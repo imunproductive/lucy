@@ -2502,6 +2502,7 @@ fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
 #[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR); runs over 30 s"]
 fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
     use orpheus_content::{heroes::SOLDIER, maps::MapCatalog, parameters::PICK_HERO};
+    use orpheus_script::wire::{Value as ScriptValue, Variables};
     use orpheus_sim::{controller::Controller, scene_assets::SceneAssets};
 
     const WORKSHOP_CHAMBER: u64 = 0x0800_0000_0000_0c48;
@@ -2697,12 +2698,27 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
         },
     );
     let scene = assets.prepare(map.clone()).unwrap();
-    let counting = scene.countdown_frame(12.5).unwrap();
-    let over = scene.countdown_frame(0.0).unwrap();
+    let clock = |seconds: f64| {
+        scene
+            .mode_frame(&Variables::from([(
+                orpheus_sim::match_flow::CLOCK,
+                ScriptValue::Float(seconds),
+            )]))
+            .unwrap()
+    };
+    let (counting, over) = (clock(12.5), clock(0.0));
     for watcher in [&*first, &*second] {
-        let frames = mode_frames(watcher);
-        let (last_index, last) = frames.last().unwrap();
-        // One frame a second for 30 s, the mode entity's first ones.
+        let (closed, _) = controllers(watcher)
+            .into_iter()
+            .find(|(_, chunk)| shows(chunk, false, false, Some(SOLDIER)))
+            .unwrap();
+        let frames: Vec<_> = mode_frames(watcher)
+            .into_iter()
+            .filter(|(index, _)| *index <= closed)
+            .collect();
+        let (_, last) = frames.last().unwrap();
+        // One frame a second for 30 s, the mode entity's first ones; then
+        // the round's, whose clock Skirmish doesn't run.
         assert!(
             (25..=32).contains(&frames.len()),
             "{} countdown frames",
@@ -2715,11 +2731,6 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
             (last.width, last.data.as_slice()),
             (over.bit_len(), over.as_bytes())
         );
-        let (closed, _) = controllers(watcher)
-            .into_iter()
-            .find(|(_, chunk)| shows(chunk, false, false, Some(SOLDIER)))
-            .unwrap();
-        assert!(closed >= *last_index);
     }
 
     // A third player joins the running match: no countdown, hero select
@@ -2751,10 +2762,18 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
         },
     );
     assert!(shows(&controllers(&third)[0].1, true, false, None));
+    // His first frame may be the mode UI without variables (he was
+    // presented after the heroes assembled); then the round's, with no
+    // countdown (Skirmish has no round clock).
+    let frames: Vec<_> = mode_frames(&third)
+        .into_iter()
+        .filter(|(_, chunk)| chunk.width != scene.mode_ui().bit_len())
+        .collect();
     assert!(
-        mode_frames(&third)
+        frames
             .iter()
-            .all(|(_, chunk)| chunk.width != counting.bit_len())
+            .all(|(_, chunk)| chunk.data.as_slice() == over.as_bytes()),
+        "the round's frames, no countdown"
     );
 
     let snapshot = server.snapshot().unwrap();
@@ -2777,6 +2796,252 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
             ("third#3333", SOLDIER, 0, PlayerState::Playing),
         ]
     );
+    server.stop().unwrap();
+}
+
+/// A Quick Play Assault match on Temple of Anubis runs its whole flow on a
+/// time scale of 1/10 (orpheus_sim::match_flow): assemble, setup, the
+/// round, the capture of A and then B by the attacker, the round's end,
+/// the match's end; the result goes to the lobby (a win for the attackers'
+/// team, a loss for the defenders') and both players go home (20304).
+///
+/// The test moves both points into the attackers' spawn room, so the
+/// attacker captures them standing where he spawns: walking 125 m to A
+/// needs the movement the test client doesn't play.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR); builds Anubis' collision once"]
+fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
+    use orpheus_content::{
+        heroes::SOLDIER,
+        maps::{MapCatalog, ObjectiveKind},
+        parameters::PICK_HERO,
+    };
+    use orpheus_script::wire::{Value as ScriptValue, Variables};
+    use orpheus_sim::{
+        match_flow::{ASSAULT, ATTACKERS, BANNER, CLOCK, DEFENDERS, OBJECTIVE_NAME},
+        scene_assets::SceneAssets,
+    };
+
+    const ANUBIS: u64 = 0x0800_0000_0000_005b;
+    const SCALE: f64 = 0.1;
+
+    let runtime = orpheus_testkit::runtime_dir();
+    let assets = Arc::new(
+        SceneAssets::load(&runtime)
+            .unwrap()
+            .with_collision_build(collision_build(orpheus_testkit::game_dir())),
+    );
+    let catalog = MapCatalog::load(runtime.join("data")).unwrap();
+    let mut map = catalog
+        .game_map(ANUBIS, ASSAULT, "Assault", false, &[6, 6])
+        .expect("Temple of Anubis in Assault");
+    let names: Vec<_> = map
+        .objectives_of(ObjectiveKind::Point)
+        .map(|point| point.name.clone().unwrap_or_default())
+        .collect();
+    assert_eq!(names, ["Point A", "Point B"]);
+    let (attack_spawn, _) = map.spawn_point(1, 0).unwrap();
+    let (defense_spawn, _) = map.spawn_point(0, 0).unwrap();
+    let distance = |a: [f64; 3], b: [f64; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
+    assert!(distance(attack_spawn, defense_spawn) > 50.0);
+    for objective in &mut map.objectives {
+        objective.position = attack_spawn;
+    }
+
+    let schemas = Arc::new(Schemas::game());
+    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    server
+        .set_match_timers(orpheus_sim::match_flow::Timers { scale: SCALE })
+        .unwrap();
+    let player = |tag: &str, team, account| WorldPlayer {
+        player: MatchPlayer {
+            name: tag.into(),
+            team,
+            tournament: false,
+            ranked: false,
+        },
+        card: PlayerCard {
+            account: [account, 0x0100_0000_0000_0000],
+            battle_tag: tag.into(),
+            record: Fields::from([(0x40, Value::String(tag.into()))]),
+            ..PlayerCard::default()
+        },
+        hero: 0,
+    };
+    let prepare = {
+        let (assets, map) = (Arc::clone(&assets), map.clone());
+        Box::new(move || assets.prepare(map))
+    };
+    let tickets = server
+        .open_world(
+            MATCH,
+            map.clone(),
+            vec![player("defender#1111", 0, 7), player("attacker#2222", 1, 8)],
+            prepare,
+        )
+        .unwrap();
+    let mut watchers: Vec<_> = tickets
+        .iter()
+        .enumerate()
+        .map(|(slot, ticket)| {
+            let mut client = Client::new(server.local_addr(), ticket);
+            client.handshake();
+            Watcher {
+                client,
+                owner: player_entity(slot),
+                tick: 0,
+                sequences: HashSet::new(),
+                datagrams: Vec::new(),
+                ticks: Vec::new(),
+            }
+        })
+        .collect();
+    let [defender, attacker] = &mut watchers[..] else {
+        unreachable!()
+    };
+    let received = |watcher: &Watcher, id: u32| {
+        watcher
+            .datagrams
+            .iter()
+            .position(|(messages, _)| messages.iter().any(|message| message.id == id))
+    };
+    pump_until(
+        &mut [defender, attacker],
+        &schemas,
+        "the instances",
+        |watchers| {
+            watchers
+                .iter()
+                .all(|watcher| received(watcher, 20300).is_some())
+        },
+    );
+    for watcher in [&mut *defender, &mut *attacker] {
+        let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+        let mut payload = BitWriter::new();
+        write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+        watcher.client.send(ACK, payload.into_bytes());
+    }
+    pump_within(
+        &mut [defender, attacker],
+        &schemas,
+        "the players in the world",
+        Duration::from_secs(900),
+        |watchers| {
+            watchers.iter().all(|watcher| {
+                watcher.created(GAME_MODE_ENTITY).is_some()
+                    && watcher
+                        .find(0, |record| {
+                            record.entity == watcher.owner && record.script.is_some()
+                        })
+                        .is_some()
+            })
+        },
+    );
+    for watcher in [&mut *defender, &mut *attacker] {
+        let owner = watcher.owner;
+        send_player_message(
+            &mut watcher.client,
+            &schemas,
+            owner,
+            1,
+            PICK_HERO,
+            SOLDIER.to_le_bytes().to_vec(),
+        );
+    }
+    pump_until(
+        &mut [defender, attacker],
+        &schemas,
+        "the bodies",
+        |watchers| {
+            watchers
+                .iter()
+                .all(|watcher| watcher.created(watcher.owner | 1).is_some())
+        },
+    );
+    // 3 s assemble, 4.5 s setup, A in 3 s, B in 1.8 s, 1.16 s of round end
+    // and 2 s of match end.
+    pump_within(
+        &mut [defender, attacker],
+        &schemas,
+        "the end of the match",
+        Duration::from_secs(60),
+        |watchers| {
+            watchers
+                .iter()
+                .all(|watcher| received(watcher, 20304).is_some())
+        },
+    );
+    let results = server.take_results().unwrap();
+    assert_eq!(results.len(), 1);
+    let result = &results[0];
+    assert_eq!(
+        (result.id, result.map, result.mode),
+        (MATCH, ANUBIS, ASSAULT)
+    );
+    let outcomes: Vec<_> = result
+        .players
+        .iter()
+        .map(|player| {
+            (
+                player.name.as_str(),
+                player.team,
+                player.outcome,
+                player.finished,
+            )
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("defender#1111", 0, Outcome::Loss, true),
+            ("attacker#2222", 1, Outcome::Win, true),
+        ]
+    );
+    assert!(server.take_results().unwrap().is_empty());
+
+    // The mode entity's frames, one a second and at each phase: the clock
+    // with the phase banner and the objective's name while the round is
+    // on, then the clock alone (no banner, no objective left) at the round's
+    // and the match's end.
+    let scene = assets.prepare(map.clone()).unwrap();
+    let width = |extra: &[(u32, ScriptValue)]| {
+        let mut variables = Variables::from([(CLOCK, ScriptValue::Float(1.0))]);
+        variables.extend(extra.iter().cloned());
+        variables.extend([
+            (ATTACKERS, ScriptValue::Integer(1)),
+            (DEFENDERS, ScriptValue::Integer(0)),
+        ]);
+        scene.mode_frame(&variables).unwrap().bit_len()
+    };
+    let playing = width(&[
+        (BANNER, ScriptValue::Asset(0x0de0_0000_0000_6116)),
+        (OBJECTIVE_NAME, ScriptValue::String("Point A".into())),
+    ]);
+    let over = width(&[]);
+    assert_ne!(playing, over);
+    for watcher in [&*defender, &*attacker] {
+        let widths: Vec<usize> = watcher
+            .datagrams
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter(|record| record.entity == GAME_MODE_ENTITY)
+            .filter_map(|record| record.script.as_ref().map(|chunk| chunk.width))
+            // A client presented after the heroes assembled first gets the
+            // mode UI without variables.
+            .filter(|&width| width != scene.mode_ui().bit_len())
+            .collect();
+        // The playing frames carry the banner and the objective's name; at
+        // the round's and the match's end they're gone (the clock's compact
+        // form changes the widths, so compare with the widest).
+        assert!(widths.len() >= 5, "{widths:?}");
+        let widest = widths.iter().copied().max().unwrap();
+        assert!(widest > over, "{widths:?}");
+        assert!(
+            widths[widths.len() - 2..]
+                .iter()
+                .all(|&width| width < widest)
+        );
+    }
     server.stop().unwrap();
 }
 

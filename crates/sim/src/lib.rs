@@ -12,6 +12,7 @@ pub mod egress;
 pub mod hitscan;
 pub mod instance;
 pub mod match_flow;
+pub mod mode_script;
 pub mod notices;
 pub mod objectives;
 pub mod others;

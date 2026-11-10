@@ -500,7 +500,9 @@ impl MatchFlow {
     /// The variables of the mode entity the HUD reads.
     pub fn variables(&self) -> Variables {
         let mut variables = Variables::from([(CLOCK, Value::Float(self.clock()))]);
-        if let Some((_, text)) = BANNERS.iter().find(|(phase, _)| *phase == self.phase) {
+        let banner = BANNERS.iter().find(|(phase, _)| *phase == self.phase);
+        if let (true, Some((_, text))) = (self.mode.sided(), banner) {
+            // 0F4A's texts; the other mode graphs' aren't read.
             variables.insert(BANNER, Value::Asset(*text));
         }
         if let Some(round) = &self.sided {

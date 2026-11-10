@@ -13,9 +13,7 @@ use serde_json::Value as Json;
 
 use crate::{
     graph::GraphStore,
-    vm::{
-        Component, GameMessage, InitFault, MAX_INIT_WORK, Root, Site, Snapshot, Unknowns, World,
-    },
+    vm::{Component, GameMessage, InitFault, MAX_INIT_WORK, Root, Site, Snapshot, Unknowns, World},
     wire::{Value, Variables},
 };
 use orpheus_wire::entity::GAME_MODE_ENTITY;
@@ -222,7 +220,8 @@ mod tests {
         let gaps = script.gaps();
         for class in ["STU_6A926B21", "STU_1D719351", "STU_9B213168"] {
             assert!(
-                gaps.keys().any(|(graph, gap)| *graph == 0x0f4a && gap == class),
+                gaps.keys()
+                    .any(|(graph, gap)| *graph == 0x0f4a && gap == class),
                 "{class} in {gaps:?}"
             );
         }
