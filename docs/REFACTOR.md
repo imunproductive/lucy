@@ -241,10 +241,10 @@ flowchart LR
 | 1 Module folders | Done, merged with phase 3: files moved straight into the crates, large test modules moved to `tests.rs` files, the statescript VM split into 11 files by concern |
 | 2 Cut cycles | Done, before phase 1 |
 | 3 Workspace crates | Done |
-| 4 `orpheus` app | Done. The dashboard serves its profile, account, item, frame and loot box actions; the rest answer 501 (see `docs/notes/parity.md`). |
+| 4 `orpheus` app | Done. The dashboard serves every action the Python dashboard has. |
 | 5 Launcher and relay | Done. The original client reached the lobby through the Rust relay (`docs/notes/behavior.md`, 2026-11-10). The C++ relay, `build.bat`, `START.bat`, `START_LOCAL.cmd` and `--relay-dll` are deleted. `ow174/launcher` stays until phase 8, because the frozen Python server imports it; it now loads the Rust relay. |
-| 6 Game data from CASC | Spike passed. 6a done: `crates/casc` reads every stored graph and definition from the install by GUID (`just test-game`). 6b done: `crates/stu` decodes every stored graph, definition and game mode, and matches a DataTool export of the install (`just test-datatool`). 6c and 6d not started. |
-| 7 Tools | IDA script moved; `fake_client` covered by test fixtures; `ssq` deferred (see phase 7) |
+| 6 Game data from CASC | Done. 6a: `crates/casc` reads every graph and definition from the install by GUID (`just test-game`). 6b: `crates/stu` decodes them and matches a DataTool export (`just test-datatool`). 6c: `crates/assets` derives every runtime file, each checked against the prepared pack (`just test-assets`). 6d: the server derives its data from the install into the state folder's cache on first start; it no longer reads a pack. |
+| 7 Tools | IDA script moved; `fake_client` covered by test fixtures; `ssq` deferred (see phase 7); no other tool was needed for the parity work |
 | 8 Remove Python | Waits for the phase 5 and 6 gates and gameplay parity |
 | 9 New documentation | Not started |
 
