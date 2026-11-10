@@ -3,6 +3,7 @@
 
 mod handlers;
 pub(crate) mod hub;
+pub(crate) mod matchmaker;
 pub(crate) mod peer;
 pub(crate) mod router;
 
@@ -73,6 +74,7 @@ pub(crate) struct Lobby {
     pub active: Arc<Mutex<HashMap<u32, Arc<AtomicBool>>>>,
     pub game: Arc<GameService>,
     pub hub: Hub,
+    pub matchmaker: matchmaker::Matchmaker,
 }
 
 struct LoginLease<'a> {

@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     game_service::GameService,
-    lobby::{Lobby, serve},
+    lobby::{Lobby, matchmaker::Matchmaker, serve},
     runtime::missing_runtime_files,
     server::dashboard::{Dashboard, DashboardParts},
 };
@@ -160,6 +160,7 @@ impl Server {
             active: Arc::default(),
             game: Arc::clone(&game),
             hub: Default::default(),
+            matchmaker: Matchmaker::new(&data, &config.data)?,
         });
         let dashboard = config
             .dashboard_port
@@ -172,6 +173,7 @@ impl Server {
                     data: config.data.clone(),
                     assets: config.data.join("assets"),
                     lobby_port: lobby_addr.port(),
+                    lobby: Some(Arc::clone(&shared)),
                 };
                 Dashboard::start(port, parts)
             })

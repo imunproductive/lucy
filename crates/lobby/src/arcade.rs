@@ -185,6 +185,15 @@ impl Arcade {
         self.cards.get(&(card as u32)).and_then(|card| card.pool)
     }
 
+    /// The Arcade's cards the menu offers now (full GUIDs): event groups
+    /// first, then everyday ones (`ow174/content/arcade.py` `cards`).
+    pub fn cards(&self, profile: &Profile, now: u64) -> Vec<u64> {
+        card_order(&profile.events, now)
+            .into_iter()
+            .map(full)
+            .collect()
+    }
+
     pub fn state(&self, profile: &Profile, season: Season, now: u64) -> io::Result<ArcadeState> {
         let cards = card_order(&profile.events, now);
         let competitive_cards = cards

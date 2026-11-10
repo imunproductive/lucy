@@ -110,6 +110,9 @@ pub struct Api<'a> {
     /// Optional dashboard pictures: `assets/previews/<GUID>.webp`.
     pub assets: &'a Path,
     pub lobby_port: u16,
+    /// The lobby's matchmaker and game service; `None` when matchmaking is
+    /// off.
+    pub lobby: Option<&'a crate::lobby::Lobby>,
     pub uptime: Duration,
 }
 
@@ -250,6 +253,7 @@ impl Api<'_> {
 
     fn server_info(&self) -> Json {
         let connected = self.online.lock().expect("lobby accounts").len();
+        let matchmaker = self.lobby.map(|lobby| &lobby.matchmaker);
         json!({
             "host": "127.0.0.1",
             "port": self.lobby_port,
@@ -258,11 +262,13 @@ impl Api<'_> {
             "game_instances": [],
             "game_runtime_available": true,
             "second_games": false,
-            "matchmaking_supported": false,
-            "test_players": 0,
-            "modes": [],
-            "maps": [],
-            "forced_map": "",
+            "matchmaking_supported": self.lobby.is_some(),
+            "test_players": matchmaker.map_or(0, |matchmaker| matchmaker.minimum_players()),
+            "modes": self.mode_rows(),
+            "maps": self.map_rows(),
+            "forced_map": matchmaker
+                .and_then(|matchmaker| matchmaker.forced_map())
+                .map_or(String::new(), |map| format!("0x{map:X}")),
         })
     }
 
@@ -897,6 +903,8 @@ fn parse_challenge(value: &Json) -> Result<String, ApiError> {
         .map(str::to_owned)
         .ok_or_else(|| ApiError::bad("Challenge not found"))
 }
+
+mod matchmaking;
 
 #[cfg(test)]
 mod tests;

@@ -74,6 +74,7 @@ impl Fixture {
             data: self.state.path(),
             assets: self.state.path(),
             lobby_port: 3724,
+            lobby: None,
             uptime: Duration::ZERO,
         }
     }

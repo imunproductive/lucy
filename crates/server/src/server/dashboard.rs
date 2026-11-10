@@ -45,14 +45,10 @@ const PAGES: [(&str, &[u8], &str); 5] = [
 ];
 const INDEX: &[u8] = include_bytes!("../../../../web/dashboard/index.html");
 /// Actions whose features the native server does not have yet.
-const NOT_PORTED: [&str; 9] = [
+const NOT_PORTED: [&str; 5] = [
     "/api/open_all_boxes",
     "/api/bot_group",
     "/api/purchase",
-    "/api/matchmaking",
-    "/api/mode_settings",
-    "/api/set_map",
-    "/api/end_matches",
     "/api/reconnect",
     "/api/start_game",
 ];
@@ -75,6 +71,9 @@ pub struct DashboardParts {
     pub assets: PathBuf,
     /// The lobby port the dashboard reports.
     pub lobby_port: u16,
+    /// The lobby's shared state (the matchmaker and the game service);
+    /// `None` when matchmaking is off.
+    pub(crate) lobby: Option<Arc<crate::lobby::Lobby>>,
 }
 
 impl Dashboard {
@@ -101,6 +100,7 @@ impl Dashboard {
                         data: &parts.data,
                         assets: &parts.assets,
                         lobby_port: parts.lobby_port,
+                        lobby: parts.lobby.as_deref(),
                         uptime: started.elapsed(),
                     };
                     let _ = handle(&api, port, request);
@@ -204,6 +204,10 @@ fn post(api: &Api, path: &str, data: &Map<String, Json>) -> ApiResult {
         "/api/grant_skin" => api.grant_skin(data),
         "/api/select_account" => api.select_account(data),
         "/api/default_account" => api.default_account(data),
+        "/api/matchmaking" => api.matchmaking(data),
+        "/api/mode_settings" => api.mode_settings(data),
+        "/api/set_map" => api.set_map(data),
+        "/api/end_matches" => api.end_matches(),
         path if NOT_PORTED.contains(&path) => Err(ApiError::new(
             501,
             "The native server does not support this action yet.",
@@ -393,6 +397,7 @@ mod tests {
             data: state.path().into(),
             assets: state.path().join("assets"),
             lobby_port: 3724,
+            lobby: None,
         };
         let mut dashboard = Dashboard::start(0, parts).unwrap();
         let addr = dashboard.addr();
