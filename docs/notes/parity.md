@@ -21,6 +21,13 @@ The frozen Python server (`ow174/`) is the behavioral reference until the Rust s
   - target searches (`TrackTargets`) find nothing; melee's health change, knockback, hit list and three unnamed states are on/off only, so melee hits nothing;
   - a map value (graph `05AD`, variable 29859) is left out of frames: its wire form isn't known, and the client builds the same map.
   The stock body turns on owner corrections (`replication.rs`). None of this has been checked with the client yet.
+- Other heroes' owner scripts (checked 2026-11-10 without the client, by starting each body through `PlayerBodyFactory`). Only Soldier: 76, Pharah and Cassidy start without a gap; `scene_assets.rs` runs only Soldier: 76. Two blockers are common to all of them:
+  - ruleset values: `PlayerWorld::ruleset` answers only Soldier: 76's few defaults and 0 for everyone else, so for example the clip size multiplier `0x2819` is 0 and Tracer's magazine is 0. The Python server had the full table (`ow174/game/script/rulesets.py`: the `0C6` ruleset schemas each hero `075` and mode `0C5` lists);
+  - a body with any startup gap gives no shots (`take_shots` waits for a complete start), so one unsupported node in an ability graph also disarms the gun.
+  Tracer, with the ruleset defaults supplied, reloads to 40 and empties her pistols; her remaining gaps are all in her ability graphs:
+  - at startup: Recall `001A` node 12 (`STU_60146072` about her own entity), Blink `0024` node 80 (`STU_B9898052`, named ClientOnlyPulser in LizRollin's list, yet networked), node 63 (`STU_038C32E8`), node 9 (`StateBlinkEffect`, effect `0x0300000000000190`), Pulse Bomb `0034` node 51 (`STU_082FA44E`, a lookup in `0x0F4800000000015D`);
+  - in use: Blink's action `STU_A807207A` (the move itself, with parameters 0.1 and 1) and `STU_71A87E92`; Recall's `STU_9B213168` message target and its container `STU_54FEB21C` (node 4), which ends only when instance variable 395 (`0x018B`) turns true, as ow1-preservation found; nothing writes it, so the server must;
+  - outside the VM: Blink and Recall move the player, so the mover must apply them (ow1-preservation did both as server teleports, Recall from 3 s of position history); the pistols' muzzle variables `0x31`/`0x32` stay empty, so shots would start at the body; Pulse Bomb's projectile `0x0400000000000045` sticks and explodes (graph `0C1B`), which the projectile flight doesn't model.
 - Full player and bot scripts and replication, native combat with stock bodies, observer projectile launch, scripted flight, healing fields.
 - Matchmaking queues and PvP modes beyond the solo Practice Range.
 - Social actions.
