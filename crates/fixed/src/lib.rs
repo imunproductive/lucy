@@ -1,6 +1,6 @@
 //! Fixed data for build 104319 that the game install does not contain, so it
 //! can't be read from CASC. It is embedded in the binary. Where each file comes
-//! from is recorded in `docs/notes/data-sources.md`.
+//! from is recorded in `docs/dev/data-sources.md`.
 
 #![forbid(unsafe_code)]
 

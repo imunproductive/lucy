@@ -1,0 +1,112 @@
+# Commands reference
+
+`orpheus --help` lists the commands. `orpheus <command> --help` shows the options of one command. This page is made from that help.
+
+```
+Usage: orpheus.exe [OPTIONS] [COMMAND]
+
+Commands:
+  play             Run the server, start the game and load the relay into it (retail mode)
+  host             Host for other PCs and play here: retail with the lobby open to other PCs
+  tournament       Run the server and the game in tournament mode, with no relay or Battle.net
+  serve            Run the Battle.net, lobby and game services until Ctrl+C, without starting a game
+  server           Host for other PCs without playing here: the lobby and game server only
+  join             Play on someone else's server with the full menu (--server, --name)
+  join-tournament  Play on someone else's server in tournament mode (--server)
+  doctor           Check the setup the modes need and say how to fix each problem
+  state            Manage saved player state
+  assets           Game data derived from the install
+  script           Statescript research tools
+  help             Print this message or the help of the given subcommand(s)
+```
+
+## Without a command
+
+`orpheus` without a command asks for the mode (see [playing](playing.md#startcmd)). Enter picks retail. Without a console, it starts retail.
+
+`--mode <mode>` starts a mode without asking. The modes are `retail`, `tournament`, `host`, `server`, `join` and `join-tournament`. Without a command, the options follow `orpheus` directly: `orpheus --mode join --server 1.2.3.4:3724`.
+
+With a command, the options go after the command: `orpheus play --game ...`. Only `--state` can go anywhere.
+
+## Options
+
+### Everywhere
+
+| Option | Meaning |
+| --- | --- |
+| `--state <DIR>` | Folder for profiles, logs, `config.toml` and remembered answers. Default `%APPDATA%\orpheus`. Environment: `ORPHEUS_STATE_DIR`. |
+
+### Server options
+
+`play`, `host`, `tournament`, `serve`, `server`, `join`, `join-tournament`, `doctor`, `assets build`, `assets diff` and `script query` take these. [Configuration](configuration.md) has the defaults.
+
+| Option | Meaning |
+| --- | --- |
+| `--account <NAME>` | Saved account the game logs in as |
+| `--game <PATH>` | `Overwatch.exe`, its installation folder or the official launcher. The server reads its game data from this install. Environment: `ORPHEUS_GAME`. |
+| `--locale <CODE>` | Game language: `auto`, `none`, or a code such as `enUS` |
+| `--lobby-port <PORT>` | Lobby TCP port |
+| `--stall-port <PORT>` | Battle.net TCP port the client dials |
+| `--rpc-port <PORT>` | Battle.net RPC TCP port the relay pipes to |
+| `--game-port <PORT>` | Game UDP port |
+| `--dashboard-port <PORT>` | Dashboard TCP port; 0 turns the dashboard off |
+| `--test-players <PLAYERS>` | Start a match once this many players search (default 0: full teams only) |
+| `--save <FILE>` | Template profile for new accounts (default `profile.json` in the state folder) |
+
+### Mode options
+
+The mode commands (`play`, `host`, `tournament`, `serve`, `server`, `join`, `join-tournament`) also take these. Each mode uses the ones that apply to it.
+
+| Option | Meaning |
+| --- | --- |
+| `--host <ADDRESS>` | Address the lobby and the game server listen on. Default `0.0.0.0` for `host` and `server`, else `127.0.0.1`. |
+| `--game-host <ADDRESS>` | Address games are sent to for a match, if not the one they reach the lobby at (behind a router's port forward: the public address) |
+| `--server <HOST:PORT>` | Address of the server to join, such as `1.2.3.4:3724` |
+| `--name <NAME>` | Your name on the server you join with the full menu |
+| `--timeout <SECONDS>` | Seconds to wait for the game to be ready for the relay. Default 30. |
+
+## Modes
+
+| Command | Menu | What runs | Guide |
+| --- | --- | --- | --- |
+| `play` (alias `retail`) | 1 | The server for this PC, the local Battle.net and the game with the relay | [playing](playing.md#orpheus-play) |
+| `tournament` | 2 | The server for this PC and the game in tournament mode. No relay or Battle.net. | [playing](playing.md#orpheus-tournament) |
+| `host` | 3 | `play`, with the lobby and game server open to other PCs | [hosting](hosting.md) |
+| `server` | 4 | The lobby and game server for other PCs. No game or Battle.net here. | [hosting](hosting.md) |
+| `join` | 5 | The game with the full menu on someone else's server | [hosting](hosting.md#join-with-the-full-menu-orpheus-join) |
+| `join-tournament` | 6 | The game in tournament mode on someone else's server | [hosting](hosting.md#join-in-tournament-mode-orpheus-join-tournament) |
+| `serve` | | The services for this PC without a game. Battle.net stays on, for a game started by hand. | [playing](playing.md#orpheus-serve) |
+
+## doctor
+
+`orpheus doctor [server options]` checks the setup the modes need and says how to fix each problem. See [doctor and troubleshooting](troubleshooting.md).
+
+## state import
+
+```
+orpheus state import [--overwrite] <CHECKOUT>
+```
+
+Copies `profiles\*.json`, `profile.json` and `default_account.txt` from an older checkout's root folder into the state folder. `--overwrite` replaces files that already exist. See [first run](first-run.md#5-profiles-from-an-older-checkout).
+
+## assets
+
+| Command | Meaning |
+| --- | --- |
+| `orpheus assets build [server options]` | Derive the game data now and print the cache folder |
+| `orpheus assets diff --pack <DIR> [server options]` | Derive the game data into a scratch folder and compare every file with a prepared runtime pack. For developers; see [testing](../dev/testing.md). |
+
+## script query
+
+`orpheus script query <command>` answers questions about the statescript graphs in the derived game data. It is a research tool.
+
+| Command | Meaning |
+| --- | --- |
+| `graphs` | Graphs with their role and size, for example `graphs --hero soldier` |
+| `show` | A graph as a tree, for example `show 0255 --state 1 --depth 1` |
+| `var` | Every use of a variable, for example `var 699 --graph 0255` |
+| `class` | Where a class is used and its fields, for example `class MovementMod` |
+| `find` | Names, aliases, hashes, GUIDs, for example `find "hero select"` |
+| `hero` | A hero's body, graphs, classes and shared variables |
+
+`--owlib <DIR>` (environment `OWLIB_TYPES`) points to `TankLib/STU/Types` of an OWLib checkout, for each field's declared type and offset. `orpheus script query --help` explains the notation.

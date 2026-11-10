@@ -1,0 +1,53 @@
+# Configuration
+
+`orpheus` reads `config.toml` in the state folder (`%APPDATA%\orpheus\config.toml`). The file is optional. Each setting comes from the first of:
+
+1. the command-line flag;
+2. the environment variable, where one exists;
+3. `config.toml`;
+4. the default.
+
+## Keys
+
+```toml
+game = 'C:\Games\Overwatch'   # the install, Overwatch.exe or the official launcher
+account = "Player"            # the saved account the game logs in as
+locale = "auto"               # auto, none, or a code such as enUS
+
+[ports]
+lobby = 3724                  # TCP
+stall = 1119                  # TCP, the Battle.net address the game dials
+rpc = 21119                   # TCP, where the relay pipes the Battle.net stream
+game = 3730                   # UDP
+dashboard = 3725              # TCP; 0 turns the dashboard off
+```
+
+| Key | Flag | Environment | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `game` | `--game` | `ORPHEUS_GAME` | the last picked game, then `game\` in the current folder, then a file dialog | The Overwatch 1.74 install. The server also reads its game data from it. |
+| `account` | `--account` | | `default_account.txt` | The saved account the game on this PC logs in as |
+| `locale` | `--locale` | | `auto` | The game language: `auto`, `none` or a code such as `enUS` (see [playing](playing.md#game-language)) |
+| `ports.lobby` | `--lobby-port` | | 3724 | Lobby, TCP |
+| `ports.stall` | `--stall-port` | | 1119 | Battle.net, TCP |
+| `ports.rpc` | `--rpc-port` | | 21119 | Battle.net RPC, TCP |
+| `ports.game` | `--game-port` | | 3730 | Game server, UDP |
+| `ports.dashboard` | `--dashboard-port` | | 3725 | Dashboard, TCP. 0 turns it off. |
+
+Use single quotes for Windows paths in TOML, so the backslashes stay as they are.
+
+An unknown key is an error. `orpheus doctor` shows it.
+
+## Settings that are not in config.toml
+
+| Flag | Environment | Meaning |
+| --- | --- | --- |
+| `--state <folder>` | `ORPHEUS_STATE_DIR` | The state folder. Default `%APPDATA%\orpheus`. |
+| `--host <address>` | | Where the lobby and game server listen |
+| `--game-host <address>` | | The public address for players on the internet. Remembered in `public_address.txt` when the menu asks for it. |
+| `--server <host:port>` | | The server to join. Remembered in `server_address.txt`. |
+| `--name <name>` | | Your name on the server you join. Remembered in `player_name.txt`. |
+| `--timeout <seconds>` | | How long to wait for the game before the relay is loaded. Default 30. |
+| `--test-players <n>` | | Start a match once `n` players search. Default 0: full teams only. |
+| `--save <file>` | | The template profile for new accounts. Default `profile.json` in the state folder. |
+
+See the [commands reference](commands.md) for which command takes which option.

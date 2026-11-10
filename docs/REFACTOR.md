@@ -1,5 +1,7 @@
 # Refactoring plan
 
+> The refactor is done. The permanent documentation is in [docs/user](user/README.md) and [docs/dev](dev/architecture.md); this plan will be deleted.
+
 Status: proposed, 2026-11-10.
 
 This plan covers the repository layout, the build, the developer workflow, the user entry points, how the server gets game data, the client relay, the removal of the Python server and the replacement of the inherited documentation. This repository is a fork that is being rewritten. Nothing in this plan pushes to, or opens pull requests against, the upstream repository. Gameplay porting continues alongside this plan; after [phase D](#phase-d-replace-the-inherited-documentation), its open items live in `docs/notes/behavior.md` (in `docs/notes/parity.md` until phase 8). This plan changes where that work lives and how it is built and run. It does not change what the work must verify.
