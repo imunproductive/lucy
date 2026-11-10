@@ -70,6 +70,8 @@ target\release\orpheus.exe play --game C:\path\to\Overwatch
 
 `orpheus assets build` derives the game data now and prints the cache folder, and `orpheus assets diff --pack <dir>` compares the derived files with a prepared runtime pack. `orpheus runtime prepare` still assembles a pack for the frozen Python server, which remains the reference for everything the native server does not do yet; `py -3 -B -m ow174 --mode retail --bnet-port 1118 --test-players 1` runs it with the game, using the relay from `cargo build --release -p orpheus-relay`.
 
+`orpheus script query` answers questions about the statescript graphs in the derived data: `graphs` (which graphs a hero or a mode runs), `show` (a graph as a tree), `var` (who reads and writes a variable), `class` (where a node class is used and its fields), `find` (names, aliases, hashes, GUIDs) and `hero` (a hero's graphs, classes and shared variables). `orpheus script query --help` explains the notation.
+
 ## Check
 
 ```powershell

@@ -244,7 +244,7 @@ flowchart LR
 | 4 `orpheus` app | Done. The dashboard serves every action the Python dashboard has. |
 | 5 Launcher and relay | Done. The original client reached the lobby through the Rust relay (`docs/notes/behavior.md`, 2026-11-10). The C++ relay, `build.bat`, `START.bat`, `START_LOCAL.cmd` and `--relay-dll` are deleted. `ow174/launcher` stays until phase 8, because the frozen Python server imports it; it now loads the Rust relay. |
 | 6 Game data from CASC | Done. 6a: `crates/casc` reads every graph and definition from the install by GUID (`just test-game`). 6b: `crates/stu` decodes them and matches a DataTool export (`just test-datatool`). 6c: `crates/assets` derives every runtime file, each checked against the prepared pack (`just test-assets`). 6d: the server derives its data from the install into the state folder's cache on first start; it no longer reads a pack. |
-| 7 Tools | IDA script moved; `fake_client` covered by test fixtures; `ssq` deferred (see phase 7); no other tool was needed for the parity work |
+| 7 Tools | IDA script moved; `fake_client` covered by test fixtures; `ssq` ported as `orpheus script query`; no other tool was needed for the parity work |
 | 8 Remove Python | Waits for the phase 5 and 6 gates and gameplay parity |
 | 9 New documentation | Not started |
 
@@ -498,7 +498,7 @@ flowchart LR
 | Tool | Fate |
 | --- | --- |
 | `fake_client.py` | Covered: the client side of the lobby handshake is the `client_handshake` fixture in `orpheus-wire` (feature `fixtures`), and the server's loopback test logs in, decodes the login messages and loads the Practice Range with it. Delete in phase 8. |
-| `ssq.py` | Port as `orpheus script query` once a graph bundle is available to check it against (phase 6 or a prepared pack). It reads `statescript_names_174.json` (fixed research data) and is 1,440 lines of queries over the Python VM. Until then it stays in `tools/`, and phase 8 waits for it. |
+| `ssq.py` | Ported as `orpheus script query` (`apps/orpheus/src/script_query`): every subcommand and output, read from the derived graph bundle and the embedded names catalog. Its output matches `ssq.py` on the same bundle, except the `class` command's `VM:` line, which describes the Rust VM's state kinds and node actions instead of the Python registries. `tests/test_ssq.py` is ported as game-tier tests there. Delete in phase 8. |
 | `extract_statescript_codecs.py` | Moved to `research/ida/` (done). It runs inside IDA. |
 | `build_collision.py`, `extract_*.py`, `dump_schemas.py`, `export_casc_records.ps1`, `prepare_server_runtime.py` | Replaced by phase 6. Delete in phase 8. |
 | `replay_game_commands.py`, `replay_native_body.py`, `probe_body_script.py`, `probe_practice.py`, `analyze_game_graphs.py`, `codec_coverage.py`, `export_item_previews.py` | They inspect or compare against the Python implementation. Delete in phase 8. Rewrite one on the Rust crates only if a concrete need comes up. |
@@ -540,7 +540,7 @@ Each earlier phase updates the README when it changes how the program is built o
 
 ## 7. Fixed data
 
-These inputs are not game assets, so CASC cannot provide them. They are fixed for build 104319 and never change. Most likely they came from client dumps and traffic taken while the live servers were still running. The first seven are committed in `crates/fixed/data` (decision D1) and embedded in the binary; `docs/notes/data-sources.md` records their source and SHA-256.
+These inputs are not game assets, so CASC cannot provide them. They are fixed for build 104319 and never change. Most likely they came from client dumps and traffic taken while the live servers were still running. The first seven and the research names are committed in `crates/fixed/data` (decision D1) and embedded in the binary; `docs/notes/data-sources.md` records their source and SHA-256.
 
 | Item | File | Why it can't come from CASC |
 | --- | --- | --- |
@@ -553,7 +553,7 @@ These inputs are not game assets, so CASC cannot provide them. They are fixed fo
 | Event resource keys | `resource_keys.json` | The server sends them to the client (`lobby_celebrations`). Treated as server-side data; whether the install also contains them is unverified (D2). |
 | Server-set queue and Arcade card fields | Parts of `game_queues_174.json` and `arcade_cards_174.json` | `extract_game_queues.py` reads the captured templates. Arcade card duration and permanence are set by the server, not the card asset. |
 | Rules from client code used by derivations | Constants in the extractors, for example the placeable type flag table in `extract_game_maps.py` | Facts about compiled code. They become Rust constants in `assets`. |
-| Research names | `statescript_names_174.json` | Research-only naming catalog, used by `orpheus script query`. Not committed yet; it comes with the `ssq` port. |
+| Research names | `statescript_names.json` | Research-only naming catalog (class aliases, the STU fields that hold a variable, logical buttons, the hero select and HUD graphs, each mode's scripts, the server's variable names), used by `orpheus script query`. Upstream research (LizRollin's `statescript_names_174.json`), not read from the client. |
 
 The captured templates should become authored server content: TOML files a server owner can read and edit, generated once from `retail_templates.json`.
 
