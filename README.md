@@ -61,7 +61,7 @@ target\release\orpheus.exe play --runtime C:\path\to\pack --game C:\path\to\Over
 just check
 ```
 
-This runs `cargo fmt --check`, `cargo clippy` with warnings denied, `cargo test` and the dashboard test. `just` lists the other recipes. Tests that need a prepared runtime pack or the game are ignored by default; run them with `just test-runtime <pack>` and `just test-game <install>`.
+This runs `cargo fmt --check`, `cargo clippy` with warnings denied, `cargo test` and the dashboard test. `just` lists the other recipes. Tests that need a prepared runtime pack or the game are ignored by default; run them with `just test-runtime <pack>` and `just test-game <install>`. `just test-datatool <install> <dump>` compares the asset reader with a DataTool XML export of the install.
 
 ## License
 
