@@ -37,6 +37,8 @@ hmac = "0.12"
 indexmap = { version = "2", features = ["serde"] }
 md-5 = "0.10"
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
+# Byte-identical XZ to Python's `lzma` (liblzma) for the collision caches.
+liblzma = { version = "0.4", default-features = false, features = ["static"] }
 mio = { version = "1.1.1", features = ["net", "os-poll"] }
 prost = "0.14"
 prost-reflect = "0.16"

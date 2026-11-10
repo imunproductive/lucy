@@ -8,19 +8,26 @@
 
 #![forbid(unsafe_code)]
 
+mod ai_spawners;
 mod arcade_cards;
 pub mod cache;
+mod collision;
+mod game_maps;
 mod game_queues;
 mod graphs;
 mod heroes;
 mod install;
 mod lists;
+mod map_chunk;
+mod mode_props;
+mod props;
 
 use std::{
     fmt, fs, io,
     path::{Path, PathBuf},
 };
 
+pub use collision::collision_cache;
 pub use install::{Install, guid_hex, guid_name, guid_type};
 
 /// One derived file: its path inside the pack (`data/…` or `collision/…`)
@@ -92,6 +99,14 @@ pub const DERIVATIONS: &[Derivation] = &[
         derive: heroes::derive,
     },
     Derivation {
+        name: "game_maps",
+        derive: game_maps::derive,
+    },
+    Derivation {
+        name: "ai_spawners",
+        derive: ai_spawners::derive,
+    },
+    Derivation {
         name: "game_movers",
         derive: heroes::movers::derive,
     },
@@ -110,6 +125,14 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "arcade_cards",
         derive: arcade_cards::derive,
+    },
+    Derivation {
+        name: "collision",
+        derive: collision::derive,
+    },
+    Derivation {
+        name: "collision_props",
+        derive: mode_props::derive,
     },
 ];
 
