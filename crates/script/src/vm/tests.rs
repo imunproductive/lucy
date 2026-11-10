@@ -2502,13 +2502,12 @@ fn soldier_sprint_graph_reads_primary_crouch_and_melee_edges_as_in_python() {
 }
 
 #[test]
-#[ignore = "requires a local 1.74 Practice Range NPC graph pack with graph 0B92"]
+#[ignore = "requires the runtime pack's bot graph bundle (graph 0B92)"]
 fn firing_placement_reset_and_timer_boundaries_match_python() {
-    let runtime = orpheus_testkit::runtime_dir();
-    let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
+    let graphs = Arc::new(GraphStore::load(orpheus_testkit::bot_graphs()).unwrap());
     assert!(
         graphs.graph(0x0b92).is_some(),
-        "the runtime pack lacks Practice Range graph 0B92"
+        "the bot graph bundle lacks Practice Range graph 0B92"
     );
     let mut component = Component::start(
         graphs,
@@ -2590,10 +2589,9 @@ fn firing_placement_reset_and_timer_boundaries_match_python() {
 }
 
 #[test]
-#[ignore = "requires an authorized 104319 graph pack in ORPHEUS_RUNTIME_DIR"]
+#[ignore = "requires the runtime pack's bot graph bundle"]
 fn controller_and_training_bot_supported_startup_edges_match_python() {
-    let runtime = orpheus_testkit::runtime_dir();
-    let graphs = GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap();
+    let graphs = GraphStore::load(orpheus_testkit::bot_graphs()).unwrap();
     let run = |entity, roots| {
         initialize(
             &graphs,
@@ -2630,8 +2628,8 @@ fn controller_and_training_bot_supported_startup_edges_match_python() {
     assert_eq!(active(&owner, 2), [25]);
     assert!(!owner.initialization_complete());
 
-    // Only the enriched pack includes the NPC body bindings.
-    if let Some(body) = graphs.entity_body(0x0400_0000_0000_1403) {
+    let body = graphs.entity_body(0x0400_0000_0000_1403).unwrap();
+    {
         let roots = body_roots(body).unwrap();
         assert_eq!(
             roots

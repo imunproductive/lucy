@@ -74,7 +74,13 @@ Committed and embedded in the binary. Taken from LizRollin's repository (MIT) at
 
 The upstream ORPHEUS repository never committed the pack's files: its `data/` held only `README.md` and replays in all 204 commits, and `prepare_server_runtime` only copies files from a private "prepared checkout". The pack now holds only game data, which phase 6 moves to CASC; the fixed data is embedded. LizRollin's repository commits all of its files in `data/`, except the collision caches. The collision caches: `tools/build_collision.py <map>` with `ORPHEUS_RUNTIME_DIR` set to the pack builds them from the install. `0688.col` built this way matches the recorded SHA-256 below.
 
-Differences from the upstream pack, found by `just test-runtime`: LizRollin's graph bundle (373 graphs, 32 bodies, `0F9C` missing) lacks the Practice Range NPC graph `0B92`, so the ignored VM test `firing_placement_reset_and_timer_boundaries_match_python` fails. With it, the server logs at start that the Practice Range Soldier owner statescript is unavailable (graph `0x4B`, node 21, unsupported config `STU_AC829876`). Whether the upstream bundle shows the same is unknown.
+The pack has two graph bundles, both made by `tools/extract_game_graphs.py` from DataTool XML dumps of the install:
+- `game_graphs_174.json.gz`, the hero bundle the server runs: 373 graphs, 32 bodies, `0F9C` missing. `--xml <dump> --owlib <OWLib>`. Built from this install it equals LizRollin's file exactly.
+- `game_graphs_bots_174.json.gz`, for VM tests of the bot graphs (`testkit::bot_graphs`): 405 graphs, 8 entity definitions, 25 modes' variables. The same plus `--ai-spawners <pack>/data/ai_spawners_174.json --mode-xml <dump>/0C5 --entity 1403 --entity 143E --entity 146E --entity 14A9 --entity 14D2 --entity 14ED --entity 1404 --entity 14AF` (the six Practice Range bot bodies and the AI definitions their `m_8B9A461F` names). It holds the Practice Range bot graph `0B92`. Its digest matches the Python reference vector for the 405-graph bundle. The server can't use it yet: with bot graphs the Practice Range scene is not movement-ready.
+
+The dumps: OWLib at the pinned revision, built with the .NET 8 SDK (a `global.json` pinning `8.0.418`; SDK 10's C# 14 breaks TACTLib's `Reverse()` calls) and run with `DOTNET_ROLL_FORWARD=Major`: `dotnet DataTool.dll --language=enUS --speech-language=enUS <install> extract-stu-type <dump> <type> --xml` for `01B`, `003` and `0C5`. It reads 1,587 `01B` and 3,528 `003` files from this install, offline.
+
+With the hero bundle the server logs at start that the Practice Range Soldier owner statescript is unavailable (graph `0x4B`, node 21, unsupported config `STU_AC829876`): a VM gap, not a data difference.
 
 ## Collision caches
 

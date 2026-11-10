@@ -32,13 +32,15 @@ import argparse
 import gzip
 import json
 import math
+import os
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "data" / "game_graphs_174.json.gz"
-HEROES = ROOT / "data" / "game_heroes_174.json"
+# The hero list comes from the runtime pack when ORPHEUS_RUNTIME_DIR names one.
+HEROES = Path(os.environ.get("ORPHEUS_RUNTIME_DIR") or ROOT) / "data" / "game_heroes_174.json"
 NS = "{https://yretenai.com/dragonml/v1}"
 ID = NS + "id"
 NAME = NS + "name"

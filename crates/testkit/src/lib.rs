@@ -21,3 +21,11 @@ pub fn runtime_dir() -> PathBuf {
         .map(PathBuf::from)
         .expect("set ORPHEUS_RUNTIME_DIR to a prepared runtime pack (just test-runtime <pack>)")
 }
+
+/// The pack's bot graph bundle: the hero bundle plus the map AI spawner
+/// graphs, the six Practice Range bot bodies with their AI definitions, and
+/// the mode variables. The server can't run bot graphs yet, so it uses the
+/// hero bundle; VM tests of bot graphs use this one.
+pub fn bot_graphs() -> PathBuf {
+    runtime_dir().join("data/game_graphs_bots_174.json.gz")
+}
