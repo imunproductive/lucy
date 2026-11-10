@@ -60,7 +60,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                             .graph(id)
                             .state(usize::from(raw))
                             .expect("movement sample");
-                        self.update_movement_sample(key, node, previous)?;
+                        self.update_movement_sample(key, node, previous, true)?;
                     }
                     Some(StateKind::Switch { .. }) => self.post(id, Event::Reevaluate(raw))?,
                     Some(StateKind::Ability { .. }) => self.activate_ability(key, 0)?,

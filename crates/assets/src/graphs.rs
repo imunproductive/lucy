@@ -5,7 +5,9 @@
 //! The hero bundle keeps every graph reachable from the hero bodies (their
 //! statescript component's initial graphs and their weapon scripts) and from
 //! the controller, hero select, HUD and mode graphs, following every graph
-//! reference (a GUID of type `01B` anywhere in a kept graph). It also holds
+//! reference (a GUID of type `01B` anywhere in a kept graph) and the initial
+//! graphs of every entity a kept weapon volley spawns (its projectile and
+//! what the projectile leaves where it lands). It also holds
 //! each mode's initial variables and each body's authored target tags. The
 //! bot bundle adds the Practice Range bot bodies and their AI definitions
 //! (with the AI weapon buttons) and the graphs placed by the maps' AI
@@ -163,6 +165,7 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
 
     let mut graphs = BTreeMap::new();
     let mut missing = BTreeSet::new();
+    let mut spawned = BTreeSet::new();
     while let Some(index) = queue.pop_front() {
         if graphs.contains_key(&index) || missing.contains(&index) {
             continue;
@@ -175,8 +178,12 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
         };
         let asset = asset?;
         let graph = GraphView::new(&asset);
-        graphs.insert(index, graph.record(index)?);
+        let record = graph.record(index)?;
         queue.extend(graph.graph_refs());
+        if !bots {
+            queue.extend(spawned_graphs(&assets, &record, &mut spawned)?);
+        }
+        graphs.insert(index, record);
     }
 
     let mut root_graphs: BTreeSet<u64> = ROOT_GRAPHS.into_iter().collect();
@@ -951,6 +958,72 @@ fn body_record(asset: &Asset, hero: Json, name: Json) -> Result<(Map<String, Jso
     record.insert("manager".into(), manager);
     record.insert("weapons".into(), Json::Array(weapons));
     Ok((record, used.into_iter().collect()))
+}
+
+/// The initial graphs (`STUStatescriptComponent.m_B634821A[].m_graph`) of
+/// the entities a hero weapon volley spawns and the bundle hasn't followed
+/// yet: its projectile (`m_projectileEntity`) and what the projectile leaves
+/// where it lands (`m_49CBA3BC`), each an `STU_8556841E` definition.
+/// `0045.003`, Tracer's Pulse Bomb, starts `0C1B`; `03DC.003`, the Biotic
+/// Field, starts `0258`. A definition the install lacks adds nothing.
+fn spawned_graphs(assets: &Assets, record: &Json, seen: &mut BTreeSet<u64>) -> Result<Vec<u64>> {
+    let mut entities = BTreeSet::new();
+    for node in record["nodes"].as_array().into_iter().flatten() {
+        if node["class"] != "STUStatescriptStateWeaponVolley" {
+            continue;
+        }
+        for name in ["m_projectileEntity", "m_49CBA3BC"] {
+            entity_definitions(&node["fields"][name], &mut entities);
+        }
+    }
+    let mut out = Vec::new();
+    for entity in entities {
+        if !seen.insert(entity) || !assets.entities.contains_key(&entity) {
+            continue;
+        }
+        let asset = assets.entity(entity)?;
+        let Some(component) = component(&asset, "STUStatescriptComponent")? else {
+            continue;
+        };
+        let Some(Value::Array(entries)) = field(component, "m_B634821A") else {
+            continue;
+        };
+        for entry in entries.iter().filter_map(|entry| asset.resolve(entry)) {
+            if let Some(Value::Guid(graph)) = field(entry, "m_graph") {
+                if *graph != 0 && guid_type(*graph) == GRAPH {
+                    out.push(graph & INDEX);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Every entity (`003`) index an `STU_8556841E` in a bundle field names, on
+/// both sides of a condition.
+fn entity_definitions(config: &Json, found: &mut BTreeSet<u64>) {
+    match config {
+        Json::Object(fields) => {
+            if fields.get("$").and_then(Json::as_str) == Some("STU_8556841E") {
+                let guid = fields
+                    .get("m_entityDef")
+                    .and_then(Json::as_str)
+                    .and_then(|text| u64::from_str_radix(text.trim_start_matches("0x"), 16).ok());
+                if let Some(guid) = guid.filter(|&guid| guid_type(guid) == ENTITY) {
+                    found.insert(guid & INDEX);
+                }
+            }
+            for value in fields.values() {
+                entity_definitions(value, found);
+            }
+        }
+        Json::Array(values) => {
+            for value in values {
+                entity_definitions(value, found);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The component of `class` in an entity definition's component map: none,

@@ -36,7 +36,10 @@ use orpheus_script::{
     timeline::FRAME_MS,
     ultimate::{ULT_SECONDS, UltimateCharge},
     vitals::Vitals,
-    vm::{Component, GameMessage, MAX_INIT_WORK, MoveRequest, Root, Snapshot, StateKind, World},
+    vm::{
+        Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest, Root, Snapshot, StateKind,
+        Unknowns, World,
+    },
     weapons::{HitDefinition, ProjectileBallistics, authored_number},
     wire::{Value, Variables},
 };
@@ -74,6 +77,7 @@ pub struct PlayerBodyFactory {
     target_tags: Option<BTreeSet<u64>>,
     controller_on_fire: bool,
     combat: BodyCombat,
+    unknowns: Unknowns,
 }
 
 impl PlayerBodyFactory {
@@ -86,6 +90,7 @@ impl PlayerBodyFactory {
         pools: Option<HealthPools>,
         controller_on_fire: bool,
         combat: BodyCombat,
+        unknowns: Unknowns,
         probe: OwnerBodySpawn,
     ) -> io::Result<Self> {
         let body = graphs
@@ -110,6 +115,7 @@ impl PlayerBodyFactory {
             target_tags,
             controller_on_fire,
             combat,
+            unknowns,
         };
         let runtime = factory.start(probe)?;
         let encoder = runtime.encoder();
@@ -144,6 +150,7 @@ impl PlayerBodyFactory {
         world.pool_types_known = self.pools.is_some() || has_authored_pools;
         world.target_tags = self.target_tags.clone();
         world.controller_on_fire = self.controller_on_fire;
+        world.unknowns = self.unknowns;
         let mut component = Component::start(
             Arc::clone(&self.graphs),
             spawn.entity,
@@ -442,6 +449,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
             .map_err(unsupported)
     }
 
+    fn take_motions(&mut self) -> Vec<Motion> {
+        self.component.take_motions()
+    }
+
     fn begin_spawn_bark(&mut self, now: Duration) -> io::Result<()> {
         if let Some(bark) = begin_spawn_bark(
             &mut self.component,
@@ -623,6 +634,7 @@ pub fn fixture_body_factory() -> (PlayerBodyFactory, OwnerBodySpawn) {
             melee: Arc::new([]),
             field: None,
         },
+        Unknowns::for_build(),
         spawn,
     )
     .unwrap();

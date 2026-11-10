@@ -32,7 +32,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         self.exit_subgraph(id, node, "m_subgraphPlug", depth + 1)?;
         match kind {
             StateKind::MovementSample(previous) => {
-                self.update_movement_sample(key, node, previous)?;
+                self.update_movement_sample(key, node, previous, false)?;
             }
             StateKind::TargetTag {
                 effect: Some(effect),
@@ -98,6 +98,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::MoveTo => {
                 self.machine.movements.remove(&key);
             }
+            StateKind::Rewind => self.machine.motions.push(Motion::EndRewind { finished }),
             _ => (),
         }
         let state = self.state_mut(key).expect("ending state");
@@ -260,6 +261,15 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     _ => None,
                 })
                 .collect();
+            if self.machine.snapshot.instances[&id]
+                .states
+                .values()
+                .any(|state| state.active && state.kind == StateKind::Rewind)
+            {
+                self.machine
+                    .motions
+                    .push(Motion::EndRewind { finished: false });
+            }
             self.machine.snapshot.instances.shift_remove(&id);
             self.machine.queues.remove(id);
             self.machine.ticking.remove(&id);

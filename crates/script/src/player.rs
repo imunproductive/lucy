@@ -17,7 +17,7 @@ use crate::{
     expr::{EntityRelation, native_shape, valid_entity},
     graph::GraphStore,
     vitals::{PoolKind, Vitals},
-    vm::{GameMessage, Site, TargetTagEffect, World},
+    vm::{GameMessage, Site, TargetTagEffect, Unknowns, World},
     wire::{Value, Variables},
 };
 use orpheus_physics::mover::sample_movement_flags;
@@ -38,6 +38,9 @@ pub struct PlayerWorld {
     pub target_tags: Option<BTreeSet<u64>>,
     target_tag_effects: BTreeMap<u64, TargetTagCounts>,
     pub controller_on_fire: bool,
+    /// How the body treats graph content the VM doesn't implement; by
+    /// default as every script does ([`Unknowns::for_build`]).
+    pub unknowns: Unknowns,
     /// Game messages to other entities, for the match to route.
     outbox: Vec<GameMessage>,
 }
@@ -49,6 +52,10 @@ struct TargetTagCounts {
 }
 
 impl World for PlayerWorld {
+    fn unknowns(&self) -> Unknowns {
+        self.unknowns
+    }
+
     fn assumption(&self, class: &str) -> Option<&'static str> {
         match class {
             // Server-only: picks the entities message 0BD goes to (graph
@@ -296,6 +303,7 @@ impl PlayerWorld {
             target_tags: None,
             target_tag_effects: BTreeMap::new(),
             controller_on_fire: false,
+            unknowns: Unknowns::for_build(),
             outbox: Vec::new(),
         }
     }

@@ -95,6 +95,7 @@ pub struct SceneAssets {
     owner_bodies: Mutex<HashMap<u64, Option<Arc<OwnerBodyFactory>>>>,
     bot_graphs: Option<Arc<GraphStore>>,
     bot_unknowns: Unknowns,
+    player_unknowns: Unknowns,
     bots: BotCatalog,
     movers: Arc<MoverCatalog>,
     eyes: Arc<EyeCatalog>,
@@ -176,6 +177,7 @@ impl SceneAssets {
             owner_bodies: Mutex::default(),
             bot_graphs,
             bot_unknowns: Unknowns::for_build(),
+            player_unknowns: Unknowns::for_build(),
             bots: BotCatalog::load(data.join("ai_spawners_174.json"))?,
             movers: Arc::new(MoverCatalog::load(
                 data.join("game_movers_174.json"),
@@ -226,6 +228,13 @@ impl SceneAssets {
     /// need it tolerated, as the Python reference did.
     pub fn set_bot_unknowns(&mut self, unknowns: Unknowns) {
         self.bot_unknowns = unknowns;
+    }
+
+    /// How the players' body scripts treat unknown statescript content. By
+    /// default as every script does ([`Unknowns::for_build`]); tests of a
+    /// hero whose graphs still have gaps tolerate them as release builds do.
+    pub fn set_player_unknowns(&mut self, unknowns: Unknowns) {
+        self.player_unknowns = unknowns;
     }
 
     /// Load the map before handing it to the worker. The render layouts and
@@ -355,6 +364,7 @@ impl SceneAssets {
         let pools = Arc::clone(&self.pools);
         let eyes = Arc::clone(&self.eyes);
         let (melee, field) = (Arc::clone(&self.melee), self.field);
+        let player_unknowns = self.player_unknowns;
         let mode = scene.map.mode_guid;
         let ready = self
             .codecs
@@ -387,6 +397,7 @@ impl SceneAssets {
                             melee: Arc::clone(&melee),
                             field,
                         },
+                        player_unknowns,
                         spawn,
                     )
                     .map(Arc::new)

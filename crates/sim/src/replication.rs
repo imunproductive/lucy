@@ -49,7 +49,7 @@ use orpheus_script::{
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
-    vm::{GameMessage, MoveRequest, Snapshot},
+    vm::{GameMessage, Motion, MoveRequest, Snapshot},
     wire::{Value as ScriptValue, Variables},
 };
 use orpheus_wire::{
@@ -159,6 +159,12 @@ pub trait OwnerBodyRuntime: Send {
         _frame: u32,
     ) -> io::Result<()> {
         Ok(())
+    }
+
+    /// The dashes and rewinds the body's graphs began or ended since the
+    /// last call, for the mover (Tracer's Blink and Recall).
+    fn take_motions(&mut self) -> Vec<Motion> {
+        Vec::new()
     }
 
     /// Begin the hero's spawn voice line (voicelines.py `VoiceLines.spawned`).
@@ -2474,7 +2480,10 @@ impl WorldDelivery {
                     script.runtime.finish_move(request, arrived, command.frame)
                 });
                 match ended.and_then(|()| script.advance(mover, command, BodyStep::Posed, false)) {
-                    Ok(hits) => shots.extend(hits),
+                    Ok(hits) => {
+                        shots.extend(hits);
+                        start_motions(mover, script.runtime.take_motions(), dt);
+                    }
                     Err(error) => {
                         mover.track_modifiers(command.frame, &BTreeMap::new());
                         failed = Some(error.to_string());
@@ -2756,6 +2765,18 @@ fn hero_vitals(scene: &PreparedScene, hero: u64) -> Vitals {
         .hero_pools(hero)
         .unwrap_or(FALLBACK_POOLS)
         .vitals()
+}
+
+/// Hand the body's new dashes and rewinds to its mover; they run from the
+/// next pose on (`orpheus_physics::mover::motion`).
+fn start_motions(mover: &mut Mover, motions: Vec<Motion>, dt: f64) {
+    for motion in motions {
+        match motion {
+            Motion::Dash { distance, seconds } => mover.dash(distance, seconds),
+            Motion::Rewind { seconds, duration } => mover.rewind(seconds, duration, dt),
+            Motion::EndRewind { finished } => mover.end_rewind(finished),
+        }
+    }
 }
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {
