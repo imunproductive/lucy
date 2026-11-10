@@ -8,6 +8,8 @@
 
 #![forbid(unsafe_code)]
 
+mod arcade_cards;
+mod game_queues;
 mod install;
 
 use std::{
@@ -76,7 +78,16 @@ pub struct Derivation {
 }
 
 /// Every derivation, inputs first.
-pub const DERIVATIONS: &[Derivation] = &[];
+pub const DERIVATIONS: &[Derivation] = &[
+    Derivation {
+        name: "game_queues",
+        derive: game_queues::derive,
+    },
+    Derivation {
+        name: "arcade_cards",
+        derive: arcade_cards::derive,
+    },
+];
 
 /// Run every derivation and write its files under `out`.
 pub fn build(install: &Install, out: &Path) -> Result<Vec<PathBuf>> {

@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 orpheus-casc.workspace = true
+orpheus-fixed.workspace = true
 orpheus-stu.workspace = true
 flate2.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
