@@ -1,7 +1,12 @@
 use super::*;
 use crate::instance::TOURNAMENT_QUANTA;
+use orpheus_physics::mover::sample_movement_flags;
 use orpheus_physics::{
     collision::index::TriangleIndex, contact::world::ContactWorld, mover::settings::MoverSettings,
+};
+use orpheus_script::{
+    vm::{Issue, Site, TargetTagEffect, World},
+    wire::Value,
 };
 
 #[test]
@@ -83,7 +88,7 @@ fn target_tag_effects_restore_authored_tags_and_remaining_grants() {
         graph: 42,
         node: Some(1),
     };
-    let read = |world: &BodyWorld, tag| world.has_target_tag(site, spawn.entity, tag);
+    let read = |world: &PlayerWorld, tag| world.has_target_tag(site, spawn.entity, tag);
     let grant = TargetTagEffect {
         entity: spawn.entity,
         tag,
@@ -134,7 +139,7 @@ fn target_tag_effects_keep_unknown_tags_and_replacement_independent() {
         graph: 42,
         node: Some(1),
     };
-    let read = |world: &BodyWorld| world.has_target_tag(site, spawn.entity, tag);
+    let read = |world: &PlayerWorld| world.has_target_tag(site, spawn.entity, tag);
     let effect = TargetTagEffect {
         entity: spawn.entity,
         tag,
@@ -670,21 +675,23 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
     let roots = orpheus_script::vm::player_roots(body, &graphs).unwrap();
     let health = pools.total();
     let variables = orpheus_script::vm::player_entity_variables(body, health, health);
-    let mut world = BodyWorld {
-        graphs: Arc::clone(&graphs),
-        controller: 0xa000_0100,
-        entity: 0xa000_0101,
-        body_filter: crate::scene::team_bit(0).unwrap(),
-        position: GameMap::practice_range().spawn_point(0, 0).unwrap().0,
-        movement: Movement::default(),
-        throttles: [0; 2],
-        mode: PRACTICE_RANGE_MODE,
-        hero: SOLDIER,
-        vitals: Vitals::empty(),
-        pool_types_known: true,
-        target_tags: body.target_tags.clone(),
-        target_tag_effects: BTreeMap::new(),
-        controller_on_fire: false,
+    let mut world = {
+        let mut world = PlayerWorld::new(
+            Arc::clone(&graphs),
+            0xa000_0100,
+            0xa000_0101,
+            crate::scene::team_bit(0).unwrap(),
+            PRACTICE_RANGE_MODE,
+            SOLDIER,
+        );
+        world.position = GameMap::practice_range().spawn_point(0, 0).unwrap().0;
+        world.movement = Movement::default();
+        world.throttles = [0; 2];
+        world.vitals = Vitals::empty();
+        world.pool_types_known = true;
+        world.target_tags = body.target_tags.clone();
+        world.controller_on_fire = false;
+        world
     };
     let mut component = Component::start(
         graphs,
@@ -698,12 +705,21 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
     .unwrap();
     component.advance_frame(FIRST_TICK, &mut world).unwrap();
     let snapshot = component.snapshot().unwrap();
-    for diagnostic in &snapshot.diagnostics {
-        eprintln!(
-            "{:04X}:{:?} {:?}",
-            diagnostic.site.graph, diagnostic.site.node, diagnostic.issue
-        );
-    }
+    // The one startup gap: the crouch branch's effect action. The server
+    // refuses the body until this list is empty.
+    let issues: Vec<_> = snapshot
+        .diagnostics
+        .iter()
+        .map(|item| (item.site.graph, item.site.node, &item.issue))
+        .collect();
+    assert_eq!(
+        issues,
+        [(
+            0x01c7,
+            Some(74),
+            &Issue::UnsupportedAction("STUStatescriptActionEffect".into())
+        )]
+    );
     // The frozen BodyScript replay allocates the same IDs with the team
     // mask. The exit retires 08B6 (9) and its unstarted child 0BF8 (25).
     let expected = [
@@ -743,12 +759,6 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
     assert!(movement.active);
     assert_eq!(movement.kind, StateKind::MovementSample(2));
     assert_eq!(snapshot.variables[&545], Value::Bool(true));
-    assert!(
-        !snapshot
-            .diagnostics
-            .iter()
-            .any(|item| item.site.graph == 0x01c7 && item.site.node == Some(7))
-    );
     let body_pools = &snapshot.instances[&1];
     assert!(body_pools.states[&0].active);
     assert_eq!(
@@ -1040,22 +1050,16 @@ fn authored_armour_and_shield_roots_reproduce_the_reference_body_pools() {
             .filter(|root| root.graph == BODY_GRAPH)
             .collect();
         let health = pools.total();
-        let mut world = BodyWorld {
-            graphs: Arc::clone(&graphs),
-            controller: 0xa000_0100,
-            entity: 0xa000_0101,
-            body_filter: crate::scene::team_bit(0).unwrap(),
-            position: [0.0; 3],
-            movement: Movement::default(),
-            throttles: [0; 2],
-            mode: PRACTICE_RANGE_MODE,
+        let mut world = PlayerWorld::new(
+            Arc::clone(&graphs),
+            0xa000_0100,
+            0xa000_0101,
+            crate::scene::team_bit(0).unwrap(),
+            PRACTICE_RANGE_MODE,
             hero,
-            vitals: Vitals::empty(),
-            pool_types_known: true,
-            target_tags: body.target_tags.clone(),
-            target_tag_effects: BTreeMap::new(),
-            controller_on_fire: false,
-        };
+        );
+        world.pool_types_known = true;
+        world.target_tags = body.target_tags.clone();
         let component = Component::start(
             Arc::clone(&graphs),
             world.entity,

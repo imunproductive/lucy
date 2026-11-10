@@ -11,6 +11,7 @@ license.workspace = true
 orpheus-fixed.workspace = true
 flate2.workspace = true
 indexmap.workspace = true
+orpheus-content.workspace = true
 orpheus-core.workspace = true
 orpheus-physics.workspace = true
 orpheus-wire.workspace = true

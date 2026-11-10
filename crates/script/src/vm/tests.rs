@@ -1,5 +1,8 @@
 use super::*;
 
+use crate::player::PlayerWorld;
+use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
+use orpheus_physics::mover::settings::SOLDIER_BODY;
 use serde_json::json;
 
 fn node(position: u16, class: &str, state: Option<u16>, mut fields: Json) -> Json {
@@ -1293,11 +1296,14 @@ fn queued_messages_abort_and_rearm_waits_without_crossing_instance_scope() {
     assert_eq!(component.run_now(&mut EmptyWorld), Err(InitFault::Halted));
 }
 
+/// The answers the Python reference gave for the training bot (`0B92`,
+/// `0C18`) and hero select (`288A`) graphs. The server doesn't run those graphs
+/// yet, so there is no server world to test them against; when it does, these
+/// tests move to that world and this one goes.
 struct ReferenceWorld;
 
 impl World for ReferenceWorld {
     fn native(&mut self, site: Site, config: &Json) -> Option<Value> {
-        // Values observed in the Python fixtures, for this test only.
         match (site.graph, config.get("$")?.as_str()?) {
             (0x0c18, "STU_AC829876") => Some(Value::Bool(true)),
             (0x0c18, "STU_4A101787" | "STU_A77AC2AC") => Some(Value::Null),
@@ -1679,36 +1685,33 @@ fn switch_exits_old_branch_and_active_query_does_not_begin_its_target() {
     assert!(updated.initialization_complete());
 }
 
-#[derive(Default)]
-struct SprintWorld {
-    forward: i8,
+/// The server's world for a human Soldier: 76 body in the Practice Range,
+/// as `PlayerBodyFactory::start` builds it.
+fn soldier_world(graphs: &Arc<GraphStore>) -> PlayerWorld {
+    let mut world = PlayerWorld::new(
+        Arc::clone(graphs),
+        0xa000_0100,
+        0xa000_0101,
+        TEAM_ONE,
+        PRACTICE_RANGE_MODE,
+        SOLDIER,
+    );
+    world.pool_types_known = true;
+    world.target_tags = graphs.bodies()[&SOLDIER_BODY].target_tags.clone();
+    world
 }
 
-impl World for SprintWorld {
-    fn native(&mut self, site: Site, config: &Json) -> Option<Value> {
-        if site.graph != 0x0255 {
-            return None;
-        }
-        match config.get("$")?.as_str()? {
-            "STU_D3EB8D87" | "STU_A77AC2AC" => Some(Value::Bool(false)),
-            "STU_310D6529" => {
-                let unit = (1.0_f64 / 127.0) as f32;
-                let forward = f64::from(f32::from(self.forward) * unit);
-                Some(Value::Vector([0.0, forward, 0.0]))
-            }
-            _ => None,
-        }
-    }
-}
+/// The body filter bit of the first team.
+const TEAM_ONE: u64 = 0x0080_0000;
 
 #[test]
 #[ignore = "requires a local 1.74 graph pack"]
 fn authored_sprint_stack_gates_track_input_and_reveal_the_base_on_release() {
     let runtime = orpheus_testkit::runtime_dir();
     let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
-    let mut world = SprintWorld::default();
+    let mut world = soldier_world(&graphs);
     let mut component = Component::start(
-        graphs,
+        Arc::clone(&graphs),
         0xa000_0101,
         Variables::new(),
         vec![Root::new(5, 0x0255)],
@@ -1733,7 +1736,7 @@ fn authored_sprint_stack_gates_track_input_and_reveal_the_base_on_release() {
         (1032, 127, 0x881, Value::Bool(true), Value::Bool(true)),
         (1033, 0, 0, Value::Null, Value::Null),
     ] {
-        world.forward = forward;
+        world.throttles = [0, forward];
         component
             .advance_command(
                 Command {
@@ -1767,9 +1770,9 @@ fn authored_sprint_stack_gates_track_input_and_reveal_the_base_on_release() {
 fn isolated_soldier_sprint_ability_matches_the_authored_toggle_and_modifier_states() {
     let runtime = orpheus_testkit::runtime_dir();
     let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
-    let mut world = SprintWorld::default();
+    let mut world = soldier_world(&graphs);
     let mut component = Component::start(
-        graphs,
+        Arc::clone(&graphs),
         0xa000_0101,
         Variables::new(),
         vec![Root::new(5, 0x0255)],
@@ -1793,7 +1796,7 @@ fn isolated_soldier_sprint_ability_matches_the_authored_toggle_and_modifier_stat
         (1041, 127, 9, 0, Some(0)),
     ];
     for (frame, forward, buttons, flags, hud) in rows {
-        world.forward = forward;
+        world.throttles = [0, forward];
         component
             .advance_command(
                 Command {
@@ -1851,7 +1854,29 @@ fn isolated_soldier_sprint_ability_matches_the_authored_toggle_and_modifier_stat
             );
         }
     }
-    assert!(!component.snapshot().unwrap().initialization_complete());
+    // Two actions sprinting reaches that the VM can't run yet.
+    let issues: Vec<_> = component
+        .snapshot()
+        .unwrap()
+        .diagnostics
+        .iter()
+        .map(|item| (item.site.graph, item.site.node, &item.issue))
+        .collect();
+    assert_eq!(
+        issues,
+        [
+            (
+                0x0255,
+                Some(40),
+                &Issue::UnsupportedAction("STU_E9694EFD".into())
+            ),
+            (
+                0x0255,
+                Some(27),
+                &Issue::UnsupportedAction("STUStatescriptActionCriteria".into())
+            ),
+        ]
+    );
     assert!(component.movement_modifiers(&mut world).unwrap().is_none());
 }
 
@@ -1943,50 +1968,13 @@ fn volley_reports_exact_times_and_bakes_linked_ammo_on_finish() {
     assert_eq!(snapshot.instances[&1].variables[&53], Value::Integer(27));
 }
 
-struct RifleWorld(Arc<GraphStore>);
-
-impl World for RifleWorld {
-    fn ruleset(&mut self, id: u32) -> Option<Value> {
-        match id {
-            0x2538 | 0x2819 | 0x32e8 => Some(Value::Float(1.0)),
-            0x260f => Some(Value::Bool(true)),
-            0x281a | 0x32e0 | 0x32e9 => Some(Value::Bool(false)),
-            _ => None,
-        }
-    }
-
-    fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
-        if entity != 0xd000_0010 {
-            return Value::Null;
-        }
-        self.0
-            .mode_variables(0x0230_0000_0000_0018)
-            .and_then(|values| values.get(&id).copied())
-            .map_or(Value::Null, Value::from)
-    }
-
-    fn native(&mut self, site: Site, config: &Json) -> Option<Value> {
-        match config.get("$")?.as_str()? {
-            "STU_1FF67CA6" => Some(Value::Entity(site.entity)),
-            "STU_310D6529" => Some(Value::Vector([0.0; 3])),
-            "STU_37F20D24" => Some(Value::Asset(0x0230_0000_0000_0018)),
-            "STU_A3DEF368" if self.0.mode_variables(0x0230_0000_0000_0018).is_some() => {
-                Some(Value::Entity(0xd000_0010))
-            }
-            "STU_D3EB8D87" | "STU_A77AC2AC" => Some(Value::Null),
-            "STU_4A101787" => Some(Value::Bool(false)),
-            _ => None,
-        }
-    }
-}
-
 #[test]
 #[ignore = "requires a local 1.74 graph pack"]
 fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
     let runtime = orpheus_testkit::runtime_dir();
     let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
     let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
-    let mut world = RifleWorld(Arc::clone(&graphs));
+    let mut world = soldier_world(&graphs);
     let mut component = Component::start(
         Arc::clone(&graphs),
         0xa000_0101,
@@ -2099,7 +2087,7 @@ fn authored_soldier_rifle_holds_releases_and_reloads_on_the_reference_clock() {
     let runtime = orpheus_testkit::runtime_dir();
     let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
     let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
-    let mut world = RifleWorld(Arc::clone(&graphs));
+    let mut world = soldier_world(&graphs);
     let mut component = Component::start(
         Arc::clone(&graphs),
         0xa000_0101,
@@ -2454,13 +2442,14 @@ fn buffered_action_press_uses_the_shared_clock_and_releases_after_one_millisecon
 fn soldier_sprint_graph_reads_primary_crouch_and_melee_edges_as_in_python() {
     let runtime = orpheus_testkit::runtime_dir();
     let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
+    let mut world = soldier_world(&graphs);
     let mut component = Component::start(
-        graphs,
+        Arc::clone(&graphs),
         0xa000_0101,
         Variables::new(),
         vec![Root::new(5, 0x0255)],
         1029,
-        &mut ReferenceWorld,
+        &mut world,
         MAX_INIT_WORK,
     )
     .unwrap();
@@ -2482,20 +2471,20 @@ fn soldier_sprint_graph_reads_primary_crouch_and_melee_edges_as_in_python() {
                 buttons: 0x881,
                 ..Command::default()
             },
-            &mut ReferenceWorld,
+            &mut world,
         )
         .unwrap();
     let snapshot = component.snapshot().unwrap();
     assert_eq!(sprint(snapshot), [(down, 1); 3]);
     assert_eq!(snapshot.instances[&5].variables[&1919], Value::Bool(true));
-    assert!(!snapshot.initialization_complete());
+    assert!(snapshot.initialization_complete());
     component
         .advance_command(
             Command {
                 frame: 1031,
                 ..Command::default()
             },
-            &mut ReferenceWorld,
+            &mut world,
         )
         .unwrap();
     assert_eq!(sprint(component.snapshot().unwrap()), [(up, 1); 3]);

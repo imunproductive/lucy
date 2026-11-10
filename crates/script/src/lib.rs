@@ -5,6 +5,7 @@
 pub mod codecs;
 pub mod expr;
 pub mod graph;
+pub mod player;
 pub mod snapshot;
 pub mod stream;
 pub mod timeline;

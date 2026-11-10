@@ -16,29 +16,29 @@ use crate::{
     projectiles::{ProjectileLeases, local_prediction, predicted_sync},
     replication::{BodyStep, OwnerBodyRuntime},
 };
-use orpheus_content::{
-    heroes::{Hero, SOLDIER},
-    maps::PRACTICE_RANGE_MODE,
-};
+use orpheus_content::heroes::Hero;
+#[cfg(any(test, feature = "fixtures"))]
+use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
 use orpheus_core::guid::parse_guid;
 use orpheus_physics::{
+    mover::Mover,
     mover::modifiers::{Modifier, ModifierKey},
-    mover::{Mover, sample_movement_flags},
 };
 use orpheus_script::{
     codecs::CodecTable,
-    expr::{EntityRelation, native_shape, to_float, valid_entity},
+    expr::to_float,
     graph::GraphStore,
+    player::PlayerWorld,
     snapshot::{SnapshotEncoder, View},
     timeline::FRAME_MS,
-    vitals::{PoolKind, Vitals},
-    vm::{Component, MAX_INIT_WORK, Root, Site, Snapshot, TargetTagEffect, World},
+    vitals::Vitals,
+    vm::{Component, MAX_INIT_WORK, Root, Snapshot},
     weapons::{HitDefinition, ProjectileBallistics, authored_number},
-    wire::{Value, Variables},
+    wire::Variables,
 };
 use orpheus_wire::{
     commands::Command,
-    entity::{Component as EntityComponent, GAME_MODE_ENTITY, Movement},
+    entity::{Component as EntityComponent, Movement},
 };
 
 #[derive(Clone, Copy)]
@@ -113,26 +113,22 @@ impl PlayerBodyFactory {
             return Err(unsupported("the owner VM requires the 16 ms retail clock"));
         }
         let has_authored_pools = self.roots.iter().any(|root| root.graph == BODY_GRAPH);
-        let mut world = BodyWorld {
-            graphs: Arc::clone(&self.graphs),
-            controller: spawn.controller,
-            entity: spawn.entity,
-            body_filter: spawn.body_filter,
-            position: spawn.pose.position,
-            movement: spawn.pose,
-            throttles: [0; 2],
-            mode: self.mode,
-            hero: self.hero,
-            vitals: if has_authored_pools {
-                Vitals::empty()
-            } else {
-                self.pools.unwrap_or(FALLBACK_POOLS).vitals()
-            },
-            pool_types_known: self.pools.is_some() || has_authored_pools,
-            target_tags: self.target_tags.clone(),
-            target_tag_effects: BTreeMap::new(),
-            controller_on_fire: self.controller_on_fire,
-        };
+        let mut world = PlayerWorld::new(
+            Arc::clone(&self.graphs),
+            spawn.controller,
+            spawn.entity,
+            spawn.body_filter,
+            self.mode,
+            self.hero,
+        );
+        world.position = spawn.pose.position;
+        world.movement = spawn.pose;
+        if !has_authored_pools {
+            world.vitals = self.pools.unwrap_or(FALLBACK_POOLS).vitals();
+        }
+        world.pool_types_known = self.pools.is_some() || has_authored_pools;
+        world.target_tags = self.target_tags.clone();
+        world.controller_on_fire = self.controller_on_fire;
         let mut component = Component::start(
             Arc::clone(&self.graphs),
             spawn.entity,
@@ -172,7 +168,7 @@ impl PlayerBodyFactory {
 
 pub struct PlayerBodyRuntime {
     component: Component,
-    world: BodyWorld,
+    world: PlayerWorld,
     codecs: Arc<CodecTable>,
     modifiers: Option<BTreeMap<ModifierKey, Modifier>>,
     leases: ProjectileLeases,
@@ -321,227 +317,6 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 }))
             })
             .collect()
-    }
-}
-
-struct BodyWorld {
-    graphs: Arc<GraphStore>,
-    controller: u32,
-    entity: u32,
-    body_filter: u64,
-    position: [f64; 3],
-    movement: Movement,
-    throttles: [i8; 2],
-    mode: u64,
-    hero: u64,
-    vitals: Vitals,
-    pool_types_known: bool,
-    target_tags: Option<BTreeSet<u64>>,
-    target_tag_effects: BTreeMap<u64, TargetTagCounts>,
-    controller_on_fire: bool,
-}
-
-#[derive(Default)]
-struct TargetTagCounts {
-    grants: u32,
-    suppressions: u32,
-}
-
-impl World for BodyWorld {
-    fn ruleset(&mut self, id: u32) -> Option<Value> {
-        if (self.mode, self.hero) != (PRACTICE_RANGE_MODE, SOLDIER) {
-            return None;
-        }
-        // Defaults read by the target startup, from ow174/game/script/rulesets.py.
-        match id {
-            0x2538 | 0x2819 | 0x32e8 => Some(Value::Float(1.0)),
-            0x260f => Some(Value::Bool(true)),
-            0x281a | 0x32e0 | 0x32e9 => Some(Value::Bool(false)),
-            _ => None,
-        }
-    }
-
-    fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
-        if entity != GAME_MODE_ENTITY {
-            return Value::Null;
-        }
-        self.graphs
-            .mode_variables(self.mode)
-            .and_then(|variables| variables.get(&id))
-            .copied()
-            .map_or(Value::Null, Value::from)
-    }
-
-    fn position(&mut self, entity: u32) -> [f64; 3] {
-        if entity == self.entity {
-            self.position
-        } else {
-            [0.0; 3]
-        }
-    }
-
-    fn movement_sample(&self, site: Site) -> Option<u16> {
-        if !self.is_player_site(site) {
-            return None;
-        }
-        sample_movement_flags(&self.movement)
-    }
-
-    fn body_scale(&mut self, site: Site, target: u32, override_value: &Value) -> Option<f64> {
-        if target != self.entity || !self.is_player_site(site) {
-            return None;
-        }
-        match override_value {
-            Value::Null | Value::Integer(1) => Some(1.0),
-            Value::Float(scale) if *scale == 1.0 => Some(1.0),
-            _ => None,
-        }
-    }
-
-    fn body_health(&self, site: Site, kind: Option<PoolKind>, maximum: bool) -> Option<f64> {
-        if !self.is_player_site(site) || (kind.is_some() && !self.pool_types_known) {
-            return None;
-        }
-        let amount = self.vitals.amount(kind, maximum);
-        (amount.is_finite() && amount >= 0.0).then_some(amount)
-    }
-
-    fn add_health_pool(
-        &mut self,
-        site: Site,
-        kind: PoolKind,
-        maximum: f64,
-        current: f64,
-    ) -> Option<u32> {
-        if !self.is_player_site(site) || !self.pool_types_known {
-            return None;
-        }
-        self.vitals.add_pool(kind, maximum, current)
-    }
-
-    fn health_pool_current(&self, site: Site, pool: u32) -> Option<f64> {
-        if !self.is_player_site(site) {
-            return None;
-        }
-        self.vitals.pool_current(pool)
-    }
-
-    fn remove_health_pool(&mut self, site: Site, pool: u32) -> Option<f64> {
-        if !self.is_player_site(site) {
-            return None;
-        }
-        self.vitals.remove_pool(pool)
-    }
-
-    fn has_target_tag(&self, site: Site, entity: u32, tag: u64) -> Option<bool> {
-        if !self.is_player_site(site) || entity != self.entity {
-            return None;
-        }
-        if let Some(counts) = self.target_tag_effects.get(&tag) {
-            return Some(counts.suppressions == 0);
-        }
-        Some(self.target_tags.as_ref()?.contains(&tag))
-    }
-
-    fn set_target_tag_effect(&mut self, site: Site, effect: TargetTagEffect, active: bool) -> bool {
-        if !self.is_player_site(site) || effect.entity != self.entity {
-            return false;
-        }
-        let counts = if active {
-            self.target_tag_effects.entry(effect.tag).or_default()
-        } else {
-            let Some(counts) = self.target_tag_effects.get_mut(&effect.tag) else {
-                return false;
-            };
-            counts
-        };
-        // The authored removal can mask existing grants. A later grant's
-        // precedence over an already-active suppression is still unknown.
-        if active && effect.present && counts.suppressions != 0 {
-            return false;
-        }
-        let count = if effect.present {
-            &mut counts.grants
-        } else {
-            &mut counts.suppressions
-        };
-        let next = if active {
-            count.checked_add(1)
-        } else {
-            count.checked_sub(1)
-        };
-        let Some(next) = next else {
-            return false;
-        };
-        *count = next;
-        if counts.grants == 0 && counts.suppressions == 0 {
-            self.target_tag_effects.remove(&effect.tag);
-        }
-        true
-    }
-
-    fn entity_filter_flags(&self, site: Site, entity: u32) -> Option<u64> {
-        (self.is_player_site(site) && entity == self.entity).then_some(self.body_filter)
-    }
-
-    fn body_on_fire(&mut self, site: Site, entity: u32) -> Option<bool> {
-        self.related_entity(site, EntityRelation::CurrentPossessor, entity)
-            .map(|_| self.controller_on_fire)
-    }
-
-    fn related_entity(&mut self, site: Site, relation: EntityRelation, entity: u32) -> Option<u32> {
-        if !self.is_player_site(site)
-            || !valid_entity(self.controller)
-            || self.controller == self.entity
-        {
-            return None;
-        }
-        // Both relations point to the same controller for this human body.
-        match relation {
-            EntityRelation::OwningController | EntityRelation::CurrentPossessor
-                if entity == self.entity =>
-            {
-                Some(self.controller)
-            }
-            EntityRelation::PossessedBody if entity == self.controller => Some(self.entity),
-            // The authenticated human body has no AI control entity in this world.
-            EntityRelation::AiControlEntity if entity == self.entity => Some(0),
-            _ => None,
-        }
-    }
-
-    fn native(&mut self, site: Site, config: &Json) -> Option<Value> {
-        match config.get("$")?.as_str()? {
-            "STU_1FF67CA6" => Some(Value::Entity(self.entity)),
-            "STU_310D6529" => {
-                const THROTTLE_UNIT: f32 = 1.0 / 127.0;
-                let [right, forward] = self
-                    .throttles
-                    .map(|byte| f64::from(f32::from(byte) * THROTTLE_UNIT));
-                Some(Value::Vector([right, forward, 0.0]))
-            }
-            "STU_37F20D24" => Some(Value::Asset(self.mode)),
-            "STU_A3DEF368" if self.graphs.mode_variables(self.mode).is_some() => {
-                Some(Value::Entity(GAME_MODE_ENTITY))
-            }
-            "STU_4A101787" => Some(Value::Bool(false)),
-            // The normal human Practice Range reference takes the falsey
-            // branch for this parameterless query. Its native meaning is open.
-            "STU_A77AC2AC"
-                if self.is_player_site(site)
-                    && self.mode == PRACTICE_RANGE_MODE
-                    && native_shape(config, "STU_A77AC2AC", None) =>
-            {
-                Some(Value::Null)
-            }
-            _ => None,
-        }
-    }
-}
-
-impl BodyWorld {
-    fn is_player_site(&self, site: Site) -> bool {
-        site.entity == self.entity && valid_entity(self.entity)
     }
 }
 
