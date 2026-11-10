@@ -1,11 +1,11 @@
 //! Load the authorized data needed before the game worker can create a world.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File},
     io::{self, BufReader},
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use serde::Deserialize;
@@ -14,17 +14,16 @@ use crate::{
     body_script::{OwnerBodySpawn, PlayerBodyFactory},
     bots::{Bot, BotCatalog, BotWalk},
     controller::Controller,
-    instance::RETAIL_QUANTA,
     pools::PoolCatalog,
     replication::OwnerBodyRuntime,
-    scene::{PlayerAppearance, initial_world, mode_ui, team_bit},
+    scene::{PlayerAppearance, initial_world, mode_ui},
 };
 use orpheus_content::{
-    heroes::{Hero, HeroCatalog, SOLDIER},
+    heroes::{Hero, HeroCatalog},
     maps::{GameMap, PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE},
     stats::{PlayerStats, StatsCatalog, initial_on_fire},
 };
-use orpheus_core::{bits::BitWriter, guid::parse_guid, tick::FIRST_TICK};
+use orpheus_core::{bits::BitWriter, guid::parse_guid};
 use orpheus_physics::{
     collision::cache::{chunk_guid, read_movement_cache},
     collision::index::TriangleIndex,
@@ -196,49 +195,51 @@ impl SceneAssets {
         Ok(scene)
     }
 
+    /// Every hero's owner body script, as Python's `BODY_SCRIPT_HEROES = None`
+    /// (`ow174/game/match.py`) runs them all. Each hero's graphs are prepared
+    /// the first time someone picks it, with that first spawn as the probe;
+    /// a hero whose script can't start gets a body without one.
     fn prepare_owner_body(&self, scene: &PreparedScene) -> Option<Arc<OwnerBodyFactory>> {
-        let hero = self.heroes.get(SOLDIER)?;
-        let prepared = self
+        let graphs = Arc::clone(&self.graphs);
+        let pools = Arc::clone(&self.pools);
+        let mode = scene.map.mode_guid;
+        let ready = self
             .codecs
-            .as_ref()
+            .clone()
             .ok_or_else(|| "the owner statescript codec table is unavailable".to_owned())
             .and_then(|codecs| {
-                let controller_on_fire =
-                    initial_on_fire(&scene.initial_board).ok_or_else(|| {
-                        "the controller's initial on-fire flag is unavailable".to_owned()
-                    })?;
-                let mover = scene
-                    .player_spawn_mover(hero.body, 0)
-                    .map_err(|error| error.to_string())?;
-                PlayerBodyFactory::prepare(
-                    Arc::clone(&self.graphs),
-                    Arc::clone(codecs),
-                    scene.map.mode_guid,
-                    hero,
-                    self.pools.hero_pools(hero.guid),
-                    controller_on_fire,
-                    OwnerBodySpawn {
-                        slot: 0,
-                        controller: 0xa000_0100,
-                        entity: 0xa000_0101,
-                        body_filter: team_bit(0).map_err(|error| error.to_string())?,
-                        frame: FIRST_TICK,
-                        pose: mover.pose(),
-                        quanta: RETAIL_QUANTA,
-                    },
-                )
-                .map_err(|error| error.to_string())
+                let on_fire = initial_on_fire(&scene.initial_board).ok_or_else(|| {
+                    "the controller's initial on-fire flag is unavailable".to_owned()
+                })?;
+                Ok((codecs, on_fire))
             });
-        if let Err(reason) = &prepared {
-            eprintln!("Practice Range Soldier owner statescript unavailable ({reason})");
-        }
+        let prepared: Mutex<HashMap<u64, Result<Arc<PlayerBodyFactory>, String>>> =
+            Mutex::default();
         Some(Arc::new(move |hero, spawn| {
-            if hero.guid != SOLDIER {
-                return Ok(None);
-            }
             let factory = prepared
-                .as_ref()
-                .map_err(|reason| io::Error::new(io::ErrorKind::Unsupported, reason.clone()))?;
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(hero.guid)
+                .or_insert_with(|| {
+                    let (codecs, on_fire) = ready.clone()?;
+                    let factory = PlayerBodyFactory::prepare(
+                        Arc::clone(&graphs),
+                        codecs,
+                        mode,
+                        hero,
+                        pools.hero_pools(hero.guid),
+                        on_fire,
+                        spawn,
+                    )
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string());
+                    if let Err(reason) = &factory {
+                        eprintln!("{} owner statescript unavailable ({reason})", hero.name);
+                    }
+                    factory
+                })
+                .clone()
+                .map_err(|reason| io::Error::new(io::ErrorKind::Unsupported, reason))?;
             let runtime: Box<dyn OwnerBodyRuntime> = Box::new(factory.start(spawn)?);
             Ok(Some(runtime))
         }))
@@ -389,11 +390,13 @@ fn invalid(error: impl std::fmt::Display) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bots::BOT_ENTITY;
+    use crate::{bots::BOT_ENTITY, instance::RETAIL_QUANTA, scene::team_bit};
+    use orpheus_content::heroes::SOLDIER;
+    use orpheus_core::tick::FIRST_TICK;
 
     #[test]
     #[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
-    fn stock_soldier_attaches_his_authored_owner_script() {
+    fn stock_heroes_attach_their_authored_owner_scripts() {
         let runtime = orpheus_testkit::runtime_dir();
         let assets = SceneAssets::load(runtime).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
@@ -408,13 +411,22 @@ mod tests {
             pose: scene.player_spawn_mover(hero.body, 0).unwrap().pose(),
             quanta: RETAIL_QUANTA,
         };
-        let runtime = scene.owner_body_runtime(hero, spawn).unwrap();
+        let soldier = scene.owner_body_runtime(hero, spawn).unwrap();
         assert!(
-            runtime.is_some(),
+            soldier.is_some(),
             "the stock Soldier: 76 owner script did not start"
         );
-        let tracer = scene.heroes().find_hero("Tracer").unwrap();
-        assert!(scene.owner_body_runtime(tracer, spawn).unwrap().is_none());
+        // Every hero has a script, not only Soldier: 76 (Pharah's starts with
+        // no unknown content).
+        let pharah = scene.heroes().find_hero("Pharah").unwrap();
+        let spawn = OwnerBodySpawn {
+            pose: scene.player_spawn_mover(pharah.body, 0).unwrap().pose(),
+            ..spawn
+        };
+        assert!(
+            scene.owner_body_runtime(pharah, spawn).unwrap().is_some(),
+            "the stock Pharah owner script did not start"
+        );
     }
 
     /// The client builds a gun only when its definition is preloaded, and the
