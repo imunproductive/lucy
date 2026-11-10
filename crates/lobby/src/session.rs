@@ -189,6 +189,10 @@ impl<'a> LobbySession<'a> {
                 continue;
             };
             let Ok(base) = self.schemas.base(crc) else {
+                tracing::info!(
+                    "[<<<] {crc:08X} offset={offset} len={} (unknown protocol)",
+                    body.len()
+                );
                 continue;
             };
             let Some(id) = base.checked_add(u32::from(offset)) else {
@@ -197,8 +201,15 @@ impl<'a> LobbySession<'a> {
             if !accept(crc, id) {
                 continue;
             }
-            let Ok(fields) = self.schemas.decode(crc, id, &body, true) else {
-                continue;
+            let fields = match self.schemas.decode(crc, id, &body, true) {
+                Ok(fields) => fields,
+                Err(error) => {
+                    tracing::info!(
+                        "[<<<] {crc:08X}/{id} len={} undecodable: {error}",
+                        body.len()
+                    );
+                    continue;
+                }
             };
             return Ok(Some((crc, id, fields)));
         }
