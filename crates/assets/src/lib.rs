@@ -112,6 +112,7 @@ pub const DERIVATIONS: &[Derivation] = &[
         derive: arcade_cards::derive,
     },
 ];
+
 /// Run every derivation and write its files under `out`.
 pub fn build(install: &Install, out: &Path) -> Result<Vec<PathBuf>> {
     let mut written = Vec::new();
