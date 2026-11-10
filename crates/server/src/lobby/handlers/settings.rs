@@ -12,6 +12,7 @@ use orpheus_wire::jam::codec::{Fields, Value};
 use crate::lobby::{
     peer::Peer,
     router::{Hooks, Module, Route},
+    social,
 };
 
 pub(crate) const MODULE: Module = Module {
@@ -65,12 +66,11 @@ fn save_block(peer: &mut Peer<'_, '_>, fields: &Fields, message: u32) -> io::Res
         Ok(Some(()))
     })?;
     tracing::info!("[<<<] Settings {field} saved");
-    // Social slice hook: "Members can invite" lives in SOCIAL_SETTINGS
-    // (22202), and the members' party state shows it (+0x94), so when
-    // `field == SOCIAL_SETTINGS` a leader of a party of more than one sends
-    // the party state to every member again (settings.py:24-28). Call
-    // `crate::lobby::social::social_settings_saved(peer.lobby, &peer.login.account)?`
-    // there.
+    // "Members can invite" lives in this block, and the members' party state
+    // shows it (+0x94).
+    if field == saved_settings::SOCIAL_SETTINGS {
+        social::social_settings_saved(peer.lobby, &peer.login.account)?;
+    }
     Ok(())
 }
 

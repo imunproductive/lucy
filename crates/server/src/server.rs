@@ -193,6 +193,7 @@ impl Server {
             hub: Default::default(),
             platform: Arc::clone(&platform),
             services,
+            social: Default::default(),
         });
         let dashboard = config
             .dashboard_port
@@ -207,6 +208,7 @@ impl Server {
                     lobby_port: lobby_addr.port(),
                     platform,
                     services: Arc::clone(&shared.services),
+                    lobby: Some(Arc::clone(&shared)),
                 };
                 Dashboard::start(port, parts)
             })

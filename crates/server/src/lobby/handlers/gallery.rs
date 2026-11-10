@@ -31,5 +31,9 @@ fn equip(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
             .game
             .update_skin(&seat.handoff, equip.hero, skin)?;
     }
-    peer.send_all(&equipped.messages)
+    peer.send_all(&equipped.messages)?;
+    if equipped.card_changed {
+        crate::lobby::social::card_changed(peer)?;
+    }
+    Ok(())
 }

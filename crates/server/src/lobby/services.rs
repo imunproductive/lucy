@@ -22,16 +22,15 @@ use orpheus_lobby::{
     leaderboard::{self, Player},
     login::Identity,
     lootbox::LootBoxes,
-    menu::MenuHero,
     player_messages::{self as player, PERMISSIONS},
     ranked::LeaderboardPlaces,
-    session::{LoginContent, PreparedLogin, SoloLoginParty},
+    session::{LoginContent, PreparedLogin},
     shop::Shop,
     templates::LOBBY,
     transport::LobbyMessage,
 };
 
-use super::{Lobby, peer::Peer};
+use super::{Lobby, peer::Peer, social};
 
 /// The account features (55500) go again this long after login, each delay
 /// counted from the one before: the client drops them on the first login
@@ -55,7 +54,6 @@ struct Session {
     logged_in: Instant,
     features_sent: usize,
     pushes: Vec<Push>,
-    menu: MenuHero,
 }
 
 pub(crate) struct Services {
@@ -104,7 +102,6 @@ impl Services {
                 logged_in: Instant::now(),
                 features_sent: 0,
                 pushes: Vec::new(),
-                menu: MenuHero::default(),
             },
         );
     }
@@ -133,26 +130,6 @@ impl Services {
             session.features_sent += 1;
         }
         (features, std::mem::take(&mut session.pushes))
-    }
-
-    /// The session's menu hero, kept like Python's per-player pick.
-    fn menu(&self, login: &PreparedLogin, lobby: &Lobby) -> io::Result<(Option<u64>, u64)> {
-        let profile = login.account.profile().clone();
-        let mut sessions = self.sessions();
-        let mut fresh = MenuHero::default();
-        let menu = match sessions
-            .get_mut(&login.account.account_lo)
-            .filter(|session| session.key == login.identity.party_id)
-        {
-            Some(session) => &mut session.menu,
-            None => &mut fresh,
-        };
-        let selection = menu.select(
-            &profile,
-            lobby.collection.heroes(),
-            lobby.collection.items(),
-        )?;
-        Ok((selection.menu_guid, selection.party_hero))
     }
 }
 
@@ -198,8 +175,19 @@ fn push_state(peer: &mut Peer<'_, '_>, granted: &[u64]) -> io::Result<()> {
         .unwrap_or_default();
     let (earned, greeting) = rewards;
     let places = top500_places(lobby, &login.account)?;
-    let (menu_hero, party_hero) = lobby.services.menu(login, lobby)?;
-    let members_may_invite = members_may_invite(&login.account);
+    let menu_hero = {
+        let profile = login.account.profile();
+        lobby
+            .social
+            .menu_hero(
+                login.account.account_lo,
+                &profile,
+                lobby.collection.heroes(),
+                lobby.collection.items(),
+            )?
+            .menu_guid
+    };
+    let party = social::party_messages(lobby, &login.account)?;
     let mut messages = login.live_messages(
         &lobby.templates,
         &lobby.collection,
@@ -211,15 +199,7 @@ fn push_state(peer: &mut Peer<'_, '_>, granted: &[u64]) -> io::Result<()> {
             arcade: &lobby.arcade,
             celebrations: Some(&lobby.celebrations),
             leaderboard_places: &places,
-            // Social slice: replace with the session's party messages,
-            // `crate::lobby::social::party_messages(lobby, &login.account)?`
-            // (20700, and 20402 / 20404 when the party chat changed).
-            solo_party: Some(SoloLoginParty {
-                id: login.identity.party_id,
-                entity: login.identity.party_entity,
-                menu_hero: party_hero,
-                members_may_invite,
-            }),
+            party: &party,
         },
     )?;
     messages.extend(
@@ -244,17 +224,6 @@ fn push_state(peer: &mut Peer<'_, '_>, granted: &[u64]) -> io::Result<()> {
     }
     tracing::info!("{summary}");
     Ok(())
-}
-
-/// "Members can invite" (20802 +0x10D +0x0), on unless saved off.
-pub(crate) fn members_may_invite(account: &Account) -> bool {
-    account
-        .profile()
-        .settings
-        .get("+0x10D")
-        .and_then(|settings| settings.get("+0x0"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(true)
 }
 
 /// Rewards granted at login, before the login messages are built: challenge

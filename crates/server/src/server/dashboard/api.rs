@@ -575,7 +575,7 @@ impl Api<'_> {
     }
 
     /// The saved account with this name (any letter case), or the selected one.
-    fn account(&self, name: Option<&str>) -> Result<Arc<Account>, ApiError> {
+    pub(super) fn account(&self, name: Option<&str>) -> Result<Arc<Account>, ApiError> {
         match name {
             None | Some("") => Ok(self.selected()),
             name => self.saved(name),

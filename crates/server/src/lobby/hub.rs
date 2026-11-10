@@ -72,13 +72,6 @@ impl Hub {
 
     /// Post a message to an online account's session. False when it is
     /// offline.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the chat, friends and party modules post to other sessions"
-        )
-    )]
     pub(crate) fn post(&self, account_lo: u32, message: LobbyMessage) -> bool {
         let mailbox = self
             .online

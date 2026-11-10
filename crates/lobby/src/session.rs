@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    accounts::{Account, Accounts, Profile, account_id_for, battle_tag},
+    accounts::{Account, Accounts, account_id_for, battle_tag},
     arcade::Arcade,
     battle_tag_query,
     celebrations::Celebrations,
@@ -21,7 +21,6 @@ use crate::{
     handoff::game_host,
     login::{self, INCOMPATIBLE_CLIENT, Identity, LOGIN_MESSAGE, Login, OUT_CONNECT},
     mode_rules::{self, MODE_RULES, RULES},
-    party::{self, Membership, PartyMember},
     passes, player_messages as player,
     presence::Presence,
     ranked::{LeaderboardPlaces, Ranked},
@@ -68,16 +67,9 @@ pub struct LoginContent<'a> {
     pub arcade: &'a Arcade,
     pub celebrations: Option<&'a Celebrations>,
     pub leaderboard_places: &'a LeaderboardPlaces,
-    /// A confirmed single-member party; the caller sends other party rosters.
-    pub solo_party: Option<SoloLoginParty>,
-}
-
-#[derive(Clone, Copy)]
-pub struct SoloLoginParty {
-    pub id: [u64; 2],
-    pub entity: [u64; 2],
-    pub menu_hero: u64,
-    pub members_may_invite: bool,
+    /// The session's party state and party chat join
+    /// (`ow174/lobby/session.py` party_messages), sent before the settings.
+    pub party: &'a [LobbyMessage],
 }
 
 impl<'a> LobbySession<'a> {
@@ -343,11 +335,7 @@ impl PreparedLogin {
                 (0x80, Value::Array(Vec::new())),
             ]),
         ));
-        if let Some(party) = content.solo_party {
-            messages.push(solo_party_state(
-                &profile, identity, collection, ranked, party, &content,
-            )?);
-        }
+        messages.extend_from_slice(content.party);
         messages.push((LOBBY, 20802, player::settings(schemas, &profile)?));
         Ok(messages)
     }
@@ -355,8 +343,8 @@ impl PreparedLogin {
     /// The state that can be refreshed while the client is connected, after
     /// a dashboard edit: clock, menu config, card, events, Arcade,
     /// endorsements, account features, currencies, boxes, collection,
-    /// competitive state and passes, then the solo party state when
-    /// `content.solo_party` is set. `live_messages`, `ow174/content/__init__.py`.
+    /// competitive state and passes, then `content.party`. `live_messages`,
+    /// `ow174/content/__init__.py`.
     pub fn live_messages(
         &self,
         templates: &RetailTemplates,
@@ -425,39 +413,9 @@ impl PreparedLogin {
             now,
         )?);
         messages.push(passes::counts(&profile)?);
-        if let Some(party) = content.solo_party {
-            messages.push(solo_party_state(
-                &profile, identity, collection, ranked, party, &content,
-            )?);
-        }
+        messages.extend_from_slice(content.party);
         Ok(messages)
     }
-}
-
-fn solo_party_state(
-    profile: &Profile,
-    identity: Identity,
-    collection: &Collection,
-    ranked: &Ranked,
-    party: SoloLoginParty,
-    content: &LoginContent<'_>,
-) -> io::Result<LobbyMessage> {
-    let ratings = ranked.party_ratings(profile, content.leaderboard_places)?;
-    let member = PartyMember {
-        profile,
-        identity,
-        menu_hero: party.menu_hero,
-        ratings: &ratings,
-        membership: Membership::Leader,
-    };
-    party::state(
-        collection,
-        party.id,
-        party.entity,
-        &[member],
-        party.members_may_invite,
-        content.wall_time,
-    )
 }
 
 fn resolve_battle_tag(accounts: &Accounts, name: &str) -> String {

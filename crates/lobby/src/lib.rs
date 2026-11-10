@@ -24,6 +24,7 @@ pub mod ranked;
 pub mod saved_settings;
 pub mod session;
 pub mod shop;
+pub mod social;
 pub mod templates;
 #[cfg(test)]
 mod test_catalog;

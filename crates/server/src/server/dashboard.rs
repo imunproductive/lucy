@@ -1,6 +1,7 @@
 //! The dashboard's loopback HTTP server: the embedded page and its JSON API.
 
 mod api;
+mod bot_group;
 mod events;
 
 use std::{
@@ -48,8 +49,7 @@ const PAGES: [(&str, &[u8], &str); 5] = [
 ];
 const INDEX: &[u8] = include_bytes!("../../../../web/dashboard/index.html");
 /// Actions whose features the native server does not have yet.
-const NOT_PORTED: [&str; 5] = [
-    "/api/bot_group",
+const NOT_PORTED: [&str; 4] = [
     "/api/matchmaking",
     "/api/mode_settings",
     "/api/set_map",
@@ -78,6 +78,9 @@ pub struct DashboardParts {
     pub platform: Arc<Platform>,
     /// The shop, the loot boxes and the live updates of a connected game.
     pub services: Arc<Services>,
+    /// The running lobby, for the actions on its live state (none in tests
+    /// of the dashboard alone).
+    pub(crate) lobby: Option<Arc<crate::lobby::Lobby>>,
 }
 
 impl Dashboard {
@@ -108,7 +111,7 @@ impl Dashboard {
                         services: &parts.services,
                         uptime: started.elapsed(),
                     };
-                    let _ = handle(&api, port, request);
+                    let _ = handle(&api, parts.lobby.as_deref(), port, request);
                 }
             })?;
         Ok(Self {
@@ -130,7 +133,12 @@ impl Dashboard {
     }
 }
 
-fn handle(api: &Api, port: u16, mut request: Request) -> io::Result<()> {
+fn handle(
+    api: &Api,
+    lobby: Option<&crate::lobby::Lobby>,
+    port: u16,
+    mut request: Request,
+) -> io::Result<()> {
     // A page on another site can reach this loopback server: through DNS
     // rebinding (refused by the Host check) or with a form post, which
     // cannot send a JSON content type without a preflight this server never
@@ -167,7 +175,7 @@ fn handle(api: &Api, port: u16, mut request: Request) -> io::Result<()> {
             })
         }
         Method::Post => {
-            let result = read_body(&mut request).and_then(|data| post(api, path, &data));
+            let result = read_body(&mut request).and_then(|data| post(api, lobby, path, &data));
             json_reply(result)
         }
         _ => json_reply(Err(ApiError::new(405, "Method not allowed"))),
@@ -200,8 +208,14 @@ fn json_body(request: &Request) -> bool {
     })
 }
 
-fn post(api: &Api, path: &str, data: &Map<String, Json>) -> ApiResult {
+fn post(
+    api: &Api,
+    lobby: Option<&crate::lobby::Lobby>,
+    path: &str,
+    data: &Map<String, Json>,
+) -> ApiResult {
     match path {
+        "/api/bot_group" => bot_group::bot_group(api, lobby, data),
         "/api/update_profile" => api.update_profile(data),
         "/api/apply_to_all" => api.apply_to_all(data),
         "/api/add_boxes" => api.add_boxes(data),
@@ -409,6 +423,7 @@ mod tests {
                 String::new(),
                 None,
             )),
+            lobby: None,
         };
         let mut dashboard = Dashboard::start(0, parts).unwrap();
         let addr = dashboard.addr();
@@ -424,7 +439,7 @@ mod tests {
             request(addr, "POST", "/api/select_account", r#"{"name":"alpha"}"#),
             (200, r#"{"status":"ok"}"#.into())
         );
-        assert_eq!(request(addr, "POST", "/api/bot_group", "{}").0, 501);
+        assert_eq!(request(addr, "POST", "/api/bot_group", "{}").0, 503);
         assert_eq!(
             request(addr, "POST", "/api/purchase", r#"{"guid":"0x10"}"#),
             (

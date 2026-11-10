@@ -24,7 +24,10 @@ use crate::{
     connection::{GameConnections, MAX_CONNECTION_ID, Outgoing, SILENCE_TIME},
     ingress::{GameIngress, MapReadiness, MapReadyStep, MessageKind, WorldReadiness, pong},
 };
-use orpheus_content::maps::{GameMap, PRACTICE_RANGE_MODE};
+use orpheus_content::{
+    maps::{GameMap, PRACTICE_RANGE_MODE},
+    parameters::{CLIENT_GAME_MESSAGE, PICK_HERO},
+};
 use orpheus_core::tick::FIRST_TICK;
 use orpheus_lobby::handoff::Handoff;
 use orpheus_script::wire::chunk;
@@ -92,6 +95,19 @@ enum Request {
         hero: u64,
         skin: SkinTheme,
         reply: mpsc::SyncSender<()>,
+    },
+    /// The lobby's `.hero` chat command.
+    Hero {
+        connection: u32,
+        id: MatchId,
+        hero: u64,
+        reply: mpsc::SyncSender<bool>,
+    },
+    /// The lobby's `.leave` chat command.
+    Home {
+        connection: u32,
+        id: MatchId,
+        reply: mpsc::SyncSender<bool>,
     },
 }
 
@@ -237,6 +253,29 @@ impl GameService {
             id: handoff.match_id,
             hero,
             skin,
+            reply,
+        })
+    }
+
+    /// Play another hero in the seat's match, as a pick on the hero select
+    /// screen does (`ow174/game/server.py` switch_hero for the lobby's `.hero`
+    /// command). False when the seat's game is not in the match's world.
+    pub(crate) fn switch_hero(&self, handoff: &Handoff, hero: u64) -> io::Result<bool> {
+        self.request(|reply| Request::Hero {
+            connection: handoff.conn,
+            id: handoff.match_id,
+            hero,
+            reply,
+        })
+    }
+
+    /// Send the seat's game back to the menu with 20304 (`ow174/game/server.py`
+    /// send_home for the lobby's `.leave` command). False when no game is
+    /// connected to the seat.
+    pub(crate) fn send_home(&self, handoff: &Handoff) -> io::Result<bool> {
+        self.request(|reply| Request::Home {
+            connection: handoff.conn,
+            id: handoff.match_id,
             reply,
         })
     }
@@ -667,7 +706,61 @@ impl State {
                 }
                 let _ = reply.send(());
             }
+            Request::Hero {
+                connection,
+                id,
+                hero,
+                reply,
+            } => {
+                let _ = reply.send(self.switch_hero(connection, id, hero, now));
+            }
+            Request::Home {
+                connection,
+                id,
+                reply,
+            } => {
+                let home = !self.clock.draining()
+                    && self.seats.get(&connection).is_some_and(|seat| seat.0 == id)
+                    && self.peers.contains_key(&connection);
+                if home {
+                    self.send_home(connection, now);
+                }
+                let _ = reply.send(home);
+            }
         }
+    }
+
+    /// A pick of the hero, as the client's own pick message (21616) carries
+    /// it, queued with the seat's other game input.
+    fn switch_hero(&mut self, connection: u32, id: MatchId, hero: u64, now: Duration) -> bool {
+        if self.clock.draining() || !self.seats.get(&connection).is_some_and(|seat| seat.0 == id) {
+            return false;
+        }
+        let (_, slot) = self.seats[&connection];
+        let room = &self.rooms[&id];
+        let (Some(world), Some(peer)) = (&room.world, self.peers.get_mut(&connection)) else {
+            return false;
+        };
+        if world.scene.heroes().get(hero).is_none() || !peer.world.world_started() {
+            return false;
+        }
+        let pick = Message {
+            id: CLIENT_GAME_MESSAGE,
+            fields: Fields::from([
+                (
+                    0x78,
+                    Value::Struct(Fields::from([(
+                        0,
+                        Value::Unsigned(u64::from(room.players[slot].entity)),
+                    )])),
+                ),
+                (0x80, Value::Blob(hero.to_le_bytes().to_vec())),
+                (0xa8, Value::Unsigned(PICK_HERO)),
+                (0xb0, Value::Signed(0)),
+            ]),
+        };
+        peer.world.queue_game_message(self.clock.frame(), now, pick);
+        true
     }
 
     fn retire(&mut self, connection: u32) {
