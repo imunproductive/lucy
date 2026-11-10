@@ -82,7 +82,7 @@ Most crates also use `core` and `fixed` directly; the graph leaves out those edg
 - `casc`, `stu`, `core`, `fixed` and `relay` depend on nothing in the workspace.
 - `assets` produces files, not types. It does not depend on `content`, `script` or `physics`; the server's loaders read the files it writes.
 - `testkit` is only a dev-dependency.
-- Only `launcher` and `relay` use `unsafe`. The other library crates (except `testkit`) have `#![forbid(unsafe_code)]`. In `launcher` and `relay`, every `unsafe` block states why it is sound, and `unsafe_op_in_unsafe_fn` is denied.
+- Only `launcher` and `relay` use `unsafe`. Every other crate, the app included, has `#![forbid(unsafe_code)]`. In `launcher` and `relay`, every `unsafe` block states why it is sound, and `unsafe_op_in_unsafe_fn` is denied.
 - Library crates return typed errors or `io::Error`. `apps/orpheus` reports them and sets the exit code.
 
 When you add a dependency between crates, keep it in the direction of the graph. Cargo refuses cycles.
