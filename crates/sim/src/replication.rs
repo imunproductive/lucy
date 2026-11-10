@@ -953,8 +953,8 @@ impl WorldDelivery {
         {
             Ok(Some(record)) => record,
             Ok(None) => return,
-            Err(_) => {
-                self.cancel_body_script();
+            Err(error) => {
+                self.drop_failed_script(&error.to_string());
                 return;
             }
         };
@@ -966,6 +966,29 @@ impl WorldDelivery {
             });
         }
         self.push(record);
+    }
+
+    /// A body whose script failed goes on without it. Say so once, with the
+    /// first gap the VM reported, so a playtest shows why.
+    fn drop_failed_script(&mut self, error: &str) {
+        if let Some(script) = &self.body_script {
+            let first = script
+                .runtime
+                .snapshot()
+                .and_then(|snapshot| snapshot.diagnostics.first())
+                .map(|item| {
+                    format!(
+                        "graph {:04X} node {:?}: {:?}",
+                        item.site.graph, item.site.node, item.issue
+                    )
+                });
+            eprintln!(
+                "body {:08X} lost its script ({error}); first gap: {}",
+                script.id.entity,
+                first.as_deref().unwrap_or("none")
+            );
+        }
+        self.cancel_body_script();
     }
 
     fn cancel_body_script(&mut self) {
@@ -1277,7 +1300,7 @@ impl WorldDelivery {
             PendingCommand::new(mover.pending_poses(command), self.body_script.as_ref())
         });
         let mut used = 0;
-        let mut failed = false;
+        let mut failed = None;
         let script = &mut self.body_script;
         let hitscan = &mut self.hitscan;
         if let Some(script) = script {
@@ -1287,10 +1310,10 @@ impl WorldDelivery {
                     frame,
                     ..Command::default()
                 };
-                if script.advance(mover, neutral, step).is_err() {
+                if let Err(error) = script.advance(mover, neutral, step) {
                     mover.track_modifiers(frame, &BTreeMap::new());
                     pending.gap = ScriptGap::default();
-                    failed = true;
+                    failed = Some(error.to_string());
                     break;
                 }
             }
@@ -1301,19 +1324,19 @@ impl WorldDelivery {
             dt,
             budget - used,
             |mover, command| {
-                if let Some(script) = script.as_mut().filter(|_| !failed) {
+                if let Some(script) = script.as_mut().filter(|_| failed.is_none()) {
                     match script.advance(mover, command, BodyStep::Posed) {
                         Ok(shots) => hitscan.extend(shots),
-                        Err(_) => {
+                        Err(error) => {
                             mover.track_modifiers(command.frame, &BTreeMap::new());
-                            failed = true;
+                            failed = Some(error.to_string());
                         }
                     }
                 }
             },
         );
-        if failed {
-            self.cancel_body_script();
+        if let Some(error) = failed {
+            self.drop_failed_script(&error);
         }
         used += stepped.map_err(invalid)?;
         Ok((used, pending.poses.len() == 0))

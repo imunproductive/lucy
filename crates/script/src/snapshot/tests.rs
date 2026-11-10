@@ -227,6 +227,34 @@ fn baseline_matches_python_for_both_views_and_enters_the_acknowledged_stream() {
 }
 
 #[test]
+fn a_map_value_stays_out_of_frames_and_the_rest_is_sent_unchanged() {
+    let (graphs, mut snapshot) = fixture();
+    let codecs = CodecTable::from_json(CODECS).unwrap();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    let without = encoder.project(&snapshot, View::Owner).unwrap();
+    snapshot.instances[&1].variables.insert(
+        500,
+        Value::Map(vec![(
+            Value::Asset(0x0a90_0000_0000_0171),
+            Value::Asset(0x0240_0000_0000_05ad),
+        )]),
+    );
+    let with = encoder.project(&snapshot, View::Owner).unwrap();
+    assert_eq!(
+        with.instances[&1]
+            .variables
+            .values
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        [100, 200, 300]
+    );
+    let bits = |projected| encoder.full(projected).unwrap();
+    assert_eq!(bits(&with).as_bytes(), bits(&without).as_bytes());
+    assert_eq!(bits(&with).bit_len(), bits(&without).bit_len());
+}
+
+#[test]
 fn unsupported_active_states_and_initialization_diagnostics_are_explicit() {
     let (graphs, mut snapshot) = fixture();
     let mut raw: Json = serde_json::from_str(CODECS).unwrap();

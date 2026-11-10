@@ -1212,8 +1212,9 @@ fn exercise_hero_selection(
             if input_ack(schemas, &packet) == expected {
                 // The stock Soldier: 76 script turns on owner corrections. The
                 // owner's own body moves only by a correction: at most one per
-                // packet, the last record, and only after its create was acked
-                // (the ACK that followed the retried body frame).
+                // packet, as the last record. This run produces none before the
+                // create is acked, so the create-first rule is tested by
+                // `owner_correction_respects_create_budget_and_failed_transport`.
                 let records = world_records(schemas, &packet);
                 let own: Vec<_> = records
                     .iter()

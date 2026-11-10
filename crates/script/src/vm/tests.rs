@@ -467,6 +467,68 @@ fn instance_exit_drains_in_order_and_finishes_the_linked_parent() {
 }
 
 #[test]
+fn server_no_ops_run_what_follows_and_assumed_ones_are_recorded() {
+    let action = |position, class: &str, next: u16| {
+        node(
+            position,
+            class,
+            None,
+            json!({"m_outPlug":plug(&[(next, "m_inPlug")], &[])}),
+        )
+    };
+    let mark = |position, identifier| {
+        node(
+            position,
+            "STUStatescriptActionSetVar",
+            None,
+            json!({"m_out_Var":var(identifier,true), "m_value":true}),
+        )
+    };
+    let graph = graph(
+        42,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntry",
+                None,
+                json!({"m_outPlug":plug(&[(1, "m_inPlug"), (3, "m_inPlug")], &[])}),
+            ),
+            action(1, "STUStatescriptActionEffect", 2),
+            mark(2, 100),
+            action(3, "STU_E9694EFD", 4),
+            mark(4, 101),
+        ],
+        json!([]),
+        json!([0]),
+    );
+    let snapshot = initialize(
+        &store(vec![graph]),
+        42,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    assert!(
+        snapshot.initialization_complete(),
+        "{:?}",
+        snapshot.diagnostics
+    );
+    assert_eq!(
+        snapshot.variables,
+        Variables::from([(100, Value::Bool(true)), (101, Value::Bool(true))])
+    );
+    // Only the unnamed action is an assumption; the effect is a known no-op.
+    let assumed: Vec<_> = snapshot
+        .assumptions
+        .iter()
+        .map(|item| (item.site.node, item.class.as_str(), item.answer))
+        .collect();
+    assert_eq!(assumed, [(Some(3), "STU_E9694EFD", "no-op")]);
+}
+
+#[test]
 fn target_tag_releases_on_abort_and_subscript_teardown() {
     #[derive(Default)]
     struct TagWorld(Vec<(TargetTagEffect, bool)>);
