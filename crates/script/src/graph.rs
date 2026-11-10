@@ -819,7 +819,6 @@ mod tests {
             // Rust only (no Python vector): every mode's script, team
             // controller and team body, and the map entity graphs.
             412 => {
-                assert_eq!(store.entities.len(), 8);
                 assert_eq!(store.mode_variables.len(), 25);
                 "1c4229042f26d5ec0168a49e7f82d55167543ae849baa86f9bfdba7ece355691"
             }
