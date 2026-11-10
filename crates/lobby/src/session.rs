@@ -183,6 +183,9 @@ impl<'a> LobbySession<'a> {
         self.receive_message_until(|| true)
     }
 
+    /// Receive the next client message while `keep_receiving` holds; `None`
+    /// when it stopped holding or the client closed the connection
+    /// ([`closed`](Self::closed) tells which).
     pub fn receive_message_until(
         &mut self,
         keep_receiving: impl Fn() -> bool,
@@ -206,6 +209,10 @@ impl<'a> LobbySession<'a> {
                 continue;
             };
             let Ok(base) = self.schemas.base(crc) else {
+                tracing::info!(
+                    "[<<<] {crc:08X} offset={offset} len={} (unknown protocol)",
+                    body.len()
+                );
                 continue;
             };
             let Some(id) = base.checked_add(u32::from(offset)) else {
@@ -214,12 +221,24 @@ impl<'a> LobbySession<'a> {
             if !accept(crc, id) {
                 continue;
             }
-            let Ok(fields) = self.schemas.decode(crc, id, &body, true) else {
-                continue;
+            let fields = match self.schemas.decode(crc, id, &body, true) {
+                Ok(fields) => fields,
+                Err(error) => {
+                    tracing::info!(
+                        "[<<<] {crc:08X}/{id} len={} undecodable: {error}",
+                        body.len()
+                    );
+                    continue;
+                }
             };
             return Ok(Some((crc, id, fields)));
         }
         Ok(None)
+    }
+
+    /// Whether the client closed the connection.
+    pub fn closed(&self) -> bool {
+        self.transport.closed()
     }
 
     /// Send an outbound JAM message with the wire index announced by this client.

@@ -15,7 +15,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use orpheus_lobby::{
@@ -33,7 +33,7 @@ use orpheus_lobby::{
 };
 use orpheus_sim::scene_assets::{PreparedScene, SceneAssets};
 use orpheus_wire::{
-    jam::codec::Schemas,
+    jam::codec::{Fields, Schemas},
     tcp::{PeerStream, PeerWorkers, accept},
 };
 
@@ -44,6 +44,16 @@ use router::Router;
 
 const MAX_LOBBY_PEERS: usize = 32;
 const ACCEPT_POLL: Duration = Duration::from_millis(10);
+/// The longest a session sleeps between ticks.
+pub(crate) const TICK: Duration = Duration::from_millis(250);
+/// How long a kicked client keeps the link after the disconnect reason, so
+/// its login screen shows the reason, not "lost connection"
+/// (`ow174/lobby/session.py` `KICK_GRACE_SECONDS`).
+const KICK_GRACE: Duration = Duration::from_millis(1500);
+/// Client telemetry groups, never logged (`ow174/jam/groups.py`).
+const TELEMETRY: [u32; 2] = [0xC64B_397E, 0x692C_511B];
+/// Characters of an unhandled message shown in the log.
+const LOG_VALUE_LIMIT: usize = 200;
 
 pub(crate) struct Lobby {
     pub signing_key: [u8; 64],
@@ -112,6 +122,13 @@ impl Drop for LoginLease<'_> {
             active.remove(&self.account.account_lo);
             drop(active);
             self.account.set_status(0);
+            // `ow174/lobby/session.py` `_cleanup`.
+            if let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) {
+                self.account.profile().last_online = now.as_secs() as i64;
+                if let Err(error) = self.account.save() {
+                    tracing::error!("saving {} at logout failed: {error}", self.account.name);
+                }
+            }
             for module in handlers::MODULES {
                 if let Some(logout) = module.hooks.logout {
                     logout(self.lobby, &self.account);
@@ -141,12 +158,10 @@ impl Lobby {
         };
         let login = match session.prepare_login(&self.accounts, || Ok(self.selected_account()))? {
             LoginRequest::Prepared(login) => login,
-            LoginRequest::Rejected { reason } => {
-                session.send_disconnect(reason)?;
-                return Ok(());
-            }
+            LoginRequest::Rejected { reason } => return kick(&mut session, reason),
             LoginRequest::Disconnected => return Ok(()),
         };
+        let _span = tracing::info_span!("lobby", account = %login.account.name).entered();
         let mut lease = LoginLease::new(self, Arc::clone(&login.account));
         let local_game = session.is_local().then(|| {
             self.platform
@@ -219,7 +234,7 @@ impl Lobby {
         let replaced = || lease.replaced.load(Ordering::Acquire);
         // The dashboard's reconnect closes this connection; the game logs in again.
         let current = || !replaced() && !local_game.as_ref().is_some_and(|game| game.dropped());
-        loop {
+        while current() {
             for message in mailbox.take() {
                 peer.send(&message)?;
             }
@@ -228,25 +243,51 @@ impl Lobby {
                     tick(&mut peer)?;
                 }
             }
-            match peer
-                .session
-                .receive_message_until(|| current() && !mailbox.has_mail())?
-            {
-                Some((group, message, fields)) => {
-                    if let Some(handle) = ROUTER.get(group, message) {
-                        handle(&mut peer, fields)?;
-                    }
-                }
-                // Woken by mail; anything else ends the session.
-                None if current() && mailbox.has_mail() => {}
-                None => break,
+            let woke = Instant::now();
+            let received = peer.session.receive_message_until(|| {
+                current() && !mailbox.has_mail() && woke.elapsed() < TICK
+            })?;
+            if let Some((group, message, fields)) = received {
+                dispatch(&mut peer, group, message, fields);
+            } else if peer.session.closed() {
+                break;
             }
         }
         if replaced() {
-            session.send_disconnect(SIGNED_IN_ELSEWHERE)?;
+            return kick(&mut session, SIGNED_IN_ELSEWHERE);
+        }
+        if local_game.as_ref().is_some_and(|game| game.dropped()) {
+            tracing::info!("[>>>] Disconnecting for reconnect (dashboard)");
         }
         Ok(())
     }
+}
+
+/// Run a client message's handler. As in Python (`session.py` `dispatch`), a
+/// message nobody handles is logged, and a failing handler is logged without
+/// ending the session; a broken link ends it at the next receive.
+fn dispatch(peer: &mut Peer<'_, '_>, group: u32, message: u32, fields: Fields) {
+    if TELEMETRY.contains(&group) {
+        return;
+    }
+    let Some(handle) = ROUTER.get(group, message) else {
+        let shown: String = format!("{fields:?}")
+            .chars()
+            .take(LOG_VALUE_LIMIT)
+            .collect();
+        tracing::info!("[<<<] {group:08X}/{message} {shown}");
+        return;
+    };
+    if let Err(error) = handle(peer, fields) {
+        tracing::error!("handler for {group:08X}/{message} failed: {error}");
+    }
+}
+
+/// Send a disconnect reason and keep the link [`KICK_GRACE`] longer.
+fn kick(session: &mut LobbySession<'_>, reason: u64) -> io::Result<()> {
+    session.send_disconnect(reason)?;
+    std::thread::sleep(KICK_GRACE);
+    Ok(())
 }
 
 pub(crate) fn serve(
