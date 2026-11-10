@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+mod graphs;
 mod install;
 
 use std::{
@@ -75,8 +76,12 @@ pub struct Derivation {
     pub derive: fn(&Install, &Path) -> Result<Vec<Output>>,
 }
 
-/// Every derivation, inputs first.
-pub const DERIVATIONS: &[Derivation] = &[];
+/// Every derivation, inputs first. `graphs` reads `game_heroes_174.json`
+/// and `ai_spawners_174.json` from the build folder.
+pub const DERIVATIONS: &[Derivation] = &[Derivation {
+    name: "graphs",
+    derive: graphs::derive,
+}];
 
 /// Run every derivation and write its files under `out`.
 pub fn build(install: &Install, out: &Path) -> Result<Vec<PathBuf>> {
