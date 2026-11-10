@@ -1,0 +1,9 @@
+{"classes":{
+    "EED6D952":{"name":"STUStatescriptStateWeaponVolley","codec":"volley","stec":true,"status":"VERIFIED",
+        "layout":[{"op":"if","c":"H","then":[{"op":"signed_var","f":"t1"},
+                  {"op":"bits","f":"has_offset","n":1},{"op":"if","c":"has_offset",
+                   "then":[{"op":"signed_var","f":"offset"},{"op":"w_u16","f":"subindex"}],"else":[]}],
+                   "else":[]},
+                  {"op":"bits","f":"has_volleys","n":1},{"op":"if","c":"has_volleys",
+                   "then":[{"op":"w_u16","f":"volleys"}],"else":[]},{"op":"bits","f":"counter","n":6}]}
+}}

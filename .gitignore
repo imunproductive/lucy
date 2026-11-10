@@ -47,7 +47,7 @@ diagnostics.txt
 backups/
 work/
 
-# Relay build output (the release DLL is downloaded by START.bat)
+# Relay build output (relay\build.bat)
 *.dll
 *.exe
 *.obj
