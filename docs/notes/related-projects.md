@@ -78,7 +78,7 @@ Source: `HANDOFF.md:2109-2118`; the reader is private.
 - Document 0, `STU_3BC32A6E` (AI cell data), is not decoded.
 - Anubis: 117 nodes, a main component of 85, 113 portal edges, capture boxes for A and B. Attacker spawn to A is 125 m, to B 206 m. Practice Range: 67 nodes.
 - A node's y is the floor rounded up to 0.35 m; a body stands at about node y + 0.8.
-- This repository has the STU types (`crates/stu/data/types.txt`: `m_volumes`, `m_chokes`, `m_cellData`) and reads map chunks from CASC, but nothing reads this chunk yet.
+- Ported: derivation `navigation` writes document 1 as `data/navigation/<map>.json.gz` and `orpheus_physics::nav` routes and paths over it (format and checks in `docs/dev/data-sources.md`). The counts above hold; every floor point fits its mask once its height is rounded to the 0.35 m grid. Here the route from the attacker spawn (floor point to border centre to floor point) is 124 m to A and 211 m to B; the smoothed walk is 106 m and 174 m. Document 0 is still not decoded (its cell index is described there).
 
 ### AI heroes as server-driven players (live)
 

@@ -30,7 +30,7 @@ Each package is named `orpheus-<folder>`.
 | `wire` | Byte-exact encodings: the JAM lobby protocol, the game link, entity records, input commands, TCP helpers |
 | `content` | Typed game content and its loaders: catalog, heroes, maps, stats, hero-select parameters |
 | `bnet` | Local Battle.net emulation: protocol, RPC, session keys, service |
-| `physics` | Collision, the contact solver, the character mover, static rays |
+| `physics` | Collision, the contact solver, the character mover, static rays, AI navigation |
 | `script` | Statescript: graphs, expressions, the VM, payload codecs, snapshots and their wire format, vitals |
 | `sim` | The match simulation: bodies, bots, combat, projectiles, replication, egress |
 | `lobby` | Lobby services: accounts, collection, login content, parties, matchmaking rules, match handoff |
