@@ -18,6 +18,9 @@ use std::{
 use crate::{
     bots::Bot,
     combat::{PosedProjectile, eye_height},
+    projectiles::{
+        DELIVERY_GRACE, ObservedOut, ObservedProjectile, predicted_sync, spawned_definitions,
+    },
     replication::kill_feed_fresh,
 };
 use orpheus_content::maps::{GameMap, PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE};
@@ -32,7 +35,7 @@ use orpheus_script::{
     weapons::{HitDefinition, ProjectileBallistics, authored_number},
     wire::{Value, Variables},
 };
-use orpheus_wire::entity::{MAX_PAYLOAD, frame};
+use orpheus_wire::entity::{EntityUpdate, MAX_PAYLOAD, frame};
 
 /// How long a dead bot's death script runs: `int(BOT_RESPAWN / TICK)`
 /// frames, 3 s of 16 ms frames rounded down (combat.py `_advance_bot_death`).
@@ -90,6 +93,8 @@ pub struct BotShot {
     /// The world tick it was fired in.
     pub tick: u32,
     pub kind: BotShotKind,
+    /// The other clients see it (projectiles.py `fired`: `_show_others`).
+    pub observed: bool,
 }
 
 pub enum BotShotKind {
@@ -319,12 +324,13 @@ impl BotScripts {
             return Ok(());
         }
         for shot in script.body.take_shots() {
-            if let Some(kind) = shot_kind(&mut script.body, &shot, bot) {
+            if let Some((kind, observed)) = shot_kind(&mut script.body, &shot, bot) {
                 shots.push(BotShot {
                     source: bot.entity,
                     team: bot.spawn.team,
                     tick: at,
                     kind,
+                    observed,
                 });
             }
         }
@@ -544,7 +550,7 @@ fn project_frame(
 /// combat.py `_shoot` for an NPC: from the bot's eye along its yaw, level
 /// (the server body pose until an animated muzzle is available). A volley
 /// with a projectile speed flies; one without is hitscan.
-fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<BotShotKind> {
+fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShotKind, bool)> {
     let [x, y, z] = bot.position;
     let origin = [x, y + eye_height(bot.spawn.hero, false), z];
     let yaw = bot.yaw.round_ties_even() * TAU / 65536.0;
@@ -554,30 +560,39 @@ fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<BotShotK
         let speed = authored_number(node.field("m_projectileSpeed"), 0.0, &mut evaluate).ok()?;
         if speed != 0.0 {
             let ballistics = ProjectileBallistics::from_authored(node, &mut evaluate).ok()??;
-            return Some(BotShotKind::Projectile(PosedProjectile {
-                shot: *shot,
-                ballistics,
-                origin,
-                direction,
-                // The NPC path covers ballistic projectiles only
-                // (projectiles.py `fired`).
-                spawn: None,
-                feet: bot.position,
-                volleys,
-            }));
+            // projectiles.py `fired`: the clients see a predicted volley's
+            // ballistic projectile; the NPC path has no spawned ones.
+            let observed = ballistics.definition.is_some()
+                && predicted_sync(node, &mut evaluate).unwrap_or(false)
+                && spawned_definitions(node).is_empty();
+            return Some((
+                BotShotKind::Projectile(PosedProjectile {
+                    shot: *shot,
+                    ballistics,
+                    origin,
+                    direction,
+                    spawn: None,
+                    feet: bot.position,
+                    volleys,
+                }),
+                observed,
+            ));
         }
         let hit = HitDefinition::from_authored(node.field("m_6396149F")?, &mut evaluate).ok()??;
         if hit.amount <= 0.0 {
             return None;
         }
         let reach = authored_number(node.field("m_FEC435C6"), RANGE, &mut evaluate).ok()?;
-        Some(BotShotKind::Hitscan {
-            origin,
-            direction,
-            reach: if reach == 0.0 { RANGE } else { reach },
-            hit,
-            shot_frame: shot.frame,
-        })
+        Some((
+            BotShotKind::Hitscan {
+                origin,
+                direction,
+                reach: if reach == 0.0 { RANGE } else { reach },
+                hit,
+                shot_frame: shot.frame,
+            },
+            false,
+        ))
     })
     .flatten()
 }
@@ -661,6 +676,11 @@ pub(crate) struct BotViews {
     /// Lifetimes whose first frame couldn't go to this client.
     refused: HashSet<u32>,
     mode_ready: bool,
+    /// The firing bots' rockets this client is shown, in firing order.
+    seen: Vec<SeenCopy>,
+    /// Rocket entities whose destroy has not arrived, by their copy.
+    seen_destroys: HashMap<u32, u64>,
+    seen_serial: u64,
 }
 
 impl BotViews {
@@ -1047,6 +1067,192 @@ fn key_instance(key: ChangeKey) -> u16 {
         | ChangeKey::Variable(instance, _)
         | ChangeKey::State(instance, _)
         | ChangeKey::VolleyIntroduction(instance, _) => instance,
+    }
+}
+
+/// A firing bot's rocket the clients see (projectiles.py `fired` for an
+/// NPC, then `_show_others`).
+#[derive(Clone, Debug)]
+pub struct SeenRocket {
+    /// The room's rocket it follows (combat.py `Rocket.shot`).
+    pub rocket: u64,
+    pub source: u32,
+    pub shot: ShotEvent,
+    pub definition: u64,
+    pub volleys: u16,
+    pub origin: [f64; 3],
+    pub direction: [f64; 3],
+    /// The ticks it flies at most (`Shot.bound`).
+    pub bound: u32,
+}
+
+impl SeenRocket {
+    /// The copy of a fired rocket, if the shot is one the clients see.
+    pub fn of(rocket: u64, shot: &BotShot) -> Option<Self> {
+        let BotShotKind::Projectile(projectile) = &shot.kind else {
+            return None;
+        };
+        let definition = projectile.ballistics.definition.filter(|_| shot.observed)?;
+        Some(Self {
+            rocket,
+            source: shot.source,
+            shot: projectile.shot,
+            definition,
+            volleys: u16::from(projectile.volleys),
+            origin: projectile.origin,
+            direction: projectile.direction,
+            bound: (projectile.ballistics.lifetime * 1000.0 / FRAME_MS as f64).ceil() as u32,
+        })
+    }
+}
+
+/// A record of a bot rocket's copy on one client: its create and the bot's
+/// shot record, current while the copy lives; its destroy until it arrived.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SeenDelivery {
+    Create { serial: u64 },
+    Launch { serial: u64 },
+    Destroy { serial: u64 },
+}
+
+/// One bot rocket on one client (`_ObservedProjectile` with `npc=True`).
+struct SeenCopy {
+    serial: u64,
+    rocket: u64,
+    projectile: ObservedProjectile,
+}
+
+impl BotViews {
+    /// projectiles.py `_show_others` for a bot's rocket: when this client
+    /// has the bot's statescript stream (server.py `bot_stream`, even
+    /// before its baseline), an entity of the rocket's definition under the
+    /// map, launched in the bot's channel 2 once its create arrived.
+    pub(crate) fn show_rocket(
+        &mut self,
+        rocket: &SeenRocket,
+        tick: u32,
+        next_id: impl FnOnce() -> u32,
+    ) -> Vec<(EntityUpdate, SeenDelivery)> {
+        let Some(view) = self.views.get(&rocket.source) else {
+            return Vec::new();
+        };
+        let has_base = view.stream.base().is_some();
+        let deadline = tick
+            .saturating_add(rocket.bound)
+            .saturating_add(DELIVERY_GRACE);
+        let Ok(mut projectile) = ObservedProjectile::new(
+            rocket.source,
+            next_id(),
+            rocket.definition,
+            &rocket.shot,
+            rocket.volleys,
+            rocket.origin.map(|value| value as f32),
+            rocket.direction,
+            deadline,
+        ) else {
+            return Vec::new();
+        };
+        self.seen_serial += 1;
+        let serial = self.seen_serial;
+        let create = projectile.open(has_base);
+        self.seen.push(SeenCopy {
+            serial,
+            rocket: rocket.rocket,
+            projectile,
+        });
+        create
+            .into_iter()
+            .filter_map(|out| match out {
+                ObservedOut::Create(update) => Some((update, SeenDelivery::Create { serial })),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The rocket landed (projectiles.py `flown` for an NPC shot): its copies
+    /// keep DELIVERY_GRACE ticks for their launch.
+    pub(crate) fn finish_rocket(&mut self, rocket: u64, tick: u32) {
+        for copy in self.seen.iter_mut().filter(|copy| copy.rocket == rocket) {
+            copy.projectile.finish(tick, false, true);
+        }
+    }
+
+    /// `_ObservedProjectile.advance` for this client's bot rockets: the
+    /// create once the bot's stream has a baseline, the launch once the
+    /// create arrived and the acknowledged baseline holds the volley, the
+    /// destroy when the rocket landed, its bot's lifetime ended or the
+    /// deadline passed.
+    pub(crate) fn advance_rockets(&mut self, tick: u32) -> Vec<(EntityUpdate, SeenDelivery)> {
+        let mut records = Vec::new();
+        let mut seen = std::mem::take(&mut self.seen);
+        seen.retain_mut(|copy| {
+            let view = self.views.get(&copy.projectile.body());
+            let base = view
+                .and_then(|view| view.stream.base())
+                .map(|(_, base)| base);
+            let volley = base.is_some_and(|base| copy.projectile.volley_arrived(base));
+            let serial = copy.serial;
+            let mut keep = true;
+            for out in copy
+                .projectile
+                .advance(tick, view.is_some(), base.is_some(), volley)
+            {
+                match out {
+                    ObservedOut::Create(update) => {
+                        records.push((update, SeenDelivery::Create { serial }));
+                    }
+                    ObservedOut::Launch(update) => {
+                        records.push((update, SeenDelivery::Launch { serial }));
+                    }
+                    // Dropping the copy withdraws its queued launch.
+                    ObservedOut::CancelLaunch => {}
+                    ObservedOut::Destroy(update) => {
+                        self.seen_destroys.insert(update.entity, serial);
+                        records.push((update, SeenDelivery::Destroy { serial }));
+                    }
+                    ObservedOut::Done => keep = false,
+                }
+            }
+            keep
+        });
+        self.seen = seen;
+        records
+    }
+
+    pub(crate) fn seen_current(&self, delivery: SeenDelivery, entity: u32) -> bool {
+        match delivery {
+            SeenDelivery::Create { serial } | SeenDelivery::Launch { serial } => {
+                self.seen.iter().any(|copy| copy.serial == serial)
+            }
+            SeenDelivery::Destroy { serial } => self.seen_destroys.get(&entity) == Some(&serial),
+        }
+    }
+
+    /// The record's datagram arrived or was lost; true: send it again.
+    pub(crate) fn seen_delivered(
+        &mut self,
+        delivery: SeenDelivery,
+        entity: u32,
+        arrived: bool,
+    ) -> bool {
+        if !arrived {
+            return self.seen_current(delivery, entity);
+        }
+        match delivery {
+            SeenDelivery::Create { serial } | SeenDelivery::Launch { serial } => {
+                if let Some(copy) = self.seen.iter_mut().find(|copy| copy.serial == serial) {
+                    if matches!(delivery, SeenDelivery::Create { .. }) {
+                        copy.projectile.creation_arrived();
+                    } else {
+                        copy.projectile.launch_arrived();
+                    }
+                }
+            }
+            SeenDelivery::Destroy { .. } => {
+                self.seen_destroys.remove(&entity);
+            }
+        }
+        false
     }
 }
 
