@@ -101,15 +101,16 @@ impl Fixture {
             Arc::new(Schemas::game()),
         )
         .unwrap();
+        let economy = Arc::new(orpheus_lobby::economy::Economy::load(&data).unwrap());
         let lobby = Lobby {
             signing_key: *orpheus_fixed::LOBBY_STATE_BLOB_KEY,
             schemas: Schemas::lobby(),
             presence: Presence::new(&templates).unwrap(),
             ranked: Ranked::new(&templates).unwrap(),
             arcade: Arcade::load(data.join("arcade_cards_174.json"), &templates).unwrap(),
-            celebrations: Celebrations::load(&data, &templates).unwrap(),
+            celebrations: Celebrations::load(&data, &templates, Arc::clone(&economy)).unwrap(),
             templates,
-            services: Arc::new(Services::new(&collection)),
+            services: Arc::new(Services::new(&collection, economy)),
             collection,
             extra_preload: Vec::new(),
             assets,

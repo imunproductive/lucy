@@ -391,7 +391,12 @@ fn messages_are_unchanged() {
         presence: Presence::new(&templates).unwrap(),
         ranked: Ranked::new(&templates).unwrap(),
         arcade: Arcade::load(data.join("arcade_cards_174.json"), &templates).unwrap(),
-        celebrations: Celebrations::load(&data, &templates).unwrap(),
+        celebrations: Celebrations::load(
+            &data,
+            &templates,
+            std::sync::Arc::new(crate::economy::Economy::load(&data).unwrap()),
+        )
+        .unwrap(),
         extra_preload,
         accounts: Accounts::new(
             temporary.path().join("profiles"),
