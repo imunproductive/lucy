@@ -1,0 +1,17 @@
+[package]
+name = "orpheus-bnet"
+description = "Local Battle.net emulation for retail build 104319"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+orpheus-wire.workspace = true
+prost.workspace = true
+prost-reflect.workspace = true
+tungstenite.workspace = true
+
+[dev-dependencies]
+sha2.workspace = true

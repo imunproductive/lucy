@@ -1,0 +1,23 @@
+[package]
+name = "orpheus-wire"
+description = "Byte-exact encodings for retail build 104319: the JAM lobby protocol, the game link, entity records and input commands"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+aes-gcm.workspace = true
+getrandom.workspace = true
+hmac.workspace = true
+orpheus-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[features]
+# Test builders shared with the tests of dependent crates.
+fixtures = []
+
+[dev-dependencies]

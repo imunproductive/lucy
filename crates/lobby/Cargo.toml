@@ -1,0 +1,25 @@
+[package]
+name = "orpheus-lobby"
+description = "Lobby services for retail build 104319: accounts, collection, login content, parties and match handoff"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+crc32fast.workspace = true
+getrandom.workspace = true
+indexmap.workspace = true
+orpheus-bnet.workspace = true
+orpheus-content.workspace = true
+orpheus-core.workspace = true
+orpheus-wire.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+sha2.workspace = true
+orpheus-wire = { workspace = true, features = ["fixtures"] }

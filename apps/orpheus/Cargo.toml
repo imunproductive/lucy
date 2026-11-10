@@ -1,0 +1,15 @@
+[package]
+name = "orpheus"
+description = "The ORPHEUS server for Overwatch 1.74.0.0.104319"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "orpheus"
+path = "src/main.rs"
+
+[dependencies]
+orpheus-server.workspace = true

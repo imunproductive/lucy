@@ -1,0 +1,20 @@
+[package]
+name = "orpheus-script"
+description = "The statescript VM and its replication for retail build 104319"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+flate2.workspace = true
+indexmap.workspace = true
+orpheus-core.workspace = true
+orpheus-physics.workspace = true
+orpheus-wire.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+sha2.workspace = true

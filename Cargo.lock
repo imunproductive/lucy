@@ -402,22 +402,131 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 name = "orpheus"
 version = "0.0.0"
 dependencies = [
- "aes-gcm",
- "crc32fast",
- "flate2",
- "getrandom",
- "hmac",
- "indexmap",
- "lzma-rust2",
- "mio",
+ "orpheus-server",
+]
+
+[[package]]
+name = "orpheus-bnet"
+version = "0.0.0"
+dependencies = [
+ "orpheus-wire",
  "prost",
  "prost-reflect",
- "roxmltree",
+ "sha2 0.10.9",
+ "tungstenite",
+]
+
+[[package]]
+name = "orpheus-content"
+version = "0.0.0"
+dependencies = [
+ "indexmap",
+ "orpheus-core",
+ "orpheus-wire",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "tungstenite",
+]
+
+[[package]]
+name = "orpheus-core"
+version = "0.0.0"
+
+[[package]]
+name = "orpheus-lobby"
+version = "0.0.0"
+dependencies = [
+ "crc32fast",
+ "getrandom",
+ "indexmap",
+ "orpheus-bnet",
+ "orpheus-content",
+ "orpheus-core",
+ "orpheus-wire",
+ "prost",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "orpheus-physics"
+version = "0.0.0"
+dependencies = [
+ "indexmap",
+ "lzma-rust2",
+ "orpheus-core",
+ "orpheus-wire",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "orpheus-script"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "indexmap",
+ "orpheus-core",
+ "orpheus-physics",
+ "orpheus-wire",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "orpheus-server"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "getrandom",
+ "indexmap",
+ "mio",
+ "orpheus-bnet",
+ "orpheus-content",
+ "orpheus-core",
+ "orpheus-lobby",
+ "orpheus-script",
+ "orpheus-sim",
+ "orpheus-wire",
+ "roxmltree",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "orpheus-sim"
+version = "0.0.0"
+dependencies = [
+ "indexmap",
+ "orpheus-content",
+ "orpheus-core",
+ "orpheus-physics",
+ "orpheus-script",
+ "orpheus-wire",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "orpheus-wire"
+version = "0.0.0"
+dependencies = [
+ "aes-gcm",
+ "getrandom",
+ "hmac",
+ "orpheus-core",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

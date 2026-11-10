@@ -83,15 +83,15 @@ During the transition, `ow174/`, `tests/*.py`, `tools/`, `relay/*.cpp`, `require
 
 | Crate | Responsibility | Comes from (today's `rust/src` modules) | Lines today |
 | --- | --- | --- | --- |
-| `core` | `Guid` and `parse_guid`, `BitReader`/`BitWriter`, tick constants | `bits`, plus symbols moved out of `accounts` and `game_clock` (phase 2) | 503 |
+| `core` | `parse_guid`, `BitReader`/`BitWriter`, tick constants | `bits`, `guid`, `tick` (the last two created in phase 2) | ~550 |
 | `wire` | Byte-exact encodings | `jam_cipher`, `jam_codec`, `jam_framing`, `jam_handshake`, `game_link`, `game_messages`, `game_combat_messages`, `commands`, `world` (renamed `entity`), `service_tcp`, `protocol_tests` | 4,258 |
 | `content` | Typed game content and its loaders | `catalog`, `game_content`, `game_heroes`, `game_stats`, `game_parameters` | 2,184 |
 | `bnet` | Battle.net emulation | `bnet_protocol`, `bnet_rpc`, `bnet_service`, `bnet_session_key` | 1,264 |
 | `physics` | Collision and movement | `collision_cache`, `collision_grid`, `collision_index`, `collision_scene`, `static_ray`, `contact_*` (12), `mover`, `mover_*` (6) | 11,147 |
-| `script` | Statescript | `script_graph`, `script_expr`, `script_init` (split up), `script_runtime`, `script_wire`, `script_codecs`, `script_stream`, `script_snapshot_wire`, `vitals`, `runtime/target_tags` | 16,239 |
+| `script` | Statescript | `script_graph`, `script_expr`, `script_init` (split up), `script_runtime`, `script_wire`, `script_codecs`, `script_stream`, `script_snapshot_wire`, `script_weapons`, `vitals` | ~16,200 |
 | `sim` | Match simulation | `game_body`, `game_bots`, `game_combat`, `game_controller`, `game_hitscan`, `game_pools`, `game_projectiles`, `game_replication`, `game_instance`, `game_egress`, `match_scene`, `scene_assets`, `script_player` (renamed `body_script`), `projectile_flight`, `projectile_wire` | 10,321 |
 | `lobby` | Lobby services | `accounts`, `collection`, `retail_templates`, `battle_tag_query`, `match_handoff`, `lobby_*` except `lobby_practice` | 8,015 |
-| `server` | Wires everything into running services | `server`, `game_service`, `game_clock` (the `GameClock` type), `game_connection`, `game_ingress`, `lobby_practice`, `runtime` (until phase 8) | 5,076 |
+| `server` | Wires everything into running services | `server`, `game_service`, `game_clock` (the `GameClock` type), `game_connection`, `game_ingress`, `lobby_practice`, `runtime` with `runtime/target_tags` (until phase 8) | ~5,500 |
 | `casc`, `stu`, `assets` | Reading game data from the install | new (phase 6) | — |
 | `launcher`, `relay` | Client start and injection | new, ported from `ow174/launcher/` and `relay/owwfd_relay.cpp` (phase 5) | — |
 | `testkit` | Test support; dev-dependency only | new | — |

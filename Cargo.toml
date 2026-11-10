@@ -1,23 +1,25 @@
-[package]
-name = "orpheus"
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.85"
 publish = false
-description = "Server reimplementation for Overwatch 1.74"
+license = "MIT"
 
-[lib]
-path = "rust/src/lib.rs"
-
-[[bin]]
-name = "prepare_server_runtime"
-path = "rust/src/bin/prepare_server_runtime.rs"
-
-[[bin]]
-name = "orpheus_server"
-path = "rust/src/bin/orpheus_server.rs"
-
-[dependencies]
+[workspace.dependencies]
+orpheus-core = { path = "crates/core" }
+orpheus-wire = { path = "crates/wire" }
+orpheus-content = { path = "crates/content" }
+orpheus-bnet = { path = "crates/bnet" }
+orpheus-physics = { path = "crates/physics" }
+orpheus-script = { path = "crates/script" }
+orpheus-sim = { path = "crates/sim" }
+orpheus-lobby = { path = "crates/lobby" }
+orpheus-server = { path = "crates/server" }
+orpheus-testkit = { path = "crates/testkit" }
 aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc"] }
 crc32fast = "1"
 flate2 = "1.1"

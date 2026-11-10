@@ -1,0 +1,29 @@
+[package]
+name = "orpheus-server"
+description = "Process wiring for retail build 104319: the Battle.net, lobby and game services"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+flate2.workspace = true
+getrandom.workspace = true
+indexmap.workspace = true
+mio.workspace = true
+orpheus-bnet.workspace = true
+orpheus-content.workspace = true
+orpheus-core.workspace = true
+orpheus-lobby.workspace = true
+orpheus-script.workspace = true
+orpheus-sim.workspace = true
+orpheus-wire.workspace = true
+roxmltree.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+orpheus-sim = { workspace = true, features = ["fixtures"] }
+orpheus-wire = { workspace = true, features = ["fixtures"] }
