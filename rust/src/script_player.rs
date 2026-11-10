@@ -9,7 +9,6 @@ use std::{
 use serde_json::Value as Json;
 
 use crate::{
-    accounts::parse_guid,
     commands::Command,
     game_combat::{PosedHitscan, PosedProjectile, PosedShot, eye_height},
     game_content::PRACTICE_RANGE_MODE,
@@ -19,6 +18,7 @@ use crate::{
     game_pools::{BODY_GRAPH, FALLBACK_POOLS, HealthPools},
     game_projectiles::{ProjectileLeases, authored_number, local_prediction, predicted_sync},
     game_replication::{BodyStep, OwnerBodyRuntime},
+    guid::parse_guid,
     mover::{Mover, sample_movement_flags},
     mover_modifiers::{Modifier, ModifierKey},
     projectile_flight::ProjectileBallistics,
@@ -1326,8 +1326,8 @@ mod tests {
     #[ignore = "requires the separately prepared 104319 statescript catalog"]
     fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
         use crate::{
-            game_clock::FIRST_TICK, game_content::GameMap, script_codecs::PayloadMode,
-            script_init::StateKind,
+            game_content::GameMap, script_codecs::PayloadMode, script_init::StateKind,
+            tick::FIRST_TICK,
         };
         use std::path::PathBuf;
 
@@ -1694,7 +1694,7 @@ mod tests {
     #[test]
     #[ignore = "requires the separately prepared 104319 hero and graph catalogs"]
     fn authored_armour_and_shield_roots_reproduce_the_reference_body_pools() {
-        use crate::game_clock::FIRST_TICK;
+        use crate::tick::FIRST_TICK;
         use std::path::PathBuf;
 
         let root = PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap());

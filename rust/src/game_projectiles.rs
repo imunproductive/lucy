@@ -10,12 +10,12 @@ use indexmap::IndexMap;
 use serde_json::Value as Json;
 
 use crate::{
-    game_clock::MAX_LEASE_FRAME,
     projectile_wire,
     script_expr::{EvalError, to_float},
     script_graph::{GraphStore, Node, asset_guid},
     script_init::{ShotEvent, Snapshot},
     script_wire::Value,
+    tick::MAX_LEASE_FRAME,
     world::{EntityUpdate, LeaseBlock, Operation},
 };
 

@@ -11,9 +11,10 @@ use crate::{
     game_stats::GMP_STATS,
     script_graph::GraphStore,
     script_wire::{self, Instance, Layout, Variables},
+    vitals::health,
     world::{
         Component, ComponentValue, Create, EntityUpdate, GAME_MODE_ENTITY, Operation, PLAYER_PATH,
-        SkinTheme, WITH_PARTICIPANT, WITH_SCALE, WITH_TRANSFORM, health,
+        SkinTheme, WITH_PARTICIPANT, WITH_SCALE, WITH_TRANSFORM,
     },
 };
 

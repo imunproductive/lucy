@@ -10,8 +10,9 @@ use indexmap::IndexMap;
 use serde_json::{Map, Value as Json};
 
 use crate::{
-    accounts::{LootBox, Profile, parse_guid},
+    accounts::{LootBox, Profile},
     catalog::ItemDb,
+    guid::parse_guid,
     jam_codec::{
         Fields, MAX_ARRAY_COUNT,
         Value::{self, Array, Bool, Signed, Struct, Unsigned},

@@ -15,6 +15,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::guid::parse_guid;
 use crate::jam_codec::{Fields, Value as JamValue};
 
 pub const DEFAULT_ICON: u64 = 0x0250_0000_0000_02f7;
@@ -242,30 +243,6 @@ pub(crate) fn saved_integer(value: &Value) -> Option<i64> {
         Value::String(value) => value.trim().parse().ok(),
         _ => None,
     }
-}
-
-pub(crate) fn parse_guid(text: &str) -> Option<u64> {
-    let text = trim_name(text);
-    let text = text.strip_prefix('+').unwrap_or(text);
-    let (digits, radix) = match text.as_bytes() {
-        [b'0', b'x' | b'X', ..] => (&text[2..], 16),
-        [b'0', b'o' | b'O', ..] => (&text[2..], 8),
-        [b'0', b'b' | b'B', ..] => (&text[2..], 2),
-        _ => (text, 10),
-    };
-    let digits = if radix == 10 {
-        digits
-    } else {
-        digits.strip_prefix('_').unwrap_or(digits)
-    };
-    if digits.starts_with('+') || digits.split('_').any(str::is_empty) {
-        return None;
-    }
-    let digits = digits.replace('_', "");
-    if radix == 10 && digits.starts_with('0') && digits.bytes().any(|byte| byte != b'0') {
-        return None;
-    }
-    u64::from_str_radix(&digits, radix).ok()
 }
 
 fn trim_name(name: &str) -> &str {

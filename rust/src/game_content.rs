@@ -7,7 +7,7 @@ use std::{collections::HashMap, fs, io, path::Path};
 use indexmap::IndexMap;
 use serde::Deserialize;
 
-use crate::accounts::parse_guid;
+use crate::guid::parse_guid;
 
 pub const PRACTICE_RANGE_MAP: u64 = 0x0800_0000_0000_0688;
 pub const PRACTICE_RANGE_MODE: u64 = 0x0230_0000_0000_0018;

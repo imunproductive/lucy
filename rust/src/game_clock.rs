@@ -3,11 +3,8 @@
 use std::time::Duration;
 
 use crate::game_connection::{HANDOFF_TIME, LEAVE_GRACE};
+use crate::tick::{FIRST_TICK, MAX_LEASE_FRAME, SEND_EVERY, TICK_PERIOD};
 
-pub const TICK_PERIOD: Duration = Duration::from_millis(16);
-pub const SEND_EVERY: u32 = 3;
-pub const FIRST_TICK: u32 = 1000;
-pub const MAX_LEASE_FRAME: u32 = u32::MAX - 2 * (1 << 22);
 const CLOCK_DRAIN_TICKS: u32 = (HANDOFF_TIME.as_millis() + LEAVE_GRACE.as_millis())
     .div_ceil(TICK_PERIOD.as_millis()) as u32
     + SEND_EVERY;

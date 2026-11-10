@@ -15,8 +15,9 @@ use indexmap::IndexMap;
 use serde::Deserialize;
 
 use crate::{
-    accounts::{Profile, parse_guid},
+    accounts::Profile,
     catalog::{ItemDb, UNLOCK_BASE},
+    guid::parse_guid,
     jam_codec::{
         Fields,
         Value::{self, Array, Float64, Signed, Struct, Unsigned},

@@ -345,16 +345,6 @@ pub(crate) fn pool_component(slots: impl IntoIterator<Item = (usize, [u8; 20])>)
     Component { index: 51, fields }
 }
 
-pub fn health(now: f32, most: f32, armour: f32, shields: f32) -> Component {
-    crate::vitals::Vitals::with_current_health(
-        f64::from(most),
-        f64::from(armour),
-        f64::from(shields),
-        f64::from(now),
-    )
-    .component()
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Movement {
     pub position: [f64; 3],
@@ -1028,7 +1018,18 @@ mod tests {
     fn mixed_frame_matches_python_at_every_component_and_channel_boundary() {
         use ComponentValue::*;
 
-        let mut pools = health(125.0, 200.0, 25.0, 50.0);
+        // The pools of a body with 200 health (125 left), 25 armour and 50 shields.
+        let mut pools = pool_component([
+            (
+                HEALTH_POOL * POOLS,
+                pool(3, HEALTH_POOL as u32, 200.0, 125.0),
+            ),
+            (ARMOUR_POOL * POOLS, pool(2, ARMOUR_POOL as u32, 25.0, 25.0)),
+            (
+                SHIELDS_POOL * POOLS,
+                pool(1, SHIELDS_POOL as u32, 50.0, 50.0),
+            ),
+        ]);
         pools.fields.extend([
             Some(U32(0xabc)),
             Some(U32(0xdef)),

@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use super::{RuntimeError, at};
 use crate::{
-    accounts::parse_guid,
+    guid::parse_guid,
     script_graph::{MAX_GRAPH_BYTES, TARGET_TAG_TYPE},
 };
 

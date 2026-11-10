@@ -448,7 +448,7 @@ mod tests {
         let dts = [0.0, 0.016, 0.032, 0.001, 0.25, 0.064];
         let mut digest = Sha256::new();
         for (i, guid) in raw.keys().enumerate() {
-            let guid = crate::accounts::parse_guid(guid).unwrap();
+            let guid = crate::guid::parse_guid(guid).unwrap();
             digest.update(guid.to_le_bytes());
             let base = movers.for_body(Some(guid));
             for n in 0..192 {

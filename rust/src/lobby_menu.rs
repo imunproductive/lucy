@@ -3,8 +3,9 @@
 use std::io;
 
 use crate::{
-    accounts::{Profile, parse_guid},
+    accounts::Profile,
     catalog::{HERO_BASE, ItemDb, SKIN_THEME_BASE},
+    guid::parse_guid,
 };
 
 const PVE_NPCS: &[(&str, u64)] = &[

@@ -48,6 +48,7 @@ pub mod game_projectiles;
 mod game_replication;
 pub mod game_service;
 pub mod game_stats;
+pub mod guid;
 pub mod jam_cipher;
 pub mod jam_codec;
 pub mod jam_framing;
@@ -93,6 +94,7 @@ pub mod script_wire;
 pub mod server;
 mod service_tcp;
 pub mod static_ray;
+pub mod tick;
 pub mod vitals;
 pub mod world;
 

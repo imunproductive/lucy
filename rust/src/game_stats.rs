@@ -8,7 +8,7 @@ use std::{collections::HashMap, fs, io, path::Path};
 use indexmap::IndexMap;
 use serde::Deserialize;
 
-use crate::accounts::parse_guid;
+use crate::guid::parse_guid;
 use crate::world::{Component, ComponentValue, GMP_STATS_FIELDS};
 
 pub const GMP_STATS: u8 = 64;

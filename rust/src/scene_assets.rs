@@ -11,14 +11,12 @@ use std::{
 use serde::Deserialize;
 
 use crate::{
-    accounts::parse_guid,
     bits::BitWriter,
     collision_cache::{chunk_guid, read_movement_cache},
     collision_index::TriangleIndex,
     collision_scene::CollisionScene,
     contact_world::ContactWorld,
     game_bots::{Bot, BotCatalog, BotWalk},
-    game_clock::FIRST_TICK,
     game_content::{GameMap, PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE},
     game_controller::Controller,
     game_heroes::{Hero, HeroCatalog, SOLDIER},
@@ -26,6 +24,7 @@ use crate::{
     game_pools::PoolCatalog,
     game_replication::OwnerBodyRuntime,
     game_stats::{PlayerStats, StatsCatalog, initial_on_fire},
+    guid::parse_guid,
     match_scene::{PlayerAppearance, initial_world, mode_ui, team_bit},
     mover::Mover,
     mover_ground::NOT_GROUND,
@@ -34,6 +33,7 @@ use crate::{
     script_graph::GraphStore,
     script_player::{OwnerBodySpawn, PlayerBodyFactory},
     script_wire::Variables,
+    tick::FIRST_TICK,
     world::{Component, EntityUpdate},
 };
 

@@ -8,13 +8,13 @@ use serde_json::Value as Json;
 
 use crate::{
     collision_index::IndexError,
-    game_clock::TICK_PERIOD,
     game_hitscan::{HitDefinition, Impact, TargetPose},
     game_projectiles::authored_number,
     script_expr::EvalError,
     script_graph::Node,
     script_wire::Value,
     static_ray::{Vec3, capsule_entry_distance, segment_distance},
+    tick::TICK_PERIOD,
 };
 
 const DEFAULT_LIFETIME: f64 = 5.0;

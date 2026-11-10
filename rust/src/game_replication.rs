@@ -13,7 +13,6 @@ use crate::{
     commands::{Command, CommandQueue},
     game_body::{BodyCreate, BodyView, body_create, owner_pose},
     game_bots::BOT_RECORD_DELAY,
-    game_clock::{MAX_LEASE_FRAME, SEND_EVERY, TICK_PERIOD},
     game_combat::{BotReplacement, PosedHitscan, PosedProjectile, PosedShot},
     game_controller::ControllerFrame,
     game_egress::{DeliveryReport, FrameRecords, GameEgress, RecordSource, SendError, SentFrame},
@@ -32,6 +31,7 @@ use crate::{
     script_player::OwnerBodySpawn,
     script_snapshot_wire::{ProjectedSnapshot, SnapshotEncoder, View},
     script_stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
+    tick::{MAX_LEASE_FRAME, SEND_EVERY, TICK_PERIOD},
     vitals::Vitals,
     world::{
         Component as WorldComponent, EntityUpdate, GAME_MODE_ENTITY, MAX_PAYLOAD, Operation,
@@ -1517,7 +1517,6 @@ mod tests {
         bits::BitReader,
         collision_index::TriangleIndex,
         contact_world::ContactWorld,
-        game_clock::FIRST_TICK,
         game_content::GameMap,
         game_heroes::SOLDIER,
         game_instance::RETAIL_QUANTA,
@@ -1530,6 +1529,7 @@ mod tests {
         script_graph::GraphStore,
         script_init::{Component, EmptyWorld, MAX_INIT_WORK, Root},
         script_runtime::FRAME_MS,
+        tick::FIRST_TICK,
         world::{MAX_ENTITY_RECORDS, Movement},
     };
     use std::sync::{
@@ -1548,9 +1548,7 @@ mod tests {
     #[test]
     fn bot_health_replaces_stale_packets_and_respawn_keeps_creation_order() {
         use crate::{
-            game_bots::BOT_ENTITY,
-            game_egress::PacketDelivery,
-            world::{Create, health},
+            game_bots::BOT_ENTITY, game_egress::PacketDelivery, vitals::health, world::Create,
         };
         let old = BOT_ENTITY;
         let new = old + 1;
@@ -2102,7 +2100,8 @@ mod tests {
 
     #[test]
     fn owner_health_waits_for_creation_and_discards_superseded_lifetimes() {
-        use crate::world::{ARMOUR_POOL, POOLS, health, pool, pool_component};
+        use crate::vitals::health;
+        use crate::world::{ARMOUR_POOL, POOLS, pool, pool_component};
 
         let id = avatar(1, 1);
         let mut world = WorldDelivery::new(OWNER);

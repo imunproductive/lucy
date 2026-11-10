@@ -7,7 +7,7 @@ use std::{collections::HashMap, io};
 
 use serde_json::Value;
 
-use crate::accounts::parse_guid;
+use crate::guid::parse_guid;
 use crate::script_graph::{GraphStore, asset_guid};
 use crate::vitals::Vitals;
 

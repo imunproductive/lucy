@@ -13,7 +13,8 @@ use std::{
 use serde::Deserialize;
 
 use crate::{
-    accounts::{Profile, parse_guid},
+    accounts::Profile,
+    guid::parse_guid,
     jam_codec::{
         Fields,
         Value::{Array, Bool, Float32, Signed, Struct, Unsigned},

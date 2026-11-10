@@ -6,7 +6,7 @@ use serde_json::Value as Json;
 
 pub use crate::script_wire::Value;
 use crate::{
-    accounts::parse_guid,
+    guid::parse_guid,
     script_graph::{asset_guid, target_tag_guid},
     vitals::PoolKind,
 };

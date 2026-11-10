@@ -13,13 +13,13 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::accounts::parse_guid;
 use crate::contact_body::CharacterBody;
 use crate::contact_math::{add, sub};
 use crate::contact_world::ContactWorld;
-use crate::game_clock::TICK_PERIOD;
+use crate::guid::parse_guid;
 use crate::mover_ground::{pogo, standing_body, standing_origin};
 use crate::mover_settings::MoverSettings;
+use crate::tick::TICK_PERIOD;
 use crate::world::{Movement, NO_INPUT};
 
 pub const BOT_ENTITY: u32 = 0xc000_1000;
@@ -740,8 +740,8 @@ impl Bot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game_clock::SEND_EVERY;
     use crate::game_content::PRACTICE_RANGE_MAP;
+    use crate::tick::SEND_EVERY;
     use crate::world::movement_record;
     use sha2::{Digest, Sha256};
 

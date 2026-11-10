@@ -276,10 +276,21 @@ impl Vitals {
     }
 }
 
+/// The component 51 record of a body with the given pools.
+pub fn health(now: f32, most: f32, armour: f32, shields: f32) -> Component {
+    Vitals::with_current_health(
+        f64::from(most),
+        f64::from(armour),
+        f64::from(shields),
+        f64::from(now),
+    )
+    .component()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::{ComponentValue, health};
+    use crate::world::ComponentValue;
 
     const HIT: Death = Death {
         time: 12.0,

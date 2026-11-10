@@ -366,7 +366,7 @@ mod tests {
         let released = BTreeMap::new();
         let mut combined = Sha256::new();
         for (i, guid) in records.keys().enumerate() {
-            let body = crate::accounts::parse_guid(guid).unwrap();
+            let body = crate::guid::parse_guid(guid).unwrap();
             let spawn = if i % 3 == 2 {
                 [45.5, 2.5, 34.75]
             } else {

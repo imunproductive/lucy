@@ -7,7 +7,7 @@ use std::{collections::HashMap, fs, io, path::Path};
 use indexmap::IndexMap;
 use serde::Deserialize;
 
-use crate::accounts::parse_guid;
+use crate::guid::parse_guid;
 
 pub const SOLDIER_BODY: u64 = 0x0400_0000_0000_03cf;
 

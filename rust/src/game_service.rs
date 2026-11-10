@@ -20,7 +20,7 @@ use indexmap::IndexMap;
 use mio::{Events, Interest, Poll, Token, Waker, net::UdpSocket};
 
 use crate::{
-    game_clock::{FIRST_TICK, GameClock, Step, next_tick_after},
+    game_clock::{GameClock, Step, next_tick_after},
     game_combat::{BotHit, BotReplacement, Combat, ShotContext},
     game_combat_messages::CombatNotice,
     game_connection::{GameConnections, MAX_CONNECTION_ID, Outgoing, SILENCE_TIME},
@@ -37,6 +37,7 @@ use crate::{
     match_scene::{PlayerAppearance, PlayerCard},
     scene_assets::PreparedScene,
     script_wire::chunk,
+    tick::FIRST_TICK,
     world::{EntityUpdate, GAME_MODE_ENTITY, MAX_PAYLOAD, SkinTheme, frame},
 };
 
@@ -1797,7 +1798,7 @@ mod tests {
                         assert_eq!(record.entity, CONTROLLER);
                         let mut bits = script.bits();
                         assert_eq!(bits.bits(3).unwrap(), 2);
-                        assert!(bits.w_var().unwrap() >= crate::game_clock::FIRST_TICK);
+                        assert!(bits.w_var().unwrap() >= crate::tick::FIRST_TICK);
                         controller = true;
                     }
                 }

@@ -12,8 +12,8 @@ use std::{
 
 use crate::bits::BitWriter;
 use crate::commands::{FRAME_HALF, frame_distance};
-use crate::game_clock::MAX_LEASE_FRAME;
 use crate::script_wire::{WireError, chunk, owner_ack};
+use crate::tick::MAX_LEASE_FRAME;
 use crate::world::EntityUpdate;
 
 pub const OWNER_SETTLE_FRAMES: u32 = 16;

@@ -11,7 +11,7 @@ use flate2::bufread::MultiGzDecoder;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::accounts::parse_guid;
+use crate::guid::parse_guid;
 
 pub(crate) const MAX_GRAPH_BYTES: u64 = 128 * 1024 * 1024;
 const GRAPH_TYPE: u64 = 0x0580;
