@@ -12,7 +12,7 @@ use std::{
 use crate::{
     body::{BodyCreate, BodyView, body_create, owner_pose},
     body_script::OwnerBodySpawn,
-    bot_script::{BotEvent, BotViewContext, BotViews},
+    bot_script::{BotEvent, BotViewContext, BotViews, SeenDelivery, SeenRocket},
     bots::BOT_RECORD_DELAY,
     combat::{
         BotReplacement, DEAD, PlayerHit, PlayerTarget, PosedProjectile, PosedShot, RESPAWN_RETRY,
@@ -473,6 +473,8 @@ enum Delivery {
     BotFrames {
         last: u32,
     },
+    /// A firing bot's rocket on this client (bot_script.rs `SeenDelivery`).
+    BotSeen(SeenDelivery),
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -1114,6 +1116,13 @@ impl WorldDelivery {
             && self.bot_views.pending(entity, self.health_pending(entity))
     }
 
+    /// The bot's replacement waits for this client (server.py
+    /// `_hold_body_destroy`): its held rocket volleys stop advancing its
+    /// frames.
+    pub fn hold_bot_destroy(&mut self, entity: u32) {
+        self.bot_views.hold_destroy(entity);
+    }
+
     /// The client's statescript stream of the bot's current lifetime, even
     /// before its baseline arrived (server.py `bot_stream`).
     pub fn bot_stream(&self, entity: u32) -> Option<&BodyStream<ProjectedSnapshot>> {
@@ -1180,6 +1189,7 @@ impl WorldDelivery {
             Delivery::Other(other) => self.others.current(other, entity),
             Delivery::Field(field) => self.fields.current(field, entity),
             Delivery::BotFrames { last } => self.bot_views.current(entity, last),
+            Delivery::BotSeen(seen) => self.bot_views.seen_current(seen, entity),
         }
     }
 
@@ -1213,6 +1223,12 @@ impl WorldDelivery {
                     (arrived, Delivery::Other(other)) => {
                         let entity = record.update.entity;
                         if self.others.delivered(other, entity, arrived, now) {
+                            retry.push(record);
+                        }
+                    }
+                    (arrived, Delivery::BotSeen(seen)) => {
+                        let entity = record.update.entity;
+                        if self.bot_views.seen_delivered(seen, entity, arrived) {
                             retry.push(record);
                         }
                     }
@@ -2202,7 +2218,36 @@ impl WorldDelivery {
                 delivery: Delivery::Other(delivery),
             });
         }
+        for (update, delivery) in self.bot_views.advance_rockets(tick) {
+            self.push(Record {
+                update,
+                delivery: Delivery::BotSeen(delivery),
+            });
+        }
         self.remove_stale();
+    }
+
+    /// projectiles.py `_show_others` for a firing bot's rocket.
+    pub(crate) fn show_bot_rocket(
+        &mut self,
+        rocket: &SeenRocket,
+        tick: u32,
+        next_id: impl FnOnce() -> u32,
+    ) {
+        if !self.world_started() {
+            return;
+        }
+        for (update, delivery) in self.bot_views.show_rocket(rocket, tick, next_id) {
+            self.push(Record {
+                update,
+                delivery: Delivery::BotSeen(delivery),
+            });
+        }
+    }
+
+    /// projectiles.py `flown` for a bot's rocket that landed.
+    pub(crate) fn finish_bot_rocket(&mut self, rocket: u64, tick: u32) {
+        self.bot_views.finish_rocket(rocket, tick);
     }
 
     /// `_deliver_field` for this client, once it is in the world.

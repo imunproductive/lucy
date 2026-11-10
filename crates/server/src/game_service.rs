@@ -39,10 +39,11 @@ use orpheus_core::tick::FIRST_TICK;
 use orpheus_lobby::handoff::Handoff;
 use orpheus_script::wire::chunk;
 use orpheus_sim::{
-    bot_script::BotShotKind,
+    bot_script::{BotShotKind, SeenRocket},
     combat::{
         BotHit, BotReplacement, Combat, CombatPlayer, FieldHeal, PosedShot, Shooter, ShotContext,
-        apply_player_hits, deliver_body_messages, deliver_projectiles, heal_players, show_fired,
+        apply_player_hits, deliver_body_messages, deliver_projectiles, finish_bot_rockets,
+        heal_players, show_bot_rockets, show_fired,
     },
     controller::ControllerFrame,
     egress::GameEgress,
@@ -845,6 +846,7 @@ impl Peer {
                     || self.world.health_pending(entity)
                     || self.world.bot_frames_pending(entity))
             {
+                self.world.hold_bot_destroy(entity);
                 self.combat_ui
                     .replacements
                     .push_back((expires, replacement));
@@ -1503,6 +1505,28 @@ impl State {
         show_fired(combat, projectiles, &mut worlds, tick);
     }
 
+    /// The room's combat and its clients' worlds, by slot, for the bots'
+    /// rocket copies (projectiles.py `_show_others`, `flown`).
+    fn bot_rockets(
+        &mut self,
+        id: MatchId,
+        tick: u32,
+        apply: impl FnOnce(&mut Combat, &mut [Option<&mut WorldDelivery>], u32),
+    ) {
+        let Some(Room { players, world, .. }) = self.rooms.get_mut(&id) else {
+            return;
+        };
+        let Some(combat) = world.as_mut().and_then(|world| world.combat.as_mut()) else {
+            return;
+        };
+        let mut peers = room_peers(&mut self.peers, &self.seats, id, players.len());
+        let mut worlds: Vec<_> = peers
+            .iter_mut()
+            .map(|peer| peer.as_deref_mut().map(|peer| &mut peer.world))
+            .collect();
+        apply(combat, &mut worlds, tick);
+    }
+
     /// The bodies of the player's ring another client of the room still
     /// holds: a new body takes none of them (ow174/game/match.py
     /// `_next_body_id`).
@@ -1659,10 +1683,12 @@ impl State {
                 (hits, first_tick)
             };
             self.deliver_bot_hits(id, None, bot_hits);
+            // projectiles.py `flown`: the copies of the rockets that landed.
+            self.bot_rockets(id, tick, finish_bot_rockets);
             // combat.py `_bot_weapons`: the firing bots' scripts after the
             // rockets flew; their shots at the players and the other team's
             // bots.
-            let bot_hits = {
+            let (bot_hits, rockets) = {
                 let world = self
                     .rooms
                     .get_mut(&id)
@@ -1672,15 +1698,21 @@ impl State {
                     .combat
                     .get_or_insert_with(|| Combat::new(&world.scene));
                 let mut hits = Vec::new();
+                let mut rockets = Vec::new();
                 for shot in world.scene.bot_weapons(tick) {
                     let shooter = Shooter {
                         source: shot.source,
                         team: shot.team,
                         bot: true,
                     };
+                    let seen = SeenRocket::of(0, &shot);
                     match shot.kind {
                         BotShotKind::Projectile(projectile) => {
-                            combat.fire_bot_projectile(shooter, projectile, shot.tick);
+                            let fired = combat.fire_bot_projectile(shooter, projectile, shot.tick);
+                            if let Some((rocket, mut seen)) = fired.zip(seen) {
+                                seen.rocket = rocket;
+                                rockets.push(seen);
+                            }
                         }
                         BotShotKind::Hitscan {
                             origin,
@@ -1708,9 +1740,12 @@ impl State {
                         }
                     }
                 }
-                hits
+                (hits, rockets)
             };
             self.deliver_bot_hits(id, None, bot_hits);
+            self.bot_rockets(id, tick, |combat, worlds, tick| {
+                show_bot_rockets(combat, &rockets, worlds, tick);
+            });
             let mut struck = Vec::new();
             for (&connection, peer) in &mut self.peers {
                 let (match_id, slot) = self.seats[&connection];

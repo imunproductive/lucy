@@ -12,6 +12,7 @@
 use std::{io, time::Duration};
 
 use crate::{
+    bot_script::SeenRocket,
     bots::{BOT_ENTITY, BOT_RECORD_DELAY, BOT_RESPAWN_TIME, Bot},
     hitscan::{HitscanShot, Impact, TargetHistory, TargetPose, ViewFrame},
     projectile_flight::{FlightEnd, ProjectileFlight},
@@ -236,6 +237,7 @@ struct PlayerSlot {
 
 /// A bot's projectile in flight (combat.py `Rocket` with `last_tick`).
 struct BotRocket {
+    id: u64,
     shooter: Shooter,
     flight: ProjectileFlight,
 }
@@ -253,6 +255,10 @@ pub struct Combat {
     /// Fields (projectiles.py `Projectiles.next_seen`, `next_field`).
     seen_ids: SeenIds,
     field_ids: FieldIds,
+    /// The last bot rocket's id, and the ids of those that landed since
+    /// the match last looked.
+    next_rocket: u64,
+    landed: Vec<u64>,
 }
 
 impl Combat {
@@ -270,6 +276,8 @@ impl Combat {
             tick: 0,
             seen_ids: SeenIds::new(),
             field_ids: FieldIds::default(),
+            next_rocket: 0,
+            landed: Vec::new(),
         }
     }
 
@@ -517,12 +525,13 @@ impl Combat {
 
     /// combat.py `_shoot` for a firing bot's projectile volley: a rocket
     /// flown by the room from this tick on (`Rocket(..., last_tick=tick)`).
+    /// Its id names it when it lands (`take_landed`); none: nothing flies.
     pub fn fire_bot_projectile(
         &mut self,
         shooter: Shooter,
         projectile: PosedProjectile,
         tick: u32,
-    ) {
+    ) -> Option<u64> {
         let damaging = projectile
             .ballistics
             .direct
@@ -533,16 +542,22 @@ impl Combat {
                 .as_ref()
                 .is_some_and(|blast| blast.hit.amount > 0.0);
         if !damaging {
-            return;
+            return None;
         }
-        if let Some(flight) = ProjectileFlight::new(
+        let flight = ProjectileFlight::new(
             projectile.ballistics,
             projectile.origin,
             projectile.direction,
             Some(tick),
-        ) {
-            self.rockets.push(BotRocket { shooter, flight });
-        }
+        )?;
+        self.next_rocket += 1;
+        let id = self.next_rocket;
+        self.rockets.push(BotRocket {
+            id,
+            shooter,
+            flight,
+        });
+        Some(id)
     }
 
     /// Fly the bots' rockets for this tick (combat.py `_fly`).
@@ -555,7 +570,7 @@ impl Combat {
         let mut rockets = std::mem::take(&mut self.rockets);
         let mut failed = None;
         rockets.retain_mut(|rocket| {
-            match self.step_projectile(
+            let keep = match self.step_projectile(
                 scene,
                 rocket.shooter,
                 &mut rocket.flight,
@@ -567,7 +582,11 @@ impl Combat {
                     failed.get_or_insert(error);
                     false
                 }
+            };
+            if !keep {
+                self.landed.push(rocket.id);
             }
+            keep
         });
         rockets.append(&mut self.rockets);
         self.rockets = rockets;
@@ -928,6 +947,36 @@ pub fn show_fired(
     for projectile in fired {
         for world in worlds.iter_mut().flatten() {
             world.show_projectile(projectile, tick, || combat.seen_ids.next());
+        }
+    }
+}
+
+/// projectiles.py `_show_others` for the firing bots' rockets: every client
+/// of the room that has the bot's statescript stream gets its own copy,
+/// numbered from the room's `next_seen`, in slot order.
+pub fn show_bot_rockets(
+    combat: &mut Combat,
+    rockets: &[SeenRocket],
+    worlds: &mut [Option<&mut WorldDelivery>],
+    tick: u32,
+) {
+    for rocket in rockets {
+        for world in worlds.iter_mut().flatten() {
+            world.show_bot_rocket(rocket, tick, || combat.seen_ids.next());
+        }
+    }
+}
+
+/// projectiles.py `flown` for the bots' rockets that landed this tick:
+/// their copies on every client of the room finish.
+pub fn finish_bot_rockets(
+    combat: &mut Combat,
+    worlds: &mut [Option<&mut WorldDelivery>],
+    tick: u32,
+) {
+    for rocket in std::mem::take(&mut combat.landed) {
+        for world in worlds.iter_mut().flatten() {
+            world.finish_bot_rocket(rocket, tick);
         }
     }
 }

@@ -15,7 +15,7 @@ use orpheus_physics::static_ray::Vec3;
 use orpheus_script::{
     expr::EvalError,
     graph::{GraphStore, Node, asset_guid},
-    snapshot::ProjectedSnapshot,
+    snapshot::{ProjectedSnapshot, ProjectedState},
     stream::Stream,
     vm::{ShotEvent, Snapshot},
     weapons::authored_number,
@@ -1004,7 +1004,7 @@ pub enum ObservedOut {
 }
 
 /// One viewer's create, shooter event and retirement of a player's remote
-/// projectile (`_ObservedProjectile`; the bot volley retention is not here).
+/// projectile (`_ObservedProjectile`).
 #[derive(Debug)]
 pub struct ObservedProjectile {
     body: u32,
@@ -1025,6 +1025,10 @@ pub struct ObservedProjectile {
     launch_arrived: bool,
     finished: bool,
     explode: bool,
+    /// A bot shot's volley state as its firing frame held it, kept in the
+    /// bot's frames until the launch arrives (`activation`, server.py
+    /// `retain_bot_volley`).
+    held: Option<ProjectedState>,
 }
 
 impl ObservedProjectile {
@@ -1080,6 +1084,7 @@ impl ObservedProjectile {
             launch_arrived: false,
             finished: false,
             explode: false,
+            held: None,
         })
     }
 
@@ -1127,6 +1132,34 @@ impl ObservedProjectile {
             self.activation,
             self.volleys,
         )
+    }
+
+    /// projectiles.py `_show_others` for an NPC: keep the firing frame's
+    /// state of this shot's volley when it matches (`matching_volley`).
+    /// True: the shot holds the volley.
+    pub fn hold(&mut self, firing: &ProjectedSnapshot) -> bool {
+        if self.volley_arrived(firing) {
+            self.held = firing.state(self.instance, self.state).cloned();
+        }
+        self.held.is_some()
+    }
+
+    /// The volley state this shot holds in its bot's frames.
+    pub fn held(&self) -> Option<&ProjectedState> {
+        self.held.as_ref()
+    }
+
+    /// `_release_volley`: true when the shot held its volley.
+    pub fn release(&mut self) -> bool {
+        self.held.take().is_some()
+    }
+
+    pub fn deadline(&self) -> u32 {
+        self.deadline
+    }
+
+    pub fn launched(&self) -> bool {
+        self.launch_arrived
     }
 
     pub fn creation_arrived(&mut self) {

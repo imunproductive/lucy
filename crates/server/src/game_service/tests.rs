@@ -2925,7 +2925,10 @@ fn practice_bots_run_their_scripts_for_a_client() {
 fn a_firing_practice_bot_shoots_the_player() {
     use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
     use orpheus_script::vm::Unknowns;
-    use orpheus_sim::scene_assets::SceneAssets;
+    use orpheus_sim::{
+        projectiles::{SEEN_FIRST, SEEN_SPAN},
+        scene_assets::SceneAssets,
+    };
 
     let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     assets.set_bot_unknowns(Unknowns::Tolerate);
@@ -3012,5 +3015,62 @@ fn a_firing_practice_bot_shoots_the_player() {
             })
             .is_some()
     );
+    // projectiles.py `_show_others` for the bot: the client gets a rocket
+    // entity of the bot's projectile definition (1476), the bot's shot record
+    // naming it once its create arrived (server.py `retain_bot_volley`
+    // keeps the volley in the bot's frames until then), and its destroy
+    // after it landed. The first rocket created gets its own launch.
+    let seen = |entity: u32| (SEEN_FIRST..SEEN_FIRST + SEEN_SPAN).contains(&entity);
+    let first = |watcher: &Watcher| {
+        watcher
+            .find(0, |record| seen(record.entity) && record.is_create())
+            .map(|created| {
+                let rocket = watcher.datagrams[created]
+                    .1
+                    .iter()
+                    .find(|record| seen(record.entity) && record.is_create())
+                    .unwrap()
+                    .entity;
+                (created, rocket)
+            })
+    };
+    // The firing bots' shot records: the first rocket may be another bot's.
+    let launch = |watcher: &Watcher, rocket: u32| {
+        watcher.find(0, |record| record.launches.contains(&rocket))
+    };
+    pump_until(
+        &mut [&mut watcher],
+        &schemas,
+        "the first rocket's launch and destroy",
+        |watchers| {
+            first(watchers[0]).is_some_and(|(_, rocket)| {
+                launch(watchers[0], rocket).is_some_and(|launched| {
+                    watchers[0]
+                        .find(launched, |record| {
+                            record.entity == rocket && record.operation == Some(3)
+                        })
+                        .is_some()
+                })
+            })
+        },
+    );
+    let (created, rocket) = first(&watcher).unwrap();
+    let launched = launch(&watcher, rocket).unwrap();
+    let (_, records) = &watcher.datagrams[created];
+    let create = records
+        .iter()
+        .find(|record| record.entity == rocket && record.is_create())
+        .unwrap();
+    assert_eq!(create.definition, Some(0x1476));
+    assert!(
+        launched > created,
+        "the launch waits for the create's arrival"
+    );
+    let destroyed = watcher
+        .find(launched, |record| {
+            record.entity == rocket && record.operation == Some(3)
+        })
+        .expect("the rocket's destroy");
+    assert!(destroyed >= launched);
     server.stop().unwrap();
 }
