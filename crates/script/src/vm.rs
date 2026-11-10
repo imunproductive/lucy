@@ -348,6 +348,21 @@ pub struct MoveRequest {
     pub speed: f64,
 }
 
+/// A movement of the body's own that the graphs start and the mover carries out
+/// ([`Component::take_motions`]). No Python reference modelled these; the
+/// meaning of the authored values is an assumption, recorded at each node.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Motion {
+    /// Tracer's Blink (`STU_A807207A`): `distance` metres along the movement
+    /// input over `seconds`.
+    Dash { distance: f64, seconds: f64 },
+    /// Recall's rewind (`STU_41B3FC2B`) began: back along the last `seconds`
+    /// of the path over `duration` seconds.
+    Rewind { seconds: f64, duration: f64 },
+    /// The rewind state ended: finished (the path is done) or aborted.
+    EndRewind { finished: bool },
+}
+
 #[derive(Default)]
 pub struct EmptyWorld;
 
@@ -436,6 +451,9 @@ pub enum StateKind {
     /// A fixed world target and speed for bot movement (`MoveTo`); the
     /// request is in [`Component::move_requests`].
     MoveTo,
+    /// Recall's rewind (`STU_41B3FC2B`): finishes after its duration; its
+    /// begin and end are [`Motion`]s for the mover.
+    Rewind,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -962,6 +980,12 @@ impl Component {
             .collect()
     }
 
+    /// The dashes and rewinds begun or ended since the last call, in order,
+    /// for the mover.
+    pub fn take_motions(&mut self) -> Vec<Motion> {
+        std::mem::take(&mut self.machine.motions)
+    }
+
     /// Begin a state from outside the graph (`State.begin` in
     /// `ow174/game/script/runtime.py`, as `VoiceLines.spawned` in
     /// `ow174/game/voicelines.py` calls it). Its begin and the plugs it
@@ -1235,6 +1259,8 @@ struct Machine {
     disabled: BTreeMap<i64, Vec<StateKey>>,
     /// `MoveTo` targets and speeds of the activations that resolved one.
     movements: BTreeMap<StateKey, ([f64; 3], f64)>,
+    /// Motions started or ended since the mover took them.
+    motions: Vec<Motion>,
 }
 
 struct Vm<'graph, 'world, 'machine, W> {
@@ -1814,22 +1840,32 @@ fn is_client_subgraph_controller(graph: &Graph, node: &Node) -> bool {
             .is_some_and(|target| target.client_only && !target.server_only)
 }
 
+/// The `STU_54FEB21C` form that waits on its variable alone (Recall's
+/// wind-up, graph `001A` node 4): `m_C7A42E2A` names a variable and none of
+/// its other configs is set. Its other forms stay without effect.
+fn is_server_ended(node: &Node) -> bool {
+    matches!(expr::lvalue(field(&node.fields, "m_C7A42E2A")), Ok(Some(_)))
+        && ["m_ED97A97C", "m_7C8AD485", "m_F8CE386A", "m_C46403A5"]
+            .iter()
+            .all(|name| field(&node.fields, name).is_null())
+}
+
+/// The owner's own movement sampler. Its edge plugs (Doomfist, Baptiste)
+/// and membership of a subgraph (`m_0B1AA8CA`, Bastion) don't change what it
+/// samples; another entity's (`m_entity`, Mei) and the extra output
+/// `m_A10CC74B` aren't supported.
 fn is_owner_movement_sampler(node: &Node) -> bool {
     node.is_networked()
         && node.remote == -1
         && [
             "m_entity",
             "m_A10CC74B",
-            "m_0B1AA8CA",
             "m_4F8F2F3F",
             "m_8BF03679",
             "m_BF5B22B7",
         ]
         .iter()
         .all(|name| field(&node.fields, name).is_null())
-        && ["m_E37BC6C2", "m_2102C541"]
-            .iter()
-            .all(|path| node.links(path).next().is_none())
         && MOVEMENT_BOOLEAN_OUTPUTS
             .iter()
             .all(|name| expr::lvalue(field(&node.fields, name)).is_ok())

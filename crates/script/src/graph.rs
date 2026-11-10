@@ -768,7 +768,21 @@ mod tests {
                 digest.update(item.to_le_bytes());
             }
         }
+        // The initial graphs of the entities hero weapon volleys spawn (and
+        // what they reference), which the derivation adds and the Python
+        // extractor didn't follow (`crates/assets/tests/graphs.rs`
+        // `SPAWNED_GRAPHS`): the reference vectors don't cover them.
+        const SPAWNED: [u32; 25] = [
+            0x00C3, 0x0132, 0x0252, 0x065E, 0x096B, 0x0BA6, 0x0C1A, 0x0C1B, 0x0CCC, 0x0CCE, 0x0D00,
+            0x0E84, 0x10FF, 0x1100, 0x1502, 0x150F, 0x151A, 0x157F, 0x1590, 0x1688, 0x1689, 0x18EB,
+            0x1C26, 0x1EB9, 0x22B8,
+        ];
+        let mut hashed = 0;
         for index in store.graph_indexes() {
+            if SPAWNED.contains(&index) {
+                continue;
+            }
+            hashed += 1;
             let graph = store.graph(index).unwrap();
             sequence(
                 &mut digest,
@@ -808,7 +822,7 @@ mod tests {
             );
         }
         assert_eq!(store.bodies().len(), 32);
-        let expected = match store.graphs.len() {
+        let expected = match hashed {
             373 => "f54fb85e91d33b669c73239ddc77fb0f8f7fa6e6d0f04b83532bc1f953a4ac7c",
             405 => {
                 assert_eq!(store.entities.len(), 8);

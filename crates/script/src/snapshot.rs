@@ -1347,6 +1347,19 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
         (StateKind::WaitFrames { target }, Some("frames")) => {
             StatePayload::from([("target".into(), Value::Integer(i64::from(target)))])
         }
+        // Recall's rewind: a 64-bit block field and a 16-bit reading
+        // ow1-preservation calls duration-like (`HANDOFF.md:634-640`); their
+        // meaning is unverified. Assumed: the field is zero and the reading
+        // is the milliseconds since the state began.
+        (StateKind::Rewind, Some("time16+s64")) => StatePayload::from([
+            ("m_0007BF47".into(), Value::Integer(0)),
+            (
+                "time".into(),
+                Value::Integer(i64::from(
+                    u16::try_from(now_ms.saturating_sub(state.start_ms)).unwrap_or(u16::MAX),
+                )),
+            ),
+        ]),
         (StateKind::LogicalButton { .. }, Some("button")) => StatePayload::from([(
             "counter".into(),
             Value::Integer(i64::from(state.activation & 15)),

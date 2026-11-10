@@ -233,6 +233,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
+            "STU_A807207A" => {
+                if !self.dash(id, node)? {
+                    return Ok(false);
+                }
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
             "STU_08D6BA6E" => {
                 // The live Python server has no raycast provider: the action
                 // leaves its outputs and follows its out plug
@@ -491,6 +498,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_E4A30BCF" => StateKind::DisableButton { button: 0 },
             "STU_D7F9E1C3" => StateKind::AiFire { button: None },
             "STUStatescriptStateMoveTo" => StateKind::MoveTo,
+            "STU_41B3FC2B" => StateKind::Rewind,
             "STU_D74D4F47" => StateKind::WaitFrames { target: 0 },
             "STU_91EF24A9" => StateKind::AiCandidate { selected: false },
             "STUStatescriptStateLogicalButton" => StateKind::LogicalButton { down: false },
@@ -592,6 +600,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::DisableButton { .. } => self.begin_disable_button(key, node, depth)?,
             StateKind::AiFire { .. } => self.begin_ai_fire(key, node)?,
             StateKind::MoveTo => self.begin_move_to(key, node),
+            StateKind::Rewind => self.begin_rewind(key, node)?,
             StateKind::WaitFrames { .. } => self.arm_frame_wait(key, node)?,
             StateKind::AiCandidate { .. } => {
                 let site = self.site(id, node);
@@ -612,7 +621,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.register_tick(key, self.machine.now_ms);
             }
             StateKind::MovementSample(previous) => {
-                self.update_movement_sample(key, node, previous)?;
+                self.update_movement_sample(key, node, previous, false)?;
                 self.register_tick(key, self.machine.now_ms);
             }
             StateKind::Anim => self.arm_animation(key, node)?,
@@ -630,6 +639,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.assume(self.site(id, node), &node.class, "finds no targets");
             }
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
+            StateKind::Plain if node.class == "STU_54FEB21C" && is_server_ended(node) => {
+                self.end_wind_up(key, node)?;
+            }
             StateKind::Plain if ASSUMED_INERT_STATES.contains(&node.class.as_str()) => {
                 self.assume(self.site(id, node), &node.class, "no effect");
             }

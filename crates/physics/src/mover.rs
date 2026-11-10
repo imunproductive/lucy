@@ -53,6 +53,7 @@ pub mod correction;
 pub mod ground;
 pub mod kinematics;
 pub mod modifiers;
+mod motion;
 #[cfg(test)]
 mod ported_tests;
 pub(crate) mod posture;
@@ -125,6 +126,10 @@ pub struct Mover {
     /// The last pose was a world-target move (`Mover.driven` in
     /// `ow174/game/mover.py`).
     driven: bool,
+    /// A dash or rewind the body's graphs started ([`motion`]).
+    motion: Option<motion::Motion>,
+    /// Recent feet positions for a rewind.
+    history: motion::History,
 }
 
 impl Mover {
@@ -152,6 +157,8 @@ impl Mover {
                 ..Movement::default()
             },
             driven: false,
+            motion: None,
+            history: motion::History::with_capacity(motion::HISTORY),
         })
     }
 
@@ -228,7 +235,8 @@ impl Mover {
     /// `None` while it is still on its way. A target the speed can't move a
     /// whole grid step this frame is ignored: no fractional progress is kept
     /// between poses. The first pose without a target after driven ones starts
-    /// from rest.
+    /// from rest. A dash or rewind the body's graphs started ([`Mover::dash`],
+    /// [`Mover::rewind`]) takes the pose before either.
     pub fn step_pose_to(
         &mut self,
         rays: &TriangleIndex,
@@ -239,6 +247,7 @@ impl Mover {
         let move_to = move_to.filter(|&(_, speed)| {
             (speed * dt).partial_cmp(&STEP) != Some(std::cmp::Ordering::Less)
         });
+        let rewinding = self.rewinding();
         if self.driven && move_to.is_none() {
             self.pose.velocity = [0.0; 3];
         }
@@ -269,35 +278,42 @@ impl Mover {
                 probe,
                 dt,
                 pitch_held: input.pitch_held,
-                driven: move_to.is_some(),
+                driven: move_to.is_some() || rewinding,
             },
             &mut self.pose.position,
             &mut self.pose.velocity,
             |radius, top| self.body.try_resize(radius, top),
         )?;
-        let outcome = match move_to {
-            None => {
-                let ground = self.posture.ground();
-                let velocity = VelocityStep {
-                    base: &self.base,
-                    settings: &settings,
-                    input,
-                    ground,
-                    crouched: self.posture.crouched(),
-                    dt,
+        let normal = probe.ground.map_or([0.0, 1.0, 0.0], |hit| hit.normal);
+        let outcome = if self.step_motion(rays, normal, dt)? {
+            None
+        } else {
+            match move_to {
+                None => {
+                    let ground = self.posture.ground();
+                    let velocity = VelocityStep {
+                        base: &self.base,
+                        settings: &settings,
+                        input,
+                        ground,
+                        crouched: self.posture.crouched(),
+                        dt,
+                    }
+                    .advance(self.pose.velocity);
+                    if ground != Ground::Standing {
+                        self.posture.apply_fall(settings.gravity_scale, dt);
+                    }
+                    let vertical =
+                        self.move_body(rays, velocity, normal, ground == Ground::Standing, dt)?;
+                    self.posture.finish_fall(settings.gravity_scale, vertical);
+                    None
                 }
-                .advance(self.pose.velocity);
-                if ground != Ground::Standing {
-                    self.posture.apply_fall(settings.gravity_scale, dt);
-                }
-                let normal = probe.ground.map_or([0.0, 1.0, 0.0], |hit| hit.normal);
-                let vertical =
-                    self.move_body(rays, velocity, normal, ground == Ground::Standing, dt)?;
-                self.posture.finish_fall(settings.gravity_scale, vertical);
-                None
+                Some((target, speed)) => self.move_to(rays, dt, target, speed)?,
             }
-            Some((target, speed)) => self.move_to(rays, dt, target, speed)?,
         };
+        if !self.rewinding() {
+            self.record_history();
+        }
 
         if input.throttles != [0; 2] {
             self.last_input = Some(command.frame);

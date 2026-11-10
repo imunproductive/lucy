@@ -28,11 +28,19 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 == Some(0)
     }
 
+    /// The movement sampler (`STU_96F1DBCF`): its outputs follow the owner's
+    /// 13 movement bits. On a tick (`edges`) a change also follows its two
+    /// plugs, which only Doomfist (graph `0D06`) and Baptiste (`1983`) link:
+    /// `m_2102C541` when the body becomes grounded (bit 1; Doomfist's plug
+    /// sets his copy of the grounded variable `0221`) and `m_E37BC6C2` when it
+    /// becomes airborne (bit 0; Baptiste's checks the jump button for the Exo
+    /// Boots). Which edge each plug takes is an assumption from those uses.
     pub(super) fn update_movement_sample(
         &mut self,
         key: StateKey,
         node: &Node,
         previous: u16,
+        edges: bool,
     ) -> Result<(), InitFault> {
         let site = self.site(key.instance, node);
         let Some(sample) = self
@@ -61,6 +69,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     source_key(key.instance, variable),
                     Value::Bool(sample & mask != 0),
                 )?;
+            }
+        }
+        if edges {
+            for (mask, plug) in [(2, "m_2102C541"), (1, "m_E37BC6C2")] {
+                if changed & sample & mask != 0 {
+                    self.follow(key.instance, node, plug, Some(key), 0)?;
+                }
             }
         }
         Ok(())
@@ -465,5 +480,92 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         {
             self.machine.movements.insert(key, (target, speed));
         }
+    }
+
+    /// A config number, or `None` (reported by the evaluator) when it isn't one.
+    fn number(&mut self, id: u16, node: &Node, name: &str) -> Option<f64> {
+        match self.evaluate(id, node, field(&node.fields, name), None)? {
+            Value::Integer(value) => Some(value as f64),
+            Value::Float(value) => Some(value),
+            _ => {
+                self.report(
+                    self.site(id, node),
+                    Issue::UnsupportedField("movement number"),
+                );
+                None
+            }
+        }
+    }
+
+    /// Tracer's Blink (`STU_A807207A`, graph `0024` node 3): a dash for the
+    /// mover. Of its eleven unnamed configs the server reads two: the
+    /// distance `m_6A79BD98` (7.5, the public 7.5 m; Shockwave names its
+    /// range the same) and the time `m_162A28FA` (0.1). Assumed, unconfirmed
+    /// by the client: the rest (0.7, 1, 1.5, 1, 1, 1, 1 and two conditions on
+    /// entity variables `7270`/`7271`) don't change the move. False when a
+    /// value isn't a number.
+    pub(super) fn dash(&mut self, id: u16, node: &Node) -> Result<bool, InitFault> {
+        let (Some(distance), Some(seconds)) = (
+            self.number(id, node, "m_6A79BD98"),
+            self.number(id, node, "m_162A28FA"),
+        ) else {
+            return Ok(false);
+        };
+        self.assume(
+            self.site(id, node),
+            &node.class,
+            "dash m_6A79BD98 m along the input over m_162A28FA s",
+        );
+        self.machine
+            .motions
+            .push(Motion::Dash { distance, seconds });
+        Ok(true)
+    }
+
+    /// Recall's rewind (`STU_41B3FC2B`, graph `001A` state 0): the mover goes
+    /// back `m_6B5DA460` seconds of path (variable `1BD5`, 3) in
+    /// `m_FAF3B2D3` seconds (variable `00D7`, 0.9), and the state finishes
+    /// then, the public 3 s and 0.9 s. Its other configs (0.1, 0.1, variable
+    /// `72A3`, 3) are assumed not to change the move.
+    pub(super) fn begin_rewind(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
+        let id = key.instance;
+        let (Some(seconds), Some(duration)) = (
+            self.number(id, node, "m_6B5DA460"),
+            self.number(id, node, "m_FAF3B2D3"),
+        ) else {
+            return Ok(());
+        };
+        self.assume(
+            self.site(id, node),
+            &node.class,
+            "rewind m_6B5DA460 s of path over m_FAF3B2D3 s",
+        );
+        self.machine
+            .motions
+            .push(Motion::Rewind { seconds, duration });
+        let delay = (duration.max(0.0) * 1000.0).round() as u64;
+        self.post_after(id, delay, Event::Finish(key.raw))
+    }
+
+    /// Recall's wind-up container (`STU_54FEB21C`, graph `001A` state 3)
+    /// ends only once its variable `m_C7A42E2A` (instance variable `018B`)
+    /// is true, and no graph writes it (ow1-preservation, `HANDOFF.md:397-401`):
+    /// the server does, at once, so the rewind starts with the press, as
+    /// Recall's public 0.9 s and the live-tested server Recall (rewind from
+    /// the press, `HANDOFF.md:1426`) have it. When the client ends it is
+    /// unverified.
+    pub(super) fn end_wind_up(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
+        let id = key.instance;
+        let site = self.site(id, node);
+        match expr::lvalue(field(&node.fields, "m_C7A42E2A")) {
+            Ok(Some(target)) => self.write(source_key(id, target), Value::Bool(true))?,
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                self.report(site, Issue::Expression(error));
+                return Ok(());
+            }
+        }
+        self.assume(site, &node.class, "the server ends it at once");
+        self.post(id, Event::Finish(key.raw))
     }
 }

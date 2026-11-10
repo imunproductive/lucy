@@ -53,6 +53,7 @@ impl Machine {
             deferred: BTreeMap::new(),
             disabled: BTreeMap::new(),
             movements: BTreeMap::new(),
+            motions: Vec::new(),
         })
     }
 

@@ -139,6 +139,10 @@ impl OwnerBodyRuntime for ProbedBody {
         self.body.finish_move(request, arrived, frame)
     }
 
+    fn take_motions(&mut self) -> Vec<Motion> {
+        self.body.take_motions()
+    }
+
     fn begin_spawn_bark(&mut self, now: Duration) -> io::Result<()> {
         self.body.begin_spawn_bark(now)
     }
