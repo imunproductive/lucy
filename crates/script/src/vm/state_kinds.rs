@@ -394,4 +394,62 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let current = state.chase.as_ref().map(|chase| chase.current.clone());
         self.remove_link(key, target, current, depth)
     }
+
+    /// `ClientOnlyPulser.pulse` in `ow174/game/script/nodes.py`: one more
+    /// pulse (mod 256) at its begin and at every begin while active. A pulse
+    /// after the instance's first frame is fresh for its payload.
+    pub(super) fn pulse(&mut self, key: StateKey) {
+        let now = self.machine.now_ms;
+        let fresh =
+            now / FRAME_MS > self.machine.snapshot.instances[&key.instance].start_ms / FRAME_MS;
+        let state = self.state_mut(key).expect("active pulser");
+        if let StateKind::Pulser { pulses, pulsed_ms } = state.kind {
+            state.kind = StateKind::Pulser {
+                pulses: pulses.wrapping_add(1),
+                pulsed_ms: if fresh { Some(now) } else { pulsed_ms },
+            };
+        }
+    }
+
+    /// `MoveTo.on_begin`: only a fixed world target with a speed resolves a
+    /// request, and only one the movement record can carry.
+    pub(super) fn begin_move_to(&mut self, key: StateKey, node: &Node) {
+        self.machine.movements.remove(&key);
+        let fixed = match field(&node.fields, "m_B060F688") {
+            Json::Number(mode) => mode.as_f64() == Some(0.0),
+            Json::Bool(mode) => !mode,
+            _ => false,
+        };
+        let speed = field(&node.fields, "m_speed");
+        if !fixed
+            || speed.is_null()
+            || ["m_destinationEntity", "m_destinationBone", "m_5BEFF040"]
+                .iter()
+                .any(|name| !field(&node.fields, name).is_null())
+        {
+            return;
+        }
+        let id = key.instance;
+        let Some(destination) = self.evaluate(id, node, field(&node.fields, "m_865F3D01"), None)
+        else {
+            return;
+        };
+        let Some(speed) = self.evaluate(id, node, speed, None) else {
+            return;
+        };
+        let speed = match speed {
+            Value::Integer(speed) => speed as f64,
+            Value::Float(speed) => speed,
+            _ => return,
+        };
+        let Value::Vector(target) = destination else {
+            return;
+        };
+        if speed > 0.0
+            && speed <= MAX_MOVEMENT_AXIS
+            && target.iter().all(|axis| axis.abs() <= MAX_MOVEMENT_AXIS)
+        {
+            self.machine.movements.insert(key, (target, speed));
+        }
+    }
 }

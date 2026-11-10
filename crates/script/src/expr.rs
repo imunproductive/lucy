@@ -328,6 +328,11 @@ fn rounded(value: f64) -> f64 {
     f64::from(value as f32)
 }
 
+/// A uniform sample in `[0, 1)` from the top 53 bits of a random word.
+fn unit_interval(sample: u64) -> f64 {
+    (sample >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0)
+}
+
 pub fn round_half_away(value: f64) -> i32 {
     let number = rounded(if value >= 0.0 {
         value + 0.5
@@ -366,11 +371,20 @@ pub fn equal(a: &Value, b: &Value) -> bool {
             a.len() == b.len() && a.iter().zip(b).all(|(a, b)| equal(a, b))
         }
         (Value::Array(a), b) => matches!(a.as_slice(), [item] if equal(item, b)),
+        (Value::Map(a), Value::Map(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|((ka, va), (kb, vb))| equal(ka, kb) && equal(va, vb))
+        }
         _ => a == b,
     }
 }
 
-fn contains(container: &Value, value: &Value) -> bool {
+/// Whether a container has an element equal to the value: an array's
+/// items, or any other value itself (`contains_value` in
+/// `ow174/game/script/expr.py`).
+pub(crate) fn contains(container: &Value, value: &Value) -> bool {
     match container {
         Value::Null => false,
         Value::Array(items) => items.iter().any(|item| equal(item, value)),
@@ -900,6 +914,20 @@ impl Evaluator {
                 let value = self.config(value, context, nested)?;
                 Value::Bool(contains(&container, &value))
             }
+            "STU_BE0BD267" => {
+                // A random float between the asset's bounds (0B92's waits, 0C17's
+                // chance gate), from the component's random stream.
+                let bound = |name| match child(config, name) {
+                    Json::Bool(value) => f64::from(u8::from(*value)),
+                    Json::Number(value) => rounded(value.as_f64().unwrap_or_default()),
+                    _ => 0.0,
+                };
+                let (low, high) = (bound("m_min"), bound("m_max"));
+                let sample = context
+                    .random_u64()
+                    .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
+                Value::Float(rounded(low + (high - low) * unit_interval(sample)))
+            }
             "STU_7197C080" => {
                 let base = to_float(&self.config(child(config, "m_01AFADB6"), context, nested)?);
                 let least = to_float(&self.config(child(config, "m_EA70ACC2"), context, nested)?);
@@ -1103,6 +1131,19 @@ impl Evaluator {
                     };
                     Value::Integer(length)
                 }
+                19 => {
+                    // A map from key and value pairs; keys are integers.
+                    let start = stack
+                        .len()
+                        .checked_sub(2 * usize::from(arg))
+                        .ok_or_else(|| malformed(pc, "expression stack underflow"))?;
+                    let mut items = stack.split_off(start).into_iter();
+                    let mut entries = Vec::with_capacity(usize::from(arg));
+                    while let (Some(key), Some(value)) = (items.next(), items.next()) {
+                        entries.push((Value::Integer(to_int(&key, 0)), value));
+                    }
+                    Value::Map(entries)
+                }
                 20 => {
                     let start = stack
                         .len()
@@ -1157,6 +1198,28 @@ impl Evaluator {
                     } else {
                         0.0
                     })
+                }
+                40..=44 | 46..=48 => {
+                    let value = to_float(&pop(&mut stack, pc)?);
+                    Value::Float(rounded(match opcode {
+                        40 => value.to_radians(),
+                        41 => value.to_degrees(),
+                        42 => value.sin(),
+                        43 => value.cos(),
+                        44 => value.tan(),
+                        46 => value.to_radians().sin(),
+                        47 => value.to_radians().cos(),
+                        _ => value.to_radians().tan(),
+                    }))
+                }
+                45 | 49 => {
+                    let (y, x) = pair(&mut stack, pc)?;
+                    let angle = to_float(&y).atan2(to_float(&x));
+                    Value::Float(rounded(if opcode == 49 {
+                        angle.to_degrees()
+                    } else {
+                        angle
+                    }))
                 }
                 50 | 51 => {
                     let value = pop(&mut stack, pc)?;
@@ -1258,8 +1321,7 @@ impl Evaluator {
                         Value::Integer((low + (u128::from(sample) % count) as i128) as i64)
                     } else {
                         let (a, b) = (to_float(&a), to_float(&b));
-                        let unit = (sample >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0);
-                        Value::Float(rounded(a + (b - a) * unit))
+                        Value::Float(rounded(a + (b - a) * unit_interval(sample)))
                     }
                 }
                 71 => {

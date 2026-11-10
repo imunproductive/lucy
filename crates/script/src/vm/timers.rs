@@ -69,6 +69,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     Some(StateKind::WaitFrames { target }) if target <= self.machine.frame => {
                         self.post(id, Event::Finish(raw))?;
                     }
+                    Some(StateKind::Wait) => {
+                        let node = self.graph(id).state(usize::from(raw)).expect("wait");
+                        self.tick_wait(key, node)?;
+                    }
                     _ => (),
                 }
             }
@@ -85,22 +89,125 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
     }
 
+    /// `Wait.arm` in `ow174/game/script/nodes.py`: a static timeout arms a
+    /// timer (or finishes now); with `m_BF1A93B0` the timeout is evaluated
+    /// again every tick.
     pub(super) fn arm_wait(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
         let id = key.instance;
-        let Some(seconds) = self.evaluate(id, node, field(&node.fields, "m_timeout"), Some(key))
-        else {
+        let Some(milliseconds) = self.wait_timeout(key, node) else {
             return Ok(());
         };
-        let milliseconds = ((expr::to_float(&seconds) * 1000.0) as f32).round();
-        if !milliseconds.is_finite() {
-            self.report(self.site(id, node), Issue::UnsupportedField("Wait timeout"));
-            return Ok(());
+        if configured(node, "m_BF1A93B0") {
+            self.register_tick(key, self.machine.now_ms);
+            return self.tick_wait(key, node);
         }
         if milliseconds <= 0.0 {
             self.post(id, Event::Finish(key.raw))
         } else {
             self.post_after(id, milliseconds as u64, Event::Timer(key.raw, 1))
         }
+    }
+
+    /// A re-evaluated wait finishes once its current timeout has passed
+    /// since it began (`Wait.tick`).
+    pub(super) fn tick_wait(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
+        let Some(milliseconds) = self.wait_timeout(key, node) else {
+            return Ok(());
+        };
+        let start = self.state(key).expect("active wait").start_ms;
+        if (self.machine.now_ms - start) as f64 >= f64::from(milliseconds) {
+            self.post(key.instance, Event::Finish(key.raw))?;
+        }
+        Ok(())
+    }
+
+    fn wait_timeout(&mut self, key: StateKey, node: &Node) -> Option<f32> {
+        let id = key.instance;
+        let seconds = self.evaluate(id, node, field(&node.fields, "m_timeout"), Some(key))?;
+        let milliseconds = ((expr::to_float(&seconds) * 1000.0) as f32).round();
+        if !milliseconds.is_finite() {
+            self.report(self.site(id, node), Issue::UnsupportedField("Wait timeout"));
+            return None;
+        }
+        Some(milliseconds)
+    }
+
+    /// `WaitForServerFrames` finishes after the count of its integer config
+    /// (one frame without one). The Python reference takes one server frame
+    /// as one 16 ms command frame, which is unverified.
+    pub(super) fn arm_server_frames(
+        &mut self,
+        key: StateKey,
+        node: &Node,
+    ) -> Result<(), InitFault> {
+        let id = key.instance;
+        let config = node.fields.as_object().and_then(|fields| {
+            fields.values().find(|value| {
+                matches!(
+                    field(value, "$").as_str(),
+                    Some("STUConfigVarInt" | "STU_919FD47C")
+                )
+            })
+        });
+        let count = match config {
+            Some(config) => {
+                let Some(count) = self.evaluate(id, node, config, None) else {
+                    return Ok(());
+                };
+                expr::to_int(&count, 0)
+            }
+            None => 1,
+        };
+        self.assume(
+            self.site(id, node),
+            &node.class,
+            "a server frame is a command frame",
+        );
+        let delay = u64::try_from(count.max(0))
+            .unwrap_or_default()
+            .saturating_mul(FRAME_MS);
+        self.post_after(id, delay, Event::Finish(key.raw))
+    }
+
+    /// `Defer.on_begin`: the state joins its instance's deferred list, which
+    /// stays sorted by priority (a new entry after equal ones).
+    pub(super) fn begin_defer(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
+        let Some(priority) =
+            self.evaluate(key.instance, node, field(&node.fields, "m_priority"), None)
+        else {
+            return Ok(());
+        };
+        let priority = expr::to_float(&priority);
+        let deferred = self.machine.deferred.entry(key.instance).or_default();
+        let at = deferred.partition_point(|&(other, _)| other <= priority);
+        deferred.insert(at, (priority, key.raw));
+        Ok(())
+    }
+
+    /// The deferred phase of an instance's update (`Instance.run_deferred`):
+    /// from the last entry down, each active `Defer` follows its out plug,
+    /// then its subgraph. Returns whether anything was deferred.
+    pub(super) fn run_deferred(&mut self, id: u16) -> Result<bool, InitFault> {
+        let Some(deferred) = self
+            .machine
+            .deferred
+            .remove(&id)
+            .filter(|deferred| !deferred.is_empty())
+        else {
+            return Ok(false);
+        };
+        for (_, raw) in deferred.into_iter().rev() {
+            let key = StateKey { instance: id, raw };
+            if !self.state(key).is_some_and(|state| state.active) {
+                continue;
+            }
+            let node = self.graph(id).state(usize::from(raw)).expect("defer state");
+            self.follow(id, node, "m_FD0C0646", Some(key), 0)?;
+            if self.state(key).is_some_and(|state| state.active) {
+                self.follow(id, node, "m_8E484B2E", Some(key), 0)?;
+            }
+        }
+        Ok(true)
     }
 
     pub(super) fn arm_animation(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {

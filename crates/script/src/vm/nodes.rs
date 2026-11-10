@@ -169,12 +169,54 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 else {
                     return Ok(false);
                 };
-                if !truthy(&value) {
-                    return self.follow(id, node, "m_falsePlug", caller, depth);
-                }
-                Ok(self.follow(id, node, "m_truePlug", caller, depth)?
-                    || (node.links("m_truePlug").next().is_none()
-                        && node.links("m_falsePlug").next().is_none()))
+                self.branch(id, node, caller, truthy(&value), depth)
+            }
+            "STU_821116A6" => {
+                let Some(container) =
+                    self.evaluate(id, node, field(&node.fields, "m_814F8EC3"), caller)
+                else {
+                    return Ok(false);
+                };
+                let Some(value) = self.evaluate(id, node, field(&node.fields, "m_value"), caller)
+                else {
+                    return Ok(false);
+                };
+                let contained = expr::contains(&container, &value);
+                self.branch(id, node, caller, contained, depth)
+            }
+            "STU_7DEB522D" => {
+                let Some(button) =
+                    self.evaluate(id, node, field(&node.fields, "m_logicalButton"), None)
+                else {
+                    return Ok(false);
+                };
+                let button = expr::to_int(&button, 0);
+                let held = self
+                    .machine
+                    .held_buttons
+                    .iter()
+                    .any(|&held| i64::from(held) == button);
+                self.branch(id, node, caller, held, depth)
+            }
+            "STU_4E2BCAAB" => {
+                // The Python reference has no model for this condition and
+                // answers false (`unknown_condition` in nodes.py).
+                self.assume(self.site(id, node), &node.class, "false");
+                self.branch(id, node, caller, false, depth)
+            }
+            "STU_BC5E4622" => self.cycle_index(id, node, depth),
+            "STU_187D5125" => {
+                self.stop_abilities(id, depth)?;
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
+            "STU_08D6BA6E" => {
+                // The live Python server has no raycast provider: the action
+                // leaves its outputs and follows its out plug
+                // (`raycast_action` in nodes.py).
+                self.assume(self.site(id, node), &node.class, "no cast");
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
             }
             "STUStatescriptActionSwitch" => {
                 let Some(value) = self.evaluate(id, node, field(&node.fields, "m_262AE982"), None)
@@ -242,9 +284,21 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 return Ok(false);
             }
         };
-        if indexed && !field(fields, "m_key").is_null() {
-            self.report(site, Issue::UnsupportedField("SetVar map key"));
-            return Ok(false);
+        let key = field(fields, "m_key");
+        if indexed && !key.is_null() {
+            // A keyed insert: an entry with an equal key is replaced by the
+            // new one at the end (`store` in nodes.py).
+            let Some(key) = self.evaluate(id, node, key, None) else {
+                return Ok(false);
+            };
+            let mut entries = match self.machine.value(target, None) {
+                Value::Map(entries) => entries,
+                _ => Vec::new(),
+            };
+            entries.retain(|(existing, _)| !equal(existing, &key));
+            entries.push((key, value));
+            self.write(target, Value::Map(entries))?;
+            return Ok(true);
         }
         let index = field(fields, "m_index");
         if indexed && !index.is_null() {
@@ -331,17 +385,23 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.finish_chase(key, depth)?;
                 self.begin_chase(key, node, depth)?;
             }
+            if matches!(kind, StateKind::Pulser { .. }) {
+                self.pulse(key);
+            }
             return Ok(());
         }
         let kind = match node.class.as_str() {
-            // These client presentation states use the base state lifecycle on the server.
+            // These client presentation states use the base state lifecycle on
+            // the server, as every state class without a model does in the
+            // Python reference (`ow174/game/script/nodes.py`).
             "STUStatescriptState"
             | "STU_9D7BF987"
             | "STU_B4CD94F4"
             | "STU_90C3BCEA"
             | "STUStatescriptStateDataFlowMapping"
             | "STU_E13B30A8"
-            | "STUStatescriptStateUXPresenter" => StateKind::Plain,
+            | "STUStatescriptStateUXPresenter"
+            | "STUStatescriptStateAnimatedCamera" => StateKind::Plain,
             // The authored zero-valued form inherits the base state reader.
             "STU_D9843704"
                 if node.is_networked() && node.remote == -1 && {
@@ -391,7 +451,20 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptStateGamePadVibration" => StateKind::GamePadVibration,
             "STU_37D754C8" | "STUStatescriptStateSubScript" => StateKind::SubScript { child: None },
             "STUStatescriptStateGameMessageEntry" => StateKind::MessageIdle,
-            "STUStatescriptStateWait" if !configured(node, "m_BF1A93B0") => StateKind::Wait,
+            "STUStatescriptStateWait" => StateKind::Wait,
+            "STU_E3CEF6B9" => StateKind::ServerFrames,
+            "STU_9C9A422A" => StateKind::Defer,
+            "STU_B9898052" => match self.state(key).map(|state| state.kind) {
+                // The pulse count carries over from earlier activations.
+                Some(kind @ StateKind::Pulser { .. }) => kind,
+                _ => StateKind::Pulser {
+                    pulses: 0,
+                    pulsed_ms: None,
+                },
+            },
+            "STU_E4A30BCF" => StateKind::DisableButton { button: 0 },
+            "STU_D7F9E1C3" => StateKind::AiFire { button: None },
+            "STUStatescriptStateMoveTo" => StateKind::MoveTo,
             "STU_D74D4F47" => StateKind::WaitFrames { target: 0 },
             "STU_91EF24A9" => StateKind::AiCandidate { selected: false },
             "STUStatescriptStateLogicalButton" => StateKind::LogicalButton { down: false },
@@ -487,6 +560,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.follow(id, node, "m_33DA5163", Some(key), depth)?;
             }
             StateKind::Wait => self.arm_wait(key, node)?,
+            StateKind::ServerFrames => self.arm_server_frames(key, node)?,
+            StateKind::Defer => self.begin_defer(key, node)?,
+            StateKind::Pulser { .. } => self.pulse(key),
+            StateKind::DisableButton { .. } => self.begin_disable_button(key, node, depth)?,
+            StateKind::AiFire { .. } => self.begin_ai_fire(key, node)?,
+            StateKind::MoveTo => self.begin_move_to(key, node),
             StateKind::WaitFrames { .. } => self.arm_frame_wait(key, node)?,
             StateKind::AiCandidate { .. } => {
                 let site = self.site(id, node);

@@ -376,17 +376,81 @@ fn executes_only_the_selected_path_and_bounds_nested_expressions() {
 }
 
 #[test]
-fn reports_unsupported_operations_instead_of_returning_a_guessed_null() {
-    let map = expression(json!([19, 0, 0]), &[], &[], &[]);
+fn builds_maps_with_integer_keys_and_reports_unknown_opcodes() {
+    let map = expression(
+        json!([6, 0, 6, 1, 6, 2, 6, 3, 19, 2, 0]),
+        &[],
+        &[1.0, 2.5, 3.0, 4.0],
+        &[],
+    );
     assert_eq!(
         evaluate(&map, &mut EmptyContext),
+        Ok(Value::Map(vec![
+            (Value::Integer(1), Value::Float(2.5)),
+            (Value::Integer(3), Value::Float(4.0)),
+        ]))
+    );
+    let short = expression(json!([6, 0, 19, 1]), &[], &[1.0], &[]);
+    assert_eq!(
+        evaluate(&short, &mut EmptyContext),
+        Err(EvalError::MalformedBytecode {
+            offset: 2,
+            reason: "expression stack underflow"
+        })
+    );
+    assert_eq!(
+        evaluate(&expression(json!([59]), &[], &[], &[]), &mut EmptyContext),
         Err(EvalError::UnsupportedOpcode {
-            opcode: 19,
+            opcode: 59,
             offset: 0
         }),
     );
+}
+
+#[test]
+fn angle_opcodes_convert_and_round_trigonometry_to_float32() {
+    let f32 = |value: f64| f64::from(value as f32);
+    let unary = |opcode: u8, operand: f64| {
+        let config = expression(json!([6, 0, opcode]), &[], &[operand], &[]);
+        evaluate(&config, &mut EmptyContext).unwrap()
+    };
+    let pi = f32(std::f64::consts::PI);
+    assert_eq!(unary(40, 180.0), Value::Float(pi));
+    assert_eq!(unary(41, pi), Value::Float(180.0));
+    assert_eq!(unary(42, 0.5), Value::Float(f32(0.5_f64.sin())));
+    assert_eq!(unary(43, 0.0), Value::Float(1.0));
+    assert_eq!(unary(44, 0.0), Value::Float(0.0));
+    // In degrees.
+    assert_eq!(unary(46, 30.0), Value::Float(0.5));
+    assert_eq!(unary(47, 60.0), Value::Float(0.5));
+    assert_eq!(unary(48, 45.0), Value::Float(1.0));
+    // atan2 takes y below x on the stack.
+    let atan2 = |opcode: u8| {
+        let config = expression(json!([6, 0, 6, 1, opcode]), &[], &[1.0, -1.0], &[]);
+        evaluate(&config, &mut EmptyContext).unwrap()
+    };
+    assert_eq!(atan2(45), Value::Float(f32(1.0_f64.atan2(-1.0))));
+    assert_eq!(atan2(49), Value::Float(135.0));
+}
+
+#[test]
+fn random_float_lies_between_the_asset_bounds() {
+    struct Samples(Vec<u64>);
+
+    impl Context for Samples {
+        fn random_u64(&mut self) -> Option<u64> {
+            self.0.pop()
+        }
+    }
+
+    let config = json!({"$": "STU_BE0BD267", "m_min": 2, "m_max": 4.5});
+    let mut context = Samples(vec![1 << 63, u64::MAX, 0]);
+    for expected in [2.0, 4.5, 3.25] {
+        assert_eq!(evaluate(&config, &mut context), Ok(Value::Float(expected)));
+    }
+    // A context without a random stream can't answer.
     assert_eq!(
-        evaluate(&json!({"$": "STU_BE0BD267"}), &mut EmptyContext),
+        evaluate(&config, &mut EmptyContext),
         Err(EvalError::UnsupportedConfig("STU_BE0BD267".into())),
     );
 }

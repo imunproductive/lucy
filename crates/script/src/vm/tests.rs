@@ -2915,3 +2915,940 @@ fn ai_control_state_finishes_at_begin_time_only_for_an_absent_owner_relation() {
         }
     }
 }
+
+/// An entry for `message` (`0x0240…` low bits) that links to `target`.
+fn on_message(position: u16, message: u64, target: u16, input: &str) -> Json {
+    node(
+        position,
+        "STUStatescriptEntryGameMessage",
+        None,
+        json!({
+            "m_gameMessage":{"m_gameMessage":format!("0x{:016X}", 0x0240_0000_0000_0000 | message)},
+            "m_outPlug":plug(&[(target, input)], &[]),
+        }),
+    )
+}
+
+fn set_entity(position: u16, id: u32, value: Json) -> Json {
+    node(
+        position,
+        "STUStatescriptActionSetVar",
+        None,
+        json!({"m_out_Var":var(id,true), "m_value":value}),
+    )
+}
+
+fn entry(links: &[(u16, &str)]) -> Json {
+    node(
+        0,
+        "STUStatescriptEntry",
+        None,
+        json!({"m_outPlug":plug(links, &[])}),
+    )
+}
+
+fn start(graphs: Store, frame: u32, world: &mut impl World) -> Component {
+    start_with(graphs, Variables::new(), frame, world)
+}
+
+type Store = Arc<GraphStore>;
+
+fn start_with(
+    graphs: Store,
+    variables: Variables,
+    frame: u32,
+    world: &mut impl World,
+) -> Component {
+    Component::start(
+        graphs,
+        0xa000_0101,
+        variables,
+        vec![Root::new(1, 42)],
+        frame,
+        world,
+        MAX_INIT_WORK,
+    )
+    .unwrap()
+}
+
+fn message(component: &mut Component, message: u64, world: &mut impl World) {
+    component
+        .queue_message(1, 0x0240_0000_0000_0000 | message, Variables::new())
+        .unwrap();
+    component.run_now(world).unwrap();
+}
+
+#[test]
+fn defer_runs_its_plugs_highest_priority_first_and_once() {
+    let defer = |position, state, priority: f64, out: u16, sub: u16| {
+        node(
+            position,
+            "STU_9C9A422A",
+            Some(state),
+            json!({
+                "m_priority":{"$":"STUConfigVarFloat","m_value":priority},
+                "m_FD0C0646":plug(&[(out,"m_inPlug")], &[]),
+                "m_8E484B2E":plug(&[(sub,"m_beginPlug")], &[sub - 3]),
+            }),
+        )
+    };
+    let graphs = Arc::new(store(vec![graph(
+        42,
+        vec![
+            entry(&[(1, "m_beginPlug"), (2, "m_beginPlug")]),
+            defer(1, 0, 1.0, 3, 5),
+            defer(2, 1, 2.0, 4, 6),
+            set_entity(3, 100, json!(1)),
+            set_entity(4, 100, json!(2)),
+            node(5, "STUStatescriptState", Some(2), json!({})),
+            node(6, "STUStatescriptState", Some(3), json!({})),
+            on_message(7, 1, 1, ABORT_PLUG),
+        ],
+        json!([1, 2, 5, 6]),
+        json!([0, 7]),
+    )]));
+    let mut component = start(graphs, 100, &mut EmptyWorld);
+    let snapshot = component.snapshot().unwrap();
+    assert!(
+        snapshot.initialization_complete(),
+        "{:?}",
+        snapshot.diagnostics
+    );
+    // The higher priority ran first, so the lower one's write is last.
+    assert_eq!(snapshot.variables[&100], Value::Integer(1));
+    // The higher priority's subgraph began first, too.
+    assert_eq!(active(snapshot, 1), [0, 1, 3, 2]);
+    component
+        .set_entity_variable(100, Value::Null, &mut EmptyWorld)
+        .unwrap();
+    component.advance_frame(101, &mut EmptyWorld).unwrap();
+    assert_eq!(component.snapshot().unwrap().variables[&100], Value::Null);
+    // Ending a Defer exits its subgraph.
+    message(&mut component, 1, &mut EmptyWorld);
+    assert_eq!(active(component.snapshot().unwrap(), 1), [1, 3]);
+}
+
+#[test]
+fn pulser_counts_every_begin_and_marks_pulses_after_the_first_frame_fresh() {
+    let graphs = Arc::new(store(vec![graph(
+        42,
+        vec![
+            entry(&[(1, "m_beginPlug")]),
+            node(1, "STU_B9898052", Some(0), json!({})),
+            on_message(2, 1, 1, "m_beginPlug"),
+            on_message(3, 2, 1, ABORT_PLUG),
+        ],
+        json!([1]),
+        json!([0, 2, 3]),
+    )]));
+    let mut component = start(graphs, 100, &mut EmptyWorld);
+    let kind = |component: &Component| component.snapshot().unwrap().instances[&1].states[&0].kind;
+    assert_eq!(
+        kind(&component),
+        StateKind::Pulser {
+            pulses: 1,
+            pulsed_ms: None
+        }
+    );
+    component.advance_frame(101, &mut EmptyWorld).unwrap();
+    message(&mut component, 1, &mut EmptyWorld);
+    let pulsed = frame_start(101) + FRAME_MS - 1;
+    assert_eq!(
+        kind(&component),
+        StateKind::Pulser {
+            pulses: 2,
+            pulsed_ms: Some(pulsed)
+        }
+    );
+    // The count carries over to the next activation.
+    message(&mut component, 2, &mut EmptyWorld);
+    message(&mut component, 1, &mut EmptyWorld);
+    let state = &component.snapshot().unwrap().instances[&1].states[&0];
+    assert!(state.active);
+    assert_eq!(
+        state.kind,
+        StateKind::Pulser {
+            pulses: 3,
+            pulsed_ms: Some(pulsed)
+        }
+    );
+}
+
+/// A logical button (20, the primary fire) whose down subgraph is state 1,
+/// and a `DisableLogicalButton` for it begun by message 1 and aborted by
+/// message 2.
+fn disabled_button_fixture(ignore: Option<bool>) -> Store {
+    let mut button = json!({
+        "m_logicalButton":{"$":"STUConfigVarLogicalButton","m_logicalButton":20},
+        "m_80AF45FB":plug(&[(2,"m_beginPlug")], &[1]),
+    });
+    if let Some(ignore) = ignore {
+        button["m_53C4B6A6"] = json!({"$":"STUConfigVarBool","m_value":ignore});
+    }
+    let mut fixture = graph(
+        42,
+        vec![
+            entry(&[(1, "m_beginPlug")]),
+            node(1, "STUStatescriptStateLogicalButton", Some(0), button),
+            node(2, "STUStatescriptState", Some(1), json!({})),
+            node(
+                3,
+                "STU_E4A30BCF",
+                Some(2),
+                json!({"m_logicalButton":{"$":"STUConfigVarLogicalButton","m_logicalButton":20}}),
+            ),
+            on_message(4, 1, 3, "m_beginPlug"),
+            on_message(5, 2, 3, ABORT_PLUG),
+        ],
+        json!([1, 2, 3]),
+        json!([0, 4, 5]),
+    );
+    fixture["fields"]["m_680A2CB2"] = json!([0]);
+    Arc::new(store(vec![fixture]))
+}
+
+#[test]
+fn disabled_button_brings_held_buttons_up_and_drops_presses_until_it_ends() {
+    let press = |component: &mut Component, frame, buttons| {
+        component
+            .advance_command(
+                Command {
+                    frame,
+                    buttons,
+                    ..Command::default()
+                },
+                &mut EmptyWorld,
+            )
+            .unwrap();
+    };
+    let down = |component: &Component| {
+        let state = &component.snapshot().unwrap().instances[&1].states[&0];
+        (
+            state.kind,
+            component.snapshot().unwrap().instances[&1]
+                .states
+                .get(&1)
+                .is_some_and(|state| state.active),
+        )
+    };
+    let mut component = start(disabled_button_fixture(None), 100, &mut EmptyWorld);
+    press(&mut component, 101, 1);
+    assert_eq!(
+        down(&component),
+        (StateKind::LogicalButton { down: true }, true)
+    );
+    message(&mut component, 1, &mut EmptyWorld);
+    assert_eq!(
+        down(&component),
+        (StateKind::LogicalButton { down: false }, false)
+    );
+    // A press while blocked does nothing.
+    press(&mut component, 102, 0);
+    press(&mut component, 103, 1);
+    assert_eq!(
+        down(&component),
+        (StateKind::LogicalButton { down: false }, false)
+    );
+    message(&mut component, 2, &mut EmptyWorld);
+    assert_eq!(
+        down(&component),
+        (StateKind::LogicalButton { down: true }, true)
+    );
+    assert!(component.snapshot().unwrap().initialization_complete());
+
+    // A button that ignores the block stays down.
+    let mut component = start(disabled_button_fixture(Some(true)), 100, &mut EmptyWorld);
+    press(&mut component, 101, 1);
+    message(&mut component, 1, &mut EmptyWorld);
+    assert_eq!(
+        down(&component),
+        (StateKind::LogicalButton { down: true }, true)
+    );
+}
+
+#[test]
+fn ai_fire_holds_its_slot_button_until_it_ends() {
+    struct Buttons(Option<u8>);
+    impl World for Buttons {
+        fn ai_weapon_button(&mut self, slot: i64) -> Option<u8> {
+            assert_eq!(slot, 3);
+            self.0
+        }
+    }
+    let mut fixture = graph(
+        42,
+        vec![
+            entry(&[(1, "m_beginPlug")]),
+            node(
+                1,
+                "STUStatescriptStateLogicalButton",
+                Some(0),
+                json!({
+                    "m_logicalButton":{"$":"STUConfigVarInt","m_value":42},
+                    "m_80AF45FB":plug(&[(2,"m_beginPlug")], &[1]),
+                }),
+            ),
+            node(2, "STUStatescriptState", Some(1), json!({})),
+            node(
+                3,
+                "STU_D7F9E1C3",
+                Some(2),
+                json!({
+                    "m_14EDDDA7":{"$":"STU_B5A0CAF0"},
+                    "m_20BCEE62":{"$":"STUConfigVarBool","m_value":1},
+                    "m_A60150E2":{"$":"STUConfigVarInt","m_value":3},
+                }),
+            ),
+            on_message(4, 1, 3, "m_beginPlug"),
+            on_message(5, 2, 3, ABORT_PLUG),
+        ],
+        json!([1, 2, 3]),
+        json!([0, 4, 5]),
+    );
+    fixture["fields"]["m_680A2CB2"] = json!([0]);
+    let graphs = Arc::new(store(vec![fixture]));
+    for button in [Some(42), None] {
+        let mut world = Buttons(button);
+        let mut component = start(Arc::clone(&graphs), 100, &mut world);
+        message(&mut component, 1, &mut world);
+        let snapshot = component.snapshot().unwrap();
+        assert!(
+            snapshot.initialization_complete(),
+            "{:?}",
+            snapshot.diagnostics
+        );
+        assert_eq!(
+            snapshot.instances[&1].states[&2].kind,
+            StateKind::AiFire { button }
+        );
+        assert_eq!(
+            active(snapshot, 1),
+            if button.is_some() {
+                vec![0, 2, 1]
+            } else {
+                vec![0, 2]
+            }
+        );
+        message(&mut component, 2, &mut world);
+        let snapshot = component.snapshot().unwrap();
+        assert_eq!(active(snapshot, 1), [0]);
+        assert_eq!(
+            snapshot.instances[&1].states[&2].kind,
+            StateKind::AiFire { button: None }
+        );
+    }
+}
+
+#[test]
+fn server_frame_wait_finishes_after_its_frames_and_is_recorded() {
+    let graphs = Arc::new(store(vec![graph(
+        42,
+        vec![
+            entry(&[(1, "m_beginPlug")]),
+            node(
+                1,
+                "STU_E3CEF6B9",
+                Some(0),
+                json!({"m_6B2EB0B2":{"$":"STUConfigVarInt","m_value":3}}),
+            ),
+        ],
+        json!([1]),
+        json!([0]),
+    )]));
+    let mut component = start(graphs, 100, &mut EmptyWorld);
+    let snapshot = component.snapshot().unwrap();
+    assert_eq!(
+        snapshot.pending_timers[&1],
+        [PendingTimer {
+            due_ms: frame_start(103),
+            raw_state: 0,
+            finish: true,
+            parameter: 0
+        }]
+    );
+    assert_eq!(snapshot.assumptions[0].class, "STU_E3CEF6B9");
+    component.advance_frame(102, &mut EmptyWorld).unwrap();
+    assert_eq!(active(component.snapshot().unwrap(), 1), [0]);
+    component.advance_frame(103, &mut EmptyWorld).unwrap();
+    assert!(active(component.snapshot().unwrap(), 1).is_empty());
+}
+
+#[test]
+fn wait_with_a_live_timeout_rechecks_it_every_tick() {
+    let graphs = Arc::new(store(vec![graph(
+        42,
+        vec![
+            entry(&[(1, "m_beginPlug")]),
+            node(
+                1,
+                "STUStatescriptStateWait",
+                Some(0),
+                json!({"m_timeout":var(100,true), "m_BF1A93B0":true}),
+            ),
+        ],
+        json!([1]),
+        json!([0]),
+    )]));
+    let mut component = start_with(
+        graphs,
+        Variables::from([(100, Value::Float(1.0))]),
+        0,
+        &mut EmptyWorld,
+    );
+    for frame in 1..=30 {
+        component.advance_frame(frame, &mut EmptyWorld).unwrap();
+    }
+    let snapshot = component.snapshot().unwrap();
+    assert_eq!(active(snapshot, 1), [0]);
+    assert!(snapshot.pending_timers.is_empty());
+    // 495 ms have passed: a shorter timeout ends it at the next tick.
+    component
+        .set_entity_variable(100, Value::Float(0.25), &mut EmptyWorld)
+        .unwrap();
+    component.advance_frame(31, &mut EmptyWorld).unwrap();
+    assert!(active(component.snapshot().unwrap(), 1).is_empty());
+}
+
+#[test]
+fn move_to_exposes_only_a_fixed_target_while_active() {
+    let fixture = |mode: Json| {
+        Arc::new(store(vec![graph(
+            42,
+            vec![
+                entry(&[(1, "m_beginPlug")]),
+                node(
+                    1,
+                    "STUStatescriptStateMoveTo",
+                    Some(0),
+                    json!({
+                        "m_B060F688":mode,
+                        "m_speed":{"$":"STUConfigVarFloat","m_value":5.5},
+                        "m_865F3D01":{"$":"STUConfigVarVec3","m_value":{"X":1,"Y":2,"Z":-3}},
+                    }),
+                ),
+                on_message(2, 1, 1, ABORT_PLUG),
+            ],
+            json!([1]),
+            json!([0, 2]),
+        )]))
+    };
+    let mut component = start(fixture(json!(0)), 100, &mut EmptyWorld);
+    assert_eq!(
+        component.move_requests(),
+        [MoveRequest {
+            instance: 1,
+            raw_state: 0,
+            target: [1.0, 2.0, -3.0],
+            speed: 5.5
+        }]
+    );
+    message(&mut component, 1, &mut EmptyWorld);
+    assert!(component.move_requests().is_empty());
+    for mode in [json!(1), Json::Null] {
+        let component = start(fixture(mode), 100, &mut EmptyWorld);
+        assert!(component.move_requests().is_empty());
+        assert_eq!(active(component.snapshot().unwrap(), 1), [0]);
+    }
+}
+
+#[test]
+fn cycle_index_keeps_the_first_candidate_its_condition_accepts() {
+    // The candidate is every parameter the condition reads: candidate < 2.
+    let below_two = json!({"$":"STU_919FD47C","m_expression":{
+        "m_opcodes":[13,0,6,0,34,0],
+        "m_dynamicVars":[{"$":"STUConfigVarDynamic","m_identifier":1}],
+        "m_D99EF254":[2.0],
+    }});
+    let never = json!({"$":"STUConfigVarBool","m_value":false});
+    for (backwards, condition, expected) in [
+        (false, &below_two, 0),
+        (true, &below_two, 1),
+        (false, &never, -1),
+    ] {
+        let mut root = Root::new(1, 42);
+        root.variables.insert(100, Value::Integer(2));
+        let graphs = store(vec![graph(
+            42,
+            vec![
+                entry(&[(1, "m_inPlug")]),
+                node(
+                    1,
+                    "STU_BC5E4622",
+                    None,
+                    json!({
+                        "m_D10618D1":{"$":"STUConfigVarInt","m_value":4},
+                        "m_339A63DB":var(100,false),
+                        "m_C78954CB":{"$":"STUConfigVarBool","m_value":backwards},
+                        "m_condition":condition,
+                        "m_outPlug":plug(&[(2,"m_inPlug")], &[]),
+                    }),
+                ),
+                set_entity(2, 101, json!(true)),
+            ],
+            json!([]),
+            json!([0]),
+        )]);
+        let snapshot = initialize(
+            &graphs,
+            42,
+            Variables::new(),
+            vec![root],
+            &mut EmptyWorld,
+            MAX_INIT_WORK,
+        )
+        .unwrap();
+        assert!(
+            snapshot.initialization_complete(),
+            "{:?}",
+            snapshot.diagnostics
+        );
+        assert_eq!(
+            snapshot.instances[&1].variables[&100],
+            Value::Integer(expected)
+        );
+        assert_eq!(snapshot.variables[&101], Value::Bool(true));
+    }
+}
+
+#[test]
+fn conditions_branch_on_containers_held_buttons_and_the_unknown_false() {
+    let condition = |position, class: &str, mut fields: Json, yes: u16, no: u16| {
+        fields["m_truePlug"] = plug(&[(yes, "m_inPlug")], &[]);
+        fields["m_falsePlug"] = plug(&[(no, "m_inPlug")], &[]);
+        node(position, class, None, fields)
+    };
+    let graphs = Arc::new(store(vec![graph(
+        42,
+        vec![
+            entry(&[(1, "m_inPlug"), (2, "m_inPlug"), (3, "m_inPlug")]),
+            condition(
+                1,
+                "STU_821116A6",
+                json!({"m_814F8EC3":var(90,true), "m_value":{"$":"STUConfigVarInt","m_value":2}}),
+                4,
+                5,
+            ),
+            condition(
+                2,
+                "STU_7DEB522D",
+                json!({"m_logicalButton":{"$":"STUConfigVarLogicalButton","m_logicalButton":20}}),
+                6,
+                7,
+            ),
+            condition(3, "STU_4E2BCAAB", json!({}), 8, 9),
+            set_entity(4, 100, json!(true)),
+            set_entity(5, 100, json!(false)),
+            set_entity(6, 101, json!(true)),
+            set_entity(7, 101, json!(false)),
+            set_entity(8, 102, json!(true)),
+            set_entity(9, 102, json!(false)),
+            on_message(10, 1, 2, "m_inPlug"),
+        ],
+        json!([]),
+        json!([0, 10]),
+    )]));
+    let variables =
+        Variables::from([(90, Value::Array(vec![Value::Integer(1), Value::Float(2.0)]))]);
+    let mut component = start_with(graphs, variables, 100, &mut EmptyWorld);
+    let snapshot = component.snapshot().unwrap();
+    assert!(
+        snapshot.initialization_complete(),
+        "{:?}",
+        snapshot.diagnostics
+    );
+    assert_eq!(snapshot.variables[&100], Value::Bool(true));
+    assert_eq!(snapshot.variables[&101], Value::Bool(false));
+    assert_eq!(snapshot.variables[&102], Value::Bool(false));
+    assert_eq!(snapshot.assumptions[0].class, "STU_4E2BCAAB");
+    component
+        .advance_command(
+            Command {
+                frame: 101,
+                buttons: 1,
+                ..Command::default()
+            },
+            &mut EmptyWorld,
+        )
+        .unwrap();
+    message(&mut component, 1, &mut EmptyWorld);
+    assert_eq!(
+        component.snapshot().unwrap().variables[&101],
+        Value::Bool(true)
+    );
+}
+
+#[test]
+fn keyed_set_var_replaces_equal_keys_and_raycast_only_follows_its_plug() {
+    let keyed = |position, key: i64, value: i64, next: u16| {
+        node(
+            position,
+            "STUStatescriptActionSetVar",
+            None,
+            json!({
+                "m_out_Var":var(100,true),
+                "m_key":{"$":"STUConfigVarInt","m_value":key},
+                "m_value":{"$":"STUConfigVarInt","m_value":value},
+                "m_outPlug":plug(&[(next,"m_inPlug")], &[]),
+            }),
+        )
+    };
+    let graphs = store(vec![graph(
+        42,
+        vec![
+            entry(&[(1, "m_inPlug")]),
+            keyed(1, 7, 1, 2),
+            keyed(2, 8, 2, 3),
+            keyed(3, 7, 3, 4),
+            node(
+                4,
+                "STU_08D6BA6E",
+                None,
+                json!({
+                    "m_out_HitSomething":var(101,true),
+                    "m_outPlug":plug(&[(5,"m_inPlug")], &[]),
+                }),
+            ),
+            set_entity(5, 102, json!(true)),
+        ],
+        json!([]),
+        json!([0]),
+    )]);
+    let snapshot = initialize(
+        &graphs,
+        42,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    assert!(
+        snapshot.initialization_complete(),
+        "{:?}",
+        snapshot.diagnostics
+    );
+    assert_eq!(
+        snapshot.variables[&100],
+        Value::Map(vec![
+            (Value::Integer(8), Value::Integer(2)),
+            (Value::Integer(7), Value::Integer(3)),
+        ])
+    );
+    assert!(!snapshot.variables.contains_key(&101));
+    assert_eq!(snapshot.variables[&102], Value::Bool(true));
+    assert_eq!(
+        snapshot
+            .assumptions
+            .iter()
+            .map(|item| (item.class.as_str(), item.answer))
+            .collect::<Vec<_>>(),
+        [("STU_08D6BA6E", "no cast")]
+    );
+}
+
+#[test]
+fn stop_ability_stops_every_running_ability_of_the_instance() {
+    let graphs = Arc::new(store(vec![graph(
+        42,
+        vec![
+            entry(&[(1, "m_beginPlug")]),
+            node(
+                1,
+                "STUStatescriptStateAbility",
+                Some(0),
+                json!({"m_6EEEC0AA":plug(&[(2,"m_inPlug")], &[])}),
+            ),
+            set_entity(2, 100, json!(true)),
+            node(
+                3,
+                "STU_187D5125",
+                None,
+                json!({"m_outPlug":plug(&[(4,"m_inPlug")], &[])}),
+            ),
+            set_entity(4, 101, json!(true)),
+            on_message(5, 1, 3, "m_inPlug"),
+        ],
+        json!([1]),
+        json!([0, 5]),
+    )]));
+    let mut component = start(graphs, 100, &mut EmptyWorld);
+    component.advance_frame(101, &mut EmptyWorld).unwrap();
+    let flags = |component: &Component| component.snapshot().unwrap().instances[&1].states[&0].kind;
+    assert_eq!(
+        flags(&component),
+        StateKind::Ability {
+            flags: ABILITY_RUNNING
+        }
+    );
+    message(&mut component, 1, &mut EmptyWorld);
+    let snapshot = component.snapshot().unwrap();
+    assert_eq!(snapshot.variables[&100], Value::Bool(true));
+    assert_eq!(snapshot.variables[&101], Value::Bool(true));
+    assert_eq!(flags(&component), StateKind::Ability { flags: 0 });
+}
+
+#[test]
+fn messages_to_other_entities_go_through_the_world_and_reach_every_instance() {
+    const OTHER: u32 = 0xa000_0201;
+    #[derive(Default)]
+    struct Router(Vec<(u32, u32, u64, Variables)>);
+    impl World for Router {
+        fn send_message(
+            &mut self,
+            source: Site,
+            target: u32,
+            message: u64,
+            parameters: &Variables,
+        ) -> bool {
+            self.0
+                .push((source.entity, target, message, parameters.clone()));
+            true
+        }
+    }
+    let sender = graph(
+        42,
+        vec![
+            entry(&[(1, "m_inPlug")]),
+            node(
+                1,
+                "STUStatescriptActionSendGameMessage",
+                None,
+                json!({
+                    "m_gameMessage":{"m_gameMessage":"0x0240000000000005"},
+                    "m_target":var(90,true),
+                    "m_params":[{"m_B5051BCE":"0x0D80000000000007","m_value":{"$":"STUConfigVarInt","m_value":9}}],
+                }),
+            ),
+        ],
+        json!([]),
+        json!([0]),
+    );
+    let receiver = graph(
+        43,
+        vec![node(
+            0,
+            "STUStatescriptEntryGameMessage",
+            None,
+            json!({
+                "m_gameMessage":{"m_gameMessage":"0x0240000000000005"},
+                "m_params":[{"m_B5051BCE":"0x0D80000000000007","m_out_Var":var(100,false)}],
+            }),
+        )],
+        json!([]),
+        json!([0]),
+    );
+    let graphs = Arc::new(store(vec![sender, receiver]));
+    let mut router = Router::default();
+    start_with(
+        Arc::clone(&graphs),
+        Variables::from([(90, Value::Entity(OTHER))]),
+        100,
+        &mut router,
+    );
+    let parameters = Variables::from([(7, Value::Integer(9))]);
+    assert_eq!(
+        router.0,
+        [(
+            0xa000_0101,
+            OTHER,
+            0x0240_0000_0000_0005,
+            parameters.clone()
+        )]
+    );
+    let mut other = Component::start(
+        graphs,
+        OTHER,
+        Variables::new(),
+        vec![Root::new(1, 43), Root::new(2, 43)],
+        100,
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    assert_eq!(
+        other
+            .receive_message(0x0240_0000_0000_0005, parameters, &mut EmptyWorld)
+            .unwrap(),
+        2
+    );
+    let snapshot = other.snapshot().unwrap();
+    for id in [1, 2] {
+        assert_eq!(snapshot.instances[&id].variables[&100], Value::Integer(9));
+    }
+
+    // The player's own world queues them for the match.
+    let mut world = PlayerWorld::new(
+        Arc::new(store(Vec::new())),
+        0xa000_0100,
+        0xa000_0101,
+        1,
+        PRACTICE_RANGE_MODE,
+        SOLDIER,
+    );
+    let site = Site {
+        entity: 0xa000_0101,
+        instance: 1,
+        graph: 42,
+        node: None,
+    };
+    assert!(world.send_message(site, OTHER, 5, &Variables::new()));
+    assert!(!world.send_message(
+        Site {
+            entity: OTHER,
+            ..site
+        },
+        1,
+        5,
+        &Variables::new()
+    ));
+    assert_eq!(
+        world.take_messages(),
+        [GameMessage {
+            sender: 0xa000_0101,
+            target: OTHER,
+            message: 5,
+            parameters: Variables::new()
+        }]
+    );
+    assert!(world.take_messages().is_empty());
+}
+
+#[test]
+fn ultimate_fills_over_its_seconds_and_waits_while_it_runs() {
+    use crate::ultimate::{ULT_CHARGE, ULT_COST, UltimateCharge, set_ult_charge};
+
+    let graphs = Arc::new(store(vec![graph(
+        42,
+        vec![
+            entry(&[(1, "m_beginPlug")]),
+            node(
+                1,
+                "STUStatescriptStateAbility",
+                Some(0),
+                json!({"m_150F0D92":var(ULT_CHARGE,true)}),
+            ),
+        ],
+        json!([1]),
+        json!([0]),
+    )]));
+    let mut component = start_with(
+        Arc::clone(&graphs),
+        Variables::from([
+            (ULT_COST, Value::Float(100.0)),
+            (ULT_CHARGE, Value::Float(0.0)),
+        ]),
+        100,
+        &mut EmptyWorld,
+    );
+    let charge =
+        |component: &Component| component.snapshot().unwrap().variables[&ULT_CHARGE].clone();
+    let ultimate = UltimateCharge::new(&component, &graphs, 60.0);
+    ultimate.charge(&mut component, &mut EmptyWorld).unwrap();
+    let step = f64::from((100.0 * 16.0 / 60_000.0) as f32);
+    assert_eq!(charge(&component), Value::Float(step));
+    // The charge starts the ultimate at its next tick; it doesn't charge
+    // while running.
+    component.advance_frame(101, &mut EmptyWorld).unwrap();
+    ultimate.charge(&mut component, &mut EmptyWorld).unwrap();
+    assert_eq!(charge(&component), Value::Float(step));
+    set_ult_charge(&mut component, 99.99, &mut EmptyWorld).unwrap();
+    assert_eq!(charge(&component), Value::Float(f64::from(99.99_f32)));
+
+    // An idle ultimate fills to its cost and stops there.
+    let mut component = start_with(
+        Arc::clone(&graphs),
+        Variables::from([
+            (ULT_COST, Value::Float(100.0)),
+            (ULT_CHARGE, Value::Float(99.99)),
+        ]),
+        100,
+        &mut EmptyWorld,
+    );
+    let ultimate = UltimateCharge::new(&component, &store(Vec::new()), 60.0);
+    for _ in 0..2 {
+        ultimate.charge(&mut component, &mut EmptyWorld).unwrap();
+    }
+    assert_eq!(charge(&component), Value::Float(100.0));
+}
+
+#[test]
+fn player_world_answers_every_heros_ruleset_defaults() {
+    let mut world = PlayerWorld::new(
+        Arc::new(store(Vec::new())),
+        0xa000_0100,
+        0xa000_0101,
+        1,
+        PRACTICE_RANGE_MODE,
+        0x02e0_0000_0000_0003,
+    );
+    // Tracer's clip size scalar and the Practice Range's own schema.
+    assert_eq!(world.ruleset(0x2819), Some(Value::Float(1.0)));
+    assert_eq!(world.ruleset(0x730a), Some(Value::Bool(true)));
+    assert_eq!(world.ruleset(0x2982), None);
+}
+
+/// The clip size scalar `0x2819` comes from the heroes' ruleset schema, so
+/// Tracer's pistols load a 40-round magazine (`ow174/game/script/rulesets.py`).
+#[test]
+#[ignore = "requires a local 1.74 graph pack"]
+fn tracer_pistols_load_forty_rounds_from_the_ruleset_defaults() {
+    const TRACER: u64 = 0x02e0_0000_0000_0003;
+    let runtime = orpheus_testkit::runtime_dir();
+    let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
+    let body = &graphs.bodies()[&0x0400_0000_0000_0001];
+    assert_eq!(body.hero.as_deref(), Some("0x02E0000000000003"));
+    let mut world = PlayerWorld::new(
+        Arc::clone(&graphs),
+        0xa000_0100,
+        0xa000_0101,
+        1,
+        PRACTICE_RANGE_MODE,
+        TRACER,
+    );
+    let mut component = Component::start(
+        Arc::clone(&graphs),
+        0xa000_0101,
+        player_entity_variables(body, 150.0, 150.0),
+        player_roots(body, &graphs).unwrap(),
+        999,
+        &mut world,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    component.advance_frame(999, &mut world).unwrap();
+    let pistols = component
+        .snapshot()
+        .unwrap()
+        .instances
+        .iter()
+        .find(|(_, instance)| instance.graph == 0x0016)
+        .map(|(&id, _)| id)
+        .unwrap();
+    let variable = |component: &Component, id| {
+        component
+            .resolved_variable(
+                pistols,
+                Variable {
+                    scope: Scope::Instance,
+                    id,
+                },
+            )
+            .unwrap()
+    };
+    assert_eq!(variable(&component, 198), Value::Integer(40));
+    assert_eq!(variable(&component, 53), Value::Integer(40));
+    for frame in 1000..1030 {
+        component
+            .advance_command(
+                Command {
+                    frame,
+                    buttons: 1,
+                    ..Command::default()
+                },
+                &mut world,
+            )
+            .unwrap();
+    }
+    assert!(!component.machine.shots.is_empty());
+    assert!(expr::to_int(&variable(&component, 53), 40) < 40);
+}

@@ -80,6 +80,24 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.stop_ability(key, node, depth + 1)?;
                 self.finish_cooldown(key)?;
             }
+            StateKind::Defer => {
+                if let Some(deferred) = self.machine.deferred.get_mut(&id) {
+                    deferred.retain(|&(_, raw)| raw != key.raw);
+                }
+                self.exit_subgraph(id, node, "m_8E484B2E", depth + 1)?;
+            }
+            StateKind::DisableButton { button } => {
+                self.end_disable_button(key, button, depth + 1)?;
+            }
+            StateKind::AiFire {
+                button: Some(button),
+            } => self.post_edge(ButtonEdge {
+                button,
+                pressed: false,
+            })?,
+            StateKind::MoveTo => {
+                self.machine.movements.remove(&key);
+            }
             _ => (),
         }
         let state = self.state_mut(key).expect("ending state");
@@ -99,6 +117,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
         if matches!(kind, StateKind::LogicalButton { .. }) {
             state.kind = StateKind::LogicalButton { down: false };
+        }
+        if matches!(kind, StateKind::AiFire { .. }) {
+            state.kind = StateKind::AiFire { button: None };
         }
         if matches!(kind, StateKind::Stack { .. }) {
             state.kind = StateKind::Stack {
@@ -226,9 +247,24 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     self.unlink_single_output(key, 0)?;
                 }
             }
+            // Button blocks and held AI buttons let go once the instance is
+            // gone (their `on_end` in `ow174/game/script/nodes.py`).
+            let controls: Vec<_> = self.machine.snapshot.instances[&id]
+                .states
+                .iter()
+                .filter(|(_, state)| state.active)
+                .filter_map(|(&raw, state)| match state.kind {
+                    StateKind::DisableButton { .. } | StateKind::AiFire { button: Some(_) } => {
+                        Some((StateKey { instance: id, raw }, state.kind))
+                    }
+                    _ => None,
+                })
+                .collect();
             self.machine.snapshot.instances.shift_remove(&id);
             self.machine.queues.remove(id);
             self.machine.ticking.remove(&id);
+            self.machine.deferred.remove(&id);
+            self.machine.movements.retain(|key, _| key.instance != id);
             self.machine
                 .ability_presses
                 .retain(|key, _| key.instance != id);
@@ -239,6 +275,20 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 watchers.retain(|watcher| watcher.instance != id);
                 !watchers.is_empty()
             });
+            for (key, kind) in controls {
+                match kind {
+                    StateKind::DisableButton { button } => {
+                        self.end_disable_button(key, button, 0)?
+                    }
+                    StateKind::AiFire {
+                        button: Some(button),
+                    } => self.post_edge(ButtonEdge {
+                        button,
+                        pressed: false,
+                    })?,
+                    _ => unreachable!("collected control state"),
+                }
+            }
         }
         Ok(())
     }

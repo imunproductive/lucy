@@ -60,6 +60,72 @@ impl ProjectedSnapshot {
     }
 }
 
+/// The pulsers whose client-only plug posts a kill feed line to the mode UI,
+/// by graph and state (`KILL_FEED_PULSERS` in `ow174/game/script/driver.py`).
+pub const KILL_FEED_PULSERS: [(u32, u16); 2] = [(0x01cf, 108), (0x0c18, 8)];
+
+impl ProjectedSnapshot {
+    /// Gate a new kill feed pulse (`BodyStream.kill_feed_snapshot` in
+    /// driver.py): until the world allows it the client keeps what it has;
+    /// once allowed the pulse goes out as a fresh first one; and a pulse
+    /// already sent keeps its wire value until it is acknowledged.
+    pub fn gate_kill_feed(mut self, stream: &BodyStream<ProjectedSnapshot>, allowed: bool) -> Self {
+        let base = stream.base().map(|(_, base)| base);
+        let pending = stream.latest_snapshot();
+        let count = |state: Option<&ProjectedState>| {
+            state
+                .filter(|state| state.active)
+                .and_then(|state| state.payload.get("count").cloned())
+        };
+        for (&owner, instance) in &mut self.instances {
+            let Some(&(_, raw)) = KILL_FEED_PULSERS
+                .iter()
+                .find(|(graph, _)| *graph == instance.graph)
+            else {
+                continue;
+            };
+            let state = |snapshot: Option<&ProjectedSnapshot>| {
+                snapshot?.instances.get(&owner)?.states.get(&raw).cloned()
+            };
+            let before = state(base);
+            let sent = state(pending);
+            let current = instance.states.get(&raw);
+            let acknowledged = count(before.as_ref());
+            let current_count = count(current);
+            let value = if let Some(sent) =
+                sent.filter(|sent| sent.active && count(Some(sent)) != acknowledged)
+            {
+                Some(sent)
+            } else if let Some(pulses) =
+                current_count.filter(|pulses| Some(pulses) != acknowledged.as_ref())
+            {
+                if allowed {
+                    Some(ProjectedState {
+                        active: true,
+                        payload: StatePayload::from([
+                            ("count".into(), pulses),
+                            ("fresh".into(), Value::Bool(true)),
+                        ]),
+                        volley: None,
+                    })
+                } else {
+                    before
+                }
+            } else {
+                continue;
+            };
+            if value.as_ref() == current {
+                continue;
+            }
+            match value {
+                Some(value) => instance.states.insert(raw, value),
+                None => instance.states.remove(&raw),
+            };
+        }
+        self
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct ProjectedInstance {
     graph: u32,
@@ -262,6 +328,7 @@ pub struct SnapshotEncoder<'a> {
     graphs: &'a GraphStore,
     codecs: &'a CodecTable,
     unknowns: Unknowns,
+    hidden: &'a [u16],
 }
 
 impl<'a> SnapshotEncoder<'a> {
@@ -270,6 +337,7 @@ impl<'a> SnapshotEncoder<'a> {
             graphs,
             codecs,
             unknowns: Unknowns::for_build(),
+            hidden: &[],
         }
     }
 
@@ -277,6 +345,13 @@ impl<'a> SnapshotEncoder<'a> {
     /// frame or is left out of it, as the Python reference did.
     pub fn with_unknowns(self, unknowns: Unknowns) -> Self {
         Self { unknowns, ..self }
+    }
+
+    /// Leave these server-only instances out of projections, as a bot's
+    /// behavior instance is (`BotScript.replicated_instances` in
+    /// `ow174/game/script/bot.py`).
+    pub fn hiding(self, hidden: &'a [u16]) -> Self {
+        Self { hidden, ..self }
     }
 
     pub fn project(
@@ -318,6 +393,9 @@ impl<'a> SnapshotEncoder<'a> {
             .unwrap_or_else(|| BTreeSet::from([OWNER_HEALTH]));
         let mut instances = BTreeMap::new();
         for (&id, instance) in &snapshot.instances {
+            if self.hidden.contains(&id) {
+                continue;
+            }
             let graph = self.graph(id, instance.graph)?;
             let exclusions = server_only_variables(graph);
             let variables =
@@ -347,7 +425,7 @@ impl<'a> SnapshotEncoder<'a> {
                 }
                 let Some(payload) = codec
                     .filter(|codec| codec.projected())
-                    .and_then(|codec| state_payload(state, codec))
+                    .and_then(|codec| state_payload(state, codec, snapshot.now_ms))
                 else {
                     if self.unknowns == Unknowns::Tolerate {
                         continue;
@@ -1154,7 +1232,11 @@ fn presenter(node: &Node) -> bool {
     node.class == "STUStatescriptStateUXPresenter" || node.fields.get("m_45216F79").is_some()
 }
 
-fn state_payload(state: &State, codec: &Codec) -> Option<StatePayload> {
+/// How long a pulse stays fresh for its first read
+/// (`ClientOnlyPulser.FRESH_MS` in `ow174/game/script/nodes.py`).
+const PULSE_FRESH_MS: u64 = 500;
+
+fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePayload> {
     Some(match (state.kind, codec.codec.as_deref()) {
         (
             StateKind::Plain
@@ -1167,9 +1249,24 @@ fn state_payload(state: &State, codec: &Codec) -> Option<StatePayload> {
             | StateKind::Watch
             | StateKind::Switch { .. }
             | StateKind::ActiveQuery
-            | StateKind::GamePadVibration,
+            | StateKind::GamePadVibration
+            | StateKind::Defer
+            | StateKind::AiFire { .. }
+            | StateKind::ServerFrames
+            | StateKind::MoveTo,
             Some("none"),
         ) if codec.empty() => StatePayload::new(),
+        // The block's link field is the reference's absent link.
+        (StateKind::DisableButton { .. }, Some("link")) => StatePayload::new(),
+        (StateKind::Pulser { pulses, pulsed_ms }, Some("pulser")) => StatePayload::from([
+            (
+                "fresh".into(),
+                Value::Bool(
+                    pulsed_ms.is_some_and(|pulsed| now_ms.saturating_sub(pulsed) <= PULSE_FRESH_MS),
+                ),
+            ),
+            ("count".into(), Value::Integer(i64::from(pulses))),
+        ]),
         (StateKind::BooleanSwitch(current), Some("switch")) => {
             StatePayload::from([("current".into(), Value::Bool(current))])
         }

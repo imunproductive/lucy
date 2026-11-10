@@ -16,6 +16,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Some(buttons)
     }
 
+    /// `Ability.held` in `ow174/game/script/nodes.py`: held and not blocked
+    /// by a `DisableLogicalButton`.
+    fn ability_held(&self, button: u8) -> bool {
+        self.machine.held_buttons.contains(&button) && !self.disabled(i64::from(button))
+    }
+
     pub(super) fn ability_edge(
         &mut self,
         key: StateKey,
@@ -24,6 +30,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     ) -> Result<(), InitFault> {
         if !edge.pressed
             || edge.button == 0
+            || self.disabled(i64::from(edge.button))
             || !self
                 .ability_buttons(key, node)
                 .is_some_and(|buttons| buttons.contains(&edge.button))
@@ -158,7 +165,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         [start, hold, stop]: [u8; 3],
         depth: usize,
     ) -> Result<(), InitFault> {
-        if !self.machine.held_buttons.contains(&start) {
+        if !self.ability_held(start) {
             flags &= !ABILITY_HELD;
             self.set_ability_flags(key, flags);
         }
@@ -175,7 +182,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 }
                 return self.stop_ability(key, node, depth);
             }
-        } else if !self.machine.held_buttons.contains(&hold) {
+        } else if !self.ability_held(hold) {
             return self.stop_ability(key, node, depth);
         }
         if !self.ability_condition(key, node, "m_F495731F")
@@ -198,7 +205,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         if start != 0 {
             pressed = self.take_ability_press(key, node, start);
             if !pressed {
-                if !self.machine.held_buttons.contains(&start) {
+                if !self.ability_held(start) {
                     self.set_ability_flags(key, flags & !ABILITY_HELD);
                     return Ok(());
                 }
@@ -206,7 +213,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     return Ok(());
                 }
             }
-        } else if hold != 0 && !self.machine.held_buttons.contains(&hold) {
+        } else if hold != 0 && !self.ability_held(hold) {
             return Ok(());
         }
         if self.cooldown_remaining(key) > 0.0
