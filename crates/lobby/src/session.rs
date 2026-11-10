@@ -163,6 +163,9 @@ impl<'a> LobbySession<'a> {
         self.receive_message_until(|| true)
     }
 
+    /// Receive the next client message while `keep_receiving` holds; `None`
+    /// when it stopped holding or the client closed the connection
+    /// ([`closed`](Self::closed) tells which).
     pub fn receive_message_until(
         &mut self,
         keep_receiving: impl Fn() -> bool,
@@ -200,6 +203,11 @@ impl<'a> LobbySession<'a> {
             return Ok(Some((crc, id, fields)));
         }
         Ok(None)
+    }
+
+    /// Whether the client closed the connection.
+    pub fn closed(&self) -> bool {
+        self.transport.closed()
     }
 
     /// Send an outbound JAM message with the wire index announced by this client.

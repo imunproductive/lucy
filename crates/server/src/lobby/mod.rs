@@ -15,7 +15,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use orpheus_lobby::{
@@ -44,6 +44,8 @@ use router::Router;
 
 const MAX_LOBBY_PEERS: usize = 32;
 const ACCEPT_POLL: Duration = Duration::from_millis(10);
+/// The longest a session sleeps between ticks.
+pub(crate) const TICK: Duration = Duration::from_millis(250);
 
 pub(crate) struct Lobby {
     pub signing_key: [u8; 64],
@@ -211,7 +213,7 @@ impl Lobby {
             }
         }
         let current = || !lease.replaced.load(Ordering::Acquire);
-        loop {
+        while current() {
             for message in mailbox.take() {
                 peer.send(&message)?;
             }
@@ -220,18 +222,16 @@ impl Lobby {
                     tick(&mut peer)?;
                 }
             }
-            match peer
-                .session
-                .receive_message_until(|| current() && !mailbox.has_mail())?
-            {
-                Some((group, message, fields)) => {
-                    if let Some(handle) = ROUTER.get(group, message) {
-                        handle(&mut peer, fields)?;
-                    }
+            let woke = Instant::now();
+            let received = peer.session.receive_message_until(|| {
+                current() && !mailbox.has_mail() && woke.elapsed() < TICK
+            })?;
+            if let Some((group, message, fields)) = received {
+                if let Some(handle) = ROUTER.get(group, message) {
+                    handle(&mut peer, fields)?;
                 }
-                // Woken by mail; anything else ends the session.
-                None if current() && mailbox.has_mail() => {}
-                None => break,
+            } else if peer.session.closed() {
+                break;
             }
         }
         if !current() {

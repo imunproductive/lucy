@@ -25,7 +25,8 @@ pub(crate) struct Route {
 pub(crate) struct Hooks {
     /// After the login messages, before the first client message.
     pub login: Option<fn(&mut Peer<'_, '_>) -> io::Result<()>>,
-    /// Each time the session wakes (at least every socket poll).
+    /// Each time the session wakes: after each client message, on mail, and
+    /// at least every [`TICK`](super::TICK).
     pub tick: Option<fn(&mut Peer<'_, '_>) -> io::Result<()>>,
     /// After the session ended, unless a newer session of the account
     /// replaced it.

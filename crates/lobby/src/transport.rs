@@ -31,6 +31,7 @@ pub struct LobbyTransport {
     groups: Vec<u32>,
     wire_of: HashMap<u32, u8>,
     last_keepalive: Instant,
+    closed: bool,
     pub sequence: u32,
 }
 
@@ -51,8 +52,14 @@ impl LobbyTransport {
             groups: Vec::new(),
             wire_of: HashMap::new(),
             last_keepalive: Instant::now(),
+            closed: false,
             sequence: channel.seq,
         }
+    }
+
+    /// Whether the client closed the connection.
+    pub fn closed(&self) -> bool {
+        self.closed
     }
 
     pub(crate) fn set_deadline(&mut self, deadline: Option<Instant>) {
@@ -89,7 +96,10 @@ impl LobbyTransport {
             }
 
             match self.stream.read(&mut data) {
-                Ok(0) => return Ok(None),
+                Ok(0) => {
+                    self.closed = true;
+                    return Ok(None);
+                }
                 Ok(count) => self.pending.extend(self.reader.feed(&data[..count])),
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error)
