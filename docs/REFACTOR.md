@@ -243,7 +243,7 @@ flowchart LR
 | 3 Workspace crates | Done |
 | 4 `orpheus` app | Done. The dashboard serves its profile, account, item, frame and loot box actions; the rest answer 501 (see `docs/notes/parity.md`). |
 | 5 Launcher and relay | Done. The original client reached the lobby through the Rust relay (`docs/notes/behavior.md`, 2026-11-10). The C++ relay, `build.bat`, `START.bat`, `START_LOCAL.cmd` and `--relay-dll` are deleted. `ow174/launcher` stays until phase 8, because the frozen Python server imports it; it now loads the Rust relay. |
-| 6 Game data from CASC | Spike passed. 6a done: `crates/casc` reads every stored graph and definition from the install by GUID (`just test-game`). 6b, 6c and 6d not started; 6c needs the runtime pack's files as oracles. |
+| 6 Game data from CASC | Spike passed. 6a done: `crates/casc` reads every stored graph and definition from the install by GUID (`just test-game`). 6b done: `crates/stu` decodes every stored graph, definition and game mode, and matches a DataTool export of the install (`just test-datatool`). 6c and 6d not started. |
 | 7 Tools | IDA script moved; `fake_client` covered by test fixtures; `ssq` deferred (see phase 7) |
 | 8 Remove Python | Waits for the phase 5 and 6 gates and gameplay parity |
 | 9 New documentation | Not started |
@@ -432,6 +432,8 @@ Public tests use a synthetic miniature storage built by `testkit`.
 **Spike result (2026-11-10):** go. TACTLib's `ProCMF_104319` decrypts the install's manifests, and the GUID counts match DataTool's extraction (1,587 `01B`, 3,528 `003`). Encrypted blocks are needed: 8 bundles use them, so the reader handles Salsa20 with the install's keyring. One key is missing from that keyring; `docs/notes/data-sources.md` lists what it hides.
 
 **6b. `stu` crate:** an STUv2 reader. A one-off generator (`cargo run -p orpheus-stu --bin gen-types`) reads OWLib's `overwatch/1.74` `TankLib/STU/Types` (revision `7afe5f52`) and writes a Rust type table, which is committed. The table is derived from MIT-licensed code, not from game data.
+
+**6b result (2026-11-10):** done. The generator writes a text table (`crates/stu/data/types.txt`: 5,255 classes, 14,194 fields, 512 enums, 2,106 declared defaults) that the crate embeds and parses once, instead of Rust source; that keeps compile times down. The reader fills unstored fields with their defaults, as DataTool shows them. It decodes all 1,586 stored graphs, 3,509 definitions and 25 game modes; 152 graph instances are of classes OWLib doesn't know, which DataTool exports as null too. Against a DataTool XML export of the same install, every graph's item list matches, and all 1,167,080 numbers, nulls and strings DataTool prints on the graph roots, graph items and definition roots are equal.
 
 **6c.0 Classify the inherited files.** No script in the repository produces `extracted_heroes.json`, `extracted_maps.json`, `extracted_items.json`, `extracted_general_unlocks.json`, `collision_keys_174.json` or `collision_props_174.json`. They most likely came from dumps taken while the live servers were still running. Their origin isn't tracked further. Other extractors read them as inputs: `extract_game_heroes.py` and `extract_ai_spawners.py` take hero names from `extracted_heroes.json`, `extract_game_maps.py` takes English map names from `extracted_maps.json`, and `extract_ai_spawners.py` and `build_collision.py` take storage keys from `collision_props_174.json` and `collision_keys_174.json`. Before porting anything in 6c, inspect each file and classify it:
 

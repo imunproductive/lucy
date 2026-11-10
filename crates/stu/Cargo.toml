@@ -1,0 +1,13 @@
+[package]
+name = "orpheus-stu"
+description = "Reads build 104319's structured data (STUv2) assets with a type table generated from OWLib"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dev-dependencies]
+orpheus-casc.workspace = true
+orpheus-testkit.workspace = true
+roxmltree.workspace = true

@@ -15,6 +15,14 @@ pub fn game_dir() -> PathBuf {
         .expect("set ORPHEUS_GAME_DIR to an Overwatch 1.74 install (just test-game <install>)")
 }
 
+/// A DataTool XML export of the same install (`extract-stu-type <dump> <type>
+/// --xml`), named by `ORPHEUS_DATATOOL_DUMP`; the oracle for the asset reader.
+pub fn datatool_dump() -> PathBuf {
+    env::var_os("ORPHEUS_DATATOOL_DUMP")
+        .map(PathBuf::from)
+        .expect("set ORPHEUS_DATATOOL_DUMP to a DataTool XML export (just test-datatool <install> <dump>)")
+}
+
 /// The prepared runtime pack named by `ORPHEUS_RUNTIME_DIR`.
 pub fn runtime_dir() -> PathBuf {
     env::var_os("ORPHEUS_RUNTIME_DIR")

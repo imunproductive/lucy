@@ -11,3 +11,4 @@
 *.pb binary
 *.key binary
 crates/fixed/data/* linguist-generated=true
+crates/stu/data/types.txt linguist-generated=true

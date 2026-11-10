@@ -27,11 +27,15 @@ build:
 
 # Ignored tests that need a prepared runtime pack.
 test-runtime runtime:
-    cargo build -p orpheus-relay --locked; $env:ORPHEUS_RUNTIME_DIR = '{{runtime}}'; cargo test --workspace --exclude orpheus-casc --locked --no-fail-fast -- --ignored
+    cargo build -p orpheus-relay --locked; $env:ORPHEUS_RUNTIME_DIR = '{{runtime}}'; cargo test --workspace --exclude orpheus-casc --exclude orpheus-stu --locked --no-fail-fast -- --ignored
 
 # Ignored tests that read an Overwatch 1.74 install.
 test-game game:
-    $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo test -p orpheus-casc --release --locked -- --ignored
+    $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo test -p orpheus-casc -p orpheus-stu --release --locked -- --ignored --skip datatool
+
+# Ignored tests that compare the asset reader with a DataTool XML export of the install.
+test-datatool game dump:
+    $env:ORPHEUS_GAME_DIR = '{{game}}'; $env:ORPHEUS_DATATOOL_DUMP = '{{dump}}'; cargo test -p orpheus-stu --release --locked -- --ignored datatool
 
 # Windows-only tests that load the relay DLL into a stand-in process.
 test-windows:

@@ -850,6 +850,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "orpheus-stu"
+version = "0.0.0"
+dependencies = [
+ "orpheus-casc",
+ "orpheus-testkit",
+ "roxmltree",
+]
+
+[[package]]
 name = "orpheus-testkit"
 version = "0.0.0"
 dependencies = [
