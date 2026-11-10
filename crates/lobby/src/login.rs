@@ -9,8 +9,8 @@ pub const OUT_CONNECT: u32 = 0x3c7e_3468;
 pub const LOGIN_MESSAGE: u32 = 21800;
 pub const INCOMPATIBLE_CLIENT: u64 = 0x0de0_0000_0001_03bf;
 pub const SIGNED_IN_ELSEWHERE: u64 = 0x0de0_0000_0001_3c84;
-const ID_HIGH_TAG: u64 = 1 << 56;
-const PARTY_ENTITY_TYPE: u64 = 0x1d << 40;
+pub(crate) const ID_HIGH_TAG: u64 = 1 << 56;
+pub(crate) const PARTY_ENTITY_TYPE: u64 = 0x1d << 40;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Login {

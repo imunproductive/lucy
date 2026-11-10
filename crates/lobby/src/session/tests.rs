@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     handoff::{GAME_REQUEST, is_request},
+    party::{self, Membership, PartyMember},
     presence::FRIENDS,
     ranked::{COMPETITIVE_CTF, Queue, RANKED},
 };
@@ -248,15 +249,32 @@ fn prepared_subset_matches_the_python_login_in_wire_order() {
             arcade: &arcade,
             celebrations: None,
             leaderboard_places: &places,
-            solo_party: None,
+            party: &[],
+        };
+        // The session's party state as the social service builds it for a
+        // party of one.
+        let solo = {
+            let profile = prepared.account.profile();
+            let ratings = ranked.party_ratings(&profile, &places).unwrap();
+            let member = PartyMember {
+                profile: &profile,
+                identity: prepared.identity,
+                menu_hero: menu_hero.unwrap_or_default(),
+                ratings: &ratings,
+                membership: Membership::Leader,
+            };
+            [party::state(
+                &collection,
+                [0x1234, 0x2345],
+                [0x0100_1d00_0000_0033, 0x4444],
+                &[member],
+                !unlock_all,
+                1_700_000_000,
+            )
+            .unwrap()]
         };
         let exact_inputs = LoginContent {
-            solo_party: Some(SoloLoginParty {
-                id: [0x1234, 0x2345],
-                entity: [0x0100_1d00_0000_0033, 0x4444],
-                menu_hero: menu_hero.unwrap_or_default(),
-                members_may_invite: !unlock_all,
-            }),
+            party: &solo,
             ..inputs
         };
         for (content, count, expected) in [
@@ -292,16 +310,13 @@ fn prepared_subset_matches_the_python_login_in_wire_order() {
             assert_eq!(ranks, 3 + event_cards.len());
             assert_eq!(messages[9].0, MODE_RULES);
             assert_eq!(messages[9].1, RULES);
-            assert_eq!(
-                messages.len(),
-                54 + event_cards.len() + usize::from(content.solo_party.is_some())
-            );
+            assert_eq!(messages.len(), 54 + event_cards.len() + content.party.len());
             // Keep the earlier reference corpus for the original subset.
             // The new dynamic rows have their own complete wire comparison.
             messages.retain(|&(crc, id, _)| {
                 (crc, id) != (MODE_RULES, RULES)
                     && !arcade_and_passes.contains(&(crc, id))
-                    && (content.solo_party.is_some() || crc != RANKED)
+                    && (!content.party.is_empty() || crc != RANKED)
             });
             let keys: Vec<_> = messages.iter().map(|&(crc, id, _)| (crc, id)).collect();
             assert_eq!(
@@ -318,7 +333,7 @@ fn prepared_subset_matches_the_python_login_in_wire_order() {
                     (HERO_CATALOG, 24900),
                 ]
             );
-            if content.solo_party.is_some() {
+            if !content.party.is_empty() {
                 assert_eq!(
                     keys[keys.len() - 4..],
                     [

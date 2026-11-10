@@ -160,6 +160,7 @@ impl Server {
             active: Arc::default(),
             game: Arc::clone(&game),
             hub: Default::default(),
+            social: Default::default(),
         });
         let dashboard = config
             .dashboard_port
@@ -172,6 +173,7 @@ impl Server {
                     data: config.data.clone(),
                     assets: config.data.join("assets"),
                     lobby_port: lobby_addr.port(),
+                    lobby: Some(Arc::clone(&shared)),
                 };
                 Dashboard::start(port, parts)
             })

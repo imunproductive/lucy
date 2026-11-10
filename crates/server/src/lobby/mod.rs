@@ -5,6 +5,7 @@ mod handlers;
 pub(crate) mod hub;
 pub(crate) mod peer;
 pub(crate) mod router;
+pub(crate) mod social;
 
 use std::{
     collections::HashMap,
@@ -25,10 +26,10 @@ use orpheus_lobby::{
     collection::Collection,
     handoff::{LobbySeat, general_channel, join_chat_channel},
     login::SIGNED_IN_ELSEWHERE,
-    menu::MenuHero,
     presence::Presence,
     ranked::{LeaderboardPlaces, Ranked},
-    session::{LobbySession, LoginContent, LoginRequest, SoloLoginParty},
+    session::{LobbySession, LoginContent, LoginRequest},
+    social::Social,
     templates::RetailTemplates,
 };
 use orpheus_sim::scene_assets::{PreparedScene, SceneAssets};
@@ -73,6 +74,8 @@ pub(crate) struct Lobby {
     pub active: Arc<Mutex<HashMap<u32, Arc<AtomicBool>>>>,
     pub game: Arc<GameService>,
     pub hub: Hub,
+    /// Friends, presence, parties, chat channels and the group finder.
+    pub social: Social,
 }
 
 struct LoginLease<'a> {
@@ -165,23 +168,19 @@ impl Lobby {
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?
             .as_secs();
-        let (menu, members_may_invite) = {
+        self.social.reroll_menu_hero(login.account.account_lo);
+        let menu = {
             let mut profile = login.account.profile();
             profile.last_online = wall_time as i64;
-            let menu = MenuHero::default().select(
+            self.social.menu_hero(
+                login.account.account_lo,
                 &profile,
                 self.collection.heroes(),
                 self.collection.items(),
-            )?;
-            let members = profile
-                .settings
-                .get("+0x10D")
-                .and_then(|settings| settings.get("+0x0"))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(true);
-            (menu, members)
+            )?
         };
         login.account.save()?;
+        let party = social::session_started(self, &login.account)?;
         let messages = login.available_messages(
             &self.schemas,
             &self.templates,
@@ -195,15 +194,11 @@ impl Lobby {
                 arcade: &self.arcade,
                 celebrations: Some(&self.celebrations),
                 leaderboard_places: &LeaderboardPlaces::new(),
-                solo_party: Some(SoloLoginParty {
-                    id: login.identity.party_id,
-                    entity: login.identity.party_entity,
-                    menu_hero: menu.party_hero,
-                    members_may_invite,
-                }),
+                party: &party,
             },
         )?;
-        for message in messages {
+        let friends = social::login_friends(self, &login.account)?;
+        for message in messages.into_iter().chain(friends) {
             if !lease.current() {
                 break;
             }

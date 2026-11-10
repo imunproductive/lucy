@@ -20,7 +20,6 @@ use crate::{
     collection::{Collection, HERO_CATALOG, PROGRESSION},
     login::{self, INCOMPATIBLE_CLIENT, Identity, LOGIN_MESSAGE, Login, OUT_CONNECT},
     mode_rules::{self, MODE_RULES, RULES},
-    party::{self, Membership, PartyMember},
     passes, player_messages as player,
     presence::Presence,
     ranked::{LeaderboardPlaces, Ranked},
@@ -64,16 +63,9 @@ pub struct LoginContent<'a> {
     pub arcade: &'a Arcade,
     pub celebrations: Option<&'a Celebrations>,
     pub leaderboard_places: &'a LeaderboardPlaces,
-    /// A confirmed single-member party; the caller sends other party rosters.
-    pub solo_party: Option<SoloLoginParty>,
-}
-
-#[derive(Clone, Copy)]
-pub struct SoloLoginParty {
-    pub id: [u64; 2],
-    pub entity: [u64; 2],
-    pub menu_hero: u64,
-    pub members_may_invite: bool,
+    /// The session's party state and party chat join
+    /// (`ow174/lobby/session.py` party_messages), sent before the settings.
+    pub party: &'a [LobbyMessage],
 }
 
 impl<'a> LobbySession<'a> {
@@ -323,24 +315,7 @@ impl PreparedLogin {
                 (0x80, Value::Array(Vec::new())),
             ]),
         ));
-        if let Some(party) = content.solo_party {
-            let ratings = ranked.party_ratings(&profile, content.leaderboard_places)?;
-            let member = PartyMember {
-                profile: &profile,
-                identity,
-                menu_hero: party.menu_hero,
-                ratings: &ratings,
-                membership: Membership::Leader,
-            };
-            messages.push(party::state(
-                collection,
-                party.id,
-                party.entity,
-                &[member],
-                party.members_may_invite,
-                content.wall_time,
-            )?);
-        }
+        messages.extend_from_slice(content.party);
         messages.push((LOBBY, 20802, player::settings(schemas, &profile)?));
         Ok(messages)
     }

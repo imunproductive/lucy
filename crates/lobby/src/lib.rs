@@ -19,5 +19,6 @@ pub mod player_messages;
 pub mod presence;
 pub mod ranked;
 pub mod session;
+pub mod social;
 pub mod templates;
 pub mod transport;
