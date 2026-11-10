@@ -14,7 +14,7 @@ The frozen Python server (`ow174/`) is the behavioral reference until the Rust s
 
 ## Still Python-only or open
 
-- The stock Soldier: 76 body: its preflight stops at the first unsupported operation. Last recorded: the crouch branch's effect action at graph `01C7`, node `74`. Its startup tree already encodes byte for byte (3,261-bit owner and 3,067-bit observer frames).
+- The stock Soldier: 76 body: its preflight stops at the first unsupported operation: the crouch branch's effect action (`STUStatescriptActionEffect`) at graph `01C7`, node `74`, with 1 initialization diagnostic (checked 2026-11-10). The VM gets that far only when the hero bundle carries the modes' variables and the bodies' target tags. Without target tags it stops at graph `004B`, node 21, an entity filter (`STU_AC829876`) that needs them; with target tags but no mode variables, at graph `0259`, node 31, the game mode entity (`STU_A3DEF368`). The server then runs Soldier: 76 without his statescript. Its startup tree already encodes byte for byte (3,261-bit owner and 3,067-bit observer frames).
 - Full player and bot scripts and replication, native combat with stock bodies, observer projectile launch, scripted flight, healing fields.
 - Matchmaking queues and PvP modes beyond the solo Practice Range.
 - Social actions.
