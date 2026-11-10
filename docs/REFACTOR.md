@@ -293,7 +293,7 @@ Each kept fact is rewritten briefly, in our own words. Where it matters, the not
 **Code comments are not part of this purge.** Some research knowledge exists only in Python and tool docstrings: the CASC layout in `ow174/game/casc.py`, the ENTITY chunk layout in `extract_ai_spawners.py`, and the placeable rules and client addresses in `extract_game_maps.py` and `extract_statescript_codecs.py`. Phase 6 carries it into the doc comments of the Rust code that replaces each tool, and phase 8 checks that before deleting `tools/` and `ow174/`.
 
 **Done when:**
-- the only documents left are `README.md`, `LICENSE`, `CREDITS.md`, `docs/REFACTOR.md` and `docs/notes/*`;
+- the only documents left are `README.md`, `LICENSE`, `CREDITS.md`, `docs/REFACTOR.md`, `docs/notes/*` and, until phase 8, `data/replays/README.txt`;
 - every link in this plan points to an existing file;
 - every fact this plan cites from an inherited document is in a note;
 - `git grep -n -E "docs/|docs\\\\|STATE\.md|RUST_MIGRATION|RESEARCH_EVIDENCE|CONTRIBUTING|WIP\.md|ROADMAP|data/README"` finds no reference to a deleted file anywhere in the code or scripts. Today there is one: `START_LOCAL.cmd` points to `docs\STATE.md`. The two Rust references to `CREDITS.md` (`jam_cipher.rs`, `jam_codec.rs`) stay valid because that file is kept.
