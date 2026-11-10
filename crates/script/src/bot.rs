@@ -12,7 +12,8 @@ use serde_json::Value as Json;
 
 use crate::{
     codecs::CodecTable,
-    graph::GraphStore,
+    expr::EvalError,
+    graph::{GraphStore, Node},
     rulesets,
     snapshot::SnapshotEncoder,
     vm::{
@@ -323,6 +324,45 @@ impl BotBody {
 
     pub fn take_shots(&mut self) -> Vec<ShotEvent> {
         self.component.take_shots().unwrap_or_default()
+    }
+
+    /// Read the authored volley a shot came from, evaluating its configs in
+    /// the shot's state (`state.evaluate` in combat.py `_shoot`). None: the
+    /// shot's state is no longer a weapon volley of this body.
+    pub fn with_shot<T>(
+        &mut self,
+        shot: &ShotEvent,
+        read: impl FnOnce(&Node, &mut dyn FnMut(&Json) -> Result<Value, EvalError>) -> T,
+    ) -> Option<T> {
+        let Self {
+            component, world, ..
+        } = self;
+        let node = component.shot_node(shot)?;
+        let mut evaluate = |config: &Json| component.evaluate_shot_config(shot, config, world);
+        Some(read(node, &mut evaluate))
+    }
+
+    /// The volley count of the state a shot came from, which the other
+    /// clients' shot record names (projectiles.py `_show_others`:
+    /// `state.volleys`); 0 when that state is gone.
+    pub fn shot_volleys(&self, shot: &ShotEvent) -> u8 {
+        self.component
+            .snapshot()
+            .and_then(|snapshot| snapshot.instances.get(&shot.instance))
+            .and_then(|instance| instance.states.get(&shot.raw_state))
+            .map_or(0, |state| match state.kind {
+                crate::vm::StateKind::WeaponVolley { volleys, .. } => volleys,
+                _ => 0,
+            })
+    }
+
+    /// The owner's health input #253 (`set_health` in driver.py), kept in
+    /// step with the bot's pools after each hit (combat.py
+    /// `_sync_body_health`).
+    pub fn set_health(&mut self, health: f64) -> Result<(), BotError> {
+        self.component
+            .set_entity_variable(OWNER_HEALTH, Value::Float(health), &mut self.world)?;
+        Ok(())
     }
 
     /// Advance a live body one server frame; the firing behavior's owner

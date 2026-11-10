@@ -134,7 +134,7 @@ impl Server {
         if !scene.movement_ready() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "the native Practice Range requires the base graph bundle",
+                "the native Practice Range requires its movement data",
             ));
         }
         let protocol = Arc::new(Protocol::client());

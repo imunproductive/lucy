@@ -4,6 +4,7 @@
 
 pub mod body;
 pub mod body_script;
+pub mod bot_script;
 pub mod bots;
 pub mod combat;
 pub mod controller;

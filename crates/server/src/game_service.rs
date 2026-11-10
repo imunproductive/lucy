@@ -39,6 +39,7 @@ use orpheus_core::tick::FIRST_TICK;
 use orpheus_lobby::handoff::Handoff;
 use orpheus_script::wire::chunk;
 use orpheus_sim::{
+    bot_script::BotShotKind,
     combat::{
         BotHit, BotReplacement, Combat, CombatPlayer, FieldHeal, PosedShot, Shooter, ShotContext,
         apply_player_hits, deliver_body_messages, deliver_projectiles, heal_players, show_fired,
@@ -702,6 +703,22 @@ fn player_entity(slot: usize) -> u32 {
     0xa000_0000 | ((slot as u32 + 1) << 8)
 }
 
+/// A hit on a bot reaches its script (combat.py `_damage`): the death
+/// message for a killing hit (`_bot_died`), else its new health
+/// (`_sync_body_health`).
+fn bot_hit_script(scene: &mut PreparedScene, hit: &BotHit) {
+    match hit.death {
+        Some(death) => scene.bot_died(
+            death.bot,
+            death.killer,
+            death.critical,
+            death.loadout,
+            death.tick,
+        ),
+        None => scene.bot_health(hit.bot, hit.remaining),
+    }
+}
+
 /// The connected players of a room, by slot.
 fn room_peers<'p>(
     peers: &'p mut IndexMap<u32, Peer>,
@@ -823,7 +840,10 @@ impl Peer {
                 .get(&entity)
                 .is_some_and(|&ordinal| !self.egress.delivered_through(ordinal));
             if now < expires
-                && (has_notice || waiting_for_reliable || self.world.health_pending(entity))
+                && (has_notice
+                    || waiting_for_reliable
+                    || self.world.health_pending(entity)
+                    || self.world.bot_frames_pending(entity))
             {
                 self.combat_ui
                     .replacements
@@ -878,7 +898,7 @@ impl Peer {
             bot_scripts_ready: room
                 .world
                 .as_ref()
-                .is_some_and(|world| world.scene.scripted_bots() == 0),
+                .is_some_and(|world| world.scene.bot_scripts_ready()),
         };
         while let Some(step) = self.loading.take_due(now, ready) {
             match step {
@@ -1499,6 +1519,11 @@ impl State {
     /// combat.py `_damage` for bots and `_send_health`: the shooter's
     /// client gets the notices, every client of the room the bot's pools.
     fn deliver_bot_hits(&mut self, id: MatchId, shooter: Option<u32>, hits: Vec<BotHit>) {
+        if let Some(world) = self.rooms.get_mut(&id).and_then(|room| room.world.as_mut()) {
+            for hit in &hits {
+                bot_hit_script(&mut world.scene, hit);
+            }
+        }
         for hit in hits {
             for (&connection, peer) in &mut self.peers {
                 if self.seats[&connection].0 != id {
@@ -1578,6 +1603,9 @@ impl State {
             }
             notices
         };
+        for hit in &bot_heals {
+            bot_hit_script(scene, hit);
+        }
         for (peer, notices) in peers.into_iter().zip(notices) {
             if let Some(peer) = peer {
                 for hit in &bot_heals {
@@ -1629,6 +1657,58 @@ impl State {
                     .step_bot_projectiles(&mut world.scene, context)
                     .unwrap_or_default();
                 (hits, first_tick)
+            };
+            self.deliver_bot_hits(id, None, bot_hits);
+            // combat.py `_bot_weapons`: the firing bots' scripts after the
+            // rockets flew; their shots at the players and the other team's
+            // bots.
+            let bot_hits = {
+                let world = self
+                    .rooms
+                    .get_mut(&id)
+                    .and_then(|room| room.world.as_mut())
+                    .expect("room with a world");
+                let combat = world
+                    .combat
+                    .get_or_insert_with(|| Combat::new(&world.scene));
+                let mut hits = Vec::new();
+                for shot in world.scene.bot_weapons(tick) {
+                    let shooter = Shooter {
+                        source: shot.source,
+                        team: shot.team,
+                        bot: true,
+                    };
+                    match shot.kind {
+                        BotShotKind::Projectile(projectile) => {
+                            combat.fire_bot_projectile(shooter, projectile, shot.tick);
+                        }
+                        BotShotKind::Hitscan {
+                            origin,
+                            direction,
+                            reach,
+                            hit,
+                            ..
+                        } => {
+                            let context = ShotContext {
+                                quanta: RETAIL_QUANTA,
+                                tick: shot.tick,
+                                now,
+                            };
+                            if let Ok(Some(hit)) = combat.bot_hitscan(
+                                &mut world.scene,
+                                shooter,
+                                origin,
+                                direction,
+                                reach,
+                                hit,
+                                context,
+                            ) {
+                                hits.push(hit);
+                            }
+                        }
+                    }
+                }
+                hits
             };
             self.deliver_bot_hits(id, None, bot_hits);
             let mut struck = Vec::new();
@@ -1792,6 +1872,7 @@ impl State {
             self.retire(expired.connection);
         }
         let mut spawned = HashMap::new();
+        let mut bot_events = HashMap::new();
         if !drain {
             for room in self.rooms.values_mut() {
                 if let Some(world) = &mut room.world {
@@ -1801,13 +1882,18 @@ impl State {
             self.update_combat(tick, now);
             for (&id, room) in &mut self.rooms {
                 if let Some(world) = &mut room.world {
+                    // combat.py `update`: the dead bots' death scripts, then
+                    // the respawns with new scripts.
+                    world.scene.advance_bot_deaths(tick);
                     if let Some(combat) = &mut world.combat {
                         if let Ok(replacements) = combat.respawn_due(&mut world.scene, tick, now) {
                             if !replacements.is_empty() {
+                                world.scene.prepare_respawned_bots(tick);
                                 spawned.insert(id, replacements);
                             }
                         }
                     }
+                    bot_events.insert(id, world.scene.take_bot_events());
                 }
             }
         }
@@ -1838,6 +1924,13 @@ impl State {
                 peer.loading = MapReadiness::default();
                 if self.links.begin_leaving(connection, now) {
                     let _ = peer.reliable(&self.schemas, leave_message());
+                }
+            }
+            if !drain {
+                if let Some(world) = &room.world {
+                    let events = bot_events.get(&id).map_or(&[][..], Vec::as_slice);
+                    peer.world
+                        .update_bots(&world.scene, events, tick, send_frames);
                 }
             }
             if let Some(replacements) = spawned.get(&id).filter(|_| peer.world.world_started()) {

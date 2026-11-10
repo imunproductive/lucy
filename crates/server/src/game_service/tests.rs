@@ -2762,3 +2762,255 @@ fn players_join_a_running_match_in_the_next_slots() {
     assert!(server.join_match([9, 9], vec![joiner()]).unwrap().is_none());
     server.stop().unwrap();
 }
+
+/// The Practice Range with the training bots' scripts (ow174/game/match.py
+/// `_prepare_bot_script`, server.py `_BotScriptDelivery`): the world waits
+/// for every bot's script; each bot's first frame follows its create, the
+/// nameplate follows the mode UI; a bot shot to death sends its death
+/// script's frames, and its replacement 3 s later starts a new script.
+#[test]
+#[ignore = "requires the derived 104319 data with its bot graph bundle"]
+fn practice_bots_run_their_scripts_for_a_client() {
+    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use orpheus_script::vm::Unknowns;
+    use orpheus_sim::{
+        body_script::fixture_hitscan_factory, bots::BOT_ENTITY, scene_assets::SceneAssets,
+    };
+    use orpheus_wire::commands::FIRE;
+
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    // The stock bot graphs hold content the VM doesn't know yet; the Python
+    // reference ran them anyway.
+    assets.set_bot_unknowns(Unknowns::Tolerate);
+    let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let [x, y, z] = scene.map().spawn_point(0, 0).unwrap().0;
+    let bots: Vec<(u32, bool)> = scene
+        .bots()
+        .iter()
+        .map(|bot| (bot.entity, bot.spawn.firing))
+        .collect();
+    // An enemy bot that neither fires nor walks, 4 m beside the spawn.
+    let target = scene
+        .bots_mut()
+        .iter_mut()
+        .find(|bot| !bot.spawn.firing && bot.spawn.team != 0 && bot.spawn.route.is_empty())
+        .unwrap();
+    target.position = [x - 4.0, y, z];
+    let target = target.entity;
+    let factory = fixture_hitscan_factory(100.0);
+    scene.owner_body_factory = Some(Arc::new(move |hero, spawn| {
+        if hero.guid != SOLDIER {
+            return Ok(None);
+        }
+        Ok(Some(Box::new(factory.start(spawn)?)))
+    }));
+    let schemas = Arc::new(Schemas::game());
+    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let ticket = server
+        .open_prepared_practice(MATCH, scene, player().remove(0), PlayerCard::default())
+        .unwrap();
+    let mut client = Client::new(server.local_addr(), &ticket);
+    client.handshake();
+    let mut watcher = Watcher {
+        client,
+        owner: player_entity(0),
+        tick: 0,
+        sequences: HashSet::new(),
+        datagrams: Vec::new(),
+        ticks: Vec::new(),
+    };
+    pump_until(&mut [&mut watcher], &schemas, "the instance", |watchers| {
+        watchers[0]
+            .datagrams
+            .iter()
+            .any(|(messages, _)| messages.iter().any(|message| message.id == 20300))
+    });
+    let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+    let mut payload = BitWriter::new();
+    write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+    watcher.client.send(ACK, payload.into_bytes());
+
+    // Each bot's first frame, after its create; then, after the mode UI, a
+    // bot that doesn't fire changes only by its nameplate.
+    let script = |watcher: &Watcher, from: usize, entity: u32, full: bool| {
+        watcher.find(from, |record| {
+            record.entity == entity
+                && record
+                    .script
+                    .as_ref()
+                    .is_some_and(|script| (script.first == 0) == full)
+        })
+    };
+    pump_until(
+        &mut [&mut watcher],
+        &schemas,
+        "the bots' first frames and nameplates",
+        |watchers| {
+            let watcher = &watchers[0];
+            let mode = watcher.find(0, |record| {
+                record.entity == GAME_MODE_ENTITY && record.script.is_some()
+            });
+            bots.iter().all(|&(entity, firing)| {
+                let created = watcher.created(entity);
+                let full = script(watcher, 0, entity, true);
+                assert!(full.is_none() || created < full);
+                full.is_some()
+                    && (firing
+                        || mode.is_some_and(|mode| script(watcher, mode, entity, false).is_some()))
+            })
+        },
+    );
+
+    // Shoot the target to death.
+    let owner = watcher.owner;
+    send_player_message(
+        &mut watcher.client,
+        &schemas,
+        owner,
+        1,
+        PICK_HERO,
+        SOLDIER.to_le_bytes().to_vec(),
+    );
+    pump_until(&mut [&mut watcher], &schemas, "the body", |watchers| {
+        watchers[0].created(owner | 1).is_some()
+    });
+    let commands = command_batch(watcher.tick + 1, 1, -16384, FIRE, false);
+    watcher.client.send(ACK, commands.clone());
+    watcher.client.send(ACK, commands);
+    let replacement = BOT_ENTITY + 15;
+    pump_until(&mut [&mut watcher], &schemas, "the kill", |watchers| {
+        watchers[0]
+            .datagrams
+            .iter()
+            .any(|(messages, _)| messages.iter().any(|message| message.id == 25005))
+    });
+    let killed_at = Instant::now();
+    pump_until(
+        &mut [&mut watcher],
+        &schemas,
+        "the replacement",
+        |watchers| watchers[0].created(replacement).is_some(),
+    );
+    // combat.py `BOT_RESPAWN`: 3 s.
+    assert!(killed_at.elapsed() >= Duration::from_millis(2_800));
+    pump_until(
+        &mut [&mut watcher],
+        &schemas,
+        "the replacement's first frame",
+        |watchers| script(watchers[0], 0, replacement, true).is_some(),
+    );
+    // The death script's frames go with the terminal health, before the
+    // destroy; the replacement's first frame after its create.
+    let terminal = watcher
+        .find(0, |record| {
+            record.entity == target && record.base_health == Some(0.0)
+        })
+        .unwrap();
+    let death = script(&watcher, terminal, target, false).unwrap();
+    let destroyed = watcher
+        .find(0, |record| {
+            record.entity == target && record.operation == Some(3)
+        })
+        .unwrap();
+    let created = watcher.created(replacement).unwrap();
+    assert!(death <= destroyed && destroyed <= created);
+    assert!(created < script(&watcher, 0, replacement, true).unwrap());
+    server.stop().unwrap();
+}
+
+/// combat.py `_bot_weapons`: a firing training bot's script fires its
+/// rockets along its yaw, and they damage the player in front of it.
+#[test]
+#[ignore = "requires the derived 104319 data with its bot graph bundle"]
+fn a_firing_practice_bot_shoots_the_player() {
+    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use orpheus_script::vm::Unknowns;
+    use orpheus_sim::scene_assets::SceneAssets;
+
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_bot_unknowns(Unknowns::Tolerate);
+    let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let [x, y, z] = scene.map().spawn_point(0, 0).unwrap().0;
+    // An enemy firing bot 4 m beside the player's spawn, facing it (a
+    // quarter turn: along +x), where the other bots leave the line clear.
+    let shooter = scene
+        .bots_mut()
+        .iter_mut()
+        .find(|bot| bot.spawn.firing && bot.spawn.team != 0)
+        .unwrap();
+    shooter.position = [x - 4.0, y, z];
+    shooter.yaw = 16384.0;
+    let shooter = shooter.entity;
+    let schemas = Arc::new(Schemas::game());
+    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let ticket = server
+        .open_prepared_practice(MATCH, scene, player().remove(0), PlayerCard::default())
+        .unwrap();
+    let mut client = Client::new(server.local_addr(), &ticket);
+    client.handshake();
+    let mut watcher = Watcher {
+        client,
+        owner: player_entity(0),
+        tick: 0,
+        sequences: HashSet::new(),
+        datagrams: Vec::new(),
+        ticks: Vec::new(),
+    };
+    pump_until(&mut [&mut watcher], &schemas, "the instance", |watchers| {
+        watchers[0]
+            .datagrams
+            .iter()
+            .any(|(messages, _)| messages.iter().any(|message| message.id == 20300))
+    });
+    let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+    let mut payload = BitWriter::new();
+    write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+    watcher.client.send(ACK, payload.into_bytes());
+    pump_until(
+        &mut [&mut watcher],
+        &schemas,
+        "the controller",
+        |watchers| {
+            watchers[0]
+                .find(0, |record| {
+                    record.entity == watchers[0].owner && record.script.is_some()
+                })
+                .is_some()
+        },
+    );
+    let owner = watcher.owner;
+    send_player_message(
+        &mut watcher.client,
+        &schemas,
+        owner,
+        1,
+        PICK_HERO,
+        SOLDIER.to_le_bytes().to_vec(),
+    );
+    let body = owner | 1;
+    pump_until(
+        &mut [&mut watcher],
+        &schemas,
+        "the bot's rocket",
+        |watchers| {
+            watchers[0]
+                .find(0, |record| {
+                    record.entity == body && record.base_health.is_some_and(|health| health < 200.0)
+                })
+                .is_some()
+        },
+    );
+    // The bot's script is what fires: its live frames went to the client.
+    assert!(
+        watcher
+            .find(0, |record| {
+                record.entity == shooter
+                    && record
+                        .script
+                        .as_ref()
+                        .is_some_and(|script| script.first != 0)
+            })
+            .is_some()
+    );
+    server.stop().unwrap();
+}

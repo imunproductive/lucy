@@ -12,6 +12,7 @@ use std::{
 use crate::{
     body::{BodyCreate, BodyView, body_create, owner_pose},
     body_script::OwnerBodySpawn,
+    bot_script::{BotEvent, BotViewContext, BotViews},
     bots::BOT_RECORD_DELAY,
     combat::{
         BotReplacement, DEAD, PlayerHit, PlayerTarget, PosedProjectile, PosedShot, RESPAWN_RETRY,
@@ -468,6 +469,10 @@ enum Delivery {
     /// A Biotic Field entity: its create, frames and destroy
     /// (projectiles.py `_deliver_field`, `FieldArrived`, `_end`).
     Field(FieldDelivery),
+    /// A training bot's statescript chunk (bot_script.rs).
+    BotFrames {
+        last: u32,
+    },
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -792,9 +797,8 @@ pub struct WorldDelivery {
     notices: SwitchNotices,
     /// Bodies of this player's ring that other clients still reference.
     retained_elsewhere: HashSet<u32>,
-    /// The PvP "assemble your team" countdown runs (match.py `assembling`):
-    /// a pick keeps hero select open, which shows the skin selector.
-    assembling: bool,
+    /// The training bots' statescript on this client.
+    bot_views: BotViews,
     /// The current body's death and respawn (combat.py `Vitals.died_at`).
     death: Option<BodyDeath>,
     /// The pools of a body that runs no script (combat.py `Vitals` from
@@ -803,6 +807,9 @@ pub struct WorldDelivery {
     /// Changes of the current body's pools, for the other clients.
     body_health: u64,
     board: BoardDelivery,
+    /// The PvP "assemble your team" countdown runs (match.py `assembling`):
+    /// a pick keeps hero select open, which shows the skin selector.
+    assembling: bool,
 }
 
 /// A body's death (combat.py `Vitals.death_tick`, `killer`) and when it
@@ -872,6 +879,7 @@ impl WorldDelivery {
             switches: 0,
             notices: SwitchNotices::default(),
             retained_elsewhere: HashSet::new(),
+            bot_views: BotViews::default(),
             death: None,
             plain_vitals: None,
             body_health: 0,
@@ -898,6 +906,7 @@ impl WorldDelivery {
         self.plain_vitals = None;
         self.board = BoardDelivery::default();
         self.others.clear();
+        self.bot_views.clear();
         self.notices = SwitchNotices::default();
     }
 
@@ -1053,6 +1062,64 @@ impl WorldDelivery {
         });
     }
 
+    /// The training bots' statescript on this client this tick: new bot
+    /// lifetimes' first frames, the room's live and death frames, what this
+    /// client's ACKs made due and, on a send frame, the practice nameplates
+    /// (server.py `queue_bot_live`, `queue_bot_death`, `_flush_bot_frames`,
+    /// `_flush_bot_nameplates`).
+    pub fn update_bots(
+        &mut self,
+        scene: &PreparedScene,
+        events: &[BotEvent],
+        tick: u32,
+        send: bool,
+    ) {
+        if self.started.is_none() {
+            return;
+        }
+        let live: Vec<u32> = self
+            .bots
+            .iter()
+            .filter(|&(_, lifetime)| *lifetime == BotLifetime::Live)
+            .map(|(&entity, _)| entity)
+            .collect();
+        let mut views = std::mem::take(&mut self.bot_views);
+        let identity = |entity: u32| self.combat_identity_ready(entity);
+        let context = BotViewContext {
+            tick,
+            mode_ready: self.mode_ready(),
+            identity: &identity,
+            live: &live,
+            send,
+        };
+        let chunks = views.update(scene.bot_scripts(), events, &context);
+        // A lifetime registered after its create already arrived (a fast
+        // ACK between ticks) may send its first frame at once.
+        for &entity in live.iter().filter(|&entity| self.created.contains(entity)) {
+            views.create_arrived(entity);
+        }
+        self.bot_views = views;
+        for chunk in chunks {
+            self.push(Record {
+                update: chunk.update,
+                delivery: Delivery::BotFrames { last: chunk.last },
+            });
+        }
+    }
+
+    /// This bot's statescript frames still owed to this client: its
+    /// replacement waits (server.py `_body_destroy_pending`).
+    pub fn bot_frames_pending(&self, entity: u32) -> bool {
+        self.created.contains(&entity)
+            && self.bot_views.pending(entity, self.health_pending(entity))
+    }
+
+    /// The client's statescript stream of the bot's current lifetime, even
+    /// before its baseline arrived (server.py `bot_stream`).
+    pub fn bot_stream(&self, entity: u32) -> Option<&BodyStream<ProjectedSnapshot>> {
+        self.bot_views.stream(entity)
+    }
+
     pub fn replace_bot(&mut self, replacement: BotReplacement) {
         let old = replacement.retired;
         let new = replacement.created.entity;
@@ -1060,6 +1127,7 @@ impl WorldDelivery {
             return;
         }
         self.bots.insert(old, BotLifetime::Retiring);
+        self.bot_views.forget(old);
         self.bots.insert(new, BotLifetime::Live);
         self.created.remove(&old);
         self.health_updates.remove(&old);
@@ -1111,6 +1179,7 @@ impl WorldDelivery {
             }
             Delivery::Other(other) => self.others.current(other, entity),
             Delivery::Field(field) => self.fields.current(field, entity),
+            Delivery::BotFrames { last } => self.bot_views.current(entity, last),
         }
     }
 
@@ -1147,6 +1216,12 @@ impl WorldDelivery {
                             retry.push(record);
                         }
                     }
+                    (arrived, Delivery::BotFrames { last }) => {
+                        let entity = record.update.entity;
+                        if self.bot_views.delivered(entity, last, arrived) {
+                            retry.push(record);
+                        }
+                    }
                     (false, Delivery::Script { resend: false, .. }) => {}
                     (false, _) => retry.push(record),
                     (true, Delivery::Baseline) => {
@@ -1156,6 +1231,7 @@ impl WorldDelivery {
                     }
                     (true, Delivery::BotCreate { .. }) => {
                         self.created.insert(record.update.entity);
+                        self.bot_views.create_arrived(record.update.entity);
                     }
                     (true, Delivery::BotDestroy) => {
                         self.bots.remove(&record.update.entity);
@@ -1275,6 +1351,11 @@ impl WorldDelivery {
                         // Even a fallback confirmation needs an acknowledged owner lease.
                         return None;
                     }
+                    Delivery::BotFrames { last }
+                        if !self.bot_views.ready(record.update.entity, last) =>
+                    {
+                        return None;
+                    }
                     Delivery::Other(other) if !self.others.ready(other) => return None,
                     _ => {}
                 }
@@ -1298,6 +1379,10 @@ impl WorldDelivery {
                     }
                 }
                 Delivery::Other(other) => self.others.sent(other),
+                Delivery::BotFrames { last } => {
+                    let entity = self.queued[index].update.entity;
+                    self.bot_views.sent(entity, last);
+                }
                 _ => {}
             }
         }

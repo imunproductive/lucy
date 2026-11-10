@@ -51,10 +51,16 @@ struct TargetTagCounts {
 
 impl World for PlayerWorld {
     fn assumption(&self, class: &str) -> Option<&'static str> {
-        // Server-only: picks the entities message 0BD goes to (graph 01CA,
-        // node 126; moving and firing reach it). Its meaning is open; the
-        // Python reference answered nothing, so the message went nowhere.
-        (class == "STU_ED45C5E8").then_some("no entities")
+        match class {
+            // Server-only: picks the entities message 0BD goes to (graph
+            // 01CA, node 126; moving and firing reach it). Its meaning is
+            // open; the Python reference answered nothing, so the message
+            // went nowhere.
+            "STU_ED45C5E8" => Some("no entities"),
+            // An entity filter the evaluator can't compute (`native`).
+            "STU_AC829876" => Some("false"),
+            _ => None,
+        }
     }
 
     fn ruleset(&mut self, id: u32) -> Option<Value> {
@@ -248,6 +254,10 @@ impl World for PlayerWorld {
             "STU_4A101787" => Some(Value::Bool(false)),
             // See `assumption`.
             "STU_ED45C5E8" if self.is_player_site(site) => Some(Value::Array(Vec::new())),
+            // Does an entity pass a filter (teams, tags): the forms the
+            // evaluator can't compute answer false, as
+            // `ow174/game/script/driver.py` does.
+            "STU_AC829876" if self.is_player_site(site) => Some(Value::Bool(false)),
             // A human player's own body takes the falsey branch for this
             // parameterless query, in every mode (`TRUSTED_NATIVES` in
             // `ow174/game/script/driver.py`). Its native meaning is open.
