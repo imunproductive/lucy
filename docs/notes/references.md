@@ -29,3 +29,18 @@ Both explain the design. Neither is a wire specification or server source.
 - [overtools/TACTLib](https://github.com/overtools/TACTLib) (MIT): CASC and TACT reading, including the per-build Overwatch manifest procedures.
 - [Plasmawatch login-server](https://github.com/plasmawatch/login-server): Battle.net login emulation reference.
 - [SplitMix64](https://prng.di.unimi.it/splitmix.c) (public domain): the generator behind the statescript VM's local random expressions.
+
+## Survey of related projects (2026-11-10)
+
+What each project has that this repository lacks, for server-side work. Full reports, with file and line citations, are outside the repository in `D:/Work/Coding/refs/reports/`.
+
+| Project | License | Worth taking | Evidence |
+| --- | --- | --- | --- |
+| [AipNooBest, branch `hud-display-fix` at `860bab45`](https://github.com/AipNooBest/overwatch-1.74-lobby-server/tree/860bab45) | MIT | A weapon's `CosmeticEntity` builds nothing unless its `.003` definition is in the 20505 preload list (`+0x90`); the captured skin list has no gun definitions (`docs/HERO-WEAPONS.md`, `ow174/game/loadout.py` `gun_defs`). The in-game HUD: a server-created UI entity (definition `0x04000000000001F1`) mounting `041A` → `120B` beside `20E4`; the match-start message `.025:0C47` that only the server sends, as a remote-sync frame; the ammo widget `20E7`, hero panel `183C`, hero HUD `01CF` and layer `01CB` through dispatcher `004B`; which weapon presenters to light (`.0035` ammo, `.003D` charge, `.001C` gate, `.00C6` magazine); `ALIVE_VAR 0x094C`; the HUD needs a named menu hero at login (`docs/HUD-VARIABLES.md`). | Live client renders; several readouts still don't draw, as the author says |
+| [p3n1cillin/ow1-preservation](https://github.com/p3n1cillin/ow1-preservation) | AGPL-3.0 (research only; its game code is not public) | `HANDOFF.md` and `CLAUDE.md`: AI navigation data in map chunk `0x12` (tactical volumes with voxel masks); vs-AI as normal modes with server bots (queue cards `0x0630…70`–`72`); the Assault flow on Temple of Anubis (phase variable `003B`, messages `0700`/`0692`/`0701`/`0694`/`0695`, mode entity `16B2` with `0F4A`, objective entities, spawn room tags); killcam record 25011; the hero dead flag `0x01DE`; `STU_E4C6AAB4` reads the spawn-room flag of component 74; `STU_54FEB21C` is a container the server ends through variable `0x018B`. Branch `claude/blissful-bohr-qodvyf`: public-source rule notes (timers, capture rates, AI difficulty). | Mixed: live runs, memory-dump emulation and static tracing, marked per item |
+| [LizRollin at `9f8f3bcb`](https://github.com/LizRollin/overwatch-1.74-lobby-server/tree/9f8f3bcb5eccab6fb7738bee3c2371fcf0623f29) | MIT | `data/statescript_names_174.json`, which `tools/ssq.py` needs: aliases for unnamed classes (`STU_0A6BE10E` FilterArray, `STU_0C3A5D53` ForProbe, `STU_B5C87F3D` SoundImportanceThreat and others), logical button ids, mode and controller graphs per team. Nothing else: the Python server here is a superset. | Names without client addresses |
+| [Prometheus](https://github.com/saturn-xvi/prometheus) (branches `artpop2`, `stu-editor-ui`) | AGPL-3.0 since `artpop2` | Beta-only leads: an instance flag `0x8` that let some beta weapons fire; PvP game component fields (game-state asset, round, overtime). | Beta client trials |
+| Boi-027 lobby server (`wip`), KenMizz fork, Boi-027 research repo, Plasmawatch login-server and lobby | MIT / none | Nothing new: older copies of the same lobby code or of what `crates/bnet` does. | |
+
+Logo2K's lobby map list also explains the eight encrypted bundles in `data-sources.md`: maps `0EEE` and `0F14` are the lobby maps "OWL Summer Showdown 2022" and "Goodbye". Gamayun and Claudewatch are not public, so they were not surveyed.
+
