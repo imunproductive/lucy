@@ -1992,6 +1992,9 @@ impl WorldDelivery {
                 }
             });
         deliveries.extend(projectiles.advance(tick));
+        // The other clients' copies and the Biotic Field's entities and heals
+        // (projectiles.py `_show_others`, `_field`) are not delivered yet.
+        projectiles.take_events();
         self.queue_projectiles(id, deliveries)
     }
 
