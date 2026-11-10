@@ -4749,7 +4749,6 @@ impl<W: World> Context for InstanceContext<'_, W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     use serde_json::json;
 
@@ -6460,9 +6459,7 @@ mod tests {
     #[test]
     #[ignore = "requires a local 1.74 graph pack"]
     fn authored_sprint_stack_gates_track_input_and_reveal_the_base_on_release() {
-        let runtime = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        );
+        let runtime = orpheus_testkit::runtime_dir();
         let graphs =
             Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
         let mut world = SprintWorld::default();
@@ -6524,9 +6521,7 @@ mod tests {
     #[test]
     #[ignore = "requires a local 1.74 graph pack"]
     fn isolated_soldier_sprint_ability_matches_the_authored_toggle_and_modifier_states() {
-        let runtime = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        );
+        let runtime = orpheus_testkit::runtime_dir();
         let graphs =
             Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
         let mut world = SprintWorld::default();
@@ -6745,9 +6740,7 @@ mod tests {
     #[test]
     #[ignore = "requires a local 1.74 graph pack"]
     fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
-        let runtime = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        );
+        let runtime = orpheus_testkit::runtime_dir();
         let graphs =
             Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
         let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
@@ -6861,9 +6854,7 @@ mod tests {
     #[test]
     #[ignore = "requires a local 1.74 graph pack"]
     fn authored_soldier_rifle_holds_releases_and_reloads_on_the_reference_clock() {
-        let runtime = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        );
+        let runtime = orpheus_testkit::runtime_dir();
         let graphs =
             Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
         let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
@@ -7220,9 +7211,7 @@ mod tests {
     #[test]
     #[ignore = "requires a local 1.74 graph pack"]
     fn soldier_sprint_graph_reads_primary_crouch_and_melee_edges_as_in_python() {
-        let runtime = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        );
+        let runtime = orpheus_testkit::runtime_dir();
         let graphs =
             Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
         let mut component = Component::start(
@@ -7275,9 +7264,7 @@ mod tests {
     #[test]
     #[ignore = "requires a local 1.74 Practice Range NPC graph pack with graph 0B92"]
     fn firing_placement_reset_and_timer_boundaries_match_python() {
-        let runtime = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        );
+        let runtime = orpheus_testkit::runtime_dir();
         let graphs =
             Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
         assert!(
@@ -7366,9 +7353,7 @@ mod tests {
     #[test]
     #[ignore = "requires an authorized 104319 graph pack in ORPHEUS_RUNTIME_DIR"]
     fn controller_and_training_bot_supported_startup_edges_match_python() {
-        let runtime = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        );
+        let runtime = orpheus_testkit::runtime_dir();
         let graphs = GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap();
         let run = |entity, roots| {
             initialize(

@@ -22,5 +22,6 @@ serde_json.workspace = true
 fixtures = []
 
 [dev-dependencies]
+orpheus-testkit.workspace = true
 sha2.workspace = true
 tempfile.workspace = true

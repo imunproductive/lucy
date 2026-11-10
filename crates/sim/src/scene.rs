@@ -228,7 +228,7 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     fn runtime() -> std::path::PathBuf {
-        std::path::PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap()).join("data")
+        orpheus_testkit::runtime_dir().join("data")
     }
 
     #[test]

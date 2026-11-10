@@ -507,9 +507,7 @@ mod tests {
         };
         use std::{fs, net::UdpSocket, time::Instant};
 
-        let runtime = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        );
+        let runtime = orpheus_testkit::runtime_dir();
         let state = tempfile::tempdir().unwrap();
         let mut config = ServerConfig::new(runtime.clone(), state.path().into());
         config.lobby_port = 0;

@@ -344,7 +344,6 @@ fn rewrite_variant_message(blob: &[u8], ids: &Ids) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     use sha2::{Digest, Sha256};
 
@@ -420,10 +419,7 @@ mod tests {
     #[test]
     #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
     fn own_and_friend_presence_match_python_wire_values() {
-        let runtime = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        )
-        .join("data");
+        let runtime = orpheus_testkit::runtime_dir().join("data");
         let schemas = Schemas::load(runtime.join("schemas_174.json")).unwrap();
         let templates = RetailTemplates::load(runtime.join("retail_templates.json")).unwrap();
         let presence = Presence::new(&templates).unwrap();

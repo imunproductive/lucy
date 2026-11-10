@@ -1337,9 +1337,8 @@ mod tests {
         use orpheus_content::maps::GameMap;
         use orpheus_core::tick::FIRST_TICK;
         use orpheus_script::{codecs::PayloadMode, vm::StateKind};
-        use std::path::PathBuf;
 
-        let root = PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap());
+        let root = orpheus_testkit::runtime_dir();
         let graphs = Arc::new(GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap());
         let pools = crate::pools::PoolCatalog::from_graphs(&graphs)
             .unwrap()
@@ -1704,9 +1703,8 @@ mod tests {
     #[ignore = "requires the separately prepared 104319 hero and graph catalogs"]
     fn authored_armour_and_shield_roots_reproduce_the_reference_body_pools() {
         use orpheus_core::tick::FIRST_TICK;
-        use std::path::PathBuf;
 
-        let root = PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap());
+        let root = orpheus_testkit::runtime_dir();
         let heroes =
             orpheus_content::heroes::HeroCatalog::load(root.join("data/game_heroes_174.json"))
                 .unwrap();

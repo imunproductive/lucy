@@ -460,7 +460,6 @@ fn invalid(message: &'static str) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
 
     use sha2::{Digest, Sha256};
 
@@ -682,7 +681,7 @@ mod tests {
     #[test]
     #[ignore = "requires the external 104319 resource catalog and lobby templates"]
     fn login_messages_match_python_for_events_challenges_and_content_key_order() {
-        let data = PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap()).join("data");
+        let data = orpheus_testkit::runtime_dir().join("data");
         let templates = RetailTemplates::load(data.join("retail_templates.json")).unwrap();
         let celebrations = Celebrations::load(&data, &templates).unwrap();
         let items = ItemDb::load(&data).unwrap();

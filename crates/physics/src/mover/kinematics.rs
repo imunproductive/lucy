@@ -306,7 +306,7 @@ fn length(x: f64, z: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::PathBuf};
+    use std::{collections::BTreeMap, fs};
 
     use sha2::{Digest, Sha256};
 
@@ -426,8 +426,7 @@ mod tests {
     #[test]
     #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
     fn movement_velocity_matches_python_across_authored_mover_settings() {
-        let path = PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap())
-            .join("data/game_movers_174.json");
+        let path = orpheus_testkit::runtime_dir().join("data/game_movers_174.json");
         let movers = MoverCatalog::load(&path).unwrap();
         let raw: BTreeMap<String, serde_json::Value> =
             serde_json::from_slice(&fs::read(path).unwrap()).unwrap();

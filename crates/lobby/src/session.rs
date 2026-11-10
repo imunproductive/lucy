@@ -345,7 +345,6 @@ mod tests {
     use std::{
         io::{Read, Write},
         net::{Ipv4Addr, TcpListener},
-        path::PathBuf,
         thread,
     };
 
@@ -526,10 +525,7 @@ mod tests {
     #[test]
     #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
     fn prepared_subset_matches_the_python_login_in_wire_order() {
-        let runtime = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        )
-        .join("data");
+        let runtime = orpheus_testkit::runtime_dir().join("data");
         let schemas = Schemas::load(runtime.join("schemas_174.json")).unwrap();
         let templates = RetailTemplates::load(runtime.join("retail_templates.json")).unwrap();
         let items = Arc::new(ItemDb::load(&runtime).unwrap());

@@ -596,7 +596,6 @@ fn box_list(boxes: &[LootBox]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     use serde_json::json;
     use sha2::{Digest, Sha256};
@@ -792,10 +791,7 @@ mod tests {
     #[test]
     #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
     fn progression_and_gallery_wire_bytes_match_python_for_three_profiles() {
-        let runtime = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        )
-        .join("data");
+        let runtime = orpheus_testkit::runtime_dir().join("data");
         let schemas = Schemas::load(runtime.join("schemas_174.json")).unwrap();
         let templates = RetailTemplates::load(runtime.join("retail_templates.json")).unwrap();
         let items = Arc::new(ItemDb::load(&runtime).unwrap());

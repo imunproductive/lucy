@@ -579,9 +579,7 @@ mod tests {
     }
 
     fn shipped(name: &str) -> Schemas {
-        let root = std::env::var_os("ORPHEUS_RUNTIME_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).to_owned());
+        let root = orpheus_testkit::runtime_dir();
         Schemas::load(root.join("data").join(name)).unwrap()
     }
 

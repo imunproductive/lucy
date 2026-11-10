@@ -280,11 +280,8 @@ mod tests {
     fn all_heroes_match_python_owner_and_observer_create_bytes() {
         use orpheus_content::heroes::HeroCatalog;
         use orpheus_script::graph::GraphStore;
-        use std::path::{Path, PathBuf};
 
-        let root = std::env::var_os("ORPHEUS_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).to_owned());
+        let root = orpheus_testkit::runtime_dir();
         let heroes = HeroCatalog::load(root.join("data/game_heroes_174.json")).unwrap();
         let graphs = GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap();
         let pools = PoolCatalog::from_graphs(&graphs).unwrap();

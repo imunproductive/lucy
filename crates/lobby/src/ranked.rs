@@ -520,7 +520,6 @@ fn integer(fields: &Fields, offset: u32) -> io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     use serde_json::json;
     use sha2::{Digest, Sha256};
@@ -587,10 +586,7 @@ mod tests {
     #[test]
     #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
     fn state_card_and_party_rating_messages_match_python_wire_vectors() {
-        let runtime = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        )
-        .join("data");
+        let runtime = orpheus_testkit::runtime_dir().join("data");
         let schemas = Schemas::load(runtime.join("schemas_174.json")).unwrap();
         let templates = RetailTemplates::load(runtime.join("retail_templates.json")).unwrap();
         let ranked = Ranked::new(&templates).unwrap();

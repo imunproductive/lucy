@@ -985,11 +985,8 @@ mod tests {
     #[ignore = "requires the separately prepared 104319 state codec table"]
     fn actual_payloads_match_python_in_owner_and_both_observer_modes() {
         use sha2::{Digest, Sha256};
-        use std::path::PathBuf;
 
-        let root = std::env::var_os("ORPHEUS_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).to_owned());
+        let root = orpheus_testkit::runtime_dir();
         let table = CodecTable::load(root.join("data/statescript_codecs_174.json")).unwrap();
         assert_eq!(table.classes().count(), 598);
         assert_eq!(

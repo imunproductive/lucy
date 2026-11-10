@@ -487,11 +487,9 @@ mod tests {
     #[ignore = "requires the separately prepared 104319 stat catalog"]
     fn actual_scoreboard_components_match_the_python_wire_corpus() {
         use crate::maps::PRACTICE_RANGE_MODE;
-        use std::{collections::BTreeSet, path::PathBuf};
+        use std::collections::BTreeSet;
 
-        let root = std::env::var_os("ORPHEUS_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).to_owned());
+        let root = orpheus_testkit::runtime_dir();
         let catalog = StatsCatalog::load(root.join("data/game_stats_174.json")).unwrap();
         let modes: BTreeSet<_> = std::iter::once(&catalog.player)
             .chain(catalog.heroes.values())

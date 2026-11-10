@@ -303,7 +303,6 @@ mod tests {
     use std::{
         collections::BTreeSet,
         fs::{self, File},
-        path::PathBuf,
     };
 
     use sha2::{Digest, Sha256};
@@ -348,7 +347,7 @@ mod tests {
     #[test]
     #[ignore = "requires a prepared 104319 Practice Range movement cache"]
     fn practice_range_player_movement_records_match_python() {
-        let runtime = PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap());
+        let runtime = orpheus_testkit::runtime_dir();
         let cache =
             read_movement_cache(File::open(runtime.join("collision/0688.col")).unwrap()).unwrap();
         let ids = BTreeSet::new();

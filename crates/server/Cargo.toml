@@ -24,6 +24,7 @@ serde_json.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+orpheus-testkit.workspace = true
 tempfile.workspace = true
 orpheus-sim = { workspace = true, features = ["fixtures"] }
 orpheus-wire = { workspace = true, features = ["fixtures"] }

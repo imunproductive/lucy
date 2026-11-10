@@ -1764,7 +1764,7 @@ mod tests {
     #[test]
     #[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
     fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input() {
-        let runtime = std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap();
+        let runtime = orpheus_testkit::runtime_dir();
         let assets = SceneAssets::load(runtime).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let owner = 0xa000_0100;
@@ -2406,7 +2406,7 @@ mod tests {
     #[test]
     #[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
     fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
-        let runtime = std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap();
+        let runtime = orpheus_testkit::runtime_dir();
         let assets = SceneAssets::load(runtime).unwrap();
         let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
         let (factory, _) = crate::body_script::fixture_body_factory();

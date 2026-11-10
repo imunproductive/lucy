@@ -471,7 +471,7 @@ mod tests {
     use orpheus_script::vm::{
         Component, EmptyWorld, MAX_INIT_WORK, player_entity_variables, player_roots,
     };
-    use std::{path::PathBuf, sync::Arc};
+    use std::sync::Arc;
 
     const BODY: u32 = 0xa000_0101;
     const CANISTER: u64 = 0x0400_0000_0000_072d;
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     #[ignore = "requires the separately prepared 104319 statescript catalog"]
     fn authored_soldier_leases_match_python_and_exclude_the_rifle() {
-        let root = PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap());
+        let root = orpheus_testkit::runtime_dir();
         let graphs = Arc::new(GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap());
         let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
         let mut component = Component::start(

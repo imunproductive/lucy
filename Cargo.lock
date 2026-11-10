@@ -409,6 +409,7 @@ dependencies = [
 name = "orpheus-bnet"
 version = "0.0.0"
 dependencies = [
+ "orpheus-testkit",
  "orpheus-wire",
  "prost",
  "prost-reflect",
@@ -422,6 +423,7 @@ version = "0.0.0"
 dependencies = [
  "indexmap",
  "orpheus-core",
+ "orpheus-testkit",
  "orpheus-wire",
  "serde",
  "serde_json",
@@ -443,6 +445,7 @@ dependencies = [
  "orpheus-bnet",
  "orpheus-content",
  "orpheus-core",
+ "orpheus-testkit",
  "orpheus-wire",
  "prost",
  "serde",
@@ -458,6 +461,7 @@ dependencies = [
  "indexmap",
  "lzma-rust2",
  "orpheus-core",
+ "orpheus-testkit",
  "orpheus-wire",
  "serde",
  "serde_json",
@@ -473,6 +477,7 @@ dependencies = [
  "indexmap",
  "orpheus-core",
  "orpheus-physics",
+ "orpheus-testkit",
  "orpheus-wire",
  "serde",
  "serde_json",
@@ -493,6 +498,7 @@ dependencies = [
  "orpheus-lobby",
  "orpheus-script",
  "orpheus-sim",
+ "orpheus-testkit",
  "orpheus-wire",
  "roxmltree",
  "serde_json",
@@ -509,12 +515,17 @@ dependencies = [
  "orpheus-core",
  "orpheus-physics",
  "orpheus-script",
+ "orpheus-testkit",
  "orpheus-wire",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
 ]
+
+[[package]]
+name = "orpheus-testkit"
+version = "0.0.0"
 
 [[package]]
 name = "orpheus-wire"
@@ -524,6 +535,7 @@ dependencies = [
  "getrandom",
  "hmac",
  "orpheus-core",
+ "orpheus-testkit",
  "serde",
  "serde_json",
  "sha2 0.10.9",

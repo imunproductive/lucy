@@ -211,11 +211,8 @@ mod tests {
     fn actual_mover_components_match_the_python_reference() {
         use sha2::{Digest, Sha256};
         use std::collections::BTreeMap;
-        use std::path::PathBuf;
 
-        let root = std::env::var_os("ORPHEUS_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).to_owned());
+        let root = orpheus_testkit::runtime_dir();
         let catalog = MoverCatalog::load(root.join("data/game_movers_174.json")).unwrap();
         assert_eq!(catalog.by_body.len(), 38);
         let settings = |body| {

@@ -659,7 +659,7 @@ mod tests {
     #[ignore = "requires a prepared 104319 state graph bundle"]
     fn whole_retail_wire_index_matches_the_python_reference() {
         use sha2::{Digest, Sha256};
-        let root = std::path::PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap());
+        let root = orpheus_testkit::runtime_dir();
         let store = GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap();
         let mut digest = Sha256::new();
         fn sequence(digest: &mut Sha256, items: impl IntoIterator<Item = u64>) {

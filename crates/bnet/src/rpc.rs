@@ -316,8 +316,8 @@ mod tests {
     #[test]
     #[ignore = "requires the separately prepared Battle.net descriptor set"]
     fn connect_logon_and_referral_match_the_python_rpc_frames() {
-        let path = std::env::var_os("ORPHEUS_BNET_DESCRIPTORS").unwrap();
-        let protocol = Protocol::load(std::path::PathBuf::from(path)).unwrap();
+        let path = orpheus_testkit::bnet_descriptors();
+        let protocol = Protocol::load(path).unwrap();
         let clock = Clock {
             server_epoch: 42,
             wall_millis: 1_700_000_000_123,

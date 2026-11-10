@@ -479,7 +479,6 @@ mod tests {
     #[ignore = "requires the separately prepared 104319 map catalog"]
     fn map_catalog_and_mode_selections_match_the_python_corpus() {
         use sha2::{Digest, Sha256};
-        use std::path::PathBuf;
 
         fn count(digest: &mut Sha256, value: usize) {
             digest.update(u32::try_from(value).unwrap().to_le_bytes());
@@ -490,9 +489,7 @@ mod tests {
             digest.update(value.as_bytes());
         }
 
-        let root = std::env::var_os("ORPHEUS_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).to_owned());
+        let root = orpheus_testkit::runtime_dir();
         let catalog = MapCatalog::load(root.join("data/game_maps_174.json")).unwrap();
         let listing = catalog.map_catalog();
         let mut digest = Sha256::new();

@@ -127,7 +127,6 @@ impl<'a> Parameters<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     use crate::heroes::SOLDIER;
     use orpheus_core::bits::BitReader;
@@ -221,10 +220,7 @@ mod tests {
     #[test]
     #[ignore = "requires authorized 104319 game schemas and hero catalog in ORPHEUS_RUNTIME_DIR"]
     fn reliable_21616_messages_match_the_python_reader_and_hero_select_requests() {
-        let data = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        )
-        .join("data");
+        let data = orpheus_testkit::runtime_dir().join("data");
         let schemas = Schemas::load(data.join("game_schemas_174.json")).unwrap();
         let heroes = HeroCatalog::load(data.join("game_heroes_174.json")).unwrap();
         // Python game.messages.write_channel with synthetic entity IDs and the

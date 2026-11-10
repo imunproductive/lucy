@@ -184,7 +184,7 @@ fn release(game: &GameService, connection: u32, error: io::Error) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{net::UdpSocket, path::PathBuf, sync::Arc, time::Duration};
+    use std::{net::UdpSocket, sync::Arc, time::Duration};
 
     use orpheus_content::maps::{PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE};
     use orpheus_lobby::{
@@ -228,10 +228,7 @@ mod tests {
     #[test]
     #[ignore = "requires authorized 104319 lobby and game schemas in ORPHEUS_RUNTIME_DIR"]
     fn practice_request_hands_off_an_authenticated_udp_seat_and_releases_failed_sends() {
-        let data = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        )
-        .join("data");
+        let data = orpheus_testkit::runtime_dir().join("data");
         let lobby = Schemas::load(data.join("schemas_174.json")).unwrap();
         let game_schemas = Arc::new(Schemas::load(data.join("game_schemas_174.json")).unwrap());
         let mut game = GameService::bind("127.0.0.1:0".parse().unwrap(), game_schemas).unwrap();

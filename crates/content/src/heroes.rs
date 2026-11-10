@@ -219,11 +219,8 @@ mod tests {
     #[ignore = "requires the separately prepared 104319 hero catalog"]
     fn actual_hero_catalog_matches_the_ordered_python_reference() {
         use sha2::{Digest, Sha256};
-        use std::path::PathBuf;
 
-        let root = std::env::var_os("ORPHEUS_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).to_owned());
+        let root = orpheus_testkit::runtime_dir();
         let catalog = HeroCatalog::load(root.join("data/game_heroes_174.json")).unwrap();
         let mut digest = Sha256::new();
         let mut roles = [0; 3];

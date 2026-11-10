@@ -346,7 +346,6 @@ fn invalid(error: impl std::fmt::Display) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
 
     use serde_json::json;
     use sha2::{Digest, Sha256};
@@ -377,7 +376,7 @@ mod tests {
     #[test]
     #[ignore = "requires an authorized 104319 Arcade catalog in ORPHEUS_RUNTIME_DIR"]
     fn arcade_and_pass_wire_bytes_match_python_across_events_seasons_and_dates() {
-        let data = PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap()).join("data");
+        let data = orpheus_testkit::runtime_dir().join("data");
         let schemas = Schemas::load(data.join("schemas_174.json")).unwrap();
         let templates = RetailTemplates::load(data.join("retail_templates.json")).unwrap();
         let ranked = Ranked::new(&templates).unwrap();

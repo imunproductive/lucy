@@ -1439,7 +1439,7 @@ fn arithmetic(opcode: u8, a: &Value, b: &Value, context: &mut impl Context) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::collections::BTreeMap;
 
     use serde_json::json;
 
@@ -1888,10 +1888,7 @@ mod tests {
     #[test]
     #[ignore = "requires an authorized 104319 graph pack in ORPHEUS_RUNTIME_DIR"]
     fn authored_controller_hud_and_soldier_config_values_match_python() {
-        let data = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        )
-        .join("data");
+        let data = orpheus_testkit::runtime_dir().join("data");
         let graphs = GraphStore::load(data.join("game_graphs_174.json.gz")).unwrap();
         let mut context = Vars {
             instance: BTreeMap::from([

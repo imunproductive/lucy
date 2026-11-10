@@ -213,7 +213,6 @@ fn presence_bit(graph: &Graph, id: u32) -> io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     const SOLDIER: u64 = 0x02e0_0000_0000_006e;
     const REAPER: u64 = 0x02e0_0000_0000_0002;
@@ -246,9 +245,7 @@ mod tests {
     #[test]
     #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
     fn practice_and_pvp_controller_frames_match_reference_graphs_and_bytes() {
-        let runtime = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        );
+        let runtime = orpheus_testkit::runtime_dir();
         let graphs =
             GraphStore::load(runtime.join("data").join("game_graphs_174.json.gz")).unwrap();
         let practice = Controller::load(&graphs, PRACTICE_RANGE_MODE).unwrap();

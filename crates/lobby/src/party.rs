@@ -109,7 +109,7 @@ impl PartyMember<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{path::PathBuf, sync::Arc};
+    use std::sync::Arc;
 
     use sha2::{Digest, Sha256};
 
@@ -173,10 +173,7 @@ mod tests {
     #[test]
     #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
     fn solo_and_group_party_payloads_match_the_python_wire_bytes() {
-        let runtime = PathBuf::from(
-            std::env::var_os("ORPHEUS_RUNTIME_DIR").expect("set ORPHEUS_RUNTIME_DIR"),
-        )
-        .join("data");
+        let runtime = orpheus_testkit::runtime_dir().join("data");
         let schemas = Schemas::load(runtime.join("schemas_174.json")).unwrap();
         let templates = RetailTemplates::load(runtime.join("retail_templates.json")).unwrap();
         let items = Arc::new(ItemDb::load(&runtime).unwrap());

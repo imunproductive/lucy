@@ -536,7 +536,7 @@ mod tests {
     fn encoded_lobby_ticket_authenticates_a_loopback_udp_peer() {
         use orpheus_lobby::handoff::{HANDOFF, HANDOFF_MESSAGE};
 
-        let runtime = std::path::PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap());
+        let runtime = orpheus_testkit::runtime_dir();
         let schemas = Schemas::load(runtime.join("data/schemas_174.json")).unwrap();
         let server_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         let client_socket = UdpSocket::bind("127.0.0.1:0").unwrap();

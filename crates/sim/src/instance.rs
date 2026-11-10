@@ -161,7 +161,7 @@ mod tests {
         use orpheus_wire::{jam::codec::Schemas, messages::encode};
         use sha2::{Digest, Sha256};
 
-        let root = std::path::PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap());
+        let root = orpheus_testkit::runtime_dir();
         let schemas = Schemas::load(root.join("data/game_schemas_174.json")).unwrap();
         let members = members();
         let practice_range = GameMap::practice_range();

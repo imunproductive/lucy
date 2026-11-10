@@ -493,9 +493,7 @@ mod tests {
     #[test]
     #[ignore = "requires the separately prepared lobby template corpus"]
     fn real_templates_and_localized_login_match_python_wire_hashes() {
-        let root = std::env::var_os("ORPHEUS_RUNTIME_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).to_owned());
+        let root = orpheus_testkit::runtime_dir();
         let data = root.join("data");
         let templates = RetailTemplates::load(data.join("retail_templates.json")).unwrap();
         let schemas = Schemas::load(data.join("schemas_174.json")).unwrap();

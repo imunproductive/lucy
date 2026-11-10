@@ -342,8 +342,7 @@ mod tests {
     #[test]
     #[ignore = "requires the separately prepared Battle.net descriptor set"]
     fn loads_external_descriptors() {
-        let path = std::env::var_os("ORPHEUS_BNET_DESCRIPTORS")
-            .expect("set ORPHEUS_BNET_DESCRIPTORS to the prepared descriptor set");
+        let path = orpheus_testkit::bnet_descriptors();
         let protocol = Protocol::load(path).unwrap();
         for name in [
             CONNECT_REQUEST,

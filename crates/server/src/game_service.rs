@@ -1265,7 +1265,7 @@ mod tests {
     #[test]
     #[ignore = "requires the separately prepared 104319 game schemas"]
     fn worker_serves_loading_using_the_retail_schemas() {
-        let root = std::path::PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap());
+        let root = orpheus_testkit::runtime_dir();
         let schemas = Schemas::load(root.join("data/game_schemas_174.json")).unwrap();
         exercise_loading(schemas);
     }
@@ -1477,7 +1477,7 @@ mod tests {
         use orpheus_sim::scene_assets::SceneAssets;
         use orpheus_wire::commands::Command;
 
-        let assets = SceneAssets::load(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap()).unwrap();
+        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let mut state = State::new(Arc::new(fixture()));
         // Five synthetic peers share a prepared fixture solely to test the
@@ -1596,7 +1596,7 @@ mod tests {
         use orpheus_wire::jam::codec::id16;
 
         const CONTROLLER: u32 = 0xa000_0100;
-        let runtime = std::path::PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap());
+        let runtime = orpheus_testkit::runtime_dir();
         let data = runtime.join("data");
         let schemas = Arc::new(Schemas::load(data.join("game_schemas_174.json")).unwrap());
         let lobby = Schemas::load(data.join("schemas_174.json")).unwrap();

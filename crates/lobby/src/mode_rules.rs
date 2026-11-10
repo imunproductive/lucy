@@ -113,7 +113,7 @@ fn category(stats: IndexMap<u64, Vec<Value>>, key: u64) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, sync::Arc};
+    use std::sync::Arc;
 
     use sha2::{Digest, Sha256};
 
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     #[ignore = "requires the prepared 104319 retail templates and catalogs"]
     fn mode_rules_matches_three_python_104319_message_bodies() {
-        let data = PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap()).join("data");
+        let data = orpheus_testkit::runtime_dir().join("data");
         let templates = RetailTemplates::load(data.join("retail_templates.json")).unwrap();
         let items = Arc::new(ItemDb::load(&data).unwrap());
         let collection = Collection::new(&templates, Arc::clone(&items)).unwrap();

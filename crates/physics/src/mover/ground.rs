@@ -381,7 +381,7 @@ fn guarded_inverse(total: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeSet, fs::File, path::PathBuf, sync::Arc};
+    use std::{collections::BTreeSet, fs::File, sync::Arc};
 
     use sha2::{Digest, Sha256};
 
@@ -444,8 +444,7 @@ mod tests {
     #[test]
     #[ignore = "requires a prepared 104319 Practice Range movement cache"]
     fn practice_range_ground_probes_match_python() {
-        let path = PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap())
-            .join("collision/0688.col");
+        let path = orpheus_testkit::runtime_dir().join("collision/0688.col");
         let cache = read_movement_cache(File::open(path).unwrap()).unwrap();
         let identifiers = BTreeSet::new();
         let scene = CollisionScene::movement_probe(&cache, &identifiers).unwrap();

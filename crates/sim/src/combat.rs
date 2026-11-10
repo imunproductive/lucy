@@ -283,7 +283,7 @@ mod tests {
     #[test]
     #[ignore = "requires a prepared 104319 Practice Range scene"]
     fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
-        let runtime = std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap();
+        let runtime = orpheus_testkit::runtime_dir();
         let mut scene = SceneAssets::load(runtime)
             .unwrap()
             .prepare(GameMap::practice_range())

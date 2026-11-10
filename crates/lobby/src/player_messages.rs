@@ -297,9 +297,7 @@ mod tests {
     #[test]
     #[ignore = "requires the separately prepared 104319 lobby schemas"]
     fn prepared_player_message_wire_bytes_match_python() {
-        let root = std::env::var_os("ORPHEUS_RUNTIME_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+        let root = orpheus_testkit::runtime_dir();
         let schemas = Schemas::load(root.join("data/schemas_174.json")).unwrap();
         let digest = |messages: &[LobbyMessage]| {
             let mut hash = Sha256::new();

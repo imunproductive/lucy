@@ -398,7 +398,7 @@ mod tests {
     #[test]
     #[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
     fn stock_soldier_requires_more_vm_support_before_prepared_attach() {
-        let runtime = PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap());
+        let runtime = orpheus_testkit::runtime_dir();
         let assets = SceneAssets::load(runtime).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         assert!(scene.movement_ready());
@@ -429,7 +429,7 @@ mod tests {
     #[test]
     #[ignore = "requires a prepared 104319 Practice Range pack"]
     fn elevated_practice_patrols_reach_their_hints_without_crossing_walls() {
-        let runtime = PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap());
+        let runtime = orpheus_testkit::runtime_dir();
         let assets = SceneAssets::load(runtime).unwrap();
         let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
         assert_eq!(scene.bots().len(), 15);

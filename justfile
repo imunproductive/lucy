@@ -27,4 +27,4 @@ build:
 
 # Ignored tests that need a prepared runtime pack.
 test-runtime runtime:
-    $env:ORPHEUS_RUNTIME_DIR = '{{runtime}}'; $env:ORPHEUS_BNET_DESCRIPTORS = '{{runtime}}\bnet\descriptors.pb'; cargo test --workspace --locked -- --ignored
+    $env:ORPHEUS_RUNTIME_DIR = '{{runtime}}'; cargo test --workspace --locked -- --ignored

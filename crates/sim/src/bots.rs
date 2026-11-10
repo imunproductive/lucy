@@ -989,11 +989,7 @@ mod tests {
     #[test]
     #[ignore = "requires the separately prepared 104319 AI spawner and mover tables"]
     fn fifteen_practice_bots_match_python_roster_and_patrol_frames() {
-        use std::path::PathBuf;
-
-        let root = std::env::var_os("ORPHEUS_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).to_owned());
+        let root = orpheus_testkit::runtime_dir();
         let data = root.join("data");
         let catalog = BotCatalog::load(data.join("ai_spawners_174.json")).unwrap();
         let raw_movers: HashMap<String, serde_json::Value> =

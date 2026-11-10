@@ -392,11 +392,7 @@ mod tests {
     #[test]
     #[ignore = "requires the separately prepared 104319 game schema"]
     fn matches_a_python_mixed_frame_and_pong_with_the_runtime_schema() {
-        use std::path::{Path, PathBuf};
-
-        let root = std::env::var_os("ORPHEUS_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).to_owned());
+        let root = orpheus_testkit::runtime_dir();
         let schemas = Schemas::load(root.join("data/game_schemas_174.json")).unwrap();
         // Python write_channel + tests/test_game_commands.py::record(5000).
         let frame = [

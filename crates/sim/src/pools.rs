@@ -233,11 +233,8 @@ mod tests {
     #[ignore = "requires the separately prepared 104319 hero and graph catalogs"]
     fn all_hero_pools_match_python_defaults_overrides_and_component_bytes() {
         use sha2::{Digest, Sha256};
-        use std::path::{Path, PathBuf};
 
-        let root = std::env::var_os("ORPHEUS_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).to_owned());
+        let root = orpheus_testkit::runtime_dir();
         let catalog = HeroCatalog::load(root.join("data/game_heroes_174.json")).unwrap();
         let graphs = GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap();
         let pools = PoolCatalog::from_graphs(&graphs).unwrap();

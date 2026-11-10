@@ -401,9 +401,8 @@ mod tests {
             jam::codec::{Schemas, Value},
             messages::{read_channel, write_channel},
         };
-        use std::path::PathBuf;
 
-        let root = PathBuf::from(std::env::var_os("ORPHEUS_RUNTIME_DIR").unwrap());
+        let root = orpheus_testkit::runtime_dir();
         let scene = SceneAssets::load(&root)
             .unwrap()
             .prepare(GameMap::practice_range())
