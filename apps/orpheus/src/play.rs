@@ -9,7 +9,7 @@ use std::{
 };
 
 use orpheus_launcher::game::{GAME_EXE, TARGET_VERSION, build_info, choose_locale, resolve_game};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::{serve, settings::Settings};
 
@@ -153,6 +153,6 @@ pub fn run(settings: &Settings) -> io::Result<()> {
         let _ = stop.send(());
     });
     let _ = stopped.recv();
-    warn!("stopping");
+    info!("game closed or Ctrl+C; stopping");
     server.stop()
 }
