@@ -80,7 +80,7 @@ impl World {
             collection: &self.collection,
             ranked: &self.ranked,
             presence: &self.presence,
-            places: &self.places,
+            places: Box::new(|_| Ok(self.places.clone())),
             wall_time: 1_700_000_000,
             now,
             queue: Box::new(|_, _| None),

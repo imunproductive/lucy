@@ -17,7 +17,9 @@ use std::{
     process::ExitCode,
 };
 
-use clap::{Parser, Subcommand};
+use clap::{
+    CommandFactory, FromArgMatches, Parser, Subcommand, error::ErrorKind, parser::ValueSource,
+};
 use orpheus_server::runtime;
 use tracing::error;
 
@@ -27,11 +29,7 @@ use settings::{Mode, ModeArgs, ServerArgs, Settings, default_state_dir};
 /// Without a command, `orpheus` asks which mode to start (Enter is retail);
 /// with no console to answer, it starts retail.
 #[derive(Parser)]
-#[command(
-    version,
-    about = "The ORPHEUS server for Overwatch 1.74.0.0.104319",
-    args_conflicts_with_subcommands = true
-)]
+#[command(version, about = "The ORPHEUS server for Overwatch 1.74.0.0.104319")]
 struct Cli {
     /// Folder for profiles, logs, config.toml and remembered answers [default: %APPDATA%\orpheus].
     #[arg(long, global = true, env = "ORPHEUS_STATE_DIR", value_name = "DIR")]
@@ -130,7 +128,7 @@ enum Launch {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = parse_cli(std::env::args_os()).unwrap_or_else(|error| error.exit());
     match run(cli) {
         Ok(code) => code,
         Err(problem) => {
@@ -138,6 +136,28 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The command line. The mode options before a command would be ignored, so
+/// they are refused there; `--state` goes anywhere.
+fn parse_cli(
+    arguments: impl IntoIterator<Item = impl Into<std::ffi::OsString> + Clone>,
+) -> Result<Cli, clap::Error> {
+    let mut command = Cli::command();
+    let matches = command.try_get_matches_from_mut(arguments)?;
+    if matches.subcommand().is_some() {
+        let misplaced = matches.ids().find(|id| {
+            id.as_str() != "state"
+                && matches.value_source(id.as_str()) == Some(ValueSource::CommandLine)
+        });
+        if let Some(id) = misplaced {
+            return Err(command.error(
+                ErrorKind::ArgumentConflict,
+                format!("the option {id} goes after the command, or use it without one"),
+            ));
+        }
+    }
+    Cli::from_arg_matches(&matches)
 }
 
 fn run(cli: Cli) -> io::Result<ExitCode> {
@@ -308,7 +328,7 @@ mod tests {
     use std::{net::Ipv4Addr, time::Duration};
 
     fn parse(arguments: &[&str]) -> Cli {
-        Cli::try_parse_from(["orpheus"].iter().chain(arguments)).unwrap()
+        parse_cli(["orpheus"].iter().chain(arguments)).unwrap()
     }
 
     #[test]
@@ -357,11 +377,24 @@ mod tests {
             ["join", "--name", "two words"],
             ["play", "--timeout", "0"],
             ["serve", "--host", "localhost"],
+            ["--host", "1.2.3.4", "play"],
         ] {
             assert!(
-                Cli::try_parse_from(["orpheus"].iter().chain(&arguments)).is_err(),
+                parse_cli(["orpheus"].iter().chain(&arguments)).is_err(),
                 "{arguments:?}"
             );
+        }
+    }
+
+    #[test]
+    fn the_state_folder_goes_before_or_after_a_command() {
+        for arguments in [
+            ["--state", "elsewhere", "doctor"],
+            ["doctor", "--state", "elsewhere"],
+        ] {
+            let cli = parse(&arguments);
+            assert!(matches!(cli.command, Some(Command::Doctor(_))));
+            assert_eq!(cli.state, Some(PathBuf::from("elsewhere")));
         }
     }
 }
