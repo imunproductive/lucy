@@ -7,7 +7,9 @@ use orpheus_content::maps::GameMap;
 use orpheus_lobby::{
     accounts::battle_tag,
     collection::Collection,
-    handoff::{Handoff, LobbySeat, enter_game, general_channel, is_request, match_channel},
+    handoff::{
+        Handoff, LobbySeat, enter_game, general_channel, is_request, match_channel, team_colours,
+    },
     session::PreparedLogin,
     transport::LobbyMessage,
 };
@@ -56,9 +58,11 @@ pub fn dispatch(
     if !is_request(request) {
         return Ok(None);
     }
+    // The player is team 0; the training bots are team 1.
+    const PLAYER_TEAM: u8 = 0;
     let players = vec![MatchPlayer {
         name: login.account.name.clone(),
-        team: 0,
+        team: PLAYER_TEAM,
         tournament: login.tournament,
         ranked: false,
     }];
@@ -80,15 +84,16 @@ pub fn dispatch(
                 "the reserved UDP seat is for another match",
             ));
         }
-        let [leave, join, ticket] = enter_game(
+        let [leave, join, colours, ticket] = enter_game(
             input.general,
             input.match_channel,
+            team_colours(PLAYER_TEAM, &[0, 1]),
             &handoff,
-            input.host,
-            game.local_addr().port(),
+            (input.host, game.local_addr().port()),
         )?;
         send(&leave)?;
         send(&join)?;
+        send(&colours)?;
         if !send(&ticket)? {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -295,9 +300,14 @@ mod tests {
                 .iter()
                 .map(|&(crc, id, _)| (crc, id))
                 .collect::<Vec<_>>(),
-            [(chat, 20404), (chat, 20402), (HANDOFF, HANDOFF_MESSAGE)],
+            [
+                (chat, 20404),
+                (chat, 20402),
+                (0x2128_6b49, 23310),
+                (HANDOFF, HANDOFF_MESSAGE)
+            ],
         );
-        let Value::Struct(ticket) = &messages[2].2[&0x80] else {
+        let Value::Struct(ticket) = &messages[3].2[&0x80] else {
             panic!("handoff ticket missing");
         };
         let connection = u32::try_from(require_unsigned(ticket, 0x28)).unwrap();

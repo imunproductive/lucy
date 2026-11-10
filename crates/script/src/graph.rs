@@ -737,7 +737,7 @@ mod tests {
         }
         assert_eq!(store.bodies().len(), 32);
         let expected = match store.graphs.len() {
-            445 => "145e25e9222eb64c242fde1cb5cf7689234bf88e285a6be474de9dd86e0ab55a",
+            373 => "f54fb85e91d33b669c73239ddc77fb0f8f7fa6e6d0f04b83532bc1f953a4ac7c",
             405 => {
                 assert_eq!(store.entities.len(), 8);
                 assert_eq!(store.mode_variables.len(), 25);

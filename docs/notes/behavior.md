@@ -56,14 +56,6 @@ The imported game-server branch (LizRollin `9f8f3bcb`) claimed these work in the
 
 Written but never checked in the game: kill feed, Helix Rockets and Biotic Field on other players' screens, no General chat during a match, a queue match found while in the Practice Range, a hero voice line on spawn (18 heroes have a networked spawn voice stimulus; Soldier: 76 does not).
 
-AipNooBest's branch (`860bab45`, ported in `crates/sim/src/hud.rs` and the login preload) claims, from its own live client:
-
-- A gun shows only when its `.003` definition is in the login preload list; without it a scripted body shows gloves.
-- The server's world UI entity, its mount and the `.0C47` ring build `HUD_Root`: interaction prompts appear, and a hero shows the ult ring with its percentage and two weapon-slot icons. The ammo digits, health number and bar, ability row and portrait still do not draw.
-- The HUD's hero layer initializes only when the login named a menu hero; a "random" lobby hero leaves it dead.
-
-The ring here differs from the branch's: it uses this repository's remote full frame layout (an active bit and the class payload per lit entry, no instance event lists, sorted compact variables). The owner mount frames are bit for bit the branch's.
-
 ## Known defects
 
 - Soldier: 76 in the Practice Range: after a kill the fire button can stay pressed and ammo stops going down; Biotic Field does not show with some skins; Sprint stops working after a while; a crash after kills. Default skins avoid some of this.
@@ -86,3 +78,4 @@ The ring here differs from the branch's: it uses this repository's remote full f
 Add one entry per check: date, commit, client build and locale, hero, map, exact inputs, expected and observed result, number of runs that agreed.
 
 - **2026-11-10, Rust relay to the lobby (phase 5 gate).** Commit `aa07704` plus the uncommitted phase 5 cleanup (no relay or server change), debug build. Client 1.74.0.0.104319, enUS, KR branch install. Runtime pack assembled from LizRollin's public data at `9f8f3bcb` plus `0688.col` built by `tools/build_collision.py` (see `docs/notes/data-sources.md`). Command: `orpheus play --runtime <pack> --game <install> --state <fresh folder>`. Expected: the client logs in through the Rust relay and reaches the lobby. Observed: the relay connected the client's Battle.net stream on port 1119 to the RPC port 21119 and carried the WebSocket upgrade and the logon exchange. The client then held a lobby connection on 3724 and showed the main menu's Options screen as RESEARCHER. One run.
+- **2026-11-10, Soldier: 76 with the forced `041A` HUD mount.** Commit `5bbbdb0` (gun preload plus AipNooBest's world UI entity mount, since replaced), release build, Practice Range, 445-graph pack. Client 1.74.0.0.104319, enUS. Observed (one run, screenshot): the rifle in first person; the hero card with portrait and 200/200 and its health segments; the ultimate ring at 0%; Sprint, Biotic Field and Helix Rockets icons; ammo 30/30 with the rifle icon; the crosshair; training bots. The user called it partly working without listing what was missing.

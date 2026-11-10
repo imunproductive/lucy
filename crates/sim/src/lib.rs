@@ -9,7 +9,6 @@ pub mod combat;
 pub mod controller;
 pub mod egress;
 pub mod hitscan;
-pub mod hud;
 pub mod instance;
 pub mod pools;
 pub mod projectile_flight;

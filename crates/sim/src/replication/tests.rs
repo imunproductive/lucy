@@ -5,10 +5,7 @@ use orpheus_content::{
     maps::GameMap,
     parameters::{CLIENT_GAME_MESSAGE, PICK_HERO},
 };
-use orpheus_core::{
-    bits::{BitReader, BitWriter},
-    tick::FIRST_TICK,
-};
+use orpheus_core::{bits::BitReader, tick::FIRST_TICK};
 use orpheus_physics::{
     collision::index::TriangleIndex, contact::world::ContactWorld, mover::settings::MoverSettings,
 };
@@ -366,83 +363,6 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
     world.clear();
     assert!(!world.has_input_work());
     assert_eq!(world.command_ack(FIRST_TICK + 90), later.frame);
-}
-
-/// The HUD mount's wire order: the UI entity comes with the first body, its
-/// mount waits for the create, the ring for the mount, and the widgets go
-/// and come back at the branch's pace.
-#[test]
-#[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
-fn the_hud_mount_rings_only_after_its_mount_arrives_then_cycles_the_widgets() {
-    use orpheus_script::wire::chunk;
-
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-    let scene = assets.prepare(GameMap::practice_range()).unwrap();
-    let viewer = PlayerAppearance {
-        entity: OWNER,
-        slot: 0,
-        team: 0,
-        card: &PlayerCard::default(),
-    };
-    let mut world = WorldDelivery::new(OWNER);
-    world.start(&scene, &viewer, FIRST_TICK).unwrap();
-    world.created.extend([OWNER, GAME_MODE_ENTITY]);
-    world.present(&scene, FIRST_TICK).unwrap();
-    let ui = |world: &WorldDelivery| -> Vec<(bool, Option<BitWriter>)> {
-        world
-            .queued
-            .iter()
-            .filter(|record| record.update.entity == WORLD_UI_ENTITY)
-            .map(|record| {
-                (
-                    matches!(record.update.operation, Some(Operation::Create(_))),
-                    record.update.chunk.clone(),
-                )
-            })
-            .collect()
-    };
-    assert!(ui(&world).is_empty(), "no UI entity before a body");
-    assert!(!world.presentation_due);
-
-    let hero = scene.heroes().get(SOLDIER).unwrap();
-    world
-        .switch(
-            &scene,
-            &viewer,
-            FIRST_TICK,
-            RETAIL_QUANTA,
-            OWNER | 1,
-            (hero, SkinTheme::default()),
-        )
-        .unwrap();
-    assert_eq!(ui(&world), [(true, None)]);
-    world.present(&scene, FIRST_TICK).unwrap();
-    assert_eq!(ui(&world).len(), 1, "the mount waits for the create");
-
-    world.created.insert(WORLD_UI_ENTITY);
-    let mut tick = FIRST_TICK + 1;
-    world.present(&scene, tick).unwrap();
-    assert_eq!(ui(&world).len(), 2, "the mount follows the create");
-    world.present(&scene, tick + HUD_STEP_TICKS).unwrap();
-    assert_eq!(ui(&world).len(), 2, "the ring waits for the mount");
-
-    assert!(world.hud.arrived(1));
-    world.present(&scene, tick).unwrap();
-    let ring = chunk(scene.hud().ring_frame(), 0, 2).unwrap();
-    assert_eq!(ui(&world)[2], (false, Some(ring)));
-
-    tick += HUD_STEP_TICKS;
-    world.present(&scene, tick - 1).unwrap();
-    assert_eq!(ui(&world).len(), 3);
-    world.present(&scene, tick).unwrap();
-    world.present(&scene, tick + HUD_STEP_TICKS - 1).unwrap();
-    assert_eq!(ui(&world).len(), 4, "the bare mount, then a pause");
-    world.present(&scene, tick + HUD_STEP_TICKS).unwrap();
-    let frames = ui(&world);
-    assert_eq!(frames.len(), 5);
-    let bits = |frame: &(bool, Option<BitWriter>)| frame.1.as_ref().unwrap().bit_len();
-    assert!(bits(&frames[3]) < bits(&frames[4]), "the widgets come back");
-    assert!(!world.presentation_due);
 }
 use crate::egress::PacketDelivery;
 

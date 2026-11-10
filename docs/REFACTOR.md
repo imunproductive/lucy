@@ -452,7 +452,7 @@ Record the result in `docs/notes/data-sources.md`.
 | --- | --- | --- |
 | `extracted_heroes.json`, `extracted_maps.json`, `extracted_items.json`, `extracted_general_unlocks.json` | None in the repository (see 6c.0) | Decided by 6c.0 |
 | `game_heroes_174.json` | `extract_game_heroes.py` | `075` plus hero names |
-| `game_graphs_174.json.gz` | `extract_game_graphs.py` | `01B`, `003`, `0C5` (mode variables), the AI spawner graphs. Oracle: the normalized SHA-256 `febfbcc8…` recorded in `docs/notes/data-sources.md` for the 373 graphs without the `041A` root, and the wire index digest of the 445-graph bundle pinned in `whole_retail_wire_index_matches_the_python_reference`. |
+| `game_graphs_174.json.gz` | `extract_game_graphs.py` | `01B`, `003`, `0C5` (mode variables), the AI spawner graphs. Oracle: the normalized SHA-256 `febfbcc8…` recorded in `docs/notes/data-sources.md`. |
 | `game_maps_174.json` | `extract_game_maps.py` | `003`, `09F`, `0C5`, raw map chunks `0BC`, map entities, strings |
 | `game_queues_174.json` | `extract_game_queues.py` | `0C7`, `0C0`, `0C5`, `039`, `09F`, `0D9`, `0EE`, `0CC`, strings `07C`, plus the captured fields in [section 7](#7-fixed-data) |
 | `arcade_cards_174.json` | `extract_arcade_cards.py` | `0C7`, plus the server-set fields in section 7 |

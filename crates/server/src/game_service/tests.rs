@@ -642,10 +642,10 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     let ticket = result.unwrap().unwrap().handoff;
     assert_eq!(
         outgoing.iter().map(|(_, id, _)| *id).collect::<Vec<_>>(),
-        [20404, 20402, HANDOFF_MESSAGE]
+        [20404, 20402, 23310, HANDOFF_MESSAGE]
     );
-    assert_eq!(outgoing[2].0, HANDOFF);
-    let Value::Struct(wire) = &outgoing[2].2[&0x80] else {
+    assert_eq!(outgoing[3].0, HANDOFF);
+    let Value::Struct(wire) = &outgoing[3].2[&0x80] else {
         panic!("the decoded handoff has no seat body");
     };
     let key = |offset| {
