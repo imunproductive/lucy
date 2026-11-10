@@ -68,11 +68,9 @@ fn player_natives_follow_the_verified_owner_and_override_shapes() {
     );
     let branch = json!({"$":"STU_A77AC2AC","m_EE729DCB":0});
     assert_eq!(evaluate(&mut runtime, &branch), Ok(Value::Null));
+    // Null in every mode (main 184ff56, as in Python).
     runtime.world.mode = 0;
-    assert_eq!(
-        evaluate(&mut runtime, &branch),
-        Err(EvalError::UnsupportedConfig("STU_A77AC2AC".into()))
-    );
+    assert_eq!(evaluate(&mut runtime, &branch), Ok(Value::Null));
 }
 
 #[test]
