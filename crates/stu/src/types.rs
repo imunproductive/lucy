@@ -43,6 +43,9 @@ pub struct Field {
     pub hash: u32,
     pub name: &'static str,
     pub ty: FieldType,
+    /// OWLib's C# element type (`teVec3`, `uint`, `STUGraphPlug`, …),
+    /// without `[]`; DataTool's XML names a value's element after it.
+    pub type_name: &'static str,
     /// What the field holds when an asset doesn't store it: the declared
     /// initializer, else zero for numbers and vectors, else null.
     pub default: Value,
@@ -163,6 +166,7 @@ impl Types {
                             name,
                             default: default_value(ty, default),
                             ty,
+                            type_name: kind.strip_suffix("[]").unwrap_or(kind),
                         }
                     })
                     .collect();

@@ -8,10 +8,11 @@
 
 #![forbid(unsafe_code)]
 
-pub mod cache;
-mod heroes;
 mod arcade_cards;
+pub mod cache;
 mod game_queues;
+mod graphs;
+mod heroes;
 mod install;
 
 use std::{
@@ -101,8 +102,11 @@ pub const DERIVATIONS: &[Derivation] = &[
         name: "arcade_cards",
         derive: arcade_cards::derive,
     },
+    Derivation {
+        name: "graphs",
+        derive: graphs::derive,
+    },
 ];
-
 /// Run every derivation and write its files under `out`.
 pub fn build(install: &Install, out: &Path) -> Result<Vec<PathBuf>> {
     let mut written = Vec::new();
