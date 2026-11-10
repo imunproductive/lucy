@@ -1,4 +1,3 @@
-
 use super::*;
 use orpheus_content::maps::PRACTICE_RANGE_MAP;
 use orpheus_core::bits::{BitReader, BitWriter};

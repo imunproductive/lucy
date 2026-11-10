@@ -1,4 +1,3 @@
-
 use super::*;
 
 const CONTROLLER: u32 = 0xa000_0100;

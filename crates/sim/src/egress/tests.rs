@@ -1,4 +1,3 @@
-
 use super::*;
 use orpheus_core::bits::BitReader;
 use orpheus_physics::mover::correction::CorrectionHistory;

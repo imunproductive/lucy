@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::{instance::RETAIL_QUANTA, scene::PlayerCard, scene_assets::SceneAssets};
 use orpheus_content::{

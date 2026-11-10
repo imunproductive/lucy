@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::instance::TOURNAMENT_QUANTA;
 use orpheus_physics::{

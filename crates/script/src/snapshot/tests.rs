@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::vm::{Diagnostic, EmptyWorld, Issue, MAX_INIT_WORK, Root, Site, initialize};
 use serde_json::{Value as Json, json};
