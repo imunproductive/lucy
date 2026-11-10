@@ -23,6 +23,7 @@ mod install;
 mod lists;
 mod map_chunk;
 mod mode_props;
+mod navigation;
 mod props;
 
 use std::{
@@ -148,6 +149,10 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "economy",
         derive: economy::derive,
+    },
+    Derivation {
+        name: "navigation",
+        derive: navigation::derive,
     },
 ];
 

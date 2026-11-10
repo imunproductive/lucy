@@ -1,6 +1,6 @@
 [package]
 name = "orpheus-physics"
-description = "Collision and character movement for retail build 104319"
+description = "Collision, character movement and AI navigation for retail build 104319"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+flate2.workspace = true
 indexmap.workspace = true
 lzma-rust2.workspace = true
 orpheus-core.workspace = true

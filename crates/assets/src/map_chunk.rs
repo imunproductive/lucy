@@ -173,7 +173,7 @@ pub(crate) struct StuV1<'a> {
 const MAGIC: &[u8; 4] = b"DUTS";
 
 impl<'a> StuV1<'a> {
-    fn new(data: &'a [u8], start: usize) -> Option<Self> {
+    pub fn new(data: &'a [u8], start: usize) -> Option<Self> {
         (data.get(start..start + 4)? == MAGIC).then_some(Self { data, start })
     }
 
@@ -202,6 +202,17 @@ impl<'a> StuV1<'a> {
 
     pub fn i32(&self, at: usize) -> Option<i32> {
         self.u32(at).map(|value| value as i32)
+    }
+
+    pub fn i16(&self, at: usize) -> Option<i16> {
+        let at = self.start + at;
+        self.data
+            .get(at..at + 2)
+            .map(|bytes| i16::from_le_bytes(bytes.try_into().unwrap()))
+    }
+
+    pub fn f32(&self, at: usize) -> Option<f32> {
+        self.u32(at).map(f32::from_bits)
     }
 
     pub fn u64(&self, at: usize) -> Option<u64> {
