@@ -101,11 +101,17 @@ impl Reader<'_> {
         for (hash, size) in fields {
             let size = if size == 0 { self.data.i32()? } else { size };
             let start = self.data.position;
+            let end = start + size.max(0) as usize;
             if let Some(field) = self.types.field(class, hash) {
                 let value = self.field(hash, field.ty, size)?;
+                // The bag gives each field's size: reading past it means the
+                // type table and the asset disagree.
+                if self.data.position > end {
+                    return Err(corrupt("a field read past its stored size"));
+                }
                 object.fields.push((hash, value));
             }
-            self.data.position = start + size.max(0) as usize;
+            self.data.position = end;
         }
         self.defaults(&mut object);
         Ok(object)
