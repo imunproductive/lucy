@@ -1194,6 +1194,12 @@ fn state_payload(state: &State, codec: &Codec) -> Option<StatePayload> {
             }
             payload
         }
+        (StateKind::HitList, Some("hits")) => {
+            StatePayload::from([("flag".into(), Value::Bool(false))])
+        }
+        (StateKind::TrackTargets, Some("targets")) => {
+            StatePayload::from([("targets".into(), Value::Array(Vec::new()))])
+        }
         (StateKind::Anim, Some("anim")) => StatePayload::from([(
             "counter".into(),
             Value::Integer(i64::from(state.activation & 7)),

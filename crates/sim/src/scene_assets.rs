@@ -419,8 +419,7 @@ mod tests {
 
     /// Soldier: 76 through the server's own path, frame by frame: empty the
     /// rifle into its reload, then move, sprint, crouch, Helix and melee. Every
-    /// frame without a gap must encode for the owner and observers; the gaps
-    /// the session reaches are listed, so fixing one is a deliberate edit here.
+    /// frame must run without a gap and encode for the owner and observers.
     #[test]
     #[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
     fn stock_soldier_plays_a_scripted_session() {
@@ -463,7 +462,6 @@ mod tests {
         ];
         let mut frame = spawn.frame;
         let mut shots = 0;
-        let mut gaps = Vec::new();
         for (frames, forward, buttons) in script {
             for _ in 0..frames {
                 frame += 1;
@@ -476,15 +474,11 @@ mod tests {
                 runtime.advance(command, &mover, BodyStep::Posed).unwrap();
                 shots += runtime.take_shots(Some(command), &mover).len();
                 let snapshot = runtime.snapshot().unwrap();
-                for item in &snapshot.diagnostics {
-                    let gap = (item.site.graph, item.site.node, format!("{:?}", item.issue));
-                    if !gaps.contains(&gap) {
-                        gaps.push(gap);
-                    }
-                }
-                if !snapshot.diagnostics.is_empty() {
-                    continue;
-                }
+                assert!(
+                    snapshot.diagnostics.is_empty(),
+                    "frame {frame}: {:?}",
+                    snapshot.diagnostics
+                );
                 let encoder = runtime.encoder();
                 for view in [View::Owner, View::Observer] {
                     let projected = encoder.project(snapshot, view).unwrap();
@@ -492,33 +486,78 @@ mod tests {
                 }
             }
         }
-        // The rifle fires until the first gap; after one the server sends no
-        // more shots for the body.
-        assert_eq!(shots, 5);
-        assert_eq!(
-            gaps,
-            [
-                // Server-only: picks the entities message 0BD goes to; moving and
-                // firing both reach it. Its meaning is open.
+        // Every shot of the session, Helix included; a change here means the
+        // weapons' timing changed.
+        assert_eq!(shots, 31);
+        let snapshot = runtime.snapshot().unwrap();
+        let assumed: Vec<_> = snapshot
+            .assumptions
+            .iter()
+            .map(|item| {
                 (
-                    0x01ca,
-                    Some(126),
-                    "Expression(UnsupportedConfig(\"STU_ED45C5E8\"))".into()
-                ),
-                // An animation whose length comes from its asset, not the graph.
+                    item.site.graph,
+                    item.site.node,
+                    item.class.as_str(),
+                    item.answer,
+                )
+            })
+            .collect();
+        // The answers the server gives without knowing they are right, as the
+        // Python reference did (docs/notes/parity.md). Each one is a known
+        // difference to check with the client.
+        assert_eq!(
+            assumed,
+            [
+                (0x01ca, Some(126), "STU_ED45C5E8", "no entities"),
                 (
                     0x02c5,
                     Some(51),
-                    "UnsupportedField(\"animation asset duration\")".into()
+                    "STUStatescriptStateAnim",
+                    "never ends by itself"
                 ),
-                // Melee: an unnamed action with no fields.
+                (0x0255, Some(40), "STU_E9694EFD", "no-op"),
+                (0x0043, Some(44), "STU_6E5C5F66", "no-op"),
+                (0x0043, Some(8), "STU_1C2CC6D5", "no-op"),
                 (
                     0x0043,
-                    Some(44),
-                    "UnsupportedAction(\"STU_6E5C5F66\")".into()
+                    Some(11),
+                    "STUStatescriptStateTrackTargets",
+                    "finds no targets"
                 ),
-            ]
+                (0x0043, Some(9), "STU_23A00A53", "no effect"),
+                (
+                    0x0043,
+                    Some(10),
+                    "STUStatescriptStateModifyHealth",
+                    "no effect"
+                ),
+                (0x0043, Some(63), "STU_0A6BE10E", "no effect"),
+                (
+                    0x0043,
+                    Some(43),
+                    "STUStatescriptStatePhysicsExplosion",
+                    "no effect"
+                ),
+                (0x0043, Some(38), "STU_54FEB21C", "no effect"),
+                (0x0043, Some(24), "STU_B5C87F3D", "no effect"),
+                (0x0043, Some(60), "STU_77E13026", "no hits"),
+            ],
+            "{} assumptions",
+            assumed.len()
         );
+        // The frames encode because the one map value is left out of them.
+        let maps: Vec<_> = snapshot
+            .instances
+            .values()
+            .flat_map(|instance| {
+                instance
+                    .variables
+                    .iter()
+                    .filter(|(_, value)| matches!(value, orpheus_script::wire::Value::Map(_)))
+                    .map(|(&variable, _)| (instance.graph, variable))
+            })
+            .collect();
+        assert_eq!(maps, [(0x05ad, 29859)]);
     }
 
     #[test]

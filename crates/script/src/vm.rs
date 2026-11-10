@@ -182,6 +182,12 @@ pub struct TargetTagEffect {
 /// External authored queries for this initialization. The caller owns mode,
 /// ruleset, and entity data and can decline a query without guessing its value.
 pub trait World {
+    /// Whether this world's answer for a native config class is an assumption
+    /// (see [`Assumption`]), and what it answers.
+    fn assumption(&self, _class: &str) -> Option<&'static str> {
+        None
+    }
+
     fn ruleset(&mut self, _id: u32) -> Option<Value> {
         None
     }
@@ -331,6 +337,12 @@ pub enum StateKind {
     CosmeticEntity,
     ChaseVar,
     Watch,
+    /// A target search. The server can't run one yet, so it finds nothing,
+    /// as in the Python reference. Unverified.
+    TrackTargets,
+    /// Melee's hit list (`STU_77E13026`). The server doesn't run melee yet, so
+    /// it records no hits. Unverified.
+    HitList,
     WeaponVolley {
         volleys: u8,
         offset_ms: u64,
@@ -434,6 +446,17 @@ pub struct Diagnostic {
     pub issue: Issue,
 }
 
+/// An answer the server gives without knowing it is right: what the Python
+/// reference did where the meaning is still open. Unlike a diagnostic it
+/// doesn't stop the body; it is recorded so tests and notes can list them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Assumption {
+    pub site: Site,
+    /// The node or config class the answer is for.
+    pub class: String,
+    pub answer: &'static str,
+}
+
 #[derive(Debug)]
 pub struct Snapshot {
     pub entity: u32,
@@ -446,6 +469,8 @@ pub struct Snapshot {
     /// Effective linked values, separate from their stored bases.
     pub resolved_bindings: IndexMap<(u16, u32), Value>,
     pub diagnostics: Vec<Diagnostic>,
+    /// Unverified answers given so far, each site and class once.
+    pub assumptions: Vec<Assumption>,
 }
 
 impl Snapshot {
@@ -664,6 +689,8 @@ impl Component {
             parameters: None,
             watcher: None,
             read_native: false,
+            // A read outside the VM's run: nothing is recorded.
+            assumed: Vec::new(),
         };
         expr::evaluate(config, &mut context)
     }
@@ -1101,6 +1128,20 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
     }
 
+    fn assume(&mut self, site: Site, class: &str, answer: &'static str) {
+        let assumptions = &mut self.machine.snapshot.assumptions;
+        if !assumptions
+            .iter()
+            .any(|known| known.site == site && known.class == class)
+        {
+            assumptions.push(Assumption {
+                site,
+                class: class.to_owned(),
+                answer,
+            });
+        }
+    }
+
     fn report(&mut self, site: Site, issue: Issue) {
         let diagnostic = Diagnostic { site, issue };
         if !self.machine.snapshot.diagnostics.contains(&diagnostic) {
@@ -1187,17 +1228,6 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         else {
             return Ok(true);
         };
-        let mut parameters = Variables::new();
-        for parameter in array_field(&node.fields, "m_params")
-            .iter()
-            .filter(|value| value.is_object())
-        {
-            self.spend("game message parameter")?;
-            let Some(value) = self.evaluate(id, node, field(parameter, "m_value"), None) else {
-                return Ok(false);
-            };
-            parameters.insert(parameter_id(parameter), value);
-        }
         let site = self.site(id, node);
         let target = node
             .fields
@@ -1225,6 +1255,21 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 .collect(),
             _ => Vec::new(),
         };
+        if entities.is_empty() {
+            // A message to nobody: its parameters are never read.
+            return Ok(true);
+        }
+        let mut parameters = Variables::new();
+        for parameter in array_field(&node.fields, "m_params")
+            .iter()
+            .filter(|value| value.is_object())
+        {
+            self.spend("game message parameter")?;
+            let Some(value) = self.evaluate(id, node, field(parameter, "m_value"), None) else {
+                return Ok(false);
+            };
+            parameters.insert(parameter_id(parameter), value);
+        }
         for entity in entities {
             self.spend("game message routing")?;
             if entity == site.entity {
@@ -1275,10 +1320,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             parameters: self.parameters.as_deref(),
             watcher,
             read_native: false,
+            assumed: Vec::new(),
         };
         let result = expr::evaluate(config, &mut context);
         let reads = context.reads;
         let read_native = context.read_native;
+        for (class, answer) in context.assumed {
+            self.assume(site, &class, answer);
+        }
         if let Some(watcher) = watcher.filter(|&key| {
             self.state(key)
                 .is_some_and(|state| state.active && !state.ending)
@@ -1656,6 +1705,8 @@ struct InstanceContext<'a, W> {
     parameters: Option<&'a Variables>,
     watcher: Option<StateKey>,
     read_native: bool,
+    /// Native answers the world marked as assumptions, by config class.
+    assumed: Vec<(String, &'static str)>,
 }
 
 #[cfg(test)]

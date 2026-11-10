@@ -2196,7 +2196,9 @@ fn authored_soldier_rifle_holds_releases_and_reloads_on_the_reference_clock() {
         evaluate(node.field("m_FEC435C6").unwrap()),
         Ok(Value::Integer(180))
     );
-    assert!(component.take_shots().is_none());
+    // The body is complete now, so the server-facing call answers; the loop
+    // above already took every shot.
+    assert_eq!(component.take_shots().map(|shots| shots.len()), Some(0));
 }
 
 #[test]

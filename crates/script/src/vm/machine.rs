@@ -21,6 +21,7 @@ impl Machine {
                 bindings: IndexMap::new(),
                 resolved_bindings: IndexMap::new(),
                 diagnostics: Vec::new(),
+                assumptions: Vec::new(),
             },
             queues: Timeline::new(MAX_PENDING_EVENTS),
             watchers: BTreeMap::new(),

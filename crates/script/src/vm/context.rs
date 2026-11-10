@@ -104,7 +104,12 @@ impl<W: World> Context for InstanceContext<'_, W> {
 
     fn native(&mut self, config: &Json) -> Option<Value> {
         self.read_native = true;
-        self.world.native(self.site, config)
+        let value = self.world.native(self.site, config)?;
+        let class = config.get("$").and_then(Json::as_str).unwrap_or_default();
+        if let Some(answer) = self.world.assumption(class) {
+            self.assumed.push((class.to_owned(), answer));
+        }
+        Some(value)
     }
 
     fn has_target_tag(&mut self, entity: u32, tag: u64) -> Option<bool> {

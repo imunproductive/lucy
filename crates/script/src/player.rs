@@ -48,6 +48,13 @@ struct TargetTagCounts {
 }
 
 impl World for PlayerWorld {
+    fn assumption(&self, class: &str) -> Option<&'static str> {
+        // Server-only: picks the entities message 0BD goes to (graph 01CA,
+        // node 126; moving and firing reach it). Its meaning is open; the
+        // Python reference answered nothing, so the message went nowhere.
+        (class == "STU_ED45C5E8").then_some("no entities")
+    }
+
     fn ruleset(&mut self, id: u32) -> Option<Value> {
         if (self.mode, self.hero) != (PRACTICE_RANGE_MODE, SOLDIER) {
             return None;
@@ -225,6 +232,8 @@ impl World for PlayerWorld {
                 Some(Value::Entity(GAME_MODE_ENTITY))
             }
             "STU_4A101787" => Some(Value::Bool(false)),
+            // See `assumption`.
+            "STU_ED45C5E8" if self.is_player_site(site) => Some(Value::Array(Vec::new())),
             // The normal human Practice Range reference takes the falsey
             // branch for this parameterless query. Its native meaning is open.
             "STU_A77AC2AC"

@@ -15,10 +15,27 @@ const SERVER_NO_OPS: &[&str] = &[
     "STUStatescriptActionPlayScript",
     "STU_7106C356", // unnamed, listed by the Python reference
     "STU_C43F9944", // unnamed, listed by the Python reference
-    // Unnamed, with only hashed fields; reached by Soldier: 76's sprint
-    // (graph 0255, node 40). Python ran it as a no-op because it runs every
-    // node it has no model for that way. Unverified: the client will tell.
-    "STU_E9694EFD",
+];
+
+/// Unnamed actions the server runs as no-ops without knowing what they do,
+/// as the Python reference did for every node it had no model for. Each use is
+/// recorded as an [`Assumption`].
+const ASSUMED_NO_OPS: &[&str] = &[
+    "STU_E9694EFD", // Soldier: 76's sprint, graph 0255 node 40; hashed fields only
+    "STU_6E5C5F66", // melee, graph 0043 node 44; no fields
+    "STU_1C2CC6D5", // melee, graph 0043 node 8; one unnamed field
+];
+
+/// Melee's states (graph 0043): health change, knockback and four unnamed
+/// ones. The client reads them as on/off only ("none" codec); the server
+/// doesn't run their effect yet, like the Python VM, so melee hits nothing.
+const ASSUMED_INERT_STATES: &[&str] = &[
+    "STU_23A00A53",
+    "STUStatescriptStateModifyHealth",
+    "STU_0A6BE10E",
+    "STUStatescriptStatePhysicsExplosion",
+    "STU_B5C87F3D",
+    "STU_54FEB21C",
 ];
 
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
@@ -183,6 +200,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 Ok(true)
             }
             class if SERVER_NO_OPS.contains(&class) => {
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
+            class if ASSUMED_NO_OPS.contains(&class) => {
+                self.assume(self.site(id, node), class, "no-op");
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
@@ -386,6 +408,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptStateCosmeticEntity" => StateKind::CosmeticEntity,
             "STUStatescriptStateChaseVar" => StateKind::ChaseVar,
             "STU_2F4E2E3F" => StateKind::Watch,
+            "STUStatescriptStateTrackTargets" => StateKind::TrackTargets,
+            class if ASSUMED_INERT_STATES.contains(&class) => StateKind::Plain,
+            "STU_77E13026" => StateKind::HitList,
             "STUStatescriptStateWeaponVolley" => StateKind::WeaponVolley {
                 volleys: 1,
                 offset_ms: 0,
@@ -487,10 +512,17 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.state_mut(key).expect("active Watch").watch_seen = seen;
             }
             StateKind::WeaponVolley { .. } => self.begin_volley(key, node, depth)?,
+            StateKind::TrackTargets => {
+                self.assume(self.site(id, node), &node.class, "finds no targets");
+            }
+            StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
+            StateKind::Plain if ASSUMED_INERT_STATES.contains(&node.class.as_str()) => {
+                self.assume(self.site(id, node), &node.class, "no effect");
+            }
             StateKind::Plain
             | StateKind::MovementMod
             | StateKind::Effect
-            | StateKind::ActiveQuery => (),
+            | StateKind::ActiveQuery => {}
         }
         self.follow(id, node, "m_onBeginPlug", Some(key), depth)?;
         self.follow(id, node, "m_subgraphPlug", Some(key), depth)?;
