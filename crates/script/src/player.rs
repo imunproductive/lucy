@@ -21,7 +21,6 @@ use crate::{
     vm::{GameMessage, Site, TargetTagEffect, World},
     wire::{Value, Variables},
 };
-use orpheus_content::maps::PRACTICE_RANGE_MODE;
 use orpheus_physics::mover::sample_movement_flags;
 use orpheus_wire::entity::{GAME_MODE_ENTITY, Movement};
 
@@ -249,12 +248,11 @@ impl World for PlayerWorld {
             "STU_4A101787" => Some(Value::Bool(false)),
             // See `assumption`.
             "STU_ED45C5E8" if self.is_player_site(site) => Some(Value::Array(Vec::new())),
-            // The normal human Practice Range reference takes the falsey
-            // branch for this parameterless query. Its native meaning is open.
+            // A human player's own body takes the falsey branch for this
+            // parameterless query, in every mode (`TRUSTED_NATIVES` in
+            // `ow174/game/script/driver.py`). Its native meaning is open.
             "STU_A77AC2AC"
-                if self.is_player_site(site)
-                    && self.mode == PRACTICE_RANGE_MODE
-                    && native_shape(config, "STU_A77AC2AC", None) =>
+                if self.is_player_site(site) && native_shape(config, "STU_A77AC2AC", None) =>
             {
                 Some(Value::Null)
             }
