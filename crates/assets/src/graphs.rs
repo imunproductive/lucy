@@ -50,12 +50,8 @@ const IDENTIFIER: u16 = 0x01C;
 const TARGET_TAG: u16 = 0x06C;
 const INDEX: u64 = 0xFFFF_FFFF_FFFF;
 
-/// The graphs every bundle starts from besides the bodies'. The mode scripts,
-/// team controllers and team bodies are each mode's (`0C5` `m_teams`, and the
-/// script of the mode entity `16B2`; `statescript_names.json` "modes"), and
-/// the map entity graphs are the objectives' and doors' statescript
-/// instances (`STUStatescriptComponentInstanceData` in the map chunks).
-const ROOT_GRAPHS: [u64; 25] = [
+/// The graphs every bundle starts from besides the bodies'.
+const ROOT_GRAPHS: [u64; 11] = [
     0x13C1, // Practice Range controller
     0x0C90, // PvP controller
     0x288A, // hero select host
@@ -63,10 +59,18 @@ const ROOT_GRAPHS: [u64; 25] = [
     0x288D, // hero select team list
     0x20E4, // weapon and ability HUD
     0x13C0, // Practice Range mode
-    0x0F4A, // Assault, Escort and Hybrid mode
-    0x0EC2, // Control mode
+    0x0F4A, // PvP mode
+    0x0EC2, // PvP mode
     0x0C8E, // PvP mode body
     0x0258, // Biotic Field (the initial graph of 03DC.003, which 0257's canister leaves where it lands)
+];
+
+/// The match flow's graphs, also roots: the other modes' scripts, team
+/// controllers and team bodies (`0C5` `m_teams`, and the script of the
+/// mode entity `16B2`; `statescript_names.json` "modes"), and the map
+/// entity graphs of the objectives and doors (their
+/// `STUStatescriptComponentInstanceData` in the map chunks).
+const MODE_FLOW_GRAPHS: [u64; 14] = [
     0x0D76, // Skirmish mode
     0x0D0B, // Elimination mode
     0x0D6F, // Elimination controller
@@ -82,6 +86,11 @@ const ROOT_GRAPHS: [u64; 25] = [
     0x1225, // map payload
     0x0D32, // map spawn door
 ];
+
+/// Every root graph of a bundle besides the bodies' and the AI spawners'.
+fn bundle_roots() -> impl Iterator<Item = u64> {
+    ROOT_GRAPHS.into_iter().chain(MODE_FLOW_GRAPHS)
+}
 
 /// The Practice Range bot bodies (`1403`, `143E`, `146E`, `14A9`, `14D2`,
 /// `14ED`) and the AI definitions their `m_8B9A461F` names (`1404`, `14AF`).
@@ -176,7 +185,7 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
             queue.extend(used);
         }
     }
-    queue.extend(ROOT_GRAPHS);
+    queue.extend(bundle_roots());
     queue.extend(ai_roots.iter().copied());
 
     let mut graphs = BTreeMap::new();
@@ -197,7 +206,7 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
         queue.extend(graph.graph_refs());
     }
 
-    let mut root_graphs: BTreeSet<u64> = ROOT_GRAPHS.into_iter().collect();
+    let mut root_graphs: BTreeSet<u64> = bundle_roots().collect();
     root_graphs.extend(ai_roots);
     let mut body_keys: Vec<&String> = bodies.keys().collect();
     body_keys.sort();
