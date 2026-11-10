@@ -528,6 +528,120 @@ fn server_no_ops_run_what_follows_and_assumed_ones_are_recorded() {
     assert_eq!(assumed, [(Some(3), "STU_E9694EFD", "no-op")]);
 }
 
+/// Debug builds refuse unknown graph content; release builds do what the
+/// Python reference did and record it.
+#[test]
+fn unknown_content_is_refused_or_tolerated_like_the_python_reference() {
+    struct Tolerant;
+    impl World for Tolerant {
+        fn unknowns(&self) -> Unknowns {
+            Unknowns::Tolerate
+        }
+    }
+
+    let mark = |position, identifier| {
+        node(
+            position,
+            "STUStatescriptActionSetVar",
+            None,
+            json!({"m_out_Var":var(identifier,true), "m_value":true}),
+        )
+    };
+    let graph = graph(
+        42,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntry",
+                None,
+                json!({"m_outPlug":plug(
+                    &[(1, "m_inPlug"), (3, "m_beginPlug"), (4, "m_inPlug")],
+                    &[],
+                )}),
+            ),
+            node(
+                1,
+                "STU_00000001",
+                None,
+                json!({"m_outPlug":plug(&[(2, "m_inPlug")], &[])}),
+            ),
+            mark(2, 100),
+            node(3, "STU_00000002", Some(0), json!({})),
+            node(
+                4,
+                "STU_3387AB5D",
+                None,
+                json!({
+                    "m_condition":{"$":"STU_00000003"},
+                    "m_truePlug":plug(&[(5, "m_inPlug")], &[]),
+                    "m_falsePlug":plug(&[(6, "m_inPlug")], &[]),
+                }),
+            ),
+            mark(5, 101),
+            mark(6, 102),
+        ],
+        json!([3]),
+        json!([0]),
+    );
+    let graphs = store(vec![graph]);
+    let refused = initialize(
+        &graphs,
+        42,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let refused: Vec<_> = refused
+        .diagnostics
+        .iter()
+        .map(|item| (item.site.node, format!("{:?}", item.issue)))
+        .collect();
+    assert_eq!(
+        refused,
+        [
+            (Some(1), r#"UnsupportedAction("STU_00000001")"#.into()),
+            (
+                Some(4),
+                r#"Expression(UnsupportedConfig("STU_00000003"))"#.into()
+            ),
+            (Some(3), r#"UnsupportedState("STU_00000002")"#.into()),
+        ]
+    );
+
+    let tolerated = initialize(
+        &graphs,
+        42,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        &mut Tolerant,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    assert!(tolerated.initialization_complete());
+    // The action's out plug ran, the state is on, and the unknown condition
+    // read as null, so the false branch ran.
+    assert_eq!(
+        tolerated.variables,
+        Variables::from([(100, Value::Bool(true)), (102, Value::Bool(true))])
+    );
+    assert_eq!(tolerated.instances[&1].states[&0].kind, StateKind::Plain);
+    let assumed: Vec<_> = tolerated
+        .assumptions
+        .iter()
+        .map(|item| (item.site.node, item.class.as_str(), item.answer))
+        .collect();
+    assert_eq!(
+        assumed,
+        [
+            (Some(1), "STU_00000001", "follows its out plug"),
+            (Some(4), "STU_00000003", "null"),
+            (Some(3), "STU_00000002", "plain state"),
+        ]
+    );
+}
+
 #[test]
 fn target_tag_releases_on_abort_and_subscript_teardown() {
     #[derive(Default)]

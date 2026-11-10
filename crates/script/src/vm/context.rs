@@ -112,6 +112,14 @@ impl<W: World> Context for InstanceContext<'_, W> {
         Some(value)
     }
 
+    fn tolerate_unknown(&mut self, what: &str) -> bool {
+        if self.world.unknowns() != Unknowns::Tolerate {
+            return false;
+        }
+        self.assumed.push((what.to_owned(), "null"));
+        true
+    }
+
     fn has_target_tag(&mut self, entity: u32, tag: u64) -> Option<bool> {
         self.read_native = true;
         self.world.has_target_tag(self.site, entity, tag)

@@ -181,7 +181,38 @@ pub struct TargetTagEffect {
 
 /// External authored queries for this initialization. The caller owns mode,
 /// ruleset, and entity data and can decline a query without guessing its value.
+/// What the VM and the frame encoder do with graph content they don't
+/// implement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Unknowns {
+    /// Record a diagnostic and refuse the body, so a gap can't hide. Debug
+    /// builds and tests.
+    Refuse,
+    /// Do what the Python reference did, and record each case in
+    /// [`Snapshot::assumptions`]: an unknown state is a plain state, an
+    /// unknown action follows its out plug, an unknown config value or
+    /// opcode is null, any other unsupported part does nothing, and an
+    /// active state whose payload can't be written is left out of frames.
+    /// Release builds.
+    Tolerate,
+}
+
+impl Unknowns {
+    pub const fn for_build() -> Self {
+        if cfg!(debug_assertions) {
+            Self::Refuse
+        } else {
+            Self::Tolerate
+        }
+    }
+}
+
 pub trait World {
+    /// How this world's bodies treat graph content the VM doesn't implement.
+    fn unknowns(&self) -> Unknowns {
+        Unknowns::for_build()
+    }
+
     /// Whether this world's answer for a native config class is an assumption
     /// (see [`Assumption`]), and what it answers.
     fn assumption(&self, _class: &str) -> Option<&'static str> {
@@ -1142,7 +1173,21 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
     }
 
+    fn tolerates_unknowns(&self) -> bool {
+        self.world.unknowns() == Unknowns::Tolerate
+    }
+
     fn report(&mut self, site: Site, issue: Issue) {
+        if self.tolerates_unknowns() {
+            let what = match &issue {
+                Issue::UnsupportedAction(class) | Issue::UnsupportedState(class) => class.clone(),
+                Issue::UnsupportedField(field) => (*field).to_owned(),
+                Issue::Expression(error) => error.to_string(),
+                issue => format!("{issue:?}"),
+            };
+            self.assume(site, &what, "skipped");
+            return;
+        }
         let diagnostic = Diagnostic { site, issue };
         if !self.machine.snapshot.diagnostics.contains(&diagnostic) {
             self.machine.snapshot.diagnostics.push(diagnostic);

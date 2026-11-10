@@ -208,6 +208,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
+            class if self.tolerates_unknowns() => {
+                self.assume(self.site(id, node), class, "follows its out plug");
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
             _ => {
                 self.report(
                     self.site(id, node),
@@ -417,6 +422,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 ammo0: 0,
                 ammo_var: None,
             },
+            class if self.tolerates_unknowns() => {
+                self.assume(self.site(id, node), class, "plain state");
+                StateKind::Plain
+            }
             _ => {
                 self.report(
                     self.site(id, node),

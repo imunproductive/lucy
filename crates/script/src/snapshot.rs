@@ -13,7 +13,7 @@ use crate::codecs::{Codec, CodecTable, PayloadError, PayloadMode, StatePayload};
 use crate::expr::{Scope, Variable, equal};
 use crate::graph::{Graph, GraphStore, Node, asset_guid};
 use crate::stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, StreamError};
-use crate::vm::{Snapshot, StackBinding, State, StateKind};
+use crate::vm::{Snapshot, StackBinding, State, StateKind, Unknowns};
 use crate::wire::{
     self, Binding, Bindings, Instance, Layout, Value, ValueEncoding, Variables, WireError,
 };
@@ -261,11 +261,22 @@ impl From<StreamError> for SnapshotError {
 pub struct SnapshotEncoder<'a> {
     graphs: &'a GraphStore,
     codecs: &'a CodecTable,
+    unknowns: Unknowns,
 }
 
 impl<'a> SnapshotEncoder<'a> {
     pub fn new(graphs: &'a GraphStore, codecs: &'a CodecTable) -> Self {
-        Self { graphs, codecs }
+        Self {
+            graphs,
+            codecs,
+            unknowns: Unknowns::for_build(),
+        }
+    }
+
+    /// Whether a state or timer whose payload can't be written fails the
+    /// frame or is left out of it, as the Python reference did.
+    pub fn with_unknowns(self, unknowns: Unknowns) -> Self {
+        Self { unknowns, ..self }
     }
 
     pub fn project(
@@ -334,14 +345,19 @@ impl<'a> SnapshotEncoder<'a> {
                 if !state.active && !(state.activation != 0 && codec.is_some_and(Codec::stec)) {
                     continue;
                 }
-                let payload = codec
+                let Some(payload) = codec
                     .filter(|codec| codec.projected())
                     .and_then(|codec| state_payload(state, codec))
-                    .ok_or_else(|| SnapshotError::UnsupportedState {
+                else {
+                    if self.unknowns == Unknowns::Tolerate {
+                        continue;
+                    }
+                    return Err(SnapshotError::UnsupportedState {
                         site,
                         class: node.class.clone(),
                         kind: state.kind,
-                    })?;
+                    });
+                };
                 states.insert(
                     raw,
                     ProjectedState {
@@ -919,6 +935,9 @@ impl<'a> SnapshotEncoder<'a> {
                 continue;
             }
             if !self.codecs.sendable(&node.class, true) {
+                if self.unknowns == Unknowns::Tolerate {
+                    continue;
+                }
                 return Err(SnapshotError::UnsupportedTimer {
                     site,
                     class: node.class.clone(),

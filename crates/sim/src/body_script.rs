@@ -32,7 +32,7 @@ use orpheus_script::{
     snapshot::{SnapshotEncoder, View},
     timeline::FRAME_MS,
     vitals::Vitals,
-    vm::{Component, MAX_INIT_WORK, Root, Snapshot},
+    vm::{Component, MAX_INIT_WORK, Root, Snapshot, World},
     weapons::{HitDefinition, ProjectileBallistics, authored_number},
     wire::Variables,
 };
@@ -155,14 +155,36 @@ impl PlayerBodyFactory {
                 component.evaluate_state_config(instance, raw, config, &mut world)
             },
         )?;
-        Ok(PlayerBodyRuntime {
+        let runtime = PlayerBodyRuntime {
             component,
             world,
             codecs: Arc::clone(&self.codecs),
             modifiers,
             leases,
             frame: spawn.frame,
-        })
+        };
+        runtime.log_assumptions();
+        Ok(runtime)
+    }
+}
+
+/// Every assumption once per server run, as the Python reference warned
+/// once: the answers the server gives without knowing they are right,
+/// including, in release builds, the graph content it tolerates.
+fn log_assumption(graph: u32, node: Option<u16>, class: &str, answer: &str) {
+    use std::{
+        collections::HashSet,
+        sync::{Mutex, OnceLock},
+    };
+    /// Graph, node and class of each assumption already logged.
+    type Logged = HashSet<(u32, Option<u16>, String)>;
+    static LOGGED: OnceLock<Mutex<Logged>> = OnceLock::new();
+    let mut logged = LOGGED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if logged.insert((graph, node, class.to_owned())) {
+        eprintln!("statescript graph {graph:04X} node {node:?}: {class} -> {answer}");
     }
 }
 
@@ -173,6 +195,19 @@ pub struct PlayerBodyRuntime {
     modifiers: Option<BTreeMap<ModifierKey, Modifier>>,
     leases: ProjectileLeases,
     frame: u32,
+}
+
+impl PlayerBodyRuntime {
+    fn log_assumptions(&self) {
+        for item in self
+            .component
+            .snapshot()
+            .into_iter()
+            .flat_map(|snapshot| &snapshot.assumptions)
+        {
+            log_assumption(item.site.graph, item.site.node, &item.class, item.answer);
+        }
+    }
 }
 
 impl OwnerBodyRuntime for PlayerBodyRuntime {
@@ -194,7 +229,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
     }
 
     fn encoder(&self) -> SnapshotEncoder<'_> {
-        SnapshotEncoder::new(&self.world.graphs, &self.codecs)
+        SnapshotEncoder::new(&self.world.graphs, &self.codecs).with_unknowns(self.world.unknowns())
     }
 
     fn advance(&mut self, command: Command, mover: &Mover, step: BodyStep) -> io::Result<()> {
@@ -226,6 +261,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 .map_err(unsupported)?;
         }
         self.frame = command.frame;
+        self.log_assumptions();
         Ok(())
     }
 

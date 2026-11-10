@@ -169,6 +169,13 @@ pub trait Context {
     fn native(&mut self, _config: &Json) -> Option<Value> {
         None
     }
+
+    /// Whether an unknown config class or opcode reads as null, as in the
+    /// Python reference, instead of failing the expression. A context that
+    /// answers true records the case.
+    fn tolerate_unknown(&mut self, _what: &str) -> bool {
+        false
+    }
 }
 
 #[derive(Default)]
@@ -647,6 +654,20 @@ impl Evaluator {
         context: &mut impl Context,
         depth: usize,
     ) -> Result<Value, EvalError> {
+        match self.known_config(config, context, depth) {
+            Err(EvalError::UnsupportedConfig(class)) if context.tolerate_unknown(&class) => {
+                Ok(Value::Null)
+            }
+            result => result,
+        }
+    }
+
+    fn known_config(
+        &mut self,
+        config: &Json,
+        context: &mut impl Context,
+        depth: usize,
+    ) -> Result<Value, EvalError> {
         if depth >= MAX_CONFIG_DEPTH {
             return Err(EvalError::NestingExceeded);
         }
@@ -967,6 +988,22 @@ impl Evaluator {
     }
 
     fn expression(
+        &mut self,
+        config: &Json,
+        context: &mut impl Context,
+        depth: usize,
+    ) -> Result<Value, EvalError> {
+        match self.known_expression(config, context, depth) {
+            Err(EvalError::UnsupportedOpcode { opcode, .. })
+                if context.tolerate_unknown(&format!("expression opcode {opcode}")) =>
+            {
+                Ok(Value::Null)
+            }
+            result => result,
+        }
+    }
+
+    fn known_expression(
         &mut self,
         config: &Json,
         context: &mut impl Context,

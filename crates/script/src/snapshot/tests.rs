@@ -273,6 +273,13 @@ fn unsupported_active_states_and_initialization_diagnostics_are_explicit() {
         })
     ));
     assert!(encoder.project(&snapshot, View::Observer).is_ok());
+    // Release builds leave the unwritable state out, as the Python reference
+    // did, and send the rest.
+    let tolerant =
+        SnapshotEncoder::new(&graphs, &codecs).with_unknowns(crate::vm::Unknowns::Tolerate);
+    let projected = tolerant.project(&snapshot, View::Owner).unwrap();
+    assert!(!projected.instances[&1].states.contains_key(&2));
+    assert!(!projected.instances[&1].states.is_empty());
     snapshot.diagnostics.push(Diagnostic {
         site: Site {
             entity: ENTITY,
