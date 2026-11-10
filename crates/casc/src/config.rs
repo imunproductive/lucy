@@ -124,7 +124,41 @@ impl Keyring {
         Keyring { keys }
     }
 
+    /// The install's key of that name, else the static one TACTLib ships.
     pub fn get(&self, name: u64) -> Option<&[u8; 16]> {
-        self.keys.get(&name)
+        self.keys.get(&name).or_else(|| {
+            STATIC_KEYS
+                .iter()
+                .find(|(known, _)| *known == name)
+                .map(|(_, key)| key)
+        })
+    }
+}
+
+/// Keys this build's content needs that the install's keyring lacks, from
+/// TACTLib's static `Overwatch.keyring` (MIT; see `CREDITS.md`): the entry
+/// tagged `[1.74]`, which encrypts eight bundles of build 104319 (among them
+/// the Genji skin unlock `000000005058.0A5`).
+const STATIC_KEYS: &[(u64, [u8; 16])] = &[(
+    0x28B8_EBB4_62B8_3EEA,
+    [
+        0x23, 0x8B, 0xA6, 0x99, 0x3D, 0x60, 0xA9, 0x7A, 0x46, 0x4C, 0xEB, 0xB4, 0xAA, 0xC4, 0x38,
+        0xB5,
+    ],
+)];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_installs_keys_win_over_the_static_ones() {
+        let name = 0x28B8_EBB4_62B8_3EEA;
+        assert_eq!(Keyring::default().get(name), Some(&STATIC_KEYS[0].1));
+        let install = Keyring {
+            keys: HashMap::from([(name, [7; 16])]),
+        };
+        assert_eq!(install.get(name), Some(&[7; 16]));
+        assert_eq!(Keyring::default().get(1), None);
     }
 }

@@ -14,6 +14,7 @@ mod game_queues;
 mod graphs;
 mod heroes;
 mod install;
+mod lists;
 
 use std::{
     fmt, fs, io,
@@ -83,6 +84,10 @@ pub struct Derivation {
 /// Every derivation, inputs first.
 pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
+        name: "lists",
+        derive: lists::derive,
+    },
+    Derivation {
         name: "game_heroes",
         derive: heroes::derive,
     },
@@ -95,16 +100,16 @@ pub const DERIVATIONS: &[Derivation] = &[
         derive: heroes::stats::derive,
     },
     Derivation {
+        name: "graphs",
+        derive: graphs::derive,
+    },
+    Derivation {
         name: "game_queues",
         derive: game_queues::derive,
     },
     Derivation {
         name: "arcade_cards",
         derive: arcade_cards::derive,
-    },
-    Derivation {
-        name: "graphs",
-        derive: graphs::derive,
     },
 ];
 /// Run every derivation and write its files under `out`.
