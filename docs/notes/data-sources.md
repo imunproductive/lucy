@@ -37,7 +37,7 @@ The server derives its game data from the install (`crates/assets`, phase 6 of t
 | Raycast metadata | Raycast filters and receivers | `extract_raycast_metadata.py` | `097`, `098`. Not a pack file |
 | Score events | `003F.054` label rows and `StatEventScoreScaler` rows | `extract_game_stats.py --score-events` | `054`. Not a pack file |
 
-Research-only files: `statescript_names_174.json` (names for `ssq.py`), `announced_crcs_174.json` (protocol identifiers for `dump_schemas.py`), `extracted_events_174.json` (verified scene mappings used by tests).
+Research-only files: `announced_crcs_174.json` (protocol identifiers for `dump_schemas.py`), `extracted_events_174.json` (verified scene mappings used by tests). The names catalog for `orpheus script query` is fixed data (below).
 
 The fixed data most likely came from client dumps and traffic captured while the live servers were still running. Its origin is not tracked further.
 
@@ -74,6 +74,7 @@ Committed and embedded in the binary. Taken from LizRollin's repository (MIT) at
 | `lobby_state_blob.key` | `BLOB_KEY` in `ow174/jam/handshake.py` | `ab024361c5acd29e3a45548cc675002b762895753fe6dc7613335b1f0ff033b8` |
 | `retail_templates.json` | `data/retail_templates.json` | `667cf09afd5a2b889b4c95e7957e0d2d90d5a7a711cb527fc8159bed2c5602e5` |
 | `resource_keys.json` | `data/resource_keys_174.json` | `47084948c33f4d2437f0f9c6b452b10a014beedd3a99cef8c3ee3a72e8bd7ba2` |
+| `statescript_names.json` | `data/statescript_names_174.json` | `1b9289832ad27b111802eb2a25d0ca94abdae9e11b769d7374eadc13ff342dbb` |
 
 ## Where a runtime pack comes from
 

@@ -8,6 +8,7 @@ mod import;
 mod join;
 mod logging;
 mod play;
+mod script_query;
 mod serve;
 mod settings;
 
@@ -71,6 +72,17 @@ enum Command {
     /// Manage the prepared runtime pack.
     #[command(subcommand)]
     Runtime(RuntimeCommand),
+    /// Statescript research tools.
+    #[command(subcommand)]
+    Script(ScriptCommand),
+}
+
+#[derive(Subcommand)]
+enum ScriptCommand {
+    /// Query the statescript graphs of the derived game data (the port of
+    /// tools/ssq.py).
+    #[command(long_about = script_query::ABOUT)]
+    Query(script_query::QueryArgs),
 }
 
 #[derive(Subcommand)]
@@ -185,6 +197,7 @@ fn run(cli: Cli) -> io::Result<ExitCode> {
         Some(Command::State(command)) => return state_command(command, &state),
         Some(Command::Assets(command)) => return assets_command(command, &state),
         Some(Command::Runtime(command)) => return runtime_command(command),
+        Some(Command::Script(command)) => return script_command(command, &state),
         None => {
             let mut options = cli.options;
             let mode = match cli.mode {
@@ -298,6 +311,14 @@ fn assets_command(command: AssetsCommand, state: &Path) -> io::Result<ExitCode> 
             }
         }
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn script_command(command: ScriptCommand, state: &Path) -> io::Result<ExitCode> {
+    let ScriptCommand::Query(query) = command;
+    logging::init(None)?;
+    let settings = Settings::resolve(state, &query.server)?;
+    script_query::run(&query, &serve::game_data(&settings)?)?;
     Ok(ExitCode::SUCCESS)
 }
 

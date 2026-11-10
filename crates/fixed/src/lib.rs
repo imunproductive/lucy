@@ -28,3 +28,9 @@ pub const RETAIL_TEMPLATES: &str = include_str!("../data/retail_templates.json")
 /// Content keys of event resources, as the server sends them in
 /// `lobby_celebrations`.
 pub const RESOURCE_KEYS: &str = include_str!("../data/resource_keys.json");
+
+/// Research names for the statescript graphs (`orpheus script query`): class
+/// aliases, the STU fields that hold a variable, logical buttons, the hero
+/// select and HUD graphs, each game mode's scripts and the variable names the
+/// server uses.
+pub const STATESCRIPT_NAMES: &str = include_str!("../data/statescript_names.json");

@@ -199,7 +199,7 @@ Game-side entries, in order. "Live" unless marked.
 - **`STU_E4C6AAB4` is "is in spawn room"** (ow1-preservation `CLAUDE.md:1334-1338`, `:1357-1359`; live). The evaluator (vtable `0x26643E8`, evaluate `0xCF1F40`) reads component 74's byte at `+0xF6`, the replicated state field 6, the spawn room flag. Used in `288B` before SetVar #1207 and message `0x13EF`. It is one of the hero select gaps.
 - **`STU_E72F6348`** is a generic entity-reference condition (evaluate `0xCE4A60`), not the spawn room test (`CLAUDE.md:1322-1324`; static).
 - **`STU_54FEB21C`** (in Tracer's Recall graph) is a container of states that ends only when instance variable `0x018B` becomes true, and no graph writes `0x018B`, so the server must end it (`HANDOFF.md:397-401`, `:678-679`, `:808-810`; emulated). We treat it as "no effect" in melee graph `0043`; a container that never ends keeps its children running.
-- **LizRollin's `data/statescript_names_174.json`** (`9f8f3bcb`, MIT; names only, no addresses). `tools/ssq.py` needs it. Besides about 60 aliases it holds which fields hold variables for about 110 classes, logical button ids, UI graph names, the 25 modes with their script, controller and body graphs per team, and variable names. Aliases not found elsewhere:
+- **LizRollin's `data/statescript_names_174.json`** (`9f8f3bcb`, MIT; names only, no addresses), committed as `crates/fixed/data/statescript_names.json` for `orpheus script query`. Besides about 60 aliases it holds which fields hold variables for about 110 classes, logical button ids, UI graph names, the 25 modes with their script, controller and body graphs per team, and variable names. Aliases not found elsewhere:
 
   | Class | Name |
   | --- | --- |
