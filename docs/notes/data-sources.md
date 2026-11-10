@@ -56,6 +56,14 @@ The fixed data most likely came from client dumps and traffic captured while the
 - The graph bundle for 32 hero bodies and 373 graphs has the normalized SHA-256 `febfbcc8d406ea59f76b10029cc825b765b49ece29c8020b9ba7929b3671104f`. Graph `0F9C` is missing. Graphs `288B`, `05AD` and `0D24` have input plugs with unknown ownership; their targets are not guessed.
 - Practice Range bot bodies: `003` indexes `1403`, `143E`, `146E`, `14A9`, `14D2`, `14ED`.
 
+## Where a runtime pack comes from
+
+The upstream ORPHEUS repository never committed the pack's files: its `data/` held only `README.md` and replays in all 204 commits, and `prepare_server_runtime` only copies files from a private "prepared checkout". LizRollin's repository (MIT) at `9f8f3bcb5eccab6fb7738bee3c2371fcf0623f29` commits all of them in `data/` and `ow174/bnet/descriptors.pb`, except two:
+- `lobby_state_blob.key`: the 64 bytes of `BLOB_KEY` in that commit's `ow174/jam/handshake.py`;
+- the collision caches: `tools/build_collision.py <map>` with `ORPHEUS_RUNTIME_DIR` set to the pack builds them from the install. `0688.col` built this way matches the recorded SHA-256 below.
+
+Differences from the upstream pack, found by `just test-runtime` (61 of 62 pass): LizRollin's graph bundle (373 graphs, 32 bodies, `0F9C` missing) lacks the Practice Range NPC graph `0B92`, so the ignored VM test `firing_placement_reset_and_timer_boundaries_match_python` fails. With it, the server logs at start that the Practice Range Soldier owner statescript is unavailable (graph `0x4B`, node 21, unsupported config `STU_AC829876`). Whether the upstream bundle shows the same is unknown.
+
 ## Collision caches
 
 - Practice Range `0688.col`: format 5, 470,397 bytes, SHA-256 `dfdb71fbe9ad079d9d0b56fe12bd7c992a76c6ec942084d86f6388827f36a169`.

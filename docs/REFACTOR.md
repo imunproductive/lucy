@@ -237,7 +237,7 @@ flowchart LR
 | 2 Cut cycles | Done, before phase 1 |
 | 3 Workspace crates | Done |
 | 4 `orpheus` app | Done. The dashboard serves its profile, account, item, frame and loot box actions; the rest answer 501 (see `docs/notes/parity.md`). |
-| 5 Launcher and relay | Built and checked by injecting the Rust relay into a running process. **The live client gate is open**: it needs the 1.74 client. |
+| 5 Launcher and relay | Done. The original client reached the lobby through the Rust relay (`docs/notes/behavior.md`, 2026-11-10). The C++ relay, `build.bat`, `START.bat`, `START_LOCAL.cmd` and `--relay-dll` are deleted. `ow174/launcher` stays until phase 8, because the frozen Python server imports it; it now loads the Rust relay. |
 | 6 Game data from CASC | Spike passed. 6a done: `crates/casc` reads every stored graph and definition from the install by GUID (`just test-game`). 6b, 6c and 6d not started; 6c needs the runtime pack's files as oracles. |
 | 7 Tools | IDA script moved; `fake_client` covered by test fixtures; `ssq` deferred (see phase 7) |
 | 8 Remove Python | Waits for the phase 5 and 6 gates and gameplay parity |
@@ -406,6 +406,8 @@ The launcher loads `owwfd_relay.dll` from the same folder as `orpheus.exe`. `car
 **Gate:** keep `relay/owwfd_relay.cpp`, `relay/build.bat` and the Python launcher until the Rust DLL passes a live test. The original client must log in through the Rust relay and reach the lobby, recorded in the status doc with commit, build and steps. Until then, `orpheus play --relay-dll <path>` can use the C++ build for comparison. After the gate passes, delete the C++ relay and that flag.
 
 **Done when:** `START.cmd` → `orpheus play` gets the original client into the lobby with the Rust relay, and `START.bat` and `START_LOCAL.cmd` are deleted.
+
+**Result (2026-11-10):** done. `ow174/launcher` is not deleted with the C++ relay as planned: `ow174/lobby/server.py`, `ow174/dashboard/service.py` and `ow174/cli.py` import it, and the Python server stays runnable as the reference until phase 8. It loads `target\release\owwfd_relay.dll` instead.
 
 ### Phase 6: Game data from CASC at run time
 

@@ -553,11 +553,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared DataTool catalogs"]
+    #[ignore = "requires the runtime pack's DataTool catalogs"]
     fn matches_the_local_retail_catalog_counts_and_order() {
-        let data = std::env::var_os("ORPHEUS_CATALOG_DATA")
-            .expect("set ORPHEUS_CATALOG_DATA to the prepared data directory");
-        let items = ItemDb::load(Path::new(&data)).unwrap();
+        let items = ItemDb::load(&orpheus_testkit::runtime_dir().join("data")).unwrap();
         assert_eq!(items.unlocks.len(), 7131);
         assert_eq!(items.hero_names.len(), 55);
         assert_eq!(items.team_skin_pairs.len(), 1528);

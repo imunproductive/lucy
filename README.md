@@ -51,9 +51,9 @@ cargo build --release --workspace
 target\release\orpheus.exe play --runtime C:\path\to\pack --game C:\path\to\Overwatch
 ```
 
-`play` checks that the install is build 1.74.0.0.104319, starts the server and the game, and loads the relay into the game. `START.cmd` does the same with the settings from `config.toml` (`game = '...'`, and `locale = "auto"` by default). The Rust relay has not yet been checked with the original client; `--relay-dll` loads another relay, such as the C++ one built with `relay\build.bat`.
+`play` checks that the install is build 1.74.0.0.104319, starts the server and the game, and loads the relay into the game. `START.cmd` does the same with the settings from `config.toml` (`game = '...'`, and `locale = "auto"` by default).
 
-`orpheus runtime prepare` assembles a runtime pack from a prepared research checkout. The frozen Python server is still the reference for everything the native server does not do yet; `START_LOCAL.cmd` runs it with the game.
+`orpheus runtime prepare` assembles a runtime pack from a prepared research checkout. The frozen Python server is still the reference for everything the native server does not do yet; `py -3 -B -m ow174 --mode retail --bnet-port 1118 --test-players 1` runs it with the game, using the relay from `cargo build --release -p orpheus-relay`.
 
 ## Check
 
@@ -61,7 +61,7 @@ target\release\orpheus.exe play --runtime C:\path\to\pack --game C:\path\to\Over
 just check
 ```
 
-This runs `cargo fmt --check`, `cargo clippy` with warnings denied, `cargo test` and the dashboard test. `just` lists the other recipes. Tests that need a prepared runtime pack are ignored by default; run them with `just test-runtime <pack>`.
+This runs `cargo fmt --check`, `cargo clippy` with warnings denied, `cargo test` and the dashboard test. `just` lists the other recipes. Tests that need a prepared runtime pack or the game are ignored by default; run them with `just test-runtime <pack>` and `just test-game <install>`.
 
 ## License
 

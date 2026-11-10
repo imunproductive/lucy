@@ -53,7 +53,7 @@ A link is `(instance, raw index)`. Owner frames (H = 1) use the owner state inde
 
 ## Relay hook points
 
-From `relay/owwfd_relay.cpp` (addresses are offsets from the `Overwatch.exe` image base):
+From the relay (`crates/relay`, ported from the community C++ relay; addresses are offsets from the `Overwatch.exe` image base):
 
 | Item | Value |
 | --- | --- |

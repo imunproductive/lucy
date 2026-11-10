@@ -48,12 +48,9 @@ pub fn game(settings: &Settings) -> io::Result<PathBuf> {
     Ok(game)
 }
 
-/// The relay built next to this executable, or an explicit one.
-pub fn relay_dll(explicit: Option<&Path>) -> io::Result<PathBuf> {
-    let path = match explicit {
-        Some(path) => path.to_owned(),
-        None => std::env::current_exe()?.with_file_name(RELAY_DLL),
-    };
+/// The relay built next to this executable.
+pub fn relay_dll() -> io::Result<PathBuf> {
+    let path = std::env::current_exe()?.with_file_name(RELAY_DLL);
     if path.is_file() {
         Ok(path)
     } else {
@@ -90,7 +87,7 @@ fn system_locale() -> Option<String> {
 }
 
 #[cfg(not(windows))]
-pub fn run(_: &Settings, _: Option<&Path>) -> io::Result<()> {
+pub fn run(_: &Settings) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "the Overwatch 1.74 client runs on Windows only",
@@ -98,11 +95,11 @@ pub fn run(_: &Settings, _: Option<&Path>) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-pub fn run(settings: &Settings, relay: Option<&Path>) -> io::Result<()> {
+pub fn run(settings: &Settings) -> io::Result<()> {
     use orpheus_launcher::process;
 
     let game = game(settings)?;
-    let relay = relay_dll(relay)?;
+    let relay = relay_dll()?;
     let mut server = serve::start(settings)?;
     info!(lobby = %server.lobby_addr(), "server running");
     if let Some(dashboard) = server.dashboard_addr() {

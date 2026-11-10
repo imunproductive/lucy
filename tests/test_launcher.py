@@ -236,15 +236,15 @@ class InjectRelayTests(unittest.TestCase):
 class RelayDllTests(TempDirTest):
     def setUp(self):
         super().setUp()
-        self.dll = self.root / "relay" / "owwfd_relay.dll"
+        self.dll = self.root / "target" / "release" / "owwfd_relay.dll"
 
     def test_a_locally_built_dll_is_used(self):
-        self.dll.parent.mkdir()
+        self.dll.parent.mkdir(parents=True)
         self.dll.write_bytes(b"built from source")
         self.assertEqual(relay.ensure_relay_dll(self.dll), self.dll)
 
     def test_a_missing_dll_says_how_to_build_it(self):
-        with self.assertRaisesRegex(LaunchError, r"relay\\build\.bat"):
+        with self.assertRaisesRegex(LaunchError, r"cargo build --release -p orpheus-relay"):
             relay.ensure_relay_dll(self.dll)
 
 

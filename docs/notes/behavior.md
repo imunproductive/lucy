@@ -76,3 +76,5 @@ Written but never checked in the game: kill feed, Helix Rockets and Biotic Field
 ## Client acceptance records
 
 Add one entry per check: date, commit, client build and locale, hero, map, exact inputs, expected and observed result, number of runs that agreed.
+
+- **2026-11-10, Rust relay to the lobby (phase 5 gate).** Commit `aa07704` plus the uncommitted phase 5 cleanup (no relay or server change), debug build. Client 1.74.0.0.104319, enUS, KR branch install. Runtime pack assembled from LizRollin's public data at `9f8f3bcb` plus `0688.col` built by `tools/build_collision.py` (see `docs/notes/data-sources.md`). Command: `orpheus play --runtime <pack> --game <install> --state <fresh folder>`. Expected: the client logs in through the Rust relay and reaches the lobby. Observed: the relay connected the client's Battle.net stream on port 1119 to the RPC port 21119 and carried the WebSocket upgrade and the logon exchange. The client then held a lobby connection on 3724 and showed the main menu's Options screen as RESEARCHER. One run.

@@ -27,7 +27,7 @@ build:
 
 # Ignored tests that need a prepared runtime pack.
 test-runtime runtime:
-    cargo build -p orpheus-relay --locked; $env:ORPHEUS_RUNTIME_DIR = '{{runtime}}'; cargo test --workspace --locked -- --ignored
+    cargo build -p orpheus-relay --locked; $env:ORPHEUS_RUNTIME_DIR = '{{runtime}}'; cargo test --workspace --exclude orpheus-casc --locked --no-fail-fast -- --ignored
 
 # Ignored tests that read an Overwatch 1.74 install.
 test-game game:

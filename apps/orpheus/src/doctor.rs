@@ -204,7 +204,7 @@ fn client(settings: &Settings) -> Outcome {
 }
 
 fn relay() -> Outcome {
-    match play::relay_dll(None) {
+    match play::relay_dll() {
         Ok(path) => Outcome::Ok(path.display().to_string()),
         Err(error) => problem(
             error.to_string(),

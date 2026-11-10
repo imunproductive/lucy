@@ -47,7 +47,7 @@ diagnostics.txt
 backups/
 work/
 
-# Relay build output (relay\build.bat)
+# Native build output
 *.dll
 *.exe
 *.obj
