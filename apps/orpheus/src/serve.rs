@@ -1,30 +1,48 @@
-//! `orpheus serve`: the Battle.net, lobby and game services until Ctrl+C.
+//! The server without a game here: `orpheus serve` (Python's `retail
+//! --no-launch`) and `orpheus server` (Python's `server` mode, the lobby for
+//! other PCs).
 
-use std::{fs, io, sync::mpsc};
+use std::{fs, io, net::Ipv4Addr, sync::Arc, sync::mpsc};
 
-use orpheus_server::server::{Server, ServerConfig};
+use orpheus_server::{
+    platform::LocalGames,
+    server::{Server, ServerConfig},
+};
 use tracing::info;
 
-use crate::settings::Settings;
+use crate::{banner, settings::Settings};
 
-pub fn run(settings: &Settings) -> io::Result<()> {
-    let mut server = start(settings)?;
-    info!(
-        lobby = %server.lobby_addr(),
-        game = %server.game_addr(),
-        battle_net = %server.stall_addr(),
-        rpc = %server.rpc_addr(),
-        "server running; press Ctrl+C to stop"
-    );
-    if let Some(dashboard) = server.dashboard_addr() {
-        info!("dashboard: http://{dashboard}");
+/// Where and for whom the server runs.
+pub struct Hosting {
+    /// Where the lobby and the game server listen.
+    pub host: Ipv4Addr,
+    /// The public address for games outside the network; empty for none.
+    pub game_host: String,
+    /// The local Battle.net, for retail games on this PC.
+    pub battle_net: bool,
+    /// The retail games this PC starts.
+    pub games: Option<Arc<dyn LocalGames>>,
+}
+
+/// Run the server until Ctrl+C. `serve` keeps Battle.net for a game started
+/// by hand; `server` mode has none.
+pub fn run(settings: &Settings, hosting: Hosting) -> io::Result<()> {
+    let battle_net = hosting.battle_net;
+    let game_host = hosting.game_host.clone();
+    let mut server = start(settings, hosting)?;
+    banner::log(&server, settings, &game_host);
+    if battle_net {
+        info!("[+] Server services ready; client launching is disabled.");
+    } else {
+        info!("[+] To play here too, choose 3 next time instead of 4.");
     }
+    info!("Keep this window open while you play; closing it or Ctrl+C stops the server.");
     wait_for_ctrl_c()?;
-    info!("stopping");
+    info!("Stopped.");
     server.stop()
 }
 
-pub fn start(settings: &Settings) -> io::Result<Server> {
+pub fn start(settings: &Settings, hosting: Hosting) -> io::Result<Server> {
     let runtime = settings.runtime.clone().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -34,15 +52,19 @@ pub fn start(settings: &Settings) -> io::Result<Server> {
     fs::create_dir_all(&settings.state)?;
     let mut config = ServerConfig::new(runtime, settings.state.clone());
     config.account = settings.account.clone();
+    config.host = hosting.host;
+    config.game_host = hosting.game_host;
     config.lobby_port = settings.ports.lobby;
     config.game_port = settings.ports.game;
+    config.battle_net = hosting.battle_net;
     config.stall_port = settings.ports.stall;
     config.rpc_port = settings.ports.rpc;
-    config.dashboard_port = Some(settings.ports.dashboard);
+    config.dashboard_port = settings.dashboard_port();
+    config.games = hosting.games;
     Server::start(config)
 }
 
-fn wait_for_ctrl_c() -> io::Result<()> {
+pub fn wait_for_ctrl_c() -> io::Result<()> {
     let (stop, stopped) = mpsc::channel();
     ctrlc::set_handler(move || {
         let _ = stop.send(());

@@ -19,6 +19,7 @@ const GAME_ACCOUNT_HIGH: u64 = 0x0200_0001_0050_726f;
 
 type RpcResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct Player {
     pub account: u64,
     pub game_account: u64,

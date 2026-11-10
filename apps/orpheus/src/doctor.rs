@@ -171,10 +171,14 @@ fn ports(settings: &Settings) -> Outcome {
     if UdpSocket::bind((Ipv4Addr::LOCALHOST, ports.game)).is_err() {
         busy.push(format!("game UDP {}", ports.game));
     }
+    let dashboard = settings.dashboard_port().map_or_else(
+        || "dashboard off".into(),
+        |port| format!("dashboard {port}"),
+    );
     if busy.is_empty() {
         Outcome::Ok(format!(
-            "lobby {}, stall {}, rpc {}, dashboard {} (TCP), game {} (UDP) are free",
-            ports.lobby, ports.stall, ports.rpc, ports.dashboard, ports.game
+            "lobby {}, stall {}, rpc {}, {dashboard} (TCP), game {} (UDP) are free",
+            ports.lobby, ports.stall, ports.rpc, ports.game
         ))
     } else {
         problem(
@@ -185,17 +189,17 @@ fn ports(settings: &Settings) -> Outcome {
 }
 
 fn client(settings: &Settings) -> Outcome {
-    if settings.game.is_none() {
-        return Outcome::Ok("not configured (only orpheus play needs it)".into());
-    }
-    match play::game(settings) {
-        Ok(game) => {
+    match play::known_game(settings) {
+        Ok(Some(game)) => {
             let locale = play::locale(settings, &game).unwrap_or_else(|| "the game's own".into());
             Outcome::Ok(format!(
                 "{} ({TARGET_VERSION}, language {locale})",
                 game.display()
             ))
         }
+        Ok(None) => Outcome::Ok(
+            "not chosen yet; the modes that start the game ask for it and remember it".into(),
+        ),
         Err(error) => problem(
             error.to_string(),
             "point game at the 1.74.0.0.104319 install with --game or game = '<path>' in config.toml",

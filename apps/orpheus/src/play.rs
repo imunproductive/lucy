@@ -1,39 +1,45 @@
-//! `orpheus play`: the server, then the client with the relay loaded into it.
+//! The modes that start the game here: `play` (retail), `host` and
+//! `tournament` (`run` in `ow174/cli.py`).
 
 use std::{
-    io,
+    env, fs, io,
     path::{Path, PathBuf},
-    sync::mpsc,
-    thread,
-    time::Duration,
 };
 
-use orpheus_launcher::game::{GAME_EXE, TARGET_VERSION, build_info, choose_locale, resolve_game};
-use tracing::info;
+use orpheus_launcher::game::{
+    GAME_EXE, GAME_PATH_FILE, TARGET_VERSION, build_info, choose_locale, find_game,
+};
 
-use crate::{serve, settings::Settings};
+use crate::settings::Settings;
 
 pub const RELAY_DLL: &str = "owwfd_relay.dll";
-const INJECT_TIMEOUT: Duration = Duration::from_secs(30);
-const CLOSE_PATIENCE: Duration = Duration::from_secs(6);
 
-/// The game the settings point at, checked to be build 104319.
+/// The game to start without asking, checked to be build 104319: the
+/// configured one, the one picked last time or an unpacked copy in the
+/// current folder's `game`. `Ok(None)` means the player has to pick one.
+pub fn known_game(settings: &Settings) -> io::Result<Option<PathBuf>> {
+    let saved = settings.state.join(GAME_PATH_FILE);
+    find_game(settings.game.as_deref(), &saved, &env::current_dir()?)?
+        .map(checked)
+        .transpose()
+}
+
+/// The game to start: a known one, else one the player picks now, which is
+/// remembered for next time.
 pub fn game(settings: &Settings) -> io::Result<PathBuf> {
-    let path = settings.game.as_deref().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "no game configured: pass --game, set ORPHEUS_GAME, or add game = '<path>' to config.toml",
-        )
-    })?;
-    let game = resolve_game(path).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "cannot find {GAME_EXE} at {}; give the game, its installation folder or the official launcher",
-                path.display()
-            ),
-        )
-    })?;
+    if let Some(game) = known_game(settings)? {
+        return Ok(game);
+    }
+    let picked = pick_game()?;
+    fs::create_dir_all(&settings.state)?;
+    fs::write(
+        settings.state.join(GAME_PATH_FILE),
+        picked.display().to_string(),
+    )?;
+    checked(picked)
+}
+
+fn checked(game: PathBuf) -> io::Result<PathBuf> {
     let version = build_info(&game).and_then(|info| info.version);
     if version.as_deref() != Some(TARGET_VERSION) {
         return Err(io::Error::new(
@@ -48,9 +54,38 @@ pub fn game(settings: &Settings) -> io::Result<PathBuf> {
     Ok(game)
 }
 
+/// Ask for the game in a file dialog until it is one.
+#[cfg(windows)]
+fn pick_game() -> io::Result<PathBuf> {
+    use orpheus_launcher::{dialog::open_game_dialog, game::resolve_game};
+    use tracing::{info, warn};
+
+    info!("Select the game's {GAME_EXE} (the game itself, not a shortcut or a launcher).");
+    loop {
+        let Some(chosen) = open_game_dialog()? else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("No game selected. Start again and pick {GAME_EXE}."),
+            ));
+        };
+        if let Some(game) = resolve_game(&chosen) {
+            return Ok(game);
+        }
+        warn!("Cannot find the game there. Select _retail_\\{GAME_EXE}.");
+    }
+}
+
+#[cfg(not(windows))]
+fn pick_game() -> io::Result<PathBuf> {
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("no game configured: pass --game with the path of {GAME_EXE}"),
+    ))
+}
+
 /// The relay built next to this executable.
 pub fn relay_dll() -> io::Result<PathBuf> {
-    let path = std::env::current_exe()?.with_file_name(RELAY_DLL);
+    let path = env::current_exe()?.with_file_name(RELAY_DLL);
     if path.is_file() {
         Ok(path)
     } else {
@@ -86,73 +121,188 @@ fn system_locale() -> Option<String> {
     None
 }
 
-#[cfg(not(windows))]
-pub fn run(_: &Settings) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "the Overwatch 1.74 client runs on Windows only",
-    ))
-}
+#[cfg(windows)]
+pub use client::{
+    close_running_copy, log_relay, retail, start_tournament_game, tournament, wait_for,
+};
 
 #[cfg(windows)]
-pub fn run(settings: &Settings) -> io::Result<()> {
-    use orpheus_launcher::process;
+mod client {
+    use std::{
+        io,
+        path::Path,
+        process::Child,
+        sync::{Arc, mpsc},
+        thread,
+        time::Duration,
+    };
 
-    let game = game(settings)?;
-    let relay = relay_dll()?;
-    let mut server = serve::start(settings)?;
-    info!(lobby = %server.lobby_addr(), "server running");
-    if let Some(dashboard) = server.dashboard_addr() {
-        info!("dashboard: http://{dashboard}");
-    }
-    let others = process::running_copies(&game)?.1;
-    if !others.is_empty() {
-        info!(pids = ?others, "another Overwatch is running; leaving it alone");
-    }
-    process::close_running_copy(&game, CLOSE_PATIENCE)?;
+    use orpheus_launcher::{
+        process,
+        retail::{GameSetup, RetailGames, Started},
+    };
+    use orpheus_server::platform::LocalGames;
+    use tracing::{error, info};
 
-    let mut arguments = vec![format!("--BNetServer=127.0.0.1:{}", settings.ports.stall)];
-    if let Some(locale) = locale(settings, &game) {
-        info!(locale, "game language");
-        arguments.push(format!("--tank_Locale={locale}"));
-    }
-    let logs = settings.logs();
-    let relay_log = logs.join("relay.log");
-    let mut child = process::start_game(
-        &game,
-        &arguments,
-        &logs.join("game.log"),
-        process::RelaySetup {
-            log: &relay_log,
+    use super::{game, locale, relay_dll};
+    use crate::{
+        banner,
+        serve::{self, Hosting},
+        settings::Settings,
+    };
+
+    const CLOSE_PATIENCE: Duration = Duration::from_secs(6);
+
+    /// The retail game with the relay, on a server for this PC (`play`) or
+    /// for other PCs too (`host`). A second game can be started from the
+    /// dashboard; the server stops when the first game closes.
+    pub fn retail(settings: &Settings, hosting: Hosting, timeout: Duration) -> io::Result<()> {
+        let game = game(settings)?;
+        let relay = relay_dll()?;
+        close_running_copy(&game)?;
+        let logs = settings.logs();
+        let games = Arc::new(RetailGames::new(GameSetup {
+            locale: logged_locale(settings, &game),
+            game,
+            relay,
+            stall_port: settings.ports.stall,
             rpc_port: settings.ports.rpc,
-        },
-    )?;
-    match process::inject_when_ready(&mut child, &relay, INJECT_TIMEOUT) {
-        Ok(base) => info!(
-            pid = child.id(),
-            base = format_args!("{base:#x}"),
-            "relay loaded"
-        ),
-        Err(error) => {
-            // Without the relay the game waits at its login screen forever.
-            let _ = child.kill();
+            game_log: logs.join("game.log"),
+            relay_log: logs.join("relay.log"),
+            timeout,
+        }));
+        let game_host = hosting.game_host.clone();
+        let mut server = serve::start(
+            settings,
+            Hosting {
+                games: Some(Arc::new(DashboardGames(Arc::clone(&games)))),
+                ..hosting
+            },
+        )?;
+        banner::log(&server, settings, &game_host);
+        let child = match games.start() {
+            Ok((child, started)) => {
+                log_relay(&started, None);
+                child
+            }
+            Err(error) => {
+                let _ = server.stop();
+                return Err(error);
+            }
+        };
+        info!("Keep this window open while you play; closing it or the game stops the server.");
+        wait_for(Some(child))?;
+        info!("Stopped.");
+        server.stop()
+    }
+
+    /// The game in tournament mode on this PC's server: it dials the lobby
+    /// itself, with no relay and no Battle.net.
+    pub fn tournament(settings: &Settings, hosting: Hosting) -> io::Result<()> {
+        let game = game(settings)?;
+        close_running_copy(&game)?;
+        let game_host = hosting.game_host.clone();
+        let mut server = serve::start(settings, hosting)?;
+        banner::log(&server, settings, &game_host);
+        let lobby = format!("127.0.0.1:{}", server.lobby_addr().port());
+        if let Err(error) = start_tournament_game(settings, &game, &lobby) {
             let _ = server.stop();
             return Err(error);
         }
+        info!("Keep this window open while you play; closing it or Ctrl+C stops the server.");
+        wait_for(None)?;
+        info!("Stopped.");
+        server.stop()
     }
-    info!("press Ctrl+C to stop the server, or close the game");
 
-    let (stop, stopped) = mpsc::channel();
-    let ctrl_c = stop.clone();
-    ctrlc::set_handler(move || {
-        let _ = ctrl_c.send(());
-    })
-    .map_err(io::Error::other)?;
-    thread::spawn(move || {
-        let _ = child.wait();
-        let _ = stop.send(());
-    });
-    let _ = stopped.recv();
-    info!("game closed or Ctrl+C; stopping");
-    server.stop()
+    /// Start the game in tournament mode on the lobby at `address`.
+    pub fn start_tournament_game(
+        settings: &Settings,
+        game: &Path,
+        address: &str,
+    ) -> io::Result<()> {
+        let mut arguments = vec![
+            "--tank_TournamentMode".to_owned(),
+            format!("--lobbyServer={address}"),
+        ];
+        if let Some(locale) = logged_locale(settings, game) {
+            arguments.push(format!("--tank_Locale={locale}"));
+        }
+        process::start_game(game, &arguments, &settings.logs().join("game.log"), None)?;
+        Ok(())
+    }
+
+    /// Close a copy of this game left from an earlier run; other installs
+    /// stay.
+    pub fn close_running_copy(game: &Path) -> io::Result<()> {
+        let others = process::running_copies(game)?.1;
+        if !others.is_empty() {
+            info!(pids = ?others, "Another Overwatch is running; leaving it alone.");
+        }
+        process::close_running_copy(game, CLOSE_PATIENCE)
+    }
+
+    /// Wait for Ctrl+C, or for the game to close.
+    pub fn wait_for(game: Option<Child>) -> io::Result<()> {
+        let (stop, stopped) = mpsc::channel();
+        let ctrl_c = stop.clone();
+        ctrlc::set_handler(move || {
+            let _ = ctrl_c.send(());
+        })
+        .map_err(io::Error::other)?;
+        if let Some(mut game) = game {
+            thread::spawn(move || {
+                let _ = game.wait();
+                let _ = stop.send(());
+            });
+        }
+        stopped.recv().map_err(io::Error::other)
+    }
+
+    fn logged_locale(settings: &Settings, game: &Path) -> Option<String> {
+        let locale = locale(settings, game);
+        if let Some(locale) = &locale {
+            info!("Game language: {locale}");
+        }
+        locale
+    }
+
+    pub fn log_relay(started: &Started, account: Option<&str>) {
+        let playing = account
+            .map(|account| format!(" for {account}"))
+            .unwrap_or_default();
+        info!(
+            "[+] Relay loaded into Overwatch (PID {}) at {:#X}{playing}.",
+            started.pid, started.base
+        );
+    }
+
+    /// The dashboard's view of the games started here.
+    struct DashboardGames(Arc<RetailGames>);
+
+    impl LocalGames for DashboardGames {
+        fn start(&self, account: &str) {
+            let games = Arc::clone(&self.0);
+            let account = account.to_owned();
+            let started = thread::Builder::new().name("game".into()).spawn(move || {
+                match games.start_for(&account) {
+                    Ok(started) => log_relay(&started, Some(&account)),
+                    Err(problem) => {
+                        error!("The second game for {account} did not start: {problem}");
+                    }
+                }
+            });
+            if let Err(problem) = started {
+                error!("The second game did not start: {problem}");
+            }
+        }
+
+        fn account_of(&self, peer_port: u16, server_port: u16) -> Option<String> {
+            self.0.account_of(peer_port, server_port)
+        }
+
+        fn second_accounts(&self) -> std::collections::HashSet<String> {
+            self.0.second_accounts()
+        }
+    }
 }

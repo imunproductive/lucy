@@ -37,7 +37,7 @@ use orpheus_wire::{
     tcp::{PeerStream, PeerWorkers, accept},
 };
 
-use crate::game_service::GameService;
+use crate::{game_service::GameService, platform::Platform};
 use hub::{Hub, Mailbox};
 use peer::Peer;
 use router::Router;
@@ -63,6 +63,8 @@ pub(crate) struct Lobby {
     pub active: Arc<Mutex<HashMap<u32, Arc<AtomicBool>>>>,
     pub game: Arc<GameService>,
     pub hub: Hub,
+    /// Hosting for other PCs and the games this PC started.
+    pub platform: Arc<Platform>,
 }
 
 struct LoginLease<'a> {
@@ -146,6 +148,10 @@ impl Lobby {
             LoginRequest::Disconnected => return Ok(()),
         };
         let mut lease = LoginLease::new(self, Arc::clone(&login.account));
+        let local_game = session.is_local().then(|| {
+            self.platform
+                .track_local(login.account.account_lo, &login.account.name)
+        });
         let wall_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?
@@ -210,7 +216,9 @@ impl Lobby {
                 login(&mut peer)?;
             }
         }
-        let current = || !lease.replaced.load(Ordering::Acquire);
+        let replaced = || lease.replaced.load(Ordering::Acquire);
+        // The dashboard's reconnect closes this connection; the game logs in again.
+        let current = || !replaced() && !local_game.as_ref().is_some_and(|game| game.dropped());
         loop {
             for message in mailbox.take() {
                 peer.send(&message)?;
@@ -234,7 +242,7 @@ impl Lobby {
                 None => break,
             }
         }
-        if !current() {
+        if replaced() {
             session.send_disconnect(SIGNED_IN_ELSEWHERE)?;
         }
         Ok(())

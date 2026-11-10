@@ -5,11 +5,15 @@
 
 use std::{
     fs, io,
+    net::Ipv4Addr,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
-use clap::Args;
+use clap::{Args, ValueEnum};
 use serde::Deserialize;
+
+use crate::ask;
 
 pub const CONFIG_FILE: &str = "config.toml";
 pub const DEFAULT_PORTS: Ports = Ports {
@@ -84,9 +88,93 @@ pub struct ServerArgs {
     /// Game UDP port.
     #[arg(long, value_name = "PORT")]
     pub game_port: Option<u16>,
-    /// Dashboard TCP port.
+    /// Dashboard TCP port; 0 turns the dashboard off.
     #[arg(long, value_name = "PORT")]
     pub dashboard_port: Option<u16>,
+}
+
+/// What `orpheus` starts: the modes of `ow174/cli.py`, in its menu order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum Mode {
+    /// The full main menu: the lobby, a local Battle.net and the game with the relay.
+    Retail,
+    /// The simpler menu without the lobby hero; the game dials the lobby, no relay.
+    Tournament,
+    /// Retail, with the lobby open to players on other PCs: you host and play.
+    Host,
+    /// Only the lobby and game server, open to players on other PCs.
+    Server,
+    /// The game with the full menu on someone else's server.
+    Join,
+    /// Only the game, in tournament mode, on someone else's server.
+    JoinTournament,
+}
+
+impl Mode {
+    pub const ALL: [Self; 6] = [
+        Self::Retail,
+        Self::Tournament,
+        Self::Host,
+        Self::Server,
+        Self::Join,
+        Self::JoinTournament,
+    ];
+
+    /// The lobby is there for other PCs (`HOSTING` in cli.py).
+    pub fn hosting(self) -> bool {
+        matches!(self, Self::Host | Self::Server)
+    }
+}
+
+/// The options of every mode: the server's, and those for hosting, joining
+/// and starting the game.
+#[derive(Args, Clone, Debug)]
+pub struct ModeArgs {
+    #[command(flatten)]
+    pub server: ServerArgs,
+    /// Address the lobby and the game server listen on [default: 0.0.0.0
+    /// for host and server, else 127.0.0.1].
+    #[arg(long, value_name = "ADDRESS")]
+    pub host: Option<Ipv4Addr>,
+    /// Address games are sent to for a match, if not the one they reach the
+    /// lobby at (behind a router's port forward: the public address).
+    #[arg(long, value_name = "ADDRESS")]
+    pub game_host: Option<String>,
+    /// Address of the server to join, such as 1.2.3.4:3724.
+    #[arg(long = "server", value_name = "HOST:PORT", value_parser = ask::parse_server_address)]
+    pub remote: Option<String>,
+    /// Your name on the server you join with the full menu.
+    #[arg(long, value_name = "NAME", value_parser = ask::parse_player_name)]
+    pub name: Option<String>,
+    /// Seconds to wait for the game to be ready for the relay.
+    #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = parse_timeout)]
+    pub timeout: Duration,
+}
+
+impl ModeArgs {
+    /// Where the lobby listens: `--host`, else every address when hosting
+    /// (it is there for other PCs) and only this PC in the modes that play
+    /// alone (`listen_host` in cli.py).
+    pub fn listen_host(&self, hosting: bool) -> Ipv4Addr {
+        self.host.unwrap_or(if hosting {
+            Ipv4Addr::UNSPECIFIED
+        } else {
+            Ipv4Addr::LOCALHOST
+        })
+    }
+
+    /// The public address, or empty for none.
+    pub fn game_host(&self) -> String {
+        self.game_host.clone().unwrap_or_default()
+    }
+}
+
+fn parse_timeout(text: &str) -> Result<Duration, String> {
+    text.parse::<f64>()
+        .ok()
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
+        .filter(|timeout| !timeout.is_zero())
+        .ok_or_else(|| "give the seconds as a number above 0, such as 30".into())
 }
 
 #[derive(Debug)]
@@ -135,6 +223,11 @@ impl Settings {
 
     pub fn logs(&self) -> PathBuf {
         self.state.join("logs")
+    }
+
+    /// The dashboard's port, `None` when 0 turns it off.
+    pub fn dashboard_port(&self) -> Option<u16> {
+        (self.ports.dashboard != 0).then_some(self.ports.dashboard)
     }
 }
 

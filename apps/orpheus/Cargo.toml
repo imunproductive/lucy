@@ -15,6 +15,7 @@ path = "src/main.rs"
 clap.workspace = true
 ctrlc.workspace = true
 directories.workspace = true
+orpheus-bnet.workspace = true
 orpheus-content.workspace = true
 orpheus-launcher.workspace = true
 orpheus-lobby.workspace = true

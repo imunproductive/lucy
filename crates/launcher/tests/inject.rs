@@ -63,10 +63,10 @@ fn the_relay_loads_once_and_uses_the_given_port() {
             ping,
             &arguments,
             &folder.path().join("game.log"),
-            RelaySetup {
+            Some(RelaySetup {
                 log: &relay_log,
                 rpc_port: 4321,
-            },
+            }),
         )
         .unwrap(),
     );

@@ -5,6 +5,12 @@
 
 #![deny(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks)]
 
+#[cfg(windows)]
+pub mod dialog;
 pub mod game;
 #[cfg(windows)]
+pub mod network;
+#[cfg(windows)]
 pub mod process;
+#[cfg(windows)]
+pub mod retail;

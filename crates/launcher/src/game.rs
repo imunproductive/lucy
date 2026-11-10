@@ -2,7 +2,7 @@
 
 use std::{
     collections::BTreeSet,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -10,6 +10,59 @@ pub const GAME_EXE: &str = "Overwatch.exe";
 pub const OFFICIAL_LAUNCHER: &str = "Overwatch Launcher.exe";
 /// The only client build the server supports.
 pub const TARGET_VERSION: &str = "1.74.0.0.104319";
+/// Where the game remembers the `Overwatch.exe` picked on the first start
+/// (`GAME_PATH_FILE` in `ow174/paths.py`), in the state folder.
+pub const GAME_PATH_FILE: &str = "game_path.txt";
+
+/// The game to start without asking: the given path, the one picked last
+/// time (`saved`), or an unpacked copy in `root/game` (`find_game` in
+/// `ow174/launcher/game.py`). `Ok(None)` means the player has to pick one.
+pub fn find_game(
+    explicit: Option<&Path>,
+    saved: &Path,
+    root: &Path,
+) -> io::Result<Option<PathBuf>> {
+    if let Some(path) = explicit {
+        return resolve_game(path).map(Some).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "Cannot find {GAME_EXE} at {}. Select the installation folder or \
+                     _retail_\\{GAME_EXE}; {OFFICIAL_LAUNCHER} opens Battle.net.",
+                    path.display()
+                ),
+            )
+        });
+    }
+    if let Some(game) = remembered_game(saved) {
+        return Ok(Some(game));
+    }
+    Ok(unpacked_game_paths(root)
+        .into_iter()
+        .find(|candidate| is_game(candidate))
+        .and_then(|game| plain_canonical(&game)))
+}
+
+/// The game picked last time, if it is still there. Older launchers saved
+/// the path with a UTF-8 byte order mark.
+fn remembered_game(saved: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(saved).ok()?;
+    let path = text.trim_start_matches('\u{feff}').trim();
+    if path.is_empty() {
+        return None;
+    }
+    resolve_game(Path::new(path))
+}
+
+/// An unpacked copy of the game in the checkout's `game` folder.
+fn unpacked_game_paths(root: &Path) -> [PathBuf; 3] {
+    let game = root.join("game");
+    [
+        game.join("Overwatch").join("_retail_").join(GAME_EXE),
+        game.join("_retail_").join(GAME_EXE),
+        game.join(GAME_EXE),
+    ]
+}
 
 /// The game for a path: the game itself, its installation folder, or the
 /// official launcher next to it. Nothing is started.
@@ -189,5 +242,41 @@ mod tests {
             );
         }
         assert_eq!(resolve_game(&install.path().join("missing.exe")), None);
+    }
+
+    #[test]
+    fn finds_the_given_game_then_the_remembered_one_then_an_unpacked_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let saved = root.path().join(GAME_PATH_FILE);
+        assert_eq!(find_game(None, &saved, root.path()).unwrap(), None);
+        assert!(find_game(Some(&root.path().join("nowhere")), &saved, root.path()).is_err());
+
+        let unpacked = root.path().join("game").join("_retail_");
+        fs::create_dir_all(&unpacked).unwrap();
+        fs::write(unpacked.join(GAME_EXE), b"").unwrap();
+        let unpacked = plain_canonical(&unpacked.join(GAME_EXE)).unwrap();
+        assert_eq!(
+            find_game(None, &saved, root.path()).unwrap(),
+            Some(unpacked.clone())
+        );
+
+        let install = tempfile::tempdir().unwrap();
+        fs::write(install.path().join(GAME_EXE), b"").unwrap();
+        let installed = plain_canonical(&install.path().join(GAME_EXE)).unwrap();
+        fs::write(&saved, format!("\u{feff}{}\r\n", install.path().display())).unwrap();
+        assert_eq!(
+            find_game(None, &saved, root.path()).unwrap(),
+            Some(installed.clone())
+        );
+        assert_eq!(
+            find_game(Some(&unpacked), &saved, root.path()).unwrap(),
+            Some(unpacked)
+        );
+        // A remembered game that moved falls back to the unpacked copy.
+        fs::write(&saved, root.path().join("moved").display().to_string()).unwrap();
+        assert_ne!(
+            find_game(None, &saved, root.path()).unwrap(),
+            Some(installed)
+        );
     }
 }

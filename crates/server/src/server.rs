@@ -1,4 +1,5 @@
-//! Loopback-only native server for the verified retail Practice Range path.
+//! The native server for the verified retail Practice Range path: the lobby,
+//! the game server, the local Battle.net and the dashboard.
 
 mod dashboard;
 
@@ -6,13 +7,14 @@ use std::{
     fs, io,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex, OnceLock, mpsc},
     thread::{self, JoinHandle},
 };
 
 use crate::{
     game_service::GameService,
     lobby::{Lobby, serve},
+    platform::{LocalGames, Platform},
     runtime::missing_runtime_files,
     server::dashboard::{Dashboard, DashboardParts},
 };
@@ -39,12 +41,25 @@ pub struct ServerConfig {
     pub runtime: PathBuf,
     pub data: PathBuf,
     pub account: Option<String>,
+    /// Where the lobby and the game server listen: 127.0.0.1 for this PC
+    /// only, 0.0.0.0 for other PCs too. Battle.net and the dashboard always
+    /// stay on this PC.
+    pub host: Ipv4Addr,
+    /// The public address sent in the handoff to games from outside the
+    /// host's network (`--game-host`); empty for none.
+    pub game_host: String,
     pub lobby_port: u16,
     pub game_port: u16,
+    /// Run the local Battle.net (the retail modes); a lobby only for other
+    /// PCs and tournament games has none.
+    pub battle_net: bool,
     pub stall_port: u16,
     pub rpc_port: u16,
     /// The dashboard's TCP port; `None` leaves it off.
     pub dashboard_port: Option<u16>,
+    /// The retail games this PC starts, so Battle.net logs each in as its own
+    /// account and the dashboard can start a second one.
+    pub games: Option<Arc<dyn LocalGames>>,
 }
 
 impl ServerConfig {
@@ -53,11 +68,15 @@ impl ServerConfig {
             runtime,
             data,
             account: None,
+            host: Ipv4Addr::LOCALHOST,
+            game_host: String::new(),
             lobby_port: 3724,
             game_port: 3730,
+            battle_net: true,
             stall_port: service::STALL_PORT,
             rpc_port: service::RPC_PORT,
             dashboard_port: Some(3725),
+            games: None,
         }
     }
 }
@@ -67,14 +86,14 @@ pub struct Server {
     game_addr: SocketAddr,
     stop_lobby: mpsc::Sender<()>,
     lobby: Option<JoinHandle<io::Result<()>>>,
-    bnet: BnetService,
+    bnet: Option<BnetService>,
     game: Option<Arc<GameService>>,
     dashboard: Option<Dashboard>,
 }
 
 impl Server {
-    /// Validate the data before starting the loopback listeners. This entry
-    /// point serves the base graph bundle and contains no client launcher.
+    /// Validate the data before starting the listeners. This entry point
+    /// serves the base graph bundle.
     pub fn start(config: ServerConfig) -> io::Result<Self> {
         let missing = missing_runtime_files(&config.runtime, true);
         if !missing.is_empty() {
@@ -115,34 +134,45 @@ impl Server {
             &template,
             config.account.as_deref(),
         )?;
-        let listener = TcpListener::bind(addr(config.lobby_port))?;
+        let listener = TcpListener::bind(SocketAddrV4::new(config.host, config.lobby_port))?;
         listener.set_nonblocking(true)?;
         let SocketAddr::V4(lobby_addr) = listener.local_addr()? else {
             unreachable!("IPv4 lobby bind")
         };
         let game = Arc::new(GameService::bind(
-            addr(config.game_port).into(),
+            SocketAddrV4::new(config.host, config.game_port).into(),
             game_schemas,
         )?);
         let game_addr = game.local_addr();
         let selected = Arc::new(Mutex::new(local));
-        let bnet_selected = Arc::clone(&selected);
-        let bnet = BnetService::start(
-            addr(config.stall_port),
-            addr(config.rpc_port),
-            lobby_addr,
-            protocol,
-            move |_| {
-                let bnet_account = Arc::clone(&bnet_selected.lock().expect("selected account"));
-                let account = u64::from(bnet_account.account_lo);
-                Player {
-                    account,
-                    game_account: account ^ PRO_ACCOUNT_BITS,
-                    battle_tag: bnet_account.battle_tag(),
-                    name: bnet_account.name.clone(),
-                }
-            },
-        )?;
+        let accounts = Arc::new(accounts);
+        let platform = Arc::new(Platform::new(
+            config.host,
+            config.game_host.clone(),
+            config.games.clone(),
+        ));
+        let bnet = if config.battle_net {
+            // Known once the RPC port is bound, before any game logs in.
+            let rpc_port = Arc::new(OnceLock::new());
+            let player = battle_net_player(
+                Arc::clone(&accounts),
+                Arc::clone(&selected),
+                Arc::clone(&platform),
+                Arc::clone(&rpc_port),
+            );
+            let bnet = BnetService::start(
+                addr(config.stall_port),
+                addr(config.rpc_port),
+                // The games are on this PC, whatever address the lobby listens on.
+                addr(lobby_addr.port()),
+                protocol,
+                player,
+            )?;
+            let _ = rpc_port.set(bnet.rpc_addr().port());
+            Some(bnet)
+        } else {
+            None
+        };
         let shared = Arc::new(Lobby {
             signing_key,
             schemas,
@@ -155,11 +185,12 @@ impl Server {
             extra_preload,
             assets,
             first_scene: Mutex::new(Some(scene)),
-            accounts: Arc::new(accounts),
+            accounts,
             selected,
             active: Arc::default(),
             game: Arc::clone(&game),
             hub: Default::default(),
+            platform: Arc::clone(&platform),
         });
         let dashboard = config
             .dashboard_port
@@ -172,6 +203,7 @@ impl Server {
                     data: config.data.clone(),
                     assets: config.data.join("assets"),
                     lobby_port: lobby_addr.port(),
+                    platform,
                 };
                 Dashboard::start(port, parts)
             })
@@ -197,11 +229,13 @@ impl Server {
     pub fn game_addr(&self) -> SocketAddr {
         self.game_addr
     }
-    pub fn stall_addr(&self) -> SocketAddr {
-        self.bnet.stall_addr()
+    /// The local Battle.net's port the game dials, when it runs.
+    pub fn stall_addr(&self) -> Option<SocketAddr> {
+        self.bnet.as_ref().map(BnetService::stall_addr)
     }
-    pub fn rpc_addr(&self) -> SocketAddr {
-        self.bnet.rpc_addr()
+    /// The Battle.net RPC port the relay pipes to, when it runs.
+    pub fn rpc_addr(&self) -> Option<SocketAddr> {
+        self.bnet.as_ref().map(BnetService::rpc_addr)
     }
     pub fn dashboard_addr(&self) -> Option<SocketAddr> {
         self.dashboard.as_ref().map(Dashboard::addr)
@@ -211,7 +245,7 @@ impl Server {
         if let Some(dashboard) = &mut self.dashboard {
             dashboard.stop();
         }
-        let bnet = self.bnet.stop();
+        let bnet = self.bnet.as_mut().map_or(Ok(()), BnetService::stop);
         let lobby = if let Some(worker) = self.lobby.take() {
             let _ = self.stop_lobby.send(());
             worker
@@ -233,6 +267,33 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.stop();
+    }
+}
+
+/// Battle.net logs a game in as the account the lobby will use, with the ids
+/// its presence shows (`_start_bnet` in `ow174/cli.py`, `game_account` in
+/// `ow174/lobby/server.py`): a second game on this PC plays the account it
+/// was started for, any other game the dashboard's account.
+fn battle_net_player(
+    accounts: Arc<Accounts>,
+    selected: Arc<Mutex<Arc<Account>>>,
+    platform: Arc<Platform>,
+    rpc_port: Arc<OnceLock<u16>>,
+) -> impl Fn(SocketAddr) -> Player + Send + Sync + 'static {
+    move |peer| {
+        let second = rpc_port
+            .get()
+            .and_then(|&server| platform.game_account_name(peer.port(), server))
+            .and_then(|name| accounts.get(&name).ok());
+        let account =
+            second.unwrap_or_else(|| Arc::clone(&selected.lock().expect("selected account")));
+        let id = u64::from(account.account_lo);
+        Player {
+            account: id,
+            game_account: id ^ PRO_ACCOUNT_BITS,
+            battle_tag: account.battle_tag(),
+            name: account.name.clone(),
+        }
     }
 }
 
@@ -308,6 +369,48 @@ mod tests {
     };
 
     #[test]
+    fn battle_net_logs_a_second_game_in_as_its_account_and_others_as_the_dashboards() {
+        struct Second;
+        impl LocalGames for Second {
+            fn start(&self, _: &str) {}
+            fn account_of(&self, peer_port: u16, server_port: u16) -> Option<String> {
+                ((peer_port, server_port) == (50_000, 21119)).then(|| "second".into())
+            }
+            fn second_accounts(&self) -> std::collections::HashSet<String> {
+                ["second".into()].into()
+            }
+        }
+        let data = tempfile::tempdir().unwrap();
+        let accounts = Arc::new(
+            Accounts::new(
+                data.path().join("profiles"),
+                data.path().join("profile.json"),
+            )
+            .unwrap(),
+        );
+        let first = accounts.get("First").unwrap();
+        let second = accounts.get("Second").unwrap();
+        let platform = Platform::new(Ipv4Addr::LOCALHOST, String::new(), Some(Arc::new(Second)));
+        let rpc_port = Arc::new(OnceLock::new());
+        let player = battle_net_player(
+            accounts,
+            Arc::new(Mutex::new(Arc::clone(&first))),
+            Arc::new(platform),
+            Arc::clone(&rpc_port),
+        );
+        let peer = |port| SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        rpc_port.set(21119).unwrap();
+        let logged_in = player(peer(50_000));
+        assert_eq!(
+            (logged_in.name.as_str(), logged_in.account),
+            ("Second", u64::from(second.account_lo))
+        );
+        assert_eq!(logged_in.game_account, logged_in.account ^ PRO_ACCOUNT_BITS);
+        assert_eq!(logged_in.battle_tag, second.battle_tag());
+        assert_eq!(player(peer(50_001)).name, "First");
+    }
+
+    #[test]
     fn the_login_account_is_the_choice_then_the_default_then_the_first_saved() {
         let data = tempfile::tempdir().unwrap();
         let saved = ["Alpha".to_owned(), "beta".to_owned()];
@@ -346,6 +449,8 @@ mod tests {
         config.game_port = 0;
         config.stall_port = 0;
         config.rpc_port = 0;
+        // A game on this PC is sent to the address it reached, not the public one.
+        config.game_host = "games.example".into();
         if !SceneAssets::load(&runtime)
             .unwrap()
             .prepare(orpheus_content::maps::GameMap::practice_range())
@@ -398,6 +503,7 @@ mod tests {
         ]);
         let mut server = Server::start(config).unwrap();
         for address in [server.stall_addr(), server.rpc_addr()] {
+            let address = address.unwrap();
             assert!(address.ip().is_loopback());
             TcpStream::connect(address).unwrap();
         }
@@ -521,6 +627,18 @@ mod tests {
             ticket[&0x2c],
             Value::Unsigned(u64::from(server.game_addr().port()))
         );
+        let Value::Array(address) = &ticket[&0x2e] else {
+            panic!("missing game address")
+        };
+        let address: Vec<u64> = address
+            .iter()
+            .take(10)
+            .map(|byte| match byte {
+                Value::Unsigned(byte) => *byte,
+                _ => panic!("invalid address byte"),
+            })
+            .collect();
+        assert_eq!(address, b"127.0.0.1\0".map(u64::from));
         let Value::Unsigned(connection) = ticket[&0x28] else {
             panic!("missing UDP connection")
         };
@@ -571,5 +689,25 @@ mod tests {
         assert!(closing.elapsed() < Duration::from_secs(3));
         TcpListener::bind(lobby).unwrap();
         UdpSocket::bind(game).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+    fn a_server_for_other_pcs_listens_everywhere_and_answers_a_join() {
+        let state = tempfile::tempdir().unwrap();
+        let mut config = ServerConfig::new(orpheus_testkit::runtime_dir(), state.path().into());
+        config.host = Ipv4Addr::UNSPECIFIED;
+        config.lobby_port = 0;
+        config.game_port = 0;
+        config.battle_net = false;
+        config.dashboard_port = None;
+        let mut server = Server::start(config).unwrap();
+        assert!(server.lobby_addr().ip().is_unspecified());
+        assert!(server.game_addr().ip().is_unspecified());
+        assert_eq!((server.stall_addr(), server.rpc_addr()), (None, None));
+        let lobby = (Ipv4Addr::LOCALHOST, server.lobby_addr().port());
+        let tag = battle_tag_query::ask(lobby, "Joiner").unwrap();
+        assert!(tag.starts_with("Joiner#"), "{tag}");
+        server.stop().unwrap();
     }
 }

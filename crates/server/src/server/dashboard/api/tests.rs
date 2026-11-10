@@ -11,6 +11,7 @@ struct Fixture {
     selected: Mutex<Arc<Account>>,
     online: Mutex<HashMap<u32, Arc<AtomicBool>>>,
     collection: Collection,
+    platform: Platform,
 }
 
 impl Fixture {
@@ -62,6 +63,7 @@ impl Fixture {
             selected,
             online: Mutex::new(HashMap::new()),
             collection,
+            platform: Platform::new(std::net::Ipv4Addr::LOCALHOST, String::new(), None),
         }
     }
 
@@ -74,6 +76,7 @@ impl Fixture {
             data: self.state.path(),
             assets: self.state.path(),
             lobby_port: 3724,
+            platform: &self.platform,
             uptime: Duration::ZERO,
         }
     }
@@ -297,4 +300,68 @@ fn frame_names_follow_the_level_tiers() {
     assert_eq!(frame_name(1441), "Gold ★★ · level 1441+");
     assert_eq!(frame_name(2401), "Diamond · level 2401+");
     assert_eq!(frame_name(3600), "Diamond ★★★★★ · level 3600+");
+}
+
+/// Second games that "start" at once and play until the test ends.
+#[derive(Default)]
+struct Started(Mutex<Vec<String>>);
+
+impl crate::platform::LocalGames for Started {
+    fn start(&self, account: &str) {
+        self.0.lock().unwrap().push(account.into());
+    }
+    fn account_of(&self, _: u16, _: u16) -> Option<String> {
+        None
+    }
+    fn second_accounts(&self) -> std::collections::HashSet<String> {
+        self.0.lock().unwrap().iter().cloned().collect()
+    }
+}
+
+#[test]
+fn a_second_game_starts_once_for_an_account_that_is_not_playing() {
+    let fixture = Fixture::new();
+    let error = fixture
+        .api()
+        .start_game(&data(json!({"name": "Alpha"})))
+        .unwrap_err();
+    assert_eq!(error.status, 409);
+
+    let games = Arc::new(Started::default());
+    let platform = Platform::new(
+        std::net::Ipv4Addr::UNSPECIFIED,
+        String::new(),
+        Some(Arc::clone(&games) as _),
+    );
+    let api = Api {
+        platform: &platform,
+        ..fixture.api()
+    };
+    let started = api.start_game(&data(json!({"name": "alpha"}))).unwrap();
+    assert_eq!(started["message"], "A second game is starting as Alpha.");
+    assert_eq!(*games.0.lock().unwrap(), ["Alpha"]);
+    let again = api.start_game(&data(json!({"name": "Alpha"}))).unwrap_err();
+    assert_eq!(
+        (again.status, again.message.as_str()),
+        (409, "Alpha is already playing")
+    );
+
+    let beta = fixture.accounts.get("Beta").unwrap();
+    fixture
+        .online
+        .lock()
+        .unwrap()
+        .insert(beta.account_lo, Arc::default());
+    assert_eq!(
+        api.start_game(&data(json!({"name": "Beta"})))
+            .unwrap_err()
+            .status,
+        409
+    );
+    assert_eq!(games.0.lock().unwrap().len(), 1);
+    let server = api.state(None).unwrap()["server"].clone();
+    assert_eq!(
+        (server["host"].as_str(), server["second_games"].as_bool()),
+        (Some("0.0.0.0"), Some(true))
+    );
 }
