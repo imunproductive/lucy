@@ -32,6 +32,7 @@ use orpheus_sim::{
     combat::{BotHit, BotReplacement, Combat, ShotContext},
     controller::ControllerFrame,
     egress::GameEgress,
+    hud::{HudMount, WORLD_UI_ENTITY},
     instance::{Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
     replication::{Record, WorldDelivery},
     scene::{PlayerAppearance, PlayerCard},
@@ -181,9 +182,16 @@ impl GameService {
         };
         let creates = scene.initial_world(&viewer)?;
         let controller = initial_controller(&scene, FIRST_TICK)?;
+        let hud = scene.hud();
         let scripts = [
             script_record(viewer.entity, &controller)?,
             script_record(GAME_MODE_ENTITY, scene.mode_ui())?,
+            HudMount::create(),
+            script_record(
+                WORLD_UI_ENTITY,
+                &hud.owner_frame(FIRST_TICK, true).map_err(invalid)?,
+            )?,
+            script_record(WORLD_UI_ENTITY, hud.ring_frame())?,
         ];
         for record in creates.iter().chain(&scripts) {
             let packet = frame(u32::MAX, u32::MAX, &[], &[], &[record]).map_err(invalid)?;

@@ -16,6 +16,7 @@ use crate::{
     combat::{BotReplacement, PosedHitscan, PosedProjectile, PosedShot},
     controller::ControllerFrame,
     egress::{DeliveryReport, FrameRecords, GameEgress, RecordSource, SendError, SentFrame},
+    hud::{HudMount, WORLD_UI_ENTITY},
     projectile_flight::{FlightEnd, ProjectileFlight},
     projectiles::{OwnerProjectiles, ProjectileDelivery, ProjectileLeases, ProjectileToken},
     scene::{PlayerAppearance, Possession, team_bit},
@@ -48,6 +49,10 @@ use orpheus_wire::{
 };
 
 const BODY_REUSE_DELAY: Duration = Duration::from_secs(30);
+
+/// The pause between the HUD mount's last three steps, as in the branch it
+/// was ported from (`hud.rs`).
+const HUD_STEP_TICKS: u32 = (600 / TICK_PERIOD.as_millis()) as u32;
 // Resource bound for this worker. The reference keeps 64 predicted states and
 // 32 commands. A farther-ahead command can be retried once the clock catches up.
 const MAX_INPUT_LEAD: u32 = 96;
@@ -309,6 +314,19 @@ impl BodyScript {
     }
 }
 
+/// The HUD mount's progress (`hud.rs`): the UI entity is created with the
+/// first body; its mount follows the create, the ring follows the mount's
+/// arrival, then the widgets go and come back.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HudStep {
+    Absent,
+    Created,
+    Mounted { last: u32 },
+    Bare { at: u32 },
+    Widgets { at: u32 },
+    Done,
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Lifetime {
     Live,
@@ -533,6 +551,8 @@ pub struct WorldDelivery {
     pub presentation_due: bool,
     controller: Stream,
     mode: Stream,
+    hud: Stream,
+    hud_step: HudStep,
     select_open: bool,
     body: Option<Body>,
     bound: Option<BodyId>,
@@ -558,6 +578,8 @@ impl WorldDelivery {
             presentation_due: false,
             controller: Stream::new(owner),
             mode: Stream::new(GAME_MODE_ENTITY),
+            hud: Stream::new(WORLD_UI_ENTITY),
+            hud_step: HudStep::Absent,
             select_open: true,
             body: None,
             bound: None,
@@ -578,6 +600,7 @@ impl WorldDelivery {
         self.health_updates.clear();
         self.started = None;
         self.presentation_due = false;
+        self.hud_step = HudStep::Absent;
         self.mover = None;
         self.body_script = None;
         self.projectile_destroys.clear();
@@ -756,6 +779,11 @@ impl WorldDelivery {
                     }
                     (true, Delivery::Script { last, .. }) if record.update.entity == self.owner => {
                         self.controller.arrived(last);
+                    }
+                    (true, Delivery::Script { last, .. })
+                        if record.update.entity == WORLD_UI_ENTITY =>
+                    {
+                        self.hud.arrived(last);
                     }
                     (true, Delivery::Script { last, .. }) => {
                         self.mode.arrived(last);
@@ -1041,8 +1069,51 @@ impl WorldDelivery {
             let chunk = self.mode.full(scene.mode_ui()).map_err(invalid)?;
             self.push(Record::script(chunk, false));
         }
-        self.presentation_due = self.controller.latest_data() == 0 || self.mode.latest_data() == 0;
+        self.advance_hud(scene.hud(), tick)?;
+        self.presentation_due = self.controller.latest_data() == 0
+            || self.mode.latest_data() == 0
+            || !matches!(self.hud_step, HudStep::Absent | HudStep::Done);
         Ok(())
+    }
+
+    fn advance_hud(&mut self, mount: &HudMount, tick: u32) -> io::Result<()> {
+        let next = match self.hud_step {
+            HudStep::Created if self.created.contains(&WORLD_UI_ENTITY) => HudStep::Mounted {
+                last: self.queue_hud_mount(mount, tick, true)?,
+            },
+            HudStep::Mounted { last } if self.hud.delivered() >= last => {
+                let chunk = self.hud.full(mount.ring_frame()).map_err(invalid)?;
+                self.push(Record::script(chunk, false));
+                HudStep::Bare {
+                    at: tick.saturating_add(HUD_STEP_TICKS),
+                }
+            }
+            HudStep::Bare { at } if tick >= at => {
+                self.queue_hud_mount(mount, tick, false)?;
+                HudStep::Widgets {
+                    at: tick.saturating_add(HUD_STEP_TICKS),
+                }
+            }
+            HudStep::Widgets { at } if tick >= at => {
+                self.queue_hud_mount(mount, tick, true)?;
+                HudStep::Done
+            }
+            step => step,
+        };
+        self.hud_step = next;
+        Ok(())
+    }
+
+    fn queue_hud_mount(&mut self, mount: &HudMount, tick: u32, widgets: bool) -> io::Result<u32> {
+        let chunk = self
+            .hud
+            .full_owner(self.command_ack(tick), |cmfd| {
+                mount.owner_frame(cmfd, widgets)
+            })
+            .map_err(invalid)?;
+        let last = chunk.last;
+        self.push(Record::script(chunk, false));
+        Ok(last)
     }
 
     fn can_handle_game_message(&self) -> bool {
@@ -1443,6 +1514,11 @@ impl WorldDelivery {
         });
         if let Some(old) = old {
             self.retire_body(old.id);
+        }
+        if self.hud_step == HudStep::Absent {
+            self.push(Record::baseline(HudMount::create()));
+            self.hud_step = HudStep::Created;
+            self.presentation_due = true;
         }
         self.push(close);
         self.remove_stale();

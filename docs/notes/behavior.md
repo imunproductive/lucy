@@ -56,6 +56,14 @@ The imported game-server branch (LizRollin `9f8f3bcb`) claimed these work in the
 
 Written but never checked in the game: kill feed, Helix Rockets and Biotic Field on other players' screens, no General chat during a match, a queue match found while in the Practice Range, a hero voice line on spawn (18 heroes have a networked spawn voice stimulus; Soldier: 76 does not).
 
+AipNooBest's branch (`860bab45`, ported in `crates/sim/src/hud.rs` and the login preload) claims, from its own live client:
+
+- A gun shows only when its `.003` definition is in the login preload list; without it a scripted body shows gloves.
+- The server's world UI entity, its mount and the `.0C47` ring build `HUD_Root`: interaction prompts appear, and a hero shows the ult ring with its percentage and two weapon-slot icons. The ammo digits, health number and bar, ability row and portrait still do not draw.
+- The HUD's hero layer initializes only when the login named a menu hero; a "random" lobby hero leaves it dead.
+
+The ring here differs from the branch's: it uses this repository's remote full frame layout (an active bit and the class payload per lit entry, no instance event lists, sorted compact variables). The owner mount frames are bit for bit the branch's.
+
 ## Known defects
 
 - Soldier: 76 in the Practice Range: after a kill the fire button can stay pressed and ammo stops going down; Biotic Field does not show with some skins; Sprint stops working after a while; a crash after kills. Default skins avoid some of this.

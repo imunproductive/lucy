@@ -14,6 +14,7 @@ use crate::{
     body_script::{OwnerBodySpawn, PlayerBodyFactory},
     bots::{Bot, BotCatalog, BotWalk},
     controller::Controller,
+    hud::HudMount,
     instance::RETAIL_QUANTA,
     pools::PoolCatalog,
     replication::OwnerBodyRuntime,
@@ -85,6 +86,7 @@ pub struct PreparedScene {
     contacts: Option<Arc<ContactWorld>>,
     controller: Controller,
     mode_ui: BitWriter,
+    hud: HudMount,
     initial_board: Component,
     bots: Vec<Bot>,
     scripted_bots: usize,
@@ -170,6 +172,11 @@ impl SceneAssets {
         }
         let controller = Controller::load(&self.graphs, map.mode_guid)?;
         let mode_ui = mode_ui(&self.graphs, &Variables::new())?;
+        let codecs = self
+            .codecs
+            .as_deref()
+            .ok_or_else(|| invalid("the statescript codec table is unavailable"))?;
+        let hud = HudMount::load(&self.graphs, codecs)?;
         let initial_board =
             self.stats
                 .component(&PlayerStats::default(), map.mode_guid, None, None);
@@ -179,6 +186,7 @@ impl SceneAssets {
             contacts,
             controller,
             mode_ui,
+            hud,
             initial_board,
             bots,
             scripted_bots,
@@ -308,6 +316,10 @@ impl PreparedScene {
 
     pub fn mode_ui(&self) -> &BitWriter {
         &self.mode_ui
+    }
+
+    pub fn hud(&self) -> &HudMount {
+        &self.hud
     }
 
     pub fn bots(&self) -> &[Bot] {
@@ -591,7 +603,8 @@ mod tests {
         let assets = SceneAssets::load(runtime).unwrap();
         let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
         assert_eq!(scene.bots().len(), 15);
-        let scripted = if assets.graphs.graph_indexes().count() == 373 {
+        // Only the bot bundle holds the Practice Range bot graph.
+        let scripted = if assets.graphs.graph(0x0b92).is_none() {
             0
         } else {
             15
