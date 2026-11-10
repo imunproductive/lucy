@@ -3,6 +3,15 @@
 //! Ports the mesh candidate boxes, simplex caches, settled-body memos and
 //! capsule casts from `ow174/game/contacts.py`. Geometry is immutable and
 //! shared across bodies. Each body owns its candidate and pair state.
+//!
+//! Client functions: mesh contact 0x7FF789D0E810 (re-queries the triangles
+//! only when the capsule leaves a box 0.1 m larger than it, or that box gets
+//! 0.4 m too loose; a prop mesh works in its own frame, 0x7FF789D0EA60 /
+//! 0x7FF789D0C160; inverse frame built at 0x7FF789D0EFE6); its manifolds
+//! 0x7FF789D0BD90; its sweep 0x7FF789D0E410. Convex contact 0x7FF789D006A0
+//! with its sweep 0x7FF789D00570; a polytope is shape A (types in descending
+//! order, 0x7FF789D20590). A cast only hits once the distance comes down to
+//! r + 0.00125, which bounds the "far" shortcut.
 
 use std::sync::Arc;
 

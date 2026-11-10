@@ -1,4 +1,21 @@
 //! Party state payloads. Membership, invitations and matchmaking remain caller state.
+//!
+//! Client research (1.74) for the 20700 member record:
+//!
+//! - +0xE0 is the membership, not the away/busy status (that comes from
+//!   presence). Names from the client's party debug print (0x7FF789761103):
+//!   0 stranger, 1 invitee (accept), 2-4 invitee (transfer info, ticket,
+//!   owner), 5 member, 6-7 leaving. The client checks 5-7 and +0xE2 for
+//!   "am I the leader" (0x7FF7895443B0) and turns it into MemberStatus for
+//!   the party panel (0x7FF789544370). Only the leader has +0xE2; with it on
+//!   everyone, all showed as leader.
+//! - An invitee that has not answered shows as a pending tile with a green
+//!   bar that runs down (PendingInviteProgressBar of tile 05E/005E). +0xB8 is
+//!   the time left in ms: the client adds its own clock to it when the party
+//!   state arrives (0x7FF7895444D4), and the bar shows the deadline minus that
+//!   clock while under 25 s (0x7FF7895442E0).
+//! - The party's "members can invite" flag is read by 0x7FF789D2EE70
+//!   (Social.members_may_invite).
 
 use std::io;
 

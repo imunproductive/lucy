@@ -834,7 +834,7 @@ mod tests {
             })
             .collect();
         // The answers the server gives without knowing they are right, as the
-        // Python reference did (docs/notes/parity.md). Each one is a known
+        // Python reference did (docs/notes/behavior.md). Each one is a known
         // difference to check with the client.
         assert_eq!(
             assumed,

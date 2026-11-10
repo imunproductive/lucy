@@ -1,4 +1,14 @@
 //! Variable storage, entry queues and stack links shared by every instance.
+//!
+//! Client research (1.74): a variable is a base value plus links, the states
+//! that override it while active, in order; the last active one wins
+//! (resolver 0x7FF78AAB70B0). A Stack's entries are its links. Every variable
+//! a state reads while it evaluates registers the state as a watcher; a change
+//! sends it an event. A config var the world answers is no variable, so a
+//! state that reads it re-checks every update (the client's poll list,
+//! 0x7FF78AAA5C20). A plain assignment keeps the value's own type
+//! (0x7FF78AAB5650). The runtime state of an m_states index is made on first
+//! use (0x7FF78AAA1460).
 
 use super::*;
 

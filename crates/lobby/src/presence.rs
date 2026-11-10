@@ -1,4 +1,20 @@
 //! Account and game-account presence for the lobby, personalized from external templates.
+//!
+//! Presence records go in 27100 +0xA8 and 27113. Their values are protobuf
+//! blobs that hold the recorded account ids in three forms: fixed64 fields,
+//! the `"<id>#1"` game account name, and varints inside a Variant
+//! message_value (the Overwatch player id `{1: 1, 2: high, 3: low}`, which the
+//! client uses for invites and whispers). A field key is `{program "BN",
+//! group, field, unique id}`; field 1 of group 2 (a game account) is its
+//! online bool. Times are Variant ints in microseconds since 1970.
+//!
+//! The status bools of the account record (group 1): the client reads its own
+//! status from them (0x7FF7896145E0 via 0x7FF789613F90: 7 away, 11 busy, 12
+//! appear offline, none set is online), which the status dropdown (27011
+//! +0x78) and the name card show. A friend's colour (0x7FF789616670) is away
+//! on 7, busy on 11, else online while one of the friend's game accounts is.
+//! The capture carries only 12, as false; all three always go out, so going
+//! back to online clears them.
 
 use std::{collections::HashSet, io};
 

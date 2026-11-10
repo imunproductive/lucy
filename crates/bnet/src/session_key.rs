@@ -1,4 +1,9 @@
 //! The local Battle.net emulator passes the UTF-8 account name to the lobby in the login key.
+//!
+//! The retail client sends the logon result's session key on to the lobby in
+//! its login (21800 +0xB8 +0x20), next to the game account id, and uses it for
+//! nothing else we serve: 64 bytes have to be there. The lobby handshake does
+//! not use this key (it uses zeros).
 
 use std::io;
 

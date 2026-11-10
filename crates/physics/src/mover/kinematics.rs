@@ -2,6 +2,14 @@
 //!
 //! The PC path in `ow174/game/mover.py` runs friction, steering, the direction
 //! cap and gravity in this order after its ground and stance transitions.
+//!
+//! Client functions: throttles (0x7FF789B49FA0, 0x7FF789B4DA30): the state
+//! keeps `trunc(t * 127)` in float32, which for 16 values is one less in size
+//! (9 -> 8, 13 -> 12, ... 104 -> 103). Wish direction 0x7FF789B44340;
+//! direction top speed (strafe speed blended toward forward or backward by the
+//! cosine to the facing) 0x7FF789ACEF40; friction 0x7FF789B43090 (the base
+//! part goes with the tick's run speed, the per-speed part with the body's
+//! own: the PC path, cvar at 0x7FF78BD3EE20); air drag 0x7FF789B416A0.
 
 use std::f64::consts::TAU;
 

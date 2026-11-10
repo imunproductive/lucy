@@ -1,4 +1,14 @@
 //! Account pass pools used by the role queues and lobby progression.
+//!
+//! The game's own texts say how priority passes work: players get them by
+//! queueing as All Roles, more for a win than a loss (1266E.07C), and spend one
+//! to find a match faster with one role (1266F.07C). A pass taken for a search
+//! comes back when the search ends without a match (128E5.07C, 12965.07C).
+//!
+//! The client keeps a count per pool, keyed by the queue card's pool
+//! identifier (0C7 m_DD50F6A1, read at card +0x250 by 0x7FF7893497D0). 58501
+//! replaces the client's whole list (0x7FF789609E50). The client shows "N/40";
+//! 40 is server config value 17EB12A9.
 
 use std::io;
 

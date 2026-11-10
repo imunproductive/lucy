@@ -1,7 +1,71 @@
 //! Server world frames for retail build 104319.
 //!
-//! The wire layout and component fields come from `ow174/game/world.py`.
-//! Frame selection follows the ordered send budget in `ow174/game/server.py`.
+//! The wire layout and component fields come from the Python reference; frame
+//! selection follows its ordered send budget.
+//!
+//! Client research (1.74). A kind-1 datagram's world frame, as the client
+//! reads it (0x7FF7896DE110): var_a packet frame; ch0 the message channel;
+//! ch3 `var_a ack, 4 bits flags, 1 bit "ping follows"` (the client drops its
+//! commands below ack - 1); ch4 1 bit (1 = keep, 0 resets the entity
+//! channel); ch5 1 bit (the end of an empty list); then 7 bits of entity
+//! count, and per entity its id and one bit per channel in order (0 ends the
+//! entity, 1 runs that channel's reader, which has presence bits of its own).
+//!
+//! The entity channel (ch4, reader 0x7FF78969BBC0) takes a 2-bit op: 1
+//! create, 2 update, 3 destroy; a create or update carries 14 bits of length
+//! and that many bits. A create (0x7FF78969C360, body 0x7FF78969DAB0): bit
+//! from map: 1 -> 32 bits placeable index, 1 bit transform override (0), then
+//! the update body (a server-owned placeable's entity id must be `0x80000000 |
+//! n`); else the 003 definition's GUID index, 8 bits flags: 0x01 the skin
+//! (with 0x40, 32 bits of a skin theme 0A6, bit 31 asking for a remap, and 1
+//! bit for the theme's golden weapon; else a skin 076 GUID index); 0x08 3 f32
+//! position and a quaternion (x y z w); 0x08 or 0x04 3 f32 scale; 0x02 a
+//! movement-state block; then the update body. Flag 0x10 is the player's own
+//! entity (command components added when 20302 named it), 0x20 adds component
+//! 74; the transform floats are thrown away on that path.
+//!
+//! The update body (0x7FF78969E5D0 / 0x7FF78969B870): 8 bits count, then per
+//! component its index, a pad to the next payload byte, a u8 mask length and
+//! the mask (one bit per replicated field), then the set fields' values.
+//! Scalars go as whole bytes; a u64 marked as an id is a byte mask and its
+//! non-zero bytes (a 16-byte id as low, high, unpadded: 0x7FF78A76B500); a
+//! teString is a u32 byte count and the bytes (0x7FF78AAF0300).
+//!
+//! Component notes: MPlayerComponentData (field records at 0x7FF78BFEAE50,
+//! names from the PS4 data): m_lobbyPlayerID, m_battleTag, m_playerLevel, s32
+//! audio locale, group token, party state, platform, m_rankedLevel,
+//! m_heroicRank, m_rankedLevelTier (0-6), m_moderator. MECPossessorData:
+//! current, view target, primary possessable. MECGameModeParticipant:
+//! portrait frame, s16, slot, lfg role, u8, role queue role, can select a
+//! hero, u8, u8. The health component (type 0x7FF78BFE8720): 16 health, 16
+//! armour and 16 shield pools, then u32, u32, entity, u8, u8. A health pool
+//! (type 0x7FF78BFE8660, 20 bytes): u32 id (0 = none), f32 max, f32 current,
+//! u32 type (0 health, 1 armour, 2 shields; array t holds type t,
+//! 0x7FF7894D0530), then four bytes. The HUD bar (0x7FF7894CCEE0) draws a pool
+//! as its type only when byte 17 is 1 and byte 18 is 0, else as over-health in
+//! another colour; 1 is the client's default for byte 17 (0x7FF78A1FFBD0).
+//!
+//! The movement-state block (0x7FF789B6F680) is a delta against a mostly-zero
+//! reference state: command frame, flags, aim pitch, throttles and the last
+//! command that had any, air ticks, gravity scale, last stand-up frame, Euler
+//! angles, position, velocity, spring offsets and speed, gravity's part of the
+//! velocity. After one bit (0 = against that reference) the same block is a
+//! ch3 movement record; the client only interpolates between records and
+//! keeps a state only when its command frame is newer than the entity's
+//! newest (gate 0x7FF7896DA7D3). Another client animates a body from it
+//! (0x7FF789B1EB10). Fields +16 to +40 (0x7FF789B6F80E to 0x7FF789B71E50) have
+//! reference values +16 = 0, +20 = +40 = 0xFFFFFFFF, +24 = 0.0, +28 = 1.0
+//! (move-speed scale), +32 to +35 = 0, +36 = 0xFFFFFFFF. +36 is the frame of
+//! the last command with throttles: a 0 bit makes it the record's frame (+8);
+//! the client reads +34/+35 only when +36 is not +8 (0x7FF789B71DF6), else it
+//! copies +32/+33, so the record's own frame must go as the 0 bit without
+//! +34/+35. An s8 throttle is 1 and its byte, or 0 for the reference's 0
+//! (0x7FF789B71C50). Spring offsets +52/+56 are the reference's steps plus a
+//! signed delta (0x7FF789B770B0); +60 spring speed; +0x360 parent entity,
+//! +0x364 its scene-node matrix; +56, +384 and +832 are three optional raw
+//! floats (0x7FF789B71CE0). A record's frame counts back from its base
+//! (0x7FF789B76D00: the packet frame on ch3); a create's movement state counts
+//! back from a fixed base (0x7FF78969DD3C).
 
 use std::{borrow::Borrow, error::Error, fmt};
 

@@ -1,7 +1,18 @@
 //! Data-driven statescript payload layouts and verified runtime projections.
 //!
-//! Layouts and H0/H1 projections follow ow174/game/script/codecs.py and
-//! ow174/game/statescript.py. The prepared runtime supplies the client table.
+//! Layouts and H0/H1 projections follow the Python reference. The prepared
+//! runtime supplies the client table, extracted in IDA from the client code:
+//! per state class (STU hash) the class the client builds for it (the
+//! registry winner), whether it is an StEC class (X then StAc, else A), its
+//! codec name and its payload layout (the property block's fields, then the
+//! class reader's). Layout ops are read in order, LSB first: bits n, f32,
+//! w_u16, var_b, signed_var, entity_id, value (a tagged value), link; `if c
+//! then else` with c one of H, !H, full, H&full, a field read before, !field or
+//! valid:field (a valid entity); `repeat count body`. H = an owner frame, full
+//! = a full frame (a delta reads with full = 0). A state whose payload the
+//! server cannot write is sent only while it is off, and never when it is an
+//! StEC class (an StEC state carries its payload when off too). Reader widths
+//! are documented in `orpheus_core::bits`.
 
 use std::{
     collections::{BTreeMap, HashMap},

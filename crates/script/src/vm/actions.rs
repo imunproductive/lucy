@@ -1,4 +1,9 @@
 //! Conditions' branches, `CycleIndex` and `StopAbility`.
+//!
+//! Client research (1.74): Condition execute (0x7FF78AA83CB0) takes a false
+//! result when a false link is, a true one when a true link is or when
+//! neither plug has links. Container membership (m_814F8EC3 has an element
+//! equal to m_value) is evaluated at 0x7FF78AA85A30.
 
 use super::*;
 

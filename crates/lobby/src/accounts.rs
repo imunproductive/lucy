@@ -316,6 +316,9 @@ pub fn account_id_for(name: &str) -> u32 {
     0x1000_0000 | (crc32fast::hash(name_key(name).as_bytes()) & 0x0fff_ffff)
 }
 
+/// The player's BattleTag: the nickname and 4 digits from the account id
+/// ("Jeff#6691"). The client shows the part before '#' as the name and the
+/// whole tag in the social screens; players type it to add a friend.
 pub fn battle_tag(nickname: &str, account_lo: u32) -> String {
     format!("{}#{}", trim_name(nickname), 1000 + account_lo % 9000)
 }

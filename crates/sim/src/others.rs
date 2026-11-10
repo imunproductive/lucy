@@ -16,6 +16,21 @@
 //!   once the create arrived (a full frame, then deltas), and its destroy
 //!   when he switches heroes or leaves;
 //! - "left the game" and the controller entity's destroy when he leaves.
+//!
+//! Client research (1.74): another player's 44 (his body) makes the client
+//! set the body's possessor (43, the comp 44 hook 0x7FF789719850), by which it
+//! names the body (0x7FF789CB3F80) and finds his On Fire flag
+//! (0x7FF789BE2370); 75 gives the Tab board each row's hero (0x7FF789A16620,
+//! read when 74 is there). The hook's re-possess (0x7FF789AB2CF0) resets
+//! input and mover only for a possessor with component 59, which only the
+//! local player has; a ch3 record of the body likewise feeds only a
+//! possessor's 59 (0x7FF7896DAA95). A movement key counts as held for the
+//! animation while the last command with throttles is less than 0.1 s old
+//! (0x7FF789B20A70), so a standing body carries the tick of that command. A
+//! remote body's create must not carry a movement state (it would sit at
+//! frame 0xFFFFFFFE and the client refuses every later record that is not
+//! newer); retail sent a movement record for every other body in every
+//! frame, standing or not (OW2 traffic).
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},

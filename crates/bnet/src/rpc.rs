@@ -1,4 +1,24 @@
 //! Local Battle.net service handlers for login and lobby referral.
+//!
+//! The login, step by step (tested in game):
+//!
+//! 1. ConnectionService.Connect: the client lists the listener services it
+//!    offers (AuthenticationClient, ChallengeNotify, AccountNotify) with the
+//!    id it gave each; we answer with server time and ids. Services the client
+//!    uses get ids 1, 2, 3... in the order it lists them.
+//! 2. AuthenticationServer.Logon: answered with
+//!    AuthenticationClient.OnLogonComplete at once. The client needs no login
+//!    form and no ticket, with or without a cached one.
+//! 3. GameUtilities.ProcessTask: answered with a ReferralInfo that sends the
+//!    client to the lobby server; the client then takes the normal retail path
+//!    and shows the full main menu.
+//!
+//! A response goes to service id 254 and repeats the request's token. A
+//! notification names the listener by its hash and the id the client gave it,
+//! with a token from our own counter, far above the client's own tokens. Empty
+//! answers are enough for the client's other requests. The high words (type
+//! tags) of the Battle.net and Overwatch game account ids are the ones the
+//! plasmawatch server uses; the low words are the player's.
 
 use std::borrow::Cow;
 use std::collections::HashMap;

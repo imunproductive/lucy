@@ -1,6 +1,35 @@
 //! Map AI spawners and the training bots' server-side patrol movement.
 //!
-//! The catalog and patrol behavior follow ow174/game/bots.py.
+//! The catalog and patrol behavior follow the Python reference.
+//!
+//! Research: the Practice Range has 15 spawners, 11 Training Bots on the red
+//! team and 4 Friendly Bots on the blue one (retail's OW2 Practice Range
+//! showed 15 bots too, each with a movement record in every frame, idle or
+//! not). Graph 0B8E walks a route: variable #6947 (0D80/1B23) lists AI hint
+//! points, #39 (0D80/0027) is the route index (2 to start); it waits 2 s,
+//! then 1 s (two StateWaits), sets `#39 = (#39 + 1) % count(#6947)` and walks
+//! to `#6947[#39]` (STU_ECAEE401 with move-to 194D744E and face-to AB9B30EF).
+//! Graph 0B92 alternates firing and waiting phases of 1.75 to 2.5 s within
+//! 0.4 m of spawn; its 0013.025 reset branch delays firing by 2.75 s. A bot's
+//! health is the body's override of 0033's #199 (Training Bots 200, Friendly
+//! Bots 225). The client's code for the AI's move-to, face-to and fire states
+//! is a stub (one shared class, vtable 0x7FF78B6BC800): they ran on the
+//! server only.
+//!
+//! Measured on the retail OW2 Practice Range's live traffic (its four walking
+//! bots walk the far routes of these spawners): a bot sets off when its wait
+//! ends whichever way it faces, keys held all the way (throttles 127; retail
+//! sent 126-127 from the first tick of a walk to its last), and turns toward
+//! the way it walks at 60 degrees a second until 0.5 s (28 to 33 ticks) after
+//! it lets go. It speeds up at ground acceleration times run speed and lets go
+//! where ground friction (base times run speed) stops it on its point (4.5
+//! m/s^2, 4.5 m/s and 67.5 m/s^2 for the Training Bot body). The next walk
+//! starts 1.2 s (75 ticks) after the last tick with keys. Unverified: retail
+//! stopped 0.05-0.45 m short of the 1.74 points. The far runners (hero 016E,
+//! body 14ED) use 1.74's values: 6 m/s, up at 66 m/s^2, down at 39 m/s^2;
+//! OW2 put ordinary Training Bots on these routes (4.5 m/s) and changed three
+//! routes. Bot n's entity is `0xC0001000 + n` (type 2, like the game mode
+//! entity).
 
 use std::{
     collections::{HashMap, VecDeque},

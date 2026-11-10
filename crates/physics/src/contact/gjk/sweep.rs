@@ -2,6 +2,20 @@
 //!
 //! Ports `shape_cast` from `ow174/game/contacts.py` and uses the same simplex
 //! solvers as distance queries. The cast maintains its own translated simplex.
+//!
+//! The client's shape cast is 0x7FF789CDBA70: the fraction of the translation
+//! B can move before it comes within the target distance of A (the radii,
+//! each at least 1 cm, less 1 cm). Each point set goes through its body's
+//! frame (cast input +0x40..+0x70); +0xA0 is "hit touching" and +0xA1
+//! "shrink" (the mover's sweeps use 0 / 1). The result is written at
+//! 0x7FF789CDC270..0x7FF789CDC407: the normal is the last search direction
+//! normalised (from A toward B; minus the translation's direction when that is
+//! 0), the point is A's witness pushed out by A's radius along it. Checked
+//! against the client's own function: 6000 casts, fraction, point and normal
+//! bit for bit. The mesh sweep is 0x7FF789CF3B20: each triangle the swept box
+//! meets is cast (0x7FF789CECE40: GJK ray cast, triangle radius 0.01, no
+//! shrink) with the best fraction so far as its limit; its quaternion product
+//! follows the lane order at 0x7FF789CF3D0A..0x7FF789CF3DA5.
 
 use std::cmp::Ordering;
 

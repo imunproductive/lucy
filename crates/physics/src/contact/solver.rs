@@ -2,6 +2,10 @@
 //!
 //! Uses the bounded sequential-impulse solve and the one/two-plane velocity
 //! cases in `ow174/game/contacts.py`.
+//!
+//! Client functions: the velocity clip after the move 0x7FF789CCAB00 ->
+//! 0x7FF789CCAD50; its QP part 0x7FF789CCAE79 (not traced in full);
+//! projected Gauss-Seidel 0x7FF789CCB3A0; the iterative path 0x7FF789CCAFF0.
 
 use std::cmp::Ordering;
 

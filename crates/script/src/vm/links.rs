@@ -1,4 +1,14 @@
 //! Variable stack links and movement modifiers.
+//!
+//! Client research (1.74): Stack OnBegin 0x7FF78AAA5FF0 pushes an entry
+//! `{state, priority}` on m_out_Var; the last entry is the top (its state
+//! follows m_topSubgraphPlug, every other m_underSubgraphPlug, only on a
+//! change), and the variable reads the top's m_value. A modifier that reads
+//! its own output variable uses the value below its entry (Doomfist 0D06
+//! state 77 adds 0.5 to entity var 5A90). The push (0x7FF78AA82F90, the sort
+//! of PS4 sub_172E790) keeps entries ascending by priority: a new entry goes
+//! after every lower priority, above equal ones when its flag is set, below
+//! them otherwise; pushing the same state again replaces its entry.
 
 use super::*;
 

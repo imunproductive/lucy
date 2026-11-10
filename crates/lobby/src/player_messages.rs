@@ -1,4 +1,25 @@
 //! The player's initial lobby messages and saved settings.
+//!
+//! Client research (1.74):
+//!
+//! - Account features (55500, right after the endorsements): the client looks
+//!   a feature up by id and treats it as enabled when it is present with a
+//!   non-zero value. 0x948D allows sending chat and whispers. The client drops
+//!   the connection right after login if the list is incomplete or the value
+//!   is 1. The ids and the value are copied from a retail 1.68 capture.
+//! - The endorsement categories are STUIdentifier 01C, from 054/0x168 in the
+//!   client data: sportsmanship (green), good teammate (purple), shot caller
+//!   (orange). The ring around the level shows each category's share in its
+//!   colour, and stays grey when the list is empty.
+//! - 20802 +0x130 holds values `[{+0x0 value, +0x8 key}]`, a key being
+//!   `(type table << 16) | identifier` (0x7FF7893512B0).
+//! - A friend's card (20809/20810) goes into the client's card cache
+//!   (0x7FF789687D80), so the friend shows an icon, level and endorsement;
+//!   from presence alone it has only the BattleTag. The id, time and two flags
+//!   after the endorsement are not known; left empty, the card shows and no
+//!   other tab lists the friend (tested in game).
+//! - 20812 interface states are kept by the client as index -> value
+//!   (0x7FF789535EB0); a missing one reads as 0.
 
 use std::{collections::BTreeMap, io};
 

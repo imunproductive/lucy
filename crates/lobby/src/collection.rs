@@ -1,4 +1,26 @@
 //! Lobby ownership, equipment and progression from the external retail catalog.
+//!
+//! Client research (1.74):
+//!
+//! - Portrait borders are 300 consecutive GUIDs: 5 tiers of 600 levels, each
+//!   with 6 star counts (100 levels each) of 10 border steps (10 levels each).
+//!   A made-up GUID shows no border at all.
+//! - An item tagged with a hero (icons and sprays included) must be listed
+//!   only under that hero: the client unlocks a hero's icon only from the
+//!   hero's list, and when the account list has it too, it does not send the
+//!   equip request at all (tested in game). The hero gallery shows only items
+//!   from the hero's store list, and an item counts as owned only when it
+//!   belongs to a hero; a default-item store entry (+0x10 0, +0x17 true)
+//!   would leave it out of the hero's count.
+//! - 24302 `{boxes, reason, flag}` merges boxes into the client's list,
+//!   skipping ids it has (0x7FF789D32D00); retail's login sent reason 12 with
+//!   the flag on. Reason 4 with the flag would store the first box as a shop
+//!   purchase (0x7FF789726DE0).
+//! - 24901 `{hero, unlock, new}` (a hero's item) and 24301 `{unlock, seen}`
+//!   (an account item) both open the challenge reward window when the unlock
+//!   is a challenge reward (0x7FF7896F8E30).
+//! - 24306 `{unlock, hero}`: the unlock must go first; with the hero first
+//!   the client charged the player and left the item locked.
 
 use std::{
     collections::{HashMap, HashSet},

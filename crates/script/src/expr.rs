@@ -1,4 +1,18 @@
 //! Typed config and expression evaluation for server-side graph initialization.
+//!
+//! Client research (1.74; interpreter 0x7FF78AA91210): value type numbers
+//! are null 255, bool 1, int 2 (32-bit signed), float 3 (every result rounded
+//! to float32), id 4 (64-bit asset), vec3 6, handle 7, entity 10, array 12,
+//! map 13. An unset variable reads as null: false, 0, 0.0, and null == 0.
+//! Truthiness 0x7FF789E74940 (an array is its element 0; an entity is valid
+//! when not 0 and its low 29 bits are not all set); ToFloat 0x7FF789E74C80
+//! and ToInt 0x7FF789E75260 (null 0, bool 0/1, a float rounds half away from
+//! zero, an array is its element 0); equality 0x7FF789E738C0 (numbers within
+//! 1.1920929e-5, a bool against the other side's truthiness, null against a
+//! number equal when it is 0); compares use `a - eps <= b`, `a < b - eps`;
+//! ADD is a vector only when both sides are vectors or entities, else float.
+//! The opcode table was read in the PS4 build and checked against the PC
+//! interpreter.
 
 use std::{error::Error, fmt};
 

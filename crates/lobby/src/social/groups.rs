@@ -54,8 +54,14 @@ pub fn group_rating(profile: &Profile, listing: &Fields) -> io::Result<Option<u1
 /// players, +0x12/+0x13/+0x14 free tank/damage/support slots, +0x15 free
 /// slots of any role, +0x18 slot types that must be free, +0x30 texts to find
 /// in the name or the creator (filter reader 0x7FF7899B1E00). +0x11 is "only
-/// players of my platform"; every player here is on PC, so it filters
-/// nothing. The client does not filter the found groups itself.
+/// players of my platform" (forced on for competitive games, hidden without
+/// crossplay, 0x7FF789AA43A0); every player here is on PC, so it filters
+/// nothing. The client does not filter the found groups itself. The filters
+/// were found by changing one at a time on the client's filter screen
+/// (05A/0668): +0x8 is the row picked in the game type list (0 any, 1 quick
+/// play, 2 competitive, 3 arcade, 4 versus AI) and +0xC that type as listings
+/// carry it in +0x76 (0, 1, 2, 4, 5); roles assigned and voice chat are 0 any,
+/// 1 no, 2 yes; +0x0 (u64) is unknown.
 pub fn matches_filters(party: &Party, wanted: &Fields) -> bool {
     let empty = Fields::new();
     let listing = party.listing.as_ref().unwrap_or(&empty);

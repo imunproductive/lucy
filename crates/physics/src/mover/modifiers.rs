@@ -1,6 +1,22 @@
 //! Frame-scoped movement modifiers from build 104319 statescript.
 //!
-//! The scalar slots and operation order follow `ow174/game/mover.py`.
+//! The scalar slots and operation order follow the Python reference.
+//!
+//! Client research: the mover keeps its mods in a list at mover +0x6E0
+//! (0x38-byte entries), sorted by priority, then start (0x7FF789B3FAA0); one
+//! acts on ticks start..end - 1 (0x7FF789B42FFB). The op on a value is
+//! 0x7FF789B42ED0 (add, multiply, set, min, max, clamp), the indexes this
+//! mover applies are in 0x7FF789B4CBA0 (jump table at RVA 0xC3D920), and the
+//! intents (jump, crouch, landing limit) read through 0x7FF789B42FB0. The
+//! statescript's MovementMod state is STU_316CFEF2; its mod classes
+//! (STU_6810506D: m_A9561CA0 index, m_9B7A63EA value) map to ops by type
+//! object at 0x7FF789C4C1E0: STU_4CB0950F add, STU_D8CC6B10 multiply,
+//! STU_56DEE1BB set, STU_C61711C8 min, STU_F197CFBF max. The client gives the
+//! mover each mod while its state is on (begin 0x7FF789C49590, tick
+//! 0x7FF789C4C1E0, end 0x7FF789C499C0); a mod starts at the statescript's
+//! frame + 1 (0x7FF789C4C510..0x7FF789C4C52A) and ends at the frame + 1 it
+//! went off in (0x7FF789C49CE1, 0x7FF789B456C0). Soldier: 76's Sprint adds
+//! 0.5 to the speed scalar and sets the crouch intent to 0.
 
 use std::{cmp::Ordering, collections::BTreeMap};
 

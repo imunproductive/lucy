@@ -2,6 +2,8 @@
 //!
 //! The 1.68 template corpus, decoded against 1.74 schemas, remains an external
 //! runtime input. This module ports the existing lobby replay and data format.
+//! Groups whose layout changed between 1.68 and 1.74 are not in the corpus,
+//! except the ranked state (36300), converted by hand.
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -24,7 +26,11 @@ use orpheus_wire::jam::codec::{Fields, Value};
 pub const RETAIL_ACCOUNT: u64 = 0x0000_0001;
 pub const REDACTED_NAME: &str = "XXXXXXXXXXXXXXX";
 pub const CLIENT_BUILD: u32 = 104319;
+/// The 36600 config entry listing supported builds, a text list like "[1,2,3]".
 pub const SUPPORTED_BUILDS_KEY: u64 = 0x0422_7e56;
+/// The 36600 config key that can put any loaded hero record in the main menu.
+/// The client re-reads 36600 while connected, so a change shows at once. PvE
+/// characters have no lobby idle animation and stand in a bind pose.
 pub const MENU_HERO_KEY: u64 = 0x8705_3c32;
 
 const TEMPLATE_FORMAT: u32 = 1;

@@ -3,6 +3,26 @@
 //! Mirrors `ow174/content/celebrations.py` and `ow174/catalog/events.py`.
 //! Resource bytes stay in the separate runtime catalog and are sent on the
 //! lobby link. Errors do not include the contents of that catalog.
+//!
+//! An event is a record in 38900. The fields the client needs, as in the
+//! recorded Lunar New Year 2022 record: +0x40 celebration id (picks the
+//! catalog of main menu maps), +0x70 celebration type (picks the event map
+//! variants and the event loot box), +0x30/+0x38 content key name and id (the
+//! key bytes go in 20504), +0x0 map swaps, +0x58 login rewards, +0xB0 event
+//! loot box type. The "What's new" screen lists the contents of the +0x58 loot
+//! box as the event's "New trophies"; the boxes are the ones
+//! STULootBoxCelebrationOverride (054/0x18) gives each celebration type.
+//! Summer Games and Archives have no main menu scene in 1.74, but their type
+//! still picks the event loot box. The one event splash 1.74 still wires is
+//! the pre-Overwatch 2 credits notice: 01B/0C74 shows 05A/07D7 when that
+//! celebration is greeted.
+//!
+//! Hero challenges are event records too, with reward tiers and the stat that
+//! counts toward them (the recorded one, Ashe's Year of the Tiger 2022 week
+//! 1). In 1.74 it counts played plus won matches (a win counts twice). The
+//! only challenges 1.74's Play menu has a banner for (01B/0B7C) are
+//! celebrations 0x119, 0x11A and 0x11B, weeks 1-3 of Anniversary Remix 3;
+//! their rewards are participation icon, spray and skin, in that order.
 
 use std::{
     collections::{BTreeMap, HashSet},

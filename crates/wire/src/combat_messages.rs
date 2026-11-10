@@ -2,6 +2,25 @@
 //!
 //! The field layout follows ow174/game/combat.py for build 104319. Each
 //! notice exposes the identity a recipient must know before it is queued.
+//!
+//! Client research (1.74):
+//!
+//! - ClientInCombat 25001 `{entity, u32 damage, u8 flags} u32 frame`
+//!   (handler 0x7FF7895D2D40) tells the shooter of a hit: it goes in his
+//!   component 59's hit list (+0x12D0, records in frame order), which shows
+//!   the target's health bar for 5 s (0x7FF7895D8520: `int(1e6 / quanta) * 5`
+//!   frames) and feeds the hit marker and its sound (event 7). Flag bit 0
+//!   counts at +0x124, else +0x120; bit 1 at +0x128. Unverified: bit 0 =
+//!   critical, bit 1 = kill (OW2 cross-check: 19 / 38 damage with 0 / 1, the
+//!   last hit 2 / 3).
+//! - 25005 `{u64, entity, entity victim, u8 score, bool assist}`
+//!   (0x7FF7895D2B50, which reads only +0x84, +0x88 and +0x89) and 25004 `{u8,
+//!   entity}` (0x7FF7895D2A70) post 0F76.025 and 0F7B.025 / 0F7C.025 to the
+//!   game mode entity's statescript (0x7FF7895D7AF0, the first component-114
+//!   entity). Its graph 1FC0 (a client-only child of 0CB6) shows
+//!   "ELIMINATED: NAME" (1126.07C; +0x89 assist would be 01F0.07C, +0x88 a
+//!   score shown when above 0), "YOU WERE KILLED BY NAME" (1127.07C) or
+//!   "YOU DIED" (1128.07C).
 
 use crate::{
     jam::codec::{Fields, Schemas, Value},

@@ -1,4 +1,14 @@
 //! Character stance, take-off, landing and pogo spring state for 104319.
+//!
+//! Client research: on the ground the feet snap to the ground
+//! (0x7FF789AD0150); the capsule springs to pogo above the feet (implicit
+//! damped spring, 0x7FF789B4F110; offsets within 1/512 m rest). A stance
+//! change does not move the capsule: the spring offset takes the difference
+//! of the pogo heights and a second offset starts from there
+//! (0x7FF789B4C5DF); it wears off by as much as the first moves
+//! (0x7FF789B4F31D). The tick start's feet and pogo vector are read at
+//! 0x7FF789ACF060. The spring offset's range is mover +0x4F8 / +0x4FC (set at
+//! 0x7FF789AD0BD1).
 
 use crate::{
     mover::ground::{ProbeResult, capsule, pogo},

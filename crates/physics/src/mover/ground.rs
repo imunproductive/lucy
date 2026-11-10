@@ -2,6 +2,29 @@
 //!
 //! It uses the same triangle index as other ground queries and the contact
 //! world's shape sweep only when the centre ray has no walkable ground.
+//!
+//! Client research: the probe (0x7FF789B48990) casts a ray from the capsule's
+//! lower sphere centre (feet + pogo + spring offset + radius) down to the
+//! feet, or on the ground to step_down below them (more when fast:
+//! `tan(max slope) * dt * min(|v|, top stance speed) * 1.1`, factor at
+//! 0x7FF78B522754). If the centre misses, a disc of ground_circle_rays points
+//! (0x7FF789B49610: 0.015 m high, the first at +z, each turned by float32
+//! sin/cos of 2 pi / count) is swept along the same segment (0x7FF789B4953D,
+//! disc setup 0x7FF789B49515; the circle shrinks with body scale down to 0.35,
+//! 0x7FF78B522748). The probe's ground test uses its own float32 cosf
+//! (0x7FF789ACEE40). A mesh hit takes the face normal of the nearest triangle
+//! within 0.05 m (0x7FF789B506E0, slack 1.19e-5 at 0x7FF78B50B054; the face
+//! normal stays in the mesh's frame, so a turned prop's is not turned back).
+//! A polytope hit casts five vertical rays 0.02 m round the hit, 72 degrees
+//! apart, 5 mm in under it, down to 0.04 m below (0x7FF789B498AC). The hit's
+//! plane is met under the feet at 0x7FF789B49B5A..0x7FF789B49BB7 (reciprocal
+//! from rcpss refined once, 0x7FF7894D08B0). The sweep's point is 1 cm out of
+//! the surface, so feet held by the disc stand 1 cm up, as the client's.
+//! Closest point on a triangle: 0x7FF789CD8230; guarded reciprocal as at
+//! 0x7FF789CD853D. Horizontal unit vector as 0x7FF789503B30 computes it
+//! (rsqrtps refined as `(3 - r r l) r / 2`). Stance capsule (0x7FF789B4C3D0,
+//! 0x7FF789B45822): `r = max(0.02, radius)`, segment `max(0.1 r, height -
+//! (pogo + 2 radius))`.
 
 use std::sync::Arc;
 

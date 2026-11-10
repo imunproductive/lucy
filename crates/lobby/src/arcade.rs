@@ -1,7 +1,19 @@
 //! Arcade catalog, dated rotation and wire messages for retail build 104319.
 //!
 //! The catalog is supplied by the external runtime. Group ordering and the
-//! dated rotation follow `ow174/content/arcade.py`.
+//! dated rotation follow the Python reference.
+//!
+//! The Arcade screen has seven slots. The client files each card under its
+//! menu group (the 0EE menu nodes of catalog 10B.063) and each group takes one
+//! slot; the everyday cards are each their own group. The everyday cards
+//! follow the two retail Arcades known (the January 2022 capture and
+//! OverwatchArcade.today's record of 3 April 2022). With five event groups
+//! (the anniversary) the last two everyday cards do not fit; retail's Arcade
+//! for that case is not known. A card's flags +0xA8.. are: permanent, the
+//! seven from the asset, two unused, role queue; the capture sets the first on
+//! No Limits, Quick Play Classic and Mystery Heroes. The competitive cards
+//! (asset flag 0, card +0xA9) are offered by the group finder as game types
+//! (0x7FF789AA3D80), each running a season.
 
 use std::{
     collections::{BTreeMap, HashSet},

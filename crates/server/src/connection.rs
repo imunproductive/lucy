@@ -1,4 +1,15 @@
 //! Match handoff admission and encrypted UDP connection state.
+//!
+//! The lobby sends each player 20600 with this server's address, a
+//! connection id of their own and two keys. The client sends SYN datagrams
+//! with that id until it gets SYN|ACK; the first reliable message after that
+//! is 20300. The client routes every datagram by the id in its header and
+//! opens it with that connection's keys, whatever the address
+//! (0x7FF7893127F0), and all links of one game share one socket
+//! (0x7FF78930F920): a game moving from one match to the next sends the old
+//! connection's FIN and the new one's SYN from the same address. 20304 with 0
+//! means "leave for good" (0x7FF7896E6830): the game returns to the menu and
+//! closes its link.
 
 use std::{collections::HashMap, net::SocketAddr, time::Duration};
 

@@ -6,6 +6,26 @@
 //! players load (match.py `_refresh_collision`); players can join it while it
 //! runs (ow174/game/server.py `join_match`). In the PvP modes the first spawn
 //! starts "assemble your team" (match.py `_end_assemble`).
+//!
+//! How a player gets into the world (client research, 1.74): when the map is
+//! loaded the client sends 21601 (and later 21602). 0.3 s later the server
+//! sends 20302 `{the player entity}`, "this is your entity" (0x7FF7896E6C10
+//! writes world +0x298); it has to come before the player's create, or the
+//! client does not add its command components 59 and 63 (0x7FF78955EE90).
+//! At least 0.6 s after loading, and after the ownership message and its
+//! predecessors are acknowledged, one frame creates the map's server-owned
+//! placeables (the loading screen only ends once they all exist), the player
+//! entity (000E.003, flags 0x3C) and the game mode entity (16B2.003). Once
+//! that create is acknowledged the player's entity gets its controller's
+//! statescript in owner mode, so small owner frames keep telling the client
+//! which of its commands the server has (CmFD); otherwise it replays old key
+//! presses. The hero's body comes with the pick, as in retail (OW2 traffic):
+//! the body with its movement state and an update of the player entity whose
+//! component 44 possesses it. A switch replaces the body under a new id in
+//! the same frame (the client ignores a destroyed id for 30 s). In the PvP
+//! modes the first spawn shows 30 s of "assemble your team" on the hero
+//! select screen, which stays open after a pick. Retail sent a datagram every
+//! third tick (48 ms, OW2 traffic).
 
 use std::{
     collections::{HashMap, VecDeque},

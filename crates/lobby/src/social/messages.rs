@@ -43,10 +43,13 @@ const FRIENDS_LIST: u32 = 27100;
 /// Changes to the friends list go one at a time. A whole list (27100) makes
 /// the client take every online friend as just come online and announce each
 /// again.
+/// {friend entry} (0x7FF789611AA0).
 const FRIEND_ADDED: u32 = 27105;
+/// {friend id} (0x7FF789614C40).
 const FRIEND_REMOVED: u32 = 27106;
 /// Unlike the list, it shows the "friend request" banner.
 const REQUEST_RECEIVED: u32 = 27107;
+/// {inviter id}: takes a request off the list (0x7FF789614EB0).
 const REQUEST_REMOVED: u32 = 27108;
 const REQUEST_RESULT: u32 = 27110;
 const ANSWERED: u32 = 27111;
@@ -195,7 +198,8 @@ pub fn request_record(
     ]))
 }
 
-/// 27100: friends, incoming friend requests, and presence.
+/// 27100: friends, incoming friend requests, and presence. Offline friends
+/// need presence too, marked offline: without it the client leaves them out.
 pub fn friends_list(
     friends: Vec<Value>,
     requests: Vec<Value>,
@@ -308,8 +312,10 @@ pub fn party_error(code: u64) -> LobbyMessage {
 
 /// A listed group's member (20700 member +0xA0): the slot types the member
 /// takes (52203) and the one they fill (+0x8). Until a member has one, the
-/// client keeps its "choose role(s)" screen open (0x7FF789AA46B0)
-/// (`ow174/content/queue.py` group_slot).
+/// client keeps its "choose role(s)" screen open (0x7FF789AA46B0); the
+/// member's slot is read by 0x7FF78934B270. Slot types are the group
+/// finder's own: 1 any role, 2 tank, 3 support, 4 damage (table
+/// 0x7FF78B566690).
 pub fn group_slot(slot_types: &[u64]) -> Value {
     Struct(Fields::from([
         (0, Unsigned(0)),

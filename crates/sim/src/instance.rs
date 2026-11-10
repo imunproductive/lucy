@@ -1,4 +1,21 @@
 //! Match entry and roster messages shared by team modes and free-for-all.
+//!
+//! Client research (1.74): 20300 is "load this map with this mode". Its
+//! +0x500 must equal the client's command frame length in microseconds
+//! (0x7FF7896E94B0), else error 262445 (tournament mode uses its own
+//! tank_TournamentModeTickRate); +0x519 must match a byte that is 0 (error
+//! 262455). +0x78 is the instance type (world system 0x38 +0x18): with 9
+//! (ranked, on a competitive card) the team list shows each player's rank
+//! (component 29) in place of level and frame (0x7FF789A15CC9,
+//! 0x7FF789A1D8E0). The 1064-byte game struct of 20300 and 20301 holds the
+//! mode, the players and their teams; a team's +0x60 is its number and +0x61
+//! its size, from which the hero select team list takes its empty slots
+//! (0x7FF789CADB40). ClientInGame 20308 `{4 flags, card}` is a player's card
+//! for the client's player list, keyed by the id in his entity's component 29
+//! (0x7FF7896E88B0); with the first and fourth flag on it also posts "NAME
+//! joined the game." (or left, or started spectating) in the chat. The client
+//! keeps a card unless it has one with a newer +0x30 for the same id
+//! (0x7FF789529C90). A card is about 90 bytes.
 
 use orpheus_content::maps::GameMap;
 use orpheus_wire::jam::codec::{

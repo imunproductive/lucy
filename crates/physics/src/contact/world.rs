@@ -3,6 +3,16 @@
 //! Ports `engine_world`, `StaticWorld`, and `scene_sweep` from the Python
 //! reference. The character body and its per-shape contact state live above
 //! this immutable geometry.
+//!
+//! Client functions: fat AABB overlap 0x7FF789D110E0 (no sign bit in
+//! `(a.high - b.low) | (b.high - a.low)`); shape AABB 0x7FF789D057B0
+//! (polytope 0x7FF789CE94B0, capsule 0x7FF789CEBA90, sphere 0x7FF789CEBB20).
+//! The probe's scene sweep 0x7FF789D25900 -> 0x7FF789D1D7E0 ->
+//! 0x7FF789D22360 -> 0x7FF789D05490, with GJK ray casts per shape (polytope
+//! 0x7FF789CE9A00, capsule 0x7FF789CEBEB0, sphere 0x7FF789CEC7F0; no shrink).
+//! The broadphase hands the best fraction on as the next shape's limit, so a
+//! later shape counts only when strictly closer. Unverified: the world's
+//! shape order (chunk polytopes, meshes, then props in placeable order).
 
 use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 use std::error::Error;

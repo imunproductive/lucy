@@ -9,7 +9,8 @@
 //! Europe, 3 Asia; 5 with friends only).
 //!
 //! Open queue and event card (Competitive CTF, Lucio Cup) boards name a card
-//! instead: card in bits 0-31, 2 in bits 40-47, region in bits 48-55.
+//! instead: card in bits 0-31, 2 in bits 40-47, region in bits 48-55
+//! (0x00010200000001B4 is season 32's open queue in the Americas).
 //!
 //! An entry is a player summary, the same as 39002. The screen sorts the
 //! entries by the f64 at +0xB8, highest first, and takes names and icons from

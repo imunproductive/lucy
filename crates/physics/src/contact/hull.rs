@@ -2,6 +2,18 @@
 //!
 //! Ports the clipped face, GJK witness, and separating-axis contact paths
 //! from `ow174/game/contacts.py`. Shape A is the hull.
+//!
+//! Client functions: capsule against polytope 0x7FF789CE5150 ->
+//! 0x7FF789CE43A0 (GJK first; a face within 5 degrees of the normal clips the
+//! segment, else one point at the closest features; closer than 5 mm, or the
+//! segment inside: separating axes). Face clip 0x7FF789CE4C30, edge separation
+//! 0x7FF789CE5000, edge point 0x7FF789CE49A0, find edge 0x7FF789CE9450. The
+//! minimum edge x segment axis length is the float at 0x7FF78B50B050; the shape
+//! type is at shape +0x20. The engine's polytope is 0x50 bytes (world +0x670):
+//! centroid +0, vertices +0x10, face planes (normal, offset) +0x18, each
+//! face's first half edge +0x20, half edges +0x28 (twin as an offset, origin
+//! vertex, face, next), twins side by side (2k, 2k + 1). It is the same data
+//! as map chunk 0x11's polytopes.
 
 use std::cmp::Ordering;
 use std::error::Error;

@@ -1,5 +1,21 @@
 //! Predicted projectile leases and owner delivery for build 104319.
 //!
+//! Client research (1.74): the owner's client shoots a projectile volley
+//! itself only under a lease on its body: component 90 (MECPredictor,
+//! accessor 0x7FF789AE5B90: word 1 bit 26), field m_leaseBlocks (type
+//! 0x7FF78BFE9200, +120, owner-only flag 0x10), an array of LeaseBlock `{u64
+//! definition, u32 start, u32 stop, u32 startEntityID, u8 perFrame}` (type
+//! 0x7FF78BFE9140; on the wire an aligned u32 count and 21 bytes per block).
+//! The allocator (0x7FF789AE59D0) takes the first block of the projectile's
+//! definition with `start <= f < stop` for command frame f and gives the id
+//! `0xA0000000 | startEntityID + (f - start) * perFrame` (one more per further
+//! projectile of that frame); no block, no projectile. Confirmation
+//! (0x7FF78969D4CD): a create record of the same id sets component 91 +28 = 1
+//! and changes nothing else; a create for an id the client does not have yet
+//! makes an unflown entity and the client's own shot of that id is refused.
+//! The client holds a networked rocket's explosion back for the server (072C,
+//! 1C86: m_delayCollisionEffectsBasedOnLatency).
+//!
 //! Ported from ow174/game/projectiles.py. A report comes from the exact
 //! datagram that carried an owner frame. Cumulative script acknowledgements
 //! alone do not confirm a projectile.

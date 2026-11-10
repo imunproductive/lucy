@@ -1,4 +1,22 @@
 //! Ability activation, stacking and cooldowns.
+//!
+//! Client research (PC 1.74): update 0x7FF789B95560, keep 0x7FF789BB87E0,
+//! start 0x7FF789BA9460, stop 0x7FF789BA6BC0, push 0x7FF789BA6D40, stack
+//! hook 0x7FF789B94DC0, output 0x7FF789B94D00. The start check
+//! (0x7FF789BB8D20) is obfuscated; the port follows the PS4 build's code
+//! (unverified): a buffered press of the start button (within the early-press
+//! time, for this activation) or the start button held, cooldown at 0, start
+//! and continue conditions true, and the stack variable taking the "starting"
+//! priority. Keep: with no hold button (or m_755F9921 set) a press of the
+//! stop button stops it, latched (flag 4) when it is the start button; with a
+//! hold button, letting go stops it; then the continue condition and the
+//! stack's "continuing" priority. An ability with a stack variable and a
+//! priority to set (m_5E561E77) pushes itself (flag 2, slot 1, value true) and
+//! starts when its entry is the top; it stops when it is no longer the top.
+//! Running is flag 1. The cooldown variable is linked as slot 0 and falls by
+//! `rate` per second from the value last written. AbilityCooldownDuration
+//! (evaluator 0x7FF789BE2E80) is `max(base * scalar, least)`, scalar 1 by
+//! default.
 
 use super::*;
 

@@ -1,4 +1,43 @@
 //! Competitive season and rating projections from the external retail template.
+//!
+//! Research behind the ranked state (36300):
+//!
+//! - The 1.68 retail capture holds season 32 (January to March 2022) on the
+//!   role queue card 1B3 (tank, damage and support ratings), the open queue
+//!   card 1B4, Lunar New Year's Competitive CTF (1C3) and 73 past seasons with
+//!   their reward tiers. 1.74 added three fields to each rating record; they
+//!   are sent as 0. An event's competitive Arcade card (Competitive CTF, the
+//!   Summer Games' Lucio Cup 1AD) runs a season of its own while the Arcade
+//!   shows it.
+//! - Every season is its own 0C7 card. The season list (+0x98) gives its
+//!   number (+0x118), and from season 23 an open queue card names it as its
+//!   parent (+0xF0): season 1 is 0xDD, season 18 (the first with roles) 0xC2,
+//!   season 32 0x1B3 with open queue 0x1B4.
+//! - The client looks a rating up by card, role, platform and matchmaking
+//!   pool. It asks for the PC platform and, when a PC player is in the group
+//!   (player card +0x3C = 1), the PC pool; a console-only group asks for pool
+//!   16020070. The capture's ratings have pool 0, which 1.74 never asks for,
+//!   so every competitive card was locked with "group members' skill ratings
+//!   differ too much".
+//! - A rating record (36300 +0x80, 36302), as the rank icon and rating
+//!   getters read it (0x7FF78934CFB0, 0x7FF789AB61F0, 0x7FF789930400): +0x18
+//!   skill rating (0: none this season; below 500 shows as "<500"), +0x1A
+//!   season high, +0x1C Top 500 place (the icon becomes the Top 500 one),
+//!   +0x1E season high place, +0x20 the rating shown while placements run,
+//!   +0x22 tier of +0x18, +0x23 tier of +0x1A, +0x28 placement results (1, 2
+//!   or 3 each, drawn as different marks; their count is the matches played),
+//!   +0x40 placements run (the first 5 matches).
+//! - A party member carries the same in 20700 +0x68: +0x10 rating, +0x12
+//!   place, +0x14 placement rating, +0x16 tier, +0x17 placements run, +0x18
+//!   placement tier.
+//! - The group check drops every role choice where a member has no rating for
+//!   the card, then compares the highest and lowest rating with 1000 (500 at
+//!   tier 5, 350 at tier 6); during placements it uses the placement rating
+//!   and tier. One member without a rating on an event card greys it out for
+//!   the whole group (game type list 0x7FF789AA3D80, check 0x7FF78934F3A0).
+//! - The career profile lists a season only when it has placement results
+//!   (0x7FF78934CA50). Retail sent one 36302 per card right after login,
+//!   before the full state.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},

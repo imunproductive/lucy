@@ -38,7 +38,8 @@ fn component(text: &str) -> io::Result<u64> {
     text.parse().map_err(|_| invalid_date())
 }
 
-/// Pack UTC seconds into the unsigned STU year/month/day/hour/minute/second layout.
+/// Pack UTC seconds into the unsigned STU year/month/day/hour/minute/second layout:
+/// year since 2000 at bit 36, then month, day, hour, minute and second.
 pub fn stu_datetime(seconds: u64) -> io::Result<u64> {
     let day = EPOCH_DAY + seconds / DAY;
     if !(days_before_year(STU_EPOCH_YEAR)..days_before_year(FIRST_UNREPRESENTABLE_YEAR))

@@ -81,7 +81,12 @@ impl Handoff {
         })
     }
 
-    /// Fields of 20600. Clearing +0x78 tells the client the inner struct is plain.
+    /// Fields of 20600. Clearing +0x78 tells the client the inner struct is plain:
+    /// true means it is XOR-scrambled, and the address the client then reads is
+    /// garbage. The handler (0x7FF789685CD0) has no queue or menu check. The
+    /// client dials the host text (+0x2E) and port (+0x2C), puts the connection
+    /// id (+0x28) in every datagram header and encrypts with the key at +0xAE;
+    /// the server encrypts with the one at +0xCE. host2 (+0x6E) is only shown.
     pub fn fields(&self, host: &str, port: u16) -> io::Result<Fields> {
         if !host.is_ascii() {
             return Err(io::Error::new(
@@ -157,6 +162,15 @@ fn match_lobby_id(id: [u64; 2]) -> Value {
 }
 
 /// Show the banner, with optional competitive settings and roster in send order.
+///
+/// 53000 (handler 0x7FF789692FE0) puts the client in the match lobby of its
+/// popped queue: queue key, lobby id (the match id) and type 4
+/// (0x7FF7896954B0); +0xE8 is the ticket of the queue entry 44202 took out
+/// (44201 +0x48, sent as 0), and the client answers 52903 with whether the
+/// two match. 53003 (0x7FF789693120) leaves it; the handler reads only +0x88
+/// (not 0: "Leaving game" for 5 s instead) and the reason, and reason 4
+/// (0x7FF789693589) shows "Game Found!" for 5 s. Both make the client redraw
+/// the search widget's status (event 36); 44202 does not.
 pub fn game_found(
     key: Fields,
     match_id: [u64; 2],

@@ -1,4 +1,16 @@
 //! Retail 104319 lobby handshake. The signing input is supplied by the local runtime.
+//!
+//! The 292-byte state blob: bytes 0-255 are a fixed pattern holding the
+//! server's address and an HMAC over the rest of it; the address is a type (2,
+//! IPv4), the IPv4 address and the port. The retail client goes on only when
+//! the address or the port is the one it dialed (0x7FF789D48F10, else error
+//! 0x300DA), so the server must put the address the connection came in on,
+//! not its listen address. The client keeps that port as a plain number
+//! (strtol in 0x7FF78932C11D), so it is little-endian here. A 36-byte trailer
+//! follows: the peer id (type 5), the channel id (type 13, with the lobby port
+//! and address) and a u32 equal to 1 (evidence: the AyakaPS and Blizless
+//! servers). The server's hello is 32 random bytes, the difficulty byte, then
+//! its nonce.
 
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};

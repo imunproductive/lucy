@@ -9,6 +9,24 @@
 //! the player) that a client-only Watch posts once. They go in one
 //! controller frame only, and only to a client whose last frame had none of
 //! them.
+//!
+//! Client research (1.74): 20308 is handled at 0x7FF7896E88B0; " left the
+//! game." is 112C.07C (+0x79 off), " joined the game." 112B.07C (+0x7A on),
+//! " started spectating." 2C0B.07C (+0x7A off). These are the only "NAME +
+//! text" lines of a match; the client's other ones (table 0x7FF78B5209B0) come
+//! from the lobby. "%1$s switched to %2$s (was %3$s)." (0AA4.07C): 0C90
+//! stores v4513 (old hero), v4514 (new) and v4515 (player) from game message
+//! 037F.025, and a client-only Watch on v4514 posts the line (action
+//! STU_7106C356, 0x7FF7899E15D0) when v4514 changed and the old hero is a
+//! different hero. The name is that entity's component 29 m_battleTag
+//! (0x7FF789CB3F80); the line shows only if the controller running the graph
+//! is the local player or a teammate (0x7FF789B2C0E0; in free-for-all
+//! everyone is an enemy, team 4, 0x7FF789B2CF60). A full frame first clears
+//! the network-set variables, telling the Watch at once (0x7FF78AAB45B0 ->
+//! 0x7FF78AA9ED40), so re-sending the three would post the line again. Retail
+//! most likely sent 037F to the switching player's controller; only modes
+//! whose teams use 0C90 have the notice (free for all 0F74, capture the flag
+//! 0CA2 and elimination 0D2A use other controllers).
 
 use std::{collections::BTreeMap, time::Duration};
 

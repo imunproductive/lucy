@@ -4,6 +4,9 @@
 //! Each answer is either computed from the server's state or, for the few
 //! questions whose meaning is still open, the answer the Python reference gives
 //! for a human player's body (`TRUSTED_NATIVES` in `ow174/game/script/driver.py`).
+//! GetThrottle (STU_310D6529, 0x7FF789BDA130) is the command's throttle bytes
+//! times f32(1/127); the evaluator of STU_4A101787 (0x7FF789BFF730) always
+//! answers false.
 //! VM tests of hero graphs use this world, so they test what the server does.
 
 use std::{

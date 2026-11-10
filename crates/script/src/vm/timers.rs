@@ -1,4 +1,16 @@
 //! Per-frame ticks, waits, timers and child instances.
+//!
+//! Client research (1.74): Wait OnEnter 0x7FF78AAA7570: `ms = R(timeout *
+//! 1000)`; 0 or less finishes now, else a timer (param 1) at now + ms;
+//! m_0DBAFD7F (+256) re-arms on a re-entry, m_BF1A93B0 (+257) re-evaluates
+//! the timeout every tick. WaitFrames (game class vtable 0x7FF78B5836C8):
+//! OnEnter 0x7FF789C54760 sets the finish frame to the component frame plus
+//! m_3016B9A1 (node +0xE8, none = 0) and checks it at once; the tick
+//! 0x7FF789C54BC0 finishes once that frame is reached (unsigned); a re-entry
+//! restarts it only with m_0DBAFD7F (node +0x100); its payload is that frame
+//! (a u32 of its property block). SubScript (OnBegin 0x7FF78AAB1F30) runs a
+//! child instance of another graph while active, its variables from
+//! m_89402D74, destroyed at the end; the child gets the next free instance id.
 
 use super::*;
 
@@ -215,7 +227,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let duration = field(&node.fields, "m_86701C3E");
         if duration.is_null() {
             // The length is that of the animation the alias resolves to,
-            // which the server doesn't resolve (docs/notes/parity.md). Like
+            // which the server doesn't resolve (docs/notes/behavior.md). Like
             // the Python reference, the state then doesn't end by itself.
             self.assume(self.site(id, node), &node.class, "never ends by itself");
             return Ok(());
