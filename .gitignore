@@ -1,0 +1,97 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Rust build output
+/target/
+
+# Editors
+.vs/
+.vscode/
+.idea/
+
+# Player data, created on first start
+profile.json
+profile.*.json
+profiles/
+game_path.txt
+server_address.txt
+player_name.txt
+public_address.txt
+default_account.txt
+matchmaking.json
+/game/
+
+# Map collision built from the player's own game (tools/build_collision.py)
+/cache/
+
+# Logs and research output
+logs/
+relay/log/
+*.log
+*_log.txt
+*_err.txt
+inject.jsonl
+.inject.jsonl.*
+diagnostics.txt
+backups/
+work/
+
+# Relay build output (the release DLL is downloaded by START.bat)
+*.dll
+*.exe
+*.obj
+*.lib
+*.exp
+*.pdb
+*.pyd
+
+# Captures, dumps and disassembler databases
+data/cli_dec.bin
+data/srv_dec.bin
+*.pcap
+*.pcapng
+*.dmp
+*.mdmp
+*.dump
+*.id0
+*.id1
+*.i64
+*.idb
+*.nam
+*.til
+
+# Archives, secrets, temporary files
+*.zip
+*.7z
+*.rar
+*.tmp
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.keystore
+.netrc
+credentials.json
+secrets.json
+/secrets/
+/local-data/
+/runtime-data/
+/game-client/
+/captures/
+/data/resource_keys_174.json
+Thumbs.db
+desktop.ini

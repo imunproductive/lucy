@@ -1,0 +1,111 @@
+Controlled server journal v2
+
+The actual server/wire contract described in CONTROLLED_SERVER_JOURNAL_V1.txt is
+retained. This version adds explicit stored-state profiles and continuous root
+boundaries. The reader rejects v1 private documents.
+
+schema = ow174.controlled-server-journal.v2
+
+The expire_handoff root takes a connection ID and returns whether a pending
+seat exists. It sets the deadline to zero, so later handshakes for that seat
+are rejected immediately. The next tick handles the leave and callback.
+This root applies to pending handoffs only.
+
+Bounded scheduler run
+
+  session.run_loop(receives, callback_actions=())
+
+The run_loop root runs the production GameServer._run synchronously with an
+in-memory socket. Supply a nonempty list of receive outcomes in order.
+
+  None                         timeout
+  (bytes, (host, port))         UDP datagram that fits the recvfrom buffer
+  ("error", (errno, message))   socket receive error
+
+The final receive still completes its scheduler iteration. Each call
+initializes its own tick deadline and ends with the production socket close.
+The journal compares socket_timeout, socket_receive and socket_close effects
+alongside environment reads, sent datagrams and callback observations. The
+original in-memory socket and stopped server state are restored at the root
+boundary. Successive run_loop roots each have a fresh scheduler deadline.
+
+A receive row may wrap one of the same outcomes with an ordered nonempty
+list or tuple of actions. The only supported operation at this boundary
+is expire_handoff.
+
+  {"outcome": (datagram, address), "actions": [("expire_handoff", {"conn": conn})]}
+
+The harness dispatches the action after socket_receive and before returning
+the outcome to the scheduler, while the game lock is released. It records
+receive_action and receive_result effects with their read positions. This can
+reproduce a lobby seat expiry before a pending SYN is dispatched, or after
+an earlier receive admitted that client. It keeps the scheduler deadline
+within one root and exercises scripted ordering. Plain receive rows keep
+their existing behavior. Invalid actions fail before the scheduler starts.
+An action failure faults the journal and restores the stopped server and
+its original in-memory socket.
+
+Optional callback actions are an ordered list or tuple of entries of the form
+(kind, (match_id, player_slot), operation, arguments). Use kind "joined" or
+"left". The player reference identifies the callback's match and slot.
+Allowed operations are take_out and expire_handoff, with the same argument
+dictionary as their standalone roots. When the next action matches an
+observed callback, the harness calls the production method within that
+callback. Dispatch, result and nested effects are checked in order, with
+their read positions. Invalid or unconsumed input fails the journal.
+Failures inside a scheduler iteration or callback remain recorded as a journal
+fault even if production catches and logs the exception.
+
+The game clock rollover emits a clock_ready observation when the production
+dispatcher reopens admission. A controlled scheduler can exercise deferred
+admission with ("clock_ready", None, "create_match", arguments). Use the same
+arguments as the create_match root. The new handoffs are recorded in the
+callback result and can authenticate subsequent datagram roots. The handler
+does not execute the live lobby, its queue or its network sends.
+
+The production callback dispatcher detaches its current batch before
+invoking handlers outside the server lock. A callback action that queues a
+new callback leaves it for the next iteration or a later report_callbacks
+root. The supplied actions exercise this boundary with controlled behavior.
+Live lobby handlers, OS socket timing and concurrent thread interleavings
+are outside this scope.
+
+The v2 envelope and the existing datagram, tick and report_callbacks roots
+are unchanged. The manifest still rejects recordings from a different
+server model, including older v2 recordings without the clock-ready
+observation. Both profiles check root boundaries with the server stopped.
+The registered-state profile also checks stored state at those boundaries.
+
+RecordingServerSession(..., verify_stored_state=False) keeps the inexpensive
+controlled-roots-and-wire-only scope. Each root's state_before/state_after and
+header initial_state are None. Root tick/read-cursor boundaries are still checked.
+
+RecordingServerSession(..., verify_stored_state=True) uses state_profile =
+registered-domain-v1 and scope = controlled-roots-wire-and-registered-state.
+It explicitly prepares canonical static mover data before server construction,
+then captures an initial stored-domain hash and a before/after hash at each root.
+SERVER_STORED_STATE_V1.txt specifies the registered domain and exclusions.
+
+Header fields additionally require state_profile and initial_state. Root rows
+add state_before/state_after. Configuration manifests bind the selected profile.
+The next root must begin at the previous root's exact after boundary and state;
+an unrecorded intermediate mutation permanently fails recording before dispatch.
+finish also checks the final boundary/state. Replay checks the expected before
+boundary/state before executing a root, then compares its actual after values.
+
+Snapshot construction is strictly observational. Inputs/ACK/combat/stream changes
+still run once through the real GameServer path; recorded damage is not reinjected.
+The profile retains hashes and verifies newly computed snapshots on replay.
+
+Successful reports set stored_state_verified=True only for registered-domain-v1.
+complete_battle_replay=False and full_state_verified=False remain explicit.
+The bounded scheduler verifies ordering under supplied inputs and clocks.
+Continuous live worker capture and original-server fidelity require separate
+validation.
+Wire-only reports set stored_state_verified=False. They cannot certify internal
+state equality. Scope/profile mismatches, stale manifests, unsupported storage or
+missing/extra roots/reads/effects cannot return a matching report.
+
+Full snapshots, raw roots and read tapes can contain handoff keys. No default file
+writer or raw logging is added. Public evidence should contain only counts, hashes,
+declared scope and validation results, never private recording payloads.
