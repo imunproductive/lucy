@@ -9,6 +9,7 @@ use std::{
 
 use orpheus_lobby::accounts::saved_names;
 use orpheus_server::server::Server;
+use orpheus_wire::jam::codec::Schemas;
 use tracing::info;
 
 use crate::{logging::LOG_FILE, settings::Settings};
@@ -23,6 +24,10 @@ struct Banner<'a> {
     network: &'a [Ipv4Addr],
     game_host: &'a str,
     accounts: &'a [String],
+    /// The file new accounts copy.
+    template: &'a str,
+    /// Lobby message layouts and protocol groups.
+    schemas: (usize, usize),
     log_file: &'a Path,
 }
 
@@ -35,6 +40,11 @@ pub fn log(server: &Server, settings: &Settings, game_host: &str) {
         Vec::new()
     };
     let accounts = saved_names(&settings.state.join("profiles")).unwrap_or_default();
+    let template = settings
+        .template
+        .as_deref()
+        .and_then(Path::file_name)
+        .map_or_else(|| "profile.json".into(), |name| name.to_string_lossy());
     let banner = Banner {
         bind,
         game: server.game_addr(),
@@ -43,6 +53,8 @@ pub fn log(server: &Server, settings: &Settings, game_host: &str) {
         network: &network,
         game_host,
         accounts: &accounts,
+        template: &template,
+        schemas: Schemas::lobby().counts(),
         log_file: &settings.logs().join(LOG_FILE),
     };
     for line in lines(&banner) {
@@ -97,7 +109,11 @@ fn lines(banner: &Banner<'_>) -> Vec<String> {
             banner.accounts.join(", ")
         }
     ));
-    lines.push(" [*] New accounts:   copy of profile.json".to_owned());
+    lines.push(format!(" [*] New accounts:   copy of {}", banner.template));
+    let (messages, protocols) = banner.schemas;
+    lines.push(format!(
+        " [*] Schemas:        {messages} messages in {protocols} protocols"
+    ));
     lines.push(format!(
         " [*] Log file:       {}",
         banner.log_file.display()
@@ -172,6 +188,8 @@ mod tests {
             network: &network,
             game_host: "1.2.3.4",
             accounts: &[],
+            template: "profile.json",
+            schemas: (707, 87),
             log_file: Path::new("orpheus.log"),
         };
         let shown = lines(&banner);

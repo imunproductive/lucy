@@ -67,6 +67,9 @@ pub struct ServerConfig {
     /// of its own; 0 = full teams only (`--test-players`,
     /// `ow174/lobby/settings.py`).
     pub test_players: usize,
+    /// The template profile for new accounts (`--save`); `profile.json` in
+    /// the state folder when unset.
+    pub template: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -86,6 +89,7 @@ impl ServerConfig {
             games: None,
             install: None,
             test_players: 0,
+            template: None,
         }
     }
 }
@@ -138,7 +142,10 @@ impl Server {
             ));
         }
         let protocol = Arc::new(Protocol::client());
-        let template = config.data.join("profile.json");
+        let template = config
+            .template
+            .clone()
+            .unwrap_or_else(|| config.data.join("profile.json"));
         let accounts = Accounts::new(config.data.join("profiles"), &template)?;
         let local = local_account(
             &accounts,
@@ -146,15 +153,19 @@ impl Server {
             &template,
             config.account.as_deref(),
         )?;
-        let listener = TcpListener::bind(SocketAddrV4::new(config.host, config.lobby_port))?;
+        let listener = TcpListener::bind(SocketAddrV4::new(config.host, config.lobby_port))
+            .map_err(|error| taken(format!("Port {} is taken", config.lobby_port), error))?;
         listener.set_nonblocking(true)?;
         let SocketAddr::V4(lobby_addr) = listener.local_addr()? else {
             unreachable!("IPv4 lobby bind")
         };
-        let game = Arc::new(GameService::bind(
-            SocketAddrV4::new(config.host, config.game_port).into(),
-            game_schemas,
-        )?);
+        let game = Arc::new(
+            GameService::bind(
+                SocketAddrV4::new(config.host, config.game_port).into(),
+                game_schemas,
+            )
+            .map_err(|error| taken(format!("UDP port {} is taken", config.game_port), error))?,
+        );
         let game_addr = game.local_addr();
         let selected = Arc::new(Mutex::new(local));
         let accounts = Arc::new(accounts);
@@ -179,7 +190,8 @@ impl Server {
                 addr(lobby_addr.port()),
                 protocol,
                 player,
-            )?;
+            )
+            .map_err(|error| taken("The Battle.net ports are taken".into(), error))?;
             let _ = rpc_port.set(bnet.rpc_addr().port());
             Some(bnet)
         } else {
@@ -357,6 +369,17 @@ pub fn local_account_name(
         return Ok(Some(name.clone()));
     }
     Ok(None)
+}
+
+/// A port another program holds, with Python's hint (`ow174/cli.py`).
+fn taken(what: String, error: io::Error) -> io::Error {
+    if error.kind() != io::ErrorKind::AddrInUse {
+        return error;
+    }
+    io::Error::new(
+        error.kind(),
+        format!("{what} ({error}). Is the server already running in another window?"),
+    )
 }
 
 fn addr(port: u16) -> SocketAddrV4 {

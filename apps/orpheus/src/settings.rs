@@ -92,6 +92,10 @@ pub struct ServerArgs {
     /// only).
     #[arg(long, value_name = "PLAYERS")]
     pub test_players: Option<usize>,
+    /// Template profile for new accounts [default: profile.json in the
+    /// state folder].
+    #[arg(long, value_name = "FILE")]
+    pub save: Option<PathBuf>,
 }
 
 /// What `orpheus` starts: the modes of `ow174/cli.py`, in its menu order.
@@ -188,6 +192,8 @@ pub struct Settings {
     pub ports: Ports,
     /// Players who start a match (`--test-players`); 0 = full teams.
     pub test_players: usize,
+    /// The template profile for new accounts (`--save`).
+    pub template: Option<PathBuf>,
 }
 
 impl Settings {
@@ -220,6 +226,7 @@ impl Settings {
                     .unwrap_or(DEFAULT_PORTS.dashboard),
             },
             test_players: args.test_players.unwrap_or(0),
+            template: args.save.clone(),
         })
     }
 

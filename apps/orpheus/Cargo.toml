@@ -21,6 +21,7 @@ orpheus-content.workspace = true
 orpheus-launcher.workspace = true
 orpheus-lobby.workspace = true
 orpheus-server.workspace = true
+orpheus-wire.workspace = true
 orpheus-sim.workspace = true
 serde.workspace = true
 tempfile.workspace = true

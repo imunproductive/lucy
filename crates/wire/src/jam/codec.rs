@@ -193,6 +193,12 @@ pub struct Schemas {
 }
 
 impl Schemas {
+    /// The number of message layouts and of protocol groups.
+    pub fn counts(&self) -> (usize, usize) {
+        let messages = self.groups.values().map(BTreeMap::len).sum();
+        (messages, self.groups.len())
+    }
+
     /// The client's lobby message layouts.
     pub fn lobby() -> Self {
         Self::from_json(orpheus_fixed::LOBBY_SCHEMAS).expect("the embedded lobby schemas parse")
