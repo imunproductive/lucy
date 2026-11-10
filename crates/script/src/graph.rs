@@ -5,6 +5,7 @@ use std::{
     fs::File,
     io::{self, BufReader, Read},
     path::Path,
+    sync::Arc,
 };
 
 use flate2::bufread::MultiGzDecoder;
@@ -12,6 +13,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use orpheus_core::guid::parse_guid;
+
+use crate::rulesets::{self, Rulesets};
 
 pub const MAX_GRAPH_BYTES: u64 = 128 * 1024 * 1024;
 const GRAPH_TYPE: u64 = 0x0580;
@@ -280,6 +283,9 @@ pub struct GraphStore {
     bodies: BTreeMap<u64, Body>,
     entities: BTreeMap<u64, Body>,
     mode_variables: BTreeMap<u64, BTreeMap<u32, ModeValue>>,
+    /// The heroes' and modes' ruleset defaults, which the server loads
+    /// beside the bundle; none until [`GraphStore::with_rulesets`].
+    rulesets: Arc<Rulesets>,
     missing: Vec<u32>,
 }
 
@@ -324,8 +330,28 @@ impl GraphStore {
                     Ok((guid, values))
                 })
                 .collect::<io::Result<_>>()?,
+            rulesets: Arc::default(),
             missing: bundle.missing,
         })
+    }
+
+    /// A bundle of the runtime `data` folder with the folder's ruleset
+    /// defaults (`game_rulesets_174.json`), as the server runs it.
+    pub fn load_runtime(data: impl AsRef<Path>, bundle: &str) -> io::Result<Self> {
+        let data = data.as_ref();
+        let rulesets = Rulesets::load(data.join(rulesets::FILE))?;
+        Ok(Self::load(data.join(bundle))?.with_rulesets(Arc::new(rulesets)))
+    }
+
+    /// The ruleset defaults the bodies' graphs read
+    /// (`GetGameRulesetValue`).
+    pub fn with_rulesets(mut self, rulesets: Arc<Rulesets>) -> Self {
+        self.rulesets = rulesets;
+        self
+    }
+
+    pub fn rulesets(&self) -> &Rulesets {
+        &self.rulesets
     }
 
     pub fn graph(&self, index: u32) -> Option<&Graph> {

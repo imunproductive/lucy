@@ -838,7 +838,8 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
     use orpheus_script::{codecs::PayloadMode, vm::StateKind};
 
     let root = orpheus_testkit::runtime_dir();
-    let graphs = Arc::new(GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap());
+    let graphs =
+        Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap());
     let pools = crate::pools::PoolCatalog::from_graphs(&graphs)
         .unwrap()
         .hero_pools(SOLDIER)
@@ -1202,7 +1203,8 @@ fn authored_armour_and_shield_roots_reproduce_the_reference_body_pools() {
     let root = orpheus_testkit::runtime_dir();
     let heroes =
         orpheus_content::heroes::HeroCatalog::load(root.join("data/game_heroes_174.json")).unwrap();
-    let graphs = Arc::new(GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap());
+    let graphs =
+        Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap());
     let catalog = crate::pools::PoolCatalog::from_graphs(&graphs).unwrap();
     for (hero, secondary_state) in [(0x02e0_0000_0000_0007, 3), (0x02e0_0000_0000_0068, 1)] {
         let body = &graphs.bodies()[&heroes.get(hero).unwrap().body];

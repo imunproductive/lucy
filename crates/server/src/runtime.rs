@@ -25,7 +25,9 @@ pub const MATCH_RUNTIME_DATA: &[&str] = &[
     "game_graphs_174.json.gz",
     "game_heroes_174.json",
     "game_maps_174.json",
+    "game_modes_174.json",
     "game_movers_174.json",
+    "game_rulesets_174.json",
     "game_stats_174.json",
 ];
 /// Packed for the Python server only: the Rust server finds each map's

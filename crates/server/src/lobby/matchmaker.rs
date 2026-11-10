@@ -221,7 +221,7 @@ impl Matchmaker {
         let modes = rules::load_modes(&modes_path);
         Ok(Self {
             rules: rules::load_rules(&data.join("game_queues_174.json"))?,
-            maps: MapCatalog::load(data.join("game_maps_174.json"))?,
+            maps: MapCatalog::load(data)?,
             modes_path,
             state: Mutex::new(State {
                 minimum_players,

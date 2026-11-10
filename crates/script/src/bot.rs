@@ -14,7 +14,6 @@ use crate::{
     codecs::CodecTable,
     expr::EvalError,
     graph::{GraphStore, Node},
-    rulesets,
     snapshot::SnapshotEncoder,
     vm::{
         Component, InitFault, MAX_INIT_WORK, ShotEvent, Site, Snapshot, Unknowns, World, body_roots,
@@ -72,7 +71,7 @@ impl World for BotWorld {
     }
 
     fn ruleset(&mut self, id: u32) -> Option<Value> {
-        rulesets::default(id, self.hero, self.mode)
+        self.graphs.rulesets().default(id, self.hero, self.mode)
     }
 
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
@@ -736,7 +735,9 @@ mod tests {
     #[test]
     #[ignore = "requires the derived game data's bot graph bundle"]
     fn the_practice_training_bot_starts_its_behavior_and_dies() {
-        let graphs = Arc::new(GraphStore::load(orpheus_testkit::bot_graphs()).unwrap());
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let graphs =
+            Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
         let codecs = CodecTable::client();
         let mut bot = BotBody::start(
             Arc::clone(&graphs),

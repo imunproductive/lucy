@@ -14,6 +14,7 @@ pub mod cache;
 mod collision;
 mod economy;
 mod game_maps;
+mod game_modes;
 mod game_queues;
 mod graphs;
 mod heroes;
@@ -126,6 +127,10 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "arcade_cards",
         derive: arcade_cards::derive,
+    },
+    Derivation {
+        name: "game_modes",
+        derive: game_modes::derive,
     },
     Derivation {
         name: "collision",

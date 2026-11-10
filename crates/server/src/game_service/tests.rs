@@ -2461,7 +2461,7 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
             .with_collision_folder(collision.path())
             .with_collision_build(collision_build(orpheus_testkit::game_dir())),
     );
-    let catalog = MapCatalog::load(runtime.join("data/game_maps_174.json")).unwrap();
+    let catalog = MapCatalog::load(runtime.join("data")).unwrap();
     let map = catalog
         .game_map(WORKSHOP_CHAMBER, SKIRMISH, "Skirmish", false, &[6, 6])
         .expect("Workshop Chamber in Skirmish");
