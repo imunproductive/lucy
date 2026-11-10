@@ -263,10 +263,17 @@ impl PreparedScene {
         self.ground.triangles()
     }
 
-    pub(crate) fn player_spawn_mover(&self, body: u64, team: u8) -> io::Result<Mover> {
+    /// The body's mover at the player's spawn point: the team's `number`-th,
+    /// side by side when the team has fewer points (match.py Player.spawn).
+    pub(crate) fn player_spawn_mover(
+        &self,
+        body: u64,
+        team: u8,
+        number: usize,
+    ) -> io::Result<Mover> {
         let (position, yaw) = self
             .map
-            .spawn_point(team, 0)
+            .spawn_point(team, number)
             .ok_or_else(|| invalid("no spawn for the selected hero"))?;
         let yaw = (yaw * 65536.0 / 360.0).round_ties_even() as i32;
         let contacts = self.contacts.as_ref().ok_or_else(|| {
@@ -408,7 +415,7 @@ mod tests {
             entity: 0xa000_0101,
             body_filter: team_bit(0).unwrap(),
             frame: FIRST_TICK,
-            pose: scene.player_spawn_mover(hero.body, 0).unwrap().pose(),
+            pose: scene.player_spawn_mover(hero.body, 0, 0).unwrap().pose(),
             quanta: RETAIL_QUANTA,
         };
         let soldier = scene.owner_body_runtime(hero, spawn).unwrap();
@@ -420,7 +427,7 @@ mod tests {
         // no unknown content).
         let pharah = scene.heroes().find_hero("Pharah").unwrap();
         let spawn = OwnerBodySpawn {
-            pose: scene.player_spawn_mover(pharah.body, 0).unwrap().pose(),
+            pose: scene.player_spawn_mover(pharah.body, 0, 0).unwrap().pose(),
             ..spawn
         };
         assert!(
@@ -472,7 +479,7 @@ mod tests {
         let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let hero = scene.heroes().get(SOLDIER).unwrap();
-        let mover = scene.player_spawn_mover(hero.body, 0).unwrap();
+        let mover = scene.player_spawn_mover(hero.body, 0, 0).unwrap();
         let spawn = OwnerBodySpawn {
             slot: 0,
             controller: 0xa000_0100,

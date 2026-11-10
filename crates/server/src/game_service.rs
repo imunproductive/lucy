@@ -1,7 +1,8 @@
 //! The native UDP match worker. It owns seats, connections and frame timing.
 //!
-//! A prepared solo Practice Range scene can advance from loading into its
-//! initial world. Maps that need the unported bot VM retain that requirement.
+//! A prepared Practice Range scene can advance from loading into one world
+//! for all its players, who see each other (ow174/game/match.py). Maps that
+//! need the unported bot VM retain that requirement.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -36,7 +37,7 @@ use orpheus_sim::{
     controller::ControllerFrame,
     egress::GameEgress,
     instance::{Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
-    replication::{Record, WorldDelivery},
+    replication::{Record, RoomPlayer, WorldDelivery, show_players},
     scene::{PlayerAppearance, PlayerCard},
     scene_assets::PreparedScene,
 };
@@ -62,6 +63,17 @@ pub struct MatchPlayer {
     pub tournament: bool,
     pub ranked: bool,
 }
+
+/// A player of a match with a world: his roster entry and his card.
+#[derive(Debug)]
+pub struct WorldPlayer {
+    pub player: MatchPlayer,
+    pub card: PlayerCard,
+}
+
+/// Retail puts a whole group in the Practice Range together, up to six on
+/// one team (ow174/lobby/matchmaker.py `practice`).
+pub const MAX_PRACTICE_PARTY: usize = 6;
 
 pub struct GameService {
     address: SocketAddr,
@@ -114,14 +126,13 @@ enum Request {
 struct OpenRequest {
     id: MatchId,
     map: GameMap,
-    players: Vec<MatchPlayer>,
+    players: Vec<WorldPlayer>,
     world: Option<WorldStart>,
     reply: mpsc::SyncSender<io::Result<Vec<Handoff>>>,
 }
 
 struct WorldStart {
     scene: Box<PreparedScene>,
-    card: PlayerCard,
     combat: Option<Combat>,
 }
 
@@ -163,6 +174,13 @@ impl GameService {
         map: GameMap,
         players: Vec<MatchPlayer>,
     ) -> io::Result<Vec<Handoff>> {
+        let players = players
+            .into_iter()
+            .map(|player| WorldPlayer {
+                player,
+                card: PlayerCard::default(),
+            })
+            .collect();
         self.request(|reply| {
             Request::Open(Box::new(OpenRequest {
                 id,
@@ -174,8 +192,9 @@ impl GameService {
         })?
     }
 
-    /// Open the currently ported world bootstrap. The graph-backed NPC
-    /// behavior from the enriched bundle is a separate simulation prerequisite.
+    /// Open the currently ported world bootstrap for one player. The
+    /// graph-backed NPC behavior from the enriched bundle is a separate
+    /// simulation prerequisite.
     pub fn open_prepared_practice(
         &self,
         id: [u64; 2],
@@ -183,47 +202,91 @@ impl GameService {
         player: MatchPlayer,
         card: PlayerCard,
     ) -> io::Result<Handoff> {
+        let mut handoffs = self.open_prepared(id, scene, vec![WorldPlayer { player, card }])?;
+        handoffs
+            .pop()
+            .ok_or_else(|| invalid("a solo world requires a seat"))
+    }
+
+    /// A group in the Practice Range: everyone on the first team, whose
+    /// size is the group's (ow174/lobby/matchmaker.py `_practice`). Seats in
+    /// member order.
+    pub fn open_practice_party(
+        &self,
+        id: [u64; 2],
+        scene: PreparedScene,
+        mut members: Vec<WorldPlayer>,
+    ) -> io::Result<Vec<Handoff>> {
+        if !(1..=MAX_PRACTICE_PARTY).contains(&members.len()) {
+            return Err(invalid("a Practice Range group has one to six players"));
+        }
+        for member in &mut members {
+            member.player.team = 0;
+        }
+        let mut map = scene.map().clone();
+        map.team_sizes = vec![members.len() as u8, 0];
+        self.open_world(id, map, scene, members)
+    }
+
+    /// One world for every player of the match, each with his card. Seats
+    /// in player order; the slot is the player's index.
+    pub fn open_prepared(
+        &self,
+        id: [u64; 2],
+        scene: PreparedScene,
+        players: Vec<WorldPlayer>,
+    ) -> io::Result<Vec<Handoff>> {
+        let map = scene.map().clone();
+        self.open_world(id, map, scene, players)
+    }
+
+    fn open_world(
+        &self,
+        id: [u64; 2],
+        map: GameMap,
+        scene: PreparedScene,
+        players: Vec<WorldPlayer>,
+    ) -> io::Result<Vec<Handoff>> {
         if scene.map().mode_guid != PRACTICE_RANGE_MODE || !scene.movement_ready() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "the native world bootstrap requires the solo Practice Range without bot VM graphs",
+                "the native world bootstrap requires the Practice Range without bot VM graphs",
             ));
         }
-        let viewer = PlayerAppearance {
-            entity: player_entity(0),
-            slot: 0,
-            team: player.team,
-            card: &card,
-        };
-        let creates = scene.initial_world(&viewer)?;
         let controller = initial_controller(&scene, FIRST_TICK)?;
-        let scripts = [
-            script_record(viewer.entity, &controller)?,
-            script_record(GAME_MODE_ENTITY, scene.mode_ui())?,
-        ];
-        for record in creates.iter().chain(&scripts) {
-            let packet = frame(u32::MAX, u32::MAX, &[], &[], &[record]).map_err(invalid)?;
-            if packet.len() > MAX_PAYLOAD {
-                return Err(invalid("a world baseline exceeds the game datagram budget"));
+        for (slot, entry) in players.iter().enumerate() {
+            let team = entry.player.team;
+            let viewer = PlayerAppearance {
+                entity: player_entity(slot),
+                slot: i8::try_from(slot).map_err(invalid)?,
+                team,
+                spawn: spawn_number(&map, players[..slot].iter().map(|p| p.player.team), team),
+                card: &entry.card,
+            };
+            let creates = scene.initial_world(&viewer)?;
+            let scripts = [
+                script_record(viewer.entity, &controller)?,
+                script_record(GAME_MODE_ENTITY, scene.mode_ui())?,
+            ];
+            for record in creates.iter().chain(&scripts) {
+                let packet = frame(u32::MAX, u32::MAX, &[], &[], &[record]).map_err(invalid)?;
+                if packet.len() > MAX_PAYLOAD {
+                    return Err(invalid("a world baseline exceeds the game datagram budget"));
+                }
             }
         }
-        let map = scene.map().clone();
-        let mut handoffs = self.request(|reply| {
+        self.request(|reply| {
             Request::Open(Box::new(OpenRequest {
                 id,
                 map,
-                players: vec![player],
+                players,
                 world: Some(WorldStart {
                     scene: Box::new(scene),
-                    card,
                     combat: None,
                 }),
                 reply,
             }))
-        })??;
-        handoffs
-            .pop()
-            .ok_or_else(|| invalid("a solo world requires a seat"))
+        })?
     }
 
     pub fn handoff_pending(&self, connection: u32) -> io::Result<bool> {
@@ -324,6 +387,7 @@ impl Drop for GameService {
 
 struct Player {
     info: MatchPlayer,
+    card: PlayerCard,
     entity: u32,
     gone: bool,
 }
@@ -348,11 +412,14 @@ struct Room {
 impl Room {
     fn appearance(&self, slot: usize) -> Option<PlayerAppearance<'_>> {
         let player = &self.players[slot];
+        let team = player.info.team;
+        let earlier = self.players[..slot].iter().map(|player| player.info.team);
         Some(PlayerAppearance {
             entity: player.entity,
             slot: i8::try_from(slot).ok()?,
-            team: player.info.team,
-            card: &self.world.as_ref()?.card,
+            team,
+            spawn: spawn_number(&self.map, earlier, team),
+            card: &player.card,
         })
     }
 
@@ -426,6 +493,14 @@ fn script_record(entity: u32, payload: &orpheus_core::bits::BitWriter) -> io::Re
 
 fn player_entity(slot: usize) -> u32 {
     0xa000_0000 | ((slot as u32 + 1) << 8)
+}
+
+/// The n-th player of a team takes the team's n-th spawn point; in a
+/// free-for-all the n-th player of the match (ow174/game/match.py Player).
+fn spawn_number(map: &GameMap, earlier: impl Iterator<Item = u8>, team: u8) -> usize {
+    earlier
+        .filter(|&other| map.free_for_all || other == team)
+        .count()
 }
 
 impl Peer {
@@ -586,7 +661,7 @@ impl State {
         &mut self,
         id: MatchId,
         map: GameMap,
-        players: Vec<MatchPlayer>,
+        players: Vec<WorldPlayer>,
         world: Option<WorldStart>,
         now: Duration,
     ) -> io::Result<Vec<Handoff>> {
@@ -611,8 +686,9 @@ impl State {
             players: players
                 .into_iter()
                 .enumerate()
-                .map(|(slot, info)| Player {
-                    info,
+                .map(|(slot, WorldPlayer { player, card })| Player {
+                    info: player,
+                    card,
                     entity: player_entity(slot),
                     gone: false,
                 })
@@ -695,10 +771,10 @@ impl State {
                 skin,
                 reply,
             } => {
-                if self.seats.get(&connection).is_some_and(|seat| seat.0 == id) {
+                if let Some(&(_, slot)) = self.seats.get(&connection).filter(|seat| seat.0 == id) {
                     let room = self.rooms.get_mut(&id).expect("reserved match");
-                    if let Some(world) = &mut room.world {
-                        world.card.skins.insert(hero, skin);
+                    if room.world.is_some() {
+                        room.players[slot].card.skins.insert(hero, skin);
                         if let Some(peer) = self.peers.get_mut(&connection) {
                             peer.world.queue_skin(hero, self.clock.frame(), now);
                         }
@@ -855,11 +931,22 @@ impl State {
         let mut remaining = INPUT_PER_TURN;
         for offset in 0..count {
             let index = (start + offset) % count;
-            let (&connection, peer) = self.peers.get_index_mut(index).expect("active peer index");
+            let (&connection, peer) = self.peers.get_index(index).expect("active peer index");
             if !peer.world.has_input_work() {
                 continue;
             }
             let (id, slot) = self.seats[&connection];
+            // A new body takes no id another client of the room still holds
+            // (ow174/game/match.py `_next_body_id`).
+            let owner = player_entity(slot);
+            let retained: Vec<u32> = self
+                .peers
+                .iter()
+                .filter(|&(&other, _)| other != connection && self.seats[&other].0 == id)
+                .flat_map(|(_, other)| other.world.retained_bodies(owner, now))
+                .collect();
+            let (_, peer) = self.peers.get_index_mut(index).expect("active peer index");
+            peer.world.retain_elsewhere(retained);
             let room = self.rooms.get_mut(&id).expect("prepared room with input");
             let world = room.world.as_ref().expect("prepared world with input");
             let viewer = room.appearance(slot).expect("prepared player");
@@ -910,6 +997,44 @@ impl State {
         if self.links.begin_leaving(connection, now) {
             let peer = self.peers.get_mut(&connection).expect("admitted peer");
             let _ = peer.reliable(&self.schemas, leave_message());
+        }
+    }
+
+    /// Every client of a room learns about the other players this tick
+    /// (ow174/game/match.py `update`); their cards go reliably.
+    fn show_players(&mut self, tick: u32, now: Duration, frames: bool) {
+        for (&id, room) in &self.rooms {
+            let Some(world) = &room.world else {
+                continue;
+            };
+            let mut connections = vec![None; room.players.len()];
+            let mut players: Vec<_> = (0..room.players.len())
+                .map(|slot| RoomPlayer {
+                    appearance: room.appearance(slot).expect("seated player"),
+                    world: None,
+                })
+                .collect();
+            for (&connection, peer) in &mut self.peers {
+                let (match_id, slot) = self.seats[&connection];
+                if match_id == id {
+                    connections[slot] = Some(connection);
+                    players[slot].world = Some(&mut peer.world);
+                }
+            }
+            if connections.iter().all(Option::is_none) {
+                continue;
+            }
+            let cards = show_players(&world.scene, &mut players, tick, now, frames);
+            drop(players);
+            for (connection, messages) in connections.into_iter().zip(cards) {
+                let Some(peer) = connection.and_then(|connection| self.peers.get_mut(&connection))
+                else {
+                    continue;
+                };
+                for message in messages {
+                    let _ = peer.reliable(&self.schemas, message);
+                }
+            }
         }
     }
 
@@ -1003,6 +1128,13 @@ impl State {
                         .map(|bot| (now.saturating_add(SILENCE_TIME), bot)),
                 );
             }
+        }
+        if !drain {
+            self.show_players(tick, now, send_frames);
+        }
+        for (&connection, peer) in &mut self.peers {
+            let (id, _) = self.seats[&connection];
+            let room = &self.rooms[&id];
             if send_frames && peer.open {
                 if !drain {
                     peer.flush_combat(&self.schemas, now);

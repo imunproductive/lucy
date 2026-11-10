@@ -60,7 +60,7 @@ use orpheus_lobby::{
 use orpheus_wire::jam::codec::{Fields, Value};
 
 use super::{Lobby, TICK, match_id, peer::Peer};
-use game::WorldPlayer;
+use crate::game_service::WorldPlayer;
 pub(crate) use parties::{Parties, Party};
 
 pub(crate) struct Matchmaker {

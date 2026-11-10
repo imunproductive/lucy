@@ -16,9 +16,14 @@ use crate::{
     combat::{BotReplacement, PosedHitscan, PosedProjectile, PosedShot},
     controller::ControllerFrame,
     egress::{DeliveryReport, FrameRecords, GameEgress, RecordSource, SendError, SentFrame},
+    notices::{NOTICE_GAP, Switch, switch_notices},
+    others::{
+        ObservedScript, ObserverActivity, OtherDelivery, Others, PlayerView, RemoteBody,
+        ShowContext, ShowOutput,
+    },
     projectile_flight::{FlightEnd, ProjectileFlight},
     projectiles::{OwnerProjectiles, ProjectileDelivery, ProjectileLeases, ProjectileToken},
-    scene::{PlayerAppearance, Possession, team_bit},
+    scene::{PlayerAppearance, Possession, player_team_bit},
     scene_assets::PreparedScene,
 };
 use orpheus_content::{
@@ -37,6 +42,7 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::Vitals,
     vm::Snapshot,
+    wire::Value as ScriptValue,
 };
 use orpheus_wire::{
     commands::{Command, CommandQueue},
@@ -47,7 +53,7 @@ use orpheus_wire::{
     messages::Message,
 };
 
-const BODY_REUSE_DELAY: Duration = Duration::from_secs(30);
+pub(crate) const BODY_REUSE_DELAY: Duration = Duration::from_secs(30);
 // Resource bound for this worker. The reference keeps 64 predicted states and
 // 32 commands. A farther-ahead command can be retried once the clock catches up.
 const MAX_INPUT_LEAD: u32 = 96;
@@ -59,9 +65,9 @@ const MAX_PENDING_INPUT: usize = 256;
 const MAX_SCRIPT_TAIL: u32 = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct BodyId {
-    entity: u32,
-    generation: u64,
+pub(crate) struct BodyId {
+    pub(crate) entity: u32,
+    pub(crate) generation: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -99,6 +105,12 @@ pub trait OwnerBodyRuntime: Send {
 
     fn take_shots(&mut self, _command: Option<Command>, _mover: &Mover) -> Vec<PosedShot> {
         Vec::new()
+    }
+
+    /// What other clients must get at once of this body's statescript
+    /// (observers.py `_activity`). None: every send frame may carry a delta.
+    fn observer_activity(&self) -> Option<ObserverActivity> {
+        None
     }
 }
 
@@ -309,8 +321,8 @@ impl BodyScript {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum Lifetime {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Lifetime {
     Live,
     Retiring,
     ReusableAt(Duration),
@@ -347,6 +359,8 @@ enum Delivery {
         close: bool,
         resend: bool,
     },
+    /// Another player's entity, body or statescript (others.rs).
+    Other(OtherDelivery),
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -522,6 +536,103 @@ impl InputQueue {
     }
 }
 
+/// Hero switches waiting for their controller frame (notices.py `Notices`).
+#[derive(Default)]
+struct SwitchNotices {
+    waiting: VecDeque<Switch>,
+    /// The controller chunk of the last notice frame.
+    chunk: Option<u32>,
+    sent_at: Option<Duration>,
+}
+
+/// One player of a room for [`show_players`]: his place in the match and
+/// his peer's world, if his game is connected.
+pub struct RoomPlayer<'a, 'w> {
+    pub appearance: PlayerAppearance<'a>,
+    pub world: Option<&'w mut WorldDelivery>,
+}
+
+/// Bring every client of a room up to date on the other players
+/// (match.py `update`: `_show_players`, `ensure_remote_body`,
+/// `Observers.update`, `Notices.update`). Each player's view is built once
+/// from his peer; each client's bookkeeping then follows the views. Returns
+/// each player's 20308 messages for the reliable channel, by slot.
+pub fn show_players(
+    scene: &PreparedScene,
+    players: &mut [RoomPlayer<'_, '_>],
+    tick: u32,
+    now: Duration,
+    frames: bool,
+) -> Vec<Vec<Message>> {
+    let controller = scene.controller();
+    let entry = move |hero| controller.team_entry_frame(hero);
+    let context = ShowContext {
+        map: scene.map(),
+        pools: scene.pools(),
+        entry: &entry,
+        tick,
+        frames,
+        switch_notices: switch_notices(scene.map().mode_guid),
+    };
+    let mut taken: Vec<_> = players
+        .iter_mut()
+        .map(|player| {
+            player
+                .world
+                .as_deref_mut()
+                .filter(|world| world.world_started())
+                .map(|world| world.others.take())
+        })
+        .collect();
+    let outputs: Vec<_> = {
+        // A body is projected for observers only on a send tick, and only
+        // when another client of the room takes its frames.
+        let observed = |slot: usize, body: BodyId| {
+            frames
+                && taken.iter().enumerate().any(|(viewer, others)| {
+                    viewer != slot && others.as_ref().is_some_and(|others| others.observes(body))
+                })
+        };
+        let views: Vec<_> = players
+            .iter()
+            .enumerate()
+            .map(|(slot, player)| match player.world.as_deref() {
+                Some(world) => {
+                    world.player_view(&player.appearance, scene, |body| observed(slot, body))
+                }
+                None => PlayerView::absent(&player.appearance),
+            })
+            .collect();
+        taken
+            .iter_mut()
+            .enumerate()
+            .map(|(slot, others)| Some(others.as_mut()?.show(&context, &views, slot)))
+            .collect()
+    };
+    players
+        .iter_mut()
+        .zip(taken)
+        .zip(outputs)
+        .map(|((player, others), output)| {
+            let (Some(world), Some(others)) = (player.world.as_deref_mut(), others) else {
+                return Vec::new();
+            };
+            world.others = others;
+            let cards = match output {
+                Some(Ok(output)) => world.apply_shown(output),
+                _ => Vec::new(),
+            };
+            if let Err(error) = world.send_notices(scene, tick, now) {
+                eprintln!(
+                    "hero switch notice for {:08X} failed ({error})",
+                    world.owner
+                );
+            }
+            cards
+        })
+        .collect()
+}
+
 pub struct WorldDelivery {
     owner: u32,
     queued: Vec<Arc<Record>>,
@@ -543,6 +654,13 @@ pub struct WorldDelivery {
     body_script: Option<BodyScript>,
     projectile_destroys: HashMap<u32, (BodyId, ProjectileToken)>,
     hitscan: Vec<PosedHitscan>,
+    others: Others,
+    /// The player's last hero switch, for the chat lines.
+    switch: Option<Switch>,
+    switches: u64,
+    notices: SwitchNotices,
+    /// Bodies of this player's ring that other clients still reference.
+    retained_elsewhere: HashSet<u32>,
 }
 
 impl WorldDelivery {
@@ -568,6 +686,11 @@ impl WorldDelivery {
             body_script: None,
             projectile_destroys: HashMap::new(),
             hitscan: Vec::new(),
+            others: Others::default(),
+            switch: None,
+            switches: 0,
+            notices: SwitchNotices::default(),
+            retained_elsewhere: HashSet::new(),
         }
     }
 
@@ -583,6 +706,103 @@ impl WorldDelivery {
         self.projectile_destroys.clear();
         self.input.clear();
         self.hitscan.clear();
+        self.others.clear();
+        self.notices = SwitchNotices::default();
+    }
+
+    /// This player as the other clients of the room see him this tick. His
+    /// body's statescript is projected for observers when `observed`.
+    fn player_view<'a>(
+        &'a self,
+        player: &PlayerAppearance<'a>,
+        scene: &'a PreparedScene,
+        observed: impl Fn(BodyId) -> bool,
+    ) -> PlayerView<'a> {
+        let mut view = PlayerView::absent(player);
+        let Some(entered) = self.started else {
+            return view;
+        };
+        view.entered = Some(entered);
+        view.presented = self.controller.latest_data() != 0;
+        view.switch = self.switch;
+        view.body = self
+            .body
+            .zip(self.mover.as_ref())
+            .and_then(|(body, mover)| {
+                let runtime = self
+                    .body_script
+                    .as_ref()
+                    .filter(|script| script.id == body.id)
+                    .map(|script| &script.runtime);
+                Some(RemoteBody {
+                    id: body.id,
+                    hero: scene.heroes().get(body.hero)?,
+                    skin: body.skin,
+                    pose: mover.pose(),
+                    vitals: runtime.and_then(|runtime| runtime.vitals()),
+                    script: runtime.filter(|_| observed(body.id)).and_then(|runtime| {
+                        let encoder = runtime.encoder();
+                        let snapshot = runtime.snapshot()?;
+                        let projected = encoder.project(snapshot, View::Observer).ok()?;
+                        Some(ObservedScript {
+                            encoder,
+                            snapshot,
+                            projected,
+                            activity: runtime.observer_activity(),
+                            frame_ms: runtime.frame_ms(),
+                        })
+                    }),
+                })
+            });
+        view
+    }
+
+    /// Queue what [`Others::show`] made for this client; its cards go to the
+    /// reliable channel.
+    fn apply_shown(&mut self, output: ShowOutput) -> Vec<Message> {
+        for (update, delivery) in output.records {
+            self.push(Record {
+                update,
+                delivery: Delivery::Other(delivery),
+            });
+        }
+        self.notices.waiting.extend(output.switches);
+        self.remove_stale();
+        output.cards
+    }
+
+    /// The bodies of `owner`'s ring this client may still reference
+    /// (server.py `body_id_available`): a new body of his takes none of them.
+    pub fn retained_bodies(&self, owner: u32, now: Duration) -> impl Iterator<Item = u32> + '_ {
+        self.others.retained(owner, now)
+    }
+
+    /// notices.py `Notices.update`: a waiting switch goes in a controller
+    /// frame of its own once the client has every controller frame sent
+    /// before, NOTICE_GAP after the last one. After a notice frame, a plain
+    /// frame goes first: it clears the three variables without a line.
+    fn send_notices(&mut self, scene: &PreparedScene, tick: u32, now: Duration) -> io::Result<()> {
+        if self.notices.waiting.is_empty() || !self.can_handle_game_message() {
+            return Ok(());
+        }
+        if self.controller.data_in_flight()
+            || self
+                .notices
+                .sent_at
+                .is_some_and(|at| now < at.saturating_add(NOTICE_GAP))
+        {
+            return Ok(());
+        }
+        let (open, hero) = (self.select_open, self.body.map(|body| body.hero));
+        if self.notices.chunk == Some(self.controller.latest_data()) {
+            self.queue_controller(scene, tick, open, hero, None)?;
+        } else {
+            let switch = self.notices.waiting.pop_front().expect("waiting switch");
+            self.queue_controller(scene, tick, open, hero, Some(&switch.presence()))?;
+            self.notices.chunk = Some(self.controller.latest_data());
+        }
+        self.notices.sent_at = Some(now);
+        Ok(())
     }
 
     fn push(&mut self, record: Record) {
@@ -680,6 +900,7 @@ impl WorldDelivery {
             Delivery::ProjectileDestroy { id, token } => {
                 self.projectile_destroys.get(&entity) == Some(&(id, token))
             }
+            Delivery::Other(other) => self.others.current(other, entity),
         }
     }
 
@@ -707,6 +928,12 @@ impl WorldDelivery {
                             projectiles.owner_arrival(last, arrived);
                         }
                         if delivery.retry {
+                            retry.push(record);
+                        }
+                    }
+                    (arrived, Delivery::Other(other)) => {
+                        let entity = record.update.entity;
+                        if self.others.delivered(other, entity, arrived, now) {
                             retry.push(record);
                         }
                     }
@@ -817,6 +1044,7 @@ impl WorldDelivery {
                         // Even a fallback confirmation needs an acknowledged owner lease.
                         return None;
                     }
+                    Delivery::Other(other) if !self.others.ready(other) => return None,
                     _ => {}
                 }
                 Some(Ready { index, record })
@@ -830,12 +1058,16 @@ impl WorldDelivery {
         if indexes.is_empty() {
             return;
         }
-        if let Some(script) = &mut self.body_script {
-            for &index in indexes {
-                match self.queued[index].delivery {
-                    Delivery::BodyScript { id, last, .. } if id == script.id => script.sent(last),
-                    _ => {}
+        for &index in indexes {
+            match self.queued[index].delivery {
+                Delivery::BodyScript { id, last, .. } => {
+                    if let Some(script) = self.body_script.as_mut().filter(|script| script.id == id)
+                    {
+                        script.sent(last);
+                    }
                 }
+                Delivery::Other(other) => self.others.sent(other),
+                _ => {}
             }
         }
         let mut selected = indexes.iter().copied().peekable();
@@ -1035,7 +1267,7 @@ impl WorldDelivery {
 
     pub fn present(&mut self, scene: &PreparedScene, tick: u32) -> io::Result<()> {
         if self.controller.latest_data() == 0 && self.created.contains(&self.owner) {
-            self.queue_controller(scene, tick, true, None)?;
+            self.queue_controller(scene, tick, true, None, None)?;
         }
         if self.mode.latest_data() == 0 && self.created.contains(&GAME_MODE_ENTITY) {
             let chunk = self.mode.full(scene.mode_ui()).map_err(invalid)?;
@@ -1088,14 +1320,14 @@ impl WorldDelivery {
                     .body
                     .is_some_and(|body| (body.hero, body.skin) == (hero.guid, skin))
                 {
-                    self.queue_controller(scene, tick, false, Some(hero.guid))?;
+                    self.queue_controller(scene, tick, false, Some(hero.guid), None)?;
                 } else if let Some(entity) = self.next_body(now) {
                     self.switch(scene, viewer, tick, quanta, entity, (hero, skin))?;
                 }
             }
             Some(HeroSelectRequest::OpenOrClose(wanted)) => {
                 let open = self.body.is_none() || wanted.unwrap_or(!self.select_open);
-                self.queue_controller(scene, tick, open, self.body.map(|body| body.hero))?;
+                self.queue_controller(scene, tick, open, self.body.map(|body| body.hero), None)?;
             }
             _ => {}
         }
@@ -1342,15 +1574,26 @@ impl WorldDelivery {
         Ok((used, pending.poses.len() == 0))
     }
 
+    /// The next id of the player's body ring that neither this client nor
+    /// any other client of the room still references (match.py
+    /// `_next_body_id`).
     fn next_body(&self, now: Duration) -> Option<u32> {
         let suffix = self.body.map_or(0, |body| body.id.entity & 0xff);
         (0..255)
             .map(|offset| self.owner | ((suffix + offset) % 255 + 1))
             .find(|&entity| {
-                self.bodies.get(&entity).is_none_or(
-                    |(_, lifetime)| matches!(lifetime, Lifetime::ReusableAt(at) if now >= *at),
-                )
+                !self.retained_elsewhere.contains(&entity)
+                    && self.bodies.get(&entity).is_none_or(
+                        |(_, lifetime)| matches!(lifetime, Lifetime::ReusableAt(at) if now >= *at),
+                    )
             })
+    }
+
+    /// The bodies of this player's ring that other clients of the room still
+    /// reference; [`Self::retained_bodies`] of their worlds.
+    pub fn retain_elsewhere(&mut self, bodies: impl IntoIterator<Item = u32>) {
+        self.retained_elsewhere.clear();
+        self.retained_elsewhere.extend(bodies);
     }
 
     fn switch(
@@ -1363,7 +1606,7 @@ impl WorldDelivery {
         selection: (&Hero, SkinTheme),
     ) -> io::Result<()> {
         let (hero, skin) = selection;
-        let mover = scene.player_spawn_mover(hero.body, viewer.team)?;
+        let mover = scene.player_spawn_mover(hero.body, viewer.team, viewer.spawn)?;
         let movement = mover.pose();
         let pose = owner_pose(movement);
         let generation = self
@@ -1376,7 +1619,7 @@ impl WorldDelivery {
             hero: hero.guid,
             skin,
         };
-        let body_filter = team_bit(viewer.team)?;
+        let body_filter = player_team_bit(scene.map(), viewer.team)?;
         let start_frame = self.input.processed.unwrap_or(tick);
         let script = scene
             .owner_body_runtime(
@@ -1402,7 +1645,10 @@ impl WorldDelivery {
                 position: pose.position,
                 yaw: pose.yaw,
                 skin,
-                vitals: script.as_ref().and_then(|script| script.runtime.vitals()),
+                health: script
+                    .as_ref()
+                    .and_then(|script| script.runtime.vitals())
+                    .map(Vitals::component),
             },
             BodyView::Owner {
                 pose: Some(pose),
@@ -1418,7 +1664,7 @@ impl WorldDelivery {
             hero: hero.guid,
             skin: (skin.guid != 0).then_some(skin.guid),
         };
-        let close = self.controller_chunk(scene, tick, false, Some(hero.guid))?;
+        let close = self.controller_chunk(scene, tick, false, Some(hero.guid), None)?;
 
         self.generation = generation;
         self.bodies.insert(entity, (generation, Lifetime::Live));
@@ -1429,6 +1675,21 @@ impl WorldDelivery {
         self.mover = Some(mover);
         self.bound = None;
         self.select_open = false;
+        // notices.py `hero_switched`: a switch from one hero to another, not
+        // the first pick. Other clients take it from this player's view.
+        if let Some(old) = old.filter(|old| old.hero != hero.guid) {
+            self.switches += 1;
+            let switch = Switch {
+                old: old.hero,
+                new: hero.guid,
+                player: self.owner,
+                serial: self.switches,
+            };
+            self.switch = Some(switch);
+            if switch_notices(scene.map().mode_guid) && self.controller.latest_data() != 0 {
+                self.notices.waiting.push_back(switch);
+            }
+        }
         self.push(Record {
             update: create,
             delivery: Delivery::CreateBody(id),
@@ -1464,12 +1725,15 @@ impl WorldDelivery {
         });
     }
 
+    /// A full controller frame. A frame with a hero switch's presence bits is
+    /// a separate event, even when the menu is already closed.
     fn controller_chunk(
         &mut self,
         scene: &PreparedScene,
         tick: u32,
         open: bool,
         hero: Option<u64>,
+        presence: Option<&BTreeMap<usize, ScriptValue>>,
     ) -> io::Result<Record> {
         let command_frame = self.command_ack(tick);
         let chunk = self
@@ -1481,13 +1745,16 @@ impl WorldDelivery {
                         select_open: open,
                         skins: open,
                         hide_assemble: true,
+                        presence,
                         hero,
-                        ..ControllerFrame::default()
                     },
                 )
             })
             .map_err(invalid)?;
-        Ok(Record::script(chunk, hero.is_some() && !open))
+        Ok(Record::script(
+            chunk,
+            hero.is_some() && !open && presence.is_none(),
+        ))
     }
 
     fn queue_controller(
@@ -1496,31 +1763,39 @@ impl WorldDelivery {
         tick: u32,
         open: bool,
         hero: Option<u64>,
+        presence: Option<&BTreeMap<usize, ScriptValue>>,
     ) -> io::Result<()> {
-        let record = self.controller_chunk(scene, tick, open, hero)?;
+        let record = self.controller_chunk(scene, tick, open, hero, presence)?;
         self.select_open = open;
         self.push(record);
         self.remove_stale();
         Ok(())
     }
 
+    /// The movement records of this send frame: every other player's body
+    /// from the frame after its create (match.py `remote_movements`), then
+    /// the training bots once their creates had time to arrive.
     pub fn movement(&self, scene: &PreparedScene, tick: u32) -> Vec<EntityUpdate> {
-        if !self
+        let mut records = self.others.movements().to_vec();
+        if self
             .started
             .is_some_and(|started| tick.saturating_sub(started) >= BOT_RECORD_DELAY)
         {
-            return Vec::new();
+            records.extend(
+                scene
+                    .bots()
+                    .iter()
+                    .filter(|bot| {
+                        self.created.contains(&bot.entity) && bot.record_due(tick, SEND_EVERY)
+                    })
+                    .map(|bot| EntityUpdate {
+                        entity: bot.entity,
+                        movement: Some(bot.movement(tick)),
+                        ..EntityUpdate::default()
+                    }),
+            );
         }
-        scene
-            .bots()
-            .iter()
-            .filter(|bot| self.created.contains(&bot.entity) && bot.record_due(tick, SEND_EVERY))
-            .map(|bot| EntityUpdate {
-                entity: bot.entity,
-                movement: Some(bot.movement(tick)),
-                ..EntityUpdate::default()
-            })
-            .collect()
+        records
     }
 }
 

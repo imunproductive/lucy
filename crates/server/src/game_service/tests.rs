@@ -427,10 +427,11 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let mut state = State::new(Arc::new(fixture()));
     // Five synthetic peers share a prepared fixture solely to test the
-    // worker scheduler. The actual admission route remains solo.
+    // worker scheduler.
     let players: Vec<_> = (0..5)
         .map(|slot| Player {
             info: player().pop().unwrap(),
+            card: PlayerCard::default(),
             entity: player_entity(slot),
             gone: false,
         })
@@ -443,7 +444,6 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
             players,
             world: Some(WorldStart {
                 scene: Box::new(scene),
-                card: PlayerCard::default(),
                 combat: None,
             }),
         },
@@ -784,13 +784,21 @@ fn send_game_message(
     guid: u64,
     parameters: Vec<u8>,
 ) {
+    send_player_message(client, schemas, player_entity(0), ordinal, guid, parameters);
+}
+
+fn send_player_message(
+    client: &mut Client,
+    schemas: &Schemas,
+    owner: u32,
+    ordinal: u32,
+    guid: u64,
+    parameters: Vec<u8>,
+) {
     let fields = Fields::from([
         (
             0x78,
-            Value::Struct(Fields::from([(
-                0,
-                Value::Unsigned(u64::from(player_entity(0))),
-            )])),
+            Value::Struct(Fields::from([(0, Value::Unsigned(u64::from(owner)))])),
         ),
         (0x80, Value::Blob(parameters)),
         (0xa8, Value::Unsigned(guid)),
@@ -1307,4 +1315,382 @@ fn exercise_hero_selection(
     );
     assert!(client.window.accept(reskin.seq));
     client.send(ACK, Vec::new());
+}
+
+/// One client of a shared world and what it received, datagram by datagram.
+struct Watcher {
+    client: Client,
+    owner: u32,
+    tick: u32,
+    sequences: HashSet<u32>,
+    datagrams: Vec<(Vec<orpheus_wire::messages::Message>, Vec<WorldRecord>)>,
+}
+
+impl Watcher {
+    fn pump(&mut self, schemas: &Schemas) {
+        let packet = self.client.receive();
+        if packet.kind != KIND_FRAME {
+            return;
+        }
+        self.tick = BitReader::new(&packet.payload).var_a().unwrap();
+        let messages = messages(schemas, &packet)
+            .into_iter()
+            .filter(|item| self.sequences.insert(item.sequence))
+            .map(|item| item.message)
+            .collect();
+        let records = world_records(schemas, &packet);
+        self.client.window.accept(packet.seq);
+        self.client.send(ACK, Vec::new());
+        self.datagrams.push((messages, records));
+    }
+
+    /// The first datagram from `from` with a record that passes `test`.
+    fn find(&self, from: usize, test: impl Fn(&WorldRecord) -> bool) -> Option<usize> {
+        (from..self.datagrams.len()).find(|&index| self.datagrams[index].1.iter().any(&test))
+    }
+
+    fn created(&self, entity: u32) -> Option<usize> {
+        self.find(0, |record| record.entity == entity && record.is_create())
+    }
+
+    /// The first 20308 card with this BattleTag from `from` on, and its flags.
+    fn card(&self, from: usize, tag: &str) -> Option<(usize, [bool; 4])> {
+        (from..self.datagrams.len()).find_map(|index| {
+            self.datagrams[index].0.iter().find_map(|message| {
+                let Value::Struct(card) = message.fields.get(&0x80)? else {
+                    return None;
+                };
+                (message.id == 20308 && card.get(&0x40) == Some(&Value::String(tag.into()))).then(
+                    || {
+                        let flag = |offset| message.fields.get(&offset) == Some(&Value::Bool(true));
+                        (index, [0x78, 0x79, 0x7a, 0x7b].map(flag))
+                    },
+                )
+            })
+        })
+    }
+}
+
+fn pump_until(
+    watchers: &mut [&mut Watcher],
+    schemas: &Schemas,
+    what: &str,
+    done: impl Fn(&[&mut Watcher]) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !done(watchers) {
+        for watcher in watchers.iter_mut() {
+            watcher.pump(schemas);
+        }
+        assert!(Instant::now() < deadline, "waiting for {what}");
+    }
+}
+
+/// Two clients in one Practice Range see each other, in the order of
+/// ow174/game/match.py: the other's card and controller entity, his team
+/// list entry once the entity arrived, his body, his possession once the
+/// body arrived, a movement record for his body in every send frame from the
+/// frame after its create, his body's statescript once the create arrived;
+/// a hero switch replaces his body, and leaving posts "left the game" and
+/// destroys his body and entity.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
+fn two_players_in_one_practice_range_see_each_other() {
+    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use orpheus_sim::scene_assets::SceneAssets;
+    use orpheus_wire::commands::FIRE;
+
+    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    assert!(scene.movement_ready());
+    let tracer = assets.heroes().find_hero("Tracer").unwrap().guid;
+    let schemas = Arc::new(Schemas::game());
+    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let tags = ["first#1111", "second#2222"];
+    let members = tags
+        .iter()
+        .enumerate()
+        .map(|(index, tag)| WorldPlayer {
+            player: MatchPlayer {
+                name: (*tag).into(),
+                team: 1,
+                tournament: false,
+                ranked: false,
+            },
+            card: PlayerCard {
+                account: [index as u64 + 7, 0x0100_0000_0000_0000],
+                battle_tag: (*tag).into(),
+                record: Fields::from([(0x40, Value::String((*tag).into()))]),
+                ..PlayerCard::default()
+            },
+        })
+        .collect();
+    let tickets = server.open_practice_party(MATCH, scene, members).unwrap();
+    assert_eq!(tickets.len(), 2);
+    let mut watchers: Vec<_> = tickets
+        .iter()
+        .enumerate()
+        .map(|(slot, ticket)| {
+            let mut client = Client::new(server.local_addr(), ticket);
+            client.handshake();
+            Watcher {
+                client,
+                owner: player_entity(slot),
+                tick: 0,
+                sequences: HashSet::new(),
+                datagrams: Vec::new(),
+            }
+        })
+        .collect();
+    let [first, second] = &mut watchers[..] else {
+        unreachable!()
+    };
+    let (first_owner, second_owner) = (first.owner, second.owner);
+    pump_until(
+        &mut [first, second],
+        &schemas,
+        "the instances",
+        |watchers| {
+            watchers.iter().all(|watcher| {
+                watcher.datagrams.iter().any(|(messages, _)| {
+                    messages.iter().any(|message| {
+                        message.id == 20300 && message.fields[&0x80] != Value::Struct(Fields::new())
+                    })
+                })
+            })
+        },
+    );
+    for watcher in [&mut *first, &mut *second] {
+        let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+        let mut payload = BitWriter::new();
+        write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+        watcher.client.send(ACK, payload.into_bytes());
+    }
+    pump_until(
+        &mut [first, second],
+        &schemas,
+        "the controllers",
+        |watchers| {
+            watchers.iter().all(|watcher| {
+                watcher
+                    .find(0, |record| {
+                        record.entity == watcher.owner && record.script.is_some()
+                    })
+                    .is_some()
+            })
+        },
+    );
+    for watcher in [&mut *first, &mut *second] {
+        let owner = watcher.owner;
+        send_player_message(
+            &mut watcher.client,
+            &schemas,
+            owner,
+            1,
+            PICK_HERO,
+            SOLDIER.to_le_bytes().to_vec(),
+        );
+    }
+    let sees = |watcher: &Watcher, other: u32| {
+        let body = other | 1;
+        watcher.created(other).is_some()
+            && watcher
+                .find(0, |record| {
+                    record.entity == other && record.script.is_some()
+                })
+                .is_some()
+            && watcher.created(body).is_some()
+            && watcher
+                .find(0, |record| {
+                    record.entity == other && record.operation == Some(2)
+                })
+                .is_some()
+            && watcher
+                .find(0, |record| record.entity == body && record.movement)
+                .is_some()
+            && watcher
+                .find(0, |record| record.entity == body && record.script.is_some())
+                .is_some()
+    };
+    pump_until(
+        &mut [first, second],
+        &schemas,
+        "the other players",
+        |watchers| sees(watchers[0], second_owner) && sees(watchers[1], first_owner),
+    );
+
+    // The second player fires: his body's statescript changes, and the first
+    // client gets a delta of it.
+    let frame = second.tick + 1;
+    second
+        .client
+        .send(ACK, command_batch(frame, 16, 0, FIRE, false));
+    let second_body = second_owner | 1;
+    pump_until(
+        &mut [first, second],
+        &schemas,
+        "an observer delta",
+        |watchers| {
+            watchers[0]
+                .find(0, |record| {
+                    record.entity == second_body
+                        && record
+                            .script
+                            .as_ref()
+                            .is_some_and(|script| script.first != 0)
+                })
+                .is_some()
+        },
+    );
+
+    for (viewer, other, tag) in [
+        (&*first, second_owner, tags[1]),
+        (&*second, first_owner, tags[0]),
+    ] {
+        let body = other | 1;
+        // Its own card first, then the other's card with his entity.
+        let own = tags[usize::from(viewer.owner == second_owner)];
+        let (own_card, own_flags) = viewer.card(0, own).expect("own card");
+        assert_eq!(own_flags, [false; 4]);
+        let (card, _) = viewer.card(0, tag).expect("the other's card");
+        let created = viewer.created(other).unwrap();
+        assert!(own_card <= card && card <= created);
+        // 288D after the entity's create arrived.
+        let entry = viewer
+            .find(0, |record| {
+                record.entity == other && record.script.is_some()
+            })
+            .unwrap();
+        assert!(entry > created);
+        let body_created = viewer.created(body).unwrap();
+        assert!(body_created >= created);
+        // 44/75 once both creates arrived.
+        let possession = viewer
+            .find(0, |record| {
+                record.entity == other && record.operation == Some(2)
+            })
+            .unwrap();
+        assert!(possession > body_created && possession > created);
+        // A movement record in every frame after the create's.
+        let moved = viewer
+            .find(0, |record| record.entity == body && record.movement)
+            .unwrap();
+        assert!(moved > body_created);
+        for (index, (_, records)) in viewer.datagrams.iter().enumerate().skip(moved) {
+            assert!(
+                records
+                    .iter()
+                    .any(|record| record.entity == body && record.movement),
+                "datagram {index} has no movement record of {body:08X}"
+            );
+        }
+        // The statescript: a plain full frame once the create arrived.
+        let full = viewer
+            .find(0, |record| record.entity == body && record.script.is_some())
+            .unwrap();
+        assert!(full > body_created);
+        let (_, records) = &viewer.datagrams[full];
+        let chunk = records
+            .iter()
+            .find_map(|record| record.script.as_ref().filter(|_| record.entity == body))
+            .unwrap();
+        assert_eq!(chunk.first, 0);
+        assert_eq!(chunk.bits().bits(2).unwrap(), 0, "an H=0 frame");
+    }
+
+    // The first player switches to Tracer: the second client loses his old
+    // body and gets the new one, its possession and a new team list entry.
+    // Tracer's body runs no statescript.
+    let switched = second.datagrams.len();
+    send_player_message(
+        &mut first.client,
+        &schemas,
+        first_owner,
+        2,
+        PICK_HERO,
+        tracer.to_le_bytes().to_vec(),
+    );
+    let (old_body, new_body) = (first_owner | 1, first_owner | 2);
+    pump_until(&mut [first, second], &schemas, "the switch", |watchers| {
+        let viewer = &watchers[1];
+        viewer.created(new_body).is_some_and(|created| {
+            viewer
+                .find(created + 1, |record| {
+                    record.entity == first_owner && record.operation == Some(2)
+                })
+                .is_some()
+        })
+    });
+    let destroyed = second
+        .find(switched, |record| {
+            record.entity == old_body && record.operation == Some(3)
+        })
+        .unwrap();
+    let created = second.created(new_body).unwrap();
+    assert!(destroyed <= created);
+    assert!(
+        second
+            .find(switched, |record| record.entity == first_owner
+                && record.script.is_some())
+            .is_some()
+    );
+    for _ in 0..20 {
+        first.pump(&schemas);
+        second.pump(&schemas);
+    }
+    assert!(
+        second
+            .find(created, |record| record.entity == new_body
+                && record.movement)
+            .is_some()
+    );
+    assert!(
+        second
+            .find(0, |record| record.entity == new_body
+                && record.script.is_some())
+            .is_none()
+    );
+
+    // The first player leaves: "left the game", then his body and entity go.
+    let left = second.datagrams.len();
+    first.client.send(FIN | ACK, Vec::new());
+    pump_until(&mut [second], &schemas, "the leave", |watchers| {
+        watchers[0]
+            .find(left, |record| {
+                record.entity == first_owner && record.operation == Some(3)
+            })
+            .is_some()
+    });
+    let (notice, flags) = second.card(left, tags[0]).expect("left the game");
+    assert_eq!(flags, [true, false, false, true]);
+    let body_gone = second
+        .find(left, |record| {
+            record.entity == new_body && record.operation == Some(3)
+        })
+        .unwrap();
+    let entity_gone = second
+        .find(left, |record| {
+            record.entity == first_owner && record.operation == Some(3)
+        })
+        .unwrap();
+    assert!(notice <= body_gone && body_gone <= entity_gone);
+    let (_, records) = &second.datagrams[entity_gone];
+    if body_gone == entity_gone {
+        let position = |entity| {
+            records
+                .iter()
+                .position(|record| record.entity == entity && record.operation == Some(3))
+        };
+        assert!(position(new_body) < position(first_owner));
+    }
+    assert!(server.seat_exists(&tickets[1]).unwrap());
+
+    // The match ends with its last player.
+    second.client.send(FIN | ACK, Vec::new());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while server.seat_exists(&tickets[1]).unwrap() {
+        assert!(Instant::now() < deadline, "waiting for the match to end");
+        thread::sleep(Duration::from_millis(10));
+    }
+    server.stop().unwrap();
 }

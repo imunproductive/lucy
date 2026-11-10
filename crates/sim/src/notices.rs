@@ -1,0 +1,184 @@
+//! The chat notices of a match (ow174/game/notices.py): a player joined or
+//! left the game, and a hero switch. The clients have the texts; the server
+//! only triggers them.
+//!
+//! 20308 {4 flags, card} keeps the card and, with +0x78 and +0x7B on, posts
+//! the card's name and " left the game." (+0x79 off) or " joined the game."
+//! (+0x79 and +0x7A on). The hero switch line is graph data of the PvP
+//! controller 0C90: three presence variables (the old hero, the new one and
+//! the player) that a client-only Watch posts once. They go in one
+//! controller frame only, and only to a client whose last frame had none of
+//! them.
+
+use std::{collections::BTreeMap, time::Duration};
+
+use crate::scene::PlayerCard;
+use orpheus_content::maps::PRACTICE_RANGE_MODE;
+use orpheus_script::wire::Value as ScriptValue;
+use orpheus_wire::{
+    jam::codec::{Fields, Value, id16},
+    messages::Message,
+};
+
+/// ClientInGame 20308: a player's card for the client's player list.
+pub const PLAYER_CARD: u32 = 20308;
+
+/// Retail modes whose teams' controller graph is 0C90: only these have the
+/// switch notice (notices.py SWITCH_MODES).
+pub const SWITCH_MODES: [u64; 7] = [
+    0x0230_0000_0000_0010,
+    0x0230_0000_0000_0014,
+    0x0230_0000_0000_0015,
+    0x0230_0000_0000_0016,
+    0x0230_0000_0000_0017,
+    0x0230_0000_0000_005a,
+    0x0230_0000_0000_0067,
+];
+
+/// 0C90's presence bits of v4513 (the old hero), v4514 (the new hero) and
+/// v4515 (the player).
+const OLD_HERO_BIT: usize = 4;
+const NEW_HERO_BIT: usize = 6;
+const PLAYER_BIT: usize = 7;
+
+/// A notice frame waits until the client has every controller frame sent
+/// before it, and a little more: the Watch's events of one frame have to run
+/// before the next frame changes the variables again.
+pub(crate) const NOTICE_GAP: Duration = Duration::from_millis(100);
+
+/// Whether a mode shows hero switches: its controller is 0C90 (every mode
+/// but the Practice Range loads it, `Controller::load`) and it is one of
+/// [`SWITCH_MODES`].
+pub fn switch_notices(mode: u64) -> bool {
+    mode != PRACTICE_RANGE_MODE && SWITCH_MODES.contains(&mode)
+}
+
+/// The card struct of 20308 +0x80. The lobby supplies it (its player
+/// record); without one, only the ids and the name, as match.py's Player
+/// builds it.
+pub(crate) fn card_record(card: &PlayerCard) -> Fields {
+    if !card.record.is_empty() {
+        return card.record.clone();
+    }
+    let [low, high] = card.account;
+    Fields::from([
+        (0x00, Value::Struct(id16(low, high))),
+        (0x10, Value::Struct(id16(low, high))),
+        (0x40, Value::String(card.battle_tag.clone())),
+    ])
+}
+
+/// 20308 with a card and no text (match.py card_message).
+pub fn card_message(card: Fields) -> Message {
+    message([Some(false), None, None, None], card)
+}
+
+/// 20308: "<name> joined the game." (+0x79 and +0x7A on).
+pub fn joined_message(card: Fields) -> Message {
+    message([Some(true); 4], card)
+}
+
+/// 20308: "<name> left the game." (+0x79 off).
+pub fn left_message(card: Fields) -> Message {
+    message([Some(true), Some(false), Some(false), Some(true)], card)
+}
+
+fn message(flags: [Option<bool>; 4], card: Fields) -> Message {
+    let mut fields: Fields = (0x78..)
+        .zip(flags)
+        .filter_map(|(offset, flag)| Some((offset, Value::Bool(flag?))))
+        .collect();
+    fields.insert(0x80, Value::Struct(card));
+    Message {
+        id: PLAYER_CARD,
+        fields,
+    }
+}
+
+/// One hero switch: the hero GUIDs and the switching player's controller
+/// entity, whose component 29 names him.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Switch {
+    pub old: u64,
+    pub new: u64,
+    pub player: u32,
+    /// Counts the player's switches, so each client takes each one once.
+    pub serial: u64,
+}
+
+impl Switch {
+    pub fn presence(&self) -> BTreeMap<usize, ScriptValue> {
+        BTreeMap::from([
+            (OLD_HERO_BIT, ScriptValue::Asset(self.old)),
+            (NEW_HERO_BIT, ScriptValue::Asset(self.new)),
+            (PLAYER_BIT, ScriptValue::Entity(self.player)),
+        ])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cards_carry_the_python_flags() {
+        let card = Fields::from([(0x40, Value::String("left#1234".into()))]);
+        let flags = |message: &Message| {
+            (0x78..0x7c)
+                .map(|offset| message.fields.get(&offset).cloned())
+                .collect::<Vec<_>>()
+        };
+        let on = Some(Value::Bool(true));
+        let off = Some(Value::Bool(false));
+        let plain = card_message(card.clone());
+        assert_eq!(plain.id, PLAYER_CARD);
+        assert_eq!(flags(&plain), [off.clone(), None, None, None]);
+        assert_eq!(plain.fields[&0x80], Value::Struct(card.clone()));
+        assert_eq!(flags(&joined_message(card.clone())), vec![on.clone(); 4]);
+        assert_eq!(
+            flags(&left_message(card)),
+            [on.clone(), off.clone(), off, on]
+        );
+    }
+
+    #[test]
+    fn a_lobby_card_goes_as_it_is_and_a_missing_one_has_ids_and_name() {
+        let mut card = PlayerCard {
+            account: [7, 0x0100_0000_0000_0000],
+            battle_tag: "rust#2345".into(),
+            ..PlayerCard::default()
+        };
+        assert_eq!(
+            card_record(&card),
+            Fields::from([
+                (0, Value::Struct(id16(7, 0x0100_0000_0000_0000))),
+                (0x10, Value::Struct(id16(7, 0x0100_0000_0000_0000))),
+                (0x40, Value::String("rust#2345".into())),
+            ])
+        );
+        card.record = Fields::from([(0x38, Value::Signed(25))]);
+        assert_eq!(card_record(&card), card.record);
+    }
+
+    #[test]
+    fn only_the_0c90_switch_modes_post_hero_switches() {
+        assert!(!switch_notices(PRACTICE_RANGE_MODE));
+        assert!(switch_notices(0x0230_0000_0000_0067));
+        assert!(!switch_notices(0x0230_0000_0000_0f74));
+        let presence = Switch {
+            old: 1,
+            new: 2,
+            player: 0xa000_0200,
+            serial: 1,
+        }
+        .presence();
+        assert_eq!(
+            presence.into_iter().collect::<Vec<_>>(),
+            [
+                (4, ScriptValue::Asset(1)),
+                (6, ScriptValue::Asset(2)),
+                (7, ScriptValue::Entity(0xa000_0200))
+            ]
+        );
+    }
+}

@@ -4,7 +4,7 @@
 //!
 //! The Rust game service opens one prepared world per call and keeps no
 //! account bookkeeping, so the matchmaker keeps its own rooms (`Room`) and
-//! reaches the service through these adapters.
+//! reaches the service through these functions.
 
 use std::{io, sync::Arc, time::SystemTime};
 
@@ -20,40 +20,22 @@ use orpheus_sim::scene::PlayerCard;
 use orpheus_wire::jam::codec::Fields;
 
 use crate::{
-    game_service::{GameService, MatchPlayer},
+    game_service::{GameService, MatchPlayer, WorldPlayer},
     lobby::Lobby,
 };
 
-/// One player of a world the game service opens.
-pub(super) struct WorldPlayer {
-    pub player: MatchPlayer,
-    pub card: PlayerCard,
-}
-
 /// Open one world for these players; their seats come back in player order.
-///
-/// The game service on this branch opens a prepared world for one player
-/// only (`GameService::open_prepared_practice`); a world for several players
-/// is `GameService::open_prepared` of the multiplayer slice (`parity-match`),
-/// which this adapter calls once that lands. Worlds open only on the Practice
-/// Range scene; the service refuses other maps as unsupported.
+/// Worlds open only on the Practice Range scene so far; the service refuses
+/// other maps as unsupported.
 pub(super) fn open_world(
     game: &GameService,
     id: [u64; 2],
     map: GameMap,
     lobby: &Lobby,
-    mut players: Vec<WorldPlayer>,
+    players: Vec<WorldPlayer>,
 ) -> io::Result<Vec<Handoff>> {
-    if players.len() != 1 {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "the game service opens a world for one player; several need GameService::open_prepared",
-        ));
-    }
-    let WorldPlayer { player, card } = players.pop().expect("one player");
     let scene = prepare_scene(lobby, map)?;
-    game.open_prepared_practice(id, scene, player, card)
-        .map(|handoff| vec![handoff])
+    game.open_prepared(id, scene, players)
 }
 
 /// Seats for more players in a match that is on (Python
@@ -135,6 +117,7 @@ pub(super) fn world_player(
         }),
         role: (role != 0).then(|| i8::try_from(role).unwrap_or(0)),
         skins,
+        record: record.clone(),
     };
     let player = MatchPlayer {
         name: account.name.clone(),

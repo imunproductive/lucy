@@ -249,6 +249,7 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
         entity: owner,
         slot: 0,
         team: 0,
+        spawn: 0,
         card: &PlayerCard::default(),
     };
     let mut world = WorldDelivery::new(owner);
@@ -336,7 +337,9 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
             if turn == 4 { gap.frame } else { actual.frame }
         );
     }
-    let mut synchronous = scene.player_spawn_mover(hero.body, viewer.team).unwrap();
+    let mut synchronous = scene
+        .player_spawn_mover(hero.body, viewer.team, viewer.spawn)
+        .unwrap();
     for command in [actual, gap] {
         synchronous
             .step(scene.movement_index(), command, 0.016, |_, _| {})
@@ -353,7 +356,9 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
     );
     assert_eq!(world.body.unwrap().id.entity, owner | 2);
     assert_eq!(world.command_ack(FIRST_TICK + 90), later.frame);
-    let mut synchronous = scene.player_spawn_mover(tracer.body, viewer.team).unwrap();
+    let mut synchronous = scene
+        .player_spawn_mover(tracer.body, viewer.team, viewer.spawn)
+        .unwrap();
     synchronous
         .step(scene.movement_index(), later, 0.016, |_, _| {})
         .unwrap();
@@ -896,6 +901,7 @@ fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
         entity: OWNER,
         slot: 0,
         team: 0,
+        spawn: 0,
         card: &PlayerCard::default(),
     };
     let mut world = WorldDelivery::new(OWNER);
