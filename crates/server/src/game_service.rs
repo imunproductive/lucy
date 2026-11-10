@@ -1,8 +1,8 @@
 //! The native UDP match worker. It owns seats, connections and frame timing.
 //!
 //! A prepared Practice Range scene can advance from loading into one world
-//! for all its players, who see each other (ow174/game/match.py). Maps that
-//! need the unported bot VM retain that requirement.
+//! for all its players, who see each other (ow174/game/match.py), with the
+//! training bots' scripts.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -250,7 +250,7 @@ impl GameService {
         if scene.map().mode_guid != PRACTICE_RANGE_MODE || !scene.movement_ready() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "the native world bootstrap requires the Practice Range without bot VM graphs",
+                "the native world bootstrap requires the Practice Range",
             ));
         }
         let controller = initial_controller(&scene, FIRST_TICK)?;
@@ -569,7 +569,10 @@ impl Peer {
                 .get(&entity)
                 .is_some_and(|&ordinal| !self.egress.delivered_through(ordinal));
             if now < expires
-                && (has_notice || waiting_for_reliable || self.world.health_pending(entity))
+                && (has_notice
+                    || waiting_for_reliable
+                    || self.world.health_pending(entity)
+                    || self.world.bot_frames_pending(entity))
             {
                 self.combat_ui
                     .replacements
@@ -606,7 +609,7 @@ impl Peer {
             bot_scripts_ready: room
                 .world
                 .as_ref()
-                .is_some_and(|world| world.scene.scripted_bots() == 0),
+                .is_some_and(|world| world.scene.bot_scripts_ready()),
         };
         while let Some(step) = self.loading.take_due(now, ready) {
             match step {
@@ -1063,6 +1066,7 @@ impl State {
             self.retire(expired.connection);
         }
         let mut spawned = HashMap::new();
+        let mut bot_events = HashMap::new();
         if !drain {
             for room in self.rooms.values_mut() {
                 if let Some(world) = &mut room.world {
@@ -1095,14 +1099,20 @@ impl State {
             }
             for (&id, room) in &mut self.rooms {
                 if let Some(world) = &mut room.world {
+                    // combat.py `update`: the firing bots' weapons, the dead
+                    // bots' death scripts, then the respawns with new scripts.
+                    let _shots = world.scene.bot_weapons(tick);
+                    world.scene.advance_bot_deaths(tick);
                     if let Some(combat) = &mut world.combat {
                         if let Ok(replacements) = combat.respawn_due(&mut world.scene, tick, now) {
                             if !replacements.is_empty() {
+                                world.scene.prepare_respawned_bots(tick);
                                 spawned.insert(id, replacements);
                             }
                         }
                         combat.record_poses(&world.scene, tick);
                     }
+                    bot_events.insert(id, world.scene.take_bot_events());
                 }
             }
         }
@@ -1118,6 +1128,13 @@ impl State {
                 peer.loading = MapReadiness::default();
                 if self.links.begin_leaving(connection, now) {
                     let _ = peer.reliable(&self.schemas, leave_message());
+                }
+            }
+            if !drain {
+                if let Some(world) = &room.world {
+                    let events = bot_events.get(&id).map_or(&[][..], Vec::as_slice);
+                    peer.world
+                        .update_bots(&world.scene, events, tick, send_frames);
                 }
             }
             if let Some(replacements) = spawned.get(&id).filter(|_| peer.world.world_started()) {

@@ -12,6 +12,7 @@ use serde::Deserialize;
 
 use crate::{
     body_script::{OwnerBodySpawn, PlayerBodyFactory},
+    bot_script::{BotEvent, BotScripts, BotShot},
     bots::{Bot, BotCatalog, BotWalk},
     controller::Controller,
     pools::PoolCatalog,
@@ -33,7 +34,7 @@ use orpheus_physics::{
     mover::ground::NOT_GROUND,
     mover::settings::MoverCatalog,
 };
-use orpheus_script::{codecs::CodecTable, graph::GraphStore, wire::Variables};
+use orpheus_script::{codecs::CodecTable, graph::GraphStore, vm::Unknowns, wire::Variables};
 use orpheus_wire::entity::{Component, EntityUpdate};
 
 const MOVER_CATEGORY: u16 = 0x18;
@@ -71,6 +72,8 @@ pub struct SceneAssets {
     graphs: Arc<GraphStore>,
     codecs: Option<Arc<CodecTable>>,
     practice_owner_body: OnceLock<Option<Arc<OwnerBodyFactory>>>,
+    bot_graphs: Option<Arc<GraphStore>>,
+    bot_unknowns: Unknowns,
     bots: BotCatalog,
     movers: Arc<MoverCatalog>,
     stats: StatsCatalog,
@@ -86,7 +89,7 @@ pub struct PreparedScene {
     mode_ui: BitWriter,
     initial_board: Component,
     bots: Vec<Bot>,
-    scripted_bots: usize,
+    bot_scripts: BotScripts,
     movers: Arc<MoverCatalog>,
     heroes: Arc<HeroCatalog>,
     pools: Arc<PoolCatalog>,
@@ -98,6 +101,13 @@ impl SceneAssets {
         let runtime = runtime.as_ref();
         let data = runtime.join("data");
         let graphs = Arc::new(GraphStore::load(data.join("game_graphs_174.json.gz"))?);
+        // The bot bundle adds the bots' bodies to the hero bundle; the heroes
+        // keep the hero bundle, which has their target tags.
+        let bot_graphs = match GraphStore::load(data.join("game_graphs_bots_174.json.gz")) {
+            Ok(graphs) => Some(Arc::new(graphs)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
         let codecs = Some(Arc::new(CodecTable::client()));
         let pools = Arc::new(PoolCatalog::from_graphs(&graphs)?);
         Ok(Self {
@@ -106,6 +116,8 @@ impl SceneAssets {
             graphs,
             codecs,
             practice_owner_body: OnceLock::new(),
+            bot_graphs,
+            bot_unknowns: Unknowns::for_build(),
             bots: BotCatalog::load(data.join("ai_spawners_174.json"))?,
             movers: Arc::new(MoverCatalog::load(data.join("game_movers_174.json"))?),
             stats: StatsCatalog::load(data.join("game_stats_174.json"))?,
@@ -120,6 +132,19 @@ impl SceneAssets {
 
     pub fn heroes(&self) -> &HeroCatalog {
         &self.heroes
+    }
+
+    /// The bot graph bundle (`game_graphs_bots_174.json.gz`), when the data
+    /// has one: the bots' bodies and their AI spawner graphs.
+    pub fn bot_graphs(&self) -> Option<&GraphStore> {
+        self.bot_graphs.as_deref()
+    }
+
+    /// How the bot scripts treat unknown statescript content. By default as
+    /// every script does ([`Unknowns::for_build`]); the stock bot graphs
+    /// need it tolerated, as the Python reference did.
+    pub fn set_bot_unknowns(&mut self, unknowns: Unknowns) {
+        self.bot_unknowns = unknowns;
     }
 
     /// Load the map before handing it to the worker. The render layouts and
@@ -147,10 +172,6 @@ impl SceneAssets {
                 settings.decel_ground_base,
             )
         });
-        let scripted_bots = bots
-            .iter()
-            .filter(|bot| self.graphs.entity_body(bot.spawn.body).is_some())
-            .count();
         let contacts = (is_practice_range(&map)
             || bots.iter().any(|bot| !bot.spawn.route.is_empty()))
         .then(|| ContactWorld::from_movement_cache(cache, identifiers).map(Arc::new))
@@ -167,6 +188,15 @@ impl SceneAssets {
                 );
             }
         }
+        let bot_scripts = BotScripts::new(
+            self.bot_graphs.clone(),
+            self.codecs
+                .clone()
+                .unwrap_or_else(|| Arc::new(CodecTable::client())),
+            self.bot_unknowns,
+            &map,
+            &bots,
+        );
         let controller = Controller::load(&self.graphs, map.mode_guid)?;
         let mode_ui = mode_ui(&self.graphs, &Variables::new())?;
         let initial_board =
@@ -180,13 +210,13 @@ impl SceneAssets {
             mode_ui,
             initial_board,
             bots,
-            scripted_bots,
+            bot_scripts,
             movers: Arc::clone(&self.movers),
             heroes: Arc::clone(&self.heroes),
             pools: Arc::clone(&self.pools),
             owner_body_factory: None,
         };
-        if is_practice_range(scene.map()) && scripted_bots == 0 {
+        if is_practice_range(scene.map()) {
             scene.owner_body_factory = self
                 .practice_owner_body
                 .get_or_init(|| self.prepare_owner_body(&scene))
@@ -251,12 +281,8 @@ impl PreparedScene {
         &self.map
     }
 
-    pub fn scripted_bots(&self) -> usize {
-        self.scripted_bots
-    }
-
     pub fn movement_ready(&self) -> bool {
-        is_practice_range(&self.map) && self.scripted_bots == 0 && self.contacts.is_some()
+        is_practice_range(&self.map) && self.contacts.is_some()
     }
 
     pub(crate) fn movement_index(&self) -> &TriangleIndex {
@@ -347,7 +373,10 @@ impl PreparedScene {
             .map(|hit| hit.map(|hit| hit.distance))
     }
 
+    /// One more bot gets its script (match.py `update`: one per update,
+    /// within the loading window), then the bots walk.
     pub fn step_bots(&mut self, tick: u32) {
+        self.bot_scripts.prepare_next(&self.bots, tick);
         let floor = self.ground.triangles();
         for bot in &mut self.bots {
             bot.step(
@@ -355,6 +384,55 @@ impl PreparedScene {
                 ground_height(floor, mover_category(&self.map, bot.spawn.team)),
             );
         }
+    }
+
+    pub fn bot_scripts(&self) -> &BotScripts {
+        &self.bot_scripts
+    }
+
+    /// The world waits until every bot that has a script has started it
+    /// (match.py `_spawn_steps`: `not self._pending_bot_scripts`).
+    pub fn bot_scripts_ready(&self) -> bool {
+        self.bot_scripts.ready()
+    }
+
+    /// The firing bots' weapon scripts at this world tick; their shots for
+    /// the match to fly (combat.py `_bot_weapons`).
+    pub fn bot_weapons(&mut self, tick: u32) -> Vec<BotShot> {
+        self.bot_scripts.weapons(&self.bots, tick)
+    }
+
+    /// A bot was killed: its script's death message (combat.py `_bot_died`).
+    pub fn bot_died(
+        &mut self,
+        entity: u32,
+        killer: u32,
+        critical: bool,
+        loadout: Option<u64>,
+        tick: u32,
+    ) {
+        self.bot_scripts
+            .died(entity, killer, critical, loadout, tick);
+    }
+
+    /// A bot's pools after a hit it survived (combat.py `_sync_body_health`).
+    pub fn bot_health(&mut self, entity: u32, health: f64) {
+        self.bot_scripts.set_health(entity, health);
+    }
+
+    /// The dead bots' death scripts (combat.py `_advance_bot_death`).
+    pub fn advance_bot_deaths(&mut self, tick: u32) {
+        self.bot_scripts.advance_deaths(&self.bots, tick);
+    }
+
+    /// The respawned bots' new scripts (combat.py `_respawn_bot`).
+    pub fn prepare_respawned_bots(&mut self, tick: u32) {
+        self.bot_scripts.prepare_respawned(&self.bots, tick);
+    }
+
+    /// What the bot scripts produced for the clients since the last call.
+    pub fn take_bot_events(&mut self) -> Vec<BotEvent> {
+        self.bot_scripts.take_events()
     }
 
     pub fn initial_world(&self, viewer: &PlayerAppearance<'_>) -> io::Result<Vec<EntityUpdate>> {
@@ -610,12 +688,9 @@ mod tests {
         let assets = SceneAssets::load(runtime).unwrap();
         let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
         assert_eq!(scene.bots().len(), 15);
-        let scripted = if assets.graphs.graph_indexes().count() == 373 {
-            0
-        } else {
-            15
-        };
-        assert_eq!(scene.scripted_bots(), scripted);
+        // Every Practice Range bot body has a graph in the bot bundle.
+        assert!(assets.bot_graphs().is_some());
+        assert_eq!(scene.bot_scripts().pending(), 15);
         let bots = [BOT_ENTITY + 4, BOT_ENTITY + 9];
         let mut previous = bots.map(|entity| {
             scene

@@ -58,6 +58,24 @@ impl ProjectedSnapshot {
             .volley
             .map(|volley| volley.identity)
     }
+
+    /// An instance's graph and parent (instance and state), if this
+    /// projection has it.
+    pub fn instance(&self, id: u16) -> Option<(u32, Option<(u16, u16)>)> {
+        self.instances
+            .get(&id)
+            .map(|instance| (instance.graph, instance.parent))
+    }
+
+    /// This projection with `other`'s instance `id` added, its variables,
+    /// states and events with it (the practice nameplate on an acknowledged
+    /// baseline: server.py `_flush_bot_nameplates`).
+    pub fn with_instance_of(&self, other: &Self, id: u16) -> Option<Self> {
+        let instance = other.instances.get(&id)?.clone();
+        let mut merged = self.clone();
+        merged.instances.insert(id, instance);
+        Some(merged)
+    }
 }
 
 /// The pulsers whose client-only plug posts a kill feed line to the mode UI,
