@@ -238,7 +238,7 @@ flowchart LR
 | 3 Workspace crates | Done |
 | 4 `orpheus` app | Done. The dashboard serves its profile, account, item, frame and loot box actions; the rest answer 501 (see `docs/notes/parity.md`). |
 | 5 Launcher and relay | Built and checked by injecting the Rust relay into a running process. **The live client gate is open**: it needs the 1.74 client. |
-| 6 Game data from CASC | Not started; needs the 1.74 client install |
+| 6 Game data from CASC | Spike passed. 6a done: `crates/casc` reads every stored graph and definition from the install by GUID (`just test-game`). 6b, 6c and 6d not started; 6c needs the runtime pack's files as oracles. |
 | 7 Tools | IDA script moved; `fake_client` covered by test fixtures; `ssq` deferred (see phase 7) |
 | 8 Remove Python | Waits for the phase 5 and 6 gates and gameplay parity |
 | 9 New documentation | Not started |
@@ -421,6 +421,8 @@ DataTool has already read everything the pack needs from the local install, full
 - the TRG/CMF manifest for 104319 only.
 
 Public tests use a synthetic miniature storage built by `testkit`.
+
+**Spike result (2026-11-10):** go. TACTLib's `ProCMF_104319` decrypts the install's manifests, and the GUID counts match DataTool's extraction (1,587 `01B`, 3,528 `003`). Encrypted blocks are needed: 8 bundles use them, so the reader handles Salsa20 with the install's keyring. One key is missing from that keyring; `docs/notes/data-sources.md` lists what it hides.
 
 **6b. `stu` crate:** an STUv2 reader. A one-off generator (`cargo run -p orpheus-stu --bin gen-types`) reads OWLib's `overwatch/1.74` `TankLib/STU/Types` (revision `7afe5f52`) and writes a Rust type table, which is committed. The table is derived from MIT-licensed code, not from game data.
 

@@ -29,6 +29,10 @@ build:
 test-runtime runtime:
     cargo build -p orpheus-relay --locked; $env:ORPHEUS_RUNTIME_DIR = '{{runtime}}'; cargo test --workspace --locked -- --ignored
 
+# Ignored tests that read an Overwatch 1.74 install.
+test-game game:
+    $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo test -p orpheus-casc --release --locked -- --ignored
+
 # Windows-only tests that load the relay DLL into a stand-in process.
 test-windows:
     cargo build -p orpheus-relay --locked; cargo test -p orpheus-launcher --locked -- --ignored

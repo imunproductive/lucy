@@ -11,6 +11,7 @@ license = "MIT"
 
 [workspace.dependencies]
 orpheus-core = { path = "crates/core" }
+orpheus-casc = { path = "crates/casc" }
 orpheus-wire = { path = "crates/wire" }
 orpheus-content = { path = "crates/content" }
 orpheus-bnet = { path = "crates/bnet" }
@@ -21,6 +22,7 @@ orpheus-lobby = { path = "crates/lobby" }
 orpheus-server = { path = "crates/server" }
 orpheus-launcher = { path = "crates/launcher" }
 orpheus-testkit = { path = "crates/testkit" }
+aes = "0.8"
 aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 crc32fast = "1"
@@ -30,6 +32,7 @@ flate2 = "1.1"
 getrandom = "0.3"
 hmac = "0.12"
 indexmap = { version = "2", features = ["serde"] }
+md-5 = "0.10"
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
 mio = { version = "1.1.1", features = ["net", "os-poll"] }
 prost = "0.14"
@@ -37,6 +40,7 @@ prost-reflect = "0.16"
 roxmltree = "0.20"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha1 = "0.10"
 sha2 = "0.10"
 tempfile = "3"
 tiny_http = "0.12.0"

@@ -80,23 +80,11 @@ pub fn build_info(game: &Path) -> Option<BuildInfo> {
 }
 
 fn parse_build_info(text: &str) -> Option<BuildInfo> {
-    let mut lines = text.lines().filter(|line| !line.trim().is_empty());
-    let header: Vec<&str> = lines
-        .next()?
-        .split('|')
-        .map(|column| column.split('!').next().unwrap_or(column))
-        .collect();
-    let row: Vec<&str> = lines.next()?.split('|').collect();
-    let column = |name: &str| {
-        header
-            .iter()
-            .position(|column| *column == name)
-            .and_then(|index| row.get(index))
-            .copied()
-    };
+    let row = orpheus_casc::BuildInfo::parse(text)?;
     Some(BuildInfo {
-        version: column("Version").map(str::to_owned),
-        locales: column("Tags")
+        version: row.get("Version").map(str::to_owned),
+        locales: row
+            .get("Tags")
             .map(|tags| {
                 tags.split(|c: char| !c.is_ascii_alphanumeric())
                     .filter(|tag| is_locale(tag))
