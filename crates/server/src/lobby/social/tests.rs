@@ -30,6 +30,8 @@ use orpheus_wire::{
 
 use crate::server::{Server, ServerConfig};
 
+mod bot_chat;
+
 const ANNOUNCED: [u32; 13] = [
     IN_CONNECT,
     OUT_CONNECT,

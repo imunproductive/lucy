@@ -600,6 +600,9 @@ fn invalid(error: impl std::fmt::Display) -> io::Error {
 }
 
 #[cfg(test)]
+mod ported_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{bots::BOT_ENTITY, instance::RETAIL_QUANTA, scene::team_bit};

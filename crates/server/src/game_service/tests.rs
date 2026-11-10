@@ -3074,3 +3074,5 @@ fn a_firing_practice_bot_shoots_the_player() {
     assert!(destroyed >= launched);
     server.stop().unwrap();
 }
+
+mod collision_ready;

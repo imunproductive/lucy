@@ -417,6 +417,9 @@ fn append_prism(out: &mut Vec<SceneTriangle>, round: RoundProp) -> Result<(), Sc
 }
 
 #[cfg(test)]
+mod ported_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::collision::cache::{HalfEdge, RAY_GEOMETRY, RAY_PROP_SCOPE, Triangle, chunk_guid};

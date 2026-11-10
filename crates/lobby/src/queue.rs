@@ -113,9 +113,11 @@ pub fn takes_passes(role: u8) -> bool {
     PASS_ROLES.contains(&role)
 }
 
-fn role(role: u8, open_for_passes: bool, wait: u64, pass_wait: u64) -> Value {
+/// A role record of the queue entry or of 56200: `role` is the role GUID, or 0
+/// for the flex card (`ow174/content/queue.py` `_role`).
+fn role(role: u64, open_for_passes: bool, wait: u64, pass_wait: u64) -> Value {
     Struct(Fields::from([
-        (0x0, Unsigned(u64::from(role))),
+        (0x0, Unsigned(role)),
         (0x8, Unsigned(0)),
         (0x10, Unsigned(0)),
         (0x18, Unsigned(wait)),
@@ -132,7 +134,7 @@ fn role(role: u8, open_for_passes: bool, wait: u64, pass_wait: u64) -> Value {
 pub fn queue_entry(key: &Fields, state: u64) -> Fields {
     let roles = ROLE_NUMBERS
         .iter()
-        .map(|&(number, _)| role(number, takes_passes(number), 0, 0))
+        .map(|&(number, guid)| role(guid, takes_passes(number), 0, 0))
         .collect();
     let roles = Fields::from([(0x0, Array(roles))]);
     Fields::from([
@@ -153,7 +155,12 @@ pub fn wait_times() -> LobbyMessage {
                 .iter()
                 .find(|(role, _)| *role == number)
                 .map_or(0, |&(_, wait)| wait);
-            role(number, takes_passes(number), wait, pass_wait)
+            role(
+                role_guid(number).unwrap_or(0),
+                takes_passes(number),
+                wait,
+                pass_wait,
+            )
         })
         .collect();
     let roles = Fields::from([(0x0, Array(roles))]);
@@ -287,9 +294,9 @@ mod tests {
         assert_eq!(
             open,
             [
-                (Unsigned(1), Bool(true)),
-                (Unsigned(2), Bool(false)),
-                (Unsigned(3), Bool(false)),
+                (Unsigned(DAMAGE), Bool(true)),
+                (Unsigned(TANK), Bool(false)),
+                (Unsigned(SUPPORT), Bool(false)),
             ]
         );
         assert_eq!(entry[&0x18], Struct(key()));
@@ -317,9 +324,9 @@ mod tests {
             waits,
             [
                 (Unsigned(0), Unsigned(45), Unsigned(0)),
-                (Unsigned(2), Unsigned(90), Unsigned(0)),
-                (Unsigned(3), Unsigned(120), Unsigned(0)),
-                (Unsigned(1), Unsigned(420), Unsigned(90)),
+                (Unsigned(TANK), Unsigned(90), Unsigned(0)),
+                (Unsigned(SUPPORT), Unsigned(120), Unsigned(0)),
+                (Unsigned(DAMAGE), Unsigned(420), Unsigned(90)),
             ]
         );
     }

@@ -1,0 +1,478 @@
+//! The messages the lobby builds match the snapshot of the Python reference
+//! (`tests/test_content_golden.py`, its set copied to
+//! `crates/lobby/tests/golden/messages.json`): one hash per message for a few
+//! fixed profiles. A hash covers a message's value as the Python builders hold
+//! it before encoding, so each Rust message is first written as the same
+//! canonical JSON (`canonical` and `digest` there).
+//!
+//! It sits under `menu` so the random menu hero can roll the first catalog
+//! hero, as the Python test's patched `random.choice` does.
+
+use std::{fmt::Write as _, sync::Arc};
+
+use serde_json::{Map, Value as Json, json};
+use sha2::{Digest, Sha256};
+
+use super::*;
+use crate::{
+    accounts::Accounts,
+    arcade::Arcade,
+    celebrations::Celebrations,
+    clock::server_time,
+    collection::Collection,
+    login::Identity,
+    mode_rules::{CareerContent, career_profile},
+    party::{self, Membership, PartyMember},
+    player_messages as player,
+    presence::Presence,
+    ranked::{LeaderboardPlaces, Ranked},
+    session::{LoginContent, PreparedLogin},
+    templates::{LOBBY, RetailTemplates},
+    transport::LobbyMessage,
+};
+use orpheus_wire::jam::codec::{Fields, Schemas, Value};
+
+const GOLDEN: &str = include_str!("../../tests/golden/messages.json");
+/// The Python test's patched `time.time`.
+const NOW: u64 = 1_800_000_000;
+const IDENTITY: Identity = Identity {
+    account_lo: 0x1C2A_69FB,
+    session: [7, 1],
+    party_id: [11, 12],
+    party_entity: [13, 14],
+};
+/// Parts of the snapshot that belonged to Python code removed as dead.
+const REMOVED_PARTS: [&str; 2] = ["name_reply", "notifications"];
+
+/// The Python test's profiles (`SCENARIOS`), each over the default profile.
+fn scenarios() -> Vec<(&'static str, Json)> {
+    vec![
+        ("default", json!({"lobby_hero": "Genji"})),
+        (
+            "unlock_all_eu",
+            json!({"lobby_hero": "Reaper", "unlock_all": true, "region": "EU", "level": 2500}),
+        ),
+        (
+            "npc_gb",
+            json!({"lobby_hero": "Talon Sniper", "region": "GB", "endorsement_level": 4}),
+        ),
+        (
+            "events_challenge",
+            json!({
+                "lobby_hero": "Tracer",
+                "events": ["anniversary"],
+                "challenge": "Tracer's Comic Challenge",
+                "challenge_wins": 20,
+                "server_date": "2022-10-03",
+            }),
+        ),
+        (
+            "granted",
+            json!({
+                "lobby_hero": "none",
+                "unlocked_items": ["0x0250000000001149", "0x0250000000000921"],
+                "icon_guid": 0x0250_0000_0000_1149_u64,
+                "loadouts": {"0x02E0000000000002": {"+0x38": "0x0250000000000921"}},
+            }),
+        ),
+    ]
+}
+
+/// Python `json.dumps(canonical(value), sort_keys=True, ensure_ascii=False,
+/// separators=(",", ":"))`: struct keys as `+0x..` offsets in string order,
+/// blobs as `{"bytes": hex}`, floats as Python's `repr`.
+fn write_value(out: &mut String, value: &Value) {
+    match value {
+        Value::Bool(flag) => out.push_str(if *flag { "true" } else { "false" }),
+        Value::Unsigned(number) => write!(out, "{number}").unwrap(),
+        Value::Signed(number) => write!(out, "{number}").unwrap(),
+        // Python holds the decimal it encodes into a 32-bit field (0.1),
+        // which is the shortest decimal that reads back as the f32.
+        Value::Float32(number) => write_float(out, number.to_string().parse().unwrap()),
+        Value::Float64(number) => write_float(out, *number),
+        Value::String(text) => write_string(out, text),
+        Value::Blob(bytes) => {
+            out.push_str(r#"{"bytes":""#);
+            for byte in bytes {
+                write!(out, "{byte:02x}").unwrap();
+            }
+            out.push_str(r#""}"#);
+        }
+        Value::Struct(fields) => write_fields(out, fields),
+        Value::Array(values) => {
+            out.push('[');
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_value(out, value);
+            }
+            out.push(']');
+        }
+    }
+}
+
+fn write_fields(out: &mut String, fields: &Fields) {
+    let mut keyed: Vec<_> = fields
+        .iter()
+        .map(|(offset, value)| (format!("+0x{offset:X}"), value))
+        .collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    out.push('{');
+    for (index, (key, value)) in keyed.into_iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        write_string(out, &key);
+        out.push(':');
+        write_value(out, value);
+    }
+    out.push('}');
+}
+
+/// Python's float `repr`: positional between 1e-4 and 1e16, else a
+/// mantissa and a signed exponent of at least two digits.
+fn write_float(out: &mut String, number: f64) {
+    if number.is_nan() {
+        out.push_str("NaN");
+    } else if number.is_infinite() {
+        out.push_str(if number > 0.0 {
+            "Infinity"
+        } else {
+            "-Infinity"
+        });
+    } else if number == 0.0 || (1e-4..1e16).contains(&number.abs()) {
+        let text = number.to_string();
+        out.push_str(&text);
+        if !text.contains('.') {
+            out.push_str(".0");
+        }
+    } else {
+        let text = format!("{number:e}");
+        let (mantissa, exponent) = text.split_once('e').unwrap();
+        let (sign, digits) = exponent
+            .strip_prefix('-')
+            .map_or(('+', exponent), |digits| ('-', digits));
+        write!(out, "{mantissa}e{sign}{digits:0>2}").unwrap();
+    }
+}
+
+/// A JSON string as Python writes it with `ensure_ascii=False`.
+fn write_string(out: &mut String, text: &str) {
+    out.push('"');
+    for character in text.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            control if u32::from(control) < 0x20 => {
+                write!(out, "\\u{:04x}", u32::from(control)).unwrap();
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+}
+
+/// The first 20 hex digits of the SHA-256 of the canonical JSON (`digest`).
+fn digest(value: &Value) -> String {
+    let mut text = String::new();
+    write_value(&mut text, value);
+    Sha256::digest(text.as_bytes())[..10]
+        .iter()
+        .fold(String::new(), |mut hex, byte| {
+            write!(hex, "{byte:02x}").unwrap();
+            hex
+        })
+}
+
+/// `[crc, id, digest]` for each message (`summarize`).
+fn summarize(messages: &[LobbyMessage]) -> Json {
+    messages
+        .iter()
+        .map(|(crc, id, fields)| {
+            json!([
+                format!("{crc:08X}"),
+                id,
+                digest(&Value::Struct(fields.clone()))
+            ])
+        })
+        .collect()
+}
+
+/// A part that holds one message the Python test summarizes with crc and id
+/// 0.
+fn single(fields: Fields) -> Json {
+    summarize(&[(0, 0, fields)])
+}
+
+fn guids(guids: impl IntoIterator<Item = u64>) -> Value {
+    Value::Array(guids.into_iter().map(Value::Unsigned).collect())
+}
+
+/// The golden part with the party state Python's `Content` puts after 38902
+/// moved to where the session sends its own (`without_party_state` and
+/// `party_messages`, `ow174/lobby/session.py`), and then `extra`.
+fn session_order(part: &Json, party: &Json, extra: Option<&Json>) -> Json {
+    let mut messages: Vec<Json> = part
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message[1] != 20700)
+        .cloned()
+        .collect();
+    let crc = format!("{:08X}", party::PARTY);
+    messages.push(json!([crc, 20700, party[0][2]]));
+    if let Some((crc, id, digest)) = extra.map(|extra| (LOBBY, 20802, &extra[0][2])) {
+        messages.push(json!([format!("{crc:08X}"), id, digest]));
+    }
+    Json::Array(messages)
+}
+
+struct Content {
+    schemas: Schemas,
+    templates: RetailTemplates,
+    collection: Collection,
+    presence: Presence,
+    ranked: Ranked,
+    arcade: Arcade,
+    celebrations: Celebrations,
+    extra_preload: Vec<u64>,
+    accounts: Accounts,
+}
+
+impl Content {
+    /// Every part the Python test builds (`build_all`); `login` and `live`
+    /// in the order the session sends them.
+    fn build_all(&self, profile: &Profile) -> Map<String, Json> {
+        let collection = &self.collection;
+        let places = LeaderboardPlaces::new();
+        let selection = MenuHero::default()
+            .select_with(profile, collection.heroes(), collection.items(), |_| Ok(0))
+            .unwrap();
+        let ratings = self.ranked.party_ratings(profile, &places).unwrap();
+        let party = party::state(
+            collection,
+            IDENTITY.party_id,
+            IDENTITY.party_entity,
+            &[PartyMember {
+                profile,
+                identity: IDENTITY,
+                menu_hero: selection.party_hero,
+                ratings: &ratings,
+                membership: Membership::Leader,
+            }],
+            true,
+            NOW,
+        )
+        .unwrap();
+        let account = self.accounts.get("player").unwrap();
+        *account.profile() = profile.clone();
+        let prepared = PreparedLogin {
+            account,
+            identity: IDENTITY,
+            tournament: false,
+        };
+        let content = LoginContent {
+            menu_hero: selection.menu_guid,
+            extra_preload: &self.extra_preload,
+            wall_time: NOW,
+            arcade: &self.arcade,
+            celebrations: Some(&self.celebrations),
+            leaderboard_places: &places,
+            party: std::slice::from_ref(&party),
+        };
+        let login = prepared
+            .available_messages(
+                &self.schemas,
+                &self.templates,
+                collection,
+                &self.presence,
+                &self.ranked,
+                content,
+            )
+            .unwrap();
+        let live = prepared
+            .live_messages(&self.templates, collection, &self.ranked, content)
+            .unwrap();
+        let now = server_time(&profile.server_date, NOW).unwrap();
+        let season = self.ranked.season(profile);
+        let event_cards = self
+            .arcade
+            .state(profile, season, now)
+            .unwrap()
+            .competitive_cards;
+        let career = |target: Fields| {
+            let content = CareerContent {
+                collection,
+                ranked: &self.ranked,
+                event_cards: &event_cards,
+                places: &places,
+                now: NOW,
+            };
+            summarize(&career_profile(profile, IDENTITY, &target, None, content).unwrap())
+        };
+        let own = Fields::from([
+            (0, Value::Unsigned(IDENTITY.account_lo.into())),
+            (8, Value::Unsigned(0x0100_0000_0000_0000)),
+        ]);
+        let other = Fields::from([(0, Value::Unsigned(5)), (8, Value::Unsigned(1))]);
+        let greetings = self
+            .celebrations
+            .greet(&mut profile.clone(), collection, now)
+            .unwrap()
+            .messages;
+        let owned_heroes = Value::Array(
+            collection
+                .heroes()
+                .iter()
+                .map(|&hero| guids(collection.owned_for_hero(profile, hero)))
+                .collect(),
+        );
+        Map::from_iter([
+            ("login".into(), summarize(&login)),
+            ("live".into(), summarize(&live)),
+            (
+                "menu_config".into(),
+                single(
+                    self.templates
+                        .menu_config(profile, IDENTITY, selection.menu_guid)
+                        .unwrap(),
+                ),
+            ),
+            ("career".into(), career(own)),
+            ("career_other".into(), career(other)),
+            ("greetings".into(), summarize(&greetings)),
+            ("party".into(), single(party.2.clone())),
+            (
+                "settings".into(),
+                single(player::settings(&self.schemas, profile).unwrap()),
+            ),
+            (
+                "summary".into(),
+                single(player::summary(
+                    profile,
+                    IDENTITY,
+                    collection.portrait_frame(profile),
+                    NOW,
+                )),
+            ),
+            (
+                "owned_account".into(),
+                json!([digest(&guids(collection.owned_account(profile)))]),
+            ),
+            ("owned_heroes".into(), json!([digest(&owned_heroes)])),
+        ])
+    }
+}
+
+/// `tests/test_content_golden.py::GoldenMessageTests::test_messages_are_unchanged`.
+///
+/// The Rust session builds `login` and `live` with the party state already
+/// where the Python session moves it (after 35500, and last), and `login`
+/// ends with the settings (20802) the Python login handler adds; their golden
+/// lists are put in that order, with the golden `party` and `settings`
+/// hashes.
+#[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
+fn messages_are_unchanged() {
+    let data = orpheus_testkit::runtime_dir().join("data");
+    let templates = RetailTemplates::captured();
+    let items = Arc::new(ItemDb::load(&data).unwrap());
+    let extra_preload = extra_preload_themes(&items).collect();
+    let temporary = tempfile::tempdir().unwrap();
+    let content = Content {
+        schemas: Schemas::lobby(),
+        collection: Collection::new(&templates, items).unwrap(),
+        presence: Presence::new(&templates).unwrap(),
+        ranked: Ranked::new(&templates).unwrap(),
+        arcade: Arcade::load(data.join("arcade_cards_174.json"), &templates).unwrap(),
+        celebrations: Celebrations::load(&data, &templates).unwrap(),
+        extra_preload,
+        accounts: Accounts::new(
+            temporary.path().join("profiles"),
+            temporary.path().join("seed"),
+        )
+        .unwrap(),
+        templates,
+    };
+    let golden: Map<String, Json> = serde_json::from_str(GOLDEN).unwrap();
+    let scenarios = scenarios();
+    let mut names: Vec<_> = scenarios.iter().map(|(name, _)| *name).collect();
+    names.sort_unstable();
+    let mut expected_names: Vec<_> = golden.keys().map(String::as_str).collect();
+    expected_names.sort_unstable();
+    assert_eq!(names, expected_names);
+    let mut changed = Vec::new();
+    for (name, fields) in scenarios {
+        let profile: Profile = serde_json::from_value(fields).unwrap();
+        let actual = content.build_all(&profile);
+        let mut expected = golden[name].as_object().unwrap().clone();
+        expected.retain(|part, _| !REMOVED_PARTS.contains(&part.as_str()));
+        let party = expected["party"].clone();
+        let settings = expected["settings"].clone();
+        let login = session_order(&expected["login"], &party, Some(&settings));
+        let live = session_order(&expected["live"], &party, None);
+        expected.insert("login".into(), login);
+        expected.insert("live".into(), live);
+        let mut parts: Vec<_> = actual.keys().collect();
+        parts.sort_unstable();
+        let mut expected_parts: Vec<_> = expected.keys().collect();
+        expected_parts.sort_unstable();
+        assert_eq!(parts, expected_parts, "{name}");
+        for (part, digests) in &expected {
+            let (want, got) = (
+                digests.as_array().unwrap(),
+                actual[part].as_array().unwrap(),
+            );
+            if want.len() != got.len() {
+                changed.push(format!(
+                    "{name}/{part}: {} entries instead of {}",
+                    got.len(),
+                    want.len()
+                ));
+            }
+            for (index, (want, got)) in want.iter().zip(got).enumerate() {
+                if want != got {
+                    changed.push(format!("{name}/{part}[{index}]: {got} instead of {want}"));
+                }
+            }
+        }
+    }
+    assert!(changed.is_empty(), "changed:\n{}", changed.join("\n"));
+}
+
+/// The JSON the hashes cover, as `canonical` and `digest` in
+/// `tests/test_content_golden.py` write it.
+#[test]
+fn canonical_json_is_written_like_python() {
+    let mut text = String::new();
+    write_value(
+        &mut text,
+        &Value::Struct(Fields::from([
+            (0x100, Value::Float64(15.0)),
+            (0x78, Value::String("a\"\n\u{1}é".into())),
+            (0x8, Value::Blob(vec![0, 0xab])),
+            (
+                0x0,
+                Value::Array(vec![
+                    Value::Bool(true),
+                    Value::Signed(-3),
+                    Value::Float64(1e-5),
+                    Value::Float64(1e16),
+                    Value::Float32(0.1),
+                ]),
+            ),
+        ])),
+    );
+    // json.dumps(canonical({"+0x100": 15.0, "+0x78": "a\"\n\x01é",
+    // "+0x8": b"\x00\xab", "+0x0": [True, -3, 1e-05, 1e16, 0.1]}), ...)
+    assert_eq!(
+        text,
+        r#"{"+0x0":[true,-3,1e-05,1e+16,0.1],"+0x100":15.0,"+0x78":"a\"\n\u0001é","+0x8":{"bytes":"00ab"}}"#
+    );
+}

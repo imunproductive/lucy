@@ -19,3 +19,4 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 orpheus-physics.workspace = true
 orpheus-stu.workspace = true
 orpheus-testkit.workspace = true
+orpheus-wire.workspace = true

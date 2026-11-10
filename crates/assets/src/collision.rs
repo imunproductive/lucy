@@ -444,6 +444,9 @@ fn python_string(text: &str) -> String {
 }
 
 #[cfg(test)]
+mod ported_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

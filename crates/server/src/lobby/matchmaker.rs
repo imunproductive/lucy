@@ -31,6 +31,8 @@
 mod game;
 pub(crate) mod parties;
 #[cfg(test)]
+mod ported_tests;
+#[cfg(test)]
 mod tests;
 
 use std::{
