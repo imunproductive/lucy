@@ -1899,25 +1899,46 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
                 })
                 .is_some()
     });
-    // The dead body's statescript goes on to both clients: its owner frames
-    // and the shooter's observer frames carry the kill feed pulse.
-    pump_until(
-        &mut [shooter, target],
-        &schemas,
-        "the dead body's frames",
-        |watchers| {
-            watchers[1]
-                .find(died, |record| {
-                    record.entity == target_body && record.script.is_some()
-                })
-                .is_some()
-                && watchers[0]
-                    .find(eliminated, |record| {
-                        record.entity == target_body && record.script.is_some()
-                    })
-                    .is_some()
-        },
-    );
+    // The dead body's statescript goes on to both clients while the dead
+    // player's client keeps sending commands: its owner frames and the
+    // shooter's observer frames carry the kill feed pulse. Soldier: 76's
+    // death path reaches an action the VM doesn't implement (graph 01CA
+    // node 118, `STU_4C3509FB`), which debug builds refuse and release
+    // builds follow as Python does; so this part runs in release builds.
+    let tolerant =
+        orpheus_script::vm::Unknowns::for_build() == orpheus_script::vm::Unknowns::Tolerate;
+    let owner_frames = |watcher: &Watcher| {
+        watcher
+            .find(died, |record| {
+                record.entity == target_body && record.script.is_some()
+            })
+            .is_some()
+    };
+    let observer_frames = |watcher: &Watcher| {
+        watcher
+            .find(eliminated, |record| {
+                record.entity == target_body && record.script.is_some()
+            })
+            .is_some()
+    };
+    let mut idle = target.tick + 1;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while tolerant && !(owner_frames(target) && observer_frames(shooter)) {
+        assert!(
+            Instant::now() < deadline,
+            "waiting for the dead body's frames: owner {}, observer {}",
+            owner_frames(target),
+            observer_frames(shooter)
+        );
+        if idle <= target.tick + 8 {
+            target
+                .client
+                .send(ACK, command_batch(idle, 16, 0, 0, false));
+            idle += 16;
+        }
+        shooter.pump(&schemas);
+        target.pump(&schemas);
+    }
     // His new body comes after the Practice Range's 3 s, to both clients.
     let respawned = target_owner | 2;
     pump_until(
