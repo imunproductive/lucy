@@ -7,7 +7,7 @@ use std::{
 };
 
 use orpheus_content::maps::GameMap;
-use orpheus_lobby::accounts::Accounts;
+use orpheus_lobby::accounts::saved_names;
 use orpheus_server::{runtime::missing_runtime_files, server::local_account_name};
 use orpheus_sim::scene_assets::SceneAssets;
 
@@ -135,25 +135,19 @@ fn runtime(settings: &Settings) -> Outcome {
 }
 
 fn account(settings: &Settings) -> Outcome {
-    let template = settings.state.join("profile.json");
-    let result = Accounts::new(settings.state.join("profiles"), &template).and_then(|accounts| {
-        let name = local_account_name(
-            &accounts,
-            &settings.state,
-            &template,
-            settings.account.as_deref(),
-        )?;
-        let saved = accounts
-            .all_saved()?
-            .iter()
-            .any(|saved| saved.eq_ignore_ascii_case(&name));
-        Ok((name, saved))
+    let result = saved_names(&settings.state.join("profiles")).and_then(|saved| {
+        let name = local_account_name(&saved, &settings.state, settings.account.as_deref())?;
+        let known = name
+            .as_ref()
+            .is_some_and(|name| saved.iter().any(|saved| saved.eq_ignore_ascii_case(name)));
+        Ok((name, known))
     });
     match result {
-        Ok((name, true)) => Outcome::Ok(format!("{name} (saved profile)")),
-        Ok((name, false)) => {
+        Ok((Some(name), true)) => Outcome::Ok(format!("{name} (saved profile)")),
+        Ok((Some(name), false)) => {
             Outcome::Ok(format!("{name} (created from the template on first login)"))
         }
+        Ok((None, _)) => Outcome::Ok("a new profile from the template on first login".into()),
         Err(error) => problem(
             format!("cannot read the saved profiles: {error}"),
             "repair or remove the broken file in the profiles folder, or import them with orpheus state import",

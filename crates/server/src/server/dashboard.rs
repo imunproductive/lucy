@@ -87,6 +87,7 @@ impl Dashboard {
             .to_ip()
             .ok_or_else(|| io::Error::other("dashboard is not on an IP address"))?;
         let requests = Arc::clone(&http);
+        let port = addr.port();
         let started = Instant::now();
         let worker = thread::Builder::new()
             .name("orpheus-dashboard".into())
@@ -102,7 +103,7 @@ impl Dashboard {
                         lobby_port: parts.lobby_port,
                         uptime: started.elapsed(),
                     };
-                    let _ = handle(&api, request);
+                    let _ = handle(&api, port, request);
                 }
             })?;
         Ok(Self {
@@ -124,7 +125,20 @@ impl Dashboard {
     }
 }
 
-fn handle(api: &Api, mut request: Request) -> io::Result<()> {
+fn handle(api: &Api, port: u16, mut request: Request) -> io::Result<()> {
+    // A page on another site can reach this loopback server: through DNS
+    // rebinding (refused by the Host check) or with a form post, which
+    // cannot send a JSON content type without a preflight this server never
+    // answers.
+    if !local_host(&request, port) {
+        return request.respond(json_reply(Err(ApiError::new(403, "Use http://127.0.0.1"))));
+    }
+    if *request.method() == Method::Post && !json_body(&request) {
+        return request.respond(json_reply(Err(ApiError::new(
+            415,
+            "Send the request as application/json",
+        ))));
+    }
     let url = request.url().to_owned();
     let (path, query) = url.split_once('?').unwrap_or((&url, ""));
     let response = match request.method() {
@@ -154,6 +168,31 @@ fn handle(api: &Api, mut request: Request) -> io::Result<()> {
         _ => json_reply(Err(ApiError::new(405, "Method not allowed"))),
     };
     request.respond(response)
+}
+
+fn header_value<'a>(request: &'a Request, name: &'static str) -> Option<&'a str> {
+    request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv(name))
+        .map(|header| header.value.as_str())
+}
+
+/// The Host header names this server on loopback.
+fn local_host(request: &Request, port: u16) -> bool {
+    header_value(request, "Host").is_some_and(|host| {
+        let host = host.trim().to_ascii_lowercase();
+        host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}")
+    })
+}
+
+fn json_body(request: &Request) -> bool {
+    header_value(request, "Content-Type").is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
+    })
 }
 
 fn post(api: &Api, path: &str, data: &Map<String, Json>) -> ApiResult {
@@ -296,10 +335,28 @@ mod tests {
     use std::{io::Write, net::TcpStream};
 
     fn request(addr: SocketAddr, method: &str, path: &str, body: &str) -> (u16, String) {
+        raw(
+            addr,
+            method,
+            path,
+            &addr.to_string(),
+            "application/json",
+            body,
+        )
+    }
+
+    fn raw(
+        addr: SocketAddr,
+        method: &str,
+        path: &str,
+        host: &str,
+        content_type: &str,
+        body: &str,
+    ) -> (u16, String) {
         let mut stream = TcpStream::connect(addr).unwrap();
         write!(
             stream,
-            "{method} {path} HTTP/1.0\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            "{method} {path} HTTP/1.0\r\nHost: {host}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         )
         .unwrap();
@@ -355,6 +412,36 @@ mod tests {
         assert_eq!(request(addr, "POST", "/api/select_account", "[]").0, 400);
         assert_eq!(request(addr, "GET", "/api/missing", "").0, 404);
         assert_eq!(request(addr, "GET", "/assets/boxes/golden.png", "").0, 404);
+
+        let select = r#"{"name":"alpha"}"#;
+        let localhost = format!("LocalHost:{}", addr.port());
+        let json = "application/json; charset=utf-8";
+        assert_eq!(
+            raw(
+                addr,
+                "POST",
+                "/api/select_account",
+                &localhost,
+                json,
+                select
+            )
+            .0,
+            200
+        );
+        assert_eq!(
+            raw(
+                addr,
+                "POST",
+                "/api/select_account",
+                &addr.to_string(),
+                "text/plain",
+                select
+            )
+            .0,
+            415
+        );
+        let evil = format!("evil.example:{}", addr.port());
+        assert_eq!(raw(addr, "GET", "/api/state", &evil, json, "").0, 403);
         dashboard.stop();
     }
 

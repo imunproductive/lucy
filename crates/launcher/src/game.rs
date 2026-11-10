@@ -15,7 +15,7 @@ pub const TARGET_VERSION: &str = "1.74.0.0.104319";
 /// official launcher next to it. Nothing is started.
 pub fn resolve_game(path: &Path) -> Option<PathBuf> {
     if is_game(path) {
-        return absolute(path);
+        return plain_canonical(path);
     }
     let folder = if path.is_dir() {
         path
@@ -30,17 +30,26 @@ pub fn resolve_game(path: &Path) -> Option<PathBuf> {
     ]
     .into_iter()
     .find(|candidate| is_game(candidate))
-    .and_then(|game| absolute(&game))
+    .and_then(|game| plain_canonical(&game))
 }
 
 /// The canonical path, without the `\\?\` prefix Windows adds to local paths.
-fn absolute(path: &Path) -> Option<PathBuf> {
+/// The game finds its data next to its own path, so it gets the plain form.
+fn plain_canonical(path: &Path) -> Option<PathBuf> {
     let canonical = path.canonicalize().ok()?;
-    let text = canonical.to_str()?;
-    Some(match text.strip_prefix(r"\\?\") {
-        Some(local) if !local.starts_with(r"UNC\") => PathBuf::from(local),
-        _ => canonical,
-    })
+    Some(
+        canonical
+            .to_str()
+            .map_or(canonical.clone(), |text| PathBuf::from(plain(text))),
+    )
+}
+
+/// `\\?\D:\x` becomes `D:\x`; UNC and ordinary paths stay as they are.
+fn plain(path: &str) -> &str {
+    match path.strip_prefix(r"\\?\") {
+        Some(local) if !local.starts_with(r"UNC\") => local,
+        _ => path,
+    }
 }
 
 fn is_game(path: &Path) -> bool {
@@ -162,14 +171,23 @@ mod tests {
     }
 
     #[test]
+    fn verbatim_local_paths_lose_their_prefix() {
+        assert_eq!(
+            plain(r"\\?\D:\Games\Overwatch.exe"),
+            r"D:\Games\Overwatch.exe"
+        );
+        assert_eq!(plain(r"\\?\UNC\server\share\x"), r"\\?\UNC\server\share\x");
+        assert_eq!(plain(r"D:\Games"), r"D:\Games");
+    }
+
+    #[test]
     fn resolves_the_game_from_its_folder_or_the_official_launcher() {
         let install = tempfile::tempdir().unwrap();
         let retail = install.path().join("_retail_");
         fs::create_dir(&retail).unwrap();
         fs::write(retail.join(GAME_EXE), b"").unwrap();
         fs::write(install.path().join(OFFICIAL_LAUNCHER), b"").unwrap();
-        let expected = absolute(&retail.join(GAME_EXE)).unwrap();
-        assert!(!expected.to_string_lossy().starts_with(r"\\?\"));
+        let expected = plain_canonical(&retail.join(GAME_EXE)).unwrap();
         for path in [
             install.path().to_owned(),
             install.path().join(OFFICIAL_LAUNCHER),

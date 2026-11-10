@@ -1,4 +1,7 @@
 //! What the dashboard says about each lobby event, in `EVENT_PRESETS` order.
+//!
+//! The scene statuses and notes are the upstream authors' reports from the
+//! Python server, carried over unchanged; see `docs/notes/behavior.md`.
 
 pub(super) struct EventInfo {
     pub id: &'static str,

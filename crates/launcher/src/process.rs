@@ -108,16 +108,23 @@ pub fn close_running_copy(game: &Path, patience: Duration) -> io::Result<()> {
     }
 }
 
-/// The relay reads its log file name from this variable in the game's environment.
+/// The relay reads its log file and the server's RPC port from these
+/// variables in the game's environment.
 pub const RELAY_LOG_VARIABLE: &str = "ORPHEUS_RELAY_LOG";
+pub const RELAY_PORT_VARIABLE: &str = "ORPHEUS_RELAY_PORT";
 
-/// Start the game in its folder, appending its output to `log` and telling
-/// the relay to log to `relay_log`.
+/// Where the relay in a started game logs and sends the plaintext.
+pub struct RelaySetup<'a> {
+    pub log: &'a Path,
+    pub rpc_port: u16,
+}
+
+/// Start the game in its folder, appending its output to `log`.
 pub fn start_game(
     game: &Path,
     arguments: &[String],
     log: &Path,
-    relay_log: &Path,
+    relay: RelaySetup<'_>,
 ) -> io::Result<Child> {
     if let Some(folder) = log.parent() {
         std::fs::create_dir_all(folder)?;
@@ -125,7 +132,8 @@ pub fn start_game(
     let output: File = OpenOptions::new().create(true).append(true).open(log)?;
     Command::new(game)
         .args(arguments)
-        .env(RELAY_LOG_VARIABLE, relay_log)
+        .env(RELAY_LOG_VARIABLE, relay.log)
+        .env(RELAY_PORT_VARIABLE, relay.rpc_port.to_string())
         .current_dir(game.parent().unwrap_or(Path::new(".")))
         .stdout(output.try_clone()?)
         .stderr(output)

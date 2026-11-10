@@ -95,7 +95,7 @@ During the transition, `ow174/`, `tests/*.py`, `tools/`, `relay/*.cpp`, `require
 | `casc`, `stu`, `assets` | Reading game data from the install | new (phase 6) | — |
 | `launcher`, `relay` | Client start and injection | new, ported from `ow174/launcher/` and `relay/owwfd_relay.cpp` (phase 5) | — |
 | `testkit` | Test support; dev-dependency only | new | — |
-| `apps/orpheus` | CLI | `bin/orpheus_server.rs`. `bin/prepare_server_runtime.rs` stays until phase 8. | — |
+| `apps/orpheus` | CLI | `bin/orpheus_server.rs` and `bin/prepare_server_runtime.rs`, now the `serve` and `runtime prepare` subcommands | — |
 
 `world.rs` is renamed `entity` because it encodes entity create, update and movement records and the datagram limits. It is part of the wire format, not a simulation world.
 
@@ -184,14 +184,15 @@ Each command ships together with the feature behind it. There are no placeholder
 | Command | Phase | Behavior |
 | --- | --- | --- |
 | `orpheus serve` | 4 | Battle.net, lobby, game and dashboard services. Stops on Ctrl+C. |
-| `orpheus doctor` | 4, extended in 5 and 6 | Checks the config, free ports, profiles, the relay DLL next to the binary, the client path and build, the fixed data and the derived cache. Prints one fix for each problem. |
-| `orpheus state import <old checkout>` | 4 | Copies profiles and the loose state files from a checkout into the state folder and config. |
-| `orpheus play` | 5 | `serve` plus starting the client and injecting the relay that was built with this binary. |
+| `orpheus doctor` | 4, extended in 5 and 6 | Checks the config, the state folder, the runtime pack, the login account, free ports, the client path and build, and the relay DLL next to the binary; phase 6 adds the fixed data and the derived cache. Prints one fix for each problem and changes nothing in the state folder. |
+| `orpheus state import <old checkout>` | 4 | Copies `profiles/`, `profile.json` and `default_account.txt` from a checkout into the state folder; existing files are kept unless `--overwrite`. |
+| `orpheus runtime prepare` | 4 | The former `prepare_server_runtime` binary. Removed in phase 8 with the pack. |
+| `orpheus play` | 5 | `serve` plus starting the client (`--BNetServer`, `--tank_Locale`) and injecting the relay built next to this binary. The game's environment tells the relay its log file and the server's RPC port. |
 | `orpheus assets diff --pack <dir>` | 6 | Developer check: compares derived content with a prepared pack. |
 | `orpheus script query` | 7 | Port of `tools/ssq.py`. |
 | `orpheus host`, `orpheus join <address>`, `--tournament` | with their features | LAN or remote hosting and joining. They need bind addresses other than loopback, the local Battle.net emulator for joining, and matchmaking. All are migration work. |
 
-`START.cmd` runs `cargo build --release --locked`, which does nothing when the build is current, then runs `target\release\orpheus.exe play %*`.
+`START.cmd` runs `cargo build --release --locked --workspace`, which also builds the relay and does nothing when the build is current, then runs `target\release\orpheus.exe play %*`. `START_SERVER_LOCAL.cmd` does the same with `serve`.
 
 ## 5. Conventions
 
@@ -324,7 +325,7 @@ Each kept fact is rewritten briefly, in our own words. Where it matters, the not
 
    Apply the same treatment to the other files over 1,500 lines: `script_snapshot_wire.rs`, `game_replication.rs`, `game_service.rs`, `script_expr.rs`, `script_player.rs`.
 
-**Done when:** the same 381 tests exist, the same 61 are ignored, `just check` passes, and every move was made with `git mv`, so `git log --follow` traces it across the checkpoint commits.
+**Done when:** the same 381 tests exist, the same 61 are ignored, `just check` passes, and every move was made with `git mv`.
 
 ### Phase 2: Cut the dependency cycles (done)
 
@@ -349,7 +350,7 @@ Phase 2 ran before phase 1: cutting the edges first made the later moves pure mo
 ### Phase 3: Workspace crates and testkit
 
 1. Turn each folder into a crate under `crates/`. Name each package `orpheus-<name>`. Use workspace-level `[workspace.dependencies]`, lints and `rust-version`.
-2. Move `bin/orpheus_server.rs` to `apps/orpheus`. Keep `prepare_server_runtime` as a binary in `apps/` until phase 8.
+2. Move `bin/orpheus_server.rs` to `apps/orpheus`. `prepare_server_runtime` became `orpheus runtime prepare` in phase 4.
 3. Create `testkit`:
    - one function that returns the prepared-pack path (later the game path) or panics with instructions, replacing the 54 direct environment reads;
    - shared synthetic fixtures;
@@ -474,7 +475,7 @@ flowchart LR
 
 **Locale:** read the installed locale, which was zhCN in the recorded extraction. Server logic keys only on GUIDs. Display names are used only for logs and the dashboard.
 
-**6d. Switch:** the server takes `game` from config, and `doctor` checks the build. The Rust server stops reading `ORPHEUS_RUNTIME_DIR`. Game-tier tests switch from the pack to `just test-game`, and `just test-runtime` is removed. The pack format, `prepare_server_runtime` and the Python extractors stay until phase 8, because the frozen Python server still reads the pack and the pack is the oracle for 6c.
+**6d. Switch:** the server takes `game` from config, and `doctor` checks the build. The Rust server stops reading `ORPHEUS_RUNTIME_DIR`. Game-tier tests switch from the pack to `just test-game`, and `just test-runtime` is removed. The pack format, `orpheus runtime prepare` and the Python extractors stay until phase 8, because the frozen Python server still reads the pack and the pack is the oracle for 6c.
 
 **6e (optional).** Dashboard item previews come from `export_item_previews.py` and DataTool PNG exports. They could later be decoded from CASC textures. This needs a texture decoder and is not required for cutover.
 
@@ -503,7 +504,7 @@ flowchart LR
 2. Delete:
    - `ow174/`, `tests/*.py`, `tools/`, `data/` (the replay fixture and its README);
    - `requirements.txt`, `pyproject.toml`;
-   - `apps/prepare_server_runtime` and `server::runtime`.
+   - `orpheus runtime prepare`, `server::runtime` and `just test-runtime`.
 3. Move the old `profiles/` layout handling entirely into `state import`.
 4. Check that the research knowledge in the Python docstrings named in phase D now lives in Rust doc comments. Then delete `docs/notes/parity.md`, and record the final client acceptance results in `docs/notes/behavior.md`.
 

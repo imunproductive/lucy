@@ -43,8 +43,8 @@ use windows_sys::{
 
 use crate::{
     BATTLE_NET_PORT, BYTE_STREAM_VTABLE, HOST_LENGTH_OFFSET, HOST_OFFSET, MAX_REGION, MAX_RELAYS,
-    PORT_OFFSET, RECV_SLOT, RELAY_PORT, SEND_SLOT, SSL_STREAM_OFFSET, STATE_OFFSET, STATE_SLOT,
-    VTABLE_SLOTS, hex_preview, image_size, in_heap, matching_words, printable,
+    PORT_OFFSET, PORT_VARIABLE, RECV_SLOT, SEND_SLOT, SSL_STREAM_OFFSET, STATE_OFFSET, STATE_SLOT,
+    VTABLE_SLOTS, hex_preview, image_size, in_heap, matching_words, printable, relay_port,
 };
 
 const SCAN_PERIOD: Duration = Duration::from_millis(8);
@@ -57,6 +57,8 @@ static MODULE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static RELAY: OnceLock<Relay> = OnceLock::new();
 
 struct Relay {
+    /// The server's RPC port that takes the plaintext.
+    port: u16,
     image_start: u64,
     image_end: u64,
     byte_stream_vtable: u64,
@@ -107,18 +109,17 @@ impl Relay {
         let mut sockets = self.sockets.lock().ok()?;
         let socket = sockets.iter_mut().find(|socket| socket.stream == stream)?;
         if socket.pipe.is_none() {
-            match TcpStream::connect((Ipv4Addr::LOCALHOST, RELAY_PORT)) {
+            let port = self.port;
+            match TcpStream::connect((Ipv4Addr::LOCALHOST, port)) {
                 Ok(pipe) => {
                     let _ = pipe.set_read_timeout(Some(RECV_WAIT));
                     self.log(&format!(
-                        "*** relay CONNECTED to 127.0.0.1:{RELAY_PORT} for clientSock={stream:016X} ***"
+                        "*** relay CONNECTED to 127.0.0.1:{port} for clientSock={stream:016X} ***"
                     ));
                     socket.pipe = Some(Arc::new(pipe));
                 }
                 Err(error) => {
-                    self.log(&format!(
-                        "relay connect() 127.0.0.1:{RELAY_PORT} failed: {error}"
-                    ));
+                    self.log(&format!("relay connect() 127.0.0.1:{port} failed: {error}"));
                 }
             }
         }
@@ -467,7 +468,9 @@ fn start() -> Option<&'static Relay> {
     } else {
         return None;
     };
+    let port = relay_port(std::env::var(PORT_VARIABLE).ok().as_deref());
     let relay = RELAY.get_or_init(|| Relay {
+        port,
         image_start: base,
         image_end: base + size,
         byte_stream_vtable: base + BYTE_STREAM_VTABLE,
@@ -481,7 +484,7 @@ fn start() -> Option<&'static Relay> {
         errors: AtomicI64::new(0),
     });
     relay.log(&format!(
-        "==== owwfd_relay (plaintext pipe -> 127.0.0.1:{RELAY_PORT}) base={base:016X} bsVt={:016X} ====",
+        "==== owwfd_relay (plaintext pipe -> 127.0.0.1:{port}) base={base:016X} bsVt={:016X} ====",
         relay.byte_stream_vtable
     ));
     Some(relay)

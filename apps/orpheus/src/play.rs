@@ -120,11 +120,15 @@ pub fn run(settings: &Settings, relay: Option<&Path>) -> io::Result<()> {
         arguments.push(format!("--tank_Locale={locale}"));
     }
     let logs = settings.logs();
+    let relay_log = logs.join("relay.log");
     let mut child = process::start_game(
         &game,
         &arguments,
         &logs.join("game.log"),
-        &logs.join("relay.log"),
+        process::RelaySetup {
+            log: &relay_log,
+            rpc_port: settings.ports.rpc,
+        },
     )?;
     match process::inject_when_ready(&mut child, &relay, INJECT_TIMEOUT) {
         Ok(base) => info!(

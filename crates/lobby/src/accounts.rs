@@ -499,10 +499,7 @@ impl Accounts {
     }
 
     pub fn all_saved(&self) -> io::Result<Vec<String>> {
-        let mut names: HashSet<_> = self
-            .saved_paths()?
-            .filter_map(|path| path.file_stem()?.to_str().map(str::to_owned))
-            .collect();
+        let mut names: HashSet<_> = saved_names(&self.directory)?.into_iter().collect();
         names.extend(
             self.by_name
                 .lock()
@@ -567,8 +564,8 @@ impl Accounts {
         }
         let key = filename.to_lowercase();
         // Find profiles created with a different letter case even on case-sensitive filesystems.
-        Ok(self
-            .saved_paths()?
+        Ok(json_files(&self.directory)?
+            .into_iter()
             .find(|saved| {
                 saved
                     .file_name()
@@ -577,17 +574,34 @@ impl Accounts {
             })
             .unwrap_or(path))
     }
+}
 
-    fn saved_paths(&self) -> io::Result<impl Iterator<Item = PathBuf>> {
-        Ok(fs::read_dir(&self.directory)?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
-                    && path.is_file()
-            }))
-    }
+/// The names of the profiles saved in a folder, sorted without regard to
+/// case. Reads only; a missing folder has none.
+pub fn saved_names(directory: &Path) -> io::Result<Vec<String>> {
+    let mut names: Vec<String> = json_files(directory)?
+        .into_iter()
+        .filter_map(|path| path.file_stem()?.to_str().map(str::to_owned))
+        .collect();
+    names.sort_by_cached_key(|name| (name.to_lowercase(), name.clone()));
+    Ok(names)
+}
+
+fn json_files(directory: &Path) -> io::Result<Vec<PathBuf>> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    Ok(entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+                && path.is_file()
+        })
+        .collect())
 }
 
 fn creation_seconds(metadata: &fs::Metadata) -> i64 {

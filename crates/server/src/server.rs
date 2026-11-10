@@ -258,17 +258,20 @@ fn local_account(
     template: &Path,
     chosen: Option<&str>,
 ) -> io::Result<Arc<Account>> {
-    accounts.get(&local_account_name(accounts, data, template, chosen)?)
+    match local_account_name(&accounts.all_saved()?, data, chosen)? {
+        Some(name) => accounts.get(&name),
+        None => accounts.get(&load_or_create_profile(template)?.player_name),
+    }
 }
 
 /// The account the local game logs in as: the explicit choice, the saved
-/// `default_account.txt` entry, the first saved profile, or the template's name.
+/// `default_account.txt` entry or the first saved profile. `None` means a new
+/// profile from the template. Reads only.
 pub fn local_account_name(
-    accounts: &Accounts,
+    saved: &[String],
     data: &Path,
-    template: &Path,
     chosen: Option<&str>,
-) -> io::Result<String> {
+) -> io::Result<Option<String>> {
     if let Some(name) = chosen.map(str::trim) {
         if name.is_empty() {
             return Err(io::Error::new(
@@ -276,9 +279,8 @@ pub fn local_account_name(
                 "empty local account name",
             ));
         }
-        return Ok(name.to_owned());
+        return Ok(Some(name.to_owned()));
     }
-    let saved = accounts.all_saved()?;
     let default = match fs::read_to_string(data.join("default_account.txt")) {
         Ok(name) => name.trim().to_owned(),
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
@@ -289,9 +291,9 @@ pub fn local_account_name(
         .find(|name| name.eq_ignore_ascii_case(&default))
         .or(saved.first())
     {
-        return Ok(name.clone());
+        return Ok(Some(name.clone()));
     }
-    Ok(load_or_create_profile(template)?.player_name)
+    Ok(None)
 }
 
 struct Lobby {
@@ -534,6 +536,19 @@ mod tests {
         jam::framing::{self, FrameReader},
         jam::handshake::client_handshake,
     };
+
+    #[test]
+    fn the_login_account_is_the_choice_then_the_default_then_the_first_saved() {
+        let data = tempfile::tempdir().unwrap();
+        let saved = ["Alpha".to_owned(), "beta".to_owned()];
+        let name = |chosen| local_account_name(&saved, data.path(), chosen).unwrap();
+        assert_eq!(name(None), Some("Alpha".into()));
+        fs::write(data.path().join("default_account.txt"), "BETA\n").unwrap();
+        assert_eq!(name(None), Some("beta".into()));
+        assert_eq!(name(Some(" Gamma ")), Some("Gamma".into()));
+        assert!(local_account_name(&saved, data.path(), Some(" ")).is_err());
+        assert_eq!(local_account_name(&[], data.path(), None).unwrap(), None);
+    }
 
     #[test]
     #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]

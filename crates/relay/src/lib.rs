@@ -33,8 +33,18 @@ pub const SEND_SLOT: usize = 3;
 pub const VTABLE_SLOTS: usize = 64;
 /// At most this many byte-streams get a relay socket; entries are never removed.
 pub const MAX_RELAYS: usize = 64;
-/// The server's Battle.net RPC port, which takes the plaintext.
+/// The server's default Battle.net RPC port, which takes the plaintext.
 pub const RELAY_PORT: u16 = 21119;
+/// The launcher passes the server's RPC port in this variable.
+pub const PORT_VARIABLE: &str = "ORPHEUS_RELAY_PORT";
+
+/// The RPC port from the launcher's variable, or the default.
+pub fn relay_port(value: Option<&str>) -> u16 {
+    value
+        .and_then(|text| text.trim().parse().ok())
+        .filter(|&port| port != 0)
+        .unwrap_or(RELAY_PORT)
+}
 /// The port the client dials; only other ports are always logged.
 pub const BATTLE_NET_PORT: u16 = 1119;
 /// Largest private region the scan reads.
@@ -108,6 +118,14 @@ mod tests {
         assert!(!in_heap(0x0000_0200_0000_0014));
         assert!(!in_heap(0x0000_00FF_FFFF_FFF8));
         assert!(!in_heap(0x0000_7FF0_0000_0000));
+    }
+
+    #[test]
+    fn the_port_variable_falls_back_to_the_default() {
+        assert_eq!(relay_port(Some(" 4000 ")), 4000);
+        for value in [None, Some(""), Some("0"), Some("70000"), Some("rpc")] {
+            assert_eq!(relay_port(value), RELAY_PORT, "{value:?}");
+        }
     }
 
     #[test]

@@ -27,4 +27,8 @@ build:
 
 # Ignored tests that need a prepared runtime pack.
 test-runtime runtime:
-    $env:ORPHEUS_RUNTIME_DIR = '{{runtime}}'; cargo test --workspace --locked -- --ignored
+    cargo build -p orpheus-relay --locked; $env:ORPHEUS_RUNTIME_DIR = '{{runtime}}'; cargo test --workspace --locked -- --ignored
+
+# Windows-only tests that load the relay DLL into a stand-in process.
+test-windows:
+    cargo build -p orpheus-relay --locked; cargo test -p orpheus-launcher --locked -- --ignored
