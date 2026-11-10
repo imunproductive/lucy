@@ -522,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 statescript catalog"]
+    #[ignore = "requires the derived 104319 statescript catalog"]
     fn authored_soldier_leases_match_python_and_exclude_the_rifle() {
         let root = orpheus_testkit::runtime_dir();
         let graphs = Arc::new(GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap());

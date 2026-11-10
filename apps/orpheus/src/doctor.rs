@@ -14,7 +14,7 @@ use orpheus_sim::scene_assets::SceneAssets;
 use orpheus_launcher::game::TARGET_VERSION;
 
 use crate::{
-    play,
+    play, serve,
     settings::{CONFIG_FILE, ServerArgs, Settings},
 };
 
@@ -41,7 +41,7 @@ pub fn run(state_dir: &Path, args: &ServerArgs) -> bool {
                 "config",
                 &problem(
                     error.to_string(),
-                    "correct config.toml; its keys are runtime, account, game, locale and [ports]",
+                    "correct config.toml; its keys are account, game, locale and [ports]",
                 ),
             );
             return false;
@@ -50,7 +50,7 @@ pub fn run(state_dir: &Path, args: &ServerArgs) -> bool {
     let checks = [
         ("config", config(&settings.state)),
         ("state", state(&settings.state)),
-        ("runtime", runtime(&settings)),
+        ("data", data(&settings)),
         ("account", account(&settings)),
         ("ports", ports(&settings)),
         ("client", client(&settings)),
@@ -98,24 +98,23 @@ fn state(state: &Path) -> Outcome {
     }
 }
 
-fn runtime(settings: &Settings) -> Outcome {
-    let Some(root) = &settings.runtime else {
-        return problem(
-            "no runtime pack configured",
-            "pass --runtime <dir>, set ORPHEUS_RUNTIME_DIR, or add runtime = '<dir>' to config.toml",
-        );
+/// The game data derived from the install, derived now if it isn't yet.
+fn data(settings: &Settings) -> Outcome {
+    let root = match serve::game_data(settings) {
+        Ok(root) => root,
+        Err(error) => {
+            return problem(
+                format!("cannot read game data from the install: {error}"),
+                "point game at an Overwatch 1.74.0.0.104319 install (--game or config.toml)",
+            );
+        }
     };
-    if !root.is_dir() {
-        return problem(
-            format!("{} does not exist", root.display()),
-            "point runtime at a prepared pack (orpheus runtime prepare)",
-        );
-    }
+    let root = &root;
     let missing = missing_runtime_files(root, true);
     if !missing.is_empty() {
         return problem(
             format!("{} is missing {}", root.display(), missing.join(", ")),
-            "prepare the pack again with orpheus runtime prepare",
+            "delete the folder so the next start derives it again",
         );
     }
     let ready = SceneAssets::load(root)
@@ -125,11 +124,11 @@ fn runtime(settings: &Settings) -> Outcome {
         Ok(true) => Outcome::Ok(format!("{} (Practice Range ready)", root.display())),
         Ok(false) => problem(
             format!("{} has no Practice Range movement data", root.display()),
-            "include the base graph bundle and the 0688 collision cache when preparing the pack",
+            "delete the folder so the next start derives it again",
         ),
         Err(error) => problem(
             format!("{} cannot load the Practice Range: {error}", root.display()),
-            "prepare the pack again with orpheus runtime prepare",
+            "delete the folder so the next start derives it again",
         ),
     }
 }

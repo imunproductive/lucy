@@ -418,7 +418,7 @@ fn input_ack(schemas: &Schemas, packet: &Packet) -> u32 {
 }
 
 #[test]
-#[ignore = "requires a prepared 104319 Practice Range scene"]
+#[ignore = "requires a derived 104319 Practice Range scene"]
 fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
     use orpheus_sim::scene_assets::SceneAssets;
     use orpheus_wire::commands::Command;
@@ -489,25 +489,25 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
 }
 
 #[test]
-#[ignore = "requires a prepared 104319 Practice Range scene"]
+#[ignore = "requires a derived 104319 Practice Range scene"]
 fn prepared_world_waits_for_ownership_and_retries_baselines_before_scripts() {
     exercise_prepared_world(PreparedFixture::Stock);
 }
 
 #[test]
-#[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
+#[ignore = "requires a derived 104319 Practice Range scene without bot VM graphs"]
 fn prepared_worker_retries_a_concrete_owner_vm_on_encrypted_loopback() {
     exercise_prepared_world(PreparedFixture::Owner);
 }
 
 #[test]
-#[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
+#[ignore = "requires a derived 104319 Practice Range scene without bot VM graphs"]
 fn prepared_worker_delivers_a_volley_hit_and_replaces_the_bot_over_encrypted_udp() {
     exercise_prepared_world(PreparedFixture::Combat);
 }
 
 #[test]
-#[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
+#[ignore = "requires a derived 104319 Practice Range scene without bot VM graphs"]
 fn prepared_worker_delivers_helix_flight_damage_and_predicted_release_over_encrypted_udp() {
     exercise_prepared_world(PreparedFixture::Projectile);
 }

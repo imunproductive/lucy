@@ -276,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 hero and graph catalogs"]
+    #[ignore = "requires the derived 104319 hero and graph catalogs"]
     fn all_heroes_match_python_owner_and_observer_create_bytes() {
         use orpheus_content::heroes::HeroCatalog;
         use orpheus_script::graph::GraphStore;

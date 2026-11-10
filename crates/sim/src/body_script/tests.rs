@@ -659,7 +659,7 @@ fn unsupported_projectile_modes_do_not_become_hitscan_or_straight_damage() {
 }
 
 #[test]
-#[ignore = "requires the separately prepared 104319 statescript catalog"]
+#[ignore = "requires the derived 104319 statescript catalog"]
 fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
     use orpheus_content::maps::GameMap;
     use orpheus_core::tick::FIRST_TICK;
@@ -1023,7 +1023,7 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
 }
 
 #[test]
-#[ignore = "requires the separately prepared 104319 hero and graph catalogs"]
+#[ignore = "requires the derived 104319 hero and graph catalogs"]
 fn authored_armour_and_shield_roots_reproduce_the_reference_body_pools() {
     use orpheus_core::tick::FIRST_TICK;
 

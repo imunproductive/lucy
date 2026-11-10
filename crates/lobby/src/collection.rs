@@ -789,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn progression_and_gallery_wire_bytes_match_python_for_three_profiles() {
         let runtime = orpheus_testkit::runtime_dir().join("data");
         let schemas = Schemas::lobby();

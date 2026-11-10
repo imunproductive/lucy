@@ -687,6 +687,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "directories",
+ "orpheus-assets",
  "orpheus-content",
  "orpheus-launcher",
  "orpheus-lobby",

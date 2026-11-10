@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the prepared 104319 retail templates and catalogs"]
+    #[ignore = "requires the derived 104319 retail templates and catalogs"]
     fn mode_rules_matches_three_python_104319_message_bodies() {
         let data = orpheus_testkit::runtime_dir().join("data");
         let templates = RetailTemplates::captured();

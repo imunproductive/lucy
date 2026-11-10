@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a prepared 104319 Practice Range movement cache"]
+    #[ignore = "requires a derived 104319 Practice Range movement cache"]
     fn practice_range_player_movement_records_match_python() {
         let runtime = orpheus_testkit::runtime_dir();
         let cache =

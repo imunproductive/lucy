@@ -39,7 +39,6 @@ pub struct Ports {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
-    runtime: Option<PathBuf>,
     account: Option<String>,
     game: Option<PathBuf>,
     locale: Option<String>,
@@ -60,13 +59,11 @@ struct PortsFile {
 /// Overrides shared by `serve`, `play` and `doctor`.
 #[derive(Args, Clone, Debug, Default)]
 pub struct ServerArgs {
-    /// Prepared runtime pack.
-    #[arg(long, env = "ORPHEUS_RUNTIME_DIR", value_name = "DIR")]
-    pub runtime: Option<PathBuf>,
     /// Saved account the game logs in as.
     #[arg(long, value_name = "NAME")]
     pub account: Option<String>,
-    /// Overwatch.exe, its installation folder or the official launcher (for play).
+    /// Overwatch.exe, its installation folder or the official launcher. The
+    /// server reads its game data from this install.
     #[arg(long, env = "ORPHEUS_GAME", value_name = "PATH")]
     pub game: Option<PathBuf>,
     /// Game language for play: auto, none, or a code such as enUS.
@@ -92,7 +89,6 @@ pub struct ServerArgs {
 #[derive(Debug)]
 pub struct Settings {
     pub state: PathBuf,
-    pub runtime: Option<PathBuf>,
     pub account: Option<String>,
     pub game: Option<PathBuf>,
     /// `auto`, `none` or a game language code.
@@ -106,7 +102,6 @@ impl Settings {
         let ports = &file.ports;
         Ok(Self {
             state: state.to_owned(),
-            runtime: args.runtime.clone().or(file.runtime),
             account: args.account.clone().or(file.account),
             game: args.game.clone().or(file.game),
             locale: args
@@ -136,6 +131,11 @@ impl Settings {
     pub fn logs(&self) -> PathBuf {
         self.state.join("logs")
     }
+
+    /// Where game data derived from the install is kept.
+    pub fn cache(&self) -> PathBuf {
+        self.state.join("cache")
+    }
 }
 
 fn read_config(path: &Path) -> io::Result<ConfigFile> {
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn flags_override_the_config_file_which_overrides_defaults() {
         let state = write_config(
-            "runtime = 'pack'\naccount = 'Saved'\n[ports]\nlobby = 4000\ngame = 4001\n",
+            "game = 'D:/Games/Overwatch'\naccount = 'Saved'\n[ports]\nlobby = 4000\ngame = 4001\n",
         );
         let args = ServerArgs {
             account: Some("Flag".into()),
@@ -172,7 +172,7 @@ mod tests {
             ..ServerArgs::default()
         };
         let settings = Settings::resolve(state.path(), &args).unwrap();
-        assert_eq!(settings.runtime, Some(PathBuf::from("pack")));
+        assert_eq!(settings.game, Some(PathBuf::from("D:/Games/Overwatch")));
         assert_eq!(settings.account.as_deref(), Some("Flag"));
         assert_eq!(
             settings.ports,
@@ -189,7 +189,7 @@ mod tests {
         let empty = tempfile::tempdir().unwrap();
         let settings = Settings::resolve(empty.path(), &ServerArgs::default()).unwrap();
         assert_eq!(settings.ports, DEFAULT_PORTS);
-        assert!(settings.runtime.is_none());
+        assert!(settings.game.is_none());
 
         let typo = write_config("[ports]\nlobyb = 1\n");
         let error = Settings::resolve(typo.path(), &ServerArgs::default()).unwrap_err();

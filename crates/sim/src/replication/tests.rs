@@ -239,7 +239,7 @@ fn pending_queue_closes_after_the_prefix_at_a_boundary_or_capacity() {
 }
 
 #[test]
-#[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
+#[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
 fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input() {
     let runtime = orpheus_testkit::runtime_dir();
     let assets = SceneAssets::load(runtime).unwrap();
@@ -883,7 +883,7 @@ fn owner_correction_respects_create_budget_and_failed_transport() {
 }
 
 #[test]
-#[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
+#[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
 fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
     let runtime = orpheus_testkit::runtime_dir();
     let assets = SceneAssets::load(runtime).unwrap();

@@ -207,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 mover catalog"]
+    #[ignore = "requires the derived 104319 mover catalog"]
     fn actual_mover_components_match_the_python_reference() {
         use sha2::{Digest, Sha256};
         use std::collections::BTreeMap;

@@ -553,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the runtime pack's DataTool catalogs"]
+    #[ignore = "requires the derived game data's DataTool catalogs"]
     fn matches_the_local_retail_catalog_counts_and_order() {
         let items = ItemDb::load(&orpheus_testkit::runtime_dir().join("data")).unwrap();
         assert_eq!(items.unlocks.len(), 7131);

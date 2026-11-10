@@ -218,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires authorized 104319 game schemas and hero catalog in ORPHEUS_RUNTIME_DIR"]
+    #[ignore = "requires derived 104319 game schemas and hero catalog"]
     fn reliable_21616_messages_match_the_python_reader_and_hero_select_requests() {
         let data = orpheus_testkit::runtime_dir().join("data");
         let schemas = Schemas::game();

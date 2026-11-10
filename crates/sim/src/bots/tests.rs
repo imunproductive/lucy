@@ -246,7 +246,7 @@ fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
 }
 
 #[test]
-#[ignore = "requires the separately prepared 104319 AI spawner and mover tables"]
+#[ignore = "requires the derived 104319 AI spawner and mover tables"]
 fn fifteen_practice_bots_match_python_roster_and_patrol_frames() {
     let root = orpheus_testkit::runtime_dir();
     let data = root.join("data");

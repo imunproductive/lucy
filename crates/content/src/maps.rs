@@ -476,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 map catalog"]
+    #[ignore = "requires the derived 104319 map catalog"]
     fn map_catalog_and_mode_selections_match_the_python_corpus() {
         use sha2::{Digest, Sha256};
 

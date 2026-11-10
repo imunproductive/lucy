@@ -392,7 +392,7 @@ mod tests {
     use crate::bots::BOT_ENTITY;
 
     #[test]
-    #[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
+    #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
     fn stock_soldier_attaches_his_authored_owner_script() {
         let runtime = orpheus_testkit::runtime_dir();
         let assets = SceneAssets::load(runtime).unwrap();
@@ -422,7 +422,7 @@ mod tests {
     /// scripts. Five weapon scripts build no cosmetic (AipNooBest's table
     /// agrees); those heroes' arms or bodies are the weapon.
     #[test]
-    #[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
+    #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
     fn the_weapon_scripts_name_the_guns_to_preload() {
         let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
         let graphs = assets.graphs();
@@ -445,7 +445,7 @@ mod tests {
     /// rifle into its reload, then move, sprint, crouch, Helix and melee. Every
     /// frame must run without a gap and encode for the owner and observers.
     #[test]
-    #[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
+    #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
     fn stock_soldier_plays_a_scripted_session() {
         use crate::replication::BodyStep;
         use orpheus_script::snapshot::View;
@@ -585,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a prepared 104319 Practice Range pack"]
+    #[ignore = "requires a derived 104319 Practice Range pack"]
     fn elevated_practice_patrols_reach_their_hints_without_crossing_walls() {
         let runtime = orpheus_testkit::runtime_dir();
         let assets = SceneAssets::load(runtime).unwrap();
