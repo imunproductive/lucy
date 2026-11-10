@@ -107,9 +107,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let id = key.instance;
         let duration = field(&node.fields, "m_86701C3E");
         if duration.is_null() {
-            // The length is the animation asset's, behind an animation alias;
-            // the server can't read it yet (phase 6b). Like the Python
-            // reference, the state then doesn't end by itself.
+            // The length is that of the animation the alias resolves to,
+            // which the server doesn't resolve (docs/notes/parity.md). Like
+            // the Python reference, the state then doesn't end by itself.
             self.assume(self.site(id, node), &node.class, "never ends by itself");
             return Ok(());
         }
