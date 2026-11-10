@@ -791,20 +791,28 @@ impl Matchmaker {
         self.maps.map_name(guid)
     }
 
-    /// Send the account's game, or every game for `None`, that is in a match
-    /// back to the menu (20304 with 0 = leave for good) and take the player
-    /// out of it. How many games were told (Python `GameServer.send_home`,
-    /// for the lobby's `.leave` and the dashboard's "End matches").
+    /// Send the account's game, or every game for `None`, that is connected
+    /// to a match back to the menu (20304 with 0 = leave for good) and take
+    /// the player out of it. How many games were told (Python
+    /// `GameServer.send_home`, for the lobby's `.leave` and the dashboard's
+    /// "End matches"). A game counts as connected as soon as its handoff is
+    /// used, before the next sweep marks the seat joined.
     pub(crate) fn send_home(&self, lobby: &Lobby, account_lo: Option<u32>) -> usize {
         self.with(lobby, |ctx| {
             let mut told = 0;
             for room in 0..ctx.state.rooms.len() {
                 for seat in 0..ctx.state.rooms[room].seats.len() {
                     let player = &ctx.state.rooms[room].seats[seat];
-                    if player.joined
-                        && !player.gone
-                        && account_lo.is_none_or(|account| player.account.account_lo == account)
+                    if player.gone
+                        || player.released
+                        || account_lo.is_some_and(|account| player.account.account_lo != account)
                     {
+                        continue;
+                    }
+                    let connected = player.joined
+                        || (matches!(lobby.game.handoff_pending(player.handoff.conn), Ok(false))
+                            && matches!(lobby.game.seat_exists(&player.handoff), Ok(true)));
+                    if connected {
                         let reason = if account_lo.is_some() {
                             "sent home"
                         } else {
