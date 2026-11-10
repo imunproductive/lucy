@@ -354,3 +354,104 @@ fn prepared_subset_matches_the_python_login_in_wire_order() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+fn live_messages_follow_the_python_refresh_order() {
+    let runtime = orpheus_testkit::runtime_dir().join("data");
+    let schemas = Schemas::lobby();
+    let templates = RetailTemplates::captured();
+    let items = Arc::new(ItemDb::load(&runtime).unwrap());
+    let collection = Collection::new(&templates, items).unwrap();
+    let ranked = Ranked::new(&templates).unwrap();
+    let arcade = Arcade::load(runtime.join("arcade_cards_174.json"), &templates).unwrap();
+    let celebrations = Celebrations::load(&runtime, &templates).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
+    let accounts = Accounts::new(
+        temporary.path().join("profiles"),
+        temporary.path().join("seed"),
+    )
+    .unwrap();
+    let account = accounts.get("player").unwrap();
+    {
+        let mut profile = account.profile();
+        profile.credits = 1234;
+        profile.comp_points = 56;
+        profile.league_tokens = 78;
+        profile.level = 901;
+        profile.server_date = "2024-02-29".into();
+    }
+    let prepared = PreparedLogin {
+        identity: Identity::for_account(account.account_lo),
+        account,
+        tournament: false,
+    };
+    let places = LeaderboardPlaces::new();
+    let content = LoginContent {
+        menu_hero: None,
+        extra_preload: &[],
+        wall_time: 1_700_000_000,
+        arcade: &arcade,
+        celebrations: Some(&celebrations),
+        leaderboard_places: &places,
+        solo_party: Some(SoloLoginParty {
+            id: [1, 2],
+            entity: [3, 4],
+            menu_hero: 0,
+            members_may_invite: true,
+        }),
+    };
+    let messages = prepared
+        .live_messages(&templates, &collection, &ranked, content)
+        .unwrap();
+    let keys: Vec<_> = messages.iter().map(|&(crc, id, _)| (crc, id)).collect();
+    let ratings = keys.iter().filter(|&&key| key == (RANKED, 36302)).count();
+    let events = crate::celebrations::EVENTS;
+    let arcade_group = crate::arcade::ARCADE;
+    let mut expected = vec![
+        (CONFIG, 36602),
+        (CONFIG, 36600),
+        (IN_CONNECT, 20502),
+        (IN_CONNECT, 20504),
+        (events, 38900),
+        (events, 38902),
+        (arcade_group, 39802),
+        (arcade_group, 39810),
+        (arcade_group, 39804),
+        (player::ENDORSEMENTS, 52002),
+        (player::ENDORSEMENTS, 52005),
+        (player::ENDORSEMENTS, 52006),
+        (player::PERMISSIONS, 55500),
+        (PROGRESSION, 24300),
+        (PROGRESSION, 24302),
+        (PROGRESSION, 24307),
+        (PROGRESSION, 24308),
+        (PROGRESSION, 24309),
+        (PROGRESSION, 24313),
+        (HERO_CATALOG, 24900),
+    ];
+    expected.extend(std::iter::repeat_n((RANKED, 36302), ratings));
+    expected.extend([
+        (RANKED, 36300),
+        (passes::PASSES, 58501),
+        (party::PARTY, 20700),
+    ]);
+    assert!(ratings >= 2);
+    assert_eq!(keys, expected);
+    let value = |id| {
+        messages
+            .iter()
+            .find(|message| message.1 == id)
+            .map(|message| message.2[&0x78].clone())
+            .unwrap()
+    };
+    assert_eq!(value(24307), Value::Signed(1234));
+    assert_eq!(value(24308), Value::Signed(56));
+    assert_eq!(value(24309), Value::Signed(78));
+    assert_eq!(value(24313), Value::Signed(901));
+    let noon = crate::clock::server_time("2024-02-29", 0).unwrap();
+    assert_eq!(value(36602), Value::Unsigned(noon));
+    for (crc, id, fields) in messages {
+        schemas.encode(crc, id, &fields).unwrap();
+    }
+}

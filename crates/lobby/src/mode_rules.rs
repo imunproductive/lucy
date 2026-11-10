@@ -9,18 +9,28 @@ use indexmap::IndexMap;
 
 use crate::{
     accounts::Profile,
+    collection::Collection,
+    leaderboard::PROFILES,
+    login::Identity,
     menu::explicit_hero,
-    ranked::{Queue, Season, wins_of},
-    templates::RetailTemplates,
+    player_messages::{endorsement, summary},
+    ranked::{LeaderboardPlaces, Queue, Ranked, Season, wins_of},
+    templates::{LOBBY, RetailTemplates},
+    transport::LobbyMessage,
 };
 use orpheus_content::catalog::ItemDb;
 use orpheus_wire::jam::codec::{
     Fields,
-    Value::{self, Array, Float64, Struct, Unsigned},
+    Value::{self, Array, Blob, Bool, Float64, Signed, Struct, Unsigned},
 };
 
 pub const MODE_RULES: u32 = 0xb9dc_a497;
 pub const RULES: u32 = 27202;
+/// 22206 (group SOCIAL_OUT): a career profile request.
+pub const PROFILE_REQUEST: u32 = 22206;
+const FULL_PROFILE: u32 = 20807;
+const PROFILE_STATUS: u32 = 39001;
+const SUMMARY: u32 = 39002;
 
 const TIME_PLAYED: u64 = 0x0860_0000_0000_0021;
 const MATCHES_WON: u64 = 0x0860_0000_0000_0039;
@@ -42,6 +52,106 @@ pub fn mode_rules(
     rules.insert(0x78, stats.clone());
     rules.insert(0xa8, stats);
     Ok(rules)
+}
+
+/// What a career profile shows besides the profile itself.
+pub struct CareerContent<'a> {
+    pub collection: &'a Collection,
+    pub ranked: &'a Ranked,
+    /// The Arcade's competitive event cards.
+    pub event_cards: &'a [u64],
+    pub places: &'a LeaderboardPlaces,
+    /// Seconds since 1970, for the player card.
+    pub now: u64,
+}
+
+/// The answer to a career profile request (22206) for `target` (+0x88).
+///
+/// Only the profile's own player has a full profile (20807) and summary
+/// (39002); anyone else gets a profile status (39001). 20807 repeats the
+/// request's own id (22206 +0x78): with another id the client leaves the
+/// screen empty. `profile`, `ow174/content/career.py`.
+pub fn career_profile(
+    profile: &Profile,
+    identity: Identity,
+    target: &Fields,
+    request_id: Option<&Fields>,
+    content: CareerContent<'_>,
+) -> io::Result<Vec<LobbyMessage>> {
+    let target_lo = match target.get(&0) {
+        Some(Unsigned(lo)) => Some(*lo),
+        Some(Signed(lo)) => Some(*lo as u64),
+        _ => None,
+    };
+    if target_lo != Some(u64::from(identity.account_lo)) {
+        return Ok(vec![(
+            PROFILES,
+            PROFILE_STATUS,
+            Fields::from([(0x78, Struct(target.clone())), (0x88, Unsigned(1))]),
+        )]);
+    }
+    let CareerContent {
+        collection,
+        ranked,
+        event_cards,
+        places,
+        now,
+    } = content;
+    let season = ranked.season(profile);
+    let stats = Array(career_stats(
+        profile,
+        collection.heroes(),
+        collection.items(),
+        season,
+    )?);
+    let mut progression = collection.progression(profile)?;
+    let mut catalog = collection.hero_catalog(profile)?;
+    let cards = ranked
+        .cards(profile, event_cards, places)?
+        .into_iter()
+        .map(Struct)
+        .collect();
+    let body = Fields::from([
+        (
+            0x00,
+            progression.remove(&0x78).unwrap_or(Struct(Fields::new())),
+        ),
+        (0x80, catalog.remove(&0x80).unwrap_or(Array(Vec::new()))),
+        (0x98, Struct(Fields::from([(0, Array(cards))]))),
+        (0xb0, stats.clone()),
+        (0xc8, stats),
+        (0xe0, Struct(endorsement(profile.endorsement_level))),
+        (0x100, Struct(identity.account())),
+        (0x110, Array(Vec::new())),
+        (0x128, Unsigned(0)),
+        (0x12c, Unsigned(0)),
+        (0x130, Bool(false)),
+        (0x138, Value::String(profile.player_name.clone())),
+        (0x160, Value::String(String::new())),
+    ]);
+    let id = request_id
+        .filter(|id| !id.is_empty())
+        .cloned()
+        .unwrap_or_else(|| identity.account());
+    Ok(vec![
+        (
+            LOBBY,
+            FULL_PROFILE,
+            Fields::from([
+                (0x78, Struct(id)),
+                // False: the profile is inline at +0x90; true would mean
+                // compressed in the +0x218 blob.
+                (0x88, Bool(false)),
+                (0x90, Struct(body)),
+                (0x218, Blob(Vec::new())),
+            ]),
+        ),
+        (
+            PROFILES,
+            SUMMARY,
+            summary(profile, identity, collection.portrait_frame(profile), now),
+        ),
+    ])
 }
 
 /// The lifetime list followed by the selected season's two career categories.
@@ -270,5 +380,57 @@ mod tests {
             assert_eq!(body.len(), length);
             assert_eq!(format!("{:x}", Sha256::digest(body)), digest);
         }
+    }
+
+    #[test]
+    fn only_the_players_own_account_gets_a_full_career_profile() {
+        let collection = crate::test_catalog::collection();
+        let ranked = Ranked::new(&RetailTemplates::captured()).unwrap();
+        let schemas = Schemas::lobby();
+        let profile = Profile {
+            player_name: "Career".into(),
+            ..Profile::default()
+        };
+        let identity = Identity::for_account(0x1000_0042);
+        let places = LeaderboardPlaces::new();
+        let content = || CareerContent {
+            collection: &collection,
+            ranked: &ranked,
+            event_cards: &[],
+            places: &places,
+            now: 1_800_000_000,
+        };
+        let stranger = crate::login::Identity::for_account(7).account();
+        let messages = career_profile(&profile, identity, &stranger, None, content()).unwrap();
+        assert_eq!(
+            messages,
+            [(
+                PROFILES,
+                PROFILE_STATUS,
+                Fields::from([(0x78, Struct(stranger)), (0x88, Unsigned(1))])
+            )]
+        );
+
+        let request_id = crate::login::Identity::for_account(99).account();
+        let own = identity.account();
+        let messages =
+            career_profile(&profile, identity, &own, Some(&request_id), content()).unwrap();
+        let keys: Vec<_> = messages.iter().map(|&(crc, id, _)| (crc, id)).collect();
+        assert_eq!(keys, [(LOBBY, FULL_PROFILE), (PROFILES, SUMMARY)]);
+        let full = &messages[0].2;
+        assert_eq!(full[&0x78], Struct(request_id));
+        let Struct(body) = &full[&0x90] else {
+            panic!("an inline profile")
+        };
+        assert_eq!(body[&0x138], Value::String("Career".into()));
+        assert_eq!(body[&0x100], Struct(identity.account()));
+        assert_eq!(body[&0xb0], body[&0xc8]);
+        for (crc, id, fields) in &messages {
+            schemas.encode(*crc, *id, fields).unwrap();
+        }
+        // Without a request id the profile answers with the account id.
+        let messages =
+            career_profile(&profile, identity, &own, Some(&Fields::new()), content()).unwrap();
+        assert_eq!(messages[0].2[&0x78], Struct(identity.account()));
     }
 }

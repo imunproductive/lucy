@@ -4,6 +4,10 @@ use orpheus_lobby::templates::RetailTemplates;
 
 const ICON: u64 = UNLOCK_BASE | 0x10;
 const FRAME: u64 = UNLOCK_BASE | 0x20;
+/// Sold for 100 credits.
+const SPRAY: u64 = UNLOCK_BASE | 0x30;
+/// An Overwatch League icon, sold for 50 league tokens; never in boxes.
+const OWL_ICON: u64 = UNLOCK_BASE | 0x40;
 
 struct Fixture {
     state: tempfile::TempDir,
@@ -11,6 +15,7 @@ struct Fixture {
     selected: Mutex<Arc<Account>>,
     online: Mutex<HashMap<u32, Arc<AtomicBool>>>,
     collection: Collection,
+    services: Services,
 }
 
 impl Fixture {
@@ -28,7 +33,9 @@ impl Fixture {
                 r#"{{"format":1,"server":[
                     ["70E5A247",24900,{{"+0x80":[],"+0x98":[]}}],
                     ["779A8581",24300,{{"+0x78":{{"+0x30":[]}},"+0xF8":{{"+0x0":[
-                        {{"+0x0":{FRAME},"+0x10":601,"+0x14":0,"+0x16":0}}
+                        {{"+0x0":{FRAME},"+0x10":601,"+0x14":0,"+0x16":0}},
+                        {{"+0x0":{SPRAY},"+0x10":0,"+0x14":100,"+0x16":0}},
+                        {{"+0x0":{OWL_ICON},"+0x10":0,"+0x14":50,"+0x16":-1}}
                     ]}}}}]
                 ]}}"#
             )
@@ -36,8 +43,12 @@ impl Fixture {
         )
         .unwrap();
         let mut items = ItemDb::default();
-        for (guid, name, item_type) in [(ICON, "Ring", "Icon"), (FRAME, "Silver", "PortraitFrame")]
-        {
+        for (guid, name, item_type, categories) in [
+            (ICON, "Ring", "Icon", &[][..]),
+            (FRAME, "Silver", "PortraitFrame", &[]),
+            (SPRAY, "Tag", "Spray", &[]),
+            (OWL_ICON, "Team", "Icon", &["OWL"]),
+        ] {
             items.unlocks.insert(
                 guid,
                 Unlock {
@@ -48,7 +59,7 @@ impl Fixture {
                     hero: None,
                     source: String::new(),
                     box_type: None,
-                    categories: Vec::new(),
+                    categories: categories.iter().map(|&category| category.into()).collect(),
                     available_in: String::new(),
                     skin_theme: 0,
                     esports_team: String::new(),
@@ -61,6 +72,7 @@ impl Fixture {
             accounts,
             selected,
             online: Mutex::new(HashMap::new()),
+            services: Services::new(&collection),
             collection,
         }
     }
@@ -74,6 +86,7 @@ impl Fixture {
             data: self.state.path(),
             assets: self.state.path(),
             lobby_port: 3724,
+            services: &self.services,
             uptime: Duration::ZERO,
         }
     }
@@ -282,9 +295,21 @@ fn collection_pages_filter_by_kind_and_report_ownership() {
             .collect::<BTreeMap<String, String>>()
     };
     let icons = api.collection(&query(&[("kind", "icons")])).unwrap();
-    assert_eq!(icons["total"], 1);
+    assert_eq!(icons["total"], 2);
     assert_eq!(icons["items"][0]["guid"], guid_text(ICON));
     assert_eq!(icons["items"][0]["purchasable"], false);
+    assert_eq!(icons["items"][0]["price"], Json::Null);
+    assert_eq!(icons["items"][1]["price"], 50);
+    assert_eq!(icons["items"][1]["currency"], "league_tokens");
+    assert_eq!(icons["items"][1]["purchasable"], true);
+    let sold = api.collection(&query(&[("currency", "credits")])).unwrap();
+    assert_eq!(sold["total"], 1);
+    assert_eq!(sold["items"][0]["guid"], guid_text(SPRAY));
+    assert_eq!(sold["items"][0]["price"], 100);
+    let none = api
+        .collection(&query(&[("currency", "comp_points")]))
+        .unwrap();
+    assert_eq!(none["total"], 0);
     let frames = api.collection(&query(&[("kind", "frames")])).unwrap();
     assert_eq!(frames["items"][0]["name"], "Silver · level 601+");
     let error = api.collection(&query(&[("kind", "hats")])).unwrap_err();
@@ -297,4 +322,61 @@ fn frame_names_follow_the_level_tiers() {
     assert_eq!(frame_name(1441), "Gold ★★ · level 1441+");
     assert_eq!(frame_name(2401), "Diamond · level 2401+");
     assert_eq!(frame_name(3600), "Diamond ★★★★★ · level 3600+");
+}
+
+#[test]
+fn a_purchase_charges_its_own_currency_and_refusals_change_nothing() {
+    let fixture = Fixture::new();
+    let api = fixture.api();
+    let before = fixture.saved("Beta");
+    let reply = api
+        .purchase(&data(json!({"guid": guid_text(OWL_ICON)})))
+        .unwrap();
+    assert_eq!(
+        reply["receipt"],
+        json!({"guid": guid_text(OWL_ICON), "price": 50, "currency": "league_tokens", "also": []})
+    );
+    let after = fixture.saved("Beta");
+    assert_eq!(after.league_tokens, before.league_tokens - 50);
+    assert_eq!(after.credits, before.credits);
+    assert_eq!(after.unlocked_items, [json!(guid_text(OWL_ICON))]);
+
+    for (guid, status, message) in [
+        (
+            json!(guid_text(OWL_ICON)),
+            409,
+            "You already have this item.",
+        ),
+        (json!(ICON), 400, "This item is not available for purchase."),
+        (json!("-5"), 400, "Invalid item identifier."),
+        (json!(0), 400, "Invalid item identifier."),
+        (json!("ring"), 400, "Invalid item"),
+        (Json::Null, 400, "Invalid item"),
+    ] {
+        let error = api.purchase(&data(json!({"guid": guid}))).unwrap_err();
+        assert_eq!(error, ApiError::new(status, message), "{guid}");
+    }
+    api.update_profile(&data(json!({"credits": 99}))).unwrap();
+    let error = api.purchase(&data(json!({"guid": SPRAY}))).unwrap_err();
+    assert_eq!(error, ApiError::new(409, "Not enough funds."));
+    assert_eq!(fixture.saved("Beta").credits, 99);
+}
+
+#[test]
+fn opening_every_box_grants_new_items_and_counts_them_for_the_menu() {
+    let fixture = Fixture::new();
+    let api = fixture.api();
+    let boxes = fixture.saved("Beta").loot_boxes.len();
+    let reply = api.open_all_boxes(&data(json!({}))).unwrap();
+    assert_eq!(reply["opened"], boxes);
+    let saved = fixture.saved("Beta");
+    assert!(saved.loot_boxes.is_empty());
+    assert_eq!(saved.stats["boxes_opened"], boxes);
+    assert_eq!(reply["new_items"], saved.unlocked_items.len());
+    assert_eq!(
+        saved.settings["+0x130"],
+        json!([{"+0x0": boxes, "+0x8": BOXES_OPENED_KEY}])
+    );
+    let error = api.open_all_boxes(&data(json!({}))).unwrap_err();
+    assert_eq!(error, ApiError::bad("No boxes to open"));
 }

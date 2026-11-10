@@ -87,6 +87,36 @@ pub fn friend_card(profile: &Profile, identity: Identity, portrait_frame: u64, n
     ])
 }
 
+/// 39002: the card other players see (name, icon, frame, level, endorsement).
+/// `summary`, `ow174/content/player.py`.
+pub fn summary(profile: &Profile, identity: Identity, portrait_frame: u64, now: u64) -> Fields {
+    Fields::from([
+        (0x78, Struct(identity.account())),
+        (
+            0x88,
+            Struct(summary_card(profile, identity, portrait_frame, now)),
+        ),
+    ])
+}
+
+/// The card of a 39002 summary, also a leaderboard row.
+pub fn summary_card(
+    profile: &Profile,
+    identity: Identity,
+    portrait_frame: u64,
+    now: u64,
+) -> Fields {
+    Fields::from([
+        (0x00, Struct(record(profile, identity, portrait_frame, now))),
+        (0x68, Struct(Fields::new())),
+        (0x80, Struct(endorsement(profile.endorsement_level))),
+        (0xa0, Array(Vec::new())),
+        (0xb8, Value::Float64(0.0)),
+        (0xc0, Array(Vec::new())),
+        (0xd8, Array(Vec::new())),
+    ])
+}
+
 pub fn endorsement(level: i64) -> Fields {
     let counts = ENDORSEMENT_CATEGORIES
         .into_iter()

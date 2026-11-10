@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     game_service::GameService,
-    lobby::{Lobby, serve},
+    lobby::{Lobby, serve, services::Services},
     runtime::missing_runtime_files,
     server::dashboard::{Dashboard, DashboardParts},
 };
@@ -143,6 +143,7 @@ impl Server {
                 }
             },
         )?;
+        let services = Arc::new(Services::new(&collection));
         let shared = Arc::new(Lobby {
             signing_key,
             schemas,
@@ -160,6 +161,7 @@ impl Server {
             active: Arc::default(),
             game: Arc::clone(&game),
             hub: Default::default(),
+            services,
         });
         let dashboard = config
             .dashboard_port
@@ -172,6 +174,7 @@ impl Server {
                     data: config.data.clone(),
                     assets: config.data.join("assets"),
                     lobby_port: lobby_addr.port(),
+                    services: Arc::clone(&shared.services),
                 };
                 Dashboard::start(port, parts)
             })
@@ -571,5 +574,255 @@ mod tests {
         assert!(closing.elapsed() < Duration::from_secs(3));
         TcpListener::bind(lobby).unwrap();
         UdpSocket::bind(game).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+    fn lobby_services_answer_the_game_and_dashboard_edits_reach_it() {
+        use orpheus_lobby::{
+            accounts::load_or_create_profile,
+            leaderboard::{LEADERBOARD_OUT, PAGE_REQUEST, PROFILES},
+            lookups::{
+                NAME_QUERY, NAME_REPLY, NAMES, OWL_LIVE, OWL_MATCHES, OWL_POLL, STORE, STORE_PAGE,
+                STORE_QUERY,
+            },
+            lootbox::{OPEN_BOX, PROGRESSION_OUT},
+            mode_rules::PROFILE_REQUEST,
+            saved_settings::SOCIAL_OUT,
+            shop::{Currency, PURCHASE, Shop},
+            templates::LOBBY,
+        };
+        use std::{collections::HashMap, time::Instant};
+
+        let runtime = orpheus_testkit::runtime_dir();
+        let state = tempfile::tempdir().unwrap();
+        let mut config = ServerConfig::new(runtime.clone(), state.path().into());
+        config.lobby_port = 0;
+        config.game_port = 0;
+        config.stall_port = 0;
+        config.rpc_port = 0;
+        config.dashboard_port = Some(0);
+        let accounts = Accounts::new(
+            state.path().join("profiles"),
+            state.path().join("profile.json"),
+        )
+        .unwrap();
+        accounts.get("rust").unwrap();
+        let other = accounts.get("other").unwrap();
+        fs::write(state.path().join("default_account.txt"), "rust\n").unwrap();
+        let collection = Collection::new(
+            &RetailTemplates::captured(),
+            Arc::new(ItemDb::load(&runtime.join("data")).unwrap()),
+        )
+        .unwrap();
+        let shop = Shop::new(&collection);
+        let product = collection
+            .store()
+            .keys()
+            .copied()
+            .find(|&guid| {
+                shop.product(guid)
+                    .is_some_and(|offer| offer.currency == Currency::Credits && offer.price <= 1000)
+                    && !collection.owns(&other.profile(), guid)
+            })
+            .unwrap();
+        let price = shop.product(product).unwrap().price;
+        let credits = other.profile().credits;
+        let first_box = other.profile().loot_boxes[0].id;
+        let mut server = Server::start(config).unwrap();
+        let dashboard = server.dashboard_addr().unwrap();
+
+        let mut tcp = TcpStream::connect(server.lobby_addr()).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let (mut tx, rx) = client_handshake(&mut tcp);
+        let groups = [
+            IN_CONNECT,
+            OUT_CONNECT,
+            PROGRESSION,
+            HERO_CATALOG,
+            PROGRESSION_OUT,
+            SOCIAL_OUT,
+            STORE_QUERY,
+            STORE,
+            NAME_QUERY,
+            NAME_REPLY,
+            OWL_POLL,
+            OWL_LIVE,
+            LOBBY,
+            PROFILES,
+            LEADERBOARD_OUT,
+            player::PERMISSIONS,
+        ];
+        let wire = |crc| groups.iter().position(|&group| group == crc).unwrap() as u8 + 1;
+        let mut announcement = vec![0, 0];
+        announcement.extend_from_slice(&(groups.len() as u32).to_le_bytes());
+        for group in groups {
+            announcement.extend_from_slice(&group.to_le_bytes());
+        }
+        framing::send_frame(&mut tcp, &mut tx, &announcement).unwrap();
+        let schemas = Schemas::lobby();
+        let mut writer = tcp.try_clone().unwrap();
+        let mut send = |crc: u32, id: u32, fields: Fields| {
+            let mut frame = schemas.header(crc, wire(crc), id).unwrap();
+            frame.extend(schemas.encode(crc, id, &fields).unwrap());
+            framing::send_frame(&mut writer, &mut tx, &frame).unwrap();
+        };
+        let id16 = |lo: u64| {
+            Value::Struct(Fields::from([
+                (0, Value::Unsigned(lo)),
+                (8, Value::Unsigned(1 << 56)),
+            ]))
+        };
+        let lo = u64::from(other.account_lo);
+        // A local game that logs in by name: the dashboard follows it.
+        send(
+            OUT_CONNECT,
+            LOGIN_MESSAGE,
+            Fields::from([(0x78, Value::String("other".into()))]),
+        );
+        send(
+            PROGRESSION_OUT,
+            OPEN_BOX,
+            Fields::from([(
+                0x78,
+                Value::Struct(Fields::from([(
+                    0,
+                    Value::Array(vec![Value::Unsigned(first_box), Value::Unsigned(0)]),
+                )])),
+            )]),
+        );
+        send(
+            PROGRESSION_OUT,
+            PURCHASE,
+            Fields::from([(0x78, Value::Unsigned(product))]),
+        );
+        send(
+            SOCIAL_OUT,
+            22202,
+            Fields::from([(
+                0x78,
+                Value::Struct(Fields::from([
+                    (0, Value::Bool(false)),
+                    (5, Value::Unsigned(2)),
+                ])),
+            )]),
+        );
+        send(STORE_QUERY, STORE_PAGE, Fields::new());
+        send(
+            NAME_QUERY,
+            NAMES,
+            Fields::from([(0x78, Value::Array(vec![id16(lo)]))]),
+        );
+        send(OWL_POLL, OWL_MATCHES, Fields::new());
+        send(
+            SOCIAL_OUT,
+            PROFILE_REQUEST,
+            Fields::from([(0x78, id16(lo)), (0x88, id16(lo))]),
+        );
+        send(
+            LEADERBOARD_OUT,
+            PAGE_REQUEST,
+            Fields::from([(
+                0x78,
+                Value::Struct(Fields::from([
+                    (0, Value::Unsigned(32 | (4 << 24))),
+                    (8, Value::Unsigned(1)),
+                ])),
+            )]),
+        );
+
+        let mut reader = FrameReader::new(rx);
+        let mut buf = [0; 65536];
+        let mut wait_for = |wanted: &[(u32, u32)], seconds: u64| {
+            let mut received: HashMap<u32, Fields> = HashMap::new();
+            let limit = Instant::now() + Duration::from_secs(seconds);
+            while wanted.iter().any(|(_, id)| !received.contains_key(id)) {
+                assert!(
+                    Instant::now() < limit,
+                    "missing {wanted:?}, got {:?}",
+                    received.keys()
+                );
+                let Ok(count) = tcp.read(&mut buf) else {
+                    continue;
+                };
+                assert_ne!(count, 0, "the lobby closed");
+                for frame in reader.feed(&buf[..count]) {
+                    for &(crc, id) in wanted {
+                        if let Some(body) = frame
+                            .strip_prefix(schemas.header(crc, wire(crc), id).unwrap().as_slice())
+                        {
+                            received.insert(id, schemas.decode(crc, id, body, true).unwrap());
+                        }
+                    }
+                }
+            }
+            received
+        };
+        let replies = wait_for(
+            &[
+                (PROGRESSION, 24305),
+                (PROGRESSION, 24307),
+                (PROGRESSION, 24306),
+                (STORE, 26400),
+                (NAME_REPLY, 58301),
+                (OWL_LIVE, 43200),
+                (LOBBY, 20807),
+                (PROFILES, 39002),
+                (PROFILES, 39000),
+            ],
+            10,
+        );
+        assert_eq!(replies[&24306][&0x78], Value::Unsigned(product));
+        let Value::Struct(opened) = &replies[&24305][&0x78] else {
+            panic!("box result")
+        };
+        let Value::Array(drops) = &opened[&0] else {
+            panic!("drops")
+        };
+        assert_eq!(drops.len(), 4);
+        let Value::Array(names) = &replies[&58301][&0x78] else {
+            panic!("names")
+        };
+        let Value::Struct(name) = &names[0] else {
+            panic!("a name")
+        };
+        assert_eq!(name[&0x18], Value::String("other".into()));
+        assert_eq!(replies[&20807][&0x78], id16(lo));
+
+        let saved = load_or_create_profile(other.path.as_deref().unwrap()).unwrap();
+        // The whole decoded block, every field present as the client sent it.
+        let social = &saved.settings["+0x10D"];
+        assert_eq!(
+            (&social["+0x0"], &social["+0x5"]),
+            (&serde_json::json!(false), &serde_json::json!(2))
+        );
+        assert_eq!(social.as_object().unwrap().len(), 17);
+        assert!(saved.unlocked_guids().contains(&product));
+        // Each slot gave at most 500 credits instead of an item or for a duplicate.
+        assert!((credits - price..=credits - price + 4 * 500).contains(&saved.credits));
+        assert!(saved.loot_boxes.iter().all(|item| item.id != first_box));
+
+        // The dashboard edits the account the game logged in as, and the game
+        // gets the new state.
+        let post = |path: &str, body: &str| {
+            let mut stream = TcpStream::connect(dashboard).unwrap();
+            write!(
+                stream,
+                "POST {path} HTTP/1.0\r\nHost: {dashboard}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            let mut reply = String::new();
+            stream.read_to_string(&mut reply).unwrap();
+            reply
+        };
+        let reply = post("/api/update_profile", r#"{"level": 777}"#);
+        assert!(
+            reply.starts_with("HTTP/1.0 200") || reply.starts_with("HTTP/1.1 200"),
+            "{reply}"
+        );
+        let pushed = wait_for(&[(PROGRESSION, 24313), (player::PERMISSIONS, 55500)], 10);
+        assert_eq!(pushed[&24313][&0x78], Value::Signed(777));
+        server.stop().unwrap();
     }
 }

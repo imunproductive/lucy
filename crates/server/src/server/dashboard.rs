@@ -22,6 +22,8 @@ use orpheus_lobby::{
     collection::Collection,
 };
 
+use crate::lobby::services::Services;
+
 const MAX_BODY_BYTES: usize = 65_536;
 /// URL path, embedded file and MIME type.
 const PAGES: [(&str, &[u8], &str); 5] = [
@@ -45,10 +47,8 @@ const PAGES: [(&str, &[u8], &str); 5] = [
 ];
 const INDEX: &[u8] = include_bytes!("../../../../web/dashboard/index.html");
 /// Actions whose features the native server does not have yet.
-const NOT_PORTED: [&str; 9] = [
-    "/api/open_all_boxes",
+const NOT_PORTED: [&str; 7] = [
     "/api/bot_group",
-    "/api/purchase",
     "/api/matchmaking",
     "/api/mode_settings",
     "/api/set_map",
@@ -75,6 +75,8 @@ pub struct DashboardParts {
     pub assets: PathBuf,
     /// The lobby port the dashboard reports.
     pub lobby_port: u16,
+    /// The shop, the loot boxes and the live updates of a connected game.
+    pub services: Arc<Services>,
 }
 
 impl Dashboard {
@@ -101,6 +103,7 @@ impl Dashboard {
                         data: &parts.data,
                         assets: &parts.assets,
                         lobby_port: parts.lobby_port,
+                        services: &parts.services,
                         uptime: started.elapsed(),
                     };
                     let _ = handle(&api, port, request);
@@ -204,6 +207,8 @@ fn post(api: &Api, path: &str, data: &Map<String, Json>) -> ApiResult {
         "/api/grant_skin" => api.grant_skin(data),
         "/api/select_account" => api.select_account(data),
         "/api/default_account" => api.default_account(data),
+        "/api/purchase" => api.purchase(data),
+        "/api/open_all_boxes" => api.open_all_boxes(data),
         path if NOT_PORTED.contains(&path) => Err(ApiError::new(
             501,
             "The native server does not support this action yet.",
@@ -385,11 +390,13 @@ mod tests {
             .as_slice(),
         )
         .unwrap();
+        let collection = Collection::new(&templates, Arc::new(ItemDb::default())).unwrap();
         let parts = DashboardParts {
             selected: Arc::new(Mutex::new(accounts.get("Alpha").unwrap())),
             accounts,
             online: Arc::default(),
-            collection: Arc::new(Collection::new(&templates, Arc::new(ItemDb::default())).unwrap()),
+            services: Arc::new(Services::new(&collection)),
+            collection: Arc::new(collection),
             data: state.path().into(),
             assets: state.path().join("assets"),
             lobby_port: 3724,
@@ -408,7 +415,14 @@ mod tests {
             request(addr, "POST", "/api/select_account", r#"{"name":"alpha"}"#),
             (200, r#"{"status":"ok"}"#.into())
         );
-        assert_eq!(request(addr, "POST", "/api/purchase", "{}").0, 501);
+        assert_eq!(request(addr, "POST", "/api/bot_group", "{}").0, 501);
+        assert_eq!(
+            request(addr, "POST", "/api/purchase", r#"{"guid":"0x10"}"#),
+            (
+                400,
+                r#"{"error":"This item is not available for purchase."}"#.into()
+            )
+        );
         assert_eq!(request(addr, "POST", "/api/select_account", "[]").0, 400);
         assert_eq!(request(addr, "GET", "/api/missing", "").0, 404);
         assert_eq!(request(addr, "GET", "/assets/boxes/golden.png", "").0, 404);

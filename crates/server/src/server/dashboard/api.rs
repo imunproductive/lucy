@@ -1,7 +1,7 @@
 //! What the dashboard can read and change, independent of HTTP.
 //!
 //! Ported from the Python dashboard service. Profile changes are saved at
-//! once and reach the game at its next login.
+//! once and sent to the account's game when it is connected.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -14,6 +14,7 @@ use std::{
 use serde_json::{Map, Value as Json, json};
 
 use super::events::EVENT_INFO;
+use crate::lobby::services::Services;
 use orpheus_content::catalog::{GAME_REGIONS, REGIONS, Unlock};
 use orpheus_core::guid::parse_guid as parse_guid_text;
 use orpheus_lobby::{
@@ -23,9 +24,12 @@ use orpheus_lobby::{
     },
     celebrations::{EVENT_PRESETS, challenges},
     collection::Collection,
+    lootbox::SystemDice,
     menu::PVE_NPCS,
     passes::{MAX_PASSES, Pool},
     ranked::{CURRENT_SEASON, MAX_MATCHES, MAX_RATING, Queue, matches_of, rating_of, wins_of},
+    saved_settings::{BOXES_OPENED_KEY, set_saved_value},
+    shop::{INVALID_INPUT, Product},
 };
 
 const PROFILE_FIELDS: [&str; 18] = [
@@ -110,6 +114,8 @@ pub struct Api<'a> {
     /// Optional dashboard pictures: `assets/previews/<GUID>.webp`.
     pub assets: &'a Path,
     pub lobby_port: u16,
+    /// The shop, the loot boxes and the live updates of a connected game.
+    pub services: &'a Services,
     pub uptime: Duration,
 }
 
@@ -148,14 +154,14 @@ impl Api<'_> {
         };
         let hero = get("hero");
         let text = get("q").to_lowercase();
-        // The shop is not ported yet, so no item has a price to filter by.
         let currency = get("currency");
         let owl_only = matches!(
             get("owl").to_lowercase().as_str(),
             "1" | "true" | "yes" | "on"
         );
         let collection = &self.collection;
-        let mut matches: Vec<&Unlock> = collection
+        let shop = &self.services.shop;
+        let mut matches: Vec<(&Unlock, Option<&Product>)> = collection
             .items()
             .unlocks
             .values()
@@ -168,9 +174,13 @@ impl Api<'_> {
                         .to_lowercase()
                         .contains(&text)
             })
-            .filter(|_| currency.is_empty())
+            .map(|unlock| (unlock, shop.product(unlock.guid)))
+            .filter(|(_, product)| {
+                currency.is_empty()
+                    || product.is_some_and(|product| product.currency.name() == currency)
+            })
             .collect();
-        matches.sort_by_cached_key(|unlock| {
+        matches.sort_by_cached_key(|(unlock, _)| {
             (
                 unlock.hero.clone().unwrap_or_else(|| "~".into()),
                 -rarity_rank(&unlock.rarity),
@@ -182,7 +192,7 @@ impl Api<'_> {
             .iter()
             .skip((page - 1) * PAGE_SIZE)
             .take(PAGE_SIZE)
-            .map(|unlock| {
+            .map(|(unlock, product)| {
                 let owned = profile.unlock_all || collection.owns(&profile, unlock.guid);
                 json!({
                     "guid": guid_text(unlock.guid),
@@ -194,9 +204,9 @@ impl Api<'_> {
                     "owned": owned,
                     // Only items unlocked here can be taken back; the starter ones stay.
                     "removable": unlocked.contains(&unlock.guid) && !profile.unlock_all,
-                    "price": null,
-                    "currency": null,
-                    "purchasable": false,
+                    "price": product.map(|product| product.price),
+                    "currency": product.map(|product| product.currency.name()),
+                    "purchasable": product.is_some() && !owned,
                     "preview": self.preview(unlock.guid),
                 })
             })
@@ -341,7 +351,10 @@ impl Api<'_> {
             )));
         }
         let account = self.account(data.get("account").and_then(Json::as_str))?;
-        let profile = self.edit(&account, |profile| self.apply(profile, data))?;
+        let profile = self.edit(&account, |profile| {
+            self.apply(profile, data)?;
+            Ok(Vec::new())
+        })?;
         Ok(json!({"status": "ok", "profile": snapshot(&profile)?}))
     }
 
@@ -359,7 +372,10 @@ impl Api<'_> {
         let names = self.accounts.all_saved()?;
         for name in &names {
             let account = self.accounts.get(name)?;
-            self.edit(&account, |profile| self.apply(profile, &changes))?;
+            self.edit(&account, |profile| {
+                self.apply(profile, &changes)?;
+                Ok(Vec::new())
+            })?;
         }
         let template = self.data.join("profile.json");
         let mut profile = load_or_create_profile(&template)?;
@@ -385,9 +401,68 @@ impl Api<'_> {
         let account = self.account(data.get("account").and_then(Json::as_str))?;
         let profile = self.edit(&account, |profile| {
             profile.add_boxes(kind as i32, count as u64)?;
-            Ok(())
+            Ok(Vec::new())
         })?;
         Ok(json!({"status": "ok", "added": count, "total_boxes": profile.loot_boxes.len()}))
+    }
+
+    /// The move to Overwatch 2: every box opens, and the game says how many
+    /// on the main menu (20802 +0x130, sent to a connected game).
+    pub fn open_all_boxes(&self, data: &Map<String, Json>) -> ApiResult {
+        let account = self.account(data.get("account").and_then(Json::as_str))?;
+        let mut opened = 0;
+        let mut new_items = 0;
+        let profile = self.edit(&account, |profile| {
+            let (count, granted) =
+                self.services
+                    .loot
+                    .open_all(profile, self.collection, &mut SystemDice)?;
+            if count == 0 {
+                return Err(ApiError::bad("No boxes to open"));
+            }
+            set_saved_value(profile, BOXES_OPENED_KEY, count as i64);
+            opened = count;
+            new_items = granted.len();
+            Ok(granted)
+        })?;
+        self.services.push_settings(account.account_lo);
+        Ok(json!({
+            "status": "ok",
+            "opened": opened,
+            "new_items": new_items,
+            "profile": snapshot(&profile)?,
+        }))
+    }
+
+    /// Buy an item for the account with its own currency.
+    pub fn purchase(&self, data: &Map<String, Json>) -> ApiResult {
+        let guid = purchase_guid(data.get("guid").unwrap_or(&Json::Null))?;
+        let account = self.account(data.get("account").and_then(Json::as_str))?;
+        let mut receipt = None;
+        let profile = self.edit(&account, |profile| {
+            let bought = self
+                .services
+                .shop
+                .purchase(profile, guid, self.collection)
+                .map_err(|refused| ApiError::new(refused.status, refused.message))?;
+            let granted = [bought.guid]
+                .into_iter()
+                .chain(bought.also.clone())
+                .collect();
+            receipt = Some(bought);
+            Ok(granted)
+        })?;
+        let receipt = receipt.expect("a saved purchase has a receipt");
+        Ok(json!({
+            "status": "ok",
+            "receipt": {
+                "guid": guid_text(receipt.guid),
+                "price": receipt.price,
+                "currency": receipt.currency.name(),
+                "also": receipt.also.iter().map(|&pair| guid_text(pair)).collect::<Vec<_>>(),
+            },
+            "profile": snapshot(&profile)?,
+        }))
     }
 
     /// Put a portrait frame on the player card, or go back to the level's frame.
@@ -404,7 +479,7 @@ impl Api<'_> {
         let account = self.account(data.get("account").and_then(Json::as_str))?;
         self.edit(&account, |profile| {
             profile.frame_guid = guid;
-            Ok(())
+            Ok(Vec::new())
         })?;
         Ok(json!({"status": "ok", "frame": (guid != 0).then(|| guid_text(guid))}))
     }
@@ -433,6 +508,15 @@ impl Api<'_> {
         let account = self.account(data.get("account").and_then(Json::as_str))?;
         let profile = self.edit(&account, |profile| {
             let mut owned = profile.unlocked_guids();
+            let granted = if revoke {
+                Vec::new()
+            } else {
+                guids
+                    .iter()
+                    .copied()
+                    .filter(|guid| !owned.contains(guid))
+                    .collect()
+            };
             for guid in &guids {
                 if revoke {
                     owned.remove(guid);
@@ -446,7 +530,7 @@ impl Api<'_> {
                 .into_iter()
                 .map(|guid| Json::String(guid_text(guid)))
                 .collect();
-            Ok(())
+            Ok(granted)
         })?;
         let changed: Vec<String> = guids.iter().map(|&guid| guid_text(guid)).collect();
         let (granted, revoked) = if revoke {
@@ -515,22 +599,27 @@ impl Api<'_> {
         }
     }
 
-    /// Change a copy of the profile; save and keep it only when every change is valid.
+    /// Change a copy of the profile; save and keep it only when every change
+    /// is valid, then send it to the account's game when that is connected.
+    /// `change` returns the items the edit gave (`_save`).
     fn edit(
         &self,
         account: &Account,
-        change: impl FnOnce(&mut Profile) -> Result<(), ApiError>,
+        change: impl FnOnce(&mut Profile) -> Result<Vec<u64>, ApiError>,
     ) -> Result<Profile, ApiError> {
         let mut rejected = None;
         let saved = account.edit_profile(|profile| match change(profile) {
-            Ok(()) => Ok(Some(profile.clone())),
+            Ok(granted) => Ok(Some((profile.clone(), granted))),
             Err(error) => {
                 rejected = Some(error);
                 Ok(None)
             }
         })?;
         match (saved, rejected) {
-            (Some(profile), _) => Ok(profile),
+            (Some((profile, granted)), _) => {
+                self.services.push_profile(account.account_lo, granted);
+                Ok(profile)
+            }
             (None, Some(error)) => Err(error),
             (None, None) => unreachable!("an edit either saves or is rejected"),
         }
@@ -898,5 +987,35 @@ fn parse_challenge(value: &Json) -> Result<String, ApiError> {
         .ok_or_else(|| ApiError::bad("Challenge not found"))
 }
 
+/// The item GUID of a purchase, read as Python's `parse_guid` then the shop's
+/// own check: a number or text such as "0x0250000000001149" (an unreadable
+/// one is "Invalid item"), between 1 and 2^64 - 1 (else "Invalid item
+/// identifier.").
+fn purchase_guid(value: &Json) -> Result<u64, ApiError> {
+    let unreadable = || ApiError::bad("Invalid item");
+    let number = match value {
+        Json::Bool(value) => i128::from(*value),
+        Json::Number(number) => number
+            .as_u64()
+            .map(i128::from)
+            .or_else(|| number.as_i64().map(i128::from))
+            .or_else(|| {
+                number
+                    .as_f64()
+                    .filter(|value| value.is_finite())
+                    .map(|value| value.trunc() as i128)
+            })
+            .ok_or_else(unreadable)?,
+        Json::String(text) => match text.trim().strip_prefix('-') {
+            Some(magnitude) => -i128::from(parse_guid_text(magnitude).ok_or_else(unreadable)?),
+            None => i128::from(parse_guid_text(text).ok_or_else(unreadable)?),
+        },
+        _ => return Err(unreadable()),
+    };
+    u64::try_from(number)
+        .ok()
+        .filter(|&guid| guid != 0)
+        .ok_or_else(|| ApiError::new(INVALID_INPUT.status, INVALID_INPUT.message))
+}
 #[cfg(test)]
 mod tests;

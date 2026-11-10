@@ -15,8 +15,9 @@ use indexmap::IndexMap;
 use serde::Deserialize;
 
 use crate::{
-    accounts::Profile,
+    accounts::{LootBox, Profile},
     clock::{DAY, stu_datetime},
+    collection::Collection,
     templates::{IN_CONNECT, RetailTemplates},
     transport::LobbyMessage,
 };
@@ -30,7 +31,19 @@ use orpheus_wire::jam::codec::{
 pub const EVENTS: u32 = 0x8b77_c823;
 pub const CONTENT_KEYS: u32 = 20504;
 pub const CELEBRATIONS: u32 = 38900;
+pub const NEW_CELEBRATION: u32 = 38901;
 pub const CHALLENGE_PROGRESS: u32 = 38902;
+
+/// What greeting the player for new events gave.
+#[derive(Debug, Default)]
+pub struct Greeting {
+    /// One 38901 per event.
+    pub messages: Vec<LobbyMessage>,
+    /// The reward items given.
+    pub given: Vec<u64>,
+    /// The event boxes given.
+    pub boxes: Vec<LootBox>,
+}
 
 const CELEBRATION_BASE: u64 = 0x0430_0000_0000_0000;
 const CELEBRATION_TYPE_BASE: u64 = 0x0d80_0000_0000_0000;
@@ -300,6 +313,96 @@ impl Celebrations {
                 Fields::from([(0x78, Array(progress))]),
             ),
         ])
+    }
+
+    /// Give the login rewards of the events the player was not greeted for:
+    /// one event box each, plus any item among the rewards (Lunar New Year's
+    /// icon), and a 38901 for each.
+    ///
+    /// 38901 puts the record (the same as in 38900) on the client's list of
+    /// new celebrations (0x7FF7895D0D20). On the main menu the login popups
+    /// graph (01B/0C75) takes it (0x7FF789818320) and plays 01B/0C74, which
+    /// shows the event's login rewards (+0x58) one by one. The client keeps no
+    /// record of it, so the server greets once per event. Retail did this at
+    /// the first login of Lunar New Year 2022: the box (24302), the icon
+    /// (24301), then 38901. `greet`, `ow174/content/celebrations.py`.
+    pub fn greet(
+        &self,
+        profile: &mut Profile,
+        collection: &Collection,
+        now: u64,
+    ) -> io::Result<Greeting> {
+        let ungreeted: Vec<Event> = active_events(&profile.events)?
+            .into_iter()
+            .filter(|event| event.box_type >= 0 || event.splash)
+            .filter(|event| {
+                !profile
+                    .greeted_events
+                    .contains(&u64::from(event.celebration))
+            })
+            .collect();
+        let mut greeting = Greeting::default();
+        for &event in &ungreeted {
+            let record = self.record_fields(event, now)?;
+            greeting.messages.push((
+                EVENTS,
+                NEW_CELEBRATION,
+                Fields::from([(0x78, Struct(record))]),
+            ));
+        }
+        for event in ungreeted {
+            if event.box_type >= 0 {
+                let box_type = i32::try_from(event.box_type)
+                    .map_err(|_| invalid("invalid celebration box type"))?;
+                greeting.boxes.extend(profile.add_boxes(box_type, 1)?);
+            }
+            for &reward in event.rewards {
+                let guid = UNLOCK_BASE | u64::from(reward);
+                // The box itself is an unlock too (STUUnlock_LootBox), but not an item.
+                if collection.items().get(guid).is_none()
+                    || collection.owns(profile, guid)
+                    || greeting.given.contains(&guid)
+                {
+                    continue;
+                }
+                greeting.given.push(guid);
+            }
+            profile.greeted_events.push(u64::from(event.celebration));
+        }
+        profile.unlocked_items.extend(
+            greeting
+                .given
+                .iter()
+                .map(|guid| serde_json::Value::String(format!("0x{guid:016X}"))),
+        );
+        Ok(greeting)
+    }
+
+    /// Grant the challenge unlocks the current win count earned that the
+    /// profile does not own yet (`claim_rewards`). Ownership is checked
+    /// against the profile as it was before any of them.
+    pub fn claim_rewards(profile: &mut Profile, collection: &Collection) -> Vec<u64> {
+        let Some(challenge) = challenge(&profile.challenge, collection.items()) else {
+            return Vec::new();
+        };
+        let unlocked = profile.unlocked_guids();
+        let earned: Vec<u64> = challenge
+            .rewards
+            .into_iter()
+            .zip(1..)
+            .filter(|&(guid, tier)| {
+                profile.challenge_wins >= (CHALLENGE_TIER_WINS * tier) as i64
+                    && !unlocked.contains(&guid)
+                    && !collection.owns(profile, guid)
+            })
+            .map(|(guid, _)| guid)
+            .collect();
+        profile.unlocked_items.extend(
+            earned
+                .iter()
+                .map(|guid| serde_json::Value::String(format!("0x{guid:016X}"))),
+        );
+        earned
     }
 
     fn content_keys(&self, events: &[Event], challenge: Option<&Challenge>) -> Fields {
@@ -716,6 +819,92 @@ mod tests {
             read_keys(wrong_type).err().unwrap().to_string(),
             error.to_string()
         );
+    }
+
+    #[test]
+    fn greeting_gives_each_new_event_its_box_and_items_once() {
+        use crate::test_catalog::{self, LUNAR_ICON};
+        let celebrations = fixture();
+        let collection = test_catalog::collection();
+        let now = server_time("2022-09-16", 0).unwrap();
+        let mut profile = Profile {
+            events: names(&["lunar", "owl", "halloween", "ow2_credits"]),
+            next_box_id: 500,
+            loot_boxes: Vec::new(),
+            ..Profile::default()
+        };
+        let greeting = celebrations.greet(&mut profile, &collection, now).unwrap();
+        let greeted: Vec<_> = greeting
+            .messages
+            .iter()
+            .map(|(crc, id, fields)| {
+                assert_eq!((*crc, *id), (EVENTS, NEW_CELEBRATION));
+                as_struct(&fields[&0x78])[&0x40].clone()
+            })
+            .collect();
+        // The OWL lobby has no box and no splash: no greeting.
+        assert_eq!(
+            greeted,
+            [0x105, 0xfb, 0x123].map(|id| Unsigned(CELEBRATION_BASE | id))
+        );
+        assert_eq!(
+            greeting.messages[0].2[&0x78],
+            Struct(
+                celebrations
+                    .record_fields(preset("lunar").unwrap(), now)
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            greeting
+                .boxes
+                .iter()
+                .map(|item| (item.id, item.box_type))
+                .collect::<Vec<_>>(),
+            [(500, 4), (501, 2)]
+        );
+        // The Lunar box unlock (0D5A) is not an item; the icon is.
+        assert_eq!(greeting.given, [LUNAR_ICON]);
+        assert_eq!(profile.greeted_events, [0x105, 0xfb, 0x123]);
+        assert!(profile.unlocked_guids().contains(&LUNAR_ICON));
+        assert_eq!(profile.loot_boxes.len(), 2);
+
+        let again = celebrations.greet(&mut profile, &collection, now).unwrap();
+        assert!(again.messages.is_empty() && again.given.is_empty() && again.boxes.is_empty());
+
+        // An owned reward is not given again.
+        let mut owner = Profile {
+            events: names(&["lunar"]),
+            unlocked_items: vec![serde_json::json!(format!("0x{LUNAR_ICON:016X}"))],
+            ..Profile::default()
+        };
+        let greeting = celebrations.greet(&mut owner, &collection, now).unwrap();
+        assert_eq!(greeting.messages.len(), 1);
+        assert!(greeting.given.is_empty());
+    }
+
+    #[test]
+    fn challenge_rewards_come_once_each_tier_is_won() {
+        let collection = crate::test_catalog::collection();
+        let mut profile = Profile {
+            challenge: TRACER.into(),
+            challenge_wins: 18,
+            unlocked_items: vec![serde_json::json!(format!("0x{:016X}", TRACER_REWARDS[0]))],
+            ..Profile::default()
+        };
+        assert_eq!(
+            Celebrations::claim_rewards(&mut profile, &collection),
+            [TRACER_REWARDS[1]]
+        );
+        assert!(Celebrations::claim_rewards(&mut profile, &collection).is_empty());
+        profile.challenge_wins = 27;
+        assert_eq!(
+            Celebrations::claim_rewards(&mut profile, &collection),
+            [TRACER_REWARDS[2]]
+        );
+        profile.challenge = String::new();
+        profile.unlocked_items.clear();
+        assert!(Celebrations::claim_rewards(&mut profile, &collection).is_empty());
     }
 
     #[test]
