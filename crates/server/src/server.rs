@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    game_service::GameService,
+    game_service::{GameService, collision_build},
     lobby::{Lobby, matchmaker::Matchmaker, serve, services::Services},
     platform::{LocalGames, Platform},
     runtime::missing_runtime_files,
@@ -60,6 +60,13 @@ pub struct ServerConfig {
     /// The retail games this PC starts, so Battle.net logs each in as its own
     /// account and the dashboard can start a second one.
     pub games: Option<Arc<dyn LocalGames>>,
+    /// The game install the data was derived from: the collision of a map
+    /// with no cache yet is built from it when a match first opens there.
+    pub install: Option<PathBuf>,
+    /// Start a match once this many players search a card without a number
+    /// of its own; 0 = full teams only (`--test-players`,
+    /// `ow174/lobby/settings.py`).
+    pub test_players: usize,
 }
 
 impl ServerConfig {
@@ -77,6 +84,8 @@ impl ServerConfig {
             rpc_port: service::RPC_PORT,
             dashboard_port: Some(3725),
             games: None,
+            install: None,
+            test_players: 0,
         }
     }
 }
@@ -113,7 +122,10 @@ impl Server {
         let ranked = Ranked::new(&templates)?;
         let arcade = Arcade::load(data.join("arcade_cards_174.json"), &templates)?;
         let celebrations = Celebrations::load(&data, &templates)?;
-        let assets = SceneAssets::load(&config.runtime)?;
+        let mut assets = SceneAssets::load(&config.runtime)?;
+        if let Some(install) = &config.install {
+            assets = assets.with_collision_build(collision_build(install.clone()));
+        }
         // Skin themes newer than the capture, and the gun models.
         let extra_preload = extra_preload_themes(&items)
             .chain(assets.graphs().weapon_cosmetics())
@@ -184,7 +196,7 @@ impl Server {
             arcade,
             celebrations,
             extra_preload,
-            assets,
+            assets: Arc::new(assets),
             first_scene: Mutex::new(Some(scene)),
             accounts,
             selected,
@@ -194,7 +206,7 @@ impl Server {
             platform: Arc::clone(&platform),
             services,
             social: Default::default(),
-            matchmaker: Matchmaker::new(&data, &config.data)?,
+            matchmaker: Matchmaker::new(&data, &config.data, config.test_players)?,
         });
         let dashboard = config
             .dashboard_port

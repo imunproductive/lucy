@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 orpheus-fixed.workspace = true
+orpheus-assets.workspace = true
 flate2.workspace = true
 getrandom.workspace = true
 indexmap.workspace = true

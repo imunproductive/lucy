@@ -14,7 +14,7 @@ use std::{
 use serde_json::{Map, Value as Json, json};
 
 use super::events::EVENT_INFO;
-use crate::lobby::services::Services;
+use crate::{game_service::PlayerState, lobby::services::Services};
 use orpheus_content::catalog::{GAME_REGIONS, REGIONS, Unlock};
 use orpheus_core::guid::parse_guid as parse_guid_text;
 use orpheus_lobby::{
@@ -273,7 +273,7 @@ impl Api<'_> {
             "port": self.lobby_port,
             "connected_clients": connected,
             "uptime_seconds": self.uptime.as_secs(),
-            "game_instances": [],
+            "game_instances": self.game_instances(),
             "game_runtime_available": true,
             "second_games": self.platform.games.is_some(),
             "matchmaking_supported": self.lobby.is_some(),
@@ -284,6 +284,51 @@ impl Api<'_> {
                 .and_then(|matchmaker| matchmaker.forced_map())
                 .map_or(String::new(), |map| format!("0x{map:X}")),
         })
+    }
+
+    /// The game server's matches, in the fields the Game sessions panel
+    /// shows (`ow174/dashboard/service.py` `_matches`).
+    fn game_instances(&self) -> Vec<Json> {
+        let Some(lobby) = self.lobby else {
+            return Vec::new();
+        };
+        let Ok(matches) = lobby.game.snapshot() else {
+            return Vec::new();
+        };
+        let address = lobby.game.local_addr();
+        let heroes = lobby.assets.heroes();
+        matches
+            .iter()
+            .map(|found| {
+                let players: Vec<String> = found
+                    .players
+                    .iter()
+                    .map(|player| {
+                        let hero = heroes
+                            .get(player.hero)
+                            .map_or("?", |hero| hero.name.as_str());
+                        format!(
+                            "{} ({hero}, team {}, {})",
+                            player.name,
+                            player.team + 1,
+                            player.state.as_str()
+                        )
+                    })
+                    .collect();
+                let playing = found
+                    .players
+                    .iter()
+                    .filter(|player| player.state == PlayerState::Playing)
+                    .count();
+                json!({
+                    "name": format!("{} · match {:04X}", found.map, found.id[0] & 0xFFFF),
+                    "player": players.join(", "),
+                    "host": address.ip().to_string(),
+                    "port": address.port(),
+                    "state": format!("{playing}/{} playing", found.players.len()),
+                })
+            })
+            .collect()
     }
 
     fn catalogs(&self) -> Json {
