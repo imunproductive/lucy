@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    accounts::{Account, Accounts, account_id_for, battle_tag},
+    accounts::{Account, Accounts, Profile, account_id_for, battle_tag},
     arcade::Arcade,
     battle_tag_query,
     celebrations::Celebrations,
@@ -25,7 +25,7 @@ use crate::{
     passes, player_messages as player,
     presence::Presence,
     ranked::{LeaderboardPlaces, Ranked},
-    templates::{IN_CONNECT, LOBBY, RetailTemplates},
+    templates::{CONFIG, IN_CONNECT, LOBBY, RetailTemplates},
     transport::{Event, LobbyMessage, LobbyTransport},
 };
 use orpheus_wire::{
@@ -344,26 +344,120 @@ impl PreparedLogin {
             ]),
         ));
         if let Some(party) = content.solo_party {
-            let ratings = ranked.party_ratings(&profile, content.leaderboard_places)?;
-            let member = PartyMember {
-                profile: &profile,
-                identity,
-                menu_hero: party.menu_hero,
-                ratings: &ratings,
-                membership: Membership::Leader,
-            };
-            messages.push(party::state(
-                collection,
-                party.id,
-                party.entity,
-                &[member],
-                party.members_may_invite,
-                content.wall_time,
+            messages.push(solo_party_state(
+                &profile, identity, collection, ranked, party, &content,
             )?);
         }
         messages.push((LOBBY, 20802, player::settings(schemas, &profile)?));
         Ok(messages)
     }
+
+    /// The state that can be refreshed while the client is connected, after
+    /// a dashboard edit: clock, menu config, card, events, Arcade,
+    /// endorsements, account features, currencies, boxes, collection,
+    /// competitive state and passes, then the solo party state when
+    /// `content.solo_party` is set. `live_messages`, `ow174/content/__init__.py`.
+    pub fn live_messages(
+        &self,
+        templates: &RetailTemplates,
+        collection: &Collection,
+        ranked: &Ranked,
+        content: LoginContent<'_>,
+    ) -> io::Result<Vec<LobbyMessage>> {
+        let profile = self.account.profile();
+        let identity = self.identity;
+        let now = server_time(&profile.server_date, content.wall_time)?;
+        let record = player::record(
+            &profile,
+            identity,
+            collection.portrait_frame(&profile),
+            content.wall_time,
+        );
+        let mut messages = vec![
+            (CONFIG, 36602, Fields::from([(0x78, Value::Unsigned(now))])),
+            (
+                CONFIG,
+                36600,
+                templates.menu_config(&profile, identity, content.menu_hero)?,
+            ),
+            (
+                IN_CONNECT,
+                20502,
+                Fields::from([(0x78, Value::Struct(record))]),
+            ),
+        ];
+        if let Some(celebrations) = content.celebrations {
+            messages.extend(celebrations.login_messages(&profile, collection.items(), now)?);
+        }
+        let season = ranked.season(&profile);
+        let arcade = content.arcade.state(&profile, season, now)?;
+        messages.extend(arcade.messages);
+        messages.extend(player::endorsements(&profile, identity, content.wall_time));
+        messages.push((player::PERMISSIONS, 55500, player::features()));
+        messages.push((PROGRESSION, 24300, collection.progression(&profile)?));
+        // The client merges boxes (24302) and takes each balance and the level
+        // from its own message; a 24300 sent again is not relied on for them.
+        messages.push(Collection::boxes_update(&profile.loot_boxes));
+        for (id, amount) in [
+            (24307, profile.credits),
+            (24308, profile.comp_points),
+            (24309, profile.league_tokens),
+        ] {
+            messages.push((
+                PROGRESSION,
+                id,
+                Fields::from([(0x78, Value::Signed(amount))]),
+            ));
+        }
+        messages.push((
+            PROGRESSION,
+            24313,
+            Fields::from([
+                (0x78, Value::Signed(profile.level)),
+                (0x80, Value::Unsigned(0)), // experience
+            ]),
+        ));
+        messages.push((HERO_CATALOG, 24900, collection.hero_catalog(&profile)?));
+        messages.extend(ranked.login_messages(
+            &profile,
+            &arcade.competitive_cards,
+            content.leaderboard_places,
+            now,
+        )?);
+        messages.push(passes::counts(&profile)?);
+        if let Some(party) = content.solo_party {
+            messages.push(solo_party_state(
+                &profile, identity, collection, ranked, party, &content,
+            )?);
+        }
+        Ok(messages)
+    }
+}
+
+fn solo_party_state(
+    profile: &Profile,
+    identity: Identity,
+    collection: &Collection,
+    ranked: &Ranked,
+    party: SoloLoginParty,
+    content: &LoginContent<'_>,
+) -> io::Result<LobbyMessage> {
+    let ratings = ranked.party_ratings(profile, content.leaderboard_places)?;
+    let member = PartyMember {
+        profile,
+        identity,
+        menu_hero: party.menu_hero,
+        ratings: &ratings,
+        membership: Membership::Leader,
+    };
+    party::state(
+        collection,
+        party.id,
+        party.entity,
+        &[member],
+        party.members_may_invite,
+        content.wall_time,
+    )
 }
 
 fn resolve_battle_tag(accounts: &Accounts, name: &str) -> String {

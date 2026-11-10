@@ -21,7 +21,6 @@ pub const LOBBY_RUNTIME_DATA: &[&str] = &[
 ];
 pub const MATCH_RUNTIME_DATA: &[&str] = &[
     "ai_spawners_174.json",
-    "collision_keys_174.json",
     "collision_props_174.json",
     "game_graphs_174.json.gz",
     "game_heroes_174.json",
@@ -29,6 +28,9 @@ pub const MATCH_RUNTIME_DATA: &[&str] = &[
     "game_movers_174.json",
     "game_stats_174.json",
 ];
+/// Packed for the Python server only: the Rust server finds each map's
+/// collision chunk through the install's manifest.
+const PYTHON_RUNTIME_DATA: &[&str] = &["collision_keys_174.json"];
 const MANIFEST_SCHEMA: &str = "orpheus-runtime-copy-v1";
 const GRAPH_BUNDLE: &str = "data/game_graphs_174.json.gz";
 
@@ -142,7 +144,11 @@ fn inputs(
     game_graphs: Option<&Path>,
 ) -> Result<BTreeMap<String, PathBuf>, RuntimeError> {
     let mut inputs = BTreeMap::new();
-    for name in LOBBY_RUNTIME_DATA.iter().chain(MATCH_RUNTIME_DATA) {
+    for name in LOBBY_RUNTIME_DATA
+        .iter()
+        .chain(MATCH_RUNTIME_DATA)
+        .chain(PYTHON_RUNTIME_DATA)
+    {
         let member = format!("data/{name}");
         inputs.insert(member.clone(), source.join(member));
     }
@@ -355,7 +361,11 @@ mod tests {
         }
 
         fn source(&self) -> PathBuf {
-            for name in LOBBY_RUNTIME_DATA.iter().chain(MATCH_RUNTIME_DATA) {
+            for name in LOBBY_RUNTIME_DATA
+                .iter()
+                .chain(MATCH_RUNTIME_DATA)
+                .chain(PYTHON_RUNTIME_DATA)
+            {
                 self.write(&format!("source/data/{name}"), name.as_bytes());
             }
             self.write("source/cache/collision/0688.col", b"practice");
@@ -407,7 +417,7 @@ mod tests {
         let entries = manifest["sha256"].as_object().unwrap();
         assert_eq!(
             entries.len(),
-            LOBBY_RUNTIME_DATA.len() + MATCH_RUNTIME_DATA.len() + 2
+            LOBBY_RUNTIME_DATA.len() + MATCH_RUNTIME_DATA.len() + PYTHON_RUNTIME_DATA.len() + 2
         );
         for (name, hash) in entries {
             let copied = fs::read(output.join(name)).unwrap();

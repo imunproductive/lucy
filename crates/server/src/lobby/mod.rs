@@ -5,6 +5,7 @@ mod handlers;
 pub(crate) mod hub;
 pub(crate) mod peer;
 pub(crate) mod router;
+pub(crate) mod services;
 
 use std::{
     collections::HashMap,
@@ -27,7 +28,7 @@ use orpheus_lobby::{
     login::SIGNED_IN_ELSEWHERE,
     menu::MenuHero,
     presence::Presence,
-    ranked::{LeaderboardPlaces, Ranked},
+    ranked::Ranked,
     session::{LobbySession, LoginContent, LoginRequest, SoloLoginParty},
     templates::RetailTemplates,
 };
@@ -75,6 +76,8 @@ pub(crate) struct Lobby {
     pub hub: Hub,
     /// Hosting for other PCs and the games this PC started.
     pub platform: Arc<Platform>,
+    /// Loot boxes, the shop, login rewards and the dashboard's live updates.
+    pub services: Arc<services::Services>,
 }
 
 struct LoginLease<'a> {
@@ -167,6 +170,7 @@ impl Lobby {
             self.platform
                 .track_local(login.account.account_lo, &login.account.name)
         });
+        services::follow_local_login(self, session.is_local(), &login.account);
         let wall_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?
@@ -188,6 +192,8 @@ impl Lobby {
             (menu, members)
         };
         login.account.save()?;
+        let rewards = services::claim_at_login(self, &login.account, wall_time)?;
+        let places = services::top500_places(self, &login.account)?;
         let messages = login.available_messages(
             &self.schemas,
             &self.templates,
@@ -200,7 +206,7 @@ impl Lobby {
                 wall_time,
                 arcade: &self.arcade,
                 celebrations: Some(&self.celebrations),
-                leaderboard_places: &LeaderboardPlaces::new(),
+                leaderboard_places: &places,
                 solo_party: Some(SoloLoginParty {
                     id: login.identity.party_id,
                     entity: login.identity.party_entity,
@@ -217,6 +223,9 @@ impl Lobby {
         }
         if lease.current() {
             session.send(&join_chat_channel(general_channel()))?;
+            for message in &rewards {
+                session.send(message)?;
+            }
         }
         let mailbox = Arc::clone(&lease.mailbox);
         let mut peer = Peer {

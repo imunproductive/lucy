@@ -22,6 +22,7 @@ pub const DEFAULT_ICON: u64 = 0x0250_0000_0000_02f7;
 pub const BOT_NAME: &str = "Bot";
 const UNLOCKS_RESET_MARKER: &str = "unlocks_reset_v2";
 
+/// A loot box type of Overwatch 1 (`ow174/catalog/boxes.py`).
 pub struct BoxType {
     pub id: i32,
     /// The official name.
@@ -30,31 +31,64 @@ pub struct BoxType {
     pub label: &'static str,
     /// How many a new profile starts with.
     pub starter: u64,
+    /// The event pool the box draws from: 0 the base items, 1-6 the seasonal events.
+    pub event: i64,
+    /// The box always holds a legendary item.
+    pub legendary: bool,
+    /// A hero's box holds only that hero's items (credits can drop too); "" for any hero.
+    pub hero: &'static str,
 }
 
-const fn box_type(id: i32, name: &'static str, label: &'static str, starter: u64) -> BoxType {
-    BoxType {
-        id,
-        name,
-        label,
-        starter,
+impl BoxType {
+    const fn new(id: i32, name: &'static str, label: &'static str, starter: u64) -> Self {
+        Self {
+            id,
+            name,
+            label,
+            starter,
+            event: 0,
+            legendary: false,
+            hero: "",
+        }
+    }
+
+    const fn event(self, event: i64) -> Self {
+        Self { event, ..self }
+    }
+
+    const fn legendary(self) -> Self {
+        Self {
+            legendary: true,
+            ..self
+        }
+    }
+
+    const fn hero(self, hero: &'static str) -> Self {
+        Self { hero, ..self }
     }
 }
 
 // The type order determines the IDs in new profiles.
 pub const BOX_TYPES: [BoxType; 11] = [
-    box_type(0, "Standard", "Standard", 50),
-    box_type(1, "Summer Games", "Summer Games", 10),
-    box_type(2, "Halloween Terror", "Halloween", 10),
-    box_type(3, "Winter Wonderland", "Winter Wonderland", 10),
-    box_type(4, "Lunar New Year", "Lunar New Year", 10),
-    box_type(5, "Archives", "Archives", 10),
-    box_type(6, "Anniversary", "Anniversary", 10),
-    box_type(7, "Golden", "Golden", 10),
-    box_type(9, "Legendary Anniversary", "Legendary Anniversary", 10),
-    box_type(10, "Wrecking Ball", "Ram", 0),
-    box_type(12, "Legendary", "Legendary", 10),
+    BoxType::new(0, "Standard", "Standard", 50),
+    BoxType::new(1, "Summer Games", "Summer Games", 10).event(1),
+    BoxType::new(2, "Halloween Terror", "Halloween", 10).event(2),
+    BoxType::new(3, "Winter Wonderland", "Winter Wonderland", 10).event(3),
+    BoxType::new(4, "Lunar New Year", "Lunar New Year", 10).event(4),
+    BoxType::new(5, "Archives", "Archives", 10).event(5),
+    BoxType::new(6, "Anniversary", "Anniversary", 10).event(6),
+    BoxType::new(7, "Golden", "Golden", 10).legendary(),
+    BoxType::new(9, "Legendary Anniversary", "Legendary Anniversary", 10)
+        .event(6)
+        .legendary(),
+    BoxType::new(10, "Wrecking Ball", "Ram", 0).hero("Wrecking Ball"),
+    BoxType::new(12, "Legendary", "Legendary", 10).legendary(),
 ];
+
+/// The catalog entry of a box type.
+pub fn box_type(id: i32) -> Option<&'static BoxType> {
+    BOX_TYPES.iter().find(|kind| kind.id == id)
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LootBox {
@@ -88,7 +122,8 @@ pub struct Profile {
     pub last_online: i64,
     pub lobby_hero: String,
     pub events: Vec<String>,
-    pub greeted_events: Vec<String>,
+    /// Celebration ids whose start greeting (38901) was shown.
+    pub greeted_events: Vec<u64>,
     pub server_date: String,
     pub challenge: String,
     pub challenge_wins: i64,
@@ -189,6 +224,16 @@ impl Profile {
         Ok(added)
     }
 
+    /// Add a new profile's boxes: each type's starter count, in catalog order
+    /// (`starter_boxes`, `ow174/catalog/boxes.py`). Returns how many.
+    pub fn add_starter_boxes(&mut self) -> io::Result<usize> {
+        let mut added = 0;
+        for kind in &BOX_TYPES {
+            added += self.add_boxes(kind.id, kind.starter)?.len();
+        }
+        Ok(added)
+    }
+
     pub fn unlocked_guids(&self) -> HashSet<u64> {
         self.unlocked_items
             .iter()
@@ -206,10 +251,7 @@ impl Profile {
 }
 
 pub fn box_name(box_type: i32) -> String {
-    BOX_TYPES
-        .iter()
-        .find(|kind| kind.id == box_type)
-        .map_or_else(|| format!("Type {box_type}"), |kind| kind.name.into())
+    self::box_type(box_type).map_or_else(|| format!("Type {box_type}"), |kind| kind.name.into())
 }
 
 fn box_id_overflow() -> io::Error {
@@ -221,11 +263,7 @@ fn box_id_overflow() -> io::Error {
 
 pub fn new_profile() -> Profile {
     let mut profile = Profile::default();
-    for kind in BOX_TYPES {
-        profile
-            .add_boxes(kind.id, kind.starter)
-            .expect("starter box IDs fit");
-    }
+    profile.add_starter_boxes().expect("starter box IDs fit");
     profile
 }
 
