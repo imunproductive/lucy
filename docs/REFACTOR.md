@@ -450,7 +450,7 @@ Record the result in `docs/notes/data-sources.md`.
 
 | Output (oracle file) | Source today | Asset inputs |
 | --- | --- | --- |
-| `extracted_heroes.json`, `extracted_maps.json`, `extracted_items.json`, `extracted_general_unlocks.json` | None in the repository (see 6c.0) | Decided by 6c.0 |
+| `extracted_heroes.json`, `extracted_maps.json`, `extracted_items.json`, `extracted_general_unlocks.json` | None in the repository (see 6c.0) | Derived: a port of DataTool's `list-heroes`, `list-maps`, `list-unlocks` and `list-general-unlocks --json` (`crates/assets/src/lists`), identical to DataTool's own output on this install. The pack's maps file has 207 blank or season-less display strings the install doesn't; the test pins them. |
 | `game_heroes_174.json` | `extract_game_heroes.py` | `075` plus hero names |
 | `game_graphs_174.json.gz` | `extract_game_graphs.py` | `01B`, `003`, `0C5` (mode variables), the AI spawner graphs. Oracle: the normalized SHA-256 `febfbcc8…` recorded in `docs/notes/data-sources.md`. |
 | `game_maps_174.json` | `extract_game_maps.py` | `003`, `09F`, `0C5`, raw map chunks `0BC`, map entities, strings |
