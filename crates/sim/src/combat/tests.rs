@@ -1,6 +1,6 @@
 use super::*;
 use crate::{instance::RETAIL_QUANTA, scene_assets::SceneAssets};
-use orpheus_content::maps::GameMap;
+use orpheus_content::maps::{GameMap, PRACTICE_RANGE_MODE};
 
 const SHOOTER: Shooter = Shooter {
     source: 0xa000_0101,
@@ -34,7 +34,8 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
     combat.record_poses(&scene, &[], context.tick);
     let mut shot = PosedHitscan {
         source: SHOOTER.source,
-        origin: [x - 8.0, y + eye_height(SOLDIER, false), z],
+        // combat.py `EYE`: Soldier: 76's standing eye.
+        origin: [x - 8.0, y + 1.55, z],
         command: Command {
             frame: context.tick,
             yaw: 16384,
@@ -158,9 +159,48 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
 
 #[test]
 fn heroes_respawn_after_the_mode_time() {
-    assert_eq!(respawn_time(PRACTICE_RANGE_MODE), Duration::from_secs(3));
-    assert_eq!(respawn_time(0x0230_0000_0000_0001), Duration::from_secs(10));
+    let times = RespawnTimes::from_json(r#"{"0x0230000000000018": 3}"#).unwrap();
+    assert_eq!(
+        times.for_mode(0x0230_0000_0000_0018),
+        Duration::from_secs(3)
+    );
+    assert_eq!(
+        times.for_mode(0x0230_0000_0000_0001),
+        Duration::from_secs(10)
+    );
     assert_eq!(RESPAWN_RETRY, Duration::from_millis(250));
+}
+
+/// combat.py `MELEE = {0x0043: (4, 1.5, 1.0)}`, read from graph 0043.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn quick_melee_reads_the_python_sphere_from_its_graph() {
+    let graphs = orpheus_script::graph::GraphStore::load(
+        orpheus_testkit::runtime_dir().join("data/game_graphs_174.json.gz"),
+    )
+    .unwrap();
+    assert_eq!(
+        melee_states(&graphs).unwrap(),
+        [MeleeState {
+            state: 4,
+            reach: 1.5,
+            radius: 1.0
+        }]
+    );
+}
+
+/// combat.py `RESPAWN` and `PRACTICE_RESPAWN` from the derived mode times.
+#[test]
+#[ignore = "requires the derived 104319 mode respawn times"]
+fn derived_respawn_times_match_the_python_reference() {
+    let times =
+        RespawnTimes::load(orpheus_testkit::runtime_dir().join("data/game_respawns_174.json"))
+            .unwrap();
+    assert_eq!(times.for_mode(PRACTICE_RANGE_MODE), Duration::from_secs(3));
+    assert_eq!(
+        times.for_mode(0x0230_0000_0000_0014),
+        Duration::from_secs(10)
+    );
 }
 
 #[test]

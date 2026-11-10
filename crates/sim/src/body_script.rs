@@ -10,14 +10,12 @@ use std::{
 use serde_json::Value as Json;
 
 use crate::{
-    combat::{MELEE, PosedHitscan, PosedMelee, PosedProjectile, PosedShot, eye_height},
+    combat::{BodyCombat, MELEE_GRAPH, PosedHitscan, PosedMelee, PosedProjectile, PosedShot},
     hitscan::aim_direction,
     instance::RETAIL_QUANTA,
     others::ObserverActivity,
     pools::{BODY_GRAPH, FALLBACK_POOLS, HealthPools},
-    projectiles::{
-        FIELD_ENTITY, ProjectileLeases, local_prediction, predicted_sync, spawned_definitions,
-    },
+    projectiles::{ProjectileLeases, local_prediction, predicted_sync, spawned_definitions},
     replication::{BodyStep, OwnerBodyRuntime},
     voice::{SpawnBark, begin_spawn_bark},
 };
@@ -75,9 +73,11 @@ pub struct PlayerBodyFactory {
     pools: Option<HealthPools>,
     target_tags: Option<BTreeSet<u64>>,
     controller_on_fire: bool,
+    combat: BodyCombat,
 }
 
 impl PlayerBodyFactory {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare(
         graphs: Arc<GraphStore>,
         codecs: Arc<CodecTable>,
@@ -85,6 +85,7 @@ impl PlayerBodyFactory {
         hero: &Hero,
         pools: Option<HealthPools>,
         controller_on_fire: bool,
+        combat: BodyCombat,
         probe: OwnerBodySpawn,
     ) -> io::Result<Self> {
         let body = graphs
@@ -108,6 +109,7 @@ impl PlayerBodyFactory {
             pools,
             target_tags,
             controller_on_fire,
+            combat,
         };
         let runtime = factory.start(probe)?;
         let encoder = runtime.encoder();
@@ -180,6 +182,7 @@ impl PlayerBodyFactory {
             frame: spawn.frame,
             ultimate,
             melee_seen: HashMap::new(),
+            combat: self.combat.clone(),
             bark: None,
         };
         runtime.log_assumptions();
@@ -217,6 +220,8 @@ pub struct PlayerBodyRuntime {
     /// The activation of each quick melee state seen last (combat.py
     /// `melee_seen`).
     melee_seen: HashMap<(u16, u16), u16>,
+    /// The body's eyes, quick melee's states and the Biotic Field.
+    combat: BodyCombat,
     /// The spawn voice line while it plays (voicelines.py).
     bark: Option<SpawnBark>,
 }
@@ -244,7 +249,9 @@ impl PlayerBodyRuntime {
         };
         let mut started = Vec::new();
         for (&id, instance) in &snapshot.instances {
-            for &(graph, raw, reach, radius) in &MELEE {
+            for melee in self.combat.melee.iter() {
+                let (graph, raw, reach, radius) =
+                    (MELEE_GRAPH, melee.state, melee.reach, melee.radius);
                 if instance.graph != graph {
                     continue;
                 }
@@ -264,7 +271,7 @@ impl PlayerBodyRuntime {
             return Vec::new();
         };
         let [x, y, z] = mover.pose().position;
-        let eye = [x, y + eye_height(self.world.hero, mover.crouched()), z];
+        let eye = [x, y + self.combat.eyes.height(mover.crouched()), z];
         let aim = aim_direction(&command);
         let graphs = Arc::clone(&self.world.graphs);
         started
@@ -469,7 +476,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
             return Vec::new();
         };
         let [x, y, z] = mover.pose().position;
-        let origin = [x, y + eye_height(self.world.hero, mover.crouched()), z];
+        let origin = [x, y + self.combat.eyes.height(mover.crouched()), z];
         let mut posed: Vec<_> = shots
             .into_iter()
             .filter_map(|shot| {
@@ -484,6 +491,11 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                     // not it does damage; the Biotic Field canister leaves its
                     // field at the shooter's feet (projectiles.py `fired`).
                     let spawn = spawned_definitions(node).first().copied();
+                    let field = self
+                        .combat
+                        .field
+                        .filter(|_| spawn == Some(crate::projectiles::FIELD_ENTITY))
+                        .map(Box::new);
                     // The match flight handles one straight, owner-predicted
                     // projectile per shot. The Biotic Field canister's arc
                     // (0257's gravity) decides nothing: its field opens at
@@ -491,7 +503,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                     if !node.is_networked()
                         || !local_prediction(node)
                         || !predicted_sync(node, &mut evaluate).ok()?
-                        || (spawn != Some(FIELD_ENTITY)
+                        || (spawn != Some(crate::projectiles::FIELD_ENTITY)
                             && node
                                 .field("m_projectileMotions")
                                 .is_some_and(|v| !v.is_null()))
@@ -525,6 +537,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                         origin,
                         direction: aim_direction(&command),
                         spawn,
+                        field,
                         feet: [x, y, z],
                         volleys,
                     }));
@@ -601,6 +614,15 @@ pub fn fixture_body_factory() -> (PlayerBodyFactory, OwnerBodySpawn) {
         &hero,
         None,
         false,
+        BodyCombat {
+            // combat.py `EYE`, `EYE_CROUCHED`: Soldier: 76's.
+            eyes: orpheus_content::heroes::Eyes {
+                standing: 1.55,
+                crouched: 1.085,
+            },
+            melee: Arc::new([]),
+            field: None,
+        },
         spawn,
     )
     .unwrap();

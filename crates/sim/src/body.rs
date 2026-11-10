@@ -13,9 +13,6 @@ use orpheus_wire::entity::{
 };
 
 pub const CROUCHED_MOVEMENT_FLAG: u32 = 0x2;
-/// The movement record's gravity scale of a body on another client
-/// (ow174/game/match.py Player.movement, as the bots' records).
-pub(crate) const GRAVITY_SCALE: f64 = 1.75;
 
 pub struct BodyCreate<'a> {
     pub entity: u32,
@@ -56,8 +53,9 @@ pub fn owner_pose(source: Movement) -> Movement {
 /// jump from it. The record's frame is the packet's (the server tick), so the
 /// client reads the input fields. A movement key counts as held while the
 /// last command with throttles is not older than this tick, so a standing
-/// body carries the frame of that command.
-pub fn remote_movement(pose: Movement, tick: u32) -> Movement {
+/// body carries the frame of that command. The gravity scale is the body's
+/// mover's (mover.py `GRAVITY_SCALE`, every hero's 1.75).
+pub fn remote_movement(pose: Movement, tick: u32, gravity: f64) -> Movement {
     // The mover's pose says None when its own frame had throttles.
     let last_input = match pose.input_frame {
         None => pose.frame,
@@ -79,7 +77,7 @@ pub fn remote_movement(pose: Movement, tick: u32) -> Movement {
         input_frame,
         input_throttles: pose.input_throttles,
         air_ticks: pose.air_ticks,
-        gravity: GRAVITY_SCALE,
+        gravity,
         ..Movement::default()
     }
 }
@@ -273,7 +271,7 @@ mod tests {
             spring: [4, 5],
             ..Movement::default()
         };
-        let record = remote_movement(standing, 1003);
+        let record = remote_movement(standing, 1003, 1.75);
         assert_eq!(
             record,
             Movement {
@@ -284,21 +282,24 @@ mod tests {
                 input_frame: Some(990),
                 input_throttles: [0, 127],
                 air_ticks: 3,
-                gravity: GRAVITY_SCALE,
+                gravity: 1.75,
                 ..Movement::default()
             }
         );
         // The record's frame is the packet's: an input at or after this tick
         // is still held, and a running body has no input frame.
-        assert_eq!(remote_movement(standing, 990).input_frame, None);
+        assert_eq!(remote_movement(standing, 990, 1.75).input_frame, None);
         let running = Movement {
             throttles: [0, 127],
             input_frame: None,
             ..standing
         };
-        assert_eq!(remote_movement(running, 1003).input_frame, None);
+        assert_eq!(remote_movement(running, 1003, 1.75).input_frame, None);
         let fresh = Movement::default();
-        assert_eq!(remote_movement(fresh, 1003).input_frame, Some(NO_INPUT));
+        assert_eq!(
+            remote_movement(fresh, 1003, 1.75).input_frame,
+            Some(NO_INPUT)
+        );
     }
 
     #[test]

@@ -2305,11 +2305,13 @@ fn another_client_sees_a_players_helix_rocket() {
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
     use orpheus_content::stats::GMP_STATS;
-    use orpheus_sim::projectiles::{FIELD_FIRST, FIELD_SPAN, FIELD_TICKS};
+    use orpheus_sim::projectiles::{FIELD_FIRST, FIELD_SPAN};
     use orpheus_wire::commands::FIRE;
     /// tests/test_game_projectiles.py `ABILITY_2`: 0257 st0's button.
     const ABILITY_2: u32 = 0x10;
     const FIELD: u32 = 0x03dc;
+    /// projectiles.py `FIELD_TICKS`: 0258's 5 s.
+    const FIELD_TICKS: u32 = 313;
 
     // The enemy and the patient share the spawn point; the healer stands
     // 1.5 m beside it, out of the enemy's line of fire.

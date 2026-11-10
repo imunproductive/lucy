@@ -93,6 +93,63 @@ impl HeroCatalog {
     }
 }
 
+/// A body's eye heights over its feet, standing and crouched
+/// (`STUFirstPersonComponent` `m_E29993A5` and `m_816B830F`, derived into
+/// `game_eyes_174.json`; combat.py `EYE`, `EYE_CROUCHED`).
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+pub struct Eyes {
+    #[serde(rename = "eye")]
+    pub standing: f64,
+    #[serde(rename = "eye_crouched")]
+    pub crouched: f64,
+}
+
+impl Eyes {
+    pub fn height(self, crouched: bool) -> f64 {
+        if crouched {
+            self.crouched
+        } else {
+            self.standing
+        }
+    }
+}
+
+/// Every hero's and training bot's body's [`Eyes`].
+#[derive(Debug)]
+pub struct EyeCatalog {
+    by_body: HashMap<u64, Eyes>,
+    fallback: Eyes,
+}
+
+impl EyeCatalog {
+    /// Read `game_eyes_174.json`. A body it doesn't list takes the
+    /// `fallback` body's eyes, which it must list (the server's fallback hero
+    /// body, as for the movers).
+    pub fn load(path: impl AsRef<Path>, fallback: u64) -> io::Result<Self> {
+        Self::from_json(&fs::read_to_string(path)?, fallback)
+    }
+
+    pub fn from_json(text: &str, fallback: u64) -> io::Result<Self> {
+        let raw: IndexMap<String, Eyes> = serde_json::from_str(text)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let by_body: HashMap<u64, Eyes> = raw
+            .into_iter()
+            .map(|(body, eyes)| Ok((required_guid(&body)?, eyes)))
+            .collect::<io::Result<_>>()?;
+        let fallback = *by_body.get(&fallback).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("the eye catalog has no fallback body 0x{fallback:016X}"),
+            )
+        })?;
+        Ok(Self { by_body, fallback })
+    }
+
+    pub fn for_body(&self, body: u64) -> Eyes {
+        self.by_body.get(&body).copied().unwrap_or(self.fallback)
+    }
+}
+
 #[derive(Deserialize)]
 struct RawHero {
     name: String,
@@ -243,5 +300,48 @@ mod tests {
             format!("{:x}", digest.finalize()),
             "db1613136543b5dcd128e2c9aa1f7037d9cd8171308895489b30d9c19f18a138"
         );
+    }
+
+    #[test]
+    fn eyes_fall_back_to_the_fallback_body() {
+        let text = r#"{
+            "0x04000000000003CF": {"name":"Soldier: 76", "eye":1.55, "eye_crouched":1.085},
+            "0x0400000000001403": {"name":"Training Bot", "eye":2.0, "eye_crouched":1.0}
+        }"#;
+        let catalog = EyeCatalog::from_json(text, 0x0400_0000_0000_03cf).unwrap();
+        let bot = catalog.for_body(0x0400_0000_0000_1403);
+        assert_eq!((bot.height(false), bot.height(true)), (2.0, 1.0));
+        assert_eq!(
+            catalog.for_body(0x99),
+            catalog.for_body(0x0400_0000_0000_03cf)
+        );
+        assert_eq!(
+            EyeCatalog::from_json(text, 0x99).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    /// combat.py `EYE`, `EYE_CROUCHED` and `EYE_CROUCHED_DEFAULT`: Soldier:
+    /// 76's eyes are 1.55 and 1.085; a body without a first-person component
+    /// (the Friendly Bot 143E) has the component's defaults, 1.55 and 1.15.
+    #[test]
+    #[ignore = "requires the derived 104319 eye catalog"]
+    fn derived_eyes_match_the_python_reference() {
+        let root = orpheus_testkit::runtime_dir();
+        let catalog =
+            EyeCatalog::load(root.join("data/game_eyes_174.json"), 0x0400_0000_0000_03cf).unwrap();
+        let soldier = catalog.for_body(0x0400_0000_0000_03cf);
+        assert_eq!((soldier.standing, soldier.crouched), (1.55, 1.085));
+        let friendly = catalog.for_body(0x0400_0000_0000_143e);
+        assert_eq!((friendly.standing, friendly.crouched), (1.55, 1.15));
+        let heroes = HeroCatalog::load(root.join("data/game_heroes_174.json")).unwrap();
+        for hero in heroes.heroes() {
+            let eyes = catalog.for_body(hero.body);
+            assert!(
+                0.0 < eyes.crouched && eyes.crouched <= eyes.standing,
+                "{}",
+                hero.name
+            );
+        }
     }
 }

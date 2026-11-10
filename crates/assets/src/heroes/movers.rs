@@ -19,7 +19,7 @@ use std::{collections::BTreeMap, path::Path};
 use orpheus_stu::Value;
 use serde_json::{Map, json};
 
-use super::{Assets, field, parse_guid, read_json};
+use super::{Assets, field, parse_guid};
 use crate::{Install, Output, Result, asset_error};
 
 const ENTITY: u16 = 0x003;
@@ -81,21 +81,7 @@ const DEFAULTED: [&str; 4] = [
 /// the collision flag are integers, the rest floats as the client prints
 /// them.
 pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
-    let heroes = read_json(out, "data/game_heroes_174.json")?;
-    let mut bodies: Vec<serde_json::Value> = heroes
-        .as_object()
-        .ok_or_else(|| asset_error("data/game_heroes_174.json is not an object"))?
-        .values()
-        .cloned()
-        .collect();
-    if out.join("data/ai_spawners_174.json").is_file() {
-        let spawners = read_json(out, "data/ai_spawners_174.json")?;
-        let bots = spawners
-            .get("heroes")
-            .and_then(serde_json::Value::as_object)
-            .ok_or_else(|| asset_error("data/ai_spawners_174.json has no heroes"))?;
-        bodies.extend(bots.values().cloned());
-    }
+    let bodies = super::bodies(out)?;
     let assets = Assets::of(install, ENTITY);
     let mut table = BTreeMap::new();
     for hero in &bodies {
@@ -140,7 +126,7 @@ pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
 
 /// An `f32` as DataTool prints it (the shortest text that reads back the
 /// same `f32`), read back as a double the way the Python reference did.
-fn float(value: f64) -> serde_json::Value {
+pub(crate) fn float(value: f64) -> serde_json::Value {
     let shortest: f64 = (value as f32).to_string().parse().expect("a float");
     json!(shortest)
 }
