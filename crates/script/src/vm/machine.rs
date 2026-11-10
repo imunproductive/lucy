@@ -22,6 +22,7 @@ impl Machine {
                 resolved_bindings: IndexMap::new(),
                 diagnostics: Vec::new(),
                 assumptions: Vec::new(),
+                now_ms: frame_start(frame),
             },
             queues: Timeline::new(MAX_PENDING_EVENTS),
             watchers: BTreeMap::new(),
@@ -39,10 +40,14 @@ impl Machine {
             command_buttons: 0,
             held_buttons: Vec::new(),
             owner_dead: false,
+            deferred: BTreeMap::new(),
+            disabled: BTreeMap::new(),
+            movements: BTreeMap::new(),
         })
     }
 
     pub(super) fn capture_outputs(&mut self) {
+        self.snapshot.now_ms = self.now_ms;
         self.snapshot.pending_timers.clear();
         for &id in self.snapshot.instances.keys() {
             let timers: Vec<_> = self

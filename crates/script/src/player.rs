@@ -16,11 +16,12 @@ use serde_json::Value as Json;
 use crate::{
     expr::{EntityRelation, native_shape, valid_entity},
     graph::GraphStore,
+    rulesets,
     vitals::{PoolKind, Vitals},
-    vm::{Site, TargetTagEffect, World},
-    wire::Value,
+    vm::{GameMessage, Site, TargetTagEffect, World},
+    wire::{Value, Variables},
 };
-use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
+use orpheus_content::maps::PRACTICE_RANGE_MODE;
 use orpheus_physics::mover::sample_movement_flags;
 use orpheus_wire::entity::{GAME_MODE_ENTITY, Movement};
 
@@ -39,6 +40,8 @@ pub struct PlayerWorld {
     pub target_tags: Option<BTreeSet<u64>>,
     target_tag_effects: BTreeMap<u64, TargetTagCounts>,
     pub controller_on_fire: bool,
+    /// Game messages to other entities, for the match to route.
+    outbox: Vec<GameMessage>,
 }
 
 #[derive(Default)]
@@ -56,16 +59,28 @@ impl World for PlayerWorld {
     }
 
     fn ruleset(&mut self, id: u32) -> Option<Value> {
-        if (self.mode, self.hero) != (PRACTICE_RANGE_MODE, SOLDIER) {
-            return None;
+        rulesets::default(id, self.hero, self.mode)
+    }
+
+    /// The body's messages to other entities wait for the match
+    /// (`BodyWorld.send_message` in `ow174/game/script/driver.py`).
+    fn send_message(
+        &mut self,
+        source: Site,
+        target: u32,
+        message: u64,
+        parameters: &Variables,
+    ) -> bool {
+        if source.entity != self.entity {
+            return false;
         }
-        // Defaults read by the target startup, from ow174/game/script/rulesets.py.
-        match id {
-            0x2538 | 0x2819 | 0x32e8 => Some(Value::Float(1.0)),
-            0x260f => Some(Value::Bool(true)),
-            0x281a | 0x32e0 | 0x32e9 => Some(Value::Bool(false)),
-            _ => None,
-        }
+        self.outbox.push(GameMessage {
+            sender: self.entity,
+            target,
+            message,
+            parameters: parameters.clone(),
+        });
+        true
     }
 
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
@@ -274,7 +289,15 @@ impl PlayerWorld {
             target_tags: None,
             target_tag_effects: BTreeMap::new(),
             controller_on_fire: false,
+            outbox: Vec::new(),
         }
+    }
+
+    /// The game messages the body sent other entities since the last call,
+    /// in order (`Match.queue_body_message` in `ow174/game/match.py`); the
+    /// recipient takes each with `Component::receive_message`.
+    pub fn take_messages(&mut self) -> Vec<GameMessage> {
+        std::mem::take(&mut self.outbox)
     }
 
     fn is_player_site(&self, site: Site) -> bool {

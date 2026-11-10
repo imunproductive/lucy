@@ -1363,3 +1363,113 @@ fn actual_shared_ui_graph_baselines_match_python() {
         );
     }
 }
+
+#[test]
+fn kill_feed_pulse_waits_for_the_world_then_stays_fresh_until_acknowledged() {
+    use crate::vm::Component;
+    use std::sync::Arc;
+
+    let mut states = vec![Json::Null; 108];
+    states.push(json!(1));
+    let mut feed = graph(
+        0x01cf,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntryGameMessage",
+                None,
+                json!({
+                    "m_gameMessage":{"m_gameMessage":"0x024000000000003E"},
+                    "m_outPlug":{"$":"Plug","links":[[1,"m_beginPlug"]],"m_FF3DAF1E":[]},
+                }),
+            ),
+            node(1, "STU_B9898052", Some(108), json!({})),
+        ],
+        json!(states),
+        json!([0]),
+        json!([]),
+        json!([]),
+    );
+    feed["header"]["m_statesBitCount"] = json!(8);
+    let graphs = Arc::new(
+        GraphStore::from_json(
+            &serde_json::to_vec(&json!({
+                "version":1, "graphs":[feed], "bodies":{}, "missing":[]
+            }))
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    let codecs = CodecTable::client();
+    let mut component = Component::start(
+        Arc::clone(&graphs),
+        ENTITY,
+        Variables::new(),
+        vec![Root::new(1, 0x01cf)],
+        100,
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    let mut stream = BodyStream::new(ENTITY);
+    let full = encoder
+        .queue_full(
+            &mut stream,
+            &encoder
+                .project(component.snapshot().unwrap(), View::Owner)
+                .unwrap(),
+        )
+        .unwrap();
+    stream.create_arrived();
+    stream.arrived(full.last);
+
+    component.advance_frame(101, &mut EmptyWorld).unwrap();
+    component
+        .queue_message(1, 0x0240_0000_0000_003e, Variables::new())
+        .unwrap();
+    component.run_now(&mut EmptyWorld).unwrap();
+    let pulse = |snapshot: &ProjectedSnapshot| {
+        snapshot.instances[&1]
+            .states
+            .get(&108)
+            .map(|state| (state.active, state.payload.clone()))
+    };
+    let payload = |fresh| {
+        StatePayload::from([
+            ("count".into(), Value::Integer(1)),
+            ("fresh".into(), Value::Bool(fresh)),
+        ])
+    };
+    let live = encoder
+        .project(component.snapshot().unwrap(), View::Owner)
+        .unwrap();
+    assert_eq!(pulse(&live), Some((true, payload(true))));
+    // Not allowed yet: the client keeps what it acknowledged.
+    assert_eq!(pulse(&live.clone().gate_kill_feed(&stream, false)), None);
+    let allowed = live.gate_kill_feed(&stream, true);
+    assert_eq!(pulse(&allowed), Some((true, payload(true))));
+    let sent = encoder
+        .queue_delta(&mut stream, &allowed, DeltaKind::InitialOwner(101), 16)
+        .unwrap()
+        .unwrap();
+
+    // Later the pulse is stale, but the unacknowledged one keeps its value.
+    for frame in 102..=140 {
+        component.advance_frame(frame, &mut EmptyWorld).unwrap();
+    }
+    let stale = encoder
+        .project(component.snapshot().unwrap(), View::Owner)
+        .unwrap();
+    assert_eq!(pulse(&stale), Some((true, payload(false))));
+    assert_eq!(
+        pulse(&stale.clone().gate_kill_feed(&stream, false)),
+        Some((true, payload(true)))
+    );
+    stream.sent(sent.last);
+    stream.arrived(sent.last);
+    assert_eq!(
+        pulse(&stale.gate_kill_feed(&stream, false)),
+        Some((true, payload(false)))
+    );
+}

@@ -43,6 +43,9 @@ impl<W: World> Context for InstanceContext<'_, W> {
     }
 
     fn parameter(&mut self, id: u32) -> Value {
+        if let Some(candidate) = self.candidate {
+            return candidate.clone();
+        }
         self.parameters
             .and_then(|parameters| parameters.get(&id))
             .cloned()

@@ -2,13 +2,16 @@
 
 #![forbid(unsafe_code)]
 
+pub mod bot;
 pub mod codecs;
 pub mod expr;
 pub mod graph;
 pub mod player;
+pub mod rulesets;
 pub mod snapshot;
 pub mod stream;
 pub mod timeline;
+pub mod ultimate;
 pub mod vitals;
 pub mod vm;
 pub mod weapons;

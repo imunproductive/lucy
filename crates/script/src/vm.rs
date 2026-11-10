@@ -7,6 +7,7 @@
 //! their corresponding runtime.
 
 mod abilities;
+mod actions;
 mod buttons;
 mod context;
 mod lifecycle;
@@ -40,11 +41,14 @@ use crate::{
     wire::{Value, Variables},
 };
 use orpheus_physics::mover::modifiers::{Modifier, ModifierKey, Operation};
-use orpheus_wire::commands::Command;
+use orpheus_wire::{commands::Command, entity::MAX_MOVEMENT_AXIS};
 
 pub const MAX_INIT_WORK: usize = 100_000;
 const MAX_PLUG_DEPTH: usize = 64;
 const MAX_EVENTS_PER_UPDATE: usize = 1000;
+/// Drain, tick and deferred rounds of one instance in one update
+/// (`MAX_INSTANCE_UPDATES` in `ow174/game/script/runtime.py`).
+const MAX_INSTANCE_UPDATES: usize = 1000;
 const MAX_PENDING_EVENTS: usize = 16_384;
 const MAX_PENDING_SHOTS: usize = 256;
 const ABILITY_RUNNING: u8 = 1;
@@ -303,7 +307,17 @@ pub trait World {
         None
     }
 
-    /// The world owns delivery outside the current body.
+    /// The logical button an AI weapon slot holds down while an
+    /// `AIFireWeapon` state runs (`ai_weapon_button` in
+    /// `ow174/game/script/runtime.py`). None: the slot has no button.
+    fn ai_weapon_button(&mut self, _slot: i64) -> Option<u8> {
+        None
+    }
+
+    /// Deliver a game message to another entity (`World.send_message` in
+    /// `ow174/game/script/runtime.py`). The world owns delivery outside the
+    /// current body; the receiving body takes it with
+    /// [`Component::receive_message`]. False: this world can't deliver it.
     fn send_message(
         &mut self,
         _source: Site,
@@ -313,6 +327,25 @@ pub trait World {
     ) -> bool {
         false
     }
+}
+
+/// A game message one body sends another, for the world to route
+/// (`Match.queue_body_message` in `ow174/game/match.py`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GameMessage {
+    pub sender: u32,
+    pub target: u32,
+    pub message: u64,
+    pub parameters: Variables,
+}
+
+/// A `MoveTo` state's fixed world target and speed in metres per second.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MoveRequest {
+    pub instance: u16,
+    pub raw_state: u16,
+    pub target: [f64; 3],
+    pub speed: f64,
 }
 
 #[derive(Default)]
@@ -380,6 +413,29 @@ pub enum StateKind {
         ammo0: i64,
         ammo_var: Option<Variable>,
     },
+    /// Runs its out plug and subgraph in the instance's deferred phase, after
+    /// the ticks (`Defer` in `ow174/game/script/nodes.py`).
+    Defer,
+    /// A client-only pulse counter (`ClientOnlyPulser`): pulses so far (mod
+    /// 256) and when the last one after the instance's first frame came.
+    Pulser {
+        pulses: u8,
+        pulsed_ms: Option<u64>,
+    },
+    /// Blocks the entity's logical buttons with this id while active
+    /// (`DisableLogicalButton`).
+    DisableButton {
+        button: i64,
+    },
+    /// Holds an AI weapon slot's button down while active (`AIFireWeapon`).
+    AiFire {
+        button: Option<u8>,
+    },
+    /// Finishes after its count of server frames (`WaitForServerFrames`).
+    ServerFrames,
+    /// A fixed world target and speed for bot movement (`MoveTo`); the
+    /// request is in [`Component::move_requests`].
+    MoveTo,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -455,6 +511,8 @@ pub struct Instance {
     pub graph: u32,
     /// Parent instance and raw state index, as carried on the wire.
     pub parent: Option<(u16, u16)>,
+    /// When the instance was created.
+    pub start_ms: u64,
     pub variables: Variables,
     pub states: IndexMap<u16, State>,
 }
@@ -502,6 +560,8 @@ pub struct Snapshot {
     pub diagnostics: Vec<Diagnostic>,
     /// Unverified answers given so far, each site and class once.
     pub assumptions: Vec<Assumption>,
+    /// The component's clock when this snapshot was taken.
+    pub now_ms: u64,
 }
 
 impl Snapshot {
@@ -540,6 +600,9 @@ pub enum InitFault {
     },
     Halted,
     PlugDepth,
+    UpdateBudget {
+        instance: u16,
+    },
 }
 
 impl fmt::Display for InitFault {
@@ -582,6 +645,12 @@ impl fmt::Display for InitFault {
             }
             Self::Halted => f.write_str("statescript component halted after a failed operation"),
             Self::PlugDepth => f.write_str("statescript initialization plug depth exceeded"),
+            Self::UpdateBudget { instance } => {
+                write!(
+                    f,
+                    "statescript instance {instance} kept deferring work past its update budget"
+                )
+            }
         }
     }
 }
@@ -718,6 +787,7 @@ impl Component {
             },
             reads: Vec::new(),
             parameters: None,
+            candidate: None,
             watcher: None,
             read_native: false,
             // A read outside the VM's run: nothing is recorded.
@@ -799,6 +869,97 @@ impl Component {
 
     pub fn set_owner_dead(&mut self, dead: bool) {
         self.machine.owner_dead = dead;
+    }
+
+    pub fn owner_dead(&self) -> bool {
+        self.machine.owner_dead
+    }
+
+    /// A game message from another body: every instance's entries for it
+    /// queue at the current clock and run now (`send_message` in
+    /// `ow174/game/script/runtime.py`, as `Match.deliver_body_messages` calls
+    /// it). Returns how many entries took it.
+    pub fn receive_message(
+        &mut self,
+        message: u64,
+        parameters: Variables,
+        world: &mut impl World,
+    ) -> Result<usize, InitFault> {
+        if self.halted {
+            return Err(InitFault::Halted);
+        }
+        let entries = self
+            .machine
+            .queue_entries(&self.graphs, None, message, parameters)?;
+        if entries != 0 {
+            self.run_now(world)?;
+        }
+        Ok(entries)
+    }
+
+    /// A new root instance of `graph` with the next free id. Its entries
+    /// queue at the current clock and run at the next update
+    /// (`Component.create` in `ow174/game/script/runtime.py`).
+    pub fn add_instance(
+        &mut self,
+        graph: u32,
+        world: &mut impl World,
+    ) -> Result<Option<u16>, InitFault> {
+        let id = u16::try_from(self.machine.next_id).map_err(|_| InitFault::InstanceIdExhausted)?;
+        let mut created = false;
+        self.run(world, |vm| {
+            created = vm.create(id, graph, None, Variables::new())?;
+            Ok(())
+        })?;
+        Ok(created.then_some(id))
+    }
+
+    /// End an instance and its children now, without their end plugs
+    /// (`Component.destroy`).
+    pub fn destroy_instance(&mut self, id: u16, world: &mut impl World) -> Result<(), InitFault> {
+        if !self.machine.snapshot.instances.contains_key(&id) {
+            return Ok(());
+        }
+        self.run(world, |vm| vm.destroy(id))
+    }
+
+    /// Let go of every held logical button without edges, as a dead bot
+    /// does (`BotScript.die` clears `Component.held`).
+    pub fn release_buttons(&mut self) {
+        self.machine.held_buttons.clear();
+    }
+
+    /// Drop the shots not taken yet.
+    pub fn discard_shots(&mut self) {
+        self.machine.shots.clear();
+    }
+
+    /// When the next queued event is due.
+    pub fn next_due_ms(&self) -> Option<u64> {
+        self.machine.queues.next_due()
+    }
+
+    /// The active `MoveTo` states' targets, for the mover
+    /// (`MoveTo.move_request` as `ow174/game/match.py` collects them).
+    pub fn move_requests(&self) -> Vec<MoveRequest> {
+        self.machine
+            .movements
+            .iter()
+            .filter(|(key, _)| {
+                self.machine
+                    .snapshot
+                    .instances
+                    .get(&key.instance)
+                    .and_then(|instance| instance.states.get(&key.raw))
+                    .is_some_and(|state| state.active)
+            })
+            .map(|(key, &(target, speed))| MoveRequest {
+                instance: key.instance,
+                raw_state: key.raw,
+                target,
+                speed,
+            })
+            .collect()
     }
 
     fn advance(
@@ -969,6 +1130,13 @@ struct Machine {
     command_buttons: u32,
     held_buttons: Vec<u8>,
     owner_dead: bool,
+    /// Each instance's `Defer` states due in its deferred phase: priority and
+    /// raw state, sorted by priority.
+    deferred: BTreeMap<u16, Vec<(f64, u16)>>,
+    /// The active `DisableLogicalButton` states by the button they block.
+    disabled: BTreeMap<i64, Vec<StateKey>>,
+    /// `MoveTo` targets and speeds of the activations that resolved one.
+    movements: BTreeMap<StateKey, ([f64; 3], f64)>,
 }
 
 struct Vm<'graph, 'world, 'machine, W> {
@@ -976,6 +1144,8 @@ struct Vm<'graph, 'world, 'machine, W> {
     world: &'world mut W,
     machine: &'machine mut Machine,
     parameters: Option<Arc<Variables>>,
+    /// The value every parameter reads while `CycleIndex` tests a candidate.
+    candidate: Option<Value>,
     output_write_depth: usize,
 }
 
@@ -990,6 +1160,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             world,
             machine,
             parameters: None,
+            candidate: None,
             output_write_depth: 0,
         }
     }
@@ -1045,6 +1216,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             Instance {
                 graph,
                 parent,
+                start_ms: self.machine.now_ms,
                 variables,
                 states: IndexMap::new(),
             },
@@ -1098,49 +1270,68 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
     }
 
+    /// One update of every instance at the clock: each drains its due
+    /// events, ticks its ticking states and runs its deferred states, again
+    /// while deferred work ran (`Instance.update` in
+    /// `ow174/game/script/runtime.py`).
     fn update(&mut self) -> Result<(), InitFault> {
         self.spend("component update")?;
         let instances: Vec<_> = self.machine.snapshot.instances.keys().copied().collect();
         for id in instances {
-            let mut events = 0;
-            while let Some(event) = self.machine.queues.pop_due(id, self.machine.now_ms) {
-                if events == MAX_EVENTS_PER_UPDATE {
-                    return Err(InitFault::EventBudget { instance: id });
+            let mut updates = 0;
+            while self.machine.snapshot.instances.contains_key(&id) {
+                if updates == MAX_INSTANCE_UPDATES {
+                    return Err(InitFault::UpdateBudget { instance: id });
                 }
-                events += 1;
-                self.spend("event dispatch")?;
-                let key = |raw| StateKey { instance: id, raw };
-                match event {
-                    Event::Entry(position) => {
-                        if let Some(node) = self.graph(id).node(position) {
-                            self.run_node(id, node, None, 0)?;
-                        }
-                    }
-                    Event::ExitInstance => self.exit_instance(id)?,
-                    Event::Begin(raw) => self.begin(key(raw), 0)?,
-                    Event::Finish(raw) => self.end(key(raw), true, 0)?,
-                    Event::Abort(raw) => self.end(key(raw), false, 0)?,
-                    Event::Changed(raw) => self.changed(key(raw))?,
-                    Event::Reevaluate(raw) => self.reevaluate(key(raw), 0)?,
-                    Event::Timer(raw, parameter) => self.timer(key(raw), parameter)?,
-                    Event::Button(edge) => self.button_edge(id, edge)?,
-                    Event::AbilityCheck(raw) => self.timer(key(raw), 1)?,
-                    Event::ChaseReached(raw) => {
-                        if self.state(key(raw)).is_some_and(|state| state.active) {
-                            let node = self.graph(id).state(usize::from(raw)).expect("chase state");
-                            self.try_complete(key(raw), node, 0)?;
-                        }
-                    }
-                    Event::WatchChanged(raw) => self.deliver_watch(key(raw))?,
-                    Event::Message {
-                        position,
-                        parameters,
-                    } => {
-                        self.deliver(id, position, parameters)?;
-                    }
+                updates += 1;
+                self.drain(id)?;
+                self.tick_states(id)?;
+                if !self.run_deferred(id)? {
+                    break;
                 }
             }
-            self.tick_states(id)?;
+        }
+        Ok(())
+    }
+
+    fn drain(&mut self, id: u16) -> Result<(), InitFault> {
+        let mut events = 0;
+        while let Some(event) = self.machine.queues.pop_due(id, self.machine.now_ms) {
+            if events == MAX_EVENTS_PER_UPDATE {
+                return Err(InitFault::EventBudget { instance: id });
+            }
+            events += 1;
+            self.spend("event dispatch")?;
+            let key = |raw| StateKey { instance: id, raw };
+            match event {
+                Event::Entry(position) => {
+                    if let Some(node) = self.graph(id).node(position) {
+                        self.run_node(id, node, None, 0)?;
+                    }
+                }
+                Event::ExitInstance => self.exit_instance(id)?,
+                Event::Begin(raw) => self.begin(key(raw), 0)?,
+                Event::Finish(raw) => self.end(key(raw), true, 0)?,
+                Event::Abort(raw) => self.end(key(raw), false, 0)?,
+                Event::Changed(raw) => self.changed(key(raw))?,
+                Event::Reevaluate(raw) => self.reevaluate(key(raw), 0)?,
+                Event::Timer(raw, parameter) => self.timer(key(raw), parameter)?,
+                Event::Button(edge) => self.button_edge(id, edge)?,
+                Event::AbilityCheck(raw) => self.timer(key(raw), 1)?,
+                Event::ChaseReached(raw) => {
+                    if self.state(key(raw)).is_some_and(|state| state.active) {
+                        let node = self.graph(id).state(usize::from(raw)).expect("chase state");
+                        self.try_complete(key(raw), node, 0)?;
+                    }
+                }
+                Event::WatchChanged(raw) => self.deliver_watch(key(raw))?,
+                Event::Message {
+                    position,
+                    parameters,
+                } => {
+                    self.deliver(id, position, parameters)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1363,6 +1554,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             site,
             reads: Vec::new(),
             parameters: self.parameters.as_deref(),
+            candidate: self.candidate.as_ref(),
             watcher,
             read_native: false,
             assumed: Vec::new(),
@@ -1748,6 +1940,8 @@ struct InstanceContext<'a, W> {
     site: Site,
     reads: Vec<VarKey>,
     parameters: Option<&'a Variables>,
+    /// Answers every parameter read when set: a `CycleIndex` candidate.
+    candidate: Option<&'a Value>,
     watcher: Option<StateKey>,
     read_native: bool,
     /// Native answers the world marked as assumptions, by config class.
