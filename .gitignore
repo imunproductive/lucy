@@ -81,6 +81,8 @@ data/srv_dec.bin
 !.env.example
 *.pem
 *.key
+# The lobby handshake key is fixed build data, not a secret (crates/fixed).
+!crates/fixed/data/lobby_state_blob.key
 *.pfx
 *.p12
 *.keystore
