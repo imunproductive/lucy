@@ -5,7 +5,7 @@ use orpheus_physics::{
     collision::index::TriangleIndex, contact::world::ContactWorld, mover::settings::MoverSettings,
 };
 use orpheus_script::{
-    vm::{Issue, Site, TargetTagEffect, World},
+    vm::{Site, TargetTagEffect, World},
     wire::Value,
 };
 
@@ -705,20 +705,11 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
     .unwrap();
     component.advance_frame(FIRST_TICK, &mut world).unwrap();
     let snapshot = component.snapshot().unwrap();
-    // The one startup gap: the crouch branch's effect action. The server
-    // refuses the body until this list is empty.
-    let issues: Vec<_> = snapshot
-        .diagnostics
-        .iter()
-        .map(|item| (item.site.graph, item.site.node, &item.issue))
-        .collect();
-    assert_eq!(
-        issues,
-        [(
-            0x01c7,
-            Some(74),
-            &Issue::UnsupportedAction("STUStatescriptActionEffect".into())
-        )]
+    // The server refuses a body whose startup has any gap.
+    assert!(
+        snapshot.diagnostics.is_empty(),
+        "{:?}",
+        snapshot.diagnostics
     );
     // The frozen BodyScript replay allocates the same IDs with the team
     // mask. The exit retires 08B6 (9) and its unstarted child 0BF8 (25).

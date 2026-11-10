@@ -1860,30 +1860,15 @@ fn isolated_soldier_sprint_ability_matches_the_authored_toggle_and_modifier_stat
             );
         }
     }
-    // Two actions sprinting reaches that the VM can't run yet.
-    let issues: Vec<_> = component
-        .snapshot()
-        .unwrap()
-        .diagnostics
-        .iter()
-        .map(|item| (item.site.graph, item.site.node, &item.issue))
-        .collect();
-    assert_eq!(
-        issues,
-        [
-            (
-                0x0255,
-                Some(40),
-                &Issue::UnsupportedAction("STU_E9694EFD".into())
-            ),
-            (
-                0x0255,
-                Some(27),
-                &Issue::UnsupportedAction("STUStatescriptActionCriteria".into())
-            ),
-        ]
+    assert!(component.snapshot().unwrap().initialization_complete());
+    // Complete now, so the server-facing call answers too: no modifier at the end.
+    assert!(
+        component
+            .movement_modifiers(&mut world)
+            .unwrap()
+            .unwrap()
+            .is_empty()
     );
-    assert!(component.movement_modifiers(&mut world).unwrap().is_none());
 }
 
 fn active(snapshot: &Snapshot, id: u16) -> Vec<u16> {

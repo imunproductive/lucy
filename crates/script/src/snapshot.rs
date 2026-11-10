@@ -413,6 +413,13 @@ impl<'a> SnapshotEncoder<'a> {
                     projected.bindings.insert(variable, links);
                 }
             }
+            // A map has no known wire form: the client's tagged values have a
+            // keyed array that nobody has decoded. The client runs the same
+            // graphs and keeps its own map; the Python reference never sent one
+            // (it didn't evaluate map literals).
+            if matches!(value, Value::Map(_)) && !projected.bindings.contains_key(&variable) {
+                continue;
+            }
             if !matches!(value, Value::Null) || projected.bindings.contains_key(&variable) {
                 projected.values.insert(variable, value.clone());
             }

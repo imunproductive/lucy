@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
-    fn stock_soldier_requires_more_vm_support_before_prepared_attach() {
+    fn stock_soldier_attaches_his_authored_owner_script() {
         let runtime = orpheus_testkit::runtime_dir();
         let assets = SceneAssets::load(runtime).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
@@ -408,18 +408,117 @@ mod tests {
             pose: scene.player_spawn_mover(hero.body, 0).unwrap().pose(),
             quanta: RETAIL_QUANTA,
         };
-        let Err(blocked) = scene.owner_body_runtime(hero, spawn) else {
-            panic!("the stock owner VM was expected to require more graph support");
-        };
-        assert_eq!(blocked.kind(), io::ErrorKind::Unsupported);
-        let first_blocker = if assets.graphs.bodies()[&hero.body].target_tags.is_some() {
-            "UnsupportedAction(\"STUStatescriptActionEffect\")"
-        } else {
-            "UnsupportedConfig(\"STU_AC829876\")"
-        };
-        assert!(blocked.to_string().contains(first_blocker), "{blocked}");
+        let runtime = scene.owner_body_runtime(hero, spawn).unwrap();
+        assert!(
+            runtime.is_some(),
+            "the stock Soldier: 76 owner script did not start"
+        );
         let tracer = scene.heroes().find_hero("Tracer").unwrap();
         assert!(scene.owner_body_runtime(tracer, spawn).unwrap().is_none());
+    }
+
+    /// Soldier: 76 through the server's own path, frame by frame: empty the
+    /// rifle into its reload, then move, sprint, crouch, Helix and melee. Every
+    /// frame without a gap must encode for the owner and observers; the gaps
+    /// the session reaches are listed, so fixing one is a deliberate edit here.
+    #[test]
+    #[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
+    fn stock_soldier_plays_a_scripted_session() {
+        use crate::replication::BodyStep;
+        use orpheus_script::snapshot::View;
+        use orpheus_wire::commands::Command;
+
+        const PRIMARY: u32 = 0x1;
+        const SECONDARY: u32 = 0x2;
+        const SPRINT: u32 = 0x8;
+        const CROUCH: u32 = 0x80;
+        const MELEE: u32 = 0x800;
+
+        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let scene = assets.prepare(GameMap::practice_range()).unwrap();
+        let hero = scene.heroes().get(SOLDIER).unwrap();
+        let mover = scene.player_spawn_mover(hero.body, 0).unwrap();
+        let spawn = OwnerBodySpawn {
+            slot: 0,
+            controller: 0xa000_0100,
+            entity: 0xa000_0101,
+            body_filter: team_bit(0).unwrap(),
+            frame: FIRST_TICK,
+            pose: mover.pose(),
+            quanta: RETAIL_QUANTA,
+        };
+        let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
+        // (frames, forward throttle, buttons held)
+        let script: [(u32, i8, u32); 10] = [
+            (30, 0, 0),
+            (300, 0, PRIMARY),
+            (200, 0, 0),
+            (60, 127, 0),
+            (60, 127, SPRINT),
+            (30, 0, CROUCH),
+            (30, 0, 0),
+            (2, 0, SECONDARY),
+            (60, 0, 0),
+            (2, 0, MELEE),
+        ];
+        let mut frame = spawn.frame;
+        let mut shots = 0;
+        let mut gaps = Vec::new();
+        for (frames, forward, buttons) in script {
+            for _ in 0..frames {
+                frame += 1;
+                let command = Command {
+                    frame,
+                    forward,
+                    buttons,
+                    ..Command::default()
+                };
+                runtime.advance(command, &mover, BodyStep::Posed).unwrap();
+                shots += runtime.take_shots(Some(command), &mover).len();
+                let snapshot = runtime.snapshot().unwrap();
+                for item in &snapshot.diagnostics {
+                    let gap = (item.site.graph, item.site.node, format!("{:?}", item.issue));
+                    if !gaps.contains(&gap) {
+                        gaps.push(gap);
+                    }
+                }
+                if !snapshot.diagnostics.is_empty() {
+                    continue;
+                }
+                let encoder = runtime.encoder();
+                for view in [View::Owner, View::Observer] {
+                    let projected = encoder.project(snapshot, view).unwrap();
+                    encoder.full(&projected).unwrap();
+                }
+            }
+        }
+        // The rifle fires until the first gap; after one the server sends no
+        // more shots for the body.
+        assert_eq!(shots, 5);
+        assert_eq!(
+            gaps,
+            [
+                // Server-only: picks the entities message 0BD goes to; moving and
+                // firing both reach it. Its meaning is open.
+                (
+                    0x01ca,
+                    Some(126),
+                    "Expression(UnsupportedConfig(\"STU_ED45C5E8\"))".into()
+                ),
+                // The reload animation's length comes from its asset.
+                (
+                    0x02c5,
+                    Some(51),
+                    "UnsupportedField(\"animation asset duration\")".into()
+                ),
+                // Melee: an unnamed action with no fields.
+                (
+                    0x0043,
+                    Some(44),
+                    "UnsupportedAction(\"STU_6E5C5F66\")".into()
+                ),
+            ]
+        );
     }
 
     #[test]

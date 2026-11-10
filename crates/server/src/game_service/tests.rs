@@ -1210,11 +1210,19 @@ fn exercise_hero_selection(
             let packet = client.receive();
             assert!(client.window.accept(packet.seq));
             if input_ack(schemas, &packet) == expected {
-                assert!(
-                    world_records(schemas, &packet)
-                        .iter()
-                        .all(|record| record.entity != FIRST || !record.movement)
-                );
+                // The stock Soldier: 76 script turns on owner corrections. The
+                // owner's own body moves only by a correction: at most one per
+                // packet, the last record, and only after its create was acked
+                // (the ACK that followed the retried body frame).
+                let records = world_records(schemas, &packet);
+                let own: Vec<_> = records
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, record)| record.entity == FIRST && record.movement)
+                    .map(|(index, _)| index)
+                    .collect();
+                assert!(own.len() <= 1, "{own:?}");
+                assert!(own.iter().all(|&index| index + 1 == records.len()));
                 return;
             }
             client.send(ACK, Vec::new());

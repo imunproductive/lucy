@@ -2,6 +2,25 @@
 
 use super::*;
 
+/// Actions that change nothing the server tracks: the client runs the same
+/// graphs and plays effects, records stats and shows its own messages itself.
+/// The server only follows their out plug. The list is the Python reference's
+/// (`no_op` in `ow174/game/script/nodes.py`).
+const SERVER_NO_OPS: &[&str] = &[
+    "STUStatescriptActionEffect",
+    "STUStatescriptActionCriteria",
+    "STU_CEBDAF17", // TrackStat
+    "STU_100EF8C2", // SendClientOnlyGameMessage
+    "STUStatescriptActionSendClientGlobalGameMessage",
+    "STUStatescriptActionPlayScript",
+    "STU_7106C356", // unnamed, listed by the Python reference
+    "STU_C43F9944", // unnamed, listed by the Python reference
+    // Unnamed, with only hashed fields; reached by Soldier: 76's sprint
+    // (graph 0255, node 40). Python ran it as a no-op because it runs every
+    // node it has no model for that way. Unverified: the client will tell.
+    "STU_E9694EFD",
+];
+
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn follow(
         &mut self,
@@ -160,6 +179,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     }
                 }
                 self.follow(id, node, &path, None, depth)?;
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
+            class if SERVER_NO_OPS.contains(&class) => {
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }

@@ -278,7 +278,9 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
             (hero, SkinTheme::default()),
         )
         .unwrap();
-    assert!(world.body_script.is_none());
+    // The stock Soldier: 76 starts his authored owner script, so the gap
+    // below is resumed through his VM before the input is acknowledged.
+    assert!(world.body_script.is_some());
     let initial = world.mover.as_ref().unwrap().pose();
     let actual = Command {
         yaw: initial.yaw,
