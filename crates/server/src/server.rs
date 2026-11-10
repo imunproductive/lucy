@@ -3,22 +3,16 @@
 mod dashboard;
 
 use std::{
-    collections::HashMap,
     fs, io,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener},
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
+    sync::{Arc, Mutex, mpsc},
     thread::{self, JoinHandle},
-    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
     game_service::GameService,
-    practice::{self, SoloPracticeHandoff},
+    lobby::{Lobby, serve},
     runtime::missing_runtime_files,
     server::dashboard::{Dashboard, DashboardParts},
 };
@@ -33,23 +27,13 @@ use orpheus_lobby::{
     arcade::Arcade,
     celebrations::Celebrations,
     collection::Collection,
-    gallery::EquipRequest,
-    handoff::{self, LobbySeat, general_channel, join_chat_channel},
-    login::SIGNED_IN_ELSEWHERE,
-    menu::{MenuHero, extra_preload_themes},
+    menu::extra_preload_themes,
     presence::{PRO_ACCOUNT_BITS, Presence},
-    ranked::{LeaderboardPlaces, Ranked},
-    session::{LobbySession, LoginContent, LoginRequest, SoloLoginParty},
+    ranked::Ranked,
     templates::RetailTemplates,
 };
-use orpheus_sim::scene_assets::{PreparedScene, SceneAssets};
-use orpheus_wire::{
-    jam::codec::Schemas,
-    tcp::{PeerStream, PeerWorkers, accept},
-};
-
-const MAX_LOBBY_PEERS: usize = 32;
-const ACCEPT_POLL: Duration = Duration::from_millis(10);
+use orpheus_sim::scene_assets::SceneAssets;
+use orpheus_wire::jam::codec::Schemas;
 
 pub struct ServerConfig {
     pub runtime: PathBuf,
@@ -175,6 +159,7 @@ impl Server {
             selected,
             active: Arc::default(),
             game: Arc::clone(&game),
+            hub: Default::default(),
         });
         let dashboard = config
             .dashboard_port
@@ -295,217 +280,6 @@ pub fn local_account_name(
     Ok(None)
 }
 
-struct Lobby {
-    signing_key: [u8; 64],
-    schemas: Schemas,
-    templates: RetailTemplates,
-    collection: Arc<Collection>,
-    presence: Presence,
-    ranked: Ranked,
-    arcade: Arcade,
-    celebrations: Celebrations,
-    extra_preload: Vec<u64>,
-    assets: SceneAssets,
-    first_scene: Mutex<Option<PreparedScene>>,
-    accounts: Arc<Accounts>,
-    /// The account a freshly started game logs in as; the dashboard can change it.
-    selected: Arc<Mutex<Arc<Account>>>,
-    active: Arc<Mutex<HashMap<u32, Arc<AtomicBool>>>>,
-    game: Arc<GameService>,
-}
-
-struct LoginLease<'a> {
-    lobby: &'a Lobby,
-    account: Arc<Account>,
-    replaced: Arc<AtomicBool>,
-    seat: Option<LobbySeat>,
-}
-
-impl<'a> LoginLease<'a> {
-    fn new(lobby: &'a Lobby, account: Arc<Account>) -> Self {
-        let replaced = Arc::new(AtomicBool::new(false));
-        let mut active = lobby.active.lock().expect("lobby accounts");
-        if let Some(previous) = active.insert(account.account_lo, Arc::clone(&replaced)) {
-            previous.store(true, Ordering::Release);
-        }
-        account.set_status(1);
-        Self {
-            lobby,
-            account,
-            replaced,
-            seat: None,
-        }
-    }
-
-    fn current(&self) -> bool {
-        !self.replaced.load(Ordering::Acquire)
-    }
-}
-
-impl Drop for LoginLease<'_> {
-    fn drop(&mut self) {
-        if let Some(seat) = self.seat.take() {
-            let _ = self.lobby.game.release_seat(&seat.handoff);
-        }
-        let mut active = self.lobby.active.lock().expect("lobby accounts");
-        if active
-            .get(&self.account.account_lo)
-            .is_some_and(|current| Arc::ptr_eq(current, &self.replaced))
-        {
-            active.remove(&self.account.account_lo);
-            self.account.set_status(0);
-        }
-    }
-}
-
-impl Lobby {
-    fn selected_account(&self) -> Arc<Account> {
-        Arc::clone(&self.selected.lock().expect("selected account"))
-    }
-
-    fn serve_peer(&self, stream: PeerStream, id: u32) -> io::Result<()> {
-        let Some(mut session) = LobbySession::accept_peer(
-            stream,
-            id,
-            &self.signing_key,
-            &self.accounts,
-            &self.schemas,
-        )?
-        else {
-            return Ok(());
-        };
-        let login = match session.prepare_login(&self.accounts, || Ok(self.selected_account()))? {
-            LoginRequest::Prepared(login) => login,
-            LoginRequest::Rejected { reason } => {
-                session.send_disconnect(reason)?;
-                return Ok(());
-            }
-            LoginRequest::Disconnected => return Ok(()),
-        };
-        let mut lease = LoginLease::new(self, Arc::clone(&login.account));
-        let wall_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(io::Error::other)?
-            .as_secs();
-        let (menu, members_may_invite) = {
-            let mut profile = login.account.profile();
-            profile.last_online = wall_time as i64;
-            let menu = MenuHero::default().select(
-                &profile,
-                self.collection.heroes(),
-                self.collection.items(),
-            )?;
-            let members = profile
-                .settings
-                .get("+0x10D")
-                .and_then(|settings| settings.get("+0x0"))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(true);
-            (menu, members)
-        };
-        login.account.save()?;
-        let messages = login.available_messages(
-            &self.schemas,
-            &self.templates,
-            &self.collection,
-            &self.presence,
-            &self.ranked,
-            LoginContent {
-                menu_hero: menu.menu_guid,
-                extra_preload: &self.extra_preload,
-                wall_time,
-                arcade: &self.arcade,
-                celebrations: Some(&self.celebrations),
-                leaderboard_places: &LeaderboardPlaces::new(),
-                solo_party: Some(SoloLoginParty {
-                    id: login.identity.party_id,
-                    entity: login.identity.party_entity,
-                    menu_hero: menu.party_hero,
-                    members_may_invite,
-                }),
-            },
-        )?;
-        for message in messages {
-            if !lease.current() {
-                break;
-            }
-            session.send(&message)?;
-        }
-        if lease.current() {
-            session.send(&join_chat_channel(general_channel()))?;
-        }
-        while let Some(request) = session.receive_message_until(|| lease.current())? {
-            if let Some(equip) = EquipRequest::read(&request) {
-                if let Some(equipped) = equip.apply(&login, &self.collection, wall_time)? {
-                    if let (Some(seat), Some(skin)) = (&lease.seat, equipped.skin) {
-                        self.game.update_skin(&seat.handoff, equip.hero, skin)?;
-                    }
-                    for message in equipped.messages {
-                        session.send(&message)?;
-                    }
-                }
-                continue;
-            }
-            if !handoff::is_request(&request) {
-                continue;
-            }
-            if let Some(old) = &lease.seat {
-                if self.game.seat_exists(&old.handoff)? {
-                    continue;
-                }
-            }
-            let input = SoloPracticeHandoff::new(match_id()?, "127.0.0.1");
-            lease.seat = practice::dispatch_scene(
-                &request,
-                &login,
-                &self.game,
-                input,
-                (&self.assets, &self.collection),
-                |map| {
-                    let first = self.first_scene.lock().expect("prepared scene").take();
-                    first.map_or_else(|| self.assets.prepare(map), Ok)
-                },
-                |message| session.send(message),
-            )?;
-        }
-        if !lease.current() {
-            session.send_disconnect(SIGNED_IN_ELSEWHERE)?;
-        }
-        Ok(())
-    }
-}
-
-fn serve(listener: TcpListener, lobby: Arc<Lobby>, shutdown: mpsc::Receiver<()>) -> io::Result<()> {
-    let mut peers = PeerWorkers::default();
-    let mut id = 0u32;
-    while matches!(shutdown.try_recv(), Err(mpsc::TryRecvError::Empty)) {
-        peers.reap();
-        if let Some((socket, _)) = accept(&listener)? {
-            if peers.len() < MAX_LOBBY_PEERS {
-                id = id.wrapping_add(1);
-                let lobby = Arc::clone(&lobby);
-                let _ = peers.spawn("orpheus-lobby-peer", socket, move |stream| {
-                    let _ = lobby.serve_peer(stream, id);
-                });
-            }
-        } else if !matches!(
-            shutdown.recv_timeout(ACCEPT_POLL),
-            Err(mpsc::RecvTimeoutError::Timeout)
-        ) {
-            break;
-        }
-    }
-    Ok(())
-}
-
-fn match_id() -> io::Result<[u64; 2]> {
-    let mut random = [0; 16];
-    getrandom::fill(&mut random).map_err(|error| io::Error::other(error.to_string()))?;
-    Ok(std::array::from_fn(|i| {
-        u64::from_le_bytes(random[i * 8..i * 8 + 8].try_into().unwrap()) >> 1
-    }))
-}
-
 fn addr(port: u16) -> SocketAddrV4 {
     SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)
 }
@@ -516,6 +290,7 @@ mod tests {
     use std::{
         io::{Read, Write},
         net::TcpStream,
+        time::Duration,
     };
 
     use orpheus_lobby::{
