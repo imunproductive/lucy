@@ -230,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 hero and graph catalogs"]
+    #[ignore = "requires the derived 104319 hero and graph catalogs"]
     fn all_hero_pools_match_python_defaults_overrides_and_component_bytes() {
         use sha2::{Digest, Sha256};
 

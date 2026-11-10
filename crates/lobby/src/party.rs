@@ -171,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn solo_and_group_party_payloads_match_the_python_wire_bytes() {
         let runtime = orpheus_testkit::runtime_dir().join("data");
         let schemas = Schemas::lobby();

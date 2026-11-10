@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 clap.workspace = true
 ctrlc.workspace = true
+orpheus-assets.workspace = true
 directories.workspace = true
 orpheus-content.workspace = true
 orpheus-launcher.workspace = true
@@ -21,9 +22,8 @@ orpheus-lobby.workspace = true
 orpheus-server.workspace = true
 orpheus-sim.workspace = true
 serde.workspace = true
+tempfile.workspace = true
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
-[dev-dependencies]
-tempfile.workspace = true

@@ -1887,7 +1887,7 @@ fn soldier_world(graphs: &Arc<GraphStore>) -> PlayerWorld {
 const TEAM_ONE: u64 = 0x0080_0000;
 
 #[test]
-#[ignore = "requires a local 1.74 graph pack"]
+#[ignore = "requires a derived 1.74 graph bundle"]
 fn authored_sprint_stack_gates_track_input_and_reveal_the_base_on_release() {
     let runtime = orpheus_testkit::runtime_dir();
     let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
@@ -1948,7 +1948,7 @@ fn authored_sprint_stack_gates_track_input_and_reveal_the_base_on_release() {
 }
 
 #[test]
-#[ignore = "requires a local 1.74 graph pack"]
+#[ignore = "requires a derived 1.74 graph bundle"]
 fn isolated_soldier_sprint_ability_matches_the_authored_toggle_and_modifier_states() {
     let runtime = orpheus_testkit::runtime_dir();
     let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
@@ -2136,7 +2136,7 @@ fn volley_reports_exact_times_and_bakes_linked_ammo_on_finish() {
 }
 
 #[test]
-#[ignore = "requires a local 1.74 graph pack"]
+#[ignore = "requires a derived 1.74 graph bundle"]
 fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
     let runtime = orpheus_testkit::runtime_dir();
     let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
@@ -2249,7 +2249,7 @@ fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
 }
 
 #[test]
-#[ignore = "requires a local 1.74 graph pack"]
+#[ignore = "requires a derived 1.74 graph bundle"]
 fn authored_soldier_rifle_holds_releases_and_reloads_on_the_reference_clock() {
     let runtime = orpheus_testkit::runtime_dir();
     let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
@@ -2607,7 +2607,7 @@ fn buffered_action_press_uses_the_shared_clock_and_releases_after_one_millisecon
 }
 
 #[test]
-#[ignore = "requires a local 1.74 graph pack"]
+#[ignore = "requires a derived 1.74 graph bundle"]
 fn soldier_sprint_graph_reads_primary_crouch_and_melee_edges_as_in_python() {
     let runtime = orpheus_testkit::runtime_dir();
     let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
@@ -2660,7 +2660,7 @@ fn soldier_sprint_graph_reads_primary_crouch_and_melee_edges_as_in_python() {
 }
 
 #[test]
-#[ignore = "requires the runtime pack's bot graph bundle (graph 0B92)"]
+#[ignore = "requires the derived game data's bot graph bundle (graph 0B92)"]
 fn firing_placement_reset_and_timer_boundaries_match_python() {
     let graphs = Arc::new(GraphStore::load(orpheus_testkit::bot_graphs()).unwrap());
     assert!(
@@ -2747,7 +2747,7 @@ fn firing_placement_reset_and_timer_boundaries_match_python() {
 }
 
 #[test]
-#[ignore = "requires the runtime pack's bot graph bundle"]
+#[ignore = "requires the derived game data's bot graph bundle"]
 fn controller_and_training_bot_supported_startup_edges_match_python() {
     let graphs = GraphStore::load(orpheus_testkit::bot_graphs()).unwrap();
     let run = |entity, roots| {

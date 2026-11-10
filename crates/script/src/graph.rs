@@ -683,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a prepared 104319 state graph bundle"]
+    #[ignore = "requires a derived 104319 state graph bundle"]
     fn whole_retail_wire_index_matches_the_python_reference() {
         use sha2::{Digest, Sha256};
         let root = orpheus_testkit::runtime_dir();

@@ -390,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a prepared 104319 Practice Range scene"]
+    #[ignore = "requires a derived 104319 Practice Range scene"]
     fn practice_capsule_hits_and_health_notices_match_reference_geometry() {
         use crate::scene_assets::SceneAssets;
         use orpheus_content::maps::GameMap;

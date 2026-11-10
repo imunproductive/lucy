@@ -1297,7 +1297,7 @@ fn initialized_waits_supply_owner_timers_and_remote_frame_targets() {
 }
 
 #[test]
-#[ignore = "requires the separately prepared 104319 graph and codec tables"]
+#[ignore = "requires the derived 104319 graph and codec tables"]
 fn actual_shared_ui_graph_baselines_match_python() {
     use sha2::{Digest, Sha256};
 

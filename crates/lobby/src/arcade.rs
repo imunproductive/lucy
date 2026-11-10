@@ -374,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an authorized 104319 Arcade catalog in ORPHEUS_RUNTIME_DIR"]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn arcade_and_pass_wire_bytes_match_python_across_events_seasons_and_dates() {
         let data = orpheus_testkit::runtime_dir().join("data");
         let schemas = Schemas::lobby();

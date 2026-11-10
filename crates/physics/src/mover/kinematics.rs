@@ -424,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn movement_velocity_matches_python_across_authored_mover_settings() {
         let path = orpheus_testkit::runtime_dir().join("data/game_movers_174.json");
         let movers = MoverCatalog::load(&path).unwrap();

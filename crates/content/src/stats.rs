@@ -484,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 stat catalog"]
+    #[ignore = "requires the derived 104319 stat catalog"]
     fn actual_scoreboard_components_match_the_python_wire_corpus() {
         use crate::maps::PRACTICE_RANGE_MODE;
         use std::collections::BTreeSet;

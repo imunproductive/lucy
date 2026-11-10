@@ -216,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 hero catalog"]
+    #[ignore = "requires the derived 104319 hero catalog"]
     fn actual_hero_catalog_matches_the_ordered_python_reference() {
         use sha2::{Digest, Sha256};
 

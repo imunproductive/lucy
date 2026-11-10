@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 spawn and stat catalogs"]
+    #[ignore = "requires the derived 104319 spawn and stat catalogs"]
     fn matches_the_python_practice_range_create_frame_and_budget() {
         let data = runtime();
         let movers = MoverCatalog::load(data.join("game_movers_174.json")).unwrap();
@@ -312,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 graph bundle"]
+    #[ignore = "requires the derived 104319 graph bundle"]
     fn mode_ui_preserves_its_shared_variable_state_with_or_without_countdown() {
         let graphs = GraphStore::load(runtime().join("game_graphs_174.json.gz")).unwrap();
         let cases = [

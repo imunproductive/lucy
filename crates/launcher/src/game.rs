@@ -71,12 +71,20 @@ pub struct BuildInfo {
 
 /// Read the `.build.info` next to the `_retail_` folder, or next to the game.
 pub fn build_info(game: &Path) -> Option<BuildInfo> {
-    let folders = [game.parent()?.parent(), game.parent()];
-    folders
+    let root = install_root(game)?;
+    fs::read_to_string(root.join(".build.info"))
+        .ok()
+        .and_then(|text| parse_build_info(&text))
+}
+
+/// The installation folder: the one holding `.build.info` and `data/casc`,
+/// next to the `_retail_` folder or next to the game.
+pub fn install_root(game: &Path) -> Option<PathBuf> {
+    [game.parent()?.parent(), game.parent()]
         .into_iter()
         .flatten()
-        .find_map(|folder| fs::read_to_string(folder.join(".build.info")).ok())
-        .and_then(|text| parse_build_info(&text))
+        .find(|folder| folder.join(".build.info").is_file())
+        .map(Path::to_path_buf)
 }
 
 fn parse_build_info(text: &str) -> Option<BuildInfo> {

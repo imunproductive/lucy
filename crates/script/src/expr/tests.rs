@@ -510,7 +510,7 @@ fn authored_random_expression_preserves_operand_types_and_inclusive_bounds() {
 }
 
 #[test]
-#[ignore = "requires an authorized 104319 graph pack in ORPHEUS_RUNTIME_DIR"]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn authored_controller_hud_and_soldier_config_values_match_python() {
     let data = orpheus_testkit::runtime_dir().join("data");
     let graphs = GraphStore::load(data.join("game_graphs_174.json.gz")).unwrap();

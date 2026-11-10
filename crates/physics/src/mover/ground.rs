@@ -442,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a prepared 104319 Practice Range movement cache"]
+    #[ignore = "requires a derived 104319 Practice Range movement cache"]
     fn practice_range_ground_probes_match_python() {
         let path = orpheus_testkit::runtime_dir().join("collision/0688.col");
         let cache = read_movement_cache(File::open(path).unwrap()).unwrap();

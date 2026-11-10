@@ -1,5 +1,6 @@
 //! The ORPHEUS server for Overwatch 1.74.0.0.104319.
 
+mod assets;
 mod doctor;
 mod import;
 mod logging;
@@ -36,9 +37,27 @@ enum Command {
     /// Manage saved player state.
     #[command(subcommand)]
     State(StateCommand),
+    /// Game data derived from the install.
+    #[command(subcommand)]
+    Assets(AssetsCommand),
     /// Manage the prepared runtime pack.
     #[command(subcommand)]
     Runtime(RuntimeCommand),
+}
+
+#[derive(Subcommand)]
+enum AssetsCommand {
+    /// Derive the game data now and print where it is.
+    Build(ServerArgs),
+    /// Derive the game data into a scratch folder and compare every file
+    /// with a prepared runtime pack.
+    Diff {
+        /// The prepared pack to compare with.
+        #[arg(long, value_name = "DIR")]
+        pack: PathBuf,
+        #[command(flatten)]
+        server: ServerArgs,
+    },
 }
 
 #[derive(Subcommand)]
@@ -122,6 +141,18 @@ fn run(cli: Cli) -> io::Result<ExitCode> {
                     "Kept the existing {} (use --overwrite to replace it).",
                     kept.display()
                 );
+            }
+        }
+        Command::Assets(AssetsCommand::Build(args)) => {
+            let settings = Settings::resolve(&state, &args)?;
+            logging::init(None)?;
+            println!("{}", serve::game_data(&settings)?.display());
+        }
+        Command::Assets(AssetsCommand::Diff { pack, server }) => {
+            let settings = Settings::resolve(&state, &server)?;
+            logging::init(None)?;
+            if !assets::diff(&settings, &pack)? {
+                return Ok(ExitCode::FAILURE);
             }
         }
         Command::Runtime(RuntimeCommand::Prepare {

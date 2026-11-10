@@ -546,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn native_server_logs_in_saved_profile_and_loads_practice_over_udp() {
         use crate::server::{Server, ServerConfig};
         use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MAP};

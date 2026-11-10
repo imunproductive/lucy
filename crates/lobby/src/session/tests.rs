@@ -180,7 +180,7 @@ fn negotiates_pings_and_accepts_practice_messages_after_login() {
 }
 
 #[test]
-#[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn prepared_subset_matches_the_python_login_in_wire_order() {
     let runtime = orpheus_testkit::runtime_dir().join("data");
     let schemas = Schemas::lobby();
