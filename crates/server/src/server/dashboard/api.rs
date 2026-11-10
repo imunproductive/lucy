@@ -28,6 +28,8 @@ use orpheus_lobby::{
     ranked::{CURRENT_SEASON, MAX_MATCHES, MAX_RATING, Queue, matches_of, rating_of, wins_of},
 };
 
+use crate::platform::Platform;
+
 const PROFILE_FIELDS: [&str; 18] = [
     "player_name",
     "region",
@@ -110,6 +112,8 @@ pub struct Api<'a> {
     /// Optional dashboard pictures: `assets/previews/<GUID>.webp`.
     pub assets: &'a Path,
     pub lobby_port: u16,
+    /// Hosting and the games this PC started.
+    pub platform: &'a Platform,
     pub uptime: Duration,
 }
 
@@ -251,13 +255,13 @@ impl Api<'_> {
     fn server_info(&self) -> Json {
         let connected = self.online.lock().expect("lobby accounts").len();
         json!({
-            "host": "127.0.0.1",
+            "host": self.platform.host.to_string(),
             "port": self.lobby_port,
             "connected_clients": connected,
             "uptime_seconds": self.uptime.as_secs(),
             "game_instances": [],
             "game_runtime_available": true,
-            "second_games": false,
+            "second_games": self.platform.games.is_some(),
             "matchmaking_supported": false,
             "test_players": 0,
             "modes": [],
@@ -898,5 +902,6 @@ fn parse_challenge(value: &Json) -> Result<String, ApiError> {
         .ok_or_else(|| ApiError::bad("Challenge not found"))
 }
 
+mod games;
 #[cfg(test)]
 mod tests;

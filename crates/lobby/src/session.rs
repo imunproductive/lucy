@@ -6,7 +6,7 @@
 use std::{
     collections::BTreeMap,
     io,
-    net::{SocketAddr, TcpStream},
+    net::{Ipv4Addr, SocketAddr, TcpStream},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -18,6 +18,7 @@ use crate::{
     celebrations::Celebrations,
     clock::server_time,
     collection::{Collection, HERO_CATALOG, PROGRESSION},
+    handoff::game_host,
     login::{self, INCOMPATIBLE_CLIENT, Identity, LOGIN_MESSAGE, Login, OUT_CONNECT},
     mode_rules::{self, MODE_RULES, RULES},
     party::{self, Membership, PartyMember},
@@ -40,6 +41,9 @@ const PING: u32 = 0xdda5_83ef;
 pub struct LobbySession<'a> {
     transport: LobbyTransport,
     schemas: &'a Schemas,
+    /// The game's address, and the lobby address it reached.
+    peer: Ipv4Addr,
+    reached: Ipv4Addr,
     local: bool,
     authenticated: bool,
 }
@@ -101,13 +105,15 @@ impl<'a> LobbySession<'a> {
         accounts: &Accounts,
         schemas: &'a Schemas,
     ) -> io::Result<Option<Self>> {
-        let local = stream.peer_addr()?.ip().is_loopback();
-        let SocketAddr::V4(address) = stream.local_addr()? else {
+        let (SocketAddr::V4(peer), SocketAddr::V4(address)) =
+            (stream.peer_addr()?, stream.local_addr()?)
+        else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "the lobby handshake requires IPv4",
             ));
         };
+        let local = peer.ip().is_loopback();
         stream.set_deadline(Some(Instant::now() + HELLO_TIMEOUT));
         if battle_tag_query::answer_peer(&mut stream, |name| resolve_battle_tag(accounts, name))? {
             return Ok(None);
@@ -118,9 +124,23 @@ impl<'a> LobbySession<'a> {
         Ok(Some(Self {
             transport,
             schemas,
+            peer: *peer.ip(),
+            reached: *address.ip(),
             local,
             authenticated: false,
         }))
+    }
+
+    /// The game runs on this PC (`Session.local` in `ow174/lobby/session.py`).
+    pub fn is_local(&self) -> bool {
+        self.local
+    }
+
+    /// Where this game finds the game server (`game_address` in
+    /// `ow174/lobby/matchmaker.py`): the address it reached the lobby at, or
+    /// the public address for a game from outside the host's network.
+    pub fn game_host(&self, public: &str) -> String {
+        game_host(public, self.reached, self.peer)
     }
 
     /// Wait for a valid login in the negotiated group. The account and session

@@ -39,8 +39,8 @@ The rest, from a module-by-module comparison of `ow174/` with the crates (2026-1
   - lookups: career profile (22206), leaderboard (39100), player name (58202), the OWL poll (42600); Top 500 places are always empty;
   - event greetings and login gifts (38901), challenge rewards (24901), team-skin pairs;
   - pushing dashboard edits to a connected game (they apply at the next login).
-- **Dashboard.** `open_all_boxes`, `bot_group`, `purchase`, `matchmaking`, `mode_settings`, `set_map`, `end_matches`, `reconnect` and `start_game` answer 501; item prices are empty; port 0 doesn't turn it off.
-- **Platform.** Every listener binds to 127.0.0.1 and the handoff names 127.0.0.1, so no other PC can play: the `host`, `server` (for others), `join`, `tournament` and `join-tournament` modes are missing, with their prompts and the public address. No second game on one PC (Battle.net always logs in the dashboard's account). No remembered game path or file picker, no log rotation.
+- **Dashboard.** `open_all_boxes`, `bot_group`, `purchase`, `matchmaking`, `mode_settings`, `set_map` and `end_matches` answer 501; item prices are empty.
+- **Platform.** `--game-port 0` gives a random port instead of turning the game server off (the lobby needs it); no `--test-players` (there is no matchmaker), `--save` or research `inject.jsonl` watcher; the start banner has no schema count; a taken port is a plain OS error. The multi-PC modes (`host`, `server`, `join`, `join-tournament`) and the second game on one PC work on loopback but are not yet verified with a second PC or a second real client.
 - **Game data.** Every runtime file still comes from the Python extractors (`tools/extract_*.py`, `build_collision.py`); `orpheus runtime prepare` only copies them, and Rust can't build a missing collision cache. `crates/casc` and `crates/stu` are not used by the server yet (phase 6c, 6d).
 - **Open verification items:** on-fire scoring and decay, the tips registry, network serialization of map values, instance overrides and foreign entities for target tags, named pools and pool resize rules, the randomized timer's client parity.
 

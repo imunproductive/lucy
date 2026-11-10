@@ -37,7 +37,7 @@ use orpheus_wire::{
     tcp::{PeerStream, PeerWorkers, accept},
 };
 
-use crate::game_service::GameService;
+use crate::{game_service::GameService, platform::Platform};
 use hub::{Hub, Mailbox};
 use peer::Peer;
 use router::Router;
@@ -73,6 +73,8 @@ pub(crate) struct Lobby {
     pub active: Arc<Mutex<HashMap<u32, Arc<AtomicBool>>>>,
     pub game: Arc<GameService>,
     pub hub: Hub,
+    /// Hosting for other PCs and the games this PC started.
+    pub platform: Arc<Platform>,
 }
 
 struct LoginLease<'a> {
@@ -161,6 +163,10 @@ impl Lobby {
         };
         let _span = tracing::info_span!("lobby", account = %login.account.name).entered();
         let mut lease = LoginLease::new(self, Arc::clone(&login.account));
+        let local_game = session.is_local().then(|| {
+            self.platform
+                .track_local(login.account.account_lo, &login.account.name)
+        });
         let wall_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?
@@ -225,7 +231,9 @@ impl Lobby {
                 login(&mut peer)?;
             }
         }
-        let current = || !lease.replaced.load(Ordering::Acquire);
+        let replaced = || lease.replaced.load(Ordering::Acquire);
+        // The dashboard's reconnect closes this connection; the game logs in again.
+        let current = || !replaced() && !local_game.as_ref().is_some_and(|game| game.dropped());
         while current() {
             for message in mailbox.take() {
                 peer.send(&message)?;
@@ -245,8 +253,11 @@ impl Lobby {
                 break;
             }
         }
-        if !current() {
+        if replaced() {
             return kick(&mut session, SIGNED_IN_ELSEWHERE);
+        }
+        if local_game.as_ref().is_some_and(|game| game.dropped()) {
+            tracing::info!("[>>>] Disconnecting for reconnect (dashboard)");
         }
         Ok(())
     }

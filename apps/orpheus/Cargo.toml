@@ -16,6 +16,7 @@ clap.workspace = true
 ctrlc.workspace = true
 orpheus-assets.workspace = true
 directories.workspace = true
+orpheus-bnet.workspace = true
 orpheus-content.workspace = true
 orpheus-launcher.workspace = true
 orpheus-lobby.workspace = true

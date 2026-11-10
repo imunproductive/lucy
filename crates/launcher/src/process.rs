@@ -7,7 +7,7 @@ use std::{
     mem::size_of,
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     ptr, thread,
     time::{Duration, Instant},
 };
@@ -119,21 +119,26 @@ pub struct RelaySetup<'a> {
     pub rpc_port: u16,
 }
 
-/// Start the game in its folder, appending its output to `log`.
+/// Start the game in its folder, appending its output to `log`. A game in
+/// tournament mode dials the lobby itself and gets no relay.
 pub fn start_game(
     game: &Path,
     arguments: &[String],
     log: &Path,
-    relay: RelaySetup<'_>,
+    relay: Option<RelaySetup<'_>>,
 ) -> io::Result<Child> {
     if let Some(folder) = log.parent() {
         std::fs::create_dir_all(folder)?;
     }
     let output: File = OpenOptions::new().create(true).append(true).open(log)?;
-    Command::new(game)
-        .args(arguments)
-        .env(RELAY_LOG_VARIABLE, relay.log)
-        .env(RELAY_PORT_VARIABLE, relay.rpc_port.to_string())
+    let mut command = Command::new(game);
+    command.args(arguments);
+    if let Some(relay) = relay {
+        command
+            .env(RELAY_LOG_VARIABLE, relay.log)
+            .env(RELAY_PORT_VARIABLE, relay.rpc_port.to_string());
+    }
+    command
         .current_dir(game.parent().unwrap_or(Path::new(".")))
         .stdout(output.try_clone()?)
         .stderr(output)
@@ -143,10 +148,20 @@ pub fn start_game(
 /// Load the DLL into the game as soon as its loader is ready, and return the
 /// module's base address there.
 pub fn inject_when_ready(child: &mut Child, dll: &Path, timeout: Duration) -> io::Result<usize> {
-    let deadline = Instant::now() + timeout;
     let pid = child.id();
+    inject_when_ready_with(pid, || child.try_wait(), dll, timeout)
+}
+
+/// [`inject_when_ready`] for a game whose exit `exited` reports.
+pub fn inject_when_ready_with(
+    pid: u32,
+    mut exited: impl FnMut() -> io::Result<Option<ExitStatus>>,
+    dll: &Path,
+    timeout: Duration,
+) -> io::Result<usize> {
+    let deadline = Instant::now() + timeout;
     loop {
-        if let Some(status) = child.try_wait()? {
+        if let Some(status) = exited()? {
             return Err(io::Error::other(format!(
                 "Overwatch exited ({status}) before the relay was loaded"
             )));

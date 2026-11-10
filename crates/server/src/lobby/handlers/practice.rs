@@ -34,7 +34,8 @@ fn create_game(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
         }
     }
     let lobby = peer.lobby;
-    let input = SoloPracticeHandoff::new(match_id()?, "127.0.0.1");
+    let host = peer.session.game_host(&lobby.platform.game_host);
+    let input = SoloPracticeHandoff::new(match_id()?, &host);
     let session = &mut *peer.session;
     *peer.seat = practice::dispatch_scene(
         &request,

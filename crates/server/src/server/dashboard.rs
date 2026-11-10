@@ -22,6 +22,8 @@ use orpheus_lobby::{
     collection::Collection,
 };
 
+use crate::platform::Platform;
+
 const MAX_BODY_BYTES: usize = 65_536;
 /// URL path, embedded file and MIME type.
 const PAGES: [(&str, &[u8], &str); 5] = [
@@ -45,7 +47,7 @@ const PAGES: [(&str, &[u8], &str); 5] = [
 ];
 const INDEX: &[u8] = include_bytes!("../../../../web/dashboard/index.html");
 /// Actions whose features the native server does not have yet.
-const NOT_PORTED: [&str; 9] = [
+const NOT_PORTED: [&str; 7] = [
     "/api/open_all_boxes",
     "/api/bot_group",
     "/api/purchase",
@@ -53,8 +55,6 @@ const NOT_PORTED: [&str; 9] = [
     "/api/mode_settings",
     "/api/set_map",
     "/api/end_matches",
-    "/api/reconnect",
-    "/api/start_game",
 ];
 
 pub struct Dashboard {
@@ -75,6 +75,8 @@ pub struct DashboardParts {
     pub assets: PathBuf,
     /// The lobby port the dashboard reports.
     pub lobby_port: u16,
+    /// Hosting and the games this PC started.
+    pub platform: Arc<Platform>,
 }
 
 impl Dashboard {
@@ -101,6 +103,7 @@ impl Dashboard {
                         data: &parts.data,
                         assets: &parts.assets,
                         lobby_port: parts.lobby_port,
+                        platform: &parts.platform,
                         uptime: started.elapsed(),
                     };
                     let _ = handle(&api, port, request);
@@ -204,6 +207,8 @@ fn post(api: &Api, path: &str, data: &Map<String, Json>) -> ApiResult {
         "/api/grant_skin" => api.grant_skin(data),
         "/api/select_account" => api.select_account(data),
         "/api/default_account" => api.default_account(data),
+        "/api/start_game" => api.start_game(data),
+        "/api/reconnect" => Ok(api.reconnect()),
         path if NOT_PORTED.contains(&path) => Err(ApiError::new(
             501,
             "The native server does not support this action yet.",
@@ -393,6 +398,11 @@ mod tests {
             data: state.path().into(),
             assets: state.path().join("assets"),
             lobby_port: 3724,
+            platform: Arc::new(Platform::new(
+                std::net::Ipv4Addr::LOCALHOST,
+                String::new(),
+                None,
+            )),
         };
         let mut dashboard = Dashboard::start(0, parts).unwrap();
         let addr = dashboard.addr();
@@ -409,6 +419,14 @@ mod tests {
             (200, r#"{"status":"ok"}"#.into())
         );
         assert_eq!(request(addr, "POST", "/api/purchase", "{}").0, 501);
+        assert_eq!(
+            request(addr, "POST", "/api/start_game", r#"{"name":"alpha"}"#).0,
+            409
+        );
+        assert_eq!(
+            request(addr, "POST", "/api/reconnect", "{}"),
+            (200, r#"{"status":"ok"}"#.into())
+        );
         assert_eq!(request(addr, "POST", "/api/select_account", "[]").0, 400);
         assert_eq!(request(addr, "GET", "/api/missing", "").0, 404);
         assert_eq!(request(addr, "GET", "/assets/boxes/golden.png", "").0, 404);
