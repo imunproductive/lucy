@@ -27,7 +27,8 @@ pub struct SocialContent<'a> {
     pub collection: &'a Collection,
     pub ranked: &'a Ranked,
     pub presence: &'a Presence,
-    pub places: &'a LeaderboardPlaces,
+    /// An account's Top 500 places, for the ratings its party tile shows.
+    pub places: PlacesOf<'a>,
     /// Seconds since 1970.
     pub wall_time: u64,
     pub now: Instant,
@@ -35,6 +36,9 @@ pub struct SocialContent<'a> {
     /// member's choice go into the party state (`content/queue.py`).
     pub queue: QueueOf<'a>,
 }
+
+/// An account's Top 500 places (`LobbyServer._top500_places`).
+pub type PlacesOf<'a> = Box<dyn Fn(&Account) -> io::Result<LeaderboardPlaces> + 'a>;
 
 /// The role queue of a party (its id and members), when it is in one.
 pub type QueueOf<'a> = Box<dyn Fn(PartyId, &[Arc<Account>]) -> Option<QueueFields> + 'a>;
@@ -219,7 +223,9 @@ impl SocialContent<'_> {
                     )?
                     .party_hero
             };
-            let ratings = self.ranked.party_ratings(&profile, self.places)?;
+            let ratings = self
+                .ranked
+                .party_ratings(&profile, &(self.places)(account)?)?;
             tiles.push((profile, account.account_lo, menu_hero, ratings, *membership));
         }
         let tiles: Vec<_> = tiles
