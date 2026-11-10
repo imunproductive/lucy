@@ -6,8 +6,8 @@ const GRAPH: u16 = 0x01B;
 const DEFINITION: u16 = 0x003;
 
 /// DataTool's offline extraction found 1,587 graphs and 3,528 definitions
-/// (`docs/notes/data-sources.md`); it lacked keys the install's keyring lacks
-/// too. With TACTLib's static 1.74 key every one is stored.
+/// (`docs/notes/data-sources.md`). With TACTLib's static 1.74 key, which the
+/// install's keyring lacks, every one is stored.
 #[test]
 #[ignore = "reads an Overwatch 1.74 install in ORPHEUS_GAME_DIR"]
 fn every_graph_and_definition_is_stored_reads_and_matches_its_key() {

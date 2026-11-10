@@ -28,7 +28,8 @@ fn stored(game: &Game, kind: u16) -> Vec<u64> {
 fn every_stored_graph_definition_and_mode_decodes() {
     let game = game();
     // Instances of classes OWLib doesn't know: DataTool exports them as null.
-    for (kind, count, unknown) in [(GRAPH, 1586, 152), (DEFINITION, 3509, 0), (MODE, 25, 0)] {
+    // With TACTLib's static 1.74 key every graph and definition is stored.
+    for (kind, count, unknown) in [(GRAPH, 1587, 152), (DEFINITION, 3528, 0), (MODE, 25, 0)] {
         let guids = stored(&game, kind);
         assert_eq!(guids.len(), count);
         let mut nulls = 0;

@@ -541,10 +541,12 @@ mod tests {
             }
         }
         assert_eq!((listing.len(), cases, accepted), (95, 698, 551));
-        // Python game.content catalog and selection outputs, with geometry as LE f32.
+        // Python game.content catalog and selection outputs on the derived
+        // data, with geometry as LE f32. (On the prepared pack, whose five
+        // lobby maps carried internal names, Python gives 414daebd....)
         assert_eq!(
             format!("{:x}", digest.finalize()),
-            "414daebdec686669243271e7cadf40c5ca7f0cb2a0e41b7c3d434c7c82b17e4a"
+            "d6d5792b3a374a271c64b15fb6204e9a7c1f5e74428453e9617cd04f5000ccca"
         );
     }
 }
