@@ -10,6 +10,8 @@
 
 pub mod cache;
 mod heroes;
+mod arcade_cards;
+mod game_queues;
 mod install;
 
 use std::{
@@ -90,6 +92,14 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "game_stats",
         derive: heroes::stats::derive,
+    },
+    Derivation {
+        name: "game_queues",
+        derive: game_queues::derive,
+    },
+    Derivation {
+        name: "arcade_cards",
+        derive: arcade_cards::derive,
     },
 ];
 

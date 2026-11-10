@@ -705,6 +705,7 @@ version = "0.0.0"
 dependencies = [
  "flate2",
  "orpheus-casc",
+ "orpheus-fixed",
  "orpheus-stu",
  "orpheus-testkit",
  "serde_json",
