@@ -3,6 +3,7 @@
 mod doctor;
 mod import;
 mod logging;
+mod play;
 mod serve;
 mod settings;
 
@@ -28,7 +29,15 @@ struct Cli {
 enum Command {
     /// Run the Battle.net, lobby and game services until Ctrl+C.
     Serve(ServerArgs),
-    /// Check the setup `serve` needs and say how to fix each problem.
+    /// Run the server, start the game and load the relay into it.
+    Play {
+        #[command(flatten)]
+        args: ServerArgs,
+        /// Load this relay DLL instead of the one built next to orpheus.exe.
+        #[arg(long, value_name = "FILE")]
+        relay_dll: Option<PathBuf>,
+    },
+    /// Check the setup `serve` and `play` need and say how to fix each problem.
     Doctor(ServerArgs),
     /// Manage saved player state.
     #[command(subcommand)]
@@ -91,6 +100,11 @@ fn run(cli: Cli) -> io::Result<ExitCode> {
             let settings = Settings::resolve(&state, &args)?;
             logging::init(Some(&settings.logs()))?;
             serve::run(&settings)?;
+        }
+        Command::Play { args, relay_dll } => {
+            let settings = Settings::resolve(&state, &args)?;
+            logging::init(Some(&settings.logs()))?;
+            play::run(&settings, relay_dll.as_deref())?;
         }
         Command::Doctor(args) => {
             logging::init(None)?;

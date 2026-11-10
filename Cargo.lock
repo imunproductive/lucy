@@ -672,6 +672,7 @@ dependencies = [
  "ctrlc",
  "directories",
  "orpheus-content",
+ "orpheus-launcher",
  "orpheus-lobby",
  "orpheus-server",
  "orpheus-sim",
@@ -713,6 +714,14 @@ name = "orpheus-core"
 version = "0.0.0"
 
 [[package]]
+name = "orpheus-launcher"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+ "windows-sys",
+]
+
+[[package]]
 name = "orpheus-lobby"
 version = "0.0.0"
 dependencies = [
@@ -744,6 +753,13 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+]
+
+[[package]]
+name = "orpheus-relay"
+version = "0.0.0"
+dependencies = [
+ "windows-sys",
 ]
 
 [[package]]

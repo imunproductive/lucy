@@ -41,6 +41,8 @@ pub struct Ports {
 struct ConfigFile {
     runtime: Option<PathBuf>,
     account: Option<String>,
+    game: Option<PathBuf>,
+    locale: Option<String>,
     #[serde(default)]
     ports: PortsFile,
 }
@@ -55,7 +57,7 @@ struct PortsFile {
     dashboard: Option<u16>,
 }
 
-/// Overrides shared by the commands that run or check the server.
+/// Overrides shared by `serve`, `play` and `doctor`.
 #[derive(Args, Clone, Debug, Default)]
 pub struct ServerArgs {
     /// Prepared runtime pack.
@@ -64,6 +66,12 @@ pub struct ServerArgs {
     /// Saved account the game logs in as.
     #[arg(long, value_name = "NAME")]
     pub account: Option<String>,
+    /// Overwatch.exe, its installation folder or the official launcher (for play).
+    #[arg(long, env = "ORPHEUS_GAME", value_name = "PATH")]
+    pub game: Option<PathBuf>,
+    /// Game language for play: auto, none, or a code such as enUS.
+    #[arg(long, value_name = "CODE")]
+    pub locale: Option<String>,
     /// Lobby TCP port.
     #[arg(long, value_name = "PORT")]
     pub lobby_port: Option<u16>,
@@ -86,6 +94,9 @@ pub struct Settings {
     pub state: PathBuf,
     pub runtime: Option<PathBuf>,
     pub account: Option<String>,
+    pub game: Option<PathBuf>,
+    /// `auto`, `none` or a game language code.
+    pub locale: String,
     pub ports: Ports,
 }
 
@@ -97,6 +108,12 @@ impl Settings {
             state: state.to_owned(),
             runtime: args.runtime.clone().or(file.runtime),
             account: args.account.clone().or(file.account),
+            game: args.game.clone().or(file.game),
+            locale: args
+                .locale
+                .clone()
+                .or(file.locale)
+                .unwrap_or_else(|| "auto".into()),
             ports: Ports {
                 lobby: args
                     .lobby_port

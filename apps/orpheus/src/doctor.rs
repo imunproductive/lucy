@@ -11,7 +11,12 @@ use orpheus_lobby::accounts::Accounts;
 use orpheus_server::{runtime::missing_runtime_files, server::local_account_name};
 use orpheus_sim::scene_assets::SceneAssets;
 
-use crate::settings::{CONFIG_FILE, ServerArgs, Settings};
+use orpheus_launcher::game::TARGET_VERSION;
+
+use crate::{
+    play,
+    settings::{CONFIG_FILE, ServerArgs, Settings},
+};
 
 /// One check's result: a passing detail, or a problem with its fix.
 enum Outcome {
@@ -36,7 +41,7 @@ pub fn run(state_dir: &Path, args: &ServerArgs) -> bool {
                 "config",
                 &problem(
                     error.to_string(),
-                    "correct config.toml; its keys are runtime, account and [ports]",
+                    "correct config.toml; its keys are runtime, account, game, locale and [ports]",
                 ),
             );
             return false;
@@ -48,6 +53,8 @@ pub fn run(state_dir: &Path, args: &ServerArgs) -> bool {
         ("runtime", runtime(&settings)),
         ("account", account(&settings)),
         ("ports", ports(&settings)),
+        ("client", client(&settings)),
+        ("relay", relay()),
     ];
     checks.iter().fold(true, |healthy, (name, outcome)| {
         report(name, outcome) && healthy
@@ -180,6 +187,35 @@ fn ports(settings: &Settings) -> Outcome {
             format!("in use: {}", busy.join(", ")),
             "stop the other server, or choose free ports with the --*-port flags or [ports] in config.toml",
         )
+    }
+}
+
+fn client(settings: &Settings) -> Outcome {
+    if settings.game.is_none() {
+        return Outcome::Ok("not configured (only orpheus play needs it)".into());
+    }
+    match play::game(settings) {
+        Ok(game) => {
+            let locale = play::locale(settings, &game).unwrap_or_else(|| "the game's own".into());
+            Outcome::Ok(format!(
+                "{} ({TARGET_VERSION}, language {locale})",
+                game.display()
+            ))
+        }
+        Err(error) => problem(
+            error.to_string(),
+            "point game at the 1.74.0.0.104319 install with --game or game = '<path>' in config.toml",
+        ),
+    }
+}
+
+fn relay() -> Outcome {
+    match play::relay_dll(None) {
+        Ok(path) => Outcome::Ok(path.display().to_string()),
+        Err(error) => problem(
+            error.to_string(),
+            "run cargo build --workspace (orpheus play loads it)",
+        ),
     }
 }
 
