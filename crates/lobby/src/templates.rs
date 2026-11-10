@@ -185,7 +185,9 @@ impl RetailTemplates {
         Ok(fields)
     }
 
-    pub fn preload(&self, extra_skins: &[u64]) -> io::Result<Fields> {
+    /// The 20505 preload record: the captured list of resident definitions
+    /// (skin themes and other `.003` assets) plus `extra_preload`.
+    pub fn preload(&self, extra_preload: &[u64]) -> io::Result<Fields> {
         let mut fields = self
             .first(IN_CONNECT, 20505)
             .ok_or_else(|| invalid("missing preload template"))?;
@@ -193,7 +195,7 @@ impl RetailTemplates {
             return Err(invalid("preload template lacks its skin list"));
         };
         let mut listed: HashSet<_> = skins.iter().filter_map(unsigned).collect();
-        for &skin in extra_skins {
+        for &skin in extra_preload {
             if listed.insert(skin) {
                 skins.push(Value::Unsigned(skin));
             }

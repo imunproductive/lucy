@@ -243,7 +243,7 @@ fn prepared_subset_matches_the_python_login_in_wire_order() {
         }
         let inputs = LoginContent {
             menu_hero,
-            extra_skins: &[],
+            extra_preload: &[],
             wall_time: 1_700_000_000,
             arcade: &arcade,
             celebrations: None,

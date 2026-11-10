@@ -417,6 +417,30 @@ mod tests {
         assert!(scene.owner_body_runtime(tracer, spawn).unwrap().is_none());
     }
 
+    /// The client builds a gun only when its definition is preloaded, and the
+    /// captured preload list has none, so the guns come from the weapon
+    /// scripts. Five weapon scripts build no cosmetic (AipNooBest's table
+    /// agrees); those heroes' arms or bodies are the weapon.
+    #[test]
+    #[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
+    fn the_weapon_scripts_name_the_guns_to_preload() {
+        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let graphs = assets.graphs();
+        let guns = graphs.weapon_cosmetics();
+        assert!(guns.contains(&0x0400_0000_0000_04bf), "Soldier: 76's rifle");
+        let gunless: Vec<_> = graphs
+            .bodies()
+            .values()
+            .filter(|body| body.hero.is_some() && body.weapons.iter().any(Option::is_some))
+            .filter(|body| graphs.body_weapon_cosmetics(body).next().is_none())
+            .map(|body| body.name.as_str())
+            .collect();
+        assert_eq!(
+            gunless,
+            ["Bastion", "Doomfist", "Moira", "Wrecking Ball", "Echo"]
+        );
+    }
+
     /// Soldier: 76 through the server's own path, frame by frame: empty the
     /// rifle into its reload, then move, sprint, crouch, Helix and melee. Every
     /// frame must run without a gap and encode for the owner and observers.

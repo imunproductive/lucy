@@ -59,7 +59,7 @@ pub struct PreparedLogin {
 #[derive(Clone, Copy)]
 pub struct LoginContent<'a> {
     pub menu_hero: Option<u64>,
-    pub extra_skins: &'a [u64],
+    pub extra_preload: &'a [u64],
     pub wall_time: u64,
     pub arcade: &'a Arcade,
     pub celebrations: Option<&'a Celebrations>,
@@ -253,7 +253,7 @@ impl PreparedLogin {
                 Fields::from([(0x78, Value::Struct(record))]),
             ),
         ];
-        let preload = (IN_CONNECT, 20505, templates.preload(content.extra_skins)?);
+        let preload = (IN_CONNECT, 20505, templates.preload(content.extra_preload)?);
         if let Some(celebrations) = content.celebrations {
             let [keys, records, progress] =
                 celebrations.login_messages(&profile, collection.items(), now)?;

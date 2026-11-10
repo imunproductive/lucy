@@ -340,6 +340,33 @@ impl GraphStore {
         &self.bodies
     }
 
+    /// The `.003` definitions the hero bodies' weapon scripts build as
+    /// cosmetics: the gun models. The client builds a cosmetic only when its
+    /// definition is resident, which the login preload list (20505) decides.
+    /// Found live by AipNooBest (`docs/notes/references.md`).
+    pub fn weapon_cosmetics(&self) -> BTreeSet<u64> {
+        self.bodies
+            .values()
+            .flat_map(|body| self.body_weapon_cosmetics(body))
+            .collect()
+    }
+
+    pub fn body_weapon_cosmetics<'a>(&'a self, body: &'a Body) -> impl Iterator<Item = u64> + 'a {
+        body.weapons
+            .iter()
+            .flatten()
+            .filter_map(|&weapon| self.graph(weapon))
+            .flat_map(|graph| {
+                graph
+                    .states
+                    .iter()
+                    .flatten()
+                    .filter_map(|&pos| graph.node(pos))
+            })
+            .filter(|node| node.class == "STUStatescriptStateCosmeticEntity")
+            .filter_map(|node| node.field("m_entityDef.m_entityDef").and_then(asset_guid))
+    }
+
     pub fn entity_body(&self, guid: u64) -> Option<&Body> {
         self.entities.get(&guid)
     }

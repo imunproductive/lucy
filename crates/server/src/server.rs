@@ -110,8 +110,11 @@ impl Server {
         let ranked = Ranked::new(&templates)?;
         let arcade = Arcade::load(data.join("arcade_cards_174.json"), &templates)?;
         let celebrations = Celebrations::load(&data, &templates)?;
-        let extra_skins = extra_preload_themes(&items).collect();
         let assets = SceneAssets::load(&config.runtime)?;
+        // Skin themes newer than the capture, and the gun models.
+        let extra_preload = extra_preload_themes(&items)
+            .chain(assets.graphs().weapon_cosmetics())
+            .collect();
         let scene = assets.prepare(GameMap::practice_range())?;
         if !scene.movement_ready() {
             return Err(io::Error::new(
@@ -165,7 +168,7 @@ impl Server {
             ranked,
             arcade,
             celebrations,
-            extra_skins,
+            extra_preload,
             assets,
             first_scene: Mutex::new(Some(scene)),
             accounts: Arc::new(accounts),
@@ -301,7 +304,7 @@ struct Lobby {
     ranked: Ranked,
     arcade: Arcade,
     celebrations: Celebrations,
-    extra_skins: Vec<u64>,
+    extra_preload: Vec<u64>,
     assets: SceneAssets,
     first_scene: Mutex<Option<PreparedScene>>,
     accounts: Arc<Accounts>,
@@ -409,7 +412,7 @@ impl Lobby {
             &self.ranked,
             LoginContent {
                 menu_hero: menu.menu_guid,
-                extra_skins: &self.extra_skins,
+                extra_preload: &self.extra_preload,
                 wall_time,
                 arcade: &self.arcade,
                 celebrations: Some(&self.celebrations),
