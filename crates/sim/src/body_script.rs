@@ -174,13 +174,12 @@ impl PlayerBodyFactory {
 fn log_assumption(graph: u32, node: Option<u16>, class: &str, answer: &str) {
     use std::{
         collections::HashSet,
-        sync::{Mutex, OnceLock},
+        sync::{LazyLock, Mutex},
     };
     /// Graph, node and class of each assumption already logged.
     type Logged = HashSet<(u32, Option<u16>, String)>;
-    static LOGGED: OnceLock<Mutex<Logged>> = OnceLock::new();
+    static LOGGED: LazyLock<Mutex<Logged>> = LazyLock::new(Mutex::default);
     let mut logged = LOGGED
-        .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if logged.insert((graph, node, class.to_owned())) {
