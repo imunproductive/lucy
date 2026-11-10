@@ -82,7 +82,8 @@ pub struct ServerArgs {
     /// Battle.net RPC TCP port the relay pipes to.
     #[arg(long, value_name = "PORT")]
     pub rpc_port: Option<u16>,
-    /// Game UDP port.
+    /// Game UDP port; 0 turns the game server off (the lobby runs without
+    /// matches).
     #[arg(long, value_name = "PORT")]
     pub game_port: Option<u16>,
     /// Dashboard TCP port; 0 turns the dashboard off.
@@ -243,6 +244,12 @@ impl Settings {
     pub fn dashboard_port(&self) -> Option<u16> {
         (self.ports.dashboard != 0).then_some(self.ports.dashboard)
     }
+
+    /// The game server's port, `None` when 0 turns it off (`--game-port`,
+    /// `ow174/lobby/settings.py`).
+    pub fn game_port(&self) -> Option<u16> {
+        (self.ports.game != 0).then_some(self.ports.game)
+    }
 }
 
 fn read_config(path: &Path) -> io::Result<ConfigFile> {
@@ -302,5 +309,18 @@ mod tests {
         let error = Settings::resolve(typo.path(), &ServerArgs::default()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("lobyb"));
+    }
+
+    #[test]
+    fn game_port_0_turns_the_game_server_off() {
+        let state = write_config("[ports]\ngame = 0\n");
+        let settings = Settings::resolve(state.path(), &ServerArgs::default()).unwrap();
+        assert_eq!(settings.game_port(), None);
+        let args = ServerArgs {
+            game_port: Some(4001),
+            ..ServerArgs::default()
+        };
+        let settings = Settings::resolve(state.path(), &args).unwrap();
+        assert_eq!(settings.game_port(), Some(4001));
     }
 }

@@ -160,6 +160,14 @@ impl GameConnections {
         )
     }
 
+    /// Whether the connection's game has not connected yet, even if its
+    /// handoff ran out before the next timeout sweep.
+    pub fn waiting(&self, connection: u32) -> bool {
+        self.connections
+            .get(&connection)
+            .is_some_and(|entry| matches!(entry.state, State::Waiting { .. }))
+    }
+
     pub fn receive(
         &mut self,
         datagram: &[u8],

@@ -167,17 +167,22 @@ fn ports(settings: &Settings) -> Outcome {
         .filter(|(_, port)| tcp_busy(*port))
         .map(|(name, port)| format!("{name} TCP {port}"))
         .collect();
-    if UdpSocket::bind((Ipv4Addr::LOCALHOST, ports.game)).is_err() {
-        busy.push(format!("game UDP {}", ports.game));
+    if let Some(game) = settings.game_port() {
+        if UdpSocket::bind((Ipv4Addr::LOCALHOST, game)).is_err() {
+            busy.push(format!("game UDP {game}"));
+        }
     }
     let dashboard = settings.dashboard_port().map_or_else(
         || "dashboard off".into(),
         |port| format!("dashboard {port}"),
     );
+    let game = settings
+        .game_port()
+        .map_or_else(|| "game off".into(), |port| format!("game {port} (UDP)"));
     if busy.is_empty() {
         Outcome::Ok(format!(
-            "lobby {}, stall {}, rpc {}, {dashboard} (TCP), game {} (UDP) are free",
-            ports.lobby, ports.stall, ports.rpc, ports.game
+            "lobby {}, stall {}, rpc {}, {dashboard} (TCP), {game} are free",
+            ports.lobby, ports.stall, ports.rpc
         ))
     } else {
         problem(

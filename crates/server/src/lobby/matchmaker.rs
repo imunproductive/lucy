@@ -62,7 +62,7 @@ use orpheus_lobby::{
 use orpheus_wire::jam::codec::{Fields, Value};
 
 use super::{Lobby, TICK, match_id, peer::Peer};
-use crate::game_service::WorldPlayer;
+use crate::game_service::{GameService, WorldPlayer};
 pub(crate) use parties::{Parties, Party};
 
 pub(crate) struct Matchmaker {
@@ -332,8 +332,11 @@ impl Matchmaker {
             for found in due {
                 // One whose lobby connection was replaced or whose reservation
                 // expired gets no 20600.
-                let pending = lobby.game.handoff_pending(found.handoff.conn);
-                if found.session == session && matches!(pending, Ok(true)) {
+                let pending = lobby
+                    .game
+                    .as_deref()
+                    .map(|game| game.handoff_pending(found.handoff.conn));
+                if found.session == session && matches!(pending, Some(Ok(true))) {
                     going.push(found);
                 } else {
                     ctx.free_seat(&found.handoff);
@@ -383,8 +386,12 @@ impl Matchmaker {
     /// `_enter_game`).
     fn enter_game(&self, peer: &mut Peer<'_, '_>, found: Found) -> io::Result<()> {
         let lobby = peer.lobby;
+        let Some(game) = lobby.game.as_deref() else {
+            // No match starts with the game server off (`start`).
+            return Ok(());
+        };
         lobby.open_match_chat(found.match_id, &[found.account_lo]);
-        let port = lobby.game.local_addr().port();
+        let port = game.local_addr().port();
         // The address the game reached the lobby at, or the public one for
         // a player outside the network (`game_address`).
         let host = peer.session.game_host(&lobby.platform.game_host);
@@ -417,11 +424,11 @@ impl Matchmaker {
             }
             Ok(false) => {
                 tracing::warn!("[!] No 20600: the client did not announce the handoff protocol");
-                self.lock().free_seat(&lobby.game, &found.handoff);
+                self.lock().free_seat(Some(game), &found.handoff);
                 Ok(())
             }
             Err(error) => {
-                self.lock().free_seat(&lobby.game, &found.handoff);
+                self.lock().free_seat(Some(game), &found.handoff);
                 Err(error)
             }
         }
@@ -626,7 +633,7 @@ impl Matchmaker {
             if !ctx.state.online(account.account_lo, session) {
                 return;
             }
-            if ctx.practice(account, &party) {
+            if ctx.practice(account, &party) || lobby.game.is_none() {
                 ctx.state.deferred_practice.remove(&account.account_lo);
             } else {
                 ctx.state
@@ -800,6 +807,9 @@ impl Matchmaker {
     /// "End matches"). A game counts as connected as soon as its handoff is
     /// used, before the next sweep marks the seat joined.
     pub(crate) fn send_home(&self, lobby: &Lobby, account_lo: Option<u32>) -> usize {
+        let Some(game) = lobby.game.as_deref() else {
+            return 0;
+        };
         self.with(lobby, |ctx| {
             let mut told = 0;
             for room in 0..ctx.state.rooms.len() {
@@ -812,8 +822,8 @@ impl Matchmaker {
                         continue;
                     }
                     let connected = player.joined
-                        || (matches!(lobby.game.handoff_pending(player.handoff.conn), Ok(false))
-                            && matches!(lobby.game.seat_exists(&player.handoff), Ok(true)));
+                        || (matches!(game.handoff_pending(player.handoff.conn), Ok(false))
+                            && matches!(game.seat_exists(&player.handoff), Ok(true)));
                     if connected {
                         let reason = if account_lo.is_some() {
                             "sent home"
@@ -906,8 +916,8 @@ impl State {
 
     /// Free the place the game service keeps for a 20600 that will not be
     /// used; its next tick drops the seat.
-    fn free_seat(&mut self, game: &crate::game_service::GameService, handoff: &Handoff) {
-        if let Err(error) = game.cancel_handoff(handoff.conn) {
+    fn free_seat(&mut self, game: Option<&GameService>, handoff: &Handoff) {
+        if let Some(Err(error)) = game.map(|game| game.cancel_handoff(handoff.conn)) {
             tracing::warn!("[MM] Could not free seat {}: {error}", handoff.conn);
         }
         for room in &mut self.rooms {
@@ -998,7 +1008,7 @@ impl Ctx<'_> {
     }
 
     fn free_seat(&mut self, handoff: &Handoff) {
-        self.state.free_seat(&self.lobby.game, handoff);
+        self.state.free_seat(self.lobby.game.as_deref(), handoff);
     }
 
     /// The party's queue state while it is in a role queue.
@@ -1308,7 +1318,11 @@ impl Ctx<'_> {
         };
         // Whether each match still waits for its players (Python
         // `GameServer.open_matches`); one the service no longer has is over.
-        let waiting: HashMap<[u64; 2], bool> = match self.lobby.game.snapshot() {
+        let lobby = self.lobby;
+        let Some(game) = lobby.game.as_deref() else {
+            return;
+        };
+        let waiting: HashMap<[u64; 2], bool> = match game.snapshot() {
             Ok(matches) => matches
                 .into_iter()
                 .map(|found| (found.id, found.waiting))
@@ -1371,7 +1385,11 @@ impl Ctx<'_> {
             return false;
         };
         let id = self.state.rooms[room].id;
-        let handoffs = match game::join_running(&self.lobby.game, id, players) {
+        let lobby = self.lobby;
+        let Some(game) = lobby.game.as_deref() else {
+            return false;
+        };
+        let handoffs = match game::join_running(game, id, players) {
             Ok(Some(handoffs)) => handoffs,
             Ok(None) => return false,
             Err(error) => {
@@ -1472,6 +1490,11 @@ impl Ctx<'_> {
         card: u64,
         used: &[[u64; 2]],
     ) -> bool {
+        let lobby = self.lobby;
+        let Some(game) = lobby.game.as_deref() else {
+            tracing::warn!("[MM] The game server is off (--game-port 0)");
+            return false;
+        };
         if entries.is_empty() {
             return false;
         }
@@ -1485,29 +1508,28 @@ impl Ctx<'_> {
                 return false;
             }
         };
-        let handoffs =
-            match game::open_world(&self.lobby.game, id, map.clone(), self.lobby, players) {
-                Ok(handoffs) if handoffs.len() == entries.len() => handoffs,
-                Ok(handoffs) => {
-                    for handoff in &handoffs {
-                        self.free_seat(handoff);
-                    }
-                    return false;
+        let handoffs = match game::open_world(game, id, map.clone(), lobby, players) {
+            Ok(handoffs) if handoffs.len() == entries.len() => handoffs,
+            Ok(handoffs) => {
+                for handoff in &handoffs {
+                    self.free_seat(handoff);
                 }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    tracing::info!("[MM] {}: the game clock is not ready: {error}", map.name);
-                    self.state.clock_blocked = true;
-                    return false;
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        "[MM] {} ({}): the game service did not open it: {error}",
-                        map.name,
-                        map.mode_name
-                    );
-                    return false;
-                }
-            };
+                return false;
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                tracing::info!("[MM] {}: the game clock is not ready: {error}", map.name);
+                self.state.clock_blocked = true;
+                return false;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "[MM] {} ({}): the game service did not open it: {error}",
+                    map.name,
+                    map.mode_name
+                );
+                return false;
+            }
+        };
         // Competitive as for the game's 20300: the lobby gives the players a
         // rank there.
         let ranked = card != 0
@@ -1698,14 +1720,20 @@ impl Ctx<'_> {
 
     /// Take a player out of its match from the server side: a connected game
     /// goes back to the menu (20304) and leaves the match when its link
-    /// closes; a game that has not connected loses its seat.
+    /// closes; a game that has not connected leaves the match now, and gets
+    /// 20304 if it still connects (Python `GameServer.take_out`).
     fn take_out(&mut self, room: usize, seat: usize, reason: &str) {
         let player = &mut self.state.rooms[room].seats[seat];
         player.going_home = true;
-        let done = match self.lobby.game.release_seat(&player.handoff) {
-            Ok(_) if player.joined => "sent to the menu",
-            Ok(_) => "left before its game connected",
-            Err(_) => "the game service did not answer",
+        let released = self
+            .lobby
+            .game
+            .as_deref()
+            .map(|game| game.release_seat(&player.handoff));
+        let done = match released {
+            Some(Ok(_)) if player.joined => "sent to the menu",
+            Some(Ok(_)) => "left before its game connected",
+            _ => "the game service did not answer",
         };
         let name = player.account.name.clone();
         let id = self.state.rooms[room].id;
@@ -1716,7 +1744,9 @@ impl Ctx<'_> {
     /// that left it lose it, are back in General, and their place may go to
     /// a party that waits (Python `LobbyServer.game_joined`, `game_left`).
     fn sweep(&mut self) {
-        let game = &self.lobby.game;
+        let Some(game) = self.lobby.game.as_deref() else {
+            return;
+        };
         let mut events = Vec::new();
         for (room_index, room) in self.state.rooms.iter_mut().enumerate() {
             for seat in room.seats.iter_mut().filter(|seat| !seat.gone) {

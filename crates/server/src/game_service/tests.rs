@@ -250,6 +250,58 @@ fn canceled_seat_is_rejected_before_tick_and_released() {
     server.stop().unwrap();
 }
 
+/// The id of the first reliable message the server sends.
+fn first_reliable(client: &Client, schemas: &Schemas) -> u32 {
+    let until = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < until {
+        let packet = client.receive();
+        if packet.kind != KIND_FRAME {
+            continue;
+        }
+        if let Some(first) = messages(schemas, &packet).first() {
+            return first.message.id;
+        }
+    }
+    panic!("no reliable message in time");
+}
+
+/// tests/test_leaving.py `test_a_player_taken_out_before_his_game_connects_
+/// leaves_at_once_and_only_gets_20304`.
+#[test]
+fn a_player_taken_out_before_his_game_connects_leaves_at_once_and_only_gets_20304() {
+    let schemas = Arc::new(Schemas::game());
+    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let ticket = server
+        .open_match(MATCH, GameMap::practice_range(), player())
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert!(server.release_seat(&ticket).unwrap());
+    // He left at once: the seat is gone, and the match with its last player.
+    assert!(!server.seat_exists(&ticket).unwrap());
+    assert!(server.snapshot().unwrap().is_empty());
+
+    let mut client = Client::new(server.local_addr(), &ticket);
+    client.handshake();
+    assert_eq!(first_reliable(&client, &schemas), 20304);
+    thread::sleep(Duration::from_millis(100));
+    // The game never joined a match.
+    assert!(!server.seat_exists(&ticket).unwrap());
+    assert!(server.snapshot().unwrap().is_empty());
+
+    client.send(FIN | ACK, Vec::new());
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        let packet = client.receive();
+        if packet.kind == KIND_CONTROL {
+            assert_eq!(packet.flags, FIN | ACK);
+            break;
+        }
+        assert!(Instant::now() < until, "waiting for FIN acknowledgement");
+    }
+    server.stop().unwrap();
+}
+
 #[derive(Debug)]
 struct WorldRecord {
     entity: u32,

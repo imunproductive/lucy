@@ -610,7 +610,7 @@ Phase 8 moved the final per-feature evidence and open items from `docs/notes/par
 
 Each of the 114 Python test files (at the tag `python-reference`): 78 covered by an existing Rust test, 10 ported to new Rust tests, 26 dropped. Covered tests marked "ignored" run only in the game tier (`just test-game`, `just test-assets`). The dashboard's JavaScript test stays, as `web/tests/test_dashboard_client.mjs`; `tests/golden/messages.json` moved to `crates/lobby/tests/golden/`.
 
-One Python test was not ported and is an open difference (see `docs/notes/behavior.md`): `TakeOutTests::test_a_player_taken_out_before_his_game_connects...` in `test_leaving.py`, because the Rust server behaves differently.
+The last differing test, `TakeOutTests::test_a_player_taken_out_before_his_game_connects...` in `test_leaving.py`, is ported too: the Rust server now behaves as Python did.
 
 | Python test | Class | Rust test or reason |
 | --- | --- | --- |
@@ -686,7 +686,7 @@ One Python test was not ported and is an open difference (see `docs/notes/behavi
 | `test_launcher.py` | covered | launcher `game.rs::resolves_the_game_from_its_folder_or_the_official_launcher`, `finds_the_given_game_then_the_remembered_one...`, `prefers_the_system_language...` (gap: `close_running_copy` is untested) |
 | `test_launcher_inject.py` | covered | launcher `tests/inject.rs::the_relay_loads_once_and_uses_the_given_port` (ignored); tasklist parsing is Python-only (Rust uses Toolhelp) |
 | `test_leaderboard.py` | covered | lobby `leaderboard/tests.rs` (2); `mode_rules.rs::preserves_played_hero_order_and_adds_role_wins...`; `player_messages.rs::hello_uses_account_session_nickname_and_region` |
-| `test_leaving.py` | ported | server `lobby/matchmaker/ported_tests.rs` (e.g. `the_leader_takes_the_party_that_is_in_his_match_and_it_stays_a_party`, `leaving_the_game_after_the_server_sent_it_home_keeps_the_party`). Open difference: `TakeOutTests::test_a_player_taken_out_before_his_game_connects...` is not ported because the Rust server behaves differently |
+| `test_leaving.py` | ported | server `lobby/matchmaker/ported_tests.rs` (e.g. `the_leader_takes_the_party_that_is_in_his_match_and_it_stays_a_party`, `leaving_the_game_after_the_server_sent_it_home_keeps_the_party`). and `a_player_taken_out_before_his_game_connects_leaves_at_once_and_only_gets_20304` (also in `game_service::tests`) |
 | `test_lineup.py` | covered | lobby `lineup.rs::roster_slots_count_within_each_team`, `the_messages_encode_with_the_lobby_schemas`; sim `instance.rs::instance_preserves_ranked_type...` |
 | `test_lobby_matches.py` | covered | lobby `session/tests.rs::negotiates_pings_and_accepts_practice_messages_after_login`; server `practice.rs::practice_request_hands_off...` |
 | `test_lobby_purchase.py` | covered | lobby `collection.rs` (asserts the 24306 unlock); server `server.rs::lobby_services_answer_the_game...` (ignored); dashboard `a_purchase_charges_its_own_currency...` |

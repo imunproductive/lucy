@@ -178,7 +178,7 @@ fn start(state: &tempfile::TempDir) -> Server {
     let runtime = orpheus_testkit::runtime_dir();
     let mut config = ServerConfig::new(runtime, state.path().into());
     config.lobby_port = 0;
-    config.game_port = 0;
+    config.game_port = Some(0);
     config.stall_port = 0;
     config.rpc_port = 0;
     config.dashboard_port = Some(0);
@@ -408,7 +408,7 @@ fn match_commands_and_general_again_after_the_match() {
     };
     let cipher = LinkCipher::new(key(0xce), key(0xae));
     let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    udp.connect(server.game_addr()).unwrap();
+    udp.connect(server.game_addr().unwrap()).unwrap();
     udp.set_read_timeout(Some(WAIT)).unwrap();
     let mut packet = Packet {
         conn: u32::try_from(connection).unwrap(),

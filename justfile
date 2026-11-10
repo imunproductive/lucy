@@ -27,7 +27,7 @@ build:
 
 # Ignored tests that read an Overwatch 1.74 install or the game data derived from it.
 test-game game:
-    cargo build -p orpheus-relay --locked; $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo test --workspace --exclude orpheus-launcher --locked --no-fail-fast -- --ignored --skip datatool --skip matches_the_pack
+    cargo build -p orpheus-relay --locked; $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo test --workspace --exclude orpheus-launcher --locked --no-fail-fast -- --ignored --skip datatool --skip matches_the_pack --test-threads=1
 
 # Ignored tests that derive the runtime pack's files from an install and compare them with the pack.
 test-assets game runtime:

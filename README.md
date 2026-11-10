@@ -20,7 +20,7 @@ target\release\orpheus.exe doctor --game C:\path\to\Overwatch
 target\release\orpheus.exe serve --game C:\path\to\Overwatch
 ```
 
-`doctor` checks the install, the derived data, the saved profiles and the ports, and prints a fix for each problem. `serve` runs until Ctrl+C. The dashboard is at <http://127.0.0.1:3725> (`--dashboard-port 0` turns it off). `START_SERVER_LOCAL.cmd` builds and runs `orpheus serve`.
+`doctor` checks the install, the derived data, the saved profiles and the ports, and prints a fix for each problem. `serve` runs until Ctrl+C. The dashboard is at <http://127.0.0.1:3725> (`--dashboard-port 0` turns it off). `--game-port 0` turns the game server off: the lobby runs without matches. `START_SERVER_LOCAL.cmd` builds and runs `orpheus serve`.
 
 Profiles, logs (`logs\orpheus.log`, kept at 2 MB with two older files), `config.toml` and the answers the modes remember live in `%APPDATA%\orpheus`; pass `--state <dir>` or set `ORPHEUS_STATE_DIR` to use another folder. To reuse the profiles of an older checkout:
 

@@ -46,7 +46,7 @@ use mio::{Events, Interest, Poll, Token, Waker, net::UdpSocket};
 
 use crate::{
     clock::{GameClock, Step, next_tick_after},
-    connection::{GameConnections, MAX_CONNECTION_ID, Outgoing, SILENCE_TIME},
+    connection::{GameConnections, MAX_CONNECTION_ID, Outgoing, Received, SILENCE_TIME},
     ingress::{GameIngress, MapReadiness, MapReadyStep, MessageKind, WorldReadiness, pong},
 };
 use orpheus_content::{
@@ -451,6 +451,10 @@ impl GameService {
         self.seat(handoff, false)
     }
 
+    /// Take the seat's player out of his match (server.py `take_out`): a
+    /// connected game goes back to the menu (20304) and leaves when its link
+    /// closes; a player whose game has not connected leaves now, and the game
+    /// gets only 20304 if it still connects. False when the seat is gone.
     pub fn release_seat(&self, handoff: &Handoff) -> io::Result<bool> {
         self.seat(handoff, true)
     }
@@ -885,6 +889,38 @@ impl Peer {
         self.egress.queue_reliable(bytes).map_err(invalid)
     }
 
+    /// This tick's frame over the peer's link: the queued reliable messages
+    /// and world records, with these movements.
+    fn send_frame(
+        &mut self,
+        links: &mut GameConnections,
+        socket: &UdpSocket,
+        connection: u32,
+        tick: u32,
+        movements: Vec<EntityUpdate>,
+        reliable_only: bool,
+    ) {
+        let _ = self.world.send_frame(
+            tick,
+            movements,
+            reliable_only,
+            &mut self.egress,
+            |payload| {
+                let packet = Packet {
+                    conn: connection,
+                    kind: KIND_FRAME,
+                    flags: ACK,
+                    payload,
+                    ..Packet::default()
+                };
+                let outgoing = links
+                    .transmit(packet)
+                    .map_err(|error| io::Error::other(format!("game link: {error:?}")))?;
+                send(socket, outgoing)
+            },
+        );
+    }
+
     /// The seconds left of "assemble your team" in the game mode entity's
     /// v1303, every second; the client shows them rounded up (match.py
     /// `_send_countdown`).
@@ -999,6 +1035,11 @@ struct State {
     rooms: HashMap<MatchId, Room>,
     seats: HashMap<u32, (MatchId, usize)>,
     peers: IndexMap<u32, Peer>,
+    /// Games taken out of their match before they connected (server.py
+    /// `take_out`): the player has left, but the handoff stays reserved until
+    /// its deadline, so a game that still connects is admitted and gets only
+    /// 20304 (server.py `_datagram`, `Client.received`).
+    homeward: HashMap<u32, Peer>,
     next_connection: u32,
     next_input_peer: usize,
 }
@@ -1012,6 +1053,7 @@ impl State {
             rooms: HashMap::new(),
             seats: HashMap::new(),
             peers: IndexMap::new(),
+            homeward: HashMap::new(),
             next_connection: 1,
             next_input_peer: 0,
         }
@@ -1106,7 +1148,7 @@ impl State {
         for _ in slots.clone() {
             let connection = self.next_connection;
             self.next_connection = self.next_connection % MAX_CONNECTION_ID + 1;
-            if self.seats.contains_key(&connection) {
+            if self.seats.contains_key(&connection) || self.homeward.contains_key(&connection) {
                 return Err(io::Error::new(
                     io::ErrorKind::WouldBlock,
                     "game seat ID is still in use",
@@ -1253,8 +1295,12 @@ impl State {
                     .seats
                     .get(&connection)
                     .is_some_and(|&(match_id, _)| match_id == id);
-                if release && exists && !self.links.cancel_handoff(connection) {
-                    self.send_home(connection, now);
+                if release && exists {
+                    if self.links.waiting(connection) {
+                        self.take_out_waiting(connection);
+                    } else {
+                        self.send_home(connection, now);
+                    }
                 }
                 let _ = reply.send(exists);
             }
@@ -1320,7 +1366,23 @@ impl State {
         true
     }
 
+    /// A player whose game has not connected leaves the match now; if his
+    /// game still connects, it gets only 20304 (server.py `take_out`).
+    fn take_out_waiting(&mut self, connection: u32) {
+        let (id, slot) = self.seats[&connection];
+        let player = &self.rooms[&id].players[slot];
+        tracing::info!(
+            "[game] match {:04X}: {} left before his game connected",
+            id[0] & 0xFFFF,
+            player.info.name
+        );
+        let peer = Peer::new(player.entity);
+        self.retire(connection);
+        self.homeward.insert(connection, peer);
+    }
+
     fn retire(&mut self, connection: u32) {
+        self.homeward.remove(&connection);
         self.peers.shift_remove(&connection);
         if let Some((id, slot)) = self.seats.remove(&connection) {
             let room = self.rooms.get_mut(&id).expect("reserved match");
@@ -1337,6 +1399,10 @@ impl State {
             return;
         };
         let connection = received.connection;
+        if self.homeward.contains_key(&connection) {
+            self.receive_homeward(socket, received, now);
+            return;
+        }
         let (id, slot) = self.seats[&connection];
         if received.admitted {
             self.peers
@@ -1397,6 +1463,29 @@ impl State {
             if let (Ok(commands), Some(_)) = (commands, &room.world) {
                 world.queue_commands(self.clock.frame(), &commands);
             }
+        }
+    }
+
+    /// A datagram of a game whose player was taken out before it connected:
+    /// once its link opens it goes back to the menu (20304), and nothing it
+    /// sends reaches a match (server.py `Client.received`, `player.gone`).
+    /// While the clock drains it is sent home at its SYN (`_datagram`).
+    fn receive_homeward(&mut self, socket: &UdpSocket, received: Received, now: Duration) {
+        let connection = received.connection;
+        let peer = self.homeward.get_mut(&connection).expect("homeward peer");
+        if let Some((ack, bits)) = received.ack {
+            let _ = peer.egress.acknowledge(ack, bits);
+        }
+        if let Some(Ok(control)) = received.control {
+            let _ = send(socket, control);
+        }
+        if received.closed {
+            self.homeward.remove(&connection);
+            return;
+        }
+        peer.open |= received.opened;
+        if received.opened || (received.admitted && self.clock.draining()) {
+            self.send_home(connection, now);
         }
     }
 
@@ -1859,7 +1948,11 @@ impl State {
 
     fn send_home(&mut self, connection: u32, now: Duration) {
         if self.links.begin_leaving(connection, now) {
-            let peer = self.peers.get_mut(&connection).expect("admitted peer");
+            let peer = self
+                .peers
+                .get_mut(&connection)
+                .or_else(|| self.homeward.get_mut(&connection))
+                .expect("admitted peer");
             let _ = peer.reliable(&self.schemas, leave_message());
         }
     }
@@ -1903,7 +1996,7 @@ impl State {
     }
 
     fn tick(&mut self, socket: &UdpSocket, now: Duration, missed: u64) {
-        let step = self.clock.step(missed, !self.seats.is_empty());
+        let step = self.clock.step(missed, self.connections_pending());
         let (tick, send_frames, drain, force) = match step {
             Step::Simulate { frame, send_world } => (frame, send_world, false, false),
             Step::Drain {
@@ -1913,7 +2006,7 @@ impl State {
                 send_reliable,
             } => {
                 if entered {
-                    for (&connection, peer) in &mut self.peers {
+                    for (&connection, peer) in self.peers.iter_mut().chain(&mut self.homeward) {
                         peer.clear_world();
                         if self.links.begin_leaving(connection, now) {
                             let _ = peer.reliable(&self.schemas, leave_message());
@@ -2019,24 +2112,23 @@ impl State {
                         .as_ref()
                         .map_or_else(Vec::new, |world| peer.world.movement(&world.scene, tick))
                 };
-                let _ =
-                    peer.world
-                        .send_frame(tick, movements, drain, &mut peer.egress, |payload| {
-                            let packet = Packet {
-                                conn: connection,
-                                kind: KIND_FRAME,
-                                flags: ACK,
-                                payload,
-                                ..Packet::default()
-                            };
-                            let outgoing = self.links.transmit(packet).map_err(|error| {
-                                io::Error::other(format!("game link: {error:?}"))
-                            })?;
-                            send(socket, outgoing)
-                        });
+                peer.send_frame(&mut self.links, socket, connection, tick, movements, drain);
             }
         }
-        self.clock.renew_if_idle(!self.seats.is_empty(), false);
+        // Games taken out before they connected get nothing but their 20304
+        // (server.py `_tick`, `Client.send_frame`).
+        for (&connection, peer) in &mut self.homeward {
+            if send_frames && peer.open {
+                peer.send_frame(&mut self.links, socket, connection, tick, Vec::new(), true);
+            }
+        }
+        self.clock.renew_if_idle(self.connections_pending(), false);
+    }
+
+    /// Seats and games still connected or awaited keep the clock from
+    /// renewing (server.py `_drain_clock`: `self.clients or self.handoffs`).
+    fn connections_pending(&self) -> bool {
+        !self.seats.is_empty() || !self.homeward.is_empty()
     }
 }
 
