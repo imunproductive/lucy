@@ -10,6 +10,8 @@ pub mod controller;
 pub mod egress;
 pub mod hitscan;
 pub mod instance;
+pub mod notices;
+pub mod others;
 pub mod pools;
 pub mod projectile_flight;
 pub mod projectile_wire;

@@ -10,6 +10,7 @@ use orpheus_lobby::{
     handoff::{
         Handoff, LobbySeat, enter_game, general_channel, is_request, match_channel, team_colours,
     },
+    player_messages,
     session::PreparedLogin,
     transport::LobbyMessage,
 };
@@ -152,11 +153,16 @@ pub(crate) fn dispatch_scene(
             let player = players.pop().expect("solo Practice Range player");
             let card = {
                 let profile = login.account.profile();
+                let portrait_frame = collection.portrait_frame(&profile);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(io::Error::other)?
+                    .as_secs();
                 PlayerCard {
                     account: login.identity.account_id(),
                     battle_tag: battle_tag(&profile.player_name, login.identity.account_lo),
                     level: Some(u32::try_from(profile.level).map_err(io::Error::other)?),
-                    portrait_frame: Some(collection.portrait_frame(&profile)),
+                    portrait_frame: Some(portrait_frame),
                     skins: assets
                         .heroes()
                         .heroes()
@@ -166,6 +172,9 @@ pub(crate) fn dispatch_scene(
                                 .map(|skin| (hero.guid, skin))
                         })
                         .collect::<io::Result<_>>()?,
+                    // The lobby's card, which every client of the match gets
+                    // in 20308 (ow174/lobby/matchmaker.py `_card`).
+                    record: player_messages::record(&profile, login.identity, portrait_frame, now),
                     ..PlayerCard::default()
                 }
             };

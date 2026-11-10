@@ -7,12 +7,15 @@ use std::f64::consts::PI;
 
 use crate::pools::PoolCatalog;
 use orpheus_content::heroes::Hero;
-use orpheus_script::vitals::Vitals;
 use orpheus_wire::entity::{
-    Component, ComponentValue, Create, EntityUpdate, LeaseBlock, Movement, Operation, SkinTheme,
+    Component, ComponentValue, Create, EntityUpdate, LeaseBlock, Movement, NO_INPUT, Operation,
+    SkinTheme,
 };
 
 pub const CROUCHED_MOVEMENT_FLAG: u32 = 0x2;
+/// The movement record's gravity scale of a body on another client
+/// (ow174/game/match.py Player.movement, as the bots' records).
+pub(crate) const GRAVITY_SCALE: f64 = 1.75;
 
 pub struct BodyCreate<'a> {
     pub entity: u32,
@@ -22,7 +25,8 @@ pub struct BodyCreate<'a> {
     pub position: [f64; 3],
     pub yaw: i32,
     pub skin: SkinTheme,
-    pub vitals: Option<&'a Vitals>,
+    /// The body's current pools (component 51); None = the hero's own pools.
+    pub health: Option<Component>,
 }
 
 pub enum BodyView<'a> {
@@ -47,6 +51,39 @@ pub fn owner_pose(source: Movement) -> Movement {
     }
 }
 
+/// Another player's body as other clients' movement records carry it
+/// (match.py Player.movement): their animation plays idle, run, crouch or a
+/// jump from it. The record's frame is the packet's (the server tick), so the
+/// client reads the input fields. A movement key counts as held while the
+/// last command with throttles is not older than this tick, so a standing
+/// body carries the frame of that command.
+pub fn remote_movement(pose: Movement, tick: u32) -> Movement {
+    // The mover's pose says None when its own frame had throttles.
+    let last_input = match pose.input_frame {
+        None => pose.frame,
+        Some(NO_INPUT) => None,
+        Some(frame) => Some(frame),
+    };
+    let input_frame = if pose.throttles != [0; 2] || last_input.is_some_and(|frame| frame >= tick) {
+        None
+    } else {
+        Some(last_input.unwrap_or(NO_INPUT))
+    };
+    Movement {
+        position: pose.position,
+        yaw: pose.yaw,
+        pitch: pose.pitch,
+        velocity: pose.velocity,
+        flags: pose.flags,
+        throttles: pose.throttles,
+        input_frame,
+        input_throttles: pose.input_throttles,
+        air_ticks: pose.air_ticks,
+        gravity: GRAVITY_SCALE,
+        ..Movement::default()
+    }
+}
+
 pub fn yaw_rotation(yaw: f64) -> [f32; 4] {
     let half = yaw * PI / 65536.0;
     let (sin, cos) = half.sin_cos();
@@ -56,10 +93,9 @@ pub fn yaw_rotation(yaw: f64) -> [f32; 4] {
 /// Capture the ordered components, skin and pose once so budget probes and
 /// reliable retries serialize the same entity lifetime.
 pub fn body_create(input: BodyCreate<'_>, view: BodyView<'_>, pools: &PoolCatalog) -> EntityUpdate {
-    let health = input.vitals.map_or_else(
-        || pools.body_pools(input.hero.guid).vitals().component(),
-        Vitals::component,
-    );
+    let health = input
+        .health
+        .unwrap_or_else(|| pools.body_pools(input.hero.guid).vitals().component());
     let mut components = vec![
         health,
         Component {
@@ -100,7 +136,7 @@ pub fn body_create(input: BodyCreate<'_>, view: BodyView<'_>, pools: &PoolCatalo
 mod tests {
     use super::*;
     use orpheus_content::heroes::SOLDIER;
-    use orpheus_script::vitals::Death;
+    use orpheus_script::vitals::{Death, Vitals};
     use orpheus_wire::entity::{WITH_SCALE, WITH_TRANSFORM, create, frame};
     use sha2::{Digest, Sha256};
 
@@ -176,7 +212,7 @@ mod tests {
                     guid: THEME,
                     golden: true,
                 },
-                vitals: None,
+                health: None,
             },
             BodyView::Owner {
                 pose: Some(pose),
@@ -222,6 +258,50 @@ mod tests {
     }
 
     #[test]
+    fn remote_records_hold_keys_until_the_tick_after_the_last_input() {
+        let standing = Movement {
+            position: [1.0, 2.0, 3.0],
+            yaw: 1200,
+            pitch: -40,
+            flags: CROUCHED_MOVEMENT_FLAG,
+            input_throttles: [0, 127],
+            air_ticks: 3,
+            gravity: 1.0,
+            frame: Some(1000),
+            input_frame: Some(990),
+            crouch_frame: Some(995),
+            spring: [4, 5],
+            ..Movement::default()
+        };
+        let record = remote_movement(standing, 1003);
+        assert_eq!(
+            record,
+            Movement {
+                position: standing.position,
+                yaw: 1200,
+                pitch: -40,
+                flags: CROUCHED_MOVEMENT_FLAG,
+                input_frame: Some(990),
+                input_throttles: [0, 127],
+                air_ticks: 3,
+                gravity: GRAVITY_SCALE,
+                ..Movement::default()
+            }
+        );
+        // The record's frame is the packet's: an input at or after this tick
+        // is still held, and a running body has no input frame.
+        assert_eq!(remote_movement(standing, 990).input_frame, None);
+        let running = Movement {
+            throttles: [0, 127],
+            input_frame: None,
+            ..standing
+        };
+        assert_eq!(remote_movement(running, 1003).input_frame, None);
+        let fresh = Movement::default();
+        assert_eq!(remote_movement(fresh, 1003).input_frame, Some(NO_INPUT));
+    }
+
+    #[test]
     fn observer_create_freezes_damaged_pools_and_omits_pose_and_lease() {
         let hero = Hero {
             guid: REINHARDT,
@@ -248,7 +328,7 @@ mod tests {
                     guid: 0,
                     golden: true,
                 },
-                vitals: Some(&live),
+                health: Some(live.component()),
             },
             BodyView::Observer,
             &PoolCatalog::default(),
@@ -327,7 +407,7 @@ mod tests {
                             guid: THEME,
                             golden: index % 2 == 0,
                         },
-                        vitals: None,
+                        health: None,
                     },
                     view,
                     &pools,

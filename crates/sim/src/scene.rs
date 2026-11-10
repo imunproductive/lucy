@@ -10,9 +10,12 @@ use orpheus_script::{
     vitals::health,
     wire::{self, Instance, Layout, Variables},
 };
-use orpheus_wire::entity::{
-    Component, ComponentValue, Create, EntityUpdate, GAME_MODE_ENTITY, Operation, PLAYER_PATH,
-    SkinTheme, WITH_PARTICIPANT, WITH_SCALE, WITH_TRANSFORM,
+use orpheus_wire::{
+    entity::{
+        Component, ComponentValue, Create, EntityUpdate, GAME_MODE_ENTITY, Operation, PLAYER_PATH,
+        SkinTheme, WITH_PARTICIPANT, WITH_SCALE, WITH_TRANSFORM,
+    },
+    jam::codec::Fields,
 };
 
 const PLAYER_DEFINITION: u64 = 0x0400_0000_0000_000e;
@@ -50,6 +53,9 @@ pub struct PlayerAppearance<'a> {
     pub entity: u32,
     pub slot: i8,
     pub team: u8,
+    /// The n-th player of the team takes the team's n-th spawn point; in a
+    /// free-for-all the n-th player of the match (match.py Player).
+    pub spawn: usize,
     pub card: &'a PlayerCard,
 }
 
@@ -62,6 +68,9 @@ pub struct PlayerCard {
     pub ranked: Option<(i16, i16, i8)>,
     pub role: Option<i8>,
     pub skins: HashMap<u64, SkinTheme>,
+    /// The lobby's player record, the 20308 card every client of the match
+    /// gets (ow174/content/player.py `record`). Empty: ids and name only.
+    pub record: Fields,
 }
 
 pub fn player_create(
@@ -72,13 +81,11 @@ pub fn player_create(
 ) -> io::Result<EntityUpdate> {
     use ComponentValue::*;
     let card = player.card;
-    let team = if map.free_for_all {
-        FREE_FOR_ALL_TEAM
-    } else {
-        player.team
-    };
     let mut components = vec![
-        fields(26, vec![Some(Id(PLAYER_FILTER | team_bit(team)?))]),
+        fields(
+            26,
+            vec![Some(Id(PLAYER_FILTER | player_team_bit(map, player.team)?))],
+        ),
         fields(
             29,
             vec![
@@ -213,6 +220,17 @@ pub(crate) fn team_bit(team: u8) -> io::Result<u64> {
     Ok(TEAM_BIT << team)
 }
 
+/// The filter bit of a player's team; in a free-for-all the free-for-all
+/// team's, since each player's own team number would run past the five teams
+/// into the spectator bit (match.py Player.team_bit).
+pub(crate) fn player_team_bit(map: &GameMap, team: u8) -> io::Result<u64> {
+    team_bit(if map.free_for_all {
+        FREE_FOR_ALL_TEAM
+    } else {
+        team
+    })
+}
+
 fn invalid(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
@@ -260,6 +278,7 @@ mod tests {
             entity: 0xa000_0100,
             slot: 0,
             team: 1,
+            spawn: 0,
             card: &card,
         };
         let board = stats.component(&PlayerStats::default(), map.mode_guid, None, None);

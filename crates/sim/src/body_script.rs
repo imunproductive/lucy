@@ -12,6 +12,7 @@ use crate::{
     combat::{PosedHitscan, PosedProjectile, PosedShot, eye_height},
     hitscan::aim_direction,
     instance::RETAIL_QUANTA,
+    others::ObserverActivity,
     pools::{BODY_GRAPH, FALLBACK_POOLS, HealthPools},
     projectiles::{ProjectileLeases, local_prediction, predicted_sync},
     replication::{BodyStep, OwnerBodyRuntime},
@@ -267,6 +268,15 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     fn frame_ms(&self) -> u32 {
         FRAME_MS as u32
+    }
+
+    fn observer_activity(&self) -> Option<ObserverActivity> {
+        let snapshot = self.component.snapshot()?;
+        Some(ObserverActivity::of(
+            snapshot,
+            &self.world.graphs,
+            &self.codecs,
+        ))
     }
 
     fn movement_modifiers(&self) -> Option<&BTreeMap<ModifierKey, Modifier>> {
