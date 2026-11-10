@@ -50,8 +50,12 @@ const IDENTIFIER: u16 = 0x01C;
 const TARGET_TAG: u16 = 0x06C;
 const INDEX: u64 = 0xFFFF_FFFF_FFFF;
 
-/// The graphs every bundle starts from besides the bodies'.
-const ROOT_GRAPHS: [u64; 11] = [
+/// The graphs every bundle starts from besides the bodies'. The mode scripts,
+/// team controllers and team bodies are each mode's (`0C5` `m_teams`, and the
+/// script of the mode entity `16B2`; `statescript_names.json` "modes"), and
+/// the map entity graphs are the objectives' and doors' statescript
+/// instances (`STUStatescriptComponentInstanceData` in the map chunks).
+const ROOT_GRAPHS: [u64; 25] = [
     0x13C1, // Practice Range controller
     0x0C90, // PvP controller
     0x288A, // hero select host
@@ -59,10 +63,24 @@ const ROOT_GRAPHS: [u64; 11] = [
     0x288D, // hero select team list
     0x20E4, // weapon and ability HUD
     0x13C0, // Practice Range mode
-    0x0F4A, // PvP mode
-    0x0EC2, // PvP mode
+    0x0F4A, // Assault, Escort and Hybrid mode
+    0x0EC2, // Control mode
     0x0C8E, // PvP mode body
     0x0258, // Biotic Field (the initial graph of 03DC.003, which 0257's canister leaves where it lands)
+    0x0D76, // Skirmish mode
+    0x0D0B, // Elimination mode
+    0x0D6F, // Elimination controller
+    0x0D38, // Elimination body
+    0x0F60, // Team Deathmatch mode
+    0x0F62, // Team Deathmatch controller
+    0x1066, // Team Deathmatch body
+    0x0F73, // Deathmatch and Bounty Hunter mode
+    0x0F74, // Deathmatch controller
+    0x1058, // Deathmatch body
+    0x0F4C, // map objective
+    0x0E8E, // map capture point
+    0x1225, // map payload
+    0x0D32, // map spawn door
 ];
 
 /// The Practice Range bot bodies (`1403`, `143E`, `146E`, `14A9`, `14D2`,

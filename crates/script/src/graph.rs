@@ -808,6 +808,7 @@ mod tests {
             );
         }
         assert_eq!(store.bodies().len(), 32);
+        let digest = format!("{:x}", digest.finalize());
         let expected = match store.graphs.len() {
             373 => "f54fb85e91d33b669c73239ddc77fb0f8f7fa6e6d0f04b83532bc1f953a4ac7c",
             405 => {
@@ -815,8 +816,15 @@ mod tests {
                 assert_eq!(store.mode_variables.len(), 25);
                 "eab09343964a53d44a53baa8d990ff9c2a3eea8922d9eb1927136fb7b661fc94"
             }
-            count => panic!("no Python reference vector for the {count}-graph bundle"),
+            // Rust only (no Python vector): every mode's script, team
+            // controller and team body, and the map entity graphs.
+            412 => {
+                assert_eq!(store.entities.len(), 8);
+                assert_eq!(store.mode_variables.len(), 25);
+                "1c4229042f26d5ec0168a49e7f82d55167543ae849baa86f9bfdba7ece355691"
+            }
+            count => panic!("no reference vector for the {count}-graph bundle (digest {digest})"),
         };
-        assert_eq!(format!("{:x}", digest.finalize()), expected);
+        assert_eq!(digest, expected);
     }
 }
