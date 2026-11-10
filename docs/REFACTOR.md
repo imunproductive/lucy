@@ -289,6 +289,9 @@ Each kept fact is rewritten briefly, in our own words. Where it matters, the not
 | `behavior.md` | Acceptance targets M0–M6, behavior seen with the original client, known defects and open questions. Client acceptance records are added here from now on. | `docs/ROADMAP.md`, `docs/STATE.md`, `WIP.md`, the README status table |
 | `parity.md` | What the Python server does that the Rust server doesn't yet, plus the cutover criteria. Deleted in phase 8. | `docs/RUST_MIGRATION.md`, the Python CLI modes |
 | `references.md` | External projects and notes still worth consulting, one line each on what they're useful for | `RESEARCH_EVIDENCE.txt` §C–H (without the retracted conclusions), `CREDITS.md` |
+| `related-projects.md` | Every useful finding from the other 1.74 projects (match flow, AI and navigation, HUD, statescript names, lobby), with source and evidence | The 2026-11-10 survey of the projects in the original `CREDITS.md` and ow1-preservation |
+| `game-rules.md` | Match, combat and progression rules from public sources | ow1-preservation's `research_notes/` |
+| `ow1-preservation.md` | Every fact from ow1-preservation's notes and protocol layouts (HUD, prediction and reset bit, Recall, Blink, two clients, AI, modes) | Its `HANDOFF.md`, `CLAUDE.md`, `docs/` and `protocol/` |
 
 **Legal files:**
 

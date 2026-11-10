@@ -32,7 +32,7 @@ Both explain the design. Neither is a wire specification or server source.
 
 ## Survey of related projects (2026-11-10)
 
-What each project has that this repository lacks, for server-side work. Full reports, with file and line citations, are outside the repository in `D:/Work/Coding/refs/reports/`.
+What each project has that this repository lacks, in short. Every finding, with its source and evidence, is in `related-projects.md`; ow1-preservation's full list is in `ow1-preservation.md`, its public rule research in `game-rules.md`.
 
 | Project | License | Worth taking | Evidence |
 | --- | --- | --- | --- |
