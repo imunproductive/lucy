@@ -597,7 +597,8 @@ mod tests {
         let scene = CollisionScene::movement_probe(&cache, &ids).unwrap();
         let world = Arc::new(ContactWorld::from_movement_cache(cache, &ids).unwrap());
         let catalog_path = runtime.join("data/game_movers_174.json");
-        let settings = MoverCatalog::load(&catalog_path).unwrap();
+        // mover.py `SOLDIER_BODY`, the fallback body.
+        let settings = MoverCatalog::load(&catalog_path, 0x0400_0000_0000_03cf).unwrap();
         let records: BTreeMap<String, serde_json::Value> =
             serde_json::from_slice(&fs::read(catalog_path).unwrap()).unwrap();
         assert_eq!(records.len(), 38);

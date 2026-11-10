@@ -151,6 +151,8 @@ pub struct Graph {
     remote: WireSlots,
     #[serde(skip)]
     presence: Vec<usize>,
+    #[serde(skip)]
+    kill_feed_pulser: Option<u16>,
 }
 
 impl Graph {
@@ -175,7 +177,46 @@ impl Graph {
             .enumerate()
             .filter_map(|(index, var)| var.has_presence_bit().then_some(index))
             .collect();
+        self.kill_feed_pulser = self.find_kill_feed_pulser();
         Ok(())
+    }
+
+    /// The state of the pulser whose client-only plug posts a kill feed line
+    /// to the mode UI (`KILL_FEED_PULSERS` in `ow174/game/script/driver.py`,
+    /// found here instead of listed): a `ClientOnlyPulser` (`STU_B9898052`)
+    /// whose plug `m_B6A27F9A` leads, through any plugs, to a client-only
+    /// node that posts `0765.025`. `01CF` st108 and `0C18` st8 in 104319.
+    fn find_kill_feed_pulser(&self) -> Option<u16> {
+        const PULSER: &str = "STU_B9898052";
+        const KILL_FEED: u64 = 0x0240_0000_0000_0765;
+        self.nodes
+            .iter()
+            .filter(|node| node.class == PULSER)
+            .find(|pulser| {
+                let mut pending: Vec<u16> = pulser
+                    .links("m_B6A27F9A")
+                    .filter_map(|(position, _)| position)
+                    .collect();
+                let mut seen = BTreeSet::new();
+                while let Some(position) = pending.pop() {
+                    let Some(node) = self.node(position).filter(|_| seen.insert(position)) else {
+                        continue;
+                    };
+                    if node.client_only
+                        && node
+                            .field("m_gameMessage.m_gameMessage")
+                            .and_then(asset_guid)
+                            == Some(KILL_FEED)
+                    {
+                        return true;
+                    }
+                    for plug in node.plugs().into_keys() {
+                        pending.extend(node.links(&plug).filter_map(|(position, _)| position));
+                    }
+                }
+                false
+            })
+            .and_then(|pulser| pulser.state)
     }
 
     pub fn node(&self, pos: u16) -> Option<&Node> {
@@ -223,6 +264,11 @@ impl Graph {
     pub fn presence_bit(&self, var: u32) -> Option<usize> {
         self.presence_vars()
             .position(|(_, entry)| entry.0 == Some(var))
+    }
+
+    /// The state of the graph's kill feed pulser, if it has one.
+    pub fn kill_feed_pulser(&self) -> Option<u16> {
+        self.kill_feed_pulser
     }
 
     pub fn graph_refs(&self) -> BTreeSet<u64> {

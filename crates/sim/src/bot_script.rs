@@ -16,8 +16,9 @@ use std::{
 };
 
 use crate::{
+    bots::BOT_EYE,
     bots::Bot,
-    combat::{PosedProjectile, eye_height},
+    combat::PosedProjectile,
     projectiles::{
         DELIVERY_GRACE, ObservedOut, ObservedProjectile, predicted_sync, spawned_definitions,
     },
@@ -100,6 +101,8 @@ pub struct BotShot {
     pub frame: Arc<BotFrame>,
 }
 
+// A few shots a tick: boxing the projectile buys nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum BotShotKind {
     Projectile(PosedProjectile),
     Hitscan {
@@ -568,7 +571,7 @@ fn project_frame(
 /// with a projectile speed flies; one without is hitscan.
 fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShotKind, bool)> {
     let [x, y, z] = bot.position;
-    let origin = [x, y + eye_height(bot.spawn.hero, false), z];
+    let origin = [x, y + BOT_EYE, z];
     let yaw = bot.yaw.round_ties_even() * TAU / 65536.0;
     let direction = [yaw.sin(), 0.0, yaw.cos()];
     let volleys = body.shot_volleys(shot);
@@ -588,6 +591,7 @@ fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShot
                     origin,
                     direction,
                     spawn: None,
+                    field: None,
                     feet: bot.position,
                     volleys,
                 }),
@@ -1051,7 +1055,7 @@ impl Flush<'_, '_> {
             .again(self.context.mode_ready, known)
             .projected()
             .clone()
-            .gate_kill_feed(&view.stream, allowed);
+            .gate_kill_feed(self.encoder.graphs(), &view.stream, allowed);
         self.queue(entity, view, projected, false)
     }
 

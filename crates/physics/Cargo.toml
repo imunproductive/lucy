@@ -15,6 +15,10 @@ orpheus-wire.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+[features]
+# Test builders shared with the tests of dependent crates.
+fixtures = []
+
 [dev-dependencies]
 orpheus-testkit.workspace = true
 sha2.workspace = true

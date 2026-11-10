@@ -48,7 +48,7 @@ use orpheus_sim::{
     controller::ControllerFrame,
     egress::GameEgress,
     instance::{Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
-    projectiles::{FiredProjectile, HEAL_RADIUS},
+    projectiles::FiredProjectile,
     replication::{Record, RoomPlayer, WorldDelivery, show_players},
     scene::{PlayerAppearance, PlayerCard},
     scene_assets::{CollisionBuild, PreparedScene},
@@ -1607,7 +1607,7 @@ impl State {
                         bot: false,
                     };
                     let (bodies, bots) =
-                        combat.heal_area(scene, healer, heal.centre, HEAL_RADIUS, heal.amount);
+                        combat.heal_area(scene, healer, heal.centre, heal.radius, heal.amount);
                     let healed = bots.iter().map(|(_, given)| given).sum();
                     heal_players(
                         scene,

@@ -15,8 +15,11 @@ use orpheus_wire::commands::{CROUCH, Command, JUMP};
 use super::{
     Mover, STEP,
     posture::{Posture, snap},
-    settings::{MoverCatalog, MoverSettings, SOLDIER_BODY},
+    settings::{MoverCatalog, MoverSettings},
 };
+
+/// Soldier: 76's body, the server's fallback (mover.py `SOLDIER_BODY`).
+const SOLDIER_BODY: u64 = 0x0400_0000_0000_03cf;
 use crate::{
     collision::{
         cache::{HalfEdge, Hull, Mesh, Triangle, read_movement_cache},
@@ -1074,7 +1077,7 @@ fn a_shape_with_one_teams_proxy_stops_only_that_team() {
 #[ignore = "requires the derived 104319 mover catalog"]
 fn soldiers_derived_mover_values_are_the_built_in_ones() {
     let path = orpheus_testkit::runtime_dir().join("data/game_movers_174.json");
-    let catalog = MoverCatalog::load(path).unwrap();
+    let catalog = MoverCatalog::load(path, SOLDIER_BODY).unwrap();
     assert_eq!(
         catalog.for_body(Some(SOLDIER_BODY)),
         &MoverSettings::default()

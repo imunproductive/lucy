@@ -14,7 +14,7 @@ use orpheus_script::{
 };
 use orpheus_wire::entity::{Create, EntityUpdate, Movement, Operation, SkinTheme};
 
-use crate::projectiles::{FIELD_ENTITY, FIELD_GRAPH};
+use crate::projectiles::FIELD_ENTITY;
 
 const HIDDEN_POSITION: [f32; 3] = [0.0, -1000.0, 0.0];
 const NO_BASELINE: u32 = u32::MAX;
@@ -76,14 +76,19 @@ pub fn field_create(
     }
 }
 
-/// 0258's plain (H = 0) full frame as instance 1 (`field_frame` in
-/// ow174/game/projectiles.py): the client builds the instance from 03DC's
-/// initial graphs and the frame adopts it. The ring and the canister stay on;
-/// st5 goes off once the field has faded.
-pub fn field_frame(graphs: &GraphStore, codecs: &CodecTable, faded: bool) -> io::Result<BitWriter> {
+/// The field graph's (0258) plain (H = 0) full frame as instance 1
+/// (`field_frame` in ow174/game/projectiles.py): the client builds the
+/// instance from 03DC's initial graphs and the frame adopts it. The ring and
+/// the canister stay on; st5 goes off once the field has faded.
+pub fn field_frame(
+    graphs: &GraphStore,
+    codecs: &CodecTable,
+    field_graph: u32,
+    faded: bool,
+) -> io::Result<BitWriter> {
     let graph = graphs
-        .graph(FIELD_GRAPH)
-        .ok_or_else(|| invalid("missing Biotic Field graph 0258"))?;
+        .graph(field_graph)
+        .ok_or_else(|| invalid("missing the Biotic Field graph"))?;
     let mut instance = Instance::new(1, Layout::try_from(graph).map_err(io::Error::other)?, None);
     for (index, class, counter) in FIELD_STATES {
         if faded && index == FADING_STATE {
@@ -428,13 +433,15 @@ mod tests {
             GraphStore::load(orpheus_testkit::runtime_dir().join("data/game_graphs_174.json.gz"))
                 .unwrap();
         let codecs = CodecTable::client();
+        // projectiles.py `FIELD_GRAPH`.
+        let graph = 0x0258;
         check(
-            &field_frame(&graphs, &codecs, false).unwrap(),
+            &field_frame(&graphs, &codecs, graph, false).unwrap(),
             48,
             "082c0100780f",
         );
         check(
-            &field_frame(&graphs, &codecs, true).unwrap(),
+            &field_frame(&graphs, &codecs, graph, true).unwrap(),
             47,
             "082c01007803",
         );

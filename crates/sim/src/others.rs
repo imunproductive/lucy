@@ -148,6 +148,8 @@ impl<'a> PlayerView<'a> {
 pub(crate) struct RemoteBody<'a> {
     pub id: BodyId,
     pub hero: &'a Hero,
+    /// Its mover's gravity scale, which its movement records carry.
+    pub gravity: f64,
     pub skin: SkinTheme,
     /// The server's copy of the body's movement state.
     pub pose: Movement,
@@ -746,7 +748,7 @@ impl Others {
                     (seen.id == body.id && seen.lifetime == Lifetime::Live && seen.sent).then(
                         || EntityUpdate {
                             entity: body.id.entity,
-                            movement: Some(remote_movement(body.pose, context.tick)),
+                            movement: Some(remote_movement(body.pose, context.tick, body.gravity)),
                             ..EntityUpdate::default()
                         },
                     )
@@ -867,7 +869,9 @@ impl Others {
                 .encoder
                 .project_next(script.snapshot, base)
                 .map(|next| match kill_feed {
-                    Some(allowed) => next.gate_kill_feed(&watch.stream, allowed),
+                    Some(allowed) => {
+                        next.gate_kill_feed(script.encoder.graphs(), &watch.stream, allowed)
+                    }
                     None => next,
                 })
                 .and_then(|next| {
@@ -1219,6 +1223,7 @@ mod tests {
                 generation,
             },
             hero,
+            gravity: 1.75,
             skin: SkinTheme::default(),
             pose: Movement::default(),
             vitals: None,

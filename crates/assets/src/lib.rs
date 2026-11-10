@@ -10,6 +10,7 @@
 
 mod ai_spawners;
 mod arcade_cards;
+mod body_data;
 pub mod cache;
 mod collision;
 mod economy;
@@ -119,6 +120,10 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "graphs",
         derive: graphs::derive,
+    },
+    Derivation {
+        name: "game_body_data",
+        derive: body_data::derive,
     },
     Derivation {
         name: "game_queues",

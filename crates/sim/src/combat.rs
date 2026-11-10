@@ -9,26 +9,30 @@
 //! script, so a hit on a player is kept here as a [`PlayerHit`] for the match
 //! to apply to that body (`Combat._damage`, `_died`).
 
-use std::{io, time::Duration};
+use std::{collections::HashMap, fs, io, path::Path, sync::Arc, time::Duration};
 
 use crate::{
     bot_script::SeenRocket,
     bots::{BOT_ENTITY, BOT_RECORD_DELAY, BOT_RESPAWN_TIME, Bot},
     hitscan::{HitscanShot, Impact, TargetHistory, TargetPose, ViewFrame},
     projectile_flight::{FlightEnd, ProjectileFlight},
-    projectiles::{FieldDeliver, FieldIds, FiredProjectile, ProjectileEvent, SeenIds, ShotKey},
+    projectiles::{
+        BioticField, FieldDeliver, FieldIds, FiredProjectile, ProjectileEvent, SeenIds, ShotKey,
+    },
     replication::WorldDelivery,
     scene::bot_create,
     scene_assets::PreparedScene,
 };
 use orpheus_content::{
-    heroes::SOLDIER,
-    maps::PRACTICE_RANGE_MODE,
+    heroes::Eyes,
     stats::{DEATHS, ELIMINATIONS, HEALING, HERO_DAMAGE, PlayerStats},
 };
+use orpheus_core::guid::parse_guid;
 use orpheus_physics::static_ray::{Vec3, segment_distance};
 use orpheus_script::{
     bot::DIED,
+    expr::{Context, evaluate, to_float},
+    graph::GraphStore,
     vitals::{Death, Vitals},
     vm::ShotEvent,
     weapons::{HitDefinition, ProjectileBallistics},
@@ -40,12 +44,10 @@ use orpheus_wire::{
     entity::{EntityUpdate, Operation},
 };
 
-/// A hero waits this long in the PvP modes (0F4A and 0EC2 send 06FD.025
-/// {10}: DATA; combat.py `RESPAWN`).
+/// A hero waits this long in a mode whose graph sends no respawn time
+/// (combat.py `RESPAWN`, the PvP modes' 10 s; [`RespawnTimes`] holds every
+/// mode's whose graph sends one).
 pub const RESPAWN: Duration = Duration::from_secs(10);
-/// A hero waits this long in the Practice Range (13C0 sends 06FD.025 {3}:
-/// DATA; combat.py `PRACTICE_RESPAWN`).
-pub const PRACTICE_RESPAWN: Duration = Duration::from_secs(3);
 /// Between respawn attempts while every body id of the player is still
 /// reserved (combat.py `RESPAWN_RETRY`).
 pub const RESPAWN_RETRY: Duration = Duration::from_millis(250);
@@ -58,9 +60,8 @@ pub const COMBAT_CATCH_UP: u32 = 64;
 /// The movement-state flag of a dead body: the 3P animation's dead pose
 /// (combat.py `DEAD`).
 pub const DEAD: u32 = 0x2000;
-/// Quick melee: graph 0043's ModifyHealth state, metres ahead of the eye and
-/// the sphere's radius (combat.py `MELEE`, DATA).
-pub const MELEE: [(u32, u16, f64, f64); 1] = [(0x0043, 4, 1.5, 1.0)];
+/// Quick melee's graph, which every hero body starts (combat.py `MELEE`).
+pub const MELEE_GRAPH: u32 = 0x0043;
 /// 003E.025's parameters, by the low 16 bits of their 026 identifiers
 /// (01CF rid4; combat.py `KILLER`, `CRIT`, `LOADOUT`, `ASSISTS`).
 const KILLER: u32 = 0x0012;
@@ -68,14 +69,114 @@ const CRIT: u32 = 0x0095;
 const LOADOUT: u32 = 0x03e6;
 const ASSISTS: u32 = 0x03e7;
 
-/// The mode's respawn time for heroes (combat.py `respawn_seconds`: the
-/// Practice Range controller's 3 s, else the PvP 10 s).
-pub fn respawn_time(mode: u64) -> Duration {
-    if mode == PRACTICE_RANGE_MODE {
-        PRACTICE_RESPAWN
-    } else {
-        RESPAWN
+/// Each mode's respawn time for heroes (combat.py `respawn_seconds`): the
+/// seconds its mode graph sends the player in 06FD.025, derived into
+/// `game_respawns_174.json` (0F4A and 0EC2 send 10, the Practice Range's
+/// 13C0 sends 3).
+#[derive(Debug, Default)]
+pub struct RespawnTimes(HashMap<u64, Duration>);
+
+impl RespawnTimes {
+    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::from_json(&fs::read_to_string(path)?)
     }
+
+    pub fn from_json(text: &str) -> io::Result<Self> {
+        let raw: HashMap<String, f64> = serde_json::from_str(text).map_err(invalid)?;
+        raw.into_iter()
+            .map(|(mode, seconds)| {
+                let mode = parse_guid(&mode).ok_or_else(|| invalid("bad respawn mode GUID"))?;
+                let seconds = Duration::try_from_secs_f64(seconds).map_err(invalid)?;
+                Ok((mode, seconds))
+            })
+            .collect::<io::Result<_>>()
+            .map(Self)
+    }
+
+    /// The mode's time, or [`RESPAWN`] when its graph sends none.
+    pub fn for_mode(&self, mode: u64) -> Duration {
+        self.0.get(&mode).copied().unwrap_or(RESPAWN)
+    }
+}
+
+/// A quick melee ModifyHealth state of [`MELEE_GRAPH`] (combat.py `MELEE`):
+/// the state, how far ahead of the eye its sphere sits and its radius.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeleeState {
+    pub state: u16,
+    pub reach: f64,
+    pub radius: f64,
+}
+
+/// combat.py `MELEE`, read from quick melee's graph: each ModifyHealth
+/// state a TrackTargets state's subgraph starts (0043 st5 starts st4). The
+/// sphere is the TrackTargets' `m_radius` around its offset `m_05BE62DD`,
+/// both read for a body of scale 1 whose eye and feet are at the origin: the
+/// offset is then how far ahead of the eye the sphere sits (1.5 and 1).
+pub fn melee_states(graphs: &GraphStore) -> io::Result<Vec<MeleeState>> {
+    let Some(graph) = graphs.graph(MELEE_GRAPH) else {
+        return Ok(Vec::new());
+    };
+    let read = |config: Option<&serde_json::Value>| {
+        let config = config.ok_or_else(|| invalid("quick melee's targets have no sphere"))?;
+        evaluate(config, &mut AtTheOrigin).map_err(invalid)
+    };
+    let mut found = Vec::new();
+    for track in graph
+        .nodes
+        .iter()
+        .filter(|node| node.class == "STUStatescriptStateTrackTargets")
+    {
+        let Value::Vector([_, _, reach]) = read(track.field("m_05BE62DD"))? else {
+            return Err(invalid("quick melee's targets have no offset"));
+        };
+        let radius = to_float(&read(track.field("m_radius"))?);
+        for (position, _) in track.links("m_subgraphPlug") {
+            let Some(state) = position
+                .and_then(|position| graph.node(position))
+                .filter(|node| node.class == "STUStatescriptStateModifyHealth")
+                .and_then(|node| node.state)
+            else {
+                continue;
+            };
+            found.push(MeleeState {
+                state,
+                reach,
+                radius,
+            });
+        }
+    }
+    Ok(found)
+}
+
+/// The owner's body of scale 1 with its eye and feet at the origin.
+struct AtTheOrigin;
+
+impl Context for AtTheOrigin {
+    fn owner(&mut self) -> Value {
+        Value::Entity(1)
+    }
+
+    fn body_scale(&mut self, _entity: u32) -> Option<f64> {
+        Some(1.0)
+    }
+
+    fn native(&mut self, _config: &serde_json::Value) -> Option<Value> {
+        Some(Value::Vector([0.0; 3]))
+    }
+}
+
+/// What a player's body script needs of the scene besides its graphs: its
+/// eyes, quick melee's states and the Biotic Field.
+#[derive(Clone, Debug)]
+pub struct BodyCombat {
+    pub eyes: Eyes,
+    pub melee: Arc<[MeleeState]>,
+    pub field: Option<BioticField>,
+}
+
+fn invalid(error: impl std::fmt::Display) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
 
 /// The "died" message a dead body's script takes (combat.py
@@ -91,14 +192,6 @@ pub fn death_message(killer: u32, critical: bool, loadout: Option<u64>) -> (u64,
             (ASSISTS, Value::Array(Vec::new())),
         ]),
     )
-}
-
-pub(crate) fn eye_height(hero: u64, crouched: bool) -> f64 {
-    match (crouched, hero) {
-        (false, _) => 1.55,
-        (true, SOLDIER) => 1.085,
-        (true, _) => 1.15,
-    }
 }
 
 /// Who fired: a player's body or a bot entity, and his team (combat.py
@@ -146,6 +239,9 @@ pub struct PosedProjectile {
     /// The entity it leaves where it lands (projectiles.py `fired`: the
     /// Biotic Field 03DC), if any.
     pub spawn: Option<u64>,
+    /// The Biotic Field it leaves, when the spawn is the field (boxed: a
+    /// rare shot).
+    pub field: Option<Box<BioticField>>,
     /// The shooter's feet when it fired (projectiles.py `Shot.where`).
     pub feet: [f64; 3],
     /// The volley state's count of volleys, as the other clients' shot
@@ -925,12 +1021,13 @@ pub fn deliver_body_messages(worlds: &mut [&mut WorldDelivery]) {
 
 /// A Biotic Field's heal this tick (projectiles.py `_field`: `heal_area`):
 /// the healer's index among the room's worlds, his body, the heal sphere's
-/// centre and the amount.
+/// centre and radius, and the amount.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FieldHeal {
     pub slot: usize,
     pub source: u32,
     pub centre: Vec3,
+    pub radius: f64,
     pub amount: f64,
 }
 
@@ -1021,10 +1118,16 @@ pub fn deliver_projectiles(
                     world.finish_projectile(body, token, tick, explode);
                 }
             }
-            ProjectileEvent::FieldHeal { centre, amount, .. } => heals.push(FieldHeal {
+            ProjectileEvent::FieldHeal {
+                centre,
+                radius,
+                amount,
+                ..
+            } => heals.push(FieldHeal {
                 slot,
                 source: body.entity,
                 centre,
+                radius,
                 amount,
             }),
             ProjectileEvent::FieldFaded { token } => {

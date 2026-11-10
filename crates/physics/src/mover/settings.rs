@@ -1,6 +1,7 @@
 //! Character mover settings read from the 104319 runtime data.
 //!
-//! Defaults and body lookup follow ow174/game/mover.py.
+//! Every body's values come from the derived `game_movers_174.json`; body
+//! lookup follows ow174/game/mover.py.
 
 use std::{collections::HashMap, fs, io, path::Path};
 
@@ -9,12 +10,9 @@ use serde::Deserialize;
 
 use orpheus_core::guid::parse_guid;
 
-pub const SOLDIER_BODY: u64 = 0x0400_0000_0000_03cf;
-
 /// Values of a body's STUCharacterMoverComponent.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[cfg_attr(test, derive(serde::Serialize))]
-#[serde(default)]
 pub struct MoverSettings {
     pub stand_height: f64,
     pub stand_radius: f64,
@@ -55,7 +53,10 @@ pub struct MoverSettings {
     pub character_collision: u32,
 }
 
-static DEFAULT_SETTINGS: MoverSettings = MoverSettings {
+/// Soldier: 76's mover (`03CF.003`, as derived): the settings tests run
+/// bodies with. The server reads every body's from the derived data.
+#[cfg(any(test, feature = "fixtures"))]
+static FIXTURE_SETTINGS: MoverSettings = MoverSettings {
     stand_height: 2.0,
     stand_radius: 0.5,
     stand_pogo: 0.5,
@@ -92,46 +93,47 @@ static DEFAULT_SETTINGS: MoverSettings = MoverSettings {
     character_collision: 1,
 };
 
+#[cfg(any(test, feature = "fixtures"))]
 impl Default for MoverSettings {
     fn default() -> Self {
-        DEFAULT_SETTINGS
+        FIXTURE_SETTINGS
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MoverCatalog {
     by_body: HashMap<u64, MoverSettings>,
+    fallback: MoverSettings,
 }
 
 impl MoverCatalog {
-    /// Read game_movers_174.json from the selected runtime.
-    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
-        let path = path.as_ref();
-        match path.metadata() {
-            Ok(metadata) if !metadata.is_file() => Ok(Self::default()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(error),
-            Ok(_) => Self::from_json(&fs::read_to_string(path)?),
-        }
+    /// Read game_movers_174.json from the selected runtime. A body it
+    /// doesn't list moves as the `fallback` body, which it must list
+    /// (mover.py `SOLDIER_BODY`: the server's fallback hero's body).
+    pub fn load(path: impl AsRef<Path>, fallback: u64) -> io::Result<Self> {
+        Self::from_json(&fs::read_to_string(path)?, fallback)
     }
 
-    pub fn from_json(text: &str) -> io::Result<Self> {
+    pub fn from_json(text: &str, fallback: u64) -> io::Result<Self> {
         let raw: IndexMap<String, MoverSettings> = serde_json::from_str(text)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let by_body = raw
+        let by_body: HashMap<u64, MoverSettings> = raw
             .into_iter()
             .map(|(body, settings)| Ok((body_guid(&body)?, settings)))
             .collect::<io::Result<_>>()?;
-        Ok(Self { by_body })
+        let fallback = *by_body.get(&fallback).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("the mover catalog has no fallback body 0x{fallback:016X}"),
+            )
+        })?;
+        Ok(Self { by_body, fallback })
     }
 
-    /// A missing body falls back to Soldier: 76, then to the built-in defaults.
-    /// Missing fields in a present body use their own built-in field defaults.
+    /// A missing body falls back to the fallback body's settings.
     pub fn for_body(&self, body: Option<u64>) -> &MoverSettings {
-        self.by_body
-            .get(&body.unwrap_or_default())
-            .or_else(|| self.by_body.get(&SOLDIER_BODY))
-            .unwrap_or(&DEFAULT_SETTINGS)
+        body.and_then(|body| self.by_body.get(&body))
+            .unwrap_or(&self.fallback)
     }
 }
 
@@ -155,25 +157,37 @@ fn body_guid(text: &str) -> io::Result<u64> {
 mod tests {
     use super::*;
 
+    const SOLDIER_BODY: u64 = 0x0400_0000_0000_03cf;
     const TRAINING_BODY: u64 = 0x0400_0000_0000_1403;
     const FAR_RUNNER_BODY: u64 = 0x0400_0000_0000_14ed;
     const FRIENDLY_BODY: u64 = 0x0400_0000_0000_143e;
 
+    /// A catalog record: the fixture settings with these fields changed.
+    fn record(name: &str, changes: serde_json::Value) -> serde_json::Value {
+        let mut record = serde_json::to_value(MoverSettings::default()).unwrap();
+        record["name"] = name.into();
+        for (key, value) in changes.as_object().unwrap() {
+            record[key] = value.clone();
+        }
+        record
+    }
+
     #[test]
-    fn body_fields_override_only_their_built_in_defaults() {
-        let catalog = MoverCatalog::from_json(r#"{
-            "0x04000000000003CF": {"name":"Fixture Soldier", "run_forward":5.75, "accel_ground":4},
-            "0400000000001403": {"name":"Fixture training", "run_forward":4.5, "character_collision":0},
-            "0X04000000000014ED": {"name":"Fixture runner", "run_forward":6, "ground_circle_rays":4}
-        }"#).unwrap();
+    fn bodies_read_their_own_values_and_others_the_fallback_body() {
+        let text = serde_json::json!({
+            "0x04000000000003CF": record("Fixture Soldier", serde_json::json!({"run_forward":5.75, "accel_ground":4})),
+            "0400000000001403": record("Fixture training", serde_json::json!({"run_forward":4.5, "character_collision":0})),
+            "0X04000000000014ED": record("Fixture runner", serde_json::json!({"run_forward":6, "ground_circle_rays":4})),
+        })
+        .to_string();
+        let catalog = MoverCatalog::from_json(&text, SOLDIER_BODY).unwrap();
         let soldier = catalog.for_body(Some(SOLDIER_BODY));
         assert_eq!(soldier.run_forward, 5.75);
         assert_eq!(soldier.accel_ground, 4.0);
-        assert!(std::ptr::eq(catalog.for_body(None), soldier));
-        assert!(std::ptr::eq(catalog.for_body(Some(9)), soldier));
+        assert_eq!(catalog.for_body(None), soldier);
+        assert_eq!(catalog.for_body(Some(9)), soldier);
         let training = catalog.for_body(Some(TRAINING_BODY));
         assert_eq!(training.run_forward, 4.5);
-        assert_eq!(training.accel_ground, MoverSettings::default().accel_ground);
         assert_eq!(training.character_collision, 0);
         let far_runner = catalog.for_body(Some(FAR_RUNNER_BODY));
         assert_eq!(far_runner.run_forward, 6.0);
@@ -181,26 +195,26 @@ mod tests {
     }
 
     #[test]
-    fn missing_table_uses_defaults_and_malformed_table_is_an_error() {
+    fn missing_and_malformed_tables_are_errors() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("game_movers_174.json");
-        let missing = MoverCatalog::load(&path).unwrap();
-        assert_eq!(missing.for_body(None), &MoverSettings::default());
-        fs::write(&path, r#"{"0":{"stand_height":1.75}}"#).unwrap();
-        let catalog = MoverCatalog::load(&path).unwrap();
-        assert_eq!(catalog.for_body(None).stand_height, 1.75);
         assert_eq!(
-            catalog.for_body(Some(TRAINING_BODY)),
-            &MoverSettings::default()
+            MoverCatalog::load(&path, SOLDIER_BODY).unwrap_err().kind(),
+            io::ErrorKind::NotFound
         );
+        let soldier = record("Soldier", serde_json::json!({}));
+        let mut partial = soldier.clone();
+        partial.as_object_mut().unwrap().remove("stand_height");
         for malformed in [
-            r#"{"bad guid":{}}"#,
-            r#"{"0x5":{"ground_circle_rays":4.5}}"#,
-            "{",
+            serde_json::json!({"bad guid": soldier}).to_string(),
+            serde_json::json!({"0x04000000000003CF": record("Soldier", serde_json::json!({"ground_circle_rays":4.5}))}).to_string(),
+            serde_json::json!({"0x04000000000003CF": partial}).to_string(),
+            serde_json::json!({"0x5": soldier}).to_string(),
+            "{".to_owned(),
         ] {
             fs::write(&path, malformed).unwrap();
             assert_eq!(
-                MoverCatalog::load(&path).unwrap_err().kind(),
+                MoverCatalog::load(&path, SOLDIER_BODY).unwrap_err().kind(),
                 io::ErrorKind::InvalidData
             );
         }
@@ -213,7 +227,8 @@ mod tests {
         use std::collections::BTreeMap;
 
         let root = orpheus_testkit::runtime_dir();
-        let catalog = MoverCatalog::load(root.join("data/game_movers_174.json")).unwrap();
+        let catalog =
+            MoverCatalog::load(root.join("data/game_movers_174.json"), SOLDIER_BODY).unwrap();
         assert_eq!(catalog.by_body.len(), 38);
         let settings = |body| {
             let values = catalog.for_body(Some(body));
@@ -226,10 +241,19 @@ mod tests {
         assert_eq!(settings(TRAINING_BODY), (4.5, 1.0, 15.0));
         assert_eq!(settings(FAR_RUNNER_BODY), (6.0, 11.0, 6.5));
         assert_eq!(settings(FRIENDLY_BODY), (5.5, 1.0, 15.0));
-        assert!(std::ptr::eq(
-            catalog.for_body(None),
-            catalog.for_body(Some(SOLDIER_BODY))
-        ));
+        assert_eq!(catalog.for_body(None), catalog.for_body(Some(SOLDIER_BODY)));
+        // mover.py's built-in defaults (`RUN_SPEED`, `JUMP_SPEED`, …) are
+        // Soldier: 76's values, and `GRAVITY_SCALE` is every body's.
+        assert_eq!(
+            catalog.for_body(Some(SOLDIER_BODY)),
+            &MoverSettings::default()
+        );
+        assert!(
+            catalog
+                .by_body
+                .values()
+                .all(|settings| settings.gravity_scale == 1.75)
+        );
 
         let mut digest = Sha256::new();
         for (body, settings) in catalog.by_body.iter().collect::<BTreeMap<_, _>>() {

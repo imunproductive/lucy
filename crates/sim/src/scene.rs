@@ -253,17 +253,14 @@ mod tests {
     #[ignore = "requires the derived 104319 spawn and stat catalogs"]
     fn matches_the_python_practice_range_create_frame_and_budget() {
         let data = runtime();
-        let movers = MoverCatalog::load(data.join("game_movers_174.json")).unwrap();
+        // mover.py `SOLDIER_BODY`, the fallback body.
+        let movers =
+            MoverCatalog::load(data.join("game_movers_174.json"), 0x0400_0000_0000_03cf).unwrap();
         let bots = BotCatalog::load(data.join("ai_spawners_174.json")).unwrap();
         let stats = StatsCatalog::load(data.join("game_stats_174.json")).unwrap();
         let map = GameMap::practice_range();
         let bots = bots.make(map.map_guid, |body| {
-            let mover = movers.for_body(Some(body));
-            BotWalk::from_mover(
-                mover.run_forward,
-                mover.accel_ground,
-                mover.decel_ground_base,
-            )
+            BotWalk::from_mover(movers.for_body(Some(body)))
         });
         let card = PlayerCard {
             account: [0x1234_5678, 0x0100_0000_0000_0000],

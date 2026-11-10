@@ -2,8 +2,10 @@ use super::*;
 
 use crate::player::PlayerWorld;
 use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
-use orpheus_physics::mover::settings::SOLDIER_BODY;
 use serde_json::json;
+
+/// Soldier: 76's body (`006E.075` `m_gameplayEntity`).
+const SOLDIER_BODY: u64 = 0x0400_0000_0000_03cf;
 
 fn node(position: u16, class: &str, state: Option<u16>, mut fields: Json) -> Json {
     fields["m_2BBEEAB8"] = json!(state.is_some());

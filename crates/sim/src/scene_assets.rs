@@ -10,6 +10,7 @@ use std::{
     io::{self, BufReader, Read},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use serde::Deserialize;
@@ -18,15 +19,16 @@ use crate::{
     body_script::{OwnerBodySpawn, PlayerBodyFactory},
     bot_script::{BotEvent, BotScripts, BotShot},
     bots::{Bot, BotCatalog, BotWalk},
+    combat::{BodyCombat, MeleeState, RespawnTimes, melee_states},
     controller::Controller,
     notices::switch_notices,
     pools::PoolCatalog,
-    projectiles::FieldFrames,
+    projectiles::{BioticField, FIELD_ENTITY, FieldFrames},
     replication::OwnerBodyRuntime,
     scene::{PlayerAppearance, initial_world, mode_ui},
 };
 use orpheus_content::{
-    heroes::{Hero, HeroCatalog},
+    heroes::{EyeCatalog, Hero, HeroCatalog, SOLDIER},
     maps::{GameMap, GameModes, MODES_FILE},
     stats::{PlayerStats, StatsCatalog, initial_on_fire},
 };
@@ -38,7 +40,7 @@ use orpheus_physics::{
     contact::world::ContactWorld,
     mover::Mover,
     mover::ground::NOT_GROUND,
-    mover::settings::MoverCatalog,
+    mover::settings::{MoverCatalog, MoverSettings},
 };
 use orpheus_script::{
     codecs::CodecTable,
@@ -95,6 +97,11 @@ pub struct SceneAssets {
     bot_unknowns: Unknowns,
     bots: BotCatalog,
     movers: Arc<MoverCatalog>,
+    eyes: Arc<EyeCatalog>,
+    respawns: RespawnTimes,
+    melee: Arc<[MeleeState]>,
+    /// The Biotic Field, when its graph reads; without it no field opens.
+    field: Option<BioticField>,
     stats: Arc<StatsCatalog>,
     heroes: Arc<HeroCatalog>,
     pools: Arc<PoolCatalog>,
@@ -113,6 +120,9 @@ pub struct PreparedScene {
     bots: Vec<Bot>,
     bot_scripts: BotScripts,
     movers: Arc<MoverCatalog>,
+    eyes: Arc<EyeCatalog>,
+    /// The mode's respawn time for heroes.
+    respawn: Duration,
     heroes: Arc<HeroCatalog>,
     pools: Arc<PoolCatalog>,
     stats: Arc<StatsCatalog>,
@@ -138,20 +148,43 @@ impl SceneAssets {
         };
         let codecs = Some(Arc::new(CodecTable::client()));
         let pools = Arc::new(PoolCatalog::from_graphs(&graphs)?);
+        let heroes = HeroCatalog::load(data.join("game_heroes_174.json"))?;
+        // A body the movers or eyes don't list is the server's fallback
+        // hero's (mover.py `SOLDIER_BODY`).
+        let fallback = heroes
+            .get(SOLDIER)
+            .ok_or_else(|| invalid("the hero catalog has no Soldier: 76"))?
+            .body;
+        let field = match field_graph(&data.join("game_spawns_174.json"))
+            .and_then(|graph| BioticField::read(&graphs, graph))
+        {
+            Ok(field) => Some(field),
+            Err(error) => {
+                eprintln!("the Biotic Field is unavailable ({error})");
+                None
+            }
+        };
         Ok(Self {
             collision: runtime.join("collision"),
             build_collision: None,
             building: Mutex::new(()),
             mode_props: read_mode_props(&data.join("collision_props_174.json"))?,
+            melee: melee_states(&graphs)?.into(),
+            field,
             graphs,
             codecs,
             owner_bodies: Mutex::default(),
             bot_graphs,
             bot_unknowns: Unknowns::for_build(),
             bots: BotCatalog::load(data.join("ai_spawners_174.json"))?,
-            movers: Arc::new(MoverCatalog::load(data.join("game_movers_174.json"))?),
+            movers: Arc::new(MoverCatalog::load(
+                data.join("game_movers_174.json"),
+                fallback,
+            )?),
+            eyes: Arc::new(EyeCatalog::load(data.join("game_eyes_174.json"), fallback)?),
+            respawns: RespawnTimes::load(data.join("game_respawns_174.json"))?,
             stats: Arc::new(StatsCatalog::load(data.join("game_stats_174.json"))?),
-            heroes: Arc::new(HeroCatalog::load(data.join("game_heroes_174.json"))?),
+            heroes: Arc::new(heroes),
             pools,
             modes: GameModes::load(data.join(MODES_FILE))?,
         })
@@ -175,6 +208,11 @@ impl SceneAssets {
 
     pub fn heroes(&self) -> &HeroCatalog {
         &self.heroes
+    }
+
+    /// The Biotic Field read from its graph, if it reads.
+    pub fn biotic_field(&self) -> Option<&BioticField> {
+        self.field.as_ref()
     }
 
     /// The bot graph bundle (`game_graphs_bots_174.json.gz`), when the data
@@ -212,12 +250,7 @@ impl SceneAssets {
         let identifiers = self.mode_props.get(&map.mode_guid).unwrap_or(&empty);
         let ground = CollisionScene::movement_probe(&cache, identifiers).map_err(invalid)?;
         let mut bots = self.bots.make(map.map_guid, |body| {
-            let settings = self.movers.for_body(Some(body));
-            BotWalk::from_mover(
-                settings.run_forward,
-                settings.accel_ground,
-                settings.decel_ground_base,
-            )
+            BotWalk::from_mover(self.movers.for_body(Some(body)))
         });
         // Every map's players move on its collision (match.py `new_mover`).
         let contacts = Some(
@@ -250,15 +283,16 @@ impl SceneAssets {
         let initial_board =
             self.stats
                 .component(&PlayerStats::default(), map.mode_guid, None, None);
-        let field_frames = match &self.codecs {
-            Some(codecs) => FieldFrames::new(&self.graphs, codecs)
+        let field_frames = match (&self.codecs, &self.field) {
+            (Some(codecs), Some(field)) => FieldFrames::new(&self.graphs, codecs, field)
                 .map(Arc::new)
                 .map_err(|error| eprintln!("the Biotic Field has no frames ({error})"))
                 .ok(),
-            None => None,
+            _ => None,
         };
         let map_mode = map.mode_guid;
         let mut scene = PreparedScene {
+            respawn: self.respawns.for_mode(map.mode_guid),
             map,
             ground,
             contacts,
@@ -269,6 +303,7 @@ impl SceneAssets {
             bots,
             bot_scripts,
             movers: Arc::clone(&self.movers),
+            eyes: Arc::clone(&self.eyes),
             heroes: Arc::clone(&self.heroes),
             pools: Arc::clone(&self.pools),
             stats: Arc::clone(&self.stats),
@@ -318,6 +353,8 @@ impl SceneAssets {
     fn prepare_owner_body(&self, scene: &PreparedScene) -> Option<Arc<OwnerBodyFactory>> {
         let graphs = Arc::clone(&self.graphs);
         let pools = Arc::clone(&self.pools);
+        let eyes = Arc::clone(&self.eyes);
+        let (melee, field) = (Arc::clone(&self.melee), self.field);
         let mode = scene.map.mode_guid;
         let ready = self
             .codecs
@@ -345,6 +382,11 @@ impl SceneAssets {
                         hero,
                         pools.hero_pools(hero.guid),
                         on_fire,
+                        BodyCombat {
+                            eyes: eyes.for_body(hero.body),
+                            melee: Arc::clone(&melee),
+                            field,
+                        },
                         spawn,
                     )
                     .map(Arc::new)
@@ -423,6 +465,16 @@ impl PreparedScene {
         &self.heroes
     }
 
+    /// The mode's respawn time for heroes (combat.py `respawn_seconds`).
+    pub fn respawn_time(&self) -> Duration {
+        self.respawn
+    }
+
+    /// A body's mover settings.
+    pub(crate) fn mover(&self, body: u64) -> &MoverSettings {
+        self.movers.for_body(Some(body))
+    }
+
     pub fn pools(&self) -> &PoolCatalog {
         &self.pools
     }
@@ -459,7 +511,7 @@ impl PreparedScene {
             feet: bot.position,
             height: settings.stand_height,
             radius: settings.stand_radius,
-            eye: crate::combat::eye_height(bot.spawn.hero, false),
+            eye: crate::bots::BOT_EYE,
         }
     }
 
@@ -490,7 +542,7 @@ impl PreparedScene {
                 settings.stand_height
             },
             radius: settings.stand_radius,
-            eye: crate::combat::eye_height(hero.guid, crouched),
+            eye: self.eyes.for_body(hero.body).height(crouched),
         }
     }
 
@@ -575,6 +627,21 @@ impl PreparedScene {
 #[derive(Deserialize)]
 struct PropCatalog {
     modes: BTreeMap<String, Vec<String>>,
+}
+
+/// The Biotic Field's graph: the first initial graph of [`FIELD_ENTITY`] in
+/// `game_spawns_174.json` (projectiles.py `FIELD_GRAPH`, 0258).
+fn field_graph(path: &Path) -> io::Result<u32> {
+    #[derive(Deserialize)]
+    struct Spawn {
+        graphs: Vec<u32>,
+    }
+    let spawns: HashMap<String, Spawn> =
+        serde_json::from_str(&fs::read_to_string(path)?).map_err(invalid)?;
+    spawns
+        .get(&format!("0x{FIELD_ENTITY:016X}"))
+        .and_then(|spawn| spawn.graphs.first().copied())
+        .ok_or_else(|| invalid("the Biotic Field entity starts no graph"))
 }
 
 fn read_mode_props(path: &Path) -> io::Result<BTreeMap<u64, BTreeSet<u64>>> {
