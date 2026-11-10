@@ -90,6 +90,7 @@ mod script_player;
 pub mod script_runtime;
 pub mod script_snapshot_wire;
 pub mod script_stream;
+pub mod script_weapons;
 pub mod script_wire;
 pub mod server;
 mod service_tcp;

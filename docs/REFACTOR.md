@@ -310,22 +310,23 @@ Each kept fact is rewritten briefly, in our own words. Where it matters, the not
 
 **Done when:** the same 381 tests exist, the same 61 are ignored, `just check` passes, and every move was made with `git mv`, so `git log --follow` traces it across the checkpoint commits.
 
-### Phase 2: Cut the dependency cycles
+### Phase 2: Cut the dependency cycles (done)
 
-A scan of non-test `use crate::` paths, with the 4.2 assignment applied, finds exactly the edges below that point the wrong way. Fix each one, re-running the same scan until it reports no wrong-way edges. The scan is a one-off script and isn't kept in the repository; from phase 3 on, Cargo enforces the rules.
+Phase 2 ran before phase 1: cutting the edges first made the later moves pure moves. A scan of every `crate::` path, test modules included, with the 4.2 assignment applied, found the edges below. Each was fixed until the scan reported none. The scan was a one-off script and isn't kept; from phase 3 on, Cargo enforces the rules.
 
 | Cut | Wrong-way edge | Change |
 | --- | --- | --- |
-| C1 | 11 modules in `physics`, `script`, `content` and `sim` use `accounts::parse_guid` | Move `parse_guid` into `core::guid`. All 17 uses import it from there. |
-| C2 | `script_runtime`, `script_stream`, `game_bots`, `game_projectiles` and `projectile_flight` use the `game_clock` tick constants (`TICK_PERIOD`, `SEND_EVERY`, `FIRST_TICK`, `MAX_LEASE_FRAME`, `MAX_SIMULATION_TICK`) | Move the tick constants into `core::time`. |
-| C3 | `game_clock` uses `game_connection::{HANDOFF_TIME, LEAVE_GRACE}` | After C2, only `game_service` uses `game_clock` (`GameClock`, `Step`, `next_tick_after`). Place it in `server` next to `game_service`. Placement only. |
-| C4 | `world::health` calls `vitals::Vitals::with_current_health` (wire to script) | Move `health()` into `vitals`, or pass it plain values. |
-| C5 | `script_player` uses more than 20 `game_*`, `match_*` and `mover*` modules | Place it in `sim` as `sim::body_script`. Placement only. |
-| C6 | `game_replication` uses `game_egress` types (`GameEgress`, `FrameRecords`, `SentFrame`, …) | Place `game_egress` in `sim`. It depends only on wire modules. Placement only. |
-| C7 | `lobby_practice` uses `game_service`, `match_scene` and `scene_assets` | Place it in `server`. Placement only. |
-| C8 | `runtime ↔ script_graph`, through `runtime::target_tags` | Move `target_tags` into `script`. |
+| C1 | 11 modules in `physics`, `script`, `content` and `sim` use `accounts::parse_guid` | `parse_guid` moved to the new `guid` module (`core`). All uses import it from there. |
+| C2 | `script_runtime`, `script_stream`, `game_bots`, `game_projectiles`, `game_replication`, `projectile_flight` and `scene_assets` use the `game_clock` tick constants | `TICK_PERIOD`, `SEND_EVERY`, `FIRST_TICK` and `MAX_LEASE_FRAME` moved to the new `tick` module (`core`). |
+| C3 | `game_clock` uses `game_connection::{HANDOFF_TIME, LEAVE_GRACE}` | After C2 only `game_service` uses `game_clock`, so it goes to `server`. Placement only. |
+| C4 | `world::health` calls `vitals::Vitals::with_current_health` (wire to script) | `health()` moved to `vitals`. The `world` test that used it builds the pool component directly. |
+| C5 | `script_player` uses more than 20 `game_*`, `match_*` and `mover*` modules | Placed in `sim`. Placement only. |
+| C6 | `game_replication` uses `game_egress` | `game_egress` placed in `sim`. Placement only. |
+| C7 | `lobby_practice` uses `game_service`, `match_scene` and `scene_assets` | Placed in `server`. Its message identity (`GAME_REQUEST`, `CREATE_GAME`, `is_request`) moved to `match_handoff` (`lobby`), which the lobby tests use. |
+| C8 | `script_init` tests use `game_hitscan::HitDefinition` and `projectile_flight::ProjectileBallistics` | The authored damage and ballistics definitions (`HitDefinition`, `DamageFalloff`, `ProjectileBallistics`, `Blast`, `authored_number`) moved to the new `script_weapons` module (`script`). Hit detection and flight stay in `sim`. |
+| C9 | `lobby_session` tests start the whole native server; `mover_correction` tests use `game_egress` | The native server test moved to `server`, the correction-and-egress test to `game_egress`. The client side of the lobby handshake became a shared test helper in `jam_handshake`; phase 3 moves it to `testkit`. |
 
-The `retail_templates ↔ lobby_{arcade,login,passes,transport}` cycle stays inside the `lobby` crate, so it doesn't block anything. Untangling it, by moving the shared message types into `lobby::messages`, is optional cleanup.
+`runtime::target_tags` only depends downward on `script_graph`, so it stays with `runtime`. The `retail_templates ↔ lobby_{arcade,login,passes,transport}` cycle stays inside the `lobby` crate and doesn't block anything.
 
 **Done when:** the scan reports no wrong-way edges and `just check` passes.
 

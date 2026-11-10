@@ -242,6 +242,7 @@ mod tests {
     use crate::bits::BitReader;
     use crate::game_messages::read_channel;
     use crate::jam_codec::Schemas;
+    use crate::mover_correction::CorrectionHistory;
     use crate::world::{MAX_ENTITY_RECORDS, MAX_PAYLOAD, Movement, Operation};
 
     const MESSAGE: [u8; 2] = [1, 2];
@@ -558,5 +559,98 @@ mod tests {
             Err(OrdinalExhausted)
         );
         assert_eq!(egress.reliable.len(), 1);
+    }
+
+    fn correction_pose(frame: u32) -> Movement {
+        Movement {
+            position: [f64::from(frame) / 1024.0, 1.0, -2.0],
+            frame: Some(frame),
+            ..Movement::default()
+        }
+    }
+
+    #[test]
+    fn selected_send_advances_ack_only_after_budget_and_transport_succeed() {
+        let mut history = CorrectionHistory::new(0xa000_0101, 1);
+        history.record(correction_pose(100));
+        assert!(history.sent(&history.candidate(100, true).unwrap()));
+        for frame in 101..114 {
+            history.record(correction_pose(frame));
+        }
+        let own = history.candidate(107, true).unwrap();
+        let movement = [own.update()];
+        let queued: Vec<_> = (0..MAX_ENTITY_RECORDS)
+            .map(|index| EntityUpdate {
+                entity: 0x8000_0001 + index as u32,
+                operation: Some(Operation::Destroy),
+                ..EntityUpdate::default()
+            })
+            .collect();
+        fn candidates<'a>(
+            queued: &'a [EntityUpdate],
+            movements: &'a [EntityUpdate],
+        ) -> FrameRecords<'a> {
+            FrameRecords {
+                tick: 107,
+                queued,
+                movements,
+                owner_correction: true,
+                reliable_only: false,
+            }
+        }
+        let ack = |records: &[&EntityUpdate]| {
+            let selected = records
+                .iter()
+                .any(|record| std::ptr::eq(*record, &movement[0]));
+            history.command_ack(107, Some(113), selected.then_some(&own))
+        };
+        let decode_ack = |bytes: Vec<u8>| {
+            let mut reader = BitReader::new(&bytes);
+            assert_eq!(reader.var_a().unwrap(), 107);
+            assert!(!reader.bit().unwrap()); // empty JAM channel
+            reader.var_a().unwrap()
+        };
+        let mut egress = GameEgress::default();
+        let crowded = egress
+            .send_frame(
+                candidates(&queued, &movement),
+                ack,
+                |_| (),
+                |bytes| {
+                    assert_eq!(decode_ack(bytes), 102);
+                    Ok::<_, ()>(0)
+                },
+            )
+            .unwrap();
+        assert_eq!(crowded.records.len(), MAX_ENTITY_RECORDS);
+        assert!(!crowded.records.contains(&RecordSource::Movement(0)));
+        assert_eq!(history.corrected(), Some(100));
+
+        let failed = egress.send_frame(
+            candidates(&[], &movement),
+            ack,
+            |_| (),
+            |bytes| {
+                assert_eq!(decode_ack(bytes), 109);
+                Err(())
+            },
+        );
+        assert!(matches!(failed, Err(SendError::Transport(()))));
+        assert_eq!(history.corrected(), Some(100));
+        let sent = egress
+            .send_frame(
+                candidates(&[], &movement),
+                ack,
+                |_| (),
+                |bytes| {
+                    assert_eq!(decode_ack(bytes), 109);
+                    Ok::<_, ()>(2)
+                },
+            )
+            .unwrap();
+        assert_eq!(sent.records, [RecordSource::Movement(0)]);
+        assert!(history.sent(&own));
+        assert_eq!(history.corrected(), Some(107));
+        assert_eq!(history.command_ack(108, Some(113), None), 109);
     }
 }

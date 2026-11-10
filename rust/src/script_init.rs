@@ -6838,12 +6838,11 @@ mod tests {
         );
         let shot = &shots[0];
         let node = component.shot_node(shot).unwrap();
-        let rocket =
-            crate::projectile_flight::ProjectileBallistics::from_authored(node, |config| {
-                component.evaluate_shot_config(shot, config, &mut world)
-            })
-            .unwrap()
-            .unwrap();
+        let rocket = crate::script_weapons::ProjectileBallistics::from_authored(node, |config| {
+            component.evaluate_shot_config(shot, config, &mut world)
+        })
+        .unwrap()
+        .unwrap();
         assert_eq!(rocket.definition, Some(0x0400_0000_0000_072c));
         assert_eq!((rocket.speed, rocket.lifetime), (50.0, 2.0));
         let direct = rocket.direct.unwrap();
@@ -6965,7 +6964,7 @@ mod tests {
         let shot = &shots[0];
         let node = component.shot_node(shot).unwrap();
         let mut evaluate = |config: &Json| component.evaluate_shot_config(shot, config, &mut world);
-        let hit = crate::game_hitscan::HitDefinition::from_authored(
+        let hit = crate::script_weapons::HitDefinition::from_authored(
             node.field("m_6396149F").unwrap(),
             &mut evaluate,
         )
@@ -6976,7 +6975,7 @@ mod tests {
         assert_eq!(hit.critical, 2.0);
         assert_eq!(
             hit.falloff,
-            Some(crate::game_hitscan::DamageFalloff {
+            Some(crate::script_weapons::DamageFalloff {
                 start: 30.0,
                 end: 50.0,
                 floor: f64::from(0.3_f32),

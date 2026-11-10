@@ -11,6 +11,9 @@ use std::time::{Duration, Instant};
 use crate::jam_codec::{Fields, Value, id16};
 use crate::lobby_transport::LobbyMessage;
 
+/// The solo Practice Range create-game request.
+pub const GAME_REQUEST: u32 = 0xa6e5_3896;
+pub const CREATE_GAME: u32 = 24000;
 pub const HANDOFF: u32 = 0x074d_ad18;
 pub const HANDOFF_MESSAGE: u32 = 20600;
 pub const FOUND_DELAY: Duration = Duration::from_secs(4);
@@ -277,10 +280,57 @@ impl PendingHandoffs {
     }
 }
 
+/// Practice uses a creation kind and flags, separate from a matchmaking card.
+pub fn is_request((crc, id, fields): &LobbyMessage) -> bool {
+    (*crc, *id) == (GAME_REQUEST, CREATE_GAME)
+        && matches!(
+            fields.get(&0x78),
+            Some(Value::Unsigned(2) | Value::Signed(2))
+        )
+        && matches!(
+            fields.get(&0xa8),
+            Some(Value::Unsigned(4) | Value::Signed(4))
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::jam_codec::Schemas;
+
+    const REQUEST: &[u8] = b"\x02\x00\x04\x00\x00\x00";
+
+    #[test]
+    fn checks_the_practice_kind_flags_and_message_identity() {
+        let schemas = Schemas::from_json(
+            r#"{"A6E53896":{"24000":[
+                {"type":2,"off":120,"count":0,"array":false},
+                {"type":12,"off":128,"count":0,"array":false},
+                {"type":7,"off":168,"count":0,"array":false}
+            ]}}"#,
+        )
+        .unwrap();
+        let fields = schemas
+            .decode(GAME_REQUEST, CREATE_GAME, REQUEST, true)
+            .unwrap();
+        assert!(is_request(&(GAME_REQUEST, CREATE_GAME, fields.clone())));
+        assert!(!is_request(&(
+            GAME_REQUEST,
+            CREATE_GAME + 1,
+            fields.clone()
+        )));
+        assert!(!is_request(&(
+            GAME_REQUEST + 1,
+            CREATE_GAME,
+            fields.clone()
+        )));
+        let mut wrong_flags = fields.clone();
+        wrong_flags.insert(0xa8, Value::Signed(12));
+        assert!(!is_request(&(GAME_REQUEST, CREATE_GAME, wrong_flags)));
+        let mut wrong_kind = fields;
+        wrong_kind.insert(0x78, Value::Unsigned(1));
+        assert!(!is_request(&(GAME_REQUEST, CREATE_GAME, wrong_kind)));
+    }
 
     fn handoff(conn: u32) -> Handoff {
         Handoff {

@@ -4,118 +4,13 @@
 //! network delivery are separate so a predicted alias never hits twice.
 //! The reference is ow174/game/combat.py.
 
-use serde_json::Value as Json;
-
 use crate::{
     collision_index::IndexError,
-    game_hitscan::{HitDefinition, Impact, TargetPose},
-    game_projectiles::authored_number,
-    script_expr::EvalError,
-    script_graph::Node,
-    script_wire::Value,
+    game_hitscan::{Impact, TargetPose},
+    script_weapons::ProjectileBallistics,
     static_ray::{Vec3, capsule_entry_distance, segment_distance},
     tick::TICK_PERIOD,
 };
-
-const DEFAULT_LIFETIME: f64 = 5.0;
-const RING_EPSILON: f64 = 1e-9;
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ProjectileBallistics {
-    pub speed: f64,
-    pub lifetime: f64,
-    pub definition: Option<u64>,
-    pub direct: Option<HitDefinition>,
-    pub blast: Option<Blast>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Blast {
-    pub hit: HitDefinition,
-    pub rings: Vec<(f64, f64)>,
-}
-
-impl ProjectileBallistics {
-    pub fn from_authored(
-        node: &Node,
-        mut evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
-    ) -> Result<Option<Self>, EvalError> {
-        let speed = authored_number(node.field("m_projectileSpeed"), 0.0, &mut evaluate)?;
-        if !speed.is_finite() || speed <= 0.0 {
-            return Ok(None);
-        }
-        let mut lifetime = authored_number(
-            node.field("m_projectileLifetime"),
-            DEFAULT_LIFETIME,
-            &mut evaluate,
-        )?;
-        if lifetime == 0.0 {
-            lifetime = DEFAULT_LIFETIME;
-        }
-        let reach = authored_number(node.field("m_FEC435C6"), 0.0, &mut evaluate)?;
-        if reach != 0.0 {
-            lifetime = lifetime.min(reach / speed);
-        }
-        if !lifetime.is_finite() || lifetime <= 0.0 {
-            return Ok(None);
-        }
-        let definition = match node.field("m_projectileEntity.m_entityDef") {
-            Some(config) => match evaluate(config)? {
-                Value::Asset(definition) => Some(definition),
-                _ => None,
-            },
-            None => None,
-        };
-        let direct = HitDefinition::from_authored(
-            node.field("m_6396149F").unwrap_or(&Json::Null),
-            &mut evaluate,
-        )?;
-        let config = node.field("m_D2D11CE9").unwrap_or(&Json::Null);
-        let blast = if let Some(hit) = HitDefinition::from_authored(config, &mut evaluate)? {
-            let mut rings = Vec::new();
-            if let Some(rows) = config.get("m_0D30E40C").and_then(Json::as_array) {
-                for row in rows.iter().filter(|row| row.is_object()) {
-                    let radius = authored_number(row.get("m_radius"), 0.0, &mut evaluate)?;
-                    let scalar = authored_number(row.get("m_B399CACB"), 0.0, &mut evaluate)?;
-                    if radius.is_finite() && scalar.is_finite() {
-                        rings.push((radius, scalar));
-                    }
-                }
-            }
-            rings.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
-            Some(Blast { hit, rings })
-        } else {
-            None
-        };
-        Ok(Some(Self {
-            speed,
-            lifetime,
-            definition,
-            direct,
-            blast,
-        }))
-    }
-}
-
-impl Blast {
-    fn multiplier(&self, distance: f64) -> f64 {
-        let Some(&(mut previous, mut scalar)) = self.rings.first() else {
-            return 0.0;
-        };
-        if distance <= previous {
-            return scalar;
-        }
-        for &(radius, next) in &self.rings[1..] {
-            if distance <= radius {
-                let share = (distance - previous) / (radius - previous).max(RING_EPSILON);
-                return scalar + (next - scalar) * share;
-            }
-            previous = radius;
-            scalar = next;
-        }
-        0.0
-    }
-}
 
 pub struct ProjectileFlight {
     ballistics: ProjectileBallistics,
@@ -263,6 +158,7 @@ impl ProjectileFlight {
 mod tests {
     use super::*;
     use crate::collision_index::{SceneTriangle, TriangleIndex};
+    use crate::script_weapons::{Blast, HitDefinition};
 
     const LOADOUT: u64 = 0x0b90_0000_0000_008e;
 

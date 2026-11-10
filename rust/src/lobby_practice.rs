@@ -7,16 +7,13 @@ use crate::{
     collection::Collection,
     game_content::GameMap,
     game_service::{GameService, MatchPlayer},
-    jam_codec::{Fields, Value},
+    jam_codec::Fields,
     lobby_session::PreparedLogin,
     lobby_transport::LobbyMessage,
-    match_handoff::{Handoff, LobbySeat, enter_game, general_channel, match_channel},
+    match_handoff::{Handoff, LobbySeat, enter_game, general_channel, is_request, match_channel},
     match_scene::PlayerCard,
     scene_assets::{PreparedScene, SceneAssets},
 };
-
-pub const GAME_REQUEST: u32 = 0xa6e5_3896;
-pub const CREATE_GAME: u32 = 24000;
 
 /// Chat and address data from the authenticated session's owner. The caller
 /// supplies this only after confirming the account is playing alone.
@@ -36,19 +33,6 @@ impl<'a> SoloPracticeHandoff<'a> {
             match_channel: match_channel(match_id),
         }
     }
-}
-
-/// Practice uses a creation kind and flags, separate from a matchmaking card.
-pub fn is_request((crc, id, fields): &LobbyMessage) -> bool {
-    (*crc, *id) == (GAME_REQUEST, CREATE_GAME)
-        && matches!(
-            fields.get(&0x78),
-            Some(Value::Unsigned(2) | Value::Signed(2))
-        )
-        && matches!(
-            fields.get(&0xa8),
-            Some(Value::Unsigned(4) | Value::Signed(4))
-        )
 }
 
 /// Reserve a seat for a decoded post-login request and send its transfer in
@@ -204,44 +188,12 @@ mod tests {
         accounts::Accounts,
         game_content::{PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE},
         game_link::{ACK, KIND_CONTROL, LinkCipher, MAX_DATAGRAM, Packet, SYN},
-        jam_codec::Schemas,
+        jam_codec::{Schemas, Value},
         lobby_login::Identity,
-        match_handoff::{HANDOFF, HANDOFF_MESSAGE},
+        match_handoff::{CREATE_GAME, GAME_REQUEST, HANDOFF, HANDOFF_MESSAGE},
     };
 
     const REQUEST: &[u8] = b"\x02\x00\x04\x00\x00\x00";
-
-    #[test]
-    fn checks_the_practice_kind_flags_and_message_identity() {
-        let schemas = Schemas::from_json(
-            r#"{"A6E53896":{"24000":[
-                {"type":2,"off":120,"count":0,"array":false},
-                {"type":12,"off":128,"count":0,"array":false},
-                {"type":7,"off":168,"count":0,"array":false}
-            ]}}"#,
-        )
-        .unwrap();
-        let fields = schemas
-            .decode(GAME_REQUEST, CREATE_GAME, REQUEST, true)
-            .unwrap();
-        assert!(is_request(&(GAME_REQUEST, CREATE_GAME, fields.clone())));
-        assert!(!is_request(&(
-            GAME_REQUEST,
-            CREATE_GAME + 1,
-            fields.clone()
-        )));
-        assert!(!is_request(&(
-            GAME_REQUEST + 1,
-            CREATE_GAME,
-            fields.clone()
-        )));
-        let mut wrong_flags = fields.clone();
-        wrong_flags.insert(0xa8, Value::Signed(12));
-        assert!(!is_request(&(GAME_REQUEST, CREATE_GAME, wrong_flags)));
-        let mut wrong_kind = fields;
-        wrong_kind.insert(0x78, Value::Unsigned(1));
-        assert!(!is_request(&(GAME_REQUEST, CREATE_GAME, wrong_kind)));
-    }
 
     fn input(match_id: [u64; 2]) -> SoloPracticeHandoff<'static> {
         SoloPracticeHandoff::new(match_id, "127.0.0.1")

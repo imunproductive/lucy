@@ -128,6 +128,38 @@ pub(crate) fn handshake_io(
     })
 }
 
+/// The client side of the lobby handshake, for loopback tests. Returns the
+/// outgoing and incoming stream ciphers.
+#[cfg(test)]
+pub(crate) fn client_handshake(client: &mut TcpStream) -> (Jam, Jam) {
+    fn proof(first: &[u8], second: &[u8]) -> [u8; 32] {
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&[0; 32]).unwrap();
+        mac.update(first);
+        mac.update(second);
+        mac.finalize().into_bytes().into()
+    }
+
+    client.write_all(b"HELLO PRO CLIENT\0").unwrap();
+    let mut hello = [0; 17];
+    client.read_exact(&mut hello).unwrap();
+    assert_eq!(&hello, b"HELLO PRO SERVER\0");
+    let nonce = [0x83; 40];
+    client.write_all(&nonce).unwrap();
+    let mut challenge = [0; 65];
+    client.read_exact(&mut challenge).unwrap();
+    let mut answer = [0; 40];
+    let client_proof = proof(&nonce[8..], &challenge[33..]);
+    answer[8..].copy_from_slice(&client_proof);
+    client.write_all(&answer).unwrap();
+    let mut state = [0; 324];
+    client.read_exact(&mut state).unwrap();
+    let server_proof = proof(&challenge[33..], &nonce[8..]);
+    assert_eq!(&state[..32], &server_proof);
+    let mut rx = Jam::new(&client_proof);
+    rx.crypt_in_place(&mut state[32..]);
+    (Jam::new(&server_proof), rx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
