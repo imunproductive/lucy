@@ -32,7 +32,9 @@ pub const PC_POOL: u64 = 16_025_156;
 
 const STATE: u32 = 36300;
 const CARD_RATINGS: u32 = 36302;
-const CURRENT_SEASON: u64 = 32;
+pub const CURRENT_SEASON: u64 = 32;
+pub const MAX_RATING: i64 = 5000;
+pub const MAX_MATCHES: i64 = 9999;
 const FIRST_ROLE_SEASON: u64 = 18;
 const SEASON_DATES: [u32; 4] = [0x20, 0x28, 0x30, 0x38];
 const DAYS_INTO_SEASON: u64 = 7;
@@ -51,6 +53,15 @@ pub enum Queue {
 }
 
 impl Queue {
+    pub const ALL: [Self; 6] = [
+        Self::Tank,
+        Self::Damage,
+        Self::Support,
+        Self::Open,
+        Self::Ctf,
+        Self::Lucio,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Tank => "tank",
@@ -156,11 +167,11 @@ pub fn tier(rating: u16) -> u8 {
 }
 
 pub fn rating_of(profile: &Profile, queue: Queue) -> io::Result<u16> {
-    Ok(profile_integer(&profile.ratings, queue, 2333)?.clamp(1, 5000) as u16)
+    Ok(profile_integer(&profile.ratings, queue, 2333)?.clamp(1, MAX_RATING) as u16)
 }
 
 pub fn matches_of(profile: &Profile, queue: Queue) -> io::Result<u16> {
-    Ok(profile_integer(&profile.matches, queue, 25)?.clamp(0, 9999) as u16)
+    Ok(profile_integer(&profile.matches, queue, 25)?.clamp(0, MAX_MATCHES) as u16)
 }
 
 pub fn wins_of(profile: &Profile, queue: Queue) -> io::Result<u16> {

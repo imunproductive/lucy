@@ -90,6 +90,43 @@ impl Event {
     }
 }
 
+/// The event names `Profile::events` accepts, besides raw `0x` celebration IDs.
+pub const EVENT_PRESETS: [&str; 15] = [
+    "goodbye",
+    "lunar",
+    "halloween",
+    "winter",
+    "anniversary",
+    "anniversary_remix_1",
+    "anniversary_remix_2",
+    "summer",
+    "archives",
+    "reaper",
+    "cassidy",
+    "malevento",
+    "owl",
+    "watchpoint",
+    "ow2_credits",
+];
+
+/// Hero challenges by title: celebration and reward unlock indexes.
+const CHALLENGES: [(&str, u16, [u64; 3]); 3] = [
+    ("Tracer's Comic Challenge", 0x119, [0x4aea, 0x4aeb, 0x4aec]),
+    (
+        "Symmetra's Restoration Challenge",
+        0x11a,
+        [0x4b10, 0x4b11, 0x4b08],
+    ),
+    ("Kanezaka Challenge", 0x11b, [0x4bb2, 0x4bb1, 0x4aa4]),
+];
+
+/// Challenge titles and their reward unlock GUIDs.
+pub fn challenges() -> impl Iterator<Item = (&'static str, [u64; 3])> {
+    CHALLENGES
+        .iter()
+        .map(|&(title, _, indexes)| (title, indexes.map(|index| UNLOCK_BASE | index)))
+}
+
 fn preset(name: &str) -> Option<Event> {
     Some(match name {
         "goodbye" => Event::keyed(0x128, 0x1a3),
@@ -140,12 +177,7 @@ struct Challenge {
 }
 
 fn challenge(name: &str, items: &ItemDb) -> Option<Challenge> {
-    let (celebration, indexes) = match name {
-        "Tracer's Comic Challenge" => (0x119, [0x4aea, 0x4aeb, 0x4aec]),
-        "Symmetra's Restoration Challenge" => (0x11a, [0x4b10, 0x4b11, 0x4b08]),
-        "Kanezaka Challenge" => (0x11b, [0x4bb2, 0x4bb1, 0x4aa4]),
-        _ => return None,
-    };
+    let &(_, celebration, indexes) = CHALLENGES.iter().find(|(title, _, _)| *title == name)?;
     let rewards = indexes.map(|index| UNLOCK_BASE | index);
     rewards
         .iter()
@@ -474,6 +506,14 @@ mod tests {
         UNLOCK_BASE | 0x4aeb,
         UNLOCK_BASE | 0x4aec,
     ];
+
+    #[test]
+    fn every_listed_event_preset_is_known() {
+        for name in EVENT_PRESETS {
+            assert!(preset(name).is_some(), "{name}");
+        }
+        assert!(preset("unknown").is_none());
+    }
 
     fn names(values: &[&str]) -> Vec<String> {
         values.iter().map(|&value| value.into()).collect()

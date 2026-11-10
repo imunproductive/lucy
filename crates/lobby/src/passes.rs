@@ -24,13 +24,15 @@ pub enum Pool {
 }
 
 impl Pool {
+    pub const ALL: [Self; 2] = [Self::QuickPlay, Self::Competitive];
+
     pub fn from_guid(guid: u64) -> Option<Self> {
         [Self::QuickPlay, Self::Competitive]
             .into_iter()
             .find(|&pool| pool as u64 == guid)
     }
 
-    fn profile_key(self) -> &'static str {
+    pub fn profile_key(self) -> &'static str {
         match self {
             Self::QuickPlay => "quick_play",
             Self::Competitive => "competitive",

@@ -1,5 +1,7 @@
 //! Loopback-only native server for the verified retail Practice Range path.
 
+mod dashboard;
+
 use std::{
     collections::HashMap,
     fs, io,
@@ -18,6 +20,7 @@ use crate::{
     game_service::GameService,
     practice::{self, SoloPracticeHandoff},
     runtime::{BNET_DESCRIPTORS, missing_runtime_files},
+    server::dashboard::{Dashboard, DashboardParts},
 };
 use orpheus_bnet::{
     protocol::Protocol,
@@ -56,6 +59,8 @@ pub struct ServerConfig {
     pub game_port: u16,
     pub stall_port: u16,
     pub rpc_port: u16,
+    /// The dashboard's TCP port; `None` leaves it off.
+    pub dashboard_port: Option<u16>,
 }
 
 impl ServerConfig {
@@ -68,6 +73,7 @@ impl ServerConfig {
             game_port: 3730,
             stall_port: service::STALL_PORT,
             rpc_port: service::RPC_PORT,
+            dashboard_port: Some(3725),
         }
     }
 }
@@ -79,6 +85,7 @@ pub struct Server {
     lobby: Option<JoinHandle<io::Result<()>>>,
     bnet: BnetService,
     game: Option<Arc<GameService>>,
+    dashboard: Option<Dashboard>,
 }
 
 impl Server {
@@ -135,13 +142,15 @@ impl Server {
             game_schemas,
         )?);
         let game_addr = game.local_addr();
-        let bnet_account = Arc::clone(&local);
+        let selected = Arc::new(Mutex::new(local));
+        let bnet_selected = Arc::clone(&selected);
         let bnet = BnetService::start(
             addr(config.stall_port),
             addr(config.rpc_port),
             lobby_addr,
             protocol,
             move |_| {
+                let bnet_account = Arc::clone(&bnet_selected.lock().expect("selected account"));
                 let account = u64::from(bnet_account.account_lo);
                 Player {
                     account,
@@ -155,7 +164,7 @@ impl Server {
             signing_key,
             schemas,
             templates,
-            collection,
+            collection: Arc::new(collection),
             presence,
             ranked,
             arcade,
@@ -163,11 +172,26 @@ impl Server {
             extra_skins,
             assets,
             first_scene: Mutex::new(Some(scene)),
-            accounts,
-            local,
-            active: Mutex::new(HashMap::new()),
+            accounts: Arc::new(accounts),
+            selected,
+            active: Arc::default(),
             game: Arc::clone(&game),
         });
+        let dashboard = config
+            .dashboard_port
+            .map(|port| {
+                let parts = DashboardParts {
+                    accounts: Arc::clone(&shared.accounts),
+                    selected: Arc::clone(&shared.selected),
+                    online: Arc::clone(&shared.active),
+                    collection: Arc::clone(&shared.collection),
+                    data: config.data.clone(),
+                    assets: config.data.join("assets"),
+                    lobby_port: lobby_addr.port(),
+                };
+                Dashboard::start(port, parts)
+            })
+            .transpose()?;
         let (stop_lobby, shutdown) = mpsc::channel();
         let lobby = thread::Builder::new()
             .name("orpheus-lobby".into())
@@ -179,6 +203,7 @@ impl Server {
             lobby: Some(lobby),
             bnet,
             game: Some(game),
+            dashboard,
         })
     }
 
@@ -194,8 +219,14 @@ impl Server {
     pub fn rpc_addr(&self) -> SocketAddr {
         self.bnet.rpc_addr()
     }
+    pub fn dashboard_addr(&self) -> Option<SocketAddr> {
+        self.dashboard.as_ref().map(Dashboard::addr)
+    }
 
     pub fn stop(&mut self) -> io::Result<()> {
+        if let Some(dashboard) = &mut self.dashboard {
+            dashboard.stop();
+        }
         let bnet = self.bnet.stop();
         let lobby = if let Some(worker) = self.lobby.take() {
             let _ = self.stop_lobby.send(());
@@ -227,6 +258,17 @@ fn local_account(
     template: &Path,
     chosen: Option<&str>,
 ) -> io::Result<Arc<Account>> {
+    accounts.get(&local_account_name(accounts, data, template, chosen)?)
+}
+
+/// The account the local game logs in as: the explicit choice, the saved
+/// `default_account.txt` entry, the first saved profile, or the template's name.
+pub fn local_account_name(
+    accounts: &Accounts,
+    data: &Path,
+    template: &Path,
+    chosen: Option<&str>,
+) -> io::Result<String> {
     if let Some(name) = chosen.map(str::trim) {
         if name.is_empty() {
             return Err(io::Error::new(
@@ -234,7 +276,7 @@ fn local_account(
                 "empty local account name",
             ));
         }
-        return accounts.get(name);
+        return Ok(name.to_owned());
     }
     let saved = accounts.all_saved()?;
     let default = match fs::read_to_string(data.join("default_account.txt")) {
@@ -247,16 +289,16 @@ fn local_account(
         .find(|name| name.eq_ignore_ascii_case(&default))
         .or(saved.first())
     {
-        return accounts.get(name);
+        return Ok(name.clone());
     }
-    accounts.get(&load_or_create_profile(template)?.player_name)
+    Ok(load_or_create_profile(template)?.player_name)
 }
 
 struct Lobby {
     signing_key: [u8; 64],
     schemas: Schemas,
     templates: RetailTemplates,
-    collection: Collection,
+    collection: Arc<Collection>,
     presence: Presence,
     ranked: Ranked,
     arcade: Arcade,
@@ -264,9 +306,10 @@ struct Lobby {
     extra_skins: Vec<u64>,
     assets: SceneAssets,
     first_scene: Mutex<Option<PreparedScene>>,
-    accounts: Accounts,
-    local: Arc<Account>,
-    active: Mutex<HashMap<u32, Arc<AtomicBool>>>,
+    accounts: Arc<Accounts>,
+    /// The account a freshly started game logs in as; the dashboard can change it.
+    selected: Arc<Mutex<Arc<Account>>>,
+    active: Arc<Mutex<HashMap<u32, Arc<AtomicBool>>>>,
     game: Arc<GameService>,
 }
 
@@ -315,6 +358,10 @@ impl Drop for LoginLease<'_> {
 }
 
 impl Lobby {
+    fn selected_account(&self) -> Arc<Account> {
+        Arc::clone(&self.selected.lock().expect("selected account"))
+    }
+
     fn serve_peer(&self, stream: PeerStream, id: u32) -> io::Result<()> {
         let Some(mut session) = LobbySession::accept_peer(
             stream,
@@ -326,7 +373,7 @@ impl Lobby {
         else {
             return Ok(());
         };
-        let login = match session.prepare_login(&self.accounts, || Ok(Arc::clone(&self.local)))? {
+        let login = match session.prepare_login(&self.accounts, || Ok(self.selected_account()))? {
             LoginRequest::Prepared(login) => login,
             LoginRequest::Rejected { reason } => {
                 session.send_disconnect(reason)?;

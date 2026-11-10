@@ -22,19 +22,38 @@ pub const DEFAULT_ICON: u64 = 0x0250_0000_0000_02f7;
 pub const BOT_NAME: &str = "Bot";
 const UNLOCKS_RESET_MARKER: &str = "unlocks_reset_v2";
 
+pub struct BoxType {
+    pub id: i32,
+    /// The official name.
+    pub name: &'static str,
+    /// The short name the dashboard shows.
+    pub label: &'static str,
+    /// How many a new profile starts with.
+    pub starter: u64,
+}
+
+const fn box_type(id: i32, name: &'static str, label: &'static str, starter: u64) -> BoxType {
+    BoxType {
+        id,
+        name,
+        label,
+        starter,
+    }
+}
+
 // The type order determines the IDs in new profiles.
-const BOX_TYPES: [(i32, &str, u64); 11] = [
-    (0, "Standard", 50),
-    (1, "Summer Games", 10),
-    (2, "Halloween Terror", 10),
-    (3, "Winter Wonderland", 10),
-    (4, "Lunar New Year", 10),
-    (5, "Archives", 10),
-    (6, "Anniversary", 10),
-    (7, "Golden", 10),
-    (9, "Legendary Anniversary", 10),
-    (10, "Wrecking Ball", 0),
-    (12, "Legendary", 10),
+pub const BOX_TYPES: [BoxType; 11] = [
+    box_type(0, "Standard", "Standard", 50),
+    box_type(1, "Summer Games", "Summer Games", 10),
+    box_type(2, "Halloween Terror", "Halloween", 10),
+    box_type(3, "Winter Wonderland", "Winter Wonderland", 10),
+    box_type(4, "Lunar New Year", "Lunar New Year", 10),
+    box_type(5, "Archives", "Archives", 10),
+    box_type(6, "Anniversary", "Anniversary", 10),
+    box_type(7, "Golden", "Golden", 10),
+    box_type(9, "Legendary Anniversary", "Legendary Anniversary", 10),
+    box_type(10, "Wrecking Ball", "Ram", 0),
+    box_type(12, "Legendary", "Legendary", 10),
 ];
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -189,8 +208,8 @@ impl Profile {
 pub fn box_name(box_type: i32) -> String {
     BOX_TYPES
         .iter()
-        .find(|(id, _, _)| *id == box_type)
-        .map_or_else(|| format!("Type {box_type}"), |(_, name, _)| (*name).into())
+        .find(|kind| kind.id == box_type)
+        .map_or_else(|| format!("Type {box_type}"), |kind| kind.name.into())
 }
 
 fn box_id_overflow() -> io::Error {
@@ -202,9 +221,9 @@ fn box_id_overflow() -> io::Error {
 
 pub fn new_profile() -> Profile {
     let mut profile = Profile::default();
-    for (box_type, _, count) in BOX_TYPES {
+    for kind in BOX_TYPES {
         profile
-            .add_boxes(box_type, count)
+            .add_boxes(kind.id, kind.starter)
             .expect("starter box IDs fit");
     }
     profile
@@ -401,7 +420,7 @@ impl Account {
         Ok(())
     }
 
-    pub(crate) fn edit_profile<T>(
+    pub fn edit_profile<T>(
         &self,
         edit: impl FnOnce(&mut Profile) -> io::Result<Option<T>>,
     ) -> io::Result<Option<T>> {

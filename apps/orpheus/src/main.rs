@@ -1,80 +1,139 @@
-use std::{env, ffi::OsString, io, path::PathBuf, process::ExitCode};
+//! The ORPHEUS server for Overwatch 1.74.0.0.104319.
 
-use orpheus_server::server::{Server, ServerConfig};
+mod doctor;
+mod import;
+mod logging;
+mod serve;
+mod settings;
 
-const USAGE: &str = "Usage: orpheus_server --data-dir <directory> [--runtime <directory>]
-       [--account <name>] [--lobby-port <port>] [--game-port <port>]
-       [--stall-port <port>] [--rpc-port <port>]
+use std::{io, path::PathBuf, process::ExitCode};
 
-The native 1.74 server listens on loopback. Use an authorized base runtime
-directory or set ORPHEUS_RUNTIME_DIR. Press Enter in the terminal to stop.";
+use clap::{Parser, Subcommand};
+use orpheus_server::runtime;
+use tracing::error;
+
+use settings::{ServerArgs, Settings, default_state_dir};
+
+#[derive(Parser)]
+#[command(version, about = "The ORPHEUS server for Overwatch 1.74.0.0.104319")]
+struct Cli {
+    /// Folder for profiles, logs and config.toml [default: %APPDATA%\orpheus].
+    #[arg(long, global = true, env = "ORPHEUS_STATE_DIR", value_name = "DIR")]
+    state: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Run the Battle.net, lobby and game services until Ctrl+C.
+    Serve(ServerArgs),
+    /// Check the setup `serve` needs and say how to fix each problem.
+    Doctor(ServerArgs),
+    /// Manage saved player state.
+    #[command(subcommand)]
+    State(StateCommand),
+    /// Manage the prepared runtime pack.
+    #[command(subcommand)]
+    Runtime(RuntimeCommand),
+}
+
+#[derive(Subcommand)]
+enum StateCommand {
+    /// Copy profiles and default_account.txt from an older checkout.
+    Import {
+        /// The older checkout's root folder.
+        checkout: PathBuf,
+        /// Replace files that already exist in the state folder.
+        #[arg(long)]
+        overwrite: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum RuntimeCommand {
+    /// Copy runtime inputs from a prepared local checkout into a new folder.
+    Prepare {
+        #[arg(long, value_name = "DIR")]
+        source: PathBuf,
+        #[arg(long, value_name = "DIR")]
+        destination: PathBuf,
+        /// Collision caches to copy, by map index; all when omitted.
+        #[arg(long = "map", value_name = "INDEX")]
+        maps: Vec<String>,
+        /// A graph bundle to use instead of the source's.
+        #[arg(long, value_name = "FILE")]
+        game_graphs: Option<PathBuf>,
+        /// DataTool .003 XML exports with the authored target tags.
+        #[arg(long, value_name = "DIR")]
+        target_tags_xml: Option<PathBuf>,
+    },
+}
 
 fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("orpheus_server: {error}");
+    let cli = Cli::parse();
+    match run(cli) {
+        Ok(code) => code,
+        Err(problem) => {
+            error!("{problem}");
             ExitCode::FAILURE
         }
     }
 }
 
-fn run() -> io::Result<()> {
-    let mut args = env::args_os().skip(1);
-    let mut config = ServerConfig::new(
-        env::var_os("ORPHEUS_RUNTIME_DIR").map_or_else(PathBuf::new, PathBuf::from),
-        PathBuf::new(),
-    );
-    while let Some(arg) = args.next() {
-        if arg == "--help" || arg == "-h" {
-            println!("{USAGE}");
-            return Ok(());
+fn run(cli: Cli) -> io::Result<ExitCode> {
+    let state = match cli.state {
+        Some(state) => state,
+        None => default_state_dir()?,
+    };
+    match cli.command {
+        Command::Serve(args) => {
+            let settings = Settings::resolve(&state, &args)?;
+            logging::init(Some(&settings.logs()))?;
+            serve::run(&settings)?;
         }
-        let value = args
-            .next()
-            .ok_or_else(|| usage_error("missing option value"))?;
-        match arg.to_str() {
-            Some("--runtime") => config.runtime = PathBuf::from(value),
-            Some("--data-dir") => config.data = PathBuf::from(value),
-            Some("--account") => {
-                config.account = Some(
-                    value
-                        .into_string()
-                        .map_err(|_| usage_error("invalid account name"))?,
+        Command::Doctor(args) => {
+            logging::init(None)?;
+            if !doctor::run(&state, &args) {
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+        Command::State(StateCommand::Import {
+            checkout,
+            overwrite,
+        }) => {
+            logging::init(None)?;
+            let report = import::run(&checkout, &state, overwrite)?;
+            println!(
+                "Imported {} file(s) into {}.",
+                report.copied.len(),
+                state.display()
+            );
+            for kept in &report.kept {
+                println!(
+                    "Kept the existing {} (use --overwrite to replace it).",
+                    kept.display()
                 );
             }
-            Some("--lobby-port") => config.lobby_port = port(value)?,
-            Some("--game-port") => config.game_port = port(value)?,
-            Some("--stall-port") => config.stall_port = port(value)?,
-            Some("--rpc-port") => config.rpc_port = port(value)?,
-            _ => return Err(usage_error("unknown option")),
+        }
+        Command::Runtime(RuntimeCommand::Prepare {
+            source,
+            destination,
+            maps,
+            game_graphs,
+            target_tags_xml,
+        }) => {
+            logging::init(None)?;
+            let prepared = runtime::prepare_with_target_tags(
+                &source,
+                &destination,
+                &maps,
+                game_graphs.as_deref(),
+                target_tags_xml.as_deref(),
+            )
+            .map_err(io::Error::other)?;
+            println!("Prepared runtime data at {}", prepared.display());
         }
     }
-    if config.runtime.as_os_str().is_empty() || config.data.as_os_str().is_empty() {
-        return Err(usage_error(
-            "both runtime and data directories are required",
-        ));
-    }
-    let mut server = Server::start(config)?;
-    println!(
-        "ORPHEUS native lobby {} · game {} · Battle.net {} / {}",
-        server.lobby_addr(),
-        server.game_addr(),
-        server.stall_addr(),
-        server.rpc_addr(),
-    );
-    println!("Press Enter to stop.");
-    io::stdin().read_line(&mut String::new())?;
-    server.stop()
-}
-
-fn port(value: OsString) -> io::Result<u16> {
-    value
-        .to_str()
-        .and_then(|value| value.parse().ok())
-        .ok_or_else(|| usage_error("invalid port"))
-}
-
-fn usage_error(message: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, format!("{message}\n{USAGE}"))
+    Ok(ExitCode::SUCCESS)
 }

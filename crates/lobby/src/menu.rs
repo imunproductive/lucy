@@ -6,7 +6,8 @@ use crate::accounts::Profile;
 use orpheus_content::catalog::{HERO_BASE, ItemDb, SKIN_THEME_BASE};
 use orpheus_core::guid::parse_guid;
 
-const PVE_NPCS: &[(&str, u64)] = &[
+/// Lobby NPCs by name, with their hero index.
+pub const PVE_NPCS: &[(&str, u64)] = &[
     ("null sector eradicator", 0x173),
     ("null sector slicer", 0x178),
     ("null sector nulltrooper", 0x179),
