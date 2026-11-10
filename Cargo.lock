@@ -943,6 +943,7 @@ name = "orpheus-testkit"
 version = "0.0.0"
 dependencies = [
  "md-5",
+ "orpheus-assets",
 ]
 
 [[package]]
