@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod install;
+mod lists;
 
 use std::{
     fmt, fs, io,
@@ -76,7 +77,10 @@ pub struct Derivation {
 }
 
 /// Every derivation, inputs first.
-pub const DERIVATIONS: &[Derivation] = &[];
+pub const DERIVATIONS: &[Derivation] = &[Derivation {
+    name: "lists",
+    derive: lists::derive,
+}];
 
 /// Run every derivation and write its files under `out`.
 pub fn build(install: &Install, out: &Path) -> Result<Vec<PathBuf>> {

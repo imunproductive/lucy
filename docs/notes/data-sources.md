@@ -15,9 +15,9 @@ Today the server reads a prepared runtime pack (`ORPHEUS_RUNTIME_DIR`). Phase 6 
 | `lobby_state_blob.key` | 64-byte signing key for the lobby state blob | — | Fixed data |
 | `retail_templates.json` | Decoded server templates, including catalogs and prices. Display-name markers are anonymized. | Decoded from 1.68 reference traffic with the 1.74 schemas | Captured server data (fixed data) |
 | `resource_keys_174.json` | Content keys for event resources, sent by the server to the client. Not account credentials. | — | Fixed data |
-| `extracted_heroes.json` | Hero identifiers and names | No producer in the repository | To classify (phase 6c.0) |
-| `extracted_maps.json` | Map metadata and seasonal variants, English names | No producer | To classify |
-| `extracted_items.json`, `extracted_general_unlocks.json` | Cosmetic names, types, rarity, categories and rewards | No producer | To classify |
+| `extracted_heroes.json` | Hero identifiers and names (DataTool `list-heroes --json`) | `orpheus-assets` derivation `lists` | `075`, `09E` loadouts, `07C` strings, DataTool's `GUIDNames.csv` hero classes |
+| `extracted_maps.json` | Map metadata and seasonal variants, English names (DataTool `list-maps --json`) | `orpheus-assets` derivation `lists` | `09F`, `0C5` mode names, `07C` strings, DataTool's `GUIDNames.csv` menu map and celebration names. The pack's copy has other text for 207 of its strings (mostly `""`); the derivation writes the install's text, as DataTool does |
+| `extracted_items.json`, `extracted_general_unlocks.json` | Cosmetic names, types, rarity, categories and rewards (DataTool `list-unlocks --json`, `list-general-unlocks --json`) | `orpheus-assets` derivation `lists` | `075`, `054` player progression, `0A5` unlocks, esports teams, `07C` strings, DataTool's `GUIDNames.csv` categories |
 | `collision_keys_174.json` | Storage keys of each map's collision chunk | No producer | To classify; expected unnecessary once the manifest resolves GUIDs |
 | `collision_props_174.json` | Storage keys of each map's props and their models, and which modes keep which props | No producer | To classify |
 | `game_heroes_174.json` | Each playable hero's GUID, name and the `003` body the server creates | `extract_game_heroes.py` | `075` hero assets, `extracted_heroes.json` names |
