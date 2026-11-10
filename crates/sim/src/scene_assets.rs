@@ -505,7 +505,7 @@ mod tests {
                     Some(126),
                     "Expression(UnsupportedConfig(\"STU_ED45C5E8\"))".into()
                 ),
-                // The reload animation's length comes from its asset.
+                // An animation whose length comes from its asset, not the graph.
                 (
                     0x02c5,
                     Some(51),
