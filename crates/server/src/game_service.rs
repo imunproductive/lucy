@@ -28,19 +28,25 @@ use crate::{
 use orpheus_content::{
     maps::{GameMap, PRACTICE_RANGE_MODE},
     parameters::{CLIENT_GAME_MESSAGE, PICK_HERO},
+    stats::PlayerStats,
 };
 use orpheus_core::tick::FIRST_TICK;
 use orpheus_lobby::handoff::Handoff;
 use orpheus_script::wire::chunk;
 use orpheus_sim::{
-    combat::{BotHit, BotReplacement, Combat, ShotContext},
+    combat::{
+        BotHit, BotReplacement, Combat, CombatPlayer, PosedShot, Shooter, ShotContext,
+        apply_player_hits, deliver_body_messages, heal_players,
+    },
     controller::ControllerFrame,
     egress::GameEgress,
     instance::{Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
+    projectiles::HEAL_RADIUS,
     replication::{Record, RoomPlayer, WorldDelivery, show_players},
     scene::{PlayerAppearance, PlayerCard},
     scene_assets::PreparedScene,
 };
+use orpheus_wire::entity::Component as WorldComponent;
 use orpheus_wire::{
     combat_messages::CombatNotice,
     entity::{EntityUpdate, GAME_MODE_ENTITY, MAX_PAYLOAD, SkinTheme, frame},
@@ -390,6 +396,8 @@ struct Player {
     card: PlayerCard,
     entity: u32,
     gone: bool,
+    /// The numbers his Tab board shows (match.py `Player.stats`).
+    stats: PlayerStats,
 }
 
 impl Player {
@@ -495,6 +503,59 @@ fn player_entity(slot: usize) -> u32 {
     0xa000_0000 | ((slot as u32 + 1) << 8)
 }
 
+/// The connected players of a room, by slot.
+fn room_peers<'p>(
+    peers: &'p mut IndexMap<u32, Peer>,
+    seats: &HashMap<u32, (MatchId, usize)>,
+    id: MatchId,
+    players: usize,
+) -> Vec<Option<&'p mut Peer>> {
+    let mut room: Vec<_> = (0..players).map(|_| None).collect();
+    for (connection, peer) in peers.iter_mut() {
+        let (match_id, slot) = seats[connection];
+        if match_id == id {
+            room[slot] = Some(peer);
+        }
+    }
+    room
+}
+
+/// A Biotic Field's heal this tick (projectiles.py `_field`).
+struct FieldHeal {
+    healer: Shooter,
+    centre: [f64; 3],
+    amount: f64,
+}
+
+/// match.py `_board`: the player's board numbers, with their medals among
+/// his teammates (every player in a free-for-all) and his hero's stats.
+fn board(room: &Room, slot: usize, scene: &PreparedScene, hero: Option<u64>) -> WorldComponent {
+    let me = &room.players[slot];
+    let free_for_all = room.map.free_for_all;
+    let mut team: Vec<usize> = (0..room.players.len())
+        .filter(|&other| {
+            let player = &room.players[other];
+            !player.gone && (free_for_all || player.info.team == me.info.team)
+        })
+        .collect();
+    if !team.contains(&slot) {
+        team.push(slot);
+    }
+    let mode = room.map.mode_guid;
+    let stats: Vec<_> = team
+        .iter()
+        .map(|&other| &room.players[other].stats)
+        .collect();
+    let medals = scene.stats().medals(&stats, mode);
+    let index = team
+        .iter()
+        .position(|&other| other == slot)
+        .expect("the player is on his team");
+    scene
+        .stats()
+        .component(&me.stats, mode, hero, Some(&medals[index]))
+}
+
 /// The n-th player of a team takes the team's n-th spawn point; in a
 /// free-for-all the n-th player of the match (ow174/game/match.py Player).
 fn spawn_number(map: &GameMap, earlier: impl Iterator<Item = u8>, team: u8) -> usize {
@@ -521,14 +582,12 @@ impl Peer {
         self.combat_ui = CombatUi::default();
     }
 
-    fn bot_hit(&mut self, hit: BotHit) {
-        self.world.queue_health(hit.health);
-        for notice in hit.notices.into_iter().flatten() {
-            if self.combat_ui.notices.len() == MAX_PENDING_COMBAT_NOTICES {
-                self.combat_ui.notices.pop_front();
-            }
-            self.combat_ui.notices.push_back(notice);
+    /// A hit's notices for this client (the shooter's).
+    fn notice(&mut self, notice: CombatNotice) {
+        if self.combat_ui.notices.len() == MAX_PENDING_COMBAT_NOTICES {
+            self.combat_ui.notices.pop_front();
         }
+        self.combat_ui.notices.push_back(notice);
     }
 
     fn flush_combat(&mut self, schemas: &Schemas, now: Duration) {
@@ -539,7 +598,7 @@ impl Peer {
                 .pop_front()
                 .expect("pending combat notice");
             let entity = notice.required_identity();
-            if entity.is_some_and(|entity| !self.world.identity_ready(entity))
+            if entity.is_some_and(|entity| !self.world.combat_identity_ready(entity))
                 || (notice.needs_mode_ui() && !self.world.mode_ready())
             {
                 self.combat_ui.notices.push_back(notice);
@@ -691,6 +750,7 @@ impl State {
                     card,
                     entity: player_entity(slot),
                     gone: false,
+                    stats: PlayerStats::default(),
                 })
                 .collect(),
             remaining,
@@ -929,6 +989,7 @@ impl State {
         let start = self.next_input_peer % count;
         let tick = self.clock.frame();
         let mut remaining = INPUT_PER_TURN;
+        let mut struck = Vec::new();
         for offset in 0..count {
             let index = (start + offset) % count;
             let (&connection, peer) = self.peers.get_index(index).expect("active peer index");
@@ -936,22 +997,14 @@ impl State {
                 continue;
             }
             let (id, slot) = self.seats[&connection];
-            // A new body takes no id another client of the room still holds
-            // (ow174/game/match.py `_next_body_id`).
-            let owner = player_entity(slot);
-            let retained: Vec<u32> = self
-                .peers
-                .iter()
-                .filter(|&(&other, _)| other != connection && self.seats[&other].0 == id)
-                .flat_map(|(_, other)| other.world.retained_bodies(owner, now))
-                .collect();
+            let retained = self.retained_elsewhere(connection, now);
             let (_, peer) = self.peers.get_index_mut(index).expect("active peer index");
             peer.world.retain_elsewhere(retained);
             let room = self.rooms.get_mut(&id).expect("prepared room with input");
             let world = room.world.as_ref().expect("prepared world with input");
             let viewer = room.appearance(slot).expect("prepared player");
+            let team = viewer.team;
             let context = ShotContext {
-                team: viewer.team,
                 quanta: room.players[slot].quanta(),
                 tick,
                 now,
@@ -963,21 +1016,47 @@ impl State {
                 .unwrap_or((budget, true));
             remaining -= used;
             self.next_input_peer = (index + 1) % count;
-            let shots = peer.world.take_hitscan();
+            let shots = peer.world.take_shots();
             if (!leave && peer.world.combat_body_active()) || !shots.is_empty() {
                 let world = room.world.as_mut().expect("prepared world with combat");
                 let combat = world
                     .combat
                     .get_or_insert_with(|| Combat::new(&world.scene));
+                // combat.py `Combat.command`: the shots, then quick melee.
+                let mut hits = Vec::new();
                 for shot in shots {
-                    if let Ok(Some(hit)) =
-                        combat.hitscan(&mut world.scene, shot, context, |entity| {
-                            peer.world.identity_ready(entity)
-                        })
-                    {
-                        peer.bot_hit(hit);
+                    let visible = |entity| peer.world.identity_ready(entity);
+                    match shot {
+                        PosedShot::Hitscan(shot) => {
+                            let shooter = Shooter {
+                                source: shot.source,
+                                team,
+                                bot: false,
+                            };
+                            if let Ok(Some(hit)) =
+                                combat.hitscan(&mut world.scene, shot, shooter, context, visible)
+                            {
+                                hits.push(hit);
+                            }
+                        }
+                        PosedShot::Melee(melee) => {
+                            let shooter = Shooter {
+                                source: melee.source,
+                                team,
+                                bot: false,
+                            };
+                            hits.extend(combat.melee(
+                                &mut world.scene,
+                                melee,
+                                shooter,
+                                context,
+                                visible,
+                            ));
+                        }
+                        PosedShot::Projectile(_) => {}
                     }
                 }
+                struck.push((id, Some(connection), hits));
             }
             if leave {
                 peer.clear_world();
@@ -990,7 +1069,211 @@ impl State {
                 break;
             }
         }
+        for (id, shooter, hits) in struck {
+            self.deliver_bot_hits(id, shooter, hits);
+            self.resolve_player_hits(id, tick, now, None);
+        }
         self.peers.values().any(|peer| peer.world.has_input_work())
+    }
+
+    /// The bodies of the player's ring another client of the room still
+    /// holds: a new body takes none of them (ow174/game/match.py
+    /// `_next_body_id`).
+    fn retained_elsewhere(&self, connection: u32, now: Duration) -> Vec<u32> {
+        let (id, slot) = self.seats[&connection];
+        let owner = player_entity(slot);
+        self.peers
+            .iter()
+            .filter(|&(&other, _)| other != connection && self.seats[&other].0 == id)
+            .flat_map(|(_, other)| other.world.retained_bodies(owner, now))
+            .collect()
+    }
+
+    /// combat.py `_damage` for bots and `_send_health`: the shooter's
+    /// client gets the notices, every client of the room the bot's pools.
+    fn deliver_bot_hits(&mut self, id: MatchId, shooter: Option<u32>, hits: Vec<BotHit>) {
+        for hit in hits {
+            for (&connection, peer) in &mut self.peers {
+                if self.seats[&connection].0 != id {
+                    continue;
+                }
+                peer.world.queue_health(hit.health.clone());
+                if shooter == Some(connection) {
+                    for notice in hit.notices.into_iter().flatten() {
+                        peer.notice(notice);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The hits on players' bodies of a room (combat.py `_damage`, `_died`).
+    /// On a tick (`heals` given) also the Biotic Fields' heals
+    /// (projectiles.py `_field`: `heal_area`) and the messages between
+    /// bodies (match.py `deliver_body_messages`), in that order.
+    fn resolve_player_hits(
+        &mut self,
+        id: MatchId,
+        tick: u32,
+        now: Duration,
+        heals: Option<Vec<FieldHeal>>,
+    ) {
+        let Some(Room { players, world, .. }) = self.rooms.get_mut(&id) else {
+            return;
+        };
+        let Some(WorldStart {
+            scene,
+            combat: Some(combat),
+        }) = world.as_mut()
+        else {
+            return;
+        };
+        let hits = combat.take_player_hits();
+        let mut peers = room_peers(&mut self.peers, &self.seats, id, players.len());
+        let mut bot_heals = Vec::new();
+        let notices = {
+            let mut room: Vec<_> = players
+                .iter_mut()
+                .zip(peers.iter_mut())
+                .map(|(player, peer)| CombatPlayer {
+                    entity: player.entity,
+                    world: peer.as_deref_mut().map(|peer| &mut peer.world),
+                    stats: &mut player.stats,
+                })
+                .collect();
+            let notices = apply_player_hits(scene, hits, &mut room, tick, now);
+            if let Some(heals) = heals {
+                for heal in heals {
+                    let (bodies, bots) =
+                        combat.heal_area(scene, heal.healer, heal.centre, HEAL_RADIUS, heal.amount);
+                    let healed = bots.iter().map(|(_, given)| given).sum();
+                    heal_players(
+                        scene,
+                        heal.healer.source,
+                        &bodies,
+                        heal.amount,
+                        healed,
+                        &mut room,
+                    );
+                    bot_heals.extend(bots.into_iter().map(|(hit, _)| hit));
+                }
+                let mut worlds: Vec<_> = room
+                    .iter_mut()
+                    .filter_map(|player| player.world.as_deref_mut())
+                    .collect();
+                deliver_body_messages(&mut worlds);
+            }
+            notices
+        };
+        for (peer, notices) in peers.into_iter().zip(notices) {
+            if let Some(peer) = peer {
+                for hit in &bot_heals {
+                    peer.world.queue_health(hit.health.clone());
+                }
+                for notice in notices {
+                    peer.notice(notice);
+                }
+            }
+        }
+    }
+
+    /// combat.py `Combat.update` for every room with a world: where the
+    /// bodies are, the bots' rockets, the players' projectiles, the hits on
+    /// players, the Biotic Fields' heals and the messages between bodies,
+    /// then the players' respawns and their spawn voice lines.
+    fn update_combat(&mut self, tick: u32, now: Duration) {
+        let ids: Vec<MatchId> = self
+            .rooms
+            .iter()
+            .filter(|(_, room)| room.world.is_some())
+            .map(|(&id, _)| id)
+            .collect();
+        for id in ids {
+            let bot_hits = {
+                let Room { players, world, .. } = self.rooms.get_mut(&id).expect("room");
+                let world = world.as_mut().expect("room with a world");
+                let targets: Vec<_> = room_peers(&mut self.peers, &self.seats, id, players.len())
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(slot, peer)| {
+                        peer?
+                            .world
+                            .combat_target(&world.scene, players[slot].info.team)
+                    })
+                    .collect();
+                let combat = world
+                    .combat
+                    .get_or_insert_with(|| Combat::new(&world.scene));
+                combat.record_poses(&world.scene, &targets, tick);
+                let context = ShotContext {
+                    quanta: RETAIL_QUANTA,
+                    tick,
+                    now,
+                };
+                combat
+                    .step_bot_projectiles(&mut world.scene, context)
+                    .unwrap_or_default()
+            };
+            self.deliver_bot_hits(id, None, bot_hits);
+            let mut struck = Vec::new();
+            for (&connection, peer) in &mut self.peers {
+                let (match_id, slot) = self.seats[&connection];
+                if match_id != id {
+                    continue;
+                }
+                let room = self.rooms.get_mut(&id).expect("room");
+                let player = &room.players[slot];
+                let team = player.info.team;
+                let context = ShotContext {
+                    quanta: player.quanta(),
+                    tick,
+                    now,
+                };
+                let world = room.world.as_mut().expect("room with a world");
+                let mut hits = Vec::new();
+                let _ = peer.world.advance_projectiles(tick, |source, flight| {
+                    let combat = world
+                        .combat
+                        .get_or_insert_with(|| Combat::new(&world.scene));
+                    let shooter = Shooter {
+                        source,
+                        team,
+                        bot: false,
+                    };
+                    combat.step_projectile(&mut world.scene, shooter, flight, context, &mut hits)
+                });
+                struck.push((connection, hits));
+            }
+            for (connection, hits) in struck {
+                self.deliver_bot_hits(id, Some(connection), hits);
+            }
+            self.resolve_player_hits(id, tick, now, Some(Vec::new()));
+            let connections: Vec<u32> = self
+                .peers
+                .keys()
+                .copied()
+                .filter(|connection| self.seats[connection].0 == id)
+                .collect();
+            for connection in connections {
+                let retained = self.retained_elsewhere(connection, now);
+                let slot = self.seats[&connection].1;
+                let room = &self.rooms[&id];
+                let world = room.world.as_ref().expect("room with a world");
+                let viewer = room.appearance(slot).expect("seated player");
+                let peer = self.peers.get_mut(&connection).expect("room peer");
+                peer.world.retain_elsewhere(retained);
+                if let Err(error) = peer.world.respawn_due(
+                    &world.scene,
+                    &viewer,
+                    tick,
+                    now,
+                    room.players[slot].quanta(),
+                ) {
+                    eprintln!("{:08X} could not respawn ({error})", viewer.entity);
+                }
+                peer.world.expire_bark(now);
+            }
+        }
     }
 
     fn send_home(&mut self, connection: u32, now: Duration) {
@@ -1069,30 +1352,7 @@ impl State {
                     world.scene.step_bots(tick);
                 }
             }
-            for (&connection, peer) in &mut self.peers {
-                let (id, slot) = self.seats[&connection];
-                let room = self.rooms.get_mut(&id).expect("admitted room");
-                let Some(world) = &mut room.world else {
-                    continue;
-                };
-                let player = &room.players[slot];
-                let context = ShotContext {
-                    team: player.info.team,
-                    quanta: player.quanta(),
-                    tick,
-                    now,
-                };
-                let mut hits = Vec::new();
-                let _ = peer.world.advance_projectiles(tick, |source, flight| {
-                    let combat = world
-                        .combat
-                        .get_or_insert_with(|| Combat::new(&world.scene));
-                    combat.step_projectile(&mut world.scene, source, flight, context, &mut hits)
-                });
-                for hit in hits {
-                    peer.bot_hit(hit);
-                }
-            }
+            self.update_combat(tick, now);
             for (&id, room) in &mut self.rooms {
                 if let Some(world) = &mut room.world {
                     if let Some(combat) = &mut world.combat {
@@ -1101,7 +1361,6 @@ impl State {
                                 spawned.insert(id, replacements);
                             }
                         }
-                        combat.record_poses(&world.scene, tick);
                     }
                 }
             }
@@ -1127,6 +1386,11 @@ impl State {
                         .cloned()
                         .map(|bot| (now.saturating_add(SILENCE_TIME), bot)),
                 );
+            }
+            if let Some(world) = room.world.as_ref().filter(|_| !drain) {
+                let hero = peer.world.current_hero();
+                peer.world
+                    .send_board(now, || board(room, slot, &world.scene, hero));
             }
         }
         if !drain {

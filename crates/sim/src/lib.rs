@@ -19,3 +19,4 @@ pub mod projectiles;
 pub mod replication;
 pub mod scene;
 pub mod scene_assets;
+pub mod voice;

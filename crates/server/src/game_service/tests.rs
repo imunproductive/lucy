@@ -434,6 +434,7 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
             card: PlayerCard::default(),
             entity: player_entity(slot),
             gone: false,
+            stats: PlayerStats::default(),
         })
         .collect();
     state.rooms.insert(

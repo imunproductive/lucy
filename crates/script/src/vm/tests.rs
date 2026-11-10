@@ -3351,6 +3351,140 @@ fn move_to_exposes_only_a_fixed_target_while_active() {
     }
 }
 
+/// State 0 of `class` with its begin, finish, abort and end plugs setting
+/// entity variables 100 to 1, 101 to 2, 101 to 3 and 102 to 4; nothing begins it.
+fn external_state_fixture(class: &str, mut fields: Json) -> Store {
+    fields["m_onBeginPlug"] = plug(&[(2, "m_inPlug")], &[]);
+    fields["m_onFinishedPlug"] = plug(&[(3, "m_inPlug")], &[]);
+    fields["m_onAbortPlug"] = plug(&[(4, "m_inPlug")], &[]);
+    fields["m_onEndPlug"] = plug(&[(5, "m_inPlug")], &[]);
+    Arc::new(store(vec![graph(
+        42,
+        vec![
+            entry(&[]),
+            node(1, class, Some(0), fields),
+            set_entity(2, 100, json!(1)),
+            set_entity(3, 101, json!(2)),
+            set_entity(4, 101, json!(3)),
+            set_entity(5, 102, json!(4)),
+        ],
+        json!([1]),
+        json!([0]),
+    )]))
+}
+
+#[test]
+fn external_begin_and_end_run_the_state_and_its_plugs_now() {
+    let mut component = start(
+        external_state_fixture("STU_40E05F6B", json!({})),
+        100,
+        &mut EmptyWorld,
+    );
+    let value =
+        |component: &Component, id| component.snapshot().unwrap().variables.get(&id).cloned();
+    assert!(active(component.snapshot().unwrap(), 1).is_empty());
+    for (instance, state) in [(1, 1), (2, 0)] {
+        assert!(
+            !component
+                .begin_state(instance, state, &mut EmptyWorld)
+                .unwrap()
+        );
+    }
+    assert!(!component.end_state(1, 0, true, &mut EmptyWorld).unwrap());
+    assert!(component.begin_state(1, 0, &mut EmptyWorld).unwrap());
+    let snapshot = component.snapshot().unwrap();
+    assert!(
+        snapshot.initialization_complete(),
+        "{:?}",
+        snapshot.diagnostics
+    );
+    assert_eq!(active(snapshot, 1), [0]);
+    assert_eq!(snapshot.instances[&1].states[&0].activation, 1);
+    assert_eq!(value(&component, 100), Some(Value::Integer(1)));
+    // Already on: nothing happens.
+    assert!(!component.begin_state(1, 0, &mut EmptyWorld).unwrap());
+    assert!(component.end_state(1, 0, true, &mut EmptyWorld).unwrap());
+    assert!(active(component.snapshot().unwrap(), 1).is_empty());
+    assert_eq!(value(&component, 101), Some(Value::Integer(2)));
+    assert_eq!(value(&component, 102), Some(Value::Integer(4)));
+    assert!(!component.end_state(1, 0, true, &mut EmptyWorld).unwrap());
+    // An abort follows the abort plug.
+    assert!(component.begin_state(1, 0, &mut EmptyWorld).unwrap());
+    assert!(component.end_state(1, 0, false, &mut EmptyWorld).unwrap());
+    assert_eq!(value(&component, 101), Some(Value::Integer(3)));
+    assert_eq!(
+        component.snapshot().unwrap().instances[&1].states[&0].activation,
+        2
+    );
+}
+
+#[test]
+fn external_begin_leaves_events_it_queues_for_the_next_advance() {
+    // A vibration queues its own finish at the current clock when it begins.
+    let mut component = start(
+        external_state_fixture("STUStatescriptStateGamePadVibration", json!({})),
+        100,
+        &mut EmptyWorld,
+    );
+    assert!(component.begin_state(1, 0, &mut EmptyWorld).unwrap());
+    assert_eq!(active(component.snapshot().unwrap(), 1), [0]);
+    component.advance_frame(101, &mut EmptyWorld).unwrap();
+    let snapshot = component.snapshot().unwrap();
+    assert!(active(snapshot, 1).is_empty());
+    assert_eq!(snapshot.variables[&101], Value::Integer(2));
+}
+
+#[test]
+fn finished_movement_ends_the_move_to_state_at_the_next_advance() {
+    let move_to = || {
+        external_state_fixture(
+            "STUStatescriptStateMoveTo",
+            json!({
+                "m_B060F688":0,
+                "m_speed":{"$":"STUConfigVarFloat","m_value":5.5},
+                "m_865F3D01":{"$":"STUConfigVarVec3","m_value":{"X":1,"Y":2,"Z":-3}},
+            }),
+        )
+    };
+    for (arrived, plug_value) in [(true, 2), (false, 3)] {
+        let mut component = start(move_to(), 100, &mut EmptyWorld);
+        assert!(component.begin_state(1, 0, &mut EmptyWorld).unwrap());
+        assert_eq!(component.move_requests().len(), 1);
+        let delay = frame_start(101) - component.now_ms();
+        component
+            .finish_move(1, 0, arrived, delay, &mut EmptyWorld)
+            .unwrap();
+        let snapshot = component.snapshot().unwrap();
+        assert_eq!(active(snapshot, 1), [0]);
+        // A finish request is a pending timer of the owner frame; an abort is not.
+        let expected = if arrived {
+            vec![PendingTimer {
+                due_ms: frame_start(101),
+                raw_state: 0,
+                finish: true,
+                parameter: 0,
+            }]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(
+            snapshot.pending_timers.get(&1).cloned().unwrap_or_default(),
+            expected
+        );
+        component.advance_frame(101, &mut EmptyWorld).unwrap();
+        let snapshot = component.snapshot().unwrap();
+        assert!(active(snapshot, 1).is_empty());
+        assert_eq!(snapshot.variables[&101], Value::Integer(plug_value));
+        assert!(component.move_requests().is_empty());
+    }
+    // A missing instance takes no request.
+    let mut component = start(move_to(), 100, &mut EmptyWorld);
+    component
+        .finish_move(7, 0, true, 0, &mut EmptyWorld)
+        .unwrap();
+    assert_eq!(component.next_due_ms(), None);
+}
+
 #[test]
 fn cycle_index_keeps_the_first_candidate_its_condition_accepts() {
     // The candidate is every parameter the condition reads: candidate < 2.

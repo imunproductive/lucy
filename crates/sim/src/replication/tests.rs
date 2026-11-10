@@ -277,6 +277,7 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
             RETAIL_QUANTA,
             owner | 1,
             (hero, SkinTheme::default()),
+            true,
         )
         .unwrap();
     // The stock Soldier: 76 starts his authored owner script, so the gap
@@ -707,7 +708,7 @@ fn body_script_retries_frozen_initial_frames_and_ignores_old_generation_reports(
                 .body_script
                 .as_mut()
                 .unwrap()
-                .advance(mover, command, BodyStep::Posed)
+                .advance(mover, command, BodyStep::Posed, false)
                 .unwrap();
         })
         .unwrap();
@@ -739,7 +740,7 @@ fn body_script_retries_frozen_initial_frames_and_ignores_old_generation_reports(
                 .body_script
                 .as_mut()
                 .unwrap()
-                .advance(mover, command, BodyStep::Posed)
+                .advance(mover, command, BodyStep::Posed, false)
                 .unwrap();
         })
         .unwrap();
@@ -770,7 +771,7 @@ fn body_script_retries_frozen_initial_frames_and_ignores_old_generation_reports(
                 .body_script
                 .as_mut()
                 .unwrap()
-                .advance(mover, command, BodyStep::Posed)
+                .advance(mover, command, BodyStep::Posed, false)
                 .unwrap();
         })
         .unwrap();
@@ -915,6 +916,7 @@ fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
             RETAIL_QUANTA,
             OWNER | 1,
             (hero, SkinTheme::default()),
+            true,
         )
         .unwrap();
     let tick = FIRST_TICK + 1;

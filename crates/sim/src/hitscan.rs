@@ -51,6 +51,15 @@ impl ViewFrame {
         }
     }
 
+    /// The poses of a world tick, as a bot's shot sees them (combat.py
+    /// `_shoot`: `view_tick = self.tick` without a command).
+    pub fn at(tick: u32) -> Self {
+        Self {
+            command: tick,
+            rewind: 0.0,
+        }
+    }
+
     fn distance_to(self, frame: u32) -> f64 {
         f64::from(frame.wrapping_sub(self.command) as i32) + self.rewind
     }
@@ -146,6 +155,17 @@ impl HitscanShot {
         Self {
             origin,
             direction: aim_direction(command),
+            reach: if reach == 0.0 { DEFAULT_REACH } else { reach },
+            hit,
+        }
+    }
+
+    /// A shot along a direction from an origin (a bot's volley: combat.py
+    /// `_shoot` aims it from the bot's yaw).
+    pub fn along(origin: Vec3, direction: Vec3, reach: f64, hit: HitDefinition) -> Self {
+        Self {
+            origin,
+            direction,
             reach: if reach == 0.0 { DEFAULT_REACH } else { reach },
             hit,
         }
