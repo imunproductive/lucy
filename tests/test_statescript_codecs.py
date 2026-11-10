@@ -1,4 +1,4 @@
-"""The client's statescript codec table (data/statescript_codecs_174.json, read in the client code by
+"""The client's statescript codec table (crates/fixed/data/statescript_codecs.json, read in the client code by
 research/ida/extract_statescript_codecs.py) and the encoder against it: every payload the encoder writes must read
 back by the table, whole and with the same values."""
 

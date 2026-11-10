@@ -19,7 +19,7 @@ use std::{
 use crate::{
     game_service::GameService,
     practice::{self, SoloPracticeHandoff},
-    runtime::{BNET_DESCRIPTORS, missing_runtime_files},
+    runtime::missing_runtime_files,
     server::dashboard::{Dashboard, DashboardParts},
 };
 use orpheus_bnet::{
@@ -92,7 +92,7 @@ impl Server {
     /// Validate the data before starting the loopback listeners. This entry
     /// point serves the base graph bundle and contains no client launcher.
     pub fn start(config: ServerConfig) -> io::Result<Self> {
-        let missing = missing_runtime_files(&config.runtime, true, true);
+        let missing = missing_runtime_files(&config.runtime, true);
         if !missing.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -100,13 +100,10 @@ impl Server {
             ));
         }
         let data = config.runtime.join("data");
-        let signing_key = fs::read(data.join("lobby_state_blob.key"))?
-            .try_into()
-            .map_err(|_| invalid("lobby signing input must be 64 bytes"))?;
-        let schemas = Schemas::load(data.join("schemas_174.json")).map_err(invalid)?;
-        let game_schemas =
-            Arc::new(Schemas::load(data.join("game_schemas_174.json")).map_err(invalid)?);
-        let templates = RetailTemplates::load(data.join("retail_templates.json"))?;
+        let signing_key = *orpheus_fixed::LOBBY_STATE_BLOB_KEY;
+        let schemas = Schemas::lobby();
+        let game_schemas = Arc::new(Schemas::game());
+        let templates = RetailTemplates::captured();
         let items = Arc::new(ItemDb::load(&data)?);
         let collection = Collection::new(&templates, Arc::clone(&items))?;
         let presence = Presence::new(&templates)?;
@@ -122,8 +119,7 @@ impl Server {
                 "the native Practice Range requires the base graph bundle",
             ));
         }
-        let protocol =
-            Arc::new(Protocol::load(config.runtime.join(BNET_DESCRIPTORS)).map_err(invalid)?);
+        let protocol = Arc::new(Protocol::client());
         let template = config.data.join("profile.json");
         let accounts = Accounts::new(config.data.join("profiles"), &template)?;
         let local = local_account(
@@ -511,10 +507,6 @@ fn addr(port: u16) -> SocketAddrV4 {
     SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)
 }
 
-fn invalid(error: impl std::fmt::Display) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,10 +595,10 @@ mod tests {
         }
         rust.save().unwrap();
         fs::write(state.path().join("default_account.txt"), "RUST\n").unwrap();
-        let schemas = Schemas::load(runtime.join("data/schemas_174.json")).unwrap();
-        let game_schemas = Schemas::load(runtime.join("data/game_schemas_174.json")).unwrap();
+        let schemas = Schemas::lobby();
+        let game_schemas = Schemas::game();
         let collection = Collection::new(
-            &RetailTemplates::load(runtime.join("data/retail_templates.json")).unwrap(),
+            &RetailTemplates::captured(),
             Arc::new(ItemDb::load(&runtime.join("data")).unwrap()),
         )
         .unwrap();

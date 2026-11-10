@@ -24,9 +24,10 @@ SOURCE_FILES = ("ow174/__init__.py", "ow174/paths.py", "requirements.txt")
 DATA_FILES = (
     "ai_spawners_174.json", "collision_keys_174.json", "collision_props_174.json",
     "game_graphs_174.json.gz", "game_heroes_174.json", "game_maps_174.json",
-    "game_movers_174.json", "game_schemas_174.json", "game_stats_174.json",
-    "schemas_174.json", "statescript_codecs_174.json",
+    "game_movers_174.json", "game_stats_174.json",
 )
+FIXED_FILES = ("crates/fixed/data/game_schemas.json", "crates/fixed/data/lobby_schemas.json",
+               "crates/fixed/data/statescript_codecs.json")
 DEPENDENCIES = ("cryptography", "protobuf", "websockets")
 _RUNTIME_FIELDS = {
     "implementation", "version", "implementation_version", "cache_tag",
@@ -237,7 +238,7 @@ def capture_manifest(
     root, data_dir = Path(root), Path(data_dir)
     if type(configuration) is not dict:
         raise ManifestError("configuration must be an explicitly supplied mapping")
-    files = [_file(root, name, name) for name in SOURCE_FILES]
+    files = [_file(root, name, name) for name in SOURCE_FILES + FIXED_FILES]
     for package in SOURCE_PACKAGES:
         folder = root / package
         if folder.is_symlink() or not folder.is_dir() or not (folder / "__init__.py").is_file():

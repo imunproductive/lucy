@@ -231,7 +231,7 @@ pub struct Celebrations {
 impl Celebrations {
     pub fn load(data_dir: &Path, templates: &RetailTemplates) -> io::Result<Self> {
         Self::from_readers(
-            BufReader::new(File::open(data_dir.join("resource_keys_174.json"))?),
+            orpheus_fixed::RESOURCE_KEYS.as_bytes(),
             BufReader::new(File::open(data_dir.join("extracted_maps.json"))?),
             templates,
         )
@@ -722,10 +722,10 @@ mod tests {
     #[ignore = "requires the external 104319 resource catalog and lobby templates"]
     fn login_messages_match_python_for_events_challenges_and_content_key_order() {
         let data = orpheus_testkit::runtime_dir().join("data");
-        let templates = RetailTemplates::load(data.join("retail_templates.json")).unwrap();
+        let templates = RetailTemplates::captured();
         let celebrations = Celebrations::load(&data, &templates).unwrap();
         let items = ItemDb::load(&data).unwrap();
-        let schemas = Schemas::load(data.join("schemas_174.json")).unwrap();
+        let schemas = Schemas::lobby();
         let empty = Profile {
             events: Vec::new(),
             server_date: "2022-09-16".into(),

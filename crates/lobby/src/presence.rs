@@ -417,11 +417,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
     fn own_and_friend_presence_match_python_wire_values() {
-        let runtime = orpheus_testkit::runtime_dir().join("data");
-        let schemas = Schemas::load(runtime.join("schemas_174.json")).unwrap();
-        let templates = RetailTemplates::load(runtime.join("retail_templates.json")).unwrap();
+        let schemas = Schemas::lobby();
+        let templates = RetailTemplates::captured();
         let presence = Presence::new(&templates).unwrap();
         let profile = Profile {
             player_name: "Local Tester".into(),

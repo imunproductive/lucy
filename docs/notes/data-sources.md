@@ -56,13 +56,25 @@ The fixed data most likely came from client dumps and traffic captured while the
 - The graph bundle for 32 hero bodies and 373 graphs has the normalized SHA-256 `febfbcc8d406ea59f76b10029cc825b765b49ece29c8020b9ba7929b3671104f`. Graph `0F9C` is missing. Graphs `288B`, `05AD` and `0D24` have input plugs with unknown ownership; their targets are not guessed.
 - Practice Range bot bodies: `003` indexes `1403`, `143E`, `146E`, `14A9`, `14D2`, `14ED`.
 
+## Fixed data (`crates/fixed/data`)
+
+Committed and embedded in the binary. Taken from LizRollin's repository (MIT) at `9f8f3bcb5eccab6fb7738bee3c2371fcf0623f29` and renamed:
+
+| File | Source in that commit | SHA-256 |
+| --- | --- | --- |
+| `lobby_schemas.json` | `data/schemas_174.json` | `bd0d752bc365df93ab35b3749add3e34c690d06b33ba6ea9293d4589cc2cff53` |
+| `game_schemas.json` | `data/game_schemas_174.json` | `904f77bd3d5fc18a5348aa32d5274c2015454aff274c13c7864a24306dccc12d` |
+| `statescript_codecs.json` | `data/statescript_codecs_174.json` | `49834e2c3b2a9761011be0b17d5b742e784a148090ed6f0430771bb7e6bea019` |
+| `bnet_descriptors.pb` | `ow174/bnet/descriptors.pb` | `c20cac09537c013ef359d3c47aa39b178c51c3efe2258308ca0b1e8ee8f0fb2d` |
+| `lobby_state_blob.key` | `BLOB_KEY` in `ow174/jam/handshake.py` | `ab024361c5acd29e3a45548cc675002b762895753fe6dc7613335b1f0ff033b8` |
+| `retail_templates.json` | `data/retail_templates.json` | `667cf09afd5a2b889b4c95e7957e0d2d90d5a7a711cb527fc8159bed2c5602e5` |
+| `resource_keys.json` | `data/resource_keys_174.json` | `47084948c33f4d2437f0f9c6b452b10a014beedd3a99cef8c3ee3a72e8bd7ba2` |
+
 ## Where a runtime pack comes from
 
-The upstream ORPHEUS repository never committed the pack's files: its `data/` held only `README.md` and replays in all 204 commits, and `prepare_server_runtime` only copies files from a private "prepared checkout". LizRollin's repository (MIT) at `9f8f3bcb5eccab6fb7738bee3c2371fcf0623f29` commits all of them in `data/` and `ow174/bnet/descriptors.pb`, except two:
-- `lobby_state_blob.key`: the 64 bytes of `BLOB_KEY` in that commit's `ow174/jam/handshake.py`;
-- the collision caches: `tools/build_collision.py <map>` with `ORPHEUS_RUNTIME_DIR` set to the pack builds them from the install. `0688.col` built this way matches the recorded SHA-256 below.
+The upstream ORPHEUS repository never committed the pack's files: its `data/` held only `README.md` and replays in all 204 commits, and `prepare_server_runtime` only copies files from a private "prepared checkout". The pack now holds only game data, which phase 6 moves to CASC; the fixed data is embedded. LizRollin's repository commits all of its files in `data/`, except the collision caches. The collision caches: `tools/build_collision.py <map>` with `ORPHEUS_RUNTIME_DIR` set to the pack builds them from the install. `0688.col` built this way matches the recorded SHA-256 below.
 
-Differences from the upstream pack, found by `just test-runtime` (61 of 62 pass): LizRollin's graph bundle (373 graphs, 32 bodies, `0F9C` missing) lacks the Practice Range NPC graph `0B92`, so the ignored VM test `firing_placement_reset_and_timer_boundaries_match_python` fails. With it, the server logs at start that the Practice Range Soldier owner statescript is unavailable (graph `0x4B`, node 21, unsupported config `STU_AC829876`). Whether the upstream bundle shows the same is unknown.
+Differences from the upstream pack, found by `just test-runtime`: LizRollin's graph bundle (373 graphs, 32 bodies, `0F9C` missing) lacks the Practice Range NPC graph `0B92`, so the ignored VM test `firing_placement_reset_and_timer_boundaries_match_python` fails. With it, the server logs at start that the Practice Range Soldier owner statescript is unavailable (graph `0x4B`, node 21, unsupported config `STU_AC829876`). Whether the upstream bundle shows the same is unknown.
 
 ## Collision caches
 

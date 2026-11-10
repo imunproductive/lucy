@@ -6,8 +6,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     error::Error,
-    fmt, fs, io,
-    path::Path,
+    fmt, io,
 };
 
 use indexmap::IndexMap;
@@ -123,8 +122,9 @@ pub struct CodecTable {
 }
 
 impl CodecTable {
-    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
-        Self::from_json(&fs::read_to_string(path)?)
+    /// The client's codec table.
+    pub fn client() -> Self {
+        Self::from_json(orpheus_fixed::STATESCRIPT_CODECS).expect("the embedded codec table parses")
     }
 
     pub fn from_json(text: &str) -> io::Result<Self> {
@@ -982,12 +982,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 state codec table"]
     fn actual_payloads_match_python_in_owner_and_both_observer_modes() {
         use sha2::{Digest, Sha256};
 
-        let root = orpheus_testkit::runtime_dir();
-        let table = CodecTable::load(root.join("data/statescript_codecs_174.json")).unwrap();
+        let table = CodecTable::client();
         assert_eq!(table.classes().count(), 598);
         assert_eq!(
             table.classes().filter(|codec| codec.verified()).count(),

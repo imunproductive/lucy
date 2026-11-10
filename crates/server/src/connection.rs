@@ -532,12 +532,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 handoff schema"]
     fn encoded_lobby_ticket_authenticates_a_loopback_udp_peer() {
         use orpheus_lobby::handoff::{HANDOFF, HANDOFF_MESSAGE};
 
-        let runtime = orpheus_testkit::runtime_dir();
-        let schemas = Schemas::load(runtime.join("data/schemas_174.json")).unwrap();
+        let schemas = Schemas::lobby();
         let server_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         let client_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         for socket in [&server_socket, &client_socket] {

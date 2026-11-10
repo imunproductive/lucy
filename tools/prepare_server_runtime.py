@@ -23,7 +23,6 @@ def prepare(source: Path, destination: Path, maps: list[str], *, game_graphs: Pa
     inputs = {f"data/{name}": source / "data" / name for name in LOBBY_RUNTIME_DATA + MATCH_RUNTIME_DATA}
     if game_graphs is not None:
         inputs["data/game_graphs_174.json.gz"] = game_graphs
-    inputs["bnet/descriptors.pb"] = source / "ow174" / "bnet" / "descriptors.pb"
     cache = source / "cache" / "collision"
     if maps:
         if any(not re.fullmatch("[0-9a-fA-F]{4,8}", value) for value in maps):

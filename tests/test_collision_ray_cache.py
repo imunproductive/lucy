@@ -156,9 +156,6 @@ class RuntimePreparationTests(unittest.TestCase):
             data.mkdir(parents=True)
             for name in LOBBY_RUNTIME_DATA + MATCH_RUNTIME_DATA:
                 (data / name).write_bytes(b"synthetic runtime data")
-            descriptor = source / "ow174" / "bnet" / "descriptors.pb"
-            descriptor.parent.mkdir(parents=True)
-            descriptor.write_bytes(b"synthetic descriptor")
             cache = source / "cache" / "collision"
             cache.mkdir(parents=True)
             for name, content in (selected | unselected).items():

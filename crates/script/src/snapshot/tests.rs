@@ -1268,7 +1268,7 @@ fn actual_shared_ui_graph_baselines_match_python() {
 
     let root = orpheus_testkit::runtime_dir();
     let graphs = GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap();
-    let codecs = CodecTable::load(root.join("data/statescript_codecs_174.json")).unwrap();
+    let codecs = CodecTable::client();
     let encoder = SnapshotEncoder::new(&graphs, &codecs);
     for (graph, expected_owner, expected_observer, delta_bits, expected_delta) in [
         (

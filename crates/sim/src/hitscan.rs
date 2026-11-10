@@ -407,7 +407,7 @@ mod tests {
             .unwrap()
             .prepare(GameMap::practice_range())
             .unwrap();
-        let schemas = Schemas::load(root.join("data/game_schemas_174.json")).unwrap();
+        let schemas = Schemas::game();
         let bot = scene.bots().iter().find(|bot| bot.spawn.team == 1).unwrap();
         let target = scene.bot_target(bot);
         let trace = |yaw, distance, height, frame| {

@@ -377,8 +377,8 @@ mod tests {
     #[ignore = "requires an authorized 104319 Arcade catalog in ORPHEUS_RUNTIME_DIR"]
     fn arcade_and_pass_wire_bytes_match_python_across_events_seasons_and_dates() {
         let data = orpheus_testkit::runtime_dir().join("data");
-        let schemas = Schemas::load(data.join("schemas_174.json")).unwrap();
-        let templates = RetailTemplates::load(data.join("retail_templates.json")).unwrap();
+        let schemas = Schemas::lobby();
+        let templates = RetailTemplates::captured();
         let ranked = Ranked::new(&templates).unwrap();
         let arcade = Arcade::load(data.join("arcade_cards_174.json"), &templates).unwrap();
         assert!(arcade.has_roles(CARD_BASE | 0xed));

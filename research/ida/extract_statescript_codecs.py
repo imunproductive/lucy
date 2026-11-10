@@ -1,5 +1,5 @@
 """Statescript payload codecs of the 1.74 PC client (build 104319), read from the client code. An IDA script
-that writes data/statescript_codecs_174.json: every statescript state class the client registers, the class it
+that writes crates/fixed/data/statescript_codecs.json: every statescript state class the client registers, the class it
 builds for each node class, and what that class reads from a frame (its property block and its class reader).
 
 Run it in IDA with a dump of the client's runtime image (base 0x7FF788F10000) open:
@@ -72,7 +72,7 @@ BLOCK_OFFSETS = {  # block function -> the state sub-object it lists (lea rax, [
 }
 
 
-# --- layout ops (data/statescript_codecs_174.json "layout"; read by ow174/game/script/codecs.py) -----------
+# --- layout ops (crates/fixed/data/statescript_codecs.json "layout"; read by ow174/game/script/codecs.py) -----------
 
 
 def bits(f, n=1):
@@ -968,7 +968,7 @@ def main():
     script = Path(globals().get("__file__") or "research/ida/extract_statescript_codecs.py")
     repo = script.resolve().parents[2]
     table = build(repo)
-    out = repo / "data" / "statescript_codecs_174.json"
+    out = repo / "crates" / "fixed" / "data" / "statescript_codecs.json"
     out.write_text(json.dumps(table, indent=1) + "\n", encoding="utf-8")
     counts = f"{len(table['records'])} state records, {len(table['classes'])} state classes"
     print(f"{out}: {counts}, {table['counts']}, problems {len(table['problems'])}")

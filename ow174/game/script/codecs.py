@@ -1,5 +1,5 @@
 """What the 1.74 client reads for each statescript state class in a frame, from
-data/statescript_codecs_174.json (made in IDA by research/ida/extract_statescript_codecs.py from the client code).
+crates/fixed/data/statescript_codecs.json (made in IDA by research/ida/extract_statescript_codecs.py from the client code).
 
 Per state class (STU hash): the class the client builds for it (registry winner), whether it is an StEC class
 (X then StAc, else A), its codec name and the layout of its payload: the property block's fields, then the
@@ -17,9 +17,9 @@ import struct
 from dataclasses import dataclass
 from functools import cache
 
-from ow174.paths import DATA_DIR
+from ow174.paths import STATESCRIPT_CODECS
 
-CODECS_PATH = DATA_DIR / "statescript_codecs_174.json"
+CODECS_PATH = STATESCRIPT_CODECS
 
 
 @dataclass(frozen=True)

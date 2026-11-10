@@ -290,7 +290,7 @@ class Stream:
 #   bound instance's m_statesBitCount bits), output slot and its priority.
 
 # What the client reads for each state class comes from its codec table (ow174/game/script/codecs.py,
-# data/statescript_codecs_174.json, read in the client code): whether it is an StEC class and its codec. The
+# crates/fixed/data/statescript_codecs.json, read in the client code): whether it is an StEC class and its codec. The
 # writers below cover these codecs; tests/test_statescript_codecs.py reads every writer back with the table.
 WRITERS = {
     "none", "switch", "stack", "anim", "chase", "button", "ability", "targets", "volley", "subscript",

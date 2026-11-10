@@ -18,11 +18,11 @@ import logging
 
 from ow174.game.bits import BitReader, BitWriter
 from ow174.jam.codec import DecodeError, Schemas
-from ow174.paths import DATA_DIR
+from ow174.paths import GAME_SCHEMAS
 
 log = logging.getLogger("ow174.game")
 
-GAME_SCHEMA_PATH = DATA_DIR / "game_schemas_174.json"
+GAME_SCHEMA_PATH = GAME_SCHEMAS
 MAX_PER_KIND = 15  # the counts are 4 bits
 
 # The table, in index order: (protocol CRC, first message id).

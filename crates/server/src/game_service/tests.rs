@@ -213,10 +213,8 @@ fn worker_serves_a_match_seat_and_retries_before_map_entry() {
 }
 
 #[test]
-#[ignore = "requires the separately prepared 104319 game schemas"]
 fn worker_serves_loading_using_the_retail_schemas() {
-    let root = orpheus_testkit::runtime_dir();
-    let schemas = Schemas::load(root.join("data/game_schemas_174.json")).unwrap();
+    let schemas = Schemas::game();
     exercise_loading(schemas);
 }
 
@@ -544,12 +542,12 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     const CONTROLLER: u32 = 0xa000_0100;
     let runtime = orpheus_testkit::runtime_dir();
     let data = runtime.join("data");
-    let schemas = Arc::new(Schemas::load(data.join("game_schemas_174.json")).unwrap());
-    let lobby = Schemas::load(data.join("schemas_174.json")).unwrap();
+    let schemas = Arc::new(Schemas::game());
+    let lobby = Schemas::lobby();
     let assets = SceneAssets::load(runtime).unwrap();
     let scripted_bots = assets.graphs().entity_body(0x0400_0000_0000_143e).is_some();
     let collection = Collection::new(
-        &RetailTemplates::load(data.join("retail_templates.json")).unwrap(),
+        &RetailTemplates::captured(),
         Arc::new(ItemDb::load(&data).unwrap()),
     )
     .unwrap();

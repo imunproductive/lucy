@@ -226,11 +226,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires authorized 104319 lobby and game schemas in ORPHEUS_RUNTIME_DIR"]
     fn practice_request_hands_off_an_authenticated_udp_seat_and_releases_failed_sends() {
-        let data = orpheus_testkit::runtime_dir().join("data");
-        let lobby = Schemas::load(data.join("schemas_174.json")).unwrap();
-        let game_schemas = Arc::new(Schemas::load(data.join("game_schemas_174.json")).unwrap());
+        let lobby = Schemas::lobby();
+        let game_schemas = Arc::new(Schemas::game());
         let mut game = GameService::bind("127.0.0.1:0".parse().unwrap(), game_schemas).unwrap();
         let fields = lobby
             .decode(GAME_REQUEST, CREATE_GAME, REQUEST, true)

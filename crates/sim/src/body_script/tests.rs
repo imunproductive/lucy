@@ -825,7 +825,7 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
     let tips = &snapshot.instances[&4].states[&0];
     assert!(tips.active);
     assert_eq!(tips.kind, StateKind::Plain);
-    let codecs = CodecTable::load(root.join("data/statescript_codecs_174.json")).unwrap();
+    let codecs = CodecTable::client();
     for mode in [
         PayloadMode::Remote { full: true },
         PayloadMode::Owner {

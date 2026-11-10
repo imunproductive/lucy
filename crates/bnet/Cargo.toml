@@ -8,6 +8,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+orpheus-fixed.workspace = true
 orpheus-wire.workspace = true
 prost.workspace = true
 prost-reflect.workspace = true

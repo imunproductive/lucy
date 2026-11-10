@@ -99,11 +99,7 @@ impl SceneAssets {
         let runtime = runtime.as_ref();
         let data = runtime.join("data");
         let graphs = Arc::new(GraphStore::load(data.join("game_graphs_174.json.gz"))?);
-        let codecs = match CodecTable::load(data.join("statescript_codecs_174.json")) {
-            Ok(table) => Some(Arc::new(table)),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error),
-        };
+        let codecs = Some(Arc::new(CodecTable::client()));
         let pools = Arc::new(PoolCatalog::from_graphs(&graphs)?);
         Ok(Self {
             collision: runtime.join("collision"),

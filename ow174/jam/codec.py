@@ -1,6 +1,6 @@
 """JAM message codec driven by the client's own message schemas.
 
-data/schemas_174.json is extracted from a running 1.74 client by tools/dump_schemas.py. It maps a
+crates/fixed/data/lobby_schemas.json is extracted from a running 1.74 client by tools/dump_schemas.py. It maps a
 protocol CRC (hex) to its messages, and a message id to its list of fields. A field is
 {type, off, size, count, array, fields?}. Decoded values are dicts keyed by the field's in-memory
 offset ("+0x78"), with nested dicts for structs and lists for arrays.
@@ -24,9 +24,9 @@ import json
 import struct
 from pathlib import Path
 
-from ow174.paths import DATA_DIR
+from ow174.paths import LOBBY_SCHEMAS
 
-SCHEMA_PATH = DATA_DIR / "schemas_174.json"
+SCHEMA_PATH = LOBBY_SCHEMAS
 
 # Frames of these protocols carry a u32 between the protocol byte and the message id. The client
 # registers them with header flag 8 (read live: registration +8 = 0xA, others 0x2) and reads the u32

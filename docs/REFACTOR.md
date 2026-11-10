@@ -63,11 +63,11 @@ ORPHEUS/
 │  ├─ assets/                  # game install -> content, graphs, collision; cache     (phase 6)
 │  ├─ launcher/                # Windows: find, start and inject the client             (phase 5)
 │  ├─ relay/                   # Windows cdylib: owwfd_relay.dll                        (phase 5)
+│  ├─ fixed/                   # fixed build data, committed and embedded (section 7)
 │  └─ testkit/                 # fixtures, synthetic vectors, test client, gated helpers
 ├─ apps/orpheus/               # the single binary
 ├─ justfile                    # check, lint, test, test-game, build, ...
 ├─ web/dashboard/              # existing JS/HTML/CSS, embedded into the binary
-├─ fixed/                      # fixed build data, if decision D1 puts it in the repo (section 7)
 ├─ research/ida/               # extract_statescript_codecs.py
 ├─ docs/
 │  ├─ notes/                   # facts saved from the inherited docs (phase D)
@@ -93,6 +93,7 @@ During the transition, `ow174/`, `tests/*.py`, `tools/`, `relay/*.cpp`, `require
 | `lobby` | Lobby services | `accounts`, `collection`, `retail_templates`, `battle_tag_query`, `match_handoff`, `lobby_*` except `lobby_practice` | 8,015 |
 | `server` | Wires everything into running services | `server`, `game_service`, `game_clock` (the `GameClock` type), `game_connection`, `game_ingress`, `lobby_practice`, `runtime` with `runtime/target_tags` (until phase 8) | ~5,500 |
 | `casc`, `stu`, `assets` | Reading game data from the install | new (phase 6) | — |
+| `fixed` | The fixed data of section 7, embedded with `include_bytes!` | new | — |
 | `launcher`, `relay` | Client start and injection | new, ported from `ow174/launcher/` and `relay/owwfd_relay.cpp` (phase 5) | — |
 | `testkit` | Test support; dev-dependency only | new | — |
 | `apps/orpheus` | CLI | `bin/orpheus_server.rs` and `bin/prepare_server_runtime.rs`, now the `serve` and `runtime prepare` subcommands | — |
@@ -127,6 +128,10 @@ graph TD
   content --> wire
   bnet --> wire
   wire --> core
+  wire --> fixed
+  bnet --> fixed
+  script --> fixed
+  lobby --> fixed
   casc --> core
   stu --> core
   launcher --> core
@@ -532,20 +537,20 @@ Each earlier phase updates the README when it changes how the program is built o
 
 ## 7. Fixed data
 
-These inputs are not game assets, so CASC cannot provide them. They are fixed for build 104319 and never change. Most likely they came from client dumps and traffic taken while the live servers were still running. Their origin isn't tracked further.
+These inputs are not game assets, so CASC cannot provide them. They are fixed for build 104319 and never change. Most likely they came from client dumps and traffic taken while the live servers were still running. The first seven are committed in `crates/fixed/data` (decision D1) and embedded in the binary; `docs/notes/data-sources.md` records their source and SHA-256.
 
-| Item | Current file | Why it can't come from CASC |
+| Item | File | Why it can't come from CASC |
 | --- | --- | --- |
-| Lobby message schemas | `schemas_174.json` | Field layouts of compiled C++ message classes, read from a running client by `dump_schemas.py` |
-| Game link schemas | `game_schemas_174.json` | Same, with `--game-link` |
-| Statescript payload codecs | `statescript_codecs_174.json` | What the client's reader code reads per state class, extracted with IDA from a client memory image |
-| Battle.net descriptors | `bnet/descriptors.pb` | Protobuf descriptors compiled into the client |
+| Lobby message schemas | `lobby_schemas.json` | Field layouts of compiled C++ message classes, read from a running client by `dump_schemas.py` |
+| Game link schemas | `game_schemas.json` | Same, with `--game-link` |
+| Statescript payload codecs | `statescript_codecs.json` | What the client's reader code reads per state class, extracted with IDA from a client memory image |
+| Battle.net descriptors | `bnet_descriptors.pb` | Protobuf descriptors compiled into the client |
 | Lobby state-blob key | `lobby_state_blob.key` | A 64-byte constant of the build's handshake |
 | Captured server templates | `retail_templates.json` | Server-side data, decoded from 1.68 reference traffic. It was never in the client. |
-| Event resource keys | `resource_keys_174.json` | The server sends them to the client (`lobby_celebrations`). Treated as server-side data; whether the install also contains them is unverified. |
+| Event resource keys | `resource_keys.json` | The server sends them to the client (`lobby_celebrations`). Treated as server-side data; whether the install also contains them is unverified (D2). |
 | Server-set queue and Arcade card fields | Parts of `game_queues_174.json` and `arcade_cards_174.json` | `extract_game_queues.py` reads the captured templates. Arcade card duration and permanence are set by the server, not the card asset. |
 | Rules from client code used by derivations | Constants in the extractors, for example the placeable type flag table in `extract_game_maps.py` | Facts about compiled code. They become Rust constants in `assets`. |
-| Research names | `statescript_names_174.json` | Research-only naming catalog, used by `orpheus script query` |
+| Research names | `statescript_names_174.json` | Research-only naming catalog, used by `orpheus script query`. Not committed yet; it comes with the `ssq` port. |
 
 The captured templates should become authored server content: TOML files a server owner can read and edit, generated once from `retail_templates.json`.
 
@@ -563,12 +568,12 @@ The captured templates should become authored server content: TOML files a serve
 | Dashboard | The JavaScript front end stays. The backend moves to Rust. No WebAssembly. |
 | Runtime | No async runtime. `mio` and worker threads stay. |
 | Target | Build 104319 only |
+| D1 Fixed data | Committed to `crates/fixed/data` and embedded in the binary (decided 2026-11-10). The repository owns the files, so names and formats may change. |
 
 ### Open
 
 | ID | Question | Options | Needed before |
 | --- | --- | --- | --- |
-| D1 | Where does the fixed data live? | **A:** commit it to `fixed/` and embed it in the binary. No setup at all, but the public repository then contains data taken from the client and from Blizzard's servers. That's a legal choice for you as the owner. **C:** each user supplies one small fixed-data file. The repository commits only its expected SHA-256 values, and `doctor` checks them. | Phase 6d |
 | D2 | Can `resource_keys_174.json` be derived from the install? | Check during the 6.0 spike. If the install does contain the keys, the item moves out of section 7. | Phase 6d |
 
 ## 9. Risks

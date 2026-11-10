@@ -100,12 +100,10 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 game schemas"]
     fn combat_notice_messages_match_python() {
         const KILLER: u32 = 0xa000_0101;
         const TARGET: u32 = 0xa004_0010;
-        let root = orpheus_testkit::runtime_dir();
-        let schemas = Schemas::load(root.join("data/game_schemas_174.json")).unwrap();
+        let schemas = Schemas::game();
         let cases: [(CombatNotice, Option<u32>, &[u8]); 4] = [
             (
                 CombatNotice::Hit {

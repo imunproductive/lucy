@@ -174,8 +174,8 @@ mod tests {
     #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
     fn solo_and_group_party_payloads_match_the_python_wire_bytes() {
         let runtime = orpheus_testkit::runtime_dir().join("data");
-        let schemas = Schemas::load(runtime.join("schemas_174.json")).unwrap();
-        let templates = RetailTemplates::load(runtime.join("retail_templates.json")).unwrap();
+        let schemas = Schemas::lobby();
+        let templates = RetailTemplates::captured();
         let items = Arc::new(ItemDb::load(&runtime).unwrap());
         let reaper = items.hero_by_name("Reaper").unwrap();
         let collection = Collection::new(&templates, items).unwrap();

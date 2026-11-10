@@ -12,6 +12,7 @@ license = "MIT"
 [workspace.dependencies]
 orpheus-core = { path = "crates/core" }
 orpheus-casc = { path = "crates/casc" }
+orpheus-fixed = { path = "crates/fixed" }
 orpheus-wire = { path = "crates/wire" }
 orpheus-content = { path = "crates/content" }
 orpheus-bnet = { path = "crates/bnet" }

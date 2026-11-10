@@ -13,7 +13,7 @@ It reads the cards (0C7), their rulesets (0C0), game modes (0C5), map catalogs (
 (09F), card titles (0D9), the Arcade menu (0EE nodes and their 0CC tags) and the strings. For each
 card it writes the name, the rulesets (game mode, players per team, free-for-all), the role slots,
 the maps and the largest party. The client ships only 4 of the 43 catalogs the cards name. For the
-other cards the maps come from the retail capture (data/retail_templates.json: message 36300 lists
+other cards the maps come from the retail capture (crates/fixed/data/retail_templates.json: message 36300 lists
 each competitive card with its maps) or else from the map headers that support the card's modes,
 narrowed to the maps its Arcade tags name. "maps_source" says which.
 """
@@ -26,7 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "data" / "game_queues_174.json"
-CAPTURE = ROOT / "data" / "retail_templates.json"
+CAPTURE = ROOT / "crates" / "fixed" / "data" / "retail_templates.json"
 NS = "{https://yretenai.com/dragonml/v1}"
 INDEX = 0xFFFFFFFFFFFF
 TEAMS = {"TeamBlue": "blue", "TeamRed": "red", "FFA": "ffa"}

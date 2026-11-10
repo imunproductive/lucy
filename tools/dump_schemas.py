@@ -11,8 +11,8 @@ The process is only read (ReadProcessMemory), never written.
     py tools/dump_schemas.py            (with Overwatch.exe running)
     py tools/dump_schemas.py --game-link [--image dump.bin --base 0x7FF788F10000]
 
-Writes data/schemas_174.json and data/schemas_174.txt. With --game-link it writes the protocols of
-the game server link instead (data/game_schemas_174.json and .txt); --image reads a saved dump of
+Writes crates/fixed/data/lobby_schemas.json and data/lobby_schemas.txt. With --game-link it writes the
+protocols of the game server link instead (crates/fixed/data/game_schemas.json and data/game_schemas.txt); --image reads a saved dump of
 the client's image, taken at --base, instead of the running game.
 """
 
@@ -27,6 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
+FIXED_DIR = ROOT / "crates" / "fixed" / "data"
 TYPE_NAMES = {
     0: "bool",
     1: "u8",
@@ -203,7 +204,7 @@ GAME_LINK_CRCS = [
 
 
 def write_schemas(groups, index, name):
-    (DATA_DIR / f"{name}.json").write_text(
+    (FIXED_DIR / f"{name}.json").write_text(
         json.dumps({f"{c:08X}": {str(m): f for m, f in sorted(g.items())} for c, g in sorted(groups.items())})
     )
     with open(DATA_DIR / f"{name}.txt", "w") as out:
@@ -212,7 +213,7 @@ def write_schemas(groups, index, name):
             out.write(f"=== wire {index[crc]} crc {crc:08X} ids {min(g)}..{max(g)}\n")
             for mid in sorted(g):
                 out.write(f" msg {mid} (off {mid - min(g)})\n" + "\n".join(describe(g[mid])) + "\n")
-    print(f"{sum(len(g) for g in groups.values())} messages in {len(groups)} protocols -> data/{name}.json")
+    print(f"{sum(len(g) for g in groups.values())} messages in {len(groups)} protocols -> {FIXED_DIR / name}.json")
 
 
 def main():
@@ -224,12 +225,12 @@ def main():
     base, img = (args.base, args.image.read_bytes()) if args.image else read_image()
     if args.game_link:
         index = {crc: i for i, crc in enumerate(GAME_LINK_CRCS)}
-        write_schemas(SchemaReader(base, img).messages(set(index)), index, "game_schemas_174")
+        write_schemas(SchemaReader(base, img).messages(set(index)), index, "game_schemas")
         return
     announced = json.loads((DATA_DIR / "announced_crcs_174.json").read_text())
     index = {int(c, 16): i for i, c in announced}
     index[0x11D82194] = 0
-    write_schemas(SchemaReader(base, img).messages(set(index)), index, "schemas_174")
+    write_schemas(SchemaReader(base, img).messages(set(index)), index, "lobby_schemas")
 
 
 if __name__ == "__main__":

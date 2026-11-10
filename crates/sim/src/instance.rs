@@ -156,13 +156,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 game schemas"]
     fn map_load_and_roster_updates_match_python_for_teams_and_free_for_all() {
         use orpheus_wire::{jam::codec::Schemas, messages::encode};
         use sha2::{Digest, Sha256};
 
-        let root = orpheus_testkit::runtime_dir();
-        let schemas = Schemas::load(root.join("data/game_schemas_174.json")).unwrap();
+        let schemas = Schemas::game();
         let members = members();
         let practice_range = GameMap::practice_range();
         let free_for_all = GameMap {

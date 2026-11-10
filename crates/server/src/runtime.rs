@@ -12,16 +12,12 @@ use std::path::{Component, Path, PathBuf};
 mod target_tags;
 
 pub const LOBBY_RUNTIME_DATA: &[&str] = &[
-    "schemas_174.json",
-    "retail_templates.json",
     "extracted_items.json",
     "extracted_general_unlocks.json",
     "extracted_heroes.json",
     "extracted_maps.json",
-    "resource_keys_174.json",
     "arcade_cards_174.json",
     "game_queues_174.json",
-    "lobby_state_blob.key",
 ];
 pub const MATCH_RUNTIME_DATA: &[&str] = &[
     "ai_spawners_174.json",
@@ -31,22 +27,18 @@ pub const MATCH_RUNTIME_DATA: &[&str] = &[
     "game_heroes_174.json",
     "game_maps_174.json",
     "game_movers_174.json",
-    "game_schemas_174.json",
     "game_stats_174.json",
-    "statescript_codecs_174.json",
 ];
-pub const BNET_DESCRIPTORS: &str = "bnet/descriptors.pb";
 const MANIFEST_SCHEMA: &str = "orpheus-runtime-copy-v1";
 const GRAPH_BUNDLE: &str = "data/game_graphs_174.json.gz";
 
 /// Names of required inputs absent from a selected external runtime root.
-pub fn missing_runtime_files(root: &Path, matches: bool, bnet: bool) -> Vec<String> {
+pub fn missing_runtime_files(root: &Path, matches: bool) -> Vec<String> {
     let match_files = if matches { MATCH_RUNTIME_DATA } else { &[] };
     LOBBY_RUNTIME_DATA
         .iter()
         .chain(match_files)
         .map(|name| format!("data/{name}"))
-        .chain(bnet.then(|| BNET_DESCRIPTORS.to_owned()))
         .filter(|name| !root.join(name).is_file())
         .collect()
 }
@@ -157,10 +149,6 @@ fn inputs(
     if let Some(graphs) = game_graphs {
         inputs.insert(GRAPH_BUNDLE.into(), graphs.to_owned());
     }
-    inputs.insert(
-        BNET_DESCRIPTORS.into(),
-        source.join("ow174").join(BNET_DESCRIPTORS),
-    );
 
     let caches = caches(&source.join("cache/collision"), maps)?;
     if caches.is_empty() {
@@ -307,7 +295,7 @@ pub fn prepare_with_target_tags(
         .map(|xml| target_tags::enrich(&inputs[GRAPH_BUNDLE], xml))
         .transpose()?;
     let mut output = OutputDirectory::create(&destination)?;
-    for directory in ["data", "bnet", "collision"] {
+    for directory in ["data", "collision"] {
         output.mkdir(directory)?;
     }
     let mut hashes = BTreeMap::new();
@@ -370,7 +358,6 @@ mod tests {
             for name in LOBBY_RUNTIME_DATA.iter().chain(MATCH_RUNTIME_DATA) {
                 self.write(&format!("source/data/{name}"), name.as_bytes());
             }
-            self.write("source/ow174/bnet/descriptors.pb", b"synthetic descriptor");
             self.write("source/cache/collision/0688.col", b"practice");
             self.write("source/cache/collision/0688.rays.col", b"practice rays");
             self.write("source/cache/collision/ABCD.col", b"another map");
@@ -400,7 +387,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(output, fs::canonicalize(&destination).unwrap());
-        assert!(missing_runtime_files(&output, true, true).is_empty());
+        assert!(missing_runtime_files(&output, true).is_empty());
         assert_eq!(
             fs::read(output.join("data/game_graphs_174.json.gz")).unwrap(),
             b"synthetic replacement graphs"
@@ -420,7 +407,7 @@ mod tests {
         let entries = manifest["sha256"].as_object().unwrap();
         assert_eq!(
             entries.len(),
-            LOBBY_RUNTIME_DATA.len() + MATCH_RUNTIME_DATA.len() + 3
+            LOBBY_RUNTIME_DATA.len() + MATCH_RUNTIME_DATA.len() + 2
         );
         for (name, hash) in entries {
             let copied = fs::read(output.join(name)).unwrap();

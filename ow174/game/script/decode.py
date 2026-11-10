@@ -1,7 +1,7 @@
 """Reads body statescript chunks back the way the client does (the readers named in
 ow174/game/statescript.py), for tests and logs: the frame header, the instance list, the variables with
 their bindings, the states with their payloads and the owner event lists. Every payload is read by the
-client's codec table (ow174/game/script/codecs.py, data/statescript_codecs_174.json), not by the encoder's
+client's codec table (ow174/game/script/codecs.py, crates/fixed/data/statescript_codecs.json), not by the encoder's
 writers, so an encoder that writes a class differently from the client shows here.
 
 `read_chunk(data, bits, known)` takes a chunk (statescript.chunk) and the client's instance table

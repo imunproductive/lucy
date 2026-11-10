@@ -42,7 +42,7 @@ class RegionTests(unittest.TestCase):
         self.assertEqual(localize(store, "RU")["+0x78"], 643)
 
     def test_no_rub_left_in_any_captured_store_for_non_ru_regions(self):
-        templates = json.loads((ROOT / "data" / "retail_templates.json").read_text(encoding="utf-8"))
+        templates = json.loads((ROOT / "crates" / "fixed" / "data" / "retail_templates.json").read_text(encoding="utf-8"))
         for code in ("US", "EU", "GB"):
             text = json.dumps(localize(templates["server"], code), ensure_ascii=False)
             self.assertNotIn("RUB", text, code)

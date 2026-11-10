@@ -193,6 +193,16 @@ pub struct Schemas {
 }
 
 impl Schemas {
+    /// The client's lobby message layouts.
+    pub fn lobby() -> Self {
+        Self::from_json(orpheus_fixed::LOBBY_SCHEMAS).expect("the embedded lobby schemas parse")
+    }
+
+    /// The client's game link message layouts.
+    pub fn game() -> Self {
+        Self::from_json(orpheus_fixed::GAME_SCHEMAS).expect("the embedded game schemas parse")
+    }
+
     pub fn from_json(json: &str) -> Result<Self, CodecError> {
         Self::from_reader(json.as_bytes())
     }
@@ -578,15 +588,9 @@ mod tests {
         Schemas::from_json(&format!(r#"{{"{CRC:X}":{{"12":{fields}}}}}"#)).unwrap()
     }
 
-    fn shipped(name: &str) -> Schemas {
-        let root = orpheus_testkit::runtime_dir();
-        Schemas::load(root.join("data").join(name)).unwrap()
-    }
-
     #[test]
-    #[ignore = "requires the separately prepared 104319 lobby schemas"]
     fn lobby_wire_vectors_match_python() {
-        let schemas = shipped("schemas_174.json");
+        let schemas = Schemas::lobby();
         let login = 0x3c7e3468;
         let mut fields = schemas.empty(login, 21800).unwrap();
         fields.insert(0x78, Value::String("Player".into()));
@@ -622,10 +626,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 lobby and game schemas"]
     fn all_shipped_lobby_and_game_schemas_round_trip_defaults() {
-        for name in ["schemas_174.json", "game_schemas_174.json"] {
-            let schemas = shipped(name);
+        for schemas in [Schemas::lobby(), Schemas::game()] {
             for (crc, group) in &schemas.groups {
                 for id in group.keys() {
                     let default_body = schemas.encode(*crc, *id, &Fields::new()).unwrap();

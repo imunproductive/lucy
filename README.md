@@ -12,7 +12,7 @@ This fork is being restructured. The plan, the target layout and the progress ar
 
 ## Run
 
-The native server serves the solo Practice Range on loopback. It needs a prepared runtime pack.
+The native server serves the solo Practice Range on loopback. It needs a prepared runtime pack of game data; the fixed build data (message layouts, protocol descriptors, captured server templates) is embedded in the binary.
 
 ```powershell
 cargo build --release

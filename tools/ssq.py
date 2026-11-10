@@ -53,7 +53,7 @@ from ow174.game.script import expr, nodes, runtime  # noqa: E402
 from ow174.game.script import graph as graphs  # noqa: E402
 
 NAMES_PATH = ROOT / "data" / "statescript_names_174.json"
-CODECS_PATH = ROOT / "data" / "statescript_codecs_174.json"  # optional, research/ida/extract_statescript_codecs.py
+CODECS_PATH = ROOT / "crates" / "fixed" / "data" / "statescript_codecs.json"  # research/ida/extract_statescript_codecs.py
 CACHE_PATH = ROOT / "cache" / "ssq_index.pickle"
 # Optional: TankLib/STU/Types of an OWLib checkout, for each field's declared type and offset.
 OWLIB_TYPES = Path(os.environ["OWLIB_TYPES"]) if os.environ.get("OWLIB_TYPES") else None
@@ -1119,7 +1119,7 @@ def find_class(index: dict, text: str) -> str | None:
 
 
 def codec_entry(cls: str):
-    """The class's entry in data/statescript_codecs_174.json ("classes" by hash, or searched by class name
+    """The class's entry in crates/fixed/data/statescript_codecs.json ("classes" by hash, or searched by class name
     or hash in any other layout); None without the file or the entry."""
     if not CODECS_PATH.is_file():
         return None
@@ -1234,13 +1234,13 @@ def cmd_class(index: dict, args) -> list[str]:
             out.append(f"  {field:24} {f'+{offset} {kind}':28} not in the data")
     entry = codec_entry(cls)
     if entry is not None:
-        out.append("codec (data/statescript_codecs_174.json):")
+        out.append("codec (crates/fixed/data/statescript_codecs.json):")
         for key, value in entry.items() if isinstance(entry, dict) else [("entry", entry)]:
             out.append(
                 f"  {key}: {value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)}"
             )
     elif CODECS_PATH.is_file():
-        out.append("codec: no entry in data/statescript_codecs_174.json")
+        out.append("codec: no entry in crates/fixed/data/statescript_codecs.json")
     return out
 
 

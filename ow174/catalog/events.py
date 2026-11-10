@@ -11,14 +11,14 @@ Year 2022 record:
 The "What's new" screen lists the contents of the event loot box in +0x58 as the event's "New
 trophies". The boxes are the ones STULootBoxCelebrationOverride (054/0x18) gives each celebration type.
 
-Content keys come from data/resource_keys_174.json.
+Content keys come from crates/fixed/data/resource_keys.json.
 """
 
 import json
 from dataclasses import dataclass
 
 from ow174.catalog.items import SKIN_THEME_BASE, UNLOCK_BASE
-from ow174.paths import DATA_DIR
+from ow174.paths import DATA_DIR, RESOURCE_KEYS
 
 CELEBRATION_BASE = 0x0430000000000000
 RESOURCE_KEY_BASE = 0x0F10000000000000
@@ -85,7 +85,7 @@ def active_events(names: list[str] | None) -> list[EventDef]:
 
 def load_resource_keys() -> dict[int, tuple[int, bytes]]:
     """Content key GUID -> (name id, key bytes)."""
-    entries = json.loads((DATA_DIR / "resource_keys_174.json").read_text(encoding="utf-8"))
+    entries = json.loads(RESOURCE_KEYS.read_text(encoding="utf-8"))
     keys = {}
     for guid, entry in entries.items():
         name_id = int(entry["name"], 16) if entry["name"] else 0

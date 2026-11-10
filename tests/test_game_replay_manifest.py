@@ -35,7 +35,7 @@ class ReplayManifestTests(unittest.TestCase):
         self.root = self.base / "checkout"
         self.data = self.base / "tables"
         self.data.mkdir()
-        for name in (*manifest.SOURCE_FILES, "ow174/game/__init__.py", "ow174/jam/__init__.py",
+        for name in (*manifest.SOURCE_FILES, *manifest.FIXED_FILES, "ow174/game/__init__.py", "ow174/jam/__init__.py",
                      "ow174/game/model.py", "ow174/jam/model.py"):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -56,7 +56,7 @@ class ReplayManifestTests(unittest.TestCase):
         captured = self.capture()
         rows = {row["path"]: row for row in captured["files"]}
         self.assertEqual(list(rows), sorted(rows))
-        self.assertEqual(len(rows), 7 + len(manifest.DATA_FILES))
+        self.assertEqual(len(rows), 7 + len(manifest.FIXED_FILES) + len(manifest.DATA_FILES))
         for name, row in rows.items():
             path = self.data / name[5:] if name.startswith("data/") else self.root / name
             blob = path.read_bytes()

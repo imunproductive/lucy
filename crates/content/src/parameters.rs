@@ -221,7 +221,7 @@ mod tests {
     #[ignore = "requires authorized 104319 game schemas and hero catalog in ORPHEUS_RUNTIME_DIR"]
     fn reliable_21616_messages_match_the_python_reader_and_hero_select_requests() {
         let data = orpheus_testkit::runtime_dir().join("data");
-        let schemas = Schemas::load(data.join("game_schemas_174.json")).unwrap();
+        let schemas = Schemas::game();
         let heroes = HeroCatalog::load(data.join("game_heroes_174.json")).unwrap();
         // Python game.messages.write_channel with synthetic entity IDs and the
         // known pick/open parameter bytes from tests/test_game_statescript.py.

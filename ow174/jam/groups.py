@@ -1,7 +1,7 @@
 """CRCs of the protocol groups the lobby speaks, with the message ids seen in each.
 
 A group is a set of messages that the client announces by CRC. Names are ours; the ids come from the
-client's schemas (data/schemas_174.json).
+client's schemas (crates/fixed/data/lobby_schemas.json).
 """
 
 # Sent by the server

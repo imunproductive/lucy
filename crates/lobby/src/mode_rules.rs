@@ -212,11 +212,11 @@ mod tests {
     #[ignore = "requires the prepared 104319 retail templates and catalogs"]
     fn mode_rules_matches_three_python_104319_message_bodies() {
         let data = orpheus_testkit::runtime_dir().join("data");
-        let templates = RetailTemplates::load(data.join("retail_templates.json")).unwrap();
+        let templates = RetailTemplates::captured();
         let items = Arc::new(ItemDb::load(&data).unwrap());
         let collection = Collection::new(&templates, Arc::clone(&items)).unwrap();
         let ranked = Ranked::new(&templates).unwrap();
-        let schemas = Schemas::load(data.join("schemas_174.json")).unwrap();
+        let schemas = Schemas::lobby();
 
         let default = Profile {
             player_name: "Mode fixture".into(),

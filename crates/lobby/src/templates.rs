@@ -5,9 +5,7 @@
 
 use std::{
     collections::{BTreeMap, HashSet},
-    fs::File,
-    io::{self, BufReader, Read},
-    path::Path,
+    io::{self, Read},
 };
 
 use serde::Deserialize;
@@ -89,11 +87,10 @@ struct TemplateFile {
 }
 
 impl RetailTemplates {
-    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
-        let path = path.as_ref();
-        let file = File::open(path)?;
-        Self::from_reader(BufReader::new(file))
-            .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))
+    /// The templates captured from reference server traffic.
+    pub fn captured() -> Self {
+        Self::from_reader(orpheus_fixed::RETAIL_TEMPLATES.as_bytes())
+            .expect("the embedded templates parse")
     }
 
     pub fn from_reader(reader: impl Read) -> io::Result<Self> {
@@ -491,12 +488,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared lobby template corpus"]
     fn real_templates_and_localized_login_match_python_wire_hashes() {
-        let root = orpheus_testkit::runtime_dir();
-        let data = root.join("data");
-        let templates = RetailTemplates::load(data.join("retail_templates.json")).unwrap();
-        let schemas = Schemas::load(data.join("schemas_174.json")).unwrap();
+        let templates = RetailTemplates::captured();
+        let schemas = Schemas::lobby();
         let digest = |messages: &[LobbyMessage]| {
             let mut hash = Sha256::new();
             for (crc, id, fields) in messages {

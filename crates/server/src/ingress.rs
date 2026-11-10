@@ -390,10 +390,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 game schema"]
     fn matches_a_python_mixed_frame_and_pong_with_the_runtime_schema() {
-        let root = orpheus_testkit::runtime_dir();
-        let schemas = Schemas::load(root.join("data/game_schemas_174.json")).unwrap();
+        let schemas = Schemas::game();
         // Python write_channel + tests/test_game_commands.py::record(5000).
         let frame = [
             0x23, 0, 0, 0, 0, 0, 1, 2, 1, 10, 3, 0, 0, 0, 2, 0, 0, 0, 111, 0, 0, 0, 0, 0, 0, 0,

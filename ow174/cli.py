@@ -257,7 +257,7 @@ def run(args: argparse.Namespace) -> None:
         return
     retail = args.mode in ("retail", "host")
     if RUNTIME_DIR is not None:
-        missing = missing_runtime_files(matches=args.game_port > 0, bnet=retail)
+        missing = missing_runtime_files(matches=args.game_port > 0)
         if missing:
             raise LaunchError(f"Missing files in ORPHEUS_RUNTIME_DIR: {', '.join(missing)}")
     try:

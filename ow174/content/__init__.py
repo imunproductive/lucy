@@ -3,7 +3,7 @@
 A message is a (protocol group CRC, message id, value) triple. The session maps the CRC to the
 wire index the client announced and encodes the value with the client's schema. The keys of a value
 are the field offsets inside the client's message struct ("+0x78"), as listed in
-data/schemas_174.json.
+crates/fixed/data/lobby_schemas.json.
 """
 
 from ow174.accounts.profile import Profile

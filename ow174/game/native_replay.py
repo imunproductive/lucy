@@ -14,7 +14,7 @@ from ow174.game.commands import FRAME_HALF, FRAME_MASK, Command, frame_distance
 from ow174.game.content import SOLDIER
 from ow174.game.script import graph, runtime
 from ow174.game.script.driver import HUD_MAX_HEALTH, OWNER_HEALTH, BodyScript
-from ow174.paths import DATA_DIR, ROOT
+from ow174.paths import DATA_DIR, ROOT, STATESCRIPT_CODECS
 
 SCHEMA = "ow174.native-body-replay.v2"
 BUILD = "1.74.0.0.104319"
@@ -33,10 +33,7 @@ MODEL_FILES = (
     "ow174/game/script/nodes.py", "ow174/game/script/graph.py", "ow174/game/script/rulesets.py",
     "ow174/game/script/codecs.py", "ow174/game/statescript.py",
 )
-MODEL_DATA = (
-    "game_graphs_174.json.gz", "game_stats_174.json", "game_heroes_174.json",
-    "statescript_codecs_174.json",
-)
+MODEL_DATA = ("game_graphs_174.json.gz", "game_stats_174.json", "game_heroes_174.json")
 
 
 def _json(value) -> str:
@@ -169,6 +166,7 @@ def model_hash() -> str:
     manifest = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in MODEL_FILES}
     manifest.update({f"data/{name}": hashlib.sha256((DATA_DIR / name).read_bytes()).hexdigest()
                      for name in MODEL_DATA})
+    manifest["crates/fixed/data/statescript_codecs.json"] = hashlib.sha256(STATESCRIPT_CODECS.read_bytes()).hexdigest()
     return _digest(manifest)
 
 

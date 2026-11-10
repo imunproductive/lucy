@@ -295,10 +295,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared 104319 lobby schemas"]
     fn prepared_player_message_wire_bytes_match_python() {
-        let root = orpheus_testkit::runtime_dir();
-        let schemas = Schemas::load(root.join("data/schemas_174.json")).unwrap();
+        let schemas = Schemas::lobby();
         let digest = |messages: &[LobbyMessage]| {
             let mut hash = Sha256::new();
             for (crc, id, fields) in messages {

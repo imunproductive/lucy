@@ -1,9 +1,9 @@
 //! Battle.net RPC framing for a WebSocket binary message.
 //!
 //! Each frame has a big-endian u16 header length, a protobuf Header, and
-//! the protobuf body. The descriptor set is an external runtime input.
+//! the protobuf body. The descriptor set is the client's, embedded by `orpheus-fixed`.
 
-use std::{error::Error, fmt, fs, io, path::Path};
+use std::{error::Error, fmt};
 
 use prost::Message;
 use prost_reflect::{
@@ -21,7 +21,6 @@ pub const PROCESS_TASK_RESPONSE: &str = "bgs.protocol.game_utilities.v2.client.P
 
 #[derive(Debug)]
 pub enum ProtocolError {
-    Io(io::Error),
     Descriptor(DescriptorError),
     Protobuf(prost::DecodeError),
     UnknownMessage(String),
@@ -36,7 +35,6 @@ pub enum ProtocolError {
 impl fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(error) => write!(f, "could not read Battle.net descriptors: {error}"),
             Self::Descriptor(error) => write!(f, "invalid Battle.net descriptors: {error}"),
             Self::Protobuf(error) => write!(f, "invalid Battle.net protobuf: {error}"),
             Self::UnknownMessage(name) => write!(f, "no Battle.net message named {name}"),
@@ -55,7 +53,6 @@ impl fmt::Display for ProtocolError {
 impl Error for ProtocolError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Io(error) => Some(error),
             Self::Descriptor(error) => Some(error),
             Self::Protobuf(error) => Some(error),
             _ => None,
@@ -70,9 +67,9 @@ pub struct Protocol {
 }
 
 impl Protocol {
-    pub fn load(path: impl AsRef<Path>) -> Result<Self, ProtocolError> {
-        let data = fs::read(path).map_err(ProtocolError::Io)?;
-        Self::from_bytes(&data)
+    /// The client's Battle.net services.
+    pub fn client() -> Self {
+        Self::from_bytes(orpheus_fixed::BNET_DESCRIPTORS).expect("the embedded descriptors load")
     }
 
     pub fn from_bytes(data: &[u8]) -> Result<Self, ProtocolError> {
@@ -340,10 +337,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the separately prepared Battle.net descriptor set"]
-    fn loads_external_descriptors() {
-        let path = orpheus_testkit::bnet_descriptors();
-        let protocol = Protocol::load(path).unwrap();
+    fn loads_the_client_descriptors() {
+        let protocol = Protocol::client();
         for name in [
             CONNECT_REQUEST,
             CONNECT_RESPONSE,

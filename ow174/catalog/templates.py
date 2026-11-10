@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 from ow174.jam.values import clone
-from ow174.paths import DATA_DIR
+from ow174.paths import RETAIL_TEMPLATES
 
 RETAIL_ACCOUNT = 0x0000_0001  # the recorded player's account id
 REDACTED_NAME = "XXXXXXXXXXXXXXX"  # the recorded BattleTag, anonymized
@@ -31,7 +31,7 @@ def _restore(value):
 class RetailTemplates:
     """The recorded server messages, in the order the retail server sent them."""
 
-    def __init__(self, path: Path = DATA_DIR / "retail_templates.json") -> None:
+    def __init__(self, path: Path = RETAIL_TEMPLATES) -> None:
         data = json.loads(path.read_text(encoding="utf-8"))
         if data.get("format") != TEMPLATE_FORMAT:
             raise ValueError("Unsupported retail template format")

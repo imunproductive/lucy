@@ -111,7 +111,7 @@ fn runtime(settings: &Settings) -> Outcome {
             "point runtime at a prepared pack (orpheus runtime prepare)",
         );
     }
-    let missing = missing_runtime_files(root, true, true);
+    let missing = missing_runtime_files(root, true);
     if !missing.is_empty() {
         return problem(
             format!("{} is missing {}", root.display(), missing.join(", ")),
