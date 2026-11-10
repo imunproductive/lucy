@@ -16,7 +16,6 @@ use serde_json::Value as Json;
 use crate::{
     expr::{EntityRelation, native_shape, valid_entity},
     graph::GraphStore,
-    rulesets,
     vitals::{PoolKind, Vitals},
     vm::{GameMessage, Site, TargetTagEffect, World},
     wire::{Value, Variables},
@@ -64,7 +63,7 @@ impl World for PlayerWorld {
     }
 
     fn ruleset(&mut self, id: u32) -> Option<Value> {
-        rulesets::default(id, self.hero, self.mode)
+        self.graphs.rulesets().default(id, self.hero, self.mode)
     }
 
     /// The body's messages to other entities wait for the match

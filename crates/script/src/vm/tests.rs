@@ -1889,8 +1889,8 @@ const TEAM_ONE: u64 = 0x0080_0000;
 #[test]
 #[ignore = "requires a derived 1.74 graph bundle"]
 fn authored_sprint_stack_gates_track_input_and_reveal_the_base_on_release() {
-    let runtime = orpheus_testkit::runtime_dir();
-    let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
+    let data = orpheus_testkit::runtime_dir().join("data");
+    let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
     let mut world = soldier_world(&graphs);
     let mut component = Component::start(
         Arc::clone(&graphs),
@@ -1950,8 +1950,8 @@ fn authored_sprint_stack_gates_track_input_and_reveal_the_base_on_release() {
 #[test]
 #[ignore = "requires a derived 1.74 graph bundle"]
 fn isolated_soldier_sprint_ability_matches_the_authored_toggle_and_modifier_states() {
-    let runtime = orpheus_testkit::runtime_dir();
-    let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
+    let data = orpheus_testkit::runtime_dir().join("data");
+    let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
     let mut world = soldier_world(&graphs);
     let mut component = Component::start(
         Arc::clone(&graphs),
@@ -2138,8 +2138,8 @@ fn volley_reports_exact_times_and_bakes_linked_ammo_on_finish() {
 #[test]
 #[ignore = "requires a derived 1.74 graph bundle"]
 fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
-    let runtime = orpheus_testkit::runtime_dir();
-    let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
+    let data = orpheus_testkit::runtime_dir().join("data");
+    let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
     let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
     let mut world = soldier_world(&graphs);
     let mut component = Component::start(
@@ -2251,8 +2251,8 @@ fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
 #[test]
 #[ignore = "requires a derived 1.74 graph bundle"]
 fn authored_soldier_rifle_holds_releases_and_reloads_on_the_reference_clock() {
-    let runtime = orpheus_testkit::runtime_dir();
-    let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
+    let data = orpheus_testkit::runtime_dir().join("data");
+    let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
     let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
     let mut world = soldier_world(&graphs);
     let mut component = Component::start(
@@ -2609,8 +2609,8 @@ fn buffered_action_press_uses_the_shared_clock_and_releases_after_one_millisecon
 #[test]
 #[ignore = "requires a derived 1.74 graph bundle"]
 fn soldier_sprint_graph_reads_primary_crouch_and_melee_edges_as_in_python() {
-    let runtime = orpheus_testkit::runtime_dir();
-    let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
+    let data = orpheus_testkit::runtime_dir().join("data");
+    let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
     let mut world = soldier_world(&graphs);
     let mut component = Component::start(
         Arc::clone(&graphs),
@@ -2662,7 +2662,8 @@ fn soldier_sprint_graph_reads_primary_crouch_and_melee_edges_as_in_python() {
 #[test]
 #[ignore = "requires the derived game data's bot graph bundle (graph 0B92)"]
 fn firing_placement_reset_and_timer_boundaries_match_python() {
-    let graphs = Arc::new(GraphStore::load(orpheus_testkit::bot_graphs()).unwrap());
+    let data = orpheus_testkit::runtime_dir().join("data");
+    let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
     assert!(
         graphs.graph(0x0b92).is_some(),
         "the bot graph bundle lacks Practice Range graph 0B92"
@@ -2749,7 +2750,8 @@ fn firing_placement_reset_and_timer_boundaries_match_python() {
 #[test]
 #[ignore = "requires the derived game data's bot graph bundle"]
 fn controller_and_training_bot_supported_startup_edges_match_python() {
-    let graphs = GraphStore::load(orpheus_testkit::bot_graphs()).unwrap();
+    let data = orpheus_testkit::runtime_dir().join("data");
+    let graphs = GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap();
     let run = |entity, roots| {
         initialize(
             &graphs,
@@ -3906,9 +3908,18 @@ fn ultimate_fills_over_its_seconds_and_waits_while_it_runs() {
 }
 
 #[test]
-fn player_world_answers_every_heros_ruleset_defaults() {
+fn player_world_answers_the_ruleset_defaults_of_its_hero_and_mode() {
+    let rulesets = crate::rulesets::Rulesets::from_json(
+        br#"{"schemas": {
+            "0x0A3000000000001B": {"10265": 1.0},
+            "0x0A30000000000060": {"29450": true}
+        },
+        "heroes": {"0x02E0000000000003": ["0x0A3000000000001B"]},
+        "modes": {"0x0230000000000018": ["0x0A30000000000060"]}}"#,
+    )
+    .unwrap();
     let mut world = PlayerWorld::new(
-        Arc::new(store(Vec::new())),
+        Arc::new(store(Vec::new()).with_rulesets(Arc::new(rulesets))),
         0xa000_0100,
         0xa000_0101,
         1,
@@ -3919,6 +3930,8 @@ fn player_world_answers_every_heros_ruleset_defaults() {
     assert_eq!(world.ruleset(0x2819), Some(Value::Float(1.0)));
     assert_eq!(world.ruleset(0x730a), Some(Value::Bool(true)));
     assert_eq!(world.ruleset(0x2982), None);
+    world.hero = SOLDIER;
+    assert_eq!(world.ruleset(0x2819), None);
 }
 
 /// The clip size scalar `0x2819` comes from the heroes' ruleset schema, so
@@ -3927,8 +3940,8 @@ fn player_world_answers_every_heros_ruleset_defaults() {
 #[ignore = "requires a local 1.74 graph pack"]
 fn tracer_pistols_load_forty_rounds_from_the_ruleset_defaults() {
     const TRACER: u64 = 0x02e0_0000_0000_0003;
-    let runtime = orpheus_testkit::runtime_dir();
-    let graphs = Arc::new(GraphStore::load(runtime.join("data/game_graphs_174.json.gz")).unwrap());
+    let data = orpheus_testkit::runtime_dir().join("data");
+    let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
     let body = &graphs.bodies()[&0x0400_0000_0000_0001];
     assert_eq!(body.hero.as_deref(), Some("0x02E0000000000003"));
     let mut world = PlayerWorld::new(

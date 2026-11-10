@@ -19,6 +19,7 @@ use crate::{
     bot_script::{BotEvent, BotScripts, BotShot},
     bots::{Bot, BotCatalog, BotWalk},
     controller::Controller,
+    notices::switch_notices,
     pools::PoolCatalog,
     projectiles::FieldFrames,
     replication::OwnerBodyRuntime,
@@ -26,7 +27,7 @@ use crate::{
 };
 use orpheus_content::{
     heroes::{Hero, HeroCatalog},
-    maps::GameMap,
+    maps::{GameMap, GameModes, MODES_FILE},
     stats::{PlayerStats, StatsCatalog, initial_on_fire},
 };
 use orpheus_core::{bits::BitWriter, guid::parse_guid};
@@ -97,6 +98,8 @@ pub struct SceneAssets {
     stats: Arc<StatsCatalog>,
     heroes: Arc<HeroCatalog>,
     pools: Arc<PoolCatalog>,
+    /// The game modes' teams (`game_modes_174.json`).
+    modes: GameModes,
 }
 
 pub struct PreparedScene {
@@ -117,16 +120,18 @@ pub struct PreparedScene {
     /// The Biotic Field's frames (projectiles.py `field_frame`); without
     /// them no field is shown.
     field_frames: Option<Arc<FieldFrames>>,
+    /// The mode posts hero switches in the chat (notices.py).
+    switch_notices: bool,
 }
 
 impl SceneAssets {
     pub fn load(runtime: impl AsRef<Path>) -> io::Result<Self> {
         let runtime = runtime.as_ref();
         let data = runtime.join("data");
-        let graphs = Arc::new(GraphStore::load(data.join("game_graphs_174.json.gz"))?);
+        let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz")?);
         // The bot bundle adds the bots' bodies to the hero bundle; the heroes
         // keep the hero bundle, which has their target tags.
-        let bot_graphs = match GraphStore::load(data.join("game_graphs_bots_174.json.gz")) {
+        let bot_graphs = match GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz") {
             Ok(graphs) => Some(Arc::new(graphs)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(error),
@@ -148,6 +153,7 @@ impl SceneAssets {
             stats: Arc::new(StatsCatalog::load(data.join("game_stats_174.json"))?),
             heroes: Arc::new(HeroCatalog::load(data.join("game_heroes_174.json"))?),
             pools,
+            modes: GameModes::load(data.join(MODES_FILE))?,
         })
     }
 
@@ -251,6 +257,7 @@ impl SceneAssets {
                 .ok(),
             None => None,
         };
+        let map_mode = map.mode_guid;
         let mut scene = PreparedScene {
             map,
             ground,
@@ -267,6 +274,7 @@ impl SceneAssets {
             stats: Arc::clone(&self.stats),
             owner_body_factory: None,
             field_frames,
+            switch_notices: switch_notices(self.modes.get(map_mode)),
         };
         let mut factories = self
             .owner_bodies
@@ -357,6 +365,11 @@ impl SceneAssets {
 impl PreparedScene {
     pub fn map(&self) -> &GameMap {
         &self.map
+    }
+
+    /// Whether the mode posts hero switches in the chat (notices.py).
+    pub fn switch_notices(&self) -> bool {
+        self.switch_notices
     }
 
     pub fn movement_ready(&self) -> bool {

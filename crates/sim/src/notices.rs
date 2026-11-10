@@ -13,7 +13,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use crate::scene::PlayerCard;
-use orpheus_content::maps::PRACTICE_RANGE_MODE;
+use orpheus_content::maps::GameMode;
 use orpheus_script::wire::Value as ScriptValue;
 use orpheus_wire::{
     jam::codec::{Fields, Value, id16},
@@ -23,17 +23,9 @@ use orpheus_wire::{
 /// ClientInGame 20308: a player's card for the client's player list.
 pub const PLAYER_CARD: u32 = 20308;
 
-/// Retail modes whose teams' controller graph is 0C90: only these have the
-/// switch notice (notices.py SWITCH_MODES).
-pub const SWITCH_MODES: [u64; 7] = [
-    0x0230_0000_0000_0010,
-    0x0230_0000_0000_0014,
-    0x0230_0000_0000_0015,
-    0x0230_0000_0000_0016,
-    0x0230_0000_0000_0017,
-    0x0230_0000_0000_005a,
-    0x0230_0000_0000_0067,
-];
+/// The PvP controller graph `0C90` (an `01B`), whose Watch posts the hero
+/// switch line.
+const SWITCH_CONTROLLER: u64 = 0x0580_0000_0000_0c90;
 
 /// 0C90's presence bits of v4513 (the old hero), v4514 (the new hero) and
 /// v4515 (the player).
@@ -46,11 +38,19 @@ const PLAYER_BIT: usize = 7;
 /// before the next frame changes the variables again.
 pub(crate) const NOTICE_GAP: Duration = Duration::from_millis(100);
 
-/// Whether a mode shows hero switches: its controller is 0C90 (every mode
-/// but the Practice Range loads it, `Controller::load`) and it is one of
-/// [`SWITCH_MODES`].
-pub fn switch_notices(mode: u64) -> bool {
-    mode != PRACTICE_RANGE_MODE && SWITCH_MODES.contains(&mode)
+/// Whether a mode shows hero switches: every team's controller graph is 0C90
+/// (`m_teams[].m_controllerScript` of the mode's `0C5`; notices.py
+/// `SWITCH_MODES`). Free for all (0F74), capture the flag (0CA2),
+/// elimination (0D2A) and the rest have other controllers without it, and
+/// the Practice Range's blue team has 13C1.
+pub fn switch_notices(mode: Option<&GameMode>) -> bool {
+    mode.is_some_and(|mode| {
+        !mode.teams.is_empty()
+            && mode
+                .teams
+                .iter()
+                .all(|team| team.controller == Some(SWITCH_CONTROLLER))
+    })
 }
 
 /// The card struct of 20308 +0x80. The lobby supplies it (its player
@@ -119,6 +119,7 @@ impl Switch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orpheus_content::maps::{GameModes, MODES_FILE, ModeTeam};
 
     #[test]
     fn cards_carry_the_python_flags() {
@@ -162,9 +163,28 @@ mod tests {
 
     #[test]
     fn only_the_0c90_switch_modes_post_hero_switches() {
-        assert!(!switch_notices(PRACTICE_RANGE_MODE));
-        assert!(switch_notices(0x0230_0000_0000_0067));
-        assert!(!switch_notices(0x0230_0000_0000_0f74));
+        let mode = |controllers: &[Option<u64>]| GameMode {
+            teams: controllers
+                .iter()
+                .enumerate()
+                .map(|(team, &controller)| ModeTeam {
+                    team: team as i64,
+                    controller,
+                    players: 6,
+                })
+                .collect(),
+            scripted_loading: false,
+        };
+        let pvp = Some(SWITCH_CONTROLLER);
+        assert!(switch_notices(Some(&mode(&[pvp, pvp]))));
+        // The Practice Range: 13C1 for the player's team.
+        assert!(!switch_notices(Some(&mode(&[
+            Some(0x0580_0000_0000_13c1),
+            pvp
+        ]))));
+        assert!(!switch_notices(Some(&mode(&[pvp, None]))));
+        assert!(!switch_notices(Some(&mode(&[]))));
+        assert!(!switch_notices(None));
         let presence = Switch {
             old: 1,
             new: 2,
@@ -178,6 +198,32 @@ mod tests {
                 (4, ScriptValue::Asset(1)),
                 (6, ScriptValue::Asset(2)),
                 (7, ScriptValue::Entity(0xa000_0200))
+            ]
+        );
+    }
+
+    /// The install's 0C90 modes are the ones notices.py lists.
+    #[test]
+    #[ignore = "requires the derived 104319 game modes"]
+    fn the_switch_modes_are_the_install_s() {
+        let modes =
+            GameModes::load(orpheus_testkit::runtime_dir().join("data").join(MODES_FILE)).unwrap();
+        let mut switching: Vec<u64> = modes
+            .iter()
+            .filter(|(_, mode)| switch_notices(Some(mode)))
+            .map(|(guid, _)| guid)
+            .collect();
+        switching.sort_unstable();
+        assert_eq!(
+            switching,
+            [
+                0x0230_0000_0000_0010,
+                0x0230_0000_0000_0014,
+                0x0230_0000_0000_0015,
+                0x0230_0000_0000_0016,
+                0x0230_0000_0000_0017,
+                0x0230_0000_0000_005a,
+                0x0230_0000_0000_0067,
             ]
         );
     }

@@ -12,16 +12,12 @@ use orpheus_core::guid::parse_guid;
 pub const PRACTICE_RANGE_MAP: u64 = 0x0800_0000_0000_0688;
 pub const PRACTICE_RANGE_MODE: u64 = 0x0230_0000_0000_0018;
 pub const SPAWN_SPACING: f64 = 1.5;
+/// The map catalog in the runtime `data` folder (the `game_maps` derivation).
+pub const MAPS_FILE: &str = "game_maps_174.json";
+/// The game modes' teams and loading rule (the `game_modes` derivation).
+pub const MODES_FILE: &str = "game_modes_174.json";
 
 const PRACTICE_RANGE_NAME: &str = "Practice Range";
-// The retail loader waits for these modes to publish their own script state.
-const SCRIPTED_LOADING_MODES: [u64; 5] = [
-    0x0230_0000_0000_0008,
-    0x0230_0000_0000_000f,
-    0x0230_0000_0000_001a,
-    0x0230_0000_0000_0025,
-    0x0230_0000_0000_0043,
-];
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 pub struct Spawn {
@@ -44,7 +40,12 @@ pub struct GameMap {
 }
 
 impl GameMap {
-    /// The training route has an explicit map, mode, and first spawn.
+    /// The training route has an explicit map, mode, and first spawn: the
+    /// Practice Range record of `ow174/game/content.py` (`PRACTICE_RANGE`).
+    /// The game-tier test `the_practice_range_is_the_derived_record` pins
+    /// its name, placeables and team sizes to the install's (`game_maps`
+    /// 0688 and the teams of mode 0018), and its spawn to the install's
+    /// team 0 spawn as Python rounded it.
     pub fn practice_range() -> Self {
         Self {
             name: PRACTICE_RANGE_NAME.into(),
@@ -96,21 +97,28 @@ pub struct MapListing {
 #[derive(Debug, Default)]
 pub struct MapCatalog {
     entries: IndexMap<u64, MapEntry>,
+    modes: GameModes,
 }
 
 impl MapCatalog {
-    /// Read game_maps_174.json from the selected runtime. A missing catalog
-    /// still leaves the built-in training route available.
-    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
-        let path = path.as_ref();
+    /// Read the map catalog and the game modes from the runtime `data`
+    /// folder. A missing catalog still leaves the built-in training route
+    /// available; a catalog needs its modes.
+    pub fn load(data: impl AsRef<Path>) -> io::Result<Self> {
+        let data = data.as_ref();
+        let path = data.join(MAPS_FILE);
         match path.metadata() {
             Ok(metadata) if !metadata.is_file() => Ok(Self::default()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error),
-            Ok(_) => Self::from_json(&fs::read_to_string(path)?),
+            Ok(_) => Ok(Self {
+                modes: GameModes::load(data.join(MODES_FILE))?,
+                ..Self::from_json(&fs::read_to_string(path)?)?
+            }),
         }
     }
 
+    /// The catalog alone, without the modes' rules.
     pub fn from_json(text: &str) -> io::Result<Self> {
         let raw: IndexMap<String, RawMap> = serde_json::from_str(text)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -150,7 +158,16 @@ impl MapCatalog {
                 },
             );
         }
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            modes: GameModes::default(),
+        })
+    }
+
+    /// The catalog with these modes.
+    pub fn with_modes(mut self, modes: GameModes) -> Self {
+        self.modes = modes;
+        self
     }
 
     /// Catalog order is stable among entries with the same display name.
@@ -192,7 +209,7 @@ impl MapCatalog {
             return Some(GameMap::practice_range());
         }
         let entry = self.entries.get(&map_guid)?;
-        if SCRIPTED_LOADING_MODES.contains(&mode_guid) || !entry.modes.contains(&mode_guid) {
+        if self.modes.scripted_loading(mode_guid) || !entry.modes.contains(&mode_guid) {
             return None;
         }
         let spawns = entry.first_round_spawns(free_for_all);
@@ -258,6 +275,103 @@ struct SpawnEntry {
     first_objective: bool,
 }
 
+/// The game modes (`0C5`) as the derivation `game_modes` describes them.
+#[derive(Debug, Default)]
+pub struct GameModes {
+    modes: HashMap<u64, GameMode>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GameMode {
+    /// `m_teams`, in the asset's order.
+    pub teams: Vec<ModeTeam>,
+    /// The loading screen waits for a state of the mode's own script
+    /// (`m_0FC17230` = 1; the loader's gate at 0x7FF789A271E0), so a server
+    /// has to run that script first (`SCRIPTED_LOADING_MODES` in
+    /// `ow174/game/content.py`).
+    pub scripted_loading: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModeTeam {
+    /// `TeamIndex`: 0 blue, 1 red, 4 free for all.
+    pub team: i64,
+    /// The team's controller graph (`01B`), when it has one.
+    pub controller: Option<u64>,
+    /// `m_170AA4B8`: the team's players.
+    pub players: u8,
+}
+
+impl GameModes {
+    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
+        let text = fs::read_to_string(path).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
+        Self::from_json(&text)
+    }
+
+    pub fn from_json(text: &str) -> io::Result<Self> {
+        let raw: RawModes = serde_json::from_str(text)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let modes = raw
+            .modes
+            .into_iter()
+            .map(|(guid, mode)| {
+                let teams = mode
+                    .teams
+                    .into_iter()
+                    .map(|team| {
+                        Ok(ModeTeam {
+                            team: team.team,
+                            controller: team.controller.as_deref().map(hex_guid).transpose()?,
+                            players: team.players,
+                        })
+                    })
+                    .collect::<io::Result<_>>()?;
+                let mode = GameMode {
+                    teams,
+                    scripted_loading: mode.scripted_loading,
+                };
+                Ok((hex_guid(&guid)?, mode))
+            })
+            .collect::<io::Result<_>>()?;
+        Ok(Self { modes })
+    }
+
+    pub fn get(&self, mode: u64) -> Option<&GameMode> {
+        self.modes.get(&mode)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (u64, &GameMode)> {
+        self.modes.iter().map(|(&guid, mode)| (guid, mode))
+    }
+
+    /// Whether the mode's loading screen waits for its own script; the
+    /// server can't host those modes (`content.py` `game_map`).
+    pub fn scripted_loading(&self, mode: u64) -> bool {
+        self.get(mode).is_some_and(|mode| mode.scripted_loading)
+    }
+}
+
+#[derive(Deserialize)]
+struct RawModes {
+    modes: HashMap<String, RawMode>,
+}
+
+#[derive(Deserialize)]
+struct RawMode {
+    teams: Vec<RawTeam>,
+    scripted_loading: bool,
+}
+
+#[derive(Deserialize)]
+struct RawTeam {
+    team: i64,
+    controller: Option<String>,
+    players: u8,
+}
+
 #[derive(Deserialize)]
 struct RawMap {
     name: Option<String>,
@@ -318,17 +432,24 @@ mod tests {
         "0x81": {"name": "No points", "modes": ["20"], "spawns": null}
     }"#;
 
+    const MODES: &str = r#"{"modes": {
+        "0x0230000000000025": {"teams": [
+            {"team": 0, "controller": "0x0580000000000F44", "players": 4},
+            {"team": 1, "controller": null, "players": 0}
+        ], "scripted_loading": true},
+        "0x20": {"teams": [], "scripted_loading": false}
+    }}"#;
+
     #[test]
     fn loads_external_catalog_and_keeps_the_practice_fallback() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("game_maps_174.json");
-        let missing = MapCatalog::load(&path).unwrap();
+        let missing = MapCatalog::load(temp.path()).unwrap();
         let practice = GameMap::practice_range();
         assert_eq!(missing.map_name(PRACTICE_RANGE_MAP), Some("Practice Range"));
         assert_eq!(
             missing.game_map(
                 PRACTICE_RANGE_MAP,
-                SCRIPTED_LOADING_MODES[0],
+                0x0230_0000_0000_0008,
                 "Ignored",
                 true,
                 &[9]
@@ -342,14 +463,55 @@ mod tests {
             Some(([54.56507, 1.0, 42.14788], -170.3434))
         );
 
+        let path = temp.path().join(MAPS_FILE);
         fs::write(&path, ARENA).unwrap();
+        // A catalog needs its modes.
         assert_eq!(
-            MapCatalog::load(&path).unwrap().map_name(0x80),
-            Some("Fixture Arena")
+            MapCatalog::load(temp.path()).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        fs::write(temp.path().join(MODES_FILE), MODES).unwrap();
+        let catalog = MapCatalog::load(temp.path()).unwrap();
+        assert_eq!(catalog.map_name(0x80), Some("Fixture Arena"));
+        assert!(
+            catalog
+                .game_map(0x80, 0x0230_0000_0000_0025, "", false, &[])
+                .is_none()
         );
         fs::write(&path, "{").unwrap();
         assert_eq!(
-            MapCatalog::load(&path).unwrap_err().kind(),
+            MapCatalog::load(temp.path()).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn reads_the_modes_teams_and_loading_rule() {
+        let modes = GameModes::from_json(MODES).unwrap();
+        let scripted = modes.get(0x0230_0000_0000_0025).unwrap();
+        assert!(scripted.scripted_loading);
+        assert_eq!(
+            scripted.teams,
+            [
+                ModeTeam {
+                    team: 0,
+                    controller: Some(0x0580_0000_0000_0f44),
+                    players: 4
+                },
+                ModeTeam {
+                    team: 1,
+                    controller: None,
+                    players: 0
+                }
+            ]
+        );
+        assert!(modes.scripted_loading(0x0230_0000_0000_0025));
+        assert!(!modes.scripted_loading(0x20));
+        assert!(!modes.scripted_loading(0x21));
+        assert_eq!(
+            GameModes::from_json(r#"{"modes": {"x": {"teams": [], "scripted_loading": true}}}"#)
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidData
         );
     }
@@ -387,7 +549,9 @@ mod tests {
 
     #[test]
     fn uses_mode_placeables_and_first_objective_in_team_order() {
-        let catalog = MapCatalog::from_json(ARENA).unwrap();
+        let catalog = MapCatalog::from_json(ARENA)
+            .unwrap()
+            .with_modes(GameModes::from_json(MODES).unwrap());
         let arena = catalog
             .game_map(0x80, 0x20, "Team Fixture", false, &[6, 5])
             .unwrap();
@@ -489,8 +653,8 @@ mod tests {
             digest.update(value.as_bytes());
         }
 
-        let root = orpheus_testkit::runtime_dir();
-        let catalog = MapCatalog::load(root.join("data/game_maps_174.json")).unwrap();
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let catalog = MapCatalog::load(&data).unwrap();
         let listing = catalog.map_catalog();
         let mut digest = Sha256::new();
         count(&mut digest, listing.len());
@@ -548,5 +712,91 @@ mod tests {
             format!("{:x}", digest.finalize()),
             "d6d5792b3a374a271c64b15fb6204e9a7c1f5e74428453e9617cd04f5000ccca"
         );
+    }
+
+    /// The install's scripted-loading modes are the ones Python listed
+    /// (`content.py` `SCRIPTED_LOADING_MODES`: Mei's Snowball Offensive, two
+    /// PvE modes, Retribution and Storm Rising).
+    #[test]
+    #[ignore = "requires the derived 104319 game modes"]
+    fn the_scripted_loading_modes_are_the_install_s() {
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let modes = GameModes::load(data.join(MODES_FILE)).unwrap();
+        let mut scripted: Vec<u64> = modes
+            .iter()
+            .filter(|(_, mode)| mode.scripted_loading)
+            .map(|(guid, _)| guid)
+            .collect();
+        scripted.sort_unstable();
+        assert_eq!(
+            scripted,
+            [
+                0x0230_0000_0000_0008,
+                0x0230_0000_0000_000f,
+                0x0230_0000_0000_001a,
+                0x0230_0000_0000_0025,
+                0x0230_0000_0000_0043,
+            ]
+        );
+    }
+
+    /// `GameMap::practice_range` is the install's record: map 0688's name
+    /// and placeables in mode 0018, the mode's team sizes, and the team 0
+    /// spawn point as Python rounded it (position to 5 decimals, yaw from
+    /// the rotation to 4).
+    #[test]
+    #[ignore = "requires the derived 104319 map catalog"]
+    fn the_practice_range_is_the_derived_record() {
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let practice = GameMap::practice_range();
+        let catalog = MapCatalog::load(&data).unwrap();
+        let entry = &catalog.entries[&PRACTICE_RANGE_MAP];
+        assert_eq!(entry.name.as_deref(), Some(practice.name.as_str()));
+        assert!(entry.modes.contains(&PRACTICE_RANGE_MODE));
+        assert_eq!(
+            entry.placeables_by_mode[&PRACTICE_RANGE_MODE],
+            practice.placeables
+        );
+        let mode = GameModes::load(data.join(MODES_FILE))
+            .unwrap()
+            .get(PRACTICE_RANGE_MODE)
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            mode.teams
+                .iter()
+                .map(|team| team.players)
+                .collect::<Vec<_>>(),
+            practice.team_sizes
+        );
+        assert!(mode.teams.iter().all(|team| team.team != 4));
+        assert!(!practice.free_for_all);
+
+        let maps: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(data.join(MAPS_FILE)).unwrap()).unwrap();
+        let spawn = maps["0x0800000000000688"]["spawns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|spawn| spawn["team"] == 0)
+            .unwrap();
+        let number = |value: &serde_json::Value| value.as_f64().unwrap();
+        let round = |value: f64, places: i32| {
+            let scale = 10f64.powi(places);
+            (value * scale).round() / scale
+        };
+        let [constant] = practice.spawns[..] else {
+            panic!("one spawn point")
+        };
+        for (axis, value) in spawn["position"].as_array().unwrap().iter().enumerate() {
+            assert_eq!(round(number(value), 5), constant.position[axis]);
+        }
+        let rotation = spawn["rotation"].as_array().unwrap();
+        let yaw = 2.0
+            * number(&rotation[1])
+                .atan2(number(&rotation[3]))
+                .to_degrees();
+        assert_eq!(round(yaw, 4), constant.yaw);
+        assert_eq!(round(constant.yaw, 3), number(&spawn["yaw"]));
     }
 }

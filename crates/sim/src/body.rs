@@ -363,7 +363,8 @@ mod tests {
 
         let root = orpheus_testkit::runtime_dir();
         let heroes = HeroCatalog::load(root.join("data/game_heroes_174.json")).unwrap();
-        let graphs = GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap();
+        let graphs =
+            GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap();
         let pools = PoolCatalog::from_graphs(&graphs).unwrap();
         let leases = leases();
         let mut digest = Sha256::new();

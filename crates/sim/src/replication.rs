@@ -20,7 +20,7 @@ use crate::{
     },
     controller::ControllerFrame,
     egress::{DeliveryReport, FrameRecords, GameEgress, RecordSource, SendError, SentFrame},
-    notices::{NOTICE_GAP, Switch, switch_notices},
+    notices::{NOTICE_GAP, Switch},
     others::{
         ObservedScript, ObserverActivity, OtherDelivery, Others, PlayerView, RemoteBody,
         RemoteDeath, ShowContext, ShowOutput, ViewerReadiness,
@@ -686,7 +686,7 @@ pub fn show_players(
         entry: &entry,
         tick,
         frames,
-        switch_notices: switch_notices(scene.map().mode_guid),
+        switch_notices: scene.switch_notices(),
     };
     let mut taken: Vec<_> = players
         .iter_mut()
@@ -2599,7 +2599,7 @@ impl WorldDelivery {
                 serial: self.switches,
             };
             self.switch = Some(switch);
-            if switch_notices(scene.map().mode_guid) && self.controller.latest_data() != 0 {
+            if scene.switch_notices() && self.controller.latest_data() != 0 {
                 self.notices.waiting.push_back(switch);
             }
         }

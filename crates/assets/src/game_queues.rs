@@ -108,7 +108,7 @@ impl<'a> Node<'a> {
         Types::get().field_named(self.object.class, name).is_some()
     }
 
-    fn value(self, name: &str) -> Option<&'a Value> {
+    pub(crate) fn value(self, name: &str) -> Option<&'a Value> {
         self.object.get(name).or_else(|| {
             Types::get()
                 .field_named(self.object.class, name)
@@ -149,7 +149,7 @@ impl<'a> Node<'a> {
     }
 
     /// An embedded or inline instance.
-    fn node(self, name: &str) -> Option<Self> {
+    pub(crate) fn node(self, name: &str) -> Option<Self> {
         let object = self.asset.resolve(self.value(name)?)?;
         Some(Self {
             asset: self.asset,
@@ -166,6 +166,11 @@ impl<'a> Node<'a> {
                 object: asset.resolve(value)?,
             })
         })
+    }
+
+    /// The instance's class, by the type table.
+    pub(crate) fn class_name(self) -> Option<&'static str> {
+        self.object.class_name()
     }
 }
 
@@ -187,7 +192,7 @@ pub(crate) fn typed(index: u64, kind: u16) -> u64 {
 /// Every asset of one type the install stores, decoded, by index. Like
 /// DataTool, it leaves out assets the install lists but doesn't store (some
 /// `09F` headers' content keys are missing from the encoding table).
-fn load(install: &Install, kind: u16) -> Result<BTreeMap<u64, Asset>> {
+pub(crate) fn load(install: &Install, kind: u16) -> Result<BTreeMap<u64, Asset>> {
     let stored: Vec<u64> = install
         .guids(kind)
         .into_iter()

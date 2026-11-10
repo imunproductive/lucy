@@ -832,7 +832,7 @@ mod tests {
                 .all(|ruleset| ruleset.team_sizes == [6, 6])
         );
         assert_eq!(quick.roles, slots(2, 2, 2));
-        let catalog = MapCatalog::load(data.join("game_maps_174.json")).unwrap();
+        let catalog = MapCatalog::load(&data).unwrap();
         let (map, ruleset) = pick_map(&catalog, quick, None, |_| 0).unwrap();
         assert_eq!(map.mode_guid, ruleset.mode);
         let (map, _) = pick_map(&catalog, quick, Some(ILIOS), |_| 0).unwrap();
