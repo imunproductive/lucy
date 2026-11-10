@@ -221,6 +221,10 @@ struct PendingProjectile {
     /// The Biotic Field it leaves, and the shooter's feet when he fired
     /// (projectiles.py `Shot.spawn`, `Shot.where`).
     field: Option<(FieldSchedule, [f64; 3])>,
+    /// It leaves another entity where it lands (projectiles.py `Shot.spawn`
+    /// other than the field: Torbjörn's turret, Zarya's Graviton Surge):
+    /// its flight schedules no release, and its end releases no explosion.
+    spawning: bool,
 }
 
 /// What the match does about an owner's projectile besides its own
@@ -331,6 +335,25 @@ impl OwnerProjectiles {
         Some(token)
     }
 
+    /// A projectile that leaves another entity where it lands (projectiles.py
+    /// `fired` with a spawn other than the field): it is confirmed as any
+    /// projectile and ends `bound` ticks after its confirmation went
+    /// (`_step`: `created_tick + bound`, as `flown` schedules nothing),
+    /// without an explosion (`_end`: a release needs `shot.spawn is None`).
+    /// The server makes no entity where it lands, as Python made none.
+    pub fn admit_spawning(
+        &mut self,
+        shot: ShotEvent,
+        definition: u64,
+        flight_bound_ticks: u32,
+    ) -> Option<ProjectileToken> {
+        let token = self.admit(shot, definition, flight_bound_ticks)?;
+        if let Some(pending) = self.pending.last_mut() {
+            pending.spawning = true;
+        }
+        Some(token)
+    }
+
     /// What the match must do since the last call.
     pub fn take_events(&mut self) -> Vec<ProjectileEvent> {
         std::mem::take(&mut self.events)
@@ -374,6 +397,7 @@ impl OwnerProjectiles {
             created_at: None,
             release_at: None,
             field: None,
+            spawning: false,
         });
         Some(token)
     }
@@ -437,7 +461,7 @@ impl OwnerProjectiles {
         else {
             return;
         };
-        if pending.release_at.is_none() && pending.field.is_none() {
+        if pending.release_at.is_none() && pending.field.is_none() && !pending.spawning {
             let start = pending
                 .reports
                 .values()
@@ -510,8 +534,10 @@ impl OwnerProjectiles {
                         .saturating_add(RELEASE_MARGIN)
                 })
             });
+            // `_end(explode=True)`: the release needs `shot.spawn is None`.
+            let release = (!pending.spawning).then_some(tick);
             if due.is_some_and(|due| tick >= due.saturating_add(DELIVERY_GRACE)) {
-                retire(pending, occupied, Some(tick), &mut out);
+                retire(pending, occupied, release, &mut out);
                 events.push(ProjectileEvent::Ended {
                     token: pending.token,
                     explode: true,
@@ -523,7 +549,7 @@ impl OwnerProjectiles {
                 && !pending.creates.is_empty()
                 && pending.creates.values().all(|&arrived| arrived)
             {
-                retire(pending, occupied, Some(tick), &mut out);
+                retire(pending, occupied, release, &mut out);
                 events.push(ProjectileEvent::Ended {
                     token: pending.token,
                     explode: true,
@@ -1595,6 +1621,56 @@ mod tests {
         tracker.create_arrived(token, entity);
         assert!(!tracker.confirmation_current(token, entity));
         assert!(tracker.retire().is_empty());
+    }
+
+    /// projectiles.py `fired` with a spawn other than the field (Torbjörn's
+    /// turret): confirmed as any projectile; its landing schedules nothing
+    /// (`flown`), so it ends `bound` + RELEASE_MARGIN ticks after its
+    /// confirmation went, destroyed without the explosion's release
+    /// (`_end`: only a shot without a spawn releases one).
+    #[test]
+    fn a_spawning_projectile_ends_on_its_bound_without_an_explosion() {
+        let frame = 1000;
+        let shot = shot(frame);
+        let leases = ProjectileLeases::new(0, frame, [HELIX]).unwrap();
+        let entity = leases.entity(HELIX, frame, 0).unwrap();
+        let mut tracker = OwnerProjectiles::new(BODY, leases);
+        let token = tracker.admit_spawning(shot, HELIX, 20).unwrap();
+        tracker.owner_sent(
+            2,
+            frame + 1,
+            |_, _| Some((shot.activation, shot.activation_ms)),
+            |_, _| false,
+        );
+        tracker.owner_arrival(2, true);
+        let created = frame + 3;
+        assert_eq!(
+            tracker.advance(created, created),
+            [ProjectileDelivery::Confirm {
+                token,
+                entity,
+                definition: HELIX
+            }]
+        );
+        tracker.create_arrived(token, entity);
+        tracker.flight_ended(token, 2, frame + 5);
+        let due = created + 20 + RELEASE_MARGIN;
+        assert!(tracker.advance(due - 1, due - 1).is_empty());
+        assert_eq!(
+            tracker.advance(due, due),
+            [ProjectileDelivery::Destroy {
+                token,
+                entity,
+                explosion_frame: None
+            }]
+        );
+        assert_eq!(
+            tracker.take_events(),
+            [ProjectileEvent::Ended {
+                token,
+                explode: true
+            }]
+        );
     }
 
     /// projectiles.py's Biotic Field numbers.

@@ -245,7 +245,8 @@ pub struct PosedMelee {
 
 pub enum PosedShot {
     Hitscan(PosedHitscan),
-    Projectile(PosedProjectile),
+    /// Boxed: by far the largest.
+    Projectile(Box<PosedProjectile>),
     Melee(PosedMelee),
 }
 
@@ -254,8 +255,13 @@ pub struct PosedProjectile {
     pub ballistics: ProjectileBallistics,
     pub origin: [f64; 3],
     pub direction: [f64; 3],
+    /// Whether the owner's client shoots it under its body's lease, so the
+    /// server confirms and releases it (projectiles.py `fired`: a predicted
+    /// volley with a lease id); else only its damage flies (combat.py
+    /// `_shoot`: a `Rocket` without a shot).
+    pub leased: bool,
     /// The entity it leaves where it lands (projectiles.py `fired`: the
-    /// Biotic Field 03DC), if any.
+    /// Biotic Field 03DC, Torbjörn's turret), if any.
     pub spawn: Option<u64>,
     /// The Biotic Field it leaves, when the spawn is the field (boxed: a
     /// rare shot).
@@ -617,24 +623,22 @@ impl Combat {
                     .map(|bot| (bot.entity, scene.bot_target(bot))),
             )
             .collect();
-        let end = flight
+        let step = flight
             .advance(context.tick, &candidates, |origin, direction, reach| {
                 scene.hitscan_wall(origin, direction, reach)
             })
             .map_err(io::Error::other)?;
-        if let Some(end) = &end {
-            hits.extend(end.impacts.iter().filter_map(|impact| {
-                self.apply_impact(
-                    scene,
-                    shooter,
-                    context.tick,
-                    Some(context.tick),
-                    context,
-                    impact,
-                )
-            }));
-        }
-        Ok(end)
+        hits.extend(step.impacts.iter().filter_map(|impact| {
+            self.apply_impact(
+                scene,
+                shooter,
+                context.tick,
+                Some(context.tick),
+                context,
+                impact,
+            )
+        }));
+        Ok(step.end)
     }
 
     /// combat.py `_shoot` for a firing bot's projectile volley: a rocket
@@ -646,16 +650,7 @@ impl Combat {
         projectile: PosedProjectile,
         tick: u32,
     ) -> Option<u64> {
-        let damaging = projectile
-            .ballistics
-            .direct
-            .is_some_and(|hit| hit.amount > 0.0)
-            || projectile
-                .ballistics
-                .blast
-                .as_ref()
-                .is_some_and(|blast| blast.hit.amount > 0.0);
-        if !damaging {
+        if !projectile.ballistics.damaging() {
             return None;
         }
         let flight = ProjectileFlight::new(
