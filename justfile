@@ -20,7 +20,7 @@ test:
     cargo test --workspace --locked
 
 dashboard-test:
-    node --test tests/test_dashboard_client.mjs
+    node --test web/tests/test_dashboard_client.mjs
 
 build:
     cargo build --workspace --release --locked

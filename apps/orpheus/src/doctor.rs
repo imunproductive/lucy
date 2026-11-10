@@ -8,7 +8,7 @@ use std::{
 
 use orpheus_content::maps::GameMap;
 use orpheus_lobby::accounts::saved_names;
-use orpheus_server::{runtime::missing_runtime_files, server::local_account_name};
+use orpheus_server::{game_data, server::local_account_name};
 use orpheus_sim::scene_assets::SceneAssets;
 
 use orpheus_launcher::game::TARGET_VERSION;
@@ -110,7 +110,7 @@ fn data(settings: &Settings) -> Outcome {
         }
     };
     let root = &root;
-    let missing = missing_runtime_files(root, true);
+    let missing = game_data::missing_files(root);
     if !missing.is_empty() {
         return problem(
             format!("{} is missing {}", root.display(), missing.join(", ")),

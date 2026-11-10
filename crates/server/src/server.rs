@@ -12,10 +12,10 @@ use std::{
 };
 
 use crate::{
+    game_data,
     game_service::{GameService, collision_build},
     lobby::{Lobby, matchmaker::Matchmaker, serve, services::Services},
     platform::{LocalGames, Platform},
-    runtime::missing_runtime_files,
     server::dashboard::{Dashboard, DashboardParts},
 };
 use orpheus_bnet::{
@@ -109,7 +109,7 @@ impl Server {
     /// Validate the data before starting the listeners. This entry point
     /// serves the base graph bundle.
     pub fn start(config: ServerConfig) -> io::Result<Self> {
-        let missing = missing_runtime_files(&config.runtime, true);
+        let missing = game_data::missing_files(&config.runtime);
         if !missing.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,

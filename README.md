@@ -68,7 +68,7 @@ target\release\orpheus.exe play --game C:\path\to\Overwatch
 
 `--host <address>` sets where the lobby and game server listen. A host behind a router gives its public address with `--game-host` (the menu asks for it and remembers it); players from outside the network get it in the handoff, players on the host's network the address they reached. The banner lists the LAN addresses and the TCP and UDP ports to forward. `join` asks the server for the name's BattleTag, runs a local Battle.net that sends the game to that server, and starts the game with the relay; the address and name it asks for are remembered.
 
-`orpheus assets build` derives the game data now and prints the cache folder, and `orpheus assets diff --pack <dir>` compares the derived files with a prepared runtime pack. `orpheus runtime prepare` still assembles a pack for the frozen Python server, which remains the reference for everything the native server does not do yet; `py -3 -B -m ow174 --mode retail --bnet-port 1118 --test-players 1` runs it with the game, using the relay from `cargo build --release -p orpheus-relay`.
+`orpheus assets build` derives the game data now and prints the cache folder, and `orpheus assets diff --pack <dir>` compares the derived files with a prepared runtime pack.
 
 `orpheus script query` answers questions about the statescript graphs in the derived data: `graphs` (which graphs a hero or a mode runs), `show` (a graph as a tree), `var` (who reads and writes a variable), `class` (where a node class is used and its fields), `find` (names, aliases, hashes, GUIDs) and `hero` (a hero's graphs, classes and shared variables). `orpheus script query --help` explains the notation.
 
