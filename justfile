@@ -27,11 +27,15 @@ build:
 
 # Ignored tests that need a prepared runtime pack.
 test-runtime runtime:
-    cargo build -p orpheus-relay --locked; $env:ORPHEUS_RUNTIME_DIR = '{{runtime}}'; cargo test --workspace --exclude orpheus-casc --exclude orpheus-stu --locked --no-fail-fast -- --ignored
+    cargo build -p orpheus-relay --locked; $env:ORPHEUS_RUNTIME_DIR = '{{runtime}}'; cargo test --workspace --exclude orpheus-casc --exclude orpheus-stu --exclude orpheus-assets --locked --no-fail-fast -- --ignored
 
 # Ignored tests that read an Overwatch 1.74 install.
 test-game game:
-    $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo test -p orpheus-casc -p orpheus-stu --release --locked -- --ignored --skip datatool
+    $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo test -p orpheus-casc -p orpheus-stu -p orpheus-assets --release --locked -- --ignored --skip datatool --skip matches_the_pack
+
+# Ignored tests that derive the runtime pack's files from an install and compare them with the pack.
+test-assets game runtime:
+    $env:ORPHEUS_GAME_DIR = '{{game}}'; $env:ORPHEUS_RUNTIME_DIR = '{{runtime}}'; cargo test -p orpheus-assets --release --locked -- --ignored matches_the_pack
 
 # Ignored tests that compare the asset reader with a DataTool XML export of the install.
 test-datatool game dump:
