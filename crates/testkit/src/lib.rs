@@ -5,6 +5,8 @@
 //! derivation checks against a prepared pack run with `just test-assets
 //! <install> <pack>`.
 
+#![forbid(unsafe_code)]
+
 pub mod casc;
 
 use std::{

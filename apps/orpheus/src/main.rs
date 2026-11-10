@@ -1,5 +1,7 @@
 //! The ORPHEUS server for Overwatch 1.74.0.0.104319.
 
+#![forbid(unsafe_code)]
+
 mod ask;
 mod assets;
 mod banner;
