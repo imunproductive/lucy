@@ -7,8 +7,42 @@ This fork is being restructured. The plan, the target layout and the progress ar
 ## Requirements
 
 - Stable Rust with the MSVC toolchain
-- [just](https://github.com/casey/just)
+- [just](https://github.com/casey/just), for the developer recipes
 - Node.js, for the dashboard test
+
+## Run
+
+The native server serves the solo Practice Range on loopback. It needs a prepared runtime pack.
+
+```powershell
+cargo build --release
+target\release\orpheus.exe doctor --runtime C:\path\to\pack
+target\release\orpheus.exe serve --runtime C:\path\to\pack
+```
+
+`doctor` checks the runtime pack, the saved profiles and the ports, and prints a fix for each problem. `serve` runs until Ctrl+C. The dashboard is at <http://127.0.0.1:3725>. `START_SERVER_LOCAL.cmd` builds and runs `orpheus serve`.
+
+Profiles, logs and `config.toml` live in `%APPDATA%\orpheus`; pass `--state <dir>` or set `ORPHEUS_STATE_DIR` to use another folder. To reuse the profiles of an older checkout:
+
+```powershell
+target\release\orpheus.exe state import C:\path\to\old\checkout
+```
+
+`config.toml` holds the defaults; a command-line flag or environment variable overrides it:
+
+```toml
+runtime = 'C:\path\to\pack'   # or ORPHEUS_RUNTIME_DIR, or --runtime
+account = "Player"            # the account the game logs in as
+
+[ports]
+lobby = 3724
+stall = 1119
+rpc = 21119
+game = 3730
+dashboard = 3725
+```
+
+`orpheus runtime prepare` assembles a runtime pack from a prepared research checkout. The frozen Python server is still the reference for everything the native server does not do yet. `START_LOCAL.cmd` runs it with the game; that needs the relay DLL built with `relay\build.bat` from an x64 Native Tools Command Prompt for Visual Studio.
 
 ## Check
 
@@ -16,17 +50,7 @@ This fork is being restructured. The plan, the target layout and the progress ar
 just check
 ```
 
-This runs `cargo fmt --check`, `cargo clippy` with warnings denied, `cargo test` and the dashboard test. `just` lists the other recipes. Tests that need a prepared runtime pack are ignored by default; run them with `just test-runtime <pack folder>`.
-
-## Run
-
-The native server serves the solo Practice Range on loopback. It needs a prepared runtime pack and a state folder for profiles:
-
-```powershell
-cargo run --release --bin orpheus_server -- --runtime <pack folder> --data-dir <state folder>
-```
-
-The frozen Python server is still the reference for everything else. `START_SERVER_LOCAL.cmd` runs it without the game. `START_LOCAL.cmd` also starts the client, which needs the relay DLL built with `relay\build.bat` from an x64 Native Tools Command Prompt for Visual Studio.
+This runs `cargo fmt --check`, `cargo clippy` with warnings denied, `cargo test` and the dashboard test. `just` lists the other recipes. Tests that need a prepared runtime pack are ignored by default; run them with `just test-runtime <pack>`.
 
 ## License
 

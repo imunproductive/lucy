@@ -18,7 +18,7 @@ The frozen Python server (`ow174/`) is the behavioral reference until the Rust s
 - Full player and bot scripts and replication, native combat with stock bodies, observer projectile launch, scripted flight, healing fields.
 - Matchmaking queues and PvP modes beyond the solo Practice Range.
 - Social actions.
-- The dashboard and its API.
+- Dashboard actions that depend on missing features: opening loot boxes, the shop (`purchase` and item prices), the bot's group, matchmaking settings (`matchmaking`, `mode_settings`, `set_map`, `end_matches`), `reconnect` and `start_game`. The native dashboard answers them with 501. Its profile, account, frame, item and loot box actions work, but a logged-in game only sees their changes at its next login; the Python server pushed them to the live session.
 - Host mode (bind beyond loopback), join mode (a local Battle.net emulator pointing at a remote lobby) and tournament mode. The Python CLI modes are `retail`, `tournament`, `host`, `server`, `join` and `join-tournament`.
 - Starting the client and injecting the relay.
 - Open verification items: on-fire scoring and decay, the tips registry, network serialization of map values, instance overrides and foreign entities for target tags, named pools and pool resize rules, the randomized timer's client parity.
