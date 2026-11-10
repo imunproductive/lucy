@@ -14,7 +14,7 @@ use orpheus_wire::{
 const JUMP_LATCH: u32 = 0x1;
 pub(crate) const CROUCHED: u32 = 0x2;
 pub(crate) const JUMPED: u32 = 0x4;
-const FELL: u32 = 0x8;
+pub(crate) const FELL: u32 = 0x8;
 const REAL_JUMP: u32 = 0x400;
 pub(crate) const TOUCHING: u32 = 0x20000;
 pub(crate) const NOT_GROUND_UNDER: u32 = 0x80000;
@@ -56,6 +56,10 @@ pub struct PostureStep<'a> {
     pub probe: ProbeResult,
     pub dt: f64,
     pub pitch_held: bool,
+    /// A world-target move drives this pose (`move_to` in `Mover.step_pose`,
+    /// `ow174/game/mover.py`): no jump, and the feet keep their height instead
+    /// of standing on the probed ground before the spring settles.
+    pub driven: bool,
 }
 
 impl Posture {
@@ -148,7 +152,7 @@ impl Posture {
                 }
             }
         }
-        if self.flags & IN_AIR == 0 {
+        if self.flags & IN_AIR == 0 && !step.driven {
             if let Some(ground) = step.probe.ground {
                 feet[1] = ground.y;
             }
@@ -190,7 +194,7 @@ impl Posture {
             | (u32::from(step.probe.non_ground_under) * NOT_GROUND_UNDER)
             | (u32::from(step.pitch_held) * TURN_HELD);
         let button = step.command.buttons & JUMP != 0;
-        let jump = step.mods.intent(JUMP_INTENT, f64::from(u8::from(button))) > 0.5;
+        let jump = !step.driven && step.mods.intent(JUMP_INTENT, f64::from(u8::from(button))) > 0.5;
         if jump {
             if flags & (IN_AIR | JUMP_LATCH) == 0 {
                 velocity[1] = step.values.jump_speed;
