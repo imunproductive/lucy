@@ -8,13 +8,20 @@
 
 #![forbid(unsafe_code)]
 
+mod ai_spawners;
+mod collision;
+mod game_maps;
 mod install;
+mod map_chunk;
+mod mode_props;
+mod props;
 
 use std::{
     fmt, fs, io,
     path::{Path, PathBuf},
 };
 
+pub use collision::collision_cache;
 pub use install::{Install, guid_hex, guid_name, guid_type};
 
 /// One derived file: its path inside the pack (`data/…` or `collision/…`)
@@ -76,7 +83,26 @@ pub struct Derivation {
 }
 
 /// Every derivation, inputs first.
-pub const DERIVATIONS: &[Derivation] = &[];
+pub const DERIVATIONS: &[Derivation] = &[
+    // Reads data/extracted_maps.json.
+    Derivation {
+        name: "game_maps",
+        derive: game_maps::derive,
+    },
+    // Reads data/extracted_heroes.json.
+    Derivation {
+        name: "ai_spawners",
+        derive: ai_spawners::derive,
+    },
+    Derivation {
+        name: "collision",
+        derive: collision::derive,
+    },
+    Derivation {
+        name: "collision_props",
+        derive: mode_props::derive,
+    },
+];
 
 /// Run every derivation and write its files under `out`.
 pub fn build(install: &Install, out: &Path) -> Result<Vec<PathBuf>> {
