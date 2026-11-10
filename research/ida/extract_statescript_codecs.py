@@ -3,7 +3,7 @@ that writes data/statescript_codecs_174.json: every statescript state class the 
 builds for each node class, and what that class reads from a frame (its property block and its class reader).
 
 Run it in IDA with a dump of the client's runtime image (base 0x7FF788F10000) open:
-    File > Script file... > tools/extract_statescript_codecs.py
+    File > Script file... > research/ida/extract_statescript_codecs.py
 It only reads the image (no database changes) and needs capstone (IDA's Python has it). It also reads, when
 present, the server's graph data (data/game_graphs_174.json.gz: class names and usage counts) and OWLib's STU
 types (the folder TankLib/STU/Types of an OWLib checkout, named by the OWLIB_TYPES environment variable). It
@@ -943,7 +943,7 @@ def build(repo):
     return {
         "build": 104319,
         "image_base": f"{BASE:#x}",
-        "generator": "tools/extract_statescript_codecs.py (IDA, the client's runtime image)",
+        "generator": "research/ida/extract_statescript_codecs.py (IDA, the client's runtime image)",
         "rule": "registration list 0x7FF78C1A69D8 walked from the head by 0x7FF78AA9FE60; a record "
         "replaces the entry when its priority is >= the entry's (0x7FF78AAA007D), so the highest priority "
         "wins and on a tie the record nearer the list's end; lookup 0x7FF78AAA02B0 by node typeinfo, then "
@@ -965,8 +965,8 @@ def build(repo):
 
 
 def main():
-    script = Path(globals().get("__file__") or "tools/extract_statescript_codecs.py")
-    repo = script.resolve().parents[1]
+    script = Path(globals().get("__file__") or "research/ida/extract_statescript_codecs.py")
+    repo = script.resolve().parents[2]
     table = build(repo)
     out = repo / "data" / "statescript_codecs_174.json"
     out.write_text(json.dumps(table, indent=1) + "\n", encoding="utf-8")

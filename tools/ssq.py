@@ -53,7 +53,7 @@ from ow174.game.script import expr, nodes, runtime  # noqa: E402
 from ow174.game.script import graph as graphs  # noqa: E402
 
 NAMES_PATH = ROOT / "data" / "statescript_names_174.json"
-CODECS_PATH = ROOT / "data" / "statescript_codecs_174.json"  # optional, tools/extract_statescript_codecs.py
+CODECS_PATH = ROOT / "data" / "statescript_codecs_174.json"  # optional, research/ida/extract_statescript_codecs.py
 CACHE_PATH = ROOT / "cache" / "ssq_index.pickle"
 # Optional: TankLib/STU/Types of an OWLib checkout, for each field's declared type and offset.
 OWLIB_TYPES = Path(os.environ["OWLIB_TYPES"]) if os.environ.get("OWLIB_TYPES") else None

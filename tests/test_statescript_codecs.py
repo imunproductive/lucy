@@ -1,5 +1,5 @@
 """The client's statescript codec table (data/statescript_codecs_174.json, read in the client code by
-tools/extract_statescript_codecs.py) and the encoder against it: every payload the encoder writes must read
+research/ida/extract_statescript_codecs.py) and the encoder against it: every payload the encoder writes must read
 back by the table, whole and with the same values."""
 
 import sys

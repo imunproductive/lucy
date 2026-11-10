@@ -1,5 +1,5 @@
 """What the 1.74 client reads for each statescript state class in a frame, from
-data/statescript_codecs_174.json (made in IDA by tools/extract_statescript_codecs.py from the client code).
+data/statescript_codecs_174.json (made in IDA by research/ida/extract_statescript_codecs.py from the client code).
 
 Per state class (STU hash): the class the client builds for it (registry winner), whether it is an StEC class
 (X then StAc, else A), its codec name and the layout of its payload: the property block's fields, then the

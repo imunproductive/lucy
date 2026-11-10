@@ -226,6 +226,22 @@ flowchart LR
   P8 --> P9[9 New docs]
 ```
 
+### Progress
+
+| Phase | Status |
+| --- | --- |
+| 0 Groundwork | Done |
+| D Docs | Done |
+| 1 Module folders | Done, merged with phase 3: files moved straight into the crates, large test modules moved to `tests.rs` files, the statescript VM split into 11 files by concern |
+| 2 Cut cycles | Done, before phase 1 |
+| 3 Workspace crates | Done |
+| 4 `orpheus` app | Done. The dashboard serves its profile, account, item, frame and loot box actions; the rest answer 501 (see `docs/notes/parity.md`). |
+| 5 Launcher and relay | Built and checked by injecting the Rust relay into a running process. **The live client gate is open**: it needs the 1.74 client. |
+| 6 Game data from CASC | Not started; needs the 1.74 client install |
+| 7 Tools | IDA script moved; `fake_client` covered by test fixtures; `ssq` deferred (see phase 7) |
+| 8 Remove Python | Waits for the phase 5 and 6 gates and gameplay parity |
+| 9 New documentation | Not started |
+
 Phases 1 to 3 are mostly mechanical, but they touch every Rust file. Each step lands as a local checkpoint commit. Gameplay work continues in the new layout afterwards. The Python server stays frozen throughout and serves as the behavioral reference until phase 8.
 
 ### Phase 0: Groundwork
@@ -370,7 +386,7 @@ Phase 2 ran before phase 1: cutting the edges first made the later moves pure mo
 - inject with `OpenProcess`, `VirtualAllocEx` and `CreateRemoteThread` plus `LoadLibraryW`, resolving the remote export through its owning module as `inject.py` does;
 - map TCP connections to process IDs (`GetExtendedTcpTable`) so the Battle.net emulator can tell two clients on one PC apart.
 
-The launcher loads only `owwfd_relay.dll` from the same folder as `orpheus.exe`. Cargo builds both into the same output folder, so the launcher always injects the DLL from the same build.
+The launcher loads `owwfd_relay.dll` from the same folder as `orpheus.exe`. `cargo build --workspace` builds both into the same output folder, so the launcher injects the DLL from the same build. `orpheus play` checks the install's `.build.info` version and refuses any build other than 104319; `--game` (or `ORPHEUS_GAME`, or `game` in `config.toml`) names the install, and `locale` picks the game language. The second-game helpers (`GetExtendedTcpTable` connection owners for the dashboard's `start_game`) wait for that dashboard action.
 
 **Relay** (`crates/relay`, a `cdylib` built with `windows-sys`). Port `relay/owwfd_relay.cpp` behavior for behavior:
 
@@ -468,9 +484,9 @@ flowchart LR
 
 | Tool | Fate |
 | --- | --- |
-| `fake_client.py` | Port into `testkit` as the lobby test client |
-| `ssq.py` | Port as `orpheus script query`. It needs `statescript_names_174.json` (fixed research data). |
-| `extract_statescript_codecs.py` | Move to `research/ida/`. It runs inside IDA. |
+| `fake_client.py` | Covered: the client side of the lobby handshake is the `client_handshake` fixture in `orpheus-wire` (feature `fixtures`), and the server's loopback test logs in, decodes the login messages and loads the Practice Range with it. Delete in phase 8. |
+| `ssq.py` | Port as `orpheus script query` once a graph bundle is available to check it against (phase 6 or a prepared pack). It reads `statescript_names_174.json` (fixed research data) and is 1,440 lines of queries over the Python VM. Until then it stays in `tools/`, and phase 8 waits for it. |
+| `extract_statescript_codecs.py` | Moved to `research/ida/` (done). It runs inside IDA. |
 | `build_collision.py`, `extract_*.py`, `dump_schemas.py`, `export_casc_records.ps1`, `prepare_server_runtime.py` | Replaced by phase 6. Delete in phase 8. |
 | `replay_game_commands.py`, `replay_native_body.py`, `probe_body_script.py`, `probe_practice.py`, `analyze_game_graphs.py`, `codec_coverage.py`, `export_item_previews.py` | They inspect or compare against the Python implementation. Delete in phase 8. Rewrite one on the Rust crates only if a concrete need comes up. |
 

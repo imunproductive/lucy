@@ -20,7 +20,8 @@ The frozen Python server (`ow174/`) is the behavioral reference until the Rust s
 - Social actions.
 - Dashboard actions that depend on missing features: opening loot boxes, the shop (`purchase` and item prices), the bot's group, matchmaking settings (`matchmaking`, `mode_settings`, `set_map`, `end_matches`), `reconnect` and `start_game`. The native dashboard answers them with 501. Its profile, account, frame, item and loot box actions work, but a logged-in game only sees their changes at its next login; the Python server pushed them to the live session.
 - Host mode (bind beyond loopback), join mode (a local Battle.net emulator pointing at a remote lobby) and tournament mode. The Python CLI modes are `retail`, `tournament`, `host`, `server`, `join` and `join-tournament`.
-- Starting the client and injecting the relay.
+- Starting the client and injecting the relay: `orpheus play` and the Rust relay exist, but no original client has logged in through them yet. The C++ relay and the Python launcher stay until one has.
+- A second game on the same PC (the dashboard's `start_game`) and telling two local games apart by their connection owners.
 - Open verification items: on-fire scoring and decay, the tips registry, network serialization of map values, instance overrides and foreign entities for target tags, named pools and pool resize rules, the randomized timer's client parity.
 
 ## Cutover criteria
