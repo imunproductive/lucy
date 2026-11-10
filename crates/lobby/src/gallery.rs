@@ -60,7 +60,10 @@ impl EquipRequest {
                 (0x88, Value::Signed(i64::from(self.slot))),
             ]);
             let mut messages = vec![(HERO_CATALOG, EQUIPPED, confirmation)];
-            if item.item_type == "Icon" {
+            // An account item or an icon changes the player card, which the
+            // party and friends see too (`ow174/lobby/handlers/gallery.py`).
+            let card_changed = self.hero == 0 || item.item_type == "Icon";
+            if card_changed {
                 let card = record(
                     profile,
                     login.identity,
@@ -77,7 +80,11 @@ impl EquipRequest {
                 "Skin" | "WeaponSkin" => Some(collection.equipped_skin(profile, self.hero)?),
                 _ => None,
             };
-            Ok(Some(Equipped { messages, skin }))
+            Ok(Some(Equipped {
+                messages,
+                skin,
+                card_changed,
+            }))
         })
     }
 }
@@ -85,4 +92,7 @@ impl EquipRequest {
 pub struct Equipped {
     pub messages: Vec<LobbyMessage>,
     pub skin: Option<SkinTheme>,
+    /// The player card changed (20502 is among the messages): the party and
+    /// friends must be told.
+    pub card_changed: bool,
 }
