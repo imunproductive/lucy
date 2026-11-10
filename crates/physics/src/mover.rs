@@ -20,17 +20,19 @@ use crate::{
     mover::kinematics::{Ground, MotionInput, Poses, VelocityStep, poses},
     mover::modifiers::{Modifier, ModifierKey, ModifierTimeline},
     mover::posture::{
-        CROUCHED, IN_AIR, JUMPED, NOT_GROUND_UNDER, Posture, PostureStep, TOUCHING, snap,
+        CROUCHED, FELL, IN_AIR, JUMPED, NOT_GROUND_UNDER, Posture, PostureStep, TOUCHING, snap,
     },
     mover::settings::MoverSettings,
 };
 use orpheus_wire::{
     commands::Command,
-    entity::{Movement, NO_INPUT},
+    entity::{Movement, NO_INPUT, POSITION_UNITS},
 };
 
 const ABYSS: f64 = 100.0;
 const EPSILON: f64 = 1.1754943508222875e-36;
+/// Positions and velocities are on a 1/1024 grid (`STEP` in `ow174/game/mover.py`).
+const STEP: f64 = 1.0 / POSITION_UNITS;
 
 /// Project the owner's current movement record into the authored 13-bit sample.
 pub fn sample_movement_flags(pose: &Movement) -> Option<u16> {
@@ -69,6 +71,9 @@ pub struct Mover {
     last_command: Option<Command>,
     last_input: Option<u32>,
     pose: Movement,
+    /// The last pose was a world-target move (`Mover.driven` in
+    /// `ow174/game/mover.py`).
+    driven: bool,
 }
 
 impl Mover {
@@ -95,6 +100,7 @@ impl Mover {
                 gravity: base.gravity_scale,
                 ..Movement::default()
             },
+            driven: false,
         })
     }
 
@@ -136,10 +142,26 @@ impl Mover {
         limit: usize,
         mut after_pose: impl FnMut(&mut Self, Command),
     ) -> Result<usize, HullContactError> {
+        self.step_pending_with(pending, limit, |mover, command| {
+            mover.step_pose_to(rays, command, dt, None)?;
+            after_pose(mover, command);
+            Ok(())
+        })
+    }
+
+    /// Like [`Mover::step_pending`], but `each` runs the pose itself (with
+    /// [`Mover::step_pose_to`]), so it can drive it toward a world target
+    /// (`Mover.step` with `simulate_pose` in `ow174/game/mover.py`, as
+    /// `Player._step_body_pose` in `ow174/game/match.py` uses it).
+    pub fn step_pending_with(
+        &mut self,
+        pending: &mut Poses,
+        limit: usize,
+        mut each: impl FnMut(&mut Self, Command) -> Result<(), HullContactError>,
+    ) -> Result<usize, HullContactError> {
         let mut stepped = 0;
         for command in pending.by_ref().take(limit) {
-            self.step_pose(rays, command, dt)?;
-            after_pose(self, command);
+            each(self, command)?;
             stepped += 1;
         }
         if stepped != 0 && pending.len() == 0 {
@@ -148,12 +170,28 @@ impl Mover {
         Ok(stepped)
     }
 
-    fn step_pose(
+    /// One posed frame (`Mover.step_pose` in `ow174/game/mover.py`). With
+    /// `move_to` (a feet target and a speed in metres per second) the body
+    /// sweeps toward the target instead of following the input and the result
+    /// is `Some(true)` once it arrived, `Some(false)` once it is blocked, and
+    /// `None` while it is still on its way. A target the speed can't move a
+    /// whole grid step this frame is ignored: no fractional progress is kept
+    /// between poses. The first pose without a target after driven ones starts
+    /// from rest.
+    pub fn step_pose_to(
         &mut self,
         rays: &TriangleIndex,
         command: Command,
         dt: f64,
-    ) -> Result<(), HullContactError> {
+        move_to: Option<([f64; 3], f64)>,
+    ) -> Result<Option<bool>, HullContactError> {
+        let move_to = move_to.filter(|&(_, speed)| {
+            (speed * dt).partial_cmp(&STEP) != Some(std::cmp::Ordering::Less)
+        });
+        if self.driven && move_to.is_none() {
+            self.pose.velocity = [0.0; 3];
+        }
+        self.driven = move_to.is_some();
         let active = self.modifiers.at(command.frame);
         let settings = active.settings(&self.base);
         let input = MotionInput::from(&command);
@@ -180,27 +218,35 @@ impl Mover {
                 probe,
                 dt,
                 pitch_held: input.pitch_held,
+                driven: move_to.is_some(),
             },
             &mut self.pose.position,
             &mut self.pose.velocity,
             |radius, top| self.body.try_resize(radius, top),
         )?;
-        let ground = self.posture.ground();
-        let velocity = VelocityStep {
-            base: &self.base,
-            settings: &settings,
-            input,
-            ground,
-            crouched: self.posture.crouched(),
-            dt,
-        }
-        .advance(self.pose.velocity);
-        if ground != Ground::Standing {
-            self.posture.apply_fall(settings.gravity_scale, dt);
-        }
-        let normal = probe.ground.map_or([0.0, 1.0, 0.0], |hit| hit.normal);
-        let vertical = self.move_body(rays, velocity, normal, ground == Ground::Standing, dt)?;
-        self.posture.finish_fall(settings.gravity_scale, vertical);
+        let outcome = match move_to {
+            None => {
+                let ground = self.posture.ground();
+                let velocity = VelocityStep {
+                    base: &self.base,
+                    settings: &settings,
+                    input,
+                    ground,
+                    crouched: self.posture.crouched(),
+                    dt,
+                }
+                .advance(self.pose.velocity);
+                if ground != Ground::Standing {
+                    self.posture.apply_fall(settings.gravity_scale, dt);
+                }
+                let normal = probe.ground.map_or([0.0, 1.0, 0.0], |hit| hit.normal);
+                let vertical =
+                    self.move_body(rays, velocity, normal, ground == Ground::Standing, dt)?;
+                self.posture.finish_fall(settings.gravity_scale, vertical);
+                None
+            }
+            Some((target, speed)) => self.move_to(rays, dt, target, speed)?,
+        };
 
         if input.throttles != [0; 2] {
             self.last_input = Some(command.frame);
@@ -221,7 +267,77 @@ impl Mover {
         self.pose.spring = self.posture.spring_steps().map(i32::from);
         self.pose.spring_speed = f64::from(self.posture.spring_speed());
         self.pose.fall = self.posture.fall;
-        Ok(())
+        Ok(outcome)
+    }
+
+    /// Sweep a speed-limited displacement toward a world feet position
+    /// (`Mover._move_to` in `ow174/game/mover.py`): `Some(true)` arrived,
+    /// `Some(false)` blocked (less than half a grid step of progress), `None`
+    /// still moving.
+    fn move_to(
+        &mut self,
+        rays: &TriangleIndex,
+        dt: f64,
+        target: [f64; 3],
+        speed: f64,
+    ) -> Result<Option<bool>, HullContactError> {
+        let start = self.pose.position;
+        let [dx, dy, dz] = std::array::from_fn(|axis| target[axis] - start[axis]);
+        let distance = dx.hypot(dy).hypot(dz);
+        if distance > STEP {
+            let scale = (speed * dt / distance).min(1.0);
+            let [x, y, z] = start;
+            let [bx, by, bz] = self.body.position().map(f64::from);
+            let lift = f64::from(self.lift());
+            let displacement = [
+                (x + dx * scale - bx) as f32,
+                (y + dy * scale + lift - by) as f32,
+                (z + dz * scale - bz) as f32,
+            ];
+            let movement = self.body.move_capsule(displacement, dt as f32)?;
+            let (mut end, touching) = (movement.position, movement.touching);
+            // The spring holds the capsule above the feet. On descent the
+            // feet still stop at walkable ground even when the capsule could
+            // move lower.
+            let lift = self.lift();
+            let feet = f64::from(end[1]) - f64::from(lift);
+            if dy < 0.0 && feet < y {
+                if let Some(ground) = rays
+                    .ground(
+                        f64::from(end[0]),
+                        f64::from(end[2]),
+                        y + STEP,
+                        feet,
+                        self.category,
+                    )
+                    .filter(|&hit| self.probe.walkable(hit))
+                {
+                    end[1] = (ground.y + f64::from(lift)) as f32;
+                }
+            }
+            self.place(rays, end, touching);
+        }
+        let position = self.pose.position;
+        let [rx, ry, rz] = std::array::from_fn(|axis| position[axis] - target[axis]);
+        let remaining = rx.hypot(ry).hypot(rz);
+        self.posture.fall = 0.0;
+        if position[1] - start[1] > STEP && self.posture.flags & IN_AIR == 0 {
+            self.posture.flags |= FELL;
+            self.posture.air_ticks = 0;
+        }
+        if remaining <= STEP || distance - remaining < STEP / 2.0 {
+            self.pose.velocity = [0.0; 3];
+            self.driven = false;
+            return Ok(Some(remaining <= STEP));
+        }
+        self.pose.velocity = std::array::from_fn(|axis| snap((position[axis] - start[axis]) / dt));
+        Ok(None)
+    }
+
+    /// The capsule's lowest point above the feet: the pogo plus the spring
+    /// offset (`Mover._lift` in `ow174/game/mover.py`).
+    fn lift(&self) -> f32 {
+        pogo(&self.base, self.posture.crouched()) as f32 + self.posture.spring_offset()
     }
 
     fn move_body(
@@ -256,21 +372,28 @@ impl Mover {
                 (x, y, z) = (x * factor, 0.0, z * factor);
             }
         }
-        self.posture.flags =
-            (self.posture.flags & !TOUCHING) | (u32::from(movement.touching) * TOUCHING);
-        let lift = pogo(&self.base, self.posture.crouched()) as f32 + self.posture.spring_offset();
-        let [px, py, pz] = movement.position;
+        let (position, touching) = (movement.position, movement.touching);
+        if self.place(rays, position, touching) {
+            y = 0.0;
+        }
+        self.pose.velocity = [x, y, z].map(snap);
+        Ok(y)
+    }
+
+    /// Put the feet under the moved capsule, on the position grid and no lower
+    /// than the abyss floor, and the capsule back over them; true when the
+    /// feet were past that floor (`Mover._place` in `ow174/game/mover.py`).
+    fn place(&mut self, rays: &TriangleIndex, position: [f32; 3], touching: bool) -> bool {
+        self.posture.flags = (self.posture.flags & !TOUCHING) | (u32::from(touching) * TOUCHING);
+        let lift = self.lift();
+        let [px, py, pz] = position;
         let feet = f64::from(py - lift);
         let floor = rays.lowest() - ABYSS;
         self.pose.position = [f64::from(px), feet.max(floor), f64::from(pz)].map(snap);
         let [px, py, pz] = self.pose.position;
         self.body
             .teleport([px as f32, (py + f64::from(lift)) as f32, pz as f32]);
-        if feet < floor {
-            y = 0.0;
-        }
-        self.pose.velocity = [x, y, z].map(snap);
-        Ok(y)
+        feet < floor
     }
 }
 
@@ -309,13 +432,131 @@ mod tests {
 
     use super::*;
     use crate::{
-        collision::cache::read_movement_cache, collision::scene::CollisionScene,
-        mover::modifiers::Operation, mover::settings::MoverCatalog,
+        collision::cache::read_movement_cache,
+        collision::scene::CollisionScene,
+        contact::round::{RoundShape, Sphere},
+        contact::world::{StaticGeometry, StaticShape},
+        mover::modifiers::Operation,
+        mover::settings::MoverCatalog,
     };
     use orpheus_wire::{
         commands::{CROUCH, JUMP},
         entity::movement_record,
     };
+
+    fn mover_in(shapes: Vec<StaticShape>) -> Mover {
+        Mover::new(
+            MoverSettings::default(),
+            Arc::new(ContactWorld::new(shapes).unwrap()),
+            [0.0; 3],
+            0,
+            0x18,
+        )
+        .unwrap()
+    }
+
+    fn idle(frame: u32) -> Command {
+        Command {
+            frame,
+            ..Command::default()
+        }
+    }
+
+    /// Drive toward `target` at 5 m/s until the move ends; the outcomes.
+    fn drive(mover: &mut Mover, rays: &TriangleIndex, target: [f64; 3]) -> Vec<Option<bool>> {
+        let mut outcomes = Vec::new();
+        for frame in 1..=100 {
+            let outcome = mover
+                .step_pose_to(rays, idle(frame), 0.016, Some((target, 5.0)))
+                .unwrap();
+            outcomes.push(outcome);
+            if outcome.is_some() {
+                break;
+            }
+        }
+        outcomes
+    }
+
+    #[test]
+    fn world_target_moves_arrive_or_report_blocking() {
+        let rays = TriangleIndex::new([]).unwrap();
+        let target = [1.0, 0.0, 0.0];
+
+        let mut open = mover_in(Vec::new());
+        let outcomes = drive(&mut open, &rays, target);
+        let (last, moving) = outcomes.split_last().unwrap();
+        assert_eq!(*last, Some(true));
+        assert!(moving.len() > 10 && moving.iter().all(Option::is_none));
+        assert_eq!(open.pose().position, target);
+        assert_eq!(open.pose().velocity, [0.0; 3]);
+        assert!(!open.driven);
+
+        // A sphere across the path stops the capsule short of the target.
+        let wall = StaticGeometry::Round {
+            shape: RoundShape::Sphere(Sphere {
+                center: [0.7, 1.0, 0.0],
+                radius: 0.3,
+            }),
+            mask: 0x18,
+        };
+        let mut blocked = mover_in(vec![StaticShape::new(wall, None).unwrap()]);
+        let outcomes = drive(&mut blocked, &rays, target);
+        assert_eq!(outcomes.last(), Some(&Some(false)));
+        assert!(blocked.pose().position[0] < 0.4);
+        assert_eq!(blocked.pose().velocity, [0.0; 3]);
+        assert!(!blocked.driven);
+    }
+
+    #[test]
+    fn undriven_poses_start_from_rest_and_slow_targets_are_ignored() {
+        let rays = TriangleIndex::new([]).unwrap();
+        let mut mover = mover_in(Vec::new());
+        let target = [1.0, 0.0, 0.0];
+        assert_eq!(
+            mover
+                .step_pose_to(&rays, idle(1), 0.016, Some((target, 5.0)))
+                .unwrap(),
+            None
+        );
+        assert!(mover.driven);
+        // 0.08 m on the 1/1024 grid is 82 steps; the velocity is that over dt, on the grid.
+        let x = mover.pose().position[0];
+        assert_eq!(x, 82.0 / 1024.0);
+        assert_eq!(mover.pose().velocity, [5125.0 / 1024.0, 0.0, 0.0]);
+        // A speed below one grid step per frame keeps no fractional progress:
+        // the pose runs as if it had no target, from rest.
+        assert_eq!(
+            mover
+                .step_pose_to(&rays, idle(2), 0.016, Some((target, 0.01)))
+                .unwrap(),
+            None
+        );
+        assert!(!mover.driven);
+        let pose = mover.pose();
+        assert_eq!((pose.velocity[0], pose.velocity[2]), (0.0, 0.0));
+        assert_eq!(pose.position[0], x);
+    }
+
+    #[test]
+    fn pending_poses_step_through_the_callback_and_keep_the_newest() {
+        let rays = TriangleIndex::new([]).unwrap();
+        let mut mover = mover_in(Vec::new());
+        let mut frames = Vec::new();
+        for newest in [5, 8] {
+            let mut pending = mover.pending_poses(idle(newest));
+            mover
+                .step_pending_with(&mut pending, usize::MAX, |mover, command| {
+                    frames.push(command.frame);
+                    mover
+                        .step_pose_to(&rays, command, 0.016, Some(([1.0, 0.0, 0.0], 5.0)))
+                        .map(drop)
+                })
+                .unwrap();
+        }
+        assert_eq!(frames, [5, 6, 7, 8]);
+        assert_eq!(mover.last_command.map(|command| command.frame), Some(8));
+        assert!(mover.pose().position[0] > 0.3);
+    }
 
     #[test]
     fn owner_movement_sample_covers_fresh_and_live_poses() {

@@ -642,11 +642,13 @@ fn unsupported_projectile_modes_do_not_become_hitscan_or_straight_damage() {
         buttons: orpheus_wire::commands::SECONDARY,
         ..Command::default()
     };
+    // A leased projectile with no direct damage still flies (combat.py
+    // `_shoot`: `damaging or shot is not None`), so only the modes the flight
+    // can't model are refused.
     for (field, value) in [
         ("m_45271E8C", json!(false)),
         ("m_projectileMotions", json!([{"$":"STU_E1A5B579"}])),
         ("m_numProjectilesPerShot", json!(2)),
-        ("m_6396149F", json!({"m_modifyHealth":{"m_amount":-1.0}})),
     ] {
         let mut fields = fixture_projectile_fields(40.0);
         fields[field] = value;

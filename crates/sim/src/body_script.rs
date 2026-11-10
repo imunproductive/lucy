@@ -1,21 +1,23 @@
 //! Prepared owner statescript for a live body in build 104319.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::Arc,
+    time::Duration,
 };
 
 use serde_json::Value as Json;
 
 use crate::{
-    combat::{PosedHitscan, PosedProjectile, PosedShot, eye_height},
+    combat::{MELEE, PosedHitscan, PosedMelee, PosedProjectile, PosedShot, eye_height},
     hitscan::aim_direction,
     instance::RETAIL_QUANTA,
     others::ObserverActivity,
     pools::{BODY_GRAPH, FALLBACK_POOLS, HealthPools},
-    projectiles::{ProjectileLeases, local_prediction, predicted_sync},
+    projectiles::{ProjectileLeases, local_prediction, predicted_sync, spawned_definitions},
     replication::{BodyStep, OwnerBodyRuntime},
+    voice::{SpawnBark, begin_spawn_bark},
 };
 use orpheus_content::heroes::Hero;
 #[cfg(any(test, feature = "fixtures"))]
@@ -32,15 +34,23 @@ use orpheus_script::{
     player::PlayerWorld,
     snapshot::{SnapshotEncoder, View},
     timeline::FRAME_MS,
+    ultimate::{ULT_SECONDS, UltimateCharge},
     vitals::Vitals,
-    vm::{Component, MAX_INIT_WORK, Root, Snapshot, World},
+    vm::{Component, GameMessage, MAX_INIT_WORK, MoveRequest, Root, Snapshot, World},
     weapons::{HitDefinition, ProjectileBallistics, authored_number},
-    wire::Variables,
+    wire::{Value, Variables},
 };
 use orpheus_wire::{
     commands::Command,
     entity::{Component as EntityComponent, Movement},
 };
+
+/// The owner's health for the graphs, and the HUD panel's current and
+/// maximum health: entity variables no graph writes (driver.py
+/// `OWNER_HEALTH`, `HUD_HEALTH`, `HUD_MAX_HEALTH`).
+const OWNER_HEALTH: u32 = 253;
+const HUD_HEALTH: u32 = 1732;
+const HUD_MAX_HEALTH: u32 = 1737;
 
 #[derive(Clone, Copy)]
 pub struct OwnerBodySpawn {
@@ -156,6 +166,9 @@ impl PlayerBodyFactory {
                 component.evaluate_state_config(instance, raw, config, &mut world)
             },
         )?;
+        // driver.py `BodyScript._spawn`: the abilities that start on the
+        // ultimate's charge, which fills over ULT_SECONDS.
+        let ultimate = UltimateCharge::new(&component, &self.graphs, ULT_SECONDS);
         let runtime = PlayerBodyRuntime {
             component,
             world,
@@ -163,6 +176,9 @@ impl PlayerBodyFactory {
             modifiers,
             leases,
             frame: spawn.frame,
+            ultimate,
+            melee_seen: HashMap::new(),
+            bark: None,
         };
         runtime.log_assumptions();
         Ok(runtime)
@@ -195,6 +211,12 @@ pub struct PlayerBodyRuntime {
     modifiers: Option<BTreeMap<ModifierKey, Modifier>>,
     leases: ProjectileLeases,
     frame: u32,
+    ultimate: UltimateCharge,
+    /// The activation of each quick melee state seen last (combat.py
+    /// `melee_seen`).
+    melee_seen: HashMap<(u16, u16), u16>,
+    /// The spawn voice line while it plays (voicelines.py).
+    bark: Option<SpawnBark>,
 }
 
 impl PlayerBodyRuntime {
@@ -207,6 +229,74 @@ impl PlayerBodyRuntime {
         {
             log_assumption(item.site.graph, item.site.node, &item.class, item.answer);
         }
+    }
+
+    /// combat.py `_melee`: quick melee's ModifyHealth state (0043 st4) hits
+    /// what its TrackTargets would find, once per activation: a sphere ahead
+    /// of the eye along the aim. The VM can't track targets, so the match
+    /// finds them. Each activation is seen whether or not a pose came with
+    /// it.
+    fn melee(&mut self, command: Option<Command>, mover: &Mover) -> Vec<PosedShot> {
+        let Some(snapshot) = self.component.snapshot() else {
+            return Vec::new();
+        };
+        let mut started = Vec::new();
+        for (&id, instance) in &snapshot.instances {
+            for &(graph, raw, reach, radius) in &MELEE {
+                if instance.graph != graph {
+                    continue;
+                }
+                let Some(state) = instance.states.get(&raw) else {
+                    continue;
+                };
+                let seen = self
+                    .melee_seen
+                    .insert((id, raw), state.activation)
+                    .unwrap_or(0);
+                if state.activation != seen && state.active {
+                    started.push((id, raw, graph, reach, radius));
+                }
+            }
+        }
+        let Some(command) = command else {
+            return Vec::new();
+        };
+        let [x, y, z] = mover.pose().position;
+        let eye = [x, y + eye_height(self.world.hero, mover.crouched()), z];
+        let aim = aim_direction(&command);
+        let graphs = Arc::clone(&self.world.graphs);
+        started
+            .into_iter()
+            .filter_map(|(id, raw, graph, reach, radius)| {
+                let node = graphs.graph(graph)?.state(usize::from(raw))?;
+                let modify = node
+                    .field("m_modifyHealth")
+                    .filter(|value| !value.is_null())?;
+                let mut evaluate = |field: &str| {
+                    modify
+                        .get(field)
+                        .filter(|value| !value.is_null())
+                        .and_then(|config| {
+                            self.component
+                                .evaluate_state_config(id, raw, config, &mut self.world)
+                                .ok()
+                        })
+                };
+                let amount = evaluate("m_amount").map_or(0.0, |value| to_float(&value));
+                let loadout = match evaluate("m_loadout") {
+                    Some(Value::Asset(guid)) => Some(guid),
+                    _ => None,
+                };
+                Some(PosedShot::Melee(PosedMelee {
+                    source: self.world.entity,
+                    centre: std::array::from_fn(|axis| eye[axis] + aim[axis] * reach),
+                    radius,
+                    amount,
+                    loadout,
+                    command,
+                }))
+            })
+            .collect()
     }
 }
 
@@ -255,6 +345,9 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
             self.component
                 .advance_command(command, &mut self.world)
                 .map_err(unsupported)?;
+            self.ultimate
+                .charge(&mut self.component, &mut self.world)
+                .map_err(unsupported)?;
             self.modifiers = self
                 .component
                 .movement_modifiers(&mut self.world)
@@ -286,14 +379,96 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         (!self.leases.blocks().is_empty()).then_some(&self.leases)
     }
 
+    fn vitals_mut(&mut self) -> Option<&mut Vitals> {
+        Some(&mut self.world.vitals)
+    }
+
+    /// driver.py `BodyScript.set_health`: #253 for the graphs, #1732 and
+    /// #1737 for the HUD's number, and a body with nothing left is dead to
+    /// its own script (the client's LogicalButton takes no presses).
+    fn health_changed(&mut self) -> io::Result<()> {
+        let (total, maximum) = (self.world.vitals.total(), self.world.vitals.maximum());
+        for (variable, value) in [
+            (OWNER_HEALTH, total),
+            (HUD_HEALTH, total),
+            (HUD_MAX_HEALTH, maximum),
+        ] {
+            self.component
+                .set_entity_variable(variable, Value::Float(value), &mut self.world)
+                .map_err(unsupported)?;
+        }
+        self.component.set_owner_dead(total <= 0.0);
+        Ok(())
+    }
+
+    fn receive_message(&mut self, message: u64, parameters: Variables) -> io::Result<usize> {
+        let entries = self
+            .component
+            .receive_message(message, parameters, &mut self.world)
+            .map_err(unsupported)?;
+        self.log_assumptions();
+        Ok(entries)
+    }
+
+    fn take_messages(&mut self) -> Vec<GameMessage> {
+        self.world.take_messages()
+    }
+
+    fn move_requests(&self) -> Vec<MoveRequest> {
+        self.component.move_requests()
+    }
+
+    /// match.py `body_command`: the move's end is due at the frame's time.
+    fn finish_move(&mut self, request: MoveRequest, arrived: bool, frame: u32) -> io::Result<()> {
+        let due = u64::from(frame) * FRAME_MS;
+        let delay = due.saturating_sub(self.component.now_ms());
+        self.component
+            .finish_move(
+                request.instance,
+                request.raw_state,
+                arrived,
+                delay,
+                &mut self.world,
+            )
+            .map_err(unsupported)
+    }
+
+    fn begin_spawn_bark(&mut self, now: Duration) -> io::Result<()> {
+        if let Some(bark) = begin_spawn_bark(
+            &mut self.component,
+            &Arc::clone(&self.world.graphs),
+            self.world.hero,
+            now,
+            &mut self.world,
+        )
+        .map_err(unsupported)?
+        {
+            self.bark = Some(bark);
+        }
+        Ok(())
+    }
+
+    fn expire_bark(&mut self, now: Duration) -> io::Result<()> {
+        if let Some(bark) = &self.bark {
+            if bark
+                .expire(now, &mut self.component, &mut self.world)
+                .map_err(unsupported)?
+            {
+                self.bark = None;
+            }
+        }
+        Ok(())
+    }
+
     fn take_shots(&mut self, command: Option<Command>, mover: &Mover) -> Vec<PosedShot> {
         let shots = self.component.take_shots().unwrap_or_default();
+        let melee = self.melee(command, mover);
         let Some(command) = command else {
             return Vec::new();
         };
         let [x, y, z] = mover.pose().position;
         let origin = [x, y + eye_height(self.world.hero, mover.crouched()), z];
-        shots
+        let mut posed: Vec<_> = shots
             .into_iter()
             .filter_map(|shot| {
                 let node = self.component.shot_node(&shot)?;
@@ -325,20 +500,17 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                         ProjectileBallistics::from_authored(node, &mut evaluate).ok()??;
                     let definition = ballistics.definition?;
                     self.leases.entity(definition, shot.frame, 0)?;
-                    if (ballistics.direct.is_none() && ballistics.blast.is_none())
-                        || ballistics.direct.is_some_and(|hit| hit.amount <= 0.0)
-                        || ballistics
-                            .blast
-                            .as_ref()
-                            .is_some_and(|blast| blast.hit.amount <= 0.0)
-                    {
-                        return None;
-                    }
+                    // combat.py `_shoot`: a leased projectile flies whether or
+                    // not it does damage; the Biotic Field canister leaves its
+                    // field where it lands (projectiles.py `fired`).
+                    let spawn = spawned_definitions(node).first().copied();
                     return Some(PosedShot::Projectile(PosedProjectile {
                         shot,
                         ballistics,
                         origin,
                         direction: aim_direction(&command),
+                        spawn,
+                        feet: [x, y, z],
                     }));
                 }
                 let hit = HitDefinition::from_authored(node.field("m_6396149F")?, &mut evaluate)
@@ -361,7 +533,9 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                     hit,
                 }))
             })
-            .collect()
+            .collect();
+        posed.extend(melee);
+        posed
     }
 }
 

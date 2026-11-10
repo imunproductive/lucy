@@ -76,6 +76,12 @@ impl ProjectedSnapshot {
         merged.instances.insert(id, instance);
         Some(merged)
     }
+
+    /// A state's projected payload in this frame, as `matching_volley` in
+    /// `ow174/game/projectiles.py` reads `snapshot.states[key][2]`.
+    pub fn state_payload(&self, instance: u16, state: u16) -> Option<&StatePayload> {
+        Some(&self.instances.get(&instance)?.states.get(&state)?.payload)
+    }
 }
 
 /// The pulsers whose client-only plug posts a kill feed line to the mode UI,

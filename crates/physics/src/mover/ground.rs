@@ -81,6 +81,13 @@ impl GroundProbe {
         })
     }
 
+    /// Ground the feet can stand on: walkable slope (`slope_cos`) and not
+    /// flagged `NOT_GROUND` (`Mover._probe` and `Mover._move_to` in
+    /// `ow174/game/mover.py`).
+    pub(crate) fn walkable(&self, hit: GroundHit) -> bool {
+        hit.normal[1] > self.slope_cos && hit.surface & NOT_GROUND == 0
+    }
+
     pub fn probe(
         &self,
         rays: &TriangleIndex,
@@ -110,7 +117,7 @@ impl GroundProbe {
         if settings.gravity_scale <= 0.0 {
             return Ok(result);
         }
-        if hit.is_some_and(|hit| hit.normal[1] > self.slope_cos && hit.surface & NOT_GROUND == 0) {
+        if hit.is_some_and(|hit| self.walkable(hit)) {
             result.ground = hit;
             return Ok(result);
         }

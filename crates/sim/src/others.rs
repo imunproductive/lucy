@@ -18,7 +18,7 @@
 //! - "left the game" and the controller entity's destroy when he leaves.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io, mem,
     time::Duration,
 };
@@ -27,7 +27,7 @@ use crate::{
     body::{BodyCreate, BodyView, body_create, remote_movement},
     notices::{Switch, card_message, card_record, joined_message, left_message},
     pools::PoolCatalog,
-    replication::{BODY_REUSE_DELAY, BodyId, Lifetime},
+    replication::{BODY_REUSE_DELAY, BodyId, Lifetime, kill_feed_fresh},
     scene::{PlayerAppearance, PlayerCard, Possession, player_create, player_team_bit},
 };
 use orpheus_content::{heroes::Hero, maps::GameMap};
@@ -150,8 +150,42 @@ pub(crate) struct RemoteBody<'a> {
     pub pose: Movement,
     /// Its current pools; None = the hero's own.
     pub vitals: Option<&'a Vitals>,
+    /// Counts the changes of its pools: a client that has another count
+    /// gets them (combat.py `_send_health`).
+    pub health: u64,
+    /// Its death, while it is dead.
+    pub death: Option<RemoteDeath>,
     /// Its statescript, on send ticks, when another client takes its frames.
     pub script: Option<ObservedScript<'a>>,
+}
+
+/// A body's death as the kill feed needs it (combat.py `Vitals.death_tick`,
+/// `killer`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RemoteDeath {
+    pub tick: u32,
+    pub killer: u32,
+}
+
+/// What one client can show besides the other players (combat.py
+/// `kill_feed_allowed`, server.py `combat_identity_ready`): whether its mode
+/// UI arrived, its own current body, and the other entities it has.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ViewerReadiness<'a> {
+    pub mode_ready: bool,
+    pub own_body: Option<u32>,
+    pub created: Option<&'a HashSet<u32>>,
+}
+
+impl ViewerReadiness<'_> {
+    /// The viewer's own body or an entity it has; None for anything else
+    /// (another player's body, which [`Others`] answers).
+    fn ready(&self, entity: u32) -> bool {
+        self.own_body == Some(entity)
+            || self
+                .created
+                .is_some_and(|created| created.contains(&entity))
+    }
 }
 
 /// A body's statescript as other clients get it (observers.py `snapshot`):
@@ -200,13 +234,32 @@ pub(crate) struct Held {
 /// only for the lifetime it was made for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OtherDelivery {
-    Controller { serial: u64 },
-    ControllerDestroy { serial: u64 },
-    Entry { serial: u64, last: u32 },
-    Possession { serial: u64, held: Held },
+    Controller {
+        serial: u64,
+    },
+    ControllerDestroy {
+        serial: u64,
+    },
+    Entry {
+        serial: u64,
+        last: u32,
+    },
+    Possession {
+        serial: u64,
+        held: Held,
+    },
     Body(BodyId),
     BodyDestroy(BodyId),
-    Script { body: BodyId, last: u32 },
+    Script {
+        body: BodyId,
+        last: u32,
+    },
+    /// The body's pools (combat.py `_send_health`), current while no newer
+    /// change went out.
+    Health {
+        body: BodyId,
+        revision: u64,
+    },
 }
 
 /// Another player's controller entity on this client (match.py ShownController).
@@ -220,6 +273,9 @@ struct Shown {
     pick: Option<Option<u64>>,
     card_again: Option<u32>,
     possession: Option<Held>,
+    /// The body of the possession this client acknowledged (server.py
+    /// `_confirmed_possessions`).
+    confirmed: Option<BodyId>,
     /// The serial of his last hero switch this client took.
     switch: Option<u64>,
 }
@@ -233,6 +289,8 @@ struct Seen {
     /// Its create arrived: possession and statescript may follow.
     arrived: bool,
     watch: Option<Watch>,
+    /// The pool changes this client got (the create's, then updates).
+    health: u64,
 }
 
 /// The body's statescript on this client (observers.py Watch).
@@ -305,6 +363,9 @@ impl Others {
             OtherDelivery::Script { body, .. } => {
                 seen(body, Lifetime::Live) && self.seen[&body.entity].watch.is_some()
             }
+            OtherDelivery::Health { body, revision } => {
+                seen(body, Lifetime::Live) && self.seen[&body.entity].health == revision
+            }
         }
     }
 
@@ -372,7 +433,16 @@ impl Others {
                     shown.entry.arrived(last);
                 }
             }
-            OtherDelivery::Possession { .. } | OtherDelivery::Script { .. } => {}
+            OtherDelivery::Possession { serial, held } => {
+                if let Some(shown) = self
+                    .shown
+                    .get_mut(&entity)
+                    .filter(|shown| shown.serial == serial)
+                {
+                    shown.confirmed = Some(held.body);
+                }
+            }
+            OtherDelivery::Script { .. } | OtherDelivery::Health { .. } => {}
             OtherDelivery::Body(id) => {
                 if let Some(seen) = self.seen.get_mut(&id.entity) {
                     seen.arrived = true;
@@ -419,15 +489,31 @@ impl Others {
         self.serial
     }
 
+    /// Whether this client may name another player's body in a combat
+    /// notice (server.py `combat_identity_ready`: once the player's
+    /// possession of it arrived). None for an entity that is not another
+    /// player's body.
+    pub(crate) fn possession_confirmed(&self, entity: u32) -> Option<bool> {
+        self.shown
+            .get(&(entity & !0xff))
+            .map(|shown| shown.confirmed.is_some_and(|body| body.entity == entity))
+    }
+
+    fn identity_ready(&self, entity: u32, readiness: &ViewerReadiness<'_>) -> bool {
+        self.possession_confirmed(entity)
+            .unwrap_or_else(|| readiness.ready(entity))
+    }
+
     /// Bring the client of `room[viewer]` up to date for this tick, in the
     /// order of match.py `update`: what the players did since the last tick
     /// (switches and leaves), the bodies' statescript, the cards and
-    /// controller entities, then the bodies.
+    /// controller entities, then the bodies and their health.
     pub(crate) fn show(
         &mut self,
         context: &ShowContext<'_>,
         room: &[PlayerView<'_>],
         viewer: usize,
+        readiness: &ViewerReadiness<'_>,
     ) -> io::Result<ShowOutput> {
         let mut output = ShowOutput::default();
         self.movements.clear();
@@ -446,7 +532,7 @@ impl Others {
         }
         if context.frames {
             for other in others() {
-                self.observe(context, other, &mut output);
+                self.observe(context, other, readiness, &mut output);
             }
         }
         if !self.card_sent {
@@ -463,6 +549,9 @@ impl Others {
         }
         for other in others() {
             self.ensure_body(context, other, &mut output)?;
+        }
+        for other in others() {
+            self.send_health(other, &mut output);
         }
         if context.frames {
             self.movements = others()
@@ -538,6 +627,7 @@ impl Others {
         &mut self,
         context: &ShowContext<'_>,
         other: &PlayerView<'_>,
+        readiness: &ViewerReadiness<'_>,
         output: &mut ShowOutput,
     ) {
         let Some((body, script)) = other
@@ -547,6 +637,19 @@ impl Others {
         else {
             return;
         };
+        // A dead body's kill feed pulse waits for what this client can show
+        // (observers.py `_frames`: `kill_feed_snapshot`, combat.py
+        // `kill_feed_allowed`).
+        let kill_feed = other
+            .body
+            .as_ref()
+            .and_then(|body| body.death)
+            .map(|death| {
+                readiness.mode_ready
+                    && kill_feed_fresh(context.tick, death.tick)
+                    && self.identity_ready(body.entity, readiness)
+                    && self.identity_ready(death.killer, readiness)
+            });
         let Some(seen) = self
             .seen
             .get_mut(&body.entity)
@@ -578,6 +681,10 @@ impl Others {
             script
                 .encoder
                 .project_next(script.snapshot, base)
+                .map(|next| match kill_feed {
+                    Some(allowed) => next.gate_kill_feed(&watch.stream, allowed),
+                    None => next,
+                })
                 .and_then(|next| {
                     script.encoder.queue_delta(
                         &mut watch.stream,
@@ -688,6 +795,7 @@ impl Others {
                     pick: None,
                     card_again: Some(context.tick.saturating_add(CARD_AGAIN_TICKS)),
                     possession: None,
+                    confirmed: None,
                     switch: other.switch.map(|switch| switch.serial),
                 },
             );
@@ -812,6 +920,7 @@ impl Others {
                 lifetime: Lifetime::Live,
                 sent: false,
                 arrived: false,
+                health: body.health,
                 watch: Some(Watch {
                     stream: BodyStream::new(body.id.entity),
                     sent: None,
@@ -821,6 +930,39 @@ impl Others {
         );
         output.records.push((create, OtherDelivery::Body(body.id)));
         Ok(())
+    }
+
+    /// combat.py `_send_health`: the body's pools when they changed since
+    /// what this client has, once its create arrived.
+    fn send_health(&mut self, other: &PlayerView<'_>, output: &mut ShowOutput) {
+        let Some(body) = other.body.as_ref().filter(|_| other.entered.is_some()) else {
+            return;
+        };
+        let Some(vitals) = body.vitals else {
+            return;
+        };
+        let Some(seen) = self
+            .seen
+            .get_mut(&body.id.entity)
+            .filter(|seen| seen.id == body.id && seen.lifetime == Lifetime::Live && seen.arrived)
+        else {
+            return;
+        };
+        if seen.health == body.health {
+            return;
+        }
+        seen.health = body.health;
+        output.records.push((
+            EntityUpdate {
+                entity: body.id.entity,
+                operation: Some(Operation::Update(vec![vitals.component()])),
+                ..EntityUpdate::default()
+            },
+            OtherDelivery::Health {
+                body: body.id,
+                revision: body.health,
+            },
+        ));
     }
 
     /// Everything this client had of the others is gone with its world.
@@ -895,6 +1037,8 @@ mod tests {
             skin: SkinTheme::default(),
             pose: Movement::default(),
             vitals: None,
+            health: 0,
+            death: None,
             script: None,
         }
     }
@@ -912,6 +1056,7 @@ mod tests {
                     OtherDelivery::Body(_) => "body",
                     OtherDelivery::BodyDestroy(_) => "body destroy",
                     OtherDelivery::Script { .. } => "script",
+                    OtherDelivery::Health { .. } => "health",
                 };
                 (update.entity, kind)
             })
@@ -951,10 +1096,13 @@ mod tests {
         ];
         room[1].body = Some(body(&soldier, 1, 1));
         let mut others = Others::default();
+        let ready = ViewerReadiness::default();
 
         // The own card, the other's card ("joined": he came later), his
         // entity and his body; no movement before the body's create went out.
-        let output = others.show(&context, &room, 0).unwrap();
+        let output = others
+            .show(&context, &room, 0, &ViewerReadiness::default())
+            .unwrap();
         assert_eq!(output.cards.len(), 2);
         assert!(!flag(&output.cards[0]) && flag(&output.cards[1]));
         assert_eq!(summary(&output), [(OTHER, "create"), (OTHER | 1, "body")]);
@@ -964,7 +1112,9 @@ mod tests {
         // Both arrived: his team list entry and his possession; a movement
         // record from now on.
         context.tick += 3;
-        let output = others.show(&context, &room, 0).unwrap();
+        let output = others
+            .show(&context, &room, 0, &ViewerReadiness::default())
+            .unwrap();
         assert!(output.cards.is_empty());
         assert_eq!(summary(&output), [(OTHER, "entry"), (OTHER, "possession")]);
         let [movement] = others.movements() else {
@@ -974,13 +1124,15 @@ mod tests {
         assert_eq!(movement.movement.unwrap().input_frame, Some(NO_INPUT));
         arrive(&mut others, &output);
         context.tick += 3;
-        assert!(summary(&others.show(&context, &room, 0).unwrap()).is_empty());
+        assert!(summary(&others.show(&context, &room, 0, &ready).unwrap()).is_empty());
 
         // A switch: the old body goes, the new one comes, and once it arrived
         // its possession and the new pick.
         room[1].body = Some(body(&soldier, 2, 2));
         context.tick += 3;
-        let output = others.show(&context, &room, 0).unwrap();
+        let output = others
+            .show(&context, &room, 0, &ViewerReadiness::default())
+            .unwrap();
         assert_eq!(
             summary(&output),
             [(OTHER | 1, "body destroy"), (OTHER | 2, "body")]
@@ -990,14 +1142,18 @@ mod tests {
         assert!(others.retains(OTHER | 1, Duration::ZERO));
         assert!(!others.retains(OTHER | 1, BODY_REUSE_DELAY));
         context.tick += 3;
-        let output = others.show(&context, &room, 0).unwrap();
+        let output = others
+            .show(&context, &room, 0, &ViewerReadiness::default())
+            .unwrap();
         assert_eq!(summary(&output), [(OTHER, "possession")]);
         arrive(&mut others, &output);
 
         // He leaves: "left the game", then his body and his entity go.
         room[1].entered = None;
         context.tick += 3;
-        let output = others.show(&context, &room, 0).unwrap();
+        let output = others
+            .show(&context, &room, 0, &ViewerReadiness::default())
+            .unwrap();
         let [left] = &output.cards[..] else {
             panic!("one left notice");
         };
@@ -1009,7 +1165,9 @@ mod tests {
         assert!(others.movements().is_empty());
         arrive(&mut others, &output);
         context.tick += 3;
-        let output = others.show(&context, &room, 0).unwrap();
+        let output = others
+            .show(&context, &room, 0, &ViewerReadiness::default())
+            .unwrap();
         assert!(output.cards.is_empty() && output.records.is_empty());
     }
 
@@ -1040,17 +1198,36 @@ mod tests {
         // A switch before this client had him is not shown.
         room[1].switch = Some(switch(1));
         let mut others = Others::default();
-        assert!(others.show(&context, &room, 0).unwrap().switches.is_empty());
+        let ready = ViewerReadiness::default();
+        assert!(
+            others
+                .show(&context, &room, 0, &ready)
+                .unwrap()
+                .switches
+                .is_empty()
+        );
         room[1].switch = Some(switch(2));
         assert_eq!(
-            others.show(&context, &room, 0).unwrap().switches,
+            others.show(&context, &room, 0, &ready).unwrap().switches,
             [switch(2)]
         );
-        assert!(others.show(&context, &room, 0).unwrap().switches.is_empty());
+        assert!(
+            others
+                .show(&context, &room, 0, &ready)
+                .unwrap()
+                .switches
+                .is_empty()
+        );
         // Enemies get no line.
         room[1].team = 1;
         room[1].switch = Some(switch(3));
-        assert!(others.show(&context, &room, 0).unwrap().switches.is_empty());
+        assert!(
+            others
+                .show(&context, &room, 0, &ready)
+                .unwrap()
+                .switches
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1080,15 +1257,27 @@ mod tests {
             })
             .collect();
         let mut others = Others::default();
-        let output = others.show(&context, &room, 0).unwrap();
+        let ready = ViewerReadiness::default();
+        let output = others
+            .show(&context, &room, 0, &ViewerReadiness::default())
+            .unwrap();
         // The own card and three others; the other two the next tick.
         assert_eq!(output.cards.len(), 4);
         assert!(output.cards.iter().all(|card| !flag(card)));
         context.tick += 1;
-        assert_eq!(others.show(&context, &room, 0).unwrap().cards.len(), 2);
+        assert_eq!(
+            others.show(&context, &room, 0, &ready).unwrap().cards.len(),
+            2
+        );
         context.tick = 1000 + CARD_AGAIN_TICKS;
-        assert_eq!(others.show(&context, &room, 0).unwrap().cards.len(), 4);
+        assert_eq!(
+            others.show(&context, &room, 0, &ready).unwrap().cards.len(),
+            4
+        );
         context.tick += 1;
-        assert_eq!(others.show(&context, &room, 0).unwrap().cards.len(), 2);
+        assert_eq!(
+            others.show(&context, &room, 0, &ready).unwrap().cards.len(),
+            2
+        );
     }
 }

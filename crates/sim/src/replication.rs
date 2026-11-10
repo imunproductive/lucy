@@ -14,14 +14,18 @@ use crate::{
     body_script::OwnerBodySpawn,
     bot_script::{BotEvent, BotViewContext, BotViews},
     bots::BOT_RECORD_DELAY,
-    combat::{BotReplacement, PosedHitscan, PosedProjectile, PosedShot},
+    combat::{
+        BotReplacement, DEAD, PlayerHit, PlayerTarget, PosedProjectile, PosedShot, RESPAWN_RETRY,
+        death_message, respawn_time,
+    },
     controller::ControllerFrame,
     egress::{DeliveryReport, FrameRecords, GameEgress, RecordSource, SendError, SentFrame},
     notices::{NOTICE_GAP, Switch, switch_notices},
     others::{
         ObservedScript, ObserverActivity, OtherDelivery, Others, PlayerView, RemoteBody,
-        ShowContext, ShowOutput,
+        RemoteDeath, ShowContext, ShowOutput, ViewerReadiness,
     },
+    pools::FALLBACK_POOLS,
     projectile_flight::{FlightEnd, ProjectileFlight},
     projectiles::{OwnerProjectiles, ProjectileDelivery, ProjectileLeases, ProjectileToken},
     scene::{PlayerAppearance, Possession, player_team_bit},
@@ -35,15 +39,15 @@ use orpheus_core::tick::{MAX_LEASE_FRAME, SEND_EVERY, TICK_PERIOD};
 use orpheus_physics::{
     mover::Mover,
     mover::correction::CorrectionHistory,
-    mover::kinematics::Poses,
+    mover::kinematics::{Poses, poses as kinematics_poses},
     mover::modifiers::{Modifier, ModifierKey},
 };
 use orpheus_script::{
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
-    vitals::Vitals,
-    vm::Snapshot,
-    wire::Value as ScriptValue,
+    vitals::{Death, Vitals},
+    vm::{GameMessage, MoveRequest, Snapshot},
+    wire::{Value as ScriptValue, Variables},
 };
 use orpheus_wire::{
     commands::{Command, CommandQueue},
@@ -113,6 +117,57 @@ pub trait OwnerBodyRuntime: Send {
     fn observer_activity(&self) -> Option<ObserverActivity> {
         None
     }
+
+    /// The body's pools, for damage and healing (combat.py `Vitals`).
+    fn vitals_mut(&mut self) -> Option<&mut Vitals> {
+        None
+    }
+
+    /// The pools changed outside the VM: the owner's health variables follow
+    /// them, and a body with none left is dead to its own script
+    /// (driver.py `BodyScript.set_health`).
+    fn health_changed(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// A game message from another entity, run now (match.py
+    /// `deliver_body_messages`, combat.py `_died`). Returns how many entries
+    /// took it.
+    fn receive_message(&mut self, _message: u64, _parameters: Variables) -> io::Result<usize> {
+        Ok(0)
+    }
+
+    /// The game messages the body sent other entities since the last call.
+    fn take_messages(&mut self) -> Vec<GameMessage> {
+        Vec::new()
+    }
+
+    /// The active `MoveTo` states' targets (match.py `_step_body_pose`).
+    fn move_requests(&self) -> Vec<MoveRequest> {
+        Vec::new()
+    }
+
+    /// A world-target move ended at this frame: the state finishes when the
+    /// body arrived, else aborts (match.py `body_command`).
+    fn finish_move(
+        &mut self,
+        _request: MoveRequest,
+        _arrived: bool,
+        _frame: u32,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// Begin the hero's spawn voice line (voicelines.py `VoiceLines.spawned`).
+    fn begin_spawn_bark(&mut self, _now: Duration) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// End the spawn voice line once its time is up (voicelines.py
+    /// `VoiceLines.expire`).
+    fn expire_bark(&mut self, _now: Duration) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -163,12 +218,15 @@ impl BodyScript {
         })
     }
 
+    /// One frame of the body's script. A dead body's reports go nowhere
+    /// (combat.py `Combat.command`: the dead do not shoot).
     fn advance(
         &mut self,
         mover: &mut Mover,
         command: Command,
         step: BodyStep,
-    ) -> io::Result<Vec<PosedHitscan>> {
+        dead: bool,
+    ) -> io::Result<Vec<PosedShot>> {
         if command.frame > self.frame {
             self.runtime.advance(command, mover, step)?;
             self.frame = command.frame;
@@ -198,17 +256,20 @@ impl BodyScript {
         {
             history.record(mover.pose());
         }
-        let mut hitscan = Vec::new();
-        for shot in self
+        let mut hits = Vec::new();
+        let shots = self
             .runtime
-            .take_shots((step == BodyStep::Posed).then_some(command), mover)
-        {
+            .take_shots((step == BodyStep::Posed).then_some(command), mover);
+        if dead {
+            return Ok(hits);
+        }
+        for shot in shots {
             match shot {
-                PosedShot::Hitscan(shot) => hitscan.push(shot),
                 PosedShot::Projectile(shot) => self.launch_projectile(shot),
+                hit => hits.push(hit),
             }
         }
-        Ok(hitscan)
+        Ok(hits)
     }
 
     fn launch_projectile(&mut self, projectile: PosedProjectile) {
@@ -233,7 +294,14 @@ impl BodyScript {
         }
     }
 
-    fn next_record(&mut self, created: bool) -> io::Result<Option<(Record, Option<u32>)>> {
+    /// The next owner frame. While the body is dead, `kill_feed` says whether
+    /// its kill feed pulse may go now (match.py `_body_frames`:
+    /// `kill_feed_snapshot`).
+    fn next_record(
+        &mut self,
+        created: bool,
+        kill_feed: Option<bool>,
+    ) -> io::Result<Option<(Record, Option<u32>)>> {
         if !created {
             return Ok(None);
         }
@@ -264,7 +332,10 @@ impl BodyScript {
                 .stream
                 .base()
                 .expect("owner delta requires the baseline");
-            let snapshot = encoder.project_next(snapshot, base).map_err(invalid)?;
+            let mut snapshot = encoder.project_next(snapshot, base).map_err(invalid)?;
+            if let Some(allowed) = kill_feed {
+                snapshot = snapshot.gate_kill_feed(&self.stream, allowed);
+            }
             let chunk = encoder
                 .queue_delta(&mut self.stream, &snapshot, kind, self.runtime.frame_ms())
                 .map_err(invalid)?
@@ -336,6 +407,11 @@ enum Delivery {
         after: Option<u32>,
     },
     Health {
+        revision: u64,
+    },
+    /// The player's Tab board numbers (match.py `_send_board`); a newer one
+    /// supersedes it.
+    Board {
         revision: u64,
     },
     BotDestroy,
@@ -608,10 +684,27 @@ pub fn show_players(
                 None => PlayerView::absent(&player.appearance),
             })
             .collect();
+        // What each client can name in a kill feed line besides the other
+        // players' bodies (combat.py `kill_feed_allowed`).
+        let readiness: Vec<_> = players
+            .iter()
+            .map(|player| {
+                player
+                    .world
+                    .as_deref()
+                    .map_or_else(ViewerReadiness::default, WorldDelivery::readiness)
+            })
+            .collect();
         taken
             .iter_mut()
             .enumerate()
-            .map(|(slot, others)| Some(others.as_mut()?.show(&context, &views, slot)))
+            .map(|(slot, others)| {
+                Some(
+                    others
+                        .as_mut()?
+                        .show(&context, &views, slot, &readiness[slot]),
+                )
+            })
             .collect()
     };
     players
@@ -658,7 +751,8 @@ pub struct WorldDelivery {
     mover: Option<Mover>,
     body_script: Option<BodyScript>,
     projectile_destroys: HashMap<u32, (BodyId, ProjectileToken)>,
-    hitscan: Vec<PosedHitscan>,
+    /// The hits and melees of the processed input, for the match.
+    shots: Vec<PosedShot>,
     others: Others,
     /// The player's last hero switch, for the chat lines.
     switch: Option<Switch>,
@@ -668,6 +762,51 @@ pub struct WorldDelivery {
     retained_elsewhere: HashSet<u32>,
     /// The training bots' statescript on this client.
     bot_views: BotViews,
+    /// The current body's death and respawn (combat.py `Vitals.died_at`).
+    death: Option<BodyDeath>,
+    /// The pools of a body that runs no script (combat.py `Vitals` from
+    /// `pools.body_pools`).
+    plain_vitals: Option<Vitals>,
+    /// Changes of the current body's pools, for the other clients.
+    body_health: u64,
+    board: BoardDelivery,
+}
+
+/// A body's death (combat.py `Vitals.death_tick`, `killer`) and when it
+/// respawns (`Combat.respawns`).
+#[derive(Clone, Copy, Debug)]
+struct BodyDeath {
+    body: BodyId,
+    killer: u32,
+    tick: u32,
+    respawn_at: Duration,
+}
+
+/// How a hit on the player's body ended (combat.py `_damage`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BodyDamage {
+    pub dealt: f64,
+    pub killed: bool,
+}
+
+/// The Tab board the client has (match.py `stats_sent`, `next_stats`).
+#[derive(Default)]
+struct BoardDelivery {
+    sent: Option<WorldComponent>,
+    next: Duration,
+    revision: u64,
+}
+
+/// combat.py `kill_feed_allowed`: a death's pulse goes out first only
+/// while it is fresh (`ClientOnlyPulser.FRESH_MS`, 500 ms of world ticks).
+const KILL_FEED_FRESH_MS: u64 = 500;
+
+/// match.py `STATS_EVERY`.
+pub const STATS_EVERY: Duration = Duration::from_millis(500);
+
+pub(crate) fn kill_feed_fresh(tick: u32, death_tick: u32) -> bool {
+    tick >= death_tick
+        && u64::from(tick - death_tick) * TICK_PERIOD.as_millis() as u64 <= KILL_FEED_FRESH_MS
 }
 
 impl WorldDelivery {
@@ -692,13 +831,17 @@ impl WorldDelivery {
             mover: None,
             body_script: None,
             projectile_destroys: HashMap::new(),
-            hitscan: Vec::new(),
+            shots: Vec::new(),
             others: Others::default(),
             switch: None,
             switches: 0,
             notices: SwitchNotices::default(),
             retained_elsewhere: HashSet::new(),
             bot_views: BotViews::default(),
+            death: None,
+            plain_vitals: None,
+            body_health: 0,
+            board: BoardDelivery::default(),
         }
     }
 
@@ -713,7 +856,10 @@ impl WorldDelivery {
         self.body_script = None;
         self.projectile_destroys.clear();
         self.input.clear();
-        self.hitscan.clear();
+        self.shots.clear();
+        self.death = None;
+        self.plain_vitals = None;
+        self.board = BoardDelivery::default();
         self.others.clear();
         self.bot_views.clear();
         self.notices = SwitchNotices::default();
@@ -743,12 +889,29 @@ impl WorldDelivery {
                     .as_ref()
                     .filter(|script| script.id == body.id)
                     .map(|script| &script.runtime);
+                let death = self
+                    .death
+                    .filter(|death| death.body == body.id)
+                    .map(|death| RemoteDeath {
+                        tick: death.tick,
+                        killer: death.killer,
+                    });
+                let mut pose = mover.pose();
+                // match.py `Player.movement`: a dead body's records carry
+                // combat.py `DEAD`, the 3P animation's dead pose.
+                if death.is_some() {
+                    pose.flags |= DEAD;
+                }
                 Some(RemoteBody {
                     id: body.id,
                     hero: scene.heroes().get(body.hero)?,
                     skin: body.skin,
-                    pose: mover.pose(),
-                    vitals: runtime.and_then(|runtime| runtime.vitals()),
+                    pose,
+                    vitals: runtime
+                        .and_then(|runtime| runtime.vitals())
+                        .or(self.plain_vitals.as_ref()),
+                    health: self.body_health,
+                    death,
                     script: runtime.filter(|_| observed(body.id)).and_then(|runtime| {
                         let encoder = runtime.encoder();
                         let snapshot = runtime.snapshot()?;
@@ -875,28 +1038,17 @@ impl WorldDelivery {
             .filter(|&(_, lifetime)| *lifetime == BotLifetime::Live)
             .map(|(&entity, _)| entity)
             .collect();
-        let owner = self.owner;
-        let body = self.body.map(|body| body.id.entity);
-        let created = &self.created;
-        // server.py `combat_identity_ready`: the own body by its current id,
-        // another player's once his create arrived, an NPC always.
-        let identity = |entity: u32| {
-            if entity & !0xff == owner {
-                body == Some(entity)
-            } else if entity & 0xff00_0000 == owner & 0xff00_0000 {
-                created.contains(&entity)
-            } else {
-                true
-            }
-        };
+        let mut views = std::mem::take(&mut self.bot_views);
+        let identity = |entity: u32| self.combat_identity_ready(entity);
         let context = BotViewContext {
             tick,
-            mode_ready: self.mode.delivered() != 0,
+            mode_ready: self.mode_ready(),
             identity: &identity,
             live: &live,
             send,
         };
-        let chunks = self.bot_views.update(scene.bot_scripts(), events, &context);
+        let chunks = views.update(scene.bot_scripts(), events, &context);
+        self.bot_views = views;
         for chunk in chunks {
             self.push(Record {
                 update: chunk.update,
@@ -951,6 +1103,7 @@ impl WorldDelivery {
             Delivery::BotCreate { .. } => self.bots.get(&entity) == Some(&BotLifetime::Live),
             Delivery::BotDestroy => self.bots.get(&entity) == Some(&BotLifetime::Retiring),
             Delivery::Health { revision } => self.health_updates.get(&entity) == Some(&revision),
+            Delivery::Board { revision } => self.board.revision == revision,
             Delivery::Script {
                 last, close: true, ..
             } => last == self.controller.latest_data(),
@@ -1032,6 +1185,7 @@ impl WorldDelivery {
                     (true, Delivery::BotDestroy) => {
                         self.bots.remove(&record.update.entity);
                     }
+                    (true, Delivery::Board { .. }) => {}
                     (true, Delivery::Health { .. }) => {
                         self.health_updates.remove(&record.update.entity);
                     }
@@ -1188,7 +1342,7 @@ impl WorldDelivery {
         send: impl FnOnce(Vec<u8>) -> Result<u32, E>,
     ) -> Result<SentFrame, SendError<E>> {
         if !reliable_only {
-            self.prepare_body_updates();
+            self.prepare_body_updates(tick);
         }
         let script = self.body_script.as_ref();
         let history = script.and_then(|script| script.corrections.as_ref());
@@ -1247,7 +1401,7 @@ impl WorldDelivery {
         Ok(sent)
     }
 
-    fn prepare_body_updates(&mut self) {
+    fn prepare_body_updates(&mut self, tick: u32) {
         // A split input gap can update physics history immediately. The owner
         // VM and health publish only after the queued command completes.
         if matches!(
@@ -1259,21 +1413,36 @@ impl WorldDelivery {
         ) {
             return;
         }
-        if let Some(update) = self.body_script.as_mut().and_then(|script| {
-            let health = script.runtime.take_health_update()?;
-            Some(EntityUpdate {
-                entity: script.id.entity,
+        let health = match (&mut self.body_script, &mut self.plain_vitals) {
+            (Some(script), _) => script
+                .runtime
+                .take_health_update()
+                .map(|health| (script.id.entity, health)),
+            (None, Some(vitals)) if vitals.has_changed() => {
+                vitals.clear_changed();
+                self.body
+                    .map(|body| (body.id.entity, vitals.cumulative_component()))
+            }
+            _ => None,
+        };
+        if let Some((entity, health)) = health {
+            self.body_health += 1;
+            self.queue_health(EntityUpdate {
+                entity,
                 operation: Some(Operation::Update(vec![health])),
                 ..EntityUpdate::default()
-            })
-        }) {
-            self.queue_health(update);
+            });
         }
+        let kill_feed = self
+            .body_script
+            .as_ref()
+            .and_then(|script| self.death.filter(|death| death.body == script.id))
+            .map(|death| self.kill_feed_allowed(death, tick));
         let Some(script) = &mut self.body_script else {
             return;
         };
-        let (record, replaced) = match script.next_record(self.created.contains(&script.id.entity))
-        {
+        let created = self.created.contains(&script.id.entity);
+        let (record, replaced) = match script.next_record(created, kill_feed) {
             Ok(Some(record)) => record,
             Ok(None) => return,
             Err(error) => {
@@ -1413,7 +1582,7 @@ impl WorldDelivery {
                 {
                     self.queue_controller(scene, tick, false, Some(hero.guid), None)?;
                 } else if let Some(entity) = self.next_body(now) {
-                    self.switch(scene, viewer, tick, quanta, entity, (hero, skin))?;
+                    self.switch(scene, viewer, tick, quanta, entity, (hero, skin), true)?;
                 }
             }
             Some(HeroSelectRequest::OpenOrClose(wanted)) => {
@@ -1475,7 +1644,7 @@ impl WorldDelivery {
         };
         if let Some(entity) = self.next_body(now) {
             let hero = scene.heroes().get(hero).expect("active hero");
-            self.switch(scene, viewer, tick, quanta, entity, (hero, skin))?;
+            self.switch(scene, viewer, tick, quanta, entity, (hero, skin), true)?;
         }
         Ok(())
     }
@@ -1494,8 +1663,305 @@ impl WorldDelivery {
         self.body_script.is_some()
     }
 
-    pub fn take_hitscan(&mut self) -> Vec<PosedHitscan> {
-        std::mem::take(&mut self.hitscan)
+    /// The hero of the player's current body.
+    pub fn current_hero(&self) -> Option<u64> {
+        self.body.map(|body| body.hero)
+    }
+
+    /// The hits and melees of the input processed since the last call.
+    pub fn take_shots(&mut self) -> Vec<PosedShot> {
+        std::mem::take(&mut self.shots)
+    }
+
+    /// The player's current body.
+    pub fn current_body(&self) -> Option<u32> {
+        self.body.map(|body| body.id.entity)
+    }
+
+    /// Whether the player's current body is dead (combat.py `is_dead`).
+    pub fn body_dead(&self) -> bool {
+        self.death.is_some()
+    }
+
+    /// The player's body as a target this tick (combat.py `_targets`: a
+    /// player in the world with a body).
+    pub fn combat_target(&self, scene: &PreparedScene, team: u8) -> Option<PlayerTarget> {
+        self.started?;
+        let body = self.body?;
+        let mover = self.mover.as_ref()?;
+        let hero = scene.heroes().get(body.hero)?;
+        Some(PlayerTarget {
+            body: body.id.entity,
+            team,
+            pose: scene.player_target(hero, mover.pose().position, mover.crouched()),
+            dead: self.death.is_some(),
+        })
+    }
+
+    /// Whether this client can name `entity` in a combat notice or a kill
+    /// feed line (server.py `combat_identity_ready`): his own current body,
+    /// another player's body once its possession arrived, a bot once its
+    /// create arrived.
+    pub fn combat_identity_ready(&self, entity: u32) -> bool {
+        if !self.world_started() {
+            return false;
+        }
+        if entity & !0xff == self.owner {
+            return self.current_body() == Some(entity);
+        }
+        self.others
+            .possession_confirmed(entity)
+            .unwrap_or_else(|| self.created.contains(&entity))
+    }
+
+    fn readiness(&self) -> ViewerReadiness<'_> {
+        ViewerReadiness {
+            mode_ready: self.mode_ready(),
+            own_body: self.current_body(),
+            created: Some(&self.created),
+        }
+    }
+
+    /// combat.py `kill_feed_allowed` for the own body: the mode UI arrived,
+    /// the death is fresh and the client can name the body and its killer.
+    fn kill_feed_allowed(&self, death: BodyDeath, tick: u32) -> bool {
+        self.mode_ready()
+            && kill_feed_fresh(tick, death.tick)
+            && self.combat_identity_ready(death.body.entity)
+            && self.combat_identity_ready(death.killer)
+    }
+
+    /// combat.py `_damage` and `_died` for the player's current body: its
+    /// pools take the hit (shields, armour, health) and its script's health
+    /// follows; a killing hit makes it dead, gives its script the "died"
+    /// message (003E.025, which pulses the kill feed line) and sets its
+    /// respawn after the mode's time.
+    pub fn damage_body(
+        &mut self,
+        scene: &PreparedScene,
+        hit: &PlayerHit,
+        tick: u32,
+        now: Duration,
+    ) -> Option<BodyDamage> {
+        let body = self.body.filter(|body| body.id.entity == hit.body)?;
+        if self.death.is_some() || hit.amount.is_nan() || hit.amount <= 0.0 {
+            return None;
+        }
+        let death_tick = hit.world_tick.unwrap_or(tick);
+        let source = Death {
+            time: now.as_secs_f64(),
+            frame: death_tick,
+            killer: hit.shooter.source,
+        };
+        let mut failure = None;
+        let result = match self
+            .body_script
+            .as_mut()
+            .filter(|script| script.id == body.id)
+        {
+            Some(script) => {
+                let result = script.runtime.vitals_mut()?.damage(hit.amount, source);
+                if result.dealt > 0.0 {
+                    failure = script.runtime.health_changed().err();
+                }
+                result
+            }
+            None => self
+                .plain_vitals
+                .get_or_insert_with(|| hero_vitals(scene, body.hero))
+                .damage(hit.amount, source),
+        };
+        if result.dealt <= 0.0 {
+            return None;
+        }
+        self.body_health += 1;
+        if result.killed {
+            self.death = Some(BodyDeath {
+                body: body.id,
+                killer: hit.shooter.source,
+                tick: death_tick,
+                respawn_at: now.saturating_add(respawn_time(scene.map().mode_guid)),
+            });
+            if let Some(script) = self
+                .body_script
+                .as_mut()
+                .filter(|script| script.id == body.id && failure.is_none())
+            {
+                let (message, parameters) =
+                    death_message(hit.shooter.source, hit.critical, hit.loadout);
+                failure = script.runtime.receive_message(message, parameters).err();
+            }
+        }
+        if let Some(error) = failure {
+            self.drop_failed_script(&error.to_string());
+        }
+        Some(BodyDamage {
+            dealt: result.dealt,
+            killed: result.killed,
+        })
+    }
+
+    /// combat.py `heal_area` for the player's living body. Returns what the
+    /// pools took.
+    pub fn heal_body(&mut self, scene: &PreparedScene, body: u32, amount: f64) -> f64 {
+        let Some(current) = self.body.filter(|current| current.id.entity == body) else {
+            return 0.0;
+        };
+        if self.death.is_some() {
+            return 0.0;
+        }
+        let mut failure = None;
+        let given = match self
+            .body_script
+            .as_mut()
+            .filter(|script| script.id == current.id)
+        {
+            Some(script) => {
+                let Some(vitals) = script.runtime.vitals_mut() else {
+                    return 0.0;
+                };
+                let given = vitals.heal(amount);
+                if given > 0.0 {
+                    failure = script.runtime.health_changed().err();
+                }
+                given
+            }
+            None => self
+                .plain_vitals
+                .get_or_insert_with(|| hero_vitals(scene, current.hero))
+                .heal(amount),
+        };
+        if given > 0.0 {
+            self.body_health += 1;
+        }
+        if let Some(error) = failure {
+            self.drop_failed_script(&error.to_string());
+        }
+        given
+    }
+
+    /// combat.py `_respawn`: once the mode's time is up, a dead player gets
+    /// a new body of the same hero at his spawn point, as a hero switch does
+    /// (match.py `switch_hero`), and his spawn voice line. While every id of
+    /// his body ring is still reserved, he tries again RESPAWN_RETRY later.
+    /// True when he respawned.
+    pub fn respawn_due(
+        &mut self,
+        scene: &PreparedScene,
+        viewer: &PlayerAppearance<'_>,
+        tick: u32,
+        now: Duration,
+        quanta: u32,
+    ) -> io::Result<bool> {
+        let Some(death) = self.death else {
+            return Ok(false);
+        };
+        if now < death.respawn_at {
+            return Ok(false);
+        }
+        let Some(body) = self.body.filter(|body| body.id == death.body) else {
+            self.death = None;
+            return Ok(false);
+        };
+        let Some(entity) = self.next_body(now) else {
+            if let Some(death) = &mut self.death {
+                death.respawn_at = now.saturating_add(RESPAWN_RETRY);
+            }
+            return Ok(false);
+        };
+        let hero = scene
+            .heroes()
+            .get(body.hero)
+            .ok_or_else(|| invalid("the dead body's hero is unknown"))?;
+        let skin = viewer
+            .card
+            .skins
+            .get(&hero.guid)
+            .copied()
+            .unwrap_or_default();
+        self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
+        self.begin_spawn_bark(now);
+        Ok(true)
+    }
+
+    /// voicelines.py `VoiceLines.spawned` on the current body.
+    fn begin_spawn_bark(&mut self, now: Duration) {
+        if let Some(script) = &mut self.body_script {
+            if let Err(error) = script.runtime.begin_spawn_bark(now) {
+                eprintln!(
+                    "{:08X}'s spawn voice line failed ({error})",
+                    script.id.entity
+                );
+            }
+        }
+    }
+
+    /// voicelines.py `VoiceLines.expire` on the current body.
+    pub fn expire_bark(&mut self, now: Duration) {
+        if let Some(script) = &mut self.body_script {
+            if let Err(error) = script.runtime.expire_bark(now) {
+                eprintln!(
+                    "ending {:08X}'s spawn voice line failed ({error})",
+                    script.id.entity
+                );
+            }
+        }
+    }
+
+    /// The game messages the current body sent other entities (match.py
+    /// `queue_body_message`), while other clients get the body (`_shown`).
+    pub fn take_body_messages(&mut self) -> Vec<GameMessage> {
+        if !self.world_started() {
+            return Vec::new();
+        }
+        self.body_script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.runtime.take_messages())
+    }
+
+    /// A message to the current body (match.py `deliver_body_messages`):
+    /// its entries run now; a failure stops the body's script. False when
+    /// the message is not for this body.
+    pub fn receive_body_message(&mut self, message: &GameMessage) -> bool {
+        if !self.world_started() || self.current_body() != Some(message.target) {
+            return false;
+        }
+        let Some(script) = &mut self.body_script else {
+            return false;
+        };
+        if let Err(error) = script
+            .runtime
+            .receive_message(message.message, message.parameters.clone())
+        {
+            self.drop_failed_script(&error.to_string());
+        }
+        true
+    }
+
+    /// match.py `_send_board`: the player's board numbers again when they
+    /// changed, at most every STATS_EVERY, once his controller went out.
+    pub fn send_board(&mut self, now: Duration, board: impl FnOnce() -> WorldComponent) {
+        if !self.can_handle_game_message() || now < self.board.next {
+            return;
+        }
+        let values = board();
+        if self.board.sent.as_ref() == Some(&values) {
+            return;
+        }
+        self.board.next = now.saturating_add(STATS_EVERY);
+        self.board.revision += 1;
+        self.push(Record {
+            update: EntityUpdate {
+                entity: self.owner,
+                operation: Some(Operation::Update(vec![values.clone()])),
+                ..EntityUpdate::default()
+            },
+            delivery: Delivery::Board {
+                revision: self.board.revision,
+            },
+        });
+        self.board.sent = Some(values);
+        self.remove_stale();
     }
 
     pub fn advance_projectiles(
@@ -1619,13 +2085,29 @@ impl WorldDelivery {
         let Some(mover) = &mut self.mover else {
             return Ok((1, true));
         };
+        // match.py `Player.take_commands`: a dead body lies where it fell; its
+        // script still takes each command, from the command's own frame.
+        let dead = self.death.is_some();
         let pending = pending.get_or_insert_with(|| {
-            PendingCommand::new(mover.pending_poses(command), self.body_script.as_ref())
+            if dead {
+                let gap = self
+                    .body_script
+                    .as_ref()
+                    .map_or_else(ScriptGap::default, |script| {
+                        ScriptGap::before(script.frame, command.frame)
+                    });
+                PendingCommand {
+                    poses: kinematics_poses(None, command),
+                    gap,
+                }
+            } else {
+                PendingCommand::new(mover.pending_poses(command), self.body_script.as_ref())
+            }
         });
         let mut used = 0;
         let mut failed = None;
         let script = &mut self.body_script;
-        let hitscan = &mut self.hitscan;
+        let shots = &mut self.shots;
         if let Some(script) = script {
             for (frame, step) in pending.gap.by_ref().take(budget) {
                 used += 1;
@@ -1633,7 +2115,7 @@ impl WorldDelivery {
                     frame,
                     ..Command::default()
                 };
-                if let Err(error) = script.advance(mover, neutral, step) {
+                if let Err(error) = script.advance(mover, neutral, step, dead) {
                     mover.track_modifiers(frame, &BTreeMap::new());
                     pending.gap = ScriptGap::default();
                     failed = Some(error.to_string());
@@ -1641,23 +2123,48 @@ impl WorldDelivery {
                 }
             }
         }
-        let stepped = mover.step_pending(
-            scene.movement_index(),
-            &mut pending.poses,
-            dt,
-            budget - used,
-            |mover, command| {
+        if dead {
+            for command in pending.poses.by_ref().take(budget - used) {
+                used += 1;
                 if let Some(script) = script.as_mut().filter(|_| failed.is_none()) {
-                    match script.advance(mover, command, BodyStep::Posed) {
-                        Ok(shots) => hitscan.extend(shots),
-                        Err(error) => {
-                            mover.track_modifiers(command.frame, &BTreeMap::new());
-                            failed = Some(error.to_string());
-                        }
+                    if let Err(error) = script.advance(mover, command, BodyStep::Posed, true) {
+                        failed = Some(error.to_string());
                     }
                 }
-            },
-        );
+            }
+            if let Some(error) = failed {
+                self.drop_failed_script(&error);
+            }
+            return Ok((used, pending.poses.len() == 0));
+        }
+        let rays = scene.movement_index();
+        let stepped =
+            mover.step_pending_with(&mut pending.poses, budget - used, |mover, command| {
+                let Some(script) = script.as_mut().filter(|_| failed.is_none()) else {
+                    mover.step_pose_to(rays, command, dt, None)?;
+                    return Ok(());
+                };
+                // match.py `_step_body_pose`: one world-target state moves the
+                // body; arbitration between several is unresolved, so none does.
+                let requests = script.runtime.move_requests();
+                let request = match requests[..] {
+                    [request] => Some(request),
+                    _ => None,
+                };
+                let outcome =
+                    mover.step_pose_to(rays, command, dt, request.map(|r| (r.target, r.speed)))?;
+                let ended = request.zip(outcome).map_or(Ok(()), |(request, arrived)| {
+                    script.runtime.finish_move(request, arrived, command.frame)
+                });
+                match ended.and_then(|()| script.advance(mover, command, BodyStep::Posed, false)) {
+                    Ok(hits) => shots.extend(hits),
+                    Err(error) => {
+                        mover.track_modifiers(command.frame, &BTreeMap::new());
+                        failed = Some(error.to_string());
+                    }
+                }
+                Ok(())
+            });
         if let Some(error) = failed {
             self.drop_failed_script(&error);
         }
@@ -1687,6 +2194,9 @@ impl WorldDelivery {
         self.retained_elsewhere.extend(bodies);
     }
 
+    /// A new body for the player (match.py `switch_hero`). A pick closes the
+    /// hero select with a controller frame; a respawn sends none.
+    #[allow(clippy::too_many_arguments)]
     fn switch(
         &mut self,
         scene: &PreparedScene,
@@ -1695,6 +2205,7 @@ impl WorldDelivery {
         quanta: u32,
         entity: u32,
         selection: (&Hero, SkinTheme),
+        pick: bool,
     ) -> io::Result<()> {
         let (hero, skin) = selection;
         let mover = scene.player_spawn_mover(hero.body, viewer.team, viewer.spawn)?;
@@ -1755,7 +2266,9 @@ impl WorldDelivery {
             hero: hero.guid,
             skin: (skin.guid != 0).then_some(skin.guid),
         };
-        let close = self.controller_chunk(scene, tick, false, Some(hero.guid), None)?;
+        let close = pick
+            .then(|| self.controller_chunk(scene, tick, false, Some(hero.guid), None))
+            .transpose()?;
 
         self.generation = generation;
         self.bodies.insert(entity, (generation, Lifetime::Live));
@@ -1765,7 +2278,13 @@ impl WorldDelivery {
         self.body_script = script;
         self.mover = Some(mover);
         self.bound = None;
-        self.select_open = false;
+        // combat.py `retire_player_body`: the old body's death and pools go
+        // with it.
+        self.death = None;
+        self.plain_vitals = None;
+        if pick {
+            self.select_open = false;
+        }
         // notices.py `hero_switched`: a switch from one hero to another, not
         // the first pick. Other clients take it from this player's view.
         if let Some(old) = old.filter(|old| old.hero != hero.guid) {
@@ -1796,7 +2315,9 @@ impl WorldDelivery {
         if let Some(old) = old {
             self.retire_body(old.id);
         }
-        self.push(close);
+        if let Some(close) = close {
+            self.push(close);
+        }
         self.remove_stale();
         Ok(())
     }
@@ -1901,6 +2422,16 @@ fn command_prefix(
     let limit = tick.saturating_add(MAX_INPUT_LEAD);
     fresh.truncate(fresh.partition_point(|command| command.frame <= limit));
     (fresh, boundary)
+}
+
+/// A body's own pools when no script keeps them (combat.py `vitals_of`:
+/// `pools.body_pools`).
+fn hero_vitals(scene: &PreparedScene, hero: u64) -> Vitals {
+    scene
+        .pools()
+        .hero_pools(hero)
+        .unwrap_or(FALLBACK_POOLS)
+        .vitals()
 }
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {

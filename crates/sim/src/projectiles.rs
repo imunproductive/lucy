@@ -11,9 +11,11 @@ use serde_json::Value as Json;
 
 use crate::projectile_wire;
 use orpheus_core::tick::MAX_LEASE_FRAME;
+use orpheus_physics::static_ray::Vec3;
 use orpheus_script::{
     expr::EvalError,
     graph::{GraphStore, Node, asset_guid},
+    snapshot::ProjectedSnapshot,
     vm::{ShotEvent, Snapshot},
     weapons::authored_number,
     wire::Value,
@@ -199,6 +201,39 @@ struct PendingProjectile {
     creates: IndexMap<u32, bool>,
     created_at: Option<u32>,
     release_at: Option<u32>,
+    /// The Biotic Field it leaves, and the shooter's feet when he fired
+    /// (projectiles.py `Shot.spawn`, `Shot.where`).
+    field: Option<(FieldSchedule, [f64; 3])>,
+}
+
+/// What the match does about an owner's projectile besides its own
+/// records (projectiles.py `_end` for the other clients' copies, and
+/// `_field`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProjectileEvent {
+    /// The shot ended (`_end`): the other clients' copies finish.
+    Ended {
+        token: ProjectileToken,
+        explode: bool,
+    },
+    /// The field heals this tick (`heal_area`).
+    FieldHeal {
+        token: ProjectileToken,
+        centre: [f64; 3],
+        amount: f64,
+    },
+    /// Every client gets the field once (`_deliver_field`): the owner's
+    /// parented to each of his canisters that arrived, the others' placed at
+    /// the shooter's feet.
+    FieldDeliver {
+        token: ProjectileToken,
+        feet: [f64; 3],
+        parents: Vec<u32>,
+    },
+    /// The field faded: its frames go again without st5.
+    FieldFaded { token: ProjectileToken },
+    /// The field is over: its entities go.
+    FieldEnded { token: ProjectileToken },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -245,6 +280,7 @@ pub struct OwnerProjectiles {
     pending: Vec<PendingProjectile>,
     occupied: HashSet<u32>,
     next: u64,
+    events: Vec<ProjectileEvent>,
 }
 
 impl OwnerProjectiles {
@@ -255,7 +291,30 @@ impl OwnerProjectiles {
             pending: Vec::new(),
             occupied: HashSet::new(),
             next: 0,
+            events: Vec::new(),
         }
+    }
+
+    /// A Biotic Field canister (projectiles.py `fired` with a spawn): it
+    /// is confirmed as any projectile, then its field runs on the field's
+    /// clock instead of a release.
+    pub fn admit_field(
+        &mut self,
+        shot: ShotEvent,
+        definition: u64,
+        flight_bound_ticks: u32,
+        feet: [f64; 3],
+    ) -> Option<ProjectileToken> {
+        let token = self.admit(shot, definition, flight_bound_ticks)?;
+        if let Some(pending) = self.pending.last_mut() {
+            pending.field = Some((FieldSchedule::new(), feet));
+        }
+        Some(token)
+    }
+
+    /// What the match must do since the last call.
+    pub fn take_events(&mut self) -> Vec<ProjectileEvent> {
+        std::mem::take(&mut self.events)
     }
 
     pub fn admit(
@@ -286,6 +345,7 @@ impl OwnerProjectiles {
             creates: IndexMap::new(),
             created_at: None,
             release_at: None,
+            field: None,
         });
         Some(token)
     }
@@ -349,7 +409,7 @@ impl OwnerProjectiles {
         else {
             return;
         };
-        if pending.release_at.is_none() {
+        if pending.release_at.is_none() && pending.field.is_none() {
             let start = pending
                 .reports
                 .values()
@@ -366,10 +426,50 @@ impl OwnerProjectiles {
 
     pub fn advance(&mut self, tick: u32) -> Vec<ProjectileDelivery> {
         let mut out = Vec::new();
+        let events = &mut self.events;
+        let leases = &self.leases;
+        let occupied = &mut self.occupied;
         self.pending.retain_mut(|pending| {
             pending
                 .reports
                 .retain(|_, report| report.arrived != Some(false));
+            if let Some((schedule, feet)) = &mut pending.field {
+                // projectiles.py `_field`.
+                let (feet, token) = (*feet, pending.token);
+                let step = schedule.step(tick, tick);
+                if step.confirm {
+                    confirm(leases, occupied, pending, tick, &mut out);
+                }
+                if step.heal > 0.0 {
+                    events.push(ProjectileEvent::FieldHeal {
+                        token,
+                        centre: field_centre(feet),
+                        amount: step.heal,
+                    });
+                }
+                if step.expired {
+                    retire(pending, occupied, None, &mut out);
+                    events.push(ProjectileEvent::FieldEnded { token });
+                    return false;
+                }
+                if step.faded_now {
+                    events.push(ProjectileEvent::FieldFaded { token });
+                }
+                if step.deliver {
+                    let parents = pending
+                        .creates
+                        .iter()
+                        .filter(|&(_, &arrived)| arrived)
+                        .map(|(&entity, _)| entity)
+                        .collect();
+                    events.push(ProjectileEvent::FieldDeliver {
+                        token,
+                        feet,
+                        parents,
+                    });
+                }
+                return true;
+            }
             let due = pending.release_at.or_else(|| {
                 pending.created_at.map(|created| {
                     created
@@ -378,43 +478,23 @@ impl OwnerProjectiles {
                 })
             });
             if due.is_some_and(|due| tick >= due.saturating_add(DELIVERY_GRACE)) {
-                retire(pending, &mut self.occupied, Some(tick), &mut out);
+                retire(pending, occupied, Some(tick), &mut out);
+                events.push(ProjectileEvent::Ended {
+                    token: pending.token,
+                    explode: true,
+                });
                 return false;
             }
-            let reports = pending
-                .reports
-                .values()
-                .filter(|report| report.arrived == Some(true));
-            let has_report = reports.clone().next().is_some();
-            let fallback = pending.reports.is_empty()
-                && pending.creates.is_empty()
-                && tick >= pending.shot.frame.saturating_add(UNREPORTED_TICKS);
-            if has_report || fallback {
-                let frames = std::iter::once(pending.shot.frame).chain(
-                    reports
-                        .filter(|report| report.introduces)
-                        .map(|report| report.frame),
-                );
-                for frame in frames {
-                    let Some(entity) = self.leases.entity(pending.definition, frame, 0) else {
-                        continue;
-                    };
-                    if self.occupied.insert(entity) {
-                        pending.creates.insert(entity, false);
-                        pending.created_at.get_or_insert(tick);
-                        out.push(ProjectileDelivery::Confirm {
-                            token: pending.token,
-                            entity,
-                            definition: pending.definition,
-                        });
-                    }
-                }
-            }
+            confirm(leases, occupied, pending, tick, &mut out);
             if due.is_some_and(|due| tick >= due)
                 && !pending.creates.is_empty()
                 && pending.creates.values().all(|&arrived| arrived)
             {
-                retire(pending, &mut self.occupied, Some(tick), &mut out);
+                retire(pending, occupied, Some(tick), &mut out);
+                events.push(ProjectileEvent::Ended {
+                    token: pending.token,
+                    explode: true,
+                });
                 return false;
             }
             true
@@ -422,10 +502,22 @@ impl OwnerProjectiles {
         out
     }
 
+    /// The body's projectiles end with it (projectiles.py `_end` with
+    /// `explode=alive` false): no explosion, and its fields go.
     pub fn retire(&mut self) -> Vec<ProjectileDelivery> {
         let mut out = Vec::new();
         for pending in &self.pending {
             retire(pending, &mut self.occupied, None, &mut out);
+            self.events.push(if pending.field.is_some() {
+                ProjectileEvent::FieldEnded {
+                    token: pending.token,
+                }
+            } else {
+                ProjectileEvent::Ended {
+                    token: pending.token,
+                    explode: false,
+                }
+            });
         }
         self.pending.clear();
         out
@@ -439,6 +531,58 @@ impl OwnerProjectiles {
         {
             let pending = self.pending.remove(index);
             retire(&pending, &mut self.occupied, None, out);
+            self.events.push(if pending.field.is_some() {
+                ProjectileEvent::FieldEnded { token }
+            } else {
+                ProjectileEvent::Ended {
+                    token,
+                    explode: false,
+                }
+            });
+        }
+    }
+}
+
+/// projectiles.py `_confirm`: once an owner frame that reported the shot
+/// arrived (or none did for UNREPORTED_TICKS), a create of each leased id
+/// the client may have shot it under.
+fn confirm(
+    leases: &ProjectileLeases,
+    occupied: &mut HashSet<u32>,
+    pending: &mut PendingProjectile,
+    tick: u32,
+    out: &mut Vec<ProjectileDelivery>,
+) {
+    let reports = pending
+        .reports
+        .values()
+        .filter(|report| report.arrived == Some(true));
+    let has_report = reports.clone().next().is_some();
+    let fallback = pending.reports.is_empty()
+        && pending.creates.is_empty()
+        && tick >= pending.shot.frame.saturating_add(UNREPORTED_TICKS);
+    if !has_report && !fallback {
+        return;
+    }
+    let frames: Vec<_> = std::iter::once(pending.shot.frame)
+        .chain(
+            reports
+                .filter(|report| report.introduces)
+                .map(|report| report.frame),
+        )
+        .collect();
+    for frame in frames {
+        let Some(entity) = leases.entity(pending.definition, frame, 0) else {
+            continue;
+        };
+        if occupied.insert(entity) {
+            pending.creates.insert(entity, false);
+            pending.created_at.get_or_insert(tick);
+            out.push(ProjectileDelivery::Confirm {
+                token: pending.token,
+                entity,
+                definition: pending.definition,
+            });
         }
     }
 }
@@ -463,6 +607,380 @@ fn retire(
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+// --- the Biotic Field (ow174/game/projectiles.py) ---------------------------
+
+const FRAME_MS: u32 = 16;
+/// 03DC.003, the Biotic Field (0257 st1's m_projectileSpawn).
+pub const FIELD_ENTITY: u64 = 0x0400_0000_0000_03dc;
+/// The field entity's initial graph.
+pub const FIELD_GRAPH: u32 = 0x0258;
+/// The field entities' ids: FIELD_FIRST + n % FIELD_SPAN.
+pub const FIELD_FIRST: u32 = 0xa008_0000;
+pub const FIELD_SPAN: u32 = 0x0004_0000;
+/// The server projectiles the other clients see: SEEN_FIRST + n % SEEN_SPAN.
+pub const SEEN_FIRST: u32 = 0xa00c_0000;
+pub const SEEN_SPAN: u32 = 0x0004_0000;
+/// Approximate deployment delay in world ticks after the cast projectile is
+/// admitted.
+pub const FIELD_DELAY: u32 = 12;
+/// 0258: #567 = 5 s, st1 waits #567 - 0.5 then st4 waits 0.5, then
+/// DestroyEntity.
+pub const FIELD_SECONDS: f64 = 5.0;
+/// ceil(FIELD_SECONDS * 1000 / FRAME_MS).
+pub const FIELD_TICKS: u32 = 5000_u32.div_ceil(FRAME_MS);
+/// 0258 st1 ends: st5 (its DataFlowMapping) goes off.
+pub const FADE_SECONDS: f64 = 4.5;
+/// 0258 #420 = 35 a player (ApplyAura 025F.053's 002A; per second unverified).
+pub const HEAL_PER_SECOND: f64 = 35.0;
+/// 0258 #422 = 5: st0 TrackTargets m_radius.
+pub const HEAL_RADIUS: f64 = 5.0;
+/// TrackTargets' offset (0, 1, 0) from the field (the sphere's centre is
+/// unverified).
+pub const HEAL_UP: f64 = 1.0;
+
+/// The entities a volley's projectile leaves where it lands (`_defs` of the
+/// volley's `m_49CBA3BC` in `Projectiles.fired`); the first one is the
+/// shot's spawn.
+pub fn spawned_definitions(node: &Node) -> Vec<u64> {
+    let mut found = Vec::new();
+    if let Some(field) = node.field("m_49CBA3BC") {
+        projectile_definitions(field, &mut found);
+    }
+    found
+}
+
+/// The heal sphere's centre over the shooter's feet (`field_centre`).
+pub fn field_centre(where_feet: [f64; 3]) -> [f64; 3] {
+    let [x, y, z] = where_feet;
+    [x, y + HEAL_UP, z]
+}
+
+/// What one `Projectiles._field` step asks of the caller, in this order:
+/// confirm the owner's canister, heal, then (unless expired) deliver the
+/// field entities and resend the field frames if it faded now.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FieldStep {
+    /// tick < expires: run the owner confirmation (`_confirm`).
+    pub confirm: bool,
+    /// The first step at or after the start: the field opened.
+    pub opened: bool,
+    /// The heal amount for this step (`heal_area`), 0 when none.
+    pub heal: f64,
+    /// The fade crossed on this step: resend every arrived field frame.
+    pub faded_now: bool,
+    pub faded: bool,
+    /// Started and not expired: create the field entities (`_deliver_field`).
+    pub deliver: bool,
+    /// tick >= expires: end the shot without an explosion.
+    pub expired: bool,
+}
+
+/// The Biotic Field's clock (`Shot.field_due`, `field_tick`, `faded` and
+/// `Projectiles._field`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FieldSchedule {
+    due: Option<u32>,
+    opened: bool,
+    faded: bool,
+}
+
+impl FieldSchedule {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// One update at `tick` covering the ticks from `first_tick` on. The
+    /// start is the first step's tick + FIELD_DELAY; the opening tick has no
+    /// heal and the field ends before its expiry tick.
+    pub fn step(&mut self, tick: u32, first_tick: u32) -> FieldStep {
+        let start = *self.due.get_or_insert(tick + FIELD_DELAY);
+        let expires = start + FIELD_TICKS;
+        let mut step = FieldStep {
+            confirm: tick < expires,
+            faded: self.faded,
+            ..FieldStep::default()
+        };
+        if tick < start {
+            return step;
+        }
+        step.opened = !self.opened;
+        self.opened = true;
+        let steps =
+            i64::from(tick.min(expires - 1)) - (i64::from(first_tick) - 1).max(i64::from(start));
+        if steps > 0 {
+            step.heal = HEAL_PER_SECOND * f64::from(FRAME_MS) / 1000.0 * steps as f64;
+        }
+        if tick >= expires {
+            step.expired = true;
+            return step;
+        }
+        let seconds = f64::from(tick - start) * f64::from(FRAME_MS) / 1000.0;
+        if !self.faded && seconds >= FADE_SECONDS {
+            self.faded = true;
+            step.faded_now = true;
+            step.faded = true;
+        }
+        step.deliver = true;
+        step
+    }
+
+    pub fn faded(&self) -> bool {
+        self.faded
+    }
+}
+
+// --- observed projectiles (`_show_others`, `_ObservedProjectile`) -----------
+
+/// The ids of the server projectiles the other clients see
+/// (`Projectiles.next_seen`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SeenIds {
+    next: u32,
+}
+
+impl SeenIds {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> u32 {
+        // SEEN_SPAN divides 2^32, so the wrapping counter keeps Python's sequence.
+        let entity = SEEN_FIRST + self.next % SEEN_SPAN;
+        self.next = self.next.wrapping_add(1);
+        entity
+    }
+}
+
+/// One output of `ObservedProjectile::advance`, in queue order.
+#[derive(Debug, PartialEq)]
+pub enum ObservedOut {
+    /// The projectile entity's create (`confirm_record`), under the map
+    /// until the launch starts it.
+    Create(EntityUpdate),
+    /// The shooter's ch2 shot record naming the entity.
+    Launch(EntityUpdate),
+    /// Withdraw the queued, unacknowledged launch (`cancel_entity_record`).
+    CancelLaunch,
+    /// The projectile entity's destroy, with the release when it exploded.
+    Destroy(EntityUpdate),
+    /// Drop this delivery.
+    Done,
+}
+
+/// One viewer's create, shooter event and retirement of a player's remote
+/// projectile (`_ObservedProjectile`; the bot volley retention is not here).
+#[derive(Debug)]
+pub struct ObservedProjectile {
+    body: u32,
+    entity: u32,
+    definition: u64,
+    frame: u32,
+    instance: u16,
+    state: u16,
+    activation: u16,
+    volleys: u16,
+    origin: [f32; 3],
+    direction: Vec3,
+    launch: EntityUpdate,
+    deadline: u32,
+    pending_create: bool,
+    launch_queued: bool,
+    creation_arrived: bool,
+    launch_arrived: bool,
+    finished: bool,
+    explode: bool,
+}
+
+impl ObservedProjectile {
+    /// The shot record of `_show_others`: the shot's frame, volley instance,
+    /// state and full activation counter, the volley state's `volleys & 0xFF`,
+    /// shot counter 0, and this viewer's entity. `deadline` is the tick plus
+    /// the shot's bound plus DELIVERY_GRACE.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        body: u32,
+        entity: u32,
+        definition: u64,
+        shot: &ShotEvent,
+        volleys: u16,
+        origin: [f32; 3],
+        direction: Vec3,
+        deadline: u32,
+    ) -> io::Result<Self> {
+        let volleys = volleys & 0xff;
+        let entities = [entity];
+        let record = projectile_wire::ShotRecord {
+            frame: shot.frame,
+            instance: shot.instance,
+            state: shot.raw_state,
+            activation: shot.activation,
+            ordinal: 0,
+            volleys,
+            origin,
+            direction,
+            entities: &entities,
+        };
+        let launch = EntityUpdate {
+            entity: body,
+            ch2: Some(projectile_wire::shot_events(&[record])?),
+            ..EntityUpdate::default()
+        };
+        Ok(Self {
+            body,
+            entity,
+            definition,
+            frame: shot.frame,
+            instance: shot.instance,
+            state: shot.raw_state,
+            activation: shot.activation,
+            volleys,
+            origin,
+            direction,
+            launch,
+            deadline,
+            pending_create: true,
+            launch_queued: false,
+            creation_arrived: false,
+            launch_arrived: false,
+            finished: false,
+            explode: false,
+        })
+    }
+
+    /// `_show_others`: the create goes at once when the viewer's stream has
+    /// a baseline, else it waits for one in `advance`.
+    pub fn open(&mut self, stream_has_base: bool) -> Option<ObservedOut> {
+        (self.pending_create && stream_has_base).then(|| {
+            self.pending_create = false;
+            ObservedOut::Create(projectile_wire::confirmation(self.entity, self.definition))
+        })
+    }
+
+    pub fn body(&self) -> u32 {
+        self.body
+    }
+
+    pub fn entity(&self) -> u32 {
+        self.entity
+    }
+
+    pub fn frame(&self) -> u32 {
+        self.frame
+    }
+
+    pub fn origin(&self) -> [f32; 3] {
+        self.origin
+    }
+
+    pub fn direction(&self) -> Vec3 {
+        self.direction
+    }
+
+    /// The volley key (instance, raw state) the launch needs on the viewer.
+    pub fn volley_key(&self) -> (u16, u16) {
+        (self.instance, self.state)
+    }
+
+    /// Whether the viewer's acknowledged H=0 baseline holds this shot's
+    /// volley (`_volley_arrived`).
+    pub fn volley_arrived(&self, base: &ProjectedSnapshot) -> bool {
+        volley_matches(
+            base,
+            self.instance,
+            self.state,
+            self.activation,
+            self.volleys,
+        )
+    }
+
+    pub fn creation_arrived(&mut self) {
+        self.creation_arrived = true;
+    }
+
+    pub fn launch_arrived(&mut self) {
+        self.launch_arrived = true;
+    }
+
+    /// The shot ended (`_ObservedProjectile.finish`): an explosion or a drain
+    /// keeps DELIVERY_GRACE ticks for the launch, else it retires now.
+    pub fn finish(&mut self, tick: u32, explode: bool, drain: bool) {
+        self.finished = true;
+        self.explode = explode;
+        let grace = if explode || drain { DELIVERY_GRACE } else { 0 };
+        self.deadline = self.deadline.min(tick.saturating_add(grace));
+    }
+
+    /// `_ObservedProjectile.advance`. Ending (the source stream changed, the
+    /// deadline, or finished after the launch arrived) yields
+    /// [CancelLaunch if launched but unacknowledged], [Destroy unless the
+    /// create never went], Done. Otherwise [Create once the stream has a
+    /// baseline], [Launch once the create arrived and the baseline holds the
+    /// volley].
+    pub fn advance(
+        &mut self,
+        tick: u32,
+        source_live: bool,
+        stream_has_base: bool,
+        volley_arrived: bool,
+    ) -> Vec<ObservedOut> {
+        let mut out = Vec::new();
+        let launched = self.launch_arrived;
+        if !source_live || tick >= self.deadline || (self.finished && launched) {
+            if self.launch_queued && !launched {
+                out.push(ObservedOut::CancelLaunch);
+            }
+            if !self.pending_create {
+                let ch2 = (source_live && self.explode && launched).then(|| {
+                    projectile_wire::release(tick.wrapping_add(RELEASE_AHEAD), 1)
+                        .expect("a one-impact release fits its fields")
+                });
+                out.push(ObservedOut::Destroy(EntityUpdate {
+                    entity: self.entity,
+                    operation: Some(Operation::Destroy),
+                    ch2,
+                    ..EntityUpdate::default()
+                }));
+            }
+            out.push(ObservedOut::Done);
+            return out;
+        }
+        if let Some(create) = self.open(stream_has_base) {
+            out.push(create);
+        }
+        if !self.launch_queued && self.creation_arrived && volley_arrived {
+            self.launch_queued = true;
+            out.push(ObservedOut::Launch(self.launch.clone()));
+        }
+        out
+    }
+}
+
+/// `_ObservedProjectile.matching_volley`: the baseline's state at
+/// (instance, state) has payload counter == the activation and
+/// `volleys & 0xFF` == the record's volleys.
+pub fn volley_matches(
+    projected: &ProjectedSnapshot,
+    instance: u16,
+    state: u16,
+    activation: u16,
+    volleys: u16,
+) -> bool {
+    let Some(payload) = projected.state_payload(instance, state) else {
+        return false;
+    };
+    let counter = match payload.get("counter") {
+        Some(Value::Integer(counter)) => *counter,
+        _ => return false,
+    };
+    let seen = match payload.get("volleys") {
+        Some(Value::Integer(volleys)) => *volleys,
+        None => 0,
+        _ => return false,
+    };
+    counter == i64::from(activation) && seen & 0xff == i64::from(volleys)
 }
 
 #[cfg(test)]
@@ -658,5 +1176,163 @@ mod tests {
         tracker.create_arrived(token, entity);
         assert!(!tracker.confirmation_current(token, entity));
         assert!(tracker.retire().is_empty());
+    }
+
+    #[test]
+    fn field_schedule_follows_the_python_clock() {
+        let mut field = FieldSchedule::new();
+        let step = field.step(100, 100);
+        assert_eq!(
+            step,
+            FieldStep {
+                confirm: true,
+                ..FieldStep::default()
+            }
+        );
+        let start = 100 + FIELD_DELAY;
+        let step = field.step(start, start);
+        assert!(step.opened && step.deliver && step.confirm && !step.expired);
+        assert_eq!(step.heal, 0.0);
+        // Skipped ticks heal for every tick after the start.
+        let step = field.step(start + 3, start + 1);
+        assert!(!step.opened);
+        assert_eq!(step.heal, HEAL_PER_SECOND * 16.0 / 1000.0 * 3.0);
+        assert!(!field.step(start + 281, start + 281).faded);
+        let step = field.step(start + 282, start + 282);
+        assert!(step.faded_now && step.faded && step.deliver);
+        let step = field.step(start + 283, start + 283);
+        assert!(!step.faded_now && step.faded);
+        assert_eq!(FIELD_TICKS, 313);
+        let step = field.step(start + FIELD_TICKS, start + FIELD_TICKS - 1);
+        assert!(step.expired && !step.confirm && !step.deliver);
+        assert_eq!(step.heal, HEAL_PER_SECOND * 16.0 / 1000.0);
+        assert_eq!(field_centre([1.0, 2.0, 3.0]), [1.0, 3.0, 3.0]);
+    }
+
+    #[test]
+    fn seen_ids_wrap_within_their_span() {
+        let mut ids = SeenIds::new();
+        assert_eq!((ids.next(), ids.next()), (SEEN_FIRST, SEEN_FIRST + 1));
+        ids.next = SEEN_SPAN - 1;
+        assert_eq!(
+            (ids.next(), ids.next()),
+            (SEEN_FIRST + SEEN_SPAN - 1, SEEN_FIRST)
+        );
+    }
+
+    fn observed(deadline: u32) -> ObservedProjectile {
+        ObservedProjectile::new(
+            BODY,
+            SEEN_FIRST,
+            HELIX,
+            &shot(1000),
+            0x101,
+            [1.0, 2.0, 3.0],
+            [0.0, 0.0, 1.0],
+            deadline,
+        )
+        .unwrap()
+    }
+
+    fn destroy(out: &ObservedOut) -> &EntityUpdate {
+        let ObservedOut::Destroy(update) = out else {
+            panic!("destroy, got {out:?}")
+        };
+        assert_eq!(
+            (update.entity, &update.operation),
+            (SEEN_FIRST, &Some(Operation::Destroy))
+        );
+        update
+    }
+
+    #[test]
+    fn observed_projectile_creates_launches_and_explodes() {
+        let mut seen = observed(2000);
+        assert_eq!(seen.open(false), None);
+        assert!(seen.advance(1001, true, false, true).is_empty());
+        let out = seen.advance(1002, true, true, true);
+        assert_eq!(
+            out,
+            [ObservedOut::Create(projectile_wire::confirmation(
+                SEEN_FIRST, HELIX
+            ))]
+        );
+        // The launch waits for the create and the volley.
+        assert!(seen.advance(1003, true, true, true).is_empty());
+        seen.creation_arrived();
+        assert!(seen.advance(1004, true, true, false).is_empty());
+        let out = seen.advance(1005, true, true, true);
+        let [ObservedOut::Launch(launch)] = out.as_slice() else {
+            panic!("launch, got {out:?}")
+        };
+        let entities = [SEEN_FIRST];
+        let record = projectile_wire::ShotRecord {
+            frame: 1000,
+            instance: 11,
+            state: 30,
+            activation: 2,
+            ordinal: 0,
+            volleys: 1,
+            origin: [1.0, 2.0, 3.0],
+            direction: [0.0, 0.0, 1.0],
+            entities: &entities,
+        };
+        assert_eq!(launch.entity, BODY);
+        assert_eq!(
+            launch.ch2.as_ref().unwrap().as_bytes(),
+            projectile_wire::shot_events(&[record]).unwrap().as_bytes()
+        );
+        assert!(seen.advance(1006, true, true, true).is_empty());
+        seen.launch_arrived();
+        seen.finish(1010, true, false);
+        let out = seen.advance(1010, true, true, true);
+        assert_eq!(out.len(), 2);
+        assert_eq!(
+            destroy(&out[0]).ch2.as_ref().unwrap().as_bytes(),
+            projectile_wire::release(1010 + RELEASE_AHEAD, 1)
+                .unwrap()
+                .as_bytes()
+        );
+        assert_eq!(out[1], ObservedOut::Done);
+    }
+
+    #[test]
+    fn observed_projectile_retires_without_a_release() {
+        // The deadline passes before the launch arrived.
+        let mut seen = observed(1050);
+        assert!(seen.open(true).is_some());
+        seen.creation_arrived();
+        assert!(matches!(
+            seen.advance(1001, true, true, true).as_slice(),
+            [ObservedOut::Launch(_)]
+        ));
+        let out = seen.advance(1050, true, true, true);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], ObservedOut::CancelLaunch);
+        assert_eq!(destroy(&out[1]).ch2, None);
+        assert_eq!(out[2], ObservedOut::Done);
+
+        // The shooter's stream went away after an exploding, launched shot.
+        let mut seen = observed(2000);
+        assert!(seen.open(true).is_some());
+        seen.creation_arrived();
+        seen.advance(1001, true, true, true);
+        seen.launch_arrived();
+        seen.finish(1002, true, false);
+        let out = seen.advance(1002, false, true, true);
+        assert_eq!(destroy(&out[0]).ch2, None);
+        assert_eq!(out[1], ObservedOut::Done);
+
+        // A finish without explosion or drain retires at once.
+        let mut seen = observed(2000);
+        assert!(seen.open(true).is_some());
+        seen.finish(1003, false, false);
+        let out = seen.advance(1003, true, true, true);
+        assert_eq!(destroy(&out[0]).ch2, None);
+        assert_eq!(out[1], ObservedOut::Done);
+
+        // Nothing reached the client.
+        let mut seen = observed(1050);
+        assert_eq!(seen.advance(1050, true, false, false), [ObservedOut::Done]);
     }
 }

@@ -7,7 +7,14 @@ use std::io;
 
 use orpheus_core::bits::{BitError, BitWriter};
 use orpheus_physics::static_ray::Vec3;
-use orpheus_wire::entity::{Create, EntityUpdate, Operation};
+use orpheus_script::{
+    codecs::{CodecTable, PayloadMode, StatePayload},
+    graph::GraphStore,
+    wire::{self, Instance, Layout, Value, Variables},
+};
+use orpheus_wire::entity::{Create, EntityUpdate, Movement, Operation, SkinTheme};
+
+use crate::projectiles::{FIELD_ENTITY, FIELD_GRAPH};
 
 const HIDDEN_POSITION: [f32; 3] = [0.0, -1000.0, 0.0];
 const NO_BASELINE: u32 = u32::MAX;
@@ -20,6 +27,94 @@ pub fn confirmation(entity: u32, definition: u64) -> EntityUpdate {
         operation: Some(Operation::Create(Box::new(create))),
         ..EntityUpdate::default()
     }
+}
+
+/// Movement state +0 bit 24: the block keeps its own rotation, not the
+/// parent's (`KEEP_ROTATION` in ow174/game/projectiles.py).
+pub const KEEP_ROTATION: u32 = 0x0100_0000;
+
+/// 0258's remote states that are on: st2 the ring (`STU_691BFA55`, counter
+/// 1), st3 the canister on the ground, st5 the DataFlowMapping until the field
+/// fades (`FIELD_STATES` in ow174/game/projectiles.py).
+const FIELD_STATES: [(u16, &str, Option<i64>); 3] = [
+    (2, "STU_691BFA55", Some(1)),
+    (3, "STUStatescriptStateCosmeticEntity", None),
+    (5, "STUStatescriptStateDataFlowMapping", None),
+];
+const FADING_STATE: u16 = 5;
+
+/// The Biotic Field entity's (03DC.003) create (`field_create` in
+/// ow174/game/projectiles.py). With a parent (the owner's canister) it
+/// carries a movement block at the origin that keeps its own rotation and
+/// names the parent; without one it is placed at `at`. Both take the
+/// caster's skin theme, never the golden flag.
+pub fn field_create(
+    entity: u32,
+    parent: Option<u32>,
+    at: [f64; 3],
+    skin: SkinTheme,
+) -> EntityUpdate {
+    let mut create = Create::new(FIELD_ENTITY, Vec::new());
+    create.skin = SkinTheme {
+        guid: skin.guid,
+        golden: false,
+    };
+    match parent {
+        Some(parent) => {
+            create.movement = Some(Movement {
+                flags: KEEP_ROTATION,
+                ..Movement::default()
+            });
+            create.movement_parent = Some(parent);
+        }
+        None => create.position = at.map(|value| value as f32),
+    }
+    EntityUpdate {
+        entity,
+        operation: Some(Operation::Create(Box::new(create))),
+        ..EntityUpdate::default()
+    }
+}
+
+/// 0258's plain (H = 0) full frame as instance 1 (`field_frame` in
+/// ow174/game/projectiles.py): the client builds the instance from 03DC's
+/// initial graphs and the frame adopts it. The ring and the canister stay on;
+/// st5 goes off once the field has faded.
+pub fn field_frame(graphs: &GraphStore, codecs: &CodecTable, faded: bool) -> io::Result<BitWriter> {
+    let graph = graphs
+        .graph(FIELD_GRAPH)
+        .ok_or_else(|| invalid("missing Biotic Field graph 0258"))?;
+    let mut instance = Instance::new(1, Layout::try_from(graph).map_err(io::Error::other)?, None);
+    for (index, class, counter) in FIELD_STATES {
+        if faded && index == FADING_STATE {
+            continue;
+        }
+        let slot = graph
+            .remote_positions()
+            .iter()
+            .position(|&pos| graph.node(pos).and_then(|node| node.state) == Some(index))
+            .ok_or_else(|| invalid("Biotic Field state has no remote slot"))?;
+        let codec = codecs
+            .codec(class)
+            .ok_or_else(|| invalid("missing Biotic Field state codec"))?;
+        let payload: StatePayload = counter
+            .map(|counter| ("counter".to_owned(), Value::Integer(counter)))
+            .into_iter()
+            .collect();
+        let mut bits = BitWriter::new();
+        bits.bit(true); // X: on in this full frame
+        if codec.stec() {
+            bits.bit(true); // Y
+        }
+        bits.bit(true); // A / StAc
+        bits.append(
+            &codec
+                .payload(&payload, PayloadMode::Remote { full: true })
+                .map_err(io::Error::other)?,
+        );
+        instance.states.insert(slot, bits);
+    }
+    wire::remote_full(&[instance], &Variables::new()).map_err(io::Error::other)
 }
 
 /// Release an acknowledged predicted projectile at its client impact point.
@@ -281,6 +376,67 @@ mod tests {
                 "873e00b034080000407f000040800000e080010001009bfeff03003000f47f00400040f5ff1f00008001029a1818000000f80b000012040000000000f8ff5ff4ffffff1f",
                 "0060192110424000000000000000000000000000002800982b0f000008040202000000000000000000000000006000c0220400"
             ),
+        );
+    }
+
+    #[test]
+    fn field_creates_match_the_python_wire_bytes() {
+        let skin = SkinTheme {
+            guid: 0x0a60_0000_0000_0123,
+            golden: true,
+        };
+        for (parent, at, skin, bits, expected) in [
+            (
+                None,
+                [1.5, -2.25, 30.0],
+                skin,
+                383,
+                "724fd3480000000000e01f000008600000f8200000000000000000000000000000c01f0000c01f0000c01f0000c01f00",
+            ),
+            (
+                Some(0xa090_0401),
+                [1.5, -2.25, 30.0],
+                skin,
+                580,
+                "72cfd3480000000000000000000000000000000000000000000000000000000000c01f0000c01f0000c01f0000c09f18e000000900009000000009000000c000024850000000000000",
+            ),
+            (
+                None,
+                [0.0; 3],
+                SkinTheme::default(),
+                350,
+                "720f030000000000000000000000000000000000000000000000000000e00f0000e00f0000e00f0000e00f00",
+            ),
+        ] {
+            let update = field_create(0xa008_0000, parent, at, skin);
+            assert_eq!(update.entity, 0xa008_0000);
+            let Some(Operation::Create(definition)) = update.operation else {
+                panic!("field create")
+            };
+            check(
+                &orpheus_wire::entity::create(0, &definition).unwrap(),
+                bits,
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the derived 104319 statescript catalog"]
+    fn field_frames_match_the_python_wire_bytes() {
+        let graphs =
+            GraphStore::load(orpheus_testkit::runtime_dir().join("data/game_graphs_174.json.gz"))
+                .unwrap();
+        let codecs = CodecTable::client();
+        check(
+            &field_frame(&graphs, &codecs, false).unwrap(),
+            48,
+            "082c0100780f",
+        );
+        check(
+            &field_frame(&graphs, &codecs, true).unwrap(),
+            47,
+            "082c01007803",
         );
     }
 }

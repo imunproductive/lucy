@@ -962,6 +962,104 @@ impl Component {
             .collect()
     }
 
+    /// Begin a state from outside the graph (`State.begin` in
+    /// `ow174/game/script/runtime.py`, as `VoiceLines.spawned` in
+    /// `ow174/game/voicelines.py` calls it). Its begin and the plugs it
+    /// follows run now; the events they queue at the current clock run at the
+    /// next advance, as in Python. False when the instance or the state is
+    /// missing or the state is already on.
+    pub fn begin_state(
+        &mut self,
+        instance: u16,
+        raw_state: u16,
+        world: &mut impl World,
+    ) -> Result<bool, InitFault> {
+        if self.halted {
+            return Err(InitFault::Halted);
+        }
+        let key = StateKey {
+            instance,
+            raw: raw_state,
+        };
+        if !self.has_state(key) || self.state_active(key) {
+            return Ok(false);
+        }
+        self.run(world, |vm| vm.begin(key, 0))?;
+        Ok(true)
+    }
+
+    /// End an active state from outside the graph, finished or aborted
+    /// (`State.end` in `ow174/game/script/runtime.py`, as `VoiceLines.expire`
+    /// in `ow174/game/voicelines.py` calls `state.end(True)`). Its end plugs
+    /// run now; the events they queue run at the next advance. False when the
+    /// state is not on.
+    pub fn end_state(
+        &mut self,
+        instance: u16,
+        raw_state: u16,
+        finished: bool,
+        world: &mut impl World,
+    ) -> Result<bool, InitFault> {
+        if self.halted {
+            return Err(InitFault::Halted);
+        }
+        let key = StateKey {
+            instance,
+            raw: raw_state,
+        };
+        if !self.state_active(key) {
+            return Ok(false);
+        }
+        self.run(world, |vm| vm.end(key, finished, 0))?;
+        Ok(true)
+    }
+
+    /// Queue a `MoveTo` state's end once the mover reports its movement over:
+    /// a finish when it arrived, else an abort, `delay_ms` after the current
+    /// clock. It runs at the next advance, not now (`body_command` in
+    /// `ow174/game/match.py` calls `state.request(FINISH if arrived else
+    /// ABORT, max(0, delay))`, `State.request` in
+    /// `ow174/game/script/runtime.py`).
+    pub fn finish_move(
+        &mut self,
+        instance: u16,
+        raw_state: u16,
+        arrived: bool,
+        delay_ms: u64,
+        world: &mut impl World,
+    ) -> Result<(), InitFault> {
+        if self.halted {
+            return Err(InitFault::Halted);
+        }
+        if !self.machine.snapshot.instances.contains_key(&instance) {
+            return Ok(());
+        }
+        let event = if arrived {
+            Event::Finish(raw_state)
+        } else {
+            Event::Abort(raw_state)
+        };
+        self.run(world, |vm| vm.post_after(instance, delay_ms, event))
+    }
+
+    fn has_state(&self, key: StateKey) -> bool {
+        self.machine
+            .snapshot
+            .instances
+            .get(&key.instance)
+            .and_then(|instance| self.graphs.graph(instance.graph))
+            .is_some_and(|graph| graph.state(usize::from(key.raw)).is_some())
+    }
+
+    fn state_active(&self, key: StateKey) -> bool {
+        self.machine
+            .snapshot
+            .instances
+            .get(&key.instance)
+            .and_then(|instance| instance.states.get(&key.raw))
+            .is_some_and(|state| state.active)
+    }
+
     fn advance(
         &mut self,
         frame: u32,

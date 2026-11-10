@@ -76,7 +76,7 @@ pub struct SceneAssets {
     bot_unknowns: Unknowns,
     bots: BotCatalog,
     movers: Arc<MoverCatalog>,
-    stats: StatsCatalog,
+    stats: Arc<StatsCatalog>,
     heroes: Arc<HeroCatalog>,
     pools: Arc<PoolCatalog>,
 }
@@ -93,6 +93,7 @@ pub struct PreparedScene {
     movers: Arc<MoverCatalog>,
     heroes: Arc<HeroCatalog>,
     pools: Arc<PoolCatalog>,
+    stats: Arc<StatsCatalog>,
     pub owner_body_factory: Option<Arc<OwnerBodyFactory>>,
 }
 
@@ -120,7 +121,7 @@ impl SceneAssets {
             bot_unknowns: Unknowns::for_build(),
             bots: BotCatalog::load(data.join("ai_spawners_174.json"))?,
             movers: Arc::new(MoverCatalog::load(data.join("game_movers_174.json"))?),
-            stats: StatsCatalog::load(data.join("game_stats_174.json"))?,
+            stats: Arc::new(StatsCatalog::load(data.join("game_stats_174.json"))?),
             heroes: Arc::new(HeroCatalog::load(data.join("game_heroes_174.json"))?),
             pools,
         })
@@ -214,6 +215,7 @@ impl SceneAssets {
             movers: Arc::clone(&self.movers),
             heroes: Arc::clone(&self.heroes),
             pools: Arc::clone(&self.pools),
+            stats: Arc::clone(&self.stats),
             owner_body_factory: None,
         };
         if is_practice_range(scene.map()) {
@@ -359,6 +361,32 @@ impl PreparedScene {
             height: settings.stand_height,
             radius: settings.stand_radius,
             eye: crate::combat::eye_height(bot.spawn.hero, false),
+        }
+    }
+
+    /// The Tab board catalog (stats.py).
+    pub fn stats(&self) -> &StatsCatalog {
+        &self.stats
+    }
+
+    /// A player's body as a target (combat.py `_targets`): a capsule from
+    /// the feet, crouched or standing, with the mover's standing radius.
+    pub(crate) fn player_target(
+        &self,
+        hero: &Hero,
+        feet: [f64; 3],
+        crouched: bool,
+    ) -> crate::hitscan::TargetPose {
+        let settings = self.movers.for_body(Some(hero.body));
+        crate::hitscan::TargetPose {
+            feet,
+            height: if crouched {
+                settings.crouch_height
+            } else {
+                settings.stand_height
+            },
+            radius: settings.stand_radius,
+            eye: crate::combat::eye_height(hero.guid, crouched),
         }
     }
 

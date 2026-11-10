@@ -434,6 +434,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 StateKind::Plain
             }
             "STU_7B9E8909" => StateKind::Plain,
+            // A voice stimulus only plays a bark on the client that runs it;
+            // the server keeps it as a plain state (`ow174/game/voicelines.py`).
+            "STU_40E05F6B" => StateKind::Plain,
             "STUStatescriptStateHealthPool" if is_base_health_pool(node) => {
                 StateKind::HealthPool { pool: None }
             }

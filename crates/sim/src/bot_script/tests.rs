@@ -239,3 +239,82 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     assert_eq!(script_chunks(&deliver(&mut world)), [BOT_ENTITY + 15]);
     assert!(nameplate(&scene, &world, BOT_ENTITY + 15));
 }
+
+/// combat.py `_bot_weapons` and `_fly`: a firing bot's rockets leave its eye
+/// along its yaw and hit the enemy player standing in front of it.
+#[test]
+#[ignore = "requires the derived 104319 data with its bot graph bundle"]
+fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
+    use crate::{
+        combat::{Combat, PlayerTarget, Shooter, ShotContext},
+        hitscan::TargetPose,
+        instance::RETAIL_QUANTA,
+    };
+
+    let mut scene = practice_scene();
+    let mut tick = FIRST_TICK;
+    let [x, y, z] = scene.map().spawn_point(0, 0).unwrap().0;
+    let shooter = scene
+        .bots_mut()
+        .iter_mut()
+        .find(|bot| bot.spawn.firing && bot.spawn.team != 0)
+        .unwrap();
+    // 4 m to the side of the player's spawn, facing it (a quarter turn: +x),
+    // where the other bots leave the line clear.
+    shooter.position = [x - 4.0, y, z];
+    shooter.yaw = 16384.0;
+    let (source, team) = (shooter.entity, shooter.spawn.team);
+    while !scene.bot_scripts_ready() {
+        scene.step_bots(tick);
+        tick += 1;
+    }
+    let body = OWNER | 1;
+    let player = PlayerTarget {
+        body,
+        team: 0,
+        pose: TargetPose {
+            feet: [x, y, z],
+            height: 1.8,
+            radius: 0.35,
+            eye: 1.55,
+        },
+        dead: false,
+    };
+    let mut combat = Combat::new(&scene);
+    let mut hits = Vec::new();
+    for _ in 0..600 {
+        scene.step_bots(tick);
+        combat.record_poses(&scene, &[player], tick);
+        let context = ShotContext {
+            quanta: RETAIL_QUANTA,
+            tick,
+            now: Duration::from_millis(u64::from(tick) * 16),
+        };
+        combat.step_bot_projectiles(&mut scene, context).unwrap();
+        for shot in scene.bot_weapons(tick) {
+            let BotShotKind::Projectile(projectile) = shot.kind else {
+                panic!("the Practice Range bots fire projectiles");
+            };
+            if shot.source == source {
+                assert_eq!(projectile.origin, [x - 4.0, y + 1.55, z]);
+                assert!(projectile.direction[0] > 0.999);
+            }
+            let shooter = Shooter {
+                source: shot.source,
+                team: shot.team,
+                bot: true,
+            };
+            combat.fire_bot_projectile(shooter, projectile, shot.tick);
+        }
+        hits.extend(combat.take_player_hits());
+        if !hits.is_empty() {
+            break;
+        }
+        tick += 1;
+    }
+    let hit = hits.first().expect("a rocket reached the player");
+    assert_eq!(hit.body, body);
+    assert_eq!(hit.shooter.source, source);
+    assert_eq!(hit.shooter.team, team);
+    assert!(hit.amount > 0.0);
+}

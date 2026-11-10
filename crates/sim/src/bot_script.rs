@@ -18,6 +18,7 @@ use std::{
 use crate::{
     bots::Bot,
     combat::{PosedProjectile, eye_height},
+    replication::kill_feed_fresh,
 };
 use orpheus_content::maps::{GameMap, PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE};
 use orpheus_script::{
@@ -42,9 +43,6 @@ const COMBAT_CATCH_UP: u32 = 64;
 /// The metres a hitscan volley reaches when it names none (combat.py `RANGE`,
 /// unverified).
 const RANGE: f64 = 200.0;
-/// How long a kill feed pulse stays fresh for its first playback
-/// (`ClientOnlyPulser.FRESH_MS` in `ow174/game/script/nodes.py`).
-const KILL_FEED_FRESH_MS: i64 = 500;
 /// 003E.025's parameters, by the low 16 bits of their 026 identifiers
 /// (combat.py `KILLER`, `CRIT`, `LOADOUT`, `ASSISTS`).
 const KILLER: u32 = 0x0012;
@@ -560,6 +558,10 @@ fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<BotShotK
                 ballistics,
                 origin,
                 direction,
+                // The NPC path covers ballistic projectiles only
+                // (projectiles.py `fired`).
+                spawn: None,
+                feet: bot.position,
             }));
         }
         let hit = HitDefinition::from_authored(node.field("m_6396149F")?, &mut evaluate).ok()??;
@@ -937,9 +939,8 @@ impl Flush<'_, '_> {
         let Some((tick, killer)) = self.scripts.death(entity) else {
             return false;
         };
-        let age = (i64::from(self.context.tick) - i64::from(tick)) * FRAME_MS as i64;
         self.context.mode_ready
-            && (0..=KILL_FEED_FRESH_MS).contains(&age)
+            && kill_feed_fresh(self.context.tick, tick)
             && (self.context.identity)(entity)
             && (self.context.identity)(killer)
     }
