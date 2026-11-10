@@ -3,6 +3,7 @@
 
 mod handlers;
 pub(crate) mod hub;
+pub(crate) mod matchmaker;
 pub(crate) mod peer;
 pub(crate) mod router;
 pub(crate) mod services;
@@ -81,6 +82,8 @@ pub(crate) struct Lobby {
     pub services: Arc<services::Services>,
     /// Friends, presence, parties, chat channels and the group finder.
     pub social: Social,
+    /// Queues, the matchmaker and the games it starts.
+    pub matchmaker: matchmaker::Matchmaker,
 }
 
 struct LoginLease<'a> {

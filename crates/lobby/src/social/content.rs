@@ -8,7 +8,7 @@ use orpheus_wire::jam::codec::{
     Value::{self, Array, Bool, Struct},
 };
 
-use super::{Party, Social, SocialState, friends_of, messages};
+use super::{Party, PartyId, Social, SocialState, friends_of, messages};
 use crate::{
     accounts::{Account, Accounts},
     collection::Collection,
@@ -16,6 +16,7 @@ use crate::{
     party::{self, Membership, PartyMember},
     player_messages::{friend_card, record},
     presence::{Presence, View},
+    queue::{QueueFields, add_to_state},
     ranked::{LeaderboardPlaces, Ranked},
     transport::LobbyMessage,
 };
@@ -30,7 +31,13 @@ pub struct SocialContent<'a> {
     /// Seconds since 1970.
     pub wall_time: u64,
     pub now: Instant,
+    /// The role queue a party is in, from the matchmaker: its entry and each
+    /// member's choice go into the party state (`content/queue.py`).
+    pub queue: QueueOf<'a>,
 }
+
+/// The role queue of a party (its id and members), when it is in one.
+pub type QueueOf<'a> = Box<dyn Fn(PartyId, &[Arc<Account>]) -> Option<QueueFields> + 'a>;
 
 impl SocialContent<'_> {
     /// The player card: ids, icon, portrait frame, level and name.
@@ -163,7 +170,17 @@ impl SocialContent<'_> {
             })
             .collect();
         let state = self.state(party, &invitees)?;
-        Ok((party::PARTY, 20700, Fields::from([(0x78, Struct(state))])))
+        let mut message = (party::PARTY, 20700, Fields::from([(0x78, Struct(state))]));
+        if let Some(queue) = (self.queue)(party.id, &party.members) {
+            let accounts: Vec<_> = party
+                .members
+                .iter()
+                .map(|member| Some(member.account_lo))
+                .chain(invitees.iter().map(|_| None))
+                .collect();
+            add_to_state(&mut message, &queue, &accounts);
+        }
+        Ok(message)
     }
 
     /// A listed party as the group finder shows it (52300, 52301): its party
@@ -248,10 +265,6 @@ impl SocialContent<'_> {
                 }
             }
         }
-        // The role queue entry (+0x18) and each member's role choice (+0xC8)
-        // while the party is in a role queue belong to the matchmaker
-        // (`ow174/services/social.py` _members_state, content/queue.py); they
-        // stay empty until it is ported.
         Ok(state)
     }
 }

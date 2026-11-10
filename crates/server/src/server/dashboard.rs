@@ -48,14 +48,6 @@ const PAGES: [(&str, &[u8], &str); 5] = [
     ),
 ];
 const INDEX: &[u8] = include_bytes!("../../../../web/dashboard/index.html");
-/// Actions whose features the native server does not have yet.
-const NOT_PORTED: [&str; 4] = [
-    "/api/matchmaking",
-    "/api/mode_settings",
-    "/api/set_map",
-    "/api/end_matches",
-];
-
 pub struct Dashboard {
     http: Arc<HttpServer>,
     addr: SocketAddr,
@@ -109,6 +101,7 @@ impl Dashboard {
                         lobby_port: parts.lobby_port,
                         platform: &parts.platform,
                         services: &parts.services,
+                        lobby: parts.lobby.as_deref(),
                         uptime: started.elapsed(),
                     };
                     let _ = handle(&api, parts.lobby.as_deref(), port, request);
@@ -227,10 +220,10 @@ fn post(
         "/api/reconnect" => Ok(api.reconnect()),
         "/api/purchase" => api.purchase(data),
         "/api/open_all_boxes" => api.open_all_boxes(data),
-        path if NOT_PORTED.contains(&path) => Err(ApiError::new(
-            501,
-            "The native server does not support this action yet.",
-        )),
+        "/api/matchmaking" => api.matchmaking(data),
+        "/api/mode_settings" => api.mode_settings(data),
+        "/api/set_map" => api.set_map(data),
+        "/api/end_matches" => api.end_matches(),
         _ => Err(ApiError::new(404, "Action not found")),
     }
 }

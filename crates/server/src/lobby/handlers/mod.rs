@@ -9,7 +9,6 @@ mod leaving;
 mod lookups;
 mod matchmaking;
 mod party;
-mod practice;
 mod rewards;
 mod settings;
 mod shop;
@@ -18,7 +17,6 @@ use super::router::Module;
 
 pub(crate) const MODULES: &[&Module] = &[
     &gallery::MODULE,
-    &practice::MODULE,
     &chat::MODULE,
     &friends::MODULE,
     &party::MODULE,

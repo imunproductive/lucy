@@ -18,6 +18,7 @@ use std::{
 use orpheus_lobby::{
     accounts::Account,
     handoff::general_channel,
+    queue::QueueFields,
     ranked::LeaderboardPlaces,
     social::{ChannelChange, PartyId, SocialState, content::SocialContent, friends_of, messages},
     transport::LobbyMessage,
@@ -26,10 +27,20 @@ use orpheus_lobby::{
 #[cfg(test)]
 mod tests;
 
-use super::{Lobby, peer::Peer};
+use super::{Lobby, matchmaker::parties::Party, peer::Peer};
 
 /// No account has a Top 500 place yet (the leaderboard is another port).
 static NO_PLACES: LeaderboardPlaces = BTreeMap::new();
+
+/// The role queue the party is in now.
+fn live_queue(lobby: &Lobby, id: PartyId, members: &[Arc<Account>]) -> Option<QueueFields> {
+    let party = Party {
+        id,
+        leader: members.first()?.account_lo,
+        members: members.to_vec(),
+    };
+    lobby.matchmaker.queue_fields(lobby, &party)
+}
 
 /// Messages for players, delivered in the order they were queued.
 #[derive(Default)]
@@ -71,6 +82,9 @@ pub(crate) struct Turn<'a> {
 
 impl<'a> Turn<'a> {
     pub(crate) fn new(lobby: &'a Lobby) -> io::Result<Self> {
+        // The matchmaker never takes the social lock while it holds its own,
+        // so asking it here, under the social lock, can't deadlock.
+        let queue = Box::new(move |id, members: &[Arc<Account>]| live_queue(lobby, id, members));
         let wall_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?
@@ -86,6 +100,7 @@ impl<'a> Turn<'a> {
                 places: &NO_PLACES,
                 wall_time,
                 now: Instant::now(),
+                queue,
             },
             out: Outbox::default(),
         })
@@ -238,7 +253,6 @@ impl<'a> Turn<'a> {
 // (social_settings_saved, party_messages).
 
 /// The account's party, as the matchmaker sees it.
-#[expect(dead_code, reason = "the matchmaker's port reads parties")]
 pub(crate) struct PartyView {
     pub id: PartyId,
     pub leader: u32,
@@ -246,7 +260,6 @@ pub(crate) struct PartyView {
 }
 
 /// The account's party, a party of one on first use.
-#[expect(dead_code, reason = "the matchmaker's port reads parties")]
 pub(crate) fn party_view(lobby: &Lobby, account: &Arc<Account>) -> io::Result<PartyView> {
     let mut state = lobby.social.lock();
     let id = state.party_of(account)?;
@@ -267,9 +280,23 @@ pub(crate) fn party_messages(
     Turn::new(lobby)?.party_messages(account)
 }
 
-#[expect(dead_code, reason = "the matchmaker's port tells parties")]
-pub(crate) fn notify_party(lobby: &Lobby, id: PartyId) -> io::Result<()> {
+/// The party state for a matchmaker change: `queue` is the party's role
+/// queue when the change happened (Python builds the state then; the
+/// matchmaker may have popped the queue since).
+pub(crate) fn notify_party(
+    lobby: &Lobby,
+    id: PartyId,
+    queue: Option<&QueueFields>,
+) -> io::Result<()> {
     let mut turn = Turn::new(lobby)?;
+    let queue = queue.cloned();
+    turn.content.queue = Box::new(move |party, members: &[Arc<Account>]| {
+        if party == id {
+            queue.clone()
+        } else {
+            live_queue(lobby, party, members)
+        }
+    });
     turn.notify_party(id)?;
     turn.finish_posted();
     Ok(())
@@ -304,7 +331,6 @@ pub(crate) fn social_settings_saved(lobby: &Lobby, account: &Arc<Account>) -> io
 
 /// Out of the party, as 22107 does; nothing for a party of one
 /// (`ow174/lobby/handlers/leaving.py` leave_party). True when it left.
-#[expect(dead_code, reason = "the leaving port (52902, 21801) leaves parties")]
 pub(crate) fn leave_party(lobby: &Lobby, account: &Arc<Account>) -> io::Result<bool> {
     let mut turn = Turn::new(lobby)?;
     let id = turn.state.party_of(account)?;
@@ -325,7 +351,6 @@ pub(crate) fn leave_party(lobby: &Lobby, account: &Arc<Account>) -> io::Result<b
 }
 
 /// The social half of a match ending for a player; see [`Turn::game_left`].
-#[expect(dead_code, reason = "the matchmaker's port sees games leave")]
 pub(crate) fn game_left(lobby: &Lobby, account_lo: u32, match_id: PartyId) -> io::Result<()> {
     let mut turn = Turn::new(lobby)?;
     turn.game_left(account_lo, match_id)?;

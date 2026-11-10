@@ -90,6 +90,7 @@ impl Fixture {
             lobby_port: 3724,
             platform: &self.platform,
             services: &self.services,
+            lobby: None,
             uptime: Duration::ZERO,
         }
     }

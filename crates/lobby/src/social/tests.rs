@@ -83,6 +83,7 @@ impl World {
             places: &self.places,
             wall_time: 1_700_000_000,
             now,
+            queue: Box::new(|_, _| None),
         }
     }
 

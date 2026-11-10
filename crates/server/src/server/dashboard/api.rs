@@ -120,6 +120,9 @@ pub struct Api<'a> {
     pub platform: &'a Platform,
     /// The shop, the loot boxes and the live updates of a connected game.
     pub services: &'a Services,
+    /// The lobby's matchmaker and game service; `None` when matchmaking is
+    /// off.
+    pub lobby: Option<&'a crate::lobby::Lobby>,
     pub uptime: Duration,
 }
 
@@ -264,6 +267,7 @@ impl Api<'_> {
 
     fn server_info(&self) -> Json {
         let connected = self.online.lock().expect("lobby accounts").len();
+        let matchmaker = self.lobby.map(|lobby| &lobby.matchmaker);
         json!({
             "host": self.platform.host.to_string(),
             "port": self.lobby_port,
@@ -272,11 +276,13 @@ impl Api<'_> {
             "game_instances": [],
             "game_runtime_available": true,
             "second_games": self.platform.games.is_some(),
-            "matchmaking_supported": false,
-            "test_players": 0,
-            "modes": [],
-            "maps": [],
-            "forced_map": "",
+            "matchmaking_supported": self.lobby.is_some(),
+            "test_players": matchmaker.map_or(0, |matchmaker| matchmaker.minimum_players()),
+            "modes": self.mode_rows(),
+            "maps": self.map_rows(),
+            "forced_map": matchmaker
+                .and_then(|matchmaker| matchmaker.forced_map())
+                .map_or(String::new(), |map| format!("0x{map:X}")),
         })
     }
 
@@ -992,6 +998,8 @@ fn parse_challenge(value: &Json) -> Result<String, ApiError> {
 }
 
 mod games;
+mod matchmaking;
+
 /// The item GUID of a purchase, read as Python's `parse_guid` then the shop's
 /// own check: a number or text such as "0x0250000000001149" (an unreadable
 /// one is "Invalid item"), between 1 and 2^64 - 1 (else "Invalid item
