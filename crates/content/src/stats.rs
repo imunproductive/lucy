@@ -2,6 +2,36 @@
 //!
 //! Ported from ow174/game/stats.py and ow174/game/onfire.py. The retail fire
 //! scoring rule and its threshold remain outside this component encoder.
+//!
+//! Client research (1.74, the Tab board): the client opens the board itself:
+//! its HUD makes a local entity (01F1.003, 0x7FF789A1AEE0) and starts graph
+//! 041C on it (0x7FF789A0DF86), whose SubScript 01BE holds the board
+//! (presenter STU_A4F3808F, screen 0403.05A) while the Scoreboard key (logical
+//! button 77, or 78 to toggle) is down. Its rows are every player entity with
+//! a slot (component 74) and a team (component 25 from 26), split by relation
+//! to the local player (0x7FF7899B6B90); name, level and rank come from his
+//! 20308 card, the hero from his component 75. Its own numbers are the local
+//! player's component 64 (0x7FF7899B3F90 -> 0x7FF789A1CB00): fields 5-12 name
+//! 8 stats (062 GUIDs) with values in 21-28 and a medal each in 37-44; fields
+//! 13-18 name 6 more with values in 29-34; GUID 0 is no entry. The value is
+//! printed by the stat's display type (0x7FF789ABFD50). A medal (the stat
+//! item's Rank, 005A.05E) is 1 gold, 2 silver, 3 bronze, 0 none. Fields 5-34
+//! and 37-44 are owner-only (field flag 0x10). Unverified: which list goes in
+//! which slots, and the medal rule (OW1's: best three among teammates, above
+//! 0, not for a flagged stat like Deaths).
+//!
+//! On Fire: the player card's fire meter (01CF st37's FireScore,
+//! 0x7FF78982EBB0) reads the local player's component 64 (MECGMPStats):
+//! `100 * min(score, 1.28 * threshold) / (1.28 * threshold)`, score field 19,
+//! threshold field 20 (owner-only); 1.28 is at 0x7FF78B53BD08, and with no
+//! threshold the client divides 0 by 0. The portrait burns (OnFire,
+//! 0x7FF789BE2370; 01CF st17's effects) while field 36 is set, read through a
+//! body's possessor, on any client. The bar shows only in the Tutorial mode
+//! (0019.0C5): its FireBarVisible asks GetPvPEntity, which this client always
+//! answers with no entity (0x7FF789BD8000). Component 64's field types (type
+//! 0x7FF78BFE9DA0): 5 nested `{u64, f32}`, 14 u64, 16 f32, u16, u8 (36), 8
+//! u8. The server rule that fills the score is not in the client; the data
+//! has only the score events and their weights (003F.054).
 
 use std::{collections::HashMap, fs, io, path::Path};
 

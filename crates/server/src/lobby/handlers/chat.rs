@@ -97,11 +97,16 @@ fn deliver(
     }
 }
 
-/// Run a match command. False when it is not one, so the text goes out as
-/// chat. The answer comes from the bot, to the player only.
+/// Run a match command. False when it is not one, or the game server is off
+/// (`--game-port 0`), so the text goes out as chat. The answer comes from the
+/// bot, to the player only.
 fn match_command(peer: &mut Peer<'_, '_>, channel: &Value, said: &str) -> io::Result<bool> {
     let (command, rest) = said[1..].split_once(' ').unwrap_or((&said[1..], ""));
     let command = command.to_lowercase();
+    let lobby = peer.lobby;
+    let Some(game) = lobby.game.as_deref() else {
+        return Ok(false);
+    };
     let reply = match command.as_str() {
         "hero" => {
             let wanted = rest.trim();
@@ -109,7 +114,7 @@ fn match_command(peer: &mut Peer<'_, '_>, channel: &Value, said: &str) -> io::Re
                 None => format!("No hero called '{wanted}'."),
                 Some(hero) => {
                     let switched = match peer.seat.as_ref() {
-                        Some(seat) => peer.lobby.game.switch_hero(&seat.handoff, hero.guid)?,
+                        Some(seat) => game.switch_hero(&seat.handoff, hero.guid)?,
                         None => false,
                     };
                     if switched {
@@ -223,7 +228,10 @@ fn follow_seat(peer: &mut Peer<'_, '_>) -> io::Result<()> {
             return Ok(());
         }
     }
-    if peer.lobby.game.seat_exists(&seat.handoff)? {
+    let Some(game) = peer.lobby.game.as_deref() else {
+        return Ok(());
+    };
+    if game.seat_exists(&seat.handoff)? {
         return Ok(());
     }
     let mut turn = Turn::new(peer.lobby)?;

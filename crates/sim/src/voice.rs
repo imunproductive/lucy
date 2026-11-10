@@ -17,7 +17,8 @@ use orpheus_script::{
 use serde_json::Value as Json;
 
 /// The statescript state that plays a bark on the client (STU_40E05F6B, the
-/// holder of the client's `STUConfigVarVoiceStimulus`; `VOICE_CLASS`).
+/// holder of the client's `STUConfigVarVoiceStimulus`, 0x819B1577;
+/// `VOICE_CLASS`). Its m_stimulus holds a voice-stimulus GUID (0x0EE0...).
 pub const VOICE_CLASS: &str = "STU_40E05F6B";
 
 /// Spawn barks are on (`VOICE_LINES`).

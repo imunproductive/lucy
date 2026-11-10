@@ -1,4 +1,33 @@
 //! Match entity baselines and the shared mode presentation frame.
+//!
+//! Client research (1.74):
+//!
+//! - Component 26 holds the filter bits: `0x800000 << team` picks the team's
+//!   physics proxy. The client's own session builder gives its player
+//!   `0x10040001 | team bit` (0x7FF78973950E), but 0x10000000 is the
+//!   spectator bit (GetEntityIsSpectator, 0x7FF789B2F000): a player with it
+//!   gets the spectator HUD, and a body with only it has no collision and no
+//!   enemy outline. So a player gets `0x00040001 | team bit`, a body only the
+//!   team bit. The client knows five teams, bits 23-27 (GetTeam
+//!   0x7FF7894E9570); team 4 is free-for-all, whose members are all enemies
+//!   (0x7FF789B2C690). Bit 28 is the spectator.
+//! - Component 29 (MPlayerComponentData): the player's 16-byte id, BattleTag
+//!   (the client names the entity by it), level, and on a competitive card
+//!   the rank (m_rankedLevel, m_heroicRank, m_rankedLevelTier), which the team
+//!   list shows (0x7FF789A16620).
+//! - Component 74 (hero select participant) names the portrait frame; the
+//!   team list draws a frame only when its asset is loaded (0x7FF78A64BA30),
+//!   and the client loads it when a player entity's 74 names it
+//!   (0x7FF7894C9D90). A list entry is filled again whenever a card arrives
+//!   (UI-world event 0x47), so each card goes once more after the frames
+//!   loaded. On a role queue card 74's m_roleQueueRole makes hero select
+//!   refuse heroes of the other roles (CanPlayHero 0x7FF789CB0F92, while the
+//!   global 0x7FF78BD4FB90 is on, which it is from the start).
+//! - A training bot's body has no component 123 (the hero): the client fails
+//!   the whole frame on a component it cannot place (assert 0xD62712AE,
+//!   "Failed to deserialize component update ... 143E ... /123"; 143E has 1,
+//!   3, 4, 22, 24, 25, 26, 28, 31, 35, 39, 43, 47, 49, 51, 69, 76, 78, 83, 86,
+//!   90, 97, 115, 119, 122, 127).
 
 use std::{collections::HashMap, io};
 

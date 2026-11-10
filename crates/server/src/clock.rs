@@ -1,4 +1,11 @@
 //! The fixed game tick and packet clock, separate from socket and simulation work.
+//!
+//! The packet frame stays on real time, like retail's (62.5 per second, OW2
+//! traffic): ticks that fell behind are skipped, not run late. The client's
+//! command clock runs on real time and only jumps forward to the packet frame
+//! (0x7FF7896DB296, 0x7FF789AC7140), so a lagging frame number would leave its
+//! commands further ahead with every stall, past its 64 predicted states and
+//! 32 kept commands.
 
 use std::time::Duration;
 

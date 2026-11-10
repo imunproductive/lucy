@@ -3,6 +3,29 @@
 //! Follows `ow174/game/correction.py`. A correction describes the state after
 //! its command frame. The packet can carry it once that frame has passed and
 //! the owner has acknowledged this body's create.
+//!
+//! Client research: the owner's client keeps the state it predicted for each
+//! of 64 command frames (mover +0x1580). A ch3 movement record on the body it
+//! possesses goes to its player's component 59 (0x7FF7896DA7E7 ->
+//! 0x7FF7896DA8AC): when comp59 +0x3E0 <= the record's frame, the state is
+//! copied to comp59 +0x70 and +0x3E0 = frame + 1. On its next tick
+//! (0x7FF78970F660) the client takes its predicted state of that frame
+//! (history vt+0x60 / vt+0x58, frame checked at 0x7FF78970FA0D) and compares
+//! with 0x7FF789B73E00 in mode 2: every field exactly, all but +384. Equal:
+//! only bookkeeping (0x7FF789ACE870 drops mods that ended before it), +0x3E0 =
+//! 0. Different or no prediction: comp59 +0x60 = 1; if the body's +12
+//! discontinuity counter equals the server's, it takes the server's state and
+//! replays the commands after F from its send window (comp59 +0xAF0, at most
+//! 32 frames), else it takes the state without replay (0x7FF789710390,
+//! 0x7FF78970FD80, 0x7FF789B7DF20). The record's frame is the packet frame
+//! minus an unsigned count (0x7FF789B76DFE). The client jumps its command
+//! frame to a passing packet frame plus a lead of at most 16
+//! (0x7FF7896DAF7A..0x7FF7896DB296). It keeps only commands from ack - 1 on
+//! (0x7FF7896DAF4F -> 0x7FF789B3D6E0); a frame it no longer has runs with its
+//! oldest command (0x7FF789B3D586). The spring offsets (+44, +48) are not
+//! sent: the decoded state has them at 0 (0x7FF789B75EC0) and the body takes
+//! them so (0x7FF789B4AC10). Retail sent the local body a ch3 record every
+//! frame (OW2 traffic).
 
 use std::collections::VecDeque;
 

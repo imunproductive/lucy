@@ -63,7 +63,8 @@ pub const MAX_PARTY_SIZE: usize = 6;
 /// again.
 pub const MENU_READY_DELAYS: [Duration; 2] = [Duration::from_secs(3), Duration::from_secs(7)];
 /// The client writes "offline (4 minutes)" once, when a friend's presence
-/// arrives, so the text only moves when the presence is sent again.
+/// arrives (0x7FF7894EBF30 counts from its own clock), so the text only moves
+/// when the presence is sent again.
 pub const OFFLINE_REFRESH: Duration = Duration::from_secs(60);
 
 /// A party or match id, `[+0x0, +0x8]`.

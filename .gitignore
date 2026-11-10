@@ -1,16 +1,6 @@
-# Python
+# Python bytecode from the IDA scripts in research/ida
 __pycache__/
 *.py[cod]
-.venv/
-venv/
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-.coverage
-htmlcov/
-*.egg-info/
-build/
-dist/
 
 # Rust build output
 /target/
@@ -32,7 +22,7 @@ default_account.txt
 matchmaking.json
 /game/
 
-# Map collision built from the player's own game (tools/build_collision.py)
+# Map collision built from the player's own game
 /cache/
 
 # Logs and research output
@@ -54,7 +44,6 @@ work/
 *.lib
 *.exp
 *.pdb
-*.pyd
 
 # Captures, dumps and disassembler databases
 data/cli_dec.bin

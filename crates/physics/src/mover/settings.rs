@@ -1,7 +1,8 @@
 //! Character mover settings read from the 104319 runtime data.
 //!
 //! Every body's values come from the derived `game_movers_174.json`; body
-//! lookup follows ow174/game/mover.py.
+//! lookup follows the Python reference. The client keeps a body's
+//! STUCharacterMoverComponent at mover +0x418 + the field's offset.
 
 use std::{collections::HashMap, fs, io, path::Path};
 

@@ -146,8 +146,8 @@ fn create_game(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
     }
     // A game that still holds its seat stays where it is, as the solo
     // Practice Range did before the matchmaker answered 24000.
-    if let Some(old) = peer.seat.as_ref() {
-        if peer.lobby.game.seat_exists(&old.handoff)? {
+    if let (Some(old), Some(game)) = (peer.seat.as_ref(), peer.lobby.game.as_deref()) {
+        if game.seat_exists(&old.handoff)? {
             return Ok(());
         }
     }

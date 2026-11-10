@@ -1,4 +1,26 @@
 //! Owner controller and remote team-entry frames for the 104319 hero select.
+//!
+//! Research (graphs and client): each team of a game mode names its
+//! controller graph. The Practice Range's is 13C1: its SubScript states start
+//! the HUD (state 42 -> 20E4) and hero select (state 43 -> 288A, whose state 0
+//! -> 288B). The PvP modes use 0C90, whose state 119 starts 288A; its HUD
+//! graph is client-only. 288B presents the screen 008C.05A ("CHOOSE YOUR
+//! HERO") while v2438 (hero select open, the server's) and v31435 (what 288B's
+//! client-only nodes read) are on. The skin selector shows while 288B's v25377
+//! ("assembling heroes") is on; with it on the client leaves the screen open
+//! after a pick, so the server closes it. v8535 feeds the screen's
+//! IsAssemblingHeroesHidden ("ASSEMBLE YOUR TEAM" and its timer); only a
+//! client-only Stack writes it (on 06A7.025), so a value from the server
+//! stays. A chosen skin goes to the lobby (24500). The team list: 288A's state
+//! 1 starts 288D, whose client-only nodes post their entity (134F.025) to the
+//! local player's 288B unless it is an enemy; every other player's controller
+//! entity gets 288D as its only root instance, and the list reads his name
+//! from his card (20308). The list shows v940 (the hero he plays, set by
+//! 0C90/13C1 once spawned), else the pick v13161 while v2114 is on, else
+//! "still choosing". The F1 hero info (288A's client-only 2931) shows v940's
+//! hero while hero select is closed (2931 st3: `v14152 = v31435 ? browsed
+//! hero : v940`). v8419 is m_allowHeroSelect. Retail OW2 traffic works the
+//! same way.
 
 use std::{collections::BTreeMap, io};
 

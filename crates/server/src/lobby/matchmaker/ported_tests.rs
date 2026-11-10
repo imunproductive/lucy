@@ -85,6 +85,16 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::build(true)
+    }
+
+    /// The lobby with the game server off (`--game-port 0`: Python's
+    /// `LobbyServer.game` stays `None`).
+    fn without_game() -> Self {
+        Self::build(false)
+    }
+
+    fn build(with_game: bool) -> Self {
         let runtime = orpheus_testkit::runtime_dir();
         let data = runtime.join("data");
         let state = tempfile::tempdir().unwrap();
@@ -96,11 +106,14 @@ impl Fixture {
         )
         .unwrap();
         let selected = accounts.get("Alpha").unwrap();
-        let game = GameService::bind(
-            SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-            Arc::new(Schemas::game()),
-        )
-        .unwrap();
+        let game = with_game.then(|| {
+            GameService::bind(
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+                Arc::new(Schemas::game()),
+            )
+            .map(Arc::new)
+            .unwrap()
+        });
         let economy = Arc::new(orpheus_lobby::economy::Economy::load(&data).unwrap());
         let lobby = Lobby {
             signing_key: *orpheus_fixed::LOBBY_STATE_BLOB_KEY,
@@ -118,7 +131,7 @@ impl Fixture {
             accounts: Arc::new(accounts),
             selected: Arc::new(Mutex::new(selected)),
             active: Arc::default(),
-            game: Arc::new(game),
+            game,
             hub: Hub::default(),
             platform: Arc::new(Platform::new(Ipv4Addr::LOCALHOST, String::new(), None)),
             social: Social::default(),
@@ -255,8 +268,7 @@ impl Fixture {
         let mut map = GameMap::practice_range();
         map.team_sizes = vec![u8::try_from(players.len()).unwrap(), 0];
         let handoffs = self
-            .lobby
-            .game
+            .service()
             .open_match(
                 id,
                 map.clone(),
@@ -359,7 +371,11 @@ impl Fixture {
     }
 
     fn game(&self, handoff: &Handoff) -> Game {
-        Game::connect(self.lobby.game.local_addr(), handoff)
+        Game::connect(self.service().local_addr(), handoff)
+    }
+
+    fn service(&self) -> &GameService {
+        self.lobby.game.as_deref().expect("the game server is on")
     }
 }
 
@@ -1108,7 +1124,7 @@ mod leaving {
         // The match ends with its last player.
         fixture.wait_for("the match ended", |fixture| {
             fixture.lobby.matchmaker.lock().rooms.is_empty()
-                && fixture.lobby.game.snapshot().unwrap().is_empty()
+                && fixture.service().snapshot().unwrap().is_empty()
         });
         assert_eq!(fixture.members(party), ["Alpha", "Beta"]);
     }
@@ -1178,7 +1194,7 @@ mod leaving {
         // The match ends with its last player.
         fixture.wait_for("the match ended", |fixture| {
             fixture.lobby.matchmaker.lock().rooms.is_empty()
-                && fixture.lobby.game.snapshot().unwrap().is_empty()
+                && fixture.service().snapshot().unwrap().is_empty()
         });
     }
 
@@ -1206,5 +1222,65 @@ mod leaving {
         fixture.wait_for("the game was dropped", |fixture| {
             fixture.seat(&alpha, |_| ()).is_none()
         });
+    }
+
+    /// `tests/test_leaving.py::TakeOutTests::test_a_player_taken_out_before_his_game_connects_leaves_at_once_and_only_gets_20304`,
+    /// through the leave handler and the lobby's sweep.
+    #[test]
+    #[ignore = "requires a derived 104319 runtime"]
+    fn a_player_taken_out_before_his_game_connects_leaves_at_once_and_only_gets_20304() {
+        let fixture = Fixture::new();
+        let alpha = fixture.log_in("Alpha");
+        let (match_id, handoffs) = fixture.open_match(&[&alpha]);
+        fixture.leave(&alpha, false, match_id, false);
+        assert_eq!(fixture.taken_out(), ["Alpha"]);
+        // He leaves at once: the next sweep finds no seat, and the match is over.
+        fixture.sweep();
+        assert!(fixture.seat(&alpha, |_| ()).is_none());
+        assert!(fixture.lobby.matchmaker.lock().rooms.is_empty());
+        assert!(fixture.service().snapshot().unwrap().is_empty());
+        // His game still connects, and gets only 20304.
+        let mut game = fixture.game(&handoffs[0]);
+        assert_eq!(game.reliable_until(LEAVE_GAME), [LEAVE_GAME]);
+        fixture.sweep();
+        assert!(fixture.messages(&alpha, MATCH_LOBBY, 53000).is_empty());
+        assert!(fixture.match_lobbies().is_empty());
+    }
+}
+
+mod game_server_off {
+    use orpheus_lobby::lineup::MATCH_LOBBY;
+
+    use super::*;
+
+    /// With `--game-port 0` the lobby has no game server: Training > Practice
+    /// Range starts nothing and is not kept for later (Python
+    /// `Matchmaker.practice`, `_start`), and `.leave` or the dashboard's "End
+    /// matches" tell no game (`GameServer.send_home`).
+    #[test]
+    #[ignore = "requires a derived 104319 runtime"]
+    fn no_match_starts_and_no_game_is_told() {
+        let fixture = Fixture::without_game();
+        let alpha = fixture.log_in("Alpha");
+        let session = fixture.lobby.matchmaker.lock().online[&alpha.account_lo]
+            .identity
+            .session;
+        fixture
+            .lobby
+            .matchmaker
+            .practice(&fixture.lobby, &alpha, session)
+            .unwrap();
+        {
+            let state = fixture.lobby.matchmaker.lock();
+            assert!(state.rooms.is_empty());
+            assert!(!state.deferred_practice.contains_key(&alpha.account_lo));
+        }
+        assert!(fixture.messages(&alpha, MATCH_LOBBY, 53000).is_empty());
+        let matchmaker = &fixture.lobby.matchmaker;
+        assert_eq!(
+            matchmaker.send_home(&fixture.lobby, Some(alpha.account_lo)),
+            0
+        );
+        assert_eq!(matchmaker.send_home(&fixture.lobby, None), 0);
     }
 }

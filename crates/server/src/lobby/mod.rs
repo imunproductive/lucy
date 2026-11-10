@@ -75,7 +75,9 @@ pub(crate) struct Lobby {
     /// The account a freshly started game logs in as; the dashboard can change it.
     pub selected: Arc<Mutex<Arc<Account>>>,
     pub active: Arc<Mutex<HashMap<u32, Arc<AtomicBool>>>>,
-    pub game: Arc<GameService>,
+    /// The game server; `None` when `--game-port 0` turns it off
+    /// (`ow174/lobby/server.py` `game`).
+    pub game: Option<Arc<GameService>>,
     pub hub: Hub,
     /// Hosting for other PCs and the games this PC started.
     pub platform: Arc<Platform>,
@@ -120,8 +122,8 @@ impl<'a> LoginLease<'a> {
 
 impl Drop for LoginLease<'_> {
     fn drop(&mut self) {
-        if let Some(seat) = self.seat.take() {
-            let _ = self.lobby.game.release_seat(&seat.handoff);
+        if let (Some(seat), Some(game)) = (self.seat.take(), &self.lobby.game) {
+            let _ = game.release_seat(&seat.handoff);
         }
         self.lobby.hub.leave(self.account.account_lo, &self.mailbox);
         let mut active = self.lobby.active.lock().expect("lobby accounts");

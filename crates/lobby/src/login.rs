@@ -1,4 +1,11 @@
 //! Login identity selection shared by the lobby and its message builders.
+//!
+//! The tournament frontend sends in 21800 the name typed on its name screen;
+//! the retail frontend has none and passes on what Battle.net gave it at
+//! logon (+0xB8), whose session key our emulator fills with the name. The two
+//! frontends run the game at different command frame lengths, which the game
+//! server must know. SIGNED_IN_ELSEWHERE (13C84.07C) is "Connection
+//! interrupted: the Battle.net account signed in on another device.".
 
 use std::io;
 

@@ -1,4 +1,27 @@
 //! Plug links, node actions, variable stores and state begin.
+//!
+//! Client research (1.74): a plug walk (0x7FF78AA83FA0) follows the links in
+//! order. A state target only gets a begin (or abort) request, an event at
+//! now, so a state never begins inside a walk; actions and conditions run at
+//! once. The server runs every node that is not client-only. A link enters a
+//! state through the base plug enter (0x7FF78AA83D80): the abort plug asks
+//! for an abort, others a begin. DoBeginState (0x7FF78AA80790): exclusive
+//! states end, OnBegin, OnEnter, m_onBeginPlug, m_subgraphPlug, then the
+//! completion check (TryComplete 0x7FF78AA81570; base IsComplete
+//! 0x7FF78AA83EC0: the first transition plug that takes a link; the state then
+//! queues its own abort at now). DoAbortState 0x7FF78AA80480 / DoFinishState
+//! 0x7FF78AA80B10: queued events dropped, the subgraph's states (the plug's
+//! m_FF3DAF1E list) aborted (0x7FF78AA7FD00), the class's own end, then
+//! m_onAbortPlug / m_onFinishedPlug and m_onEndPlug. A state's button edge is
+//! vt+0x128 and its output to a linked variable vt+0x188. SetVar
+//! (0x7FF78AA7D300): the value (failure: int 0), then a keyed insert, an
+//! element write or a plain assignment with the value's own type; then
+//! m_outPlug. ActiveQuery: a link into its m_inPlug (an STU_A1AAB8C4 input
+//! plug) does not begin it; it follows m_7273C81B when the state is on and
+//! m_C6F3744E when off (vt+0x198 0x7FF78AAA8920, called by the plug enter for
+//! every input plug that is not the abort plug). 01CF st70 is one: on while
+//! 01CF waits for 0A43.025, it pulses st108 (the kill feed line) when 003E.025
+//! comes.
 
 use super::*;
 

@@ -121,6 +121,7 @@ impl Api<'_> {
     pub fn end_matches(&self) -> ApiResult {
         let lobby = self
             .lobby
+            .filter(|lobby| lobby.game.is_some())
             .ok_or_else(|| ApiError::new(409, "The game server is off."))?;
         let told = lobby.matchmaker.send_home(lobby, None);
         Ok(json!({"message": format!("Sent {told} game(s) back to the menu.")}))

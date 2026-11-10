@@ -1,4 +1,77 @@
 //! Shared statescript value, full-frame and chunk writers for build 104319.
+//!
+//! Client research (1.74; chunk reader 0x7FF7898A6450, frame 0x7FF78991E3C0):
+//!
+//! - A ch1 chunk is `w_u32 first | w_var span | bit fragmented | w_var size in
+//!   bits | payload`; first 0 is a full frame. The client keeps the highest
+//!   `last` (first + span) it applied and drops chunks at or below it, so an
+//!   unchanged chunk can be sent again safely.
+//! - The payload starts `bit lead | bit H`; with H (an owner frame) `bit C |
+//!   w_var CmFD`, and in a delta also `w_var LBSS` (the body's length). An
+//!   owner frame is skipped unless its CmFD is larger than the last one
+//!   (unsigned, so 0 never applies).
+//! - A full frame lists the instances (w_u16 index steps, each with a
+//!   descriptor: 16 bits graph, bit other entity, bit flag, bit parent ->
+//!   w_var parent instance and w_var parent state index, bit references),
+//!   then the entity's variables, then per instance its variables (a presence
+//!   bit per m_syncVars entry with an identifier and instance scope,
+//!   0x7FF78991C270), one bit per state, and in an owner frame its event
+//!   list; then the frame's event list. It destroys the network instances it
+//!   does not list and first clears the variables the network set. The
+//!   dispatcher makes new instances and destroys gone ones first
+//!   (0x7FF78991EE10); an instance of the same id, graph and parent is kept
+//!   (0x7FF78991F200).
+//! - Owner-frame states are the graph's m_states minus client-only and
+//!   server-only ones (an entry DataTool could not read counts as client-only;
+//!   the only one, 0D24 st75, sits under a client-only UI presenter). A
+//!   SubScript state that is on carries its child's instance id (w_u16) and a
+//!   bit. Instances the server makes never run their own Entry nodes (only
+//!   client-only ones run), so the server sends what those would have done.
+//! - A delta lists only what changed: instances (w_u16 index steps; a bit
+//!   "gone", else a bit "full descriptor follows"), the entity variables, per
+//!   listed instance a mask over its m_syncVars entries plus an id list
+//!   (0x7FF78991CA20; an entry without an id gives variable id 0), then a mask
+//!   over all its m_states (0x7FF78991C620): a LogicalButton / WeaponVolley /
+//!   Effect state gets X then StAc and its payload, every other state A and
+//!   its payload when A = 1. Then, in an owner frame, the event lists (EIns),
+//!   "more" and the frame's events. A delta may name, without a descriptor,
+//!   only instances the client has a network record of; otherwise it refuses
+//!   the frame (0x7FF78991C510), rolling it back and retrying every tick.
+//! - Masks (0x7FF789C630E0): up to 8 entries as plain bits, else one bit per
+//!   group of 8 entries and the groups that have a bit set. signed_u16 is a
+//!   sign then w_u16 (0x7FF789C63290); a count is `0 / 10 / 110 / 111 + w_u16`
+//!   (0x7FF789C63400); a tagged value is read at 0x7FF789C67DE0.
+//! - A variable is a tagged value and its bindings (0x7FF78991D4F0): the
+//!   states whose output it takes while they are active (Stack entries), each
+//!   with its instance, state index (m_statesBitCount bits), output slot and
+//!   priority. Short form bit 0: the client takes the instance from the
+//!   variable's bag (0x7FF78991D6DB). A variable is read at 0x7FF78991D2C0 and
+//!   resolved by (instance id, low 16 bits of the id) at 0x7FF78AAB3150; the
+//!   value is stored by 0x7FF78AAB78A0. The client crashes when there is none
+//!   (id 0, or an instance it lacks) and it uses it anyway, and on a listed
+//!   instance, binding or event list naming an instance it lacks
+//!   (0x7FF78991CA20, 0x7FF78991D6E5, 0x7FF78991BA30).
+//! - The linked-state field (0x7FF78AA837D0): a bit; with it the linked
+//!   instance's id and its state index in that graph's width (m_statesBitCount
+//!   in an owner frame, else a remote-sync index). An unknown id crashes the
+//!   client (0x7FF78AA8385A).
+//! - An owner event list (0x7FF78991BA30) has 2-bit codes, times from 16 *
+//!   CmFD on, each the step from the one before. A last tick t means
+//!   `lastTick = 16 * (CmFD + 1) - t` on the client (0x7FF78AAA8400). Effect
+//!   sends its activation counter & 3 (0x7FF789894540); ClientOnlyPulser is
+//!   0x7FF78990D760.
+//! - H = 0 frames (0x7FF78991BE30 / 0x7FF78991C620) walk the graph's
+//!   m_remoteSyncNodes entries that are states (the client casts each to the
+//!   state base; actions fail) and neither client-only nor server-only. In a
+//!   full frame each networked state has X: 0 aborts it, 1 then A (StEC: Y,
+//!   then StAc) and, when on, its payload with H = 0, full = 1. A delta has a
+//!   mask over the whole raw list and per set bit A (StEC: X, then StAc) and
+//!   the payload with full = 0. After a full frame the client aborts every
+//!   active state of the instance that is neither remote-synced nor
+//!   client-only.
+//! - The client builds a body's initial graphs itself on its create
+//!   (0x7FF789AF9DE0; the networked create, component vt+0x78, gives each the
+//!   highest id + 1: 1..N in definition order).
 
 use std::{collections::BTreeMap, error::Error, fmt};
 

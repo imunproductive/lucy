@@ -2,6 +2,21 @@
 //!
 //! Ported from `ow174/jam/codec.py` and `ow174/jam/values.py`. The inherited
 //! MIT notice and protocol research credits remain in `LICENSE` and `CREDITS.md`.
+//!
+//! The schemas are extracted from a running 1.74 client. Field types: 0 bool
+//! (one bit, lowest first), 1-9 little-endian integers of 1, 2, 4 or 8 bytes,
+//! 10/11 f32/f64, 12/13 zero-terminated UTF-8 string, 14 struct (inline), 15
+//! blob (u32 length, bytes); arrays are a u32 count and the elements
+//! (fixed-size arrays have no count). Bools fill bytes across the whole
+//! message: a run of bools continues over struct, array-element and
+//! fixed-array edges, and only a byte-sized write starts a new byte (tested in
+//! game: in 20802 the 5 flags of +0x108 and the first 4 of +0x10D form one run
+//! of 9 bits). Some protocols carry a u32 between the protocol byte and the
+//! message id: the client registers them with header flag 8 (registration +8 =
+//! 0xA, others 0x2, read live) and reads the u32 before the id
+//! (0x7FF789471C50); its protocol table marks them with flag 2 (entry +0xC).
+//! With the u32 after the id instead, only messages at id offset 0 (52300,
+//! 55500) worked.
 
 use serde::Deserialize;
 use std::collections::BTreeMap;

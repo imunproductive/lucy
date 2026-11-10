@@ -3,6 +3,12 @@
 //! Ports the GJK distance in `ow174/game/contacts.py`. In particular the
 //! simplex reductions preserve the reference feature order and lane rounding.
 //! Triangle contact and shape-cast policies are separate from this distance.
+//!
+//! Client functions: GJK distance 0x7FF789CD8CE0 (it builds the rotation
+//! matrix from the quaternion at 0x7FF789CD8D56); simplex solvers for the
+//! segment 0x7FF789CD9A70, triangle 0x7FF789CDB340 and tetrahedron
+//! 0x7FF789CD9C40; witness points 0x7FF789CD7FA0. A polytope's radius in its
+//! GJK proxy is set at 0x7FF789CD81D0.
 
 use std::cmp::Ordering;
 use std::error::Error;

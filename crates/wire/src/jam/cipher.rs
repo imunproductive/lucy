@@ -2,6 +2,14 @@
 //!
 //! Ported from `ow174/jam/cipher.py`. The original MIT notice and upstream
 //! attribution are retained in `LICENSE` and `CREDITS.md`.
+//!
+//! PANAMA keeps a state of 17 words and a buffer of 32 stages of 8 words.
+//! Each step runs one round on the state (gamma, pi, theta, sigma) and feeds 8
+//! words into the buffer. Key setup pushes the 8 key words twice, then runs
+//! 32 blank steps; after that every blank step gives 32 bytes of keystream.
+//! The state words are stored in a different order than in the PANAMA paper,
+//! so the index tables do not match the paper's, and buffer stages are picked
+//! relative to a counter that grows by 0x20 per step.
 
 const BLOCK_SIZE: usize = 32;
 

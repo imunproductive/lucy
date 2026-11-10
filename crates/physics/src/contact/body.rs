@@ -2,6 +2,19 @@
 //!
 //! Ports `CharacterBody` from `ow174/game/contacts.py`. The immutable
 //! world is shared. Candidate lifetimes and warm caches are per body.
+//!
+//! Client functions: the character move 0x7FF789CCABF0 -> 0x7FF789CC9320
+//! (mover +0x14E4 holds the rounds the next move may take). Shape AABB
+//! 0x7FF789CEBA90, swept AABB 0x7FF789CEBC60. The proxy's fat AABB follows
+//! when the shape leaves it or it gets four margins too loose (0x7FF789CD65F0
+//! -> 0x7FF789CDD820). New pairs 0x7FF789CF5800, each at the head of the
+//! list; pair filter 0x7FF789D07730. Teleport 0x7FF789D11B60 ->
+//! 0x7FF789D10BD0. Stance capsule change 0x7FF789CCAC00 -> 0x7FF789D072F0
+//! (contacts stay). Stance fit test 0x7FF789CCAC10 -> 0x7FF789CCA300 with
+//! overlap query 0x7FF789D24DC0: no shape within max(0.005, r - 0.02) of the
+//! segment; per shape 0x7FF789D05710 (mesh triangles 0x7FF789CF44A0 ->
+//! 0x7FF789CEDCF0, polytopes 0x7FF789CEA060, capsules 0x7FF789CDC480, spheres
+//! 0x7FF789CDC7F0). Move toward a target 0x7FF789D102D0.
 
 use std::{collections::HashSet, fmt, sync::Arc};
 

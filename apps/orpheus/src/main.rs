@@ -1,5 +1,7 @@
 //! The ORPHEUS server for Overwatch 1.74.0.0.104319.
 
+#![forbid(unsafe_code)]
+
 mod ask;
 mod assets;
 mod banner;
@@ -21,7 +23,6 @@ use std::{
 use clap::{
     CommandFactory, FromArgMatches, Parser, Subcommand, error::ErrorKind, parser::ValueSource,
 };
-use orpheus_server::runtime;
 use tracing::error;
 
 use serve::Hosting;
@@ -69,9 +70,6 @@ enum Command {
     /// Game data derived from the install.
     #[command(subcommand)]
     Assets(AssetsCommand),
-    /// Manage the prepared runtime pack.
-    #[command(subcommand)]
-    Runtime(RuntimeCommand),
     /// Statescript research tools.
     #[command(subcommand)]
     Script(ScriptCommand),
@@ -109,26 +107,6 @@ enum StateCommand {
         /// Replace files that already exist in the state folder.
         #[arg(long)]
         overwrite: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum RuntimeCommand {
-    /// Copy runtime inputs from a prepared local checkout into a new folder.
-    Prepare {
-        #[arg(long, value_name = "DIR")]
-        source: PathBuf,
-        #[arg(long, value_name = "DIR")]
-        destination: PathBuf,
-        /// Collision caches to copy, by map index; all when omitted.
-        #[arg(long = "map", value_name = "INDEX")]
-        maps: Vec<String>,
-        /// A graph bundle to use instead of the source's.
-        #[arg(long, value_name = "FILE")]
-        game_graphs: Option<PathBuf>,
-        /// DataTool .003 XML exports with the authored target tags.
-        #[arg(long, value_name = "DIR")]
-        target_tags_xml: Option<PathBuf>,
     },
 }
 
@@ -196,7 +174,6 @@ fn run(cli: Cli) -> io::Result<ExitCode> {
         }
         Some(Command::State(command)) => return state_command(command, &state),
         Some(Command::Assets(command)) => return assets_command(command, &state),
-        Some(Command::Runtime(command)) => return runtime_command(command),
         Some(Command::Script(command)) => return script_command(command, &state),
         None => {
             let mut options = cli.options;
@@ -319,27 +296,6 @@ fn script_command(command: ScriptCommand, state: &Path) -> io::Result<ExitCode> 
     logging::init(None)?;
     let settings = Settings::resolve(state, &query.server)?;
     script_query::run(&query, &serve::game_data(&settings)?)?;
-    Ok(ExitCode::SUCCESS)
-}
-
-fn runtime_command(command: RuntimeCommand) -> io::Result<ExitCode> {
-    let RuntimeCommand::Prepare {
-        source,
-        destination,
-        maps,
-        game_graphs,
-        target_tags_xml,
-    } = command;
-    logging::init(None)?;
-    let prepared = runtime::prepare_with_target_tags(
-        &source,
-        &destination,
-        &maps,
-        game_graphs.as_deref(),
-        target_tags_xml.as_deref(),
-    )
-    .map_err(io::Error::other)?;
-    println!("Prepared runtime data at {}", prepared.display());
     Ok(ExitCode::SUCCESS)
 }
 

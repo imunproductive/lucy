@@ -1,4 +1,11 @@
 //! ClientOutInstance game messages and the known hero-select parameter layouts.
+//!
+//! The client sends the pick as ClientOutInstance 21616 `{entity, parameters,
+//! game message 1361.025, instance}`, with the hero among the parameters as an
+//! 8-byte little-endian GUID with the hero type bits (as in OW2's traffic; the
+//! exact layout is not certain). 1360.025 asks to open or close the screen: its
+//! parameters end with two u32 entities (0x7FF78AAB7D30), and the boolean
+//! before them is its type byte 1 and a value byte.
 
 use crate::heroes::{Hero, HeroCatalog};
 use orpheus_wire::{jam::codec::Value, messages::Message};

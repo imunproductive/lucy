@@ -1,4 +1,53 @@
 //! Server-side movement for an authored 104319 character capsule.
+//!
+//! The client never sends its position and moves no body but its own, so the
+//! server runs the PC client's character mover for every player (image base
+//! 0x7FF788F10000), one tick per command frame (dt = 16 ms). Main tick
+//! 0x7FF789B4B1D0:
+//!
+//! 1. The body turns to the command's yaw (0x7FF789B4C6A0); the pitch is held
+//!    to +-89 degrees (0x7FF789B763B0; s16 to radians by the float at
+//!    0x7FF78B524F6C, limit at 0x7FF78B523F94, back to s16 at 0x7FF78B524F70,
+//!    rounded half away from zero), which sets flag 0x200000 for good
+//!    (0x7FF789B4C8C0).
+//! 2. A held crouch button does not crouch again within 0.15 s of standing up
+//!    (0x7FF789B73CA0, constant 0x7FF78B567978).
+//! 3. The ground probe (0x7FF789B48990) at the feet before anything moves.
+//! 4. Transitions (0x7FF789B4F780): in the air, ground and `v.n < 0.004`
+//!    (0x7FF78B509D70) lands (0x7FF789AD0400), else the air ticks count up; on
+//!    the ground, no ground is a fall (0x7FF789AD0370). The jump sets the
+//!    vertical speed to jump_speed (0x7FF789B48880, air ticks reset at
+//!    0x7FF789AD03B0), flags 0x4 | 0x400 | 0x1. Crouch 0x7FF789B4C3D0 if the
+//!    crouched capsule fits.
+//! 5. The move context (0x7FF789B49FA0): ground normal (or up), horizontal
+//!    velocity, yaw axes, throttles s8 / 127.
+//! 6. The pogo spring (0x7FF789B4F110).
+//! 7. Velocity: friction (0x7FF789B43090; air 0x7FF789B416A0 plus quadratic
+//!    drag toward terminal_velocity while falling), acceleration
+//!    (0x7FF789B434A0), the direction's speed cap (0x7FF789B44090), gravity
+//!    `-10 * gravity_scale` in the air (0x7FF789B42100; world gravity 10 m/s^2
+//!    at 0x7FF78AA63BD0; every hero's scale is 1.75 and jump speed 6 m/s).
+//! 8. The move (0x7FF789B4D9C0, 0x7FF789ACF640; outer rounds 0x7FF789B4B683):
+//!    on the ground the velocity follows the ground plane (0x7FF789B4DD81);
+//!    the engine moves the capsule by (velocity + spring speed) * dt; the
+//!    velocity loses what goes into the contact planes (0x7FF789CCAD50).
+//! 9. Gravity's part of the velocity (state +832, 0x7FF789B4F530; summed at
+//!    0x7FF789B42133, normalised with rsqrtps so it can differ in the last
+//!    bits between CPUs); positions and velocities on the 1/1024 m grid
+//!    (0x7FF789B77730), spring offsets as 1/32768 steps of their range
+//!    (0x7FF789B745E0, 0x7FF789B74E40, 0x7FF789B77550). The tick ends at
+//!    0x7FF789D11B60.
+//!
+//! The mover writes a movement state for other clients' animation
+//! (0x7FF789B4DA26): this command's throttles and the throttles and tick of
+//! the last command that had any. Other flags: 0x20000 the last move touched
+//! something (0x7FF789ACF8AC), 0x80000 the probe met a surface that is not
+//! ground. Mover +0x14DD is "landed this tick", state +40 the frame the body
+//! last stood up in, state +24 the gravity scale of the last tick
+//! (0x7FF789B4D869). Not modelled: throttle mods (17-19), velocity mods
+//! (STU_FF3471E9 states), knockback, abilities that take over the move,
+//! moving platforms, other bodies. The capsule rests 5 mm out of a wall (the
+//! engine's contact skin).
 
 pub mod correction;
 pub mod ground;

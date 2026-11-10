@@ -1,4 +1,18 @@
 //! The JAM message channel at the start of a 1.74 world-frame payload.
+//!
+//! Client research (1.74; reader 0x7FF789B7A480, writer 0x7FF789B7ADE0): 1
+//! bit "any messages"; if set, 4 bits reliable count and 4 bits unreliable
+//! count; when either is not 0, pad to a byte, then reliable messages `u32
+//! seq, u8 protocol index, u8 message index, JAM fields` (in seq order) and
+//! unreliable ones `u8 protocol index, u8 message index, JAM fields`; the
+//! stream goes on at the byte after the last message. With both counts 0
+//! there is no padding (the input record then starts at bit 9). The client
+//! delivers reliable messages strictly in seq order: it parks one that comes
+//! early and drops one it already had, so a lost one must be resent or
+//! everything after it waits. There is no protocol announcement on this link:
+//! the index points into a fixed table the client builds in its message
+//! system (0x7FF789B797C0); the message id is the protocol's first id plus the
+//! message index.
 
 use std::{error::Error, fmt};
 

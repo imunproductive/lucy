@@ -3,6 +3,13 @@
 //! Ports the round narrow phase of `ow174/game/contacts.py`. The caller filters
 //! the obstacle mask, runs the broadphase, and applies the returned contact
 //! constraints. Static surface rays use a separate representation.
+//!
+//! Client functions: capsule against capsule 0x7FF789CD6970 and against
+//! sphere 0x7FF789CD7300 (nearest point 0x7FF789CD8A60, then 0x7FF789CD8B30
+//! with both radii 0), in the world frame. The convex pair dispatch is
+//! 0x7FF789CFF970: A's type >= B's; a polytope meets the other shape in its
+//! own frame. Quaternion rotation `v + 2 q x (w v + q x v)` as at
+//! 0x7FF789CFFFB6 and similar sites.
 
 use crate::collision::cache::{Placement, Shape};
 use crate::contact::math::{

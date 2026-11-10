@@ -1,4 +1,13 @@
 //! Logical buttons and their buffered presses.
+//!
+//! Client research (1.74): LogicalButton edge handler 0x7FF78AAAC570, OnEnter
+//! 0x7FF78AAACA80. Down: m_onGoingDownPlug then the down subgraph
+//! (m_80AF45FB); up: m_onComingUpPlug then the up subgraph (m_1C9EF058). A
+//! press while inactive is kept for the next activation (m_246438AD, the
+//! early press). The edge handler drops a press while the owner is dead
+//! (0x7FF78AAAC5FC; the client sees its owner dead through component 51,
+//! 0x7FF789ADBF00). DisableLogicalButton blocks the entity's LogicalButtons
+//! for its button while active (OnBegin 0x7FF78AA82530).
 
 use super::*;
 

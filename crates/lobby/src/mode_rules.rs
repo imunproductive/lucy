@@ -2,6 +2,14 @@
 //!
 //! Ports `ow174/content/career.py`. The retail stat catalog remains in the
 //! separately prepared templates. Only the two career stat lists are rebuilt.
+//!
+//! Client research: a hero's lifetime "Time Played" is stat 062/021 (seconds)
+//! and "Matches won" 062/039. The career profile's role tables sum a hero stat
+//! per role themselves: "Matches won" of a role is 062/713, the sum of 062/039
+//! (read by 0x7FF789936F33), so each role queue's wins go on one hero of the
+//! role. The "All modes" stats category has key 0; a competitive season's has
+//! key `(season << 16) | 3`, with 0x20 added when the season item has the
+//! flag 0xD800000000084E7 (0x7FF7893528A0, 0x7FF78992D210); both keys are sent.
 
 use std::io;
 

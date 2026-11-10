@@ -86,7 +86,9 @@ impl GameMap {
     /// The game-tier test `the_practice_range_is_the_derived_record` pins
     /// its name, placeables and team sizes to the install's (`game_maps`
     /// 0688 and the teams of mode 0018), and its spawn to the install's
-    /// team 0 spawn as Python rounded it.
+    /// team 0 spawn as Python rounded it. The map has four server-owned
+    /// placeables (the ones the running client has), and its mode has one
+    /// player on the blue team and none on the red one.
     pub fn practice_range() -> Self {
         Self {
             name: PRACTICE_RANGE_NAME.into(),

@@ -1,7 +1,15 @@
 //! Initial health, armour, and shield pools for a playable hero body.
 //!
 //! Common body graph 0033 supplies the defaults. Each body's binding can
-//! override them, following ow174/game/pools.py.
+//! override them, following the Python reference.
+//!
+//! 0033's first Entry begins a HealthPool for each pool: st1 (type 2,
+//! shields) with #221 when set, st3 (type 1, armour) with #1736 when set, and
+//! st0 (type 0, health) with #199. The schema defaults are #199 1000, #1736
+//! 0, #221 0; body overrides give e.g. Soldier 200, Reinhardt 300 + 200
+//! armour, Zarya 200 + 200 shields, Wrecking Ball 500 + 100 armour, Zenyatta
+//! 50 + 150 shields. D.Va's 150 is her pilot's; the mech's pools come from her
+//! own graphs (0109).
 
 use std::{collections::HashMap, io};
 

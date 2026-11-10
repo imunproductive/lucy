@@ -1,4 +1,11 @@
 //! Weapon volleys and their shot events.
+//!
+//! Client research (PC 1.74): shot k leaves the gun at volley start + `R((k /
+//! rate) * 1000)` ms in float32 (0x7FF789C702E0); n = min(ammo / per shot,
+//! max shots); a finish timer (param 2) at the last shot's time and a
+//! minimum-shots timer (param 1). While active m_out_Ammo reads
+//! `max(0, ammo0 - perShot * (shots + 1))`; at the end the variable keeps the
+//! value one ms later (the +1 ms rule, 0x7FF78A07F310).
 
 use super::*;
 

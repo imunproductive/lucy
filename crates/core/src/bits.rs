@@ -1,7 +1,25 @@
 //! Least-significant-bit-first fields used by the Overwatch 1.74 game link.
 //!
-//! Ported from `ow174/game/bits.py`. The selector bits are transmitted before the
-//! value. See that module for the client reader locations and upstream research.
+//! Ported from the Python reference. The selector bits are transmitted before
+//! the value, LSB first, as the client's reader 0x7FF78969BDB0 takes them.
+//! The client uses several width tables:
+//!
+//! - var_a `1 -> 18 bits | 01 -> 24 | 00 -> 32`: the packet frame and the ch3
+//!   ack (0x7FF789CC0E60).
+//! - var_b `0 -> 8 | 10 -> 16 | 11 -> 32`: entity ids (0x7FF78A76B800);
+//!   statescript's w_var (0x7FF789C631B0) is the same.
+//! - w_u16 `0 -> 4 | 10 -> 8 | 11 -> 16`: statescript indexes (0x7FF789C63320;
+//!   also 0x7FF78A76BA50).
+//! - w_u32 `0 -> 16 | 10 -> 24 | 11 -> 32`: statescript frame numbers
+//!   (0x7FF789C63000).
+//! - signed_var: a sign bit, then `0 -> 8 | 10 -> 16 | 11 -> 32`
+//!   (0x7FF78AA836A0).
+//! - guid index `1 -> 12 | 01 -> 20 | 00 -> 32`: a GUID's low 32 bits, the
+//!   type comes from context.
+//!
+//! An entity id is 2 type bits, then var_b of the rest; the client rebuilds
+//! `0x80000000 | type << 29 | value`, and a value of 0 means no entity
+//! (0x7FF789CC0F70).
 
 use std::fmt;
 

@@ -1,4 +1,11 @@
 //! Lobby stream framing. Each payload starts with a protocol index and message offset.
+//!
+//! A frame on the encrypted stream is a 3-byte big-endian length, then the
+//! payload. The first payload byte is the wire index of the protocol group,
+//! which the client announces at the start of the connection (index 0 is
+//! reserved for control frames: the announcement and its reply, and the
+//! keep-alive answered with PONG); the second is the message offset in the
+//! group.
 
 use std::io::{self, Write};
 

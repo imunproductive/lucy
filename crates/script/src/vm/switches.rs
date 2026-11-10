@@ -1,4 +1,9 @@
 //! Watched values, switches, delayed switches and branches.
+//!
+//! Client research (1.74): BooleanSwitch OnBegin 0x7FF78AAA8F50 evaluates
+//! m_condition (its variables become watched) and follows the true or false
+//! plug and subgraph; a watched change queues one re-evaluation and the branch
+//! switches only when the result changed.
 
 use super::*;
 

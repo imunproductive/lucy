@@ -2,7 +2,8 @@
 //! the members' slot types and the groups a player watches. Ports the group
 //! finder part of `ow174/lobby/handlers/matchmaking.py`. The client only
 //! searches once it has latency data, which the empty data center list sent
-//! at login (35500) gives it.
+//! at login (35500) gives it: with no data centers the client counts its
+//! latency as known (0x7FF789D4B1A0).
 
 use std::{io, sync::Arc};
 
@@ -62,8 +63,9 @@ fn find_groups(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
     Ok(())
 }
 
-/// Groups the player picked in the group finder. The client renews them
-/// every 2 minutes and drops them on a new search (52205).
+/// Groups the player picked in the group finder. The client keeps them in LFG
+/// +0x240 (0x7FF78953C070), renews them every 2 minutes and drops them on a
+/// new search (52205).
 fn watch_groups(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
     let mut state = peer.lobby.social.lock();
     if let Some(session) = state.session_mut(peer.login.account.account_lo) {
@@ -90,8 +92,9 @@ fn unwatch_groups(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
 
 /// The leader lists the group (or updates the listing). 52301 is not an
 /// answer to this: the client only uses it to refresh a group it already
-/// found, so the leader gets the party state with the listing. Creating a
-/// group sends 52201 and, one tick later, the leader's slot types (52203);
+/// found (0x7FF78953D0A0), so the leader gets the party state with the
+/// listing. Creating a group sends 52201 and, one tick later, the leader's
+/// slot types (52203; the client sets both flags together, 0x7FF7899AD830);
 /// the first party state waits for them, because a listing without the
 /// leader's slot opens "choose role(s)", which does not close by itself when
 /// the slot arrives.

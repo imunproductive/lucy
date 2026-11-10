@@ -2,6 +2,12 @@
 //!
 //! Ports the bounded spherical clustering and point selection of
 //! `ow174/game/contacts.py`, with float32 thresholds and source-order ties.
+//!
+//! Client functions: a mesh contact's manifolds 0x7FF789D0CE00 (up to three
+//! normals, k-means on the sphere for at most four rounds); point reduction
+//! 0x7FF789CE2480 (farthest along a tangent, farthest from it, largest area
+//! with those two, farthest outside their triangle; a candidate must beat the
+//! last best by 1 %).
 
 use std::cmp::Ordering;
 

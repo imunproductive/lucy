@@ -1,5 +1,27 @@
 //! Build 104319 projectile confirmation, launch and release records.
 //!
+//! Client research (1.74): the release reader chain is ch2 0x7FF789A4A490 ->
+//! state 0x7FF789A34600 -> record 0x7FF789C78980 (blank baseline
+//! 0x7FF789A348DD). A ch2 projectile state for a frame ahead of the rocket's,
+//! alive, with an impact count, in the same entity block as the destroy, makes
+//! the destructor play the explosion at the client's own impact point. Other
+//! clients see a SHOTS_AND_PROJECTILES volley's projectile as a server entity
+//! that a shot record starts (reader 0x7FF789C91F80): in ch2 of the shooter's
+//! entity block (events bit, per event a bit, the frame (first a var_b, then
+//! steps), the record; a 0 bit; then no projectile state, 0x7FF789A50130).
+//! The record: shot counter, spread bit, form 2 (bit 0): instance w16, state
+//! w16, activation counter (6 bits), volley counter (a 1 bit for 1), a w16;
+//! origin (3 raw f32, world), yaw16 and pitch16 (value ^ 0x8000, pitch up,
+//! 0x7FF789CC1360), and the projectile ids (bit, w16 count, first id, then
+//! steps). Codes: w16 0x7FF78A76B9E0 (0 + 4 bits, 10 + 8, 11 + 16); counter
+//! 0x7FF78A76BB90 (0 + 4 bits, 1 + 8 bits below 0xFF, 1 + 0xFF + 32 bits);
+//! entity 0x7FF789CC0F00 (2 type bits, then 0 + 8 bits, 1 + 16 bits below
+//! 0xFFFF, 1 + 0xFFFF + 32 bits). The client starts the projectile only while
+//! it holds the shooter's volley record of that key: entity, instance id,
+//! state index and volley counter (key 0x7FF789C95180; the volley's begin
+//! 0x7FF789C71950 takes the instance's id +0x18 and the state's +0x70, the
+//! m_states index the state constructor 0x7FF78AAA1460 stores).
+//!
 //! Ported from ow174/game/projectiles.py. The caller owns entity lifetime,
 //! acknowledgement gates and frame selection.
 

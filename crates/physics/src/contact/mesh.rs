@@ -3,6 +3,15 @@
 //! Ports the mesh query and its separating-axis triangle/box test from
 //! `ow174/game/contacts.py`. The grid is shared with the f64 scene query,
 //! while the exact test, scaled vertices and triangle metadata are f32.
+//!
+//! Client functions: triangle/box test 0x7FF789CD79D0 (box axes, triangle
+//! normal, edges x box axes, 5 mm slack); BVH query 0x7FF789CF3900 (mask &
+//! category, then the exact test); mesh contact gather 0x7FF789D0EF80; box
+//! through a transform 0x7FF789CD7DF0. The BVH of every map visits the
+//! triangles in increasing number (checked on the data), so number order is
+//! the client's order. A mesh's box is its BVH root's: the triangles' box
+//! grown by their 1 cm radius (0x7FF789CF3360; measured on the running
+//! client's Practice Range meshes).
 
 use std::collections::HashSet;
 use std::error::Error;

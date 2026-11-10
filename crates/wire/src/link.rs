@@ -4,6 +4,20 @@
 //! 22 bytes are authenticated additional data. The payload uses AES-256-GCM
 //! with an eight-byte direction salt and the little-endian packet sequence as
 //! its nonce. Keys are specific to the connection and direction.
+//!
+//! Client research (1.74): the datagram builder is 0x7FF7893096D0, the seal
+//! call at 0x7FF7893099E4. Header: +0 tag[12] (the first 12 bytes of the GCM
+//! tag), +12 u32 `connection id << 4 | kind` (the id is 20600 +0x28, stored at
+//! conn+4), +16 u32 seq, +20 u32 ack, +24 u64 ack_bits, +32 u8 flags (SYN 1,
+//! ACK 2, FIN 4), +33 u8 0xAD. The nonce salt is 20600 +0x18 (client to
+//! server) or +0x20 (server to client; we send 0). The first key of 20600
+//! encrypts what the client sends, the second what the server sends
+//! (0x7FF7893089E0). Kind 0 carries no payload, 1 is a world frame, 15 a bulk
+//! fragment. ack is the next seq expected; bit k of ack_bits = seq ack-1-k
+//! arrived. A seq below the expected one is dropped (0x7FF789309FC0). The
+//! transport resends nothing: the layer above must resend lost reliable
+//! messages. The client sends SYN until it gets SYN|ACK, then its datagrams
+//! carry ACK (state machine 0x7FF7893094F0); FIN closes the connection.
 
 use aes_gcm::{
     AesGcm, Nonce, Tag,

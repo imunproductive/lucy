@@ -323,6 +323,9 @@ pub const REGIONS: [Region; 4] = [
         decimal_comma: true,
     },
 ];
+/// Game regions, the servers a player plays on. The lobby sends the number in
+/// 20500 (retail sent 2 to a Russian account), and the Top 500 boards are kept
+/// per game region.
 pub const GAME_REGIONS: [(&str, u8); 3] = [("americas", 1), ("europe", 2), ("asia", 3)];
 
 pub fn game_region_number(name: &str) -> u8 {
@@ -348,6 +351,10 @@ const TIERS: [(u16, u16, u16); 5] = [
     (2399, 3999, 3599),
 ];
 
+/// The captured retail store lists real-money bundles priced in RUB. A price
+/// record holds the amount twice in 1/10000 units (+0x0, +0x8), the currency
+/// (+0x10) and the display text twice (+0x18, +0x40); the store message has
+/// its own currency code next to its product list.
 pub fn localize(value: &Value, code: &str) -> Value {
     let mut localized = value.clone();
     let region = region_of(code);

@@ -1,6 +1,8 @@
 //! Parties: invites and their answers, joining and merging from the group
 //! finder, leader transfer, kicks and leaving (22102-22111), and invites that
-//! nobody answered in time. Ports `ow174/lobby/handlers/party.py`.
+//! nobody answered in time. Ports `ow174/lobby/handlers/party.py`. The client
+//! sends 22102 whether or not the leader lets members invite (0x7FF7897652D0
+//! checks only a full party).
 
 use std::{io, sync::Arc};
 

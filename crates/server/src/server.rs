@@ -12,10 +12,10 @@ use std::{
 };
 
 use crate::{
+    game_data,
     game_service::{GameService, collision_build},
     lobby::{Lobby, matchmaker::Matchmaker, serve, services::Services},
     platform::{LocalGames, Platform},
-    runtime::missing_runtime_files,
     server::dashboard::{Dashboard, DashboardParts},
 };
 use orpheus_bnet::{
@@ -50,7 +50,9 @@ pub struct ServerConfig {
     /// host's network (`--game-host`); empty for none.
     pub game_host: String,
     pub lobby_port: u16,
-    pub game_port: u16,
+    /// The game server's UDP port; `None` leaves it off, and the lobby runs
+    /// without matches (`--game-port 0`, `ow174/lobby/settings.py`).
+    pub game_port: Option<u16>,
     /// Run the local Battle.net (the retail modes); a lobby only for other
     /// PCs and tournament games has none.
     pub battle_net: bool,
@@ -82,7 +84,7 @@ impl ServerConfig {
             host: Ipv4Addr::LOCALHOST,
             game_host: String::new(),
             lobby_port: 3724,
-            game_port: 3730,
+            game_port: Some(3730),
             battle_net: true,
             stall_port: service::STALL_PORT,
             rpc_port: service::RPC_PORT,
@@ -97,7 +99,7 @@ impl ServerConfig {
 
 pub struct Server {
     lobby_addr: SocketAddrV4,
-    game_addr: SocketAddr,
+    game_addr: Option<SocketAddr>,
     stop_lobby: mpsc::Sender<()>,
     lobby: Option<JoinHandle<io::Result<()>>>,
     bnet: Option<BnetService>,
@@ -109,7 +111,7 @@ impl Server {
     /// Validate the data before starting the listeners. This entry point
     /// serves the base graph bundle.
     pub fn start(config: ServerConfig) -> io::Result<Self> {
-        let missing = missing_runtime_files(&config.runtime, true);
+        let missing = game_data::missing_files(&config.runtime);
         if !missing.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -136,13 +138,21 @@ impl Server {
         let extra_preload = extra_preload_themes(&items)
             .chain(assets.graphs().weapon_cosmetics())
             .collect();
-        let scene = assets.prepare(GameMap::practice_range())?;
-        if !scene.movement_ready() {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "the native Practice Range requires its movement data",
-            ));
-        }
+        // The Practice Range's scene is prepared up front for the first match
+        // (`ow174/lobby/server.py` `start_game_server`); no match starts
+        // without the game server.
+        let scene = if config.game_port.is_some() {
+            let scene = assets.prepare(GameMap::practice_range())?;
+            if !scene.movement_ready() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the native Practice Range requires its movement data",
+                ));
+            }
+            Some(scene)
+        } else {
+            None
+        };
         let protocol = Arc::new(Protocol::client());
         let template = config
             .template
@@ -161,14 +171,15 @@ impl Server {
         let SocketAddr::V4(lobby_addr) = listener.local_addr()? else {
             unreachable!("IPv4 lobby bind")
         };
-        let game = Arc::new(
-            GameService::bind(
-                SocketAddrV4::new(config.host, config.game_port).into(),
-                game_schemas,
-            )
-            .map_err(|error| taken(format!("UDP port {} is taken", config.game_port), error))?,
-        );
-        let game_addr = game.local_addr();
+        let game = config
+            .game_port
+            .map(|port| {
+                GameService::bind(SocketAddrV4::new(config.host, port).into(), game_schemas)
+                    .map(Arc::new)
+                    .map_err(|error| taken(format!("UDP port {port} is taken"), error))
+            })
+            .transpose()?;
+        let game_addr = game.as_deref().map(GameService::local_addr);
         let selected = Arc::new(Mutex::new(local));
         let accounts = Arc::new(accounts);
         let platform = Arc::new(Platform::new(
@@ -211,11 +222,11 @@ impl Server {
             celebrations,
             extra_preload,
             assets: Arc::new(assets),
-            first_scene: Mutex::new(Some(scene)),
+            first_scene: Mutex::new(scene),
             accounts,
             selected,
             active: Arc::default(),
-            game: Arc::clone(&game),
+            game: game.clone(),
             hub: Default::default(),
             platform: Arc::clone(&platform),
             services,
@@ -250,7 +261,7 @@ impl Server {
             stop_lobby,
             lobby: Some(lobby),
             bnet,
-            game: Some(game),
+            game,
             dashboard,
         })
     }
@@ -258,7 +269,8 @@ impl Server {
     pub fn lobby_addr(&self) -> SocketAddrV4 {
         self.lobby_addr
     }
-    pub fn game_addr(&self) -> SocketAddr {
+    /// The game server's address, when it runs.
+    pub fn game_addr(&self) -> Option<SocketAddr> {
         self.game_addr
     }
     /// The local Battle.net's port the game dials, when it runs.
@@ -489,7 +501,7 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let mut config = ServerConfig::new(runtime.clone(), state.path().into());
         config.lobby_port = 0;
-        config.game_port = 0;
+        config.game_port = Some(0);
         config.stall_port = 0;
         config.rpc_port = 0;
         // A game on this PC is sent to the address it reached, not the public one.
@@ -668,7 +680,7 @@ mod tests {
         let ticket = structure(&received[&HANDOFF_MESSAGE][&0x80]);
         assert_eq!(
             ticket[&0x2c],
-            Value::Unsigned(u64::from(server.game_addr().port()))
+            Value::Unsigned(u64::from(server.game_addr().unwrap().port()))
         );
         let Value::Array(address) = &ticket[&0x2e] else {
             panic!("missing game address")
@@ -698,7 +710,7 @@ mod tests {
         };
         let cipher = LinkCipher::new(key(0xce), key(0xae));
         let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let game = server.game_addr();
+        let game = server.game_addr().unwrap();
         udp.connect(game).unwrap();
         udp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         let mut packet = Packet {
@@ -741,16 +753,46 @@ mod tests {
         let mut config = ServerConfig::new(orpheus_testkit::runtime_dir(), state.path().into());
         config.host = Ipv4Addr::UNSPECIFIED;
         config.lobby_port = 0;
-        config.game_port = 0;
+        config.game_port = Some(0);
         config.battle_net = false;
         config.dashboard_port = None;
         let mut server = Server::start(config).unwrap();
         assert!(server.lobby_addr().ip().is_unspecified());
-        assert!(server.game_addr().ip().is_unspecified());
+        assert!(server.game_addr().unwrap().ip().is_unspecified());
         assert_eq!((server.stall_addr(), server.rpc_addr()), (None, None));
         let lobby = (Ipv4Addr::LOCALHOST, server.lobby_addr().port());
         let tag = battle_tag_query::ask(lobby, "Joiner").unwrap();
         assert!(tag.starts_with("Joiner#"), "{tag}");
+        server.stop().unwrap();
+    }
+
+    /// `--game-port 0` (`ow174/cli.py`): the lobby and the dashboard run with
+    /// no game server, and "End matches" answers that it is off.
+    #[test]
+    #[ignore = "requires a derived 104319 runtime"]
+    fn without_a_game_port_the_lobby_runs_alone() {
+        let state = tempfile::tempdir().unwrap();
+        let mut config = ServerConfig::new(orpheus_testkit::runtime_dir(), state.path().into());
+        config.lobby_port = 0;
+        config.game_port = None;
+        config.battle_net = false;
+        config.dashboard_port = Some(0);
+        let mut server = Server::start(config).unwrap();
+        assert_eq!(server.game_addr(), None);
+        let lobby = (Ipv4Addr::LOCALHOST, server.lobby_addr().port());
+        let tag = battle_tag_query::ask(lobby, "Joiner").unwrap();
+        assert!(tag.starts_with("Joiner#"), "{tag}");
+        let dashboard = server.dashboard_addr().unwrap();
+        let mut stream = TcpStream::connect(dashboard).unwrap();
+        write!(
+            stream,
+            "POST /api/end_matches HTTP/1.0\r\nHost: {dashboard}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}"
+        )
+        .unwrap();
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).unwrap();
+        assert!(reply.contains(" 409 "), "{reply}");
+        assert!(reply.contains("The game server is off."), "{reply}");
         server.stop().unwrap();
     }
 
@@ -776,7 +818,7 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let mut config = ServerConfig::new(runtime.clone(), state.path().into());
         config.lobby_port = 0;
-        config.game_port = 0;
+        config.game_port = Some(0);
         config.stall_port = 0;
         config.rpc_port = 0;
         config.dashboard_port = Some(0);

@@ -3,6 +3,28 @@
 //! The input layout and command-epoch behavior come from `ow174/game/commands.py`.
 //! Frames use uint32 serial arithmetic. Deltas extend the decoded aim angles
 //! beyond the range of the signed 16-bit absolute values.
+//!
+//! Client research (1.74): the input record ends every client datagram. The
+//! client never sends its position: only the message channel and this record
+//! have writers (0x7FF7896D0930). Layout (record writer 0x7FF789B3DDC0,
+//! command writer 0x7FF789B3DD00): 1 bit present, u32 length in bits, u16
+//! latency ms, u8 key flags, u8 count (1..32), then the commands oldest first.
+//! The first is complete: `u32 frame | throttles | s16 yaw | s16 pitch | 24
+//! bits buttons | u8 action | [buttons & 0x10000: u8 sub-frame, s16, s16] |
+//! u16 extra`. Each later one is a change against the one before: `frame + 1
+//! if bit 0, else + U(2, 6 bits or 32) | bit 0 = same command again, else
+//! throttles | bit -> pitch += S(8, 10) | bit -> yaw += S(8, 10) | bit ->
+//! extra += S(5, 8) | bit -> buttons | bit -> action | [sub-frame data]`.
+//! Throttles: bit present; bit compact: 1 -> bit (0 = none, 1 = 3 bits
+//! direction), else bit -> s8 right, bit -> s8 forward. Angles are s16 units
+//! of 2 pi / 65536; forward is (sin yaw, 0, cos yaw), right (-cos yaw, 0, sin
+//! yaw); the pitch is positive looking down. One command frame is one game
+//! tick. The extra is the client's view delay in ms (clock +0x98 plus +0x9C,
+//! times 1000: how far in the past it draws other bodies). The sub-frame data
+//! (command +0x12, 0xFF when not sent; angles +0x0E, +0x10) says when in the
+//! frame a click came, in 255ths, and where it aimed then. The client's own
+//! hit test runs at the frame's view time (0x7FF7894BEE40): the frame's time
+//! less `extra + round((1 - sub-frame / 255) * frame ms)` ms (0x7FF7894BEEC0).
 
 use std::fmt;
 

@@ -3,6 +3,16 @@
 //! Ports the one-sided contact, feature selection, face clipping, and edge
 //! filtering from `ow174/game/contacts.py`. The mesh broadphase supplies
 //! the candidate and keeps its warm simplex cache between calls.
+//!
+//! Client functions: capsule against triangle 0x7FF789CEE5E0 (wrapper
+//! 0x7FF789CEFC20); the triangle fetch 0x7FF789CF3670 (corners times the
+//! placeable's scale; for each edge the far corner of the neighbour across it,
+//! or its own third corner when there is none); neighbour normals
+//! 0x7FF789CEF970 (no neighbour: the triangle's own normal reversed); face
+//! clipping to the triangle's prism 0x7FF789CEF2C0; edge separation
+//! 0x7FF789CEFAB0; edge contact 0x7FF789CEF060; the engine's atan2
+//! approximation `z / (1 + 0.28 z^2)` 0x7FF789CCB970; closest points of two
+//! segments 0x7FF789CD8720 (radii 0), then 0x7FF789CD8B30.
 
 use std::cmp::Ordering;
 use std::sync::OnceLock;

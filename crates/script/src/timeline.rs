@@ -1,4 +1,22 @@
 //! Clock and pending-event ordering for authored statescripts.
+//!
+//! Client research (1.74): time is int64 milliseconds. Command frame K runs
+//! as the window [16K, 16K + 15]: an update of every instance at each time an
+//! event is due, and one at the window's end (component update
+//! 0x7FF78AA9C910, step 0x7FF78AA9DE30). An update drains the instance's
+//! events up to now, ticks the ticking states and runs the deferred list,
+//! until the deferred list is empty (0x7FF78AAA27C0). Events (dispatcher
+//! 0x7FF78AAA1690): 0 a state op (begin, finish, abort), 1 a timer, 2 a
+//! deferred completion check, 3 an Entry, 8 a button edge, 9 "a watched
+//! variable changed". A posted event goes after every event of the same time
+//! (FIFO), never in the past (0x7FF78AAA2990); a state's queued events are
+//! dropped at 0x7FF78AAA12F0, begin requests queued at now at 0x7FF78AAA10F0.
+//! Init (0x7FF78AAA3F00) queues every server-run Entry at the start time.
+//! Button edges go to every instance (0x7FF789C66AA0), one per changed
+//! command bit, in the client's order: bit -> logical button 0x40 11, 0x80
+//! 12, 0x01 20, 0x02 29, 0x08 35, 0x10 36, 0x20 37, 0x04 30, 0x800 31, 0x400
+//! 14, then the second byte 0x01 111, 0x02 112, 0x04 113, 0x08 114, 0x10 110,
+//! 0x20 116, 0x40 115; an action byte presses and releases its button.
 
 use std::collections::{BTreeMap, VecDeque};
 

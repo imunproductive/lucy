@@ -8,6 +8,24 @@
 //! free-for-all (`Combat._enemies`). A player's pools live in his body's
 //! script, so a hit on a player is kept here as a [`PlayerHit`] for the match
 //! to apply to that body (`Combat._damage`, `_died`).
+//!
+//! Client research (1.74): health is component 51; an op-2 update of a
+//! pool's field changes the bar on every client that has the body. A body
+//! whose health pools (type 0) add up to 0 with a maximum above 0 is dead
+//! (0x7FF789ADBF00): the client then sets flag 0x2000 on its movement state
+//! (0x7FF7896A4F9A) and the 3P animation takes the dead pose 004.015
+//! (0x7FF789B24889); flag 0x2000 in the records does the same. A dead body's
+//! statescript takes no presses (as the client's LogicalButton
+//! 0x7FF78AAAC570). The game mode entity carries the client UI graph 0CB6,
+//! whose client-only entries make the kill feed 0DEA and the notices 1FC0;
+//! every full frame of that entity has to list 0CB6, or the client destroys
+//! it. The kill feed line: the dead body's 01CF takes 003E.025 (killer 0012,
+//! crit 0095, loadout 03E6, assists 03E7), pulses its ClientOnlyPulser st108,
+//! and every client's 01CF sends 0765.025 to the mode entity's 0DEA. Targets
+//! are rewound to the command's view time (0x7FF7894BEE40 / 0x7FF7894BEEC0).
+//! The client ignores a destroyed entity id for 30 s, so a respawned bot gets
+//! a new id. Unverified (OW1 rule; the client has no damage code): armour
+//! stops 5 per hit, at most half.
 
 use std::{collections::HashMap, fs, io, path::Path, sync::Arc, time::Duration};
 
