@@ -42,18 +42,10 @@ use orpheus_physics::{
     mover::ground::NOT_GROUND,
     mover::settings::{MoverCatalog, MoverSettings},
 };
-use orpheus_script::{
-    codecs::CodecTable,
-    graph::GraphStore,
-    vm::Unknowns,
-    wire::{Value, Variables},
-};
+use orpheus_script::{codecs::CodecTable, graph::GraphStore, vm::Unknowns, wire::Variables};
 use orpheus_wire::entity::{Component, EntityUpdate};
 
 const MOVER_CATEGORY: u16 = 0x18;
-/// The game mode entity's "assemble your team" seconds (ow174/game/match.py
-/// `COUNTDOWN`).
-const COUNTDOWN: u32 = 1303;
 
 fn mover_category(map: &GameMap, team: u8) -> u16 {
     match (map.free_for_all, team) {
@@ -498,14 +490,16 @@ impl PreparedScene {
         &self.mode_ui
     }
 
-    /// A full frame of the game mode entity with the seconds left of
-    /// "assemble your team" in v1303 (match.py `_send_countdown`,
-    /// combat.py `mode_frame`).
-    pub fn countdown_frame(&self, seconds: f64) -> io::Result<BitWriter> {
-        mode_ui(
-            &self.graphs,
-            &Variables::from([(COUNTDOWN, Value::Float(seconds))]),
-        )
+    /// A full frame of the game mode entity carrying the variables the
+    /// match flow publishes, such as the clock v1303 (match.py
+    /// `_send_countdown`, combat.py `mode_frame`).
+    pub fn mode_frame(&self, variables: &Variables) -> io::Result<BitWriter> {
+        mode_ui(&self.graphs, variables)
+    }
+
+    /// The statescript graphs, for runs outside the scene (the mode graph).
+    pub fn shared_graphs(&self) -> Arc<GraphStore> {
+        Arc::clone(&self.graphs)
     }
 
     pub fn bots(&self) -> &[Bot] {

@@ -135,6 +135,11 @@ pub struct Profile {
     pub matches: Map<String, Value>,
     #[serde(deserialize_with = "map_or_empty")]
     pub wins: Map<String, Value>,
+    /// Finished matches that ended in a draw, by queue as `matches` and
+    /// `wins` (Python keeps no draws; profiles saved without them load with
+    /// none).
+    #[serde(deserialize_with = "map_or_empty")]
+    pub draws: Map<String, Value>,
     pub sms_protect: bool,
     pub seasons_seen: Vec<i64>,
     #[serde(deserialize_with = "map_or_empty")]
@@ -180,6 +185,7 @@ impl Default for Profile {
             season: 32,
             matches: Map::new(),
             wins: Map::new(),
+            draws: Map::new(),
             sms_protect: true,
             seasons_seen: Vec::new(),
             priority_passes: Map::new(),

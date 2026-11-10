@@ -67,6 +67,33 @@ const ROOT_GRAPHS: [u64; 11] = [
     0x0258, // Biotic Field (the initial graph of 03DC.003, which 0257's canister leaves where it lands)
 ];
 
+/// The match flow's graphs, also roots: the other modes' scripts, team
+/// controllers and team bodies (`0C5` `m_teams`, and the script of the
+/// mode entity `16B2`; `statescript_names.json` "modes"), and the map
+/// entity graphs of the objectives and doors (their
+/// `STUStatescriptComponentInstanceData` in the map chunks).
+const MODE_FLOW_GRAPHS: [u64; 14] = [
+    0x0D76, // Skirmish mode
+    0x0D0B, // Elimination mode
+    0x0D6F, // Elimination controller
+    0x0D38, // Elimination body
+    0x0F60, // Team Deathmatch mode
+    0x0F62, // Team Deathmatch controller
+    0x1066, // Team Deathmatch body
+    0x0F73, // Deathmatch and Bounty Hunter mode
+    0x0F74, // Deathmatch controller
+    0x1058, // Deathmatch body
+    0x0F4C, // map objective
+    0x0E8E, // map capture point
+    0x1225, // map payload
+    0x0D32, // map spawn door
+];
+
+/// Every root graph of a bundle besides the bodies' and the AI spawners'.
+fn bundle_roots() -> impl Iterator<Item = u64> {
+    ROOT_GRAPHS.into_iter().chain(MODE_FLOW_GRAPHS)
+}
+
 /// The Practice Range bot bodies (`1403`, `143E`, `146E`, `14A9`, `14D2`,
 /// `14ED`) and the AI definitions their `m_8B9A461F` names (`1404`, `14AF`).
 const BOT_ENTITIES: [u64; 8] = [
@@ -160,7 +187,7 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
             queue.extend(used);
         }
     }
-    queue.extend(ROOT_GRAPHS);
+    queue.extend(bundle_roots());
     queue.extend(ai_roots.iter().copied());
 
     let mut graphs = BTreeMap::new();
@@ -186,7 +213,7 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
         graphs.insert(index, record);
     }
 
-    let mut root_graphs: BTreeSet<u64> = ROOT_GRAPHS.into_iter().collect();
+    let mut root_graphs: BTreeSet<u64> = bundle_roots().collect();
     root_graphs.extend(ai_roots);
     let mut body_keys: Vec<&String> = bodies.keys().collect();
     body_keys.sort();

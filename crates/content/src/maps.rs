@@ -37,9 +37,50 @@ pub struct GameMap {
     pub mode_name: String,
     pub team_sizes: Vec<u8>,
     pub free_for_all: bool,
+    /// The map's objectives in this mode, as derived from their statescript
+    /// instances (`game_maps` `objectives`): capture points in their order,
+    /// the payload and its checkpoints, the Control stages.
+    pub objectives: Vec<MapObjective>,
+}
+
+/// What an objective entity of the map is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObjectiveKind {
+    /// A capture point of Assault or Hybrid (graphs 0F4C and 0E8E).
+    Point,
+    /// A payload checkpoint of Escort or Hybrid (0F4C with var 0x2931).
+    Checkpoint,
+    /// The payload itself (graph 1225).
+    Payload,
+    /// A Control stage's point (0E8E with tag 0x41B..0x41D).
+    ControlPoint,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapObjective {
+    pub kind: ObjectiveKind,
+    /// The objective's order (0x2934), or the Control stage; 0 for the
+    /// payload.
+    pub order: u32,
+    /// The point's display name (0x1DDB, or 0x6D9 for Control).
+    pub name: Option<String>,
+    /// The entity placeable's flat index.
+    pub placeable: u32,
+    pub position: [f64; 3],
 }
 
 impl GameMap {
+    /// The objectives of a kind in their order.
+    pub fn objectives_of(&self, kind: ObjectiveKind) -> impl Iterator<Item = &MapObjective> {
+        let mut chosen: Vec<_> = self
+            .objectives
+            .iter()
+            .filter(|objective| objective.kind == kind)
+            .collect();
+        chosen.sort_by_key(|objective| objective.order);
+        chosen.into_iter()
+    }
+
     /// The training route has an explicit map, mode, and first spawn: the
     /// Practice Range record of `ow174/game/content.py` (`PRACTICE_RANGE`).
     /// The game-tier test `the_practice_range_is_the_derived_record` pins
@@ -62,6 +103,7 @@ impl GameMap {
             mode_name: PRACTICE_RANGE_NAME.into(),
             team_sizes: vec![1, 0],
             free_for_all: false,
+            objectives: Vec::new(),
         }
     }
 
@@ -157,6 +199,7 @@ impl MapCatalog {
                     placeables: raw.placeables,
                     placeables_by_mode,
                     spawns,
+                    objectives: raw.objectives.unwrap_or_default(),
                 },
             );
         }
@@ -231,6 +274,17 @@ impl MapCatalog {
             mode_name: mode_name.into(),
             team_sizes: team_sizes.into(),
             free_for_all,
+            objectives: entry
+                .objectives
+                .iter()
+                .map(|objective| MapObjective {
+                    kind: objective.kind,
+                    order: objective.objective.or(objective.stage).unwrap_or(0),
+                    name: objective.name.clone(),
+                    placeable: objective.placeable,
+                    position: objective.position,
+                })
+                .collect(),
         })
     }
 }
@@ -242,6 +296,7 @@ struct MapEntry {
     placeables: Vec<u32>,
     placeables_by_mode: HashMap<u64, Vec<u32>>,
     spawns: Vec<SpawnEntry>,
+    objectives: Vec<RawObjective>,
 }
 
 impl MapEntry {
@@ -383,6 +438,31 @@ struct RawMap {
     placeables: Vec<u32>,
     placeables_by_mode: Option<IndexMap<String, Vec<u32>>>,
     spawns: Option<Vec<RawSpawn>>,
+    objectives: Option<Vec<RawObjective>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawObjective {
+    #[serde(deserialize_with = "objective_kind")]
+    kind: ObjectiveKind,
+    objective: Option<u32>,
+    stage: Option<u32>,
+    name: Option<String>,
+    placeable: u32,
+    position: [f64; 3],
+}
+
+fn objective_kind<'de, D: serde::Deserializer<'de>>(input: D) -> Result<ObjectiveKind, D::Error> {
+    let text = String::deserialize(input)?;
+    match text.as_str() {
+        "point" => Ok(ObjectiveKind::Point),
+        "checkpoint" => Ok(ObjectiveKind::Checkpoint),
+        "payload" => Ok(ObjectiveKind::Payload),
+        "control point" => Ok(ObjectiveKind::ControlPoint),
+        _ => Err(serde::de::Error::custom(format!(
+            "unknown objective kind {text:?}"
+        ))),
+    }
 }
 
 #[derive(Deserialize)]
@@ -441,6 +521,40 @@ mod tests {
         ], "scripted_loading": true},
         "0x20": {"teams": [], "scripted_loading": false}
     }}"#;
+
+    #[test]
+    fn objectives_load_in_their_order_per_kind() {
+        let catalog = MapCatalog::from_json(
+            r#"{"0x80": {"name": "Hybrid Fixture", "modes": ["20"],
+                "spawns": [{"team": 0, "position": [0, 0, 0]}],
+                "objectives": [
+                    {"objective": 2, "name": null, "kind": "checkpoint", "placeable": 9, "position": [3, 0, 0]},
+                    {"objective": 0, "name": "Point A", "kind": "point", "placeable": 7, "position": [1, 0, 0]},
+                    {"objective": 1, "name": null, "kind": "checkpoint", "placeable": 8, "position": [2, 0, 0]},
+                    {"kind": "payload", "placeable": 6, "position": [0, 0, 0], "rotation": [0, 0, 0, 1]},
+                    {"stage": 1, "name": "B", "kind": "control point", "placeable": 5, "position": [4, 0, 0]}
+                ]}}"#,
+        )
+        .unwrap();
+        let map = catalog.game_map(0x80, 0x20, "", false, &[]).unwrap();
+        let order = |kind| {
+            map.objectives_of(kind)
+                .map(|objective| (objective.order, objective.placeable))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(ObjectiveKind::Checkpoint), [(1, 8), (2, 9)]);
+        assert_eq!(order(ObjectiveKind::Payload), [(0, 6)]);
+        assert_eq!(order(ObjectiveKind::ControlPoint), [(1, 5)]);
+        let point = map.objectives_of(ObjectiveKind::Point).next().unwrap();
+        assert_eq!(point.name.as_deref(), Some("Point A"));
+        assert_eq!(point.position, [1.0, 0.0, 0.0]);
+        assert!(
+            MapCatalog::from_json(
+                r#"{"0x80": {"objectives": [{"kind": "flag", "placeable": 1, "position": [0, 0, 0]}]}}"#
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn loads_external_catalog_and_keeps_the_practice_fallback() {

@@ -1839,6 +1839,17 @@ impl WorldDelivery {
         self.death.is_some()
     }
 
+    /// Where the player's body stands while it is alive in the world (the
+    /// match flow's objectives count it).
+    pub fn body_position(&self) -> Option<[f64; 3]> {
+        self.started?;
+        self.body?;
+        if self.death.is_some() {
+            return None;
+        }
+        Some(self.mover.as_ref()?.pose().position)
+    }
+
     /// The player's body as a target this tick (combat.py `_targets`: a
     /// player in the world with a body).
     pub fn combat_target(&self, scene: &PreparedScene, team: u8) -> Option<PlayerTarget> {
@@ -1994,6 +2005,23 @@ impl WorldDelivery {
             self.drop_failed_script(&error.to_string());
         }
         given
+    }
+
+    /// A dead player's timer is up now: a new Elimination round brings
+    /// everyone back at its start (game-rules.md 99). See
+    /// [`Self::respawn_due`].
+    pub fn respawn_now(
+        &mut self,
+        scene: &PreparedScene,
+        viewer: &PlayerAppearance<'_>,
+        tick: u32,
+        now: Duration,
+        quanta: u32,
+    ) -> io::Result<bool> {
+        if let Some(death) = &mut self.death {
+            death.respawn_at = death.respawn_at.min(now);
+        }
+        self.respawn_due(scene, viewer, tick, now, quanta)
     }
 
     /// combat.py `_respawn`: once the mode's time is up, a dead player gets

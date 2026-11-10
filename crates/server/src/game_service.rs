@@ -5,7 +5,10 @@
 //! with the map's collision, is prepared off the game thread while the
 //! players load (match.py `_refresh_collision`); players can join it while it
 //! runs (ow174/game/server.py `join_match`). In the PvP modes the first spawn
-//! starts "assemble your team" (match.py `_end_assemble`).
+//! starts the match flow (orpheus_sim::match_flow): "assemble your team"
+//! (match.py `_end_assemble`), then the mode's setup, rounds, objectives and
+//! scoring; at the match's end the result goes to the lobby and the players
+//! go home.
 //!
 //! How a player gets into the world (client research, 1.74): when the map is
 //! loaded the client sends 21601 (and later 21602). 0.3 s later the server
@@ -57,7 +60,7 @@ use orpheus_content::{
 };
 use orpheus_core::tick::FIRST_TICK;
 use orpheus_lobby::handoff::Handoff;
-use orpheus_script::wire::chunk;
+use orpheus_script::{vm::GameMessage, wire::chunk};
 use orpheus_sim::{
     bot_script::{BotShotKind, SeenRocket},
     combat::{
@@ -68,6 +71,9 @@ use orpheus_sim::{
     controller::ControllerFrame,
     egress::GameEgress,
     instance::{Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
+    match_flow::{FlowEvent, MatchFlow, Mode, Phase, Standing, Timers},
+    mode_script::ModeRunner,
+    objectives::Participant,
     projectiles::FiredProjectile,
     replication::{Record, RoomPlayer, WorldDelivery, show_players},
     scene::{PlayerAppearance, PlayerCard},
@@ -88,11 +94,9 @@ const RECEIVE_BATCH: usize = 64;
 const INPUT_PER_PEER: usize = 16;
 const INPUT_PER_TURN: usize = 64;
 const MAX_PENDING_COMBAT_NOTICES: usize = 256;
-/// "Assemble your team" in the PvP modes: 30 s shown on the hero select
-/// screen, in whole seconds (ow174/game/match.py `ASSEMBLE_SECONDS`,
-/// `COUNTDOWN_EVERY`).
-const ASSEMBLE_TIME: Duration = Duration::from_secs(30);
-const COUNTDOWN_EVERY: Duration = Duration::from_secs(1);
+/// The game mode entity gets a frame with the match flow's clock every
+/// second, and at each phase change (ow174/game/match.py `COUNTDOWN_EVERY`).
+const MODE_FRAME_EVERY: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 pub struct MatchPlayer {
@@ -155,6 +159,36 @@ impl PlayerState {
             Self::Waiting => "waiting",
         }
     }
+}
+
+/// How a finished match went for a player's team.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Win,
+    Loss,
+    Draw,
+}
+
+/// A match that ended by its rules, for the lobby's profiles: every seat of
+/// the room in slot order, which is the matchmaker's seat order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MatchResult {
+    pub id: MatchId,
+    pub map: u64,
+    pub mode: u64,
+    pub players: Vec<PlayerResult>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerResult {
+    pub slot: usize,
+    pub name: String,
+    pub account: [u64; 2],
+    pub team: u8,
+    pub outcome: Outcome,
+    /// Still in the match when it ended: a leaver's seat is listed, but
+    /// gets no result of his own.
+    pub finished: bool,
 }
 
 /// Builds a map's collision cache from the game install, as the Python
@@ -232,6 +266,16 @@ enum Request {
     },
     Snapshot {
         reply: mpsc::SyncSender<Vec<MatchSnapshot>>,
+    },
+    /// The matches that ended since the last call, oldest first.
+    Results {
+        reply: mpsc::SyncSender<Vec<MatchResult>>,
+    },
+    /// Tests: the match flow's timers for the matches that start later.
+    #[cfg(test)]
+    Timers {
+        timers: Timers,
+        reply: mpsc::SyncSender<()>,
     },
 }
 
@@ -439,6 +483,18 @@ impl GameService {
         self.request(|reply| Request::Snapshot { reply })
     }
 
+    /// The matches that ended by their rules since the last call, oldest
+    /// first; the lobby records them in the players' profiles.
+    pub fn take_results(&self) -> io::Result<Vec<MatchResult>> {
+        self.request(|reply| Request::Results { reply })
+    }
+
+    /// Tests: shorten the match flow of the matches that start from now.
+    #[cfg(test)]
+    pub(crate) fn set_match_timers(&self, timers: Timers) -> io::Result<()> {
+        self.request(|reply| Request::Timers { timers, reply })
+    }
+
     pub fn handoff_pending(&self, connection: u32) -> io::Result<bool> {
         self.request(|reply| Request::Pending { connection, reply })
     }
@@ -554,8 +610,18 @@ struct Room {
     players: Vec<Player>,
     remaining: usize,
     world: Option<WorldStart>,
-    /// PvP: when "assemble your team" ends (match.py `assemble_ends`).
-    assemble_ends: Option<Duration>,
+    /// PvP: the match flow, from the first spawn (match.py
+    /// `assemble_ends`).
+    flow: Option<MatchFlow>,
+    /// The game mode entity's frames: its graph's or the flow's.
+    mode: Option<ModeRunner>,
+    /// When the flow last advanced.
+    flow_at: Duration,
+    /// The mode entity's frame every client gets this tick, and when the
+    /// next is due.
+    mode_frame: Option<orpheus_core::bits::BitWriter>,
+    next_mode_frame: Duration,
+    /// Hero select closed this tick: the heroes are assembled.
     assembled: bool,
     /// Its collision failed: it takes nobody more (match.py `ended`).
     ended: bool,
@@ -570,7 +636,11 @@ impl Room {
             players: Vec::with_capacity(players.len()),
             remaining: 0,
             world,
-            assemble_ends: None,
+            flow: None,
+            mode: None,
+            flow_at: Duration::ZERO,
+            mode_frame: None,
+            next_mode_frame: Duration::ZERO,
             assembled: false,
             ended: false,
             started: Instant::now(),
@@ -597,7 +667,40 @@ impl Room {
     }
 
     fn assembling(&self) -> bool {
-        self.assemble_ends.is_some() && !self.assembled
+        self.flow.as_ref().is_some_and(MatchFlow::assembling)
+    }
+
+    /// The players are in a PvP world: the flow starts with "assemble your
+    /// team", and the mode graph once to see whether it can drive the mode
+    /// entity (`mode_script.rs`).
+    fn begin_flow(&mut self, scene: &PreparedScene, timers: Timers, now: Duration, tick: u32) {
+        if self.flow.is_some() {
+            return;
+        }
+        let competitive = self.players.iter().any(|player| player.info.ranked);
+        // A PvP mode without a flow of its own (a brawl) keeps the
+        // assemble phase and plays on like Skirmish.
+        let skirmish = || {
+            let map = GameMap {
+                mode_guid: orpheus_sim::match_flow::SKIRMISH,
+                ..self.map.clone()
+            };
+            MatchFlow::new(&map, competitive, timers)
+        };
+        let Some(mut flow) = MatchFlow::new(&self.map, competitive, timers).or_else(skirmish)
+        else {
+            return;
+        };
+        flow.start();
+        tracing::info!(
+            "[game] {}: {:?} match flow, assemble your team",
+            self.map.name,
+            flow.mode()
+        );
+        self.flow = Some(flow);
+        self.mode = Some(ModeRunner::start(scene, tick));
+        self.flow_at = now;
+        self.next_mode_frame = now;
     }
 
     fn appearance(&self, slot: usize) -> Option<PlayerAppearance<'_>> {
@@ -648,8 +751,6 @@ struct Peer {
     combat_ui: CombatUi,
     /// The controller step ran (match.py `steps_done >= 4`).
     presented: bool,
-    /// When the next countdown frame is due (match.py `next_countdown`).
-    next_countdown: Duration,
 }
 
 #[derive(Default)]
@@ -809,7 +910,6 @@ impl Peer {
             world: WorldDelivery::new(owner),
             combat_ui: CombatUi::default(),
             presented: false,
-            next_countdown: Duration::ZERO,
         }
     }
 
@@ -921,22 +1021,6 @@ impl Peer {
         );
     }
 
-    /// The seconds left of "assemble your team" in the game mode entity's
-    /// v1303, every second; the client shows them rounded up (match.py
-    /// `_send_countdown`).
-    fn send_countdown(
-        &mut self,
-        scene: &PreparedScene,
-        ends: Duration,
-        now: Duration,
-    ) -> io::Result<()> {
-        let frame = scene.countdown_frame(ends.saturating_sub(now).as_secs_f64())?;
-        if self.world.queue_mode_frame(&frame)? {
-            self.next_countdown = now.saturating_add(COUNTDOWN_EVERY);
-        }
-        Ok(())
-    }
-
     /// The due spawn steps; true when this one put the player in the world.
     fn advance_loading(
         &mut self,
@@ -985,44 +1069,32 @@ impl Peer {
         Ok(spawned)
     }
 
-    /// This tick's steps of the player (match.py `update`): the end of
-    /// "assemble your team", the spawn steps, and the countdown. The first
-    /// spawn in a PvP mode starts the countdown (`_spawn_steps`).
+    /// This tick's steps of the player (match.py `update`): the mode
+    /// entity's frame and the end of "assemble your team", then the spawn
+    /// steps. The first spawn in a PvP mode starts the match flow
+    /// (`_spawn_steps`).
     fn update(
         &mut self,
         schemas: &Schemas,
         room: &mut Room,
         slot: usize,
-        assembled: bool,
+        timers: Timers,
         now: Duration,
         tick: u32,
     ) -> io::Result<()> {
-        if let (true, Some(world), Some(ends)) =
-            (assembled && self.presented, &room.world, room.assemble_ends)
-        {
-            self.send_countdown(&world.scene, ends, now)?;
+        if let (true, Some(frame)) = (self.presented, &room.mode_frame) {
+            self.world.queue_mode_frame(frame)?;
+        }
+        if let (true, Some(world)) = (room.assembled && self.presented, &room.world) {
             self.world.end_assemble(&world.scene, tick)?;
         }
         self.world.set_assembling(room.assembling());
         let spawned = self.advance_loading(schemas, room, slot, now, tick)?;
-        let pvp = room
-            .world
-            .as_ref()
-            .is_some_and(|world| !world.scene.controller().practice());
-        if spawned && pvp && room.assemble_ends.is_none() {
-            room.assemble_ends = Some(now.saturating_add(ASSEMBLE_TIME));
-            tracing::info!(
-                "[game] {}: assemble your team, {} s",
-                room.map.name,
-                ASSEMBLE_TIME.as_secs()
-            );
-        }
-        if let (true, Some(world), Some(ends)) = (
-            room.assembling() && self.presented && now >= self.next_countdown,
-            &room.world,
-            room.assemble_ends,
-        ) {
-            self.send_countdown(&world.scene, ends, now)?;
+        if let Some(world) = room.world.take() {
+            if spawned && !world.scene.controller().practice() {
+                room.begin_flow(&world.scene, timers, now, tick);
+            }
+            room.world = Some(world);
         }
         Ok(())
     }
@@ -1042,6 +1114,10 @@ struct State {
     homeward: HashMap<u32, Peer>,
     next_connection: u32,
     next_input_peer: usize,
+    /// Matches that ended by their rules, until the lobby takes them.
+    results: Vec<MatchResult>,
+    /// The match flow's timers (tests shorten them).
+    timers: Timers,
 }
 
 impl State {
@@ -1056,6 +1132,8 @@ impl State {
             homeward: HashMap::new(),
             next_connection: 1,
             next_input_peer: 0,
+            results: Vec::new(),
+            timers: Timers::default(),
         }
     }
 
@@ -1223,7 +1301,10 @@ impl State {
                 id,
                 map: room.map.name.clone(),
                 mode: room.map.mode_name.clone(),
-                waiting: room.assemble_ends.is_none(),
+                waiting: room
+                    .flow
+                    .as_ref()
+                    .is_none_or(|flow| flow.phase() <= Phase::Assemble),
                 players: room
                     .players
                     .iter()
@@ -1278,6 +1359,14 @@ impl State {
             Request::Scene { id, scene } => self.scene_ready(id, scene, now),
             Request::Snapshot { reply } => {
                 let _ = reply.send(self.snapshot());
+            }
+            Request::Results { reply } => {
+                let _ = reply.send(std::mem::take(&mut self.results));
+            }
+            #[cfg(test)]
+            Request::Timers { timers, reply } => {
+                self.timers = timers;
+                let _ = reply.send(());
             }
             Request::Pending { connection, reply } => {
                 let _ = reply.send(self.links.handoff_pending(connection, now));
@@ -1683,7 +1772,13 @@ impl State {
         now: Duration,
         heals: Option<Vec<FieldHeal>>,
     ) {
-        let Some(Room { players, world, .. }) = self.rooms.get_mut(&id) else {
+        let Some(Room {
+            players,
+            world,
+            flow,
+            ..
+        }) = self.rooms.get_mut(&id)
+        else {
             return;
         };
         let Some(WorldStart {
@@ -1736,6 +1831,27 @@ impl State {
             }
             notices
         };
+        // The kills count for the match flow's score (Deathmatch, Team
+        // Deathmatch): the victim's death notice names the killer's body.
+        if let Some(flow) = flow {
+            for (victim, notices) in notices.iter().enumerate() {
+                for notice in notices {
+                    if let CombatNotice::Death { source, killed_by } = *notice {
+                        let killer = killed_by
+                            .then(|| {
+                                players
+                                    .iter()
+                                    .position(|player| player.entity == source & !0xff)
+                            })
+                            .flatten();
+                        flow.kill(
+                            killer.map(|slot| (slot, teams[slot])),
+                            (victim, teams[victim]),
+                        );
+                    }
+                }
+            }
+        }
         for hit in &bot_heals {
             bot_hit_script(scene, hit);
         }
@@ -1911,13 +2027,21 @@ impl State {
                 let viewer = room.appearance(slot).expect("seated player");
                 let peer = self.peers.get_mut(&connection).expect("room peer");
                 peer.world.retain_elsewhere(retained);
-                if let Err(error) = peer.world.respawn_due(
-                    &world.scene,
-                    &viewer,
-                    tick,
-                    now,
-                    room.players[slot].quanta(),
-                ) {
+                // The match flow holds the dead within an Elimination round
+                // and once the match is decided.
+                let respawns = room.flow.as_ref().is_none_or(MatchFlow::respawns);
+                if let Err(error) = respawns
+                    .then(|| {
+                        peer.world.respawn_due(
+                            &world.scene,
+                            &viewer,
+                            tick,
+                            now,
+                            room.players[slot].quanta(),
+                        )
+                    })
+                    .transpose()
+                {
                     eprintln!("{:08X} could not respawn ({error})", viewer.entity);
                 }
                 peer.world.expire_bark(now);
@@ -1954,6 +2078,158 @@ impl State {
                 .or_else(|| self.homeward.get_mut(&connection))
                 .expect("admitted peer");
             let _ = peer.reliable(&self.schemas, leave_message());
+        }
+    }
+
+    /// Every PvP room's match flow this tick (orpheus_sim::match_flow): it
+    /// advances with where the players' bodies stand, the game mode
+    /// entity's frame is made when due, hero select closes once the heroes
+    /// are assembled, the phase messages and the mode graph's go to the
+    /// players' bodies, a new Elimination round brings the dead back, a
+    /// decided match goes to the lobby's results, and once its end is over
+    /// everyone goes home.
+    fn update_flows(&mut self, tick: u32, now: Duration) {
+        let mut home = Vec::new();
+        for (&id, room) in &mut self.rooms {
+            room.assembled = false;
+            room.mode_frame = None;
+            let mut connections: Vec<(u32, usize)> = self
+                .seats
+                .iter()
+                .filter(|(connection, seat)| seat.0 == id && self.peers.contains_key(*connection))
+                .map(|(&connection, &(_, slot))| (connection, slot))
+                .collect();
+            connections.sort_by_key(|&(_, slot)| slot);
+            let (Some(flow), Some(world)) = (room.flow.as_mut(), room.world.as_ref()) else {
+                continue;
+            };
+            let participants: Vec<Participant> = connections
+                .iter()
+                .filter(|&&(_, slot)| !room.players[slot].gone)
+                .map(|&(connection, slot)| Participant {
+                    slot,
+                    team: room.players[slot].info.team,
+                    position: self.peers[&connection].world.body_position(),
+                })
+                .collect();
+            let seconds = now.saturating_sub(room.flow_at).as_secs_f64();
+            room.flow_at = now;
+            let was = flow.phase();
+            let events = flow.advance(seconds, &participants);
+            let variables = flow.variables();
+            let mut messages = room
+                .mode
+                .as_mut()
+                .map_or_else(Vec::new, |mode| mode.advance(tick, &variables));
+            let changed = events
+                .iter()
+                .any(|event| matches!(event, FlowEvent::Phase(_)));
+            if changed || now >= room.next_mode_frame {
+                if let Some(mode) = &room.mode {
+                    match mode.frame(&world.scene, &variables) {
+                        Ok(frame) => room.mode_frame = Some(frame),
+                        Err(error) => tracing::warn!("[game] no game mode frame: {error}"),
+                    }
+                }
+                room.next_mode_frame = now.saturating_add(MODE_FRAME_EVERY);
+            }
+            room.assembled = was == Phase::Assemble && flow.phase() != Phase::Assemble;
+            let mut revive = false;
+            for event in &events {
+                match event {
+                    FlowEvent::Phase(phase) => {
+                        tracing::info!(
+                            "[game] match {:04X}: {phase:?}, {:.1} s",
+                            id[0] & 0xFFFF,
+                            flow.clock()
+                        );
+                        revive |= *phase == Phase::Round && flow.mode() == Mode::Elimination;
+                    }
+                    FlowEvent::Message {
+                        message,
+                        parameters,
+                    } => messages.extend(connections.iter().filter_map(|(connection, _)| {
+                        Some(GameMessage {
+                            sender: GAME_MODE_ENTITY,
+                            target: self.peers[connection].world.current_body()?,
+                            message: *message,
+                            parameters: parameters.clone(),
+                        })
+                    })),
+                    FlowEvent::Objective(objective) => tracing::info!(
+                        "[game] match {:04X}: objective {objective} taken",
+                        id[0] & 0xFFFF
+                    ),
+                    FlowEvent::Overtime(on) => {
+                        tracing::info!("[game] match {:04X}: overtime {on}", id[0] & 0xFFFF)
+                    }
+                    FlowEvent::RoundOver(winner) => tracing::info!(
+                        "[game] match {:04X}: round {} won by {winner:?}",
+                        id[0] & 0xFFFF,
+                        flow.round()
+                    ),
+                    FlowEvent::MatchOver => {
+                        room.ended = true;
+                        let players = room
+                            .players
+                            .iter()
+                            .enumerate()
+                            .map(|(slot, player)| PlayerResult {
+                                slot,
+                                name: player.info.name.clone(),
+                                account: player.card.account,
+                                team: player.info.team,
+                                outcome: match flow.standing(slot, player.info.team) {
+                                    Some(Standing::Won) => Outcome::Win,
+                                    Some(Standing::Drew) => Outcome::Draw,
+                                    _ => Outcome::Loss,
+                                },
+                                finished: !player.gone
+                                    && connections.iter().any(|&(_, seated)| seated == slot),
+                            })
+                            .collect();
+                        tracing::info!("[game] match {:04X} is over", id[0] & 0xFFFF);
+                        self.results.push(MatchResult {
+                            id,
+                            map: room.map.map_guid,
+                            mode: room.map.mode_guid,
+                            players,
+                        });
+                    }
+                    FlowEvent::Finished => {
+                        home.extend(connections.iter().map(|&(connection, _)| connection));
+                    }
+                }
+            }
+            for message in messages {
+                for (connection, _) in &connections {
+                    let peer = self.peers.get_mut(connection).expect("room peer");
+                    if peer.world.receive_body_message(&message) {
+                        break;
+                    }
+                }
+            }
+            if revive {
+                let world = room.world.as_ref().expect("room with a world");
+                for &(connection, slot) in &connections {
+                    let viewer = room.appearance(slot).expect("seated player");
+                    let peer = self.peers.get_mut(&connection).expect("room peer");
+                    if let Err(error) = peer.world.respawn_now(
+                        &world.scene,
+                        &viewer,
+                        tick,
+                        now,
+                        room.players[slot].quanta(),
+                    ) {
+                        eprintln!("{:08X} could not respawn ({error})", viewer.entity);
+                    }
+                }
+            }
+        }
+        for connection in home {
+            if !self.links.cancel_handoff(connection) && self.peers.contains_key(&connection) {
+                self.send_home(connection, now);
+            }
         }
     }
 
@@ -2045,27 +2321,18 @@ impl State {
                 }
             }
         }
-        // match.py `update`: the countdown ends before the players' steps.
-        let mut assembled = Vec::new();
+        // match.py `update`: the countdown (now the match flow) runs before
+        // the players' steps.
         if !drain {
-            for (&id, room) in &mut self.rooms {
-                if room
-                    .assemble_ends
-                    .is_some_and(|ends| !room.assembled && now >= ends)
-                {
-                    room.assembled = true;
-                    tracing::info!("[game] match {:04X}: heroes assembled", id[0] & 0xFFFF);
-                    assembled.push(id);
-                }
-            }
+            self.update_flows(tick, now);
         }
+        let timers = self.timers;
         for (&connection, peer) in &mut self.peers {
             let (id, slot) = self.seats[&connection];
             let room = self.rooms.get_mut(&id).expect("admitted room");
-            let ending = assembled.contains(&id);
             if !drain
                 && peer
-                    .update(&self.schemas, room, slot, ending, now, tick)
+                    .update(&self.schemas, room, slot, timers, now, tick)
                     .is_err()
             {
                 peer.clear_world();
