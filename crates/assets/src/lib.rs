@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+mod heroes;
 mod install;
 
 use std::{
@@ -76,7 +77,20 @@ pub struct Derivation {
 }
 
 /// Every derivation, inputs first.
-pub const DERIVATIONS: &[Derivation] = &[];
+pub const DERIVATIONS: &[Derivation] = &[
+    Derivation {
+        name: "game_heroes",
+        derive: heroes::derive,
+    },
+    Derivation {
+        name: "game_movers",
+        derive: heroes::movers::derive,
+    },
+    Derivation {
+        name: "game_stats",
+        derive: heroes::stats::derive,
+    },
+];
 
 /// Run every derivation and write its files under `out`.
 pub fn build(install: &Install, out: &Path) -> Result<Vec<PathBuf>> {
