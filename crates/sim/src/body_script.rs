@@ -15,7 +15,9 @@ use crate::{
     instance::RETAIL_QUANTA,
     others::ObserverActivity,
     pools::{BODY_GRAPH, FALLBACK_POOLS, HealthPools},
-    projectiles::{ProjectileLeases, local_prediction, predicted_sync, spawned_definitions},
+    projectiles::{
+        FIELD_ENTITY, ProjectileLeases, local_prediction, predicted_sync, spawned_definitions,
+    },
     replication::{BodyStep, OwnerBodyRuntime},
     voice::{SpawnBark, begin_spawn_bark},
 };
@@ -36,7 +38,7 @@ use orpheus_script::{
     timeline::FRAME_MS,
     ultimate::{ULT_SECONDS, UltimateCharge},
     vitals::Vitals,
-    vm::{Component, GameMessage, MAX_INIT_WORK, MoveRequest, Root, Snapshot, World},
+    vm::{Component, GameMessage, MAX_INIT_WORK, MoveRequest, Root, Snapshot, StateKind, World},
     weapons::{HitDefinition, ProjectileBallistics, authored_number},
     wire::{Value, Variables},
 };
@@ -478,13 +480,21 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 };
                 let speed = node.field("m_projectileSpeed").unwrap_or(&Json::Null);
                 if !speed.is_null() && to_float(&evaluate(speed).ok()?) != 0.0 {
-                    // The match flight handles one straight, owner-predicted projectile per shot.
+                    // combat.py `_shoot`: a leased projectile flies whether or
+                    // not it does damage; the Biotic Field canister leaves its
+                    // field at the shooter's feet (projectiles.py `fired`).
+                    let spawn = spawned_definitions(node).first().copied();
+                    // The match flight handles one straight, owner-predicted
+                    // projectile per shot. The Biotic Field canister's arc
+                    // (0257's gravity) decides nothing: its field opens at
+                    // the shooter's feet, and Python flies it straight too.
                     if !node.is_networked()
                         || !local_prediction(node)
                         || !predicted_sync(node, &mut evaluate).ok()?
-                        || node
-                            .field("m_projectileMotions")
-                            .is_some_and(|v| !v.is_null())
+                        || (spawn != Some(FIELD_ENTITY)
+                            && node
+                                .field("m_projectileMotions")
+                                .is_some_and(|v| !v.is_null()))
                         || node.field("m_aimID").is_some_and(|v| !v.is_null())
                         || authored_number(
                             node.field("m_numProjectilesPerShot"),
@@ -500,10 +510,15 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                         ProjectileBallistics::from_authored(node, &mut evaluate).ok()??;
                     let definition = ballistics.definition?;
                     self.leases.entity(definition, shot.frame, 0)?;
-                    // combat.py `_shoot`: a leased projectile flies whether or
-                    // not it does damage; the Biotic Field canister leaves its
-                    // field where it lands (projectiles.py `fired`).
-                    let spawn = spawned_definitions(node).first().copied();
+                    let volleys = self
+                        .component
+                        .snapshot()
+                        .and_then(|snapshot| snapshot.instances.get(&shot.instance))
+                        .and_then(|instance| instance.states.get(&shot.raw_state))
+                        .map_or(0, |state| match state.kind {
+                            StateKind::WeaponVolley { volleys, .. } => volleys,
+                            _ => 0,
+                        });
                     return Some(PosedShot::Projectile(PosedProjectile {
                         shot,
                         ballistics,
@@ -511,6 +526,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                         direction: aim_direction(&command),
                         spawn,
                         feet: [x, y, z],
+                        volleys,
                     }));
                 }
                 let hit = HitDefinition::from_authored(node.field("m_6396149F")?, &mut evaluate)
@@ -663,6 +679,25 @@ fn fixture_volley_factory(button: u8, networked: bool, mut volley: Json) -> Play
         );
     }
     factory.roots = vec![Root::new(1, 42)];
+    factory
+}
+
+/// A fixture body that runs one graph (instance 1) with these entity
+/// variables besides the body's own.
+#[cfg(any(test, feature = "fixtures"))]
+pub fn fixture_graph_factory(graph: Json, variables: Variables) -> PlayerBodyFactory {
+    use serde_json::json;
+
+    let index = graph["index"]
+        .as_u64()
+        .and_then(|index| u32::try_from(index).ok())
+        .expect("the graph's index");
+    let bundle = json!({"version":1,"missing":[],"graphs":[graph],"bodies":{}});
+    let mut factory = fixture_body_factory().0;
+    factory.graphs =
+        Arc::new(GraphStore::from_json(&serde_json::to_vec(&bundle).unwrap()).unwrap());
+    factory.roots = vec![Root::new(1, index)];
+    factory.variables.extend(variables);
     factory
 }
 

@@ -259,6 +259,9 @@ struct WorldRecord {
     skin: Option<(u32, bool)>,
     script: Option<ReceivedChunk>,
     projectile_release: Option<u32>,
+    /// The channel-2 shot records' projectile ids (projectiles.py
+    /// `shot_events`): a launch the other clients see.
+    launches: Vec<u32>,
     base_health: Option<f32>,
     /// The first component of an update with one component.
     updated: Option<u8>,
@@ -301,6 +304,7 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
                 skin: None,
                 script: None,
                 projectile_release: None,
+                launches: Vec::new(),
                 base_health: None,
                 updated: None,
             };
@@ -324,7 +328,9 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
             if !reader.bit().unwrap() {
                 return record;
             }
-            assert!(!reader.bit().unwrap()); // no channel-2 launch events
+            if reader.bit().unwrap() {
+                record.launches = shot_events(&mut reader);
+            }
             if reader.bit().unwrap() {
                 assert_eq!(reader.var_b().unwrap(), u32::MAX);
                 record.projectile_release = Some(reader.var_b().unwrap());
@@ -384,6 +390,65 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
             record
         })
         .collect()
+}
+
+/// The shot records after channel 2's events bit (projectiles.py
+/// `shot_events`, `write_shot`): the projectile ids they start.
+fn shot_events(reader: &mut BitReader<'_>) -> Vec<u32> {
+    // 0 + `small` bits, else 1 + `middle` bits, escaped to 32 bits.
+    fn escaped(reader: &mut BitReader<'_>, small: usize, middle: usize) -> u32 {
+        if !reader.bit().unwrap() {
+            return reader.bits(small).unwrap() as u32;
+        }
+        let value = reader.bits(middle).unwrap() as u32;
+        if value == (1 << middle) - 1 {
+            reader.bits(32).unwrap() as u32
+        } else {
+            value
+        }
+    }
+    let mut ids = Vec::new();
+    let mut first = true;
+    while reader.bit().unwrap() {
+        if first {
+            reader.var_b().unwrap();
+            first = false;
+        } else if !reader.bit().unwrap() {
+            reader.bits(4).unwrap();
+        } else {
+            let wide = reader.bit().unwrap();
+            reader.bits(if wide { 32 } else { 8 }).unwrap();
+        }
+        escaped(reader, 4, 8); // the shot counter
+        assert!(!reader.bit().unwrap(), "no spread");
+        assert!(!reader.bit().unwrap(), "the volley form");
+        reader.w_u16().unwrap(); // instance
+        reader.w_u16().unwrap(); // state
+        reader.bits(6).unwrap(); // activation
+        if !reader.bit().unwrap() {
+            reader.w_u16().unwrap(); // volleys
+        }
+        assert_eq!(reader.w_u16().unwrap(), 0);
+        reader.advance(3 * 32 + 2 * 16).unwrap(); // origin, yaw and pitch
+        if !reader.bit().unwrap() {
+            continue;
+        }
+        let count = reader.w_u16().unwrap();
+        let kind = reader.bits(2).unwrap() as u32;
+        let mut id = 0x8000_0000 | kind << 29 | escaped(reader, 8, 16);
+        ids.push(id);
+        for _ in 1..count {
+            if reader.bit().unwrap() {
+                id += 1;
+            } else {
+                let negative = reader.bit().unwrap();
+                let step = escaped(reader, 4, 8);
+                id = if negative { id - step } else { id + step };
+            }
+            ids.push(id);
+        }
+    }
+    ids
 }
 
 fn input_batch(first: u32, count: u8, yaw: i16) -> Vec<u8> {
@@ -1973,6 +2038,402 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
             .find(died, |record| record.entity == target_body
                 && record.operation == Some(3))
             .is_some()
+    );
+    server.stop().unwrap();
+}
+
+/// Players (BattleTag, team, hero name) in one prepared Practice Range, once
+/// each client has every other body, its possession and, for a body that
+/// runs a statescript (Soldier: 76's), its frames. Also where each spawned.
+fn practice_players<const N: usize>(
+    players: [(&str, u8, &str); N],
+) -> (GameService, Arc<Schemas>, [Watcher; N], [[f64; 3]; N]) {
+    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use orpheus_sim::scene_assets::SceneAssets;
+
+    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let heroes = players.map(|(_, _, name)| assets.heroes().find_hero(name).unwrap().guid);
+    // match.py Player.spawn: the n-th player of a team.
+    let spawns = std::array::from_fn(|slot| {
+        let team = players[slot].1;
+        let number = players[..slot]
+            .iter()
+            .filter(|(_, other, _)| *other == team)
+            .count();
+        scene.map().spawn_point(team, number).unwrap().0
+    });
+    let schemas = Arc::new(Schemas::game());
+    let server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let members = players
+        .iter()
+        .enumerate()
+        .map(|(index, &(tag, team, _))| WorldPlayer {
+            player: MatchPlayer {
+                name: tag.into(),
+                team,
+                tournament: false,
+                ranked: false,
+            },
+            card: PlayerCard {
+                account: [index as u64 + 7, 0x0100_0000_0000_0000],
+                battle_tag: tag.into(),
+                record: Fields::from([(0x40, Value::String(tag.into()))]),
+                ..PlayerCard::default()
+            },
+            hero: 0,
+        })
+        .collect();
+    let tickets = server.open_prepared(MATCH, scene, members).unwrap();
+    let mut watchers: [Watcher; N] = tickets
+        .iter()
+        .enumerate()
+        .map(|(slot, ticket)| {
+            let mut client = Client::new(server.local_addr(), ticket);
+            client.handshake();
+            Watcher {
+                client,
+                owner: player_entity(slot),
+                tick: 0,
+                sequences: HashSet::new(),
+                datagrams: Vec::new(),
+                ticks: Vec::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap_or_else(|_| unreachable!("one client a ticket"));
+    let mut all: Vec<&mut Watcher> = watchers.iter_mut().collect();
+    pump_until(&mut all, &schemas, "the instances", |watchers| {
+        watchers.iter().all(|watcher| {
+            watcher.datagrams.iter().any(|(messages, _)| {
+                messages.iter().any(|message| {
+                    message.id == 20300 && message.fields[&0x80] != Value::Struct(Fields::new())
+                })
+            })
+        })
+    });
+    for watcher in all.iter_mut() {
+        let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+        let mut payload = BitWriter::new();
+        write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+        watcher.client.send(ACK, payload.into_bytes());
+    }
+    pump_until(&mut all, &schemas, "the controllers", |watchers| {
+        watchers.iter().all(|watcher| {
+            watcher
+                .find(0, |record| {
+                    record.entity == watcher.owner && record.script.is_some()
+                })
+                .is_some()
+        })
+    });
+    for (watcher, hero) in all.iter_mut().zip(heroes) {
+        let owner = watcher.owner;
+        send_player_message(
+            &mut watcher.client,
+            &schemas,
+            owner,
+            1,
+            PICK_HERO,
+            hero.to_le_bytes().to_vec(),
+        );
+    }
+    let owners: Vec<(u32, bool)> = all
+        .iter()
+        .zip(heroes)
+        .map(|(watcher, hero)| (watcher.owner, hero == SOLDIER))
+        .collect();
+    let sees = |watcher: &Watcher, (other, scripted): (u32, bool)| {
+        let body = other | 1;
+        watcher.created(body).is_some()
+            && watcher
+                .find(0, |record| {
+                    record.entity == other && record.operation == Some(2)
+                })
+                .is_some()
+            && (!scripted
+                || watcher
+                    .find(0, |record| record.entity == body && record.script.is_some())
+                    .is_some())
+    };
+    pump_until(&mut all, &schemas, "the other bodies", |watchers| {
+        watchers.iter().all(|watcher| {
+            owners
+                .iter()
+                .filter(|(other, _)| *other != watcher.owner)
+                .all(|&other| sees(watcher, other))
+        })
+    });
+    // The full frames' acknowledgements reach the server.
+    for _ in 0..10 {
+        for watcher in all.iter_mut() {
+            watcher.pump(&schemas);
+        }
+    }
+    (server, schemas, watchers, spawns)
+}
+
+/// Pump the clients until `done` while `player` keeps sending idle commands:
+/// his body's script runs on his commands.
+fn pump_commanding(
+    watchers: &mut [&mut Watcher],
+    schemas: &Schemas,
+    what: &str,
+    player: usize,
+    next: &mut u32,
+    done: impl Fn(&[&mut Watcher]) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !done(watchers) {
+        assert!(Instant::now() < deadline, "waiting for {what}");
+        let commander = &mut watchers[player];
+        if *next <= commander.tick + 8 {
+            commander
+                .client
+                .send(ACK, command_batch(*next, 16, 0, 0, false));
+            *next += 16;
+        }
+        for watcher in watchers.iter_mut() {
+            watcher.pump(schemas);
+        }
+    }
+}
+
+/// projectiles.py `_show_others`, `_ObservedProjectile`: another client
+/// sees a player's Helix Rocket as a server entity of its definition under
+/// the map (the room's first SEEN id), which a shot record in the shooter
+/// body's channel 2 starts once its create arrived and the client has the
+/// volley; it goes with the explosion's release when the rocket ends. The
+/// shooter's own client gets none of it.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
+fn another_client_sees_a_players_helix_rocket() {
+    use orpheus_sim::projectiles::{SEEN_FIRST, SEEN_SPAN};
+    use orpheus_wire::commands::SECONDARY;
+    const HELIX: u32 = 0x072c;
+
+    // Teammates, side by side: the rocket harms nobody.
+    let (mut server, schemas, [mut shooter, mut viewer], spawns) = practice_players([
+        ("shooter#1111", 1, "Soldier: 76"),
+        ("viewer#2222", 1, "Soldier: 76"),
+    ]);
+    let shooter_body = shooter.owner | 1;
+    // Away from the other player, level: the rocket ends on the range.
+    let [dx, _, dz] = std::array::from_fn::<_, 3, _>(|axis| spawns[1][axis] - spawns[0][axis]);
+    let away = ((-dx).atan2(-dz) * 32768.0 / std::f64::consts::PI).round() as i32 as i16;
+    let fired = viewer.datagrams.len();
+    let mut next = shooter.tick + 1;
+    shooter
+        .client
+        .send(ACK, command_batch(next, 1, away, SECONDARY, false));
+    next += 1;
+    let seen = |entity: u32| (SEEN_FIRST..SEEN_FIRST + SEEN_SPAN).contains(&entity);
+    pump_commanding(
+        &mut [&mut shooter, &mut viewer],
+        &schemas,
+        "the observed rocket's destroy",
+        0,
+        &mut next,
+        |watchers| {
+            watchers[1]
+                .find(fired, |record| {
+                    seen(record.entity) && record.operation == Some(3)
+                })
+                .is_some()
+        },
+    );
+    let created = viewer
+        .find(fired, |record| seen(record.entity) && record.is_create())
+        .expect("the rocket's create");
+    let (_, records) = &viewer.datagrams[created];
+    let create = records
+        .iter()
+        .find(|record| seen(record.entity) && record.is_create())
+        .unwrap();
+    assert_eq!(create.entity, SEEN_FIRST);
+    assert_eq!(create.definition, Some(HELIX));
+    let launched = viewer
+        .find(fired, |record| {
+            record.entity == shooter_body && record.launches == [SEEN_FIRST]
+        })
+        .expect("the shot record");
+    assert!(
+        launched > created,
+        "the launch waits for the create's arrival"
+    );
+    let destroyed = viewer
+        .find(fired, |record| {
+            record.entity == SEEN_FIRST && record.operation == Some(3)
+        })
+        .unwrap();
+    assert!(destroyed >= launched);
+    let (_, records) = &viewer.datagrams[destroyed];
+    let destroy = records
+        .iter()
+        .find(|record| record.entity == SEEN_FIRST && record.operation == Some(3))
+        .unwrap();
+    assert!(
+        destroy.projectile_release.is_some(),
+        "a launched rocket that exploded is released"
+    );
+    for (_, records) in &viewer.datagrams {
+        assert!(
+            records
+                .iter()
+                .filter(|record| !record.launches.is_empty())
+                .all(|record| record.entity == shooter_body)
+        );
+    }
+    assert!(
+        shooter
+            .find(0, |record| seen(record.entity)
+                || !record.launches.is_empty())
+            .is_none()
+    );
+    server.stop().unwrap();
+}
+
+/// projectiles.py `_field`, `_deliver_field`: Soldier: 76's Biotic Field
+/// (ABILITY_2: 0257) heals a wounded teammate standing in it, the healer's
+/// Tab board counts the healing, and every client gets the field entity
+/// (03DC.003), its frame once the create arrived, and its destroy when the
+/// field ends, FIELD_TICKS after it opened. The teammate is Tracer, whose
+/// body runs no statescript: a wounded Soldier: 76 body reaches an entity
+/// filter (0033 node 29, `STU_AC829876`) that debug builds refuse.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
+fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
+    use orpheus_content::stats::GMP_STATS;
+    use orpheus_sim::projectiles::{FIELD_FIRST, FIELD_SPAN, FIELD_TICKS};
+    use orpheus_wire::commands::FIRE;
+    /// tests/test_game_projectiles.py `ABILITY_2`: 0257 st0's button.
+    const ABILITY_2: u32 = 0x10;
+    const FIELD: u32 = 0x03dc;
+
+    // The enemy and the patient share the spawn point; the healer stands
+    // 1.5 m beside it, out of the enemy's line of fire.
+    let (mut server, schemas, [mut enemy, mut patient, mut healer], spawns) = practice_players([
+        ("enemy#1111", 0, "Soldier: 76"),
+        ("patient#2222", 1, "Tracer"),
+        ("healer#3333", 1, "Soldier: 76"),
+    ]);
+    let patient_body = patient.owner | 1;
+    let health = |watcher: &Watcher| {
+        watcher
+            .datagrams
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter(|record| record.entity == patient_body)
+            .filter_map(|record| record.base_health)
+            .next_back()
+    };
+    // The enemy wounds the patient with short bursts away from the healer.
+    let [dx, _, dz] = std::array::from_fn::<_, 3, _>(|axis| spawns[2][axis] - spawns[0][axis]);
+    let away = ((-dx).atan2(-dz) * 32768.0 / std::f64::consts::PI).round() as i32 as i16;
+    let full = 150.0;
+    let mut frame = enemy.tick + 1;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !health(&patient).is_some_and(|health| health < full) {
+        assert!(Instant::now() < deadline, "waiting for the wound");
+        if frame <= enemy.tick + 8 {
+            enemy
+                .client
+                .send(ACK, command_batch(frame, 8, away, FIRE, false));
+            frame += 8;
+        }
+        for watcher in [&mut enemy, &mut patient, &mut healer] {
+            watcher.pump(&schemas);
+        }
+    }
+    for _ in 0..20 {
+        for watcher in [&mut enemy, &mut patient, &mut healer] {
+            watcher.pump(&schemas);
+        }
+    }
+    let wounded = health(&patient).unwrap();
+    assert!(wounded < full && wounded > 0.0, "wounded to {wounded}");
+
+    let cast = [&enemy, &patient, &healer].map(|watcher| watcher.datagrams.len());
+    let mut next = healer.tick + 1;
+    healer
+        .client
+        .send(ACK, command_batch(next, 1, 0, ABILITY_2, false));
+    next += 1;
+    let field =
+        |record: &WorldRecord| (FIELD_FIRST..FIELD_FIRST + FIELD_SPAN).contains(&record.entity);
+    let created = |watcher: &Watcher, from: usize| -> Vec<u32> {
+        watcher.datagrams[from..]
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter(|record| field(record) && record.is_create())
+            .map(|record| record.entity)
+            .collect()
+    };
+    let destroyed = |watcher: &Watcher, entity: u32| {
+        watcher
+            .find(0, |record| {
+                record.entity == entity && record.operation == Some(3)
+            })
+            .is_some()
+    };
+    pump_commanding(
+        &mut [&mut enemy, &mut patient, &mut healer],
+        &schemas,
+        "the fields' destroys",
+        2,
+        &mut next,
+        |watchers| {
+            watchers.iter().zip(cast).all(|(watcher, from)| {
+                let fields = created(watcher, from);
+                !fields.is_empty() && fields.iter().all(|&entity| destroyed(watcher, entity))
+            })
+        },
+    );
+    for (watcher, from) in [(&enemy, cast[0]), (&patient, cast[1]), (&healer, cast[2])] {
+        let fields = created(watcher, from);
+        if watcher.owner != healer.owner {
+            assert_eq!(fields.len(), 1, "another client's field, at the feet");
+        }
+        for entity in fields {
+            let create = watcher
+                .find(from, |record| record.entity == entity && record.is_create())
+                .unwrap();
+            let (_, records) = &watcher.datagrams[create];
+            let record = records
+                .iter()
+                .find(|record| record.entity == entity && record.is_create())
+                .unwrap();
+            assert_eq!(record.definition, Some(FIELD));
+            let frame = watcher
+                .find(create, |record| {
+                    record.entity == entity && record.script.is_some()
+                })
+                .expect("the field's frame");
+            assert!(frame > create, "its frame follows the create's arrival");
+            let gone = watcher
+                .find(create, |record| {
+                    record.entity == entity && record.operation == Some(3)
+                })
+                .unwrap();
+            if watcher.owner != healer.owner {
+                let lived = watcher.ticks[gone] - watcher.ticks[create];
+                assert!(
+                    (FIELD_TICKS - 4..=FIELD_TICKS + 30).contains(&lived),
+                    "the field lived {lived} ticks"
+                );
+            }
+        }
+    }
+    let healed = health(&patient).unwrap();
+    assert!(healed > wounded, "healed from {wounded} to {healed}");
+    assert!(
+        healer
+            .find(cast[2], |record| {
+                record.entity == healer.owner && record.updated == Some(GMP_STATS)
+            })
+            .is_some(),
+        "the healing reaches the healer's board"
     );
     server.stop().unwrap();
 }

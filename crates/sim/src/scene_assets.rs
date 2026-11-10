@@ -19,6 +19,7 @@ use crate::{
     bots::{Bot, BotCatalog, BotWalk},
     controller::Controller,
     pools::PoolCatalog,
+    projectiles::FieldFrames,
     replication::OwnerBodyRuntime,
     scene::{PlayerAppearance, initial_world, mode_ui},
 };
@@ -109,6 +110,9 @@ pub struct PreparedScene {
     pools: Arc<PoolCatalog>,
     stats: Arc<StatsCatalog>,
     pub owner_body_factory: Option<Arc<OwnerBodyFactory>>,
+    /// The Biotic Field's frames (projectiles.py `field_frame`); without
+    /// them no field is shown.
+    field_frames: Option<Arc<FieldFrames>>,
 }
 
 impl SceneAssets {
@@ -209,6 +213,13 @@ impl SceneAssets {
         let initial_board =
             self.stats
                 .component(&PlayerStats::default(), map.mode_guid, None, None);
+        let field_frames = match &self.codecs {
+            Some(codecs) => FieldFrames::new(&self.graphs, codecs)
+                .map(Arc::new)
+                .map_err(|error| eprintln!("the Biotic Field has no frames ({error})"))
+                .ok(),
+            None => None,
+        };
         let mut scene = PreparedScene {
             map,
             ground,
@@ -224,6 +235,7 @@ impl SceneAssets {
             pools: Arc::clone(&self.pools),
             stats: Arc::clone(&self.stats),
             owner_body_factory: None,
+            field_frames,
         };
         if scripted_bots == 0 {
             let mut factories = self
@@ -416,6 +428,11 @@ impl PreparedScene {
     /// The Tab board catalog (stats.py).
     pub fn stats(&self) -> &StatsCatalog {
         &self.stats
+    }
+
+    /// The Biotic Field's frames, before and after its fade.
+    pub(crate) fn field_frames(&self) -> Option<&Arc<FieldFrames>> {
+        self.field_frames.as_ref()
     }
 
     /// A player's body as a target (combat.py `_targets`): a capsule from

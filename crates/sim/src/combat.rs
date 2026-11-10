@@ -15,6 +15,7 @@ use crate::{
     bots::{BOT_ENTITY, BOT_RECORD_DELAY, BOT_RESPAWN_TIME, Bot},
     hitscan::{HitscanShot, Impact, TargetHistory, TargetPose, ViewFrame},
     projectile_flight::{FlightEnd, ProjectileFlight},
+    projectiles::{FieldDeliver, FieldIds, FiredProjectile, ProjectileEvent, SeenIds, ShotKey},
     replication::WorldDelivery,
     scene::bot_create,
     scene_assets::PreparedScene,
@@ -50,6 +51,9 @@ pub const RESPAWN_RETRY: Duration = Duration::from_millis(250);
 /// The match's deferred messages between bodies per tick (match.py
 /// `MAX_BODY_MESSAGES`).
 pub const MAX_BODY_MESSAGES: usize = 256;
+/// At most about a second of retained combat frames per update (combat.py
+/// `COMBAT_CATCH_UP`).
+pub const COMBAT_CATCH_UP: u32 = 64;
 /// The movement-state flag of a dead body: the 3P animation's dead pose
 /// (combat.py `DEAD`).
 pub const DEAD: u32 = 0x2000;
@@ -143,6 +147,9 @@ pub struct PosedProjectile {
     pub spawn: Option<u64>,
     /// The shooter's feet when it fired (projectiles.py `Shot.where`).
     pub feet: [f64; 3],
+    /// The volley state's count of volleys, as the other clients' shot
+    /// record names it (projectiles.py `_show_others`: `state.volleys`).
+    pub volleys: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -240,6 +247,12 @@ pub struct Combat {
     rockets: Vec<BotRocket>,
     player_hits: Vec<PlayerHit>,
     next_bot: u32,
+    /// The last update's tick (combat.py `Combat.tick`).
+    tick: u32,
+    /// The ids of the projectiles the other clients see and of the Biotic
+    /// Fields (projectiles.py `Projectiles.next_seen`, `next_field`).
+    seen_ids: SeenIds,
+    field_ids: FieldIds,
 }
 
 impl Combat {
@@ -254,7 +267,22 @@ impl Combat {
             rockets: Vec::new(),
             player_hits: Vec::new(),
             next_bot: BOT_ENTITY + scene.bots().len() as u32,
+            tick: 0,
+            seen_ids: SeenIds::new(),
+            field_ids: FieldIds::default(),
         }
+    }
+
+    /// combat.py `update`'s retained frames: the first combat frame this
+    /// update at `tick` covers, at most COMBAT_CATCH_UP of them after the
+    /// last update's.
+    pub fn catch_up(&mut self, tick: u32) -> u32 {
+        let first = self
+            .tick
+            .saturating_add(1)
+            .max(tick.saturating_sub(COMBAT_CATCH_UP - 1));
+        self.tick = tick;
+        first
     }
 
     /// Keep where every body was this tick (combat.py `update`'s history):
@@ -846,14 +874,21 @@ pub fn heal_players(
     }
 }
 
-/// match.py `deliver_body_messages`: the messages the players' bodies sent
-/// go to the bodies they name, in the room, at most MAX_BODY_MESSAGES a
-/// tick. A message a body sends while it takes one goes in the next batch.
+/// match.py `queue_body_message` and `deliver_body_messages`: the messages
+/// the players' bodies sent go to the bodies they name in the room, at most
+/// MAX_BODY_MESSAGES a tick; a message to a body nobody plays takes no place
+/// in the queue. A message a body sends while it takes one goes in the next
+/// batch.
 pub fn deliver_body_messages(worlds: &mut [&mut WorldDelivery]) {
-    let messages: Vec<_> = worlds
+    let mut messages: Vec<_> = worlds
         .iter_mut()
         .flat_map(|world| world.take_body_messages())
         .collect();
+    messages.retain(|message| {
+        worlds
+            .iter()
+            .any(|world| world.takes_body_message(message.target))
+    });
     if messages.len() > MAX_BODY_MESSAGES {
         eprintln!(
             "match body message queue reached {MAX_BODY_MESSAGES}; {} dropped",
@@ -867,6 +902,121 @@ pub fn deliver_body_messages(worlds: &mut [&mut WorldDelivery]) {
             }
         }
     }
+}
+
+/// A Biotic Field's heal this tick (projectiles.py `_field`: `heal_area`):
+/// the healer's index among the room's worlds, his body, the heal sphere's
+/// centre and the amount.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FieldHeal {
+    pub slot: usize,
+    pub source: u32,
+    pub centre: Vec3,
+    pub amount: f64,
+}
+
+/// projectiles.py `_show_others` for the projectiles a player fired: every
+/// other client of the room that has his body's statescript gets its own
+/// copy, numbered from the room's `next_seen`, in slot order. `worlds` are
+/// the room's, by slot.
+pub fn show_fired(
+    combat: &mut Combat,
+    fired: &[FiredProjectile],
+    worlds: &mut [Option<&mut WorldDelivery>],
+    tick: u32,
+) {
+    for projectile in fired {
+        for world in worlds.iter_mut().flatten() {
+            world.show_projectile(projectile, tick, || combat.seen_ids.next());
+        }
+    }
+}
+
+/// projectiles.py `Projectiles.update` for a room, once every player's
+/// shots stepped (`WorldDelivery::advance_projectiles`), by slot: an ended
+/// shot finishes its copies on the other clients (`_end`); a field's heal
+/// comes back for the match; its frames go again when it fades; every
+/// client in the world gets its entity once (`_deliver_field`: the owner's
+/// parented to each of his canisters that arrived, the others' at the
+/// shooter's feet); the fields whose shot no longer runs go (`_end`); then
+/// each client's copies of the others' projectiles advance
+/// (`_ObservedProjectile.advance`).
+pub fn deliver_projectiles(
+    scene: &PreparedScene,
+    combat: &mut Combat,
+    worlds: &mut [Option<&mut WorldDelivery>],
+    tick: u32,
+) -> Vec<FieldHeal> {
+    let live: Vec<ShotKey> = worlds
+        .iter()
+        .flatten()
+        .flat_map(|world| world.live_fields())
+        .collect();
+    let mut events = Vec::new();
+    for (slot, world) in worlds.iter_mut().enumerate() {
+        if let Some(world) = world {
+            let (owner, skin) = (world.owner(), world.skin());
+            events.extend(
+                world
+                    .take_projectile_events()
+                    .into_iter()
+                    .map(|(body, event)| (slot, owner, skin, body, event)),
+            );
+        }
+    }
+    let mut heals = Vec::new();
+    for (slot, owner, skin, body, event) in events {
+        match event {
+            ProjectileEvent::Ended { token, explode } => {
+                for world in worlds.iter_mut().flatten() {
+                    world.finish_projectile(body, token, tick, explode);
+                }
+            }
+            ProjectileEvent::FieldHeal { centre, amount, .. } => heals.push(FieldHeal {
+                slot,
+                source: body.entity,
+                centre,
+                amount,
+            }),
+            ProjectileEvent::FieldFaded { token } => {
+                for world in worlds.iter_mut().flatten() {
+                    world.fade_field((body, token));
+                }
+            }
+            ProjectileEvent::FieldDeliver {
+                token,
+                feet,
+                parents,
+                faded,
+            } => {
+                let Some(frames) = scene.field_frames() else {
+                    continue;
+                };
+                let canisters: Vec<_> = parents.into_iter().map(Some).collect();
+                for world in worlds.iter_mut().flatten() {
+                    let parents: &[Option<u32>] = if world.owner() == owner {
+                        &canisters
+                    } else {
+                        &[None]
+                    };
+                    let field = FieldDeliver {
+                        shot: (body, token),
+                        parents,
+                        feet,
+                        skin,
+                        faded,
+                        frames,
+                    };
+                    world.deliver_field(&field, &mut combat.field_ids);
+                }
+            }
+        }
+    }
+    for world in worlds.iter_mut().flatten() {
+        world.end_fields(&live);
+        world.advance_observed(tick);
+    }
+    heals
 }
 
 fn eligible_bot(bot: &Bot, shooter: Shooter, free_for_all: bool) -> bool {

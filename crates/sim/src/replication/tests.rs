@@ -562,7 +562,7 @@ fn projectile_retirement_retries_destroys_and_ignores_stale_confirmations() {
             125,
         )
         .unwrap();
-    let confirmation = projectiles.advance(133);
+    let confirmation = projectiles.advance(133, 133);
     world.body_script.as_mut().unwrap().projectiles = Some(projectiles);
     world.queue_projectiles(id, confirmation).unwrap();
     let old = Arc::clone(&world.queued[0]);
@@ -1068,4 +1068,205 @@ fn ring_reuses_only_acknowledged_destroy_after_the_retention_window() {
         None
     );
     assert_eq!(world.next_body(BODY_REUSE_DELAY), Some(target.entity));
+}
+
+/// A started client whose current body runs `runtime`.
+fn scripted_world(owner: u32, id: BodyId, runtime: Box<dyn OwnerBodyRuntime>) -> WorldDelivery {
+    let mut world = WorldDelivery::new(owner);
+    world.started = Some(100);
+    world.body = Some(body(id));
+    world.body_script = Some(BodyScript::new(body(id), 100, runtime).unwrap());
+    world
+}
+
+/// match.py `deliver_body_messages`: a message one body's script sends
+/// another (SendGameMessage) runs the other body's entries for it, with its
+/// parameters; the sender takes nothing of it, and it goes once.
+#[test]
+fn a_body_message_runs_the_named_bodys_entries() {
+    use crate::{
+        body_script::{fixture_body_factory, fixture_graph_factory},
+        combat::deliver_body_messages,
+    };
+    use orpheus_script::wire::Value;
+    use serde_json::{Value as Json, json};
+
+    const RECEIVER: u32 = 0xa000_0200;
+    let message = "0x0240000000000005";
+    let parameter = "0x0D80000000000007";
+    let var = |id: u32, entity: bool| json!({"$":"STUConfigVarDynamic","m_identifier":id,"m_60DB8F99":entity});
+    let node = |pos: u16, class: &str, fields: Json| {
+        let mut fields = fields;
+        fields["m_2BBEEAB8"] = json!(false);
+        fields["m_ADEB6E05"] = json!(class.contains("Action"));
+        json!({"pos":pos,"class":class,"uid":pos,"rid":pos,"remote":-1,"state":null,
+            "client_only":false,"server_only":false,"fields":fields})
+    };
+    let graph = |nodes: Vec<Json>| {
+        json!({
+            "index":42,"items":nodes.len(),"nodes":nodes,"states":[],"entries":[0],
+            "remote":[],"sync_vars":[],"containers":{},"unknown_nodes":[],"fields":{},
+            "header":{"m_nodesBitCount":4,"m_statesBitCount":4,
+                "m_remoteSyncNodesBitCount":4,"m_syncVarsBitCount":4}
+        })
+    };
+    // The sender's entry sends the message to the body in its #90.
+    let sender = graph(vec![
+        node(
+            0,
+            "STUStatescriptEntry",
+            json!({"m_outPlug":{"$":"Plug","links":[[1,"m_inPlug"]],"m_FF3DAF1E":[]}}),
+        ),
+        node(
+            1,
+            "STUStatescriptActionSendGameMessage",
+            json!({
+                "m_gameMessage":{"m_gameMessage":message},
+                "m_target":var(90, true),
+                "m_params":[{"m_B5051BCE":parameter,
+                    "m_value":{"$":"STUConfigVarInt","m_value":9}}],
+            }),
+        ),
+    ]);
+    // The receiver's entry for it keeps the parameter in its #100.
+    let receiver = graph(vec![node(
+        0,
+        "STUStatescriptEntryGameMessage",
+        json!({
+            "m_gameMessage":{"m_gameMessage":message},
+            "m_params":[{"m_B5051BCE":parameter,"m_out_Var":var(100, false)}],
+        }),
+    )]);
+    let (_, spawn) = fixture_body_factory();
+    let (sending, receiving) = (
+        avatar(1, 1),
+        BodyId {
+            entity: RECEIVER | 1,
+            generation: 1,
+        },
+    );
+    let sender = fixture_graph_factory(
+        sender,
+        Variables::from([(90, Value::Entity(receiving.entity))]),
+    )
+    .start(spawn)
+    .unwrap();
+    let receiver = fixture_graph_factory(receiver, Variables::new())
+        .start(OwnerBodySpawn {
+            controller: RECEIVER,
+            entity: receiving.entity,
+            ..spawn
+        })
+        .unwrap();
+    let mut a = scripted_world(OWNER, sending, Box::new(sender));
+    let mut b = scripted_world(RECEIVER, receiving, Box::new(receiver));
+    let taken = |world: &WorldDelivery| {
+        world
+            .body_script
+            .as_ref()
+            .unwrap()
+            .runtime
+            .snapshot()
+            .unwrap()
+            .instances[&1]
+            .variables
+            .get(&100)
+            .cloned()
+    };
+    assert_eq!(taken(&b), None);
+    deliver_body_messages(&mut [&mut a, &mut b]);
+    assert_eq!(taken(&b), Some(Value::Integer(9)));
+    assert_eq!(taken(&a), None);
+    assert!(a.take_body_messages().is_empty(), "it went once");
+}
+
+/// A body whose script only sends and takes messages.
+struct Mailbox {
+    owner: SyntheticOwner,
+    outbox: Vec<GameMessage>,
+    inbox: Arc<Mutex<Vec<u64>>>,
+}
+
+impl OwnerBodyRuntime for Mailbox {
+    fn snapshot(&self) -> Option<&Snapshot> {
+        self.owner.snapshot()
+    }
+
+    fn encoder(&self) -> SnapshotEncoder<'_> {
+        self.owner.encoder()
+    }
+
+    fn advance(&mut self, command: Command, mover: &Mover, step: BodyStep) -> io::Result<()> {
+        self.owner.advance(command, mover, step)
+    }
+
+    fn frame_ms(&self) -> u32 {
+        self.owner.frame_ms()
+    }
+
+    fn receive_message(&mut self, message: u64, _parameters: Variables) -> io::Result<usize> {
+        self.inbox.lock().unwrap().push(message);
+        Ok(1)
+    }
+
+    fn take_messages(&mut self) -> Vec<GameMessage> {
+        std::mem::take(&mut self.outbox)
+    }
+}
+
+/// match.py `queue_body_message`: a message to an entity no player's body
+/// is goes nowhere and takes no place in the match's queue, which holds
+/// MAX_BODY_MESSAGES a tick; the first ones go, in order.
+#[test]
+fn body_messages_to_unknown_entities_go_nowhere_and_the_rest_are_capped() {
+    use crate::combat::{MAX_BODY_MESSAGES, deliver_body_messages};
+
+    const RECEIVER: u32 = 0xa000_0200;
+    const NOBODY: u32 = 0xa000_0901;
+    let (sending, receiving) = (
+        avatar(1, 1),
+        BodyId {
+            entity: RECEIVER | 1,
+            generation: 1,
+        },
+    );
+    let mail = |target, message| GameMessage {
+        sender: sending.entity,
+        target,
+        message,
+        parameters: Variables::new(),
+    };
+    let mut outbox = Vec::new();
+    for message in 0..300 {
+        outbox.push(mail(NOBODY, 1000 + message));
+        outbox.push(mail(receiving.entity, message));
+    }
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let mut a = scripted_world(
+        OWNER,
+        sending,
+        Box::new(Mailbox {
+            owner: synthetic_owner(sending.entity, 100, Arc::default()),
+            outbox,
+            inbox: Arc::clone(&sent),
+        }),
+    );
+    let mut b = scripted_world(
+        RECEIVER,
+        receiving,
+        Box::new(Mailbox {
+            owner: synthetic_owner(receiving.entity, 100, Arc::default()),
+            outbox: Vec::new(),
+            inbox: Arc::clone(&received),
+        }),
+    );
+    deliver_body_messages(&mut [&mut a, &mut b]);
+    assert_eq!(
+        *received.lock().unwrap(),
+        (0..MAX_BODY_MESSAGES as u64).collect::<Vec<_>>()
+    );
+    assert!(sent.lock().unwrap().is_empty());
+    deliver_body_messages(&mut [&mut a, &mut b]);
+    assert_eq!(received.lock().unwrap().len(), MAX_BODY_MESSAGES);
 }

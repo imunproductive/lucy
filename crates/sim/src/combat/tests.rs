@@ -201,6 +201,9 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
         rockets: Vec::new(),
         player_hits: Vec::new(),
         next_bot: BOT_ENTITY,
+        tick: 0,
+        seen_ids: SeenIds::new(),
+        field_ids: FieldIds::default(),
     };
     let bodies = |free_for_all| -> Vec<u32> {
         combat

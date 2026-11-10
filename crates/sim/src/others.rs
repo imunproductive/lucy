@@ -27,6 +27,9 @@ use crate::{
     body::{BodyCreate, BodyView, body_create, remote_movement},
     notices::{Switch, card_message, card_record, joined_message, left_message},
     pools::PoolCatalog,
+    projectiles::{
+        DELIVERY_GRACE, FiredProjectile, ObservedOut, ObservedProjectile, ProjectileToken,
+    },
     replication::{BODY_REUSE_DELAY, BodyId, Lifetime, kill_feed_fresh},
     scene::{PlayerAppearance, PlayerCard, Possession, player_create, player_team_bit},
 };
@@ -260,6 +263,18 @@ pub(crate) enum OtherDelivery {
         body: BodyId,
         revision: u64,
     },
+    /// Another player's projectile on this client (projectiles.py
+    /// `_ObservedProjectile`): its create and the shooter's shot record,
+    /// current while the delivery lives; its destroy until it arrived.
+    SeenCreate {
+        serial: u64,
+    },
+    SeenLaunch {
+        serial: u64,
+    },
+    SeenDestroy {
+        serial: u64,
+    },
 }
 
 /// Another player's controller entity on this client (match.py ShownController).
@@ -311,6 +326,19 @@ pub(crate) struct Others {
     serial: u64,
     /// This send tick's movement records of the other bodies.
     movements: Vec<EntityUpdate>,
+    /// The other players' projectiles this client is shown, in the order
+    /// they were fired.
+    observed: Vec<Observed>,
+    /// Projectile entities whose destroy has not arrived, by its serial.
+    observed_destroys: HashMap<u32, u64>,
+}
+
+/// One projectile of another player's body on this client.
+struct Observed {
+    serial: u64,
+    body: BodyId,
+    token: ProjectileToken,
+    projectile: ObservedProjectile,
 }
 
 impl Others {
@@ -366,7 +394,26 @@ impl Others {
             OtherDelivery::Health { body, revision } => {
                 seen(body, Lifetime::Live) && self.seen[&body.entity].health == revision
             }
+            OtherDelivery::SeenCreate { serial } => self.observed(serial).is_some(),
+            OtherDelivery::SeenLaunch { serial } => self
+                .observed(serial)
+                .is_some_and(|observed| seen(observed.body, Lifetime::Live)),
+            OtherDelivery::SeenDestroy { serial } => {
+                self.observed_destroys.get(&entity) == Some(&serial)
+            }
         }
+    }
+
+    fn observed(&self, serial: u64) -> Option<&Observed> {
+        self.observed
+            .iter()
+            .find(|observed| observed.serial == serial)
+    }
+
+    fn observed_mut(&mut self, serial: u64) -> Option<&mut Observed> {
+        self.observed
+            .iter_mut()
+            .find(|observed| observed.serial == serial)
     }
 
     /// A body's statescript chunk goes once its create arrived.
@@ -443,6 +490,19 @@ impl Others {
                 }
             }
             OtherDelivery::Script { .. } | OtherDelivery::Health { .. } => {}
+            OtherDelivery::SeenCreate { serial } => {
+                if let Some(observed) = self.observed_mut(serial) {
+                    observed.projectile.creation_arrived();
+                }
+            }
+            OtherDelivery::SeenLaunch { serial } => {
+                if let Some(observed) = self.observed_mut(serial) {
+                    observed.projectile.launch_arrived();
+                }
+            }
+            OtherDelivery::SeenDestroy { .. } => {
+                self.observed_destroys.remove(&entity);
+            }
             OtherDelivery::Body(id) => {
                 if let Some(seen) = self.seen.get_mut(&id.entity) {
                     seen.arrived = true;
@@ -482,6 +542,131 @@ impl Others {
             .filter(|seen| seen.id == body && seen.lifetime == Lifetime::Live)?
             .watch
             .as_mut()
+    }
+
+    /// The body's statescript on this client once it acknowledged the
+    /// stream's first frame (observers.py `projectile_stream` for a
+    /// player's body: `acknowledged_stream`): the source its projectiles'
+    /// launches need.
+    fn projectile_stream(&self, body: BodyId) -> Option<&BodyStream<ProjectedSnapshot>> {
+        let seen = self
+            .seen
+            .get(&body.entity)
+            .filter(|seen| seen.id == body && seen.lifetime == Lifetime::Live && seen.sent)?;
+        let stream = &seen.watch.as_ref()?.stream;
+        stream.base().is_some().then_some(stream)
+    }
+
+    /// projectiles.py `_show_others` for this client: when it has the
+    /// shooter's statescript, an entity of the projectile's definition
+    /// under the map, named by `next_id` (`Projectiles.next_seen`), whose
+    /// launch follows in the shooter's channel 2. Its delivery ends by the
+    /// shot's bound and DELIVERY_GRACE.
+    pub(crate) fn show_projectile(
+        &mut self,
+        fired: &FiredProjectile,
+        tick: u32,
+        next_id: impl FnOnce() -> u32,
+    ) -> Vec<(EntityUpdate, OtherDelivery)> {
+        let Some(stream) = self.projectile_stream(fired.body) else {
+            return Vec::new(); // the client has no statescript stream for this body
+        };
+        let has_base = stream.base().is_some();
+        let entity = next_id();
+        let deadline = tick
+            .saturating_add(fired.bound)
+            .saturating_add(DELIVERY_GRACE);
+        let Ok(mut projectile) = ObservedProjectile::new(
+            fired.body.entity,
+            entity,
+            fired.definition,
+            &fired.shot,
+            fired.volleys,
+            fired.origin.map(|value| value as f32),
+            fired.direction,
+            deadline,
+        ) else {
+            return Vec::new();
+        };
+        let serial = self.next_serial();
+        let create = projectile.open(has_base);
+        self.observed.push(Observed {
+            serial,
+            body: fired.body,
+            token: fired.token,
+            projectile,
+        });
+        create
+            .into_iter()
+            .filter_map(|out| match out {
+                ObservedOut::Create(update) => Some((update, OtherDelivery::SeenCreate { serial })),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The shooter's shot ended (projectiles.py `_end`:
+    /// `_ObservedProjectile.finish`).
+    pub(crate) fn finish_projectile(
+        &mut self,
+        body: BodyId,
+        token: ProjectileToken,
+        tick: u32,
+        explode: bool,
+    ) {
+        for observed in self
+            .observed
+            .iter_mut()
+            .filter(|observed| observed.body == body && observed.token == token)
+        {
+            observed.projectile.finish(tick, explode, false);
+        }
+    }
+
+    /// `_ObservedProjectile.advance` for this client's projectiles, in the
+    /// order they were fired: the create once the shooter's stream has a
+    /// baseline, the launch once the create arrived and the acknowledged
+    /// baseline holds the volley; the destroy (with the release after an
+    /// explosion it launched) when the shot ended, its source went or its
+    /// deadline passed.
+    pub(crate) fn advance_projectiles(&mut self, tick: u32) -> Vec<(EntityUpdate, OtherDelivery)> {
+        let mut records = Vec::new();
+        let mut observed = mem::take(&mut self.observed);
+        let mut done = HashSet::new();
+        for item in &mut observed {
+            let stream = self.projectile_stream(item.body);
+            let base = stream
+                .and_then(|stream| stream.base())
+                .map(|(_, base)| base);
+            let volley = base.is_some_and(|base| item.projectile.volley_arrived(base));
+            let outs = item
+                .projectile
+                .advance(tick, stream.is_some(), base.is_some(), volley);
+            let serial = item.serial;
+            for out in outs {
+                match out {
+                    ObservedOut::Create(update) => {
+                        records.push((update, OtherDelivery::SeenCreate { serial }));
+                    }
+                    ObservedOut::Launch(update) => {
+                        records.push((update, OtherDelivery::SeenLaunch { serial }));
+                    }
+                    // Dropping the delivery below withdraws the queued launch
+                    // (`cancel_entity_record`).
+                    ObservedOut::CancelLaunch => {}
+                    ObservedOut::Destroy(update) => {
+                        self.observed_destroys.insert(update.entity, serial);
+                        records.push((update, OtherDelivery::SeenDestroy { serial }));
+                    }
+                    ObservedOut::Done => {
+                        done.insert(serial);
+                    }
+                }
+            }
+        }
+        observed.retain(|item| !done.contains(&item.serial));
+        self.observed = observed;
+        records
     }
 
     fn next_serial(&mut self) -> u64 {
@@ -1057,6 +1242,9 @@ mod tests {
                     OtherDelivery::BodyDestroy(_) => "body destroy",
                     OtherDelivery::Script { .. } => "script",
                     OtherDelivery::Health { .. } => "health",
+                    OtherDelivery::SeenCreate { .. } => "projectile",
+                    OtherDelivery::SeenLaunch { .. } => "launch",
+                    OtherDelivery::SeenDestroy { .. } => "projectile destroy",
                 };
                 (update.entity, kind)
             })

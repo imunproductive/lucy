@@ -658,6 +658,178 @@ fn unsupported_projectile_modes_do_not_become_hitscan_or_straight_damage() {
     }
 }
 
+/// projectiles.py `fired`: a volley whose projectile leaves an entity names
+/// it as the shot's spawn, and the Biotic Field canister flies despite its
+/// arc (combat.py `_shoot` flies it straight). The shot carries the volley
+/// state's count of volleys for the other clients' shot record.
+#[test]
+fn a_spawning_canister_flies_despite_its_arc_and_names_its_field() {
+    use crate::projectiles::FIELD_ENTITY;
+    use serde_json::json;
+
+    let (_, spawn) = fixture_body_factory();
+    let mover = Mover::new(
+        MoverSettings::default(),
+        Arc::new(ContactWorld::new(Vec::new()).unwrap()),
+        spawn.pose.position,
+        0,
+        0x18,
+    )
+    .unwrap();
+    let fire = Command {
+        frame: spawn.frame + 1,
+        buttons: orpheus_wire::commands::SECONDARY,
+        ..Command::default()
+    };
+    let mut fields = fixture_projectile_fields(0.0);
+    fields["m_projectileMotions"] = json!([{"$":"STU_E1A5B579"}]);
+    fields["m_49CBA3BC"] = json!({"$":"STU_78BF9026","m_entityDefinition":{
+        "$":"STU_8556841E","m_resourceKey":null,
+        "m_entityDef":format!("0x{FIELD_ENTITY:016X}")}});
+    let mut runtime = fixture_volley_factory(29, true, fields)
+        .start(spawn)
+        .unwrap();
+    runtime.advance(fire, &mover, BodyStep::Posed).unwrap();
+    let shots = runtime.take_shots(Some(fire), &mover);
+    let [PosedShot::Projectile(canister)] = shots.as_slice() else {
+        panic!("expected the canister");
+    };
+    assert_eq!(canister.spawn, Some(FIELD_ENTITY));
+    assert_eq!(canister.feet, spawn.pose.position);
+    assert_eq!(canister.volleys, 1);
+}
+
+/// A body whose entries set the ultimate's cost (#338) and whose ultimate
+/// ability, when `ability`, starts on the charge (#342 in its m_150F0D92).
+fn ultimate_factory(ability: bool) -> PlayerBodyFactory {
+    use orpheus_script::ultimate::{ULT_CHARGE, ULT_COST};
+    use serde_json::json;
+
+    let var = |id: u32| json!({"$":"STUConfigVarDynamic","m_identifier":id,"m_60DB8F99":true});
+    let mut links = vec![json!([1, "m_inPlug"])];
+    let mut nodes = vec![
+        json!({"pos":0,"class":"STUStatescriptEntry","uid":0,"rid":0,"remote":-1,
+            "state":null,"client_only":false,"server_only":false,"fields":{
+            "m_2BBEEAB8":false,"m_ADEB6E05":false}}),
+        json!({"pos":1,"class":"STUStatescriptActionSetVar","uid":1,"rid":1,"remote":-1,
+            "state":null,"client_only":false,"server_only":false,"fields":{
+            "m_2BBEEAB8":false,"m_ADEB6E05":true,"m_out_Var":var(ULT_COST),
+            "m_value":{"$":"STUConfigVarFloat","m_value":100.0}}}),
+    ];
+    if ability {
+        links.push(json!([2, "m_beginPlug"]));
+        nodes.push(
+            json!({"pos":2,"class":"STUStatescriptStateAbility","uid":2,"rid":2,"remote":-1,
+            "state":0,"client_only":false,"server_only":true,"fields":{
+            "m_2BBEEAB8":true,"m_ADEB6E05":false,"m_150F0D92":var(ULT_CHARGE)}}),
+        );
+    }
+    nodes[0]["fields"]["m_outPlug"] = json!({"$":"Plug","links":links,"m_FF3DAF1E":[]});
+    let states = if ability { json!([2]) } else { json!([]) };
+    fixture_graph_factory(
+        json!({
+            "index":42,"items":nodes.len(),"nodes":nodes,"states":states,"entries":[0],
+            "remote":[],"sync_vars":[],"containers":{},"unknown_nodes":[],"fields":{},
+            "header":{"m_nodesBitCount":4,"m_statesBitCount":4,
+                "m_remoteSyncNodesBitCount":4,"m_syncVarsBitCount":4}
+        }),
+        Variables::new(),
+    )
+}
+
+/// driver.py `BodyScript._charge_ult`: after every command frame the body
+/// runs, the ultimate's charge (#342) rises by its cost (#338, from the
+/// entries) * 16 ms / ULT_SECONDS, in f32 steps; a timer frame charges
+/// nothing, and neither does any frame while an ability that starts on the
+/// charge (its m_150F0D92 reads #342) runs.
+#[test]
+fn the_ultimate_charges_on_command_frames_until_its_ability_runs() {
+    use orpheus_script::ultimate::ULT_CHARGE;
+
+    let (_, spawn) = fixture_body_factory();
+    let mover = Mover::new(
+        MoverSettings::default(),
+        Arc::new(ContactWorld::new(Vec::new()).unwrap()),
+        spawn.pose.position,
+        0,
+        0x18,
+    )
+    .unwrap();
+    let step = (100.0 * 16.0 / (1000.0 * ULT_SECONDS)) as f32;
+    let next = |charge: f64| f64::from((charge + f64::from(step)) as f32);
+    let charge = |runtime: &PlayerBodyRuntime| {
+        runtime
+            .snapshot()
+            .unwrap()
+            .variables
+            .get(&ULT_CHARGE)
+            .cloned()
+    };
+    let command = |frame| Command {
+        frame,
+        ..Command::default()
+    };
+
+    let mut runtime = ultimate_factory(false).start(spawn).unwrap();
+    assert_eq!(
+        charge(&runtime),
+        Some(Value::Float(0.0)),
+        "no charge before a command frame"
+    );
+    let mut expected = 0.0;
+    for frame in spawn.frame + 1..=spawn.frame + 3 {
+        runtime
+            .advance(command(frame), &mover, BodyStep::Posed)
+            .unwrap();
+        expected = next(expected);
+        assert_eq!(
+            charge(&runtime),
+            Some(Value::Float(expected)),
+            "frame {frame}"
+        );
+    }
+    let timer = spawn.frame + 10;
+    runtime
+        .advance(command(timer), &mover, BodyStep::UnposedTimer)
+        .unwrap();
+    assert_eq!(
+        charge(&runtime),
+        Some(Value::Float(expected)),
+        "timer frame"
+    );
+    runtime
+        .advance(command(timer + 1), &mover, BodyStep::UnposedBoundary)
+        .unwrap();
+    expected = next(expected);
+    assert_eq!(
+        charge(&runtime),
+        Some(Value::Float(expected)),
+        "neutral frame"
+    );
+
+    // The first charge starts the ability at its next tick; it runs, and
+    // the charge waits.
+    let mut runtime = ultimate_factory(true).start(spawn).unwrap();
+    let first = spawn.frame + 1;
+    runtime
+        .advance(command(first), &mover, BodyStep::Posed)
+        .unwrap();
+    let charged = Some(Value::Float(next(0.0)));
+    assert_eq!(charge(&runtime), charged);
+    for frame in first + 1..=first + 3 {
+        runtime
+            .advance(command(frame), &mover, BodyStep::Posed)
+            .unwrap();
+        let kind = runtime.snapshot().unwrap().instances[&1].states[&0].kind;
+        // ultimate.rs `ABILITY_RUNNING`.
+        assert!(
+            matches!(kind, StateKind::Ability { flags } if flags & 1 != 0),
+            "frame {frame}: {kind:?}"
+        );
+        assert_eq!(charge(&runtime), charged, "frame {frame}");
+    }
+}
+
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {

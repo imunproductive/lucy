@@ -26,7 +26,10 @@ use crate::{
     },
     pools::FALLBACK_POOLS,
     projectile_flight::{FlightEnd, ProjectileFlight},
-    projectiles::{OwnerProjectiles, ProjectileDelivery, ProjectileLeases, ProjectileToken},
+    projectiles::{
+        FIELD_ENTITY, FieldCopies, FieldDeliver, FieldDelivery, FiredProjectile, OwnerProjectiles,
+        ProjectileDelivery, ProjectileEvent, ProjectileLeases, ProjectileToken, ShotKey,
+    },
     scene::{PlayerAppearance, Possession, player_team_bit},
     scene_assets::PreparedScene,
 };
@@ -185,6 +188,9 @@ struct BodyScript {
     corrections: Option<CorrectionHistory>,
     projectiles: Option<OwnerProjectiles>,
     flights: Vec<(ProjectileToken, ProjectileFlight)>,
+    /// The projectiles fired since the match last took them, for the other
+    /// clients (projectiles.py `fired`: `_show_others`).
+    fired: Vec<FiredProjectile>,
 }
 
 impl BodyScript {
@@ -214,6 +220,7 @@ impl BodyScript {
             corrections,
             projectiles,
             flights: Vec::new(),
+            fired: Vec::new(),
         })
     }
 
@@ -271,6 +278,9 @@ impl BodyScript {
         Ok(hits)
     }
 
+    /// projectiles.py `fired` for a leased projectile: the Biotic Field
+    /// canister leaves its field where it lands; any other flies, and the
+    /// other clients see it.
     fn launch_projectile(&mut self, projectile: PosedProjectile) {
         let Some((projectiles, definition)) = self
             .projectiles
@@ -288,8 +298,26 @@ impl BodyScript {
         ) else {
             return;
         };
-        if let Some(token) = projectiles.admit(projectile.shot, definition, bound) {
-            self.flights.push((token, flight));
+        let token = if projectile.spawn == Some(FIELD_ENTITY) {
+            projectiles.admit_field(projectile.shot, definition, bound, projectile.feet)
+        } else {
+            projectiles.admit(projectile.shot, definition, bound)
+        };
+        let Some(token) = token else {
+            return;
+        };
+        self.flights.push((token, flight));
+        if projectile.spawn.is_none() {
+            self.fired.push(FiredProjectile {
+                body: self.id,
+                token,
+                shot: projectile.shot,
+                definition,
+                volleys: u16::from(projectile.volleys),
+                origin: projectile.origin,
+                direction: projectile.direction,
+                bound,
+            });
         }
     }
 
@@ -437,6 +465,9 @@ enum Delivery {
     },
     /// Another player's entity, body or statescript (others.rs).
     Other(OtherDelivery),
+    /// A Biotic Field entity: its create, frames and destroy
+    /// (projectiles.py `_deliver_field`, `FieldArrived`, `_end`).
+    Field(FieldDelivery),
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -746,6 +777,12 @@ pub struct WorldDelivery {
     mover: Option<Mover>,
     body_script: Option<BodyScript>,
     projectile_destroys: HashMap<u32, (BodyId, ProjectileToken)>,
+    /// What the player's projectiles ask of the room since the match last
+    /// took it (projectiles.py `_end`, `_field`).
+    projectile_events: Vec<(BodyId, ProjectileEvent)>,
+    /// The Biotic Field entities this client has (projectiles.py
+    /// `Shot.field_ids`).
+    fields: FieldCopies,
     /// The hits and melees of the processed input, for the match.
     shots: Vec<PosedShot>,
     others: Others,
@@ -827,6 +864,8 @@ impl WorldDelivery {
             mover: None,
             body_script: None,
             projectile_destroys: HashMap::new(),
+            projectile_events: Vec::new(),
+            fields: FieldCopies::default(),
             shots: Vec::new(),
             others: Others::default(),
             switch: None,
@@ -851,6 +890,8 @@ impl WorldDelivery {
         self.mover = None;
         self.body_script = None;
         self.projectile_destroys.clear();
+        self.projectile_events.clear();
+        self.fields = FieldCopies::default();
         self.input.clear();
         self.shots.clear();
         self.death = None;
@@ -1069,6 +1110,7 @@ impl WorldDelivery {
                 self.projectile_destroys.get(&entity) == Some(&(id, token))
             }
             Delivery::Other(other) => self.others.current(other, entity),
+            Delivery::Field(field) => self.fields.current(field, entity),
         }
     }
 
@@ -1149,6 +1191,26 @@ impl WorldDelivery {
                     }
                     (true, Delivery::ProjectileDestroy { .. }) => {
                         self.projectile_destroys.remove(&record.update.entity);
+                    }
+                    (true, Delivery::Field(FieldDelivery::Create)) => {
+                        // projectiles.py `FieldArrived`: the field's frame.
+                        match self.fields.created(record.update.entity) {
+                            Ok(Some((update, field))) => self.push(Record {
+                                update,
+                                delivery: Delivery::Field(field),
+                            }),
+                            Ok(None) => {}
+                            Err(error) => eprintln!(
+                                "Biotic Field {:08X}'s frame failed ({error})",
+                                record.update.entity
+                            ),
+                        }
+                    }
+                    (true, Delivery::Field(FieldDelivery::Frame { last })) => {
+                        self.fields.frame_arrived(record.update.entity, last);
+                    }
+                    (true, Delivery::Field(FieldDelivery::Destroy)) => {
+                        self.fields.destroy_arrived(record.update.entity);
                     }
                     (true, Delivery::Script { last, .. }) if record.update.entity == self.owner => {
                         self.controller.arrived(last);
@@ -1417,6 +1479,12 @@ impl WorldDelivery {
             if let Some(projectiles) = &mut script.projectiles {
                 self.queue_projectiles(script.id, projectiles.retire())
                     .expect("projectile retirement has no release payload");
+                self.projectile_events.extend(
+                    projectiles
+                        .take_events()
+                        .into_iter()
+                        .map(|event| (script.id, event)),
+                );
             }
             self.remove_stale();
         }
@@ -1885,11 +1953,17 @@ impl WorldDelivery {
             .map_or_else(Vec::new, |script| script.runtime.take_messages())
     }
 
+    /// Whether this client's current body runs a script that takes messages
+    /// sent to `target` (match.py `_message_player`).
+    pub fn takes_body_message(&self, target: u32) -> bool {
+        self.world_started() && self.current_body() == Some(target) && self.body_script.is_some()
+    }
+
     /// A message to the current body (match.py `deliver_body_messages`):
     /// its entries run now; a failure stops the body's script. False when
     /// the message is not for this body.
     pub fn receive_body_message(&mut self, message: &GameMessage) -> bool {
-        if !self.world_started() || self.current_body() != Some(message.target) {
+        if !self.takes_body_message(message.target) {
             return false;
         }
         let Some(script) = &mut self.body_script else {
@@ -1930,9 +2004,14 @@ impl WorldDelivery {
         self.remove_stale();
     }
 
+    /// projectiles.py `Projectiles.update` for the player's shots: their
+    /// flights, confirmations and releases at `tick`, whose retained combat
+    /// frames start at `first_tick`. What they ask of the room waits for
+    /// [`crate::combat::deliver_projectiles`].
     pub fn advance_projectiles(
         &mut self,
         tick: u32,
+        first_tick: u32,
         mut step: impl FnMut(u32, &mut ProjectileFlight) -> io::Result<Option<FlightEnd>>,
     ) -> io::Result<()> {
         let Some(script) = &mut self.body_script else {
@@ -1957,11 +2036,135 @@ impl WorldDelivery {
                     false
                 }
             });
-        deliveries.extend(projectiles.advance(tick));
-        // The other clients' copies and the Biotic Field's entities and heals
-        // (projectiles.py `_show_others`, `_field`) are not delivered yet.
-        projectiles.take_events();
+        deliveries.extend(projectiles.advance(tick, first_tick));
+        self.projectile_events.extend(
+            projectiles
+                .take_events()
+                .into_iter()
+                .map(|event| (id, event)),
+        );
         self.queue_projectiles(id, deliveries)
+    }
+
+    /// The projectiles the player fired since the last call, for the other
+    /// clients (projectiles.py `fired`: `_show_others`).
+    pub fn take_fired(&mut self) -> Vec<FiredProjectile> {
+        self.body_script
+            .as_mut()
+            .map_or_else(Vec::new, |script| std::mem::take(&mut script.fired))
+    }
+
+    /// projectiles.py `_show_others` for this client: another player's
+    /// projectile, when this client has his body's statescript.
+    pub(crate) fn show_projectile(
+        &mut self,
+        fired: &FiredProjectile,
+        tick: u32,
+        next_id: impl FnOnce() -> u32,
+    ) {
+        if !self.world_started() {
+            return;
+        }
+        for (update, delivery) in self.others.show_projectile(fired, tick, next_id) {
+            self.push(Record {
+                update,
+                delivery: Delivery::Other(delivery),
+            });
+        }
+    }
+
+    pub(crate) fn take_projectile_events(&mut self) -> Vec<(BodyId, ProjectileEvent)> {
+        std::mem::take(&mut self.projectile_events)
+    }
+
+    /// The skin theme of the player's body (match.py `Player.skin`).
+    pub(crate) fn skin(&self) -> SkinTheme {
+        self.body.map(|body| body.skin).unwrap_or_default()
+    }
+
+    pub(crate) fn owner(&self) -> u32 {
+        self.owner
+    }
+
+    /// The player's Biotic Fields that still run.
+    pub(crate) fn live_fields(&self) -> Vec<ShotKey> {
+        self.body_script
+            .as_ref()
+            .and_then(|script| Some((script.id, script.projectiles.as_ref()?)))
+            .map_or_else(Vec::new, |(id, projectiles)| {
+                projectiles.fields().map(|token| (id, token)).collect()
+            })
+    }
+
+    /// `_ObservedProjectile.finish` for this client's copy of another
+    /// player's shot.
+    pub(crate) fn finish_projectile(
+        &mut self,
+        body: BodyId,
+        token: ProjectileToken,
+        tick: u32,
+        explode: bool,
+    ) {
+        self.others.finish_projectile(body, token, tick, explode);
+    }
+
+    /// `_ObservedProjectile.advance` for this client's copies.
+    pub(crate) fn advance_observed(&mut self, tick: u32) {
+        let records = self.others.advance_projectiles(tick);
+        for (update, delivery) in records {
+            self.push(Record {
+                update,
+                delivery: Delivery::Other(delivery),
+            });
+        }
+        self.remove_stale();
+    }
+
+    /// `_deliver_field` for this client, once it is in the world.
+    pub(crate) fn deliver_field(
+        &mut self,
+        field: &FieldDeliver<'_>,
+        ids: &mut crate::projectiles::FieldIds,
+    ) {
+        if !self.world_started() {
+            return;
+        }
+        for (update, delivery) in self.fields.deliver(field, ids) {
+            self.push(Record {
+                update,
+                delivery: Delivery::Field(delivery),
+            });
+        }
+    }
+
+    /// The field faded: its frames go again (`FieldArrived.send`).
+    pub(crate) fn fade_field(&mut self, shot: ShotKey) {
+        match self.fields.fade(shot) {
+            Ok(records) => {
+                for (update, delivery) in records {
+                    self.push(Record {
+                        update,
+                        delivery: Delivery::Field(delivery),
+                    });
+                }
+            }
+            Err(error) => eprintln!("a faded Biotic Field frame failed ({error})"),
+        }
+    }
+
+    /// `_end`: the fields of the shots that no longer run go.
+    pub(crate) fn end_fields(&mut self, live: &[ShotKey]) {
+        let records = self.fields.end(|shot| live.contains(&shot));
+        if records.is_empty() {
+            return;
+        }
+        for (update, delivery) in records {
+            self.push(Record {
+                update,
+                delivery: Delivery::Field(delivery),
+            });
+        }
+        self.remove_stale();
     }
 
     fn queue_projectiles(

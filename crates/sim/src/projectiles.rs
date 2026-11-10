@@ -4,23 +4,24 @@
 //! datagram that carried an owner frame. Cumulative script acknowledgements
 //! alone do not confirm a projectile.
 
-use std::{collections::HashSet, io};
+use std::{collections::HashSet, io, sync::Arc};
 
 use indexmap::IndexMap;
 use serde_json::Value as Json;
 
-use crate::projectile_wire;
-use orpheus_core::tick::MAX_LEASE_FRAME;
+use crate::{projectile_wire, replication::BodyId};
+use orpheus_core::{bits::BitWriter, tick::MAX_LEASE_FRAME};
 use orpheus_physics::static_ray::Vec3;
 use orpheus_script::{
     expr::EvalError,
     graph::{GraphStore, Node, asset_guid},
     snapshot::ProjectedSnapshot,
+    stream::Stream,
     vm::{ShotEvent, Snapshot},
     weapons::authored_number,
     wire::Value,
 };
-use orpheus_wire::entity::{EntityUpdate, LeaseBlock, Operation};
+use orpheus_wire::entity::{EntityUpdate, LeaseBlock, Operation, SkinTheme};
 
 const LEASE_FIRST: u32 = 0x0010_0000;
 const LEASE_SPAN: u32 = 1 << 22;
@@ -32,7 +33,7 @@ const REPORT_WINDOW: u32 = 64;
 const UNREPORTED_TICKS: u32 = 32;
 const RELEASE_MARGIN: u32 = 6;
 const RELEASE_AHEAD: u32 = 4096;
-const DELIVERY_GRACE: u32 = 64;
+pub(crate) const DELIVERY_GRACE: u32 = 64;
 const MAX_PROJECTILES: usize = 256;
 
 #[derive(Clone, Debug, Default)]
@@ -182,7 +183,7 @@ fn projectile_definitions(value: &Json, out: &mut Vec<u64>) {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ProjectileToken(u64);
 
 #[derive(Clone, Copy, Debug)]
@@ -208,7 +209,8 @@ struct PendingProjectile {
 
 /// What the match does about an owner's projectile besides its own
 /// records (projectiles.py `_end` for the other clients' copies, and
-/// `_field`).
+/// `_field`). A field's entities go when its shot is no longer live
+/// ([`OwnerProjectiles::fields`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProjectileEvent {
     /// The shot ended (`_end`): the other clients' copies finish.
@@ -224,16 +226,15 @@ pub enum ProjectileEvent {
     },
     /// Every client gets the field once (`_deliver_field`): the owner's
     /// parented to each of his canisters that arrived, the others' placed at
-    /// the shooter's feet.
+    /// the shooter's feet. A field that already faded sends its faded frame.
     FieldDeliver {
         token: ProjectileToken,
         feet: [f64; 3],
         parents: Vec<u32>,
+        faded: bool,
     },
     /// The field faded: its frames go again without st5.
     FieldFaded { token: ProjectileToken },
-    /// The field is over: its entities go.
-    FieldEnded { token: ProjectileToken },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -315,6 +316,15 @@ impl OwnerProjectiles {
     /// What the match must do since the last call.
     pub fn take_events(&mut self) -> Vec<ProjectileEvent> {
         std::mem::take(&mut self.events)
+    }
+
+    /// The Biotic Fields still running (projectiles.py `shots` with a
+    /// spawn): the other shots' field entities go.
+    pub fn fields(&self) -> impl Iterator<Item = ProjectileToken> + '_ {
+        self.pending
+            .iter()
+            .filter(|pending| pending.field.is_some())
+            .map(|pending| pending.token)
     }
 
     pub fn admit(
@@ -424,7 +434,9 @@ impl OwnerProjectiles {
         }
     }
 
-    pub fn advance(&mut self, tick: u32) -> Vec<ProjectileDelivery> {
+    /// One update (projectiles.py `Projectiles.update`) at `tick`, whose
+    /// retained combat frames start at `first_tick` (combat.py `update`).
+    pub fn advance(&mut self, tick: u32, first_tick: u32) -> Vec<ProjectileDelivery> {
         let mut out = Vec::new();
         let events = &mut self.events;
         let leases = &self.leases;
@@ -436,7 +448,7 @@ impl OwnerProjectiles {
             if let Some((schedule, feet)) = &mut pending.field {
                 // projectiles.py `_field`.
                 let (feet, token) = (*feet, pending.token);
-                let step = schedule.step(tick, tick);
+                let step = schedule.step(tick, first_tick);
                 if step.confirm {
                     confirm(leases, occupied, pending, tick, &mut out);
                 }
@@ -448,8 +460,8 @@ impl OwnerProjectiles {
                     });
                 }
                 if step.expired {
+                    // `_end(explode=False)`: its fields go with the shot.
                     retire(pending, occupied, None, &mut out);
-                    events.push(ProjectileEvent::FieldEnded { token });
                     return false;
                 }
                 if step.faded_now {
@@ -466,6 +478,7 @@ impl OwnerProjectiles {
                         token,
                         feet,
                         parents,
+                        faded: step.faded,
                     });
                 }
                 return true;
@@ -508,16 +521,12 @@ impl OwnerProjectiles {
         let mut out = Vec::new();
         for pending in &self.pending {
             retire(pending, &mut self.occupied, None, &mut out);
-            self.events.push(if pending.field.is_some() {
-                ProjectileEvent::FieldEnded {
-                    token: pending.token,
-                }
-            } else {
-                ProjectileEvent::Ended {
+            if pending.field.is_none() {
+                self.events.push(ProjectileEvent::Ended {
                     token: pending.token,
                     explode: false,
-                }
-            });
+                });
+            }
         }
         self.pending.clear();
         out
@@ -531,14 +540,12 @@ impl OwnerProjectiles {
         {
             let pending = self.pending.remove(index);
             retire(&pending, &mut self.occupied, None, out);
-            self.events.push(if pending.field.is_some() {
-                ProjectileEvent::FieldEnded { token }
-            } else {
-                ProjectileEvent::Ended {
+            if pending.field.is_none() {
+                self.events.push(ProjectileEvent::Ended {
                     token,
                     explode: false,
-                }
-            });
+                });
+            }
         }
     }
 }
@@ -729,6 +736,232 @@ impl FieldSchedule {
     pub fn faded(&self) -> bool {
         self.faded
     }
+}
+
+/// The Biotic Field entities' ids (`Projectiles.next_field`), one counter
+/// for the room.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FieldIds {
+    next: u32,
+}
+
+impl FieldIds {
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> u32 {
+        // FIELD_SPAN divides 2^32, so the wrapping counter keeps Python's sequence.
+        let entity = FIELD_FIRST + self.next % FIELD_SPAN;
+        self.next = self.next.wrapping_add(1);
+        entity
+    }
+}
+
+/// 0258's two full frames (`field_frame`): while the field is on, and once
+/// it faded.
+#[derive(Clone, Debug)]
+pub struct FieldFrames {
+    plain: BitWriter,
+    faded: BitWriter,
+}
+
+impl FieldFrames {
+    pub fn new(
+        graphs: &GraphStore,
+        codecs: &orpheus_script::codecs::CodecTable,
+    ) -> io::Result<Self> {
+        Ok(Self {
+            plain: projectile_wire::field_frame(graphs, codecs, false)?,
+            faded: projectile_wire::field_frame(graphs, codecs, true)?,
+        })
+    }
+
+    fn frame(&self, faded: bool) -> &BitWriter {
+        if faded { &self.faded } else { &self.plain }
+    }
+}
+
+/// A shot as the room names it: its owner's body and token.
+pub(crate) type ShotKey = (BodyId, ProjectileToken);
+
+/// What a [`FieldCopies`] record is, for its acknowledgement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FieldDelivery {
+    Create,
+    Frame { last: u32 },
+    Destroy,
+}
+
+/// One client's Biotic Field entities (projectiles.py `Shot.field_ids` and
+/// `FieldArrived`): one per shot and parent, created once; its frame goes
+/// when its create arrived and again when the field fades; they all go when
+/// the shot ends (`_end`).
+#[derive(Debug, Default)]
+pub(crate) struct FieldCopies {
+    copies: Vec<FieldCopy>,
+    /// Field entities whose destroy has not arrived.
+    destroys: HashSet<u32>,
+}
+
+#[derive(Debug)]
+struct FieldCopy {
+    shot: ShotKey,
+    parent: Option<u32>,
+    entity: u32,
+    /// The field's statescript on this client (`Stream(entity)`).
+    stream: Stream,
+    frames: Arc<FieldFrames>,
+    arrived: bool,
+    faded: bool,
+}
+
+impl FieldCopy {
+    /// `FieldArrived.send`: the field's full frame as it is now.
+    fn frame(&mut self) -> io::Result<(EntityUpdate, FieldDelivery)> {
+        let chunk = self
+            .stream
+            .full(self.frames.frame(self.faded))
+            .map_err(io::Error::other)?;
+        Ok((chunk.update, FieldDelivery::Frame { last: chunk.last }))
+    }
+}
+
+/// One shot's field as `_deliver_field` creates it for a client.
+pub(crate) struct FieldDeliver<'a> {
+    pub shot: ShotKey,
+    /// The owner's canisters that arrived, or `[None]`: at the feet.
+    pub parents: &'a [Option<u32>],
+    pub feet: [f64; 3],
+    /// The caster's skin theme.
+    pub skin: SkinTheme,
+    pub faded: bool,
+    pub frames: &'a Arc<FieldFrames>,
+}
+
+impl FieldCopies {
+    /// `_deliver_field` for this client: a create for each parent it has
+    /// no field of the shot for yet.
+    pub(crate) fn deliver(
+        &mut self,
+        field: &FieldDeliver<'_>,
+        ids: &mut FieldIds,
+    ) -> Vec<(EntityUpdate, FieldDelivery)> {
+        let mut out = Vec::new();
+        for &parent in field.parents {
+            if self
+                .copies
+                .iter()
+                .any(|copy| copy.shot == field.shot && copy.parent == parent)
+            {
+                continue;
+            }
+            let entity = ids.next();
+            self.destroys.remove(&entity);
+            self.copies.push(FieldCopy {
+                shot: field.shot,
+                parent,
+                entity,
+                stream: Stream::new(entity),
+                frames: Arc::clone(field.frames),
+                arrived: false,
+                faded: field.faded,
+            });
+            out.push((
+                projectile_wire::field_create(entity, parent, field.feet, field.skin),
+                FieldDelivery::Create,
+            ));
+        }
+        out
+    }
+
+    /// The field's create arrived (`FieldArrived.arrived`): its frame goes,
+    /// the first time only.
+    pub(crate) fn created(
+        &mut self,
+        entity: u32,
+    ) -> io::Result<Option<(EntityUpdate, FieldDelivery)>> {
+        let Some(copy) = self
+            .copies
+            .iter_mut()
+            .find(|copy| copy.entity == entity && !copy.arrived)
+        else {
+            return Ok(None);
+        };
+        copy.arrived = true;
+        copy.frame().map(Some)
+    }
+
+    /// The shot's field faded: the frames of its arrived copies go again
+    /// without st5, and the others' go faded when they arrive.
+    pub(crate) fn fade(&mut self, shot: ShotKey) -> io::Result<Vec<(EntityUpdate, FieldDelivery)>> {
+        let mut out = Vec::new();
+        for copy in self.copies.iter_mut().filter(|copy| copy.shot == shot) {
+            copy.faded = true;
+            if copy.arrived {
+                out.push(copy.frame()?);
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn frame_arrived(&mut self, entity: u32, last: u32) {
+        if let Some(copy) = self.copies.iter_mut().find(|copy| copy.entity == entity) {
+            copy.stream.arrived(last);
+        }
+    }
+
+    /// `_end`: the fields of the shots that are no longer live go.
+    pub(crate) fn end(
+        &mut self,
+        live: impl Fn(ShotKey) -> bool,
+    ) -> Vec<(EntityUpdate, FieldDelivery)> {
+        let mut out = Vec::new();
+        self.copies.retain(|copy| {
+            if live(copy.shot) {
+                return true;
+            }
+            self.destroys.insert(copy.entity);
+            out.push((
+                EntityUpdate {
+                    entity: copy.entity,
+                    operation: Some(Operation::Destroy),
+                    ..EntityUpdate::default()
+                },
+                FieldDelivery::Destroy,
+            ));
+            false
+        });
+        out
+    }
+
+    pub(crate) fn destroy_arrived(&mut self, entity: u32) {
+        self.destroys.remove(&entity);
+    }
+
+    /// A create or frame stays current while its field lives; a destroy
+    /// until it arrived.
+    pub(crate) fn current(&self, delivery: FieldDelivery, entity: u32) -> bool {
+        match delivery {
+            FieldDelivery::Create | FieldDelivery::Frame { .. } => {
+                self.copies.iter().any(|copy| copy.entity == entity)
+            }
+            FieldDelivery::Destroy => self.destroys.contains(&entity),
+        }
+    }
+}
+
+/// A player's projectile the other clients see (projectiles.py `fired`
+/// without a spawn, for `_show_others`).
+#[derive(Clone, Debug)]
+pub struct FiredProjectile {
+    pub(crate) body: BodyId,
+    pub(crate) token: ProjectileToken,
+    pub(crate) shot: ShotEvent,
+    pub(crate) definition: u64,
+    /// The volley state's `volleys & 0xFF`.
+    pub(crate) volleys: u16,
+    pub(crate) origin: [f64; 3],
+    pub(crate) direction: Vec3,
+    /// The ticks it flies at most (`Shot.bound`).
+    pub(crate) bound: u32,
 }
 
 // --- observed projectiles (`_show_others`, `_ObservedProjectile`) -----------
@@ -1095,12 +1328,12 @@ mod tests {
         tracker.owner_sent(2, frame + 2, identity, |_, _| true);
         tracker.owner_sent(3, frame + 4, identity, |_, _| true);
         tracker.owner_sent(4, frame + 5, identity, |_, _| false);
-        assert!(tracker.advance(frame + 5).is_empty());
+        assert!(tracker.advance(frame + 5, frame + 5).is_empty());
         tracker.owner_arrival(2, false);
         tracker.owner_arrival(3, true);
         tracker.owner_arrival(4, true);
         assert_eq!(
-            tracker.advance(frame + 5),
+            tracker.advance(frame + 5, frame + 5),
             [
                 ProjectileDelivery::Confirm {
                     token,
@@ -1116,12 +1349,12 @@ mod tests {
         );
         tracker.flight_ended(token, 2, frame + 5);
         tracker.create_arrived(token, original);
-        assert!(tracker.advance(frame + 12).is_empty());
+        assert!(tracker.advance(frame + 12, frame + 12).is_empty());
         assert!(tracker.confirmation_current(token, alias));
         tracker.create_arrived(token, alias);
         let explosion_frame = Some(frame + 13 + RELEASE_AHEAD);
         assert_eq!(
-            tracker.advance(frame + 13),
+            tracker.advance(frame + 13, frame + 13),
             [
                 ProjectileDelivery::Destroy {
                     token,
@@ -1136,7 +1369,7 @@ mod tests {
             ]
         );
         assert!(!tracker.confirmation_current(token, original));
-        assert!(tracker.advance(frame + 14).is_empty());
+        assert!(tracker.advance(frame + 14, frame + 14).is_empty());
     }
 
     #[test]
@@ -1155,18 +1388,20 @@ mod tests {
         );
         tracker.owner_arrival(2, false);
         tracker.flight_ended(token, 2, frame + 2);
-        assert!(tracker.advance(frame + UNREPORTED_TICKS - 1).is_empty());
+        let late = frame + UNREPORTED_TICKS - 1;
+        assert!(tracker.advance(late, late).is_empty());
         assert_eq!(
-            tracker.advance(frame + UNREPORTED_TICKS),
+            tracker.advance(frame + UNREPORTED_TICKS, frame + UNREPORTED_TICKS),
             [ProjectileDelivery::Confirm {
                 token,
                 entity,
                 definition: HELIX
             }]
         );
-        assert!(tracker.advance(frame + 8 + DELIVERY_GRACE - 1).is_empty());
+        let grace = frame + 8 + DELIVERY_GRACE;
+        assert!(tracker.advance(grace - 1, grace - 1).is_empty());
         assert_eq!(
-            tracker.advance(frame + 8 + DELIVERY_GRACE),
+            tracker.advance(grace, grace),
             [ProjectileDelivery::Destroy {
                 token,
                 entity,
@@ -1334,5 +1569,172 @@ mod tests {
         // Nothing reached the client.
         let mut seen = observed(1050);
         assert_eq!(seen.advance(1050, true, false, false), [ObservedOut::Done]);
+    }
+
+    /// projectiles.py `_field`: the field opens FIELD_DELAY after its first
+    /// update, heals from the tick after its opening over the retained
+    /// frames, delivers with the canisters that arrived, fades at 4.5 s and
+    /// ends at FIELD_TICKS, when it is no longer live.
+    #[test]
+    fn a_field_runs_on_its_clock_and_ends_with_its_shot() {
+        let frame = 1000;
+        let feet = [1.0, 2.0, 3.0];
+        let leases = ProjectileLeases::new(0, frame, [CANISTER]).unwrap();
+        let canister = leases.entity(CANISTER, frame, 0).unwrap();
+        let mut tracker = OwnerProjectiles::new(BODY, leases);
+        let token = tracker
+            .admit_field(shot(frame), CANISTER, 10, feet)
+            .unwrap();
+        assert_eq!(tracker.fields().collect::<Vec<_>>(), [token]);
+        let heal = |steps: u32| HEAL_PER_SECOND * f64::from(FRAME_MS) / 1000.0 * f64::from(steps);
+        let deliver = |parents: Vec<u32>, faded| ProjectileEvent::FieldDeliver {
+            token,
+            feet,
+            parents,
+            faded,
+        };
+        assert!(tracker.advance(frame, frame).is_empty());
+        assert!(tracker.take_events().is_empty());
+        let start = frame + FIELD_DELAY;
+        tracker.advance(start, start);
+        assert_eq!(tracker.take_events(), [deliver(Vec::new(), false)]);
+        // Five frames at once: the retained ones heal.
+        tracker.advance(start + 5, start + 1);
+        assert_eq!(
+            tracker.take_events(),
+            [
+                ProjectileEvent::FieldHeal {
+                    token,
+                    centre: field_centre(feet),
+                    amount: heal(5),
+                },
+                deliver(Vec::new(), false)
+            ]
+        );
+        // No owner frame reported it: the canister's fallback confirmation.
+        let confirm = frame + UNREPORTED_TICKS;
+        assert_eq!(
+            tracker.advance(confirm, start + 6),
+            [ProjectileDelivery::Confirm {
+                token,
+                entity: canister,
+                definition: CANISTER,
+            }]
+        );
+        tracker.take_events();
+        tracker.create_arrived(token, canister);
+        // Only this update's own frame is retained.
+        let faded = start + 282; // 4.512 s
+        tracker.advance(faded, faded);
+        assert_eq!(
+            tracker.take_events(),
+            [
+                ProjectileEvent::FieldHeal {
+                    token,
+                    centre: field_centre(feet),
+                    amount: heal(1),
+                },
+                ProjectileEvent::FieldFaded { token },
+                deliver(vec![canister], true)
+            ]
+        );
+        // The field ends before its expiry tick.
+        let expires = start + FIELD_TICKS;
+        assert_eq!(
+            tracker.advance(expires, faded + 1),
+            [ProjectileDelivery::Destroy {
+                token,
+                entity: canister,
+                explosion_frame: None,
+            }]
+        );
+        assert_eq!(
+            tracker.take_events(),
+            [ProjectileEvent::FieldHeal {
+                token,
+                centre: field_centre(feet),
+                amount: heal(expires - 1 - faded),
+            }]
+        );
+        assert_eq!(tracker.fields().count(), 0);
+    }
+
+    /// projectiles.py `_deliver_field` and `FieldArrived` for one client:
+    /// one create per shot and parent; its frame when the create arrived,
+    /// once, and again without st5 when the field fades; its destroy when
+    /// the shot is no longer live, current until it arrived.
+    #[test]
+    fn field_copies_follow_their_shot() {
+        let mut plain = BitWriter::new();
+        plain.bits(0b101, 3).unwrap();
+        let mut faded = BitWriter::new();
+        faded.bit(true);
+        let frames = Arc::new(FieldFrames {
+            plain: plain.clone(),
+            faded: faded.clone(),
+        });
+        let body = BodyId {
+            entity: BODY,
+            generation: 1,
+        };
+        let shot = (body, ProjectileToken(1));
+        let mut ids = FieldIds::default();
+        let mut copies = FieldCopies::default();
+        let field = FieldDeliver {
+            shot,
+            parents: &[None],
+            feet: [1.0, 2.0, 3.0],
+            skin: SkinTheme::default(),
+            faded: false,
+            frames: &frames,
+        };
+        let created = copies.deliver(&field, &mut ids);
+        assert_eq!(
+            created,
+            [(
+                projectile_wire::field_create(
+                    FIELD_FIRST,
+                    None,
+                    [1.0, 2.0, 3.0],
+                    SkinTheme::default()
+                ),
+                FieldDelivery::Create
+            )]
+        );
+        assert!(copies.deliver(&field, &mut ids).is_empty());
+        assert!(copies.current(FieldDelivery::Create, FIELD_FIRST));
+
+        let mut stream = Stream::new(FIELD_FIRST);
+        let expected = stream.full(&plain).unwrap();
+        assert_eq!(
+            copies.created(FIELD_FIRST).unwrap(),
+            Some((expected.update, FieldDelivery::Frame { last: 1 }))
+        );
+        assert_eq!(copies.created(FIELD_FIRST).unwrap(), None);
+        copies.frame_arrived(FIELD_FIRST, 1);
+        let expected = stream.full(&faded).unwrap();
+        assert_eq!(
+            copies.fade(shot).unwrap(),
+            [(expected.update, FieldDelivery::Frame { last: 2 })]
+        );
+
+        assert!(copies.end(|live| live == shot).is_empty());
+        let gone: [_; 1] = copies.end(|_| false).try_into().unwrap();
+        let [(destroy, FieldDelivery::Destroy)] = gone else {
+            panic!("one destroy");
+        };
+        assert_eq!(
+            (destroy.entity, destroy.operation),
+            (FIELD_FIRST, Some(Operation::Destroy))
+        );
+        assert!(!copies.current(FieldDelivery::Create, FIELD_FIRST));
+        assert!(copies.current(FieldDelivery::Destroy, FIELD_FIRST));
+        copies.destroy_arrived(FIELD_FIRST);
+        assert!(!copies.current(FieldDelivery::Destroy, FIELD_FIRST));
+        let next = FieldDeliver {
+            shot: (body, ProjectileToken(2)),
+            ..field
+        };
+        assert_eq!(copies.deliver(&next, &mut ids)[0].0.entity, FIELD_FIRST + 1);
     }
 }
