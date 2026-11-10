@@ -1299,14 +1299,20 @@ fn queued_messages_abort_and_rearm_waits_without_crossing_instance_scope() {
 /// The answers the Python reference gave for the training bot (`0B92`,
 /// `0C18`) and hero select (`288A`) graphs. The server doesn't run those graphs
 /// yet, so there is no server world to test them against; when it does, these
-/// tests move to that world and this one goes.
+/// tests move to that world and this one goes. `STU_4A101787` takes the
+/// client's answer (always false, its evaluator at `0x7FF789BFF730`); the
+/// Python fixtures had null, which branches the same way. The `STU_AC829876`
+/// target-tag filter in `0C18` is true as in those fixtures, although the
+/// Python server answered every such filter false; what a bot's filter answers
+/// is still open.
 struct ReferenceWorld;
 
 impl World for ReferenceWorld {
     fn native(&mut self, site: Site, config: &Json) -> Option<Value> {
         match (site.graph, config.get("$")?.as_str()?) {
             (0x0c18, "STU_AC829876") => Some(Value::Bool(true)),
-            (0x0c18, "STU_4A101787" | "STU_A77AC2AC") => Some(Value::Null),
+            (0x0c18, "STU_4A101787") => Some(Value::Bool(false)),
+            (0x0c18, "STU_A77AC2AC") => Some(Value::Null),
             (0x288a, "STU_37F20D24") => Some(Value::Null),
             (0x0b92, "STU_71A87E92" | "STU_2200A66D") if matches!(site.node, Some(7 | 11)) => {
                 Some(Value::Null)
