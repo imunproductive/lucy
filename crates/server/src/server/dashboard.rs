@@ -406,7 +406,7 @@ mod tests {
             selected: Arc::new(Mutex::new(accounts.get("Alpha").unwrap())),
             accounts,
             online: Arc::default(),
-            services: Arc::new(Services::new(&collection)),
+            services: Arc::new(Services::new(&collection, Arc::default())),
             collection: Arc::new(collection),
             data: state.path().into(),
             assets: state.path().join("assets"),

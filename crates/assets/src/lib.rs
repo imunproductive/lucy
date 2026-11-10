@@ -12,6 +12,7 @@ mod ai_spawners;
 mod arcade_cards;
 pub mod cache;
 mod collision;
+mod economy;
 mod game_maps;
 mod game_queues;
 mod graphs;
@@ -133,6 +134,10 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "collision_props",
         derive: mode_props::derive,
+    },
+    Derivation {
+        name: "economy",
+        derive: economy::derive,
     },
 ];
 

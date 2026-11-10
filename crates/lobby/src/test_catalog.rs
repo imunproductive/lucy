@@ -6,7 +6,7 @@ use std::{fs, sync::Arc};
 
 use serde_json::json;
 
-use crate::{collection::Collection, templates::RetailTemplates};
+use crate::{collection::Collection, economy::Economy, templates::RetailTemplates};
 use orpheus_content::catalog::{HERO_BASE, ItemDb, TEAM_SKIN_TEXT, UNLOCK_BASE};
 
 pub const HERO: u64 = HERO_BASE | 0x40;
@@ -93,4 +93,22 @@ pub fn collection() -> Collection {
     ]});
     let templates = RetailTemplates::from_reader(templates.to_string().as_bytes()).unwrap();
     Collection::new(&templates, Arc::new(items)).unwrap()
+}
+
+/// The install's economy (`economy_174.json`) as build 104319 derives it,
+/// cut to the events the tests run: Halloween and Lunar New Year.
+pub fn economy() -> Arc<Economy> {
+    let economy = json!({
+        "duplicate_credits": {"Common": 5, "Rare": 15, "Epic": 50, "Legendary": 200},
+        "credit_drops": {
+            "Rare": {"unlock": "0x025000000000088B", "amount": 50},
+            "Epic": {"unlock": "0x025000000000088C", "amount": 150},
+            "Legendary": {"unlock": "0x025000000000088D", "amount": 500},
+        },
+        "celebration_boxes": {
+            "0x0D8000000000212E": {"unlock": "0x0250000000000C23", "box_type": 2},
+            "0x0D8000000000237C": {"unlock": "0x0250000000000D5A", "box_type": 4},
+        },
+    });
+    Arc::new(Economy::from_reader(economy.to_string().as_bytes()).unwrap())
 }

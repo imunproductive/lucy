@@ -5,7 +5,9 @@ use serde_json::json;
 use super::*;
 use crate::{
     accounts::LootBox,
-    test_catalog::{COMMON, EPIC, HALLOWEEN, HERO, ICON, LEGENDARY, RARE, SPRAY, collection},
+    test_catalog::{
+        COMMON, EPIC, HALLOWEEN, HERO, ICON, LEGENDARY, RARE, SPRAY, collection, economy,
+    },
 };
 use orpheus_wire::jam::codec::Schemas;
 
@@ -66,7 +68,7 @@ fn unlocked(profile: &Profile) -> Vec<u64> {
 #[test]
 fn a_standard_box_rolls_rarities_credits_and_duplicates() {
     let collection = collection();
-    let loot = LootBoxes::new(&collection);
+    let loot = LootBoxes::new(&collection, economy());
     let mut profile = profile_with(&[(7, 0), (8, 0), (9, 0), (10, 0), (11, 0)]);
     profile.unlocked_items.push(json!("0x0250000000000103"));
     let mut dice = Script::new(
@@ -119,7 +121,7 @@ fn a_standard_box_rolls_rarities_credits_and_duplicates() {
 #[test]
 fn an_event_box_draws_its_first_slot_from_the_event_and_never_credits_there() {
     let collection = collection();
-    let loot = LootBoxes::new(&collection);
+    let loot = LootBoxes::new(&collection, economy());
     let mut profile = profile_with(&[(3, 2)]);
     let mut dice = Script::new(
         // guaranteed legendary, three commons; slots 1-3 from the event or not
@@ -152,7 +154,7 @@ fn an_event_box_draws_its_first_slot_from_the_event_and_never_credits_there() {
 #[test]
 fn a_legendary_box_keeps_its_promised_legendary_and_may_add_coins() {
     let collection = collection();
-    let loot = LootBoxes::new(&collection);
+    let loot = LootBoxes::new(&collection, economy());
     let mut profile = profile_with(&[(1, 7)]);
     let mut dice = Script::new(
         // three ordinary legendaries; the promised slot rolls no credits,
@@ -175,7 +177,7 @@ fn a_legendary_box_keeps_its_promised_legendary_and_may_add_coins() {
 #[test]
 fn a_hero_box_holds_only_its_heros_items_and_an_unknown_box_is_standard() {
     let collection = collection();
-    let loot = LootBoxes::new(&collection);
+    let loot = LootBoxes::new(&collection, economy());
     let mut profile = profile_with(&[(5, 10)]);
     let mut dice = Script::new(&[0.5, 0.9, 0.9, 0.9, 0.9], &[3, 2, 1, 0, 0, 0, 0]);
     let opening = loot
@@ -197,7 +199,7 @@ fn a_hero_box_holds_only_its_heros_items_and_an_unknown_box_is_standard() {
 #[test]
 fn opening_every_box_reports_the_new_items_without_a_refill() {
     let collection = collection();
-    let loot = LootBoxes::new(&collection);
+    let loot = LootBoxes::new(&collection, economy());
     let mut profile = profile_with(&[(1, 0), (2, 0)]);
     let (opened, granted) = loot
         .open_all(&mut profile, &collection, &mut SystemDice)
@@ -268,4 +270,28 @@ fn the_box_messages_match_python() {
     )]);
     assert_eq!(box_id(&request), Some(7));
     assert_eq!(box_id(&Fields::new()), None);
+}
+
+/// The credits the install gives are the ones `ow174/services/lootbox.py`
+/// holds: `DUPLICATE_CREDITS` and `CREDIT_DROPS`.
+#[test]
+#[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
+fn the_installs_credits_are_pythons() {
+    let economy = Economy::load(&orpheus_testkit::runtime_dir().join("data")).unwrap();
+    let duplicates =
+        ["Common", "Rare", "Epic", "Legendary"].map(|rarity| economy.duplicate_credits(rarity));
+    assert_eq!(duplicates, [5, 15, 50, 200]);
+    assert_eq!(economy.credit_drop("Common"), None);
+    let drops = ["Rare", "Epic", "Legendary"].map(|rarity| {
+        let drop = economy.credit_drop(rarity).unwrap();
+        (drop.unlock, drop.amount)
+    });
+    assert_eq!(
+        drops,
+        [
+            (0x0250_0000_0000_088b, 50),
+            (0x0250_0000_0000_088c, 150),
+            (0x0250_0000_0000_088d, 500)
+        ]
+    );
 }

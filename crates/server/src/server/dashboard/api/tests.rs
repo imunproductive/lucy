@@ -73,7 +73,7 @@ impl Fixture {
             accounts,
             selected,
             online: Mutex::new(HashMap::new()),
-            services: Services::new(&collection),
+            services: Services::new(&collection, Arc::default()),
             collection,
             platform: Platform::new(std::net::Ipv4Addr::LOCALHOST, String::new(), None),
         }

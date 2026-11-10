@@ -380,7 +380,8 @@ fn live_messages_follow_the_python_refresh_order() {
     let collection = Collection::new(&templates, items).unwrap();
     let ranked = Ranked::new(&templates).unwrap();
     let arcade = Arcade::load(runtime.join("arcade_cards_174.json"), &templates).unwrap();
-    let celebrations = Celebrations::load(&runtime, &templates).unwrap();
+    let economy = Arc::new(crate::economy::Economy::load(&runtime).unwrap());
+    let celebrations = Celebrations::load(&runtime, &templates, economy).unwrap();
     let temporary = tempfile::tempdir().unwrap();
     let accounts = Accounts::new(
         temporary.path().join("profiles"),

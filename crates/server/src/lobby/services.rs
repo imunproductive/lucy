@@ -19,6 +19,7 @@ use orpheus_lobby::{
     celebrations::Celebrations,
     clock::server_time,
     collection::Collection,
+    economy::Economy,
     leaderboard::{self, Player},
     login::Identity,
     lootbox::LootBoxes,
@@ -63,9 +64,9 @@ pub(crate) struct Services {
 }
 
 impl Services {
-    pub(crate) fn new(collection: &Collection) -> Self {
+    pub(crate) fn new(collection: &Collection, economy: Arc<Economy>) -> Self {
         Self {
-            loot: LootBoxes::new(collection),
+            loot: LootBoxes::new(collection, economy),
             shop: Shop::new(collection),
             sessions: Mutex::default(),
         }
@@ -341,7 +342,10 @@ mod tests {
             .as_slice(),
         )
         .unwrap();
-        Services::new(&Collection::new(&templates, Arc::new(ItemDb::default())).unwrap())
+        Services::new(
+            &Collection::new(&templates, Arc::new(ItemDb::default())).unwrap(),
+            Arc::default(),
+        )
     }
 
     fn login(accounts: &Accounts, name: &str, key: u64) -> PreparedLogin {

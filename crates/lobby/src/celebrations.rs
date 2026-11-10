@@ -9,6 +9,7 @@ use std::{
     fs::File,
     io::{self, BufReader, Read},
     path::Path,
+    sync::Arc,
 };
 
 use indexmap::IndexMap;
@@ -18,6 +19,7 @@ use crate::{
     accounts::{LootBox, Profile},
     clock::{DAY, stu_datetime},
     collection::Collection,
+    economy::{Economy, EventBox},
     templates::{IN_CONNECT, RetailTemplates},
     transport::LobbyMessage,
 };
@@ -53,12 +55,16 @@ const CHALLENGE_WINS_STAT: u64 = 0x0860_0000_0000_073f;
 const CHALLENGE_TIER_WINS: u64 = 9;
 const KEY_LENGTH: usize = 16;
 
+/// A celebration the server can run. A seasonal one names its celebration
+/// type (`kind`, `01C`); the install gives the loot box of that type
+/// ([`Economy::event_box`]), which is the first login reward and the record's
+/// box type (`ow174/catalog/events.py` `EventDef.box`, `rewards`).
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct Event {
     celebration: u16,
     key: u16,
     kind: u16,
-    box_type: i64,
+    /// Login rewards besides the event box.
     rewards: &'static [u16],
     // Splash presets and raw IDs with the same celebration are separate entries.
     splash: bool,
@@ -70,7 +76,6 @@ impl Event {
             celebration,
             key: 0,
             kind: 0,
-            box_type: -1,
             rewards: &[],
             splash: false,
         }
@@ -83,16 +88,9 @@ impl Event {
         }
     }
 
-    const fn seasonal(
-        celebration: u16,
-        key: u16,
-        kind: u16,
-        box_type: i64,
-        rewards: &'static [u16],
-    ) -> Self {
+    const fn seasonal(celebration: u16, key: u16, kind: u16, rewards: &'static [u16]) -> Self {
         Self {
             kind,
-            box_type,
             rewards,
             ..Self::keyed(celebration, key)
         }
@@ -143,14 +141,14 @@ pub fn challenges() -> impl Iterator<Item = (&'static str, [u64; 3])> {
 fn preset(name: &str) -> Option<Event> {
     Some(match name {
         "goodbye" => Event::keyed(0x128, 0x1a3),
-        "lunar" => Event::seasonal(0x105, 0x188, 0x237c, 4, &[0x0d5a, 0x4f50]),
-        "halloween" => Event::seasonal(0xfb, 0x181, 0x212e, 2, &[0x0c23]),
-        "winter" => Event::seasonal(0xff, 0x185, 0x2168, 3, &[0x0d0b]),
-        "anniversary" => Event::seasonal(0x118, 0x198, 0x2428, 6, &[0x0ec3]),
-        "anniversary_remix_1" => Event::seasonal(0x10e, 0x196, 0x2428, 6, &[0x0ec3]),
-        "anniversary_remix_2" => Event::seasonal(0x112, 0x197, 0x2428, 6, &[0x0ec3]),
-        "summer" => Event::seasonal(0xeb, 0x178, 0x212f, 1, &[0x0b2f]),
-        "archives" => Event::seasonal(0xa8, 0x169, 0x2427, 5, &[0x0ec2]),
+        "lunar" => Event::seasonal(0x105, 0x188, 0x237c, &[0x4f50]),
+        "halloween" => Event::seasonal(0xfb, 0x181, 0x212e, &[]),
+        "winter" => Event::seasonal(0xff, 0x185, 0x2168, &[]),
+        "anniversary" => Event::seasonal(0x118, 0x198, 0x2428, &[]),
+        "anniversary_remix_1" => Event::seasonal(0x10e, 0x196, 0x2428, &[]),
+        "anniversary_remix_2" => Event::seasonal(0x112, 0x197, 0x2428, &[]),
+        "summer" => Event::seasonal(0xeb, 0x178, 0x212f, &[]),
+        "archives" => Event::seasonal(0xa8, 0x169, 0x2427, &[]),
         "reaper" => Event {
             rewards: &[0x4dc7, 0x4ef3, 0x4fcf],
             ..Event::keyed(0x104, 0x189)
@@ -239,14 +237,20 @@ pub struct Celebrations {
     captured_bytes: Vec<u8>,
     resource_keys: BTreeMap<u64, ResourceKey>,
     map_swaps: MapSwaps,
+    economy: Arc<Economy>,
 }
 
 impl Celebrations {
-    pub fn load(data_dir: &Path, templates: &RetailTemplates) -> io::Result<Self> {
+    pub fn load(
+        data_dir: &Path,
+        templates: &RetailTemplates,
+        economy: Arc<Economy>,
+    ) -> io::Result<Self> {
         Self::from_readers(
             orpheus_fixed::RESOURCE_KEYS.as_bytes(),
             BufReader::new(File::open(data_dir.join("extracted_maps.json"))?),
             templates,
+            economy,
         )
     }
 
@@ -254,6 +258,7 @@ impl Celebrations {
         keys: impl Read,
         maps: impl Read,
         templates: &RetailTemplates,
+        economy: Arc<Economy>,
     ) -> io::Result<Self> {
         let template = templates
             .first(IN_CONNECT, CONTENT_KEYS)
@@ -264,7 +269,30 @@ impl Celebrations {
             captured_bytes,
             resource_keys: read_keys(keys)?,
             map_swaps: read_map_swaps(maps)?,
+            economy,
         })
+    }
+
+    /// The loot box a seasonal event gives, from the install.
+    fn event_box(&self, event: Event) -> Option<EventBox> {
+        if event.kind == 0 {
+            return None;
+        }
+        self.economy
+            .event_box(CELEBRATION_TYPE_BASE | u64::from(event.kind))
+    }
+
+    /// An event's login rewards: its box, then the rest.
+    fn rewards(&self, event: Event) -> impl Iterator<Item = u64> + use<> {
+        self.event_box(event)
+            .map(|event_box| event_box.unlock)
+            .into_iter()
+            .chain(
+                event
+                    .rewards
+                    .iter()
+                    .map(|&reward| UNLOCK_BASE | u64::from(reward)),
+            )
     }
 
     /// Build 20504, 38900, and 38902 in their relative login order. The
@@ -334,7 +362,7 @@ impl Celebrations {
     ) -> io::Result<Greeting> {
         let ungreeted: Vec<Event> = active_events(&profile.events)?
             .into_iter()
-            .filter(|event| event.box_type >= 0 || event.splash)
+            .filter(|&event| self.event_box(event).is_some() || event.splash)
             .filter(|event| {
                 !profile
                     .greeted_events
@@ -351,13 +379,12 @@ impl Celebrations {
             ));
         }
         for event in ungreeted {
-            if event.box_type >= 0 {
-                let box_type = i32::try_from(event.box_type)
-                    .map_err(|_| invalid("invalid celebration box type"))?;
-                greeting.boxes.extend(profile.add_boxes(box_type, 1)?);
+            if let Some(event_box) = self.event_box(event) {
+                greeting
+                    .boxes
+                    .extend(profile.add_boxes(event_box.box_type, 1)?);
             }
-            for &reward in event.rewards {
-                let guid = UNLOCK_BASE | u64::from(reward);
+            for guid in self.rewards(event) {
                 // The box itself is an unlock too (STUUnlock_LootBox), but not an item.
                 if collection.items().get(guid).is_none()
                     || collection.owns(profile, guid)
@@ -460,11 +487,10 @@ impl Celebrations {
                 Struct(Fields::from([(0, Unsigned(base)), (8, Unsigned(variant))]))
             })
             .collect();
-        let rewards = event
-            .rewards
-            .iter()
-            .map(|&guid| Unsigned(UNLOCK_BASE | u64::from(guid)))
-            .collect();
+        let rewards = self.rewards(event).map(Unsigned).collect();
+        let box_type = self
+            .event_box(event)
+            .map_or(-1, |event_box| i64::from(event_box.box_type));
         let start = now
             .checked_sub(2 * DAY)
             .ok_or_else(|| invalid("invalid celebration start date"))?;
@@ -484,7 +510,7 @@ impl Celebrations {
             (0x78, Unsigned(0)),
             (0x80, Array(Vec::new())),
             (0x98, Array(Vec::new())),
-            (0xb0, Signed(event.box_type)),
+            (0xb0, Signed(box_type)),
         ]))
     }
 }
@@ -644,7 +670,7 @@ mod tests {
             "03.0CE":{"CelebrationVariants":null},
             "04.0CE":{}
         }"#[..];
-        Celebrations::from_readers(keys, maps, &templates).unwrap()
+        Celebrations::from_readers(keys, maps, &templates, crate::test_catalog::economy()).unwrap()
     }
 
     fn tracer_rewards() -> ItemDb {
@@ -907,12 +933,67 @@ mod tests {
         assert!(Celebrations::claim_rewards(&mut profile, &collection).is_empty());
     }
 
+    /// The event boxes the install gives are those of
+    /// `ow174/catalog/events.py` (`EventDef.box` and the first reward).
+    #[test]
+    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
+    fn the_installs_event_boxes_are_pythons() {
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let economy = Arc::new(Economy::load(&data).unwrap());
+        let celebrations =
+            Celebrations::load(&data, &RetailTemplates::captured(), economy).unwrap();
+        let python: [(&str, i32, &[u16]); 8] = [
+            ("lunar", 4, &[0x0d5a, 0x4f50]),
+            ("halloween", 2, &[0x0c23]),
+            ("winter", 3, &[0x0d0b]),
+            ("anniversary", 6, &[0x0ec3]),
+            ("anniversary_remix_1", 6, &[0x0ec3]),
+            ("anniversary_remix_2", 6, &[0x0ec3]),
+            ("summer", 1, &[0x0b2f]),
+            ("archives", 5, &[0x0ec2]),
+        ];
+        for (name, box_type, rewards) in python {
+            let event = preset(name).unwrap();
+            assert_eq!(
+                celebrations
+                    .event_box(event)
+                    .map(|event_box| event_box.box_type),
+                Some(box_type),
+                "{name}"
+            );
+            let rewards: Vec<u64> = rewards
+                .iter()
+                .map(|&reward| UNLOCK_BASE | u64::from(reward))
+                .collect();
+            assert_eq!(
+                celebrations.rewards(event).collect::<Vec<_>>(),
+                rewards,
+                "{name}"
+            );
+        }
+        for name in [
+            "goodbye",
+            "reaper",
+            "cassidy",
+            "malevento",
+            "owl",
+            "watchpoint",
+        ] {
+            assert_eq!(
+                celebrations.event_box(preset(name).unwrap()),
+                None,
+                "{name}"
+            );
+        }
+    }
+
     #[test]
     #[ignore = "requires the derived 104319 resource catalog and lobby templates"]
     fn login_messages_match_python_for_events_challenges_and_content_key_order() {
         let data = orpheus_testkit::runtime_dir().join("data");
         let templates = RetailTemplates::captured();
-        let celebrations = Celebrations::load(&data, &templates).unwrap();
+        let economy = Arc::new(Economy::load(&data).unwrap());
+        let celebrations = Celebrations::load(&data, &templates, economy).unwrap();
         let items = ItemDb::load(&data).unwrap();
         let schemas = Schemas::lobby();
         let empty = Profile {

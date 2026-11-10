@@ -4,15 +4,18 @@
 //! account catalogs has a price and an event: 0 for the base pool, 1-6 for a
 //! seasonal event, -1 for items that never drop from boxes (challenge rewards
 //! among them). Icons have no price, as the game never sold them, but they
-//! drop. Rarity and item type come from the extracted unlock list.
+//! drop. Rarity and item type come from the extracted unlock list; the credits
+//! a duplicate gives and the credit drops come from the install
+//! ([`Economy`]).
 
-use std::{collections::HashMap, io};
+use std::{collections::HashMap, io, sync::Arc};
 
 use serde_json::Value as Json;
 
 use crate::{
     accounts::{Profile, box_type},
     collection::{Collection, PROGRESSION},
+    economy::{CreditDrop, Economy},
     transport::LobbyMessage,
 };
 use orpheus_wire::jam::codec::{
@@ -26,6 +29,9 @@ pub const OPEN_BOX: u32 = 24201;
 pub const BOX_OPENED: u32 = 24305;
 pub const CREDITS: u32 = 24307;
 
+/// Four slots, as retail's boxes. Not found in the install: the loot box
+/// rules (`054/011D`, `STULootBoxRules`) hold two unnamed numbers per box
+/// type (`m_24391F9B` 21, `m_53B8C818` 50), neither of them 4.
 const SLOTS_PER_BOX: usize = 4;
 /// A profile with fewer boxes left is refilled with the starter set.
 const LOW_STOCK: usize = 5;
@@ -45,31 +51,27 @@ const COMMON: &str = "Common";
 // Chance of each rarity for an ordinary slot, and for the one slot that is at
 // least rare. They give the odds of the game's own "average chance from
 // containers" screen for a whole box: some common item 99%, rare 94% (here
-// 95%), epic 18.5%, legendary 7.5%.
+// 95%), epic 18.5%, legendary 7.5%. Python fitted them to that screen. The
+// install's loot box rules (`054/011D`, `STULootBoxRarityRules`) give each
+// box type two numbers per rarity (`m_A07D6F99`/`m_CBE06580`: base box rare
+// 1/20, epic 1/40, legendary 1/100; currency rules 11/30, 13/42, 91/250),
+// whose meaning isn't known: read as odds per slot or per box they give none
+// of the screen's chances, so Python's odds are kept.
 const SLOT_ODDS: [(&str, f64); 3] = [(LEGENDARY, 0.0193), (EPIC, 0.0498), (RARE, 0.10)];
 const GUARANTEED_ODDS: [(&str, f64); 2] = [(LEGENDARY, 0.0193), (EPIC, 0.0498)];
 
-/// Credits drop in place of an item of the same rarity (STUUnlock_Currency
-/// 0A5/088B-088D; 500 is the chest full of coins), so a box keeps the rarity
-/// odds of the game's odds screen. Retail's share of credits in a rarity is
-/// not known: Python's guess is that half of the legendary slots hold the 500
-/// (as often as a legendary item) and 1 in 20 rare or epic slots holds 50 or
-/// 150. The guess is kept.
-fn credit_drop(rarity: &str) -> Option<(u64, i64, f64)> {
+/// Credits drop in place of an item of the same rarity (the install's
+/// currency unlocks, [`Economy::credit_drop`]; 500 is the chest full of
+/// coins), so a box keeps the rarity odds of the game's odds screen. Retail's
+/// share of credits in a rarity is not in the install (unless it is the
+/// undecoded currency rules above): Python's guess is that half of the
+/// legendary slots hold the 500 (as often as a legendary item) and 1 in 20
+/// rare or epic slots holds 50 or 150. The guess is kept.
+fn credit_share(rarity: &str) -> Option<f64> {
     match rarity {
-        RARE => Some((0x0250_0000_0000_088b, 50, 0.05)),
-        EPIC => Some((0x0250_0000_0000_088c, 150, 0.05)),
-        LEGENDARY => Some((0x0250_0000_0000_088d, 500, 0.5)),
+        RARE | EPIC => Some(0.05),
+        LEGENDARY => Some(0.5),
         _ => None,
-    }
-}
-
-fn duplicate_credits(rarity: &str) -> i64 {
-    match rarity {
-        RARE => 15,
-        EPIC => 50,
-        LEGENDARY => 200,
-        _ => 5,
     }
 }
 
@@ -130,16 +132,17 @@ pub struct BoxOpening {
     pub box_name: String,
 }
 
-/// The loot pools of the catalog.
+/// The loot pools of the catalog and the install's credit values.
 pub struct LootBoxes {
     /// (event, rarity) -> item GUIDs, in catalog order.
     pools: HashMap<(i64, String), Vec<u64>>,
     /// (hero name, rarity) -> the hero's base-pool items.
     hero_pools: HashMap<(String, String), Vec<u64>>,
+    economy: Arc<Economy>,
 }
 
 impl LootBoxes {
-    pub fn new(collection: &Collection) -> Self {
+    pub fn new(collection: &Collection, economy: Arc<Economy>) -> Self {
         let mut pools = HashMap::<_, Vec<u64>>::new();
         let mut hero_pools = HashMap::<_, Vec<u64>>::new();
         for (&guid, entry) in collection.store() {
@@ -165,7 +168,11 @@ impl LootBoxes {
                 }
             }
         }
-        Self { pools, hero_pools }
+        Self {
+            pools,
+            hero_pools,
+            economy,
+        }
     }
 
     /// Open a box: remove it from the profile, add the drops and credits,
@@ -203,20 +210,24 @@ impl LootBoxes {
         let mut drops = Vec::with_capacity(SLOTS_PER_BOX);
         let mut credits = 0;
         for (order, (&rarity, &slot_event)) in rarities.iter().zip(&events).enumerate() {
-            if let Some((guid, amount)) =
-                roll_credits(rarity, slot_event, Some(order) == promised, dice)?
-            {
-                profile.credits += amount;
+            if let Some(drop) = roll_credits(
+                rarity,
+                slot_event,
+                Some(order) == promised,
+                &self.economy,
+                dice,
+            )? {
+                profile.credits += drop.amount;
                 drops.push(Drop {
                     hero: 0,
-                    unlock: guid,
+                    unlock: drop.unlock,
                     credits: 0,
                     order: order as u32,
                     highlight: 0,
                     duplicate: false,
                     new: false,
                     rarity: rarity.into(),
-                    amount: Some(amount),
+                    amount: Some(drop.amount),
                 });
                 continue;
             }
@@ -228,7 +239,7 @@ impl LootBoxes {
             };
             let duplicate = unlock_all || owned.contains(&guid);
             let duplicate_credits = if duplicate {
-                duplicate_credits(rarity)
+                self.economy.duplicate_credits(rarity)
             } else {
                 0
             };
@@ -412,22 +423,27 @@ fn roll_slot_events(event: i64, dice: &mut impl Dice) -> io::Result<Vec<i64>> {
         .collect()
 }
 
-/// The (currency unlock, amount) a slot gives instead of an item of its
+/// The currency unlock and credits a slot gives instead of an item of its
 /// rarity, if any. Never in an event slot, nor in place of the legendary item
 /// a legendary box promises.
 fn roll_credits(
     rarity: &str,
     slot_event: i64,
     promised: bool,
+    economy: &Economy,
     dice: &mut impl Dice,
-) -> io::Result<Option<(u64, i64)>> {
+) -> io::Result<Option<CreditDrop>> {
     if slot_event != 0 || promised {
         return Ok(None);
     }
-    let Some((guid, amount, share)) = credit_drop(rarity) else {
+    let Some(share) = credit_share(rarity) else {
         return Ok(None);
     };
-    Ok((dice.unit()? < share).then_some((guid, amount)))
+    Ok(if dice.unit()? < share {
+        economy.credit_drop(rarity)
+    } else {
+        None
+    })
 }
 
 fn count_stats(profile: &mut Profile, rarities: &[&str], credits: i64) {

@@ -38,6 +38,12 @@ pub const MAX_MATCHES: i64 = 9999;
 const FIRST_ROLE_SEASON: u64 = 18;
 const SEASON_DATES: [u32; 4] = [0x20, 0x28, 0x30, 0x38];
 const DAYS_INTO_SEASON: u64 = 7;
+/// Lowest rating of each tier from silver up (`TIER_FLOORS`,
+/// `ow174/content/ranked.py`). The type table names their home
+/// (`STUGenericSettings_Ranked.m_rankedTiers`, `STURankedTierDefinition`),
+/// but the client install doesn't ship it: no `054` setting has that class
+/// and a scan of the install's data assets found neither class, so the
+/// floors stay Python's.
 const TIER_FLOORS: [u16; 6] = [1500, 2000, 2500, 3000, 3500, 4000];
 const PLACEMENT_MATCHES: u8 = 5;
 const EVENT_CARDS: [u64; 2] = [COMPETITIVE_CTF, LUCIO_CUP];

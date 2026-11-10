@@ -1,0 +1,131 @@
+//! The loot box economy of the install (`data/economy_174.json`, derived
+//! from the player progression settings `054/0018` by `orpheus_assets`): the
+//! values `ow174/services/lootbox.py` (`DUPLICATE_CREDITS`, `CREDIT_DROPS`)
+//! and `ow174/catalog/events.py` (each event's box) hold, read from the game
+//! data instead.
+
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{self, BufReader, Read},
+    path::Path,
+};
+
+use serde::Deserialize;
+
+use orpheus_core::guid::parse_guid;
+
+pub const FILE: &str = "economy_174.json";
+
+/// The currency unlock a slot holds in place of an item, and its credits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CreditDrop {
+    pub unlock: u64,
+    pub amount: i64,
+}
+
+/// The loot box a celebration gives at login, and its box type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventBox {
+    pub unlock: u64,
+    pub box_type: i32,
+}
+
+#[derive(Debug, Default)]
+pub struct Economy {
+    /// Rarity -> the credits a duplicate gives.
+    duplicate_credits: HashMap<String, i64>,
+    /// Rarity -> what a base box slot holds when it holds credits.
+    credit_drops: HashMap<String, CreditDrop>,
+    /// Celebration type (`01C` GUID) -> its box.
+    event_boxes: HashMap<u64, EventBox>,
+}
+
+#[derive(Deserialize)]
+struct Raw {
+    duplicate_credits: HashMap<String, i64>,
+    credit_drops: HashMap<String, RawDrop>,
+    celebration_boxes: HashMap<String, RawBox>,
+}
+
+#[derive(Deserialize)]
+struct RawDrop {
+    unlock: String,
+    amount: i64,
+}
+
+#[derive(Deserialize)]
+struct RawBox {
+    unlock: String,
+    box_type: i32,
+}
+
+impl Economy {
+    pub fn load(data_dir: &Path) -> io::Result<Self> {
+        let path = data_dir.join(FILE);
+        let file = File::open(&path).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
+        Self::from_reader(BufReader::new(file))
+    }
+
+    pub fn from_reader(reader: impl Read) -> io::Result<Self> {
+        let raw: Raw = serde_json::from_reader(reader)
+            .map_err(|error| invalid(format!("invalid {FILE}: {error}")))?;
+        let credit_drops = raw
+            .credit_drops
+            .into_iter()
+            .map(|(rarity, drop)| {
+                let unlock = guid(&drop.unlock)?;
+                Ok((
+                    rarity,
+                    CreditDrop {
+                        unlock,
+                        amount: drop.amount,
+                    },
+                ))
+            })
+            .collect::<io::Result<_>>()?;
+        let event_boxes = raw
+            .celebration_boxes
+            .into_iter()
+            .map(|(kind, event_box)| {
+                Ok((
+                    guid(&kind)?,
+                    EventBox {
+                        unlock: guid(&event_box.unlock)?,
+                        box_type: event_box.box_type,
+                    },
+                ))
+            })
+            .collect::<io::Result<_>>()?;
+        Ok(Self {
+            duplicate_credits: raw.duplicate_credits,
+            credit_drops,
+            event_boxes,
+        })
+    }
+
+    /// The credits a duplicate item of `rarity` gives.
+    pub fn duplicate_credits(&self, rarity: &str) -> i64 {
+        self.duplicate_credits.get(rarity).copied().unwrap_or(0)
+    }
+
+    /// What a base box slot of `rarity` holds when it holds credits.
+    pub fn credit_drop(&self, rarity: &str) -> Option<CreditDrop> {
+        self.credit_drops.get(rarity).copied()
+    }
+
+    /// The box a celebration type (`01C` GUID) gives at login.
+    pub fn event_box(&self, kind: u64) -> Option<EventBox> {
+        self.event_boxes.get(&kind).copied()
+    }
+}
+
+fn guid(text: &str) -> io::Result<u64> {
+    parse_guid(text).ok_or_else(|| invalid(format!("{FILE}: invalid GUID {text:?}")))
+}
+
+fn invalid(message: String) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}

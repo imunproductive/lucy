@@ -29,6 +29,7 @@ use orpheus_lobby::{
     arcade::Arcade,
     celebrations::Celebrations,
     collection::Collection,
+    economy::Economy,
     menu::extra_preload_themes,
     presence::{PRO_ACCOUNT_BITS, Presence},
     ranked::Ranked,
@@ -125,7 +126,8 @@ impl Server {
         let presence = Presence::new(&templates)?;
         let ranked = Ranked::new(&templates)?;
         let arcade = Arcade::load(data.join("arcade_cards_174.json"), &templates)?;
-        let celebrations = Celebrations::load(&data, &templates)?;
+        let economy = Arc::new(Economy::load(&data)?);
+        let celebrations = Celebrations::load(&data, &templates, Arc::clone(&economy))?;
         let mut assets = SceneAssets::load(&config.runtime)?;
         if let Some(install) = &config.install {
             assets = assets.with_collision_build(collision_build(install.clone()));
@@ -197,7 +199,7 @@ impl Server {
         } else {
             None
         };
-        let services = Arc::new(Services::new(&collection));
+        let services = Arc::new(Services::new(&collection, economy));
         let shared = Arc::new(Lobby {
             signing_key,
             schemas,
