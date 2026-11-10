@@ -1052,6 +1052,11 @@ impl WorldDelivery {
             send,
         };
         let chunks = views.update(scene.bot_scripts(), events, &context);
+        // A lifetime registered after its create already arrived (a fast
+        // ACK between ticks) may send its first frame at once.
+        for &entity in live.iter().filter(|&entity| self.created.contains(entity)) {
+            views.create_arrived(entity);
+        }
         self.bot_views = views;
         for chunk in chunks {
             self.push(Record {
