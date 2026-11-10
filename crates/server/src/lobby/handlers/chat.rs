@@ -121,10 +121,12 @@ fn match_command(peer: &mut Peer<'_, '_>, channel: &Value, said: &str) -> io::Re
             }
         }
         "leave" => {
-            let home = match peer.seat.as_ref() {
-                Some(seat) => peer.lobby.game.send_home(&seat.handoff)?,
-                None => false,
-            };
+            // Python `GameServer.send_home(account)`.
+            let home = peer
+                .lobby
+                .matchmaker
+                .send_home(peer.lobby, Some(peer.login.account.account_lo))
+                != 0;
             if home {
                 "Back to the menu.".to_owned()
             } else {

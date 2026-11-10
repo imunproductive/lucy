@@ -9,7 +9,6 @@
 //! directly, to other sessions through their mailboxes.
 
 use std::{
-    collections::BTreeMap,
     io,
     sync::{Arc, MutexGuard},
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -19,7 +18,6 @@ use orpheus_lobby::{
     accounts::Account,
     handoff::general_channel,
     queue::QueueFields,
-    ranked::LeaderboardPlaces,
     social::{ChannelChange, PartyId, SocialState, content::SocialContent, friends_of, messages},
     transport::LobbyMessage,
 };
@@ -27,10 +25,7 @@ use orpheus_lobby::{
 #[cfg(test)]
 mod tests;
 
-use super::{Lobby, matchmaker::parties::Party, peer::Peer};
-
-/// No account has a Top 500 place yet (the leaderboard is another port).
-static NO_PLACES: LeaderboardPlaces = BTreeMap::new();
+use super::{Lobby, matchmaker::parties::Party, peer::Peer, services};
 
 /// The role queue the party is in now.
 fn live_queue(lobby: &Lobby, id: PartyId, members: &[Arc<Account>]) -> Option<QueueFields> {
@@ -97,7 +92,7 @@ impl<'a> Turn<'a> {
                 collection: &lobby.collection,
                 ranked: &lobby.ranked,
                 presence: &lobby.presence,
-                places: &NO_PLACES,
+                places: Box::new(move |account| services::top500_places(lobby, account)),
                 wall_time,
                 now: Instant::now(),
                 queue,

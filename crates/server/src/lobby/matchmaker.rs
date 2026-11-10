@@ -213,9 +213,10 @@ fn pass_count(pool: Option<Pool>, account: &Account) -> i64 {
 }
 
 impl Matchmaker {
-    /// The queue rules and maps from the runtime `data` folder, and the
-    /// settings saved in the `state` folder.
-    pub(crate) fn new(data: &Path, state: &Path) -> io::Result<Self> {
+    /// The queue rules and maps from the runtime `data` folder, the settings
+    /// saved in the `state` folder, and the players who start a match of a
+    /// card without a number of its own (`--test-players`; 0 = full teams).
+    pub(crate) fn new(data: &Path, state: &Path, minimum_players: usize) -> io::Result<Self> {
         let modes_path = state.join("matchmaking.json");
         let modes = rules::load_modes(&modes_path);
         Ok(Self {
@@ -223,6 +224,7 @@ impl Matchmaker {
             maps: MapCatalog::load(data.join("game_maps_174.json"))?,
             modes_path,
             state: Mutex::new(State {
+                minimum_players,
                 modes,
                 ..State::default()
             }),
@@ -789,16 +791,34 @@ impl Matchmaker {
         self.maps.map_name(guid)
     }
 
-    /// Send every game that is in a match back to the menu (20304). How many
-    /// games were told.
-    pub(crate) fn end_matches(&self, lobby: &Lobby) -> usize {
+    /// Send the account's game, or every game for `None`, that is connected
+    /// to a match back to the menu (20304 with 0 = leave for good) and take
+    /// the player out of it. How many games were told (Python
+    /// `GameServer.send_home`, for the lobby's `.leave` and the dashboard's
+    /// "End matches"). A game counts as connected as soon as its handoff is
+    /// used, before the next sweep marks the seat joined.
+    pub(crate) fn send_home(&self, lobby: &Lobby, account_lo: Option<u32>) -> usize {
         self.with(lobby, |ctx| {
             let mut told = 0;
             for room in 0..ctx.state.rooms.len() {
                 for seat in 0..ctx.state.rooms[room].seats.len() {
                     let player = &ctx.state.rooms[room].seats[seat];
-                    if player.joined && !player.gone {
-                        ctx.take_out(room, seat, "the dashboard ended the matches");
+                    if player.gone
+                        || player.released
+                        || account_lo.is_some_and(|account| player.account.account_lo != account)
+                    {
+                        continue;
+                    }
+                    let connected = player.joined
+                        || (matches!(lobby.game.handoff_pending(player.handoff.conn), Ok(false))
+                            && matches!(lobby.game.seat_exists(&player.handoff), Ok(true)));
+                    if connected {
+                        let reason = if account_lo.is_some() {
+                            "sent home"
+                        } else {
+                            "the dashboard ended the matches"
+                        };
+                        ctx.take_out(room, seat, reason);
                         told += 1;
                     }
                 }
@@ -920,10 +940,10 @@ impl Room {
             .collect()
     }
 
-    /// As the matchmaker sees it. Hero select's assemble countdown is not
-    /// ported, so a match keeps waiting for its players (Python
+    /// As the matchmaker sees it; `waiting` from the game service: hero
+    /// select's assemble countdown has not started (Python
     /// `Match.waiting_for_players`).
-    fn open(&self) -> OpenMatch {
+    fn open(&self, waiting: bool) -> OpenMatch {
         let mut roles = vec![BTreeMap::new(); self.map.team_sizes.len()];
         for seat in self
             .seats
@@ -935,7 +955,7 @@ impl Room {
             }
         }
         OpenMatch {
-            waiting: true,
+            waiting,
             free: self.free(),
             roles,
         }
@@ -1284,13 +1304,28 @@ impl Ctx<'_> {
         } else {
             rules.roles.clone()
         };
+        // Whether each match still waits for its players (Python
+        // `GameServer.open_matches`); one the service no longer has is over.
+        let waiting: HashMap<[u64; 2], bool> = match self.lobby.game.snapshot() {
+            Ok(matches) => matches
+                .into_iter()
+                .map(|found| (found.id, found.waiting))
+                .collect(),
+            Err(error) => {
+                tracing::warn!("[MM] The game service did not list its matches: {error}");
+                return;
+            }
+        };
         for room in 0..self.state.rooms.len() {
+            let Some(&waiting) = waiting.get(&self.state.rooms[room].id) else {
+                continue;
+            };
             if self.state.rooms[room].card != card {
                 continue;
             }
             let mut index = 0;
             while index < self.state.tickets.len() {
-                let open = self.state.rooms[room].open();
+                let open = self.state.rooms[room].open(waiting);
                 if !open.free.iter().any(|&free| free > 0)
                     || (!open.waiting && !self.fills_running(card))
                 {
@@ -1334,7 +1369,7 @@ impl Ctx<'_> {
             return false;
         };
         let id = self.state.rooms[room].id;
-        let handoffs = match game::join_running(&self.lobby.game, id, &players) {
+        let handoffs = match game::join_running(&self.lobby.game, id, players) {
             Ok(Some(handoffs)) => handoffs,
             Ok(None) => return false,
             Err(error) => {

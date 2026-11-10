@@ -68,7 +68,8 @@ pub(crate) struct Lobby {
     pub arcade: Arcade,
     pub celebrations: Celebrations,
     pub extra_preload: Vec<u64>,
-    pub assets: SceneAssets,
+    /// Shared with the threads that prepare match scenes.
+    pub assets: Arc<SceneAssets>,
     pub first_scene: Mutex<Option<PreparedScene>>,
     pub accounts: Arc<Accounts>,
     /// The account a freshly started game logs in as; the dashboard can change it.

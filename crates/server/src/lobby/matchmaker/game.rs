@@ -2,9 +2,9 @@
 //! `GameServer` offers it (`ow174/game/server.py` `create_match`,
 //! `join_match`).
 //!
-//! The Rust game service opens one prepared world per call and keeps no
-//! account bookkeeping, so the matchmaker keeps its own rooms (`Room`) and
-//! reaches the service through these functions.
+//! The Rust game service keeps no account bookkeeping, so the matchmaker
+//! keeps its own rooms (`Room`) and reaches the service through these
+//! functions.
 
 use std::{io, sync::Arc, time::SystemTime};
 
@@ -24,9 +24,11 @@ use crate::{
     lobby::Lobby,
 };
 
-/// Open one world for these players; their seats come back in player order.
-/// Worlds open only on the Practice Range scene so far; the service refuses
-/// other maps as unsupported.
+/// Open one world for these players on any map of the catalog; their seats
+/// come back in player order. The Practice Range prepared at start-up goes
+/// the first time; any other scene is prepared off the game thread while
+/// the players load, its collision built from the install when it has no
+/// cache yet (match.py `_refresh_collision`).
 pub(super) fn open_world(
     game: &GameService,
     id: [u64; 2],
@@ -34,34 +36,27 @@ pub(super) fn open_world(
     lobby: &Lobby,
     players: Vec<WorldPlayer>,
 ) -> io::Result<Vec<Handoff>> {
-    let scene = prepare_scene(lobby, map)?;
-    game.open_prepared(id, scene, players)
-}
-
-/// Seats for more players in a match that is on (Python
-/// `GameServer.join_match`), or `None` when the match takes no more. The game
-/// service cannot add players to a running world yet, so a match takes none
-/// and waiting parties start a match of their own instead.
-pub(super) fn join_running(
-    _game: &GameService,
-    _id: [u64; 2],
-    _players: &[WorldPlayer],
-) -> io::Result<Option<Vec<Handoff>>> {
-    Ok(None)
-}
-
-/// The scene of a map: the Practice Range prepared at start-up the first time,
-/// then a fresh one each time.
-fn prepare_scene(
-    lobby: &Lobby,
-    map: GameMap,
-) -> io::Result<orpheus_sim::scene_assets::PreparedScene> {
     let first = lobby
         .first_scene
         .lock()
         .expect("prepared scene")
         .take_if(|scene| *scene.map() == map);
-    first.map_or_else(|| lobby.assets.prepare(map), Ok)
+    if let Some(scene) = first {
+        return game.open_prepared(id, scene, players);
+    }
+    let assets = Arc::clone(&lobby.assets);
+    let prepare = map.clone();
+    game.open_world(id, map, players, Box::new(move || assets.prepare(prepare)))
+}
+
+/// Seats for more players in a match that is on (Python
+/// `GameServer.join_match`), or `None` once it has ended.
+pub(super) fn join_running(
+    game: &GameService,
+    id: [u64; 2],
+    players: Vec<WorldPlayer>,
+) -> io::Result<Option<Vec<Handoff>>> {
+    game.join_match(id, players)
 }
 
 /// What the game server takes for a player, and the player's card as the
@@ -79,6 +74,20 @@ pub(super) fn world_player(
     role: u8,
 ) -> io::Result<(WorldPlayer, Fields)> {
     let profile = account.profile();
+    // The hero picked for the menu in the dashboard; the game server takes
+    // Soldier: 76 for 0 (`matchmaker.py` `_hero`, `menu_hero.py` `picked`).
+    let heroes = lobby.collection.heroes();
+    let hero = lobby
+        .social
+        .menu_hero(
+            account.account_lo,
+            &profile,
+            heroes,
+            lobby.collection.items(),
+        )?
+        .menu_guid
+        .filter(|hero| heroes.contains(hero))
+        .unwrap_or(0);
     let identity = Identity::for_account(account.account_lo);
     let frame = lobby.collection.portrait_frame(&profile);
     let now = SystemTime::now()
@@ -129,6 +138,7 @@ pub(super) fn world_player(
         WorldPlayer {
             player,
             card: world_card,
+            hero,
         },
         record,
     ))

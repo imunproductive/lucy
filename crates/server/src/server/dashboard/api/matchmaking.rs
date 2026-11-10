@@ -122,7 +122,7 @@ impl Api<'_> {
         let lobby = self
             .lobby
             .ok_or_else(|| ApiError::new(409, "The game server is off."))?;
-        let told = lobby.matchmaker.end_matches(lobby);
+        let told = lobby.matchmaker.send_home(lobby, None);
         Ok(json!({"message": format!("Sent {told} game(s) back to the menu.")}))
     }
 
