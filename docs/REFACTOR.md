@@ -432,7 +432,7 @@ DataTool has already read everything the pack needs from the local install, full
 
 Public tests use a synthetic miniature storage built by `testkit`.
 
-**Spike result (2026-11-10):** go. TACTLib's `ProCMF_104319` decrypts the install's manifests, and the GUID counts match DataTool's extraction (1,587 `01B`, 3,528 `003`). Encrypted blocks are needed: 8 bundles use them, so the reader handles Salsa20 with the install's keyring. One key is missing from that keyring; `docs/notes/data-sources.md` lists what it hides.
+**Spike result (2026-11-10):** go. TACTLib's `ProCMF_104319` decrypts the install's manifests, and the GUID counts match DataTool's extraction (1,587 `01B`, 3,528 `003`). Encrypted blocks are needed: 8 bundles use them, so the reader handles Salsa20 with the install's keyring. One key is missing from that keyring; TACTLib's static keyring has it, and `docs/notes/data-sources.md` lists what it unlocks.
 
 **6b. `stu` crate:** an STUv2 reader. A one-off generator (`cargo run -p orpheus-stu --bin gen-types`) reads OWLib's `overwatch/1.74` `TankLib/STU/Types` (revision `7afe5f52`) and writes a Rust type table, which is committed. The table is derived from MIT-licensed code, not from game data.
 
