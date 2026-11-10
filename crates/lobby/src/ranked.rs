@@ -187,6 +187,15 @@ pub fn wins_of(profile: &Profile, queue: Queue) -> io::Result<u16> {
     )
 }
 
+/// The queue's matches that ended in a draw; none for a profile without
+/// them (Python keeps no draws).
+pub fn draws_of(profile: &Profile, queue: Queue) -> io::Result<u16> {
+    Ok(
+        profile_integer(&profile.draws, queue, 0)?.clamp(0, i64::from(matches_of(profile, queue)?))
+            as u16,
+    )
+}
+
 fn profile_integer(values: &Map<String, Json>, queue: Queue, default: i64) -> io::Result<i64> {
     let Some(value) = values.get(queue.name()) else {
         return Ok(default);

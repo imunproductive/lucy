@@ -32,6 +32,7 @@ mod game;
 pub(crate) mod parties;
 #[cfg(test)]
 mod ported_tests;
+mod results;
 #[cfg(test)]
 mod tests;
 
@@ -55,14 +56,14 @@ use orpheus_lobby::{
     matchmaker::{self as rules, ModeSettings, OpenMatch, QUICK_PLAY, QueueRules, Seekers},
     passes::{self, Pool},
     queue::{self, PICKING, QueueFields, SEARCHING},
-    ranked::LeaderboardPlaces,
+    ranked::{LeaderboardPlaces, Queue},
     session::PreparedLogin,
     transport::LobbyMessage,
 };
 use orpheus_wire::jam::codec::{Fields, Value};
 
 use super::{Lobby, TICK, match_id, peer::Peer};
-use crate::game_service::WorldPlayer;
+use crate::game_service::{Outcome, WorldPlayer};
 pub(crate) use parties::{Parties, Party};
 
 pub(crate) struct Matchmaker {
@@ -189,6 +190,8 @@ enum Effect {
     Notify(Party, Option<QueueFields>),
     PassesChanged(Arc<Account>),
     GameLeft(u32, [u64; 2]),
+    /// A finished match into the player's profile, saved.
+    Recorded(Arc<Account>, Queue, Outcome),
 }
 
 /// The card of a queue key (44100 +0x78): its +0x0 +0x0.
@@ -309,9 +312,9 @@ impl Matchmaker {
         });
     }
 
-    /// Each wake of a session: its 20600 when it is due, and the games that
-    /// connected to or left their match (at most once per lobby tick for all
-    /// sessions).
+    /// Each wake of a session: its 20600 when it is due, and the matches that
+    /// ended and the games that connected to or left their match (at most
+    /// once per lobby tick for all sessions).
     pub(crate) fn tick(&self, peer: &mut Peer<'_, '_>) -> io::Result<()> {
         let lobby = peer.lobby;
         let account_lo = peer.login.account.account_lo;
@@ -346,6 +349,7 @@ impl Matchmaker {
             let mut retry = None;
             if sweep {
                 ctx.state.last_sweep = Some(now);
+                ctx.record_results();
                 ctx.sweep();
                 if std::mem::take(&mut ctx.state.clock_blocked) {
                     ctx.retry(None);
@@ -852,6 +856,7 @@ fn perform(lobby: &Lobby, effects: Vec<Effect>) {
                 Ok(())
             }),
             Effect::GameLeft(account_lo, match_id) => lobby.game_left(account_lo, match_id),
+            Effect::Recorded(account, queue, outcome) => results::save(&account, queue, outcome),
         };
         if let Err(error) = done {
             tracing::error!("[MM] {error}");
@@ -1710,6 +1715,39 @@ impl Ctx<'_> {
         let name = player.account.name.clone();
         let id = self.state.rooms[room].id;
         tracing::info!("[MM] {name} out of match {id:X?} ({reason}): {done}");
+    }
+
+    /// The matches that ended by their rules since the last tick go into
+    /// the profiles of their seated players who were still in them (see
+    /// `results`). They come before the sweep, which drops a room once its
+    /// last game left. The room itself stays: its games leave the ended
+    /// match as from any other, and the sweep frees it after the last.
+    fn record_results(&mut self) {
+        let ended = match self.lobby.game.take_results() {
+            Ok(ended) => ended,
+            Err(error) => {
+                tracing::warn!("[MM] The game service did not report its results: {error}");
+                return;
+            }
+        };
+        for result in ended {
+            let Some(room) = self.state.rooms.iter().find(|room| room.id == result.id) else {
+                tracing::info!("[MM] Match {:X?} ended without a room", result.id);
+                continue;
+            };
+            let ranked = &self.lobby.ranked;
+            for (account, queue, outcome) in
+                results::recorded(room, &result, |profile| ranked.season(profile))
+            {
+                tracing::info!(
+                    "[MM] {} finished match {:X?}: {outcome:?} in {}",
+                    account.name,
+                    result.id,
+                    queue.name()
+                );
+                self.effects.push(Effect::Recorded(account, queue, outcome));
+            }
+        }
     }
 
     /// The games that connected to their match get its match lobby; those

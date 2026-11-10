@@ -137,6 +137,36 @@ impl PlayerState {
     }
 }
 
+/// How a finished match went for a player's team.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Win,
+    Loss,
+    Draw,
+}
+
+/// A match that ended by its rules, for the lobby's profiles: every seat of
+/// the room in slot order, which is the matchmaker's seat order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MatchResult {
+    pub id: MatchId,
+    pub map: u64,
+    pub mode: u64,
+    pub players: Vec<PlayerResult>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerResult {
+    pub slot: usize,
+    pub name: String,
+    pub account: [u64; 2],
+    pub team: u8,
+    pub outcome: Outcome,
+    /// Still in the match when it ended: a leaver's seat is listed, but
+    /// gets no result of his own.
+    pub finished: bool,
+}
+
 /// Builds a map's collision cache from the game install, as the Python
 /// server did when a match opened on a map without one
 /// (ow174/game/collision.py `_read_cache`, `build`). The collision reads no
@@ -212,6 +242,10 @@ enum Request {
     },
     Snapshot {
         reply: mpsc::SyncSender<Vec<MatchSnapshot>>,
+    },
+    /// The matches that ended since the last call, oldest first.
+    Results {
+        reply: mpsc::SyncSender<Vec<MatchResult>>,
     },
 }
 
@@ -417,6 +451,12 @@ impl GameService {
     /// Every match with its players (server.py `snapshot`).
     pub fn snapshot(&self) -> io::Result<Vec<MatchSnapshot>> {
         self.request(|reply| Request::Snapshot { reply })
+    }
+
+    /// The matches that ended by their rules since the last call, oldest
+    /// first; the lobby records them in the players' profiles.
+    pub fn take_results(&self) -> io::Result<Vec<MatchResult>> {
+        self.request(|reply| Request::Results { reply })
     }
 
     pub fn handoff_pending(&self, connection: u32) -> io::Result<bool> {
@@ -981,6 +1021,8 @@ struct State {
     peers: IndexMap<u32, Peer>,
     next_connection: u32,
     next_input_peer: usize,
+    /// Matches that ended by their rules, until the lobby takes them.
+    results: Vec<MatchResult>,
 }
 
 impl State {
@@ -994,6 +1036,7 @@ impl State {
             peers: IndexMap::new(),
             next_connection: 1,
             next_input_peer: 0,
+            results: Vec::new(),
         }
     }
 
@@ -1216,6 +1259,9 @@ impl State {
             Request::Scene { id, scene } => self.scene_ready(id, scene, now),
             Request::Snapshot { reply } => {
                 let _ = reply.send(self.snapshot());
+            }
+            Request::Results { reply } => {
+                let _ = reply.send(std::mem::take(&mut self.results));
             }
             Request::Pending { connection, reply } => {
                 let _ = reply.send(self.links.handoff_pending(connection, now));
