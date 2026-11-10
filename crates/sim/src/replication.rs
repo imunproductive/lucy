@@ -783,6 +783,9 @@ pub struct WorldDelivery {
     input: InputQueue,
     mover: Option<Mover>,
     body_script: Option<BodyScript>,
+    /// The body's script stopped on a fault: a pick of the same hero gets a
+    /// new body with a new script (match.py `body_script_failed`).
+    script_failed: bool,
     projectile_destroys: HashMap<u32, (BodyId, ProjectileToken)>,
     /// What the player's projectiles ask of the room since the match last
     /// took it (projectiles.py `_end`, `_field`).
@@ -872,6 +875,7 @@ impl WorldDelivery {
             input: InputQueue::default(),
             mover: None,
             body_script: None,
+            script_failed: false,
             projectile_destroys: HashMap::new(),
             projectile_events: Vec::new(),
             fields: FieldCopies::default(),
@@ -899,6 +903,7 @@ impl WorldDelivery {
         self.presentation_due = false;
         self.mover = None;
         self.body_script = None;
+        self.script_failed = false;
         self.projectile_destroys.clear();
         self.projectile_events.clear();
         self.fields = FieldCopies::default();
@@ -1547,8 +1552,9 @@ impl WorldDelivery {
         self.push(record);
     }
 
-    /// A body whose script failed goes on without it. Say so once, with the
-    /// first gap the VM reported, so a playtest shows why.
+    /// A body whose script failed goes on without it until a pick of its
+    /// hero replaces it. Say so once, with the first gap the VM reported, so
+    /// a playtest shows why.
     fn drop_failed_script(&mut self, error: &str) {
         if let Some(script) = &self.body_script {
             let first = script
@@ -1568,9 +1574,12 @@ impl WorldDelivery {
             );
         }
         self.cancel_body_script();
+        self.script_failed = true;
     }
 
+    /// The body's script stops (match.py `stop_body_script`), not failed.
     fn cancel_body_script(&mut self) {
+        self.script_failed = false;
         if let Some(mut script) = self.body_script.take() {
             script.stream.retire();
             if let Some(mover) = &mut self.mover {
@@ -1707,9 +1716,12 @@ impl WorldDelivery {
                     .get(&hero.guid)
                     .copied()
                     .unwrap_or_default();
-                if self
-                    .body
-                    .is_some_and(|body| (body.hero, body.skin) == (hero.guid, skin))
+                // match.py `game_message`: the same hero and skin keep the
+                // body, unless its script failed (`needs_body`).
+                if !self.script_failed
+                    && self
+                        .body
+                        .is_some_and(|body| (body.hero, body.skin) == (hero.guid, skin))
                 {
                     // The screen stays open until the heroes are assembled,
                     // as in retail (match.py `game_message`).

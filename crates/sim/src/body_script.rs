@@ -702,4 +702,6 @@ pub fn fixture_graph_factory(graph: Json, variables: Variables) -> PlayerBodyFac
 }
 
 #[cfg(test)]
+mod fault_tests;
+#[cfg(test)]
 mod tests;

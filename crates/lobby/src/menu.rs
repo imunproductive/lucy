@@ -151,6 +151,9 @@ fn random_index(len: usize) -> io::Result<usize> {
 }
 
 #[cfg(test)]
+mod content_golden;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

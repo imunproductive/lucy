@@ -4,6 +4,8 @@ pub mod correction;
 pub mod ground;
 pub mod kinematics;
 pub mod modifiers;
+#[cfg(test)]
+mod ported_tests;
 pub(crate) mod posture;
 pub mod settings;
 

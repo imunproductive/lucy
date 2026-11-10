@@ -2047,4 +2047,6 @@ struct InstanceContext<'a, W> {
 }
 
 #[cfg(test)]
+mod membership_tests;
+#[cfg(test)]
 mod tests;

@@ -772,6 +772,7 @@ dependencies = [
  "orpheus-physics",
  "orpheus-stu",
  "orpheus-testkit",
+ "orpheus-wire",
  "serde_json",
 ]
 

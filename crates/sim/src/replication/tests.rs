@@ -1270,3 +1270,5 @@ fn body_messages_to_unknown_entities_go_nowhere_and_the_rest_are_capped() {
     deliver_body_messages(&mut [&mut a, &mut b]);
     assert_eq!(received.lock().unwrap().len(), MAX_BODY_MESSAGES);
 }
+
+mod recovery;
