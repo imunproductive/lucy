@@ -2,7 +2,12 @@
 //! --no-launch`) and `orpheus server` (Python's `server` mode, the lobby for
 //! other PCs).
 
-use std::{fs, io, net::Ipv4Addr, path::PathBuf, sync::Arc, sync::mpsc};
+use std::{
+    fs, io,
+    net::Ipv4Addr,
+    path::{Path, PathBuf},
+    sync::{Arc, mpsc},
+};
 
 use orpheus_launcher::game::install_root;
 use orpheus_server::{
@@ -60,6 +65,8 @@ pub fn start(settings: &Settings, hosting: Hosting) -> io::Result<Server> {
     config.rpc_port = settings.ports.rpc;
     config.dashboard_port = settings.dashboard_port();
     config.games = hosting.games;
+    config.install = Some(install(&play::game(settings)?)?);
+    config.test_players = settings.test_players;
     Server::start(config)
 }
 
@@ -67,16 +74,21 @@ pub fn start(settings: &Settings, hosting: Hosting) -> io::Result<Server> {
 /// the first start and kept in the state folder's cache.
 pub fn game_data(settings: &Settings) -> io::Result<PathBuf> {
     let game = play::game(settings)?;
-    let install = install_root(&game).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("{} has no .build.info next to it", game.display()),
-        )
-    })?;
+    let install = install(&game)?;
     let locale = play::locale(settings, &game).unwrap_or_else(|| TEXT_LOCALE.into());
     fs::create_dir_all(settings.cache())?;
     info!(install = %install.display(), "reading game data from the install");
     orpheus_assets::cache::ensure(&install, &locale, &settings.cache()).map_err(io::Error::other)
+}
+
+/// The install folder of the configured game.
+fn install(game: &Path) -> io::Result<PathBuf> {
+    install_root(game).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{} has no .build.info next to it", game.display()),
+        )
+    })
 }
 
 pub fn wait_for_ctrl_c() -> io::Result<()> {

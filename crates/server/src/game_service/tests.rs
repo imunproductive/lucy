@@ -264,7 +264,7 @@ struct WorldRecord {
     updated: Option<u8>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ReceivedChunk {
     first: u32,
     span: u32,
@@ -437,26 +437,20 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
     // Five synthetic peers share a prepared fixture solely to test the
     // worker scheduler.
     let players: Vec<_> = (0..5)
-        .map(|slot| Player {
-            info: player().pop().unwrap(),
+        .map(|_| WorldPlayer {
+            player: player().pop().unwrap(),
             card: PlayerCard::default(),
-            entity: player_entity(slot),
-            gone: false,
-            stats: PlayerStats::default(),
+            hero: 0,
         })
         .collect();
-    state.rooms.insert(
-        MATCH,
-        Room {
-            map: scene.map().clone(),
-            remaining: players.len(),
-            players,
-            world: Some(WorldStart {
-                scene: Box::new(scene),
-                combat: None,
-            }),
-        },
-    );
+    let map = scene.map().clone();
+    let world = WorldStart {
+        scene: Box::new(scene),
+        combat: None,
+    };
+    state
+        .rooms
+        .insert(MATCH, Room::new(map, players, Some(world)));
     let first = FIRST_TICK + 1;
     let commands: Vec<_> = (first..first + 32)
         .map(|frame| Command {
@@ -1164,8 +1158,11 @@ fn exercise_hero_selection(
             })
             .collect::<Vec<_>>()
     };
-    let controller =
-        orpheus_sim::controller::Controller::load(assets.graphs(), PRACTICE_RANGE_MODE).unwrap();
+    let controller = orpheus_sim::controller::Controller::load(
+        assets.graphs(),
+        orpheus_content::maps::PRACTICE_RANGE_MODE,
+    )
+    .unwrap();
     let verify_controller = |records: &[WorldRecord], hero, open| {
         let script = records
             .iter()
@@ -1389,7 +1386,17 @@ fn pump_until(
     what: &str,
     done: impl Fn(&[&mut Watcher]) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    pump_within(watchers, schemas, what, Duration::from_secs(10), done);
+}
+
+fn pump_within(
+    watchers: &mut [&mut Watcher],
+    schemas: &Schemas,
+    what: &str,
+    within: Duration,
+    done: impl Fn(&[&mut Watcher]) -> bool,
+) {
+    let deadline = Instant::now() + within;
     while !done(watchers) {
         for watcher in watchers.iter_mut() {
             watcher.pump(schemas);
@@ -1435,6 +1442,7 @@ fn two_players_in_one_practice_range_see_each_other() {
                 record: Fields::from([(0x40, Value::String((*tag).into()))]),
                 ..PlayerCard::default()
             },
+            hero: 0,
         })
         .collect();
     let tickets = server.open_practice_party(MATCH, scene, members).unwrap();
@@ -1996,6 +2004,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
                 record: Fields::from([(0x40, Value::String((*tag).into()))]),
                 ..PlayerCard::default()
             },
+            hero: 0,
         })
         .collect();
     let tickets = server.open_prepared(MATCH, scene, members).unwrap();
@@ -2215,5 +2224,330 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
                 && record.operation == Some(3))
             .is_some()
     );
+    server.stop().unwrap();
+}
+
+/// A PvP match on a map other than the Practice Range (ow174/game/match.py,
+/// server.py): its collision is built from the install while two players
+/// load, and both spawn on it. The first spawn starts "assemble your team":
+/// the game mode entity counts v1303 down every second, hero select stays
+/// open after a pick with the skin selector on, and closes when the 30 s are
+/// up. A third player then joins the running match and sees the others.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR); runs over 30 s"]
+fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
+    use orpheus_content::{heroes::SOLDIER, maps::MapCatalog, parameters::PICK_HERO};
+    use orpheus_sim::{controller::Controller, scene_assets::SceneAssets};
+
+    const WORKSHOP_CHAMBER: u64 = 0x0800_0000_0000_0c48;
+    const SKIRMISH: u64 = 0x0230_0000_0000_0010;
+
+    let runtime = orpheus_testkit::runtime_dir();
+    let collision = tempfile::tempdir().unwrap();
+    let assets = Arc::new(
+        SceneAssets::load(&runtime)
+            .unwrap()
+            .with_collision_folder(collision.path())
+            .with_collision_build(collision_build(orpheus_testkit::game_dir())),
+    );
+    let catalog = MapCatalog::load(runtime.join("data/game_maps_174.json")).unwrap();
+    let map = catalog
+        .game_map(WORKSHOP_CHAMBER, SKIRMISH, "Skirmish", false, &[6, 6])
+        .expect("Workshop Chamber in Skirmish");
+    let controller = Controller::load(assets.graphs(), SKIRMISH).unwrap();
+    assert!(!controller.practice());
+    let schemas = Arc::new(Schemas::game());
+    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let player = |tag: &str, team, account| WorldPlayer {
+        player: MatchPlayer {
+            name: tag.into(),
+            team,
+            tournament: false,
+            ranked: false,
+        },
+        card: PlayerCard {
+            account: [account, 0x0100_0000_0000_0000],
+            battle_tag: tag.into(),
+            record: Fields::from([(0x40, Value::String(tag.into()))]),
+            ..PlayerCard::default()
+        },
+        hero: 0,
+    };
+    let prepare = {
+        let (assets, map) = (Arc::clone(&assets), map.clone());
+        Box::new(move || assets.prepare(map))
+    };
+    let tickets = server
+        .open_world(
+            MATCH,
+            map.clone(),
+            vec![player("first#1111", 0, 7), player("second#2222", 1, 8)],
+            prepare,
+        )
+        .unwrap();
+    let watch = |ticket: &Handoff, slot| {
+        let mut client = Client::new(server.local_addr(), ticket);
+        client.handshake();
+        Watcher {
+            client,
+            owner: player_entity(slot),
+            tick: 0,
+            sequences: HashSet::new(),
+            datagrams: Vec::new(),
+            ticks: Vec::new(),
+        }
+    };
+    let instance = |watcher: &Watcher| {
+        watcher.datagrams.iter().any(|(messages, _)| {
+            messages.iter().any(|message| {
+                message.id == 20300 && message.fields[&0x80] != Value::Struct(Fields::new())
+            })
+        })
+    };
+    let load = |watcher: &mut Watcher| {
+        let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+        let mut payload = BitWriter::new();
+        write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+        watcher.client.send(ACK, payload.into_bytes());
+    };
+    // The owner's controller frames, in order, with their datagram.
+    let controllers = |watcher: &Watcher| -> Vec<(usize, ReceivedChunk)> {
+        let mut frames = Vec::new();
+        for (index, (_, records)) in watcher.datagrams.iter().enumerate() {
+            for record in records {
+                if let (true, Some(script)) = (record.entity == watcher.owner, &record.script) {
+                    frames.push((index, script.clone()));
+                }
+            }
+        }
+        frames
+    };
+    let mode_frames = |watcher: &Watcher| -> Vec<(usize, ReceivedChunk)> {
+        let mut frames = Vec::new();
+        for (index, (_, records)) in watcher.datagrams.iter().enumerate() {
+            for record in records {
+                if let (GAME_MODE_ENTITY, Some(script)) = (record.entity, &record.script) {
+                    frames.push((index, script.clone()));
+                }
+            }
+        }
+        frames
+    };
+    // Whether a controller frame shows hero select so (match.py
+    // `send_controller`: no assemble title hidden in the PvP modes).
+    let shows = |chunk: &ReceivedChunk, open: bool, skins: bool, hero: Option<u64>| {
+        let mut reader = chunk.bits();
+        if chunk.first != 0 || reader.bits(3).unwrap() != 2 {
+            return false;
+        }
+        let cmfd = reader.w_var().unwrap();
+        let expected = controller
+            .controller_frame(
+                cmfd,
+                ControllerFrame {
+                    select_open: open,
+                    skins,
+                    hide_assemble: false,
+                    hero,
+                    ..ControllerFrame::default()
+                },
+            )
+            .unwrap();
+        (chunk.width, chunk.data.as_slice()) == (expected.bit_len(), expected.as_bytes())
+    };
+
+    let mut watchers: Vec<_> = tickets
+        .iter()
+        .enumerate()
+        .map(|(slot, ticket)| watch(ticket, slot))
+        .collect();
+    let [first, second] = &mut watchers[..] else {
+        unreachable!()
+    };
+    pump_until(
+        &mut [first, second],
+        &schemas,
+        "the instances",
+        |watchers| watchers.iter().all(|watcher| instance(watcher)),
+    );
+    load(first);
+    load(second);
+    // The world waits for the collision, which is built on its own thread.
+    pump_within(
+        &mut [first, second],
+        &schemas,
+        "the controllers on the built collision",
+        Duration::from_secs(600),
+        |watchers| {
+            watchers
+                .iter()
+                .all(|watcher| !controllers(watcher).is_empty())
+        },
+    );
+    assert!(collision.path().join("0C48.col").is_file());
+    for watcher in [&*first, &*second] {
+        assert!(watcher.created(0x8000_0000 | map.placeables[0]).is_some());
+        assert!(watcher.created(watcher.owner).is_some());
+        assert!(watcher.created(GAME_MODE_ENTITY).is_some());
+        // Assembling already: hero select opens with the skin selector.
+        let (_, first_frame) = &controllers(watcher)[0];
+        assert!(shows(first_frame, true, true, None));
+    }
+
+    // A pick creates the body and keeps the screen open while the heroes
+    // assemble.
+    for watcher in [&mut *first, &mut *second] {
+        let owner = watcher.owner;
+        send_player_message(
+            &mut watcher.client,
+            &schemas,
+            owner,
+            1,
+            PICK_HERO,
+            SOLDIER.to_le_bytes().to_vec(),
+        );
+    }
+    pump_until(&mut [first, second], &schemas, "the bodies", |watchers| {
+        watchers.iter().all(|watcher| {
+            watcher.created(watcher.owner | 1).is_some_and(|created| {
+                controllers(watcher).iter().any(|(index, chunk)| {
+                    *index >= created && shows(chunk, true, true, Some(SOLDIER))
+                })
+            })
+        })
+    });
+
+    // The countdown ends: hero select closes for the players with a hero.
+    pump_within(
+        &mut [first, second],
+        &schemas,
+        "the end of the assembly",
+        Duration::from_secs(40),
+        |watchers| {
+            watchers.iter().all(|watcher| {
+                controllers(watcher)
+                    .iter()
+                    .any(|(_, chunk)| shows(chunk, false, false, Some(SOLDIER)))
+            })
+        },
+    );
+    let scene = assets.prepare(map.clone()).unwrap();
+    let counting = scene.countdown_frame(12.5).unwrap();
+    let over = scene.countdown_frame(0.0).unwrap();
+    for watcher in [&*first, &*second] {
+        let frames = mode_frames(watcher);
+        let (last_index, last) = frames.last().unwrap();
+        // One frame a second for 30 s, the mode entity's first ones.
+        assert!(
+            (25..=32).contains(&frames.len()),
+            "{} countdown frames",
+            frames.len()
+        );
+        for (_, chunk) in &frames[..frames.len() - 1] {
+            assert_eq!(chunk.width, counting.bit_len());
+        }
+        assert_eq!(
+            (last.width, last.data.as_slice()),
+            (over.bit_len(), over.as_bytes())
+        );
+        let (closed, _) = controllers(watcher)
+            .into_iter()
+            .find(|(_, chunk)| shows(chunk, false, false, Some(SOLDIER)))
+            .unwrap();
+        assert!(closed >= *last_index);
+    }
+
+    // A third player joins the running match: no countdown, hero select
+    // open without the skin selector, and the others in his world.
+    let joined = server
+        .join_match(MATCH, vec![player("third#3333", 0, 9)])
+        .unwrap()
+        .expect("the running match takes a player");
+    assert_eq!(joined.len(), 1);
+    let mut third = watch(&joined[0], 2);
+    pump_until(
+        &mut [first, second, &mut third],
+        &schemas,
+        "his instance",
+        |watchers| instance(watchers[2]),
+    );
+    load(&mut third);
+    let (first_owner, second_owner, third_owner) = (first.owner, second.owner, third.owner);
+    pump_until(
+        &mut [first, second, &mut third],
+        &schemas,
+        "the third player in the world",
+        |watchers| {
+            !controllers(watchers[2]).is_empty()
+                && watchers[2].created(first_owner).is_some()
+                && watchers[2].created(second_owner).is_some()
+                && watchers[0].created(third_owner).is_some()
+                && watchers[1].created(third_owner).is_some()
+        },
+    );
+    assert!(shows(&controllers(&third)[0].1, true, false, None));
+    assert!(
+        mode_frames(&third)
+            .iter()
+            .all(|(_, chunk)| chunk.width != counting.bit_len())
+    );
+
+    let snapshot = server.snapshot().unwrap();
+    assert_eq!(snapshot.len(), 1);
+    let found = &snapshot[0];
+    assert_eq!(
+        (found.map.as_str(), found.waiting),
+        ("Workshop Chamber", false)
+    );
+    let players: Vec<_> = found
+        .players
+        .iter()
+        .map(|player| (player.name.as_str(), player.hero, player.team, player.state))
+        .collect();
+    assert_eq!(
+        players,
+        [
+            ("first#1111", SOLDIER, 0, PlayerState::Playing),
+            ("second#2222", SOLDIER, 1, PlayerState::Playing),
+            ("third#3333", SOLDIER, 0, PlayerState::Playing),
+        ]
+    );
+    server.stop().unwrap();
+}
+
+/// Players join a match that is on, in the next slots, and a match that is
+/// over takes nobody (ow174/game/server.py `join_match`); the snapshot lists
+/// every player, with the lobby's hero until his pick (match.py `snapshot`).
+#[test]
+fn players_join_a_running_match_in_the_next_slots() {
+    use orpheus_content::heroes::SOLDIER;
+
+    let mut server = GameService::bind(local(), Arc::new(fixture())).unwrap();
+    let opened = server
+        .open_match(MATCH, GameMap::practice_range(), player())
+        .unwrap();
+    let joiner = || WorldPlayer {
+        player: player().pop().unwrap(),
+        card: PlayerCard::default(),
+        hero: 0,
+    };
+    let joined = server
+        .join_match(MATCH, vec![joiner()])
+        .unwrap()
+        .expect("a running match");
+    assert_eq!(joined.len(), 1);
+    assert_eq!(joined[0].match_id, MATCH);
+    assert_ne!(joined[0].conn, opened[0].conn);
+    assert!(server.seat_exists(&joined[0]).unwrap());
+    let snapshot = server.snapshot().unwrap();
+    assert_eq!(snapshot.len(), 1);
+    assert!(snapshot[0].waiting);
+    let players: Vec<_> = snapshot[0]
+        .players
+        .iter()
+        .map(|player| (player.hero, player.state))
+        .collect();
+    assert_eq!(players, [(SOLDIER, PlayerState::Waiting); 2]);
+    assert!(server.join_match([9, 9], vec![joiner()]).unwrap().is_none());
     server.stop().unwrap();
 }

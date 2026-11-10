@@ -1,13 +1,17 @@
 //! The native UDP match worker. It owns seats, connections and frame timing.
 //!
-//! A prepared Practice Range scene can advance from loading into one world
-//! for all its players, who see each other (ow174/game/match.py), with the
-//! training bots' scripts.
+//! A match on any map of the catalog advances from loading into one world
+//! for all its players, who see each other (ow174/game/match.py). Its scene,
+//! with the map's collision, is prepared off the game thread while the
+//! players load (match.py `_refresh_collision`); players can join it while it
+//! runs (ow174/game/server.py `join_match`). In the PvP modes the first spawn
+//! starts "assemble your team" (match.py `_end_assemble`).
 
 use std::{
     collections::{HashMap, VecDeque},
     io,
     net::SocketAddr,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -26,7 +30,8 @@ use crate::{
     ingress::{GameIngress, MapReadiness, MapReadyStep, MessageKind, WorldReadiness, pong},
 };
 use orpheus_content::{
-    maps::{GameMap, PRACTICE_RANGE_MODE},
+    heroes::SOLDIER,
+    maps::GameMap,
     parameters::{CLIENT_GAME_MESSAGE, PICK_HERO},
     stats::PlayerStats,
 };
@@ -45,7 +50,7 @@ use orpheus_sim::{
     projectiles::HEAL_RADIUS,
     replication::{Record, RoomPlayer, WorldDelivery, show_players},
     scene::{PlayerAppearance, PlayerCard},
-    scene_assets::PreparedScene,
+    scene_assets::{CollisionBuild, PreparedScene},
 };
 use orpheus_wire::entity::Component as WorldComponent;
 use orpheus_wire::{
@@ -62,6 +67,11 @@ const RECEIVE_BATCH: usize = 64;
 const INPUT_PER_PEER: usize = 16;
 const INPUT_PER_TURN: usize = 64;
 const MAX_PENDING_COMBAT_NOTICES: usize = 256;
+/// "Assemble your team" in the PvP modes: 30 s shown on the hero select
+/// screen, in whole seconds (ow174/game/match.py `ASSEMBLE_SECONDS`,
+/// `COUNTDOWN_EVERY`).
+const ASSEMBLE_TIME: Duration = Duration::from_secs(30);
+const COUNTDOWN_EVERY: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 pub struct MatchPlayer {
@@ -71,11 +81,77 @@ pub struct MatchPlayer {
     pub ranked: bool,
 }
 
-/// A player of a match with a world: his roster entry and his card.
+/// A player of a match with a world: his roster entry, his card, and the
+/// hero the lobby gives him until his first pick (ow174/game/server.py
+/// `create_match`; Soldier: 76 for 0).
 #[derive(Debug)]
 pub struct WorldPlayer {
     pub player: MatchPlayer,
     pub card: PlayerCard,
+    pub hero: u64,
+}
+
+/// Prepares a match's scene off the game thread: the map's collision may
+/// have to be built from the install first.
+pub type ScenePreparation = Box<dyn FnOnce() -> io::Result<PreparedScene> + Send>;
+
+/// A match as the dashboard and the matchmaker see it (match.py `snapshot`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MatchSnapshot {
+    pub id: MatchId,
+    pub map: String,
+    pub mode: String,
+    /// Before hero select counts down: the players are still joining
+    /// (match.py `waiting_for_players`).
+    pub waiting: bool,
+    pub players: Vec<PlayerSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerSnapshot {
+    pub name: String,
+    /// The hero he plays, or the lobby's before his first pick.
+    pub hero: u64,
+    pub team: u8,
+    pub state: PlayerState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayerState {
+    /// In the world.
+    Playing,
+    /// His game connected and loads the map.
+    Loading,
+    /// His game has not connected, or he left.
+    Waiting,
+}
+
+impl PlayerState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Playing => "playing",
+            Self::Loading => "loading",
+            Self::Waiting => "waiting",
+        }
+    }
+}
+
+/// Builds a map's collision cache from the game install, as the Python
+/// server did when a match opened on a map without one
+/// (ow174/game/collision.py `_read_cache`, `build`). The collision reads no
+/// display strings, so any text locale does.
+pub fn collision_build(install: PathBuf) -> Arc<CollisionBuild> {
+    Arc::new(move |map, name| {
+        let started = Instant::now();
+        let opened = orpheus_assets::Install::open(&install, "enUS").map_err(io::Error::other)?;
+        let output =
+            orpheus_assets::collision_cache(&opened, map, name).map_err(io::Error::other)?;
+        tracing::info!(
+            "[game] built the collision of {name} in {:.1} s",
+            started.elapsed().as_secs_f64()
+        );
+        Ok(output.bytes)
+    })
 }
 
 /// Retail puts a whole group in the Practice Range together, up to six on
@@ -85,12 +161,12 @@ pub const MAX_PRACTICE_PARTY: usize = 6;
 pub struct GameService {
     address: SocketAddr,
     requests: mpsc::SyncSender<Request>,
-    wake: Waker,
+    wake: Arc<Waker>,
     stopping: Arc<AtomicBool>,
     worker: Option<JoinHandle<io::Result<()>>>,
 }
 
-type MatchId = [u64; 2];
+pub type MatchId = [u64; 2];
 
 enum Request {
     Open(Box<OpenRequest>),
@@ -122,11 +198,19 @@ enum Request {
         hero: u64,
         reply: mpsc::SyncSender<bool>,
     },
-    /// The lobby's `.leave` chat command.
-    Home {
-        connection: u32,
+    /// More players for a match that is on (server.py `join_match`).
+    Join {
         id: MatchId,
-        reply: mpsc::SyncSender<bool>,
+        players: Vec<WorldPlayer>,
+        reply: mpsc::SyncSender<io::Result<Option<Vec<Handoff>>>>,
+    },
+    /// A match's scene came from its preparation thread.
+    Scene {
+        id: MatchId,
+        scene: io::Result<Box<PreparedScene>>,
+    },
+    Snapshot {
+        reply: mpsc::SyncSender<Vec<MatchSnapshot>>,
     },
 }
 
@@ -155,7 +239,7 @@ impl GameService {
         let poll = Poll::new()?;
         poll.registry()
             .register(&mut socket, GAME_SOCKET, Interest::READABLE)?;
-        let wake = Waker::new(poll.registry(), REQUESTS)?;
+        let wake = Arc::new(Waker::new(poll.registry(), REQUESTS)?);
         let (requests, receiver) = mpsc::sync_channel(RECEIVE_BATCH);
         let stopping = Arc::new(AtomicBool::new(false));
         let worker_stopping = Arc::clone(&stopping);
@@ -186,6 +270,7 @@ impl GameService {
             .map(|player| WorldPlayer {
                 player,
                 card: PlayerCard::default(),
+                hero: SOLDIER,
             })
             .collect();
         self.request(|reply| {
@@ -209,7 +294,12 @@ impl GameService {
         player: MatchPlayer,
         card: PlayerCard,
     ) -> io::Result<Handoff> {
-        let mut handoffs = self.open_prepared(id, scene, vec![WorldPlayer { player, card }])?;
+        let player = WorldPlayer {
+            player,
+            card,
+            hero: SOLDIER,
+        };
+        let mut handoffs = self.open_prepared(id, scene, vec![player])?;
         handoffs
             .pop()
             .ok_or_else(|| invalid("a solo world requires a seat"))
@@ -232,7 +322,7 @@ impl GameService {
         }
         let mut map = scene.map().clone();
         map.team_sizes = vec![members.len() as u8, 0];
-        self.open_world(id, map, scene, members)
+        self.open_ready(id, map, scene, members)
     }
 
     /// One world for every player of the match, each with his card. Seats
@@ -244,44 +334,60 @@ impl GameService {
         players: Vec<WorldPlayer>,
     ) -> io::Result<Vec<Handoff>> {
         let map = scene.map().clone();
-        self.open_world(id, map, scene, players)
+        self.open_ready(id, map, scene, players)
     }
 
-    fn open_world(
+    /// A match on any map: the seats come back at once, and the players load
+    /// the map while `prepare` makes the scene on a thread of its own; their
+    /// world comes once it is ready (match.py `_refresh_collision`). When it
+    /// fails, their games go back to the menu and the match ends
+    /// (`_collision_failure`). Seats in player order.
+    pub fn open_world(
         &self,
-        id: [u64; 2],
+        id: MatchId,
+        map: GameMap,
+        players: Vec<WorldPlayer>,
+        prepare: ScenePreparation,
+    ) -> io::Result<Vec<Handoff>> {
+        let handoffs = self.request(|reply| {
+            Request::Open(Box::new(OpenRequest {
+                id,
+                map,
+                players,
+                world: None,
+                reply,
+            }))
+        })??;
+        let requests = self.requests.clone();
+        let wake = Arc::clone(&self.wake);
+        let spawned = thread::Builder::new()
+            .name("orpheus-scene".into())
+            .spawn(move || {
+                let scene = prepare().map(Box::new);
+                if requests.send(Request::Scene { id, scene }).is_ok() {
+                    let _ = wake.wake();
+                }
+            });
+        if let Err(error) = spawned {
+            let _ = self.requests.try_send(Request::Scene {
+                id,
+                scene: Err(error),
+            });
+            self.wake.wake()?;
+        }
+        Ok(handoffs)
+    }
+
+    fn open_ready(
+        &self,
+        id: MatchId,
         map: GameMap,
         scene: PreparedScene,
         players: Vec<WorldPlayer>,
     ) -> io::Result<Vec<Handoff>> {
-        if scene.map().mode_guid != PRACTICE_RANGE_MODE || !scene.movement_ready() {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "the native world bootstrap requires the Practice Range",
-            ));
-        }
-        let controller = initial_controller(&scene, FIRST_TICK)?;
-        for (slot, entry) in players.iter().enumerate() {
-            let team = entry.player.team;
-            let viewer = PlayerAppearance {
-                entity: player_entity(slot),
-                slot: i8::try_from(slot).map_err(invalid)?,
-                team,
-                spawn: spawn_number(&map, players[..slot].iter().map(|p| p.player.team), team),
-                card: &entry.card,
-            };
-            let creates = scene.initial_world(&viewer)?;
-            let scripts = [
-                script_record(viewer.entity, &controller)?,
-                script_record(GAME_MODE_ENTITY, scene.mode_ui())?,
-            ];
-            for record in creates.iter().chain(&scripts) {
-                let packet = frame(u32::MAX, u32::MAX, &[], &[], &[record]).map_err(invalid)?;
-                if packet.len() > MAX_PAYLOAD {
-                    return Err(invalid("a world baseline exceeds the game datagram budget"));
-                }
-            }
-        }
+        let teams: Vec<u8> = players.iter().map(|entry| entry.player.team).collect();
+        let cards: Vec<&PlayerCard> = players.iter().map(|entry| &entry.card).collect();
+        check_scene(&scene, &map, &teams, &cards)?;
         self.request(|reply| {
             Request::Open(Box::new(OpenRequest {
                 id,
@@ -294,6 +400,22 @@ impl GameService {
                 reply,
             }))
         })?
+    }
+
+    /// Seats for more players in a match that is on, in player order
+    /// (server.py `join_match`); `None` once it has ended or while the game
+    /// clock rolls over.
+    pub fn join_match(
+        &self,
+        id: MatchId,
+        players: Vec<WorldPlayer>,
+    ) -> io::Result<Option<Vec<Handoff>>> {
+        self.request(|reply| Request::Join { id, players, reply })?
+    }
+
+    /// Every match with its players (server.py `snapshot`).
+    pub fn snapshot(&self) -> io::Result<Vec<MatchSnapshot>> {
+        self.request(|reply| Request::Snapshot { reply })
     }
 
     pub fn handoff_pending(&self, connection: u32) -> io::Result<bool> {
@@ -335,17 +457,6 @@ impl GameService {
             connection: handoff.conn,
             id: handoff.match_id,
             hero,
-            reply,
-        })
-    }
-
-    /// Send the seat's game back to the menu with 20304 (`ow174/game/server.py`
-    /// send_home for the lobby's `.leave` command). False when no game is
-    /// connected to the seat.
-    pub(crate) fn send_home(&self, handoff: &Handoff) -> io::Result<bool> {
-        self.request(|reply| Request::Home {
-            connection: handoff.conn,
-            id: handoff.match_id,
             reply,
         })
     }
@@ -395,6 +506,8 @@ impl Drop for GameService {
 struct Player {
     info: MatchPlayer,
     card: PlayerCard,
+    /// The lobby's hero, shown until his first pick.
+    hero: u64,
     entity: u32,
     gone: bool,
     /// The numbers his Tab board shows (match.py `Player.stats`).
@@ -416,9 +529,52 @@ struct Room {
     players: Vec<Player>,
     remaining: usize,
     world: Option<WorldStart>,
+    /// PvP: when "assemble your team" ends (match.py `assemble_ends`).
+    assemble_ends: Option<Duration>,
+    assembled: bool,
+    /// Its collision failed: it takes nobody more (match.py `ended`).
+    ended: bool,
+    /// When the match opened: the snapshot lists the oldest first.
+    started: Instant,
 }
 
 impl Room {
+    fn new(map: GameMap, players: Vec<WorldPlayer>, world: Option<WorldStart>) -> Self {
+        let mut room = Self {
+            map,
+            players: Vec::with_capacity(players.len()),
+            remaining: 0,
+            world,
+            assemble_ends: None,
+            assembled: false,
+            ended: false,
+            started: Instant::now(),
+        };
+        room.add(players);
+        room
+    }
+
+    /// The players after those already in the match, each in the next slot
+    /// (match.py `add_player`).
+    fn add(&mut self, players: Vec<WorldPlayer>) {
+        self.remaining += players.len();
+        for WorldPlayer { player, card, hero } in players {
+            let slot = self.players.len();
+            self.players.push(Player {
+                info: player,
+                card,
+                hero: if hero == 0 { SOLDIER } else { hero },
+                entity: player_entity(slot),
+                gone: false,
+                stats: PlayerStats::default(),
+            });
+        }
+    }
+
+    fn assembling(&self) -> bool {
+        self.assemble_ends.is_some() && !self.assembled
+    }
+
     fn appearance(&self, slot: usize) -> Option<PlayerAppearance<'_>> {
         let player = &self.players[slot];
         let team = player.info.team;
@@ -465,6 +621,10 @@ struct Peer {
     open: bool,
     world: WorldDelivery,
     combat_ui: CombatUi,
+    /// The controller step ran (match.py `steps_done >= 4`).
+    presented: bool,
+    /// When the next countdown frame is due (match.py `next_countdown`).
+    next_countdown: Duration,
 }
 
 #[derive(Default)]
@@ -490,6 +650,45 @@ fn initial_controller(
             },
         )
         .map_err(invalid)
+}
+
+/// A scene the worker can open a world on, whose world baselines fit a
+/// datagram for every player (`teams` and `cards` in slot order).
+fn check_scene(
+    scene: &PreparedScene,
+    map: &GameMap,
+    teams: &[u8],
+    cards: &[&PlayerCard],
+) -> io::Result<()> {
+    if !scene.movement_ready() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the native world bootstrap requires a scene without bot VM graphs",
+        ));
+    }
+    let controller = initial_controller(scene, FIRST_TICK)?;
+    for (slot, card) in cards.iter().enumerate() {
+        let team = teams[slot];
+        let viewer = PlayerAppearance {
+            entity: player_entity(slot),
+            slot: i8::try_from(slot).map_err(invalid)?,
+            team,
+            spawn: spawn_number(map, teams[..slot].iter().copied(), team),
+            card,
+        };
+        let creates = scene.initial_world(&viewer)?;
+        let scripts = [
+            script_record(viewer.entity, &controller)?,
+            script_record(GAME_MODE_ENTITY, scene.mode_ui())?,
+        ];
+        for record in creates.iter().chain(&scripts) {
+            let packet = frame(u32::MAX, u32::MAX, &[], &[], &[record]).map_err(invalid)?;
+            if packet.len() > MAX_PAYLOAD {
+                return Err(invalid("a world baseline exceeds the game datagram budget"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn script_record(entity: u32, payload: &orpheus_core::bits::BitWriter) -> io::Result<EntityUpdate> {
@@ -591,12 +790,15 @@ impl Peer {
             open: false,
             world: WorldDelivery::new(owner),
             combat_ui: CombatUi::default(),
+            presented: false,
+            next_countdown: Duration::ZERO,
         }
     }
 
     fn clear_world(&mut self) {
         self.world.clear();
         self.combat_ui = CombatUi::default();
+        self.presented = false;
     }
 
     /// A hit's notices for this client (the shooter's).
@@ -668,6 +870,23 @@ impl Peer {
         self.egress.queue_reliable(bytes).map_err(invalid)
     }
 
+    /// The seconds left of "assemble your team" in the game mode entity's
+    /// v1303, every second; the client shows them rounded up (match.py
+    /// `_send_countdown`).
+    fn send_countdown(
+        &mut self,
+        scene: &PreparedScene,
+        ends: Duration,
+        now: Duration,
+    ) -> io::Result<()> {
+        let frame = scene.countdown_frame(ends.saturating_sub(now).as_secs_f64())?;
+        if self.world.queue_mode_frame(&frame)? {
+            self.next_countdown = now.saturating_add(COUNTDOWN_EVERY);
+        }
+        Ok(())
+    }
+
+    /// The due spawn steps; true when this one put the player in the world.
     fn advance_loading(
         &mut self,
         schemas: &Schemas,
@@ -675,7 +894,8 @@ impl Peer {
         slot: usize,
         now: Duration,
         tick: u32,
-    ) -> io::Result<()> {
+    ) -> io::Result<bool> {
+        let mut spawned = false;
         let player = &room.players[slot];
         let ready = WorldReadiness {
             ownership_delivered: self
@@ -699,13 +919,59 @@ impl Peer {
                     let world = room.world.as_ref().expect("map-entry prerequisites");
                     let viewer = room.appearance(slot).expect("prepared player");
                     self.world.start(&world.scene, &viewer, tick)?;
+                    spawned = true;
                 }
-                MapReadyStep::Controller => self.world.presentation_due = true,
+                MapReadyStep::Controller => {
+                    self.world.presentation_due = true;
+                    self.presented = true;
+                }
             }
         }
         if self.world.presentation_due {
             let world = room.world.as_ref().expect("world started");
             self.world.present(&world.scene, tick)?;
+        }
+        Ok(spawned)
+    }
+
+    /// This tick's steps of the player (match.py `update`): the end of
+    /// "assemble your team", the spawn steps, and the countdown. The first
+    /// spawn in a PvP mode starts the countdown (`_spawn_steps`).
+    fn update(
+        &mut self,
+        schemas: &Schemas,
+        room: &mut Room,
+        slot: usize,
+        assembled: bool,
+        now: Duration,
+        tick: u32,
+    ) -> io::Result<()> {
+        if let (true, Some(world), Some(ends)) =
+            (assembled && self.presented, &room.world, room.assemble_ends)
+        {
+            self.send_countdown(&world.scene, ends, now)?;
+            self.world.end_assemble(&world.scene, tick)?;
+        }
+        self.world.set_assembling(room.assembling());
+        let spawned = self.advance_loading(schemas, room, slot, now, tick)?;
+        let pvp = room
+            .world
+            .as_ref()
+            .is_some_and(|world| !world.scene.controller().practice());
+        if spawned && pvp && room.assemble_ends.is_none() {
+            room.assemble_ends = Some(now.saturating_add(ASSEMBLE_TIME));
+            tracing::info!(
+                "[game] {}: assemble your team, {} s",
+                room.map.name,
+                ASSEMBLE_TIME.as_secs()
+            );
+        }
+        if let (true, Some(world), Some(ends)) = (
+            room.assembling() && self.presented && now >= self.next_countdown,
+            &room.world,
+            room.assemble_ends,
+        ) {
+            self.send_countdown(&world.scene, ends, now)?;
         }
         Ok(())
     }
@@ -760,31 +1026,69 @@ impl State {
         if remaining == 0 || remaining > usize::from(u8::MAX) {
             return Err(invalid("invalid match roster size"));
         }
-        let room = Room {
-            map,
-            players: players
-                .into_iter()
-                .enumerate()
-                .map(|(slot, WorldPlayer { player, card })| Player {
-                    info: player,
-                    card,
-                    entity: player_entity(slot),
-                    gone: false,
-                    stats: PlayerStats::default(),
-                })
-                .collect(),
-            remaining,
-            world,
-        };
+        let room = Room::new(map, players, world);
+        self.check_roster(&room)?;
+        let tickets = self.reserve(id, 0..remaining, now)?;
+        self.rooms.insert(id, room);
+        Ok(tickets)
+    }
+
+    /// More players for a match that is on, in the next slots (server.py
+    /// `join_match`); `None` once it has ended or while the clock drains.
+    fn join_match(
+        &mut self,
+        id: MatchId,
+        players: Vec<WorldPlayer>,
+        now: Duration,
+    ) -> io::Result<Option<Vec<Handoff>>> {
+        if self.clock.draining() || self.rooms.get(&id).is_none_or(|room| room.ended) {
+            return Ok(None);
+        }
+        let room = self.rooms.get_mut(&id).expect("running match");
+        let first = room.players.len();
+        if players.is_empty() || first + players.len() > usize::from(u8::MAX) {
+            return Err(invalid("invalid match roster size"));
+        }
+        room.add(players);
+        let room = &self.rooms[&id];
+        let checked = self.check_roster(room).and_then(|()| {
+            let Some(world) = &room.world else {
+                return Ok(());
+            };
+            let teams: Vec<u8> = room.players.iter().map(|player| player.info.team).collect();
+            let cards: Vec<&PlayerCard> = room.players.iter().map(|player| &player.card).collect();
+            check_scene(&world.scene, &room.map, &teams, &cards)
+        });
+        let count = room.players.len();
+        let reserved = checked.and_then(|()| self.reserve(id, first..count, now));
+        if reserved.is_err() {
+            let room = self.rooms.get_mut(&id).expect("running match");
+            room.players.truncate(first);
+            room.remaining -= count - first;
+        }
+        reserved.map(Some)
+    }
+
+    /// The roster's 20300 fits a datagram.
+    fn check_roster(&self, room: &Room) -> io::Result<()> {
         let initial = room.message(0, true);
         let bytes = encode(&self.schemas, initial.id, &initial.fields).map_err(invalid)?;
         let payload = frame(u32::MAX, u32::MAX, &[(0, bytes)], &[], &[]).map_err(invalid)?;
         if payload.len() > MAX_PAYLOAD {
             return Err(invalid("match roster exceeds the game datagram budget"));
         }
+        Ok(())
+    }
 
-        let mut tickets = Vec::with_capacity(remaining);
-        for _ in 0..remaining {
+    /// A seat for each of these slots of the match.
+    fn reserve(
+        &mut self,
+        id: MatchId,
+        slots: std::ops::Range<usize>,
+        now: Duration,
+    ) -> io::Result<Vec<Handoff>> {
+        let mut tickets = Vec::with_capacity(slots.len());
+        for _ in slots.clone() {
             let connection = self.next_connection;
             self.next_connection = self.next_connection % MAX_CONNECTION_ID + 1;
             if self.seats.contains_key(&connection) {
@@ -795,15 +1099,98 @@ impl State {
             }
             tickets.push(Handoff::new(connection, id)?);
         }
-        for (slot, ticket) in tickets.iter().enumerate() {
+        for (slot, ticket) in slots.zip(&tickets) {
             let reserved = self
                 .links
                 .reserve_handoff(ticket, u64::from(ticket.conn), now);
             assert!(reserved, "seat and connection tables are in sync");
             self.seats.insert(ticket.conn, (id, slot));
         }
-        self.rooms.insert(id, room);
         Ok(tickets)
+    }
+
+    /// The match's scene is ready, or its collision failed: then every game
+    /// goes back to the menu, those not connected yet lose their seats, and
+    /// the match takes nobody more (match.py `_collision_failure`).
+    fn scene_ready(&mut self, id: MatchId, scene: io::Result<Box<PreparedScene>>, now: Duration) {
+        let Some(room) = self.rooms.get_mut(&id) else {
+            return;
+        };
+        let scene = scene.and_then(|scene| {
+            let teams: Vec<u8> = room.players.iter().map(|player| player.info.team).collect();
+            let cards: Vec<&PlayerCard> = room.players.iter().map(|player| &player.card).collect();
+            check_scene(&scene, &room.map, &teams, &cards)?;
+            Ok(scene)
+        });
+        let error = match scene {
+            Ok(scene) => {
+                room.world = Some(WorldStart {
+                    scene,
+                    combat: None,
+                });
+                return;
+            }
+            Err(error) => error,
+        };
+        tracing::error!(
+            "[game] match {:04X} on {}: collision unavailable: {error}",
+            id[0] & 0xFFFF,
+            room.map.name
+        );
+        room.ended = true;
+        let seated: Vec<u32> = self
+            .seats
+            .iter()
+            .filter(|(_, seat)| seat.0 == id)
+            .map(|(&connection, _)| connection)
+            .collect();
+        for connection in seated {
+            if !self.links.cancel_handoff(connection) && self.peers.contains_key(&connection) {
+                self.send_home(connection, now);
+            }
+        }
+    }
+
+    /// Every match with its players and their state (match.py `snapshot`).
+    fn snapshot(&self) -> Vec<MatchSnapshot> {
+        let mut peers: HashMap<MatchId, HashMap<usize, &Peer>> = HashMap::new();
+        for (connection, peer) in &self.peers {
+            let (id, slot) = self.seats[connection];
+            peers.entry(id).or_default().insert(slot, peer);
+        }
+        let mut rooms: Vec<_> = self.rooms.iter().collect();
+        rooms.sort_by_key(|(_, room)| room.started);
+        rooms
+            .into_iter()
+            .map(|(&id, room)| MatchSnapshot {
+                id,
+                map: room.map.name.clone(),
+                mode: room.map.mode_name.clone(),
+                waiting: room.assemble_ends.is_none(),
+                players: room
+                    .players
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, player)| {
+                        let peer = peers.get(&id).and_then(|peers| peers.get(&slot));
+                        let state = match peer {
+                            _ if player.gone => PlayerState::Waiting,
+                            Some(peer) if peer.world.world_started() => PlayerState::Playing,
+                            Some(_) => PlayerState::Loading,
+                            None => PlayerState::Waiting,
+                        };
+                        PlayerSnapshot {
+                            name: player.info.name.clone(),
+                            hero: peer
+                                .and_then(|peer| peer.world.hero())
+                                .unwrap_or(player.hero),
+                            team: player.info.team,
+                            state,
+                        }
+                    })
+                    .collect(),
+            })
+            .collect()
     }
 
     fn handle_request(&mut self, request: Request, now: Duration) {
@@ -822,6 +1209,18 @@ impl State {
                         self.links.cancel_handoff(ticket.conn);
                     }
                 }
+            }
+            Request::Join { id, players, reply } => {
+                let result = self.join_match(id, players, now);
+                if let Err(mpsc::SendError(Ok(Some(tickets)))) = reply.send(result) {
+                    for ticket in tickets {
+                        self.links.cancel_handoff(ticket.conn);
+                    }
+                }
+            }
+            Request::Scene { id, scene } => self.scene_ready(id, scene, now),
+            Request::Snapshot { reply } => {
+                let _ = reply.send(self.snapshot());
             }
             Request::Pending { connection, reply } => {
                 let _ = reply.send(self.links.handoff_pending(connection, now));
@@ -869,19 +1268,6 @@ impl State {
                 reply,
             } => {
                 let _ = reply.send(self.switch_hero(connection, id, hero, now));
-            }
-            Request::Home {
-                connection,
-                id,
-                reply,
-            } => {
-                let home = !self.clock.draining()
-                    && self.seats.get(&connection).is_some_and(|seat| seat.0 == id)
-                    && self.peers.contains_key(&connection);
-                if home {
-                    self.send_home(connection, now);
-                }
-                let _ = reply.send(home);
             }
         }
     }
@@ -1451,12 +1837,27 @@ impl State {
                 }
             }
         }
+        // match.py `update`: the countdown ends before the players' steps.
+        let mut assembled = Vec::new();
+        if !drain {
+            for (&id, room) in &mut self.rooms {
+                if room
+                    .assemble_ends
+                    .is_some_and(|ends| !room.assembled && now >= ends)
+                {
+                    room.assembled = true;
+                    tracing::info!("[game] match {:04X}: heroes assembled", id[0] & 0xFFFF);
+                    assembled.push(id);
+                }
+            }
+        }
         for (&connection, peer) in &mut self.peers {
             let (id, slot) = self.seats[&connection];
-            let room = &self.rooms[&id];
+            let room = self.rooms.get_mut(&id).expect("admitted room");
+            let ending = assembled.contains(&id);
             if !drain
                 && peer
-                    .advance_loading(&self.schemas, room, slot, now, tick)
+                    .update(&self.schemas, room, slot, ending, now, tick)
                     .is_err()
             {
                 peer.clear_world();

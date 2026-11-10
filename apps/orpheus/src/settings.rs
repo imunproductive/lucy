@@ -88,6 +88,10 @@ pub struct ServerArgs {
     /// Dashboard TCP port; 0 turns the dashboard off.
     #[arg(long, value_name = "PORT")]
     pub dashboard_port: Option<u16>,
+    /// Start a match once this many players search (default: 0 = full teams
+    /// only).
+    #[arg(long, value_name = "PLAYERS")]
+    pub test_players: Option<usize>,
 }
 
 /// What `orpheus` starts: the modes of `ow174/cli.py`, in its menu order.
@@ -182,6 +186,8 @@ pub struct Settings {
     /// `auto`, `none` or a game language code.
     pub locale: String,
     pub ports: Ports,
+    /// Players who start a match (`--test-players`); 0 = full teams.
+    pub test_players: usize,
 }
 
 impl Settings {
@@ -213,6 +219,7 @@ impl Settings {
                     .or(ports.dashboard)
                     .unwrap_or(DEFAULT_PORTS.dashboard),
             },
+            test_players: args.test_players.unwrap_or(0),
         })
     }
 

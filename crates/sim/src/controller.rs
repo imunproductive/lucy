@@ -52,6 +52,7 @@ pub struct Controller {
     start_screen: StateSlot,
     start_entry: StateSlot,
     assembling: usize,
+    practice: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -98,7 +99,14 @@ impl Controller {
             start_screen: owner_slot(host, 0)?,
             start_entry: owner_slot(host, 1)?,
             assembling: presence_bit(screen, ASSEMBLING)?,
+            practice: mode_guid == PRACTICE_RANGE_MODE,
         })
+    }
+
+    /// The Practice Range's controller 13C1, else the PvP modes' 0C90
+    /// (ow174/game/heroselect.py `controller_of`).
+    pub fn practice(&self) -> bool {
+        self.practice
     }
 
     /// Owner full frame: root controller, 288A, 288B, optional HUD, and team entry.

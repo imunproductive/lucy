@@ -770,6 +770,9 @@ pub struct WorldDelivery {
     /// Changes of the current body's pools, for the other clients.
     body_health: u64,
     board: BoardDelivery,
+    /// The PvP "assemble your team" countdown runs (match.py `assembling`):
+    /// a pick keeps hero select open, which shows the skin selector.
+    assembling: bool,
 }
 
 /// A body's death (combat.py `Vitals.death_tick`, `killer`) and when it
@@ -842,6 +845,7 @@ impl WorldDelivery {
             plain_vitals: None,
             body_health: 0,
             board: BoardDelivery::default(),
+            assembling: false,
         }
     }
 
@@ -1529,12 +1533,50 @@ impl WorldDelivery {
         if self.controller.latest_data() == 0 && self.created.contains(&self.owner) {
             self.queue_controller(scene, tick, true, None, None)?;
         }
-        if self.mode.latest_data() == 0 && self.created.contains(&GAME_MODE_ENTITY) {
+        // While heroes assemble the countdown frames are the mode entity's
+        // first (combat.py `spawned`).
+        if self.mode.latest_data() == 0
+            && !self.assembling
+            && self.created.contains(&GAME_MODE_ENTITY)
+        {
             let chunk = self.mode.full(scene.mode_ui()).map_err(invalid)?;
             self.push(Record::script(chunk, false));
         }
         self.presentation_due = self.controller.latest_data() == 0 || self.mode.latest_data() == 0;
         Ok(())
+    }
+
+    /// The hero of the player's body, `None` before his first pick.
+    pub fn hero(&self) -> Option<u64> {
+        self.body.map(|body| body.hero)
+    }
+
+    pub fn set_assembling(&mut self, assembling: bool) {
+        self.assembling = assembling;
+    }
+
+    /// A full frame of the game mode entity, such as the countdown; false
+    /// when the client has no mode entity yet (server.py `queue_mode_frame`).
+    pub fn queue_mode_frame(&mut self, frame: &orpheus_core::bits::BitWriter) -> io::Result<bool> {
+        if !self.created.contains(&GAME_MODE_ENTITY) {
+            return Ok(false);
+        }
+        let chunk = self.mode.full(frame).map_err(invalid)?;
+        self.push(Record::script(chunk, false));
+        self.remove_stale();
+        Ok(true)
+    }
+
+    /// The countdown is over: a player with a hero gets hero select closed,
+    /// and the skin selector goes (match.py `_end_assemble`).
+    pub fn end_assemble(&mut self, scene: &PreparedScene, tick: u32) -> io::Result<()> {
+        self.assembling = false;
+        if !self.can_handle_game_message() {
+            return Ok(());
+        }
+        let hero = self.body.map(|body| body.hero);
+        let open = self.select_open && hero.is_none();
+        self.queue_controller(scene, tick, open, hero, None)
     }
 
     fn can_handle_game_message(&self) -> bool {
@@ -1580,7 +1622,11 @@ impl WorldDelivery {
                     .body
                     .is_some_and(|body| (body.hero, body.skin) == (hero.guid, skin))
                 {
-                    self.queue_controller(scene, tick, false, Some(hero.guid), None)?;
+                    // The screen stays open until the heroes are assembled,
+                    // as in retail (match.py `game_message`).
+                    if !self.assembling {
+                        self.queue_controller(scene, tick, false, Some(hero.guid), None)?;
+                    }
                 } else if let Some(entity) = self.next_body(now) {
                     self.switch(scene, viewer, tick, quanta, entity, (hero, skin), true)?;
                 }
@@ -2269,8 +2315,9 @@ impl WorldDelivery {
             hero: hero.guid,
             skin: (skin.guid != 0).then_some(skin.guid),
         };
+        let open = self.assembling && self.select_open;
         let close = pick
-            .then(|| self.controller_chunk(scene, tick, false, Some(hero.guid), None))
+            .then(|| self.controller_chunk(scene, tick, open, Some(hero.guid), None))
             .transpose()?;
 
         self.generation = generation;
@@ -2286,7 +2333,7 @@ impl WorldDelivery {
         self.death = None;
         self.plain_vitals = None;
         if pick {
-            self.select_open = false;
+            self.select_open = open;
         }
         // notices.py `hero_switched`: a switch from one hero to another, not
         // the first pick. Other clients take it from this player's view.
@@ -2351,6 +2398,12 @@ impl WorldDelivery {
         presence: Option<&BTreeMap<usize, ScriptValue>>,
     ) -> io::Result<Record> {
         let command_frame = self.command_ack(tick);
+        // The skin selector shows in the PvP modes while heroes are
+        // assembled, in the Practice Range whenever the screen is open; only
+        // the Practice Range hides the assemble title (match.py
+        // `send_controller`).
+        let practice = scene.controller().practice();
+        let skins = open && (practice || self.assembling);
         let chunk = self
             .controller
             .full_owner(command_frame, |cmfd| {
@@ -2358,8 +2411,8 @@ impl WorldDelivery {
                     cmfd,
                     ControllerFrame {
                         select_open: open,
-                        skins: open,
-                        hide_assemble: true,
+                        skins,
+                        hide_assemble: practice,
                         presence,
                         hero,
                     },

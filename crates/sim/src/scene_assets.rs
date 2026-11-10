@@ -1,11 +1,15 @@
 //! Load the authorized data needed before the game worker can create a world.
+//!
+//! Any map of the catalog: its collision comes from the cache folder, built
+//! from the install first when the cache is missing or of another version
+//! (ow174/game/collision.py `_read_cache`).
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File},
-    io::{self, BufReader},
+    io::{self, BufReader, Read},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
 };
 
 use serde::Deserialize;
@@ -21,12 +25,12 @@ use crate::{
 };
 use orpheus_content::{
     heroes::{Hero, HeroCatalog},
-    maps::{GameMap, PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE},
+    maps::GameMap,
     stats::{PlayerStats, StatsCatalog, initial_on_fire},
 };
 use orpheus_core::{bits::BitWriter, guid::parse_guid};
 use orpheus_physics::{
-    collision::cache::{chunk_guid, read_movement_cache},
+    collision::cache::{MAGIC, VERSION, chunk_guid, read_movement_cache},
     collision::index::TriangleIndex,
     collision::scene::CollisionScene,
     contact::world::ContactWorld,
@@ -34,10 +38,18 @@ use orpheus_physics::{
     mover::ground::NOT_GROUND,
     mover::settings::MoverCatalog,
 };
-use orpheus_script::{codecs::CodecTable, graph::GraphStore, vm::Unknowns, wire::Variables};
+use orpheus_script::{
+    codecs::CodecTable,
+    graph::GraphStore,
+    vm::Unknowns,
+    wire::{Value, Variables},
+};
 use orpheus_wire::entity::{Component, EntityUpdate};
 
 const MOVER_CATEGORY: u16 = 0x18;
+/// The game mode entity's "assemble your team" seconds (ow174/game/match.py
+/// `COUNTDOWN`).
+const COUNTDOWN: u32 = 1303;
 
 fn mover_category(map: &GameMap, team: u8) -> u16 {
     match (map.free_for_all, team) {
@@ -45,10 +57,6 @@ fn mover_category(map: &GameMap, team: u8) -> u16 {
         (false, 1) => 0x10,
         _ => MOVER_CATEGORY,
     }
-}
-
-fn is_practice_range(map: &GameMap) -> bool {
-    map.map_guid == PRACTICE_RANGE_MAP && map.mode_guid == PRACTICE_RANGE_MODE
 }
 
 fn ground_height(
@@ -66,12 +74,21 @@ fn ground_height(
 type OwnerBodyFactory =
     dyn Fn(&Hero, OwnerBodySpawn) -> io::Result<Option<Box<dyn OwnerBodyRuntime>>> + Send + Sync;
 
+/// Builds a map's collision cache file from the install: (map GUID, the
+/// server's map name) to the file's bytes (`orpheus_assets::collision_cache`).
+pub type CollisionBuild = dyn Fn(u64, &str) -> io::Result<Vec<u8>> + Send + Sync;
+
 pub struct SceneAssets {
     collision: PathBuf,
+    build_collision: Option<Arc<CollisionBuild>>,
+    /// One cache build at a time (collision.py `_building`).
+    building: Mutex<()>,
     mode_props: BTreeMap<u64, BTreeSet<u64>>,
     graphs: Arc<GraphStore>,
     codecs: Option<Arc<CodecTable>>,
-    practice_owner_body: OnceLock<Option<Arc<OwnerBodyFactory>>>,
+    /// Each mode's owner body factory, made the first time a scene of the
+    /// mode is prepared.
+    owner_bodies: Mutex<HashMap<u64, Option<Arc<OwnerBodyFactory>>>>,
     bot_graphs: Option<Arc<GraphStore>>,
     bot_unknowns: Unknowns,
     bots: BotCatalog,
@@ -87,6 +104,7 @@ pub struct PreparedScene {
     contacts: Option<Arc<ContactWorld>>,
     controller: Controller,
     mode_ui: BitWriter,
+    graphs: Arc<GraphStore>,
     initial_board: Component,
     bots: Vec<Bot>,
     bot_scripts: BotScripts,
@@ -113,10 +131,12 @@ impl SceneAssets {
         let pools = Arc::new(PoolCatalog::from_graphs(&graphs)?);
         Ok(Self {
             collision: runtime.join("collision"),
+            build_collision: None,
+            building: Mutex::new(()),
             mode_props: read_mode_props(&data.join("collision_props_174.json"))?,
             graphs,
             codecs,
-            practice_owner_body: OnceLock::new(),
+            owner_bodies: Mutex::default(),
             bot_graphs,
             bot_unknowns: Unknowns::for_build(),
             bots: BotCatalog::load(data.join("ai_spawners_174.json"))?,
@@ -125,6 +145,18 @@ impl SceneAssets {
             heroes: Arc::new(HeroCatalog::load(data.join("game_heroes_174.json"))?),
             pools,
         })
+    }
+
+    /// Build missing or outdated collision caches from the install.
+    pub fn with_collision_build(mut self, build: Arc<CollisionBuild>) -> Self {
+        self.build_collision = Some(build);
+        self
+    }
+
+    /// Keep the collision caches in `folder` instead of the data's own.
+    pub fn with_collision_folder(mut self, folder: impl Into<PathBuf>) -> Self {
+        self.collision = folder.into();
+        self
     }
 
     pub fn graphs(&self) -> &GraphStore {
@@ -149,11 +181,15 @@ impl SceneAssets {
     }
 
     /// Load the map before handing it to the worker. The render layouts and
-    /// graph requirements are checked without blocking a game tick.
+    /// graph requirements are checked without blocking a game tick. A map's
+    /// collision is built from the install when its cache is missing or
+    /// outdated, which can take a while: callers prepare off the game thread
+    /// (match.py `_refresh_collision`).
     pub fn prepare(&self, map: GameMap) -> io::Result<PreparedScene> {
         let path = self
             .collision
             .join(format!("{:04X}.col", map.map_guid as u32));
+        self.ensure_collision(&map, &path)?;
         let cache = read_movement_cache(BufReader::new(File::open(path)?)).map_err(invalid)?;
         for (field, expected) in [("map", map.map_guid), ("chunk", chunk_guid(map.map_guid))] {
             if let Some(value) = cache.header.source.get(field) {
@@ -173,11 +209,12 @@ impl SceneAssets {
                 settings.decel_ground_base,
             )
         });
-        let contacts = (is_practice_range(&map)
-            || bots.iter().any(|bot| !bot.spawn.route.is_empty()))
-        .then(|| ContactWorld::from_movement_cache(cache, identifiers).map(Arc::new))
-        .transpose()
-        .map_err(invalid)?;
+        // Every map's players move on its collision (match.py `new_mover`).
+        let contacts = Some(
+            ContactWorld::from_movement_cache(cache, identifiers)
+                .map(Arc::new)
+                .map_err(invalid)?,
+        );
         if let Some(world) = &contacts {
             for bot in bots.iter_mut().filter(|bot| !bot.spawn.route.is_empty()) {
                 let category = mover_category(&map, bot.spawn.team);
@@ -209,6 +246,7 @@ impl SceneAssets {
             contacts,
             controller,
             mode_ui,
+            graphs: Arc::clone(&self.graphs),
             initial_board,
             bots,
             bot_scripts,
@@ -218,13 +256,39 @@ impl SceneAssets {
             stats: Arc::clone(&self.stats),
             owner_body_factory: None,
         };
-        if is_practice_range(scene.map()) {
-            scene.owner_body_factory = self
-                .practice_owner_body
-                .get_or_init(|| self.prepare_owner_body(&scene))
-                .clone();
-        }
+        let mut factories = self
+            .owner_bodies
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        scene.owner_body_factory = factories
+            .entry(scene.map.mode_guid)
+            .or_insert_with(|| self.prepare_owner_body(&scene))
+            .clone();
         Ok(scene)
+    }
+
+    /// Build the map's cache from the install when it is missing or of
+    /// another version, one build at a time (collision.py `_read_cache`).
+    /// Without an install the cache must be there already.
+    fn ensure_collision(&self, map: &GameMap, path: &Path) -> io::Result<()> {
+        let Some(build) = &self.build_collision else {
+            return Ok(());
+        };
+        if cache_version(path) == Some(VERSION) {
+            return Ok(());
+        }
+        let _building = self
+            .building
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache_version(path) == Some(VERSION) {
+            return Ok(());
+        }
+        let bytes = build(map.map_guid, &map.name)?;
+        fs::create_dir_all(&self.collision)?;
+        let temporary = path.with_extension("col.tmp");
+        fs::write(&temporary, bytes)?;
+        fs::rename(&temporary, path)
     }
 
     /// Every hero's owner body script, as Python's `BODY_SCRIPT_HEROES = None`
@@ -284,7 +348,7 @@ impl PreparedScene {
     }
 
     pub fn movement_ready(&self) -> bool {
-        is_practice_range(&self.map) && self.contacts.is_some()
+        self.contacts.is_some()
     }
 
     pub(crate) fn movement_index(&self) -> &TriangleIndex {
@@ -344,6 +408,16 @@ impl PreparedScene {
 
     pub fn mode_ui(&self) -> &BitWriter {
         &self.mode_ui
+    }
+
+    /// A full frame of the game mode entity with the seconds left of
+    /// "assemble your team" in v1303 (match.py `_send_countdown`,
+    /// combat.py `mode_frame`).
+    pub fn countdown_frame(&self, seconds: f64) -> io::Result<BitWriter> {
+        mode_ui(
+            &self.graphs,
+            &Variables::from([(COUNTDOWN, Value::Float(seconds))]),
+        )
     }
 
     pub fn bots(&self) -> &[Bot] {
@@ -494,6 +568,14 @@ fn read_mode_props(path: &Path) -> io::Result<BTreeMap<u64, BTreeSet<u64>>> {
             ))
         })
         .collect()
+}
+
+/// The version of a collision cache file, `None` when it is none
+/// (collision.py `cache_version`).
+fn cache_version(path: &Path) -> Option<u32> {
+    let mut head = [0; 12];
+    File::open(path).ok()?.read_exact(&mut head).ok()?;
+    (&head[..8] == MAGIC).then(|| u32::from_le_bytes([head[8], head[9], head[10], head[11]]))
 }
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {

@@ -241,10 +241,10 @@ flowchart LR
 | 1 Module folders | Done, merged with phase 3: files moved straight into the crates, large test modules moved to `tests.rs` files, the statescript VM split into 11 files by concern |
 | 2 Cut cycles | Done, before phase 1 |
 | 3 Workspace crates | Done |
-| 4 `orpheus` app | Done. The dashboard serves its profile, account, item, frame and loot box actions; the rest answer 501 (see `docs/notes/parity.md`). |
+| 4 `orpheus` app | Done. The dashboard serves every action the Python dashboard has. |
 | 5 Launcher and relay | Done. The original client reached the lobby through the Rust relay (`docs/notes/behavior.md`, 2026-11-10). The C++ relay, `build.bat`, `START.bat`, `START_LOCAL.cmd` and `--relay-dll` are deleted. `ow174/launcher` stays until phase 8, because the frozen Python server imports it; it now loads the Rust relay. |
-| 6 Game data from CASC | Spike passed. 6a done: `crates/casc` reads every stored graph and definition from the install by GUID (`just test-game`). 6b done: `crates/stu` decodes every stored graph, definition and game mode, and matches a DataTool export of the install (`just test-datatool`). 6c and 6d not started. |
-| 7 Tools | IDA script moved; `fake_client` covered by test fixtures; `ssq` deferred (see phase 7) |
+| 6 Game data from CASC | Done. 6a: `crates/casc` reads every graph and definition from the install by GUID (`just test-game`). 6b: `crates/stu` decodes them and matches a DataTool export (`just test-datatool`). 6c: `crates/assets` derives every runtime file, each checked against the prepared pack (`just test-assets`). 6d: the server derives its data from the install into the state folder's cache on first start; it no longer reads a pack. |
+| 7 Tools | IDA script moved; `fake_client` covered by test fixtures; `ssq` deferred (see phase 7); no other tool was needed for the parity work |
 | 8 Remove Python | Waits for the phase 5 and 6 gates and gameplay parity |
 | 9 New documentation | Not started |
 
@@ -481,7 +481,7 @@ flowchart LR
   CP[collision_props]
 ```
 
-**6c result (2026-11-12):** done. `crates/assets` has 11 derivations, run in the order above (`DERIVATIONS`). Each is tested against its pack file (`just test-assets`); all match except where the test pins a known difference with its cause: 207 display strings of `extracted_maps.json` (the pack's copy wasn't made from this install's strings), the bytes of `0688.col` (6 more empty models, because the derivation also reads models stored in bundles), and `collision_props_174.json` (only `modes` is written). `orpheus_assets::collision_cache` builds any other map's cache.
+**6c result (2026-11-12):** done. `crates/assets` has 11 derivations, run in the order above (`DERIVATIONS`). Each is tested against its pack file (`just test-assets`); all match except where the test pins a known difference with its cause: 207 display strings of `extracted_maps.json` (the pack's copy wasn't made from this install's strings; built from them, `game_maps_174.json` names five lobby maps by their names, where the pack has their internal ones), the bytes of `0688.col` (6 more empty models, because the derivation also reads models stored in bundles), and `collision_props_174.json` (only `modes` is written). `orpheus_assets::collision_cache` builds any other map's cache. A full derivation takes about 1 min 50 s in a release build.
 
 **Caching:** results go to `<state>/cache/104319/`, stamped with the build version, build config key, locale and `DERIVATIONS_VERSION`; another stamp derives them again. Collision for a map other than the Practice Range is built when a match on that map first starts. The first launch is slower; later launches read the cache.
 
