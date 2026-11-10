@@ -260,6 +260,8 @@ struct WorldRecord {
     script: Option<ReceivedChunk>,
     projectile_release: Option<u32>,
     base_health: Option<f32>,
+    /// The first component of an update with one component.
+    updated: Option<u8>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -300,6 +302,7 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
                 script: None,
                 projectile_release: None,
                 base_health: None,
+                updated: None,
             };
             assert!(reader.bit().unwrap());
             if !reader.bit().unwrap() {
@@ -358,7 +361,12 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
                         }
                     } else if operation == 2 {
                         let mut components = reader;
-                        if components.bits(8).unwrap() == 1 && components.bits(8).unwrap() == 51 {
+                        let count = components.bits(8).unwrap();
+                        let index = components.bits(8).unwrap() as u8;
+                        if count == 1 {
+                            record.updated = Some(index);
+                        }
+                        if count == 1 && index == 51 {
                             components.align();
                             if components.bits(8).unwrap() == 7 && components.bits(56).unwrap() == 1
                             {
@@ -1325,6 +1333,8 @@ struct Watcher {
     tick: u32,
     sequences: HashSet<u32>,
     datagrams: Vec<(Vec<orpheus_wire::messages::Message>, Vec<WorldRecord>)>,
+    /// The server tick of each datagram.
+    ticks: Vec<u32>,
 }
 
 impl Watcher {
@@ -1343,6 +1353,7 @@ impl Watcher {
         self.client.window.accept(packet.seq);
         self.client.send(ACK, Vec::new());
         self.datagrams.push((messages, records));
+        self.ticks.push(self.tick);
     }
 
     /// The first datagram from `from` with a record that passes `test`.
@@ -1440,6 +1451,7 @@ fn two_players_in_one_practice_range_see_each_other() {
                 tick: 0,
                 sequences: HashSet::new(),
                 datagrams: Vec::new(),
+                ticks: Vec::new(),
             }
         })
         .collect();
@@ -1693,5 +1705,242 @@ fn two_players_in_one_practice_range_see_each_other() {
         assert!(Instant::now() < deadline, "waiting for the match to end");
         thread::sleep(Duration::from_millis(10));
     }
+    server.stop().unwrap();
+}
+
+/// Two players on different teams in one Practice Range (combat.py): the
+/// first shoots the second to death. The shooter gets his hits (25001) and
+/// the elimination (25005); the victim gets "YOU WERE KILLED BY" (25004)
+/// naming the shooter's body; both clients get frames of the dead body's
+/// statescript, which carry its "died" kill feed line (003E); the shooter's
+/// Tab board changes; and the victim gets a new body after the Practice
+/// Range's 3 s, which the shooter's client gets too.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
+fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
+    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO, stats::GMP_STATS};
+    use orpheus_sim::scene_assets::SceneAssets;
+    use orpheus_wire::commands::FIRE;
+
+    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let spawns = [0, 1].map(|team| scene.map().spawn_point(team, 0).unwrap().0);
+    let schemas = Arc::new(Schemas::game());
+    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let tags = ["shooter#1111", "target#2222"];
+    let members = tags
+        .iter()
+        .enumerate()
+        .map(|(index, tag)| WorldPlayer {
+            player: MatchPlayer {
+                name: (*tag).into(),
+                team: index as u8,
+                tournament: false,
+                ranked: false,
+            },
+            card: PlayerCard {
+                account: [index as u64 + 7, 0x0100_0000_0000_0000],
+                battle_tag: (*tag).into(),
+                record: Fields::from([(0x40, Value::String((*tag).into()))]),
+                ..PlayerCard::default()
+            },
+        })
+        .collect();
+    let tickets = server.open_prepared(MATCH, scene, members).unwrap();
+    let mut watchers: Vec<_> = tickets
+        .iter()
+        .enumerate()
+        .map(|(slot, ticket)| {
+            let mut client = Client::new(server.local_addr(), ticket);
+            client.handshake();
+            Watcher {
+                client,
+                owner: player_entity(slot),
+                tick: 0,
+                sequences: HashSet::new(),
+                datagrams: Vec::new(),
+                ticks: Vec::new(),
+            }
+        })
+        .collect();
+    let [shooter, target] = &mut watchers[..] else {
+        unreachable!()
+    };
+    let (shooter_owner, target_owner) = (shooter.owner, target.owner);
+    let (shooter_body, target_body) = (shooter_owner | 1, target_owner | 1);
+    pump_until(
+        &mut [shooter, target],
+        &schemas,
+        "the instances",
+        |watchers| {
+            watchers.iter().all(|watcher| {
+                watcher.datagrams.iter().any(|(messages, _)| {
+                    messages.iter().any(|message| {
+                        message.id == 20300 && message.fields[&0x80] != Value::Struct(Fields::new())
+                    })
+                })
+            })
+        },
+    );
+    for watcher in [&mut *shooter, &mut *target] {
+        let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+        let mut payload = BitWriter::new();
+        write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+        watcher.client.send(ACK, payload.into_bytes());
+    }
+    pump_until(
+        &mut [shooter, target],
+        &schemas,
+        "the controllers",
+        |watchers| {
+            watchers.iter().all(|watcher| {
+                watcher
+                    .find(0, |record| {
+                        record.entity == watcher.owner && record.script.is_some()
+                    })
+                    .is_some()
+            })
+        },
+    );
+    for watcher in [&mut *shooter, &mut *target] {
+        let owner = watcher.owner;
+        send_player_message(
+            &mut watcher.client,
+            &schemas,
+            owner,
+            1,
+            PICK_HERO,
+            SOLDIER.to_le_bytes().to_vec(),
+        );
+    }
+    // Each client has the other's body and his possession of it.
+    let possessed = |watcher: &Watcher, other: u32| {
+        watcher.created(other | 1).is_some()
+            && watcher
+                .find(0, |record| {
+                    record.entity == other && record.operation == Some(2)
+                })
+                .is_some()
+    };
+    pump_until(&mut [shooter, target], &schemas, "the bodies", |watchers| {
+        possessed(watchers[0], target_owner) && possessed(watchers[1], shooter_owner)
+    });
+    for _ in 0..10 {
+        shooter.pump(&schemas);
+        target.pump(&schemas);
+    }
+
+    // The shooter holds fire at the target's head height, level.
+    let [dx, _, dz] = std::array::from_fn::<_, 3, _>(|axis| spawns[1][axis] - spawns[0][axis]);
+    let yaw = (dx.atan2(dz) * 32768.0 / std::f64::consts::PI).round() as i32 as i16;
+    let messages_of = |watcher: &Watcher, id: u32| -> Vec<(usize, Fields)> {
+        watcher
+            .datagrams
+            .iter()
+            .enumerate()
+            .flat_map(|(index, (messages, _))| {
+                messages
+                    .iter()
+                    .filter(move |message| message.id == id)
+                    .map(move |message| (index, message.fields.clone()))
+            })
+            .collect()
+    };
+    let fired = shooter.datagrams.len();
+    let mut frame = shooter.tick + 1;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while messages_of(target, 25004).is_empty() {
+        assert!(Instant::now() < deadline, "waiting for the kill");
+        if frame <= shooter.tick + 8 {
+            shooter
+                .client
+                .send(ACK, command_batch(frame, 16, yaw, FIRE, false));
+            frame += 16;
+        }
+        shooter.pump(&schemas);
+        target.pump(&schemas);
+    }
+    let (died, death) = messages_of(target, 25004).remove(0);
+    let death_tick = target.ticks[died];
+    assert_eq!(death[&0x78], Value::Unsigned(2), "killed by");
+    assert_eq!(
+        death[&0x7c],
+        Value::Struct(Fields::from([(
+            0,
+            Value::Unsigned(u64::from(shooter_body))
+        )]))
+    );
+    // Stop firing, and wait for the shooter's notices and board.
+    let elimination = |watcher: &[&mut Watcher]| !messages_of(watcher[0], 25005).is_empty();
+    pump_until(
+        &mut [shooter, target],
+        &schemas,
+        "the elimination",
+        elimination,
+    );
+    let hits = messages_of(shooter, 25001);
+    assert!(!hits.is_empty());
+    assert!(hits.iter().all(|(index, _)| *index >= fired));
+    let (eliminated, notice) = messages_of(shooter, 25005).remove(0);
+    assert_eq!(
+        notice[&0x84],
+        Value::Struct(Fields::from([(0, Value::Unsigned(u64::from(target_body)))]))
+    );
+    assert!(hits.iter().all(|(index, _)| *index <= eliminated));
+    pump_until(&mut [shooter, target], &schemas, "the board", |watchers| {
+        watchers[0]
+            .find(fired, |record| {
+                record.entity == shooter_owner && record.updated == Some(GMP_STATS)
+            })
+            .is_some()
+            && watchers[1]
+                .find(died, |record| {
+                    record.entity == target_owner && record.updated == Some(GMP_STATS)
+                })
+                .is_some()
+    });
+    // The dead body's statescript goes on to both clients: its owner frames
+    // and the shooter's observer frames carry the kill feed pulse.
+    pump_until(
+        &mut [shooter, target],
+        &schemas,
+        "the dead body's frames",
+        |watchers| {
+            watchers[1]
+                .find(died, |record| {
+                    record.entity == target_body && record.script.is_some()
+                })
+                .is_some()
+                && watchers[0]
+                    .find(eliminated, |record| {
+                        record.entity == target_body && record.script.is_some()
+                    })
+                    .is_some()
+        },
+    );
+    // His new body comes after the Practice Range's 3 s, to both clients.
+    let respawned = target_owner | 2;
+    pump_until(
+        &mut [shooter, target],
+        &schemas,
+        "the respawn",
+        |watchers| {
+            watchers[1].created(respawned).is_some() && watchers[0].created(respawned).is_some()
+        },
+    );
+    let created = target.created(respawned).unwrap();
+    let respawn_tick = target.ticks[created];
+    assert!(created > died);
+    let waited = respawn_tick - death_tick;
+    assert!(
+        (3000 / 16 - 4..3000 / 16 + 60).contains(&waited),
+        "respawned after {waited} ticks"
+    );
+    assert!(
+        target
+            .find(died, |record| record.entity == target_body
+                && record.operation == Some(3))
+            .is_some()
+    );
     server.stop().unwrap();
 }

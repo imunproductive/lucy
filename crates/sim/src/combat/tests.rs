@@ -155,3 +155,60 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
     );
     assert_eq!(combat.targets[slot].vitals.total(), 160.0);
 }
+
+#[test]
+fn heroes_respawn_after_the_mode_time() {
+    assert_eq!(respawn_time(PRACTICE_RANGE_MODE), Duration::from_secs(3));
+    assert_eq!(respawn_time(0x0230_0000_0000_0001), Duration::from_secs(10));
+    assert_eq!(RESPAWN_RETRY, Duration::from_millis(250));
+}
+
+#[test]
+fn the_died_message_names_the_killer_the_crit_and_the_loadout() {
+    let (message, parameters) = death_message(0xa000_0201, true, Some(0x0b90_0000_0000_008d));
+    assert_eq!(message, DIED);
+    assert_eq!(parameters[&KILLER], Value::Entity(0xa000_0201));
+    assert_eq!(parameters[&CRIT], Value::Bool(true));
+    assert_eq!(parameters[&LOADOUT], Value::Asset(0x0b90_0000_0000_008d));
+    assert_eq!(parameters[&ASSISTS], Value::Array(Vec::new()));
+    assert_eq!(death_message(1, false, None).1[&LOADOUT], Value::Null);
+}
+
+#[test]
+fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
+    let target = |body, team, dead| PlayerSlot {
+        target: PlayerTarget {
+            body,
+            team,
+            pose: TargetPose {
+                feet: [0.0; 3],
+                height: 1.8,
+                radius: 0.4,
+                eye: 1.55,
+            },
+            dead,
+        },
+        history: TargetHistory::new(None),
+    };
+    let combat = Combat {
+        targets: Vec::new(),
+        players: vec![
+            target(0xa000_0101, 0, false),
+            target(0xa000_0201, 0, false),
+            target(0xa000_0301, 1, false),
+            target(0xa000_0401, 1, true),
+        ],
+        rockets: Vec::new(),
+        player_hits: Vec::new(),
+        next_bot: BOT_ENTITY,
+    };
+    let bodies = |free_for_all| -> Vec<u32> {
+        combat
+            .player_candidates(SHOOTER, free_for_all, |slot| Some(slot.target.pose))
+            .map(|(body, _)| body)
+            .collect()
+    };
+    // Not himself, not an ally, not the dead.
+    assert_eq!(bodies(false), [0xa000_0301]);
+    assert_eq!(bodies(true), [0xa000_0201, 0xa000_0301]);
+}
