@@ -54,7 +54,7 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
     let state = tempfile::tempdir().unwrap();
     let mut config = ServerConfig::new(runtime, state.path().into());
     config.lobby_port = 0;
-    config.game_port = 0;
+    config.game_port = Some(0);
     config.stall_port = 0;
     config.rpc_port = 0;
     config.dashboard_port = Some(0);
@@ -243,7 +243,7 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
     let ticket = structure(&handoff[&0x80]);
     assert_eq!(
         ticket[&0x2c],
-        Value::Unsigned(u64::from(server.game_addr().port()))
+        Value::Unsigned(u64::from(server.game_addr().unwrap().port()))
     );
     let (_, lobby, _) = find(53000, 0);
     let match_id = &structure(&lobby[&0x78])[&0x30];

@@ -292,10 +292,13 @@ impl Api<'_> {
         let Some(lobby) = self.lobby else {
             return Vec::new();
         };
-        let Ok(matches) = lobby.game.snapshot() else {
+        let Some(game) = lobby.game.as_deref() else {
             return Vec::new();
         };
-        let address = lobby.game.local_addr();
+        let Ok(matches) = game.snapshot() else {
+            return Vec::new();
+        };
+        let address = game.local_addr();
         let heroes = lobby.assets.heroes();
         matches
             .iter()

@@ -17,7 +17,8 @@ use crate::{logging::LOG_FILE, settings::Settings};
 /// What the banner shows.
 struct Banner<'a> {
     bind: SocketAddrV4,
-    game: SocketAddr,
+    /// `None` when `--game-port 0` turns the game server off.
+    game: Option<SocketAddr>,
     battle_net: Option<(SocketAddr, SocketAddr)>,
     dashboard: Option<SocketAddr>,
     /// This PC's addresses other PCs can dial.
@@ -82,17 +83,23 @@ fn lines(banner: &Banner<'_>) -> Vec<String> {
                 addresses.join(", ")
             }
         ));
-        lines.push(if banner.game_host.is_empty() {
-            " [*] Internet:       off (no public address, --game-host)".to_owned()
-        } else {
-            format!(
+        lines.push(match (banner.game_host.is_empty(), banner.game) {
+            (true, _) => " [*] Internet:       off (no public address, --game-host)".to_owned(),
+            (false, Some(game)) => format!(
                 " [*] Internet:       {}:{port} (open TCP {port} and UDP {} in your router and firewall)",
                 banner.game_host,
-                banner.game.port()
-            )
+                game.port()
+            ),
+            (false, None) => format!(
+                " [*] Internet:       {}:{port} (open TCP {port} in your router and firewall)",
+                banner.game_host
+            ),
         });
     }
-    lines.push(format!(" [*] Game server:    {} (UDP)", banner.game));
+    lines.push(match banner.game {
+        Some(game) => format!(" [*] Game server:    {game} (UDP)"),
+        None => " [*] Game server:    off".to_owned(),
+    });
     lines.push(match banner.battle_net {
         Some((stall, rpc)) => format!(" [*] Battle.net:     {stall} (relay RPC {rpc})"),
         None => " [*] Battle.net:     off".to_owned(),
@@ -182,7 +189,7 @@ mod tests {
         let network = [Ipv4Addr::new(192, 168, 1, 5)];
         let mut banner = Banner {
             bind: "0.0.0.0:3724".parse().unwrap(),
-            game: "0.0.0.0:3730".parse().unwrap(),
+            game: Some("0.0.0.0:3730".parse().unwrap()),
             battle_net: None,
             dashboard: None,
             network: &network,
@@ -210,5 +217,18 @@ mod tests {
 
         banner.bind = "127.0.0.1:3724".parse().unwrap();
         assert!(!lines(&banner).iter().any(|line| line.contains("Internet")));
+
+        // `--game-port 0`: no game server, and no UDP port to forward.
+        banner.bind = "0.0.0.0:3724".parse().unwrap();
+        banner.game_host = "1.2.3.4";
+        banner.game = None;
+        let shown = lines(&banner);
+        assert!(shown.contains(&" [*] Game server:    off".to_owned()));
+        assert!(
+            shown.contains(
+                &" [*] Internet:       1.2.3.4:3724 (open TCP 3724 in your router and firewall)"
+                    .to_owned()
+            )
+        );
     }
 }

@@ -26,10 +26,12 @@ fn equip(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
     let Some(equipped) = equip.apply(peer.login, &peer.lobby.collection, peer.wall_time)? else {
         return Ok(());
     };
-    if let (Some(seat), Some(skin)) = (peer.seat.as_ref(), equipped.skin) {
-        peer.lobby
-            .game
-            .update_skin(&seat.handoff, equip.hero, skin)?;
+    if let (Some(seat), Some(skin), Some(game)) = (
+        peer.seat.as_ref(),
+        equipped.skin,
+        peer.lobby.game.as_deref(),
+    ) {
+        game.update_skin(&seat.handoff, equip.hero, skin)?;
     }
     peer.send_all(&equipped.messages)?;
     if equipped.card_changed {

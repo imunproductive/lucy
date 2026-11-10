@@ -59,7 +59,7 @@ pub fn start(settings: &Settings, hosting: Hosting) -> io::Result<Server> {
     config.host = hosting.host;
     config.game_host = hosting.game_host;
     config.lobby_port = settings.ports.lobby;
-    config.game_port = settings.ports.game;
+    config.game_port = settings.game_port();
     config.battle_net = hosting.battle_net;
     config.stall_port = settings.ports.stall;
     config.rpc_port = settings.ports.rpc;
