@@ -395,16 +395,8 @@ mod tests {
     use orpheus_core::tick::FIRST_TICK;
 
     #[test]
-<<<<<<< HEAD
-    #[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
-    fn stock_heroes_attach_their_authored_owner_scripts() {
-||||||| 13a80f1
-    #[ignore = "requires a prepared 104319 Practice Range pack without bot VM graphs"]
-    fn stock_soldier_attaches_his_authored_owner_script() {
-=======
     #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
-    fn stock_soldier_attaches_his_authored_owner_script() {
->>>>>>> assets-switch
+    fn stock_heroes_attach_their_authored_owner_scripts() {
         let runtime = orpheus_testkit::runtime_dir();
         let assets = SceneAssets::load(runtime).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();

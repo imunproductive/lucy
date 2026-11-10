@@ -694,7 +694,7 @@ mod tests {
     /// the Python reference did: the firing behavior runs out of sight, the
     /// stock nameplate mounts under 0C18, and the death runs to its end.
     #[test]
-    #[ignore = "requires the runtime pack's bot graph bundle"]
+    #[ignore = "requires the derived game data's bot graph bundle"]
     fn the_practice_training_bot_starts_its_behavior_and_dies() {
         let graphs = Arc::new(GraphStore::load(orpheus_testkit::bot_graphs()).unwrap());
         let codecs = CodecTable::client();
