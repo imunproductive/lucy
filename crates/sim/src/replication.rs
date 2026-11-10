@@ -16,7 +16,7 @@ use crate::{
     bots::BOT_RECORD_DELAY,
     combat::{
         BotReplacement, DEAD, PlayerHit, PlayerTarget, PosedProjectile, PosedShot, RESPAWN_RETRY,
-        death_message, respawn_time,
+        death_message,
     },
     controller::ControllerFrame,
     egress::{DeliveryReport, FrameRecords, GameEgress, RecordSource, SendError, SentFrame},
@@ -28,7 +28,7 @@ use crate::{
     pools::FALLBACK_POOLS,
     projectile_flight::{FlightEnd, ProjectileFlight},
     projectiles::{
-        FIELD_ENTITY, FieldCopies, FieldDeliver, FieldDelivery, FiredProjectile, OwnerProjectiles,
+        FieldCopies, FieldDeliver, FieldDelivery, FiredProjectile, OwnerProjectiles,
         ProjectileDelivery, ProjectileEvent, ProjectileLeases, ProjectileToken, ShotKey,
     },
     scene::{PlayerAppearance, Possession, player_team_bit},
@@ -299,10 +299,11 @@ impl BodyScript {
         ) else {
             return;
         };
-        let token = if projectile.spawn == Some(FIELD_ENTITY) {
-            projectiles.admit_field(projectile.shot, definition, bound, projectile.feet)
-        } else {
-            projectiles.admit(projectile.shot, definition, bound)
+        let token = match projectile.field {
+            Some(field) => {
+                projectiles.admit_field(projectile.shot, definition, bound, projectile.feet, *field)
+            }
+            None => projectiles.admit(projectile.shot, definition, bound),
         };
         let Some(token) = token else {
             return;
@@ -362,7 +363,7 @@ impl BodyScript {
                 .expect("owner delta requires the baseline");
             let mut snapshot = encoder.project_next(snapshot, base).map_err(invalid)?;
             if let Some(allowed) = kill_feed {
-                snapshot = snapshot.gate_kill_feed(&self.stream, allowed);
+                snapshot = snapshot.gate_kill_feed(encoder.graphs(), &self.stream, allowed);
             }
             let chunk = encoder
                 .queue_delta(&mut self.stream, &snapshot, kind, self.runtime.frame_ms())
@@ -954,9 +955,11 @@ impl WorldDelivery {
                 if death.is_some() {
                     pose.flags |= DEAD;
                 }
+                let hero = scene.heroes().get(body.hero)?;
                 Some(RemoteBody {
                     id: body.id,
-                    hero: scene.heroes().get(body.hero)?,
+                    hero,
+                    gravity: scene.mover(hero.body).gravity_scale,
                     skin: body.skin,
                     pose,
                     vitals: runtime
@@ -1927,7 +1930,7 @@ impl WorldDelivery {
                 body: body.id,
                 killer: hit.shooter.source,
                 tick: death_tick,
-                respawn_at: now.saturating_add(respawn_time(scene.map().mode_guid)),
+                respawn_at: now.saturating_add(scene.respawn_time()),
             });
             if let Some(script) = self
                 .body_script

@@ -43,28 +43,32 @@ const TURN_RATE: f64 = YAW_UNITS / 6.0;
 const TURN_AFTER: f64 = 0.5;
 const CATCH_UP: u32 = 625;
 const EPSILON: f64 = 1.0e-9;
-const GRAVITY_SCALE: f64 = 1.75;
+/// A training bot's eye over its feet, where its shots start and its head
+/// zone ends (combat.py `EYE`, which Python used for every bot). Kept, not
+/// derived: the Training Bot body (1403) authors a first-person eye of 2.0,
+/// the top of its capsule, which is not where the reference aimed from or
+/// put the head (its tests pin 1.55); the other bot bodies author none.
+pub const BOT_EYE: f64 = 1.55;
 
+/// A bot body's walk, from its mover (bots.py `mover_data`): run speed,
+/// acceleration and braking, and the gravity scale its movement records
+/// carry (mover.py `GRAVITY_SCALE`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BotWalk {
     pub speed: f64,
     pub acceleration: f64,
     pub brake: f64,
+    pub gravity: f64,
 }
 
 impl BotWalk {
-    pub fn from_mover(run_forward: f64, accel_ground: f64, decel_ground_base: f64) -> Self {
+    pub fn from_mover(mover: &MoverSettings) -> Self {
         Self {
-            speed: run_forward,
-            acceleration: accel_ground * run_forward,
-            brake: decel_ground_base * run_forward,
+            speed: mover.run_forward,
+            acceleration: mover.accel_ground * mover.run_forward,
+            brake: mover.decel_ground_base * mover.run_forward,
+            gravity: mover.gravity_scale,
         }
-    }
-}
-
-impl Default for BotWalk {
-    fn default() -> Self {
-        Self::from_mover(5.5, 35.0, 15.0)
     }
 }
 
@@ -731,7 +735,7 @@ impl Bot {
             throttles: self.held,
             input_frame,
             input_throttles: self.last_held,
-            gravity: GRAVITY_SCALE,
+            gravity: self.walk.gravity,
             ..Movement::default()
         }
     }

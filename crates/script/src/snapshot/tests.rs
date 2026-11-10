@@ -1383,7 +1383,23 @@ fn kill_feed_pulse_waits_for_the_world_then_stays_fresh_until_acknowledged() {
                     "m_outPlug":{"$":"Plug","links":[[1,"m_beginPlug"]],"m_FF3DAF1E":[]},
                 }),
             ),
-            node(1, "STU_B9898052", Some(108), json!({})),
+            node(
+                1,
+                "STU_B9898052",
+                Some(108),
+                json!({"m_B6A27F9A":{"$":"Plug","links":[[2,"m_inPlug"]]}}),
+            ),
+            {
+                // Its client-only plug posts the kill feed line.
+                let mut post = node(
+                    2,
+                    "STU_100EF8C2",
+                    None,
+                    json!({"m_gameMessage":{"m_gameMessage":"0x0240000000000765"}}),
+                );
+                post["client_only"] = json!(true);
+                post
+            },
         ],
         json!(states),
         json!([0]),
@@ -1445,9 +1461,13 @@ fn kill_feed_pulse_waits_for_the_world_then_stays_fresh_until_acknowledged() {
         .project(component.snapshot().unwrap(), View::Owner)
         .unwrap();
     assert_eq!(pulse(&live), Some((true, payload(true))));
+    assert_eq!(graphs.graph(0x01cf).unwrap().kill_feed_pulser(), Some(108));
     // Not allowed yet: the client keeps what it acknowledged.
-    assert_eq!(pulse(&live.clone().gate_kill_feed(&stream, false)), None);
-    let allowed = live.gate_kill_feed(&stream, true);
+    assert_eq!(
+        pulse(&live.clone().gate_kill_feed(&graphs, &stream, false)),
+        None
+    );
+    let allowed = live.gate_kill_feed(&graphs, &stream, true);
     assert_eq!(pulse(&allowed), Some((true, payload(true))));
     let sent = encoder
         .queue_delta(&mut stream, &allowed, DeltaKind::InitialOwner(101), 16)
@@ -1463,13 +1483,35 @@ fn kill_feed_pulse_waits_for_the_world_then_stays_fresh_until_acknowledged() {
         .unwrap();
     assert_eq!(pulse(&stale), Some((true, payload(false))));
     assert_eq!(
-        pulse(&stale.clone().gate_kill_feed(&stream, false)),
+        pulse(&stale.clone().gate_kill_feed(&graphs, &stream, false)),
         Some((true, payload(true)))
     );
     stream.sent(sent.last);
     stream.arrived(sent.last);
     assert_eq!(
-        pulse(&stale.gate_kill_feed(&stream, false)),
+        pulse(&stale.gate_kill_feed(&graphs, &stream, false)),
         Some((true, payload(false)))
+    );
+}
+
+/// driver.py `KILL_FEED_PULSERS`: `{0x01CF: 108, 0x0C18: 8}`, found in the
+/// bot bundle (the hero bundle has no `0C18`).
+#[test]
+#[ignore = "requires the derived 104319 graph bundles"]
+fn the_kill_feed_pulsers_are_the_python_reference_table() {
+    let pulsers = |path: std::path::PathBuf| {
+        let graphs = GraphStore::load(path).unwrap();
+        graphs
+            .graph_indexes()
+            .filter_map(|index| Some((index, graphs.graph(index)?.kill_feed_pulser()?)))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        pulsers(orpheus_testkit::bot_graphs()),
+        [(0x01cf, 108), (0x0c18, 8)]
+    );
+    assert_eq!(
+        pulsers(orpheus_testkit::runtime_dir().join("data/game_graphs_174.json.gz")),
+        [(0x01cf, 108)]
     );
 }

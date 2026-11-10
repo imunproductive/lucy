@@ -427,7 +427,8 @@ mod tests {
     #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
     fn movement_velocity_matches_python_across_authored_mover_settings() {
         let path = orpheus_testkit::runtime_dir().join("data/game_movers_174.json");
-        let movers = MoverCatalog::load(&path).unwrap();
+        // mover.py `SOLDIER_BODY`, the fallback body.
+        let movers = MoverCatalog::load(&path, 0x0400_0000_0000_03cf).unwrap();
         let raw: BTreeMap<String, serde_json::Value> =
             serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(raw.len(), 38);

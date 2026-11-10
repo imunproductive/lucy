@@ -111,16 +111,19 @@ impl ProjectedSnapshot {
     }
 }
 
-/// The pulsers whose client-only plug posts a kill feed line to the mode UI,
-/// by graph and state (`KILL_FEED_PULSERS` in `ow174/game/script/driver.py`).
-pub const KILL_FEED_PULSERS: [(u32, u16); 2] = [(0x01cf, 108), (0x0c18, 8)];
-
 impl ProjectedSnapshot {
     /// Gate a new kill feed pulse (`BodyStream.kill_feed_snapshot` in
-    /// driver.py): until the world allows it the client keeps what it has;
-    /// once allowed the pulse goes out as a fresh first one; and a pulse
-    /// already sent keeps its wire value until it is acknowledged.
-    pub fn gate_kill_feed(mut self, stream: &BodyStream<ProjectedSnapshot>, allowed: bool) -> Self {
+    /// driver.py) of each instance whose graph has a kill feed pulser
+    /// ([`Graph::kill_feed_pulser`]): until the world allows it the client
+    /// keeps what it has; once allowed the pulse goes out as a fresh first
+    /// one; and a pulse already sent keeps its wire value until it is
+    /// acknowledged.
+    pub fn gate_kill_feed(
+        mut self,
+        graphs: &GraphStore,
+        stream: &BodyStream<ProjectedSnapshot>,
+        allowed: bool,
+    ) -> Self {
         let base = stream.base().map(|(_, base)| base);
         let pending = stream.latest_snapshot();
         let count = |state: Option<&ProjectedState>| {
@@ -129,9 +132,9 @@ impl ProjectedSnapshot {
                 .and_then(|state| state.payload.get("count").cloned())
         };
         for (&owner, instance) in &mut self.instances {
-            let Some(&(_, raw)) = KILL_FEED_PULSERS
-                .iter()
-                .find(|(graph, _)| *graph == instance.graph)
+            let Some(raw) = graphs
+                .graph(instance.graph)
+                .and_then(Graph::kill_feed_pulser)
             else {
                 continue;
             };
@@ -391,6 +394,11 @@ impl<'a> SnapshotEncoder<'a> {
             unknowns: Unknowns::for_build(),
             hidden: &[],
         }
+    }
+
+    /// The graphs it projects with.
+    pub fn graphs(&self) -> &'a GraphStore {
+        self.graphs
     }
 
     /// Whether a state or timer whose payload can't be written fails the

@@ -13,8 +13,8 @@ use crate::{projectile_wire, replication::BodyId};
 use orpheus_core::{bits::BitWriter, tick::MAX_LEASE_FRAME};
 use orpheus_physics::static_ray::Vec3;
 use orpheus_script::{
-    expr::EvalError,
-    graph::{GraphStore, Node, asset_guid},
+    expr::{Context, EvalError, Variable, evaluate, to_float},
+    graph::{Graph, GraphStore, Node, asset_guid},
     snapshot::{ProjectedSnapshot, ProjectedState},
     stream::Stream,
     vm::{ShotEvent, Snapshot},
@@ -218,10 +218,11 @@ pub enum ProjectileEvent {
         token: ProjectileToken,
         explode: bool,
     },
-    /// The field heals this tick (`heal_area`).
+    /// The field heals this tick (`heal_area`): the sphere and the amount.
     FieldHeal {
         token: ProjectileToken,
         centre: [f64; 3],
+        radius: f64,
         amount: f64,
     },
     /// Every client gets the field once (`_deliver_field`): the owner's
@@ -305,10 +306,11 @@ impl OwnerProjectiles {
         definition: u64,
         flight_bound_ticks: u32,
         feet: [f64; 3],
+        field: BioticField,
     ) -> Option<ProjectileToken> {
         let token = self.admit(shot, definition, flight_bound_ticks)?;
         if let Some(pending) = self.pending.last_mut() {
-            pending.field = Some((FieldSchedule::new(), feet));
+            pending.field = Some((FieldSchedule::new(field), feet));
         }
         Some(token)
     }
@@ -449,13 +451,15 @@ impl OwnerProjectiles {
                 // projectiles.py `_field`.
                 let (feet, token) = (*feet, pending.token);
                 let step = schedule.step(tick, first_tick);
+                let (centre, radius) = (schedule.centre(feet), schedule.radius());
                 if step.confirm {
                     confirm(leases, occupied, pending, tick, &mut out);
                 }
                 if step.heal > 0.0 {
                     events.push(ProjectileEvent::FieldHeal {
                         token,
-                        centre: field_centre(feet),
+                        centre,
+                        radius,
                         amount: step.heal,
                     });
                 }
@@ -621,8 +625,6 @@ fn invalid(message: &'static str) -> io::Error {
 const FRAME_MS: u32 = 16;
 /// 03DC.003, the Biotic Field (0257 st1's m_projectileSpawn).
 pub const FIELD_ENTITY: u64 = 0x0400_0000_0000_03dc;
-/// The field entity's initial graph.
-pub const FIELD_GRAPH: u32 = 0x0258;
 /// The field entities' ids: FIELD_FIRST + n % FIELD_SPAN.
 pub const FIELD_FIRST: u32 = 0xa008_0000;
 pub const FIELD_SPAN: u32 = 0x0004_0000;
@@ -630,22 +632,104 @@ pub const FIELD_SPAN: u32 = 0x0004_0000;
 pub const SEEN_FIRST: u32 = 0xa00c_0000;
 pub const SEEN_SPAN: u32 = 0x0004_0000;
 /// Approximate deployment delay in world ticks after the cast projectile is
-/// admitted.
+/// admitted (projectiles.py `FIELD_DELAY`: the canister's flight, which no
+/// asset states).
 pub const FIELD_DELAY: u32 = 12;
-/// 0258: #567 = 5 s, st1 waits #567 - 0.5 then st4 waits 0.5, then
-/// DestroyEntity.
-pub const FIELD_SECONDS: f64 = 5.0;
-/// ceil(FIELD_SECONDS * 1000 / FRAME_MS).
-pub const FIELD_TICKS: u32 = 5000_u32.div_ceil(FRAME_MS);
-/// 0258 st1 ends: st5 (its DataFlowMapping) goes off.
-pub const FADE_SECONDS: f64 = 4.5;
-/// 0258 #420 = 35 a player (ApplyAura 025F.053's 002A; per second unverified).
-pub const HEAL_PER_SECOND: f64 = 35.0;
-/// 0258 #422 = 5: st0 TrackTargets m_radius.
-pub const HEAL_RADIUS: f64 = 5.0;
-/// TrackTargets' offset (0, 1, 0) from the field (the sphere's centre is
-/// unverified).
-pub const HEAL_UP: f64 = 1.0;
+/// The `Wait` state of the field's graph whose end turns its
+/// DataFlowMapping (st5) off: 0258 st1 waits `#567 - 0.5`, then st4 waits
+/// 0.5 and destroys the entity (projectiles.py `FADE_SECONDS`).
+const FADE_WAIT: usize = 1;
+/// The ApplyAura parameters (`025F.053`) of the heal a second and the
+/// field's seconds: 0258 st7 passes #420 and #567.
+const AURA_HEAL: u64 = 0x002a;
+const AURA_SECONDS: u64 = 0x002b;
+
+/// The Biotic Field's numbers, read from its entity's initial graph (0258)
+/// as projectiles.py's `FIELD_SECONDS`, `FADE_SECONDS`, `HEAL_PER_SECOND`,
+/// `HEAL_RADIUS` and `HEAL_UP` name them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BioticField {
+    /// The field entity's initial graph.
+    pub graph: u32,
+    /// ceil(seconds * 1000 / FRAME_MS): the ApplyAura's seconds (#567).
+    pub ticks: u32,
+    /// When st1's Wait ends and st5 goes off.
+    pub fade_seconds: f64,
+    /// The ApplyAura's heal (#420 = 35 a player; per second: unverified).
+    pub heal_per_second: f64,
+    /// st0 TrackTargets' `m_radius` (#422).
+    pub radius: f64,
+    /// st0 TrackTargets' offset up from the field (`m_05BE62DD`; the
+    /// sphere's centre is unverified).
+    pub up: f64,
+}
+
+impl BioticField {
+    /// Read the numbers from `graph`. A graph variable is the value the
+    /// graph's `SetVar` actions give it; a native the server can't answer is
+    /// null (#420 takes its constant 35 when the owner has no modifier).
+    pub fn read(graphs: &GraphStore, graph: u32) -> io::Result<Self> {
+        let source = graphs
+            .graph(graph)
+            .ok_or_else(|| invalid("missing the Biotic Field graph"))?;
+        let mut context = FieldContext {
+            graph: source,
+            depth: 0,
+        };
+        let mut authored = |config: Option<&Json>| -> io::Result<Value> {
+            let config = config.ok_or_else(|| invalid("a Biotic Field number is absent"))?;
+            evaluate(config, &mut context)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        };
+        let track = source
+            .nodes
+            .iter()
+            .find(|node| node.class == "STUStatescriptStateTrackTargets" && node.state.is_some())
+            .ok_or_else(|| invalid("the Biotic Field graph tracks no targets"))?;
+        let aura = source
+            .nodes
+            .iter()
+            .find(|node| node.class == "STU_431F3FCC" && node.state.is_some())
+            .ok_or_else(|| invalid("the Biotic Field graph applies no aura"))?;
+        let parameter = |index: u64| {
+            aura.field("m_params")
+                .and_then(Json::as_array)
+                .into_iter()
+                .flatten()
+                .find(|parameter| {
+                    parameter
+                        .get("m_B5051BCE")
+                        .and_then(asset_guid)
+                        .is_some_and(|guid| guid & 0xffff_ffff_ffff == index)
+                })
+                .and_then(|parameter| parameter.get("m_value"))
+        };
+        let seconds = to_float(&authored(parameter(AURA_SECONDS))?);
+        let fade_seconds = to_float(&authored(
+            source
+                .state(FADE_WAIT)
+                .filter(|node| node.class == "STUStatescriptStateWait")
+                .and_then(|node| node.field("m_timeout")),
+        )?);
+        let Value::Vector([_, up, _]) = authored(track.field("m_05BE62DD"))? else {
+            return Err(invalid("the Biotic Field's targets have no offset"));
+        };
+        Ok(Self {
+            graph,
+            ticks: (seconds * 1000.0 / f64::from(FRAME_MS)).ceil() as u32,
+            fade_seconds,
+            heal_per_second: to_float(&authored(parameter(AURA_HEAL))?),
+            radius: to_float(&authored(track.field("m_radius"))?),
+            up,
+        })
+    }
+
+    /// The heal sphere's centre over the shooter's feet (`field_centre`).
+    pub fn centre(&self, where_feet: [f64; 3]) -> [f64; 3] {
+        let [x, y, z] = where_feet;
+        [x, y + self.up, z]
+    }
+}
 
 /// The entities a volley's projectile leaves where it lands (`_defs` of the
 /// volley's `m_49CBA3BC` in `Projectiles.fired`); the first one is the
@@ -658,10 +742,42 @@ pub fn spawned_definitions(node: &Node) -> Vec<u64> {
     found
 }
 
-/// The heal sphere's centre over the shooter's feet (`field_centre`).
-pub fn field_centre(where_feet: [f64; 3]) -> [f64; 3] {
-    let [x, y, z] = where_feet;
-    [x, y + HEAL_UP, z]
+/// The field graph read as authored: its variables are what its `SetVar`
+/// actions set, natives are unknown (null).
+struct FieldContext<'a> {
+    graph: &'a Graph,
+    depth: u8,
+}
+
+impl Context for FieldContext<'_> {
+    fn variable(&mut self, variable: Variable) -> Value {
+        if self.depth > 8 {
+            return Value::Null;
+        }
+        let Some(config) = self
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| node.class == "STUStatescriptActionSetVar")
+            .find(|node| {
+                node.field("m_out_Var.m_identifier")
+                    .and_then(Json::as_u64)
+                    .is_some_and(|id| id == u64::from(variable.id))
+            })
+            .and_then(|node| node.field("m_value"))
+        else {
+            return Value::Null;
+        };
+        let mut inner = FieldContext {
+            graph: self.graph,
+            depth: self.depth + 1,
+        };
+        evaluate(config, &mut inner).unwrap_or(Value::Null)
+    }
+
+    fn native(&mut self, _config: &Json) -> Option<Value> {
+        Some(Value::Null)
+    }
 }
 
 /// What one `Projectiles._field` step asks of the caller, in this order:
@@ -686,16 +802,22 @@ pub struct FieldStep {
 
 /// The Biotic Field's clock (`Shot.field_due`, `field_tick`, `faded` and
 /// `Projectiles._field`).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FieldSchedule {
+    field: BioticField,
     due: Option<u32>,
     opened: bool,
     faded: bool,
 }
 
 impl FieldSchedule {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(field: BioticField) -> Self {
+        Self {
+            field,
+            due: None,
+            opened: false,
+            faded: false,
+        }
     }
 
     /// One update at `tick` covering the ticks from `first_tick` on. The
@@ -703,7 +825,7 @@ impl FieldSchedule {
     /// heal and the field ends before its expiry tick.
     pub fn step(&mut self, tick: u32, first_tick: u32) -> FieldStep {
         let start = *self.due.get_or_insert(tick + FIELD_DELAY);
-        let expires = start + FIELD_TICKS;
+        let expires = start + self.field.ticks;
         let mut step = FieldStep {
             confirm: tick < expires,
             faded: self.faded,
@@ -717,14 +839,14 @@ impl FieldSchedule {
         let steps =
             i64::from(tick.min(expires - 1)) - (i64::from(first_tick) - 1).max(i64::from(start));
         if steps > 0 {
-            step.heal = HEAL_PER_SECOND * f64::from(FRAME_MS) / 1000.0 * steps as f64;
+            step.heal = self.field.heal_per_second * f64::from(FRAME_MS) / 1000.0 * steps as f64;
         }
         if tick >= expires {
             step.expired = true;
             return step;
         }
         let seconds = f64::from(tick - start) * f64::from(FRAME_MS) / 1000.0;
-        if !self.faded && seconds >= FADE_SECONDS {
+        if !self.faded && seconds >= self.field.fade_seconds {
             self.faded = true;
             step.faded_now = true;
             step.faded = true;
@@ -735,6 +857,16 @@ impl FieldSchedule {
 
     pub fn faded(&self) -> bool {
         self.faded
+    }
+
+    /// The heal sphere's centre over the shooter's feet.
+    pub fn centre(&self, where_feet: [f64; 3]) -> [f64; 3] {
+        self.field.centre(where_feet)
+    }
+
+    /// The heal sphere's radius.
+    pub fn radius(&self) -> f64 {
+        self.field.radius
     }
 }
 
@@ -767,10 +899,11 @@ impl FieldFrames {
     pub fn new(
         graphs: &GraphStore,
         codecs: &orpheus_script::codecs::CodecTable,
+        field: &BioticField,
     ) -> io::Result<Self> {
         Ok(Self {
-            plain: projectile_wire::field_frame(graphs, codecs, false)?,
-            faded: projectile_wire::field_frame(graphs, codecs, true)?,
+            plain: projectile_wire::field_frame(graphs, codecs, field.graph, false)?,
+            faded: projectile_wire::field_frame(graphs, codecs, field.graph, true)?,
         })
     }
 
@@ -1448,9 +1581,31 @@ mod tests {
         assert!(tracker.retire().is_empty());
     }
 
+    /// projectiles.py's Biotic Field numbers.
+    const FIELD: BioticField = BioticField {
+        graph: 0x0258,
+        ticks: 313,
+        fade_seconds: 4.5,
+        heal_per_second: 35.0,
+        radius: 5.0,
+        up: 1.0,
+    };
+
+    /// projectiles.py `FIELD_GRAPH`, `FIELD_SECONDS` (`FIELD_TICKS`),
+    /// `FADE_SECONDS`, `HEAL_PER_SECOND`, `HEAL_RADIUS` and `HEAL_UP`, read
+    /// from 03DC's initial graph.
+    #[test]
+    #[ignore = "requires the derived 104319 statescript catalog"]
+    fn the_biotic_field_reads_the_python_numbers_from_its_graph() {
+        let graphs =
+            GraphStore::load(orpheus_testkit::runtime_dir().join("data/game_graphs_174.json.gz"))
+                .unwrap();
+        assert_eq!(BioticField::read(&graphs, 0x0258).unwrap(), FIELD);
+    }
+
     #[test]
     fn field_schedule_follows_the_python_clock() {
-        let mut field = FieldSchedule::new();
+        let mut field = FieldSchedule::new(FIELD);
         let step = field.step(100, 100);
         assert_eq!(
             step,
@@ -1466,17 +1621,16 @@ mod tests {
         // Skipped ticks heal for every tick after the start.
         let step = field.step(start + 3, start + 1);
         assert!(!step.opened);
-        assert_eq!(step.heal, HEAL_PER_SECOND * 16.0 / 1000.0 * 3.0);
+        assert_eq!(step.heal, 35.0 * 16.0 / 1000.0 * 3.0);
         assert!(!field.step(start + 281, start + 281).faded);
         let step = field.step(start + 282, start + 282);
         assert!(step.faded_now && step.faded && step.deliver);
         let step = field.step(start + 283, start + 283);
         assert!(!step.faded_now && step.faded);
-        assert_eq!(FIELD_TICKS, 313);
-        let step = field.step(start + FIELD_TICKS, start + FIELD_TICKS - 1);
+        let step = field.step(start + 313, start + 312);
         assert!(step.expired && !step.confirm && !step.deliver);
-        assert_eq!(step.heal, HEAL_PER_SECOND * 16.0 / 1000.0);
-        assert_eq!(field_centre([1.0, 2.0, 3.0]), [1.0, 3.0, 3.0]);
+        assert_eq!(step.heal, 35.0 * 16.0 / 1000.0);
+        assert_eq!(field.centre([1.0, 2.0, 3.0]), [1.0, 3.0, 3.0]);
     }
 
     #[test]
@@ -1609,7 +1763,7 @@ mod tests {
     /// projectiles.py `_field`: the field opens FIELD_DELAY after its first
     /// update, heals from the tick after its opening over the retained
     /// frames, delivers with the canisters that arrived, fades at 4.5 s and
-    /// ends at FIELD_TICKS, when it is no longer live.
+    /// ends at its 313 ticks, when it is no longer live.
     #[test]
     fn a_field_runs_on_its_clock_and_ends_with_its_shot() {
         let frame = 1000;
@@ -1618,10 +1772,11 @@ mod tests {
         let canister = leases.entity(CANISTER, frame, 0).unwrap();
         let mut tracker = OwnerProjectiles::new(BODY, leases);
         let token = tracker
-            .admit_field(shot(frame), CANISTER, 10, feet)
+            .admit_field(shot(frame), CANISTER, 10, feet, FIELD)
             .unwrap();
         assert_eq!(tracker.fields().collect::<Vec<_>>(), [token]);
-        let heal = |steps: u32| HEAL_PER_SECOND * f64::from(FRAME_MS) / 1000.0 * f64::from(steps);
+        let heal = |steps: u32| 35.0 * f64::from(FRAME_MS) / 1000.0 * f64::from(steps);
+        let centre = [1.0, 3.0, 3.0];
         let deliver = |parents: Vec<u32>, faded| ProjectileEvent::FieldDeliver {
             token,
             feet,
@@ -1640,7 +1795,8 @@ mod tests {
             [
                 ProjectileEvent::FieldHeal {
                     token,
-                    centre: field_centre(feet),
+                    centre,
+                    radius: 5.0,
                     amount: heal(5),
                 },
                 deliver(Vec::new(), false)
@@ -1666,7 +1822,8 @@ mod tests {
             [
                 ProjectileEvent::FieldHeal {
                     token,
-                    centre: field_centre(feet),
+                    centre,
+                    radius: 5.0,
                     amount: heal(1),
                 },
                 ProjectileEvent::FieldFaded { token },
@@ -1674,7 +1831,7 @@ mod tests {
             ]
         );
         // The field ends before its expiry tick.
-        let expires = start + FIELD_TICKS;
+        let expires = start + 313;
         assert_eq!(
             tracker.advance(expires, faded + 1),
             [ProjectileDelivery::Destroy {
@@ -1687,7 +1844,8 @@ mod tests {
             tracker.take_events(),
             [ProjectileEvent::FieldHeal {
                 token,
-                centre: field_centre(feet),
+                centre,
+                radius: 5.0,
                 amount: heal(expires - 1 - faded),
             }]
         );

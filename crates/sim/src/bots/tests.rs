@@ -8,6 +8,16 @@ const TRAINING: u64 = 0x02e0_0000_0000_016b;
 const TRAINING_BODY: u64 = 0x0400_0000_0000_1403;
 const FAR_RUNNER: u64 = 0x02e0_0000_0000_016e;
 
+/// A walk from a mover with these run, acceleration and braking values.
+fn walk(run_forward: f64, accel_ground: f64, decel_ground_base: f64) -> BotWalk {
+    BotWalk::from_mover(&MoverSettings {
+        run_forward,
+        accel_ground,
+        decel_ground_base,
+        ..MoverSettings::default()
+    })
+}
+
 fn walker(target: [f64; 3]) -> Bot {
     Bot::new(
         BOT_ENTITY,
@@ -23,7 +33,7 @@ fn walker(target: [f64; 3]) -> Bot {
             route: vec![[0.0; 3], target],
             initial_index: 0,
         }),
-        BotWalk::from_mover(4.5, 1.0, 15.0),
+        walk(4.5, 1.0, 15.0),
     )
 }
 
@@ -67,7 +77,7 @@ fn catalogs_only_unconditional_spawners_and_preserves_the_hint_sequence() {
         }"#).unwrap();
     let bots = catalog.make(PRACTICE_RANGE_MAP, |body| {
         assert_eq!(body, TRAINING_BODY);
-        BotWalk::from_mover(4.5, 1.0, 15.0)
+        walk(4.5, 1.0, 15.0)
     });
     assert_eq!(bots.len(), 2);
     assert_eq!(bots[0].entity, BOT_ENTITY);
@@ -251,24 +261,14 @@ fn fifteen_practice_bots_match_python_roster_and_patrol_frames() {
     let root = orpheus_testkit::runtime_dir();
     let data = root.join("data");
     let catalog = BotCatalog::load(data.join("ai_spawners_174.json")).unwrap();
-    let raw_movers: HashMap<String, serde_json::Value> =
-        serde_json::from_str(&fs::read_to_string(data.join("game_movers_174.json")).unwrap())
-            .unwrap();
+    // mover.py `SOLDIER_BODY`, the fallback body.
+    let movers = orpheus_physics::mover::settings::MoverCatalog::load(
+        data.join("game_movers_174.json"),
+        0x0400_0000_0000_03cf,
+    )
+    .unwrap();
     let mut bots = catalog.make(PRACTICE_RANGE_MAP, |body| {
-        let values = raw_movers
-            .get(&format!("0x{body:016X}"))
-            .or_else(|| raw_movers.get("0x04000000000003CF"));
-        let number = |key, default| {
-            values
-                .and_then(|values| values.get(key))
-                .and_then(serde_json::Value::as_f64)
-                .unwrap_or(default)
-        };
-        BotWalk::from_mover(
-            number("run_forward", 5.5),
-            number("accel_ground", 35.0),
-            number("decel_ground_base", 15.0),
-        )
+        BotWalk::from_mover(movers.for_body(Some(body)))
     });
     assert_eq!(bots.len(), 15);
     assert_eq!(bots.iter().filter(|bot| bot.spawn.team == 1).count(), 11);
