@@ -4,7 +4,7 @@ What the server reads, where each input comes from, and the facts needed to rebu
 
 ## Runtime files
 
-Today the server reads a prepared runtime pack (`ORPHEUS_RUNTIME_DIR`). Phase 6 of the [refactor plan](../REFACTOR.md) replaces the derivable files with reads from the game install.
+The server derives its game data from the install (`crates/assets`, phase 6 of the [refactor plan](../REFACTOR.md)) into `<state>/cache/104319`, in the format of the prepared runtime pack the inherited server read, so the loaders read it unchanged. A stamp file (`derived.txt`) records the build, build config, locale and derivations version; a cache with another stamp is derived again. The prepared pack stays as the oracle each derivation is checked against (`just test-assets`, `orpheus assets diff --pack`) and as input for the frozen Python server, until phase 8. The fixed data is embedded in the binary (`crates/fixed`).
 
 | File | Content | Made by | Inputs |
 | --- | --- | --- | --- |
