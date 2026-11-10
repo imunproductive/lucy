@@ -459,7 +459,7 @@ Record the result in `docs/notes/data-sources.md`.
 | `game_movers_174.json` | `extract_game_movers.py` | `003` (`STUCharacterMoverComponent`) |
 | `game_stats_174.json` | `extract_game_stats.py` | `054`, `075`, `062` |
 | `ai_spawners_174.json` | `extract_ai_spawners.py` | Map ENTITY chunks (`0x0B`), `075` |
-| `collision_keys_174.json`, `collision_props_174.json` | None in the repository (see 6c.0) | Expected to be unnecessary once the manifest resolves GUIDs. The prop list per map and mode is then derived from map data. |
+| `collision_keys_174.json`, `collision_props_174.json` | None in the repository (see 6c.0) | Keys: not needed, the manifest resolves the chunks. Props: only `modes` (which placeables each mode keeps) is read; the `collision_props` derivation writes it from the map ENTITY chunks. |
 | Collision `.col` and `.rays.col` caches | `build_collision.py` (with `ow174.game.casc`, `collision`, `props`) | Map collision chunks and prop models. Write the existing `.col` format, so `physics::collision_cache` stays unchanged. |
 | Raycast metadata, score events | `extract_raycast_metadata.py`, `extract_game_stats.py --score-events` | `097`, `098`, `054` |
 
@@ -467,25 +467,23 @@ The derivations depend on each other, and are ported and run in this order. An a
 
 ```mermaid
 flowchart LR
-  EH[extracted_heroes] --> GH[game_heroes]
-  EH --> AI[ai_spawners]
-  CP[collision_props] --> AI
-  CK[collision_keys] --> COL[collision caches]
-  CP --> COL
-  EM[extracted_maps] --> GM[game_maps]
-  GH --> GG[game_graphs]
+  L[lists: extracted_heroes, maps, items, general_unlocks] --> GH[game_heroes]
+  L --> AI[ai_spawners]
+  L --> GM[game_maps]
+  GH --> GG[graphs: hero and bot bundles]
   AI --> GG
   GH --> MV[game_movers]
   AI --> MV
   GH --> ST[game_stats]
   RT[retail_templates, fixed] --> GQ[game_queues]
-  EI[extracted_items, extracted_general_unlocks]
   AC[arcade_cards]
+  COL[collision, Practice Range]
+  CP[collision_props]
 ```
 
-`extracted_items`, `extracted_general_unlocks` and `arcade_cards` have no derivation inputs, so they can be ported at any point. `game_heroes` and `ai_spawners` are the first real ports, after 6c.0 settles their inputs.
+**6c result (2026-11-12):** done. `crates/assets` has 11 derivations, run in the order above (`DERIVATIONS`). Each is tested against its pack file (`just test-assets`); all match except where the test pins a known difference with its cause: 207 display strings of `extracted_maps.json` (the pack's copy wasn't made from this install's strings), the bytes of `0688.col` (6 more empty models, because the derivation also reads models stored in bundles), and `collision_props_174.json` (only `modes` is written). `orpheus_assets::collision_cache` builds any other map's cache.
 
-**Caching:** results go to `state/cache/104319/`, keyed by the content keys of their inputs. Collision for a map is built when a match on that map first starts. The first launch is slower; later launches read the cache.
+**Caching:** results go to `<state>/cache/104319/`, stamped with the build version, build config key, locale and `DERIVATIONS_VERSION`; another stamp derives them again. Collision for a map other than the Practice Range is built when a match on that map first starts. The first launch is slower; later launches read the cache.
 
 **Locale:** read the installed locale, which was zhCN in the recorded extraction. Server logic keys only on GUIDs. Display names are used only for logs and the dashboard.
 
