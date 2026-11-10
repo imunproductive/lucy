@@ -95,6 +95,9 @@ pub struct BotShot {
     pub kind: BotShotKind,
     /// The other clients see it (projectiles.py `fired`: `_show_others`).
     pub observed: bool,
+    /// The bot's live frame after the advance that fired it, else its
+    /// latest (combat.py `_bot_weapons`: `snapshot or script.latest_live`).
+    pub frame: Arc<BotFrame>,
 }
 
 pub enum BotShotKind {
@@ -323,30 +326,43 @@ impl BotScripts {
         {
             return Ok(());
         }
+        let mut fired = Vec::new();
         for shot in script.body.take_shots() {
-            if let Some((kind, observed)) = shot_kind(&mut script.body, &shot, bot) {
-                shots.push(BotShot {
-                    source: bot.entity,
-                    team: bot.spawn.team,
-                    tick: at,
-                    kind,
-                    observed,
-                });
+            if let Some(found) = shot_kind(&mut script.body, &shot, bot) {
+                fired.push(found);
             }
         }
         let script = self.slots[slot].as_ref().expect("a running bot script");
-        let snapshot = script.body.snapshot().ok_or("the script halted")?;
-        let frame = self
-            .frame(&script.body, snapshot, &script.initial)
-            .map_err(|error| error.to_string())?;
+        let frame = script
+            .body
+            .snapshot()
+            .ok_or_else(|| "the script halted".to_string())
+            .and_then(|snapshot| {
+                self.frame(&script.body, snapshot, &script.initial)
+                    .map_err(|error| error.to_string())
+            });
         let script = self.slots[slot].as_mut().expect("a running bot script");
-        if frame.full != script.produced {
-            script.produced = frame.full.clone();
-            let frame = Arc::new(frame);
-            script.latest_live = Arc::clone(&frame);
+        let changed = match frame {
+            Ok(frame) if frame.full != script.produced => {
+                script.produced = frame.full.clone();
+                script.latest_live = Arc::new(frame);
+                true
+            }
+            Ok(_) => false,
+            Err(reason) => return Err(reason),
+        };
+        shots.extend(fired.into_iter().map(|(kind, observed)| BotShot {
+            source: bot.entity,
+            team: bot.spawn.team,
+            tick: at,
+            kind,
+            observed,
+            frame: Arc::clone(&script.latest_live),
+        }));
+        if changed {
             self.events.push(BotEvent::Live {
                 entity: script.entity,
-                frame,
+                frame: Arc::clone(&script.latest_live),
             });
         }
         Ok(())
@@ -653,6 +669,12 @@ struct BotView {
     cancelled: BTreeSet<u32>,
     create_acked: bool,
     dirty: bool,
+    /// The bot's rocket copies whose launch still needs their volley in
+    /// this client's frames, in firing order (`volleys`).
+    volleys: VecDeque<u64>,
+    /// The bot's destroy waits for this client (server.py
+    /// `_body_destroy_wait`).
+    destroy_wait: bool,
 }
 
 /// What a client's view of the bots needs from its world this update.
@@ -700,6 +722,14 @@ impl BotViews {
         if let Some(view) = self.views.get_mut(&entity) {
             view.stream.create_arrived();
             view.create_acked = true;
+        }
+    }
+
+    /// The bot's destroy waits for this client's frames (server.py
+    /// `_hold_body_destroy`).
+    pub(crate) fn hold_destroy(&mut self, entity: u32) {
+        if let Some(view) = self.views.get_mut(&entity) {
+            view.destroy_wait = true;
         }
     }
 
@@ -772,6 +802,7 @@ impl BotViews {
         };
         let mut flush = Flush {
             scripts,
+            seen: &self.seen,
             encoder,
             context,
             out: &mut out,
@@ -857,6 +888,8 @@ impl BotViews {
 
 struct Flush<'a, 'o> {
     scripts: &'a BotScripts,
+    /// This client's bot rocket copies.
+    seen: &'a [SeenCopy],
     encoder: SnapshotEncoder<'a>,
     context: &'a BotViewContext<'a>,
     out: &'o mut Vec<ScriptChunk>,
@@ -893,6 +926,8 @@ impl Flush<'_, '_> {
                     cancelled: BTreeSet::new(),
                     create_acked: false,
                     dirty: false,
+                    volleys: VecDeque::new(),
+                    destroy_wait: false,
                 })
             }
             Err(reason) => {
@@ -911,6 +946,10 @@ impl Flush<'_, '_> {
         if view.stream.pending().next().is_some()
             && (view.nameplate.is_none() || !replace_nameplate)
         {
+            return;
+        }
+        if !view.volleys.is_empty() {
+            self.volley(entity, view);
             return;
         }
         if let Some(live) = view.live.take() {
@@ -936,6 +975,66 @@ impl Flush<'_, '_> {
             let base = view.stream.base().map(|(_, base)| base.clone());
             self.death(entity, view, &chosen, base.as_ref());
         }
+    }
+
+    /// server.py `_flush_bot_frames` while copies of the bot's rockets wait
+    /// for their launch: the first copy's volley activation stays in the
+    /// frames until the acknowledged baseline holds it; each later copy's
+    /// volley keeps its acknowledged state, and everything else comes from
+    /// the latest frame (without taking the live one).
+    fn volley(&mut self, entity: u32, view: &mut BotView) {
+        let seen = self.seen;
+        let Some(first) = view
+            .volleys
+            .front()
+            .and_then(|&serial| seen.iter().find(|copy| copy.serial == serial))
+        else {
+            return;
+        };
+        let first = &first.projectile;
+        // Projectile cleanup cancels its launch before advancing the stream.
+        if view.destroy_wait || self.context.tick >= first.deadline() {
+            return;
+        }
+        let Some((_, acknowledged)) = view.stream.base() else {
+            return;
+        };
+        // Keep this activation installed until its launch is acknowledged.
+        if first.volley_arrived(acknowledged) {
+            return;
+        }
+        let base = match view.nameplate {
+            None => acknowledged,
+            Some(old) => match view.stream.pending().find(|&(last, _, _)| last == old) {
+                Some((_, snapshot, _)) => snapshot,
+                None => acknowledged,
+            },
+        };
+        let mut latest = match &view.live {
+            Some(live) => Chosen::new(Arc::clone(live), self.context.mode_ready, None)
+                .projected()
+                .clone(),
+            None => base.clone(),
+        };
+        let (instance, state) = first.volley_key();
+        // The old activation expires without recreating a removed instance.
+        if !latest.has_instance(instance) {
+            return;
+        }
+        for copy in view
+            .volleys
+            .iter()
+            .filter_map(|&serial| seen.iter().find(|copy| copy.serial == serial))
+        {
+            let (instance, state) = copy.projectile.volley_key();
+            latest.replace_state(
+                instance,
+                state,
+                acknowledged.state(instance, state).cloned(),
+            );
+        }
+        latest.replace_state(instance, state, first.held().cloned());
+        self.queue(entity, view, latest, false);
     }
 
     /// server.py `_queue_bot_death_snapshot`: a new kill feed pulse waits
@@ -980,6 +1079,7 @@ impl Flush<'_, '_> {
         };
         if view.stream.pending().next().is_some()
             || view.live.is_some()
+            || !view.volleys.is_empty()
             || view.death_frames.is_some()
         {
             return;
@@ -1084,6 +1184,8 @@ pub struct SeenRocket {
     pub direction: [f64; 3],
     /// The ticks it flies at most (`Shot.bound`).
     pub bound: u32,
+    /// The bot's frame it was fired from (`snapshot`).
+    pub frame: Arc<BotFrame>,
 }
 
 impl SeenRocket {
@@ -1102,6 +1204,7 @@ impl SeenRocket {
             origin: projectile.origin,
             direction: projectile.direction,
             bound: (projectile.ballistics.lifetime * 1000.0 / FRAME_MS as f64).ceil() as u32,
+            frame: Arc::clone(&shot.frame),
         })
     }
 }
@@ -1155,6 +1258,14 @@ impl BotViews {
         self.seen_serial += 1;
         let serial = self.seen_serial;
         let create = projectile.open(has_base);
+        // server.py `retain_bot_volley`: the firing frame's activation of
+        // the shot's volley stays in this client's frames until the launch
+        // arrives.
+        if projectile.hold(&rocket.frame.full) {
+            if let Some(view) = self.views.get_mut(&rocket.source) {
+                view.volleys.push_back(serial);
+            }
+        }
         self.seen.push(SeenCopy {
             serial,
             rocket: rocket.rocket,
@@ -1211,6 +1322,17 @@ impl BotViews {
                         records.push((update, SeenDelivery::Destroy { serial }));
                     }
                     ObservedOut::Done => keep = false,
+                }
+            }
+            // `_release_volley`: the launch arrived or the copy ended; the
+            // first held volley's release lets the bot's frames go on.
+            if (!keep || copy.projectile.launched()) && copy.projectile.release() {
+                if let Some(view) = self.views.get_mut(&copy.projectile.body()) {
+                    let first = view.volleys.front() == Some(&serial);
+                    view.volleys.retain(|&held| held != serial);
+                    if first {
+                        view.dirty = true;
+                    }
                 }
             }
             keep

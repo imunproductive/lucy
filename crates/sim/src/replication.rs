@@ -1116,6 +1116,13 @@ impl WorldDelivery {
             && self.bot_views.pending(entity, self.health_pending(entity))
     }
 
+    /// The bot's replacement waits for this client (server.py
+    /// `_hold_body_destroy`): its held rocket volleys stop advancing its
+    /// frames.
+    pub fn hold_bot_destroy(&mut self, entity: u32) {
+        self.bot_views.hold_destroy(entity);
+    }
+
     /// The client's statescript stream of the bot's current lifetime, even
     /// before its baseline arrived (server.py `bot_stream`).
     pub fn bot_stream(&self, entity: u32) -> Option<&BodyStream<ProjectedSnapshot>> {

@@ -3017,35 +3017,45 @@ fn a_firing_practice_bot_shoots_the_player() {
     );
     // projectiles.py `_show_others` for the bot: the client gets a rocket
     // entity of the bot's projectile definition (1476), the bot's shot record
-    // naming it once its create arrived, and its destroy after it landed.
+    // naming it once its create arrived (server.py `retain_bot_volley`
+    // keeps the volley in the bot's frames until then), and its destroy
+    // after it landed. The first rocket created gets its own launch.
     let seen = |entity: u32| (SEEN_FIRST..SEEN_FIRST + SEEN_SPAN).contains(&entity);
-    let launch = |watcher: &Watcher| {
-        (0..watcher.datagrams.len()).find_map(|index| {
-            watcher.datagrams[index].1.iter().find_map(|record| {
-                (record.entity == shooter && !record.launches.is_empty())
-                    .then(|| (index, record.launches[0]))
+    let first = |watcher: &Watcher| {
+        watcher
+            .find(0, |record| seen(record.entity) && record.is_create())
+            .map(|created| {
+                let rocket = watcher.datagrams[created]
+                    .1
+                    .iter()
+                    .find(|record| seen(record.entity) && record.is_create())
+                    .unwrap()
+                    .entity;
+                (created, rocket)
             })
-        })
+    };
+    // The firing bots' shot records: the first rocket may be another bot's.
+    let launch = |watcher: &Watcher, rocket: u32| {
+        watcher.find(0, |record| record.launches.contains(&rocket))
     };
     pump_until(
         &mut [&mut watcher],
         &schemas,
-        "a launched rocket's destroy",
+        "the first rocket's launch and destroy",
         |watchers| {
-            launch(watchers[0]).is_some_and(|(launched, rocket)| {
-                watchers[0]
-                    .find(launched, |record| {
-                        record.entity == rocket && record.operation == Some(3)
-                    })
-                    .is_some()
+            first(watchers[0]).is_some_and(|(_, rocket)| {
+                launch(watchers[0], rocket).is_some_and(|launched| {
+                    watchers[0]
+                        .find(launched, |record| {
+                            record.entity == rocket && record.operation == Some(3)
+                        })
+                        .is_some()
+                })
             })
         },
     );
-    let (launched, rocket) = launch(&watcher).unwrap();
-    assert!(seen(rocket));
-    let created = watcher
-        .find(0, |record| record.entity == rocket && record.is_create())
-        .expect("the rocket's create");
+    let (created, rocket) = first(&watcher).unwrap();
+    let launched = launch(&watcher, rocket).unwrap();
     let (_, records) = &watcher.datagrams[created];
     let create = records
         .iter()

@@ -846,6 +846,7 @@ impl Peer {
                     || self.world.health_pending(entity)
                     || self.world.bot_frames_pending(entity))
             {
+                self.world.hold_bot_destroy(entity);
                 self.combat_ui
                     .replacements
                     .push_back((expires, replacement));

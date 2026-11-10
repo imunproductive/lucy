@@ -82,6 +82,33 @@ impl ProjectedSnapshot {
     pub fn state_payload(&self, instance: u16, state: u16) -> Option<&StatePayload> {
         Some(&self.instances.get(&instance)?.states.get(&state)?.payload)
     }
+
+    /// A state of an instance in this frame (server.py `_flush_bot_frames`
+    /// reads `snapshot.states[key]`).
+    pub fn state(&self, instance: u16, state: u16) -> Option<&ProjectedState> {
+        self.instances.get(&instance)?.states.get(&state)
+    }
+
+    /// Put `value` in for an instance's state, or remove the state when it
+    /// is None (`states[key] = ...`, `states.pop(key)`); nothing without the
+    /// instance.
+    pub fn replace_state(&mut self, instance: u16, state: u16, value: Option<ProjectedState>) {
+        let Some(instance) = self.instances.get_mut(&instance) else {
+            return;
+        };
+        match value {
+            Some(value) => {
+                instance.states.insert(state, value);
+            }
+            None => {
+                instance.states.remove(&state);
+            }
+        }
+    }
+
+    pub fn has_instance(&self, id: u16) -> bool {
+        self.instances.contains_key(&id)
+    }
 }
 
 /// The pulsers whose client-only plug posts a kill feed line to the mode UI,
@@ -159,8 +186,9 @@ struct ProjectedInstance {
     events: Vec<ProjectedEvent>,
 }
 
+/// One projected state: whether it runs, its payload and volley.
 #[derive(Clone, Debug, PartialEq)]
-struct ProjectedState {
+pub struct ProjectedState {
     active: bool,
     payload: StatePayload,
     volley: Option<VolleyActivation>,
