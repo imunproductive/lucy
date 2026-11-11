@@ -920,7 +920,8 @@ fn pick_message(entity: u32, hero: u64) -> Message {
 
 /// A hit on a bot reaches its script (combat.py `_damage`): the death
 /// message for a killing hit (`_bot_died`), else its new health
-/// (`_sync_body_health`).
+/// (`_sync_body_health`) and, for damage, the damage message `0011.025`
+/// (its flinch and pain line).
 fn bot_hit_script(scene: &mut PreparedScene, hit: &BotHit) {
     match hit.death {
         Some(death) => scene.bot_died(
@@ -930,7 +931,12 @@ fn bot_hit_script(scene: &mut PreparedScene, hit: &BotHit) {
             death.loadout,
             death.tick,
         ),
-        None => scene.bot_health(hit.bot, hit.remaining),
+        None => {
+            scene.bot_health(hit.bot, hit.remaining);
+            if let Some(damage) = &hit.damage {
+                scene.bot_hurt(hit.bot, damage);
+            }
+        }
     }
 }
 
@@ -2543,6 +2549,7 @@ impl State {
         }
         let mut spawned = HashMap::new();
         let mut bot_events = HashMap::new();
+        let mut bot_voices = HashMap::new();
         if !drain {
             for room in self.rooms.values_mut() {
                 if let Some(world) = &mut room.world {
@@ -2555,6 +2562,10 @@ impl State {
                     // combat.py `update`: the dead bots' death scripts, then
                     // the respawns with new scripts.
                     world.scene.advance_bot_deaths(tick);
+                    // The live bots' reactions to their hits, and the voice
+                    // lines they call for.
+                    world.scene.advance_live_bots(tick);
+                    bot_voices.insert(id, world.scene.take_bot_voices());
                     if let Some(combat) = &mut world.combat {
                         if let Ok(replacements) = combat.respawn_due(&mut world.scene, tick, now) {
                             if !replacements.is_empty() {
@@ -2597,6 +2608,13 @@ impl State {
                     let events = bot_events.get(&id).map_or(&[][..], Vec::as_slice);
                     peer.world
                         .update_bots(&world.scene, events, tick, send_frames);
+                }
+                // ClientInVoice 27500: each line to every client of the
+                // room with a body (bot_voice.rs).
+                if let Some(body) = peer.world.current_body() {
+                    for voice in bot_voices.get(&id).into_iter().flatten() {
+                        peer.notice(voice.notice(body));
+                    }
                 }
             }
             if let Some(replacements) = spawned.get(&id).filter(|_| peer.world.world_started()) {

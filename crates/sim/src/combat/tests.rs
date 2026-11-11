@@ -52,6 +52,7 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
             loadout: None,
             critical: 2.0,
             falloff: None,
+            tags: [0x0d80_0000_0000_09a2].into_iter().collect(),
         },
     };
     assert!(
@@ -108,6 +109,16 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
                 killer: SHOOTER.source,
                 critical: true,
                 loadout: None,
+                tick: context.tick,
+            })
+        );
+        // A hit it survives carries its damage for the bot's script.
+        assert_eq!(
+            result.damage,
+            (!terminal).then_some(BotDamage {
+                source: SHOOTER.source,
+                dealt: 40.0,
+                tags: shot.hit.tags,
                 tick: context.tick,
             })
         );

@@ -4554,6 +4554,30 @@ fn practice_bots_run_their_scripts_for_a_client() {
         },
     );
     assert_eq!(hits_from(&watcher, fired, 25005), None);
+    // 0.1 s after the hit the bot's 0C17 raises its pain criteria (100 of
+    // the 100 left: "severe", 0609); the client gets the bot's voice set's
+    // line for it (ClientInVoice 27500): the bot speaks, to the player's
+    // body, stimulus 0004.078 ("PnSvr"), its first line (key 000B).
+    pump_until(
+        &mut [&mut watcher],
+        &schemas,
+        "the bot's pain line",
+        |watchers| hits_from(watchers[0], fired, 27500).is_some(),
+    );
+    let hit = hits_from(&watcher, fired, 25001).unwrap();
+    let said = hits_from(&watcher, fired, 27500).unwrap();
+    assert!(said >= hit);
+    let voice = &watcher.datagrams[said]
+        .0
+        .iter()
+        .find(|message| message.id == 27500)
+        .unwrap()
+        .fields;
+    let entity = |id: u32| Value::Struct(Fields::from([(0, Value::Unsigned(u64::from(id)))]));
+    assert_eq!(voice[&0x78], entity(target));
+    assert_eq!(voice[&0x7c], entity(owner | 1));
+    assert_eq!(voice[&0x88], Value::Unsigned(0x0ee0_0000_0000_0004));
+    assert_eq!(voice[&0x90], Value::Unsigned(0x0760_0000_0000_000b));
     // The button comes up, and the gun's 9 shots a second allow the next.
     let release = aimed_batch(watcher.tick + 1, 1, -16384, 0, 0, false);
     watcher.client.send(ACK, release.clone());

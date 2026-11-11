@@ -33,7 +33,6 @@ use super::*;
 /// (`no_op` in `ow174/game/script/nodes.py`) and one from upstream's research.
 const SERVER_NO_OPS: &[&str] = &[
     "STUStatescriptActionEffect",
-    "STUStatescriptActionCriteria",
     "STU_CEBDAF17", // TrackStat
     "STU_100EF8C2", // SendClientOnlyGameMessage
     "STUStatescriptActionSendClientGlobalGameMessage",
@@ -262,6 +261,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 Ok(true)
             }
             "STUStatescriptActionSwitch" => self.action_switch(id, node, depth),
+            "STUStatescriptActionCriteria" => {
+                self.raise_criteria(id, node);
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
             class if SERVER_NO_OPS.contains(&class) => {
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
@@ -283,6 +287,25 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 );
                 Ok(false)
             }
+        }
+    }
+
+    /// A criteria action changes nothing the VM tracks; one whose target is
+    /// the owner and whose identifier is a literal tells the world
+    /// ([`World::criteria`]). Others stay no-ops, as in the Python reference
+    /// (`no_op` in `ow174/game/script/nodes.py`): nothing is evaluated, so
+    /// nothing can fail here.
+    fn raise_criteria(&mut self, id: u16, node: &Node) {
+        let owner = field(&node.fields, "m_targets")
+            .get("$")
+            .and_then(Json::as_str)
+            == Some("STU_B5A0CAF0");
+        let identifier = node
+            .field("m_identifier.m_identifier")
+            .and_then(crate::graph::asset_guid);
+        if let Some(identifier) = identifier.filter(|_| owner) {
+            let site = self.site(id, node);
+            self.world.criteria(site, identifier);
         }
     }
 

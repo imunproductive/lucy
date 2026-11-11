@@ -21,6 +21,14 @@
 //!   "ELIMINATED: NAME" (1126.07C; +0x89 assist would be 01F0.07C, +0x88 a
 //!   score shown when above 0), "YOU WERE KILLED BY NAME" (1127.07C) or
 //!   "YOU DIED" (1128.07C).
+//! - ClientInVoice 27500 `{entity speaker, entity, entity, u64 stimulus, u64
+//!   line, u32, u64}` (handler B12CD0) queues a voice line: the client
+//!   looks the speaker up for its voice set and plays the line whose key
+//!   (`076`, the set's `m_voiceLineGuids`) is `line`, for the stimulus
+//!   (`078`). leafall903/ORPHEUS (MIT), docs/MCCREE_COMBAT.txt and
+//!   `voicelines.py` `queue_voice_notice`: +0x7C the listener's body, +0x80
+//!   0xFFFFFFFF (no observer override), the rest 0; a Talon NPC's hit line
+//!   played from it on the original client.
 
 use crate::{
     jam::codec::{Fields, Schemas, Value},
@@ -30,6 +38,9 @@ use crate::{
 const HIT: u32 = 25001;
 const DEATH: u32 = 25004;
 const ELIMINATION: u32 = 25005;
+const VOICE: u32 = 27500;
+/// ClientInVoice's "no observer override" (+0x80).
+const NO_OBSERVER: u32 = 0xffff_ffff;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CombatNotice {
@@ -48,11 +59,19 @@ pub enum CombatNotice {
         killer: u32,
         victim: u32,
     },
+    /// `speaker` says the voice line keyed `line` of its voice set, for
+    /// `stimulus`, to the client whose body is `listener`.
+    Voice {
+        speaker: u32,
+        listener: u32,
+        stimulus: u64,
+        line: u64,
+    },
 }
 
 impl CombatNotice {
     pub fn needs_mode_ui(self) -> bool {
-        !matches!(self, Self::Hit { .. })
+        !matches!(self, Self::Hit { .. } | Self::Voice { .. })
     }
 
     pub fn required_identity(self) -> Option<u32> {
@@ -60,6 +79,7 @@ impl CombatNotice {
             Self::Hit { target, .. } => Some(target),
             Self::Death { source, killed_by } => killed_by.then_some(source),
             Self::Elimination { victim, .. } => Some(victim),
+            Self::Voice { speaker, .. } => Some(speaker),
         }
     }
 
@@ -107,6 +127,23 @@ impl CombatNotice {
                     (0x84, entity(victim)),
                     (0x88, Value::Unsigned(0)),
                     (0x89, Value::Bool(false)),
+                ]),
+            ),
+            Self::Voice {
+                speaker,
+                listener,
+                stimulus,
+                line,
+            } => (
+                VOICE,
+                Fields::from([
+                    (0x78, entity(speaker)),
+                    (0x7c, entity(listener)),
+                    (0x80, entity(NO_OBSERVER)),
+                    (0x88, Value::Unsigned(stimulus)),
+                    (0x90, Value::Unsigned(line)),
+                    (0x98, Value::Unsigned(0)),
+                    (0xa0, Value::Unsigned(0)),
                 ]),
             ),
         };
@@ -164,5 +201,41 @@ mod tests {
             assert_eq!(notice.required_identity(), identity);
             assert_eq!(notice.encode(&schemas).unwrap(), expected);
         }
+    }
+
+    /// The voice notice as upstream's `queue_voice_notice` lays it out: on
+    /// channel 3 (ClientInVoice), message 0, the speaker, the listener's
+    /// body, no observer override, the stimulus and the line key; the
+    /// client must know the speaker first.
+    #[test]
+    fn a_voice_notice_names_the_speaker_stimulus_and_line() {
+        const BOT: u32 = 0xc000_1000;
+        const BODY: u32 = 0xa000_0101;
+        let schemas = Schemas::game();
+        let notice = CombatNotice::Voice {
+            speaker: BOT,
+            listener: BODY,
+            stimulus: 0x0ee0_0000_0000_0004,
+            line: 0x0760_0000_0000_000b,
+        };
+        assert_eq!(notice.required_identity(), Some(BOT));
+        assert!(!notice.needs_mode_ui());
+        let bytes = notice.encode(&schemas).unwrap();
+        assert_eq!(bytes[..2], [3, 0]);
+        let (_, crc, _) = messages::locate(VOICE).unwrap();
+        let fields = schemas.decode(crc, VOICE, &bytes[2..], true).unwrap();
+        let entity = |id: u32| Value::Struct(Fields::from([(0, Value::Unsigned(u64::from(id)))]));
+        assert_eq!(
+            fields,
+            Fields::from([
+                (0x78, entity(BOT)),
+                (0x7c, entity(BODY)),
+                (0x80, entity(0xffff_ffff)),
+                (0x88, Value::Unsigned(0x0ee0_0000_0000_0004)),
+                (0x90, Value::Unsigned(0x0760_0000_0000_000b)),
+                (0x98, Value::Unsigned(0)),
+                (0xa0, Value::Unsigned(0)),
+            ])
+        );
     }
 }

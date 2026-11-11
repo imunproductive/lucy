@@ -15,6 +15,7 @@ use crate::{
     expr::{EvalError, Scope, Variable, native_shape},
     graph::{GraphStore, Node},
     snapshot::SnapshotEncoder,
+    vitals::PoolKind,
     vm::{
         Component, InitFault, MAX_INIT_WORK, ShotEvent, Site, Snapshot, TargetCandidate, Unknowns,
         World, body_roots,
@@ -26,6 +27,29 @@ use orpheus_wire::entity::GAME_MODE_ENTITY;
 
 /// `003E.025`: the body's authoritative death message.
 pub const DIED: u64 = 0x0240_0000_0000_003e;
+/// `0011.025`: the body took damage. Entries of many body graphs take it
+/// (the Training Bot's `0033` rid 3, `0C17` rid 0 and `0E8C` rid 8, all
+/// server-only; `01CA` rid 6 in every hero body); no graph sends it, so the
+/// server does, as for `003E`. Its parameters, by the low 16 bits of their
+/// `026` identifiers: [`DAMAGE_TAGS`], [`DAMAGE_SOURCE`], [`DAMAGE_AMOUNT`],
+/// [`DAMAGE_DIRECTION`].
+pub const DAMAGED: u64 = 0x0240_0000_0000_0011;
+/// `003D.0A4`: the damage tags of the health change, an array of
+/// identifiers (`0E8C` #1017 picks the flinch by them; `0C17` skips the pain
+/// line for `0262`).
+pub const DAMAGE_TAGS: u32 = 0x003d;
+/// `0012.0A4`: who dealt it, an entity (`0C17` #41). `003E` carries its
+/// killer under the same parameter.
+pub const DAMAGE_SOURCE: u32 = 0x0012;
+/// `0013.0A4`: how much, a number (`0C17` #337 adds it up over a second
+/// and compares the sum with the health left, #7404 / #520, to pick the
+/// minor or severe pain line). Assumption: the damage dealt.
+pub const DAMAGE_AMOUNT: u32 = 0x0013;
+/// `0065.0A4`: a vector (`0E8C` #1018, synced to the clients by st17; its
+/// client-only part turns it into the flinch's direction against the
+/// body's facing, `2C5` / `1688` the same way). Assumption: the direction
+/// the damage travels, from the attacker to the body.
+pub const DAMAGE_DIRECTION: u32 = 0x0065;
 /// `0013.025`: the placement's eligibility reset.
 pub const RESET: u64 = 0x0240_0000_0000_0013;
 /// The Practice Range firing placement behavior (`FIRING` in
@@ -99,6 +123,12 @@ pub struct BotWorld {
     /// tick; none: the world lists no bodies.
     pub targets: Option<Vec<TargetCandidate>>,
     pub unknowns: Unknowns,
+    /// The body's health now and at most, as the match keeps it (#253).
+    pub health: f64,
+    pub max_health: f64,
+    /// The criteria the body raised on itself ([`World::criteria`]) since
+    /// the match last took them, in order.
+    pub criteria: Vec<u64>,
 }
 
 impl World for BotWorld {
@@ -131,6 +161,21 @@ impl World for BotWorld {
         self.weapon_buttons
             .iter()
             .find_map(|&(item, button)| (item == slot).then_some(button))
+    }
+
+    /// The body's own total (`STU_9B7648C3` on the owner: `0C17` #520 reads
+    /// it after a hit). A bot has one pool as far as the match knows, so a
+    /// pool kind is unknown.
+    fn body_health(&self, _site: Site, kind: Option<PoolKind>, maximum: bool) -> Option<f64> {
+        kind.is_none().then_some(if maximum {
+            self.max_health
+        } else {
+            self.health
+        })
+    }
+
+    fn criteria(&mut self, _site: Site, identifier: u64) {
+        self.criteria.push(identifier);
     }
 
     /// From the body's compiled animation data
@@ -337,6 +382,9 @@ impl BotBody {
             owner_position: spawn.firing_position.filter(|_| firing),
             targets: None,
             unknowns,
+            health: spawn.health,
+            max_health: spawn.health,
+            criteria: Vec::new(),
         };
         let mut component = Component::start(
             graphs,
@@ -462,9 +510,48 @@ impl BotBody {
     /// step with the bot's pools after each hit (combat.py
     /// `_sync_body_health`).
     pub fn set_health(&mut self, health: f64) -> Result<(), BotError> {
+        self.world.health = health;
         self.component
             .set_entity_variable(OWNER_HEALTH, Value::Float(health), &mut self.world)?;
         Ok(())
+    }
+
+    /// The hit the body took and survived: `0011.025` ([`DAMAGED`]) with
+    /// its parameters runs now. The Training Bot's `0E8C` sets its flinch
+    /// (#1024, #6500, #1018, synced by st17 for the clients' own flinch
+    /// anim) and `0C17` raises its pain criteria 0.1 s later. A body that
+    /// doesn't fire never advances on its own, so the script first catches
+    /// up to the frame before `frame`; a firing body still runs that frame
+    /// for its weapons. False: it is dead or no entry took the message.
+    pub fn take_damage(&mut self, frame: u32, parameters: Variables) -> Result<bool, BotError> {
+        if self.component.owner_dead() {
+            return Ok(false);
+        }
+        let before = frame.saturating_sub(1);
+        if before > self.frame {
+            self.frame = before;
+            self.component.advance_frame(before, &mut self.world)?;
+        }
+        Ok(self
+            .component
+            .receive_message(DAMAGED, parameters, &mut self.world)?
+            != 0)
+    }
+
+    /// Whether a graph event of the live body is due by the end of `frame`
+    /// (its waits after a hit), so the frame has something to run.
+    pub fn due_by(&self, frame: u32) -> bool {
+        !self.component.owner_dead()
+            && self
+                .component
+                .next_due_ms()
+                .is_some_and(|due| due / crate::timeline::FRAME_MS <= u64::from(frame))
+    }
+
+    /// The criteria the body raised on itself since the last call, in order
+    /// ([`World::criteria`]).
+    pub fn take_criteria(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.world.criteria)
     }
 
     /// A hit the bot survived enables its nameplate: each `0D24` instance
@@ -573,6 +660,7 @@ impl BotBody {
         self.component.release_buttons();
         self.component
             .set_entity_variable(DEAD_FLAG, Value::Bool(true), &mut self.world)?;
+        self.world.health = 0.0;
         self.component
             .set_entity_variable(OWNER_HEALTH, Value::Float(0.0), &mut self.world)?;
         if self
@@ -1022,6 +1110,9 @@ mod tests {
             owner_position: Some([1.0, 2.0, 3.0]),
             targets: None,
             unknowns: Unknowns::Refuse,
+            health: 200.0,
+            max_health: 200.0,
+            criteria: Vec::new(),
         };
         assert_eq!(
             world.native(site(PRACTICE_NAMEPLATE_PARENT), &gate),
@@ -1204,6 +1295,105 @@ mod tests {
             Some(&Value::String("Friendly Bot".into()))
         );
         assert!(observed.state(nameplate, 57).is_some());
+        encoder_full(&graphs, &codecs, &bot);
+    }
+
+    /// The pack's Training Bot takes a Heavy Pulse Rifle hit it survives
+    /// (`0011.025` with the rifle's tags, graph `0254` rid 25): its flinch
+    /// graph `0E8C` sets the strength #1024 to 0.2 for tag `09A2`, with the
+    /// direction #1018, and the observers' frame carries both (st17 syncs
+    /// them for the clients' own flinch anim); 0.1 s later `0C17` raises one
+    /// pain criteria (`0608` or `0609`) on the bot, and the flinch ends
+    /// (#1024 back to 0) after its 0.1 s.
+    #[test]
+    #[ignore = "requires the derived game data's bot graph bundle"]
+    fn the_practice_training_bot_flinches_and_raises_its_pain_criteria() {
+        const FLINCH: u32 = 0x0e8c;
+        const STRENGTH: u32 = 1024;
+        const DIRECTION: u32 = 1018;
+        // The authored 0.2 as the client's float32.
+        let rifle_flinch = Value::Float(f64::from(0.2_f32));
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let graphs =
+            Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
+        let codecs = CodecTable::client();
+        let mut bot = BotBody::start(Arc::clone(&graphs), spawn(None), Unknowns::Tolerate).unwrap();
+        let snapshot = bot.snapshot().unwrap();
+        let flinch = snapshot
+            .instances
+            .iter()
+            .find_map(|(&id, instance)| (instance.graph == FLINCH).then_some(id))
+            .unwrap();
+        let observed = bot
+            .encoder(&graphs, &codecs)
+            .project(snapshot, crate::snapshot::View::Observer)
+            .unwrap();
+        assert_ne!(
+            observed.instance_variable(flinch, STRENGTH),
+            Some(&rifle_flinch)
+        );
+        let rifle: crate::weapons::DamageTags = [0x03bf, 0x09a2, 0x1e1e, 0x2d2f, 0x4d29]
+            .map(|tag| 0x0d80_0000_0000_0000 | tag)
+            .into_iter()
+            .collect();
+        let hit = 130;
+        bot.set_health(181.0).unwrap();
+        assert!(
+            bot.take_damage(
+                hit,
+                Variables::from([
+                    (DAMAGE_TAGS, rifle.to_value()),
+                    (DAMAGE_SOURCE, Value::Entity(0xa000_0101)),
+                    (DAMAGE_AMOUNT, Value::Float(19.0)),
+                    (DAMAGE_DIRECTION, Value::Vector([0.0, 0.0, 1.0])),
+                ]),
+            )
+            .unwrap()
+        );
+        let snapshot = bot.snapshot().unwrap();
+        assert!(snapshot.initialization_complete());
+        let hurt = bot
+            .encoder(&graphs, &codecs)
+            .project_next(snapshot, &observed)
+            .unwrap();
+        assert_eq!(
+            hurt.instance_variable(flinch, STRENGTH),
+            Some(&rifle_flinch)
+        );
+        assert_eq!(
+            hurt.instance_variable(flinch, DIRECTION),
+            Some(&Value::Vector([0.0, 0.0, 1.0]))
+        );
+        assert!(bot.take_criteria().is_empty(), "the pain waits 0.1 s");
+        let mut criteria = Vec::new();
+        for frame in hit..hit + 40 {
+            if bot.due_by(frame) {
+                assert!(bot.advance_live(frame, None).unwrap());
+            }
+            criteria.extend(bot.take_criteria().into_iter().map(|id| (frame, id)));
+        }
+        // 19 of the 181 left is a tenth or more (#7404 / #520, rid 3): the
+        // severe pain `0609` (voice set `011D`'s "PnSvr" stimulus `0004`),
+        // with `0C17`'s `191D` (more than 5 %, rid 38), which the voice set
+        // doesn't answer. The message ran at the start of frame 129 (the one
+        // before the hit); its 0.1 s wait (rid 20), in whole frames, is over
+        // in frame 136.
+        assert_eq!(
+            criteria,
+            [
+                (hit + 6, 0x0d80_0000_0000_0609),
+                (hit + 6, 0x0d80_0000_0000_191d)
+            ],
+            "{criteria:x?}"
+        );
+        let settled = bot
+            .encoder(&graphs, &codecs)
+            .project_next(bot.snapshot().unwrap(), &hurt)
+            .unwrap();
+        assert_ne!(
+            settled.instance_variable(flinch, STRENGTH),
+            Some(&rifle_flinch)
+        );
         encoder_full(&graphs, &codecs, &bot);
     }
 

@@ -50,7 +50,7 @@ use orpheus_script::{
     graph::GraphStore,
     vitals::{Death, Vitals},
     vm::{ShotEvent, TargetCandidate},
-    weapons::{HitDefinition, ProjectileBallistics},
+    weapons::{DamageTags, HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
 };
 use orpheus_wire::{
@@ -301,6 +301,18 @@ pub struct BotDeath {
     pub tick: u32,
 }
 
+/// A hit a training bot took and survived: its script's damage message
+/// (`0011.025`, [`orpheus_script::bot::DAMAGED`]) carries these.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BotDamage {
+    /// Who dealt it.
+    pub source: u32,
+    pub dealt: f64,
+    pub tags: DamageTags,
+    /// The world tick of the hit.
+    pub tick: u32,
+}
+
 pub struct BotHit {
     pub notices: [Option<CombatNotice>; 2],
     pub health: EntityUpdate,
@@ -308,6 +320,8 @@ pub struct BotHit {
     /// The bot's pools added up after the hit.
     pub remaining: f64,
     pub death: Option<BotDeath>,
+    /// The damage of a hit it survived; none for a heal or a kill.
+    pub damage: Option<BotDamage>,
 }
 
 /// A hit on a player's body, for the match to apply to his body's pools
@@ -643,6 +657,9 @@ impl Combat {
                     damage: melee.amount,
                     critical: false,
                     loadout: melee.loadout,
+                    // Quick melee's tags are on graph 0043's health change,
+                    // which the body runtime doesn't read yet.
+                    tags: DamageTags::NONE,
                 };
                 self.apply_impact(scene, shooter, frame, None, context, &impact)
             })
@@ -845,6 +862,12 @@ impl Combat {
                 loadout: impact.loadout,
                 tick: death_tick,
             }),
+            damage: (!result.killed).then_some(BotDamage {
+                source: shooter.source,
+                dealt: result.dealt,
+                tags: impact.tags,
+                tick: death_tick,
+            }),
         })
     }
 
@@ -943,6 +966,7 @@ impl Combat {
                     bot: bot.entity,
                     remaining: target.vitals.total(),
                     death: None,
+                    damage: None,
                 },
                 given,
             ));

@@ -7,6 +7,7 @@ pub mod body;
 pub mod body_script;
 pub mod bot_animation;
 pub mod bot_script;
+pub mod bot_voice;
 pub mod bots;
 pub mod combat;
 pub mod controller;

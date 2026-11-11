@@ -200,6 +200,7 @@ impl ProjectileFlight {
                 damage: direct.damage_at(self.travelled * self.ballistics.speed, false),
                 critical: false,
                 loadout: direct.loadout,
+                tags: direct.tags,
             });
         }
         let Some(fuse) = self.ballistics.fuse else {
@@ -258,6 +259,7 @@ impl ProjectileFlight {
                         damage,
                         critical: false,
                         loadout: blast.hit.loadout,
+                        tags: blast.hit.tags,
                     });
                 }
             }
@@ -312,7 +314,7 @@ fn pose_of(targets: &[(u32, TargetPose)], entity: u32) -> Option<&TargetPose> {
 mod tests {
     use super::*;
     use orpheus_physics::collision::index::{SceneTriangle, TriangleIndex};
-    use orpheus_script::weapons::{Blast, DamageFalloff, HitDefinition, STICK_FUSE};
+    use orpheus_script::weapons::{Blast, DamageFalloff, DamageTags, HitDefinition, STICK_FUSE};
 
     const LOADOUT: u64 = 0x0b90_0000_0000_008e;
     const TICK: f64 = 0.016;
@@ -323,6 +325,7 @@ mod tests {
             loadout: Some(LOADOUT),
             critical: 1.0,
             falloff: None,
+            tags: DamageTags::NONE,
         }
     }
 

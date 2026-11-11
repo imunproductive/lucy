@@ -17,6 +17,85 @@ pub struct HitDefinition {
     pub loadout: Option<u64>,
     pub critical: f64,
     pub falloff: Option<DamageFalloff>,
+    /// The health change's damage tags, which the struck body's damage
+    /// message carries.
+    pub tags: DamageTags,
+}
+
+/// The most damage tags an authored health change lists in build 104319.
+const MAX_DAMAGE_TAGS: usize = 8;
+
+/// The damage tags of an authored health change (`STUStatescriptModifyHealth`
+/// `m_148F3152`, each an `STUStatescriptModifyHealthTag` whose `m_EE3055BD`
+/// names an identifier `01C`): what kind of hit it is. The struck body's
+/// graphs test them; the Training Bot's flinch (`0E8C` rid 0 to 31) picks
+/// its strength by `03EF`, `0302`, `09AB` and `09A1` to `09A7`, and a hit
+/// with `078D` (splash) plays its knockback anim. In order, at most 8 (the
+/// most any 104319 graph lists).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DamageTags {
+    ids: [u64; MAX_DAMAGE_TAGS],
+    len: u8,
+}
+
+impl DamageTags {
+    /// No tags.
+    pub const NONE: Self = Self {
+        ids: [0; MAX_DAMAGE_TAGS],
+        len: 0,
+    };
+
+    /// The tags of `modify` (an `STUStatescriptModifyHealth`), each read
+    /// with `evaluate`; a tag that doesn't read as an identifier is left out.
+    pub fn from_authored(
+        modify: &Json,
+        mut evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
+    ) -> Self {
+        let mut tags = Self::default();
+        let listed = modify
+            .get("m_148F3152")
+            .and_then(Json::as_array)
+            .map_or(&[][..], Vec::as_slice);
+        for tag in listed {
+            let Some(config) = tag.get("m_EE3055BD").filter(|value| !value.is_null()) else {
+                continue;
+            };
+            if let Ok(Value::Asset(id)) = evaluate(config) {
+                tags.push(id);
+            }
+        }
+        tags
+    }
+
+    fn push(&mut self, id: u64) {
+        if let Some(slot) = self.ids.get_mut(usize::from(self.len)) {
+            *slot = id;
+            self.len += 1;
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = u64> + '_ {
+        self.ids[..usize::from(self.len)].iter().copied()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// As a message parameter: an array of identifiers.
+    pub fn to_value(&self) -> Value {
+        Value::Array(self.iter().map(Value::Asset).collect())
+    }
+}
+
+impl FromIterator<u64> for DamageTags {
+    fn from_iter<I: IntoIterator<Item = u64>>(ids: I) -> Self {
+        let mut tags = Self::default();
+        for id in ids {
+            tags.push(id);
+        }
+        tags
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,6 +145,7 @@ impl HitDefinition {
             loadout,
             critical: number(field(config, "m_A872C70E")?).unwrap_or(1.0),
             falloff,
+            tags: DamageTags::from_authored(modify, &mut evaluate),
         }))
     }
 
@@ -440,7 +520,14 @@ mod tests {
         let config = json!({
             "m_modifyHealth": {
                 "m_amount": int(20),
-                "m_loadout": {"$": "STUConfigVarLoadout", "m_loadout": "0x0B9000000000008D"}
+                "m_loadout": {"$": "STUConfigVarLoadout", "m_loadout": "0x0B9000000000008D"},
+                "m_148F3152": [
+                    {"$": "STUStatescriptModifyHealthTag", "m_EE3055BD":
+                        {"$": "STUConfigVarIdentifier", "m_identifier": "0x0D800000000003BF"}},
+                    {"$": "STUStatescriptModifyHealthTag", "m_EE3055BD": int(7)},
+                    {"$": "STUStatescriptModifyHealthTag", "m_EE3055BD":
+                        {"$": "STUConfigVarIdentifier", "m_identifier": "0x0D800000000009A2"}}
+                ]
             },
             "m_EAD7F104": int(30),
             "m_157E5BC5": int(50),
@@ -456,6 +543,11 @@ mod tests {
         assert_eq!(hit.damage_at(10.0, false), 20.0);
         assert!((hit.damage_at(40.0, false) - 13.0).abs() < 1e-6);
         assert!((hit.damage_at(60.0, true) - 12.0).abs() < 1e-6);
+        // The identifiers in order; a tag that isn't one is left out.
+        assert_eq!(
+            hit.tags.iter().collect::<Vec<_>>(),
+            [0x0d80_0000_0000_03bf, 0x0d80_0000_0000_09a2]
+        );
         let defaults = HitDefinition::from_authored(&json!({}), |_| panic!("no fields"))
             .unwrap()
             .unwrap();
@@ -464,9 +556,10 @@ mod tests {
                 defaults.amount,
                 defaults.loadout,
                 defaults.critical,
-                defaults.falloff
+                defaults.falloff,
+                defaults.tags
             ),
-            (0.0, None, 1.0, None)
+            (0.0, None, 1.0, None, DamageTags::default())
         );
     }
 

@@ -19,7 +19,7 @@ use orpheus_physics::{
     collision::index::IndexError,
     static_ray::{Vec3, capsule_entry_distance, segment_distance},
 };
-use orpheus_script::weapons::HitDefinition;
+use orpheus_script::weapons::{DamageTags, HitDefinition};
 use orpheus_wire::commands::Command;
 
 use crate::hitboxes::HitShape;
@@ -234,6 +234,8 @@ pub struct Impact {
     pub damage: f64,
     pub critical: bool,
     pub loadout: Option<u64>,
+    /// The health change's damage tags (the struck body's `0011.025`).
+    pub tags: DamageTags,
 }
 
 impl HitscanShot {
@@ -293,6 +295,7 @@ impl HitscanShot {
             damage: self.hit.damage_at(distance, head),
             critical: head && self.hit.critical > 1.0,
             loadout: self.hit.loadout,
+            tags: self.hit.tags,
         }))
     }
 }
@@ -321,6 +324,7 @@ mod tests {
             end: 50.0,
             floor: 0.3,
         }),
+        tags: DamageTags::NONE,
     };
 
     fn standing(x: f64, z: f64) -> TargetPose {
@@ -376,7 +380,8 @@ mod tests {
                 distance: 9.5,
                 damage: 20.0,
                 critical: false,
-                loadout: RIFLE.loadout
+                loadout: RIFLE.loadout,
+                tags: RIFLE.tags,
             }
         );
         assert_eq!(resolve(&coincident), Some(hit));

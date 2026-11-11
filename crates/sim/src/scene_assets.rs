@@ -800,9 +800,26 @@ impl PreparedScene {
         self.bot_scripts.show_damage_nameplate(entity);
     }
 
+    /// A hit the bot survived reaches its script as `0011.025` (its flinch,
+    /// then its pain line), after [`Self::bot_health`].
+    pub fn bot_hurt(&mut self, entity: u32, damage: &crate::combat::BotDamage) {
+        self.bot_scripts.hurt(entity, damage, &self.bots);
+    }
+
     /// The dead bots' death scripts (combat.py `_advance_bot_death`).
     pub fn advance_bot_deaths(&mut self, tick: u32) {
         self.bot_scripts.advance_deaths(&self.bots, tick);
+    }
+
+    /// The live bots' graph events due by this tick (a hit's reaction), and
+    /// the voice lines their criteria call for.
+    pub fn advance_live_bots(&mut self, tick: u32) {
+        self.bot_scripts.advance_live(&self.bots, tick);
+    }
+
+    /// The voice lines the bots said since the last call, for every client.
+    pub fn take_bot_voices(&mut self) -> Vec<crate::bot_voice::BotVoice> {
+        self.bot_scripts.take_voices()
     }
 
     /// The respawned bots' new scripts (combat.py `_respawn_bot`).

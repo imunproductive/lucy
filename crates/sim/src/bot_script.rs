@@ -15,9 +15,10 @@ use std::{
 };
 
 use crate::{
+    bot_voice::{BotVoice, BotVoiceState},
     bots::BOT_EYE,
     bots::Bot,
-    combat::PosedProjectile,
+    combat::{BotDamage, PosedProjectile},
     projectiles::{
         DELIVERY_GRACE, ObservedOut, ObservedProjectile, predicted_sync, projectiles_per_shot,
         spawned_definitions,
@@ -26,7 +27,10 @@ use crate::{
 };
 use orpheus_content::maps::{GameMap, PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE};
 use orpheus_script::{
-    bot::{BotBody, BotSpawn as ScriptSpawn, practice_nameplate},
+    bot::{
+        BotBody, BotSpawn as ScriptSpawn, DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE,
+        DAMAGE_TAGS, practice_nameplate,
+    },
     codecs::CodecTable,
     graph::GraphStore,
     snapshot::{ProjectedSnapshot, SnapshotEncoder, SnapshotError, View},
@@ -75,7 +79,8 @@ struct Plain {
 #[derive(Clone, Debug)]
 pub enum BotEvent {
     /// A bot's changed live frame: a firing bot's (combat.py
-    /// `queue_bot_live`), or the nameplate a hit enabled.
+    /// `queue_bot_live`), the nameplate a hit enabled, or the bot's
+    /// reaction to a hit.
     Live { entity: u32, frame: Arc<BotFrame> },
     /// The bot died; its script's immediate change, if any
     /// (`queue_bot_death`).
@@ -126,6 +131,8 @@ struct BotScript {
     /// The world tick of the death and the killer's entity
     /// (`Vitals.death_tick`, `Vitals.killer`).
     death: Option<(u32, u32)>,
+    /// The lifetime's voice lines ([`crate::bot_voice`]).
+    voice: BotVoiceState,
 }
 
 /// Every training bot's script in one room, one slot per spawner.
@@ -149,6 +156,8 @@ pub struct BotScripts {
     /// The bodies the target searches can find, as the match last placed
     /// them; a new script starts with them.
     targets: Vec<TargetCandidate>,
+    /// The lines the bots said since the match last looked.
+    voices: Vec<BotVoice>,
 }
 
 impl BotScripts {
@@ -191,6 +200,7 @@ impl BotScripts {
             events: Vec::new(),
             weapons_tick: 0,
             targets: Vec::new(),
+            voices: Vec::new(),
         }
     }
 
@@ -293,6 +303,7 @@ impl BotScripts {
                     initial,
                     body,
                     death: None,
+                    voice: BotVoiceState::default(),
                 })
             });
         match started {
@@ -578,6 +589,121 @@ impl BotScripts {
                 self.slots[slot] = None;
             }
         }
+    }
+
+    /// A hit the bot survived reaches its script: `0011.025` with the
+    /// damage's tags, source, amount and direction (see
+    /// [`orpheus_script::bot::DAMAGED`]); the changed frame (its flinch)
+    /// goes to the clients as a live frame. The direction runs from the
+    /// attacker's feet to the bot's, as the match last placed them
+    /// (assumption; none when the attacker isn't found).
+    pub(crate) fn hurt(&mut self, entity: u32, damage: &BotDamage, bots: &[Bot]) {
+        let Some(slot) = self.slot(entity) else {
+            return;
+        };
+        let feet = |entity: u32| {
+            self.targets
+                .iter()
+                .find(|candidate| candidate.entity == entity)
+                .map(|candidate| candidate.feet)
+                .or_else(|| {
+                    bots.iter()
+                        .find(|bot| bot.entity == entity)
+                        .map(|bot| bot.position)
+                })
+        };
+        let direction = feet(damage.source)
+            .zip(Some(bots[slot].position))
+            .map(|(from, to)| std::array::from_fn::<f64, 3, _>(|axis| to[axis] - from[axis]))
+            .and_then(|offset| {
+                let length = offset.iter().map(|part| part * part).sum::<f64>().sqrt();
+                (length > f64::EPSILON).then(|| offset.map(|part| part / length))
+            })
+            .map_or(Value::Null, Value::Vector);
+        let parameters = Variables::from([
+            (DAMAGE_TAGS, damage.tags.to_value()),
+            (DAMAGE_SOURCE, Value::Entity(damage.source)),
+            (DAMAGE_AMOUNT, Value::Float(damage.dealt)),
+            (DAMAGE_DIRECTION, direction),
+        ]);
+        let script = self.slots[slot].as_mut().expect("a running bot script");
+        let result = script
+            .body
+            .take_damage(damage.tick, parameters)
+            .map_err(|error| error.to_string())
+            .and_then(|took| {
+                if took {
+                    self.publish_live(slot)
+                } else {
+                    Ok(())
+                }
+            });
+        if let Err(reason) = result {
+            eprintln!("bot {entity:08X}'s body script failed on its damage ({reason})");
+            self.slots[slot] = None;
+        }
+    }
+
+    /// The live bots' graph events due by world tick `tick` (a hit's flinch
+    /// and pain waits): a bot the weapons didn't run this tick runs the
+    /// tick when something is due, and its changed frame goes out. Then the
+    /// criteria every bot raised become its voice lines
+    /// ([`crate::bot_voice`]).
+    pub(crate) fn advance_live(&mut self, bots: &[Bot], tick: u32) {
+        for (slot, bot) in bots.iter().enumerate() {
+            let Some(script) = self.slots[slot].as_mut() else {
+                continue;
+            };
+            if !bot.dead && script.body.frame() < tick && script.body.due_by(tick) {
+                let result = script
+                    .body
+                    .advance_live(tick, Some(bot.position))
+                    .map_err(|error| error.to_string())
+                    .and_then(|ran| if ran { self.publish_live(slot) } else { Ok(()) });
+                if let Err(reason) = result {
+                    eprintln!("bot {:08X}'s body script failed ({reason})", bot.entity);
+                    self.slots[slot] = None;
+                    continue;
+                }
+            }
+            let script = self.slots[slot].as_mut().expect("a running bot script");
+            for criteria in script.body.take_criteria() {
+                if bot.dead {
+                    continue;
+                }
+                if let Some(voice) =
+                    script
+                        .voice
+                        .answer(bot.spawn.body, script.entity, criteria, tick)
+                {
+                    self.voices.push(voice);
+                }
+            }
+        }
+    }
+
+    /// The slot's current frame as its latest live one, sent when it
+    /// changed.
+    fn publish_live(&mut self, slot: usize) -> Result<(), String> {
+        let script = self.slots[slot].as_ref().expect("a running bot script");
+        let snapshot = script.body.snapshot().ok_or("the script halted")?;
+        let frame = self
+            .frame(&script.body, snapshot, &script.initial)
+            .map_err(|error| error.to_string())?;
+        let script = self.slots[slot].as_mut().expect("a running bot script");
+        if frame.full != script.produced {
+            script.produced = frame.full.clone();
+            script.latest_live = Arc::new(frame);
+            self.events.push(BotEvent::Live {
+                entity: script.entity,
+                frame: Arc::clone(&script.latest_live),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn take_voices(&mut self) -> Vec<BotVoice> {
+        std::mem::take(&mut self.voices)
     }
 
     pub fn take_events(&mut self) -> Vec<BotEvent> {
