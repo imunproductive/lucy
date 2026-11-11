@@ -994,7 +994,7 @@ mod tests {
             r#"{"0x0800000000000688": {"name": "Practice Range",
                 "modes": ["0x0230000000000018"],
                 "placeables_by_mode": {"0x0230000000000018": [136]},
-                "spawns": [{"team": 0, "position": [0, 0, 0]}]}}"#,
+                "spawns": [{"team": 0, "position": [0, 0, 0], "rotation": [0, 0, 0, 1]}]}}"#,
         )
         .unwrap()
         .with_modes(
