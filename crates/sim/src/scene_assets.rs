@@ -22,9 +22,11 @@ use crate::{
     combat::{BodyCombat, MeleeState, RespawnTimes, melee_states},
     controller::Controller,
     hitboxes::HitboxCatalog,
+    match_flow::{MatchFlow, Mode, Timers},
     mode_graph_values::ModeGraphValues,
     mode_rules_data::{ModeRules, ModeRulesData},
     notices::switch_notices,
+    objective_data::{MapObjectives, ObjectiveData},
     pools::PoolCatalog,
     projectiles::{BioticField, FIELD_ENTITY, FieldFrames},
     replication::OwnerBodyRuntime,
@@ -119,6 +121,8 @@ pub struct SceneAssets {
     modes: GameModes,
     /// The match flow's values the graphs and objectives hold.
     mode_rules: ModeRulesData,
+    /// Each map's objective data (`game_objectives_174.json` `maps`).
+    objectives: ObjectiveData,
 }
 
 pub struct PreparedScene {
@@ -152,6 +156,8 @@ pub struct PreparedScene {
     mode_rules: ModeRules,
     /// The mode graphs' values the match flow uses.
     mode_graph_values: ModeGraphValues,
+    /// The map's objective data.
+    objectives: Arc<MapObjectives>,
 }
 
 impl SceneAssets {
@@ -187,6 +193,7 @@ impl SceneAssets {
         let stats = Arc::new(StatsCatalog::load(data.join("game_stats_174.json"))?);
         let board = stats.board()?;
         let mode_rules = ModeRulesData::load(&graphs, &data)?;
+        let objectives = ObjectiveData::load(&data)?;
         Ok(Self {
             collision: runtime.join("collision"),
             runtime: runtime.to_path_buf(),
@@ -217,6 +224,7 @@ impl SceneAssets {
             pools,
             modes: GameModes::load(data.join(MODES_FILE))?,
             mode_rules,
+            objectives,
         })
     }
 
@@ -338,6 +346,25 @@ impl SceneAssets {
         let mode_rules = self
             .mode_rules
             .rules(self.graphs.rulesets(), map.mode_guid)?;
+        let objectives = self.objectives.map(&map)?;
+        // A mode that plays for objectives needs their data, checked here
+        // rather than when the match begins.
+        if Mode::of(map.mode_guid).is_some_and(Mode::has_objectives)
+            && MatchFlow::new(
+                &map,
+                false,
+                self.mode_graph_values,
+                mode_rules,
+                Arc::clone(&objectives),
+                Timers::default(),
+            )
+            .is_none()
+        {
+            return Err(invalid(format!(
+                "{}: the objective data doesn't fit the map's objectives in mode {:016X}",
+                map.name, map.mode_guid
+            )));
+        }
         let mut scene = PreparedScene {
             respawn: self.respawns.for_mode(map.mode_guid),
             map,
@@ -362,6 +389,7 @@ impl SceneAssets {
             navigation,
             mode_rules,
             mode_graph_values: self.mode_graph_values,
+            objectives,
         };
         let mut factories = self
             .owner_bodies
@@ -544,6 +572,11 @@ impl PreparedScene {
     /// The rules of the mode's match flow (`mode_rules_data`).
     pub fn mode_rules(&self) -> ModeRules {
         self.mode_rules
+    }
+
+    /// The map's objective data (`objective_data`).
+    pub fn map_objectives(&self) -> Arc<MapObjectives> {
+        Arc::clone(&self.objectives)
     }
 
     /// A body's mover settings.

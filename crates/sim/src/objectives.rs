@@ -2,31 +2,20 @@
 //! the payload and the Control point (docs/notes/game-rules.md §3-7).
 //!
 //! The retail objectives are map entities whose statescript (graphs 0F4C,
-//! 0E8E, 1225) works with the native capture area and escort components.
-//! Their volumes, the payload's waypoints and the native → graph interface
-//! aren't derived yet, so these rules stand in for them, from the derived
-//! objective positions (`MapObjective`) and the public rules. Every value
-//! the rules don't give is an assumption, named where it is used.
+//! 0E8E, 1225, 121E) works with native components the server doesn't run.
+//! The server plays their graphs' rules (refs reports `CaptureAreas.md`
+//! and `Payloads.md`) on the map's derived data (`objective_data.rs`): the
+//! points' areas and times, the payload's track. Each value is read from
+//! the install; the guesses are named where they are used.
 
 use orpheus_content::maps::MapObjective;
+use serde::Deserialize;
 
-use crate::mode_rules_data::{ControlScoring, MARK_TOLERANCE};
-
-/// Assumption: a capture area is a vertical cylinder around the objective
-/// entity's position. Neither the area placeables (map chunk kind 8) nor
-/// `STUECCaptureAreaInstanceData` are decoded, and the rules give no radius.
-pub const POINT_RADIUS: f64 = 8.0;
-/// Assumption: how far below and above the objective's position a player
-/// still stands in its area.
-pub const POINT_BELOW: f64 = 2.0;
-pub const POINT_ABOVE: f64 = 5.0;
-/// Assumption: the payload's push radius. The rules don't give it
-/// (game-rules.md 48); 5 m is the payload's healing range (rule 42).
-pub const PAYLOAD_RADIUS: f64 = 5.0;
-/// Rule 39: the payload rolls back after 10 s without an attacker near.
-pub const ROLLBACK_AFTER: f64 = 10.0;
-/// Rule 40: speed multiplier by pusher count, for maps without a table entry.
-pub const PUSH_MULTIPLIERS: [f64; 3] = [1.0, 1.165, 1.33];
+use crate::{
+    mode_graph_values::CaptureRates,
+    mode_rules_data::{ControlScoring, MARK_TOLERANCE, PayloadRules},
+    objective_data::{PayloadData, PointData, WaypointData, WaypointEvent},
+};
 
 /// Who stands on an objective.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -50,39 +39,85 @@ impl Participant {
     }
 }
 
-/// A vertical cylinder (see [`POINT_RADIUS`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Area {
+/// One box of a capture area (an area placeable of map chunk kind 0x0A):
+/// its world centre, half extents along its own axes, and its rotation
+/// `{x, y, z, w}` from those axes to the world's.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+pub struct CaptureBox {
     pub centre: [f64; 3],
-    pub radius: f64,
-    pub below: f64,
-    pub above: f64,
+    pub half: [f64; 3],
+    pub rotation: [f64; 4],
+}
+
+impl CaptureBox {
+    pub fn contains(&self, position: [f64; 3]) -> bool {
+        let offset: [f64; 3] = std::array::from_fn(|axis| position[axis] - self.centre[axis]);
+        let [x, y, z, w] = self.rotation;
+        // Into the box's axes: the inverse rotation, v + 2w(u×v) + 2u×(u×v)
+        // with u the conjugate's vector part.
+        let local = rotate([-x, -y, -z], w, offset);
+        local
+            .iter()
+            .zip(self.half)
+            .all(|(along, half)| along.abs() <= half)
+    }
+
+    /// A box with a size and a unit rotation.
+    pub(crate) fn check(&self) -> Result<(), String> {
+        let norm = self.rotation.iter().map(|part| part * part).sum::<f64>();
+        if !self.half.iter().all(|half| half.is_finite() && *half > 0.0) {
+            return Err(format!("a box's half extents are {:?}", self.half));
+        }
+        if (norm - 1.0).abs() > 1e-3 {
+            return Err(format!(
+                "a box's rotation {:?} is not a unit",
+                self.rotation
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// `v` rotated by the unit quaternion `(u, w)`.
+fn rotate(u: [f64; 3], w: f64, v: [f64; 3]) -> [f64; 3] {
+    let t = cross(u, v).map(|part| 2.0 * part);
+    let u_t = cross(u, t);
+    std::array::from_fn(|axis| v[axis] + w * t[axis] + u_t[axis])
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Where a player counts as on an objective.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Area {
+    /// A capture point's area: the union of the boxes of the area placeable
+    /// the point's `STUTargetTagInstanceData.m_2746D7E4` names. Strong guess
+    /// (`CaptureAreas.md` §3): the boxes fit the points' floor rings, but no
+    /// reader of the field was seen.
+    Boxes(Vec<CaptureBox>),
+    /// The payload's range: 1225's TrackTargets find players within a
+    /// radius of a point (refs `Payloads.md` §3; a sphere is a strong guess
+    /// from their 360° angles).
+    Sphere { centre: [f64; 3], radius: f64 },
 }
 
 impl Area {
-    pub fn point(objective: &MapObjective) -> Self {
-        Self {
-            centre: objective.position,
-            radius: POINT_RADIUS,
-            below: POINT_BELOW,
-            above: POINT_ABOVE,
-        }
-    }
-
-    /// The payload's push area around where it stands.
-    pub fn payload(centre: [f64; 3]) -> Self {
-        Self {
-            centre,
-            radius: PAYLOAD_RADIUS,
-            below: PAYLOAD_RADIUS,
-            above: PAYLOAD_RADIUS,
-        }
-    }
-
     pub fn contains(&self, position: [f64; 3]) -> bool {
-        let [x, y, z] = position;
-        let [cx, cy, cz] = self.centre;
-        (x - cx).hypot(z - cz) <= self.radius && y >= cy - self.below && y <= cy + self.above
+        match self {
+            Self::Boxes(boxes) => boxes.iter().any(|area| area.contains(position)),
+            Self::Sphere { centre, radius } => {
+                let squared: f64 = (0..3)
+                    .map(|axis| (position[axis] - centre[axis]).powi(2))
+                    .sum();
+                squared <= radius * radius
+            }
+        }
     }
 
     /// The alive players of `attackers` and of the other teams inside.
@@ -102,46 +137,65 @@ impl Area {
         }
         presence
     }
+
+    /// A point's boxes where its objective entity stands: the data places
+    /// them for the entity at `point.position`; a map that moves the entity
+    /// (as a test may) moves its area with it.
+    pub fn of_point(point: &PointData, at: [f64; 3]) -> Self {
+        let shift: [f64; 3] = std::array::from_fn(|axis| at[axis] - point.position[axis]);
+        Self::Boxes(
+            point
+                .boxes
+                .iter()
+                .map(|area| CaptureBox {
+                    centre: std::array::from_fn(|axis| area.centre[axis] + shift[axis]),
+                    ..*area
+                })
+                .collect(),
+        )
+    }
 }
 
-/// The capture seconds with 1, 2 and 3 or more attackers.
-pub type CaptureTimes = [f64; 3];
-
-/// Rule 33: Assault point A, 30/20/15 s.
-pub const ASSAULT_FIRST: CaptureTimes = [30.0, 20.0, 15.0];
-/// Rule 34: Assault point B, 18/12/10 s.
-pub const ASSAULT_LAST: CaptureTimes = [18.0, 12.0, 10.0];
-/// Rule 49: Hybrid point A, 32/21/15 s for its three ticks.
-pub const HYBRID_POINT: CaptureTimes = [32.0, 21.0, 15.0];
-/// Rule 100: Elimination's tiebreaker point, 3 s (custom default).
-/// Assumption: the same with more players on it.
-pub const ELIMINATION_CAPTURE: CaptureTimes = [3.0; 3];
-
-fn capture_seconds(times: &CaptureTimes, players: usize) -> f64 {
-    times[players.clamp(1, 3) - 1]
-}
-
-/// An Assault or Hybrid capture point (rules 32-35). Progress runs 0 to 1;
-/// its marks (`ModeRules::capture_marks`, 1/3 and 2/3) are checkpoints it
-/// never falls below.
+/// An Assault or Hybrid capture point (graph 0E8E, rules 32-35). Progress
+/// runs 0 to 1; its marks (`ModeRules::capture_marks`, 1/3 and 2/3) are
+/// ticks it never falls below.
+///
+/// Assumption: every attacker can advance it. 0E8E lets an attacker with
+/// entity variable v10414 (set by some hero abilities, probably the phased
+/// states) count but not advance it alone; the server sets no v10414.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CapturePoint {
     pub area: Area,
+    pub position: [f64; 3],
     pub name: Option<String>,
-    times: CaptureTimes,
+    /// The base capture and decay seconds (0E8E v12395, v12396).
+    capture: f64,
+    decay: f64,
+    rates: CaptureRates,
     marks: [f64; 2],
     progress: f64,
+    /// Seconds since the last attacker left it.
+    empty: f64,
     captured: bool,
 }
 
 impl CapturePoint {
-    pub fn new(objective: &MapObjective, times: CaptureTimes, marks: [f64; 2]) -> Self {
+    pub fn new(
+        objective: &MapObjective,
+        point: &PointData,
+        rates: CaptureRates,
+        marks: [f64; 2],
+    ) -> Self {
         Self {
-            area: Area::point(objective),
+            area: Area::of_point(point, objective.position),
+            position: objective.position,
             name: objective.name.clone(),
-            times,
+            capture: point.capture,
+            decay: point.decay,
+            rates,
             marks,
             progress: 0.0,
+            empty: 0.0,
             captured: false,
         }
     }
@@ -170,22 +224,19 @@ impl CapturePoint {
 
     /// One step of `seconds` (already on the match's time scale) with
     /// `presence` on the point; true when it was captured in this step.
-    /// Progress rises with attackers alone on it (rule 32), holds while it
-    /// is contested, and without attackers falls back to its last tick.
-    /// Assumption: it falls back at the one-attacker rate (rule 35 gives no
-    /// rate).
+    /// 0E8E: attackers alone raise it at their count's rate over the base
+    /// capture seconds (uid 154); attackers and defenders together hold it;
+    /// once no attacker has been on it for the decay delay it falls at the
+    /// defenders' count's rate over the base decay seconds (uids 181, 175)
+    /// to its last tick (uid 302).
     pub fn step(&mut self, seconds: f64, scale: f64, presence: Presence) -> bool {
         if self.captured {
             return false;
         }
-        match (presence.attackers, presence.defenders) {
-            (0, _) => {
-                let floor = self.mark();
-                let rate = 1.0 / (self.times[0] * scale);
-                self.progress = (self.progress - rate * seconds).max(floor);
-            }
-            (attackers, 0) => {
-                let rate = 1.0 / (capture_seconds(&self.times, attackers) * scale);
+        if presence.attackers > 0 {
+            self.empty = 0.0;
+            if presence.defenders == 0 {
+                let rate = self.rates.capture(presence.attackers) / (self.capture * scale);
                 self.progress += rate * seconds;
                 if self.progress >= 1.0 - 1e-9 {
                     self.progress = 1.0;
@@ -193,71 +244,244 @@ impl CapturePoint {
                     return true;
                 }
             }
-            _ => {}
+            return false;
+        }
+        self.empty += seconds;
+        if self.empty >= self.rates.decay_delay * scale {
+            let floor = self.mark();
+            let rate = self.rates.decay(presence.defenders) / (self.decay * scale);
+            self.progress = (self.progress - rate * seconds).max(floor);
         }
         false
     }
 }
 
-/// The payload's speeds in m/s with 1, 2 and 3 or more pushers, by map
-/// (rules 41 and 50); other maps take the most common row.
-pub fn payload_speeds(map_name: &str) -> [f64; 3] {
-    const SLOW: [f64; 3] = [1.4, 1.65, 1.85];
-    const MID: [f64; 3] = [1.55, 1.8, 2.05];
-    const FAST: [f64; 3] = [1.7, 2.0, 2.25];
-    let name = map_name.to_ascii_lowercase();
-    let any = |names: &[&str]| names.iter().any(|map| name.contains(map));
-    if any(&["havana", "route 66"]) {
-        SLOW
-    } else if any(&["gibraltar", "rialto", "blizzard world", "eichenwalde"]) {
-        FAST
-    } else {
-        MID
+/// How many samples of each track segment map its stored length to its
+/// curve.
+const SAMPLES: usize = 32;
+/// How far a segment's curve may end from the next waypoint, in metres.
+const CURVE_TOLERANCE: f64 = 0.02;
+
+/// A payload's track: the cubic Bézier segments between its waypoints,
+/// measured in their stored lengths (`m_9741DF92`, about 4% shorter than
+/// the curves). Strong guess (`Payloads.md` §2): the payload moves its
+/// speed in stored-length metres a second, so on the curve a segment's
+/// stored length stretches evenly over its arc.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Track {
+    segments: Vec<Segment>,
+    waypoints: Vec<Waypoint>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Segment {
+    /// Distance along the track where it starts, and its stored length.
+    start: f64,
+    length: f64,
+    /// a, b, c, d of `a t³ + b t² + c t + d`.
+    curve: [[f64; 3]; 4],
+    /// The arc length from its start at t = k / SAMPLES.
+    arc: Vec<f64>,
+}
+
+impl Segment {
+    fn at(&self, t: f64) -> [f64; 3] {
+        let [a, b, c, d] = self.curve;
+        std::array::from_fn(|axis| ((a[axis] * t + b[axis]) * t + c[axis]) * t + d[axis])
+    }
+
+    /// The point a share `fraction` of its arc along.
+    fn along(&self, fraction: f64) -> [f64; 3] {
+        let total = self.arc[SAMPLES];
+        let target = fraction.clamp(0.0, 1.0) * total;
+        let k = self
+            .arc
+            .windows(2)
+            .position(|pair| target <= pair[1])
+            .unwrap_or(SAMPLES - 1);
+        let (from, to) = (self.arc[k], self.arc[k + 1]);
+        let within = if to > from {
+            (target - from) / (to - from)
+        } else {
+            0.0
+        };
+        self.at((k as f64 + within) / SAMPLES as f64)
     }
 }
 
-/// The payload (rules 39-47). Assumption: it moves along straight lines
-/// from its start through each checkpoint in order; the waypoints
-/// (`STUWaypointInstanceData`) that give the real path aren't derived.
+/// A waypoint of a track.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Waypoint {
+    /// Its distance along the track.
+    pub distance: f64,
+    pub placeable: u32,
+    /// Rollback stops here: barrier waypoints have no previous link
+    /// (strong guess, `Payloads.md` §4).
+    pub barrier: bool,
+    /// Graph 121E's answer when the payload reaches it.
+    pub event: Option<WaypointEvent>,
+}
+
+impl Track {
+    pub fn new(waypoints: &[WaypointData]) -> Result<Self, String> {
+        let (last, inner) = waypoints.split_last().ok_or("a track without waypoints")?;
+        if last.curve.is_some() {
+            return Err(format!("the last waypoint {} has a curve", last.placeable));
+        }
+        let mut segments = Vec::new();
+        let mut start = 0.0;
+        for (waypoint, next) in inner.iter().zip(&waypoints[1..]) {
+            let (Some([a, b, c]), Some(length)) = (waypoint.curve, waypoint.length) else {
+                return Err(format!("waypoint {} has no curve", waypoint.placeable));
+            };
+            if !(length.is_finite() && length > 0.0) {
+                return Err(format!(
+                    "waypoint {}'s segment is {length} m",
+                    waypoint.placeable
+                ));
+            }
+            let mut segment = Segment {
+                start,
+                length,
+                curve: [a, b, c, waypoint.position],
+                arc: vec![0.0],
+            };
+            let mut previous = segment.at(0.0);
+            for k in 1..=SAMPLES {
+                let point = segment.at(k as f64 / SAMPLES as f64);
+                let step = distance(previous, point);
+                segment.arc.push(segment.arc[k - 1] + step);
+                previous = point;
+            }
+            if distance(previous, next.position) > CURVE_TOLERANCE {
+                return Err(format!(
+                    "waypoint {}'s curve ends at {previous:?}, not at the next waypoint",
+                    waypoint.placeable
+                ));
+            }
+            segments.push(segment);
+            start += length;
+        }
+        let mut distance = 0.0;
+        let waypoints = waypoints
+            .iter()
+            .map(|waypoint| {
+                let at = distance;
+                distance += waypoint.length.unwrap_or_default();
+                Waypoint {
+                    distance: at,
+                    placeable: waypoint.placeable,
+                    barrier: waypoint.barrier,
+                    event: waypoint.event,
+                }
+            })
+            .collect();
+        Ok(Self {
+            segments,
+            waypoints,
+        })
+    }
+
+    /// Its stored length.
+    pub fn length(&self) -> f64 {
+        self.segments
+            .last()
+            .map_or(0.0, |segment| segment.start + segment.length)
+    }
+
+    pub fn waypoints(&self) -> &[Waypoint] {
+        &self.waypoints
+    }
+
+    /// Where the payload stands at `distance` along it.
+    pub fn position(&self, distance: f64) -> [f64; 3] {
+        let Some(first) = self.segments.first() else {
+            return [0.0; 3];
+        };
+        let segment = self
+            .segments
+            .iter()
+            .rev()
+            .find(|segment| segment.start <= distance)
+            .unwrap_or(first);
+        segment.along((distance - segment.start) / segment.length)
+    }
+}
+
+fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
+    (0..3)
+        .map(|axis| (a[axis] - b[axis]).powi(2))
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// The payload (graph 1225, rules 39-47) on its track.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Payload {
-    path: Vec<[f64; 3]>,
-    /// Distance along the path of each path point.
-    lengths: Vec<f64>,
-    speeds: [f64; 3],
-    /// The rollback speed in m/s (`ModeRules::rollback_speed`).
-    rollback: f64,
+    track: Track,
+    rules: PayloadRules,
+    /// The push speeds times the map's speed factor (v7779).
+    push_speeds: [f64; 3],
+    /// The checkpoints' distances along the track; the last is the
+    /// delivery.
+    checkpoints: Vec<f64>,
     distance: f64,
     /// The farthest it got (rule 63).
     best: f64,
-    /// Checkpoints reached; path point `reached` is the last one.
+    /// Checkpoints reached.
     reached: usize,
+    /// Seconds without an attacker in range.
     idle: f64,
+    /// Seconds the contest still lasts.
+    contest: f64,
+    /// Seconds it stays put: the waits once active, a waypoint's pause.
+    hold: f64,
+    /// On a run of its own, until the next waypoint with an event.
+    auto: bool,
+    /// The waypoints up to here have been reached.
+    passed: usize,
 }
 
 impl Payload {
-    /// From `start` through `checkpoints` (the last is the delivery point),
-    /// rolling back at `rollback` m/s.
-    pub fn new(start: [f64; 3], checkpoints: &[[f64; 3]], speeds: [f64; 3], rollback: f64) -> Self {
-        let mut path = vec![start];
-        path.extend_from_slice(checkpoints);
-        let mut lengths = vec![0.0];
-        for pair in path.windows(2) {
-            let [a, b] = [pair[0], pair[1]];
-            let step =
-                ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
-            lengths.push(lengths.last().copied().unwrap_or_default() + step);
+    /// The payload as it becomes active, heading through the checkpoints
+    /// (their placeables, in order) on its track; none when a checkpoint is
+    /// not a waypoint of the track or they don't come in order. 1225 waits
+    /// v2102 and v2118 (Hybrid's unlock) and, with v1362 set, runs on its
+    /// own to the first waypoint with an event (King's Row and Blizzard
+    /// World's unlock run). Assumption: the run comes after the waits.
+    pub fn new(
+        data: &PayloadData,
+        rules: PayloadRules,
+        checkpoints: &[u32],
+        scale: f64,
+    ) -> Option<Self> {
+        let waypoints = data.track.waypoints();
+        let checkpoints: Vec<f64> = checkpoints
+            .iter()
+            .map(|placeable| {
+                waypoints
+                    .iter()
+                    .find(|waypoint| waypoint.placeable == *placeable)
+                    .map(|waypoint| waypoint.distance)
+            })
+            .collect::<Option<_>>()?;
+        if checkpoints.is_empty() || checkpoints.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return None;
         }
-        Self {
-            path,
-            lengths,
-            speeds,
-            rollback,
+        Some(Self {
+            track: data.track.clone(),
+            rules,
+            push_speeds: rules.push_speeds.map(|speed| speed * data.speed),
+            checkpoints,
             distance: 0.0,
             best: 0.0,
             reached: 0,
             idle: 0.0,
-        }
+            contest: 0.0,
+            hold: (data.unlock[0] + data.unlock[1]) * scale,
+            auto: data.auto_start,
+            passed: 0,
+        })
     }
 
     pub fn distance(&self) -> f64 {
@@ -269,7 +493,7 @@ impl Payload {
     }
 
     pub fn length(&self) -> f64 {
-        self.lengths.last().copied().unwrap_or_default()
+        self.track.length()
     }
 
     /// Checkpoints reached; the last is the delivery.
@@ -278,7 +502,7 @@ impl Payload {
     }
 
     pub fn checkpoints(&self) -> usize {
-        self.path.len() - 1
+        self.checkpoints.len()
     }
 
     pub fn delivered(&self) -> bool {
@@ -287,107 +511,174 @@ impl Payload {
 
     /// Where it stands.
     pub fn position(&self) -> [f64; 3] {
-        let segment = self
-            .lengths
-            .windows(2)
-            .position(|pair| self.distance <= pair[1])
-            .unwrap_or(self.path.len().saturating_sub(2));
-        let (from, to) = (self.lengths[segment], self.lengths[segment + 1]);
-        let t = if to > from {
-            ((self.distance - from) / (to - from)).clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-        let [a, b] = [self.path[segment], self.path[segment + 1]];
-        [
-            a[0] + (b[0] - a[0]) * t,
-            a[1] + (b[1] - a[1]) * t,
-            a[2] + (b[2] - a[2]) * t,
-        ]
+        self.track.position(self.distance)
     }
 
+    /// Its push, contest and heal range (the same for every map).
     pub fn area(&self) -> Area {
-        Area::payload(self.position())
+        let position = self.position();
+        Area::Sphere {
+            centre: std::array::from_fn(|axis| position[axis] + self.rules.centre[axis]),
+            radius: self.rules.radius,
+        }
     }
 
-    /// One step: attackers alone push it (rule 39, the speed by pusher
-    /// count); any defender stops it; after [`ROLLBACK_AFTER`] without
-    /// attackers it rolls back toward the last checkpoint. Returns the
-    /// checkpoint reached in this step.
+    /// One step with `presence` in its range; the checkpoint reached in
+    /// this step. 1225: attackers push it at their count's speed unless it
+    /// is contested, which lasts v3032 after the last defender left (uids
+    /// 4, 203-205); after v2312 without an attacker it rolls back (uids 52,
+    /// 44) to the last barrier it passed. A waypoint with an event stops it
+    /// for its pause and may send it on alone (uids 61, 73-75, 124-125).
+    /// Assumption: an event fires once, the first time it is reached.
     pub fn step(&mut self, seconds: f64, scale: f64, presence: Presence) -> Option<usize> {
         if self.delivered() {
             return None;
         }
+        if presence.defenders > 0 {
+            self.contest = self.rules.contest_linger * scale;
+        } else {
+            self.contest = (self.contest - seconds).max(0.0);
+        }
+        let contested = presence.defenders > 0 || self.contest > 0.0;
         if presence.attackers > 0 {
             self.idle = 0.0;
         } else {
             self.idle += seconds;
         }
-        if presence.attackers > 0 && presence.defenders == 0 {
-            let speed = self.speeds[presence.attackers.clamp(1, 3) - 1] / scale;
-            self.distance = (self.distance + speed * seconds).min(self.length());
+        if self.hold > 0.0 {
+            self.hold -= seconds;
+            return None;
+        }
+        if let Some(reached) = self.arrive(scale) {
+            return Some(reached);
+        }
+        if self.hold > 0.0 {
+            return None;
+        }
+        let forward = if self.auto {
+            Some(self.rules.auto_speed)
+        } else if presence.attackers > 0 && !contested {
+            Some(self.push_speeds[presence.attackers.clamp(1, 3) - 1])
+        } else {
+            None
+        };
+        if let Some(speed) = forward {
+            let stop = self.next_stop().unwrap_or_else(|| self.length());
+            self.distance = (self.distance + speed / scale * seconds).min(stop);
             self.best = self.best.max(self.distance);
-            let next = self.lengths[self.reached + 1];
-            if self.distance >= next - 1e-9 {
+            return self.arrive(scale);
+        }
+        if presence.attackers == 0 && self.idle >= self.rules.rollback_after * scale {
+            let floor = self
+                .track
+                .waypoints()
+                .iter()
+                .filter(|waypoint| waypoint.barrier && waypoint.distance <= self.distance)
+                .map(|waypoint| waypoint.distance)
+                .fold(0.0, f64::max);
+            let floor = self.checkpoints[..self.reached]
+                .iter()
+                .copied()
+                .fold(floor, f64::max);
+            self.distance =
+                (self.distance - self.rules.rollback_speed / scale * seconds).max(floor);
+        }
+        None
+    }
+
+    /// The distance of the next waypoint it stops at: one with an event or
+    /// a checkpoint.
+    fn next_stop(&self) -> Option<f64> {
+        self.track.waypoints()[self.passed..]
+            .iter()
+            .find(|waypoint| self.stops_at(waypoint))
+            .map(|waypoint| waypoint.distance)
+    }
+
+    fn stops_at(&self, waypoint: &Waypoint) -> bool {
+        waypoint.event.is_some() || self.checkpoints.contains(&waypoint.distance)
+    }
+
+    /// Reach the waypoints up to where it stands: the first stop among
+    /// them takes its pause and its run of its own; a checkpoint counts.
+    fn arrive(&mut self, scale: f64) -> Option<usize> {
+        while let Some(&waypoint) = self.track.waypoints().get(self.passed) {
+            if waypoint.distance > self.distance + 1e-9 {
+                return None;
+            }
+            self.passed += 1;
+            self.distance = self.distance.max(waypoint.distance);
+            if let Some(event) = waypoint.event {
+                self.hold = event.pause * scale;
+                self.auto = event.auto_next;
+            }
+            if self.checkpoints.get(self.reached) == Some(&waypoint.distance) {
                 self.reached += 1;
                 return Some(self.reached);
             }
-        } else if presence.attackers == 0 && self.idle >= ROLLBACK_AFTER * scale {
-            let floor = self.lengths[self.reached];
-            self.distance = (self.distance - self.rollback / scale * seconds).max(floor);
+            if self.stops_at(&waypoint) {
+                return None;
+            }
         }
         None
     }
 }
 
-/// The Control point of a round (rules 55-58): it unlocks after 30 s,
-/// a team captures it (in the times 0EC2 gives, `mode_graph_values.rs`;
-/// any enemy on it blocks), and the owner's percentage rises at its
-/// scoring rate (1% every 1.2 s) to 100.
+/// The Control point of a round (graph 0E8E, rules 55-58): it unlocks
+/// after 30 s, a team captures it in the times 0EC2 gives
+/// (`mode_graph_values.rs`), and the owner's percentage rises at its
+/// scoring rate (1% every 1.2 s) to 100. Also Elimination's tiebreaker
+/// point (rule 100), which only needs an owner.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ControlPoint {
     pub area: Area,
+    pub position: [f64; 3],
     pub name: Option<String>,
     locked: f64,
-    times: CaptureTimes,
+    capture: f64,
+    decay: f64,
+    rates: CaptureRates,
     /// None for Elimination's tiebreaker point, which only needs an owner.
     scoring: Option<ControlScoring>,
     owner: Option<u8>,
     /// The team taking it and its progress, 0 to 1.
     taking: Option<(u8, f64)>,
+    /// Seconds since the last of the team taking it left.
+    empty: f64,
     percent: [f64; 2],
 }
 
 impl ControlPoint {
     pub fn new(
         objective: &MapObjective,
+        point: &PointData,
         unlock: f64,
-        times: CaptureTimes,
+        rates: CaptureRates,
         scoring: ControlScoring,
     ) -> Self {
-        Self {
-            area: Area::point(objective),
-            name: objective.name.clone(),
-            locked: unlock,
-            times,
-            scoring: Some(scoring),
-            owner: None,
-            taking: None,
-            percent: [0.0; 2],
-        }
+        let mut control = Self::tiebreak(point, rates, unlock);
+        control.area = Area::of_point(point, objective.position);
+        control.position = objective.position;
+        control.name = objective.name.clone();
+        control.scoring = Some(scoring);
+        control
     }
 
     /// Elimination's tiebreaker point (rule 100): it unlocks after
     /// `unlock` and the first team to own it wins the round.
-    pub fn tiebreak(area: Area, unlock: f64) -> Self {
+    pub fn tiebreak(point: &PointData, rates: CaptureRates, unlock: f64) -> Self {
         Self {
-            area,
+            area: Area::Boxes(point.boxes.clone()),
+            position: point.position,
             name: None,
             locked: unlock,
-            times: ELIMINATION_CAPTURE,
+            capture: point.capture,
+            decay: point.decay,
+            rates,
             scoring: None,
             owner: None,
             taking: None,
+            empty: 0.0,
             percent: [0.0; 2],
         }
     }
@@ -418,9 +709,13 @@ impl ControlPoint {
         self.area.presence(participants, owner).defenders > 0
     }
 
-    /// One step; the round's winner once a team reaches 100%. Assumption:
-    /// an unfinished capture with nobody on the point falls back at the
-    /// one-player rate (rule 56 gives no rate).
+    /// One step; the round's winner once a team reaches 100%. 0E8E with
+    /// v9847 set (the Control points' override): the team taking it is the
+    /// one with more players on a neutral point (equal numbers: a random
+    /// pick, uid 136; assumption: team 0, for reproducible rounds), or the
+    /// other team on an owned one. It captures as an Assault point does,
+    /// and decays to 0; on a neutral point the decay starts at once when
+    /// the other team stands on it (uid 298).
     pub fn step(&mut self, seconds: f64, scale: f64, participants: &[Participant]) -> Option<u8> {
         if self.locked > 0.0 {
             self.locked -= seconds;
@@ -428,30 +723,39 @@ impl ControlPoint {
         }
         let blue = self.area.presence(participants, 0);
         let on = [blue.attackers, blue.defenders];
-        let contested = on[0] > 0 && on[1] > 0;
-        let alone = (0..2u8).find(|&team| on[usize::from(team)] > 0 && !contested);
-        match (alone, self.taking) {
-            (Some(team), _) if Some(team) == self.owner => self.taking = None,
-            (Some(team), taking) => {
-                let progress = match taking {
-                    Some((taker, progress)) if taker == team => progress,
-                    _ => 0.0,
+        let taker = match (self.taking, self.owner) {
+            (Some((team, _)), _) => Some(team),
+            (None, Some(owner)) => Some(1 - owner).filter(|other| on[usize::from(*other)] > 0),
+            (None, None) if on == [0, 0] => None,
+            (None, None) => Some(u8::from(on[1] > on[0])),
+        };
+        if let Some(team) = taker {
+            let progress = self.taking.map_or(0.0, |(_, progress)| progress);
+            let attackers = on[usize::from(team)];
+            let defenders = on[usize::from(1 - team)];
+            if attackers > 0 {
+                self.empty = 0.0;
+                let progress = if defenders == 0 {
+                    progress + self.rates.capture(attackers) / (self.capture * scale) * seconds
+                } else {
+                    progress
                 };
-                let rate = 1.0 / (capture_seconds(&self.times, on[usize::from(team)]) * scale);
-                let progress = progress + rate * seconds;
                 if progress >= 1.0 - 1e-9 {
                     self.owner = Some(team);
                     self.taking = None;
                 } else {
                     self.taking = Some((team, progress));
                 }
-            }
-            (None, Some((team, progress))) if !contested => {
-                let rate = 1.0 / (self.times[0] * scale);
-                let progress = progress - rate * seconds;
+            } else {
+                self.empty += seconds;
+                let at_once = self.owner.is_none() && defenders > 0;
+                let progress = if at_once || self.empty >= self.rates.decay_delay * scale {
+                    progress - self.rates.decay(defenders) / (self.decay * scale) * seconds
+                } else {
+                    progress
+                };
                 self.taking = (progress > 0.0).then_some((team, progress));
             }
-            _ => {}
         }
         let owner = self.owner?;
         let scoring = self.scoring?;
@@ -469,244 +773,4 @@ impl ControlPoint {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        match_flow::{CONTROL, ESCORT},
-        mode_rules_data::fixture,
-    };
-    use orpheus_content::maps::ObjectiveKind;
-
-    /// The install's capture marks (`fixture` pins them to the data).
-    fn marks() -> [f64; 2] {
-        fixture(ESCORT).capture_marks
-    }
-
-    const STEP: f64 = 1.0 / 60.0;
-
-    fn objective(position: [f64; 3]) -> MapObjective {
-        MapObjective {
-            kind: ObjectiveKind::Point,
-            order: 0,
-            name: Some("Point A".into()),
-            placeable: 1,
-            position,
-        }
-    }
-
-    fn run(seconds: f64, mut step: impl FnMut() -> bool) -> Option<f64> {
-        let mut elapsed = 0.0;
-        while elapsed < seconds {
-            elapsed += STEP;
-            if step() {
-                return Some(elapsed);
-            }
-        }
-        None
-    }
-
-    fn on(attackers: usize, defenders: usize) -> Presence {
-        Presence {
-            attackers,
-            defenders,
-        }
-    }
-
-    #[test]
-    fn point_capture_times_follow_the_attacker_count() {
-        for (times, expected) in [
-            (ASSAULT_FIRST, [30.0, 20.0, 15.0]),
-            (ASSAULT_LAST, [18.0, 12.0, 10.0]),
-        ] {
-            for (attackers, seconds) in [
-                (1, expected[0]),
-                (2, expected[1]),
-                (3, expected[2]),
-                (6, expected[2]),
-            ] {
-                let mut point = CapturePoint::new(&objective([0.0; 3]), times, marks());
-                let took = run(60.0, || point.step(STEP, 1.0, on(attackers, 0))).unwrap();
-                assert!((took - seconds).abs() < 2.0 * STEP, "{attackers}: {took} s");
-            }
-        }
-        // The time scale shortens it.
-        let mut point = CapturePoint::new(&objective([0.0; 3]), ASSAULT_FIRST, marks());
-        let took = run(60.0, || point.step(STEP, 0.1, on(1, 0))).unwrap();
-        assert!((took - 3.0).abs() < 2.0 * STEP);
-    }
-
-    #[test]
-    fn a_contested_point_holds_and_an_empty_one_falls_back_to_its_mark() {
-        let mut point = CapturePoint::new(&objective([0.0; 3]), ASSAULT_FIRST, marks());
-        run(12.0, || point.step(STEP, 1.0, on(1, 0)));
-        assert_eq!(point.mark(), marks()[0]);
-        let held = point.progress();
-        run(20.0, || point.step(STEP, 1.0, on(2, 1)));
-        assert_eq!(point.progress(), held, "contested: no change");
-        run(20.0, || point.step(STEP, 1.0, on(0, 0)));
-        assert_eq!(point.progress(), marks()[0], "back to the first mark");
-        run(20.0, || point.step(STEP, 1.0, on(0, 2)));
-        assert_eq!(point.progress(), marks()[0]);
-        assert!(!point.captured());
-    }
-
-    /// The marks are the rules': with others, the point keeps those.
-    #[test]
-    fn a_point_falls_back_to_the_marks_it_is_given() {
-        let mut point = CapturePoint::new(&objective([0.0; 3]), ASSAULT_FIRST, [0.25, 0.75]);
-        run(10.0, || point.step(STEP, 1.0, on(1, 0)));
-        assert_eq!(point.mark(), 0.25);
-        run(30.0, || point.step(STEP, 1.0, on(0, 0)));
-        assert_eq!(point.progress(), 0.25);
-    }
-
-    #[test]
-    fn areas_count_alive_players_inside_by_side() {
-        let area = Area::point(&objective([10.0, 0.0, 10.0]));
-        let player = |slot, team, position| Participant {
-            slot,
-            team,
-            position,
-        };
-        let players = [
-            player(0, 1, Some([12.0, 1.0, 13.0])),
-            player(1, 1, Some([10.0, 4.9, 10.0])),
-            player(2, 1, Some([10.0, 5.1, 10.0])),
-            player(3, 0, Some([17.9, 0.0, 10.0])),
-            player(4, 0, None),
-            player(5, 0, Some([18.1, 0.0, 10.0])),
-        ];
-        assert_eq!(area.presence(&players, 1), on(2, 1));
-        assert_eq!(area.presence(&players, 0), on(1, 2));
-    }
-
-    #[test]
-    fn the_payload_moves_by_pusher_count_stops_and_rolls_back_to_its_checkpoint() {
-        let speeds = payload_speeds("Watchpoint: Gibraltar");
-        assert_eq!(speeds, [1.7, 2.0, 2.25]);
-        assert_eq!(payload_speeds("Route 66"), [1.4, 1.65, 1.85]);
-        assert_eq!(payload_speeds("King's Row"), [1.55, 1.8, 2.05]);
-        let rollback = fixture(ESCORT).rollback_speed;
-        let mut payload = Payload::new(
-            [0.0; 3],
-            &[[20.0, 0.0, 0.0], [40.0, 0.0, 0.0]],
-            speeds,
-            rollback,
-        );
-        assert_eq!(payload.length(), 40.0);
-        for (pushers, speed) in [(1, 1.7), (2, 2.0), (3, 2.25), (5, 2.25)] {
-            let mut payload = payload.clone();
-            run(1.0, || {
-                payload.step(STEP, 1.0, on(pushers, 0));
-                false
-            });
-            assert!(
-                (payload.distance() - speed).abs() < 0.05,
-                "{pushers}: {}",
-                payload.distance()
-            );
-        }
-        let reached = run(20.0, || payload.step(STEP, 1.0, on(1, 0)) == Some(1)).unwrap();
-        assert!((reached - 20.0 / 1.7).abs() < 2.0 * STEP);
-        run(3.0, || payload.step(STEP, 1.0, on(1, 0)).is_some());
-        let pushed = payload.distance();
-        run(5.0, || payload.step(STEP, 1.0, on(3, 1)).is_some());
-        assert_eq!(payload.distance(), pushed, "a defender stops it");
-        run(9.0, || payload.step(STEP, 1.0, on(0, 0)).is_some());
-        assert_eq!(payload.distance(), pushed, "no rollback before 10 s");
-        // Then 0.3 m/s (the rules' rollback speed).
-        run(2.0, || payload.step(STEP, 1.0, on(0, 0)).is_some());
-        let back = pushed - payload.distance();
-        assert!((back - rollback).abs() < 0.02, "{back}");
-        run(60.0, || payload.step(STEP, 1.0, on(0, 0)).is_some());
-        assert_eq!(payload.distance(), 20.0, "rolls back to the checkpoint");
-        assert!(payload.best() > 20.0);
-        assert_eq!(payload.position(), [20.0, 0.0, 0.0]);
-        run(60.0, || payload.step(STEP, 1.0, on(2, 0)).is_some());
-        assert!(payload.delivered());
-    }
-
-    /// The capture times 0EC2 gives (`mode_graph_values.rs`).
-    const CONTROL_TIMES: CaptureTimes = [8.0, 16.0 / 3.0, 4.0];
-
-    #[test]
-    fn control_unlocks_captures_scores_and_holds_at_99_while_contested() {
-        let point_at = [0.0; 3];
-        let control = fixture(CONTROL).control;
-        let mut point = ControlPoint::new(&objective(point_at), 30.0, CONTROL_TIMES, control);
-        let blue = Participant {
-            slot: 0,
-            team: 0,
-            position: Some(point_at),
-        };
-        let red = Participant {
-            slot: 1,
-            team: 1,
-            position: Some(point_at),
-        };
-        run(29.0, || point.step(STEP, 1.0, &[blue]).is_some());
-        assert!(point.locked());
-        run(1.0 + 7.9, || point.step(STEP, 1.0, &[blue]).is_some());
-        assert_eq!(point.owner(), None, "8 s with one player");
-        run(0.2, || point.step(STEP, 1.0, &[blue]).is_some());
-        assert_eq!(point.owner(), Some(0));
-        // 118.8 s more takes blue to 99%, held there while red contests.
-        let won = run(200.0, || point.step(STEP, 1.0, &[blue, red]).is_some());
-        assert!(won.is_none());
-        assert_eq!(point.percent(0), 99.0);
-        assert!(point.contested(&[blue, red]));
-        // Red alone takes it in 8 s; blue keeps its 99%.
-        run(8.1, || point.step(STEP, 1.0, &[red]).is_some());
-        assert_eq!(point.owner(), Some(1));
-        assert_eq!(point.percent(0), 99.0);
-        let won = run(121.0, || point.step(STEP, 1.0, &[red]).is_some()).unwrap();
-        assert!((won - 120.0).abs() < 0.5, "{won}");
-        assert_eq!(point.percent(1), 100.0);
-    }
-
-    /// The score rate and the overtime hold are the rules'.
-    #[test]
-    fn control_scores_at_the_rate_and_holds_at_the_percentage_it_is_given() {
-        let scoring = ControlScoring {
-            percent_per_second: 2.0,
-            hold_at: 90.0,
-        };
-        let mut point = ControlPoint::new(&objective([0.0; 3]), 0.0, CONTROL_TIMES, scoring);
-        let blue = Participant {
-            slot: 0,
-            team: 0,
-            position: Some([0.0; 3]),
-        };
-        let red = Participant { team: 1, ..blue };
-        run(8.0 + STEP, || point.step(STEP, 1.0, &[blue]).is_some());
-        assert_eq!(point.owner(), Some(0));
-        run(10.0, || point.step(STEP, 1.0, &[blue]).is_some());
-        assert!(
-            (point.percent(0) - 20.0).abs() < 0.2,
-            "{}",
-            point.percent(0)
-        );
-        run(60.0, || point.step(STEP, 1.0, &[blue, red]).is_some());
-        assert_eq!(point.percent(0), 90.0);
-    }
-
-    #[test]
-    fn control_capture_time_follows_the_player_count() {
-        let point_at = [0.0; 3];
-        for (players, seconds) in [(1, 8.0), (2, 16.0 / 3.0), (3, 4.0), (4, 4.0)] {
-            let control = fixture(CONTROL).control;
-            let mut point = ControlPoint::new(&objective(point_at), 0.0, CONTROL_TIMES, control);
-            let team: Vec<_> = (0..players)
-                .map(|slot| Participant {
-                    slot,
-                    team: 0,
-                    position: Some(point_at),
-                })
-                .collect();
-            run(seconds - 0.1, || point.step(STEP, 1.0, &team).is_some());
-            assert_eq!(point.owner(), None, "{players} players");
-            run(0.2, || point.step(STEP, 1.0, &team).is_some());
-            assert_eq!(point.owner(), Some(0), "{players} players");
-        }
-    }
-}
+pub(crate) mod tests;

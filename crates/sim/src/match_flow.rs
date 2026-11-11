@@ -24,18 +24,16 @@
 //! them), so the server opens none. Assumption: the doors are map entities
 //! the client drives itself; nothing holds the attackers in during setup.
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
-use orpheus_content::maps::{GameMap, ObjectiveKind, SpawnChoice};
+use orpheus_content::maps::{GameMap, MapObjective, ObjectiveKind, SpawnChoice};
 use orpheus_script::wire::{Value, Variables};
 
 use crate::{
     mode_graph_values::ModeGraphValues,
     mode_rules_data::ModeRules,
-    objectives::{
-        ASSAULT_FIRST, ASSAULT_LAST, Area, CapturePoint, ControlPoint, HYBRID_POINT, POINT_ABOVE,
-        POINT_BELOW, POINT_RADIUS, Participant, Payload, Presence, payload_speeds,
-    },
+    objective_data::MapObjectives,
+    objectives::{CapturePoint, ControlPoint, Participant, Payload, Presence},
 };
 
 /// The game modes (`0C5`) whose flow the server runs.
@@ -119,6 +117,11 @@ impl Mode {
     fn sided(self) -> bool {
         matches!(self, Self::Assault | Self::Escort | Self::Hybrid)
     }
+
+    /// The mode plays for the map's objectives (points, payload).
+    pub fn has_objectives(self) -> bool {
+        self.sided() || matches!(self, Self::Control | Self::Elimination)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -160,16 +163,6 @@ impl Default for Timers {
     }
 }
 
-/// Rule 31: 4:00 for Assault point A, 3:00 more for B.
-pub const ASSAULT_TIME: f64 = 240.0;
-pub const ASSAULT_BONUS: f64 = 180.0;
-/// Rule 43: Escort starts with 4:00; rule 53: Hybrid's point A too.
-pub const ESCORT_TIME: f64 = 240.0;
-/// Assumption: time added at the payload's checkpoints. The rules know no
-/// Overwatch 1 values (rule 45, ⚠️OW2: +2:30 and +1:30, used here).
-pub const CHECKPOINT_BONUS: [f64; 2] = [150.0, 90.0];
-/// Assumption: time added when Hybrid's point A falls, as Assault's B.
-pub const HYBRID_BONUS: f64 = 180.0;
 /// Assumption: how long the match's end shows before the players go home.
 /// Neither POTG nor the cards are played; their length is unknown (rule 167).
 pub const MATCH_END: f64 = 20.0;
@@ -179,8 +172,6 @@ pub const DEATHMATCH_WINNERS: usize = 4;
 /// Rule 11: overtime adds 3 s to a respawn (the notes favour the wiki's
 /// 3 s over the Jul 2016 patch's 2 s).
 pub const OVERTIME_RESPAWN: f64 = 3.0;
-/// Rule 69: in Assault's extra rounds point A adds 30 s.
-pub const EXTRA_ASSAULT_BONUS: f64 = 30.0;
 
 /// Something the room acts on.
 #[derive(Clone, Debug, PartialEq)]
@@ -207,9 +198,12 @@ pub enum FlowEvent {
 #[derive(Clone, Debug)]
 enum Course {
     Points(Vec<CapturePoint>),
+    /// Hybrid: the point, then the payload (rule 51), which waits parked
+    /// until the point falls.
     Hybrid {
-        point: CapturePoint,
+        point: Box<CapturePoint>,
         payload: Option<Payload>,
+        parked: Option<Box<Payload>>,
     },
     Payload(Payload),
 }
@@ -227,7 +221,7 @@ impl Course {
                     .map_or(0.0, CapturePoint::mark);
                 (taken, next)
             }
-            Self::Hybrid { point, payload } => match payload {
+            Self::Hybrid { point, payload, .. } => match payload {
                 Some(payload) => (1 + payload.reached() as u32, payload.best()),
                 None => (0, point.mark()),
             },
@@ -274,6 +268,7 @@ impl Course {
             Self::Hybrid {
                 point,
                 payload: None,
+                ..
             } => point.name.as_deref(),
             _ => None,
         }
@@ -285,13 +280,13 @@ impl Course {
             Self::Points(points) => points
                 .iter()
                 .find(|point| !point.captured())
-                .map(|point| point.area.centre),
+                .map(|point| point.position),
             Self::Hybrid {
                 payload: Some(payload),
                 ..
             }
             | Self::Payload(payload) => Some(payload.position()),
-            Self::Hybrid { point, .. } => Some(point.area.centre),
+            Self::Hybrid { point, .. } => Some(point.position),
         }
     }
 
@@ -314,102 +309,29 @@ impl Course {
     }
 }
 
-/// The objectives of one side's round.
-fn course(map: &GameMap, mode: Mode, rules: &ModeRules) -> Option<Course> {
-    let points: Vec<_> = map.objectives_of(ObjectiveKind::Point).collect();
-    let checkpoints: Vec<[f64; 3]> = map
-        .objectives_of(ObjectiveKind::Checkpoint)
-        .map(|objective| objective.position)
-        .collect();
-    let start = map
-        .objectives_of(ObjectiveKind::Payload)
-        .next()
-        .map(|payload| payload.position);
-    let speeds = payload_speeds(&map.name);
-    match mode {
-        Mode::Assault => {
-            let last = points.len().checked_sub(1)?;
-            Some(Course::Points(
-                points
-                    .iter()
-                    .enumerate()
-                    .map(|(index, objective)| {
-                        let times = if index == last {
-                            ASSAULT_LAST
-                        } else {
-                            ASSAULT_FIRST
-                        };
-                        CapturePoint::new(objective, times, rules.capture_marks)
-                    })
-                    .collect(),
-            ))
-        }
-        Mode::Hybrid => {
-            let point = CapturePoint::new(points.first()?, HYBRID_POINT, rules.capture_marks);
-            start?;
-            (!checkpoints.is_empty()).then_some(Course::Hybrid {
-                point,
-                payload: None,
-            })
-        }
-        Mode::Escort => {
-            let start = start?;
-            (!checkpoints.is_empty()).then(|| {
-                Course::Payload(Payload::new(
-                    start,
-                    &checkpoints,
-                    speeds,
-                    rules.rollback_speed,
-                ))
-            })
-        }
-        _ => None,
-    }
-}
-
-/// Where Elimination's tiebreaker point stands. Assumption: halfway
-/// between the two teams' first spawn points; the arena maps are
-/// symmetrical and their point entity isn't derived (`game_maps` lists no
-/// objective for them).
-fn arena_centre(map: &GameMap) -> Option<[f64; 3]> {
-    let (blue, _) = map.spawn_point(0, 0)?;
-    let (red, _) = map.spawn_point(1, 0)?;
-    Some(std::array::from_fn(|axis| (blue[axis] + red[axis]) / 2.0))
-}
-
+/// One side's round of Assault, Escort or Hybrid.
+///
+/// The clock: each objective adds its own time when it becomes the current
+/// one (`objective_data.rs`, 0F4A uids 646-648), the first one's to the
+/// team's bank at the round's start (0 in rounds 1 and 2, uid 620). With
+/// Competitive rules: Escort and Hybrid 4:00, +2:30, +1:30, Assault 4:00,
+/// +3:00; without them: Escort and Hybrid 5:00, +3:00, +2:00. In the extra
+/// rounds only Assault's B adds time (30 s). Assumption: a match with a
+/// ranked player plays the Competitive rulesets, whose "Competitive Rules"
+/// (ruleset entry 9544) is on (`Payloads.md` §1); others play with it off.
 #[derive(Clone, Debug)]
 struct SidedRound {
     attackers: u8,
     course: Course,
     /// The clock it starts with, in unscaled seconds.
     time: f64,
-    /// An extra round of the time bank (rules 67-69): no time added, but
-    /// 30 s for Assault's A.
+    /// An extra round of the time bank (rules 67-69, 0F4A's v7901 at least
+    /// 2).
     extra: bool,
     /// The round's result for the tiebreak.
     result: Option<(u32, f64)>,
     /// The time left when the attackers completed the map (unscaled).
     bank: Option<f64>,
-}
-
-impl SidedRound {
-    fn new(
-        map: &GameMap,
-        mode: Mode,
-        rules: &ModeRules,
-        attackers: u8,
-        time: f64,
-        extra: bool,
-    ) -> Option<Self> {
-        Some(Self {
-            attackers,
-            course: course(map, mode, rules)?,
-            time,
-            extra,
-            result: None,
-            bank: None,
-        })
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -428,8 +350,11 @@ pub struct MatchFlow {
     rules: ModeRules,
     timers: Timers,
     /// The mode graphs' values: the wait after a round, the overtime fuse
-    /// and Control's capture times.
+    /// and the capture points' rates.
     graph_values: ModeGraphValues,
+    /// The map's objective data: the points' areas and times, the time
+    /// each objective adds, the payload's track.
+    objectives: Arc<MapObjectives>,
     /// Competitive: both teams attack (sided modes); otherwise one round.
     competitive: bool,
     phase: Phase,
@@ -438,7 +363,7 @@ pub struct MatchFlow {
     round: u8,
     sided: Option<SidedRound>,
     /// Competitive: the sides still to play in this set (the second side,
-    /// or the extra rounds), each its attackers and clock.
+    /// or the extra rounds), each its attackers and time bank.
     upcoming: VecDeque<(u8, f64)>,
     /// The sides played in this set.
     played: Vec<SidedRound>,
@@ -462,15 +387,16 @@ pub struct MatchFlow {
 }
 
 impl MatchFlow {
-    /// The flow of a map's mode by the mode graphs' values and `rules` (the
-    /// mode's); none for the modes the server doesn't run a flow for
-    /// (Practice Range, Arcade brawls), or when the map lacks the
-    /// objectives its mode plays for.
+    /// The flow of a map's mode by the mode graphs' values, `rules` (the
+    /// mode's) and the map's objective data; none for the modes the server
+    /// doesn't run a flow for (Practice Range, Arcade brawls), or when the
+    /// map lacks the objectives its mode plays for or their data.
     pub fn new(
         map: &GameMap,
         competitive: bool,
         graph_values: ModeGraphValues,
         rules: ModeRules,
+        objectives: Arc<MapObjectives>,
         timers: Timers,
     ) -> Option<Self> {
         let mode = Mode::of(map.mode_guid)?;
@@ -480,6 +406,7 @@ impl MatchFlow {
             rules,
             timers,
             graph_values,
+            objectives,
             competitive,
             phase: Phase::Waiting,
             left: 0.0,
@@ -499,21 +426,119 @@ impl MatchFlow {
             events: Vec::new(),
         };
         if mode.sided() {
-            let time = match mode {
-                Mode::Assault => ASSAULT_TIME,
-                _ => ESCORT_TIME,
-            };
             // game_maps.rs: team 1 attacks first; in Competitive team 0
-            // attacks second with the same time.
-            flow.sided = Some(SidedRound::new(map, mode, &rules, 1, time, false)?);
+            // attacks second, both from an empty bank.
+            flow.sided = Some(flow.sided_round(1, 0.0, false)?);
             if competitive {
-                flow.upcoming.push_back((0, time));
+                flow.upcoming.push_back((0, 0.0));
             }
         }
         if mode == Mode::Control {
-            map.objectives_of(ObjectiveKind::ControlPoint).next()?;
+            let mut stages = map.objectives_of(ObjectiveKind::ControlPoint).peekable();
+            stages.peek()?;
+            for stage in stages {
+                flow.objectives.point(stage.placeable)?;
+            }
+        }
+        if mode == Mode::Elimination {
+            flow.arena_point()?;
         }
         Some(flow)
+    }
+
+    /// A side's round: its course and its clock, the team's bank plus the
+    /// first objective's time. None when an objective lacks its data.
+    fn sided_round(&self, attackers: u8, bank: f64, extra: bool) -> Option<SidedRound> {
+        let course = self.course()?;
+        let objectives = self.map.objectives.iter().filter(|objective| {
+            matches!(
+                objective.kind,
+                ObjectiveKind::Point | ObjectiveKind::Checkpoint
+            )
+        });
+        for objective in objectives {
+            self.objectives.times(objective.placeable)?;
+        }
+        Some(SidedRound {
+            attackers,
+            course,
+            time: bank + self.objective_time(0, extra)?,
+            extra,
+            result: None,
+            bank: None,
+        })
+    }
+
+    /// The objectives of one side's round.
+    fn course(&self) -> Option<Course> {
+        let points: Vec<_> = self.map.objectives_of(ObjectiveKind::Point).collect();
+        let capture = self.graph_values.sided_capture;
+        let marks = self.rules.capture_marks;
+        let point = |objective: &MapObjective| {
+            let data = self.objectives.point(objective.placeable)?;
+            Some(CapturePoint::new(objective, data, capture, marks))
+        };
+        match self.mode {
+            Mode::Assault => {
+                (!points.is_empty()).then_some(())?;
+                let points = points.into_iter().map(point).collect::<Option<_>>()?;
+                Some(Course::Points(points))
+            }
+            Mode::Hybrid => Some(Course::Hybrid {
+                point: Box::new(point(points.first()?)?),
+                payload: None,
+                parked: Some(Box::new(self.payload()?)),
+            }),
+            Mode::Escort => Some(Course::Payload(self.payload()?)),
+            _ => None,
+        }
+    }
+
+    /// The map's payload as it becomes active, heading for its checkpoints.
+    fn payload(&self) -> Option<Payload> {
+        let placeable = self
+            .map
+            .objectives_of(ObjectiveKind::Payload)
+            .next()?
+            .placeable;
+        let checkpoints: Vec<u32> = self
+            .map
+            .objectives_of(ObjectiveKind::Checkpoint)
+            .map(|checkpoint| checkpoint.placeable)
+            .collect();
+        Payload::new(
+            self.objectives.payload(placeable)?,
+            self.rules.payload?,
+            &checkpoints,
+            self.timers.scale,
+        )
+    }
+
+    /// The unscaled seconds the objective of `order` adds when it becomes
+    /// the current one.
+    fn objective_time(&self, order: u32, extra: bool) -> Option<f64> {
+        let objective = self
+            .map
+            .objectives
+            .iter()
+            .filter(|objective| {
+                matches!(
+                    objective.kind,
+                    ObjectiveKind::Point | ObjectiveKind::Checkpoint
+                )
+            })
+            .find(|objective| objective.order == order)?;
+        let times = self.objectives.times(objective.placeable)?;
+        Some(times.seconds(self.competitive, extra))
+    }
+
+    /// Elimination's tiebreaker point: the arena's one capture point (the
+    /// arenas' points aren't `game_maps` objectives).
+    fn arena_point(&self) -> Option<&crate::objective_data::PointData> {
+        match self.objectives.points.as_slice() {
+            [point] => Some(point),
+            _ => None,
+        }
     }
 
     pub fn mode(&self) -> Mode {
@@ -639,7 +664,7 @@ impl MatchFlow {
             return round.course.position();
         }
         if let Some(point) = &self.control {
-            return Some(point.area.centre);
+            return Some(point.position);
         }
         let stages: Vec<_> = self
             .map
@@ -802,7 +827,7 @@ impl MatchFlow {
         self.seen_alive = [false; 2];
         let seconds = match self.mode {
             Mode::Assault | Mode::Escort | Mode::Hybrid => {
-                self.sided.as_ref().map_or(ESCORT_TIME, |round| round.time)
+                self.sided.as_ref().map_or(0.0, |round| round.time)
             }
             Mode::Deathmatch | Mode::TeamDeathmatch | Mode::Elimination => self.rules.round_time,
             // No round clock (rule 58), no score (rule 112).
@@ -810,25 +835,27 @@ impl MatchFlow {
         };
         if self.mode == Mode::Control {
             let stage = self.stage(self.round);
+            let point = self
+                .objectives
+                .point(stage.placeable)
+                .expect("MatchFlow::new checked the stages' data");
             self.control = Some(ControlPoint::new(
                 stage,
+                point,
                 self.scaled(self.rules.control_unlock),
                 self.graph_values.control_capture,
                 self.rules.control,
             ));
         }
         if self.mode == Mode::Elimination {
-            self.tiebreak = arena_centre(&self.map).map(|centre| {
-                ControlPoint::tiebreak(
-                    Area {
-                        centre,
-                        radius: POINT_RADIUS,
-                        below: POINT_BELOW,
-                        above: POINT_ABOVE,
-                    },
-                    self.scaled(self.rules.tiebreak),
-                )
-            });
+            let point = self
+                .arena_point()
+                .expect("MatchFlow::new checked the arena's point");
+            self.tiebreak = Some(ControlPoint::tiebreak(
+                point,
+                self.graph_values.elimination_capture,
+                self.scaled(self.rules.tiebreak),
+            ));
         }
         self.enter(Phase::Round, seconds);
     }
@@ -853,17 +880,10 @@ impl MatchFlow {
             Mode::Assault | Mode::Escort | Mode::Hybrid => {
                 // Rule 2: the sides swap (or an extra round starts) after
                 // a hero select of 25 s.
-                let (attackers, time) = self.upcoming.pop_front().expect("a side to play");
+                let (attackers, bank) = self.upcoming.pop_front().expect("a side to play");
                 self.sided = Some(
-                    SidedRound::new(
-                        &self.map,
-                        self.mode,
-                        &self.rules,
-                        attackers,
-                        time,
-                        self.extra,
-                    )
-                    .expect("the map's course"),
+                    self.sided_round(attackers, bank, self.extra)
+                        .expect("MatchFlow::new built the map's course"),
                 );
                 self.enter(Phase::Assemble, self.rules.assemble_later);
             }
@@ -903,16 +923,13 @@ impl MatchFlow {
 
     fn play_sided(&mut self, seconds: f64, participants: &[Participant]) {
         let scale = self.timers.scale;
-        let speeds = payload_speeds(&self.map.name);
-        let rollback = self.rules.rollback_speed;
         let round = self.sided.as_mut().expect("a sided round");
         let attackers = round.attackers;
         let extra = round.extra;
+        let current = round.course.objective();
         let mut taken = Vec::new();
-        let mut bonus = 0.0;
         match &mut round.course {
             Course::Points(points) => {
-                let last = points.len() - 1;
                 if let Some((index, point)) = points
                     .iter_mut()
                     .enumerate()
@@ -921,49 +938,26 @@ impl MatchFlow {
                     let presence = point.area.presence(participants, attackers);
                     if point.step(seconds, scale, presence) {
                         taken.push(index as u32);
-                        if index != last {
-                            // Rule 29: A taken in overtime goes on with 3:00
-                            // (the bonus is added to what is left, 0); rule
-                            // 69: 30 s in an extra round.
-                            bonus = if extra {
-                                EXTRA_ASSAULT_BONUS
-                            } else {
-                                ASSAULT_BONUS
-                            };
-                        }
                     }
                 }
             }
-            Course::Hybrid { point, payload } => match payload {
+            Course::Hybrid {
+                point,
+                payload,
+                parked,
+            } => match payload {
                 None => {
                     let presence = point.area.presence(participants, attackers);
                     if point.step(seconds, scale, presence) {
                         taken.push(0);
-                        // Rule 69: nothing in an extra round.
-                        if !extra {
-                            bonus = HYBRID_BONUS;
-                        }
-                        let checkpoints: Vec<_> = self
-                            .map
-                            .objectives_of(ObjectiveKind::Checkpoint)
-                            .map(|objective| objective.position)
-                            .collect();
-                        let start = self
-                            .map
-                            .objectives_of(ObjectiveKind::Payload)
-                            .next()
-                            .map_or(point.area.centre, |payload| payload.position);
                         // Rule 51: the payload moves once A is taken.
-                        *payload = Some(Payload::new(start, &checkpoints, speeds, rollback));
+                        *payload = parked.take().map(|parked| *parked);
                     }
                 }
                 Some(payload) => {
                     let presence = payload.area().presence(participants, attackers);
                     if let Some(reached) = payload.step(seconds, scale, presence) {
                         taken.push(reached as u32);
-                        if !payload.delivered() && !extra {
-                            bonus = CHECKPOINT_BONUS[(reached - 1).min(1)];
-                        }
                     }
                 }
             },
@@ -971,13 +965,11 @@ impl MatchFlow {
                 let presence = payload.area().presence(participants, attackers);
                 if let Some(reached) = payload.step(seconds, scale, presence) {
                     taken.push((reached - 1) as u32);
-                    if !payload.delivered() && !extra {
-                        bonus = CHECKPOINT_BONUS[(reached - 1).min(1)];
-                    }
                 }
             }
         }
         let complete = round.course.complete();
+        let next = round.course.objective();
         for objective in taken {
             self.events.push(FlowEvent::Objective(objective));
         }
@@ -985,6 +977,14 @@ impl MatchFlow {
             self.end_side();
             return;
         }
+        // The next objective adds its time (rule 29: what is left, 0 in
+        // overtime, plus the time).
+        let bonus = if next == current {
+            0.0
+        } else {
+            self.objective_time(next, extra)
+                .expect("MatchFlow::new checked the objectives' times")
+        };
         if bonus > 0.0 {
             self.left = self.left.max(0.0) + self.scaled(bonus);
             // Rule 28: a checkpoint in overtime ends it.
