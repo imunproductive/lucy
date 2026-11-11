@@ -56,7 +56,7 @@ use orpheus_content::{
     heroes::SOLDIER,
     maps::{GameMap, SpawnChoice},
     parameters::{CLIENT_GAME_MESSAGE, PICK_HERO},
-    stats::PlayerStats,
+    stats::{BRONZE, GOLD, Medals, PlayerStats, SILVER, StatsCatalog},
 };
 use orpheus_core::tick::FIRST_TICK;
 use orpheus_lobby::handoff::Handoff;
@@ -189,6 +189,9 @@ pub struct PlayerResult {
     /// Still in the match when it ended: a leaver's seat is listed, but
     /// gets no result of his own.
     pub finished: bool,
+    /// His medals at the end, counted by tier: gold, silver, bronze (the
+    /// Tab board's, `team_medals`).
+    pub medals: [u32; 3],
 }
 
 /// Builds a map's collision cache from the game install, as the Python
@@ -870,30 +873,58 @@ fn room_peers<'p>(
 /// match.py `_board`: the player's board numbers, with their medals among
 /// his teammates (every player in a free-for-all) and his hero's stats.
 fn board(room: &Room, slot: usize, scene: &PreparedScene, hero: Option<u64>) -> WorldComponent {
-    let me = &room.players[slot];
-    let free_for_all = room.map.free_for_all;
-    let mut team: Vec<usize> = (0..room.players.len())
+    let mode = room.map.mode_guid;
+    let medals = team_medals(
+        &room.players,
+        room.map.free_for_all,
+        mode,
+        slot,
+        scene.stats(),
+    );
+    scene
+        .stats()
+        .component(&room.players[slot].stats, mode, hero, Some(&medals))
+}
+
+/// The player's medals among his teammates still in the match (every
+/// player in a free-for-all), as the Tab board shows them.
+fn team_medals(
+    players: &[Player],
+    free_for_all: bool,
+    mode: u64,
+    slot: usize,
+    catalog: &StatsCatalog,
+) -> Medals {
+    let me = &players[slot];
+    let mut team: Vec<usize> = (0..players.len())
         .filter(|&other| {
-            let player = &room.players[other];
+            let player = &players[other];
             !player.gone && (free_for_all || player.info.team == me.info.team)
         })
         .collect();
     if !team.contains(&slot) {
         team.push(slot);
     }
-    let mode = room.map.mode_guid;
-    let stats: Vec<_> = team
-        .iter()
-        .map(|&other| &room.players[other].stats)
-        .collect();
-    let medals = scene.stats().medals(&stats, mode);
+    let stats: Vec<_> = team.iter().map(|&other| &players[other].stats).collect();
     let index = team
         .iter()
         .position(|&other| other == slot)
         .expect("the player is on his team");
-    scene
-        .stats()
-        .component(&me.stats, mode, hero, Some(&medals[index]))
+    catalog.medals(&stats, mode).swap_remove(index)
+}
+
+/// Medals counted by tier: gold, silver, bronze.
+fn medal_counts(medals: &Medals) -> [u32; 3] {
+    let mut counts = [0; 3];
+    for &medal in medals.values() {
+        match medal {
+            GOLD => counts[0] += 1,
+            SILVER => counts[1] += 1,
+            BRONZE => counts[2] += 1,
+            _ => {}
+        }
+    }
+    counts
 }
 
 /// The n-th player of a team takes the team's n-th spawn point; in a
@@ -2208,6 +2239,13 @@ impl State {
                                 },
                                 finished: !player.gone
                                     && connections.iter().any(|&(_, seated)| seated == slot),
+                                medals: medal_counts(&team_medals(
+                                    &room.players,
+                                    room.map.free_for_all,
+                                    room.map.mode_guid,
+                                    slot,
+                                    world.scene.stats(),
+                                )),
                             })
                             .collect();
                         tracing::info!("[game] match {:04X} is over", id[0] & 0xFFFF);

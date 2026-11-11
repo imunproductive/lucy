@@ -25,8 +25,7 @@
 //!   newest lowest, set for a leave [assumption: bit order]. The floats go
 //!   as captured.
 //!
-//! Not done, for want of a rule or of data: medal experience (rule 177: the
-//! match results carry no medals), endorsement levels (rule 168: levels 1-5
+//! Not done, for want of a rule or of data: endorsement levels (rule 168: levels 1-5
 //! "with decay", but the gain is not public, `game-rules.md` gaps), the
 //! endorsement-level boxes (rule 171: irregular cadence), SR decay (rule 79:
 //! uncertain in 2022), competitive suspensions (rules 87, 89: no message is
@@ -58,6 +57,10 @@ pub const WIN_XP: i64 = 500;
 /// here, as Dot Esports has it [assumption]. A day is the lobby clock's UTC
 /// day (`clock::server_time`, the dashboard's date when it sets one).
 pub const FIRST_WIN_XP: i64 = 1500;
+/// Rules 172, 177: a medal gives 150 (gold), 100 (silver) or 50 (bronze).
+/// A player holds at most one medal per stat, so rule 172's "only the
+/// highest medal earns XP" is every medal he holds.
+pub const MEDAL_XP: [i64; 3] = [150, 100, 50];
 /// Rule 177: playing in a group gives 20% more on the match's experience
 /// [assumption: not on the first-win bonus].
 const GROUP_PERCENT: i64 = 120;
@@ -111,6 +114,8 @@ pub struct MatchPlay {
     pub group: bool,
     /// Seconds he was in the match.
     pub seconds: f64,
+    /// His medals by tier: gold, silver, bronze (rule 177).
+    pub medals: [u32; 3],
 }
 
 /// What a match gave, for the log.
@@ -156,13 +161,15 @@ pub fn apply(profile: &mut Profile, play: &MatchPlay, now: u64) -> io::Result<Ea
     Ok(earned)
 }
 
-/// Rule 177: the match's experience.
+/// Rule 177: the match's experience. Rule 177 lists the medals before the
+/// group bonus, so the bonus counts on them [assumption: order].
 fn experience(play: &MatchPlay, outcome: Outcome, first_win: bool, leaver: bool) -> i64 {
     let seconds = play.seconds.max(0.0) as i64;
     let mut xp = seconds * XP_PER_HUNDRED_SECONDS / 100 + MATCH_FINISH_XP;
     if outcome == Outcome::Win {
         xp += WIN_XP;
     }
+    xp += medal_experience(play.medals);
     if play.group {
         xp = xp * GROUP_PERCENT / 100;
     }
@@ -176,6 +183,15 @@ fn experience(play: &MatchPlay, outcome: Outcome, first_win: bool, leaver: bool)
         xp = xp * LEAVER_PERCENT / 100;
     }
     xp
+}
+
+/// Rule 177: the experience of medals counted gold, silver, bronze.
+pub fn medal_experience(medals: [u32; 3]) -> i64 {
+    medals
+        .iter()
+        .zip(MEDAL_XP)
+        .map(|(&count, xp)| i64::from(count) * xp)
+        .sum()
 }
 
 /// Experience from `level` to the next (rule 178).
@@ -277,6 +293,7 @@ mod tests {
             versus_ai: false,
             group: false,
             seconds: 0.0,
+            medals: [0; 3],
         }
     }
 
@@ -354,6 +371,33 @@ mod tests {
             ..play(Outcome::Win)
         };
         assert_eq!(earned(&mut player, versus_ai).experience, 675);
+    }
+
+    /// Rule 177: 150 a gold medal, 100 a silver, 50 a bronze, before the
+    /// group bonus.
+    #[test]
+    fn medals_give_experience_before_the_group_bonus() {
+        assert_eq!(medal_experience([0; 3]), 0);
+        assert_eq!(medal_experience([1, 0, 0]), 150);
+        assert_eq!(medal_experience([0, 1, 0]), 100);
+        assert_eq!(medal_experience([0, 0, 1]), 50);
+        assert_eq!(medal_experience([2, 3, 1]), 300 + 300 + 50);
+        let mut player = profile();
+        let medals = MatchPlay {
+            medals: [2, 3, 1],
+            ..play(Outcome::Loss)
+        };
+        assert_eq!(earned(&mut player, medals).experience, 250 + 650);
+        let group = MatchPlay {
+            group: true,
+            ..medals
+        };
+        assert_eq!(earned(&mut player, group).experience, (250 + 650) * 6 / 5);
+        let left = MatchPlay {
+            finished: false,
+            ..medals
+        };
+        assert_eq!(earned(&mut player, left).experience, 0);
     }
 
     /// Rule 178: levels 1-18 from the launch table, 20000 from level 19;

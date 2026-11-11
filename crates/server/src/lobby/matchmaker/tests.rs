@@ -343,6 +343,7 @@ mod results {
             team,
             outcome,
             finished: true,
+            medals: [0; 3],
         }
     }
 
@@ -503,7 +504,7 @@ mod results {
     /// and the card's kind: competitive (the room is ranked) or Practice vs
     /// AI.
     #[test]
-    fn each_play_carries_queue_time_group_and_card() {
+    fn each_play_carries_queue_time_group_card_and_medals() {
         let state = tempfile::tempdir().unwrap();
         let accounts = registry(&state);
         let [alpha, beta, gamma] =
@@ -524,7 +525,10 @@ mod results {
             &quick_play,
             vec![
                 player(0, &alpha, 0, Outcome::Win),
-                player(1, &beta, 0, Outcome::Win),
+                PlayerResult {
+                    medals: [1, 2, 0],
+                    ..player(1, &beta, 0, Outcome::Win)
+                },
                 player(2, &gamma, 1, Outcome::Loss),
             ],
             joined,
@@ -537,6 +541,7 @@ mod results {
             versus_ai: false,
             group: true,
             seconds: PLAYED.as_secs_f64(),
+            medals: [0; 3],
         };
         assert_eq!(
             played,
@@ -546,6 +551,7 @@ mod results {
                     String::from("Beta"),
                     MatchPlay {
                         queue: Queue::Damage,
+                        medals: [1, 2, 0],
                         ..base
                     }
                 ),

@@ -2,7 +2,7 @@
 //! profiles. Python reports no match results (`ow174/game` keeps none), so
 //! this is the Rust server's own: each seated player gets the match in his
 //! queue's counts (`matches`, `wins`, `draws`: `ranked.rs` `matches_of`,
-//! `wins_of`, `draws_of`), experience, levels and boxes, his competitive
+//! `wins_of`, `draws_of`), experience (with his medals'), levels and boxes, his competitive
 //! rating and points, and the match in his leave record, by the public
 //! rules (`orpheus_lobby::progression`). A player who left before the end
 //! gets the match as a loss and a leave (rules 87, 88), unless the server
@@ -84,6 +84,7 @@ pub(super) fn recorded(
                 seconds: seat
                     .joined_at
                     .map_or(0.0, |joined| now.duration_since(joined).as_secs_f64()),
+                medals: player.medals,
             };
             Some((Arc::clone(&seat.account), play))
         })
