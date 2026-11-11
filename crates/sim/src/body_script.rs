@@ -56,6 +56,8 @@ use orpheus_wire::{
 /// maximum health: entity variables no graph writes (driver.py
 /// `OWNER_HEALTH`, `HUD_HEALTH`, `HUD_MAX_HEALTH`).
 const OWNER_HEALTH: u32 = 253;
+/// The body's dead flag (`orpheus_script::bot::DEAD_FLAG`, entity variable #478).
+const DEAD_FLAG: u32 = orpheus_script::bot::DEAD_FLAG;
 const HUD_HEALTH: u32 = 1732;
 const HUD_MAX_HEALTH: u32 = 1737;
 
@@ -422,7 +424,12 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     /// driver.py `BodyScript.set_health`: #253 for the graphs, #1732 and
     /// #1737 for the HUD's number, and a body with nothing left is dead to
-    /// its own script (the client's LogicalButton takes no presses).
+    /// its own script (the client's LogicalButton takes no presses). A body
+    /// that dies also raises its dead flag #478: no graph writes it, and
+    /// the graphs that show a body to others read it (`0D24`'s health bar
+    /// and name tag, `01CF`), so the server sets it as it does for a dying
+    /// bot (assumption: retail did so for every body that died). A body
+    /// can't come back to life; a respawn is a new body.
     fn health_changed(&mut self) -> io::Result<()> {
         let (total, maximum) = (self.world.vitals.total(), self.world.vitals.maximum());
         for (variable, value) in [
@@ -434,7 +441,13 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 .set_entity_variable(variable, Value::Float(value), &mut self.world)
                 .map_err(unsupported)?;
         }
-        self.component.set_owner_dead(total <= 0.0);
+        let dead = total <= 0.0;
+        if dead {
+            self.component
+                .set_entity_variable(DEAD_FLAG, Value::Bool(true), &mut self.world)
+                .map_err(unsupported)?;
+        }
+        self.component.set_owner_dead(dead);
         Ok(())
     }
 

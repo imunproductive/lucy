@@ -1415,3 +1415,35 @@ fn authored_armour_and_shield_roots_reproduce_the_reference_body_pools() {
         assert_eq!(world.vitals.component(), pools.vitals().component());
     }
 }
+
+/// A body whose pools run out raises its dead flag (#478), which the
+/// graphs that show it to others read; while it lives the flag isn't set.
+#[test]
+fn a_body_that_dies_raises_its_dead_flag() {
+    use orpheus_script::vitals::Death;
+
+    let spawn = fixture_body_factory().1;
+    let mut runtime = fixture_hitscan_factory(20.0).start(spawn).unwrap();
+    let flag = |runtime: &PlayerBodyRuntime| {
+        runtime
+            .snapshot()
+            .unwrap()
+            .variables
+            .get(&DEAD_FLAG)
+            .cloned()
+    };
+    let source = Death {
+        time: 1.0,
+        frame: spawn.frame,
+        killer: 0xa000_0201,
+    };
+    let total = runtime.vitals().unwrap().total();
+    runtime.vitals_mut().unwrap().damage(total / 2.0, source);
+    runtime.health_changed().unwrap();
+    assert_eq!(flag(&runtime), None);
+    assert!(!runtime.component.owner_dead());
+    runtime.vitals_mut().unwrap().damage(total, source);
+    runtime.health_changed().unwrap();
+    assert_eq!(flag(&runtime), Some(Value::Bool(true)));
+    assert!(runtime.component.owner_dead());
+}

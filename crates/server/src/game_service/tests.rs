@@ -2205,6 +2205,35 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
         shooter.pump(&schemas);
         target.pump(&schemas);
     }
+    // The dead body's frames raise its dead flag (entity variable #478),
+    // which hides its health bar and name tag from the others (0D24's
+    // #17549 reads `!#478e`); the shooter's observer frames carry it.
+    if tolerant {
+        let mut dead_flag = BitWriter::new();
+        dead_flag.w_var(orpheus_script::bot::DEAD_FLAG);
+        orpheus_script::wire::write_value(
+            &mut dead_flag,
+            &orpheus_script::wire::Value::Bool(true),
+            orpheus_script::wire::ValueEncoding::Compact,
+        )
+        .unwrap();
+        dead_flag.bit(false); // no stack binding
+        let raised = shooter.find(0, |record| {
+            record.entity == target_body
+                && record.script.as_ref().is_some_and(|chunk| {
+                    orpheus_testkit::contains_bits(
+                        &chunk.data,
+                        chunk.width,
+                        dead_flag.as_bytes(),
+                        dead_flag.bit_len(),
+                    )
+                })
+        });
+        assert!(
+            raised.is_some_and(|index| index >= fired),
+            "the dead body's observer frames carry its dead flag"
+        );
+    }
     // His new body comes after the Practice Range's 3 s, to both clients.
     let respawned = target_owner | 2;
     pump_until(
