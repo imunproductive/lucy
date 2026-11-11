@@ -1,4 +1,5 @@
 use super::*;
+use crate::mode_rules_data::fixture;
 use orpheus_content::maps::MapObjective;
 
 const STEP: f64 = 1.0 / 62.5;
@@ -39,6 +40,11 @@ fn assault() -> GameMap {
             objective(ObjectiveKind::Point, 0, Some("Point A"), A),
         ],
     )
+}
+
+/// The map's flow by its mode's rules as the install has them.
+fn new_flow(map: &GameMap, competitive: bool, timers: Timers) -> Option<MatchFlow> {
+    MatchFlow::new(map, competitive, fixture(map.mode_guid), timers)
 }
 
 fn at(slot: usize, team: u8, position: [f64; 3]) -> Participant {
@@ -122,11 +128,11 @@ fn close(actual: f64, expected: f64) {
 
 #[test]
 fn modes_without_a_flow_or_their_objectives_get_none() {
-    assert!(MatchFlow::new(&GameMap::practice_range(), false, Timers::default()).is_none());
-    assert!(MatchFlow::new(&map(ASSAULT, Vec::new()), false, Timers::default()).is_none());
-    assert!(MatchFlow::new(&map(ESCORT, Vec::new()), false, Timers::default()).is_none());
-    assert!(MatchFlow::new(&map(CONTROL, Vec::new()), false, Timers::default()).is_none());
-    let skirmish = MatchFlow::new(&map(SKIRMISH, Vec::new()), false, Timers::default()).unwrap();
+    assert!(new_flow(&GameMap::practice_range(), false, Timers::default()).is_none());
+    assert!(new_flow(&map(ASSAULT, Vec::new()), false, Timers::default()).is_none());
+    assert!(new_flow(&map(ESCORT, Vec::new()), false, Timers::default()).is_none());
+    assert!(new_flow(&map(CONTROL, Vec::new()), false, Timers::default()).is_none());
+    let skirmish = new_flow(&map(SKIRMISH, Vec::new()), false, Timers::default()).unwrap();
     assert_eq!(skirmish.mode(), Mode::Skirmish);
     assert_eq!(Mode::of(ASSAULT_TEST), Some(Mode::Assault));
     assert_eq!(Mode::of(BOUNTY_HUNTER), Some(Mode::Deathmatch));
@@ -134,7 +140,7 @@ fn modes_without_a_flow_or_their_objectives_get_none() {
 
 #[test]
 fn quick_play_assault_runs_its_phases_and_attackers_win_by_taking_a_and_b() {
-    let mut run = Run::new(MatchFlow::new(&assault(), false, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&assault(), false, Timers::default()).unwrap());
     assert_eq!(run.flow.phase(), Phase::Waiting);
     assert!(
         run.flow.advance(10.0, &[]).is_empty(),
@@ -222,7 +228,7 @@ fn quick_play_assault_runs_its_phases_and_attackers_win_by_taking_a_and_b() {
 #[test]
 fn the_time_scale_shortens_every_timer_and_capture() {
     let timers = Timers { scale: 0.1 };
-    let mut run = Run::new(MatchFlow::new(&assault(), false, timers).unwrap());
+    let mut run = Run::new(new_flow(&assault(), false, timers).unwrap());
     run.flow.start();
     let attacker = [at(0, 1, A)];
     close(run.phase(10.0, &attacker, Phase::Setup), 3.0);
@@ -236,7 +242,7 @@ fn the_time_scale_shortens_every_timer_and_capture() {
 
 #[test]
 fn time_out_with_an_attacker_on_the_point_is_overtime_until_the_fuse_burns() {
-    let mut run = Run::new(MatchFlow::new(&assault(), false, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&assault(), false, Timers::default()).unwrap());
     run.flow.start();
     let away = [at(0, 1, SPAWN)];
     run.phase(100.0, &away, Phase::Round);
@@ -266,7 +272,7 @@ fn time_out_with_an_attacker_on_the_point_is_overtime_until_the_fuse_burns() {
 
 #[test]
 fn a_taken_in_overtime_goes_on_with_three_minutes() {
-    let mut run = Run::new(MatchFlow::new(&assault(), false, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&assault(), false, Timers::default()).unwrap());
     run.flow.start();
     run.phase(100.0, &[], Phase::Round);
     // He reaches A with 10 s left and takes it alone in 30 s.
@@ -283,7 +289,7 @@ fn a_taken_in_overtime_goes_on_with_three_minutes() {
 
 #[test]
 fn competitive_assault_swaps_sides_and_the_farther_attack_wins() {
-    let mut run = Run::new(MatchFlow::new(&assault(), true, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&assault(), true, Timers::default()).unwrap());
     run.flow.start();
     run.phase(100.0, &[], Phase::Round);
     // Team 1 takes A and a tick of B, then runs out of time.
@@ -316,7 +322,7 @@ fn competitive_assault_swaps_sides_and_the_farther_attack_wins() {
 
 #[test]
 fn competitive_assault_with_equal_progress_is_a_draw() {
-    let mut run = Run::new(MatchFlow::new(&assault(), true, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&assault(), true, Timers::default()).unwrap());
     run.flow.start();
     for team in [1, 0] {
         run.phase(200.0, &[], Phase::Round);
@@ -347,7 +353,7 @@ fn escort() -> GameMap {
 
 #[test]
 fn escort_checkpoints_add_time_and_the_delivery_wins() {
-    let mut run = Run::new(MatchFlow::new(&escort(), false, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&escort(), false, Timers::default()).unwrap());
     run.flow.start();
     run.phase(100.0, &[], Phase::Round);
     assert_eq!(run.flow.clock(), ESCORT_TIME);
@@ -391,7 +397,7 @@ fn hybrid_moves_its_payload_only_after_point_a() {
     let mut map = escort();
     map.mode_guid = HYBRID;
     map.objectives[0] = objective(ObjectiveKind::Point, 0, Some("Point A"), [0.0, 0.0, 0.0]);
-    let mut run = Run::new(MatchFlow::new(&map, false, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&map, false, Timers::default()).unwrap());
     run.flow.start();
     run.phase(100.0, &[], Phase::Round);
     let on_a = [at(0, 1, [0.0, 0.0, 0.0])];
@@ -423,9 +429,12 @@ fn control() -> GameMap {
 
 #[test]
 fn control_is_best_of_three_on_the_stages_in_turn() {
-    let mut run = Run::new(MatchFlow::new(&control(), false, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&control(), false, Timers::default()).unwrap());
     run.flow.start();
-    close(run.phase(40.0, &[], Phase::Round), ASSEMBLE);
+    close(
+        run.phase(40.0, &[], Phase::Round),
+        fixture(CONTROL).assemble,
+    );
     assert_eq!(run.flow.clock(), 0.0, "no round clock");
     assert_eq!(
         run.flow.variables()[&OBJECTIVE_NAME],
@@ -451,12 +460,42 @@ fn control_is_best_of_three_on_the_stages_in_turn() {
     assert_eq!(run.flow.standing(5, 0), Some(Standing::Won));
 }
 
+/// The flow's timers and goals are its rules' (the install's, read by
+/// `mode_rules_data`), not constants: other rules play another match.
+#[test]
+fn the_flow_plays_by_the_rules_it_is_given() {
+    let mut control_rules = fixture(CONTROL);
+    control_rules.assemble = 10.0;
+    control_rules.control_unlock = 5.0;
+    control_rules.control.percent_per_second = 10.0;
+    control_rules.score_to_win = 1;
+    let flow = MatchFlow::new(&control(), false, control_rules, Timers::default());
+    let mut run = Run::new(flow.unwrap());
+    run.flow.start();
+    close(run.phase(40.0, &[], Phase::Round), 10.0);
+    // Unlock 5 s, capture 8 s, 10 s of scoring; one round wins.
+    let took = run
+        .until(200.0, &[at(0, 0, A)], |event| {
+            *event == FlowEvent::MatchOver
+        })
+        .unwrap();
+    assert!((took - 23.0).abs() < 0.5, "{took}");
+
+    let mut assault_rules = fixture(ASSAULT);
+    assault_rules.setup = 15.0;
+    let flow = MatchFlow::new(&assault(), false, assault_rules, Timers::default());
+    let mut run = Run::new(flow.unwrap());
+    run.flow.start();
+    close(run.phase(40.0, &[], Phase::Setup), 30.0);
+    close(run.phase(60.0, &[], Phase::Round), 15.0);
+}
+
 /// Where the AI heroes go: the next Assault point, the moving payload, the
 /// Control stage of the round (the next one's before it starts); nothing
 /// in a mode without an objective.
 #[test]
 fn the_objective_follows_the_round() {
-    let mut run = Run::new(MatchFlow::new(&assault(), false, Timers { scale: 0.1 }).unwrap());
+    let mut run = Run::new(new_flow(&assault(), false, Timers { scale: 0.1 }).unwrap());
     assert_eq!(run.flow.objective(), Some(A));
     run.flow.start();
     run.phase(100.0, &[], Phase::Round);
@@ -466,14 +505,14 @@ fn the_objective_follows_the_round() {
     .unwrap();
     assert_eq!(run.flow.objective(), Some(B));
 
-    let mut run = Run::new(MatchFlow::new(&escort(), false, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&escort(), false, Timers::default()).unwrap());
     run.flow.start();
     run.phase(100.0, &[], Phase::Round);
     assert_eq!(run.flow.objective(), Some([0.0; 3]));
     run.until(2.0, &[at(0, 1, [0.0; 3])], |_| false);
     assert!(run.flow.objective().unwrap()[0] > 3.0);
 
-    let mut run = Run::new(MatchFlow::new(&control(), false, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&control(), false, Timers::default()).unwrap());
     assert_eq!(run.flow.objective(), Some(A));
     run.flow.start();
     run.until(200.0, &[at(0, 0, A)], |event| {
@@ -484,13 +523,13 @@ fn the_objective_follows_the_round() {
     run.phase(20.0, &[], Phase::Round);
     assert_eq!(run.flow.objective(), Some(B));
 
-    let flow = MatchFlow::new(&map(DEATHMATCH, Vec::new()), false, Timers::default()).unwrap();
+    let flow = new_flow(&map(DEATHMATCH, Vec::new()), false, Timers::default()).unwrap();
     assert_eq!(flow.objective(), None);
 }
 
 #[test]
 fn control_overtime_holds_at_99_percent_while_contested() {
-    let mut run = Run::new(MatchFlow::new(&control(), false, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&control(), false, Timers::default()).unwrap());
     run.flow.start();
     run.phase(40.0, &[], Phase::Round);
     run.until(30.0 + 8.0 + 118.0, &[at(0, 0, A)], |_| false);
@@ -503,18 +542,18 @@ fn control_overtime_holds_at_99_percent_while_contested() {
 
 #[test]
 fn deathmatch_scores_final_blows_minus_own_deaths_and_the_top_four_win() {
-    let mut flow = MatchFlow::new(&map(DEATHMATCH, Vec::new()), false, Timers::default()).unwrap();
+    let mut flow = new_flow(&map(DEATHMATCH, Vec::new()), false, Timers::default()).unwrap();
     flow.start();
     let players: Vec<_> = (0..8).map(|slot| at(slot, 0, SPAWN)).collect();
     let mut run = Run::new(flow);
     run.phase(40.0, &players, Phase::Round);
-    assert_eq!(run.flow.clock(), DEATHMATCH_TIME);
+    assert_eq!(run.flow.clock(), fixture(DEATHMATCH).round_time);
     run.flow.kill(Some((2, 0)), (3, 0));
     run.flow.kill(None, (2, 0));
     run.flow.kill(Some((4, 0)), (4, 0));
     assert_eq!(run.flow.player_score(2), 0);
     assert_eq!(run.flow.player_score(4), -1);
-    for _ in 0..DEATHMATCH_SCORE {
+    for _ in 0..fixture(DEATHMATCH).score_to_win {
         run.flow.kill(Some((5, 0)), (6, 0));
     }
     run.flow.kill(Some((1, 0)), (6, 0));
@@ -530,12 +569,11 @@ fn deathmatch_scores_final_blows_minus_own_deaths_and_the_top_four_win() {
 #[test]
 fn team_deathmatch_wins_at_thirty_or_compares_at_the_time_limit() {
     let players = [at(0, 0, SPAWN), at(1, 1, SPAWN)];
-    let mut run = Run::new(
-        MatchFlow::new(&map(TEAM_DEATHMATCH, Vec::new()), false, Timers::default()).unwrap(),
-    );
+    let mut run =
+        Run::new(new_flow(&map(TEAM_DEATHMATCH, Vec::new()), false, Timers::default()).unwrap());
     run.flow.start();
     run.phase(40.0, &players, Phase::Round);
-    for _ in 0..TEAM_DEATHMATCH_SCORE {
+    for _ in 0..fixture(TEAM_DEATHMATCH).score_to_win {
         run.flow.kill(Some((1, 1)), (0, 0));
     }
     run.flow.kill(Some((0, 0)), (0, 0));
@@ -544,9 +582,8 @@ fn team_deathmatch_wins_at_thirty_or_compares_at_the_time_limit() {
         .unwrap();
     assert_eq!(run.flow.standing(0, 1), Some(Standing::Won));
 
-    let mut run = Run::new(
-        MatchFlow::new(&map(TEAM_DEATHMATCH, Vec::new()), false, Timers::default()).unwrap(),
-    );
+    let mut run =
+        Run::new(new_flow(&map(TEAM_DEATHMATCH, Vec::new()), false, Timers::default()).unwrap());
     run.flow.start();
     run.phase(40.0, &players, Phase::Round);
     run.flow.kill(Some((0, 0)), (1, 1));
@@ -554,14 +591,14 @@ fn team_deathmatch_wins_at_thirty_or_compares_at_the_time_limit() {
     let ended = run
         .until(700.0, &players, |event| *event == FlowEvent::MatchOver)
         .unwrap();
-    close(ended, DEATHMATCH_TIME);
+    close(ended, fixture(TEAM_DEATHMATCH).round_time);
     assert_eq!(run.flow.standing(0, 0), Some(Standing::Drew));
 }
 
 #[test]
 fn elimination_rounds_go_to_the_last_team_standing_first_to_three() {
     let mut run =
-        Run::new(MatchFlow::new(&map(ELIMINATION, Vec::new()), false, Timers::default()).unwrap());
+        Run::new(new_flow(&map(ELIMINATION, Vec::new()), false, Timers::default()).unwrap());
     run.flow.start();
     let alive = [at(0, 0, SPAWN), at(1, 1, SPAWN)];
     let red_out = [
@@ -593,20 +630,20 @@ fn elimination_rounds_go_to_the_last_team_standing_first_to_three() {
 #[test]
 fn an_elimination_round_still_on_after_its_time_is_a_draw() {
     let mut run =
-        Run::new(MatchFlow::new(&map(ELIMINATION, Vec::new()), false, Timers::default()).unwrap());
+        Run::new(new_flow(&map(ELIMINATION, Vec::new()), false, Timers::default()).unwrap());
     run.flow.start();
     let alive = [at(0, 0, SPAWN), at(1, 1, SPAWN)];
     run.phase(40.0, &alive, Phase::Round);
     let ended = run
         .until(200.0, &alive, |event| *event == FlowEvent::RoundOver(None))
         .unwrap();
-    close(ended, ELIMINATION_ROUND);
+    close(ended, fixture(ELIMINATION).round_time);
     assert_eq!(run.flow.team_score(0) + run.flow.team_score(1), 0);
 }
 
 #[test]
 fn overtime_adds_three_seconds_to_respawns() {
-    let mut run = Run::new(MatchFlow::new(&assault(), false, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&assault(), false, Timers::default()).unwrap());
     run.flow.start();
     run.phase(100.0, &[], Phase::Round);
     assert_eq!(run.flow.respawn_extra(), 0.0);
@@ -619,7 +656,7 @@ fn overtime_adds_three_seconds_to_respawns() {
 
 #[test]
 fn spawn_rooms_follow_the_objective_and_swap_with_the_sides() {
-    let mut run = Run::new(MatchFlow::new(&assault(), true, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&assault(), true, Timers::default()).unwrap());
     let room = |objective, attack| SpawnChoice::Objective { objective, attack };
     assert_eq!(run.flow.spawn_choice(1), room(0, true));
     assert_eq!(run.flow.spawn_choice(0), room(0, false));
@@ -639,7 +676,7 @@ fn spawn_rooms_follow_the_objective_and_swap_with_the_sides() {
     assert_eq!(run.flow.spawn_choice(1), room(0, false));
 
     // Escort: the checkpoint the payload heads for.
-    let mut run = Run::new(MatchFlow::new(&escort(), false, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&escort(), false, Timers::default()).unwrap());
     run.flow.start();
     run.phase(100.0, &[], Phase::Round);
     assert_eq!(run.flow.spawn_choice(1), room(0, true));
@@ -657,7 +694,7 @@ fn spawn_rooms_follow_the_objective_and_swap_with_the_sides() {
     assert_eq!(run.flow.spawn_choice(0), room(1, false));
 
     // Control: the stage of the round (rule 60).
-    let mut run = Run::new(MatchFlow::new(&control(), false, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&control(), false, Timers::default()).unwrap());
     assert_eq!(run.flow.spawn_choice(0), SpawnChoice::Stage(0));
     run.flow.start();
     run.phase(40.0, &[], Phase::Round);
@@ -673,7 +710,7 @@ fn spawn_rooms_follow_the_objective_and_swap_with_the_sides() {
 /// time banks (rules 67-69).
 #[test]
 fn competitive_assault_completed_by_both_goes_to_extra_rounds_on_the_time_banks() {
-    let mut run = Run::new(MatchFlow::new(&assault(), true, Timers::default()).unwrap());
+    let mut run = Run::new(new_flow(&assault(), true, Timers::default()).unwrap());
     run.flow.start();
     // Team 1 alone: A in 30 s, B in 18 s, 372 s left. Team 0 with two
     // players: A in 20 s, B in 12 s, 388 s left.
@@ -731,7 +768,7 @@ fn time_banks_are_cut_to_two_minutes_or_raised_to_one() {
         if mode == ASSAULT {
             map = assault();
         }
-        let mut flow = MatchFlow::new(&map, true, Timers::default()).unwrap();
+        let mut flow = new_flow(&map, true, Timers::default()).unwrap();
         flow.upcoming.clear();
         flow.extra_rounds(banks, 1);
         (flow.single, flow.upcoming.into_iter().collect::<Vec<_>>())
@@ -767,7 +804,7 @@ fn time_banks_are_cut_to_two_minutes_or_raised_to_one() {
 #[test]
 fn a_lone_extra_attack_wins_with_a_tick_or_draws() {
     for (seconds, expected) in [(12.0, Standing::Won), (5.0, Standing::Drew)] {
-        let mut flow = MatchFlow::new(&assault(), true, Timers::default()).unwrap();
+        let mut flow = new_flow(&assault(), true, Timers::default()).unwrap();
         flow.upcoming.clear();
         flow.extra_rounds([75.0, 0.0], 1);
         flow.sided = None;
@@ -789,7 +826,7 @@ fn a_lone_extra_attack_wins_with_a_tick_or_draws() {
 #[test]
 fn an_elimination_point_unlocks_at_105_seconds_and_its_capture_wins() {
     let mut run =
-        Run::new(MatchFlow::new(&map(ELIMINATION, Vec::new()), false, Timers::default()).unwrap());
+        Run::new(new_flow(&map(ELIMINATION, Vec::new()), false, Timers::default()).unwrap());
     run.flow.start();
     // The fixture's one spawn point serves both teams: the point is there.
     let centre = GameMap::practice_range().spawns[0].position;
@@ -800,7 +837,7 @@ fn an_elimination_point_unlocks_at_105_seconds_and_its_capture_wins() {
             *event == FlowEvent::RoundOver(Some(0))
         })
         .unwrap();
-    close(won, ELIMINATION_TIEBREAK + 3.0);
+    close(won, fixture(ELIMINATION).tiebreak + 3.0);
     assert_eq!(run.flow.team_score(0), 1);
     // Contested, it isn't taken: the round is a draw at 135 s.
     let contested = [at(0, 0, centre), at(1, 1, centre)];
@@ -810,7 +847,7 @@ fn an_elimination_point_unlocks_at_105_seconds_and_its_capture_wins() {
             matches!(event, FlowEvent::RoundOver(_))
         })
         .unwrap();
-    close(drawn, ELIMINATION_ROUND);
+    close(drawn, fixture(ELIMINATION).round_time);
     assert!(
         run.events
             .iter()

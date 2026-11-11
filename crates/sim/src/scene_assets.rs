@@ -22,6 +22,7 @@ use crate::{
     combat::{BodyCombat, MeleeState, RespawnTimes, melee_states},
     controller::Controller,
     hitboxes::HitboxCatalog,
+    mode_rules_data::{ModeRules, ModeRulesData},
     notices::switch_notices,
     pools::PoolCatalog,
     projectiles::{BioticField, FIELD_ENTITY, FieldFrames},
@@ -111,6 +112,8 @@ pub struct SceneAssets {
     pools: Arc<PoolCatalog>,
     /// The game modes' teams (`game_modes_174.json`).
     modes: GameModes,
+    /// The match flow's values the graphs and objectives hold.
+    mode_rules: ModeRulesData,
 }
 
 pub struct PreparedScene {
@@ -139,6 +142,8 @@ pub struct PreparedScene {
     switch_notices: bool,
     /// The map's AI navigation, when the data has it (Practice vs AI).
     navigation: Option<Arc<Navigation>>,
+    /// The rules of the mode's match flow.
+    mode_rules: ModeRules,
 }
 
 impl SceneAssets {
@@ -171,6 +176,7 @@ impl SceneAssets {
                 None
             }
         };
+        let mode_rules = ModeRulesData::load(&graphs, &data)?;
         Ok(Self {
             collision: runtime.join("collision"),
             runtime: runtime.to_path_buf(),
@@ -198,6 +204,7 @@ impl SceneAssets {
             heroes: Arc::new(heroes),
             pools,
             modes: GameModes::load(data.join(MODES_FILE))?,
+            mode_rules,
         })
     }
 
@@ -316,6 +323,9 @@ impl SceneAssets {
         };
         let map_mode = map.mode_guid;
         let navigation = self.navigation(&map);
+        let mode_rules = self
+            .mode_rules
+            .rules(self.graphs.rulesets(), map.mode_guid)?;
         let mut scene = PreparedScene {
             respawn: self.respawns.for_mode(map.mode_guid),
             map,
@@ -337,6 +347,7 @@ impl SceneAssets {
             field_frames,
             switch_notices: switch_notices(self.modes.get(map_mode)),
             navigation,
+            mode_rules,
         };
         let mut factories = self
             .owner_bodies
@@ -514,6 +525,11 @@ impl PreparedScene {
     /// The mode's respawn time for heroes (combat.py `respawn_seconds`).
     pub fn respawn_time(&self) -> Duration {
         self.respawn
+    }
+
+    /// The rules of the mode's match flow (`mode_rules_data`).
+    pub fn mode_rules(&self) -> ModeRules {
+        self.mode_rules
     }
 
     /// A body's mover settings.
