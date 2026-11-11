@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod anim_lengths;
 pub mod bot;
 pub mod codecs;
 pub mod expr;

@@ -36,6 +36,8 @@ pub struct PlayerWorld {
     pub throttles: [i8; 2],
     pub mode: u64,
     pub hero: u64,
+    /// The hero's body definition (`003`), which names its animation data.
+    pub body: Option<u64>,
     pub vitals: Vitals,
     pub pool_types_known: bool,
     pub target_tags: Option<BTreeSet<u64>>,
@@ -80,6 +82,18 @@ impl World for PlayerWorld {
 
     fn ruleset(&mut self, id: u32) -> Option<Value> {
         self.graphs.rulesets().default(id, self.hero, self.mode)
+    }
+
+    /// From the body's compiled animation data
+    /// ([`crate::anim_lengths::AnimLengths`]).
+    fn animation_length(&self, site: Site, alias: u64, category: u64) -> Option<f64> {
+        let body = self.body.filter(|_| site.entity == self.entity)?;
+        self.graphs.anim_lengths().length(body, alias, category)
+    }
+
+    fn animation_scalar(&self, site: Site, alias: u64, category: u64) -> Option<f64> {
+        let body = self.body.filter(|_| site.entity == self.entity)?;
+        self.graphs.anim_lengths().scalar(body, alias, category)
     }
 
     /// The body's messages to other entities wait for the match
@@ -306,6 +320,7 @@ impl PlayerWorld {
         hero: u64,
     ) -> Self {
         Self {
+            body: graphs.hero_body(hero),
             graphs,
             controller,
             entity,

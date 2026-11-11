@@ -42,8 +42,8 @@ use crate::Install;
 
 /// STUAnimBlendTreeSet: the root alias, the aliases and their items.
 const ROOT_ALIAS: u32 = 0x8493_5843;
-const ALIASES: u32 = 0x253E_E7C8;
-const ITEMS: u32 = 0x6AFC_D1A5;
+pub(crate) const ALIASES: u32 = 0x253E_E7C8;
+pub(crate) const ITEMS: u32 = 0x6AFC_D1A5;
 /// An item: its tree and its bound values (aliases, clips).
 const TREE: u32 = 0xC021_4513;
 const BINDINGS: u32 = 0xF6E6_D4B1;
@@ -75,7 +75,7 @@ const LAYER: u32 = 0x4027_4C18;
 const STATE_MACHINE: u32 = 0xBB7A_7240;
 const SEQUENCE: u32 = 0xF738_4072;
 
-fn field(object: &Object, hash: u32) -> Option<&Value> {
+pub(crate) fn field(object: &Object, hash: u32) -> Option<&Value> {
     object
         .fields
         .iter()
@@ -90,7 +90,7 @@ fn key(value: Option<&Value>) -> u64 {
     }
 }
 
-fn keys(object: Option<&Object>, hash: u32) -> Vec<u64> {
+pub(crate) fn keys(object: Option<&Object>, hash: u32) -> Vec<u64> {
     match object.and_then(|object| field(object, hash)) {
         Some(Value::Array(items)) => items.iter().map(|item| key(Some(item))).collect(),
         _ => Vec::new(),

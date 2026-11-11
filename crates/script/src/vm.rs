@@ -351,6 +351,22 @@ pub trait World {
         None
     }
 
+    /// The length in seconds of the animation `alias` plays on this
+    /// world's body with animation category `category` set (0: none), from
+    /// the body's compiled animation data; none when the data can't tell
+    /// (`World.animation_duration` in leafall903/ORPHEUS `c239a84`,
+    /// `src/ow174/game/script/runtime.py`).
+    fn animation_length(&self, _site: Site, _alias: u64, _category: u64) -> Option<f64> {
+        None
+    }
+
+    /// The scalar an `Anim` state playing `alias` writes to its output
+    /// (`World.animation_scalar`, the same source); none when the data
+    /// can't tell.
+    fn animation_scalar(&self, _site: Site, _alias: u64, _category: u64) -> Option<f64> {
+        None
+    }
+
     /// Deliver a game message to another entity (`World.send_message` in
     /// `ow174/game/script/runtime.py`). The world owns delivery outside the
     /// current body; the receiving body takes it with

@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod ai_spawners;
+mod anim_lengths;
 mod animation;
 mod arcade_cards;
 mod blend_trees;
@@ -124,6 +125,10 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "hitboxes",
         derive: hitboxes::derive,
+    },
+    Derivation {
+        name: "game_anim_lengths",
+        derive: anim_lengths::derive,
     },
     Derivation {
         name: "game_stats",

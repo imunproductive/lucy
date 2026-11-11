@@ -68,6 +68,8 @@ pub fn practice_nameplate(snapshot: &Snapshot) -> Option<u16> {
 pub struct BotWorld {
     pub graphs: Arc<GraphStore>,
     pub hero: u64,
+    /// The bot's body definition (`003`), which names its animation data.
+    pub body: u64,
     pub mode: u64,
     /// The logical button each AI weapon slot holds (the body's
     /// `ai_weapon_buttons`).
@@ -110,6 +112,20 @@ impl World for BotWorld {
         self.weapon_buttons
             .iter()
             .find_map(|&(item, button)| (item == slot).then_some(button))
+    }
+
+    /// From the body's compiled animation data
+    /// ([`crate::anim_lengths::AnimLengths`]).
+    fn animation_length(&self, _site: Site, alias: u64, category: u64) -> Option<f64> {
+        self.graphs
+            .anim_lengths()
+            .length(self.body, alias, category)
+    }
+
+    fn animation_scalar(&self, _site: Site, alias: u64, category: u64) -> Option<f64> {
+        self.graphs
+            .anim_lengths()
+            .scalar(self.body, alias, category)
     }
 
     /// The reconstruction policy for the single authored firing placement:
@@ -286,6 +302,7 @@ impl BotBody {
         let mut world = BotWorld {
             graphs: Arc::clone(&graphs),
             hero: spawn.hero,
+            body: spawn.body,
             mode: spawn.mode,
             weapon_buttons,
             owner_position: spawn.firing_position.filter(|_| firing),
@@ -801,6 +818,7 @@ mod tests {
         let mut world = BotWorld {
             graphs: graphs(),
             hero: TRAINING_BOT,
+            body: 0,
             mode: PRACTICE_RANGE_MODE,
             weapon_buttons: vec![(0, 20)],
             owner_position: Some([1.0, 2.0, 3.0]),

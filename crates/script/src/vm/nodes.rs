@@ -624,7 +624,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.update_movement_sample(key, node, previous, false)?;
                 self.register_tick(key, self.machine.now_ms);
             }
-            StateKind::Anim => self.arm_animation(key, node)?,
+            StateKind::Anim => self.arm_animation(key, node, depth)?,
             StateKind::SendMessage => {
                 self.send_game_message(id, node)?;
             }

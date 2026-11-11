@@ -15,6 +15,7 @@ use serde_json::{Map, Value};
 use orpheus_core::guid::parse_guid;
 
 use crate::{
+    anim_lengths::{ANIM_LENGTHS_FILE, AnimLengths},
     rulesets::{self, Rulesets},
     weapons::{TUNABLES_FILE, Tunables},
 };
@@ -338,6 +339,10 @@ pub struct GraphStore {
     /// The install's tunable values (`STU_082FA44E`), loaded beside the
     /// bundle; none until [`GraphStore::with_tunables`].
     tunables: Arc<Tunables>,
+    /// Each body's animation lengths (`game_anim_lengths_174.json`),
+    /// loaded beside the bundle; none until
+    /// [`GraphStore::with_anim_lengths`].
+    anim_lengths: Arc<AnimLengths>,
     missing: Vec<u32>,
 }
 
@@ -384,20 +389,35 @@ impl GraphStore {
                 .collect::<io::Result<_>>()?,
             rulesets: Arc::default(),
             tunables: Arc::default(),
+            anim_lengths: Arc::default(),
             missing: bundle.missing,
         })
     }
 
     /// A bundle of the runtime `data` folder with the folder's ruleset
-    /// defaults (`game_rulesets_174.json`) and tunable values
-    /// (`game_tunables_174.json`), as the server runs it.
+    /// defaults (`game_rulesets_174.json`), tunable values
+    /// (`game_tunables_174.json`) and animation lengths
+    /// (`game_anim_lengths_174.json`), as the server runs it.
     pub fn load_runtime(data: impl AsRef<Path>, bundle: &str) -> io::Result<Self> {
         let data = data.as_ref();
         let rulesets = Rulesets::load(data.join(rulesets::FILE))?;
         let tunables = Tunables::load(data.join(TUNABLES_FILE))?;
+        let anim_lengths = AnimLengths::load(data.join(ANIM_LENGTHS_FILE))?;
         Ok(Self::load(data.join(bundle))?
             .with_rulesets(Arc::new(rulesets))
-            .with_tunables(Arc::new(tunables)))
+            .with_tunables(Arc::new(tunables))
+            .with_anim_lengths(Arc::new(anim_lengths)))
+    }
+
+    /// The bodies' animation lengths, which `Anim` states without an
+    /// authored length run for.
+    pub fn with_anim_lengths(mut self, anim_lengths: Arc<AnimLengths>) -> Self {
+        self.anim_lengths = anim_lengths;
+        self
+    }
+
+    pub fn anim_lengths(&self) -> &AnimLengths {
+        &self.anim_lengths
     }
 
     /// The tunable values the graphs read (`STU_082FA44E`).
@@ -431,6 +451,13 @@ impl GraphStore {
 
     pub fn bodies(&self) -> &BTreeMap<u64, Body> {
         &self.bodies
+    }
+
+    /// The body definition of hero `hero`.
+    pub fn hero_body(&self, hero: u64) -> Option<u64> {
+        self.bodies.iter().find_map(|(&guid, body)| {
+            (body.hero.as_deref().and_then(parse_guid) == Some(hero)).then_some(guid)
+        })
     }
 
     /// The `.003` definitions the hero bodies' weapon scripts build as

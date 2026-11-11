@@ -72,7 +72,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.exit_subgraph(id, node, "m_underSubgraphPlug", depth + 1)?;
                 self.unlink_single_output(key, depth + 1)?;
             }
-            StateKind::CosmeticEntity => self.unlink_single_output(key, depth + 1)?,
+            StateKind::CosmeticEntity | StateKind::Anim => {
+                self.unlink_single_output(key, depth + 1)?
+            }
             StateKind::ChaseVar => self.finish_chase(key, depth + 1)?,
             StateKind::WeaponVolley { .. } => self.finish_volley(key, depth + 1)?,
             StateKind::Ability { flags } => {

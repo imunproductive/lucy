@@ -4337,3 +4337,163 @@ fn a_target_search_the_server_cant_run_finds_nothing_and_names_the_gap() {
         )]
     );
 }
+
+/// Alias `0C8:0001` of [`Animations`].
+const ANIMATED: &str = "0x0C80000000000001";
+const ANIMATED_ALIAS: u64 = 0x0C80_0000_0000_0001;
+const ANIMATED_CATEGORY: u64 = 0x0280_0000_0000_011B;
+
+/// A body whose animation data knows one alias ([`ANIMATED`]): 1.25 s, or
+/// 0.5 s with category `015:011B`, and a scalar of 0.75.
+struct Animations;
+
+impl World for Animations {
+    fn unknowns(&self) -> Unknowns {
+        Unknowns::Refuse
+    }
+
+    fn animation_length(&self, _site: Site, alias: u64, category: u64) -> Option<f64> {
+        (alias == ANIMATED_ALIAS).then_some(if category == ANIMATED_CATEGORY {
+            0.5
+        } else {
+            1.25
+        })
+    }
+
+    fn animation_scalar(&self, _site: Site, alias: u64, _category: u64) -> Option<f64> {
+        (alias == ANIMATED_ALIAS).then_some(0.75)
+    }
+}
+
+/// An `Anim` state (node 1) entered at 1600 ms (frame 100) with `fields`
+/// and alias `alias`.
+fn start_anim(alias: Json, fields: Json, world: &mut impl World) -> Component {
+    let mut fields = fields;
+    fields["m_11E0A658"] = alias;
+    let fixture = graph(
+        42,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntry",
+                None,
+                json!({"m_outPlug":plug(&[(1,"m_beginPlug")],&[])}),
+            ),
+            node(1, "STUStatescriptStateAnim", Some(0), fields),
+        ],
+        json!([1]),
+        json!([0]),
+    );
+    Component::start(
+        Arc::new(store(vec![fixture])),
+        42,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        100,
+        world,
+        MAX_INIT_WORK,
+    )
+    .unwrap()
+}
+
+fn anim_alias(alias: &str) -> Json {
+    json!({"$":"STUConfigVarAnimAlias","m_animAlias":alias,"m_resourceKey":null})
+}
+
+/// Each pending timer of the state as (due ms, finish).
+fn anim_timers(component: &Component) -> Vec<(u64, bool)> {
+    component
+        .snapshot()
+        .unwrap()
+        .pending_timers
+        .get(&1)
+        .into_iter()
+        .flatten()
+        .map(|timer| (timer.due_ms, timer.finish))
+        .collect()
+}
+
+/// leafall903/ORPHEUS `c239a84` `Anim.on_enter`: with no authored length
+/// (or one under 1000 × `f32::EPSILON`), the state runs for its
+/// animation's length on the body, times `m_speedScalar`, for the category
+/// it names; timer 1 and the finish come then.
+#[test]
+fn an_anim_without_a_length_runs_for_the_body_animation_length() {
+    let speed = json!({"m_speedScalar":{"$":"STUConfigVarFloat","m_value":2.0}});
+    let component = start_anim(anim_alias(ANIMATED), speed, &mut Animations);
+    assert_eq!(anim_timers(&component), [(4100, false), (4100, true)]);
+    let category = json!({"m_22326315":{
+        "$":"STUConfigVarAnimCategory","m_category":"0x028000000000011B","m_resourceKey":null
+    }});
+    let component = start_anim(anim_alias(ANIMATED), category, &mut Animations);
+    assert_eq!(anim_timers(&component), [(2100, false), (2100, true)]);
+    let zero = json!({"m_86701C3E":{"$":"STUConfigVarFloat","m_value":0.0001}});
+    let component = start_anim(anim_alias(ANIMATED), zero, &mut Animations);
+    assert_eq!(anim_timers(&component), [(2850, false), (2850, true)]);
+    let authored = json!({"m_86701C3E":{"$":"STUConfigVarFloat","m_value":0.025}});
+    let component = start_anim(anim_alias(ANIMATED), authored, &mut Animations);
+    assert_eq!(anim_timers(&component), [(1625, false), (1625, true)]);
+    assert!(component.snapshot().unwrap().assumptions.is_empty());
+}
+
+/// `m_37EE887D` arms no timer, whatever the length: the state stays on.
+#[test]
+fn an_anim_that_skips_its_timer_stays_on() {
+    let fields = json!({
+        "m_37EE887D":{"$":"STUConfigVarBool","m_value":1},
+        "m_86701C3E":{"$":"STUConfigVarFloat","m_value":0.025},
+    });
+    let mut component = start_anim(anim_alias(ANIMATED), fields, &mut Animations);
+    assert_eq!(anim_timers(&component), []);
+    component.advance_frame(200, &mut Animations).unwrap();
+    assert_eq!(active(component.snapshot().unwrap(), 1), [0]);
+}
+
+/// An alias the body's data doesn't know, with no authored length, never
+/// ends by itself, and the answer is recorded; a zero alias skips the model
+/// query (length 0) and ends at once.
+#[test]
+fn an_anim_the_data_cant_time_never_ends_and_a_zero_alias_ends_at_once() {
+    let mut component = start_anim(anim_alias("0x0C80000000000002"), json!({}), &mut Animations);
+    assert_eq!(anim_timers(&component), []);
+    let assumed: Vec<_> = component
+        .snapshot()
+        .unwrap()
+        .assumptions
+        .iter()
+        .map(|item| (item.site.node, item.class.as_str(), item.answer))
+        .collect();
+    assert_eq!(
+        assumed,
+        [(Some(1), "STUStatescriptStateAnim", "never ends by itself")]
+    );
+    component.advance_frame(200, &mut Animations).unwrap();
+    assert_eq!(active(component.snapshot().unwrap(), 1), [0]);
+    let mut component = start_anim(Json::Null, json!({}), &mut Animations);
+    component.advance_frame(101, &mut Animations).unwrap();
+    let snapshot = component.snapshot().unwrap();
+    assert!(snapshot.assumptions.is_empty());
+    assert_eq!(active(snapshot, 1), Vec::<u16>::new());
+}
+
+/// `m_EBEFB4A7` reads the animation's scalar (output slot 2) while the
+/// state runs, and is let go when it ends.
+#[test]
+fn an_anim_outputs_its_scalar_while_it_runs() {
+    let fields = json!({
+        "m_EBEFB4A7":var(7, false),
+        "m_86701C3E":{"$":"STUConfigVarFloat","m_value":0.025},
+    });
+    let mut component = start_anim(anim_alias(ANIMATED), fields, &mut Animations);
+    let output = Variable {
+        scope: Scope::Instance,
+        id: 7,
+    };
+    assert_eq!(
+        component.resolved_variable(1, output),
+        Some(Value::Float(0.75))
+    );
+    component.advance_frame(102, &mut Animations).unwrap();
+    assert_eq!(active(component.snapshot().unwrap(), 1), Vec::<u16>::new());
+    assert_eq!(component.resolved_variable(1, output), Some(Value::Null));
+}

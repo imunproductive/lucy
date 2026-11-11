@@ -14,6 +14,21 @@
 
 use super::*;
 
+/// An `Anim` length below this (seconds) is the model's (leafall903/ORPHEUS
+/// `c239a84`, `nodes.py` `Anim.on_enter`: 1000 × `f32::EPSILON`).
+const MODEL_LENGTH_BELOW: f64 = 0.000_119_209_289_550_781_25;
+
+/// What an `Anim` state plays, for the body's animation data.
+#[derive(Clone, Copy)]
+enum AnimAlias {
+    /// A zero alias: no model query, length and scalar 0.
+    Zero,
+    /// The alias and its animation category (0 for none).
+    Played(u64, u64),
+    /// An alias or category that isn't an asset.
+    Unknown,
+}
+
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn register_tick(&mut self, key: StateKey, start_ms: u64) {
         self.machine
@@ -226,25 +241,143 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(true)
     }
 
-    pub(super) fn arm_animation(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
-        let id = key.instance;
-        let duration = field(&node.fields, "m_86701C3E");
-        if duration.is_null() {
-            // The length is that of the animation the alias resolves to,
-            // which the server doesn't resolve (docs/notes/behavior.md). Like
-            // the Python reference, the state then doesn't end by itself.
-            self.assume(self.site(id, node), &node.class, "never ends by itself");
-            return Ok(());
-        }
-        let Some(seconds) = self.evaluate(id, node, duration, None) else {
-            return Ok(());
+    /// The alias an `Anim` state plays and its animation category, for the
+    /// body's animation data; none when an evaluation failed (reported).
+    /// A zero alias skips the model query: its length and scalar are 0
+    /// (leafall903/ORPHEUS `c239a84`, `driver.py` `_wheel_animation_key`).
+    fn animation_alias(&mut self, id: u16, node: &Node) -> Option<AnimAlias> {
+        let alias = field(&node.fields, "m_11E0A658");
+        let alias = if alias.is_null() {
+            Value::Null
+        } else {
+            self.evaluate(id, node, alias, None)?
         };
-        let delay = ((expr::to_float(&seconds) * 1000.0) as f32).round();
+        if !truthy(&alias) {
+            return Some(AnimAlias::Zero);
+        }
+        let category = field(&node.fields, "m_22326315");
+        let category = if category.is_null() {
+            Value::Null
+        } else {
+            self.evaluate(id, node, category, None)?
+        };
+        Some(match (alias, category) {
+            (Value::Asset(alias), Value::Null) => AnimAlias::Played(alias, 0),
+            (Value::Asset(alias), Value::Asset(category)) => AnimAlias::Played(alias, category),
+            _ => AnimAlias::Unknown,
+        })
+    }
+
+    /// `Anim` (leafall903/ORPHEUS `c239a84`, `src/ow174/game/script/nodes.py`
+    /// `Anim`, the client's `CC19A0`/`CC1E70`). On begin, an `m_EBEFB4A7`
+    /// output reads the animation's scalar (slot 2) while the state runs,
+    /// when the body's data has one. A true `m_37EE887D` arms no timer.
+    /// Otherwise the state runs for its authored length `m_86701C3E`; a
+    /// length under 1000 × `f32::EPSILON` (none authored reads 0) is the
+    /// model's: the animation's length on this body
+    /// ([`World::animation_length`]) times `m_speedScalar` (1 without one).
+    /// Then timer 1 follows `m_A3B86BB0` and, unless `m_154DBA91` is true,
+    /// the state finishes. An alias the data can't resolve, with no
+    /// authored length, never ends by itself (an assumption, as the Python
+    /// reference: docs/notes/behavior.md).
+    pub(super) fn arm_animation(
+        &mut self,
+        key: StateKey,
+        node: &Node,
+        depth: usize,
+    ) -> Result<(), InitFault> {
+        let id = key.instance;
+        let site = self.site(id, node);
+        let mut alias = None;
+        let target = match expr::lvalue(field(&node.fields, "m_EBEFB4A7")) {
+            Ok(target) => target.map(|target| source_key(id, target)),
+            Err(error) => {
+                self.report(site, Issue::Expression(error));
+                None
+            }
+        };
+        if let Some(target) = target {
+            let Some(played) = self.animation_alias(id, node) else {
+                return Ok(());
+            };
+            alias = Some(played);
+            let scalar = match played {
+                AnimAlias::Zero => Some(0.0),
+                AnimAlias::Played(alias, category) => {
+                    self.world.animation_scalar(site, alias, category)
+                }
+                AnimAlias::Unknown => None,
+            };
+            if let Some(scalar) = scalar {
+                self.state_mut(key).expect("active anim").linked_variable = Some(target);
+                self.insert_link(
+                    target,
+                    VariableLink {
+                        state: key,
+                        priority: LINK_PRIORITY,
+                        output: LinkValue::Fixed(Value::Float(scalar)),
+                        stack: false,
+                    },
+                    depth,
+                )?;
+            }
+        }
+        let no_timer = field(&node.fields, "m_37EE887D");
+        if !no_timer.is_null() {
+            let Some(value) = self.evaluate(id, node, no_timer, None) else {
+                return Ok(());
+            };
+            if truthy(&value) {
+                return Ok(());
+            }
+        }
+        let authored = field(&node.fields, "m_86701C3E");
+        let mut seconds = if authored.is_null() {
+            0.0
+        } else {
+            let Some(value) = self.evaluate(id, node, authored, None) else {
+                return Ok(());
+            };
+            expr::to_float(&value)
+        };
+        if seconds < MODEL_LENGTH_BELOW {
+            let played = match alias {
+                Some(played) => played,
+                None => match self.animation_alias(id, node) {
+                    Some(played) => played,
+                    None => return Ok(()),
+                },
+            };
+            let length = match played {
+                AnimAlias::Zero => Some(0.0),
+                AnimAlias::Played(alias, category) => {
+                    self.world.animation_length(site, alias, category)
+                }
+                AnimAlias::Unknown => None,
+            };
+            match length {
+                Some(length) => {
+                    let speed = field(&node.fields, "m_speedScalar");
+                    let speed = if speed.is_null() {
+                        1.0
+                    } else {
+                        let Some(value) = self.evaluate(id, node, speed, None) else {
+                            return Ok(());
+                        };
+                        expr::to_float(&value)
+                    };
+                    seconds = f64::from((length * speed) as f32);
+                }
+                None if authored.is_null() => {
+                    self.assume(site, &node.class, "never ends by itself");
+                    return Ok(());
+                }
+                None => (),
+            }
+        }
+        let delay = ((seconds * 1000.0) as f32).round();
         if !delay.is_finite() {
-            self.report(
-                self.site(id, node),
-                Issue::UnsupportedField("animation duration"),
-            );
+            self.report(site, Issue::UnsupportedField("animation duration"));
             return Ok(());
         }
         let removes_self = field(&node.fields, "m_154DBA91");
