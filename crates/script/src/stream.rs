@@ -208,6 +208,12 @@ pub enum ChangeKey {
     Variable(u16, u32),
     State(u16, u16),
     VolleyIntroduction(u16, u16),
+    /// A frame action (a wheel callout) and the chunk number it first went
+    /// out in, which it keeps as its stamp until acknowledged.
+    Action {
+        serial: u32,
+        stamp: u32,
+    },
 }
 
 impl ChangeKey {

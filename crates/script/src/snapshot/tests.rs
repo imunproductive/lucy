@@ -226,32 +226,34 @@ fn baseline_matches_python_for_both_views_and_enters_the_acknowledged_stream() {
     assert!(!owner.instances[&1].states.is_empty());
 }
 
+/// The authored typed pairs of graph `05AD` (variable 29859) go out in the
+/// type-12 pair form (104319 D57899, leafall903/ORPHEUS (MIT)
+/// `_write_pair_array`), like any other variable.
 #[test]
-fn a_map_value_stays_out_of_frames_and_the_rest_is_sent_unchanged() {
+fn typed_pairs_go_out_in_the_pair_array_form() {
+    use crate::wire::{ValueEncoding, write_value};
+
     let (graphs, mut snapshot) = fixture();
     let codecs = CodecTable::from_json(CODECS).unwrap();
     let encoder = SnapshotEncoder::new(&graphs, &codecs);
-    let without = encoder.project(&snapshot, View::Owner).unwrap();
-    snapshot.instances[&1].variables.insert(
-        500,
-        Value::Map(vec![(
-            Value::Asset(0x0a90_0000_0000_0171),
-            Value::Asset(0x0240_0000_0000_05ad),
-        )]),
-    );
+    let pairs = Value::Pairs(vec![(
+        Value::Asset(0x0a90_0000_0000_0171),
+        Value::Asset(0x0240_0000_0000_05ad),
+    )]);
+    snapshot.instances[&1].variables.insert(500, pairs.clone());
     let with = encoder.project(&snapshot, View::Owner).unwrap();
-    assert_eq!(
-        with.instances[&1]
-            .variables
-            .values
-            .keys()
-            .copied()
-            .collect::<Vec<_>>(),
-        [100, 200, 300]
-    );
-    let bits = |projected| encoder.full(projected).unwrap();
-    assert_eq!(bits(&with).as_bytes(), bits(&without).as_bytes());
-    assert_eq!(bits(&with).bit_len(), bits(&without).bit_len());
+    assert_eq!(with.instances[&1].variables.values.get(&500), Some(&pairs));
+    let frame = encoder.full(&with).unwrap();
+    let mut encoded = BitWriter::new();
+    write_value(&mut encoded, &pairs, ValueEncoding::Compact).unwrap();
+    // The value's bits appear in the frame (byte search at every shift).
+    let needle: Vec<bool> = (0..encoded.bit_len())
+        .map(|bit| encoded.as_bytes()[bit / 8] >> (bit % 8) & 1 == 1)
+        .collect();
+    let hay: Vec<bool> = (0..frame.bit_len())
+        .map(|bit| frame.as_bytes()[bit / 8] >> (bit % 8) & 1 == 1)
+        .collect();
+    assert!(hay.windows(needle.len()).any(|window| window == needle));
 }
 
 #[test]
@@ -454,7 +456,7 @@ fn initial_owner_delta_matches_python_stack_bindings_and_payloads() {
         Value::Integer(17)
     );
     check(
-        &encoder.delta_frame(&owner, &delta, kind, 16).unwrap(),
+        &encoder.delta_frame(&owner, &delta, kind, 16, None).unwrap(),
         222,
         "2a7d40af40003a908f89004e0189008012116000f0db11009b981800",
     );
@@ -1354,7 +1356,7 @@ fn actual_shared_ui_graph_baselines_match_python() {
             .differences(base, &owner, &BTreeSet::new(), &BTreeSet::new())
             .unwrap();
         let frame = encoder
-            .delta_frame(&owner, &delta, DeltaKind::InitialOwner(1000), 16)
+            .delta_frame(&owner, &delta, DeltaKind::InitialOwner(1000), 16, None)
             .unwrap();
         assert_eq!(frame.bit_len(), delta_bits);
         assert_eq!(

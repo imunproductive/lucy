@@ -97,8 +97,15 @@ pub enum Value {
     },
     String(String),
     Array(Vec<Value>),
-    /// An ordered script map. Its wire representation has not been verified.
+    /// A map built by an expression (opcode 19): integer keys. On the wire
+    /// the keyed type-13 array, tag 15 subtype 6 with the keyed bit, read at
+    /// 104319 RVA D57430 (leafall903/ORPHEUS (MIT), `statescript.py`
+    /// `_write_keyed_array`, `docs/COMMUNICATION_WHEEL.txt`).
     Map(Vec<(Value, Value)>),
+    /// Authored typed pairs (`STU_7757D403`): resource keys and values in
+    /// authored order. On the wire the type-12 pair array, tag 15 subtype
+    /// 7, read at 104319 RVA D57899 (upstream `_write_pair_array`).
+    Pairs(Vec<(Value, Value)>),
 }
 
 impl From<ModeValue> for Value {
@@ -261,6 +268,41 @@ pub fn write_value(
                 for item in items {
                     write_value(out, item, encoding)?;
                 }
+            }
+        }
+        Value::Map(entries) if compact => {
+            let length = u16::try_from(entries.len()).map_err(|_| WireError::InvalidValue)?;
+            out.bits(15, 4)?;
+            out.bits(6, 3)?;
+            out.w_u16(length);
+            out.bit(true); // keyed
+            if !entries.is_empty() {
+                out.bit(false); // every value tagged
+            }
+            for (index, (key, value)) in entries.iter().enumerate() {
+                let Value::Integer(key) = key else {
+                    return Err(WireError::InvalidValue);
+                };
+                let key = u16::try_from(*key).map_err(|_| WireError::InvalidValue)?;
+                if index != 0 {
+                    out.bit(true); // later pairs have a presence bit
+                }
+                out.bits(u64::from(key), 16)?;
+                write_value(out, value, encoding)?;
+            }
+        }
+        Value::Pairs(entries) if compact => {
+            let length = u16::try_from(entries.len()).map_err(|_| WireError::InvalidValue)?;
+            out.bits(15, 4)?;
+            out.bits(7, 3)?;
+            out.w_u16(length);
+            out.bit(false); // keys are values, not uint16 indexes
+            if !entries.is_empty() {
+                out.bit(false); // each key and value has its own tag
+            }
+            for (key, value) in entries {
+                write_value(out, key, encoding)?;
+                write_value(out, value, encoding)?;
             }
         }
         _ => return Err(WireError::InvalidValue),

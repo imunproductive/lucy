@@ -44,6 +44,13 @@ const SERVER_NO_OPS: &[&str] = &[
     // 1B6EBA0; leafall903/ORPHEUS (MIT), commit c239a84, nodes.py). Melee,
     // graph 0043 node 44.
     "STU_6E5C5F66",
+    // The base Action: the PC factory builds no class of its own and the
+    // inherited handler (1B6EBA0) only records a prediction entry, then
+    // follows the empty out plug (leafall903/ORPHEUS (MIT),
+    // `wheel_base_action` in nodes.py, `docs/COMMUNICATION_WHEEL.txt`).
+    // 05AD node 165 and 023A/02CF/0686's server-only unlock-use reports.
+    "STU_631D36C3",
+    "STU_94771561",
 ];
 
 /// Unnamed actions the server runs as no-ops without knowing what they do,
@@ -51,6 +58,14 @@ const SERVER_NO_OPS: &[&str] = &[
 /// recorded as an [`Assumption`].
 const ASSUMED_NO_OPS: &[&str] = &[
     "STU_E9694EFD", // Soldier: 76's sprint, graph 0255 node 40; hashed fields only
+    // The communication wheel's terminal action after each PlayScript
+    // (05AD nodes 154 and 155, 02CF node 32): an entity and an integer, no
+    // out link.
+    "STU_71FE9852",
+    // A game message whose targets the engine picks (0686 node 21 sends
+    // 0307 after Need Healing). Who receives it is unknown; it goes nowhere,
+    // as in upstream's release mode.
+    "STU_57692020",
 ];
 
 /// Melee's states (graph 0043): health change, knockback and four unnamed
@@ -174,6 +189,36 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
+            "STUStatescriptActionPlayScript" => {
+                let graph = self.graph(id).index;
+                if let Some(played) = wheel::played_graph(graph, node.pos) {
+                    self.play_wheel_script(id, node, played)?;
+                }
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
+            // A PlayScript start entry: [`Self::play_wheel_script`] binds its
+            // parameters before it runs.
+            "STU_BB4AC733" => self.follow(id, node, "m_outPlug", None, depth),
+            // The emote's end (069A nodes 7 and 8, category 5): retire the
+            // 1040 helper, then follow the out plug (upstream
+            // `finish_wheel_emote`; CB9C70 passes target and category to a
+            // native service).
+            "STU_3D419B63" if self.graph(id).index == 0x069a && matches!(node.pos, 7 | 8) => {
+                let helpers: Vec<_> = self
+                    .machine
+                    .snapshot
+                    .instances
+                    .iter()
+                    .filter(|(_, instance)| instance.graph == 0x1040)
+                    .map(|(&helper, _)| helper)
+                    .collect();
+                for helper in helpers {
+                    self.destroy(helper)?;
+                }
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
             "STU_22926252"
                 if field(&node.fields, "m_67B81D25").is_null()
                     && field(&node.fields, "m_EB35D2F1").is_null() =>
@@ -263,6 +308,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             "STUStatescriptActionSwitch" => self.action_switch(id, node, depth),
             class if SERVER_NO_OPS.contains(&class) => {
+                if matches!(class, "STU_7106C356" | "STUStatescriptActionEffect") {
+                    self.record_frame_action(id, node);
+                }
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
