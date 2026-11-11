@@ -193,6 +193,15 @@ impl BotScripts {
         self.slots.iter().flatten().count()
     }
 
+    /// The script of the bot in `slot` as of its last run, while it is
+    /// that bot's (`entity`).
+    pub(crate) fn snapshot(&self, slot: usize, entity: u32) -> Option<&Snapshot> {
+        let script = self.slots.get(slot)?.as_ref()?;
+        (script.entity == entity)
+            .then(|| script.body.snapshot())
+            .flatten()
+    }
+
     /// One script per update, within the loading window and off the
     /// world-create burst (match.py `update`).
     pub(crate) fn prepare_next(&mut self, bots: &[Bot], tick: u32) {

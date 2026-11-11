@@ -106,13 +106,15 @@
 //! lowest sphere 0.30 m above the feet and the arm capsules vertical, from
 //! 1.46 to 0.59 m. The first frame is every frame. The trees also play a
 //! 4 s layer, `391F` (14 bones, added to the pose: its body bone moves
-//! −0.04 to +0.03 m), which bobs the bot by ±4 cm; it is left out (how
-//! the client adds a layer is not in the data, and its mean is within
-//! 1 cm of the pose). A hero's tree plays its base from an animation slot
-//! the game fills: on 29 of the 32 heroes the walk reaches no clip keying
-//! every bone (Reinhardt one, Winston two, untested); the heroes stay at
-//! rest (players are hit by the capsule, and the file keeps their shapes
-//! for later).
+//! −0.04 to +0.03 m), which bobs the bot by ±4 cm; this file leaves it out.
+//! The server animates the bots instead, bob, walk and all, from
+//! `data/game_bot_animation_174.json` ([`crate::bot_animation`], written
+//! by this derivation too: each bot body's shapes on their bones and its
+//! rig); it uses the static shapes here only for a body without a rig. A
+//! hero's tree plays its base from an animation slot the game fills: on 29
+//! of the 32 heroes the walk reaches no clip keying every bone (Reinhardt
+//! one, Winston two, untested); the heroes stay at rest (players are hit by
+//! the capsule, and the file keeps their shapes for later).
 //!
 //! The file: `{body: {"name", "model" (the model whose list was read),
 //! "pose" (the idle clip, bots only), "shapes": [{"kind": "sphere",
@@ -132,7 +134,7 @@ use serde_json::{Map, json};
 use crate::{
     Install, Output, Result,
     animation::{self, Bone},
-    asset_error, blend_trees, guid_hex,
+    asset_error, blend_trees, bot_animation, guid_hex,
     heroes::{Assets, bodies, movers::float, parse_guid, read_json},
     props::{chunk, i64_at, model_components, slice},
 };
@@ -172,11 +174,11 @@ const IDS: usize = 6;
 
 /// A model's skeleton (`mskl`): each bone's id, parent, place in the model
 /// and transform relative to its parent.
-struct Skeleton {
-    ids: Vec<u32>,
-    parents: Vec<Option<usize>>,
+pub(crate) struct Skeleton {
+    pub ids: Vec<u32>,
+    pub parents: Vec<Option<usize>>,
     model: Vec<Bone>,
-    local: Vec<Bone>,
+    pub local: Vec<Bone>,
 }
 
 impl Skeleton {
@@ -204,7 +206,7 @@ impl Skeleton {
         }))
     }
 
-    fn bone(&self, id: u32) -> Option<usize> {
+    pub(crate) fn bone(&self, id: u32) -> Option<usize> {
         self.ids.iter().position(|bone| *bone == id)
     }
 
@@ -292,17 +294,29 @@ fn compose(parent: &Bone, child: &Bone) -> Bone {
 
 /// A part's geometry in its bone's frame.
 #[derive(Clone, Debug, PartialEq)]
-enum Geometry {
+pub(crate) enum Geometry {
     Sphere([f32; 3], f32),
     Capsule([f32; 3], [f32; 3], f32),
 }
 
 /// A motion type 1 part: its node, geometry and damage zone (0 none).
 #[derive(Clone, Debug, PartialEq)]
-struct Part {
-    node: u32,
-    geometry: Geometry,
+pub(crate) struct Part {
+    pub node: u32,
+    pub geometry: Geometry,
     zone: u64,
+}
+
+impl Part {
+    /// Its body's damage zones list its zone with a multiplier above 1
+    /// (see the module notes).
+    pub(crate) fn critical(&self, zones: &HashMap<u64, f64>) -> bool {
+        self.zone
+            .ne(&0)
+            .then(|| zones.get(&self.zone))
+            .flatten()
+            .is_some_and(|multiplier| *multiplier > 1.0)
+    }
 }
 
 /// The STUModel of a model file (its MSTU chunk), decoded.
@@ -496,12 +510,7 @@ fn shapes(
             if bone.scale.iter().any(|scale| (scale - 1.0).abs() > 1e-3) {
                 return Err(format!("bone {:X} is scaled", part.node));
             }
-            let critical = part
-                .zone
-                .ne(&0)
-                .then(|| zones.get(&part.zone))
-                .flatten()
-                .is_some_and(|multiplier| *multiplier > 1.0);
+            let critical = part.critical(zones);
             Ok(match part.geometry {
                 Geometry::Sphere(centre, radius) => json!({
                     "kind": "sphere",
@@ -542,6 +551,8 @@ pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
     let assets = Assets::of(install, ENTITY);
     let bots = bot_bodies(out)?;
     let mut table = BTreeMap::new();
+    let mut animated = BTreeMap::new();
+    let mut rigs = BTreeMap::new();
     for record in bodies(out)? {
         let key = record
             .get("body")
@@ -577,16 +588,40 @@ pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
                 };
                 let zones = zones(install, &asset)?;
                 listed = shapes(&parts, &skeleton, &places, &zones).map_err(failed)?;
+                if bots.contains(key) && set != 0 {
+                    let rig = format!("{}/{}", guid_hex(model), guid_hex(set));
+                    if !rigs.contains_key(&rig) {
+                        let derived =
+                            bot_animation::rig(install, set, &skeleton).map_err(failed)?;
+                        rigs.insert(rig.clone(), derived);
+                    }
+                    animated.insert(
+                        key.to_owned(),
+                        json!({
+                            "name": record.get("name").cloned().unwrap_or_default(),
+                            "rig": rig,
+                            "shapes": bot_animation::shapes(&parts, &skeleton, &zones)
+                                .map_err(failed)?,
+                        }),
+                    );
+                }
             }
         }
         entry.insert("shapes".into(), json!(listed));
         table.insert(key.to_owned(), serde_json::Value::Object(entry));
     }
     let table: Map<String, serde_json::Value> = table.into_iter().collect();
-    Ok(vec![Output::json(
-        "data/game_hitboxes_174.json",
-        &table.into(),
-    )])
+    let animation = json!({
+        "bodies": animated.into_iter().collect::<Map<_, _>>(),
+        "rigs": rigs.into_iter().collect::<Map<_, _>>(),
+    });
+    Ok(vec![
+        Output::json("data/game_hitboxes_174.json", &table.into()),
+        Output {
+            path: "data/game_bot_animation_174.json".into(),
+            bytes: serde_json::to_vec(&animation).expect("JSON values serialize"),
+        },
+    ])
 }
 
 #[cfg(test)]

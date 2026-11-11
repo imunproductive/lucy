@@ -41,6 +41,7 @@ These look findable from the data alone, by comparing values across maps and mod
 | Credit share in loot box slots | `lobby/src/lootbox.rs:70-75` | 5%, 5%, 50% | Only the base box has `m_currencyRarityRules`: 11/30, 13/42, 91/250. A weak guess is the chance that a slot of that rarity gives credits (about 37%, 31%, 36%). Not confirmed. |
 | Level-up loot box | `lobby/src/progression.rs:82` | Box type 0 | `054/0018` `m_C84D463F` names unlock `03E1`. It is probably the standard box. |
 | Shop prices | `lobby/src/shop.rs` | From the captured shop catalog (see below) | `054/0018` `m_0C6A363E` prices by rarity: 25/75/250/1000 credits for normal items, 75/225/750/3000 for event items, 3000 for golden weapons. The install does not say which event items cost the event price. In the capture, most event items cost the normal price, and only some cost 3×. |
+| Bot animation categories and their variable | `assets/src/bot_animation.rs` (`MOVING`, `ARMS_FORWARD`), `sim/src/bot_animation.rs` (`CATEGORY_VARIABLE`, `ARMS_FORWARD`) | Moving `0005`, arms forward `007F`, variable 1226 | The Training Bot's trees switch on these categories (`072.020` on data flow `048:0018`, `06E.020` on `048:00E4`), and graph `0BA8` pushes `007F` into variable 1226 (remote sync `0D8:04CA`). Which game value feeds each data flow, and when the game sets `0005`, are not named; the server sets `0005` while a bot walks its route. |
 
 The captured shop catalog is `crates/fixed/data/retail_templates.json`. The upstream project decoded it from traffic recorded on the real 1.68 servers before they closed. See [data sources](data-sources.md). For shop prices, keep the capture until there is a way to pick out the event-price items.
 
@@ -62,6 +63,7 @@ These were rules of Blizzard's servers, live-service data, or code inside the cl
 | Hitscan reach and projectile lifetime when a weapon has none | `sim/src/hitscan.rs:24`, `script/src/weapons.rs:87` | 200 m, 5 s | Fallbacks. Not found. |
 | Training Bot eye height | `sim/src/bots.rs:82` | 1.55 m | The bot asset says 2.0 m, but the Python server aimed from 1.55 m. Hit shapes now decide headshots for bots. |
 | Training Bot patrol timings | `sim/src/bots.rs:62-73` | First wait 3 s, walk gap 1.2 s, turn rate | The patrol graph `0B8E` is read, but these timings were not found in it. |
+| Bot animation blending | `sim/src/bot_animation.rs`, `assets/src/blend_trees.rs` | Layers add (translation summed, rotation `base · delta`, scale multiplied); branch changes are immediate; layers with a game-driven weight add nothing; a state machine stays in its first state; keys interpolate linearly | In the client's animation code. The trees name the nodes and blend times, not how they run. The module docs list each rule. |
 | Ranked: tier floors, placements, ±25 SR, leaver loss, demotion, competitive points | `lobby/src/ranked.rs` | Community rules and guesses | Server-side rules. No ranked asset is in the install. |
 | Leaderboard rule | `lobby/src/leaderboard.rs:51-53` | Top 500, 3000 SR, 25 wins | Server-side rule. |
 | Endorsement shares | `lobby/src/player_messages.rs:56-60` | 40/35/25 | Only the category ids are in the install. |
