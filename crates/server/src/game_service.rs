@@ -1921,26 +1921,38 @@ impl State {
     /// combat.py `_damage` for bots and `_send_health`: the shooter's
     /// client gets the notices, every client of the room the bot's pools.
     /// The shooter's ultimate charges for the damage (assumption: training
-    /// bots charge it as heroes do).
+    /// bots charge it as heroes do) and for the healing of allied bots
+    /// (combat.py `_heal`), which his Healing Done counts too.
     fn deliver_bot_hits(&mut self, id: MatchId, shooter: Option<u32>, hits: Vec<BotHit>) {
-        if let Some(world) = self.rooms.get_mut(&id).and_then(|room| room.world.as_mut()) {
-            for hit in &hits {
-                bot_hit_script(&mut world.scene, hit);
+        let healed: f64 = hits.iter().map(|hit| hit.healed).sum();
+        if let Some(room) = self.rooms.get_mut(&id) {
+            if let Some(world) = room.world.as_mut() {
+                for hit in &hits {
+                    bot_hit_script(&mut world.scene, hit);
+                }
+                if let Some(slot) = shooter
+                    .filter(|_| healed > 0.0)
+                    .map(|shooter| self.seats[&shooter].1)
+                {
+                    let healing = world.scene.board_stats().healing;
+                    room.players[slot].stats.add(healing, healed);
+                }
             }
         }
-        let dealt: f64 = hits
+        let points = hits
             .iter()
             .flat_map(|hit| &hit.notices)
             .filter_map(|notice| match notice {
                 Some(CombatNotice::Hit { dealt, .. }) => Some(*dealt),
                 _ => None,
             })
-            .sum();
+            .sum::<f64>()
+            + healed;
         if let Some(peer) = shooter
-            .filter(|_| dealt > 0.0)
+            .filter(|_| points > 0.0)
             .and_then(|shooter| self.peers.get_mut(&shooter))
         {
-            peer.world.gain_ult(dealt);
+            peer.world.gain_ult(points);
         }
         for hit in hits {
             for (&connection, peer) in &mut self.peers {
@@ -2012,7 +2024,7 @@ impl State {
                     };
                     let (bodies, bots) =
                         combat.heal_area(scene, healer, heal.centre, heal.radius, heal.amount);
-                    let healed = bots.iter().map(|(_, given)| given).sum();
+                    let healed = bots.iter().map(|hit| hit.healed).sum();
                     heal_players(
                         scene,
                         healer.source,
@@ -2021,7 +2033,7 @@ impl State {
                         healed,
                         &mut room,
                     );
-                    bot_heals.extend(bots.into_iter().map(|(hit, _)| hit));
+                    bot_heals.extend(bots);
                 }
                 let mut worlds: Vec<_> = room
                     .iter_mut()
