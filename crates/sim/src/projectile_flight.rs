@@ -1,20 +1,21 @@
 //! Server-side projectile flight and splash for build 104319.
 //!
-//! Uses the swept target capsules and map ray from the match. Damage and
+//! Uses the swept target bodies and map ray from the match. Damage and
 //! network delivery are separate so a predicted alias never hits twice.
 //! The reference is ow174/game/combat.py (`_fly`), which flew every
 //! projectile straight and ended it where it hit. Beyond it (no reference;
 //! the values are the volley's, see [`ProjectileBallistics`]): a projectile
 //! with gravity flies an arc, swept as one straight chord a tick at most,
 //! and one that sticks stays on the body or surface it hit, moving with the
-//! body, until its fuse ends and it explodes there.
+//! body, until its fuse ends and it explodes there. A body with hit shapes
+//! is met by its shapes, as a shot meets it ([`TargetPose::entry`]): the
+//! sweep and an explosion's distance; others by the reference's capsule. A
+//! projectile is swept as a point (the ballistics have no radius to grow
+//! the shapes by, and the reference swept points too).
 
 use crate::hitscan::{Impact, TargetPose};
 use orpheus_core::tick::TICK_PERIOD;
-use orpheus_physics::{
-    collision::index::IndexError,
-    static_ray::{Vec3, capsule_entry_distance, segment_distance},
-};
+use orpheus_physics::{collision::index::IndexError, static_ray::Vec3};
 use orpheus_script::weapons::ProjectileBallistics;
 
 pub struct ProjectileFlight {
@@ -234,7 +235,8 @@ impl ProjectileFlight {
     }
 
     /// The explosion at its position (combat.py `_fly`: every target's
-    /// distance to the capsule scales the damage), and the end.
+    /// distance to the capsule, here to its shapes when it has them, scales
+    /// the damage), and the end.
     fn explode(&mut self, targets: &[(u32, TargetPose)], step: &mut FlightStep) {
         if let Some(blast) = self
             .ballistics
@@ -242,9 +244,9 @@ impl ProjectileFlight {
             .as_ref()
             .filter(|blast| blast.hit.amount > 0.0)
         {
-            for &(entity, pose) in targets {
-                let [a, b] = pose.segment();
-                let distance = (segment_distance(self.position, a, b) - pose.radius).max(0.0);
+            for (entity, pose) in targets {
+                let entity = *entity;
+                let distance = pose.surface_distance(self.position);
                 let damage = blast.hit.amount * blast.multiplier(distance);
                 if damage > 0.0 {
                     step.impacts.push(Impact {
@@ -278,11 +280,9 @@ fn closest(
     wall: &mut impl FnMut(Vec3, Vec3, f64) -> Result<Option<f64>, IndexError>,
 ) -> Result<Option<(f64, Option<u32>)>, IndexError> {
     let mut closest = None;
-    for &(entity, target) in targets {
-        let [a, b] = target.segment();
-        if let Some(distance) =
-            capsule_entry_distance(origin, direction, reach, a, b, target.radius)
-        {
+    for (entity, target) in targets {
+        if let Some((distance, _)) = target.entry(origin, direction, reach) {
+            let entity = *entity;
             if closest.is_none_or(|(best, _)| distance < best) {
                 closest = Some((distance, Some(entity)));
             }
@@ -298,11 +298,11 @@ fn closest(
     Ok(closest)
 }
 
-fn pose_of(targets: &[(u32, TargetPose)], entity: u32) -> Option<TargetPose> {
+fn pose_of(targets: &[(u32, TargetPose)], entity: u32) -> Option<&TargetPose> {
     targets
         .iter()
-        .find(|&&(target, _)| target == entity)
-        .map(|&(_, pose)| pose)
+        .find(|(target, _)| *target == entity)
+        .map(|(_, pose)| pose)
 }
 
 #[cfg(test)]
@@ -364,6 +364,8 @@ mod tests {
             height: 2.0,
             radius: 0.5,
             eye: 1.55,
+            yaw: 0.0,
+            shapes: None,
         }
     }
 
@@ -528,6 +530,8 @@ mod tests {
             height: 0.9,
             radius: 0.3,
             eye: 0.7,
+            yaw: 0.0,
+            shapes: None,
         };
         let fly = |gravity| {
             let ballistics = ProjectileBallistics {
@@ -541,7 +545,11 @@ mod tests {
                 ProjectileFlight::new(ballistics, [0.0, 1.5, 0.0], [1.0, 0.0, 0.0], Some(1000))
                     .unwrap();
             (1001..1100)
-                .map(|tick| flight.advance(tick, &[(7, short)], no_wall).unwrap())
+                .map(|tick| {
+                    flight
+                        .advance(tick, &[(7, short.clone())], no_wall)
+                        .unwrap()
+                })
                 .find(|step| step.end.is_some())
                 .unwrap()
         };
@@ -553,6 +561,39 @@ mod tests {
         let point = arc.end.unwrap().point;
         assert!(point[0] > 9.0 && point[0] < 10.0, "{point:?}");
         assert!(point[1] > 0.0 && point[1] < 0.9, "{point:?}");
+    }
+
+    /// A body with hit shapes is met by them: a bolt passing 0.4 m from its
+    /// one 0.3 m sphere flies by, where the capsule (0.5 m) caught it; one
+    /// at the sphere stops on its surface, and its blast there is at 0 m.
+    #[test]
+    fn a_body_with_shapes_is_swept_and_blasted_by_its_shapes() {
+        use crate::hitboxes::HitShape;
+        let head = HitShape {
+            a: [0.0, 1.0, 0.0],
+            b: [0.0, 1.0, 0.0],
+            radius: 0.3,
+            critical: true,
+        };
+        let shaped = TargetPose {
+            shapes: Some(vec![head].into()),
+            ..target(5.0, 0.0)
+        };
+        let fly = |z, body: &TargetPose| {
+            let mut flight =
+                ProjectileFlight::new(helix(), [0.0, 1.0, z], [1.0, 0.0, 0.0], Some(1000)).unwrap();
+            (1001..1200)
+                .map(|tick| flight.advance(tick, &[(4, body.clone())], no_wall).unwrap())
+                .find(|step| step.end.is_some())
+                .unwrap()
+        };
+        assert_eq!(damage(&fly(0.4, &target(5.0, 0.0))), [(4, 40.0), (4, 80.0)]);
+        let by = fly(0.4, &shaped);
+        assert!(by.impacts.is_empty());
+        assert!((by.end.unwrap().point[0] - 100.0).abs() < 1e-9);
+        let struck = fly(0.0, &shaped);
+        assert_eq!(damage(&struck), [(4, 40.0), (4, 80.0)]);
+        assert!((struck.end.unwrap().point[0] - 4.7).abs() < 1e-9);
     }
 
     /// The Pulse Bomb sticks to the bot it hits (5 damage), rides along as
@@ -569,7 +610,7 @@ mod tests {
         let mut stuck = None;
         for tick in 1000..1100 {
             let step = flight
-                .advance(tick, &[(1, bot), (2, behind)], no_wall)
+                .advance(tick, &[(1, bot.clone()), (2, behind.clone())], no_wall)
                 .unwrap();
             assert!(step.end.is_none());
             if !step.impacts.is_empty() {
@@ -587,9 +628,11 @@ mod tests {
             bot.feet[0] += 0.05;
             let near = target(bot.feet[0] + 3.5, 2.5);
             let step = flight
-                .advance(tick, &[(1, bot), (2, behind), (3, near)], |_, _, _| {
-                    panic!("a stuck projectile sweeps nothing")
-                })
+                .advance(
+                    tick,
+                    &[(1, bot.clone()), (2, behind.clone()), (3, near)],
+                    |_, _, _| panic!("a stuck projectile sweeps nothing"),
+                )
                 .unwrap();
             if step.end.is_some() {
                 break step;
@@ -622,8 +665,11 @@ mod tests {
         )
         .unwrap();
         let bot = (1, target(0.0, 3.0));
-        let mut steps =
-            (1000..1200).map(|tick| flight.advance(tick, &[bot], cast(&world)).unwrap());
+        let mut steps = (1000..1200).map(|tick| {
+            flight
+                .advance(tick, std::slice::from_ref(&bot), cast(&world))
+                .unwrap()
+        });
         let step = steps
             .find(|step| step.end.is_some() || !step.impacts.is_empty())
             .unwrap();
@@ -641,7 +687,11 @@ mod tests {
         let mut flight =
             ProjectileFlight::new(quick, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], Some(999)).unwrap();
         let step = (1000..1100)
-            .map(|tick| flight.advance(tick, &[bot], no_wall).unwrap())
+            .map(|tick| {
+                flight
+                    .advance(tick, std::slice::from_ref(&bot), no_wall)
+                    .unwrap()
+            })
             .find(|step| step.end.is_some())
             .unwrap();
         assert!(step.impacts.is_empty());

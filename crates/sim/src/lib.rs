@@ -10,6 +10,7 @@ pub mod bots;
 pub mod combat;
 pub mod controller;
 pub mod egress;
+pub mod hitboxes;
 pub mod hitscan;
 pub mod instance;
 pub mod match_flow;

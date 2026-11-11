@@ -21,6 +21,7 @@ use crate::{
     bots::{Bot, BotCatalog, BotWalk},
     combat::{BodyCombat, MeleeState, RespawnTimes, melee_states},
     controller::Controller,
+    hitboxes::HitboxCatalog,
     notices::switch_notices,
     pools::PoolCatalog,
     projectiles::{BioticField, FIELD_ENTITY, FieldFrames},
@@ -99,6 +100,8 @@ pub struct SceneAssets {
     bots: BotCatalog,
     movers: Arc<MoverCatalog>,
     eyes: Arc<EyeCatalog>,
+    /// Each body's hit shapes (`game_hitboxes_174.json`).
+    hitboxes: Arc<HitboxCatalog>,
     respawns: RespawnTimes,
     melee: Arc<[MeleeState]>,
     /// The Biotic Field, when its graph reads; without it no field opens.
@@ -122,6 +125,7 @@ pub struct PreparedScene {
     bot_scripts: BotScripts,
     movers: Arc<MoverCatalog>,
     eyes: Arc<EyeCatalog>,
+    hitboxes: Arc<HitboxCatalog>,
     /// The mode's respawn time for heroes.
     respawn: Duration,
     heroes: Arc<HeroCatalog>,
@@ -188,6 +192,7 @@ impl SceneAssets {
                 fallback,
             )?),
             eyes: Arc::new(EyeCatalog::load(data.join("game_eyes_174.json"), fallback)?),
+            hitboxes: Arc::new(HitboxCatalog::load(data.join("game_hitboxes_174.json"))?),
             respawns: RespawnTimes::load(data.join("game_respawns_174.json"))?,
             stats: Arc::new(StatsCatalog::load(data.join("game_stats_174.json"))?),
             heroes: Arc::new(heroes),
@@ -324,6 +329,7 @@ impl SceneAssets {
             bot_scripts,
             movers: Arc::clone(&self.movers),
             eyes: Arc::clone(&self.eyes),
+            hitboxes: Arc::clone(&self.hitboxes),
             heroes: Arc::clone(&self.heroes),
             pools: Arc::clone(&self.pools),
             stats: Arc::clone(&self.stats),
@@ -547,6 +553,9 @@ impl PreparedScene {
         &mut self.bots
     }
 
+    /// A bot's body as a target: the capsule of its mover's standing height
+    /// and radius (combat.py `_targets`), facing its yaw as the clients see
+    /// it, hit by its body's shapes when the data has them.
     pub(crate) fn bot_target(&self, bot: &Bot) -> crate::hitscan::TargetPose {
         let settings = self.movers.for_body(Some(bot.spawn.body));
         crate::hitscan::TargetPose {
@@ -554,6 +563,8 @@ impl PreparedScene {
             height: settings.stand_height,
             radius: settings.stand_radius,
             eye: crate::bots::BOT_EYE,
+            yaw: bot.facing(),
+            shapes: self.hitboxes.for_body(bot.spawn.body),
         }
     }
 
@@ -568,7 +579,9 @@ impl PreparedScene {
     }
 
     /// A player's body as a target (combat.py `_targets`): a capsule from
-    /// the feet, crouched or standing, with the mover's standing radius.
+    /// the feet, crouched or standing, with the mover's standing radius. It
+    /// keeps the capsule even where the data has the hero's hit shapes: they
+    /// are a rest pose, which cannot follow a crouch or an animation.
     pub(crate) fn player_target(
         &self,
         hero: &Hero,
@@ -585,6 +598,8 @@ impl PreparedScene {
             },
             radius: settings.stand_radius,
             eye: self.eyes.for_body(hero.body).height(crouched),
+            yaw: 0.0,
+            shapes: None,
         }
     }
 

@@ -3,37 +3,114 @@
 //! Ports target rewind and direct-hit selection from ow174/game/combat.py.
 //! Target eligibility and damage delivery belong to the match. Capsule and
 //! static intersections use the existing collision kernels.
+//!
+//! Beyond the reference (which hit every body as one capsule): a body with
+//! hit shapes ([`crate::hitboxes`]) is hit by them, turned by its facing,
+//! and a hit is critical when the shape it enters first is. Only bots have
+//! shapes for now: a player's body keeps the capsule (the shapes are a rest
+//! pose, which cannot follow a crouch or an animation).
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, f64::consts::PI, sync::Arc};
 
 use orpheus_physics::{
     collision::index::IndexError,
-    static_ray::{Vec3, capsule_entry_distance},
+    static_ray::{Vec3, capsule_entry_distance, segment_distance},
 };
 use orpheus_script::weapons::HitDefinition;
 use orpheus_wire::commands::Command;
+
+use crate::hitboxes::HitShape;
 
 pub const DEFAULT_REACH: f64 = 200.0;
 const HISTORY: usize = 64;
 const HEAD_BELOW_EYE: f64 = 0.2;
 const ANGLE_STEP: f64 = std::f64::consts::TAU / 65536.0;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TargetPose {
     pub feet: Vec3,
     pub height: f64,
     pub radius: f64,
     pub eye: f64,
+    /// The facing in radians: forward is `[sin, 0, cos]`.
+    pub yaw: f64,
+    /// The body's hit shapes in its frame; `None`: the capsule from the
+    /// feet to `height`, critical from `eye` less 0.2 m up.
+    pub shapes: Option<Arc<[HitShape]>>,
 }
 
 impl TargetPose {
-    pub(crate) fn segment(self) -> [Vec3; 2] {
+    pub(crate) fn segment(&self) -> [Vec3; 2] {
         let [x, y, z] = self.feet;
         [
             [x, y + self.radius, z],
             [x, y + self.radius.max(self.height - self.radius), z],
         ]
     }
+
+    /// A point of the body's frame in the world: turned by the facing about
+    /// the feet (the frame's +Z to `[sin yaw, 0, cos yaw]`).
+    fn place(&self, [x, y, z]: Vec3) -> Vec3 {
+        let (sin, cos) = self.yaw.sin_cos();
+        let [fx, fy, fz] = self.feet;
+        [fx + x * cos + z * sin, fy + y, fz - x * sin + z * cos]
+    }
+
+    /// The body's shapes in the world: segment ends, radius, critical.
+    fn placed(&self) -> impl Iterator<Item = (Vec3, Vec3, f64, bool)> + '_ {
+        self.shapes
+            .iter()
+            .flat_map(|shapes| shapes.iter())
+            .map(|shape| {
+                (
+                    self.place(shape.a),
+                    self.place(shape.b),
+                    shape.radius,
+                    shape.critical,
+                )
+            })
+    }
+
+    /// Where a ray first enters the body within `length`: the distance, and
+    /// for a body with shapes whether the shape it enters is critical (the
+    /// nearest shape; the earlier one of the list on a tie). `None` for the
+    /// capsule, whose head zone the caller applies.
+    pub(crate) fn entry(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        length: f64,
+    ) -> Option<(f64, Option<bool>)> {
+        if self.shapes.is_none() {
+            let [a, b] = self.segment();
+            return capsule_entry_distance(origin, direction, length, a, b, self.radius)
+                .map(|distance| (distance, None));
+        }
+        self.placed()
+            .filter_map(|(a, b, radius, critical)| {
+                capsule_entry_distance(origin, direction, length, a, b, radius)
+                    .map(|distance| (distance, Some(critical)))
+            })
+            .min_by(|left, right| left.0.total_cmp(&right.0))
+    }
+
+    /// How far a point is from the body's surface, 0 inside it.
+    pub(crate) fn surface_distance(&self, point: Vec3) -> f64 {
+        if self.shapes.is_none() {
+            let [a, b] = self.segment();
+            return (segment_distance(point, a, b) - self.radius).max(0.0);
+        }
+        self.placed()
+            .map(|(a, b, radius, _)| (segment_distance(point, a, b) - radius).max(0.0))
+            .fold(f64::INFINITY, f64::min)
+    }
+}
+
+/// The angle a `share` of the way from `from` to `to` along the shorter
+/// turn.
+fn turned(from: f64, to: f64, share: f64) -> f64 {
+    let turn = (to - from + PI).rem_euclid(2.0 * PI) - PI;
+    from + turn * share
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -97,6 +174,9 @@ impl TargetHistory {
         self.poses.push_back((tick, pose));
     }
 
+    /// The body as a view saw it: its feet and facing between the two
+    /// retained poses around the view's time, the posture (height, eye) of
+    /// the nearer one, the radius and shapes of the body now.
     pub fn at(&self, view: ViewFrame, current: TargetPose) -> Option<TargetPose> {
         if self
             .replacement
@@ -111,9 +191,9 @@ impl TargetHistory {
             upper.checked_sub(1).and_then(|index| self.poses.get(index)),
             self.poses.get(upper),
         ) {
-            (Some(&(earlier_tick, earlier)), Some(&(later_tick, later))) => {
-                let share = -view.distance_to(earlier_tick)
-                    / f64::from(later_tick.wrapping_sub(earlier_tick));
+            (Some((earlier_tick, earlier)), Some((later_tick, later))) => {
+                let share = -view.distance_to(*earlier_tick)
+                    / f64::from(later_tick.wrapping_sub(*earlier_tick));
                 let posture = if share < 0.5 { earlier } else { later };
                 TargetPose {
                     feet: std::array::from_fn(|axis| {
@@ -121,12 +201,14 @@ impl TargetHistory {
                     }),
                     height: posture.height,
                     eye: posture.eye,
+                    yaw: turned(earlier.yaw, later.yaw, share),
                     ..current
                 }
             }
-            (Some(&(_, pose)), None) | (None, Some(&(_, pose))) => TargetPose {
+            (Some((_, pose)), None) | (None, Some((_, pose))) => TargetPose {
                 radius: current.radius,
-                ..pose
+                shapes: current.shapes,
+                ..pose.clone()
             },
             (None, None) => current,
         };
@@ -171,8 +253,10 @@ impl HitscanShot {
         }
     }
 
-    /// Find the first eligible capsule before any blocking map surface.
-    /// Iteration order breaks exact ties, as it does in the reference.
+    /// Find the first eligible body before any blocking map surface: the
+    /// nearest entry into a capsule or, for a body with them, into one of
+    /// its shapes. Iteration order breaks exact ties, as it does in the
+    /// reference.
     pub fn resolve(
         &self,
         targets: impl IntoIterator<Item = (u32, TargetPose)>,
@@ -181,22 +265,21 @@ impl HitscanShot {
         if !self.hit.amount.is_finite() || self.hit.amount <= 0.0 {
             return Ok(None);
         }
-        let mut nearest = None;
+        let mut nearest: Option<(f64, u32, TargetPose, Option<bool>)> = None;
         for (entity, pose) in targets {
-            let [a, b] = pose.segment();
-            let length = nearest.map_or(self.reach, |(distance, _, _)| distance);
-            if let Some(distance) =
-                capsule_entry_distance(self.origin, self.direction, length, a, b, pose.radius)
-            {
+            let length = nearest
+                .as_ref()
+                .map_or(self.reach, |(distance, ..)| *distance);
+            if let Some((distance, critical)) = pose.entry(self.origin, self.direction, length) {
                 if nearest.is_none() || distance < length {
-                    nearest = Some((distance, entity, pose));
+                    nearest = Some((distance, entity, pose, critical));
                     if distance == 0.0 {
                         break;
                     }
                 }
             }
         }
-        let Some((distance, entity, pose)) = nearest else {
+        let Some((distance, entity, pose, critical)) = nearest else {
             return Ok(None);
         };
         if distance > 0.0
@@ -205,8 +288,10 @@ impl HitscanShot {
         {
             return Ok(None);
         }
-        let impact_y = self.origin[1] + self.direction[1] * distance;
-        let head = impact_y >= pose.feet[1] + pose.eye - HEAD_BELOW_EYE;
+        let head = critical.unwrap_or_else(|| {
+            let impact_y = self.origin[1] + self.direction[1] * distance;
+            impact_y >= pose.feet[1] + pose.eye - HEAD_BELOW_EYE
+        });
         Ok(Some(Impact {
             entity,
             distance,
@@ -249,6 +334,8 @@ mod tests {
             height: 1.8,
             radius: 0.5,
             eye: 1.55,
+            yaw: 0.0,
+            shapes: None,
         }
     }
 
@@ -273,7 +360,7 @@ mod tests {
         ];
         let resolve = |world: &TriangleIndex| {
             direct
-                .resolve(targets, |origin, direction, distance| {
+                .resolve(targets.clone(), |origin, direction, distance| {
                     world
                         .cast_ray(origin, direction, distance, MOVER)
                         .map(|hit| hit.map(|hit| hit.distance))
@@ -298,7 +385,7 @@ mod tests {
             ..direct
         };
         let hit = headshot
-            .resolve(targets, |_, _, _| Ok(None))
+            .resolve(targets.clone(), |_, _, _| Ok(None))
             .unwrap()
             .unwrap();
         assert_eq!(hit.entity, 2);
@@ -310,7 +397,7 @@ mod tests {
         };
         assert_eq!(
             inside
-                .resolve(targets, |_, _, _| panic!("inside capsule"))
+                .resolve(targets.clone(), |_, _, _| panic!("inside capsule"))
                 .unwrap()
                 .unwrap()
                 .distance,
@@ -356,10 +443,10 @@ mod tests {
         };
         let mut history = TargetHistory::new(Some(u32::MAX));
         history.record(u32::MAX, before);
-        history.record(1, crouched);
+        history.record(1, crouched.clone());
         history.record(0, standing(50.0, 0.0)); // a late sample cannot reorder the history
         let pose = history
-            .at(ViewFrame::from_command(&command, 16_000), crouched)
+            .at(ViewFrame::from_command(&command, 16_000), crouched.clone())
             .unwrap();
         assert_eq!(pose.feet, [10.5, 0.0, 0.0]);
         assert_eq!((pose.height, pose.eye), (1.2, 1.05));
@@ -400,7 +487,7 @@ mod tests {
                         },
                         16_000,
                     ),
-                    current,
+                    current.clone(),
                 )
                 .unwrap()
         };
@@ -409,6 +496,132 @@ mod tests {
         assert_eq!(seen(100).feet, [69.0, 0.0, 0.0]);
     }
 
+    fn sphere(centre: Vec3, radius: f64, critical: bool) -> HitShape {
+        HitShape {
+            a: centre,
+            b: centre,
+            radius,
+            critical,
+        }
+    }
+
+    fn shaped(feet: Vec3, yaw: f64, shapes: &[HitShape]) -> TargetPose {
+        TargetPose {
+            feet,
+            yaw,
+            shapes: Some(shapes.into()),
+            ..standing(0.0, 0.0)
+        }
+    }
+
+    fn level(origin: Vec3, direction: Vec3) -> HitscanShot {
+        HitscanShot::along(origin, direction, 180.0, RIFLE)
+    }
+
+    fn first(shot: &HitscanShot, targets: &[(u32, TargetPose)]) -> Option<Impact> {
+        shot.resolve(targets.iter().cloned(), |_, _, _| Ok(None))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_body_with_shapes_is_hit_by_them_turned_by_its_facing() {
+        // An arm out to the body's right (+X), as the capsule would not
+        // have it.
+        let arm = [HitShape {
+            a: [0.4, 1.2, 0.0],
+            b: [0.9, 1.2, 0.0],
+            radius: 0.1,
+            critical: false,
+        }];
+        let shot = level([0.8, 1.2, -5.0], [0.0, 0.0, 1.0]);
+        let facing_ahead = shaped([0.0; 3], 0.0, &arm);
+        let hit = first(&shot, &[(1, facing_ahead)]).unwrap();
+        assert!((hit.distance - 4.9).abs() < 1e-9, "{hit:?}");
+        assert!(!hit.critical);
+        // A quarter turn swings the arm to -Z: the same shot passes by,
+        // where the capsule (radius 0.5) would not have hit either way.
+        let turned = shaped([0.0; 3], std::f64::consts::FRAC_PI_2, &arm);
+        assert!(first(&shot, &[(1, turned.clone())]).is_none());
+        let along_the_arm = level([-5.0, 1.2, -0.8], [1.0, 0.0, 0.0]);
+        let hit = first(&along_the_arm, &[(1, turned)]).unwrap();
+        assert!((hit.distance - 4.9).abs() < 1e-9, "{hit:?}");
+    }
+
+    #[test]
+    fn only_the_critical_shape_is_critical() {
+        let body = [
+            sphere([0.0, 1.2, 0.0], 0.4, false),
+            sphere([0.0, 1.9, 0.0], 0.15, true),
+        ];
+        let target = [(1, shaped([0.0, 0.0, 10.0], 0.0, &body))];
+        let at = |height| first(&level([0.0, height, 0.0], [0.0, 0.0, 1.0]), &target);
+        let head = at(1.9).unwrap();
+        assert!(head.critical);
+        assert_eq!(head.damage, 40.0);
+        assert!((head.distance - 9.85).abs() < 1e-9);
+        // Above the capsule's head line (eye 1.55 less 0.2) but on the body.
+        let chest = at(1.45).unwrap();
+        assert!(!chest.critical);
+        assert_eq!(chest.damage, 20.0);
+        assert!(at(2.1).is_none());
+    }
+
+    #[test]
+    fn the_nearest_shape_of_all_bodies_wins() {
+        // A shield arm in front of the head: the shot enters the arm first.
+        let body = [
+            sphere([0.0, 1.6, 0.0], 0.2, true),
+            sphere([0.0, 1.6, -0.5], 0.1, false),
+        ];
+        let near = shaped([0.0, 0.0, 10.0], 0.0, &body);
+        let shot = level([0.0, 1.6, 0.0], [0.0, 0.0, 1.0]);
+        let hit = first(&shot, &[(1, near.clone())]).unwrap();
+        assert!((hit.distance - 9.4).abs() < 1e-9);
+        assert!(!hit.critical);
+        // Turned around, the arm is behind the head.
+        let back = shaped([0.0, 0.0, 10.0], std::f64::consts::PI, &body);
+        let hit = first(&shot, &[(1, back)]).unwrap();
+        assert!((hit.distance - 9.8).abs() < 1e-9);
+        assert!(hit.critical);
+        // A capsule body in front of it takes the shot, by the eye rule: its
+        // top cap (1.3 m up, 0.5 m round) 0.4 m before its axis at 1.6 m.
+        let hit = first(&shot, &[(1, near), (2, standing(0.0, 8.0))]).unwrap();
+        assert_eq!((hit.entity, hit.critical), (2, true));
+        assert!((hit.distance - 7.6).abs() < 1e-9, "{hit:?}");
+    }
+
+    #[test]
+    fn history_rewinds_the_facing_along_the_shorter_turn() {
+        let body = [sphere([0.0, 1.0, 0.0], 0.3, false)];
+        let mut history = TargetHistory::new(None);
+        history.record(10, shaped([0.0; 3], 3.0, &body));
+        history.record(12, shaped([2.0, 0.0, 0.0], -3.0, &body));
+        let current = shaped([5.0, 0.0, 0.0], 1.0, &body);
+        let seen = |frame| {
+            let command = Command {
+                frame,
+                ..Command::default()
+            };
+            history
+                .at(ViewFrame::from_command(&command, 16_000), current.clone())
+                .unwrap()
+        };
+        let middle = seen(11);
+        assert_eq!(middle.feet, [1.0, 0.0, 0.0]);
+        // From 3.0 to -3.0 rad through pi, not through 0.
+        assert!(
+            (middle.yaw - std::f64::consts::PI).abs() < 1e-12,
+            "{}",
+            middle.yaw
+        );
+        assert_eq!(middle.shapes, current.shapes);
+        assert_eq!(seen(10).yaw, 3.0);
+        assert_eq!(seen(20).yaw, -3.0);
+    }
+
+    /// The reference's capsule rule (combat.py `ray_capsule`, the head from
+    /// the eye less 0.2 m), which players' bodies keep, on a Practice Range
+    /// bot's capsule. The bot itself is now hit by its shapes (below).
     #[test]
     #[ignore = "requires a derived 104319 Practice Range scene"]
     fn practice_capsule_hits_and_health_notices_match_reference_geometry() {
@@ -429,7 +642,10 @@ mod tests {
             .unwrap();
         let schemas = Schemas::game();
         let bot = scene.bots().iter().find(|bot| bot.spawn.team == 1).unwrap();
-        let target = scene.bot_target(bot);
+        let target = TargetPose {
+            shapes: None,
+            ..scene.bot_target(bot)
+        };
         let trace = |yaw, distance, height, frame| {
             let [x, y, z] = target.feet;
             let origin = if yaw == 0 {
@@ -443,9 +659,10 @@ mod tests {
                 ..Command::default()
             };
             HitscanShot::from_command(origin, &command, 180.0, RIFLE)
-                .resolve([(bot.entity, target)], |origin, direction, length| {
-                    scene.hitscan_wall(origin, direction, length)
-                })
+                .resolve(
+                    [(bot.entity, target.clone())],
+                    |origin, direction, length| scene.hitscan_wall(origin, direction, length),
+                )
                 .unwrap()
         };
         assert!(trace(0, 8.0, 1.0, 1000).is_none());
@@ -492,5 +709,59 @@ mod tests {
             vitals.clear_changed();
         }
         assert_eq!(vitals.death().unwrap().killer, source);
+    }
+
+    /// A Practice Range Training Bot as its hit shapes place it, facing its
+    /// yaw: a shot from its side passing 0.45 m in front of its centre at
+    /// 1.2 m (its upper chest) misses, where its capsule (0.5 m round) took
+    /// it; a shot at its head is critical, one at its chest is not.
+    #[test]
+    #[ignore = "requires a derived 104319 Practice Range scene"]
+    fn a_practice_bot_is_hit_by_its_shapes() {
+        use crate::scene_assets::SceneAssets;
+        use orpheus_content::maps::GameMap;
+
+        let scene = SceneAssets::load(orpheus_testkit::runtime_dir())
+            .unwrap()
+            .prepare(GameMap::practice_range())
+            .unwrap();
+        let bot = scene.bots().iter().find(|bot| bot.spawn.team == 1).unwrap();
+        let target = scene.bot_target(bot);
+        assert_eq!(target.shapes.as_ref().map(|shapes| shapes.len()), Some(7));
+        let (sin, cos) = target.yaw.sin_cos();
+        let forward = [sin, 0.0, cos];
+        // The body's +X, to one side.
+        let side = [cos, 0.0, -sin];
+        let point = |ahead: f64, aside: f64, height: f64| -> Vec3 {
+            std::array::from_fn(|axis| {
+                target.feet[axis]
+                    + forward[axis] * ahead
+                    + side[axis] * aside
+                    + if axis == 1 { height } else { 0.0 }
+            })
+        };
+        let shoot = |pose: &TargetPose, origin: Vec3, direction: Vec3| {
+            HitscanShot::along(origin, direction, 180.0, RIFLE)
+                .resolve([(bot.entity, pose.clone())], |_, _, _| Ok(None))
+                .unwrap()
+        };
+        let beside = point(0.45, -8.0, 1.2);
+        assert!(shoot(&target, beside, side).is_none());
+        let capsule = TargetPose {
+            shapes: None,
+            ..target.clone()
+        };
+        assert!(shoot(&capsule, beside, side).is_some());
+        let back = forward.map(|part| -part);
+        let head = shoot(&target, point(8.0, 0.0, 1.5), back).unwrap();
+        assert!(head.critical, "{head:?}");
+        assert_eq!(head.damage, 40.0);
+        // The head sphere: 0.44 m round, its centre 1.48 m up.
+        assert!((head.distance - 7.57).abs() < 0.01, "{head:?}");
+        let chest = shoot(&target, point(8.0, 0.0, 0.9), back).unwrap();
+        assert!(!chest.critical, "{chest:?}");
+        assert_eq!(chest.damage, 20.0);
+        // The chest sphere: 0.48 m round, its centre 0.87 m up.
+        assert!((chest.distance - 7.52).abs() < 0.01, "{chest:?}");
     }
 }

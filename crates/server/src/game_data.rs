@@ -13,6 +13,7 @@ pub const FILES: &[&str] = &[
     "economy_174.json",
     "game_queues_174.json",
     "game_eyes_174.json",
+    "game_hitboxes_174.json",
     "ai_spawners_174.json",
     "collision_props_174.json",
     "game_graphs_174.json.gz",

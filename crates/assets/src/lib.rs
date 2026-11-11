@@ -19,6 +19,7 @@ mod game_modes;
 mod game_queues;
 mod graphs;
 mod heroes;
+mod hitboxes;
 mod install;
 mod lists;
 mod map_chunk;
@@ -114,6 +115,10 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "game_movers",
         derive: heroes::movers::derive,
+    },
+    Derivation {
+        name: "hitboxes",
+        derive: hitboxes::derive,
     },
     Derivation {
         name: "game_stats",

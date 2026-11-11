@@ -225,6 +225,8 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
                 height: 1.8,
                 radius: 0.4,
                 eye: 1.55,
+                yaw: 0.0,
+                shapes: None,
             },
             dead,
         },
@@ -249,7 +251,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
     };
     let bodies = |free_for_all| -> Vec<u32> {
         combat
-            .player_candidates(SHOOTER, free_for_all, |slot| Some(slot.target.pose))
+            .player_candidates(SHOOTER, free_for_all, |slot| Some(slot.target.pose.clone()))
             .map(|(body, _)| body)
             .collect()
     };

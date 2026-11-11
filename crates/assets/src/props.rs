@@ -243,7 +243,7 @@ fn root_model(install: &Install, definition: u64) -> Option<u64> {
 
 /// The entity's STUModelComponent models and whether each is a client-only
 /// breakable (m_breakableConfig m_clientOnly = 1), in component map order.
-fn model_components(asset: &Asset) -> Vec<(u64, bool)> {
+pub(crate) fn model_components(asset: &Asset) -> Vec<(u64, bool)> {
     let Some(Stu::Map(entries)) = asset.root().and_then(|root| root.get("m_componentMap")) else {
         return Vec::new();
     };
@@ -268,7 +268,7 @@ fn model_components(asset: &Asset) -> Vec<(u64, bool)> {
 // ---- the model file
 
 /// Python-style slicing: `data[start:end]`, clamped to the data.
-fn slice(data: &[u8], start: usize, end: usize) -> &[u8] {
+pub(crate) fn slice(data: &[u8], start: usize, end: usize) -> &[u8] {
     let end = end.min(data.len());
     &data[start.min(end)..end]
 }
@@ -287,7 +287,7 @@ fn u32_at(data: &[u8], at: usize) -> Result<u32, String> {
     read::<4>(data, at).map(u32::from_le_bytes)
 }
 
-fn i64_at(data: &[u8], at: usize) -> Result<i64, String> {
+pub(crate) fn i64_at(data: &[u8], at: usize) -> Result<i64, String> {
     read::<8>(data, at).map(i64::from_le_bytes)
 }
 
@@ -297,7 +297,7 @@ fn f32_at(data: &[u8], at: usize) -> Result<f32, String> {
 
 /// The payload of the first top-level chunk of a tag in a chunked file
 /// (teChunkedData: 00C models), such as `MSTU`.
-fn chunk<'a>(data: &'a [u8], name: &[u8; 4]) -> Result<Option<&'a [u8]>, String> {
+pub(crate) fn chunk<'a>(data: &'a [u8], name: &[u8; 4]) -> Result<Option<&'a [u8]>, String> {
     if data.len() < 16 || u32_at(data, 0)? != CHUNK_MAGIC {
         return Err("not a chunked file".into());
     }

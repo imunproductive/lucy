@@ -278,6 +278,8 @@ fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
             height: 1.8,
             radius: 0.35,
             eye: 1.55,
+            yaw: 0.0,
+            shapes: None,
         },
         dead: false,
     };
@@ -285,7 +287,7 @@ fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
     let mut hits = Vec::new();
     for _ in 0..600 {
         scene.step_bots(tick);
-        combat.record_poses(&scene, &[player], tick);
+        combat.record_poses(&scene, std::slice::from_ref(&player), tick);
         let context = ShotContext {
             quanta: RETAIL_QUANTA,
             tick,

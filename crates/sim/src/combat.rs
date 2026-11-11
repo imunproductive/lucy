@@ -330,7 +330,7 @@ pub struct BotReplacement {
 }
 
 /// A player's body as a target this tick.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PlayerTarget {
     pub body: u32,
     pub team: u8,
@@ -426,7 +426,7 @@ impl Combat {
         let mut previous = std::mem::take(&mut self.players);
         self.players = players
             .iter()
-            .map(|&target| {
+            .map(|target| {
                 let mut history = previous
                     .iter()
                     .position(|slot| slot.target.body == target.body)
@@ -434,8 +434,11 @@ impl Combat {
                         || TargetHistory::new(Some(tick)),
                         |index| previous.swap_remove(index).history,
                     );
-                history.record(tick, target.pose);
-                PlayerSlot { target, history }
+                history.record(tick, target.pose.clone());
+                PlayerSlot {
+                    target: target.clone(),
+                    history,
+                }
             })
             .collect();
         for (target, bot) in self.targets.iter_mut().zip(scene.bots()) {
@@ -460,7 +463,7 @@ impl Combat {
         pose: impl Fn(&PlayerSlot) -> Option<TargetPose> + 'a,
     ) -> impl Iterator<Item = (u32, TargetPose)> + 'a {
         self.players.iter().filter_map(move |slot| {
-            let target = slot.target;
+            let target = &slot.target;
             (target.body != shooter.source
                 && (free_for_all || target.team != shooter.team)
                 && !target.dead)
@@ -529,7 +532,7 @@ impl Combat {
         let free_for_all = scene.map().free_for_all;
         let players: Vec<_> = self
             .player_candidates(shooter, free_for_all, |slot| {
-                slot.history.at(view, slot.target.pose)
+                slot.history.at(view, slot.target.pose.clone())
             })
             .collect();
         let bots = scene
@@ -558,7 +561,9 @@ impl Combat {
     }
 
     /// combat.py `_melee`: every enemy whose capsule, as the shooter's client
-    /// showed it, comes within the sphere takes the hit.
+    /// showed it, comes within the sphere takes the hit. Bots keep the
+    /// capsule here, as for heals: only shots and projectiles meet the hit
+    /// shapes.
     pub fn melee(
         &mut self,
         scene: &mut PreparedScene,
@@ -572,15 +577,15 @@ impl Combat {
         }
         let view = ViewFrame::from_command(&melee.command, context.quanta);
         let free_for_all = scene.map().free_for_all;
-        let reaches = |pose: TargetPose| {
+        let reaches = |pose: &TargetPose| {
             let [a, b] = pose.segment();
             segment_distance(melee.centre, a, b) - pose.radius <= melee.radius
         };
         let players: Vec<_> = self
             .player_candidates(shooter, free_for_all, |slot| {
-                slot.history.at(view, slot.target.pose)
+                slot.history.at(view, slot.target.pose.clone())
             })
-            .filter(|&(_, pose)| reaches(pose))
+            .filter(|(_, pose)| reaches(pose))
             .collect();
         let bots: Vec<_> = scene
             .bots()
@@ -589,7 +594,7 @@ impl Combat {
             .filter(|(bot, _)| eligible_bot(bot, shooter, free_for_all) && visible(bot.entity))
             .filter_map(|(bot, target)| {
                 let pose = target.history.at(view, scene.bot_target(bot))?;
-                reaches(pose).then_some(bot.entity)
+                reaches(&pose).then_some(bot.entity)
             })
             .collect();
         let frame = melee.command.frame;
@@ -620,7 +625,7 @@ impl Combat {
     ) -> io::Result<Option<FlightEnd>> {
         let free_for_all = scene.map().free_for_all;
         let candidates: Vec<_> = self
-            .player_candidates(shooter, free_for_all, |slot| Some(slot.target.pose))
+            .player_candidates(shooter, free_for_all, |slot| Some(slot.target.pose.clone()))
             .chain(
                 scene
                     .bots()
@@ -846,7 +851,8 @@ impl Combat {
     /// combat.py `heal_area`: the healer's own body and his teammates'
     /// (only his own in a free-for-all), players' and bots' alike, whose
     /// capsule comes within `radius` of `centre` (unverified: to the
-    /// capsule). The players' bodies come back for the match to heal; the
+    /// capsule; a bot keeps its capsule here though shots meet its hit
+    /// shapes). The players' bodies come back for the match to heal; the
     /// bots heal here, with what they took.
     pub fn heal_area(
         &mut self,
@@ -857,18 +863,18 @@ impl Combat {
         amount: f64,
     ) -> (Vec<u32>, Vec<(BotHit, f64)>) {
         let free_for_all = scene.map().free_for_all;
-        let reaches = |pose: TargetPose| {
+        let reaches = |pose: &TargetPose| {
             let [a, b] = pose.segment();
             segment_distance(centre, a, b) - pose.radius <= radius
         };
         let players = self
             .players
             .iter()
-            .map(|slot| slot.target)
+            .map(|slot| &slot.target)
             .filter(|target| {
                 let own = target.body & !0xff == healer.source & !0xff;
                 let ally = !free_for_all && target.team == healer.team;
-                (own || ally) && !target.dead && reaches(target.pose)
+                (own || ally) && !target.dead && reaches(&target.pose)
             })
             .map(|target| target.body)
             .collect();
@@ -877,7 +883,7 @@ impl Combat {
             let bot = &scene.bots()[slot];
             let own = bot.entity == healer.source;
             let ally = !free_for_all && bot.spawn.team == healer.team;
-            if bot.dead || !(own || ally) || !reaches(scene.bot_target(bot)) {
+            if bot.dead || !(own || ally) || !reaches(&scene.bot_target(bot)) {
                 continue;
             }
             let target = &mut self.targets[slot];

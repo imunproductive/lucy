@@ -11,7 +11,6 @@
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet, VecDeque},
-    f64::consts::TAU,
     sync::Arc,
 };
 
@@ -573,7 +572,7 @@ fn project_frame(
 fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShotKind, bool)> {
     let [x, y, z] = bot.position;
     let origin = [x, y + BOT_EYE, z];
-    let yaw = bot.yaw.round_ties_even() * TAU / 65536.0;
+    let yaw = bot.facing();
     let direction = [yaw.sin(), 0.0, yaw.cos()];
     let volleys = body.shot_volleys(shot);
     body.with_shot(shot, |node, mut evaluate| {

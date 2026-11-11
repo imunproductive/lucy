@@ -72,11 +72,13 @@ const TURN_RATE: f64 = YAW_UNITS / 6.0;
 const TURN_AFTER: f64 = 0.5;
 const CATCH_UP: u32 = 625;
 const EPSILON: f64 = 1.0e-9;
-/// A training bot's eye over its feet, where its shots start and its head
-/// zone ends (combat.py `EYE`, which Python used for every bot). Kept, not
-/// derived: the Training Bot body (1403) authors a first-person eye of 2.0,
-/// the top of its capsule, which is not where the reference aimed from or
-/// put the head (its tests pin 1.55); the other bot bodies author none.
+/// A training bot's eye over its feet, where its shots start (combat.py
+/// `EYE`, which Python used for every bot), and where the head zone of a bot
+/// body without hit shapes ends. Kept, not derived: the Training Bot body
+/// (1403) authors a first-person eye of 2.0, the top of its capsule, which
+/// is not where the reference aimed from (its tests pin 1.55); the other bot
+/// bodies author none. Bodies with hit shapes (every bot body in the data)
+/// take their critical zone from the shapes instead.
 pub const BOT_EYE: f64 = 1.55;
 
 /// A bot body's walk, from its mover (bots.py `mover_data`): run speed,
@@ -393,6 +395,12 @@ impl Bot {
             records_from: None,
             spawn,
         }
+    }
+
+    /// The facing the clients are sent (its yaw in 1/65536 turns, rounded),
+    /// in radians: forward is `[sin, 0, cos]`.
+    pub fn facing(&self) -> f64 {
+        self.yaw.round_ties_even() * consts::TAU / YAW_UNITS
     }
 
     pub(crate) fn attach_collision(
