@@ -16,12 +16,14 @@
 //! start plays Soldier: 76 instead; the AI heroes come into the world with
 //! the first player (the match flow's start), not before.
 
-use std::{io, time::Duration};
+use std::{cell::Cell, io, time::Duration};
 
 use orpheus_content::heroes::SOLDIER;
 use orpheus_lobby::login::Identity;
 use orpheus_sim::{
-    ai::{AiController, Difficulty, Goal, Random, Seen, Senses, pick_heroes, ticks},
+    ai::{
+        AiController, Difficulty, Goal, PATHS_PER_TICK, Random, Seen, Senses, pick_heroes, ticks,
+    },
     combat::PlayerHit,
     match_flow::{MatchFlow, Phase},
     replication::WorldDelivery,
@@ -142,7 +144,7 @@ fn goal(flow: &MatchFlow, team: u8) -> Goal {
 
 impl AiSeat {
     /// His tick: into the world with the first player, his hero, then his
-    /// command.
+    /// command, which he gives once his body has taken the last one.
     #[allow(clippy::too_many_arguments)]
     fn step(
         &mut self,
@@ -152,6 +154,7 @@ impl AiSeat {
         flow: &MatchFlow,
         slot: usize,
         seen: &[Seen],
+        paths: &Cell<usize>,
         tick: u32,
         now: Duration,
     ) -> io::Result<()> {
@@ -189,6 +192,15 @@ impl AiSeat {
             delivery.queue_game_message(tick, now, pick_message(viewer.entity, wanted));
             self.ask_again = tick + ticks(1.0);
         }
+        // The server takes a body's commands between its ticks, later than
+        // they're given when it is busy: he decides from where his body
+        // stands, so his next command waits until his body has taken the
+        // last (a command a tick when the server keeps up; frames between
+        // two commands are the body's last input held, as for a client's
+        // late commands).
+        if delivery.has_input_work() {
+            return Ok(());
+        }
         let me = delivery.combat_target(scene, team);
         let others: Vec<Seen> = seen
             .iter()
@@ -212,6 +224,7 @@ impl AiSeat {
             goal: goal(flow, team),
             home,
             navigation: scene.navigation(),
+            paths,
             sight: &sight,
         };
         let command = self.controller.command(&senses);
@@ -289,7 +302,8 @@ impl State {
     }
 
     /// Every AI hero's tick, in the rooms whose match flow started: what
-    /// he sees (the living bodies of the room), then his command.
+    /// he sees (the living bodies of the room), then his command; the
+    /// room's AI heroes share [`PATHS_PER_TICK`] new walks a tick.
     pub(super) fn drive_ai(&mut self, tick: u32, now: Duration) {
         let Self {
             rooms,
@@ -325,6 +339,7 @@ impl State {
                     });
                 }
             }
+            let paths = Cell::new(PATHS_PER_TICK);
             for (connection, peer) in peers.iter_mut() {
                 let (match_id, slot) = seats[connection];
                 let Peer {
@@ -338,7 +353,8 @@ impl State {
                 if match_id != id {
                     continue;
                 }
-                if let Err(error) = seat.step(delivery, room, scene, flow, slot, &seen, tick, now) {
+                let step = seat.step(delivery, room, scene, flow, slot, &seen, &paths, tick, now);
+                if let Err(error) = step {
                     tracing::warn!(
                         "[game] AI {} stopped: {error}",
                         room.players[slot].info.name

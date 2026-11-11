@@ -29,10 +29,10 @@
 //! reaction time per difficulty, the burst rhythm, the ranges, the health
 //! at which an AI falls back and the ability it uses then.
 
-use std::f64::consts::TAU;
+use std::{cell::Cell, f64::consts::TAU};
 
 use orpheus_core::tick::TICK_PERIOD;
-use orpheus_physics::nav::Navigation;
+use orpheus_physics::{mover::kinematics::poses, nav::Navigation};
 use orpheus_wire::commands::{Command, FIRE, JUMP};
 
 /// Ability 2 (E) on the command (logical button 36).
@@ -69,14 +69,23 @@ const HOLD: f64 = 1.2;
 /// How far an AI sees and shoots an enemy (assumption: Soldier: 76's
 /// damage falls off from 30 m).
 pub const ENGAGE_RANGE: f64 = 35.0;
-/// A new path at least this often, and when the goal moved this far
-/// (assumption).
+/// A walk is kept until it ends, the AI is stuck or its goal moves this
+/// far; a goal that moves (a hunted enemy) gets a new walk at most this
+/// often (assumption).
 const REPATH: f64 = 3.0;
 const GOAL_MOVED: f64 = 2.0;
-/// No progress for this long, by this much, means stuck: jump and find a
-/// new path (assumption; rule 127, bots jump to get around).
+/// At most this many new walks a tick for a room's AIs: a path over the
+/// navigation is an A* over the cells of its route (a few milliseconds in
+/// a release build, a hundred times that in a debug one), so AIs that set
+/// off together take turns (assumption).
+pub const PATHS_PER_TICK: usize = 1;
+/// No progress over this much of its body's walking, by this much, means
+/// stuck: jump and step aside for this much of its walking, to one side
+/// and to the other the next time, then find a new path (assumption; rule
+/// 127, bots jump to get around).
 const STUCK: f64 = 1.0;
 const STUCK_DISTANCE: f64 = 0.4;
+const SIDESTEP: f64 = 0.5;
 /// Falls back to its spawn below this share of its health, until it has
 /// this much again or the time is up (assumption; rule 128, bots retreat).
 pub const RETREAT_BELOW: f64 = 0.3;
@@ -267,6 +276,9 @@ pub struct Senses<'a> {
     /// Its team's spawn, where it falls back to.
     pub home: [f64; 3],
     pub navigation: Option<&'a Navigation>,
+    /// The new walks its room's AIs may still make this tick
+    /// ([`PATHS_PER_TICK`]); a new walk takes one.
+    pub paths: &'a Cell<usize>,
     /// Whether nothing of the map stands between two points.
     pub sight: &'a dyn Fn([f64; 3], [f64; 3]) -> bool,
 }
@@ -332,12 +344,22 @@ pub fn throttles(yaw: i32, direction: [f64; 2]) -> (i8, i8) {
 }
 
 /// The waypoint to walk to from `feet`: those within [`ARRIVE`] metres are
-/// passed, the last within [`HOLD`]; `None` once the last is reached.
+/// passed, the last within [`HOLD`], and any it has walked past (beyond it
+/// on the way from the waypoint before: a body that takes its commands far
+/// apart overshoots, and turning back would overshoot again); `None` once
+/// the last is passed.
 pub fn steer(feet: [f64; 3], waypoints: &[[f64; 3]], next: &mut usize) -> Option<[f64; 3]> {
     while let Some(&point) = waypoints.get(*next) {
         let last = *next + 1 == waypoints.len();
         let reach = if last { HOLD } else { ARRIVE };
-        if flat_distance(feet, point) > reach {
+        let walked_past = next
+            .checked_sub(1)
+            .and_then(|before| waypoints.get(before))
+            .is_some_and(|&from| {
+                let way = [point[0] - from[0], point[2] - from[2]];
+                (feet[0] - point[0]) * way[0] + (feet[2] - point[2]) * way[1] > 0.0
+            });
+        if flat_distance(feet, point) > reach && !walked_past {
             return Some(point);
         }
         *next += 1;
@@ -399,8 +421,16 @@ pub struct AiController {
     /// It falls back until this tick.
     retreat: Option<u32>,
     ability_ready: u32,
-    /// Where it was when it last made progress, and when.
+    /// Where it was when it last made progress, and the frames its body
+    /// walked since.
     progress: Option<([f64; 3], u32)>,
+    /// Its last command, and the frames of walking it gave its body.
+    last: Option<Command>,
+    walked: u32,
+    /// Stepping aside after it got stuck: the frames of walking left, and
+    /// the side; the side of the next time.
+    sidestep: Option<(u32, i8)>,
+    sidestep_side: i8,
     strafe: i8,
     strafe_until: u32,
     /// The current burst: firing until `burst.0`, then pausing until
@@ -425,6 +455,10 @@ impl AiController {
             retreat: None,
             ability_ready: 0,
             progress: None,
+            last: None,
+            walked: 0,
+            sidestep: None,
+            sidestep_side: 127,
             strafe: 127,
             strafe_until: 0,
             burst: (0, 0),
@@ -460,6 +494,8 @@ impl AiController {
             // Dead or not yet in the world: no input, as a client's.
             self.target = None;
             self.walk = None;
+            self.last = None;
+            self.walked = 0;
             return command;
         };
         if senses.body != self.body {
@@ -469,6 +505,8 @@ impl AiController {
             self.leaves = None;
             self.retreat = None;
             self.progress = None;
+            self.sidestep = None;
+            self.last = None;
             self.target = None;
         }
         let eye = [feet[0], feet[1] + senses.eye, feet[2]];
@@ -534,9 +572,25 @@ impl AiController {
                 .get_or_insert(tick + ticks(STAGGER * self.rank as f64)),
             None => u32::MAX,
         };
-        let heading = destination
-            .filter(|_| tick >= leaves)
-            .and_then(|goal| self.next_point(senses, feet, goal));
+        // Stepping aside after it got stuck, for that much of its walking.
+        let aside = match self.sidestep {
+            Some((left, side)) if left > self.walked => {
+                self.sidestep = Some((left - self.walked, side));
+                Some(side)
+            }
+            _ => {
+                self.sidestep = None;
+                None
+            }
+        };
+        let heading = match destination {
+            Some(goal) if tick >= leaves && aside.is_none() => self.next_point(senses, feet, goal),
+            Some(_) => None,
+            None => {
+                self.walk = None;
+                None
+            }
+        };
 
         // Where to look.
         match target {
@@ -556,11 +610,17 @@ impl AiController {
         }
 
         // How to move.
-        if let Some(point) = heading {
+        if let Some(side) = aside {
+            command.right = side;
+        } else if let Some(point) = heading {
             let direction = [point[0] - feet[0], point[2] - feet[2]];
             (command.forward, command.right) = throttles(command.yaw, direction);
-            if self.stuck(feet, tick) {
+            if self.stuck(feet) {
+                // Jump and step aside; a new walk from there.
                 command.buttons |= JUMP;
+                (command.forward, command.right) = (0, self.sidestep_side);
+                self.sidestep = Some((ticks(SIDESTEP), self.sidestep_side));
+                self.sidestep_side = -self.sidestep_side;
                 self.walk = None;
             }
         } else {
@@ -587,11 +647,17 @@ impl AiController {
 
         self.yaw = command.yaw;
         self.pitch = command.pitch;
+        // The frames between two commands are the body's last input held
+        // (`orpheus_physics::mover::kinematics::poses`): how far this one
+        // walks it.
+        let walking = |pose: &Command| pose.forward != 0 || pose.right != 0;
+        self.walked = poses(self.last, command).filter(walking).count() as u32;
+        self.last = Some(command);
         command
     }
 
     /// Its standing cell at the objective: the cells spread around it, one
-    /// per AI of the team, its own by rank.
+    /// per AI of the team, its own by rank. A new objective: a new walk.
     fn spot(&mut self, navigation: Option<&Navigation>, objective: [f64; 3]) -> [f64; 3] {
         if let Some((at, cell)) = self.spot {
             if flat_distance(at, objective) < GOAL_MOVED {
@@ -605,12 +671,16 @@ impl AiController {
             .get(self.rank % cells.len().max(1))
             .map_or(objective, |&cell| from_nav(cell));
         self.spot = Some((objective, cell));
+        self.walk = None;
         cell
     }
 
-    /// The point to walk to next on the way to `goal`, with a new walk
-    /// when there is none, the goal moved or the walk is old. `None` once
-    /// there.
+    /// The point to walk to next on the way to `goal`; `None` once there
+    /// or at the end of its walk (a goal off the walkable cells ends the
+    /// walk at the nearest one). A new walk when there is none, the goal
+    /// moved (at most every [`REPATH`] seconds while the walk goes on) or
+    /// the AI was pushed off the end of its walk, as the room's paths this
+    /// tick allow; until then the old walk, if any.
     fn next_point(
         &mut self,
         senses: &Senses<'_>,
@@ -618,51 +688,64 @@ impl AiController {
         goal: [f64; 3],
     ) -> Option<[f64; 3]> {
         let tick = senses.tick;
-        let fresh = self.walk.as_ref().is_some_and(|walk| {
-            flat_distance(walk.goal, goal) < GOAL_MOVED && tick < walk.made + ticks(REPATH)
+        let stale = self.walk.as_ref().is_none_or(|walk| {
+            let ended = walk.next >= walk.waypoints.len();
+            let moved = flat_distance(walk.goal, goal) >= GOAL_MOVED
+                && (ended || tick >= walk.made + ticks(REPATH));
+            let pushed = ended
+                && walk
+                    .waypoints
+                    .last()
+                    .is_some_and(|&end| flat_distance(feet, end) > HOLD + ARRIVE);
+            moved || pushed
         });
-        if !fresh {
+        if stale {
             if flat_distance(feet, goal) <= HOLD {
                 self.walk = None;
                 return None;
             }
-            let waypoints = senses
-                .navigation
-                .and_then(|navigation| navigation.path(to_nav(feet), to_nav(goal)))
-                .map(|walk| walk.waypoints.into_iter().map(from_nav).collect())
-                .unwrap_or_else(|| vec![goal]);
-            self.walk = Some(Walking {
-                goal,
-                waypoints,
-                // The first waypoint is where it stands: steering passes it.
-                next: 0,
-                made: tick,
-            });
+            if senses.paths.get() > 0 {
+                senses.paths.set(senses.paths.get() - 1);
+                let waypoints = senses
+                    .navigation
+                    .and_then(|navigation| navigation.path(to_nav(feet), to_nav(goal)))
+                    .map(|walk| walk.waypoints.into_iter().map(from_nav).collect())
+                    .unwrap_or_else(|| vec![goal]);
+                self.walk = Some(Walking {
+                    goal,
+                    waypoints,
+                    // The first waypoint is where it stands: steering passes it.
+                    next: 0,
+                    made: tick,
+                });
+            }
         }
-        let walk = self.walk.as_mut().expect("a walk");
-        let point = steer(feet, &walk.waypoints, &mut walk.next);
-        if point.is_none() {
-            // There: the walk ends; a later goal makes a new one.
-            self.walk = None;
-        }
-        point
+        let walk = self.walk.as_mut()?;
+        steer(feet, &walk.waypoints, &mut walk.next)
     }
 
-    /// Whether it made no progress for a while; each check that finds
-    /// progress restarts the clock.
-    fn stuck(&mut self, feet: [f64; 3], tick: u32) -> bool {
-        match self.progress {
-            Some((at, _)) if flat_distance(at, feet) >= STUCK_DISTANCE => {
-                self.progress = Some((feet, tick));
+    /// Whether its body's last second of walking moved it less than
+    /// [`STUCK_DISTANCE`]; progress starts the count again. The count is of
+    /// the frames its commands walked its body, not of ticks: a server
+    /// behind on its ticks has its body take fewer, farther apart commands,
+    /// which is no reason to think it stuck.
+    fn stuck(&mut self, feet: [f64; 3]) -> bool {
+        let walked = self.walked;
+        match &mut self.progress {
+            Some((at, _)) if flat_distance(*at, feet) >= STUCK_DISTANCE => {
+                self.progress = Some((feet, 0));
                 false
             }
-            Some((_, since)) if tick >= since + ticks(STUCK) => {
-                self.progress = Some((feet, tick));
-                true
+            Some((_, frames)) => {
+                *frames += walked;
+                if *frames >= ticks(STUCK) {
+                    self.progress = Some((feet, 0));
+                    return true;
+                }
+                false
             }
-            Some(_) => false,
             None => {
-                self.progress = Some((feet, tick));
+                self.progress = Some((feet, 0));
                 false
             }
         }

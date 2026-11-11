@@ -3063,6 +3063,7 @@ fn a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
         maps::{MapCatalog, ObjectiveKind},
         parameters::PICK_HERO,
     };
+    use orpheus_script::vm::Unknowns;
     use orpheus_sim::{
         ai::{Difficulty, ROSTER},
         match_flow::ASSAULT,
@@ -3073,11 +3074,15 @@ fn a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
     const SCALE: f64 = 0.25;
 
     let runtime = orpheus_testkit::runtime_dir();
-    let assets = Arc::new(
-        SceneAssets::load(&runtime)
-            .unwrap()
-            .with_collision_build(collision_build(orpheus_testkit::game_dir())),
-    );
+    let mut assets = SceneAssets::load(&runtime)
+        .unwrap()
+        .with_collision_build(collision_build(orpheus_testkit::game_dir()));
+    // The roster heroes' graphs still have gaps, and every body's graph
+    // `0B8B` reaches TrackStatTime (`STU_441B50E4`) on the ultimate's
+    // charge (`ULT_CHARGE` against `ULT_COST`): the bodies run them as a
+    // release build does.
+    assets.set_player_unknowns(Unknowns::Tolerate);
+    let assets = Arc::new(assets);
     let catalog = MapCatalog::load(runtime.join("data")).unwrap();
     let map = catalog
         .game_map(ANUBIS, ASSAULT, "Assault", false, &[6, 6])

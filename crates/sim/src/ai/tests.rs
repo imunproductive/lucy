@@ -1,6 +1,13 @@
+use std::{io, sync::Arc};
+
+use orpheus_content::{
+    heroes::SOLDIER,
+    maps::{MapCatalog, ObjectiveKind},
+};
 use serde_json::{Value, json};
 
 use super::*;
+use crate::{instance::RETAIL_QUANTA, match_flow::ASSAULT, scene_assets::SceneAssets};
 
 const FLOOR: f32 = 0.35;
 const SPEED: f64 = 5.5;
@@ -68,12 +75,18 @@ fn enemy(slot: usize, feet: [f64; 3]) -> Seen {
     }
 }
 
+/// New walks without a limit, for a controller alone in its room.
+fn unlimited() -> Cell<usize> {
+    Cell::new(usize::MAX)
+}
+
 fn senses<'a>(
     tick: u32,
     feet: [f64; 3],
     others: &'a [Seen],
     goal: Goal,
     navigation: Option<&'a Navigation>,
+    paths: &'a Cell<usize>,
     sight: &'a dyn Fn([f64; 3], [f64; 3]) -> bool,
 ) -> Senses<'a> {
     Senses {
@@ -87,6 +100,7 @@ fn senses<'a>(
         goal,
         home: [1.0, 0.0, 1.0],
         navigation,
+        paths,
         sight,
     }
 }
@@ -150,8 +164,10 @@ fn easier_ai_misses_its_aim_by_more() {
         let (yaw, pitch) = aim_at([0.0, 1.5, 0.0], others[0].chest());
         let most = (difficulty.aim_error() * 65536.0 / TAU).ceil() as i32;
         let mut total = 0.0;
+        let paths = unlimited();
         for tick in 0..400 {
-            let command = ai.command(&senses(tick, [0.0; 3], &others, Goal::Hold, None, &clear));
+            let now = senses(tick, [0.0; 3], &others, Goal::Hold, None, &paths, &clear);
+            let command = ai.command(&now);
             let (dy, dp) = (command.yaw - yaw, command.pitch - pitch);
             assert!(
                 dy.abs() <= most && dp.abs() <= most,
@@ -234,9 +250,11 @@ fn an_ai_fires_at_a_visible_enemy_after_its_reaction_time() {
     let others = [enemy(4, [0.0, 0.0, 15.0])];
     let mut ai = AiController::new(Difficulty::Hard, 0, 1, 1);
     let reaction = ticks(Difficulty::Hard.reaction());
+    let paths = unlimited();
     let fired: Vec<bool> = (0..200)
         .map(|tick| {
-            let command = ai.command(&senses(tick, [0.0; 3], &others, Goal::Hold, None, &clear));
+            let now = senses(tick, [0.0; 3], &others, Goal::Hold, None, &paths, &clear);
+            let command = ai.command(&now);
             command.buttons & FIRE != 0
         })
         .collect();
@@ -248,12 +266,15 @@ fn an_ai_fires_at_a_visible_enemy_after_its_reaction_time() {
     assert!(shots > 60 && shots < 200 - reaction as usize, "{shots}");
     let mut ai = AiController::new(Difficulty::Hard, 0, 1, 1);
     for tick in 0..200 {
-        let command = ai.command(&senses(tick, [0.0; 3], &others, Goal::Hold, None, &blind));
+        let now = senses(tick, [0.0; 3], &others, Goal::Hold, None, &paths, &blind);
+        let command = ai.command(&now);
         assert_eq!(command.buttons & FIRE, 0);
     }
     assert_eq!(ai.target(), None);
 }
 
+/// Waypoints within reach are passed, and so are those walked past (a
+/// body that takes its commands far apart overshoots them).
 #[test]
 fn steering_passes_reached_waypoints() {
     let waypoints = [[0.0, 0.0, 0.0], [5.0, 0.0, 0.0], [5.0, 0.0, 5.0]];
@@ -269,6 +290,13 @@ fn steering_passes_reached_waypoints() {
     );
     assert_eq!(next, 2);
     assert_eq!(steer([5.0, 0.0, 4.0], &waypoints, &mut next), None);
+    // 1.5 m past the corner, then 2 m past the end.
+    let mut next = 1;
+    assert_eq!(
+        steer([6.5, 0.0, 0.3], &waypoints, &mut next),
+        Some(waypoints[2])
+    );
+    assert_eq!(steer([5.0, 0.0, 7.0], &waypoints, &mut next), None);
 }
 
 /// From tile 0 to an objective on tile 3 the AI walks round the wall
@@ -281,6 +309,7 @@ fn an_ai_follows_the_navigation_path_to_the_objective() {
     let mut ai = AiController::new(Difficulty::Easy, 0, 1, 3);
     let mut feet = [2.5, 0.35, 2.5];
     let mut arrived = None;
+    let paths = unlimited();
     for tick in 0..2000 {
         let command = ai.command(&senses(
             tick,
@@ -288,6 +317,7 @@ fn an_ai_follows_the_navigation_path_to_the_objective() {
             &[],
             Goal::Objective(objective),
             Some(&nav),
+            &paths,
             &clear,
         ));
         if command.forward == 0 && command.right == 0 && tick > 0 {
@@ -320,6 +350,7 @@ fn a_team_spreads_over_the_objective_and_leaves_staggered() {
         let mut ai = AiController::new(Difficulty::Medium, rank, 3, 9);
         let mut feet = start;
         let mut first = None;
+        let paths = unlimited();
         for tick in 0..3000 {
             let command = ai.command(&senses(
                 tick,
@@ -327,6 +358,7 @@ fn a_team_spreads_over_the_objective_and_leaves_staggered() {
                 &[],
                 Goal::Objective(objective),
                 Some(&nav),
+                &paths,
                 &clear,
             ));
             let moving = command.forward != 0 || command.right != 0;
@@ -357,7 +389,9 @@ fn a_hurt_ai_falls_back_to_its_spawn() {
     let objective = [20.0, 0.0, 0.0];
     let mut ai = AiController::new(Difficulty::Medium, 0, 1, 5);
     let feet = [10.0, 0.0, 0.0];
-    let mut hurt = senses(10, feet, &[], Goal::Objective(objective), None, &clear);
+    let paths = unlimited();
+    let goal = Goal::Objective(objective);
+    let mut hurt = senses(10, feet, &[], goal, None, &paths, &clear);
     hurt.health = 0.2;
     let command = ai.command(&hurt);
     assert!(ai.retreating());
@@ -367,7 +401,7 @@ fn a_hurt_ai_falls_back_to_its_spawn() {
     assert!(step[0] < feet[0]);
     hurt.tick = 11;
     assert_eq!(ai.command(&hurt).buttons & ABILITY_2, 0);
-    let mut healed = senses(12, feet, &[], Goal::Objective(objective), None, &clear);
+    let mut healed = senses(12, feet, &[], goal, None, &paths, &clear);
     healed.health = 0.9;
     let command = ai.command(&healed);
     assert!(!ai.retreating());
@@ -380,12 +414,119 @@ fn a_hurt_ai_falls_back_to_its_spawn() {
 fn without_an_objective_an_ai_hunts_and_dead_it_idles() {
     let others = [enemy(4, [0.0, 0.0, 80.0]), enemy(5, [0.0, 0.0, -50.0])];
     let mut ai = AiController::new(Difficulty::Hard, 0, 1, 2);
-    let command = ai.command(&senses(0, [0.0; 3], &others, Goal::Hunt, None, &clear));
+    let paths = unlimited();
+    let command = ai.command(&senses(
+        0,
+        [0.0; 3],
+        &others,
+        Goal::Hunt,
+        None,
+        &paths,
+        &clear,
+    ));
     assert!(walk([0.0; 3], &command)[2] < 0.0);
-    let mut dead = senses(1, [0.0; 3], &others, Goal::Hunt, None, &clear);
+    let mut dead = senses(1, [0.0; 3], &others, Goal::Hunt, None, &paths, &clear);
     dead.feet = None;
     let command = ai.command(&dead);
     assert_eq!((command.forward, command.right, command.buttons), (0, 0, 0));
+}
+
+/// A room's AIs share their new walks of a tick: with one left, the first
+/// AI to need a walk sets off and the second stands until the next tick.
+#[test]
+fn the_ais_of_a_room_take_turns_making_walks() {
+    let nav = ring();
+    let objective = [11.5, 0.35, 11.5];
+    let start = [2.5, 0.35, 2.5];
+    let mut first = AiController::new(Difficulty::Easy, 0, 1, 1);
+    let mut second = AiController::new(Difficulty::Easy, 0, 1, 2);
+    let moving = |command: Command| command.forward != 0 || command.right != 0;
+    for (tick, expected) in [(0, [true, false]), (1, [true, true])] {
+        let paths = Cell::new(PATHS_PER_TICK);
+        let goal = Goal::Objective(objective);
+        let room = senses(tick, start, &[], goal, Some(&nav), &paths, &clear);
+        let commands = [first.command(&room), second.command(&room)];
+        assert_eq!(commands.map(moving), expected, "tick {tick}");
+        assert_eq!(paths.get(), 0);
+    }
+}
+
+/// A goal off the walkable cells (a hunted enemy on a ledge) ends its walk
+/// on the nearest cell: the AI stands there and makes no new walk while
+/// the goal stays, but one when it is pushed off the end of its walk.
+#[test]
+fn a_walk_that_ends_short_of_its_goal_is_made_once() {
+    let nav = ring();
+    // 2 m past the ring's edge at x 16; the nearest cell's centre is
+    // (15.5, 4.5). Out of sight, so the AI walks without shooting.
+    let others = [enemy(4, [17.5, 0.35, 4.5])];
+    let paths = Cell::new(100);
+    let mut ai = AiController::new(Difficulty::Easy, 0, 1, 4);
+    let mut feet = [2.5, 0.35, 2.5];
+    let mut standing = 0;
+    for tick in 0..1000 {
+        let now = senses(tick, feet, &others, Goal::Hunt, Some(&nav), &paths, &blind);
+        let command = ai.command(&now);
+        if command.forward == 0 && command.right == 0 {
+            standing += 1;
+        }
+        feet = walk(feet, &command);
+    }
+    assert!(flat_distance(feet, [15.5, 0.35, 4.5]) <= HOLD, "{feet:?}");
+    assert!(standing > 500, "{standing}");
+    assert_eq!(paths.get(), 99);
+    // Pushed 3 m back: a new walk to the same cell.
+    feet[0] -= 3.0;
+    let now = senses(1000, feet, &others, Goal::Hunt, Some(&nav), &paths, &blind);
+    let command = ai.command(&now);
+    assert!(walk(feet, &command)[0] > feet[0]);
+    assert_eq!(paths.get(), 98);
+}
+
+/// Stuck is a second of its body's walking without progress, however far
+/// apart its commands are (a server behind on its ticks): it jumps and
+/// steps aside for half a second of walking, to the other side the next
+/// time, then walks on; a body that moves isn't stuck.
+#[test]
+fn stuck_counts_the_frames_walked_not_ticks() {
+    let nav = ring();
+    let objective = [11.5, 0.35, 11.5];
+    let start = [2.5, 0.35, 2.5];
+    let paths = unlimited();
+    let goal = Goal::Objective(objective);
+    let aside = ticks(SIDESTEP) as usize;
+    for gap in [1, 100] {
+        let mut held = AiController::new(Difficulty::Easy, 0, 1, 6);
+        let commands: Vec<Command> = (0..200)
+            .map(|step| {
+                let now = senses(step * gap, start, &[], goal, Some(&nav), &paths, &clear);
+                held.command(&now)
+            })
+            .collect();
+        let jumps: Vec<usize> = (0..commands.len())
+            .filter(|&step| commands[step].buttons & JUMP != 0)
+            .collect();
+        assert_eq!(jumps.len(), 2, "gap {gap}: {jumps:?}");
+        assert_eq!(jumps[0], ticks(STUCK) as usize, "gap {gap}");
+        for (jump, side) in [(jumps[0], 127), (jumps[1], -127)] {
+            let stepping = &commands[jump..jump + aside];
+            assert!(
+                stepping
+                    .iter()
+                    .all(|command| (command.forward, command.right) == (0, side)),
+                "gap {gap}"
+            );
+            assert_eq!(commands[jump + aside].forward, 127, "gap {gap}");
+        }
+        let mut free = AiController::new(Difficulty::Easy, 0, 1, 6);
+        let mut feet = start;
+        for step in 0..200 {
+            let now = senses(step * gap, feet, &[], goal, Some(&nav), &paths, &clear);
+            let command = free.command(&now);
+            assert_eq!(command.buttons & JUMP, 0, "gap {gap}");
+            feet = walk(feet, &command);
+        }
+    }
 }
 
 #[test]
@@ -400,4 +541,79 @@ fn a_team_gets_each_roster_hero_once() {
     }
     // More than the roster: it starts again.
     assert_eq!(pick_heroes(14, &[], &mut random).len(), 14);
+}
+
+/// An attacker walks from Temple of Anubis' attack spawn to its cell at
+/// point A over the map's navigation and collision: out of the spawn and
+/// down its stairs, and past the block on the way the navigation thinks
+/// clear (stuck there, it jumps and steps aside). Also when its body takes
+/// its commands 40 frames apart, as a server behind on its ticks has it
+/// (the frames between are its last input held): it overshoots its
+/// waypoints and walks on rather than turning back to them.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR); builds Anubis' collision once"]
+fn an_attacker_walks_from_the_anubis_spawn_to_point_a() {
+    const ANUBIS: u64 = 0x0800_0000_0000_005b;
+    let runtime = orpheus_testkit::runtime_dir();
+    let install = orpheus_testkit::game_dir();
+    let assets = SceneAssets::load(&runtime)
+        .unwrap()
+        .with_collision_build(Arc::new(move |map, name| {
+            let opened =
+                orpheus_assets::Install::open(&install, "enUS").map_err(io::Error::other)?;
+            let output =
+                orpheus_assets::collision_cache(&opened, map, name).map_err(io::Error::other)?;
+            Ok(output.bytes)
+        }));
+    let catalog = MapCatalog::load(runtime.join("data")).unwrap();
+    let map = catalog
+        .game_map(ANUBIS, ASSAULT, "Assault", false, &[6, 6])
+        .unwrap();
+    let point_a = map
+        .objectives_of(ObjectiveKind::Point)
+        .next()
+        .unwrap()
+        .position;
+    let scene = assets.prepare(map).unwrap();
+    let body = scene.heroes().get(SOLDIER).unwrap().body;
+    let rays = scene.movement_index();
+    let dt = f64::from(RETAIL_QUANTA) / 1_000_000.0;
+    let sight = |from, to| scene.line_of_sight(from, to);
+    let paths = unlimited();
+    for gap in [1, 40] {
+        let mut mover = scene.player_spawn_mover(body, 1, 0).unwrap();
+        let spawn = mover.pose().position;
+        let mut ai = AiController::new(Difficulty::Easy, 0, 6, 1);
+        let mut frame = 0;
+        let arrived = loop {
+            frame += gap;
+            let feet = mover.pose().position;
+            assert!(frame < ticks(60.0), "gap {gap}: at {feet:?} after a minute");
+            let command = ai.command(&Senses {
+                tick: frame,
+                team: 1,
+                feet: Some(feet),
+                body: Some(1),
+                eye: 1.5,
+                health: 1.0,
+                others: &[],
+                goal: Goal::Objective(point_a),
+                home: spawn,
+                navigation: scene.navigation(),
+                paths: &paths,
+                sight: &sight,
+            });
+            if command.forward == 0 && command.right == 0 {
+                break feet;
+            }
+            let mut poses = mover.pending_poses(command);
+            mover
+                .step_pending(rays, &mut poses, dt, usize::MAX, |_, _| {})
+                .unwrap();
+        };
+        // At its cell within 6 m of the point, give or take a command's
+        // walk.
+        let left = flat_distance(arrived, point_a);
+        assert!(left < f64::from(SPREAD) + 3.0, "gap {gap}: {left} m from A");
+    }
 }
