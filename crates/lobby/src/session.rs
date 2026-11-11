@@ -23,6 +23,7 @@ use crate::{
     mode_rules::{self, MODE_RULES, RULES},
     passes, player_messages as player,
     presence::Presence,
+    progression,
     ranked::{LeaderboardPlaces, Ranked},
     templates::{CONFIG, IN_CONNECT, LOBBY, RetailTemplates},
     transport::{Event, LobbyMessage, LobbyTransport},
@@ -311,7 +312,10 @@ impl PreparedLogin {
             )?,
         ));
         let arcade = content.arcade.state(&profile, season, now)?;
-        let mut built = BTreeMap::from([((LOBBY, 20812), player::ux_states(&profile)?)]);
+        let mut built = BTreeMap::from([
+            ((LOBBY, 20812), player::ux_states(&profile)?),
+            ((LOBBY, 20813), progression::leave_policy(&profile)),
+        ]);
         for (crc, id, fields) in arcade
             .messages
             .into_iter()
@@ -341,9 +345,11 @@ impl PreparedLogin {
     }
 
     /// The state that can be refreshed while the client is connected, after
-    /// a dashboard edit: clock, menu config, card, events, Arcade,
-    /// endorsements, account features, currencies, boxes, collection,
-    /// competitive state and passes, then `content.party`. `live_messages`,
+    /// a dashboard edit or a match's result: clock, menu config, card,
+    /// events, Arcade, endorsements, account features, currencies, boxes,
+    /// level and experience, the leave policy (20813, new: Python sends it
+    /// only at login, from the capture), collection, competitive state and
+    /// passes, then `content.party`. `live_messages`,
     /// `ow174/content/__init__.py`.
     pub fn live_messages(
         &self,
@@ -402,9 +408,10 @@ impl PreparedLogin {
             24313,
             Fields::from([
                 (0x78, Value::Signed(profile.level)),
-                (0x80, Value::Unsigned(0)), // experience
+                (0x80, Value::Unsigned(profile.experience.max(0) as u64)),
             ]),
         ));
+        messages.push((LOBBY, 20813, progression::leave_policy(&profile)));
         messages.push((HERO_CATALOG, 24900, collection.hero_catalog(&profile)?));
         messages.extend(ranked.login_messages(
             &profile,

@@ -395,6 +395,8 @@ fn live_messages_follow_the_python_refresh_order() {
         profile.comp_points = 56;
         profile.league_tokens = 78;
         profile.level = 901;
+        profile.experience = 4321;
+        profile.leave_mask = 0b10;
         profile.server_date = "2024-02-29".into();
     }
     let prepared = PreparedLogin {
@@ -439,6 +441,8 @@ fn live_messages_follow_the_python_refresh_order() {
         (PROGRESSION, 24308),
         (PROGRESSION, 24309),
         (PROGRESSION, 24313),
+        // New: the leave policy after a match's result (progression.rs).
+        (LOBBY, 20813),
         (HERO_CATALOG, 24900),
     ];
     expected.extend(std::iter::repeat_n((RANKED, 36302), ratings));
@@ -460,6 +464,13 @@ fn live_messages_follow_the_python_refresh_order() {
     assert_eq!(value(24308), Value::Signed(56));
     assert_eq!(value(24309), Value::Signed(78));
     assert_eq!(value(24313), Value::Signed(901));
+    let level = &messages
+        .iter()
+        .find(|message| message.1 == 24313)
+        .unwrap()
+        .2;
+    assert_eq!(level[&0x80], Value::Unsigned(4321));
+    assert_eq!(value(20813), Value::Unsigned(0b10));
     let noon = crate::clock::server_time("2024-02-29", 0).unwrap();
     assert_eq!(value(36602), Value::Unsigned(noon));
     for (crc, id, fields) in messages {

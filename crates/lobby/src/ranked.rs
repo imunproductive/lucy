@@ -49,6 +49,7 @@ use serde_json::{Map, Value as Json};
 use crate::{
     accounts::{Profile, saved_integer},
     clock::{DAY, from_stu_datetime, stu_datetime},
+    progression::Outcome,
     templates::RetailTemplates,
     transport::LobbyMessage,
 };
@@ -86,6 +87,24 @@ const DAYS_INTO_SEASON: u64 = 7;
 const TIER_FLOORS: [u16; 6] = [1500, 2000, 2500, 3000, 3500, 4000];
 const PLACEMENT_MATCHES: u8 = 5;
 const EVENT_CARDS: [u64; 2] = [COMPETITIVE_CTF, LUCIO_CUP];
+/// A competitive win or loss moves the rating by this much. Rule 77: the
+/// formula is not public; a fixed step is the server's [assumption].
+const RATING_STEP: i64 = 25;
+/// Rule 73: new players get larger swings over their first 10-20 matches:
+/// twice the step over the queue's first 10 [assumption: the factor and the
+/// lower end].
+const NEW_PLAYER_MATCHES: u16 = 10;
+/// Rule 87: a competitive leaver loses 50.
+const LEAVER_RATING_LOSS: i64 = 50;
+/// Rule 76: Silver to Diamond demote after 5 games under the tier's
+/// minimum, Master and above at once.
+const DEMOTION_GAMES: i64 = 5;
+const PROTECTED_TIERS: std::ops::RangeInclusive<u8> = 1..=4;
+/// Rule 81: competitive points, 15 a win, 5 a draw, none for a loss; they
+/// stop at 6000 unspent.
+const WIN_POINTS: i64 = 15;
+const DRAW_POINTS: i64 = 5;
+pub const MAX_COMP_POINTS: i64 = 6000;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Queue {
@@ -161,6 +180,7 @@ pub struct MatchRank {
 
 struct Rating {
     skill: u16,
+    tier: u8,
     place: u16,
     placements_played: u8,
 }
@@ -171,6 +191,7 @@ impl Rating {
         let matches = matches_of(profile, queue)?;
         Ok(Self {
             skill,
+            tier: tier_of(profile, queue)?,
             place: places.get(&queue).copied().unwrap_or(0),
             placements_played: matches.min(u16::from(PLACEMENT_MATCHES)) as u8,
         })
@@ -183,7 +204,7 @@ impl Rating {
         MatchRank {
             skill_rating: self.skill,
             top_500_place: self.place,
-            tier: tier(self.skill),
+            tier: self.tier,
         }
     }
 
@@ -209,6 +230,89 @@ impl Rating {
 
 pub fn tier(rating: u16) -> u8 {
     TIER_FLOORS.partition_point(|&floor| rating >= floor) as u8
+}
+
+/// The tier the rank icon shows: the rating's, or the tier above it while
+/// a Silver to Diamond player is held there for his games under its minimum
+/// (rule 76). A hold the rating has left behind (the dashboard set it
+/// elsewhere) is not shown.
+pub fn tier_of(profile: &Profile, queue: Queue) -> io::Result<u8> {
+    let rated = tier(rating_of(profile, queue)?);
+    Ok(match held_tier(profile, queue)? {
+        Some((held, _)) if held == rated + 1 => held,
+        _ => rated,
+    })
+}
+
+/// The tier a player is held in, and his games under its minimum
+/// (`held_tiers`).
+fn held_tier(profile: &Profile, queue: Queue) -> io::Result<Option<(u8, i64)>> {
+    let Some(held) = profile.held_tiers.get(queue.name()) else {
+        return Ok(None);
+    };
+    let read = |key: &str| {
+        held.get(key)
+            .and_then(saved_integer)
+            .ok_or_else(|| invalid(format!("invalid held tier for {}", queue.name())))
+    };
+    Ok(Some((
+        u8::try_from(read("tier")?).unwrap_or(0),
+        read("games")?,
+    )))
+}
+
+/// A competitive match into the queue's rating (section 9), before the
+/// match is counted. A win or a loss moves it by the step, twice that over
+/// the queue's first matches (rule 73), a draw not at all (rule 73), and a
+/// leaver loses 50 (rule 87); it stays within 1-5000 (rule 73). The tier
+/// follows (rules 75, 76). Returns the change.
+pub fn rate(profile: &mut Profile, queue: Queue, outcome: Outcome, left: bool) -> io::Result<i64> {
+    let before = i64::from(rating_of(profile, queue)?);
+    let shown = tier_of(profile, queue)?;
+    let held = held_tier(profile, queue)?;
+    let step = if matches_of(profile, queue)? < NEW_PLAYER_MATCHES {
+        2 * RATING_STEP
+    } else {
+        RATING_STEP
+    };
+    let change = match outcome {
+        _ if left => -LEAVER_RATING_LOSS,
+        Outcome::Win => step,
+        Outcome::Loss => -step,
+        Outcome::Draw => 0,
+    };
+    let after = (before + change).clamp(1, MAX_RATING);
+    profile
+        .ratings
+        .insert(queue.name().into(), Json::from(after));
+    let rated = tier(after as u16);
+    let games = match held {
+        Some((tier, games)) if tier == shown => games + 1,
+        _ => 1,
+    };
+    if rated < shown && PROTECTED_TIERS.contains(&shown) && games < DEMOTION_GAMES {
+        profile.held_tiers.insert(
+            queue.name().into(),
+            serde_json::json!({"tier": shown, "games": games}),
+        );
+    } else {
+        profile.held_tiers.remove(queue.name());
+    }
+    Ok(after - before)
+}
+
+/// Rule 81: the match's competitive points. Returns those given.
+pub fn award_points(profile: &mut Profile, outcome: Outcome) -> i64 {
+    let points = match outcome {
+        Outcome::Win => WIN_POINTS,
+        Outcome::Draw => DRAW_POINTS,
+        Outcome::Loss => 0,
+    };
+    let before = profile.comp_points;
+    if before < MAX_COMP_POINTS {
+        profile.comp_points = (before + points).min(MAX_COMP_POINTS);
+    }
+    profile.comp_points - before
 }
 
 pub fn rating_of(profile: &Profile, queue: Queue) -> io::Result<u16> {
@@ -646,6 +750,114 @@ mod tests {
         assert_eq!(rating_of(&profile, Queue::Tank).unwrap(), 5000);
         profile.matches.insert("tank".into(), json!(-5));
         assert_eq!(matches_of(&profile, Queue::Tank).unwrap(), 0);
+    }
+
+    /// Rule 73: a win and a loss move the rating by the step, twice that
+    /// over the queue's first 10 matches, a draw not at all, within 1-5000;
+    /// rule 87: a leaver loses 50.
+    #[test]
+    fn competitive_results_move_the_rating() {
+        let mut profile = Profile::default();
+        profile.ratings.insert("support".into(), json!(2000));
+        profile.matches.insert("support".into(), json!(9));
+        let support = Queue::Support;
+        assert_eq!(
+            rate(&mut profile, support, Outcome::Win, false).unwrap(),
+            50
+        );
+        profile.matches.insert("support".into(), json!(10));
+        assert_eq!(
+            rate(&mut profile, support, Outcome::Win, false).unwrap(),
+            25
+        );
+        assert_eq!(
+            rate(&mut profile, support, Outcome::Draw, false).unwrap(),
+            0
+        );
+        assert_eq!(
+            rate(&mut profile, support, Outcome::Loss, false).unwrap(),
+            -25
+        );
+        assert_eq!(
+            rate(&mut profile, support, Outcome::Win, true).unwrap(),
+            -50
+        );
+        assert_eq!(rating_of(&profile, support).unwrap(), 2000);
+
+        profile.ratings.insert("support".into(), json!(4990));
+        assert_eq!(
+            rate(&mut profile, support, Outcome::Win, false).unwrap(),
+            10
+        );
+        profile.ratings.insert("support".into(), json!(20));
+        assert_eq!(
+            rate(&mut profile, support, Outcome::Win, true).unwrap(),
+            -19
+        );
+        assert_eq!(rating_of(&profile, support).unwrap(), 1);
+    }
+
+    /// Rule 76: Silver to Diamond stay in their tier for 4 games under its
+    /// minimum and drop with the 5th; a game back over it ends the hold;
+    /// Master and above drop at once. The rank record shows the held tier.
+    #[test]
+    fn tiers_hold_for_five_games_below_silver_to_diamond_only() {
+        let mut profile = Profile::default();
+        let tank = Queue::Tank;
+        profile.ratings.insert("tank".into(), json!(3010));
+        assert_eq!(tier_of(&profile, tank).unwrap(), 4);
+        rate(&mut profile, tank, Outcome::Loss, false).unwrap();
+        // 2985: Platinum by its rating, held in Diamond.
+        assert_eq!(tier(rating_of(&profile, tank).unwrap()), 3);
+        assert_eq!(tier_of(&profile, tank).unwrap(), 4);
+        let places = LeaderboardPlaces::new();
+        let fields = Rating::read(&profile, tank, &places).unwrap().fields();
+        assert_eq!(
+            (&fields[&0x18], &fields[&0x22]),
+            (&Unsigned(2985), &Unsigned(4))
+        );
+        for _ in 0..3 {
+            rate(&mut profile, tank, Outcome::Draw, false).unwrap();
+            assert_eq!(tier_of(&profile, tank).unwrap(), 4);
+        }
+        rate(&mut profile, tank, Outcome::Draw, false).unwrap();
+        assert_eq!(tier_of(&profile, tank).unwrap(), 3);
+        assert!(profile.held_tiers.is_empty());
+
+        // Back over the minimum ends the hold; under it again starts anew.
+        profile.ratings.insert("tank".into(), json!(3010));
+        rate(&mut profile, tank, Outcome::Loss, false).unwrap();
+        rate(&mut profile, tank, Outcome::Win, false).unwrap();
+        assert!(profile.held_tiers.is_empty());
+        rate(&mut profile, tank, Outcome::Loss, false).unwrap();
+        assert_eq!(profile.held_tiers["tank"], json!({"tier": 4, "games": 1}));
+        // A rating the dashboard moved away from the hold shows its own tier.
+        profile.ratings.insert("tank".into(), json!(1200));
+        assert_eq!(tier_of(&profile, tank).unwrap(), 0);
+
+        // Master drops at once.
+        let mut master = Profile::default();
+        master.ratings.insert("damage".into(), json!(3510));
+        rate(&mut master, Queue::Damage, Outcome::Loss, false).unwrap();
+        assert_eq!(tier_of(&master, Queue::Damage).unwrap(), 4);
+        assert!(master.held_tiers.is_empty());
+    }
+
+    /// Rule 81: 15 points a win, 5 a draw, none for a loss, accrual stops at
+    /// 6000.
+    #[test]
+    fn competitive_points_stop_at_6000() {
+        let mut profile = Profile {
+            comp_points: 5990,
+            ..Profile::default()
+        };
+        assert_eq!(award_points(&mut profile, Outcome::Loss), 0);
+        assert_eq!(award_points(&mut profile, Outcome::Draw), 5);
+        assert_eq!(award_points(&mut profile, Outcome::Win), 5);
+        assert_eq!(profile.comp_points, 6000);
+        profile.comp_points = 7000;
+        assert_eq!(award_points(&mut profile, Outcome::Win), 0);
+        assert_eq!(profile.comp_points, 7000);
     }
 
     #[test]

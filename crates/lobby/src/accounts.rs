@@ -105,6 +105,15 @@ pub struct Profile {
     pub region: String,
     pub game_region: String,
     pub level: i64,
+    /// Experience into the current level (`progression.rs`; Python keeps
+    /// none).
+    pub experience: i64,
+    /// The lobby day (days since 1970) of the last first-win-of-the-day
+    /// bonus (`progression.rs`).
+    pub first_win_day: i64,
+    /// The last matches that ended by their rules, one bit each, the newest
+    /// lowest, set for a leave (`progression.rs`, 20813).
+    pub leave_mask: u64,
     pub credits: i64,
     pub comp_points: i64,
     pub league_tokens: i64,
@@ -140,6 +149,11 @@ pub struct Profile {
     /// none).
     #[serde(deserialize_with = "map_or_empty")]
     pub draws: Map<String, Value>,
+    /// By queue, the competitive tier a player stays in while under its
+    /// minimum, and his games there: `{"tier", "games"}` (`ranked.rs`
+    /// `tier_of`, rule 76).
+    #[serde(deserialize_with = "map_or_empty")]
+    pub held_tiers: Map<String, Value>,
     pub sms_protect: bool,
     pub seasons_seen: Vec<i64>,
     #[serde(deserialize_with = "map_or_empty")]
@@ -161,6 +175,9 @@ impl Default for Profile {
             region: "US".into(),
             game_region: "americas".into(),
             level: 100,
+            experience: 0,
+            first_win_day: 0,
+            leave_mask: 0,
             credits: 50_000,
             comp_points: 6_000,
             league_tokens: 1_000,
@@ -186,6 +203,7 @@ impl Default for Profile {
             matches: Map::new(),
             wins: Map::new(),
             draws: Map::new(),
+            held_tiers: Map::new(),
             sms_protect: true,
             seasons_seen: Vec::new(),
             priority_passes: Map::new(),
