@@ -282,6 +282,7 @@ mod results {
             matches_of, rating_of, tier_of, wins_of,
         },
         templates::{IN_CONNECT, LOBBY},
+        xp_table::XpTable,
     };
     use orpheus_wire::jam::{
         codec::{Fields, Schemas, Value},
@@ -397,8 +398,27 @@ mod results {
     fn record(room: &Room, players: Vec<PlayerResult>, joined: Instant) -> Vec<Earned> {
         recorded(room, &result(players), false, |_| season(), joined + PLAYED)
             .into_iter()
-            .map(|(account, play)| save(&account, &play, WALL_TIME).unwrap())
+            .map(|(account, play)| save(&account, &play, &xp_table(), WALL_TIME).unwrap())
             .collect()
+    }
+
+    /// The install's XP gains and level curve (`game_progression_174.json`)
+    /// as build 104319 derives them, cut to the fields the lobby reads.
+    fn xp_table() -> XpTable {
+        let gain = |amount: f64| json!({ "amount": amount });
+        let table = json!({
+            "xp_gains": {
+                "time": gain(1.75), "match_finish": gain(75.0), "win": gain(250.0),
+                "gold_medal": gain(75.0), "silver_medal": gain(50.0), "bronze_medal": gain(25.0),
+                "first_win_of_the_day": gain(1500.0),
+            },
+            "level_experience": [
+                0, 0, 2000, 3500, 5000, 6500, 7500, 8500, 9500, 10500, 11500, 12500, 13500,
+                14500, 15000, 15500, 16000, 16500, 17000, 17500, 18000, 18500, 19000, 19500,
+                20000,
+            ],
+        });
+        XpTable::from_reader(table.to_string().as_bytes()).unwrap()
     }
 
     fn registry(state: &tempfile::TempDir) -> Accounts {
@@ -678,7 +698,7 @@ mod results {
         assert_eq!(
             earned,
             [Earned {
-                experience: 2406 + 250 + 500 + 1500,
+                experience: 1050 + 75 + 250 + 1500,
                 levels: 1,
                 rating: 25,
                 comp_points: 15,
@@ -705,11 +725,11 @@ mod results {
             .unwrap();
     }
 
-    /// `prepare`d Alpha after a 10-minute competitive tank win: 7000 + 4656
-    /// experience is level 6 (7500 for level 5) with 4156 into it and one
+    /// `prepare`d Alpha after a 10-minute competitive tank win: 7000 + 2875
+    /// experience is level 6 (7500 for level 5) with 2375 into it and one
     /// box more; 2515 is Platinum; 15 points.
     fn assert_won(profile: &Profile, boxes_before: usize) {
-        assert_eq!((profile.level, profile.experience), (6, 4156));
+        assert_eq!((profile.level, profile.experience), (6, 2375));
         assert_eq!(profile.loot_boxes.len(), boxes_before + 1);
         assert_eq!(rating_of(profile, Queue::Tank).unwrap(), 2515);
         assert_eq!(tier_of(profile, Queue::Tank).unwrap(), 3);
@@ -872,7 +892,7 @@ mod results {
         assert_eq!(array(&boxes_sent[&0x78]).len(), boxes + 1);
         assert_eq!(integer(&client.expect(PROGRESSION, 24308)[&0x78]), 15);
         let level = client.expect(PROGRESSION, 24313);
-        assert_eq!((integer(&level[&0x78]), integer(&level[&0x80])), (6, 4156));
+        assert_eq!((integer(&level[&0x78]), integer(&level[&0x80])), (6, 2375));
         let policy = client.expect(LOBBY, 20813);
         assert_eq!((integer(&policy[&0x78]), integer(&policy[&0x80])), (0, 20));
         let tank = loop {

@@ -4,7 +4,8 @@
 //! Python keeps none of this (`ow174` has no match results); the rules are
 //! the public ones in `docs/notes/game-rules.md`, sections 9, 10, 16 and 17,
 //! and each constant names its rule. Where a rule leaves a number open, the
-//! choice is marked as an assumption.
+//! choice is marked as an assumption. The experience amounts and the level
+//! curve are the install's (`xp_table.rs`).
 //!
 //! What the client is told, all through messages the lobby already builds:
 //!
@@ -44,23 +45,9 @@ use crate::{
     accounts::Profile,
     clock::DAY,
     ranked::{self, MAX_MATCHES, Queue, draws_of, matches_of, wins_of},
+    xp_table::XpTable,
 };
 
-/// Rule 177: 4.01 experience per second in the match.
-const XP_PER_HUNDRED_SECONDS: i64 = 401;
-/// Rule 177: a finished match gives 250 (Fextralife; Dot Esports says 150).
-pub const MATCH_FINISH_XP: i64 = 250;
-/// Rule 177: a win gives 500 more.
-pub const WIN_XP: i64 = 500;
-/// Rule 177: the first win of the day gives 1500. The sources conflict on
-/// whether the first match or the first win earns it; it is the first win
-/// here, as Dot Esports has it [assumption]. A day is the lobby clock's UTC
-/// day (`clock::server_time`, the dashboard's date when it sets one).
-pub const FIRST_WIN_XP: i64 = 1500;
-/// Rules 172, 177: a medal gives 150 (gold), 100 (silver) or 50 (bronze).
-/// A player holds at most one medal per stat, so rule 172's "only the
-/// highest medal earns XP" is every medal he holds.
-pub const MEDAL_XP: [i64; 3] = [150, 100, 50];
 /// Rule 177: playing in a group gives 20% more on the match's experience
 /// [assumption: not on the first-win bonus].
 const GROUP_PERCENT: i64 = 120;
@@ -68,16 +55,6 @@ const GROUP_PERCENT: i64 = 120;
 const VERSUS_AI_PERCENT: i64 = 90;
 /// Rule 86: a player in leaver status gets 75% less on later matches.
 const LEAVER_PERCENT: i64 = 25;
-/// Rule 178: experience from each level to the next, levels 1 to 18 (the
-/// launch table, PCS:13). Since November 2016 levels 14-100 cost "slightly"
-/// less, by amounts not published; the launch values stay [assumption].
-const LEVEL_XP: [i64; 18] = [
-    1500, 3000, 4500, 6000, 7500, 8500, 9500, 10_500, 11_500, 12_500, 13_500, 14_500, 15_500,
-    16_500, 17_500, 18_500, 19_000, 19_500,
-];
-/// Rule 178: level 19 and every later one cost 20000 (a flat 20000 after
-/// level 100 since November 2016; the curve no longer resets).
-const LATER_LEVEL_XP: i64 = 20_000;
 /// Rule 179: one loot box per level, a standard one (`BOX_TYPES` id 0).
 pub const LEVEL_UP_BOX: i32 = 0;
 /// The leave policy's window (20813 +0x80, retail's 20): the matches whose
@@ -128,9 +105,14 @@ pub struct Earned {
     pub left: bool,
 }
 
-/// The match into the profile. `now` is the lobby's time (seconds since
-/// 1970, `clock::server_time`).
-pub fn apply(profile: &mut Profile, play: &MatchPlay, now: u64) -> io::Result<Earned> {
+/// The match into the profile, with the install's experience table. `now`
+/// is the lobby's time (seconds since 1970, `clock::server_time`).
+pub fn apply(
+    profile: &mut Profile,
+    play: &MatchPlay,
+    now: u64,
+    xp: &XpTable,
+) -> io::Result<Earned> {
     let outcome = if play.finished {
         play.outcome
     } else {
@@ -151,30 +133,41 @@ pub fn apply(profile: &mut Profile, play: &MatchPlay, now: u64) -> io::Result<Ea
     if !play.finished {
         return Ok(earned);
     }
+    // The first win of the day: the sources conflict on whether the first
+    // match or the first win earns it (rule 177); it is the first win here,
+    // as Dot Esports has it [assumption]. A day is the lobby clock's UTC day
+    // (`clock::server_time`, the dashboard's date when it sets one).
     let day = i64::try_from(now / DAY).unwrap_or(i64::MAX);
     let first_win = outcome == Outcome::Win && profile.first_win_day != day;
     if first_win {
         profile.first_win_day = day;
     }
-    earned.experience = experience(play, outcome, first_win, leaver);
-    earned.levels = gain(profile, earned.experience)?;
+    earned.experience = experience(xp, play, outcome, first_win, leaver);
+    earned.levels = gain(xp, profile, earned.experience)?;
     Ok(earned)
 }
 
-/// Rule 177: the match's experience. Rule 177 lists the medals before the
-/// group bonus, so the bonus counts on them [assumption: order].
-fn experience(play: &MatchPlay, outcome: Outcome, first_win: bool, leaver: bool) -> i64 {
-    let seconds = play.seconds.max(0.0) as i64;
-    let mut xp = seconds * XP_PER_HUNDRED_SECONDS / 100 + MATCH_FINISH_XP;
+/// The match's experience: time, finish, win and medals, the install's
+/// amounts. Rule 177 lists the medals before the group bonus, so the bonus
+/// counts on them [assumption: order].
+fn experience(
+    table: &XpTable,
+    play: &MatchPlay,
+    outcome: Outcome,
+    first_win: bool,
+    leaver: bool,
+) -> i64 {
+    let seconds = play.seconds.max(0.0).floor();
+    let mut xp = (seconds * table.per_second) as i64 + table.match_finish;
     if outcome == Outcome::Win {
-        xp += WIN_XP;
+        xp += table.win;
     }
-    xp += medal_experience(play.medals);
+    xp += medal_experience(table, play.medals);
     if play.group {
         xp = xp * GROUP_PERCENT / 100;
     }
     if first_win {
-        xp += FIRST_WIN_XP;
+        xp += table.first_win;
     }
     if play.versus_ai {
         xp = xp * VERSUS_AI_PERCENT / 100;
@@ -185,35 +178,24 @@ fn experience(play: &MatchPlay, outcome: Outcome, first_win: bool, leaver: bool)
     xp
 }
 
-/// Rule 177: the experience of medals counted gold, silver, bronze.
-pub fn medal_experience(medals: [u32; 3]) -> i64 {
+/// The experience of medals counted gold, silver, bronze. A player holds at
+/// most one medal per stat, so rule 172's "only the highest medal earns XP"
+/// is every medal he holds.
+pub fn medal_experience(table: &XpTable, medals: [u32; 3]) -> i64 {
     medals
         .iter()
-        .zip(MEDAL_XP)
+        .zip(table.medals)
         .map(|(&count, xp)| i64::from(count) * xp)
         .sum()
 }
 
-/// Experience from `level` to the next (rule 178).
-pub fn level_experience(level: i64) -> i64 {
-    usize::try_from(level - 1)
-        .ok()
-        .and_then(|index| LEVEL_XP.get(index))
-        .copied()
-        .unwrap_or(if level < 1 {
-            LEVEL_XP[0]
-        } else {
-            LATER_LEVEL_XP
-        })
-}
-
 /// The experience into the profile, and the levels it makes, each with a
 /// standard box (rule 179). Returns the levels gained.
-fn gain(profile: &mut Profile, experience: i64) -> io::Result<i64> {
+fn gain(table: &XpTable, profile: &mut Profile, experience: i64) -> io::Result<i64> {
     profile.experience = profile.experience.max(0).saturating_add(experience);
     let mut levels = 0;
     loop {
-        let needed = level_experience(profile.level);
+        let needed = table.level_experience(profile.level);
         if profile.experience < needed {
             break;
         }
@@ -280,6 +262,7 @@ mod tests {
     use crate::{
         ranked::{rating_of, tier_of},
         templates::{LOBBY, RetailTemplates},
+        test_catalog::xp_table,
     };
 
     const NOON: u64 = 19_000 * DAY + DAY / 2;
@@ -309,11 +292,12 @@ mod tests {
     }
 
     fn earned(profile: &mut Profile, play: MatchPlay) -> Earned {
-        apply(profile, &play, NOON).unwrap()
+        apply(profile, &play, NOON, &xp_table()).unwrap()
     }
 
-    /// Rule 177: 4.01 a second, 250 for the finish, 500 more for a win; a
-    /// draw is a finish only.
+    /// The install's 1.75 a second (whole seconds), 75 for the finish, 250
+    /// more for a win; a draw is a finish only. (Rule 177's community
+    /// figures were 4.01, 250 and 500.)
     #[test]
     fn a_match_gives_time_finish_and_win_experience() {
         let ten_minutes = |outcome| MatchPlay {
@@ -323,37 +307,37 @@ mod tests {
         let mut player = profile();
         assert_eq!(
             earned(&mut player, ten_minutes(Outcome::Loss)).experience,
-            2406 + 250
+            1050 + 75
         );
         assert_eq!(
             earned(&mut player, ten_minutes(Outcome::Draw)).experience,
-            2406 + 250
+            1050 + 75
         );
         assert_eq!(
             earned(&mut player, ten_minutes(Outcome::Win)).experience,
-            2406 + 250 + 500
+            1050 + 75 + 250
         );
-        assert_eq!(player.experience, 3 * 2656 + 500);
+        assert_eq!(player.experience, 3 * 1125 + 250);
     }
 
-    /// Rule 177: the first win of a day gives 1500 more, once that day.
+    /// The first win of a day gives the install's 1500 more, once that day.
     #[test]
     fn the_first_win_of_the_day_gives_1500_once() {
         let mut player = Profile {
             first_win_day: 0,
             ..profile()
         };
-        assert_eq!(earned(&mut player, play(Outcome::Loss)).experience, 250);
+        assert_eq!(earned(&mut player, play(Outcome::Loss)).experience, 75);
         assert_eq!(
             earned(&mut player, play(Outcome::Win)).experience,
-            750 + 1500
+            325 + 1500
         );
-        assert_eq!(earned(&mut player, play(Outcome::Win)).experience, 750);
+        assert_eq!(earned(&mut player, play(Outcome::Win)).experience, 325);
         assert_eq!(
-            apply(&mut player, &play(Outcome::Win), NOON + DAY)
+            apply(&mut player, &play(Outcome::Win), NOON + DAY, &xp_table())
                 .unwrap()
                 .experience,
-            750 + 1500
+            325 + 1500
         );
     }
 
@@ -365,34 +349,35 @@ mod tests {
             group: true,
             ..play(Outcome::Win)
         };
-        assert_eq!(earned(&mut player, group).experience, 900);
+        assert_eq!(earned(&mut player, group).experience, 325 * 6 / 5);
         let versus_ai = MatchPlay {
             versus_ai: true,
             ..play(Outcome::Win)
         };
-        assert_eq!(earned(&mut player, versus_ai).experience, 675);
+        assert_eq!(earned(&mut player, versus_ai).experience, 325 * 9 / 10);
     }
 
-    /// Rule 177: 150 a gold medal, 100 a silver, 50 a bronze, before the
-    /// group bonus.
+    /// The install's 75 a gold medal, 50 a silver, 25 a bronze (rule 177's
+    /// community figures were 150/100/50), before the group bonus.
     #[test]
     fn medals_give_experience_before_the_group_bonus() {
-        assert_eq!(medal_experience([0; 3]), 0);
-        assert_eq!(medal_experience([1, 0, 0]), 150);
-        assert_eq!(medal_experience([0, 1, 0]), 100);
-        assert_eq!(medal_experience([0, 0, 1]), 50);
-        assert_eq!(medal_experience([2, 3, 1]), 300 + 300 + 50);
+        let table = xp_table();
+        assert_eq!(medal_experience(&table, [0; 3]), 0);
+        assert_eq!(medal_experience(&table, [1, 0, 0]), 75);
+        assert_eq!(medal_experience(&table, [0, 1, 0]), 50);
+        assert_eq!(medal_experience(&table, [0, 0, 1]), 25);
+        assert_eq!(medal_experience(&table, [2, 3, 1]), 150 + 150 + 25);
         let mut player = profile();
         let medals = MatchPlay {
             medals: [2, 3, 1],
             ..play(Outcome::Loss)
         };
-        assert_eq!(earned(&mut player, medals).experience, 250 + 650);
+        assert_eq!(earned(&mut player, medals).experience, 75 + 325);
         let group = MatchPlay {
             group: true,
             ..medals
         };
-        assert_eq!(earned(&mut player, group).experience, (250 + 650) * 6 / 5);
+        assert_eq!(earned(&mut player, group).experience, (75 + 325) * 6 / 5);
         let left = MatchPlay {
             finished: false,
             ..medals
@@ -400,30 +385,24 @@ mod tests {
         assert_eq!(earned(&mut player, left).experience, 0);
     }
 
-    /// Rule 178: levels 1-18 from the launch table, 20000 from level 19;
-    /// rule 179: one standard box per level gained.
+    /// The install's level curve (2000 from level 1, 3500 from level 2;
+    /// `xp_table.rs`); rule 179: one standard box per level gained.
     #[test]
     fn experience_makes_levels_with_a_box_each() {
-        assert_eq!(level_experience(1), 1500);
-        assert_eq!(level_experience(13), 15_500);
-        assert_eq!(level_experience(18), 19_500);
-        assert_eq!(level_experience(19), 20_000);
-        assert_eq!(level_experience(250), 20_000);
-
         let mut player = Profile {
             level: 1,
             experience: 1000,
             loot_boxes: Vec::new(),
             ..profile()
         };
-        // 1000 + 4260 = 5260: 1500 to level 2, 3000 to level 3, 760 left.
+        // 1000 + 5325 = 6325: 2000 to level 2, 3500 to level 3, 825 left.
         let long = MatchPlay {
-            seconds: 1000.0,
+            seconds: 3000.0,
             ..play(Outcome::Loss)
         };
         let earned = earned(&mut player, long);
-        assert_eq!((earned.experience, earned.levels), (4260, 2));
-        assert_eq!((player.level, player.experience), (3, 760));
+        assert_eq!((earned.experience, earned.levels), (5325, 2));
+        assert_eq!((player.level, player.experience), (3, 825));
         assert_eq!(player.loot_boxes.len(), 2);
         assert!(player.loot_boxes.iter().all(|item| item.box_type == 0));
     }
@@ -449,14 +428,14 @@ mod tests {
         assert_eq!(matches_of(&player, Queue::Open).unwrap(), 46);
         assert_eq!(wins_of(&player, Queue::Open).unwrap(), 20);
 
-        assert_eq!(earned(&mut player, play(Outcome::Win)).experience, 750 / 4);
+        assert_eq!(earned(&mut player, play(Outcome::Win)).experience, 325 / 4);
         // Up to the 20th match since the first leave, all 6 stay in the
         // window.
         for _ in 0..14 {
-            assert_eq!(earned(&mut player, play(Outcome::Loss)).experience, 250 / 4);
+            assert_eq!(earned(&mut player, play(Outcome::Loss)).experience, 75 / 4);
         }
         // The 21st pushes the first leave out: 5 of 20 is under the line.
-        assert_eq!(earned(&mut player, play(Outcome::Loss)).experience, 250);
+        assert_eq!(earned(&mut player, play(Outcome::Loss)).experience, 75);
         assert_eq!(player.leave_mask.count_ones(), 4);
     }
 

@@ -6,7 +6,9 @@ use std::{fs, sync::Arc};
 
 use serde_json::json;
 
-use crate::{collection::Collection, economy::Economy, templates::RetailTemplates};
+use crate::{
+    collection::Collection, economy::Economy, templates::RetailTemplates, xp_table::XpTable,
+};
 use orpheus_content::catalog::{HERO_BASE, ItemDb, TEAM_SKIN_TEXT, UNLOCK_BASE};
 
 pub const HERO: u64 = HERO_BASE | 0x40;
@@ -111,4 +113,23 @@ pub fn economy() -> Arc<Economy> {
         },
     });
     Arc::new(Economy::from_reader(economy.to_string().as_bytes()).unwrap())
+}
+
+/// The install's XP gains and level curve (`game_progression_174.json`) as
+/// build 104319 derives them, cut to the fields the lobby reads.
+pub fn xp_table() -> XpTable {
+    let gain = |amount: f64| json!({ "amount": amount });
+    let table = json!({
+        "xp_gains": {
+            "time": gain(1.75), "match_finish": gain(75.0), "win": gain(250.0),
+            "gold_medal": gain(75.0), "silver_medal": gain(50.0), "bronze_medal": gain(25.0),
+            "first_win_of_the_day": gain(1500.0), "backfill": gain(200.0),
+            "consecutive_match": gain(150.0),
+        },
+        "level_experience": [
+            0, 0, 2000, 3500, 5000, 6500, 7500, 8500, 9500, 10500, 11500, 12500, 13500, 14500,
+            15000, 15500, 16000, 16500, 17000, 17500, 18000, 18500, 19000, 19500, 20000,
+        ],
+    });
+    XpTable::from_reader(table.to_string().as_bytes()).unwrap()
 }

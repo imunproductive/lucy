@@ -34,3 +34,4 @@ pub mod templates;
 #[cfg(test)]
 mod test_catalog;
 pub mod transport;
+pub mod xp_table;
