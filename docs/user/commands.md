@@ -52,6 +52,7 @@ With a command, the options go after the command: `orpheus play --game ...`. Onl
 | `--dashboard-port <PORT>` | Dashboard TCP port; 0 turns the dashboard off |
 | `--test-players <PLAYERS>` | Start a match once this many players search (default 0: full teams only) |
 | `--test-ai <LEVEL>` | Fill the missing players of a match `--test-players` starts with AI heroes of this level (`easy`, `medium`, `hard`) |
+| `--bot-controller <KIND>` | How the training bots get a name in "ELIMINATED" and the kill feed: `player` (default), `ai` or `off`. See [Bot controllers](configuration.md#bot-controllers). Environment: `ORPHEUS_BOT_CONTROLLER`. |
 | `--save <FILE>` | Template profile for new accounts (default `profile.json` in the state folder) |
 
 ### Mode options

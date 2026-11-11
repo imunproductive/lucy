@@ -13,6 +13,7 @@
 game = 'C:\Games\Overwatch'   # the install, Overwatch.exe or the official launcher
 account = "Player"            # the saved account the game logs in as
 locale = "auto"               # auto, none, or a code such as enUS
+bot_controller = "player"     # player, ai or off
 
 [ports]
 lobby = 3724                  # TCP
@@ -27,6 +28,7 @@ dashboard = 3725              # TCP; 0 turns the dashboard off
 | `game` | `--game` | `ORPHEUS_GAME` | the last picked or given game, then `game\` in the current folder, then a file dialog (only the modes that start the game) | The Overwatch 1.74 install. The server also reads its game data from it. |
 | `account` | `--account` | | `default_account.txt` | The saved account the game on this PC logs in as |
 | `locale` | `--locale` | | `auto` | The game language: `auto`, `none` or a code such as `enUS` (see [playing](playing.md#game-language)) |
+| `bot_controller` | `--bot-controller` | `ORPHEUS_BOT_CONTROLLER` | `player` | How the training bots get a name in "ELIMINATED" and the kill feed. See [Bot controllers](#bot-controllers). |
 | `ports.lobby` | `--lobby-port` | | 3724 | Lobby, TCP |
 | `ports.stall` | `--stall-port` | | 1119 | Battle.net, TCP |
 | `ports.rpc` | `--rpc-port` | | 21119 | Battle.net RPC, TCP |
@@ -36,6 +38,18 @@ dashboard = 3725              # TCP; 0 turns the dashboard off
 Use single quotes for Windows paths in TOML, so the backslashes stay as they are.
 
 An unknown key is an error. `orpheus doctor` shows it.
+
+## Bot controllers
+
+The game names a killed player by his player entity, the entity that controls his hero. A training bot has no such entity, so the server gives each bot a stand-in one. `bot_controller` sets what kind:
+
+| Value | What the server sends for each bot |
+| --- | --- |
+| `player` | A player entity (definition `000E`) with the bot's team, a made-up account named after the bot ("Training Bot", "Friendly Bot") and a link to the bot's body. It is not a match participant, so it should not show in the team list or the Tab board. |
+| `ai` | The bot body's own AI entity (definition `1404`, or `14AF` for two of the bodies) with the bot's team, a link to the body and the bot's hero. This is probably closer to what the original servers did, but the game may reject it. |
+| `off` | Nothing. The bots stay unnamed: "ELIMINATED" without a name, and no kill feed line. |
+
+If the game crashes or misbehaves near the bots, try `ai` or `off`. The setting applies to the matches that start after the server starts.
 
 ## Settings that are not in config.toml
 

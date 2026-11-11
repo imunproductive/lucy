@@ -38,7 +38,7 @@ use crate::{
         BioticField, FieldDeliver, FieldIds, FiredProjectile, ProjectileEvent, SeenIds, ShotKey,
     },
     replication::WorldDelivery,
-    scene::bot_create,
+    scene::{bot_controller_link, bot_create},
     scene_assets::PreparedScene,
 };
 use orpheus_content::{heroes::Eyes, stats::PlayerStats};
@@ -331,6 +331,9 @@ pub struct PlayerHit {
 pub struct BotReplacement {
     pub retired: u32,
     pub created: EntityUpdate,
+    /// The bot's stand-in controller's link to the new body, if the scene
+    /// has controllers (`scene.rs` `bot_controller_link`).
+    pub link: Option<EntityUpdate>,
 }
 
 /// A player's body as a target this tick.
@@ -862,12 +865,14 @@ impl Combat {
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("bot entity IDs exhausted"))?;
             let created = bot_create(&fresh, None)?;
+            let link = bot_controller_link(&fresh, slot, scene.bot_controllers())?;
             prepared.push((
                 slot,
                 fresh,
                 BotReplacement {
                     retired: bot.entity,
                     created,
+                    link,
                 },
             ));
         }

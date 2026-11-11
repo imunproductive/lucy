@@ -101,6 +101,7 @@ fn bot_health_replaces_stale_packets_and_respawn_keeps_creation_order() {
     world.replace_bot(BotReplacement {
         retired: old,
         created: create(new),
+        link: None,
     });
     assert!(!world.identity_ready(old));
     let ready = world.ready();
@@ -124,6 +125,97 @@ fn bot_health_replaces_stale_packets_and_respawn_keeps_creation_order() {
     assert!(world.ready().is_empty());
     assert!(!world.identity_ready(old));
     assert!(world.identity_ready(new));
+}
+
+/// A respawned bot's stand-in controller names the new body (component 44)
+/// only with or after the body's create, and again if lost; the link of a
+/// body that a newer respawn retired goes no more.
+#[test]
+fn a_respawned_bots_controller_link_follows_its_new_body() {
+    use crate::{
+        bots::{BOT_CONTROLLER_ENTITY, BOT_ENTITY},
+        egress::PacketDelivery,
+    };
+    use orpheus_wire::entity::{Component, ComponentValue, Create};
+    let controller = BOT_CONTROLLER_ENTITY;
+    let [old, new, newer] = [BOT_ENTITY, BOT_ENTITY + 15, BOT_ENTITY + 16];
+    let create = |entity| EntityUpdate {
+        entity,
+        operation: Some(Operation::Create(Box::new(Create::new(1, vec![])))),
+        ..EntityUpdate::default()
+    };
+    let link = |body| EntityUpdate {
+        entity: controller,
+        operation: Some(Operation::Update(vec![Component {
+            index: 44,
+            fields: vec![Some(ComponentValue::Entity(body)); 3],
+        }])),
+        ..EntityUpdate::default()
+    };
+    let ready = |world: &WorldDelivery| -> Vec<EntityUpdate> {
+        world
+            .ready()
+            .iter()
+            .map(|item| item.record.update.clone())
+            .collect()
+    };
+    let send = |world: &mut WorldDelivery| {
+        let ready = &world.ready()[0];
+        let record = ready.tracked();
+        let index = ready.index;
+        world.sent(&[index]);
+        record
+    };
+    let resolve = |world: &mut WorldDelivery, record, arrived| {
+        world.acknowledge(
+            DeliveryReport {
+                requeued_reliable: 0,
+                packets: vec![PacketDelivery {
+                    sequence: 0,
+                    arrived,
+                    records: vec![record],
+                }],
+            },
+            Duration::ZERO,
+        );
+    };
+    let mut world = WorldDelivery::new(OWNER);
+    world.started = Some(FIRST_TICK);
+    world.bots.insert(old, BotLifetime::Live);
+    world.created.insert(old);
+    world.replace_bot(BotReplacement {
+        retired: old,
+        created: create(new),
+        link: Some(link(new)),
+    });
+    // All three can go in one datagram, the link after the create.
+    assert_eq!(ready(&world).len(), 3);
+    assert_eq!(ready(&world)[2], link(new));
+    // Only the destroy went: the create waits for it, and the link for the
+    // create.
+    let destroy = send(&mut world);
+    assert!(ready(&world).is_empty());
+    resolve(&mut world, destroy, true);
+    assert_eq!(ready(&world), [create(new), link(new)]);
+    // The create went alone: the link waits until it arrived.
+    let created = send(&mut world);
+    assert!(ready(&world).is_empty());
+    resolve(&mut world, created, true);
+    assert_eq!(ready(&world), [link(new)]);
+    let first = send(&mut world);
+    resolve(&mut world, first, false);
+    assert_eq!(ready(&world), [link(new)]);
+
+    // The bot died again and came back before the link arrived: only the
+    // newest body's link goes.
+    world.replace_bot(BotReplacement {
+        retired: new,
+        created: create(newer),
+        link: Some(link(newer)),
+    });
+    let updates = ready(&world);
+    assert!(!updates.contains(&link(new)));
+    assert_eq!(updates.last(), Some(&link(newer)));
 }
 
 #[test]

@@ -29,7 +29,9 @@
 //! body 14ED) use 1.74's values: 6 m/s, up at 66 m/s^2, down at 39 m/s^2;
 //! OW2 put ordinary Training Bots on these routes (4.5 m/s) and changed three
 //! routes. Bot n's entity is `0xC0001000 + n` (type 2, like the game mode
-//! entity).
+//! entity); its respawns take the next free ids up from there. The stand-in
+//! controller of the bot in slot n (`scene.rs` `BotControllers`) is
+//! `0xC0000800 + n`, below them, so the two never meet.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -56,6 +58,7 @@ use crate::{
 };
 
 pub const BOT_ENTITY: u32 = 0xc000_1000;
+pub const BOT_CONTROLLER_ENTITY: u32 = 0xc000_0800;
 pub const DEAD_MOVEMENT_FLAG: u32 = 0x2000;
 pub const SETTLE_TICKS: u32 = 63;
 pub const BOT_RECORD_DELAY: u32 = 8;

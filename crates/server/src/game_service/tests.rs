@@ -317,6 +317,95 @@ struct WorldRecord {
     base_health: Option<f32>,
     /// The first component of an update with one component.
     updated: Option<u8>,
+    /// A create's or update's components, when they are all of the kinds
+    /// [`decode_components`] reads.
+    components: Option<Vec<DecodedComponent>>,
+}
+
+/// A component's index and its fields (absent ones `None`).
+type DecodedComponent = (u8, Vec<Option<DecodedField>>);
+
+#[derive(Clone, Debug, PartialEq)]
+enum DecodedField {
+    Id(u64),
+    DbId(u64, u64),
+    Entity(u32),
+    Text(String),
+}
+
+/// The components of a create or update (`orpheus_wire::entity`
+/// `write_components`) when each is a 26, 29 (id and BattleTag), 44 or 75,
+/// the components of a player's or a bot's stand-in controller; `None` for
+/// any other.
+fn decode_components(mut reader: BitReader<'_>) -> Option<Vec<DecodedComponent>> {
+    #[derive(Clone, Copy)]
+    enum Kind {
+        Id,
+        DbId,
+        Entity,
+        Text,
+    }
+    fn byte_masked(reader: &mut BitReader<'_>) -> Option<u64> {
+        let present = reader.bits(8).ok()?;
+        let mut value = 0;
+        for byte in 0..8 {
+            if present & (1 << byte) != 0 {
+                value |= reader.bits(8).ok()? << (8 * byte);
+            }
+        }
+        Some(value)
+    }
+    let count = reader.bits(8).ok()?;
+    let mut components = Vec::new();
+    for _ in 0..count {
+        let index = reader.bits(8).ok()? as u8;
+        let layout: &[Kind] = match index {
+            26 => &[Kind::Id],
+            29 => &[Kind::DbId, Kind::Text],
+            44 => &[Kind::Entity; 3],
+            75 => &[Kind::Id; 6],
+            _ => return None,
+        };
+        reader.align();
+        let mask_bytes = reader.bits(8).ok()? as usize;
+        let mask: Vec<u64> = (0..mask_bytes)
+            .map(|_| reader.bits(8))
+            .collect::<Result<_, _>>()
+            .ok()?;
+        let fields_present = mask_bytes * 8;
+        let mut fields = Vec::new();
+        for field in 0..fields_present {
+            if mask[field / 8] & (1 << (field % 8)) == 0 {
+                fields.push(None);
+                continue;
+            }
+            let value = match layout.get(field)? {
+                Kind::Id => {
+                    reader.align();
+                    DecodedField::Id(byte_masked(&mut reader)?)
+                }
+                Kind::DbId => {
+                    DecodedField::DbId(byte_masked(&mut reader)?, byte_masked(&mut reader)?)
+                }
+                Kind::Entity => DecodedField::Entity(reader.bits(32).ok()? as u32),
+                Kind::Text => {
+                    reader.align();
+                    let length = reader.bits(32).ok()? as usize;
+                    let bytes: Vec<u8> = (0..length)
+                        .map(|_| reader.bits(8).map(|byte| byte as u8))
+                        .collect::<Result<_, _>>()
+                        .ok()?;
+                    DecodedField::Text(String::from_utf8(bytes).ok()?)
+                }
+            };
+            fields.push(Some(value));
+        }
+        while fields.last() == Some(&None) {
+            fields.pop();
+        }
+        components.push((index, fields));
+    }
+    Some(components)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -359,6 +448,7 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
                 launches: Vec::new(),
                 base_health: None,
                 updated: None,
+                components: None,
             };
             assert!(reader.bit().unwrap());
             if !reader.bit().unwrap() {
@@ -417,7 +507,19 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
                             record.skin =
                                 Some((reader.bits(32).unwrap() as u32, reader.bit().unwrap()));
                         }
+                        if flags & orpheus_wire::entity::WITH_MOVEMENT == 0 {
+                            use orpheus_wire::entity::{WITH_SCALE, WITH_TRANSFORM};
+                            let mut components = reader;
+                            if flags & WITH_TRANSFORM != 0 {
+                                components.advance(7 * 32).unwrap();
+                            }
+                            if flags & (WITH_TRANSFORM | WITH_SCALE) != 0 {
+                                components.advance(3 * 32).unwrap();
+                            }
+                            record.components = decode_components(components);
+                        }
                     } else if operation == 2 {
+                        record.components = decode_components(reader);
                         let mut components = reader;
                         let count = components.bits(8).unwrap();
                         let index = components.bits(8).unwrap() as u8;
@@ -860,7 +962,8 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         client.send(ACK, Vec::new());
         assert!(Instant::now() < deadline, "waiting for baseline retransmit");
     }
-    assert_eq!(creates.len(), 21);
+    // 4 placeables, the player, the mode, 15 bots and their 15 controllers.
+    assert_eq!(creates.len(), 36);
 
     // Even after the retransmission, the script stays behind its create ACK.
     let withheld = client.receive();
@@ -4509,6 +4612,244 @@ fn a_firing_practice_bot_shoots_the_player() {
         })
         .expect("the rocket's destroy");
     assert!(destroyed >= launched);
+    server.stop().unwrap();
+}
+
+/// Each training bot's stand-in controller (`orpheus_sim::scene`
+/// `BotControllers`), in both variants: the client gets its create, with
+/// the bot's name (player) or hero (AI) and its body (44), no earlier than
+/// the body's create; the kill notice 25005 names the body while the
+/// controller exists; after the respawn the controller's 44 names the new
+/// body, after its create; no card names a bot (the team list and the Tab
+/// board stay the players'), and the controller is never destroyed.
+#[test]
+#[ignore = "requires the derived 104319 data with its bot graph bundle"]
+fn practice_bot_controllers_name_the_bots_for_a_client() {
+    use orpheus_sim::scene::BotControllers;
+    for controllers in [BotControllers::Player, BotControllers::Ai] {
+        exercise_bot_controllers(controllers);
+    }
+}
+
+fn exercise_bot_controllers(controllers: orpheus_sim::scene::BotControllers) {
+    use DecodedField::{DbId, Entity, Id, Text};
+    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use orpheus_script::vm::Unknowns;
+    use orpheus_sim::{
+        body_script::fixture_hitscan_factory,
+        bots::{BOT_CONTROLLER_ENTITY, BOT_ENTITY},
+        scene::BotControllers,
+        scene_assets::SceneAssets,
+    };
+    use orpheus_wire::commands::FIRE;
+
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_bot_unknowns(Unknowns::Tolerate);
+    assets.set_bot_controllers(controllers);
+    let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
+    assert_eq!(scene.bot_controllers(), controllers);
+    let [x, y, z] = scene.map().spawn_point(0, 0).unwrap().0;
+    // An enemy bot that neither fires nor walks, 4 m beside the spawn.
+    let slot = scene
+        .bots()
+        .iter()
+        .position(|bot| !bot.spawn.firing && bot.spawn.team != 0 && bot.spawn.route.is_empty())
+        .unwrap();
+    scene.bots_mut()[slot].position = [x - 4.0, y, z];
+    let target = scene.bots()[slot].entity;
+    let controller = BOT_CONTROLLER_ENTITY + slot as u32;
+    // Each bot's body, controller and the components its create carries.
+    let link = |body: u32| (44, vec![Some(Entity(body)); 3]);
+    let expected: Vec<(u32, u32, u32, Vec<DecodedComponent>)> = scene
+        .bots()
+        .iter()
+        .enumerate()
+        .map(|(slot, bot)| {
+            let team = (26, vec![Some(Id(0x80_0000 << bot.spawn.team))]);
+            let (definition, components) = match controllers {
+                BotControllers::Player => (
+                    0x000e,
+                    vec![
+                        team,
+                        (
+                            29,
+                            vec![
+                                Some(DbId(0xffff_f000 + slot as u64, 1 << 56)),
+                                Some(Text(bot.spawn.name.clone())),
+                            ],
+                        ),
+                        link(bot.entity),
+                    ],
+                ),
+                _ => (
+                    if [0x14a9, 0x14d2].contains(&(bot.spawn.body as u32)) {
+                        0x14af
+                    } else {
+                        0x1404
+                    },
+                    vec![
+                        team,
+                        link(bot.entity),
+                        (
+                            75,
+                            vec![
+                                Some(Id(bot.spawn.hero)),
+                                None,
+                                None,
+                                Some(Id(bot.spawn.hero)),
+                            ],
+                        ),
+                    ],
+                ),
+            };
+            (
+                bot.entity,
+                BOT_CONTROLLER_ENTITY + slot as u32,
+                definition,
+                components,
+            )
+        })
+        .collect();
+    let names: HashSet<String> = scene
+        .bots()
+        .iter()
+        .map(|bot| bot.spawn.name.clone())
+        .collect();
+    let factory = fixture_hitscan_factory(100.0);
+    scene.owner_body_factory = Some(Arc::new(move |hero, spawn| {
+        if hero.guid != SOLDIER {
+            return Ok(None);
+        }
+        Ok(Some(Box::new(factory.start(spawn)?)))
+    }));
+    let schemas = Arc::new(Schemas::game());
+    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let ticket = server
+        .open_prepared_practice(MATCH, scene, player().remove(0), PlayerCard::default())
+        .unwrap();
+    let mut client = Client::new(server.local_addr(), &ticket);
+    client.handshake();
+    let mut watcher = Watcher {
+        client,
+        owner: player_entity(0),
+        tick: 0,
+        sequences: HashSet::new(),
+        datagrams: Vec::new(),
+        ticks: Vec::new(),
+    };
+    pump_until(&mut [&mut watcher], &schemas, "the instance", |watchers| {
+        watchers[0]
+            .datagrams
+            .iter()
+            .any(|(messages, _)| messages.iter().any(|message| message.id == 20300))
+    });
+    let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+    let mut payload = BitWriter::new();
+    write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+    watcher.client.send(ACK, payload.into_bytes());
+    pump_until(
+        &mut [&mut watcher],
+        &schemas,
+        "the bots and their controllers",
+        |watchers| {
+            expected.iter().all(|(body, controller, _, _)| {
+                watchers[0].created(*body).is_some() && watchers[0].created(*controller).is_some()
+            })
+        },
+    );
+    let create_of =
+        |watcher: &Watcher, entity: u32| -> (usize, Option<u32>, Vec<DecodedComponent>) {
+            let index = watcher.created(entity).unwrap();
+            let record = watcher.datagrams[index]
+                .1
+                .iter()
+                .find(|record| record.entity == entity && record.is_create())
+                .unwrap();
+            (
+                index,
+                record.definition,
+                record.components.clone().expect("decodable controller"),
+            )
+        };
+    for (body, controller, definition, components) in &expected {
+        let (created, kind, received) = create_of(&watcher, *controller);
+        assert!(created >= watcher.created(*body).unwrap());
+        assert_eq!(kind, Some(*definition));
+        assert_eq!(&received, components, "controller {controller:08X}");
+    }
+
+    // Kill the target with a head shot.
+    let owner = watcher.owner;
+    send_player_message(
+        &mut watcher.client,
+        &schemas,
+        owner,
+        1,
+        PICK_HERO,
+        SOLDIER.to_le_bytes().to_vec(),
+    );
+    pump_until(&mut [&mut watcher], &schemas, "the body", |watchers| {
+        watchers[0].created(owner | 1).is_some()
+    });
+    let commands = aimed_batch(watcher.tick + 1, 1, -16384, AT_BOT_HEAD_4M, FIRE, false);
+    watcher.client.send(ACK, commands.clone());
+    watcher.client.send(ACK, commands);
+    let notice = |watcher: &Watcher| {
+        (0..watcher.datagrams.len()).find_map(|index| {
+            watcher.datagrams[index]
+                .0
+                .iter()
+                .find(|message| message.id == 25005)
+                .map(|message| (index, message.fields[&0x84].clone()))
+        })
+    };
+    pump_until(&mut [&mut watcher], &schemas, "the kill", |watchers| {
+        notice(watchers[0]).is_some()
+    });
+    let (killed, victim) = notice(&watcher).unwrap();
+    assert_eq!(
+        victim,
+        Value::Struct(Fields::from([(0, Value::Unsigned(u64::from(target)))]))
+    );
+    assert!(watcher.created(controller).unwrap() < killed);
+
+    // The respawn: the controller now controls the new body.
+    let replacement = BOT_ENTITY + expected.len() as u32;
+    let relinked = |watcher: &Watcher| {
+        watcher.find(0, |record| {
+            record.entity == controller
+                && record.operation == Some(2)
+                && record.components == Some(vec![link(replacement)])
+        })
+    };
+    pump_until(
+        &mut [&mut watcher],
+        &schemas,
+        "the replacement's controller link",
+        |watchers| relinked(watchers[0]).is_some(),
+    );
+    assert!(relinked(&watcher).unwrap() >= watcher.created(replacement).unwrap());
+    // Never destroyed, never a card or a team list entry of its own.
+    assert!(
+        watcher
+            .find(0, |record| {
+                expected
+                    .iter()
+                    .any(|(_, controller, _, _)| record.entity == *controller)
+                    && record.operation == Some(3)
+            })
+            .is_none()
+    );
+    assert!(!watcher.datagrams.iter().any(|(messages, _)| {
+        messages.iter().any(|message| {
+            message.id == 20308
+                && matches!(
+                    message.fields.get(&0x80),
+                    Some(Value::Struct(card))
+                        if matches!(card.get(&0x40), Some(Value::String(tag)) if names.contains(tag))
+                )
+        })
+    }));
     server.stop().unwrap();
 }
 

@@ -600,6 +600,12 @@ enum Delivery {
     },
     /// A firing bot's rocket on this client (bot_script.rs `SeenDelivery`).
     BotSeen(SeenDelivery),
+    /// A respawned bot's stand-in controller now controls `body`, its new
+    /// body (`scene.rs` `bot_controller_link`): it goes with or after the
+    /// body's create, and a newer respawn's link supersedes it.
+    BotLink {
+        body: u32,
+    },
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -1360,6 +1366,12 @@ impl WorldDelivery {
             update: replacement.created,
             delivery: Delivery::BotCreate { after: Some(old) },
         });
+        if let Some(link) = replacement.link {
+            self.push(Record {
+                update: link,
+                delivery: Delivery::BotLink { body: new },
+            });
+        }
     }
 
     fn current(&self, record: &Record) -> bool {
@@ -1367,6 +1379,7 @@ impl WorldDelivery {
         match record.delivery {
             Delivery::Baseline | Delivery::Script { close: false, .. } => true,
             Delivery::BotCreate { .. } => self.bots.get(&entity) == Some(&BotLifetime::Live),
+            Delivery::BotLink { body } => self.bots.get(&body) == Some(&BotLifetime::Live),
             Delivery::BotDestroy => self.bots.get(&entity) == Some(&BotLifetime::Retiring),
             Delivery::Health { revision } => self.health_updates.get(&entity) == Some(&revision),
             Delivery::Board { revision } => self.board.revision == revision,
@@ -1465,7 +1478,7 @@ impl WorldDelivery {
                     (true, Delivery::BotDestroy) => {
                         self.bots.remove(&record.update.entity);
                     }
-                    (true, Delivery::Board { .. }) => {}
+                    (true, Delivery::Board { .. } | Delivery::BotLink { .. }) => {}
                     (true, Delivery::Health { .. }) => {
                         self.health_updates.remove(&record.update.entity);
                     }
@@ -1544,6 +1557,7 @@ impl WorldDelivery {
         let mut created = body.is_none_or(|id| self.created.contains(&id.entity));
         let mut bound = body == self.bound;
         let mut destroyed = HashSet::new();
+        let mut creating = HashSet::new();
         self.queued
             .iter()
             .enumerate()
@@ -1554,6 +1568,14 @@ impl WorldDelivery {
                     }
                     Delivery::BotCreate { after: Some(old) }
                         if self.bots.contains_key(&old) && !destroyed.contains(&old) =>
+                    {
+                        return None;
+                    }
+                    Delivery::BotCreate { .. } => {
+                        creating.insert(record.update.entity);
+                    }
+                    Delivery::BotLink { body }
+                        if !self.created.contains(&body) && !creating.contains(&body) =>
                     {
                         return None;
                     }

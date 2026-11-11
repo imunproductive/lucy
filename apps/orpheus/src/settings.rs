@@ -11,7 +11,7 @@ use std::{
 };
 
 use clap::{Args, ValueEnum};
-use orpheus_sim::ai::Difficulty;
+use orpheus_sim::{ai::Difficulty, scene::BotControllers};
 use serde::Deserialize;
 
 use crate::ask;
@@ -47,6 +47,7 @@ struct ConfigFile {
     account: Option<String>,
     game: Option<PathBuf>,
     locale: Option<String>,
+    bot_controller: Option<String>,
     #[serde(default)]
     ports: PortsFile,
 }
@@ -98,6 +99,15 @@ pub struct ServerArgs {
     /// heroes of this level (easy, medium or hard).
     #[arg(long, value_name = "LEVEL", value_parser = parse_ai_level)]
     pub test_ai: Option<Difficulty>,
+    /// The stand-in controller of each training bot, which names it in
+    /// "ELIMINATED" and the kill feed: player, ai or off [default: player].
+    #[arg(
+        long,
+        env = "ORPHEUS_BOT_CONTROLLER",
+        value_name = "KIND",
+        value_parser = parse_bot_controller
+    )]
+    pub bot_controller: Option<BotControllers>,
     /// Template profile for new accounts [default: profile.json in the
     /// state folder].
     #[arg(long, value_name = "FILE")]
@@ -192,6 +202,10 @@ fn parse_ai_level(text: &str) -> Result<Difficulty, String> {
     Difficulty::parse(text).ok_or_else(|| "give easy, medium or hard".into())
 }
 
+fn parse_bot_controller(text: &str) -> Result<BotControllers, String> {
+    BotControllers::parse(text).ok_or_else(|| "give player, ai or off".into())
+}
+
 #[derive(Debug)]
 pub struct Settings {
     pub state: PathBuf,
@@ -204,6 +218,8 @@ pub struct Settings {
     pub test_players: usize,
     /// AI heroes for the missing players of such a match (`--test-ai`).
     pub test_ai: Option<Difficulty>,
+    /// The training bots' stand-in controllers (`--bot-controller`).
+    pub bot_controllers: BotControllers,
     /// The template profile for new accounts (`--save`).
     pub template: Option<PathBuf>,
 }
@@ -211,6 +227,16 @@ pub struct Settings {
 impl Settings {
     pub fn resolve(state: &Path, args: &ServerArgs) -> io::Result<Self> {
         let file = read_config(&state.join(CONFIG_FILE))?;
+        let bot_controllers = match (args.bot_controller, &file.bot_controller) {
+            (Some(controllers), _) => controllers,
+            (None, Some(text)) => parse_bot_controller(text).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{CONFIG_FILE}: bot_controller: {error}"),
+                )
+            })?,
+            (None, None) => BotControllers::default(),
+        };
         let ports = &file.ports;
         Ok(Self {
             state: state.to_owned(),
@@ -239,6 +265,7 @@ impl Settings {
             },
             test_players: args.test_players.unwrap_or(0),
             test_ai: args.test_ai,
+            bot_controllers,
             template: args.save.clone(),
         })
     }
@@ -334,5 +361,27 @@ mod tests {
         };
         let settings = Settings::resolve(state.path(), &args).unwrap();
         assert_eq!(settings.game_port(), Some(4001));
+    }
+
+    #[test]
+    fn bot_controller_comes_from_the_flag_then_the_file_then_player() {
+        let empty = tempfile::tempdir().unwrap();
+        let settings = Settings::resolve(empty.path(), &ServerArgs::default()).unwrap();
+        assert_eq!(settings.bot_controllers, BotControllers::Player);
+
+        let state = write_config("bot_controller = 'ai'\n");
+        let settings = Settings::resolve(state.path(), &ServerArgs::default()).unwrap();
+        assert_eq!(settings.bot_controllers, BotControllers::Ai);
+        let args = ServerArgs {
+            bot_controller: Some(BotControllers::Off),
+            ..ServerArgs::default()
+        };
+        let settings = Settings::resolve(state.path(), &args).unwrap();
+        assert_eq!(settings.bot_controllers, BotControllers::Off);
+
+        let typo = write_config("bot_controller = 'on'\n");
+        let error = Settings::resolve(typo.path(), &ServerArgs::default()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("bot_controller"));
     }
 }

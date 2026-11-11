@@ -74,6 +74,10 @@ pub struct ServerConfig {
     /// AI heroes of this level fill the missing players of a match that
     /// `test_players` starts (`--test-ai`; Practice vs AI, `orpheus_sim::ai`).
     pub test_ai: Option<orpheus_sim::ai::Difficulty>,
+    /// The stand-in controller each training bot gets, which names it in
+    /// "ELIMINATED" and the kill feed (`--bot-controller`,
+    /// `orpheus_sim::scene::BotControllers`).
+    pub bot_controllers: orpheus_sim::scene::BotControllers,
     /// The template profile for new accounts (`--save`); `profile.json` in
     /// the state folder when unset.
     pub template: Option<PathBuf>,
@@ -97,6 +101,7 @@ impl ServerConfig {
             install: None,
             test_players: 0,
             test_ai: None,
+            bot_controllers: orpheus_sim::scene::BotControllers::default(),
             template: None,
         }
     }
@@ -140,6 +145,7 @@ impl Server {
         if let Some(install) = &config.install {
             assets = assets.with_collision_build(collision_build(install.clone()));
         }
+        assets.set_bot_controllers(config.bot_controllers);
         // Skin themes newer than the capture, and the gun models.
         let extra_preload = extra_preload_themes(&items)
             .chain(assets.graphs().weapon_cosmetics())

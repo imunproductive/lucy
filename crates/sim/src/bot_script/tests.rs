@@ -291,6 +291,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     world.replace_bot(BotReplacement {
         retired: victim,
         created,
+        link: None,
     });
     assert!(world.bot_stream(victim).is_none());
     world.update_bots(&scene, &[], tick, true);
