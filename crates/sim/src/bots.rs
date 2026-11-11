@@ -30,7 +30,7 @@
 //! OW2 put ordinary Training Bots on these routes (4.5 m/s) and changed three
 //! routes. Bot n's entity is `0xC0001000 + n` (type 2, like the game mode
 //! entity); its respawns take the next free ids up from there. The stand-in
-//! controller of the bot in slot n (`scene.rs` `BotControllers`) is
+//! controller of the bot in slot n (`scene.rs` `bot_controller_create`) is
 //! `0xC0000800 + n`, below them, so the two never meet.
 
 use std::{
