@@ -29,6 +29,17 @@ fn top(shape: &Value) -> f64 {
     }
 }
 
+/// The lowest point of a shape.
+fn bottom(shape: &Value) -> f64 {
+    let radius = shape["radius"].as_f64().unwrap();
+    let y = |point: &Value| point[1].as_f64().unwrap();
+    match shape["kind"].as_str().unwrap() {
+        "sphere" => y(&shape["centre"]) - radius,
+        "capsule" => y(&shape["a"]).min(y(&shape["b"])) - radius,
+        kind => panic!("a {kind}"),
+    }
+}
+
 fn shapes<'a>(file: &'a Value, body: &str) -> &'a Vec<Value> {
     file[body]["shapes"].as_array().unwrap()
 }
@@ -41,15 +52,19 @@ fn critical(shapes: &[Value]) -> Vec<&Value> {
 }
 
 /// The Training Bot (`1403.003`, model `312E`): five spheres and two arm
-/// capsules; its head sphere, the top of the body at 1.92 m of its 2 m
-/// mover, is the only critical one.
+/// capsules, placed by its idle pose, clip `006:3920` (the one clip keying
+/// every bone that its blend trees play when no animation category is
+/// set), as the bot is seen in the game: it hovers 0.5 m above its rest
+/// pose with its arms hanging down. Its head sphere, the top of the body,
+/// is the only critical one, centred at its mover's 2 m eye.
 #[test]
 #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
-fn the_training_bot_has_seven_shapes_and_a_critical_head() {
+fn the_training_bot_hovers_with_its_arms_down_and_a_critical_head() {
     let file = derived();
     let bot = &file["0x0400000000001403"];
     assert_eq!(bot["name"], "Training Bot");
     assert_eq!(bot["model"], "0x0D0000000000312E");
+    assert_eq!(bot["pose"], "0x0A00000000003920");
     let shapes = shapes(&file, "0x0400000000001403");
     assert_eq!(shapes.len(), 7);
     let kinds = |kind: &str| shapes.iter().filter(|shape| shape["kind"] == kind).count();
@@ -61,11 +76,62 @@ fn the_training_bot_has_seven_shapes_and_a_critical_head() {
     assert!((head["radius"].as_f64().unwrap() - 0.44).abs() < 1e-6);
     let highest = shapes.iter().map(top).fold(f64::MIN, f64::max);
     assert_eq!(top(head), highest);
-    assert!((highest - 2.0).abs() < 0.1, "top {highest}");
-    // The arms reach forward (+Z) from the shoulders.
+    // At rest the head's centre is 1.48 m up; posed, at the eye.
+    let centre = head["centre"][1].as_f64().unwrap();
+    assert!((centre - 2.0).abs() < 0.05, "head centre {centre}");
+    // It floats: nothing comes within 0.3 m of the feet (at rest the lowest
+    // sphere reached 0.2 m below them).
+    let lowest = shapes.iter().map(bottom).fold(f64::MAX, f64::min);
+    assert!((lowest - 0.3).abs() < 0.01, "bottom {lowest}");
+    // The arms hang straight down from the shoulders (at rest they reached
+    // 0.87 m forward along +Z).
     for arm in shapes.iter().filter(|shape| shape["kind"] == "capsule") {
-        let z = |point: &str| arm[point][2].as_f64().unwrap();
-        assert!(z("a").max(z("b")) > 0.8, "{arm}");
+        let point = |end: &str| -> [f64; 3] {
+            std::array::from_fn(|axis| arm[end][axis].as_f64().unwrap())
+        };
+        let (a, b) = (point("a"), point("b"));
+        assert!(
+            (a[0] - b[0]).abs() < 0.01 && (a[2] - b[2]).abs() < 0.01,
+            "{arm}"
+        );
+        assert!(a[1] - b[1] > 0.8, "{arm}");
+    }
+}
+
+/// Every bot body is the Training Bot's model with its blend trees, so in
+/// the same pose; the heroes stay at rest (their trees reach no single clip
+/// keying every bone, and players are hit by the capsule).
+#[test]
+#[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
+fn the_bots_are_posed_and_the_heroes_rest() {
+    let file = derived();
+    let geometry = |body: &str| -> Vec<Value> {
+        shapes(&file, body)
+            .iter()
+            .map(|shape| {
+                let mut shape = shape.clone();
+                shape.as_object_mut().unwrap().remove("critical");
+                shape
+            })
+            .collect()
+    };
+    for bot in [
+        "0x040000000000143E",
+        "0x040000000000146E",
+        "0x04000000000014A9",
+        "0x04000000000014D2",
+        "0x04000000000014ED",
+    ] {
+        assert_eq!(file[bot]["pose"], "0x0A00000000003920", "{bot}");
+        assert_eq!(geometry(bot), geometry("0x0400000000001403"), "{bot}");
+    }
+    let heroes: Value = serde_json::from_slice(
+        &std::fs::read(orpheus_testkit::runtime_dir().join("data/game_heroes_174.json")).unwrap(),
+    )
+    .unwrap();
+    for hero in heroes.as_object().unwrap().values() {
+        let body = hero["body"].as_str().unwrap();
+        assert!(file[body].get("pose").is_none(), "{}", hero["name"]);
     }
 }
 

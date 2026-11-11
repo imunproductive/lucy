@@ -508,6 +508,23 @@ fn input_batch(first: u32, count: u8, yaw: i16) -> Vec<u8> {
 }
 
 fn command_batch(first: u32, count: u8, yaw: i16, buttons: u32, forward: bool) -> Vec<u8> {
+    aimed_batch(first, count, yaw, 0, buttons, forward)
+}
+
+/// Soldier: 76's level shot from his 1.55 m eye meets a Training Bot's
+/// chest: its idle pose centres the head sphere 1.98 m up. This pitch
+/// (1/65536 turns, negative up) aims from the eye at the head 4 m away,
+/// atan(0.43 / 4).
+const AT_BOT_HEAD_4M: i16 = -1114;
+
+fn aimed_batch(
+    first: u32,
+    count: u8,
+    yaw: i16,
+    pitch: i16,
+    buttons: u32,
+    forward: bool,
+) -> Vec<u8> {
     let mut input = BitWriter::new();
     input.bits(0, 24).unwrap(); // latency and key flags
     input.bits(u64::from(count), 8).unwrap();
@@ -519,7 +536,7 @@ fn command_batch(first: u32, count: u8, yaw: i16, buttons: u32, forward: bool) -
         input.bits(2, 3).unwrap();
     }
     input.signed(i64::from(yaw), 16).unwrap();
-    input.signed(0, 16).unwrap();
+    input.signed(i64::from(pitch), 16).unwrap();
     input.bits(u64::from(buttons), 24).unwrap();
     input.bits(0, 8).unwrap(); // action
     input.bits(0, 16).unwrap(); // extra
@@ -964,7 +981,7 @@ fn pick_soldier_for_weapon(client: &mut Client, schemas: &Schemas) -> u32 {
 fn exercise_combat(client: &mut Client, schemas: &Schemas, target: u32, replacement: u32) {
     let frame = pick_soldier_for_weapon(client, schemas);
     let fire = orpheus_wire::commands::FIRE;
-    let commands = command_batch(frame, 1, -16384, fire, false);
+    let commands = aimed_batch(frame, 1, -16384, AT_BOT_HEAD_4M, fire, false);
     client.send(ACK, commands.clone());
     client.send(ACK, commands);
 
@@ -4103,7 +4120,7 @@ fn practice_bots_run_their_scripts_for_a_client() {
     pump_until(&mut [&mut watcher], &schemas, "the body", |watchers| {
         watchers[0].created(owner | 1).is_some()
     });
-    let commands = command_batch(watcher.tick + 1, 1, -16384, FIRE, false);
+    let commands = aimed_batch(watcher.tick + 1, 1, -16384, AT_BOT_HEAD_4M, FIRE, false);
     watcher.client.send(ACK, commands.clone());
     watcher.client.send(ACK, commands);
     let replacement = BOT_ENTITY + 15;

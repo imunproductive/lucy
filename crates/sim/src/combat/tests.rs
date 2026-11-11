@@ -34,8 +34,10 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
     combat.record_poses(&scene, &[], context.tick);
     let mut shot = PosedHitscan {
         source: SHOOTER.source,
-        // combat.py `EYE`: Soldier: 76's standing eye.
-        origin: [x - 8.0, y + 1.55, z],
+        // Level with the Training Bot's head: its idle pose centres the
+        // head sphere 1.98 m up (from Soldier: 76's standing eye, combat.py
+        // `EYE` 1.55 m, a level shot meets its chest).
+        origin: [x - 8.0, y + 2.0, z],
         command: Command {
             frame: context.tick,
             yaw: 16384,
