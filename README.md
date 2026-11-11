@@ -33,6 +33,7 @@ The first start derives the game data from the install, which takes about two mi
 - [Testing](docs/dev/testing.md): the test tiers and the `just` recipes. Run `just check` before every change.
 - [Data sources](docs/dev/data-sources.md): where each data file comes from.
 - [Decisions](docs/dev/decisions.md): conventions, fixed data, decisions, and how the Python tests were retired.
+- [Hardcoded values](docs/dev/hardcoded-values.md): game values still kept in code, and whether the install has the real value.
 - [Research notes](docs/notes): protocol, behavior and acceptance records, references.
 
 ## License
