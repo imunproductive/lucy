@@ -622,6 +622,7 @@ fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShot
                     // combat.py `_shoot`: the NPC path flies one whatever
                     // the count, and leases none.
                     projectiles: projectiles_per_shot(node, &mut evaluate).unwrap_or(1),
+                    pellets: vec![direction],
                 }),
                 observed,
             ));

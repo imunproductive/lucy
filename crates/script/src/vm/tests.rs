@@ -2137,6 +2137,78 @@ fn volley_reports_exact_times_and_bakes_linked_ammo_on_finish() {
     assert_eq!(snapshot.instances[&1].variables[&53], Value::Integer(27));
 }
 
+/// leafall903/ORPHEUS (MIT) e5463e3 `WeaponVolley.tick`: a launch
+/// `STU_239B571E` volley's spread grows by 1/ramp a shot from the value the
+/// volley began with, each tick publishes it on the linked variable until
+/// it is full, each shot carries it, and the end bakes it 1 ms later.
+#[test]
+fn volley_spread_grows_each_shot_and_ticks_until_full() {
+    let weapon = graph(
+        42,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntry",
+                None,
+                json!({"m_outPlug":plug(&[(1,"m_beginPlug")],&[])}),
+            ),
+            node(
+                1,
+                "STUStatescriptStateWeaponVolley",
+                Some(0),
+                json!({
+                    "m_A17BE89B":6,
+                    "m_numShotsPerSecond":10,
+                    "m_3FFC9EB9":var(231,false),
+                    "m_5EC1EB38":{"$":"STU_239B571E","m_AC20B1C1":4,"m_23C72C36":null}
+                }),
+            ),
+        ],
+        json!([1]),
+        json!([0]),
+    );
+    let mut root = Root::new(1, 42);
+    root.variables.insert(231, Value::Float(0.125));
+    let mut component = Component::start(
+        Arc::new(store(vec![weapon])),
+        42,
+        Variables::new(),
+        vec![root],
+        0,
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let mut shots = Vec::new();
+    let mut published = Vec::new();
+    for frame in 0..=40 {
+        component.advance_frame(frame, &mut EmptyWorld).unwrap();
+        shots.extend(component.take_shots().unwrap());
+        let snapshot = component.snapshot().unwrap();
+        let value = snapshot
+            .resolved_bindings
+            .get(&(1, 231))
+            .unwrap_or(&snapshot.instances[&1].variables[&231]);
+        if published.last() != Some(value) {
+            published.push(value.clone());
+        }
+    }
+    // Shots at 0, 100, ..., 500 ms: 1/8 plus a quarter for each shot so
+    // far, the first included, at most 1.
+    assert_eq!(
+        shots.iter().map(|shot| shot.spread).collect::<Vec<_>>(),
+        [0.375, 0.625, 0.875, 1.0, 1.0, 1.0].map(Some)
+    );
+    assert_eq!(
+        published,
+        [0.375, 0.625, 0.875, 1.0].map(Value::Float),
+        "the linked variable follows each shot until full"
+    );
+    let snapshot = component.snapshot().unwrap();
+    assert!(!snapshot.instances[&1].states[&0].active);
+    assert_eq!(snapshot.instances[&1].variables[&231], Value::Float(1.0));
+}
+
 #[test]
 #[ignore = "requires a derived 1.74 graph bundle"]
 fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
@@ -4014,6 +4086,88 @@ fn tracer_pistols_load_forty_rounds_from_the_ruleset_defaults() {
     }
     assert!(!component.machine.shots.is_empty());
     assert!(expr::to_int(&variable(&component, 53), 40) < 40);
+}
+
+/// leafall903/ORPHEUS (MIT) e5463e3
+/// `test_held_primary_updates_owner_spread_and_recovers_on_release`:
+/// Wrecking Ball's Quad Cannons (graph `1514` state 9, ramp 20) grow the
+/// linked spread variable 231 each shot while the trigger is held, and the
+/// owner's reticle (entity variable 243, a graph's expression over it)
+/// follows: 0.2 and 0.4° after 4 shots, 1 and 2° after 20.
+#[test]
+#[ignore = "requires a local 1.74 graph pack"]
+fn wrecking_balls_reticle_follows_the_growing_spread() {
+    const WRECKING_BALL: u64 = 0x02e0_0000_0000_01ca;
+    const QUAD_CANNONS: u32 = 0x1514;
+    let data = orpheus_testkit::runtime_dir().join("data");
+    let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
+    let body = &graphs.bodies()[&0x0400_0000_0000_200b];
+    let mut world = PlayerWorld::new(
+        Arc::clone(&graphs),
+        0xa000_0100,
+        0xa000_0101,
+        TEAM_ONE,
+        PRACTICE_RANGE_MODE,
+        WRECKING_BALL,
+    );
+    world.pool_types_known = true;
+    world.unknowns = Unknowns::Tolerate;
+    let mut component = Component::start(
+        Arc::clone(&graphs),
+        0xa000_0101,
+        player_entity_variables(body, 600.0, 600.0),
+        player_roots(body, &graphs).unwrap(),
+        999,
+        &mut world,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let cannons = component
+        .snapshot()
+        .unwrap()
+        .instances
+        .iter()
+        .find(|(_, instance)| instance.graph == QUAD_CANNONS)
+        .map(|(&id, _)| id)
+        .unwrap();
+    let read = |component: &Component, scope, id| {
+        expr::to_float(
+            &component
+                .resolved_variable(cannons, Variable { scope, id })
+                .unwrap(),
+        )
+    };
+    let mut frame = 999;
+    let mut advance = |component: &mut Component, frames: u32, buttons: u32| {
+        for _ in 0..frames {
+            frame += 1;
+            component
+                .advance_command(
+                    Command {
+                        frame,
+                        buttons,
+                        ..Command::default()
+                    },
+                    &mut world,
+                )
+                .unwrap();
+        }
+    };
+    advance(&mut component, 24, 0);
+    assert_eq!(read(&component, Scope::Entity, 243), 0.0);
+    advance(&mut component, 9, 1);
+    assert_eq!(read(&component, Scope::Instance, 53), 76.0);
+    assert!((read(&component, Scope::Instance, 231) - 0.2).abs() < 1e-6);
+    assert!((read(&component, Scope::Entity, 243) - 0.4).abs() < 1e-6);
+    advance(&mut component, 41, 1);
+    assert_eq!(read(&component, Scope::Instance, 53), 60.0);
+    assert_eq!(
+        (
+            read(&component, Scope::Instance, 231),
+            read(&component, Scope::Entity, 243)
+        ),
+        (1.0, 2.0)
+    );
 }
 
 /// The bodies a target search can find, as a match lists them.

@@ -537,6 +537,8 @@ fn posed_volley_keeps_the_authored_shot_frame_and_drains_unposed_reports() {
     assert_eq!(shot.origin, [1.0, 3.55, 3.0]);
     assert_eq!(shot.shot_frame, 101);
     assert_eq!(shot.command, command);
+    // No spread ramp: the shot leaves along the aim.
+    assert_eq!(shot.direction, aim_direction(&command));
     assert_eq!(
         (shot.reach, shot.hit.amount, shot.hit.critical),
         (180.0, 20.0, 2.0)
@@ -713,12 +715,103 @@ fn projectile_volleys_fly_leased_for_damage_alone_or_not_at_all() {
     assert!(trio.leased);
     assert_eq!(trio.projectiles, 3);
     assert_eq!(trio.direction, aim_direction(&fire));
-    // More than 7 a shot resolve to shots only (projectiles.py `_sync`).
+    assert_eq!(trio.pellets, [aim_direction(&fire)]);
+    // Echo's Tri-Shot layout (one ring of 3 at 0.6 of the spread, here 5°):
+    // the leased shot still leaves along the aim, and its three pellets
+    // fly 3° around it for the damage (upstream 7cb4018).
+    fields["m_5EC1EB38"] = json!({"$":"STU_613BDDB0","m_spread":5,"m_0D30E40C":[
+        {"$":"STU_B101467F","m_6425FFB9":0.6,"m_B19BD35D":3}]});
+    let ringed = shoot(fields.clone()).expect("a ringed volley of three flies");
+    assert!(ringed.leased);
+    assert_eq!(ringed.direction, aim_direction(&fire));
+    let angle = |pellet: &[f64; 3]| {
+        let aim = aim_direction(&fire);
+        let dot: f64 = aim.iter().zip(pellet).map(|(a, b)| a * b).sum();
+        dot.clamp(-1.0, 1.0).acos().to_degrees()
+    };
+    assert_eq!(ringed.pellets.len(), 3);
+    assert!(
+        ringed
+            .pellets
+            .iter()
+            .all(|pellet| (angle(pellet) - 3.0).abs() < 1e-9)
+    );
+    // More than 7 a shot resolve to shots only (projectiles.py `_sync`);
+    // Roadhog's rings lay out 25 pellets around the aim.
     fields["m_numProjectilesPerShot"] = json!(25);
-    let pellets = shoot(fields).expect("the pellets' damage flies");
+    fields["m_5EC1EB38"]["m_0D30E40C"] = json!([
+        {"$":"STU_B101467F","m_6425FFB9":0,"m_B19BD35D":1},
+        {"$":"STU_B101467F","m_6425FFB9":0.3,"m_B19BD35D":5},
+        {"$":"STU_B101467F","m_6425FFB9":0.6,"m_B19BD35D":10},
+        {"$":"STU_B101467F","m_6425FFB9":1,"m_B19BD35D":9}]);
+    let pellets = shoot(fields.clone()).expect("the pellets' damage flies");
     assert!(!pellets.leased);
     assert_eq!(pellets.projectiles, 25);
     assert_eq!(pellets.ballistics.direct.unwrap().amount, 40.0);
+    let mut angles: Vec<_> = pellets
+        .pellets
+        .iter()
+        .map(|pellet| (angle(pellet) * 1e6).round() / 1e6)
+        .collect();
+    angles.dedup();
+    assert_eq!(angles, [0.0, 1.5, 3.0, 5.0]);
+    // Rings that don't add up to the count fly one along the aim.
+    fields["m_numProjectilesPerShot"] = json!(24);
+    let uneven = shoot(fields).expect("the damage flies");
+    assert_eq!(uneven.pellets, [aim_direction(&fire)]);
+}
+
+/// leafall903/ORPHEUS (MIT) c239a84 `weapon_spread.py` and e5463e3: a
+/// volley whose launch spread grows (`STU_239B571E`, ramp 4, 1° to 3°)
+/// turns each hitscan shot by the client's circular spread at the shot's
+/// normalized spread (the first shot: 1/4, so 1.5°), seeded from the body,
+/// instance, state node and activation counter.
+#[test]
+fn a_growing_spread_turns_each_shot_inside_its_cone() {
+    use crate::weapon_spread::{direction, seed_base};
+    use serde_json::json;
+
+    let factory = fixture_volley_factory(
+        20,
+        false,
+        json!({
+            "m_A17BE89B":2,"m_numShotsPerSecond":9,"m_FEC435C6":180,
+            "m_6396149F":{"m_modifyHealth":{"m_amount":20.0}},
+            "m_5EC1EB38":{"$":"STU_239B571E","m_AC20B1C1":4,"m_23C72C36":null,
+                "m_7F0FED02":1,"m_429A6C85":3}
+        }),
+    );
+    let (_, spawn) = fixture_body_factory();
+    let mut runtime = factory.start(spawn).unwrap();
+    let mover = Mover::new(
+        MoverSettings::default(),
+        Arc::new(ContactWorld::new(Vec::new()).unwrap()),
+        spawn.pose.position,
+        0,
+        0x18,
+    )
+    .unwrap();
+    let fire = Command {
+        frame: 101,
+        buttons: orpheus_wire::commands::FIRE,
+        yaw: 12,
+        pitch: 30,
+        ..Command::default()
+    };
+    runtime.advance(fire, &mover, BodyStep::Posed).unwrap();
+    let shots = runtime.take_shots(Some(fire), &mover);
+    let [PosedShot::Hitscan(shot)] = shots.as_slice() else {
+        panic!("expected the opening shot")
+    };
+    let aim = aim_direction(&fire);
+    let cone = 1.5f64.to_radians() as f32;
+    assert_eq!(
+        shot.direction,
+        direction(aim, cone, seed_base(spawn.entity, 1, 2, 1), 0, 0, false)
+    );
+    assert_ne!(shot.direction, aim);
+    let dot: f64 = aim.iter().zip(shot.direction).map(|(a, b)| a * b).sum();
+    assert!(dot >= f64::from(cone).cos() - 1e-7);
 }
 
 /// projectiles.py `fired`: a volley whose projectile leaves an entity names

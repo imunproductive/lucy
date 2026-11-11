@@ -2697,6 +2697,110 @@ fn genjis_fan_hits_a_bot_once_a_shot_for_its_damage_alone_unseen() {
     server.stop().unwrap();
 }
 
+/// Doomfist's Hand Cannon (graph `0D0A` state 2: 11 projectiles a shot in
+/// rings of 1, 4 and 6, 6 damage each, shots only): each pellet flies for
+/// its damage (leafall903/ORPHEUS 7cb4018 `test_hand_cannon_sweeps_all_eleven_pellets_from_one_shot`),
+/// so a training bot 2 m ahead takes eleven hits of 6, 66 in all, from one
+/// shot; nobody sees a server projectile.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene"]
+fn doomfists_hand_cannon_hits_with_all_eleven_pellets() {
+    use orpheus_script::vm::Unknowns;
+    use orpheus_sim::{
+        projectiles::{SEEN_FIRST, SEEN_SPAN},
+        scene_assets::SceneAssets,
+    };
+    use orpheus_wire::commands::FIRE;
+    const AHEAD: f64 = 2.0;
+
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(Unknowns::Tolerate);
+    let mut aim = None;
+    let (mut server, schemas, [mut doomfist, mut viewer], _) = practice_world(
+        [
+            ("doomfist#1111", 0, "Doomfist"),
+            ("viewer#2222", 0, "Soldier: 76"),
+        ],
+        &assets,
+        |scene| {
+            let ([x, y, z], yaw) = scene.map().spawn_point(0, 0).unwrap();
+            let (sin, cos) = yaw.to_radians().sin_cos();
+            let bot = scene
+                .bots_mut()
+                .iter_mut()
+                .find(|bot| bot.spawn.team == 1 && !bot.spawn.firing && bot.spawn.route.is_empty())
+                .unwrap();
+            bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
+            aim = Some((bot.entity, (yaw * 65536.0 / 360.0).round() as i32 as i16));
+        },
+    );
+    let (bot, yaw) = aim.unwrap();
+    let seen = |entity: u32| (SEEN_FIRST..SEEN_FIRST + SEEN_SPAN).contains(&entity);
+    let hits_of = |watcher: &Watcher, from: usize| -> Vec<(Value, Value)> {
+        watcher.datagrams[from..]
+            .iter()
+            .flat_map(|(messages, _)| messages.iter().filter(|message| message.id == 25001))
+            .map(|message| {
+                let Value::Struct(impact) = &message.fields[&0x78] else {
+                    panic!("hit body")
+                };
+                let Value::Struct(target) = &impact[&0] else {
+                    panic!("hit target")
+                };
+                (target[&0].clone(), impact[&4].clone())
+            })
+            .collect()
+    };
+    let mut next = doomfist.tick + 1;
+    let mut command = |doomfist: &mut Watcher, buttons: u32| {
+        let count = if buttons == 0 { 16 } else { 1 };
+        if buttons != 0 || next <= doomfist.tick + 8 {
+            doomfist
+                .client
+                .send(ACK, command_batch(next, count, yaw, buttons, false));
+            next += u32::from(count);
+        }
+    };
+    let ready = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < ready {
+        command(&mut doomfist, 0);
+        doomfist.pump(&schemas);
+        viewer.pump(&schemas);
+    }
+    let fired = (doomfist.datagrams.len(), viewer.datagrams.len());
+    command(&mut doomfist, FIRE);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while hits_of(&doomfist, fired.0).len() < 11 {
+        assert!(
+            Instant::now() < deadline,
+            "waiting for the pellets: {:?}",
+            hits_of(&doomfist, fired.0)
+        );
+        command(&mut doomfist, 0);
+        doomfist.pump(&schemas);
+        viewer.pump(&schemas);
+    }
+    let settled = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < settled {
+        command(&mut doomfist, 0);
+        doomfist.pump(&schemas);
+        viewer.pump(&schemas);
+    }
+
+    assert_eq!(
+        hits_of(&doomfist, fired.0),
+        vec![(Value::Unsigned(u64::from(bot)), Value::Unsigned(6)); 11]
+    );
+    assert!(
+        viewer
+            .find(fired.1, |record| seen(record.entity)
+                || !record.launches.is_empty())
+            .is_none(),
+        "the other client sees no pellet"
+    );
+    server.stop().unwrap();
+}
+
 /// Echo's Tri-Shot (graph `19E5` state 3, her primary fire: three bolts a
 /// shot, predicted): her body's lease gives definition `2CBF` three ids a
 /// frame, so the three bolts she shot under the frame's consecutive ids

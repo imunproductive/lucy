@@ -53,6 +53,7 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
     vm::{GameMessage, Motion, MoveRequest, Snapshot, TargetCandidate},
+    weapons::ProjectileBallistics,
     wire::{Value as ScriptValue, Variables},
 };
 use orpheus_wire::{
@@ -321,17 +322,43 @@ impl BodyScript {
     /// flies, and the other clients see it (one copy, as Python, whatever
     /// the volley's count of projectiles a shot), while each of the owner's
     /// projectiles of the shot is confirmed. combat.py `_shoot`: an
-    /// unleased one flies for its damage alone.
+    /// unleased one flies for its damage alone. A shot of pellet rings
+    /// flies each pellet for its damage (upstream 7cb4018); a leased one's
+    /// confirmation and release still follow one projectile along the aim,
+    /// which then does no damage, so the wire is as without rings.
     fn launch_projectile(&mut self, projectile: PosedProjectile) {
         let bound = (projectile.ballistics.bound() / TICK_PERIOD.as_secs_f64()).ceil() as u32;
         let definition = projectile.ballistics.definition;
         let damaging = projectile.ballistics.damaging();
-        let Some(flight) = ProjectileFlight::new(
-            projectile.ballistics,
-            projectile.origin,
-            projectile.direction,
-            None,
-        ) else {
+        let rings = projectile.pellets.len() > 1;
+        let pellets: Vec<_> = if rings && damaging {
+            projectile
+                .pellets
+                .iter()
+                .filter_map(|&pellet| {
+                    ProjectileFlight::new(
+                        projectile.ballistics.clone(),
+                        projectile.origin,
+                        pellet,
+                        None,
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let tracked = if rings {
+            ProjectileBallistics {
+                direct: None,
+                blast: None,
+                ..projectile.ballistics
+            }
+        } else {
+            projectile.ballistics
+        };
+        let Some(flight) =
+            ProjectileFlight::new(tracked, projectile.origin, projectile.direction, None)
+        else {
             return;
         };
         let token = match (&mut self.projectiles, definition) {
@@ -358,7 +385,9 @@ impl BodyScript {
             }
             _ => None,
         };
-        if token.is_none() && !damaging {
+        self.flights
+            .extend(pellets.into_iter().map(|pellet| (None, pellet)));
+        if token.is_none() && (rings || !damaging) {
             return;
         }
         self.flights.push((token.map(|(token, _)| token), flight));
