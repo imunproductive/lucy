@@ -60,3 +60,19 @@ pub fn oracle_pack() -> PathBuf {
 pub fn bot_graphs() -> PathBuf {
     runtime_dir().join("data/game_graphs_bots_174.json.gz")
 }
+
+/// Whether the first `needle_bits` bits of `needle` appear in the first
+/// `haystack_bits` bits of `haystack` at any bit offset, both read
+/// least-significant bit first as the wire writes them: a value written
+/// alone found inside a frame.
+pub fn contains_bits(
+    haystack: &[u8],
+    haystack_bits: usize,
+    needle: &[u8],
+    needle_bits: usize,
+) -> bool {
+    let bit = |data: &[u8], index: usize| data[index / 8] >> (index % 8) & 1;
+    needle_bits <= haystack_bits
+        && (0..=haystack_bits - needle_bits)
+            .any(|start| (0..needle_bits).all(|i| bit(haystack, start + i) == bit(needle, i)))
+}

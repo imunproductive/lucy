@@ -882,6 +882,26 @@ impl Component {
         })
     }
 
+    /// Set an instance's variable as the server's own input; nothing when
+    /// the instance isn't there.
+    pub fn set_instance_variable(
+        &mut self,
+        instance: u16,
+        id: u32,
+        value: Value,
+        world: &mut impl World,
+    ) -> Result<(), InitFault> {
+        if !self.machine.snapshot.instances.contains_key(&instance) {
+            return Ok(());
+        }
+        self.run(world, |vm| {
+            let key = VarKey::Instance(instance, id);
+            let old = vm.machine.value(key, None);
+            vm.set_base(key, value);
+            vm.notify_value(key, &old, None)
+        })
+    }
+
     /// Authoritative modifiers require a fully supported runtime path.
     pub fn movement_modifiers(
         &mut self,
