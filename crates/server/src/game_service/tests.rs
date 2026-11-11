@@ -2048,9 +2048,11 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     // The dead body's statescript goes on to both clients while the dead
     // player's client keeps sending commands: its owner frames and the
     // shooter's observer frames carry the kill feed pulse. Soldier: 76's
-    // death path reaches an action the VM doesn't implement (graph 01CA
-    // node 118, `STU_4C3509FB`), which debug builds refuse and release
-    // builds follow as Python does; so this part runs in release builds.
+    // death path now runs its array inserts (graph 01CA nodes 118 and 121,
+    // `STU_4C3509FB`), then reaches a config the VM doesn't compute (graph
+    // 01D8 node 98, `STU_309B0570`, a velocity), which debug builds refuse
+    // and release builds read as null as Python does; so this part runs in
+    // release builds.
     let tolerant =
         orpheus_script::vm::Unknowns::for_build() == orpheus_script::vm::Unknowns::Tolerate;
     let owner_frames = |watcher: &Watcher| {

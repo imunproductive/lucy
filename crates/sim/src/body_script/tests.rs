@@ -66,11 +66,12 @@ fn player_natives_follow_the_verified_owner_and_override_shapes() {
         evaluate(&mut runtime, &other_path),
         Err(EvalError::UnsupportedConfig("STU_DB742151".into()))
     );
+    // IsTutorial (CE8580): whether the mode is the Tutorial
+    // (leafall903/ORPHEUS, commit c239a84; Python answered null).
     let branch = json!({"$":"STU_A77AC2AC","m_EE729DCB":0});
-    assert_eq!(evaluate(&mut runtime, &branch), Ok(Value::Null));
-    // Null in every mode (main 184ff56, as in Python).
-    runtime.world.mode = 0;
-    assert_eq!(evaluate(&mut runtime, &branch), Ok(Value::Null));
+    assert_eq!(evaluate(&mut runtime, &branch), Ok(Value::Bool(false)));
+    runtime.world.mode = orpheus_content::maps::TUTORIAL_MODE;
+    assert_eq!(evaluate(&mut runtime, &branch), Ok(Value::Bool(true)));
 }
 
 #[test]
@@ -197,15 +198,20 @@ fn health_queries_read_the_authoritative_vitals() {
 
     let target = json!({"$": "STUConfigVarDynamic", "m_identifier": 400, "m_60DB8F99": true});
     let current = json!({"$": "STU_32E6E4D8", "m_entity": target});
-    for entity in [spawn.entity + 1, 0] {
+    // Another body's pools are unknown here; no entity reads 0 (D18110,
+    // `SceneWorld.native` in leafall903/ORPHEUS, commit c239a84).
+    for (entity, expected) in [
+        (
+            spawn.entity + 1,
+            Err(EvalError::UnsupportedConfig("STU_32E6E4D8".into())),
+        ),
+        (0, Ok(Value::Float(0.0))),
+    ] {
         runtime
             .component
             .set_entity_variable(400, Value::Entity(entity), &mut runtime.world)
             .unwrap();
-        assert_eq!(
-            evaluate(&mut runtime, &current),
-            Err(EvalError::UnsupportedConfig("STU_32E6E4D8".into()))
-        );
+        assert_eq!(evaluate(&mut runtime, &current), expected);
     }
 }
 
@@ -1232,11 +1238,12 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
             Ok(Value::Bool(enabled))
         );
     }
-    // Both 0254 rifle branches have the same parameterless human condition.
+    // Both 0254 rifle branches ask IsTutorial (`STU_A77AC2AC`), false outside
+    // the Tutorial (leafall903/ORPHEUS, commit c239a84; Python answered null).
     for condition in rifle_conditions {
         assert_eq!(
             component.evaluate_state_config(11, 10, &condition, &mut world),
-            Ok(Value::Null)
+            Ok(Value::Bool(false))
         );
     }
     world.vitals.damage(

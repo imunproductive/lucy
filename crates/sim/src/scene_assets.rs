@@ -1051,7 +1051,6 @@ mod tests {
                     "never ends by itself"
                 ),
                 (0x0255, Some(40), "STU_E9694EFD", "no-op"),
-                (0x0043, Some(8), "STU_1C2CC6D5", "no-op"),
                 (
                     0x0043,
                     Some(11),

@@ -138,6 +138,30 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.world.body_on_fire(self.site, entity)
     }
 
+    fn entity_exists(&mut self, entity: u32) -> Option<bool> {
+        self.read_native = true;
+        // The script's own entity exists.
+        if entity == self.site.entity {
+            return Some(true);
+        }
+        self.world.entity_exists(self.site, entity)
+    }
+
+    fn entity_position(&mut self, entity: u32) -> Option<[f64; 3]> {
+        self.read_native = true;
+        self.world.entity_position(self.site, entity)
+    }
+
+    fn entity_facing(&mut self, entity: u32) -> Option<[i32; 2]> {
+        self.read_native = true;
+        self.world.entity_facing(self.site, entity)
+    }
+
+    fn entity_team(&mut self, entity: u32) -> Option<i64> {
+        self.read_native = true;
+        self.world.entity_team(self.site, entity)
+    }
+
     fn related_entity(&mut self, relation: EntityRelation, entity: u32) -> Option<u32> {
         self.read_native = true;
         self.world.related_entity(self.site, relation, entity)
