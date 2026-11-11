@@ -2430,6 +2430,51 @@ fn pump_commanding(
     }
 }
 
+/// The client's hero settings (21604) reach his body in the world: with
+/// ALLIED HEALTH BARS at ALWAYS, Soldier: 76's body graph `01CF` gives him
+/// the support tag (st117) that `0D24` asks of the viewer for an ally's
+/// health bar; back at DEFAULT the tag goes.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
+fn a_clients_allied_health_bars_setting_reaches_his_body() {
+    use orpheus_content::hero_settings::{
+        ALLIED_HEALTH_BARS, ALLIED_HEALTH_BARS_ALWAYS, HERO_SETTINGS,
+    };
+
+    let (mut server, schemas, [mut soldier], _) =
+        practice_players([("soldier#1111", 0, "Soldier: 76")]);
+    assert!(!server.bodies(MATCH).unwrap()[0].support_tag_given);
+    // practice_world sent records 0 (map loaded) and 1 (the pick).
+    let send = |watcher: &mut Watcher, ordinal: u32, value: u64| {
+        let entry = Value::Struct(Fields::from([
+            (0, Value::Unsigned(0)),
+            (8, Value::Unsigned(ALLIED_HEALTH_BARS)),
+            (0x10, Value::Unsigned(value)),
+        ]));
+        let settings = Fields::from([
+            (0x78, Value::Array(vec![entry])),
+            (0x90, Value::Bool(false)),
+            (0x91, Value::Bool(false)),
+        ]);
+        let message = encode(&schemas, HERO_SETTINGS, &settings).unwrap();
+        let mut payload = BitWriter::new();
+        write_channel(&mut payload, &[(ordinal, message)], &[]).unwrap();
+        watcher.client.send(ACK, payload.into_bytes());
+    };
+    let wait_for = |watcher: &mut Watcher, given: bool| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while server.bodies(MATCH).unwrap()[0].support_tag_given != given {
+            assert!(Instant::now() < deadline, "the tag is not {given}");
+            watcher.pump(&schemas);
+        }
+    };
+    send(&mut soldier, 2, ALLIED_HEALTH_BARS_ALWAYS);
+    wait_for(&mut soldier, true);
+    send(&mut soldier, 3, 0);
+    wait_for(&mut soldier, false);
+    server.stop().unwrap();
+}
+
 /// projectiles.py `_show_others`, `_ObservedProjectile`: another client
 /// sees a player's Helix Rocket as a server entity of its definition under
 /// the map (the room's first SEEN id), which a shot record in the shooter

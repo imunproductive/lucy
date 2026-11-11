@@ -285,6 +285,7 @@ impl State {
                 scripted: false,
                 position: None,
                 health: None,
+                support_tag_given: false,
             })
             .collect();
         for (connection, peer) in &self.peers {
@@ -297,6 +298,7 @@ impl State {
             body.scripted = peer.world.combat_body_active();
             body.position = peer.world.body_position();
             body.health = peer.world.health_share();
+            body.support_tag_given = peer.world.body_state_active(0x01cf, 117);
         }
         bodies
     }
@@ -378,4 +380,7 @@ pub(crate) struct BodyState {
     /// His living body's feet.
     pub position: Option<[f64; 3]>,
     pub health: Option<f64>,
+    /// His body's `01CF` st117 is active: ALLIED HEALTH BARS at ALWAYS gave
+    /// it the support tag (`orpheus_content::hero_settings`).
+    pub support_tag_given: bool,
 }

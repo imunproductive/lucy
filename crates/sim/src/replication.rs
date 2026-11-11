@@ -2099,6 +2099,24 @@ impl WorldDelivery {
         }
     }
 
+    /// Tests: whether state `state` of the current body's instance of graph
+    /// `graph` is active.
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn body_state_active(&self, graph: u32, state: u16) -> bool {
+        self.body_script
+            .as_ref()
+            .and_then(|script| script.runtime.snapshot())
+            .is_some_and(|snapshot| {
+                snapshot.instances.values().any(|instance| {
+                    instance.graph == graph
+                        && instance
+                            .states
+                            .get(&state)
+                            .is_some_and(|state| state.active)
+                })
+            })
+    }
+
     /// The client's hero settings (21604): kept for every body the player
     /// plays from now on, and given to the current one at once, whose graphs
     /// react to them (`01CF` st115/st116 watch ALLIED HEALTH BARS).
