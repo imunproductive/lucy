@@ -962,7 +962,22 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         client.send(ACK, Vec::new());
         assert!(Instant::now() < deadline, "waiting for baseline retransmit");
     }
-    // 4 placeables, the player, the mode, 15 bots and their 15 controllers.
+    // The rest of the world follows, still without a script before the
+    // retransmitted creates are acknowledged: 4 placeables, the player, the
+    // mode, 15 bots and their 15 stand-in controllers.
+    while creates.len() < 36 {
+        let frame = client.receive();
+        assert!(client.window.accept(frame.seq));
+        let records = world_records(&schemas, &frame);
+        assert!(records.iter().all(|record| record.script.is_none()));
+        for record in records.iter().filter(|record| record.is_create()) {
+            assert!(creates.insert(record.entity));
+        }
+        assert!(
+            Instant::now() < deadline,
+            "waiting for the rest of the world"
+        );
+    }
     assert_eq!(creates.len(), 36);
 
     // Even after the retransmission, the script stays behind its create ACK.
