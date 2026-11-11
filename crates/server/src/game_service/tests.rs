@@ -2430,29 +2430,27 @@ fn pump_commanding(
     }
 }
 
-/// The client's hero settings (21604) reach his body in the world: with
-/// ALLIED HEALTH BARS at ALWAYS, Soldier: 76's body graph `01CF` gives him
-/// the support tag (st117) that `0D24` asks of the viewer for an ally's
-/// health bar; back at DEFAULT the tag goes.
+/// The client's hero settings (21604) reach his body in the world and his
+/// owner frames: with ALLIED HEALTH BARS at ALWAYS, Soldier: 76's body graph
+/// `01CF` gives him the support tag (st117) that `0D24` asks of the viewer
+/// for an ally's health bar, and the client acknowledges a frame with st117
+/// and `#8336e`; back at DEFAULT the client sends an empty list (seen in the
+/// game) and the tag and the variable go, in his frames too.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn a_clients_allied_health_bars_setting_reaches_his_body() {
     use orpheus_content::hero_settings::{
         ALLIED_HEALTH_BARS, ALLIED_HEALTH_BARS_ALWAYS, HERO_SETTINGS,
     };
+    use orpheus_script::wire::Value as ScriptValue;
 
     let (mut server, schemas, [mut soldier], _) =
         practice_players([("soldier#1111", 0, "Soldier: 76")]);
     assert!(!server.bodies(MATCH).unwrap()[0].support_tag_given);
     // practice_world sent records 0 (map loaded) and 1 (the pick).
-    let send = |watcher: &mut Watcher, ordinal: u32, value: u64| {
-        let entry = Value::Struct(Fields::from([
-            (0, Value::Unsigned(0)),
-            (8, Value::Unsigned(ALLIED_HEALTH_BARS)),
-            (0x10, Value::Unsigned(value)),
-        ]));
+    let send = |watcher: &mut Watcher, ordinal: u32, entries: Vec<Value>| {
         let settings = Fields::from([
-            (0x78, Value::Array(vec![entry])),
+            (0x78, Value::Array(entries)),
             (0x90, Value::Bool(false)),
             (0x91, Value::Bool(false)),
         ]);
@@ -2461,17 +2459,43 @@ fn a_clients_allied_health_bars_setting_reaches_his_body() {
         write_channel(&mut payload, &[(ordinal, message)], &[]).unwrap();
         watcher.client.send(ACK, payload.into_bytes());
     };
-    let wait_for = |watcher: &mut Watcher, given: bool| {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while server.bodies(MATCH).unwrap()[0].support_tag_given != given {
-            assert!(Instant::now() < deadline, "the tag is not {given}");
+    // His body's script runs, and its owner frames go out, on his commands.
+    let mut next = soldier.tick + 1;
+    let mut wait_for = |watcher: &mut Watcher, given: bool, variable: ScriptValue| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let body = server.bodies(MATCH).unwrap().remove(0);
+            if body.support_tag_given == given
+                && body.support_tag_delivered == (given, variable.clone())
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the tag is not {given}: {body:?}"
+            );
+            if next <= watcher.tick + 8 {
+                watcher
+                    .client
+                    .send(ACK, command_batch(next, 16, 0, 0, false));
+                next += 16;
+            }
             watcher.pump(&schemas);
         }
     };
-    send(&mut soldier, 2, ALLIED_HEALTH_BARS_ALWAYS);
-    wait_for(&mut soldier, true);
-    send(&mut soldier, 3, 0);
-    wait_for(&mut soldier, false);
+    let always = Value::Struct(Fields::from([
+        (0, Value::Unsigned(0)),
+        (8, Value::Unsigned(ALLIED_HEALTH_BARS)),
+        (0x10, Value::Unsigned(ALLIED_HEALTH_BARS_ALWAYS)),
+    ]));
+    send(&mut soldier, 2, vec![always]);
+    wait_for(
+        &mut soldier,
+        true,
+        ScriptValue::Asset(ALLIED_HEALTH_BARS_ALWAYS),
+    );
+    send(&mut soldier, 3, Vec::new());
+    wait_for(&mut soldier, false, ScriptValue::Null);
     server.stop().unwrap();
 }
 

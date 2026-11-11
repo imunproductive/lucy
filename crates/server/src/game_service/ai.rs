@@ -286,6 +286,7 @@ impl State {
                 position: None,
                 health: None,
                 support_tag_given: false,
+                support_tag_delivered: (false, orpheus_script::wire::Value::Null),
             })
             .collect();
         for (connection, peer) in &self.peers {
@@ -299,6 +300,11 @@ impl State {
             body.position = peer.world.body_position();
             body.health = peer.world.health_share();
             body.support_tag_given = peer.world.body_state_active(0x01cf, 117);
+            body.support_tag_delivered = peer.world.body_delivered(
+                0x01cf,
+                117,
+                orpheus_content::hero_settings::ALLIED_HEALTH_BARS as u32,
+            );
         }
         bodies
     }
@@ -383,4 +389,7 @@ pub(crate) struct BodyState {
     /// His body's `01CF` st117 is active: ALLIED HEALTH BARS at ALWAYS gave
     /// it the support tag (`orpheus_content::hero_settings`).
     pub support_tag_given: bool,
+    /// The last owner frame his client acknowledged: whether st117 runs in
+    /// it, and its ALLIED HEALTH BARS variable (`#8336e`).
+    pub support_tag_delivered: (bool, orpheus_script::wire::Value),
 }
