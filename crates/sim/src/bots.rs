@@ -50,6 +50,11 @@ use orpheus_physics::mover::ground::{pogo, standing_body, standing_origin};
 use orpheus_physics::mover::settings::MoverSettings;
 use orpheus_wire::entity::{Movement, NO_INPUT};
 
+use crate::{
+    bot_animation::{AnimRequest, BodyRig, BotAnimation},
+    hitboxes::HitShape,
+};
+
 pub const BOT_ENTITY: u32 = 0xc000_1000;
 pub const DEAD_MOVEMENT_FLAG: u32 = 0x2000;
 pub const SETTLE_TICKS: u32 = 63;
@@ -358,6 +363,8 @@ pub struct Bot {
     moved_tick: Option<u32>,
     last_tick: Option<u32>,
     records_from: Option<u32>,
+    /// Its body's animation, when the data has a rig for it.
+    animation: Option<BotAnimation>,
 }
 
 impl Bot {
@@ -391,6 +398,7 @@ impl Bot {
             moved_tick: None,
             last_tick: None,
             records_from: None,
+            animation: None,
             spawn,
         }
     }
@@ -399,6 +407,25 @@ impl Bot {
     /// in radians: forward is `[sin, 0, cos]`.
     pub fn facing(&self) -> f64 {
         self.yaw.round_ties_even() * consts::TAU / YAW_UNITS
+    }
+
+    /// Animate the body by `body`'s rig ([`crate::bot_animation`]).
+    pub(crate) fn attach_animation(&mut self, body: Arc<BodyRig>) {
+        self.animation = Some(BotAnimation::new(body));
+    }
+
+    /// Pose the body for `tick` (after it walked), with what its script
+    /// asks; a body without a rig keeps its static shapes.
+    pub(crate) fn animate(&mut self, tick: u32, arms_forward: bool, anim: Option<AnimRequest>) {
+        let walking = self.walking();
+        if let Some(animation) = &mut self.animation {
+            animation.advance(tick, walking, arms_forward, anim);
+        }
+    }
+
+    /// The body's shapes as posed last; `None` without a rig.
+    pub(crate) fn posed_shapes(&self) -> Option<Arc<[HitShape]>> {
+        self.animation.as_ref().map(BotAnimation::shapes)
     }
 
     pub(crate) fn attach_collision(
@@ -731,8 +758,8 @@ impl Bot {
                 .fresh_at(standing_origin(fresh.position, collision.lift)),
             lift: collision.lift,
         });
-        fresh.plans = self.plans.clone();
         fresh.records_from = Some(records_from);
+        fresh.animation = self.animation.as_ref().map(BotAnimation::fresh);
         fresh
     }
 

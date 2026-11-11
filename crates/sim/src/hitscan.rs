@@ -7,8 +7,11 @@
 //! Beyond the reference (which hit every body as one capsule): a body with
 //! hit shapes ([`crate::hitboxes`]) is hit by them, turned by its facing,
 //! and a hit is critical when the shape it enters first is. Only bots have
-//! shapes for now: a player's body keeps the capsule (the shapes are a rest
-//! pose, which cannot follow a crouch or an animation).
+//! shapes for now, posed each tick by their animation
+//! ([`crate::bot_animation`]), and a rewound shot meets the shapes of the
+//! retained tick nearest its view; a player's body keeps the capsule (the
+//! heroes' shapes are a rest pose, which cannot follow a crouch or an
+//! animation).
 
 use std::{collections::VecDeque, f64::consts::PI, sync::Arc};
 
@@ -175,8 +178,9 @@ impl TargetHistory {
     }
 
     /// The body as a view saw it: its feet and facing between the two
-    /// retained poses around the view's time, the posture (height, eye) of
-    /// the nearer one, the radius and shapes of the body now.
+    /// retained poses around the view's time, the posture (height, eye) and
+    /// shapes of the nearer one (a bot's shapes are posed each tick,
+    /// [`crate::bot_animation`]), the radius of the body now.
     pub fn at(&self, view: ViewFrame, current: TargetPose) -> Option<TargetPose> {
         if self
             .replacement
@@ -202,12 +206,12 @@ impl TargetHistory {
                     height: posture.height,
                     eye: posture.eye,
                     yaw: turned(earlier.yaw, later.yaw, share),
+                    shapes: posture.shapes.clone(),
                     ..current
                 }
             }
             (Some((_, pose)), None) | (None, Some((_, pose))) => TargetPose {
                 radius: current.radius,
-                shapes: current.shapes,
                 ..pose.clone()
             },
             (None, None) => current,
@@ -614,9 +618,43 @@ mod tests {
             "{}",
             middle.yaw
         );
-        assert_eq!(middle.shapes, current.shapes);
+        assert_eq!(middle.shapes.as_deref(), Some(&body[..]));
         assert_eq!(seen(10).yaw, 3.0);
         assert_eq!(seen(20).yaw, -3.0);
+    }
+
+    /// A bot's shapes are posed each tick; a rewound shot meets the pose
+    /// of the retained tick nearest its view, not the body's pose now.
+    #[test]
+    fn history_rewinds_the_pose() {
+        let low = [sphere([0.0, 1.0, 0.0], 0.3, false)];
+        let high = [sphere([0.0, 2.0, 0.0], 0.3, true)];
+        let mut history = TargetHistory::new(None);
+        history.record(10, shaped([0.0; 3], 0.0, &low));
+        history.record(12, shaped([0.0; 3], 0.0, &high));
+        let current = shaped([0.0; 3], 0.0, &[sphere([0.0, 3.0, 0.0], 0.3, false)]);
+        let seen = |frame| {
+            let command = Command {
+                frame,
+                ..Command::default()
+            };
+            history
+                .at(ViewFrame::from_command(&command, 16_000), current.clone())
+                .unwrap()
+        };
+        assert_eq!(seen(10).shapes.as_deref(), Some(&low[..]));
+        assert_eq!(seen(12).shapes.as_deref(), Some(&high[..]));
+        assert_eq!(seen(20).shapes.as_deref(), Some(&high[..]));
+        let at = |height: f64, frame| {
+            first(
+                &level([0.0, height, -5.0], [0.0, 0.0, 1.0]),
+                &[(1, seen(frame))],
+            )
+        };
+        assert!(at(1.0, 10).is_some_and(|hit| !hit.critical));
+        assert!(at(1.0, 12).is_none());
+        assert!(at(2.0, 12).is_some_and(|hit| hit.critical));
+        assert!(at(3.0, 12).is_none());
     }
 
     /// The reference's capsule rule (combat.py `ray_capsule`, the head from
@@ -711,8 +749,9 @@ mod tests {
         assert_eq!(vitals.death().unwrap().killer, source);
     }
 
-    /// A Practice Range Training Bot as its hit shapes place it, in its
-    /// idle pose (hovering 0.5 m up, arms down), facing its yaw: a shot from
+    /// A Practice Range Training Bot as its hit shapes place it, posed at
+    /// the start of its clock (its idle pose, hovering 0.5 m up with its
+    /// arms down, and the first frame of its bob), facing its yaw: a shot from
     /// its side passing under it 0.15 m above its feet misses, where its
     /// capsule (from the feet) took it; a shot at its 2 m eye hits the head
     /// and is critical; one at 1.5 m, where the rest pose had the head,
@@ -758,8 +797,10 @@ mod tests {
         let head = shoot(&target, point(8.0, 0.0, 2.0), back).unwrap();
         assert!(head.critical, "{head:?}");
         assert_eq!(head.damage, 40.0);
-        // The head sphere: 0.44 m round, its centre 1.98 m up.
-        assert!((head.distance - 7.57).abs() < 0.01, "{head:?}");
+        // The head sphere: 0.44 m round, its centre 1.98 m up; the bot is
+        // posed at the start of its clock, where the hover bob (`391F`)
+        // leans the head 1.5 cm back from the idle pose (7.57 m).
+        assert!((head.distance - 7.58).abs() < 0.01, "{head:?}");
         let chest = shoot(&target, point(8.0, 0.0, 1.5), back).unwrap();
         assert!(!chest.critical, "{chest:?}");
         assert_eq!(chest.damage, 20.0);

@@ -1,5 +1,6 @@
-//! The clips an entity's animation blend trees play when no animation
-//! category is set: where the idle pose of a body comes from.
+//! The clips an entity's animation blend trees play: when no animation
+//! category is set (where the idle pose of a body comes from) and for a
+//! set of categories (where a bot's animated branches come from).
 //!
 //! A model component names a blend tree set (`021`, `STUAnimBlendTreeSet`).
 //! The set lists animation aliases (`m_253EE7C8`, the `0C8…` keys the
@@ -27,6 +28,11 @@
 //! returns the clips found. Assumption: a body standing idle has no
 //! category set (the data does not say which categories the game sets;
 //! the Training Bot's graph `0BA8` pushes category `015:007F` in one state).
+//!
+//! [`TreeSet::branch`] walks one alias for a set of categories and keeps
+//! the clips in the order met, with the rules its notes give: the
+//! categorised branches set, layers without a game-driven weight, a state
+//! machine's first state, a sequence's order.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -57,6 +63,17 @@ const ANIMATION: u32 = 0x3F5B_86A4;
 const SLOT: u32 = 0x63DE_DAC0;
 const INLINE_ALIAS: u32 = 0x7615_8B9E;
 const VALUE: u32 = 0x07DD_813E;
+/// A category switch's category (`m_categoryDataFlow`), a node's children,
+/// a layer's weight (`m_weightDriver`), the item's bound categories.
+const CATEGORY_FLOW: u32 = 0xD32F_A452;
+const CHILDREN: u32 = 0x134E_E5BB;
+const WEIGHT_DRIVER: u32 = 0x0F88_291F;
+const BOUND_CATEGORIES: u32 = 0xB497_5FA6;
+/// Node classes: a layer (`STUAnimNode_LayerChild`), a state machine and a
+/// sequence.
+const LAYER: u32 = 0x4027_4C18;
+const STATE_MACHINE: u32 = 0xBB7A_7240;
+const SEQUENCE: u32 = 0xF738_4072;
 
 fn field(object: &Object, hash: u32) -> Option<&Value> {
     object
@@ -187,6 +204,230 @@ pub(crate) fn idle_clips(install: &Install, set: u64) -> Result<BTreeSet<u64>, S
     };
     walk.alias(key(field(root, ROOT_ALIAS)))?;
     Ok(walk.clips)
+}
+
+/// A clip a branch plays, in the order the walk meets it; `once` when a
+/// sequence plays it before its last child (see [`TreeSet::branch`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Played {
+    pub clip: u64,
+    pub once: bool,
+}
+
+/// A blend tree set read once: its aliases, the item of each and every
+/// item's tree.
+pub(crate) struct TreeSet {
+    set: Asset,
+    root: u64,
+    aliases: Vec<u64>,
+    items: HashMap<u64, Value>,
+    trees: HashMap<u64, Asset>,
+}
+
+/// The values an item binds to its tree's slots.
+struct Bound {
+    aliases: Vec<u64>,
+    clips: Vec<u64>,
+    categories: Vec<u64>,
+}
+
+impl TreeSet {
+    pub(crate) fn read(install: &Install, set: u64) -> Result<Self, String> {
+        let asset = install.stu(set).map_err(|error| error.to_string())?;
+        let root = asset.root().ok_or("an empty blend tree set")?;
+        let aliases = keys(Some(root), ALIASES);
+        let items: HashMap<u64, Value> = match field(root, ITEMS) {
+            Some(Value::Array(items)) => {
+                aliases.iter().copied().zip(items.iter().cloned()).collect()
+            }
+            _ => HashMap::new(),
+        };
+        let mut trees = HashMap::new();
+        for item in items.values().filter_map(|item| asset.resolve(item)) {
+            let tree = key(field(item, TREE));
+            if tree != 0 && !trees.contains_key(&tree) {
+                trees.insert(tree, install.stu(tree).map_err(|error| error.to_string())?);
+            }
+        }
+        Ok(Self {
+            root: key(field(root, ROOT_ALIAS)),
+            set: asset,
+            aliases,
+            items,
+            trees,
+        })
+    }
+
+    /// The set's root alias (`m_rootAnimAliasGUID`).
+    pub(crate) fn root(&self) -> u64 {
+        self.root
+    }
+
+    /// The aliases the set binds, in its order.
+    pub(crate) fn aliases(&self) -> &[u64] {
+        &self.aliases
+    }
+
+    /// The clips alias `alias` plays while the game sets `categories`, in
+    /// the order the walk meets them (duplicates kept). From the alias's
+    /// tree root it follows every link but the parent and the transitions,
+    /// as [`idle_clips`] does, and through every alias it meets, with
+    /// these rules (each an assumption; the data names the nodes, not how
+    /// the client runs them):
+    ///
+    /// - a category switch takes its branches whose category (bound by the
+    ///   item's slot, `m_B4975FA6`) is set, else its uncategorised one; a
+    ///   branch whose slot binds no category is never taken;
+    /// - a layer weighted by a game value (`STUAnimNode_LayerChild` with an
+    ///   `m_weightDriver`) adds nothing: the server computes no data flows
+    ///   (on the Training Bot these are the hit layer `3A9D`, the moving
+    ///   bob `3951` and the arms-forward layer `39FE`);
+    /// - a state machine stays in its first state (the trees' idle and
+    ///   blink machines start there);
+    /// - a sequence plays its children in order, all but the last once.
+    pub(crate) fn branch(&self, alias: u64, categories: &[u64]) -> Vec<Played> {
+        let mut walk = Branch {
+            set: self,
+            categories,
+            played: Vec::new(),
+            path: Vec::new(),
+        };
+        walk.alias(alias, false);
+        walk.played
+    }
+}
+
+struct Branch<'a> {
+    set: &'a TreeSet,
+    categories: &'a [u64],
+    played: Vec<Played>,
+    /// The aliases being walked, so a tree naming itself ends.
+    path: Vec<u64>,
+}
+
+impl Branch<'_> {
+    fn alias(&mut self, alias: u64, once: bool) {
+        if alias == 0 || self.path.contains(&alias) {
+            return;
+        }
+        let set = &self.set.set;
+        let Some(item) = self
+            .set
+            .items
+            .get(&alias)
+            .and_then(|item| set.resolve(item))
+        else {
+            return;
+        };
+        let bindings = field(item, BINDINGS).and_then(|value| set.resolve(value));
+        let bound = Bound {
+            aliases: keys(bindings, BOUND_ALIASES),
+            clips: keys(bindings, BOUND_CLIPS),
+            categories: keys(bindings, BOUND_CATEGORIES),
+        };
+        let Some(tree) = self.set.trees.get(&key(field(item, TREE))) else {
+            return;
+        };
+        let Some(root) = tree.root().and_then(|root| field(root, ROOT_NODE)) else {
+            return;
+        };
+        self.path.push(alias);
+        self.value(tree, root, &bound, once, &mut HashSet::new());
+        self.path.pop();
+    }
+
+    fn value(
+        &mut self,
+        tree: &Asset,
+        value: &Value,
+        bound: &Bound,
+        once: bool,
+        seen: &mut HashSet<usize>,
+    ) {
+        match value {
+            Value::Instance(index) if seen.insert(*index) => {
+                if let Some(object) = tree.resolve(value) {
+                    self.node(tree, object, bound, once, seen);
+                }
+            }
+            Value::Object(object) => self.node(tree, object, bound, once, seen),
+            Value::Array(items) => {
+                for item in items {
+                    self.value(tree, item, bound, once, seen);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn node(
+        &mut self,
+        tree: &Asset,
+        object: &Object,
+        bound: &Bound,
+        once: bool,
+        seen: &mut HashSet<usize>,
+    ) {
+        if object.class == LAYER && field(object, WEIGHT_DRIVER).is_some_and(|d| *d != Value::Null)
+        {
+            return;
+        }
+        if let Some(Value::Object(alias)) = field(object, ALIAS) {
+            self.alias(slotted(alias, &bound.aliases, INLINE_ALIAS), once);
+        }
+        if let Some(Value::Object(clip)) = field(object, ANIMATION) {
+            let clip = slotted(clip, &bound.clips, VALUE);
+            if clip != 0 {
+                self.played.push(Played { clip, once });
+            }
+        }
+        let children = match field(object, CHILDREN) {
+            Some(Value::Array(children)) => children.as_slice(),
+            _ => &[],
+        };
+        if field(object, CATEGORY_FLOW).is_some() {
+            let category = |child: &Value| match tree
+                .resolve(child)
+                .and_then(|c| field(c, CATEGORY))
+            {
+                Some(Value::Object(category)) => Some(slotted(category, &bound.categories, VALUE)),
+                Some(Value::Guid(category)) => Some(*category),
+                _ => None,
+            };
+            let set: Vec<&Value> = children
+                .iter()
+                .filter(|child| {
+                    category(child).is_some_and(|c| c != 0 && self.categories.contains(&c))
+                })
+                .collect();
+            let taken = if set.is_empty() {
+                children
+                    .iter()
+                    .filter(|child| category(child).is_none())
+                    .collect()
+            } else {
+                set
+            };
+            for child in taken {
+                self.value(tree, child, bound, once, seen);
+            }
+        } else if object.class == STATE_MACHINE {
+            if let Some(first) = children.first() {
+                self.value(tree, first, bound, once, seen);
+            }
+        } else {
+            let sequence = object.class == SEQUENCE;
+            for (index, child) in children.iter().enumerate() {
+                let before_last = sequence && index + 1 < children.len();
+                self.value(tree, child, bound, once || before_last, seen);
+            }
+        }
+        for (hash, value) in &object.fields {
+            if !matches!(*hash, PARENT | TRANSITIONS | CHILDREN | ALIAS | ANIMATION) {
+                self.value(tree, value, bound, once, seen);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -13,6 +13,7 @@ mod animation;
 mod arcade_cards;
 mod blend_trees;
 mod body_data;
+mod bot_animation;
 pub mod cache;
 mod collision;
 mod economy;

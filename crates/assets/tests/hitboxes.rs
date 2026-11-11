@@ -1,9 +1,10 @@
-//! The hit shapes derived from the install (`data/game_hitboxes_174.json`).
+//! The hit shapes derived from the install (`data/game_hitboxes_174.json`)
+//! and the bot bodies' rigs (`data/game_bot_animation_174.json`).
 
 use orpheus_assets::{DERIVATIONS, Install};
 use serde_json::Value;
 
-fn derived() -> Value {
+fn derived_file(path: &str) -> Value {
     let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
     let pack = orpheus_testkit::runtime_dir();
     let derivation = DERIVATIONS
@@ -13,9 +14,13 @@ fn derived() -> Value {
     let output = (derivation.derive)(&install, &pack)
         .unwrap()
         .into_iter()
-        .find(|output| output.path == "data/game_hitboxes_174.json")
+        .find(|output| output.path == path)
         .unwrap();
     serde_json::from_slice(&output.bytes).unwrap()
+}
+
+fn derived() -> Value {
+    derived_file("data/game_hitboxes_174.json")
 }
 
 /// The highest point of a shape.
@@ -158,4 +163,72 @@ fn every_body_has_its_critical_shapes() {
         assert_eq!(shapes.len(), 7);
         assert!(critical(shapes).is_empty());
     }
+}
+
+/// The bot bodies share the Training Bot's rig: its 43 bones, its seven
+/// shapes on their bones, and the clips of the branches the server picks
+/// from: standing `3920` with the hover bob `391F`, moving `3990` once and
+/// then `3952`, the arms-forward ones `394F` and `3A08` then `3A07`; and the
+/// clips the aliases the bots' graphs name play: `0451` (`0BA8`'s state on a
+/// reset) `39D7`, or `39D8` with the arms-forward category.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
+fn the_bots_are_rigged_with_their_branches() {
+    let file = derived_file("data/game_bot_animation_174.json");
+    let bodies = file["bodies"].as_object().unwrap();
+    assert_eq!(bodies.len(), 6);
+    let rig_name = "0x0D0000000000312E/0x00400000000005A8";
+    assert!(bodies.values().all(|body| body["rig"] == rig_name));
+    let training = &file["bodies"]["0x0400000000001403"];
+    let shapes = training["shapes"].as_array().unwrap();
+    assert_eq!(shapes.len(), 7);
+    let rig = &file["rigs"][rig_name];
+    let bones = rig["bones"].as_array().unwrap();
+    assert_eq!(bones.len(), 43);
+    let head = shapes
+        .iter()
+        .find(|shape| shape["critical"] == true)
+        .unwrap();
+    assert_eq!(bones[head["bone"].as_u64().unwrap() as usize]["id"], 0x11);
+    let clip = |index: u64| format!("0x0A0000000000{index:04X}");
+    let branch = |branch: &Value| -> (Vec<(String, bool)>, Vec<String>) {
+        (
+            branch["base"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|played| {
+                    (
+                        played["clip"].as_str().unwrap().to_owned(),
+                        played["once"].as_bool().unwrap(),
+                    )
+                })
+                .collect(),
+            branch["layers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|layer| layer.as_str().unwrap().to_owned())
+                .collect(),
+        )
+    };
+    let (base, layers) = branch(&rig["branches"]["standing"]);
+    assert_eq!(base, [(clip(0x3920), false)]);
+    assert!(layers.contains(&clip(0x391F)), "{layers:?}");
+    // The weight-driven hit layer stays out.
+    assert!(!layers.contains(&clip(0x3A9D)), "{layers:?}");
+    let (base, layers) = branch(&rig["branches"]["moving"]);
+    assert_eq!(base, [(clip(0x3990), true), (clip(0x3952), false)]);
+    assert!(!layers.contains(&clip(0x391F)), "{layers:?}");
+    let (base, _) = branch(&rig["branches"]["arms_forward_standing"]);
+    assert_eq!(base, [(clip(0x394F), false)]);
+    let (base, _) = branch(&rig["branches"]["arms_forward_moving"]);
+    assert_eq!(base, [(clip(0x3A08), true), (clip(0x3A07), false)]);
+    let reset = &rig["anims"]["0x0C80000000000451"];
+    assert_eq!(branch(&reset["plain"]).0, [(clip(0x39D7), false)]);
+    assert_eq!(branch(&reset["arms_forward"]).0, [(clip(0x39D8), false)]);
+    let bob = &rig["clips"][clip(0x391F)];
+    assert_eq!(bob["additive"], true);
+    assert_eq!(bob["frames"], 121);
+    assert_eq!(rig["clips"][clip(0x3920)]["additive"], false);
 }

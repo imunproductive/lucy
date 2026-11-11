@@ -17,6 +17,7 @@ use serde::Deserialize;
 
 use crate::{
     body_script::{OwnerBodySpawn, PlayerBodyFactory},
+    bot_animation::{BotRigCatalog, ScriptAnims},
     bot_script::{BotEvent, BotScripts, BotShot},
     bots::{Bot, BotCatalog, BotWalk},
     combat::{BodyCombat, MeleeState, RespawnTimes, melee_states},
@@ -108,6 +109,10 @@ pub struct SceneAssets {
     eyes: Arc<EyeCatalog>,
     /// Each body's hit shapes (`game_hitboxes_174.json`).
     hitboxes: Arc<HitboxCatalog>,
+    /// The bot bodies' rigs (`game_bot_animation_174.json`).
+    bot_rigs: BotRigCatalog,
+    /// The bots' graphs' states that animate them.
+    script_anims: Arc<ScriptAnims>,
     respawns: RespawnTimes,
     melee: Arc<[MeleeState]>,
     /// The mode graphs' values the match flow uses.
@@ -135,6 +140,7 @@ pub struct PreparedScene {
     initial_board: Component,
     bots: Vec<Bot>,
     bot_scripts: BotScripts,
+    script_anims: Arc<ScriptAnims>,
     movers: Arc<MoverCatalog>,
     eyes: Arc<EyeCatalog>,
     hitboxes: Arc<HitboxCatalog>,
@@ -191,6 +197,12 @@ impl SceneAssets {
         let stats = Arc::new(StatsCatalog::load(data.join("game_stats_174.json"))?);
         let board = stats.board()?;
         let mode_rules = ModeRulesData::load(&graphs, &data)?;
+        let script_anims = Arc::new(
+            bot_graphs
+                .as_deref()
+                .map(ScriptAnims::from_graphs)
+                .unwrap_or_default(),
+        );
         Ok(Self {
             collision: runtime.join("collision"),
             runtime: runtime.to_path_buf(),
@@ -214,6 +226,8 @@ impl SceneAssets {
             )?),
             eyes: Arc::new(EyeCatalog::load(data.join("game_eyes_174.json"), fallback)?),
             hitboxes: Arc::new(HitboxCatalog::load(data.join("game_hitboxes_174.json"))?),
+            bot_rigs: BotRigCatalog::load(data.join("game_bot_animation_174.json"))?,
+            script_anims,
             respawns: RespawnTimes::load(data.join("game_respawns_174.json"))?,
             stats,
             board,
@@ -316,6 +330,11 @@ impl SceneAssets {
                 );
             }
         }
+        for bot in &mut bots {
+            if let Some(body) = self.bot_rigs.for_body(bot.spawn.body) {
+                bot.attach_animation(body);
+            }
+        }
         let bot_scripts = BotScripts::new(
             self.bot_graphs.clone(),
             self.codecs
@@ -353,6 +372,7 @@ impl SceneAssets {
             initial_board,
             bots,
             bot_scripts,
+            script_anims: Arc::clone(&self.script_anims),
             movers: Arc::clone(&self.movers),
             eyes: Arc::clone(&self.eyes),
             hitboxes: Arc::clone(&self.hitboxes),
@@ -595,7 +615,8 @@ impl PreparedScene {
 
     /// A bot's body as a target: the capsule of its mover's standing height
     /// and radius (combat.py `_targets`), facing its yaw as the clients see
-    /// it, hit by its body's shapes when the data has them.
+    /// it, hit by its body's shapes when the data has them: posed this tick
+    /// when it has a rig ([`crate::bot_animation`]), else the static ones.
     pub(crate) fn bot_target(&self, bot: &Bot) -> crate::hitscan::TargetPose {
         let settings = self.movers.for_body(Some(bot.spawn.body));
         crate::hitscan::TargetPose {
@@ -604,7 +625,9 @@ impl PreparedScene {
             radius: settings.stand_radius,
             eye: crate::bots::BOT_EYE,
             yaw: bot.facing(),
-            shapes: self.hitboxes.for_body(bot.spawn.body),
+            shapes: bot
+                .posed_shapes()
+                .or_else(|| self.hitboxes.for_body(bot.spawn.body)),
         }
     }
 
@@ -678,15 +701,26 @@ impl PreparedScene {
     }
 
     /// One more bot gets its script (match.py `update`: one per update,
-    /// within the loading window), then the bots walk.
+    /// within the loading window), then the bots walk and the live ones are
+    /// posed ([`crate::bot_animation`]), by what their scripts asked as of
+    /// their last run.
     pub fn step_bots(&mut self, tick: u32) {
         self.bot_scripts.prepare_next(&self.bots, tick);
         let floor = self.ground.triangles();
-        for bot in &mut self.bots {
+        for (slot, bot) in self.bots.iter_mut().enumerate() {
             bot.step(
                 tick,
                 ground_height(floor, mover_category(&self.map, bot.spawn.team)),
             );
+            if !bot.dead {
+                let (arms_forward, anim) = self
+                    .bot_scripts
+                    .snapshot(slot, bot.entity)
+                    .map_or((false, None), |snapshot| {
+                        self.script_anims.requests(snapshot)
+                    });
+                bot.animate(tick, arms_forward, anim);
+            }
         }
     }
 

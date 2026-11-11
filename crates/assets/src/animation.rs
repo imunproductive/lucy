@@ -2,22 +2,22 @@
 //! and rotations, and the pose they give at a time.
 //!
 //! Ported from OWLib's TankLib `teAnimation` (MIT; see `CREDITS.md`). The
-//! header (80 bytes): priority `i16`, bone count `u16`, flags `u16`, an
-//! unknown `u16` and `i64`, the duration in seconds `f32`, an unknown
-//! `f32`, the frame rate `f32`, an unknown `f32`, the effect (`08F`) and its
-//! handle (`u64` each), then `i64` offsets: the bone list at byte 48 and the
-//! track tables at byte 72. The clip has `fps · duration + 1` frames
-//! (truncated). The bone list is one `i32` bone id per animated bone; a
-//! track table follows for each, in the same order: the scale, position and
-//! rotation key counts and a flags word (`u16` each), then six `i32`
-//! offsets in 4-byte words from the table's start: the three key frame
-//! lists, then the three value lists. A key frame is a `u8` when the clip
-//! has at most 255 frames, else an `i16`, taken as its absolute value
-//! modulo the frame count. A position is three `f32`; a scale three `u16`
-//! (OWLib's unpacking, `1 + (1 - v/1024)/1024`); a rotation three `u16`
-//! packing a unit quaternion's three smallest parts (each 15 bits, the top
-//! bits of the first two naming the left-out part) and the left-out part
-//! rebuilt as the positive square root.
+//! header (80 bytes): a flags word `u16` (OWLib's priority), bone count
+//! `u16`, flags `u16`, an unknown `u16` and `i64`, the duration in seconds
+//! `f32`, an unknown `f32`, the frame rate `f32`, an unknown `f32`, the
+//! effect (`08F`) and its handle (`u64` each), then `i64` offsets: the bone
+//! list at byte 48 and the track tables at byte 72. The clip has
+//! `fps · duration + 1` frames (truncated). The bone list is one `i32` bone
+//! id per animated bone; a track table follows for each, in the same order:
+//! the scale, position and rotation key counts and a flags word (`u16`
+//! each), then six `i32` offsets in 4-byte words from the table's start:
+//! the three key frame lists, then the three value lists. A key frame is a
+//! `u8` when the clip has at most 255 frames, else an `i16`, taken as its
+//! absolute value modulo the frame count. A position is three `f32`; a
+//! scale three `u16` (OWLib's unpacking, `1 + (1 - v/1024)/1024`); a
+//! rotation three `u16` packing a unit quaternion's three smallest parts
+//! (each 15 bits, the top bits of the first two naming the left-out part)
+//! and the left-out part rebuilt as the positive square root.
 //!
 //! A track's values are the bone's transform relative to its parent, as
 //! OWLib's exporter writes them (SEAnim, absolute): they replace the
@@ -26,12 +26,23 @@
 //! along the shorter arc) and hold the first and last keys outside them
 //! (assumption: OWLib exports keys only, and the client's sampling is not
 //! in the data).
+//!
+//! **Additive clips.** The first word is `0x100` on every clip the
+//! Training Bot's blend trees play as its whole pose (they key all 43
+//! bones) and has bit `0x4` set (`0x104`, `0x10C`) on every clip they play
+//! as a layer (`391F`, `3950`, `3951`, `39FE`, `3A19`, `3A9D`, `27AD`,
+//! `5E8D`), whose values are all near zero and the identity (the hover bob
+//! `391F` moves bone `0x2` by −0.04 to +0.03 m, its rotations within 2° of
+//! none). We read that bit as "the tracks are deltas to add to the pose"
+//! (assumption: OWLib does not name it and the client's use of it is not in
+//! the data).
 
 use std::{collections::BTreeMap, f64::consts::SQRT_2};
 
 use crate::props::i64_at;
 
 /// The header's byte offsets.
+const FLAGS: usize = 0;
 const BONE_COUNT: usize = 2;
 const DURATION: usize = 16;
 const FPS: usize = 24;
@@ -39,10 +50,14 @@ const BONE_LIST: usize = 48;
 const TRACKS: usize = 72;
 /// A track table's size.
 const TRACK_TABLE: usize = 32;
+/// The flags word's bit for a clip of deltas (see the module notes).
+const ADDITIVE: u16 = 0x4;
 
 /// A decoded clip.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Animation {
+    /// The tracks are deltas to add to a pose (see the module notes).
+    pub additive: bool,
     pub duration: f32,
     pub fps: f32,
     /// `fps · duration + 1`, truncated: the frames the keys index.
@@ -193,6 +208,7 @@ pub(crate) fn read(data: &[u8]) -> Result<Animation, String> {
         tracks.push(track);
     }
     Ok(Animation {
+        additive: u16_at(data, FLAGS)? & ADDITIVE != 0,
         duration,
         fps,
         frames,
@@ -259,6 +275,8 @@ mod tests {
 
     /// A clip of `fps · duration + 1` frames with one track per bone.
     struct Clip {
+        /// The header's first word (`0x104` for a layer of deltas).
+        flags: u16,
         fps: f32,
         duration: f32,
         bones: Vec<Keys>,
@@ -267,6 +285,7 @@ mod tests {
     impl Clip {
         fn bytes(&self) -> Vec<u8> {
             let mut data = vec![0; 80];
+            data[0..2].copy_from_slice(&self.flags.to_le_bytes());
             data[2..4].copy_from_slice(&(self.bones.len() as u16).to_le_bytes());
             data[16..20].copy_from_slice(&self.duration.to_le_bytes());
             data[24..28].copy_from_slice(&self.fps.to_le_bytes());
@@ -345,6 +364,7 @@ mod tests {
         // A sixth of a turn about x: (sin 30°, 0, 0, cos 30°).
         let (x, w) = (0.5, 0.75f64.sqrt());
         let clip = Clip {
+            flags: 0x100,
             fps: 30.0,
             duration: 1.0,
             bones: vec![
@@ -363,6 +383,7 @@ mod tests {
             ],
         };
         let animation = read(&clip.bytes()).unwrap();
+        assert!(!animation.additive);
         assert_eq!(animation.frames, 31);
         assert_eq!(animation.fps, 30.0);
         let [head, other] = &animation.tracks[..] else {
@@ -377,6 +398,11 @@ mod tests {
         assert_eq!(other.bone, 0x2A);
         assert_eq!(other.positions.keys().copied().collect::<Vec<_>>(), [10]);
         assert!(other.rotations.is_empty());
+        let layer = Clip {
+            flags: 0x104,
+            ..clip
+        };
+        assert!(read(&layer.bytes()).unwrap().additive);
     }
 
     #[test]
