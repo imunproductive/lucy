@@ -17,6 +17,8 @@ pub const MAPS_FILE: &str = "game_maps_174.json";
 /// The game modes' teams and loading rule (the `game_modes` derivation).
 pub const MODES_FILE: &str = "game_modes_174.json";
 
+/// The Practice Range's name in the install (`09F` 0688), for the test
+/// fixture [`GameMap::practice_range`].
 const PRACTICE_RANGE_NAME: &str = "Practice Range";
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -109,14 +111,14 @@ impl GameMap {
         chosen.into_iter()
     }
 
-    /// The training route has an explicit map, mode, and first spawn: the
-    /// Practice Range record of `ow174/game/content.py` (`PRACTICE_RANGE`).
-    /// The game-tier test `the_practice_range_is_the_derived_record` pins
-    /// its name, placeables and team sizes to the install's (`game_maps`
-    /// 0688 and the teams of mode 0018), and its spawn to the install's
-    /// team 0 spawn as Python rounded it. The map has four server-owned
-    /// placeables (the ones the running client has), and its mode has one
-    /// player on the blue team and none on the red one.
+    /// A copy of the Practice Range record, for tests that run without the
+    /// install: the record of `ow174/game/content.py` (`PRACTICE_RANGE`).
+    /// The server uses [`MapCatalog::practice_range`], read from the install;
+    /// the game-tier test `the_practice_range_is_the_derived_record` checks
+    /// that this copy is that record (its spawn as Python rounded it). The
+    /// map has four server-owned placeables (the ones the running client
+    /// has), and its mode has one player on the blue team and none on the
+    /// red one.
     pub fn practice_range() -> Self {
         Self {
             name: PRACTICE_RANGE_NAME.into(),
@@ -213,20 +215,17 @@ pub struct MapCatalog {
 
 impl MapCatalog {
     /// Read the map catalog and the game modes from the runtime `data`
-    /// folder. A missing catalog still leaves the built-in training route
-    /// available; a catalog needs its modes.
+    /// folder; the Practice Range comes from them too.
     pub fn load(data: impl AsRef<Path>) -> io::Result<Self> {
         let data = data.as_ref();
         let path = data.join(MAPS_FILE);
-        match path.metadata() {
-            Ok(metadata) if !metadata.is_file() => Ok(Self::default()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(error),
-            Ok(_) => Ok(Self {
-                modes: GameModes::load(data.join(MODES_FILE))?,
-                ..Self::from_json(&fs::read_to_string(path)?)?
-            }),
-        }
+        let text = fs::read_to_string(&path).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
+        Ok(Self {
+            modes: GameModes::load(data.join(MODES_FILE))?,
+            ..Self::from_json(&text)?
+        })
     }
 
     /// The catalog alone, without the modes' rules.
@@ -260,6 +259,7 @@ impl MapCatalog {
                         .map(|(objective, role)| (objective, role == "attack"))
                         .collect(),
                     stage: entry.stage,
+                    rotation: entry.rotation,
                 })
                 .collect();
             entries.insert(
@@ -288,29 +288,90 @@ impl MapCatalog {
 
     /// Catalog order is stable among entries with the same display name.
     pub fn map_catalog(&self) -> Vec<MapListing> {
-        let mut maps = vec![MapListing {
-            guid: PRACTICE_RANGE_MAP,
-            name: PRACTICE_RANGE_NAME.into(),
-        }];
-        maps.extend(self.entries.iter().filter_map(|(&guid, entry)| {
-            if guid == PRACTICE_RANGE_MAP {
-                return None;
-            }
-            let name = match entry.name.as_deref() {
-                Some(name) if !name.is_empty() => name.to_owned(),
-                _ => format!("0x{guid:X}"),
-            };
-            Some(MapListing { guid, name })
-        }));
+        let mut maps: Vec<MapListing> = self
+            .entries
+            .iter()
+            .map(|(&guid, entry)| {
+                let name = match entry.name.as_deref() {
+                    Some(name) if !name.is_empty() => name.to_owned(),
+                    _ => format!("0x{guid:X}"),
+                };
+                MapListing { guid, name }
+            })
+            .collect();
         maps.sort_by(|left, right| left.name.cmp(&right.name));
         maps
     }
 
     pub fn map_name(&self, guid: u64) -> Option<&str> {
-        if guid == PRACTICE_RANGE_MAP {
-            return Some(PRACTICE_RANGE_NAME);
-        }
         self.entries.get(&guid)?.name.as_deref()
+    }
+
+    /// The Practice Range as the install has it (the record of
+    /// `ow174/game/content.py` `PRACTICE_RANGE`): map 0688's name and its
+    /// placeables in mode 0018, its team 0 spawn point (for every team), and
+    /// the mode's team sizes. Python's record rounded the spawn point: its
+    /// position to 5 decimals, its yaw (from the rotation) to 4; so does
+    /// this one. An error when the data no longer has them.
+    pub fn practice_range(&self) -> io::Result<GameMap> {
+        let invalid = |what: &str| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("the Practice Range (map 0688, mode 0018) {what}"),
+            )
+        };
+        let entry = self
+            .entries
+            .get(&PRACTICE_RANGE_MAP)
+            .ok_or_else(|| invalid("is not in the map catalog"))?;
+        let name = entry
+            .name
+            .clone()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| invalid("has no name"))?;
+        if !entry.modes.contains(&PRACTICE_RANGE_MODE) {
+            return Err(invalid("is not played in its mode"));
+        }
+        let placeables = entry
+            .placeables_by_mode
+            .get(&PRACTICE_RANGE_MODE)
+            .ok_or_else(|| invalid("has no placeables for its mode"))?
+            .clone();
+        let spawn = entry
+            .spawns
+            .iter()
+            .find(|entry| !entry.free_for_all && entry.spawn.team == Some(0))
+            .ok_or_else(|| invalid("has no team 0 spawn point"))?;
+        let [_, y, _, w] = spawn
+            .rotation
+            .ok_or_else(|| invalid("spawn point has no rotation"))?;
+        let round = |value: f64, places: i32| {
+            let scale = 10f64.powi(places);
+            (value * scale).round() / scale
+        };
+        let mode = self
+            .modes
+            .get(PRACTICE_RANGE_MODE)
+            .ok_or_else(|| invalid("mode is not in the game modes"))?;
+        if mode.teams.iter().any(|team| team.team == FREE_FOR_ALL_TEAM) {
+            return Err(invalid("mode is free for all"));
+        }
+        Ok(GameMap {
+            name: name.clone(),
+            map_guid: PRACTICE_RANGE_MAP,
+            mode_guid: PRACTICE_RANGE_MODE,
+            placeables,
+            spawns: vec![Spawn {
+                team: None,
+                position: spawn.spawn.position.map(|value| round(value, 5)),
+                yaw: round(2.0 * y.atan2(w).to_degrees(), 4),
+            }],
+            mode_name: name,
+            team_sizes: mode.teams.iter().map(|team| team.players).collect(),
+            free_for_all: false,
+            objectives: Vec::new(),
+            rooms: Vec::new(),
+        })
     }
 
     pub fn game_map(
@@ -321,8 +382,10 @@ impl MapCatalog {
         free_for_all: bool,
         team_sizes: &[u8],
     ) -> Option<GameMap> {
+        // A forced Practice Range plays its own mode (the server's
+        // matchmaker checked at load that the data has it).
         if map_guid == PRACTICE_RANGE_MAP {
-            return Some(GameMap::practice_range());
+            return self.practice_range().ok();
         }
         let entry = self.entries.get(&map_guid)?;
         if self.modes.scripted_loading(mode_guid) || !entry.modes.contains(&mode_guid) {
@@ -412,6 +475,8 @@ struct SpawnEntry {
     free_for_all: bool,
     objectives: Vec<(u32, bool)>,
     stage: Option<u32>,
+    /// The point's rotation quaternion (x, y, z, w).
+    rotation: Option<[f64; 4]>,
 }
 
 impl SpawnEntry {
@@ -436,6 +501,9 @@ pub struct GameMode {
     /// `ow174/game/content.py`).
     pub scripted_loading: bool,
 }
+
+/// [`ModeTeam::team`] of a free-for-all mode's one team.
+const FREE_FOR_ALL_TEAM: i64 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModeTeam {
@@ -560,6 +628,7 @@ struct RawSpawn {
     ffa: Option<bool>,
     objectives: Option<Vec<(u32, String)>>,
     stage: Option<u32>,
+    rotation: Option<[f64; 4]>,
 }
 
 fn hex_guid(text: &str) -> io::Result<u64> {
@@ -645,27 +714,90 @@ mod tests {
         );
     }
 
+    /// A Practice Range entry and its mode as the derivations write them.
+    const PRACTICE: &str = r#"{
+        "0x0800000000000688": {"name": "Practice Range", "modes": ["0x0230000000000018"],
+            "placeables": [1, 2, 3, 4, 5],
+            "placeables_by_mode": {"0x0230000000000018": [136, 558, 564, 649]},
+            "spawns": [
+                {"team": 1, "position": [1, 2, 3], "yaw": 10, "rotation": [0, 1, 0, 0]},
+                {"team": 0, "position": [54.56507, 0.99999833, 42.147877], "yaw": -170.343,
+                    "rotation": [0.0, -0.99645156, 7.1054274e-15, 0.08417019]}
+            ]}
+    }"#;
+    const PRACTICE_MODES: &str = r#"{"modes": {"0x0230000000000018": {"teams": [
+        {"team": 0, "controller": null, "players": 1},
+        {"team": 1, "controller": null, "players": 0}
+    ], "scripted_loading": false}}}"#;
+
     #[test]
-    fn loads_external_catalog_and_keeps_the_practice_fallback() {
-        let temp = tempfile::tempdir().unwrap();
-        let missing = MapCatalog::load(temp.path()).unwrap();
-        let practice = GameMap::practice_range();
-        assert_eq!(missing.map_name(PRACTICE_RANGE_MAP), Some("Practice Range"));
+    fn the_practice_range_comes_from_the_catalog_and_its_mode() {
+        let catalog = MapCatalog::from_json(PRACTICE)
+            .unwrap()
+            .with_modes(GameModes::from_json(PRACTICE_MODES).unwrap());
+        // The install's values give Python's record, its spawn rounded.
+        let practice = catalog.practice_range().unwrap();
+        assert_eq!(practice, GameMap::practice_range());
+        // A forced Practice Range plays its own mode, whatever the card's.
         assert_eq!(
-            missing.game_map(
+            catalog.game_map(
                 PRACTICE_RANGE_MAP,
                 0x0230_0000_0000_0008,
                 "Ignored",
                 true,
                 &[9]
             ),
-            Some(practice.clone())
+            Some(practice)
         );
-        assert_eq!(practice.placeables, [0x88, 0x22e, 0x234, 0x289]);
-        assert_eq!(practice.team_sizes, [1, 0]);
+        assert_eq!(catalog.map_name(PRACTICE_RANGE_MAP), Some("Practice Range"));
+
+        // Without the map, its mode's placeables or the mode, there is none.
+        let error = |catalog: MapCatalog| catalog.practice_range().unwrap_err().kind();
         assert_eq!(
-            practice.spawn_point(0, 0),
-            Some(([54.56507, 1.0, 42.14788], -170.3434))
+            error(MapCatalog::from_json("{}").unwrap()),
+            io::ErrorKind::InvalidData
+        );
+        let other_mode = PRACTICE.replace(
+            r#""placeables_by_mode": {"0x0230000000000018""#,
+            r#""placeables_by_mode": {"0x023000000000005A""#,
+        );
+        assert_eq!(
+            error(
+                MapCatalog::from_json(&other_mode)
+                    .unwrap()
+                    .with_modes(GameModes::from_json(PRACTICE_MODES).unwrap())
+            ),
+            io::ErrorKind::InvalidData
+        );
+        let no_mode = MapCatalog::from_json(PRACTICE).unwrap();
+        assert_eq!(error(no_mode), io::ErrorKind::InvalidData);
+        let unturned = PRACTICE.replace(
+            r#""rotation": [0.0, -0.99645156, 7.1054274e-15, 0.08417019]"#,
+            r#""rotation": null"#,
+        );
+        assert_eq!(
+            error(
+                MapCatalog::from_json(&unturned)
+                    .unwrap()
+                    .with_modes(GameModes::from_json(PRACTICE_MODES).unwrap())
+            ),
+            io::ErrorKind::InvalidData
+        );
+        assert!(
+            MapCatalog::from_json("{}")
+                .unwrap()
+                .game_map(PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE, "", false, &[])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn loads_external_catalog_with_its_modes() {
+        let temp = tempfile::tempdir().unwrap();
+        // The catalog is needed.
+        assert_eq!(
+            MapCatalog::load(temp.path()).unwrap_err().kind(),
+            io::ErrorKind::NotFound
         );
 
         let path = temp.path().join(MAPS_FILE);
@@ -722,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_listing_sorts_stably_and_deduplicates_practice() {
+    fn dashboard_listing_sorts_stably_by_the_catalog_s_names() {
         let catalog = MapCatalog::from_json(
             r#"{
             "0x9": {"name": "Same"},
@@ -742,7 +874,7 @@ mod tests {
             [
                 (6, "0x6"),
                 (7, "0x7"),
-                (PRACTICE_RANGE_MAP, "Practice Range"),
+                (PRACTICE_RANGE_MAP, "Override"),
                 (9, "Same"),
                 (8, "Same")
             ]
@@ -988,37 +1120,17 @@ mod tests {
         );
     }
 
-    /// `GameMap::practice_range` is the install's record: map 0688's name
-    /// and placeables in mode 0018, the mode's team sizes, and the team 0
-    /// spawn point as Python rounded it (position to 5 decimals, yaw from
-    /// the rotation to 4).
+    /// The test fixture `GameMap::practice_range` is the install's record
+    /// (`MapCatalog::practice_range`: map 0688's name and placeables in mode
+    /// 0018, the mode's team sizes, the team 0 spawn point as Python rounded
+    /// it), and that spawn is the install's within the rounding.
     #[test]
     #[ignore = "requires the derived 104319 map catalog"]
     fn the_practice_range_is_the_derived_record() {
         let data = orpheus_testkit::runtime_dir().join("data");
-        let practice = GameMap::practice_range();
-        let catalog = MapCatalog::load(&data).unwrap();
-        let entry = &catalog.entries[&PRACTICE_RANGE_MAP];
-        assert_eq!(entry.name.as_deref(), Some(practice.name.as_str()));
-        assert!(entry.modes.contains(&PRACTICE_RANGE_MODE));
-        assert_eq!(
-            entry.placeables_by_mode[&PRACTICE_RANGE_MODE],
-            practice.placeables
-        );
-        let mode = GameModes::load(data.join(MODES_FILE))
-            .unwrap()
-            .get(PRACTICE_RANGE_MODE)
-            .cloned()
-            .unwrap();
-        assert_eq!(
-            mode.teams
-                .iter()
-                .map(|team| team.players)
-                .collect::<Vec<_>>(),
-            practice.team_sizes
-        );
-        assert!(mode.teams.iter().all(|team| team.team != 4));
-        assert!(!practice.free_for_all);
+        let derived = MapCatalog::load(&data).unwrap().practice_range().unwrap();
+        assert_eq!(derived, GameMap::practice_range());
+        assert_eq!(derived.team_sizes, [1, 0]);
 
         let maps: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(data.join(MAPS_FILE)).unwrap()).unwrap();
@@ -1029,22 +1141,13 @@ mod tests {
             .find(|spawn| spawn["team"] == 0)
             .unwrap();
         let number = |value: &serde_json::Value| value.as_f64().unwrap();
-        let round = |value: f64, places: i32| {
-            let scale = 10f64.powi(places);
-            (value * scale).round() / scale
-        };
-        let [constant] = practice.spawns[..] else {
+        let [chosen] = derived.spawns[..] else {
             panic!("one spawn point")
         };
+        assert_eq!(chosen.team, None);
         for (axis, value) in spawn["position"].as_array().unwrap().iter().enumerate() {
-            assert_eq!(round(number(value), 5), constant.position[axis]);
+            assert!((chosen.position[axis] - number(value)).abs() <= 0.000_005);
         }
-        let rotation = spawn["rotation"].as_array().unwrap();
-        let yaw = 2.0
-            * number(&rotation[1])
-                .atan2(number(&rotation[3]))
-                .to_degrees();
-        assert_eq!(round(yaw, 4), constant.yaw);
-        assert_eq!(round(constant.yaw, 3), number(&spawn["yaw"]));
+        assert!((chosen.yaw - number(&spawn["yaw"])).abs() <= 0.000_5);
     }
 }

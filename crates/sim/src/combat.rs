@@ -31,7 +31,7 @@ use std::{collections::HashMap, fs, io, path::Path, sync::Arc, time::Duration};
 
 use crate::{
     bot_script::SeenRocket,
-    bots::{BOT_ENTITY, BOT_RECORD_DELAY, BOT_RESPAWN_TIME, Bot},
+    bots::{BOT_ENTITY, BOT_RECORD_DELAY, Bot},
     hitscan::{HitscanShot, Impact, TargetHistory, TargetPose, ViewFrame},
     projectile_flight::{FlightEnd, ProjectileFlight},
     projectiles::{
@@ -41,10 +41,7 @@ use crate::{
     scene::bot_create,
     scene_assets::PreparedScene,
 };
-use orpheus_content::{
-    heroes::Eyes,
-    stats::{DEATHS, ELIMINATIONS, HEALING, HERO_DAMAGE, PlayerStats},
-};
+use orpheus_content::{heroes::Eyes, stats::PlayerStats};
 use orpheus_core::guid::parse_guid;
 use orpheus_physics::static_ray::{Vec3, segment_distance};
 use orpheus_script::{
@@ -754,6 +751,9 @@ impl Combat {
         context: ShotContext,
         impact: &Impact,
     ) -> Option<BotHit> {
+        // A Training Bot is back after the mode's respawn time, as a hero
+        // (`game_respawns`: 3 s in the practice modes).
+        let respawn = scene.respawn_time();
         let (bot, target) = scene
             .bots_mut()
             .iter_mut()
@@ -773,7 +773,7 @@ impl Combat {
         }
         if result.killed {
             bot.died(death_tick);
-            target.respawn_at = Some(context.now.saturating_add(BOT_RESPAWN_TIME));
+            target.respawn_at = Some(context.now.saturating_add(respawn));
         }
         let health = EntityUpdate {
             entity: bot.entity,
@@ -928,9 +928,9 @@ fn player_of(players: &[CombatPlayer<'_>], body: u32) -> Option<usize> {
 
 /// The hits on players' bodies (combat.py `_damage`, `_tell_hit`,
 /// `_died`, `_kill_notice`): the victim's pools take each; a player
-/// shooter gets 25001 and HERO_DAMAGE, and ultimate charge for damage to
-/// another; a kill counts DEATHS for the victim,
-/// ELIMINATIONS and 25005 for another player who killed him, and gives the
+/// shooter gets 25001 and Hero Damage Done, and ultimate charge for damage
+/// to another; a kill counts Deaths for the victim, Eliminations and 25005
+/// for another player who killed him (the scene's board stats), and gives the
 /// victim 25004 ("YOU WERE KILLED BY", or "YOU DIED" for his own blow).
 /// Returns each player's notices, by slot.
 pub fn apply_player_hits(
@@ -940,6 +940,7 @@ pub fn apply_player_hits(
     tick: u32,
     now: Duration,
 ) -> Vec<Vec<CombatNotice>> {
+    let board = *scene.board_stats();
     let mut notices = vec![Vec::new(); players.len()];
     for hit in hits {
         let Some(victim) = players.iter().position(|player| {
@@ -968,7 +969,7 @@ pub fn apply_player_hits(
                 killed: damage.killed,
                 shot_frame: hit.frame,
             });
-            players[shooter].stats.add(HERO_DAMAGE, damage.dealt);
+            players[shooter].stats.add(board.hero_damage, damage.dealt);
             if shooter != victim {
                 if let Some(world) = players[shooter].world.as_deref_mut() {
                     world.gain_ult(damage.dealt);
@@ -978,10 +979,10 @@ pub fn apply_player_hits(
         if !damage.killed {
             continue;
         }
-        players[victim].stats.add(DEATHS, 1.0);
+        players[victim].stats.add(board.deaths, 1.0);
         let own_blow = shooter == Some(victim);
         if let Some(killer) = shooter.filter(|_| !own_blow) {
-            players[killer].stats.add(ELIMINATIONS, 1.0);
+            players[killer].stats.add(board.eliminations, 1.0);
             notices[killer].push(CombatNotice::Elimination {
                 killer: hit.shooter.source,
                 victim: hit.body,
@@ -996,7 +997,7 @@ pub fn apply_player_hits(
 }
 
 /// combat.py `heal_area` for players' bodies: each heals, and the healer's
-/// HEALING counts what they took, with what the bots took (`bots_healed`);
+/// Healing Done counts what they took, with what the bots took (`bots_healed`);
 /// his ultimate charges for it, his own healing included (unverified).
 pub fn heal_players(
     scene: &PreparedScene,
@@ -1017,7 +1018,9 @@ pub fn heal_players(
         }
     }
     if let Some(healer) = player_of(players, healer).filter(|_| healed > 0.0) {
-        players[healer].stats.add(HEALING, healed);
+        players[healer]
+            .stats
+            .add(scene.board_stats().healing, healed);
         if let Some(world) = players[healer].world.as_deref_mut() {
             world.gain_ult(healed);
         }

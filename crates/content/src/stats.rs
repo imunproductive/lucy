@@ -46,13 +46,6 @@ pub const GOLD: u8 = 1;
 pub const SILVER: u8 = 2;
 pub const BRONZE: u8 = 3;
 
-pub const ELIMINATIONS: u64 = 0x0860_0000_0000_0025;
-pub const OBJECTIVE_KILLS: u64 = 0x0860_0000_0000_0326;
-pub const OBJECTIVE_TIME: u64 = 0x0860_0000_0000_0327;
-pub const HERO_DAMAGE: u64 = 0x0860_0000_0000_04b8;
-pub const HEALING: u64 = 0x0860_0000_0000_01d1;
-pub const DEATHS: u64 = 0x0860_0000_0000_0029;
-
 const MEDAL_SLOTS: usize = 8;
 const HERO_SLOTS: usize = 6;
 const MEDAL_STAT: usize = 5;
@@ -92,6 +85,53 @@ impl PlayerStats {
 
 pub type Medals = HashMap<u64, u8>;
 
+/// The stats (`062`) the server counts, as the Tab board lists them for a
+/// player: the default list of `0051.054` `m_FC833C02`, in its order. The
+/// stats' display strings say which is which (in 1.74: `0025`
+/// Eliminations, `0326` Objective Kills, `0327` Objective Time, `04B8` Hero
+/// Damage Done, `01D1` Healing Done, `0029` Deaths); Deaths is the one
+/// without a medal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BoardStats {
+    pub eliminations: u64,
+    pub objective_kills: u64,
+    pub objective_time: u64,
+    pub hero_damage: u64,
+    pub healing: u64,
+    pub deaths: u64,
+}
+
+impl BoardStats {
+    /// The player list's six stats in order; an error when the list no
+    /// longer has six stats with only the last (Deaths) without a medal.
+    fn from_slots(slots: &[StatSlot]) -> io::Result<Self> {
+        let medals = slots.iter().map(|slot| slot.no_medal);
+        match slots {
+            [
+                eliminations,
+                objective_kills,
+                objective_time,
+                hero_damage,
+                healing,
+                deaths,
+            ] if medals.eq([false, false, false, false, false, true]) => Ok(Self {
+                eliminations: eliminations.guid,
+                objective_kills: objective_kills.guid,
+                objective_time: objective_time.guid,
+                hero_damage: hero_damage.guid,
+                healing: healing.guid,
+                deaths: deaths.guid,
+            }),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "the player stats are not the six of the Tab board, Deaths last: {slots:?}"
+                ),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct StatsCatalog {
     player: StatLists,
@@ -120,6 +160,12 @@ impl StatsCatalog {
                 .map(|(stat, display)| Ok((guid(&stat)?, display)))
                 .collect::<io::Result<_>>()?,
         })
+    }
+
+    /// The stats the server counts for each player; an error when the
+    /// player list is not the Tab board's six.
+    pub fn board(&self) -> io::Result<BoardStats> {
+        BoardStats::from_slots(&self.player.default)
     }
 
     pub fn player_stats(&self, mode: u64) -> &[StatSlot] {
@@ -325,6 +371,11 @@ mod tests {
     use orpheus_wire::entity::{WorldError, update};
     use sha2::{Digest, Sha256};
 
+    const ELIMINATIONS: u64 = 0x0860_0000_0000_0025;
+    const OBJECTIVE_TIME: u64 = 0x0860_0000_0000_0327;
+    const HERO_DAMAGE: u64 = 0x0860_0000_0000_04b8;
+    const HEALING: u64 = 0x0860_0000_0000_01d1;
+    const DEATHS: u64 = 0x0860_0000_0000_0029;
     const HERO: u64 = 0x90;
     const MODE: u64 = 2;
     const FIXTURE: &str = r#"{
@@ -561,6 +612,53 @@ mod tests {
         assert_eq!(
             format!("{:x}", digest.finalize()),
             "50198309f54b9b975c225a13a2d6c0a5277faaa8615f715ad155e95e120b94de"
+        );
+    }
+
+    #[test]
+    fn the_board_stats_are_the_player_list_in_order() {
+        let six = FIXTURE.replace(
+            r#"["0x0860000000000025",0], ["08600000000004B8",false], ["0x0860000000000029",1]"#,
+            r#"["0x25",0], ["0x326",0], ["0x327",0], ["0x4B8",0], ["0x1D1",0], ["0x29",1]"#,
+        );
+        assert_eq!(
+            StatsCatalog::from_json(&six).unwrap().board().unwrap(),
+            BoardStats {
+                eliminations: 0x25,
+                objective_kills: 0x326,
+                objective_time: 0x327,
+                hero_damage: 0x4b8,
+                healing: 0x1d1,
+                deaths: 0x29,
+            }
+        );
+        // Three stats, or Deaths not last, are not the board.
+        assert_eq!(
+            fixture().board().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        let moved = six.replace(r#"["0x1D1",0], ["0x29",1]"#, r#"["0x29",1], ["0x1D1",0]"#);
+        assert!(StatsCatalog::from_json(&moved).unwrap().board().is_err());
+    }
+
+    /// The install's player list holds the six stats whose display strings
+    /// are Eliminations, Objective Kills, Objective Time, Hero Damage Done,
+    /// Healing Done and Deaths (read from each `062`'s `m_name`).
+    #[test]
+    #[ignore = "requires the derived 104319 stat catalog"]
+    fn the_derived_board_stats_are_the_install_s() {
+        let root = orpheus_testkit::runtime_dir();
+        let catalog = StatsCatalog::load(root.join("data/game_stats_174.json")).unwrap();
+        assert_eq!(
+            catalog.board().unwrap(),
+            BoardStats {
+                eliminations: ELIMINATIONS,
+                objective_kills: 0x0860_0000_0000_0326,
+                objective_time: OBJECTIVE_TIME,
+                hero_damage: HERO_DAMAGE,
+                healing: HEALING,
+                deaths: DEATHS,
+            }
         );
     }
 }

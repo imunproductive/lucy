@@ -39,17 +39,12 @@ The install's XP values are much lower than the community figures. Decide whethe
 | Capture progress marks at 1/3 and 2/3 | `sim/src/objectives.rs:162,178` | `STUCaptureAreaComponent.m_segments` in `0x37.003`. |
 | Leave policy: window 20, thresholds 0.3 and 0.2 | `lobby/src/progression.rs:85,90` | `054/0008` `m_94EA7D40`, `m_84F13CFF`, `m_398CB1D9`. The thresholds' meaning is not known. |
 | Group XP 120%, leaver XP 25% | `lobby/src/progression.rs:66,70` | `054/0008` has 1.2 (three unnamed fields) and 0.25. It is not known which 1.2 is the group bonus. |
-| Practice Range record | `content/src/maps.rs:120-137` | `game_maps_174.json` entry 0688 and mode 0018. A game-tier test pins the copy to the data. |
-| Practice Range bot bodies | `assets/src/graphs.rs:99` | `ai_spawners_174.json` lists the same six bodies. |
-| The six Tab board stats | `content/src/stats.rs:49-54` | `054/0051` lists the same six, in order. |
-| Special map names | `assets/src/game_maps.rs:95-102` | The `09F` map name plus its `0C5` mode name. |
 
 ### Values the server does not use yet
 
 | Item | Where | Install |
 | --- | --- | --- |
 | Arcade loot boxes at 3, 6 and 9 wins | Not built | `054/0018` `m_rulesetWinRewards`: unlock `03E1` at 3, 6 and 9 wins. |
-| Training Bot respawn, 3 s | `sim/src/bots.rs:57` | The practice modes have 3 s in `game_respawns_174.json`, but the bot timer does not read it. |
 
 ## 2. In the install, but the field meanings are not confirmed
 

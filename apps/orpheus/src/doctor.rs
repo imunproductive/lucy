@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use orpheus_content::maps::GameMap;
+use orpheus_content::maps::MapCatalog;
 use orpheus_lobby::accounts::saved_names;
 use orpheus_server::{game_data, server::local_account_name};
 use orpheus_sim::scene_assets::SceneAssets;
@@ -117,8 +117,9 @@ fn data(settings: &Settings) -> Outcome {
             "delete the folder so the next start derives it again",
         );
     }
-    let ready = SceneAssets::load(root)
-        .and_then(|assets| assets.prepare(GameMap::practice_range()))
+    let ready = MapCatalog::load(root.join("data"))
+        .and_then(|maps| maps.practice_range())
+        .and_then(|map| SceneAssets::load(root)?.prepare(map))
         .map(|scene| scene.movement_ready());
     match ready {
         Ok(true) => Outcome::Ok(format!("{} (Practice Range ready)", root.display())),

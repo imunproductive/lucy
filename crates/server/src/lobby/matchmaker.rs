@@ -71,6 +71,8 @@ pub(crate) use parties::{Parties, Party};
 pub(crate) struct Matchmaker {
     rules: HashMap<u64, QueueRules>,
     maps: MapCatalog,
+    /// Training > Practice Range's map, read from the install.
+    practice: GameMap,
     /// Where the dashboard's settings per card are kept (Python
     /// `paths.matchmaking`).
     modes_path: PathBuf,
@@ -245,9 +247,11 @@ impl Matchmaker {
     ) -> io::Result<Self> {
         let modes_path = state.join("matchmaking.json");
         let modes = rules::load_modes(&modes_path);
+        let maps = MapCatalog::load(data)?;
         Ok(Self {
             rules: rules::load_rules(&data.join("game_queues_174.json"))?,
-            maps: MapCatalog::load(data)?,
+            practice: maps.practice_range()?,
+            maps,
             modes_path,
             state: Mutex::new(State {
                 minimum_players,
@@ -817,7 +821,13 @@ impl Matchmaker {
         self.lock().forced_map = map;
     }
 
-    /// Every map the data knows, plus the Practice Range, sorted by name.
+    /// Training > Practice Range's map (`MapCatalog::practice_range`).
+    pub(crate) fn practice_map(&self) -> &GameMap {
+        &self.practice
+    }
+
+    /// Every map the data knows, the Practice Range among them, sorted by
+    /// name.
     pub(crate) fn map_catalog(&self) -> Vec<MapListing> {
         self.maps.map_catalog()
     }
@@ -1542,7 +1552,7 @@ impl Ctx<'_> {
             .iter()
             .filter_map(|member| self.entry(member, &ticket, 0, 0))
             .collect();
-        let mut map = GameMap::practice_range();
+        let mut map = self.mm.practice.clone();
         map.team_sizes = vec![u8::try_from(members.len()).unwrap_or(u8::MAX), 0];
         self.start(map, entries, false, 0, &[], None)
     }

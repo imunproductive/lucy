@@ -115,7 +115,7 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
             .unwrap()
             .is_none()
     );
-    let due = context.now + BOT_RESPAWN_TIME;
+    let due = context.now + scene.respawn_time();
     assert!(
         combat
             .respawn_due(&mut scene, 1187, due - Duration::from_millis(1))

@@ -94,12 +94,6 @@ fn bundle_roots() -> impl Iterator<Item = u64> {
     ROOT_GRAPHS.into_iter().chain(MODE_FLOW_GRAPHS)
 }
 
-/// The Practice Range bot bodies (`1403`, `143E`, `146E`, `14A9`, `14D2`,
-/// `14ED`) and the AI definitions their `m_8B9A461F` names (`1404`, `14AF`).
-const BOT_ENTITIES: [u64; 8] = [
-    0x1403, 0x143E, 0x146E, 0x14A9, 0x14D2, 0x14ED, 0x1404, 0x14AF,
-];
-
 /// `STUGraphItem`'s editor fields.
 const LAYOUT: [&str; 4] = ["m_pos", "m_displayName", "m_comment", "m_F008EA57"];
 const NODE_KEYS: [(&str, &str); 6] = [
@@ -142,10 +136,14 @@ impl Bundle {
 fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
     let assets = Assets::new(install);
     let variables = mode_variables(install)?;
-    let ai_roots = if bots {
-        ai_graph_roots(&out.join("data/ai_spawners_174.json"))?
+    let (ai_roots, bot_entities) = if bots {
+        let spawners = out.join("data/ai_spawners_174.json");
+        (
+            ai_graph_roots(&spawners)?,
+            bot_entities(&assets, &spawners)?,
+        )
     } else {
-        BTreeSet::new()
+        (BTreeSet::new(), BTreeSet::new())
     };
     let heroes = read_json(&out.join("data/game_heroes_174.json"))?;
     let heroes = heroes
@@ -172,7 +170,7 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
     }
     let mut entities = Map::new();
     if bots {
-        for index in BOT_ENTITIES.into_iter().collect::<BTreeSet<_>>() {
+        for index in bot_entities {
             let asset = assets.entity(index)?;
             let name = format!("entity {index:04X}");
             let (mut record, used) = body_record(&asset, Json::Null, name.into())?;
@@ -1114,14 +1112,8 @@ fn ai_weapon_buttons(assets: &Assets, asset: &Asset) -> Result<Map<String, Json>
     let root = asset
         .root()
         .ok_or_else(|| asset_error("an entity definition without a root"))?;
-    let guid = match field(root, "m_8B9A461F") {
-        None | Some(Value::Null) => return Ok(Map::new()),
-        Some(Value::Guid(guid)) if guid_type(*guid) == ENTITY && guid & INDEX != 0 => *guid,
-        Some(_) => {
-            return Err(asset_error(
-                "m_8B9A461F must reference a .003 entity definition",
-            ));
-        }
+    let Some(guid) = ai_definition(root)? else {
+        return Ok(Map::new());
     };
     let ai = assets.entity(guid & INDEX)?;
     let mut buttons = Map::new();
@@ -1241,6 +1233,56 @@ fn identifier(value: Option<&Value>) -> Option<u64> {
         Some(Value::Guid(guid)) if guid_type(*guid) == IDENTIFIER => Some(*guid),
         _ => None,
     }
+}
+
+/// The AI definition (`003`) an entity definition's `m_8B9A461F` names.
+fn ai_definition(root: &Object) -> Result<Option<u64>> {
+    match field(root, "m_8B9A461F") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Guid(guid)) if guid_type(*guid) == ENTITY && guid & INDEX != 0 => {
+            Ok(Some(*guid))
+        }
+        Some(_) => Err(asset_error(
+            "m_8B9A461F must reference a .003 entity definition",
+        )),
+    }
+}
+
+/// The bot entity definitions, by index: the bodies of the heroes the maps'
+/// AI spawners place (`ai_spawners_174.json` `heroes`, the six Practice
+/// Range bodies `1403`, `143E`, `146E`, `14A9`, `14D2`, `14ED` in 1.74) and
+/// the AI definitions their `m_8B9A461F` names (`1404`, `14AF`).
+fn bot_entities(assets: &Assets, path: &Path) -> Result<BTreeSet<u64>> {
+    let table = read_json(path)?;
+    let invalid = |reason: String| asset_error(format!("{}: {reason}", path.display()));
+    let heroes = table
+        .get("heroes")
+        .and_then(Json::as_object)
+        .ok_or_else(|| invalid("expected a hero table".into()))?;
+    let mut entities = BTreeSet::new();
+    for (hero, record) in heroes {
+        let body = record
+            .get("body")
+            .and_then(Json::as_str)
+            .and_then(|text| text.strip_prefix("0x"))
+            .and_then(|digits| u64::from_str_radix(digits, 16).ok())
+            .filter(|&body| guid_type(body) == ENTITY && body & INDEX != 0)
+            .ok_or_else(|| invalid(format!("hero {hero} has no .003 body")))?;
+        if !entities.insert(body & INDEX) {
+            continue;
+        }
+        let asset = assets.entity(body & INDEX)?;
+        let root = asset
+            .root()
+            .ok_or_else(|| asset_error("an entity definition without a root"))?;
+        if let Some(ai) = ai_definition(root)? {
+            entities.insert(ai & INDEX);
+        }
+    }
+    if entities.is_empty() {
+        return Err(invalid("the AI spawners place no hero".into()));
+    }
+    Ok(entities)
 }
 
 /// The `01B` graphs the maps' AI spawners place (`ai_spawners_174.json`),

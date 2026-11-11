@@ -31,7 +31,7 @@ use crate::{
 use orpheus_content::{
     heroes::{EyeCatalog, Hero, HeroCatalog, SOLDIER},
     maps::{GameMap, GameModes, MODES_FILE, SpawnChoice},
-    stats::{PlayerStats, StatsCatalog, initial_on_fire},
+    stats::{BoardStats, PlayerStats, StatsCatalog, initial_on_fire},
 };
 use orpheus_core::{bits::BitWriter, guid::parse_guid};
 use orpheus_physics::{
@@ -107,6 +107,8 @@ pub struct SceneAssets {
     /// The Biotic Field, when its graph reads; without it no field opens.
     field: Option<BioticField>,
     stats: Arc<StatsCatalog>,
+    /// The stats the server counts (the Tab board's player list).
+    board: BoardStats,
     heroes: Arc<HeroCatalog>,
     pools: Arc<PoolCatalog>,
     /// The game modes' teams (`game_modes_174.json`).
@@ -131,6 +133,7 @@ pub struct PreparedScene {
     heroes: Arc<HeroCatalog>,
     pools: Arc<PoolCatalog>,
     stats: Arc<StatsCatalog>,
+    board: BoardStats,
     pub owner_body_factory: Option<Arc<OwnerBodyFactory>>,
     /// The Biotic Field's frames (projectiles.py `field_frame`); without
     /// them no field is shown.
@@ -171,6 +174,8 @@ impl SceneAssets {
                 None
             }
         };
+        let stats = Arc::new(StatsCatalog::load(data.join("game_stats_174.json"))?);
+        let board = stats.board()?;
         Ok(Self {
             collision: runtime.join("collision"),
             runtime: runtime.to_path_buf(),
@@ -194,7 +199,8 @@ impl SceneAssets {
             eyes: Arc::new(EyeCatalog::load(data.join("game_eyes_174.json"), fallback)?),
             hitboxes: Arc::new(HitboxCatalog::load(data.join("game_hitboxes_174.json"))?),
             respawns: RespawnTimes::load(data.join("game_respawns_174.json"))?,
-            stats: Arc::new(StatsCatalog::load(data.join("game_stats_174.json"))?),
+            stats,
+            board,
             heroes: Arc::new(heroes),
             pools,
             modes: GameModes::load(data.join(MODES_FILE))?,
@@ -333,6 +339,7 @@ impl SceneAssets {
             heroes: Arc::clone(&self.heroes),
             pools: Arc::clone(&self.pools),
             stats: Arc::clone(&self.stats),
+            board: self.board,
             owner_body_factory: None,
             field_frames,
             switch_notices: switch_notices(self.modes.get(map_mode)),
@@ -571,6 +578,11 @@ impl PreparedScene {
     /// The Tab board catalog (stats.py).
     pub fn stats(&self) -> &StatsCatalog {
         &self.stats
+    }
+
+    /// The stats the server counts for each player.
+    pub fn board_stats(&self) -> &BoardStats {
+        &self.board
     }
 
     /// The Biotic Field's frames, before and after its fade.

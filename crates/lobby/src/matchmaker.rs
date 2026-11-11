@@ -681,7 +681,7 @@ pub fn pick_map<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orpheus_content::maps::PRACTICE_RANGE_MAP;
+    use orpheus_content::maps::{GameModes, PRACTICE_RANGE_MAP};
 
     fn slots(tank: usize, damage: usize, support: usize) -> BTreeMap<u8, usize> {
         BTreeMap::from([
@@ -886,7 +886,7 @@ mod tests {
         let (map, _) = pick_map(&catalog, quick, Some(CHATEAU_GUILLARD), |_| 0).unwrap();
         assert_ne!(map.map_guid, CHATEAU_GUILLARD);
         let (map, _) = pick_map(&catalog, quick, Some(PRACTICE_RANGE_MAP), |_| 0).unwrap();
-        assert_eq!(map, GameMap::practice_range());
+        assert_eq!(map, catalog.practice_range().unwrap());
     }
 
     #[test]
@@ -989,14 +989,29 @@ mod tests {
 
     #[test]
     fn a_forced_map_plays_in_any_mode_and_falls_back_to_the_cards_pick() {
-        let catalog = MapCatalog::default();
+        // The catalog has only the Practice Range.
+        let catalog = MapCatalog::from_json(
+            r#"{"0x0800000000000688": {"name": "Practice Range",
+                "modes": ["0x0230000000000018"],
+                "placeables_by_mode": {"0x0230000000000018": [136]},
+                "spawns": [{"team": 0, "position": [0, 0, 0]}]}}"#,
+        )
+        .unwrap()
+        .with_modes(
+            GameModes::from_json(
+                r#"{"modes": {"0x0230000000000018": {"teams": [
+                    {"team": 0, "controller": null, "players": 1}
+                ], "scripted_loading": false}}}"#,
+            )
+            .unwrap(),
+        );
         let rules = parse_rules(QUEUES).unwrap();
         let quick = &rules[&QUICK_PLAY];
         // The catalog knows no map of the card, so only a forced Practice Range loads.
         assert!(pick_map(&catalog, quick, None, |_| 0).is_none());
         assert!(pick_map(&catalog, quick, Some(0x0800_0000_0000_0080), |_| 0).is_none());
         let (map, ruleset) = pick_map(&catalog, quick, Some(PRACTICE_RANGE_MAP), |_| 0).unwrap();
-        assert_eq!(map, GameMap::practice_range());
+        assert_eq!(map, catalog.practice_range().unwrap());
         assert_eq!(ruleset.mode_name, "Assault");
     }
 

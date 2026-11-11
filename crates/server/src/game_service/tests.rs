@@ -704,6 +704,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
             host: "127.0.0.1",
             general: channel([7, 8], 7),
             match_channel: channel(MATCH, 6),
+            map: GameMap::practice_range(),
         },
         (&assets, &collection),
         |map| {

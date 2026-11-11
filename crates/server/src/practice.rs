@@ -20,20 +20,23 @@ use orpheus_sim::{
 };
 use orpheus_wire::jam::codec::Fields;
 
-/// Chat and address data from the authenticated session's owner. The caller
-/// supplies this only after confirming the account is playing alone.
+/// Chat and address data from the authenticated session's owner, and the
+/// Practice Range's map (`MapCatalog::practice_range`). The caller supplies
+/// this only after confirming the account is playing alone.
 pub struct SoloPracticeHandoff<'a> {
     pub match_id: [u64; 2],
     pub host: &'a str,
     pub general: Fields,
     pub match_channel: Fields,
+    pub map: GameMap,
 }
 
 impl<'a> SoloPracticeHandoff<'a> {
-    pub fn new(match_id: [u64; 2], host: &'a str) -> Self {
+    pub fn new(match_id: [u64; 2], host: &'a str, map: GameMap) -> Self {
         Self {
             match_id,
             host,
+            map,
             general: general_channel(),
             match_channel: match_channel(match_id),
         }
@@ -67,7 +70,7 @@ pub fn dispatch(
         tournament: login.tournament,
         ranked: false,
     }];
-    let tickets = open_match(game, input.match_id, GameMap::practice_range(), players)?;
+    let tickets = open_match(game, input.match_id, input.map, players)?;
     let [handoff] = match <[Handoff; 1]>::try_from(tickets) {
         Ok(tickets) => tickets,
         Err(tickets) => {
@@ -214,7 +217,7 @@ mod tests {
     const REQUEST: &[u8] = b"\x02\x00\x04\x00\x00\x00";
 
     fn input(match_id: [u64; 2]) -> SoloPracticeHandoff<'static> {
-        SoloPracticeHandoff::new(match_id, "127.0.0.1")
+        SoloPracticeHandoff::new(match_id, "127.0.0.1", GameMap::practice_range())
     }
 
     fn require_unsigned(fields: &Fields, offset: u32) -> u64 {

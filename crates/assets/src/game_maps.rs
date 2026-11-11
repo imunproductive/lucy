@@ -1,8 +1,8 @@
 //! `data/game_maps_174.json`: per map, the placeables the server must create
 //! and the spawn points (`tools/extract_game_maps.py`).
 //!
-//! Inputs: the map headers (`09F`), the game modes (`0C5`), the entity
-//! definitions (`003`), every chunk of each map (`0BC`) with the entity
+//! Inputs: the map headers (`09F`), the game modes (`0C5`) and rulesets
+//! (`0C0`, for mode names), the entity definitions (`003`), every chunk of each map (`0BC`) with the entity
 //! placeables' instance data, and the English map names of
 //! `data/extracted_maps.json` (read from the build folder).
 //!
@@ -91,15 +91,18 @@ const OBJECTIVE_GRAPH: u64 = 0xF4C;
 const POINT_GRAPH: u64 = 0xE8E;
 /// The payload's own graph.
 const PAYLOAD_GRAPH: u64 = 0x1225;
-/// Names the extractor sets itself, by map index.
-const NAMES_SET: [(u64, &str); 6] = [
-    (0x661, "Tutorial"),
-    (0x751, "Numbani"),
-    (0x6FE, "King's Row (Uprising)"),
-    (0x79F, "Rialto (Retribution)"),
-    (0xAFE, "Havana (Storm Rising)"),
-    (0x6C9, "Junkenstein's Revenge"),
-];
+/// The maps the Python extractor named itself (`NAMES_SET`), by map index;
+/// all but `6C9` lack an English name in the pack's `extracted_maps.json`.
+/// Their names are read from the install instead, see [`map_name`]. Other
+/// maps without an English name keep the last part of their path, as in the
+/// pack.
+const NAMED_FROM_HEADER: [u64; 6] = [0x661, 0x751, 0x6FE, 0x79F, 0xAFE, 0x6C9];
+/// The end of an Archives mission map's path (`Maps\Venice\Venice - Rialto -
+/// Archives`): such a map is named with its mission's mode, see
+/// [`map_name`].
+const ARCHIVES: &str = " - Archives";
+/// The game rulesets (`0C0`): they name a mode its `0C5` leaves unnamed.
+const RULESET: u16 = 0x0C0;
 
 // STUv1 instance data classes and their field offsets (TankLib's generated
 // types).
@@ -120,6 +123,8 @@ struct Header {
     /// The supported modes' indexes.
     modes: Vec<u64>,
     path: String,
+    /// `m_displayName`, in English.
+    display: Option<String>,
 }
 
 /// An entity placeable with its instance data.
@@ -133,6 +138,7 @@ pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
         .map_err(|error| asset_error(format!("{NAMES}: {error}")))?;
     let headers = headers(install)?;
     let mode_ids = modes(install);
+    let mode_names = mode_names(install);
     let mut chunks: HashMap<u64, Vec<u64>> = HashMap::new();
     for guid in install.guids(MAP_CHUNK) {
         chunks.entry(guid & 0xFFFF_FFFF).or_default().push(guid);
@@ -144,7 +150,10 @@ pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
             continue;
         };
         let mut entry = Map::new();
-        entry.insert("name".into(), json!(map_name(header, map, &names)));
+        entry.insert(
+            "name".into(),
+            json!(map_name(header, map, &names, &mode_names)?),
+        );
         entry.insert("state".into(), json!(header.state));
         let data = map_data(install, header, map, &chunks, &mode_ids, &mut components)?;
         entry.extend(data);
@@ -185,12 +194,17 @@ fn headers(install: &Install) -> Result<Vec<Header>> {
             Some(Stu::String(path)) => path.clone(),
             _ => String::new(),
         };
+        let display = match root.get("m_displayName") {
+            Some(Stu::Guid(name)) => install.string(*name).filter(|name| !name.is_empty()),
+            _ => None,
+        };
         out.push(Header {
             index: name_index(guid),
             state,
             map,
             modes,
             path,
+            display,
         });
     }
     out.sort_by_key(|header| header.index);
@@ -541,12 +555,36 @@ fn ref_index(text: &str) -> Result<u64> {
     u64::from_str_radix(digits, 16).map_err(|_| asset_error(format!("not a GUID: {text:?}")))
 }
 
-/// The map's name: the extractor's own, else the English name of its header,
-/// else the last part of its path, with the path's variant in parentheses
-/// when the name lacks it.
-fn map_name(header: &Header, map: u64, names: &Map<String, Value>) -> String {
-    if let Some((_, name)) = NAMES_SET.iter().find(|(index, _)| *index == map) {
-        return (*name).to_owned();
+/// The map's name: the English name of its header, else the last part of
+/// its path, with the path's variant in parentheses when the name lacks it.
+///
+/// The maps of [`NAMED_FROM_HEADER`] take their header's own name
+/// (`m_displayName`) instead; an Archives mission's map (its path ends in
+/// [`ARCHIVES`]) adds its first mode's name in parentheses: "Rialto
+/// (Retribution)", "Havana (Storm Rising)", "King's Row (Uprising)".
+fn map_name(
+    header: &Header,
+    map: u64,
+    names: &Map<String, Value>,
+    mode_names: &HashMap<u64, String>,
+) -> Result<String> {
+    let unnamed = |what: &str| {
+        asset_error(format!(
+            "{:012X}.09F: map {map:04X} has no {what}",
+            header.index
+        ))
+    };
+    if NAMED_FROM_HEADER.contains(&map) {
+        let name = header.display.as_deref().ok_or_else(|| unnamed("name"))?;
+        if !header.path.ends_with(ARCHIVES) {
+            return Ok(name.to_owned());
+        }
+        let mode = header
+            .modes
+            .first()
+            .and_then(|mode| mode_names.get(mode))
+            .ok_or_else(|| unnamed("game mode name"))?;
+        return Ok(format!("{name} ({mode})"));
     }
     let english = names
         .get(&format!("{:012X}.09F", header.index))
@@ -564,10 +602,47 @@ fn map_name(header: &Header, map: u64, names: &Map<String, Value>) -> String {
         },
         str::to_owned,
     );
-    match variant(&header.path) {
+    Ok(match variant(&header.path) {
         Some(variant) if !name.contains(variant) => format!("{name} ({variant})"),
         _ => name,
+    })
+}
+
+/// Game mode index -> its English name: the mode's `m_displayName`, else
+/// the description of the first ruleset (`0C0`, by GUID) that plays it (the
+/// Uprising modes `0F` and `1A` have no name of their own; their rulesets
+/// say "Uprising").
+fn mode_names(install: &Install) -> HashMap<u64, String> {
+    let text = |value: Option<&Stu>| match value {
+        Some(Stu::Guid(guid)) => install.string(*guid).filter(|text| !text.is_empty()),
+        _ => None,
+    };
+    let mut names = HashMap::new();
+    let mut rulesets = install.guids(RULESET);
+    rulesets.sort_unstable();
+    for (_, asset) in install.stu_all(&rulesets) {
+        let Ok(asset) = asset else { continue };
+        let Some(game) = asset
+            .root()
+            .and_then(|root| root.get("m_gamemode"))
+            .and_then(|game| asset.resolve(game))
+        else {
+            continue;
+        };
+        let (Some(Stu::Guid(mode)), Some(name)) =
+            (game.get("m_gamemode"), text(game.get("m_description")))
+        else {
+            continue;
+        };
+        names.entry(name_index(*mode)).or_insert(name);
     }
+    for (guid, asset) in install.stu_all(&install.guids(GAME_MODE)) {
+        let Ok(asset) = asset else { continue };
+        if let Some(name) = text(asset.root().and_then(|root| root.get("m_displayName"))) {
+            names.insert(name_index(guid), name);
+        }
+    }
+    names
 }
 
 /// The first `(...)` of a path whose text starts with a word character

@@ -37,7 +37,6 @@ use std::{
     fs, io,
     path::Path,
     sync::Arc,
-    time::Duration,
 };
 
 use serde::Deserialize;
@@ -54,7 +53,6 @@ use orpheus_wire::entity::{Movement, NO_INPUT};
 pub const BOT_ENTITY: u32 = 0xc000_1000;
 pub const DEAD_MOVEMENT_FLAG: u32 = 0x2000;
 pub const SETTLE_TICKS: u32 = 63;
-pub const BOT_RESPAWN_TIME: Duration = Duration::from_secs(3);
 pub const BOT_RECORD_DELAY: u32 = 8;
 
 const PATROL: u64 = 0x0580_0000_0000_0b8e;

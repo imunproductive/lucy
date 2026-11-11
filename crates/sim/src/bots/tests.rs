@@ -3,6 +3,7 @@ use orpheus_content::maps::PRACTICE_RANGE_MAP;
 use orpheus_core::tick::SEND_EVERY;
 use orpheus_wire::entity::movement_record;
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 
 const TRAINING: u64 = 0x02e0_0000_0000_016b;
 const TRAINING_BODY: u64 = 0x0400_0000_0000_1403;
@@ -228,8 +229,9 @@ fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
     assert!(bot.record_due(250 + SETTLE_TICKS - 1, SEND_EVERY));
 
     let replacement = BOT_ENTITY + 15;
+    // Respawned after the practice modes' 3 s (`game_respawns`).
     let tick = 250
-        + BOT_RESPAWN_TIME
+        + Duration::from_secs(3)
             .as_millis()
             .div_ceil(TICK_PERIOD.as_millis()) as u32;
     let records_from = tick + BOT_RECORD_DELAY;

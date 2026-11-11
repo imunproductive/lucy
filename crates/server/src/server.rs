@@ -23,7 +23,7 @@ use orpheus_bnet::{
     rpc::Player,
     service::{self, BnetService},
 };
-use orpheus_content::{catalog::ItemDb, maps::GameMap};
+use orpheus_content::catalog::ItemDb;
 use orpheus_lobby::{
     accounts::{Account, Accounts, load_or_create_profile},
     arcade::Arcade,
@@ -142,11 +142,12 @@ impl Server {
         let extra_preload = extra_preload_themes(&items)
             .chain(assets.graphs().weapon_cosmetics())
             .collect();
+        let matchmaker = Matchmaker::new(&data, &config.data, config.test_players, config.test_ai)?;
         // The Practice Range's scene is prepared up front for the first match
         // (`ow174/lobby/server.py` `start_game_server`); no match starts
         // without the game server.
         let scene = if config.game_port.is_some() {
-            let scene = assets.prepare(GameMap::practice_range())?;
+            let scene = assets.prepare(matchmaker.practice_map().clone())?;
             if !scene.movement_ready() {
                 return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
@@ -235,7 +236,7 @@ impl Server {
             platform: Arc::clone(&platform),
             services,
             social: Default::default(),
-            matchmaker: Matchmaker::new(&data, &config.data, config.test_players, config.test_ai)?,
+            matchmaker,
         });
         let dashboard = config
             .dashboard_port
