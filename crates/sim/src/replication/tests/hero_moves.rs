@@ -1,7 +1,7 @@
 //! Tracer's Blink and Recall through the player's tick: her body script on
 //! the derived Practice Range scene, with its collision. Her graphs still
 //! reach config classes the VM doesn't compute (`STU_60146072`,
-//! `STU_038C32E8`, `STU_082FA44E`) and `StateBlinkEffect`, none of which
+//! `STU_038C32E8`) and `StateBlinkEffect`, none of which
 //! decides the moves tested here, so the body tolerates them as release
 //! builds do.
 
