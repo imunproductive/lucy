@@ -784,7 +784,7 @@ pub struct StackBinding {
     pub slot: u8,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShotEvent {
     pub entity: u32,
     pub instance: u16,
@@ -795,6 +795,9 @@ pub struct ShotEvent {
     pub activation: u16,
     pub activation_ms: u64,
     pub ordinal: u32,
+    /// The volley's normalized spread when the shot left (0 to 1), for a
+    /// launch `STU_239B571E` with a spread ramp; else None.
+    pub spread: Option<f64>,
 }
 
 /// A single body using the same authored graph engine as one-shot initialization.
@@ -1270,6 +1273,12 @@ struct Volley {
     ammo0: i64,
     per_shot: i64,
     rate: f64,
+    /// The spread variable's value when the volley began, 0 to 1.
+    spread0: f64,
+    /// The shots that take the spread from `spread0` to 1: launch
+    /// `STU_239B571E`'s `m_AC20B1C1` as float32 (none: the spread stays).
+    ramp: Option<f32>,
+    /// The spread output as last published (each tick re-evaluates it).
     spread: f64,
     planned: u32,
     reported: u32,
@@ -1277,15 +1286,39 @@ struct Volley {
 }
 
 impl Volley {
+    /// The float-based shot index the outputs use; None before the start
+    /// (`WeaponVolley.shots_at` in `ow174/game/script/nodes.py`).
+    fn shots_at(&self, now_ms: u64) -> Option<i64> {
+        let elapsed = now_ms.checked_sub(self.start_ms)?;
+        let seconds = f64::from(elapsed as f32 * 0.001_f32);
+        Some(((seconds * self.rate) as f32).floor() as i64)
+    }
+
     fn ammo_at(&self, now_ms: u64) -> i64 {
-        let Some(elapsed) = now_ms.checked_sub(self.start_ms) else {
+        let Some(shots) = self.shots_at(now_ms) else {
             return self.ammo0;
         };
-        let seconds = f64::from(elapsed as f32 * 0.001_f32);
-        let shots = ((seconds * self.rate) as f32).floor() as i64;
         self.ammo0
             .saturating_sub(self.per_shot.saturating_mul(shots.saturating_add(1)))
             .max(0)
+    }
+
+    /// The normalized spread (0 to 1, not an angle) of launch
+    /// `STU_239B571E`: the completed shots plus one over the ramp, added to
+    /// the spread the volley began with, at most 1; a ramp below 1e-7 is
+    /// full spread at once. Client PC104319 `D80A50`-`D80A99`, the shots
+    /// from `D5F979`-`D5F996`, as leafall903/ORPHEUS (MIT) has it in
+    /// `nodes.py` `WeaponVolley.spread_at` (commit e5463e3).
+    fn spread_at(&self, now_ms: u64) -> f64 {
+        let Some(ramp) = self.ramp else {
+            return self.spread0;
+        };
+        if ramp < 1e-7 {
+            return 1.0;
+        }
+        let shots = self.shots_at(now_ms).map_or(0, |shots| (shots + 1).max(0));
+        let increase = (shots as f64 / f64::from(ramp)) as f32;
+        f64::from((increase + self.spread0 as f32).min(1.0))
     }
 
     fn output(&self, slot: u8, now_ms: u64) -> Value {

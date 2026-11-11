@@ -558,6 +558,7 @@ fn projectile_retirement_retries_destroys_and_ignores_stale_confirmations() {
                 activation: 1,
                 activation_ms: 101 * FRAME_MS,
                 ordinal: 0,
+                spread: None,
             },
             DEFINITION,
             125,

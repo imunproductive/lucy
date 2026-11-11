@@ -21,6 +21,7 @@ use crate::{
     },
     replication::{BodyStep, OwnerBodyRuntime},
     voice::{SpawnBark, begin_spawn_bark},
+    weapon_spread::{ring_directions, shot_direction},
 };
 use orpheus_content::heroes::Hero;
 #[cfg(any(test, feature = "fixtures"))]
@@ -43,7 +44,7 @@ use orpheus_script::{
         Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest, Root, Snapshot, StateKind,
         TargetCandidate, Unknowns, World,
     },
-    weapons::{HitDefinition, ProjectileBallistics},
+    weapons::{HitDefinition, ProjectileBallistics, pellet_rings},
     wire::{Value, Variables},
 };
 use orpheus_wire::{
@@ -520,6 +521,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         };
         let [x, y, z] = mover.pose().position;
         let origin = [x, y + self.combat.eyes.height(mover.crouched()), z];
+        let aim = aim_direction(&command);
         let mut posed: Vec<_> = shots
             .into_iter()
             .filter_map(|shot| {
@@ -528,18 +530,28 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                     self.component
                         .evaluate_shot_config(&shot, config, &mut self.world)
                 };
+                // The volley's growing spread turns the aim (a guessed seed;
+                // `weapon_spread::shot_direction`).
+                let spread = shot_direction(&shot, node, aim, &mut evaluate).ok()?;
+                let log_spread = || {
+                    if spread != aim {
+                        log_assumption(
+                            shot.graph,
+                            Some(node.pos),
+                            "STU_239B571E",
+                            "spread seeded from the body, instance, state and counter",
+                        );
+                    }
+                };
                 let speed = node.field("m_projectileSpeed").unwrap_or(&Json::Null);
                 if !speed.is_null() && to_float(&evaluate(speed).ok()?) != 0.0 {
-                    // Several projectiles a shot (Roadhog's pellets, Genji's
-                    // fan, Echo's Tri-Shot): combat.py `_shoot` flies one
-                    // along the aim whatever the count, as the client's
-                    // spread pattern is unknown.
                     let projectiles = projectiles_per_shot(node, &mut evaluate).ok()?;
                     let ballistics =
                         ProjectileBallistics::from_authored(node, &mut evaluate).ok()??;
                     for class in &ballistics.unmodelled {
                         log_assumption(shot.graph, None, class, "flies as if it weren't there");
                     }
+                    let rings = pellet_rings(node, &mut evaluate).ok()?;
                     // projectiles.py `fired`: the owner's client shoots a
                     // networked, predicted volley's projectile under its
                     // body's lease, and the server confirms and releases it;
@@ -575,17 +587,42 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                             StateKind::WeaponVolley { volleys, .. } => volleys,
                             _ => 0,
                         });
+                    // A leased volley leaves along the aim, as the other
+                    // clients see it; another along the spread.
+                    let direction = if leased {
+                        aim
+                    } else {
+                        log_spread();
+                        spread
+                    };
+                    // Pellet rings (Doomfist's Hand Cannon, Roadhog's Scrap
+                    // Gun, Torbjörn's secondary, Echo's Tri-Shot): each of
+                    // the shot's projectiles flies for its damage, around
+                    // the direction (upstream 7cb4018, any sync).
+                    let pellets = match rings {
+                        Some(rings) => {
+                            log_assumption(
+                                shot.graph,
+                                Some(node.pos),
+                                "STU_613BDDB0",
+                                "pellets evenly spaced around each ring, the first on the right",
+                            );
+                            ring_directions(direction, &rings)
+                        }
+                        None => vec![direction],
+                    };
                     return Some(PosedShot::Projectile(Box::new(PosedProjectile {
                         shot,
                         ballistics,
                         origin,
-                        direction: aim_direction(&command),
+                        direction,
                         leased,
                         spawn,
                         field,
                         feet: [x, y, z],
                         volleys,
                         projectiles,
+                        pellets,
                     })));
                 }
                 let hit = HitDefinition::from_authored(node.field("m_6396149F")?, &mut evaluate)
@@ -599,10 +636,12 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 } else {
                     to_float(&evaluate(reach).ok()?)
                 };
+                log_spread();
                 Some(PosedShot::Hitscan(PosedHitscan {
                     source: shot.entity,
                     origin,
                     command,
+                    direction: spread,
                     shot_frame: shot.frame,
                     reach,
                     hit,

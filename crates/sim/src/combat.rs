@@ -223,6 +223,9 @@ pub struct PosedHitscan {
     pub source: u32,
     pub origin: [f64; 3],
     pub command: Command,
+    /// The command's aim, turned by the volley's spread when it has one
+    /// (`weapon_spread::shot_direction`).
+    pub direction: [f64; 3],
     pub shot_frame: u32,
     pub reach: f64,
     pub hit: HitDefinition,
@@ -268,12 +271,16 @@ pub struct PosedProjectile {
     /// The volley state's count of volleys, as the other clients' shot
     /// record names it (projectiles.py `_show_others`: `state.volleys`).
     pub volleys: u8,
-    /// The projectiles a shot of the volley fires (`m_numProjectilesPerShot`).
-    /// The server flies one, along the aim, for all of them (combat.py
-    /// `_shoot`, which never reads the count; the client's spread pattern is
-    /// unknown); a leased one's owner client shot each under its own id,
-    /// and each is confirmed and released.
+    /// The projectiles a shot of the volley fires (`m_numProjectilesPerShot`):
+    /// a leased one's owner client shot each under its own id, and each is
+    /// confirmed and released.
     pub projectiles: u8,
+    /// The directions the server flies the shot's projectiles in for their
+    /// damage: one per projectile when the volley lays them out in rings
+    /// (`STU_613BDDB0`, `weapon_spread::ring_directions`), else `direction`
+    /// alone (combat.py `_shoot` flew one whatever the count). A bot's
+    /// flies along `direction` alone (combat.py's NPC path).
+    pub pellets: Vec<[f64; 3]>,
 }
 
 #[derive(Clone, Copy)]
@@ -505,7 +512,7 @@ impl Combat {
         visible: impl Fn(u32) -> bool,
     ) -> io::Result<Option<BotHit>> {
         let view = ViewFrame::from_command(&shot.command, context.quanta);
-        let ray = HitscanShot::from_command(shot.origin, &shot.command, shot.reach, shot.hit);
+        let ray = HitscanShot::along(shot.origin, shot.direction, shot.reach, shot.hit);
         self.fire_hitscan(
             scene,
             &ray,

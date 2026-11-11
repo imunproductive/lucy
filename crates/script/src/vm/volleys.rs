@@ -113,16 +113,35 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             || i64::from(maximum).saturating_mul(per_shot),
             |var| expr::to_int(&self.machine.value(var, None), 0).max(0),
         );
-        let spread = outputs[2].map_or(0.0, |var| {
+        let spread0 = outputs[2].map_or(0.0, |var| {
             expr::to_float(&self.machine.value(var, None)).clamp(0.0, 1.0)
         });
-        if !spread.is_finite() {
+        if !spread0.is_finite() {
             self.report(
                 self.site(id, node),
                 Issue::UnsupportedField("weapon volley spread"),
             );
             return Ok(());
         }
+        // The spread ramp of launch `STU_239B571E` without `m_23C72C36`,
+        // baked when firing starts (leafall903/ORPHEUS (MIT) `nodes.py`
+        // `WeaponVolley.params`, commit e5463e3).
+        let launch = field(&node.fields, "m_5EC1EB38");
+        let ramp = if field(launch, "$").as_str() == Some("STU_239B571E")
+            && field(launch, "m_23C72C36").is_null()
+        {
+            let config = field(launch, "m_AC20B1C1");
+            if config.is_null() {
+                Some(0.0)
+            } else {
+                let Some(ramp) = self.evaluate(id, node, config, None) else {
+                    return Ok(());
+                };
+                Some(expr::to_float(&ramp) as f32)
+            }
+        } else {
+            None
+        };
         let planned = if per_shot == 0 {
             maximum
         } else {
@@ -135,25 +154,31 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             ammo0,
             ammo_var,
         };
-        self.machine.volleys.insert(
-            key,
-            Volley {
-                start_ms,
-                ammo0,
-                per_shot,
-                rate,
-                spread,
-                planned,
-                reported: 0,
-                outputs,
-            },
-        );
+        let mut volley = Volley {
+            start_ms,
+            ammo0,
+            per_shot,
+            rate,
+            spread0,
+            ramp,
+            spread: 0.0,
+            planned,
+            reported: 0,
+            outputs,
+        };
+        volley.spread = volley.spread_at(start_ms);
+        // The spread output is re-evaluated each tick until it is full, so
+        // what watches it (the owner's reticle) follows the shots.
+        if outputs[2].is_some() && ramp.is_some() && volley.spread < 1.0 {
+            self.register_tick(key, start_ms);
+        }
+        self.machine.volleys.insert(key, volley);
         for (slot, (target, base)) in outputs
             .into_iter()
             .zip([
                 Value::Integer(ammo0),
                 Value::Float(rate),
-                Value::Float(spread),
+                Value::Float(spread0),
             ])
             .enumerate()
         {
@@ -236,6 +261,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 activation,
                 activation_ms: volley.start_ms,
                 ordinal: volley.reported,
+                spread: volley.ramp.map(|_| volley.spread_at(time_ms)),
             });
             volley.reported += 1;
         }
@@ -252,7 +278,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let values = [
             volley.output(0, at),
             volley.output(1, at),
-            volley.output(2, at),
+            Value::Float(volley.spread_at(at)),
         ];
         for (target, value) in outputs.into_iter().zip(values) {
             if let Some(target) = target {
@@ -260,6 +286,33 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
         }
         self.machine.volleys.remove(&key);
+        Ok(())
+    }
+
+    /// A ticking volley re-evaluates its spread; a change is published on
+    /// the linked variable as an ordinary change, until the spread is full
+    /// (leafall903/ORPHEUS (MIT) `nodes.py` `WeaponVolley.tick`, commit
+    /// e5463e3: Wrecking Ball's reticle reads 0.4° at 4 shots, 2° at 20).
+    pub(super) fn tick_volley(&mut self, key: StateKey) -> Result<(), InitFault> {
+        let Some(volley) = self.machine.volleys.get(&key) else {
+            return Ok(());
+        };
+        let spread = volley.spread_at(self.machine.now_ms);
+        if spread == volley.spread {
+            return Ok(());
+        }
+        if let Some(target) = volley.outputs[2] {
+            let before = self.machine.value(target, None);
+            self.machine
+                .volleys
+                .get_mut(&key)
+                .expect("ticking volley")
+                .spread = spread;
+            self.notify_value(target, &before, None)?;
+        }
+        if spread >= 1.0 {
+            self.clear_tick(key);
+        }
         Ok(())
     }
 }

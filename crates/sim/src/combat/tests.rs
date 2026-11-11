@@ -43,6 +43,8 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
             yaw: 16384,
             ..Command::default()
         },
+        // Along +x, as yaw 16384 aims.
+        direction: [1.0, 0.0, 0.0],
         shot_frame: 999,
         reach: 180.0,
         hit: HitDefinition {
