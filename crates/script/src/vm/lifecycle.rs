@@ -108,6 +108,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         state.ending = false;
         state.pending_change = false;
         state.pending_timer = false;
+        state.pending_check = false;
         state.delayed_timers = [false; 2];
         state.tracked.clear();
         if matches!(kind, StateKind::SubScript { .. }) {
@@ -277,6 +278,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             self.machine.queues.remove(id);
             self.machine.ticking.remove(&id);
             self.machine.deferred.remove(&id);
+            self.machine.joins.remove(&id);
             self.machine.movements.retain(|key, _| key.instance != id);
             self.machine
                 .ability_presses
