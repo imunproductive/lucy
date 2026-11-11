@@ -4227,9 +4227,10 @@ fn players_join_a_running_match_in_the_next_slots() {
 /// The Practice Range with the training bots' scripts (ow174/game/match.py
 /// `_prepare_bot_script`, server.py `_BotScriptDelivery`): the world waits
 /// for every bot's script; each bot's first frame follows its create, the
-/// nameplate follows the mode UI and carries the bot's name; a hit the bot
-/// survives sends its enabled nameplate; a bot shot to death sends its death
-/// script's frames, and its replacement 3 s later starts a new script.
+/// nameplate follows the mode UI and carries the bot's name, enabled for
+/// the player's team's bots; a hit the bot survives sends its enabled
+/// nameplate; a bot shot to death sends its death script's frames with its
+/// dead flag up, and its replacement 3 s later starts a new script.
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn practice_bots_run_their_scripts_for_a_client() {
@@ -4256,6 +4257,13 @@ fn practice_bots_run_their_scripts_for_a_client() {
         .iter()
         .map(|bot| (bot.entity, bot.spawn.name.clone()))
         .collect();
+    let allies: Vec<u32> = scene
+        .bots()
+        .iter()
+        .filter(|bot| bot.spawn.team == 0)
+        .map(|bot| bot.entity)
+        .collect();
+    assert!(!allies.is_empty());
     // An enemy bot that neither fires nor walks, 4 m beside the spawn.
     let target = scene
         .bots_mut()
@@ -4370,6 +4378,57 @@ fn practice_bots_run_their_scripts_for_a_client() {
             })
         },
     );
+    // The first datagram from `from` on with a script chunk of `entity`
+    // that has `bits`.
+    let first_with = |watcher: &Watcher, from: usize, entity: u32, bits: &BitWriter| {
+        watcher.find(from, |record| {
+            record.entity == entity
+                && record.script.as_ref().is_some_and(|chunk| {
+                    orpheus_testkit::contains_bits(
+                        &chunk.data,
+                        chunk.width,
+                        bits.as_bytes(),
+                        bits.bit_len(),
+                    )
+                })
+        })
+    };
+    // The player's team's bots arrive with their nameplate enabled: in the
+    // nameplate's variables #8807 true (0D24 sync slot 7) comes right before
+    // the name (slot 12). The enemy target's nameplate, not hit yet, has
+    // only its name there.
+    let enabled_name = |name: &str| {
+        let mut bits = BitWriter::new();
+        for value in [
+            orpheus_script::wire::Value::Bool(true),
+            orpheus_script::wire::Value::String(name.into()),
+        ] {
+            orpheus_script::wire::write_value(
+                &mut bits,
+                &value,
+                orpheus_script::wire::ValueEncoding::Compact,
+            )
+            .unwrap();
+            bits.bit(false); // no stack binding
+        }
+        bits
+    };
+    for &ally in &allies {
+        let name = &names.iter().find(|(entity, _)| *entity == ally).unwrap().1;
+        assert!(
+            first_with(&watcher, 0, ally, &enabled_name(name)).is_some(),
+            "{ally:08X}'s nameplate is not enabled"
+        );
+    }
+    let target_name = &names
+        .iter()
+        .find(|(entity, _)| *entity == target)
+        .unwrap()
+        .1;
+    assert_eq!(
+        first_with(&watcher, 0, target, &enabled_name(target_name)),
+        None
+    );
 
     // Shoot the target: first a body shot it survives, then to death.
     let owner = watcher.owner;
@@ -4425,6 +4484,7 @@ fn practice_bots_run_their_scripts_for_a_client() {
             .any(|(messages, _)| messages.iter().any(|message| message.id == 25005))
     });
     let killed_at = Instant::now();
+    let kill = hits_from(&watcher, fired, 25005).unwrap();
     pump_until(
         &mut [&mut watcher],
         &schemas,
@@ -4454,6 +4514,20 @@ fn practice_bots_run_their_scripts_for_a_client() {
         .unwrap();
     let created = watcher.created(replacement).unwrap();
     assert!(death <= destroyed && destroyed <= created);
+    // The death's frames raise the target's dead flag (entity variable
+    // #478 true), which hides its health bar (0D24's #17549 reads
+    // `!#478e`); its frames before the kill didn't have it.
+    let mut dead_flag = BitWriter::new();
+    dead_flag.w_var(orpheus_script::bot::DEAD_FLAG);
+    orpheus_script::wire::write_value(
+        &mut dead_flag,
+        &orpheus_script::wire::Value::Bool(true),
+        orpheus_script::wire::ValueEncoding::Compact,
+    )
+    .unwrap();
+    dead_flag.bit(false); // no stack binding
+    let raised = first_with(&watcher, 0, target, &dead_flag).unwrap();
+    assert!(kill <= raised && raised <= destroyed);
     assert!(created < script(&watcher, 0, replacement, true).unwrap());
     server.stop().unwrap();
 }

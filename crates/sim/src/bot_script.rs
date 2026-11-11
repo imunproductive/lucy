@@ -135,6 +135,10 @@ pub struct BotScripts {
     unknowns: Unknowns,
     mode: u64,
     practice: bool,
+    /// The one team that holds players, if just one does (the Practice
+    /// Range's team 0): its bots can't be hit, so their nameplates start
+    /// enabled ([`ScriptSpawn::nameplate_enabled`]).
+    players_team: Option<u8>,
     slots: Vec<Option<BotScript>>,
     /// The entity each slot's script was last prepared for.
     prepared: Vec<Option<u32>>,
@@ -164,12 +168,23 @@ impl BotScripts {
                 .map(|(slot, _)| slot)
                 .collect()
         });
+        let mut teams = map
+            .team_sizes
+            .iter()
+            .enumerate()
+            .filter(|&(_, &size)| size > 0)
+            .filter_map(|(team, _)| u8::try_from(team).ok());
+        let players_team = match (teams.next(), teams.next()) {
+            (Some(team), None) if !map.free_for_all => Some(team),
+            _ => None,
+        };
         Self {
             graphs,
             codecs,
             unknowns,
             mode: map.mode_guid,
             practice: map.map_guid == PRACTICE_RANGE_MAP && map.mode_guid == PRACTICE_RANGE_MODE,
+            players_team,
             slots: bots.iter().map(|_| None).collect(),
             prepared: vec![None; bots.len()],
             pending,
@@ -257,6 +272,7 @@ impl BotScripts {
             mode: self.mode,
             health: bot.spawn.health,
             firing_position: (bot.spawn.firing && self.practice).then_some(bot.position),
+            nameplate_enabled: self.players_team == Some(bot.spawn.team),
         };
         let started = BotBody::start(Arc::clone(graphs), spawn, self.unknowns)
             .map_err(|error| error.to_string())
