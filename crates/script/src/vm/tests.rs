@@ -7,6 +7,8 @@ use serde_json::json;
 /// Soldier: 76's body (`006E.075` `m_gameplayEntity`).
 const SOLDIER_BODY: u64 = 0x0400_0000_0000_03cf;
 
+mod flow;
+
 fn node(position: u16, class: &str, state: Option<u16>, mut fields: Json) -> Json {
     fields["m_2BBEEAB8"] = json!(state.is_some());
     fields["m_ADEB6E05"] =
@@ -493,12 +495,14 @@ fn server_no_ops_run_what_follows_and_assumed_ones_are_recorded() {
                 0,
                 "STUStatescriptEntry",
                 None,
-                json!({"m_outPlug":plug(&[(1, "m_inPlug"), (3, "m_inPlug")], &[])}),
+                json!({"m_outPlug":plug(&[(1, "m_inPlug"), (3, "m_inPlug"), (5, "m_inPlug")], &[])}),
             ),
             action(1, "STUStatescriptActionEffect", 2),
             mark(2, 100),
             action(3, "STU_E9694EFD", 4),
             mark(4, 101),
+            action(5, "STU_6E5C5F66", 6),
+            mark(6, 102),
         ],
         json!([]),
         json!([0]),
@@ -519,9 +523,14 @@ fn server_no_ops_run_what_follows_and_assumed_ones_are_recorded() {
     );
     assert_eq!(
         snapshot.variables,
-        Variables::from([(100, Value::Bool(true)), (101, Value::Bool(true))])
+        Variables::from([
+            (100, Value::Bool(true)),
+            (101, Value::Bool(true)),
+            (102, Value::Bool(true))
+        ])
     );
-    // Only the unnamed action is an assumption; the effect is a known no-op.
+    // Only the unnamed action is an assumption; the effect and STU_6E5C5F66
+    // (trace data only, upstream's research) are known no-ops.
     let assumed: Vec<_> = snapshot
         .assumptions
         .iter()
@@ -3621,7 +3630,7 @@ fn cycle_index_keeps_the_first_candidate_its_condition_accepts() {
 }
 
 #[test]
-fn conditions_branch_on_containers_held_buttons_and_the_unknown_false() {
+fn conditions_branch_on_containers_held_buttons_and_a_state_age_without_a_state() {
     let condition = |position, class: &str, mut fields: Json, yes: u16, no: u16| {
         fields["m_truePlug"] = plug(&[(yes, "m_inPlug")], &[]);
         fields["m_falsePlug"] = plug(&[(no, "m_inPlug")], &[]);
@@ -3669,7 +3678,13 @@ fn conditions_branch_on_containers_held_buttons_and_the_unknown_false() {
     assert_eq!(snapshot.variables[&100], Value::Bool(true));
     assert_eq!(snapshot.variables[&101], Value::Bool(false));
     assert_eq!(snapshot.variables[&102], Value::Bool(false));
-    assert_eq!(snapshot.assumptions[0].class, "STU_4E2BCAAB");
+    // StateElapsed with no age and no state is false (upstream
+    // leafall903/ORPHEUS `state_elapsed`); it is no longer an assumption.
+    assert!(
+        snapshot.assumptions.is_empty(),
+        "{:?}",
+        snapshot.assumptions
+    );
     component
         .advance_command(
             Command {
