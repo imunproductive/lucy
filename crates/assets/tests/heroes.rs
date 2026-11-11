@@ -7,7 +7,7 @@ use orpheus_assets::{DERIVATIONS, Difference, Install, diff};
 /// with the pack's.
 fn matches_the_pack(name: &str) {
     let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::runtime_dir();
+    let pack = orpheus_testkit::oracle_pack();
     let derivation = DERIVATIONS
         .iter()
         .find(|derivation| derivation.name == name)

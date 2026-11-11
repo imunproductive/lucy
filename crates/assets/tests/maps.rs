@@ -5,7 +5,7 @@ use orpheus_assets::{DERIVATIONS, Difference, Install, diff};
 
 fn check(name: &str) {
     let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::runtime_dir();
+    let pack = orpheus_testkit::oracle_pack();
     let derivation = DERIVATIONS
         .iter()
         .find(|derivation| derivation.name == name)
@@ -45,7 +45,7 @@ fn collision_matches_the_pack() {
     use orpheus_physics::collision::cache::read_cache;
 
     let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::runtime_dir();
+    let pack = orpheus_testkit::oracle_pack();
     let derivation = DERIVATIONS
         .iter()
         .find(|derivation| derivation.name == "collision")
@@ -101,7 +101,7 @@ fn collision_matches_the_pack() {
 #[ignore = "requires an Overwatch 1.74 install and a runtime pack (just test-assets <install> <pack>)"]
 fn collision_props_matches_the_pack() {
     let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::runtime_dir();
+    let pack = orpheus_testkit::oracle_pack();
     let derivation = DERIVATIONS
         .iter()
         .find(|derivation| derivation.name == "collision_props")

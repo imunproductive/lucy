@@ -4,7 +4,7 @@ use orpheus_assets::{DERIVATIONS, Difference, Install, diff};
 
 fn assert_matches(name: &str) {
     let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::runtime_dir();
+    let pack = orpheus_testkit::oracle_pack();
     let derivation = DERIVATIONS
         .iter()
         .find(|derivation| derivation.name == name)

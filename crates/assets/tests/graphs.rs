@@ -2,7 +2,7 @@
 
 use std::io::Read;
 
-use orpheus_assets::{DERIVATIONS, Difference, Install, Output, diff, first_difference};
+use orpheus_assets::{DERIVATIONS, Install, Output, first_difference};
 use serde_json::Value;
 
 /// Graphs the derivation adds to the pack's hero bundle: the initial graphs
@@ -17,7 +17,7 @@ const SPAWNED_GRAPHS: &[u64] = &[
 
 fn derived(path: &str) -> Output {
     let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::runtime_dir();
+    let pack = orpheus_testkit::oracle_pack();
     let graphs = DERIVATIONS
         .iter()
         .find(|derivation| derivation.name == "graphs")
@@ -27,12 +27,6 @@ fn derived(path: &str) -> Output {
         .into_iter()
         .find(|output| output.path == path)
         .unwrap()
-}
-
-fn assert_matches(path: &str) {
-    let output = derived(path);
-    let difference = diff(&output, &orpheus_testkit::runtime_dir()).unwrap();
-    assert_eq!(difference, Difference::Same, "{path}");
 }
 
 fn json(bytes: &[u8]) -> Value {
@@ -50,9 +44,39 @@ fn json(bytes: &[u8]) -> Value {
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and a runtime pack (just test-assets <install> <pack>)"]
 fn hero_bundle_matches_the_pack() {
-    let path = "data/game_graphs_174.json.gz";
+    let derived = keeps_the_pack(
+        "data/game_graphs_174.json.gz",
+        &["version", "bodies", "mode_variables"],
+    );
+    for index in SPAWNED_GRAPHS {
+        assert!(derived.contains_key(index), "graph {index:04X}");
+    }
+}
+
+/// The bot bundle likewise keeps every pack graph, entity definition and
+/// AI weapon button; the derivation adds the same graphs as to the hero
+/// bundle (volley-spawned and match flow graphs).
+#[test]
+#[ignore = "requires an Overwatch 1.74 install and a runtime pack (just test-assets <install> <pack>)"]
+fn bot_bundle_matches_the_pack() {
+    keeps_the_pack(
+        "data/game_graphs_bots_174.json.gz",
+        &[
+            "version",
+            "bodies",
+            "mode_variables",
+            "entities",
+            "ai_weapon_buttons",
+        ],
+    );
+}
+
+/// Check that the derived bundle at `path` keeps every graph of the pack's
+/// unchanged, the listed top-level keys equal, and every root and missing
+/// graph the pack lists; return the derived graphs by index.
+fn keeps_the_pack(path: &str, equal: &[&str]) -> std::collections::BTreeMap<u64, Value> {
     let derived = json(&derived(path).bytes);
-    let pack = json(&std::fs::read(orpheus_testkit::runtime_dir().join(path)).unwrap());
+    let pack = json(&std::fs::read(orpheus_testkit::oracle_pack().join(path)).unwrap());
     let by_index = |bundle: &Value| -> std::collections::BTreeMap<u64, Value> {
         bundle["graphs"]
             .as_array()
@@ -72,10 +96,7 @@ fn hero_bundle_matches_the_pack() {
             "graph {index:04X}"
         );
     }
-    for index in SPAWNED_GRAPHS {
-        assert!(derived_graphs.contains_key(index), "graph {index:04X}");
-    }
-    for key in ["version", "bodies", "mode_variables"] {
+    for &key in equal {
         assert_eq!(
             first_difference(&derived[key], &pack[key], key),
             None,
@@ -95,10 +116,5 @@ fn hero_bundle_matches_the_pack() {
         &derived["roots"]["graphs"],
         &pack["roots"]["graphs"]
     ));
-}
-
-#[test]
-#[ignore = "requires an Overwatch 1.74 install and a runtime pack (just test-assets <install> <pack>)"]
-fn bot_bundle_matches_the_pack() {
-    assert_matches("data/game_graphs_bots_174.json.gz");
+    derived_graphs
 }
