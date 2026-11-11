@@ -46,6 +46,8 @@ With the Rust server: the client entered the Practice Range, but weapons were mi
 
 - **2026-11-11, the freeze after a kill is fixed (Rust server, original client).** Killing a Training Bot used to freeze the client's own body (ult ring, fire button stuck, no sprint animation) because 25005 ends in a packed bool and the world frame started at the next byte instead of the next bit. The game link channel now ends on the exact bit (`crates/wire/src/messages.rs`, after upstream leafall903/ORPHEUS `c239a84`). Checked in the game by the user.
 
+- **2026-11-11, bot nameplates, animated bot hit shapes and ported VM fixes (Rust server, original client, checked by the user).** Bot name tags show over Friendly and Training Bots. A Training Bot's health bar shows once it is hit (message `0C3C` enables its `0D24`). Still missing: the health bar over Friendly Bots (they are never hit) and the bot's name after "ELIMINATED". The bots' hit shapes follow the hover bob. Abilities no longer start by themselves when their cooldown ends. The weapon spread grows while firing.
+
 ## Upstream author's claims (not independently verified)
 
 The imported game-server branch (LizRollin `9f8f3bcb`) claimed these work in the game:
