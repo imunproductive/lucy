@@ -265,7 +265,7 @@ impl World for PlayerWorld {
             }
             "STU_4A101787" => Some(Value::Bool(false)),
             // See `assumption`.
-            "STU_082FA44E" => crate::weapons::tunable(config).map(Value::Float),
+            "STU_082FA44E" => self.graphs.tunables().value(config).map(Value::Float),
             // See `assumption`.
             "STU_ED45C5E8" if self.is_player_site(site) => Some(Value::Array(Vec::new())),
             // Does an entity pass a filter (teams, tags): the forms the
