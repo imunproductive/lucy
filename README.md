@@ -32,6 +32,7 @@ The first start derives the game data from the install, which takes about two mi
 - [Architecture](docs/dev/architecture.md): crates, data flow, the lobby, the game service, the state folder.
 - [Testing](docs/dev/testing.md): the test tiers and the `just` recipes. Run `just check` before every change.
 - [Data sources](docs/dev/data-sources.md): where each data file comes from.
+- [Decisions](docs/dev/decisions.md): conventions, fixed data, decisions, and how the Python tests were retired.
 - [Research notes](docs/notes): protocol, behavior and acceptance records, references.
 
 ## License

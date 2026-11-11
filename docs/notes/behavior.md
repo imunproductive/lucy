@@ -69,7 +69,7 @@ Written but never checked in the game: kill feed, Helix Rockets and Biotic Field
 
 ## Server coverage and open items
 
-Moved here from the parity note when the Python server was deleted (phase 8 of the [refactor plan](../REFACTOR.md)). "Python" and "the reference" mean the frozen Python server, still reachable at the git tag `python-reference`. None of this is verified with the original client unless [Seen with the original client](#seen-with-the-original-client) or the acceptance records say so.
+Moved here from the parity note when the Python server was deleted (see [decisions](../dev/decisions.md)). "Python" and "the reference" mean the frozen Python server, still reachable at the git tag `python-reference`. None of this is verified with the original client unless [Seen with the original client](#seen-with-the-original-client) or the acceptance records say so.
 
 ### What the Rust server does
 
