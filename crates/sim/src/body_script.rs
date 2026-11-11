@@ -499,6 +499,18 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         targets.extend_from_slice(candidates);
     }
 
+    /// A hero setting is an entity variable no graph writes. A changed one
+    /// queues a re-evaluation of the states that watch it (`01CF`
+    /// st115/st116), which runs now, so the next frame carries the result.
+    fn set_hero_settings(&mut self, variables: &Variables) -> io::Result<()> {
+        for (&id, value) in variables {
+            self.component
+                .set_entity_variable(id, value.clone(), &mut self.world)
+                .map_err(unsupported)?;
+        }
+        self.component.run_now(&mut self.world).map_err(unsupported)
+    }
+
     fn begin_spawn_bark(&mut self, now: Duration) -> io::Result<()> {
         if let Some(bark) = begin_spawn_bark(
             &mut self.component,

@@ -38,6 +38,7 @@ use crate::{
     scene_assets::PreparedScene,
 };
 use orpheus_content::{
+    hero_settings::{HeroSetting, HeroSettings, SCRIPT_SETTINGS},
     heroes::{Hero, SOLDIER},
     parameters::{ClientGameMessage, HeroSelectRequest},
 };
@@ -191,6 +192,12 @@ pub trait OwnerBodyRuntime: Send {
     /// The bodies the body's target searches can find from now on
     /// (`Combat::target_candidates`).
     fn set_target_candidates(&mut self, _candidates: &[TargetCandidate]) {}
+
+    /// The player's hero settings that the body's graphs read, as entity
+    /// variables ([`hero_setting_variables`]).
+    fn set_hero_settings(&mut self, _variables: &Variables) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -956,6 +963,27 @@ pub struct WorldDelivery {
     /// Time the match flow adds to a death's respawn now (overtime,
     /// game-rules.md 11).
     respawn_extra: Duration,
+    /// The hero settings the player's client sent (21604); every body he
+    /// plays takes them. They are the client's, so a new world keeps them.
+    hero_settings: HeroSettings,
+}
+
+/// The entity variables of the hero settings a body's graphs read
+/// (`orpheus_content::hero_settings`): the setting identifier's index holds
+/// the chosen entry's identifier, or nothing for an entry without one
+/// (DEFAULT). A setting the client never sent stays unset.
+pub fn hero_setting_variables(settings: &HeroSettings, hero: u64) -> Variables {
+    SCRIPT_SETTINGS
+        .iter()
+        .filter_map(|&setting| {
+            let value = settings.value(hero, setting)?;
+            let value = match value {
+                0 => ScriptValue::Null,
+                value => ScriptValue::Asset(value),
+            };
+            Some((setting as u32, value))
+        })
+        .collect()
 }
 
 /// A body's death (combat.py `Vitals.death_tick`, `killer`) and when it
@@ -1035,6 +1063,7 @@ impl WorldDelivery {
             assembling: false,
             headless: false,
             respawn_extra: Duration::ZERO,
+            hero_settings: HeroSettings::default(),
         }
     }
 
@@ -2070,6 +2099,25 @@ impl WorldDelivery {
         }
     }
 
+    /// The client's hero settings (21604): kept for every body the player
+    /// plays from now on, and given to the current one at once, whose graphs
+    /// react to them (`01CF` st115/st116 watch ALLIED HEALTH BARS).
+    pub fn update_hero_settings(&mut self, entries: &[HeroSetting]) {
+        self.hero_settings.update(entries);
+        let Some(body) = self.body else {
+            return;
+        };
+        let variables = hero_setting_variables(&self.hero_settings, body.hero);
+        let failure = self
+            .body_script
+            .as_mut()
+            .filter(|script| script.id == body.id && !variables.is_empty())
+            .and_then(|script| script.runtime.set_hero_settings(&variables).err());
+        if let Some(error) = failure {
+            self.drop_failed_script(&error.to_string());
+        }
+    }
+
     /// Whether the player's current body is dead (combat.py `is_dead`).
     pub fn body_dead(&self) -> bool {
         self.death.is_some()
@@ -2881,9 +2929,13 @@ impl WorldDelivery {
             )
             .ok()
             .flatten()
-            .map(|mut runtime| {
+            .and_then(|mut runtime| {
                 runtime.set_target_candidates(&self.target_candidates);
-                runtime
+                let settings = hero_setting_variables(&self.hero_settings, hero.guid);
+                if !settings.is_empty() {
+                    runtime.set_hero_settings(&settings).ok()?;
+                }
+                Some(runtime)
             })
             .and_then(|runtime| BodyScript::new(body, start_frame, runtime).ok());
         let create = body_create(

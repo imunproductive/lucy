@@ -1366,5 +1366,177 @@ fn body_messages_to_unknown_entities_go_nowhere_and_the_rest_are_capped() {
     assert_eq!(received.lock().unwrap().len(), MAX_BODY_MESSAGES);
 }
 
+/// The client's hero settings (21604) reach the current body's graphs as
+/// entity variables at once: ALLIED HEALTH BARS is `#8336e`, the hero's own
+/// entry wins over the general one, DEFAULT clears it, and an entry for
+/// another hero changes nothing.
+#[test]
+fn hero_settings_reach_the_bodys_graphs_as_entity_variables() {
+    use crate::body_script::{fixture_body_factory, fixture_graph_factory};
+    use orpheus_content::hero_settings::{
+        ALLIED_HEALTH_BARS, ALLIED_HEALTH_BARS_ALWAYS, ALLIED_HEALTH_BARS_OFF, HeroSetting,
+    };
+    use orpheus_script::wire::Value as ScriptValue;
+    use serde_json::json;
+
+    let graph = json!({
+        "index":42,"items":1,"states":[],"entries":[0],
+        "nodes":[{"pos":0,"class":"STUStatescriptEntry","uid":0,"rid":0,"remote":-1,
+            "state":null,"client_only":false,"server_only":false,
+            "fields":{"m_2BBEEAB8":false,"m_ADEB6E05":false}}],
+        "remote":[],"sync_vars":[],"containers":{},"unknown_nodes":[],"fields":{},
+        "header":{"m_nodesBitCount":4,"m_statesBitCount":4,
+            "m_remoteSyncNodesBitCount":4,"m_syncVarsBitCount":4}
+    });
+    let (_, spawn) = fixture_body_factory();
+    let id = BodyId {
+        entity: spawn.entity,
+        generation: 1,
+    };
+    let runtime = fixture_graph_factory(graph, Variables::new())
+        .start(spawn)
+        .unwrap();
+    let mut world = scripted_world(spawn.controller, id, Box::new(runtime));
+    let hero = world.body.unwrap().hero;
+    let setting = |hero, value| HeroSetting {
+        hero,
+        setting: ALLIED_HEALTH_BARS,
+        value,
+    };
+    let allied = |world: &WorldDelivery| {
+        world
+            .body_script
+            .as_ref()
+            .unwrap()
+            .runtime
+            .snapshot()
+            .unwrap()
+            .variables
+            .get(&8336)
+            .cloned()
+    };
+    assert_eq!(allied(&world), None);
+    world.update_hero_settings(&[setting(0, ALLIED_HEALTH_BARS_ALWAYS)]);
+    assert_eq!(
+        allied(&world),
+        Some(ScriptValue::Asset(ALLIED_HEALTH_BARS_ALWAYS))
+    );
+    world.update_hero_settings(&[setting(hero + 1, ALLIED_HEALTH_BARS_OFF)]);
+    assert_eq!(
+        allied(&world),
+        Some(ScriptValue::Asset(ALLIED_HEALTH_BARS_ALWAYS))
+    );
+    world.update_hero_settings(&[setting(hero, ALLIED_HEALTH_BARS_OFF)]);
+    assert_eq!(
+        allied(&world),
+        Some(ScriptValue::Asset(ALLIED_HEALTH_BARS_OFF))
+    );
+    world.update_hero_settings(&[setting(hero, 0)]);
+    assert!(matches!(allied(&world), None | Some(ScriptValue::Null)));
+    assert!(!world.script_failed);
+}
+
+/// The stock body graph `01CF` turns ALLIED HEALTH BARS into target tag
+/// `0042`, which the nameplate `0D24` asks of the local view for an ally's
+/// health bar (`#17553`): ALWAYS gives it to Soldier: 76 (st116 → st117), on
+/// his running body and on the next one; OFF takes Ana's own tag away (st115
+/// → st114); DEFAULT does neither. Each frame encodes for the owner.
+#[test]
+#[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
+fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
+    use orpheus_content::hero_settings::{
+        ALLIED_HEALTH_BARS, ALLIED_HEALTH_BARS_ALWAYS, ALLIED_HEALTH_BARS_OFF, HeroSetting,
+    };
+    use orpheus_script::vm::{StateKind, TargetTagEffect};
+
+    const SUPPORT_TAG: u64 = 0x0d60_0000_0000_0042;
+    let runtime = orpheus_testkit::runtime_dir();
+    let mut assets = SceneAssets::load(runtime).unwrap();
+    // Ana's graphs still have gaps: tolerated, as release builds do.
+    assets.set_player_unknowns(orpheus_script::vm::Unknowns::Tolerate);
+    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let owner = 0xa000_0100;
+    let viewer = PlayerAppearance {
+        entity: owner,
+        slot: 0,
+        team: 0,
+        spawn: 0,
+        room: orpheus_content::maps::SpawnChoice::First,
+        card: &PlayerCard::default(),
+    };
+    let mut world = WorldDelivery::new(owner);
+    world.start(&scene, &viewer, FIRST_TICK).unwrap();
+    world.created.insert(owner);
+    world.present(&scene, FIRST_TICK).unwrap();
+    let general = |value| HeroSetting {
+        hero: 0,
+        setting: ALLIED_HEALTH_BARS,
+        value,
+    };
+    // The 01CF states 114 (OFF: drop the tag) and 117 (ALWAYS: take it):
+    // each one's effect while it is active.
+    let tag_states = |world: &WorldDelivery| {
+        let script = world.body_script.as_ref().unwrap();
+        let snapshot = script.runtime.snapshot().unwrap();
+        let encoder = script.runtime.encoder();
+        encoder
+            .full(&encoder.project(snapshot, View::Owner).unwrap())
+            .unwrap();
+        let instance = snapshot
+            .instances
+            .values()
+            .find(|instance| instance.graph == 0x01cf)
+            .expect("the body runs 01CF");
+        [114, 117].map(|raw| match instance.states.get(&raw) {
+            Some(state) if state.active => match state.kind {
+                StateKind::TargetTag { effect } => effect,
+                _ => None,
+            },
+            _ => None,
+        })
+    };
+    let tag = |entity, present| {
+        Some(TargetTagEffect {
+            entity,
+            tag: SUPPORT_TAG,
+            present,
+        })
+    };
+    let spawn = |world: &mut WorldDelivery, entity, hero: &Hero| {
+        world
+            .switch(
+                &scene,
+                &viewer,
+                FIRST_TICK,
+                RETAIL_QUANTA,
+                entity,
+                (hero, SkinTheme::default()),
+                true,
+            )
+            .unwrap();
+        assert!(world.body_script.is_some(), "{} has no script", hero.name);
+    };
+
+    let soldier = scene.heroes().get(SOLDIER).unwrap();
+    spawn(&mut world, owner | 1, soldier);
+    assert_eq!(tag_states(&world), [None, None], "DEFAULT");
+    world.update_hero_settings(&[general(ALLIED_HEALTH_BARS_ALWAYS)]);
+    assert_eq!(tag_states(&world), [None, tag(owner | 1, true)]);
+    world.update_hero_settings(&[general(0)]);
+    assert_eq!(tag_states(&world), [None, None], "back to DEFAULT");
+    world.update_hero_settings(&[general(ALLIED_HEALTH_BARS_ALWAYS)]);
+    spawn(&mut world, owner | 2, soldier);
+    assert_eq!(tag_states(&world), [None, tag(owner | 2, true)], "respawn");
+
+    let ana = scene.heroes().find_hero("Ana").unwrap();
+    spawn(&mut world, owner | 3, ana);
+    assert_eq!(tag_states(&world), [None, None], "ALWAYS: a support has it");
+    world.update_hero_settings(&[general(ALLIED_HEALTH_BARS_OFF)]);
+    assert_eq!(tag_states(&world), [tag(owner | 3, false), None]);
+    spawn(&mut world, owner | 4, ana);
+    assert_eq!(tag_states(&world), [tag(owner | 4, false), None], "respawn");
+    assert!(!world.script_failed);
+}
+
 mod hero_moves;
 mod recovery;

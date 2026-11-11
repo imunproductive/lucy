@@ -54,6 +54,7 @@ use crate::{
     ingress::{GameIngress, MapReadiness, MapReadyStep, MessageKind, WorldReadiness, pong},
 };
 use orpheus_content::{
+    hero_settings,
     heroes::SOLDIER,
     maps::{GameMap, SpawnChoice},
     parameters::{CLIENT_GAME_MESSAGE, PICK_HERO},
@@ -1699,6 +1700,31 @@ impl State {
                     }
                     MessageKind::GameMessage if room.world.is_some() => {
                         world.queue_game_message(self.clock.frame(), now, message);
+                    }
+                    MessageKind::HeroSettings => {
+                        let name = &room.players[slot].info.name;
+                        match hero_settings::read(&message) {
+                            Some(entries) => {
+                                let listed: Vec<_> = entries
+                                    .iter()
+                                    .map(|entry| {
+                                        format!(
+                                            "{:X}/{:X}={:X}",
+                                            entry.hero, entry.setting, entry.value
+                                        )
+                                    })
+                                    .collect();
+                                tracing::info!(
+                                    "[game] hero settings of {name} (hero/setting=value): {}",
+                                    listed.join(" ")
+                                );
+                                world.update_hero_settings(&entries);
+                            }
+                            None => tracing::info!(
+                                "[game] unreadable hero settings of {name}: {:?}",
+                                message.fields
+                            ),
+                        }
                     }
                     _ => {}
                 }

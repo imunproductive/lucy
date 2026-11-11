@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod catalog;
+pub mod hero_settings;
 pub mod heroes;
 pub mod maps;
 pub mod parameters;
