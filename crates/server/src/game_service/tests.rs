@@ -2804,10 +2804,13 @@ fn doomfists_hand_cannon_hits_with_all_eleven_pellets() {
 /// Echo's Tri-Shot (graph `19E5` state 3, her primary fire: three bolts a
 /// shot, predicted): her body's lease gives definition `2CBF` three ids a
 /// frame, so the three bolts she shot under the frame's consecutive ids
-/// are each confirmed, and each released once the server's one bolt
-/// (combat.py `_shoot`, along the aim) has hit the training bot ahead of
-/// her; the other client sees that one bolt as the room's first SEEN
-/// entity, started by one shot record.
+/// are each confirmed, and each released once the server's tracking bolt
+/// (along the aim) has reached the training bot ahead of her; the other
+/// client sees that one bolt as the room's first SEEN entity, started by
+/// one shot record. Each of the three bolts of the volley's ring
+/// (`STU_613BDDB0`, leafall903/ORPHEUS 7cb4018) flies for its damage and
+/// hits the bot: three hits, where the one bolt along the aim hit once
+/// before the ring layout.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
@@ -2877,7 +2880,23 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
         })
     };
     let deadline = Instant::now() + Duration::from_secs(5);
+    let hits_of = |echo: &Watcher| -> Vec<Value> {
+        echo.datagrams[fired.0..]
+            .iter()
+            .flat_map(|(messages, _)| messages.iter().filter(|message| message.id == 25001))
+            .map(|message| {
+                let Value::Struct(impact) = &message.fields[&0x78] else {
+                    panic!("hit body")
+                };
+                let Value::Struct(target) = &impact[&0] else {
+                    panic!("hit target")
+                };
+                target[&0].clone()
+            })
+            .collect()
+    };
     while released(&echo).len() < 3
+        || hits_of(&echo).len() < 3
         || viewer
             .find(fired.1, |record| {
                 seen(record.entity) && record.operation == Some(3)
@@ -2904,21 +2923,8 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
     let mut releases = released(&echo);
     releases.sort_unstable();
     assert_eq!(releases, ids);
-    // The server's one bolt hit the bot.
-    let hits: Vec<_> = echo.datagrams[fired.0..]
-        .iter()
-        .flat_map(|(messages, _)| messages.iter().filter(|message| message.id == 25001))
-        .map(|message| {
-            let Value::Struct(impact) = &message.fields[&0x78] else {
-                panic!("hit body")
-            };
-            let Value::Struct(target) = &impact[&0] else {
-                panic!("hit target")
-            };
-            target[&0].clone()
-        })
-        .collect();
-    assert_eq!(hits, [Value::Unsigned(u64::from(bot))]);
+    // Each bolt of the ring hit the bot.
+    assert_eq!(hits_of(&echo), vec![Value::Unsigned(u64::from(bot)); 3]);
     // The other client's one copy.
     assert_eq!(
         records(&viewer, fired.1, &|record| seen(record.entity)
