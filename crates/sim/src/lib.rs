@@ -32,3 +32,4 @@ pub mod scene;
 pub mod scene_assets;
 pub mod voice;
 pub mod weapon_spread;
+pub mod wheel;

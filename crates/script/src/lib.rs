@@ -17,4 +17,5 @@ pub mod ultimate;
 pub mod vitals;
 pub mod vm;
 pub mod weapons;
+pub mod wheel;
 pub mod wire;

@@ -184,7 +184,8 @@ fn run(cli: Cli) -> io::Result<ExitCode> {
             (Launch::Mode(mode), options)
         }
     };
-    let settings = Settings::resolve(&state, &options.server)?;
+    let mut settings = Settings::resolve(&state, &options.server)?;
+    settings.game_args = options.game_args.clone();
     logging::init(Some(&settings.logs()))?;
     launch_mode(launch, &settings, &options)?;
     Ok(ExitCode::SUCCESS)
@@ -306,6 +307,39 @@ mod tests {
 
     fn parse(arguments: &[&str]) -> Cli {
         parse_cli(["orpheus"].iter().chain(arguments)).unwrap()
+    }
+
+    /// Everything after `--` goes to Overwatch.exe as it is, also options
+    /// orpheus has itself; without `--` there are none.
+    #[test]
+    fn arguments_after_a_double_dash_go_to_the_game() {
+        let cli = parse(&[
+            "play",
+            "--game",
+            "D:\\Games\\Overwatch",
+            "--",
+            "--tank_TournamentModeAdmin",
+            "--game",
+            "x",
+        ]);
+        let Some(Command::Play(options)) = cli.command else {
+            panic!("play")
+        };
+        assert_eq!(
+            options.game_args,
+            ["--tank_TournamentModeAdmin", "--game", "x"]
+        );
+        assert_eq!(
+            options.server.game.as_deref(),
+            Some(std::path::Path::new("D:\\Games\\Overwatch"))
+        );
+        let cli = parse(&["--", "--tank_Console"]);
+        assert_eq!(cli.options.game_args, ["--tank_Console"]);
+        let cli = parse(&["play"]);
+        let Some(Command::Play(options)) = cli.command else {
+            panic!("play")
+        };
+        assert!(options.game_args.is_empty());
     }
 
     #[test]

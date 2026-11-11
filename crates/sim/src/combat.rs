@@ -50,7 +50,7 @@ use orpheus_script::{
     graph::GraphStore,
     vitals::{Death, Vitals},
     vm::{ShotEvent, TargetCandidate},
-    weapons::{DamageTags, HitDefinition, ProjectileBallistics},
+    weapons::{AllyHits, DamageTags, HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
 };
 use orpheus_wire::{
@@ -322,6 +322,9 @@ pub struct BotHit {
     pub death: Option<BotDeath>,
     /// The damage of a hit it survived; none for a heal or a kill.
     pub damage: Option<BotDamage>,
+    /// What a heal gave the bot, for the healer's Healing Done and his
+    /// ultimate; 0 for a damaging hit.
+    pub healed: f64,
 }
 
 /// A hit on a player's body, for the match to apply to his body's pools
@@ -339,6 +342,8 @@ pub struct PlayerHit {
     pub frame: u32,
     /// The world tick of the death if this kills; None: the match's tick.
     pub world_tick: Option<u32>,
+    /// An ally's heal of `amount` (combat.py `_heal`), not damage.
+    pub heal: bool,
 }
 
 #[derive(Clone)]
@@ -357,6 +362,9 @@ pub struct PlayerTarget {
     pub team: u8,
     pub pose: TargetPose,
     pub dead: bool,
+    /// Its pools are below their maximum ([`Vitals::hurt`]): a hit that
+    /// strikes hurt allies strikes it.
+    pub hurt: bool,
 }
 
 struct Target {
@@ -501,19 +509,23 @@ impl Combat {
         std::mem::take(&mut self.player_hits)
     }
 
-    /// The enemies' bodies a shooter can hit (combat.py `_enemies`): other
-    /// players' living bodies of another team (any in a free-for-all), as
-    /// `pose` places each. Bots come after them.
+    /// The bodies a shooter's hit can strike (combat.py `_enemies`, and
+    /// `_shot_targets` for a hit that strikes allies, leafall903/ORPHEUS
+    /// (MIT) commit c239a84): other players' living bodies of another team
+    /// (any in a free-for-all) and of his team as the hit strikes allies
+    /// ([`strikes_ally`]), as `pose` places each. Bots come after them.
     fn player_candidates<'a>(
         &'a self,
         shooter: Shooter,
         free_for_all: bool,
+        allies: AllyHits,
         pose: impl Fn(&PlayerSlot) -> Option<TargetPose> + 'a,
     ) -> impl Iterator<Item = (u32, TargetPose)> + 'a {
         self.players.iter().filter_map(move |slot| {
             let target = &slot.target;
+            let enemy = free_for_all || target.team != shooter.team;
             (target.body != shooter.source
-                && (free_for_all || target.team != shooter.team)
+                && (enemy || strikes_ally(allies, target.hurt))
                 && !target.dead)
                 .then(|| Some((target.body, pose(slot)?)))
                 .flatten()
@@ -578,8 +590,9 @@ impl Combat {
         visible: impl Fn(u32) -> bool,
     ) -> io::Result<Option<BotHit>> {
         let free_for_all = scene.map().free_for_all;
+        let allies = ray.hit.allies;
         let players: Vec<_> = self
-            .player_candidates(shooter, free_for_all, |slot| {
+            .player_candidates(shooter, free_for_all, allies, |slot| {
                 slot.history.at(view, slot.target.pose.clone())
             })
             .collect();
@@ -588,7 +601,8 @@ impl Combat {
             .iter()
             .zip(&self.targets)
             .filter_map(|(bot, target)| {
-                if !eligible_bot(bot, shooter, free_for_all) || !visible(bot.entity) {
+                if !eligible_bot(bot, target, shooter, free_for_all, allies) || !visible(bot.entity)
+                {
                     return None;
                 }
                 target
@@ -630,7 +644,7 @@ impl Combat {
             segment_distance(melee.centre, a, b) - pose.radius <= melee.radius
         };
         let players: Vec<_> = self
-            .player_candidates(shooter, free_for_all, |slot| {
+            .player_candidates(shooter, free_for_all, AllyHits::None, |slot| {
                 slot.history.at(view, slot.target.pose.clone())
             })
             .filter(|(_, pose)| reaches(pose))
@@ -639,7 +653,10 @@ impl Combat {
             .bots()
             .iter()
             .zip(&self.targets)
-            .filter(|(bot, _)| eligible_bot(bot, shooter, free_for_all) && visible(bot.entity))
+            .filter(|(bot, target)| {
+                eligible_bot(bot, target, shooter, free_for_all, AllyHits::None)
+                    && visible(bot.entity)
+            })
             .filter_map(|(bot, target)| {
                 let pose = target.history.at(view, scene.bot_target(bot))?;
                 reaches(&pose).then_some(bot.entity)
@@ -660,6 +677,7 @@ impl Combat {
                     // Quick melee's tags are on graph 0043's health change,
                     // which the body runtime doesn't read yet.
                     tags: DamageTags::NONE,
+                    heal: 0.0,
                 };
                 self.apply_impact(scene, shooter, frame, None, context, &impact)
             })
@@ -675,14 +693,20 @@ impl Combat {
         hits: &mut Vec<BotHit>,
     ) -> io::Result<Option<FlightEnd>> {
         let free_for_all = scene.map().free_for_all;
+        let allies = flight.direct().map_or(AllyHits::None, |hit| hit.allies);
         let candidates: Vec<_> = self
-            .player_candidates(shooter, free_for_all, |slot| Some(slot.target.pose.clone()))
+            .player_candidates(shooter, free_for_all, allies, |slot| {
+                Some(slot.target.pose.clone())
+            })
             .chain(
                 scene
                     .bots()
                     .iter()
-                    .filter(|bot| eligible_bot(bot, shooter, free_for_all))
-                    .map(|bot| (bot.entity, scene.bot_target(bot))),
+                    .zip(&self.targets)
+                    .filter(|(bot, target)| {
+                        eligible_bot(bot, target, shooter, free_for_all, allies)
+                    })
+                    .map(|(bot, _)| (bot.entity, scene.bot_target(bot))),
             )
             .collect();
         let step = flight
@@ -765,7 +789,9 @@ impl Combat {
     }
 
     /// combat.py `_damage`: a bot's pools change here; a player's hit waits
-    /// for the match.
+    /// for the match. An ally of the shooter (the hits that strike allies
+    /// alone reach one) takes the impact's heal instead (combat.py
+    /// `_heal`, leafall903/ORPHEUS (MIT) commit c239a84), and no damage.
     fn apply_impact(
         &mut self,
         scene: &mut PreparedScene,
@@ -775,20 +801,24 @@ impl Combat {
         context: ShotContext,
         impact: &Impact,
     ) -> Option<BotHit> {
-        if self
+        let free_for_all = scene.map().free_for_all;
+        if let Some(slot) = self
             .players
             .iter()
-            .any(|slot| slot.target.body == impact.entity && !slot.target.dead)
+            .find(|slot| slot.target.body == impact.entity && !slot.target.dead)
         {
-            if impact.damage > 0.0 {
+            let heal = !free_for_all && slot.target.team == shooter.team;
+            let amount = if heal { impact.heal } else { impact.damage };
+            if amount > 0.0 {
                 self.player_hits.push(PlayerHit {
                     body: impact.entity,
                     shooter,
-                    amount: impact.damage,
-                    critical: impact.critical,
+                    amount,
+                    critical: impact.critical && !heal,
                     loadout: impact.loadout,
                     frame: shot_frame,
                     world_tick,
+                    heal,
                 });
             }
             return None;
@@ -808,11 +838,16 @@ impl Combat {
         // A Training Bot is back after the mode's respawn time, as a hero
         // (`game_respawns`: 3 s in the practice modes).
         let respawn = scene.respawn_time();
+        let free_for_all = scene.map().free_for_all;
         let (bot, target) = scene
             .bots_mut()
             .iter_mut()
             .zip(&mut self.targets)
             .find(|(bot, _)| !bot.dead && bot.entity == impact.entity)?;
+        if !free_for_all && bot.spawn.team == shooter.team {
+            let given = target.vitals.heal(impact.heal);
+            return (given > 0.0).then(|| healed_bot(bot, target, given));
+        }
         let death_tick = world_tick.unwrap_or(context.tick);
         let result = target.vitals.damage(
             impact.damage,
@@ -855,6 +890,7 @@ impl Combat {
             health,
             bot: bot.entity,
             remaining: target.vitals.total(),
+            healed: 0.0,
             death: result.killed.then_some(BotDeath {
                 bot: bot.entity,
                 killer: shooter.source,
@@ -915,7 +951,7 @@ impl Combat {
     /// capsule comes within `radius` of `centre` (unverified: to the
     /// capsule; a bot keeps its capsule here though shots meet its hit
     /// shapes). The players' bodies come back for the match to heal; the
-    /// bots heal here, with what they took.
+    /// bots heal here, each hit with what it took.
     pub fn heal_area(
         &mut self,
         scene: &mut PreparedScene,
@@ -923,7 +959,7 @@ impl Combat {
         centre: Vec3,
         radius: f64,
         amount: f64,
-    ) -> (Vec<u32>, Vec<(BotHit, f64)>) {
+    ) -> (Vec<u32>, Vec<BotHit>) {
         let free_for_all = scene.map().free_for_all;
         let reaches = |pose: &TargetPose| {
             let [a, b] = pose.segment();
@@ -950,28 +986,31 @@ impl Combat {
             }
             let target = &mut self.targets[slot];
             let given = target.vitals.heal(amount);
-            if given <= 0.0 {
-                continue;
+            if given > 0.0 {
+                bots.push(healed_bot(bot, target, given));
             }
-            let health = EntityUpdate {
-                entity: bot.entity,
-                operation: Some(Operation::Update(vec![target.vitals.component()])),
-                ..EntityUpdate::default()
-            };
-            target.vitals.clear_changed();
-            bots.push((
-                BotHit {
-                    notices: [None, None],
-                    health,
-                    bot: bot.entity,
-                    remaining: target.vitals.total(),
-                    death: None,
-                    damage: None,
-                },
-                given,
-            ));
         }
         (players, bots)
+    }
+}
+
+/// A bot's heal of `given`: its new pools for every client, and no notice
+/// (combat.py `_heal` sends none).
+fn healed_bot(bot: &Bot, target: &mut Target, given: f64) -> BotHit {
+    let health = EntityUpdate {
+        entity: bot.entity,
+        operation: Some(Operation::Update(vec![target.vitals.component()])),
+        ..EntityUpdate::default()
+    };
+    target.vitals.clear_changed();
+    BotHit {
+        notices: [None, None],
+        health,
+        bot: bot.entity,
+        remaining: target.vitals.total(),
+        death: None,
+        healed: given,
+        damage: None,
     }
 }
 
@@ -994,7 +1033,10 @@ fn player_of(players: &[CombatPlayer<'_>], body: u32) -> Option<usize> {
 /// shooter gets 25001 and Hero Damage Done, and ultimate charge for damage
 /// to another; a kill counts Deaths for the victim, Eliminations and 25005
 /// for another player who killed him (the scene's board stats), and gives the
-/// victim 25004 ("YOU WERE KILLED BY", or "YOU DIED" for his own blow).
+/// victim 25004 ("YOU WERE KILLED BY", or "YOU DIED" for his own blow). A
+/// heal of an ally (combat.py `_heal`, leafall903/ORPHEUS (MIT) commit
+/// c239a84) tells no one: a player healer's Healing Done and ultimate count
+/// what the pools took.
 /// Returns each player's notices, by slot.
 pub fn apply_player_hits(
     scene: &PreparedScene,
@@ -1014,6 +1056,16 @@ pub fn apply_player_hits(
         }) else {
             continue;
         };
+        if hit.heal {
+            let given = players[victim]
+                .world
+                .as_deref_mut()
+                .map_or(0.0, |world| world.heal_body(scene, hit.body, hit.amount));
+            if !hit.shooter.bot {
+                credit_healing(scene, players, hit.shooter.source, given);
+            }
+            continue;
+        }
         let Some(damage) = players[victim]
             .world
             .as_deref_mut()
@@ -1080,6 +1132,17 @@ pub fn heal_players(
             }
         }
     }
+    credit_healing(scene, players, healer, healed);
+}
+
+/// The healer's Healing Done counts `healed` and his ultimate charges for
+/// it (combat.py `_heal`), when he is a player of the room.
+fn credit_healing(
+    scene: &PreparedScene,
+    players: &mut [CombatPlayer<'_>],
+    healer: u32,
+    healed: f64,
+) {
     if let Some(healer) = player_of(players, healer).filter(|_| healed > 0.0) {
         players[healer]
             .stats
@@ -1272,8 +1335,31 @@ pub fn deliver_projectiles(
     heals
 }
 
-fn eligible_bot(bot: &Bot, shooter: Shooter, free_for_all: bool) -> bool {
-    !bot.dead && bot.entity != shooter.source && (free_for_all || bot.spawn.team != shooter.team)
+/// A living bot other than the shooter, of another team (any in a
+/// free-for-all) or of his as the hit strikes allies.
+fn eligible_bot(
+    bot: &Bot,
+    target: &Target,
+    shooter: Shooter,
+    free_for_all: bool,
+    allies: AllyHits,
+) -> bool {
+    !bot.dead
+        && bot.entity != shooter.source
+        && (free_for_all
+            || bot.spawn.team != shooter.team
+            || strikes_ally(allies, target.vitals.hurt()))
+}
+
+/// Whether a hit that strikes `allies` strikes an ally that is `hurt` or
+/// not (combat.py `_shot_targets`: the living allies below their maximum,
+/// as the Biotic Rifle's filter asks).
+fn strikes_ally(allies: AllyHits, hurt: bool) -> bool {
+    match allies {
+        AllyHits::None => false,
+        AllyHits::Hurt => hurt,
+        AllyHits::All => true,
+    }
 }
 
 #[cfg(test)]

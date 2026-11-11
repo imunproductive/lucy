@@ -115,9 +115,10 @@ impl Room {
 }
 
 /// Rule 123: an AI hero deals its difficulty's share of his weapons'
-/// damage, to players and AI heroes alike.
+/// damage, to players and AI heroes alike. His heals stay whole
+/// (assumption: the rule speaks of damage alone).
 pub(super) fn scale_damage(hits: &mut [PlayerHit], players: &[Player], difficulty: Difficulty) {
-    for hit in hits {
+    for hit in hits.iter_mut().filter(|hit| !hit.heal) {
         let shooter = hit.shooter.source & !0xff;
         if players
             .iter()
@@ -286,6 +287,7 @@ impl State {
                 position: None,
                 health: None,
                 support_tag_given: false,
+                support_tag_delivered: (false, orpheus_script::wire::Value::Null),
             })
             .collect();
         for (connection, peer) in &self.peers {
@@ -299,6 +301,11 @@ impl State {
             body.position = peer.world.body_position();
             body.health = peer.world.health_share();
             body.support_tag_given = peer.world.body_state_active(0x01cf, 117);
+            body.support_tag_delivered = peer.world.body_delivered(
+                0x01cf,
+                117,
+                orpheus_content::hero_settings::ALLIED_HEALTH_BARS as u32,
+            );
         }
         bodies
     }
@@ -383,4 +390,7 @@ pub(crate) struct BodyState {
     /// His body's `01CF` st117 is active: ALLIED HEALTH BARS at ALWAYS gave
     /// it the support tag (`orpheus_content::hero_settings`).
     pub support_tag_given: bool,
+    /// The last owner frame his client acknowledged: whether st117 runs in
+    /// it, and its ALLIED HEALTH BARS variable (`#8336e`).
+    pub support_tag_delivered: (bool, orpheus_script::wire::Value),
 }

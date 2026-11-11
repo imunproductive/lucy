@@ -38,6 +38,9 @@ pub struct GameSetup {
     pub relay_log: PathBuf,
     /// How long the game may take before the relay is in it.
     pub timeout: Duration,
+    /// More arguments for the game, after the ones above (`orpheus play --
+    /// ...`).
+    pub extra_arguments: Vec<String>,
 }
 
 /// A started game with the relay loaded.
@@ -130,6 +133,7 @@ impl RetailGames {
         if let Some(locale) = &setup.locale {
             arguments.push(format!("--tank_Locale={locale}"));
         }
+        arguments.extend(setup.extra_arguments.iter().cloned());
         start_game(
             &setup.game,
             &arguments,

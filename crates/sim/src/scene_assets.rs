@@ -1095,19 +1095,26 @@ mod tests {
             "{} assumptions",
             assumed.len()
         );
-        // The frames encode because the one map value is left out of them.
-        let maps: Vec<_> = snapshot
+        // The one typed-pair value (05AD's message table) encodes with the
+        // rest of the frames; no expression map is left.
+        let tables: Vec<_> = snapshot
             .instances
             .values()
             .flat_map(|instance| {
                 instance
                     .variables
                     .iter()
-                    .filter(|(_, value)| matches!(value, orpheus_script::wire::Value::Map(_)))
+                    .filter(|(_, value)| {
+                        matches!(
+                            value,
+                            orpheus_script::wire::Value::Map(_)
+                                | orpheus_script::wire::Value::Pairs(_)
+                        )
+                    })
                     .map(|(&variable, _)| (instance.graph, variable))
             })
             .collect();
-        assert_eq!(maps, [(0x05ad, 29859)]);
+        assert_eq!(tables, [(0x05ad, 29859)]);
     }
 
     /// Soldier: 76's Biotic Field (ABILITY_2, graph `0257`): 0.65 s after

@@ -72,7 +72,7 @@ fn expression(opcodes: Json, dynamics: &[Json], floats: &[f64], configs: &[Json]
 }
 
 #[test]
-fn authored_message_map_looks_up_the_first_matching_key_without_wire() {
+fn authored_pairs_look_up_the_first_matching_key_and_encode_as_typed_pairs() {
     use crate::wire::{ValueEncoding, WireError, write_value};
     use orpheus_core::bits::BitWriter;
 
@@ -122,16 +122,40 @@ fn authored_message_map_looks_up_the_first_matching_key_without_wire() {
     );
     literal["m_configVars"] = Json::Null;
     let empty = evaluate(&literal, &mut context).unwrap();
-    assert_eq!(empty, Value::Map(Vec::new()));
+    assert_eq!(empty, Value::Pairs(Vec::new()));
     assert!(!truthy(&empty));
-    for encoding in [ValueEncoding::Explicit, ValueEncoding::Compact] {
-        let mut bits = BitWriter::new();
-        assert_eq!(
-            write_value(&mut bits, &map, encoding),
-            Err(WireError::InvalidValue)
-        );
-        assert_eq!(bits.bit_len(), 0);
+    // A position reads the value of that row.
+    context.instance.insert(2, Value::Integer(1));
+    assert_eq!(
+        evaluate(&lookup, &mut context),
+        Ok(Value::Asset(0x0240_0000_0000_0004))
+    );
+    // The type-12 pair array read at D57899: tag 15, subtype 7, the count,
+    // a clear keyed bit, a clear "untagged" bit, then each key and value.
+    let mut bits = BitWriter::new();
+    write_value(&mut bits, &map, ValueEncoding::Compact).unwrap();
+    let mut expected = BitWriter::new();
+    expected.bits(15, 4).unwrap();
+    expected.bits(7, 3).unwrap();
+    expected.w_u16(2);
+    expected.bit(false);
+    expected.bit(false);
+    for (key, message) in [(0x42, 3), (0x42, 4)] {
+        for guid in [0x0a90_0000_0000_0000 | key, 0x0240_0000_0000_0000 | message] {
+            expected.bits(9, 4).unwrap();
+            expected.bit(true);
+            expected.bits(guid >> 48, 16).unwrap();
+            expected.w_var(guid as u32);
+        }
     }
+    assert_eq!(bits.as_bytes(), expected.as_bytes());
+    assert_eq!(bits.bit_len(), expected.bit_len());
+    let mut bits = BitWriter::new();
+    assert_eq!(
+        write_value(&mut bits, &map, ValueEncoding::Explicit),
+        Err(WireError::InvalidValue)
+    );
+    assert_eq!(bits.bit_len(), 0);
 }
 
 #[test]

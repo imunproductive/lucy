@@ -1123,8 +1123,8 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
             .iter()
             .any(|diagnostic| diagnostic.site == site)
     );
-    let Value::Map(messages) = &snapshot.instances[&24].variables[&29859] else {
-        panic!("the authored message table must be a map");
+    let Value::Pairs(messages) = &snapshot.instances[&24].variables[&29859] else {
+        panic!("the authored message table must be typed pairs");
     };
     assert_eq!(messages.len(), 20);
     assert_eq!(
@@ -1446,4 +1446,106 @@ fn a_body_that_dies_raises_its_dead_flag() {
     runtime.health_changed().unwrap();
     assert_eq!(flag(&runtime), Some(Value::Bool(true)));
     assert!(runtime.component.owner_dead());
+}
+
+/// The communication wheel on Soldier: 76's own graphs
+/// ([`crate::wheel`]): a choice reaches `05AD` as `02A3`, which plays
+/// `0686`. Need Healing sends effect 40 (remote 8), Hello its callout 27
+/// (remote 6), the Voice Line slot pulses 0686's voice state 13; each a
+/// frame action or state the clients get. Nothing in the path is
+/// unsupported.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn wheel_choices_run_the_callout_graph() {
+    use orpheus_content::maps::GameMap;
+    use orpheus_core::tick::FIRST_TICK;
+    use orpheus_script::vm::StateKind;
+    use orpheus_wire::{
+        jam::codec::{Fields, Value as Field},
+        messages::Message,
+    };
+
+    let root = orpheus_testkit::runtime_dir();
+    let graphs =
+        Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap());
+    let pools = crate::pools::PoolCatalog::from_graphs(&graphs)
+        .unwrap()
+        .hero_pools(SOLDIER)
+        .unwrap();
+    let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
+    for (action, expected_node) in [(0x16c, Some(40)), (0x16b, Some(27)), (0x16f, None)] {
+        let roots = orpheus_script::vm::player_roots(body, &graphs).unwrap();
+        let health = pools.total();
+        let variables = orpheus_script::vm::player_entity_variables(body, health, health);
+        let mut world = PlayerWorld::new(
+            Arc::clone(&graphs),
+            0xa000_0100,
+            0xa000_0101,
+            crate::scene::team_bit(0).unwrap(),
+            PRACTICE_RANGE_MODE,
+            SOLDIER,
+        );
+        world.position = GameMap::practice_range().spawn_point(0, 0).unwrap().0;
+        world.vitals = Vitals::empty();
+        world.pool_types_known = true;
+        world.target_tags = body.target_tags.clone();
+        let mut component = Component::start(
+            Arc::clone(&graphs),
+            world.entity,
+            variables,
+            roots,
+            FIRST_TICK,
+            &mut world,
+            MAX_INIT_WORK,
+        )
+        .unwrap();
+        component.advance_frame(FIRST_TICK, &mut world).unwrap();
+        let mut choice = Fields::new();
+        choice.insert(0x78, Field::Unsigned(0x0a90_0000_0000_0000 | action));
+        choice.insert(0x80, Field::Bool(false));
+        let (message, parameters) = crate::wheel::selection(&Message {
+            id: crate::wheel::COMMUNICATION_ACTION,
+            fields: choice,
+        })
+        .unwrap();
+        assert_ne!(
+            component
+                .receive_message(message, parameters, &mut world)
+                .unwrap(),
+            0
+        );
+        for frame in 1..4 {
+            component
+                .advance_frame(FIRST_TICK + frame, &mut world)
+                .unwrap();
+        }
+        let snapshot = component.snapshot().unwrap();
+        assert!(
+            snapshot.diagnostics.is_empty(),
+            "{:?}",
+            snapshot.diagnostics
+        );
+        let (&callouts, instance) = snapshot
+            .instances
+            .iter()
+            .find(|(_, instance)| instance.graph == 0x0686)
+            .expect("05AD plays 0686");
+        assert_eq!(instance.parent, None);
+        let ran: Vec<_> = snapshot
+            .frame_actions
+            .iter()
+            .filter(|action| action.instance == callouts)
+            .map(|action| action.node)
+            .collect();
+        match expected_node {
+            Some(node) => assert_eq!(ran, [node], "{action:X}"),
+            None => {
+                assert!(ran.is_empty());
+                assert!(matches!(
+                    instance.states[&13].kind,
+                    StateKind::Pulser { pulses: 1, .. }
+                ));
+            }
+        }
+    }
 }
