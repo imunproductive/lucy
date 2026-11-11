@@ -10,7 +10,7 @@ use crate::{
     scene_assets::{PreparedScene, SceneAssets},
 };
 use orpheus_core::tick::FIRST_TICK;
-use orpheus_script::bot::NAMEPLATE_TEXT;
+use orpheus_script::bot::{NAMEPLATE_ENABLED, NAMEPLATE_TEXT};
 use orpheus_wire::entity::EntityUpdate;
 
 const OWNER: u32 = 0xa000_0100;
@@ -124,8 +124,8 @@ fn practice_bots_start_one_script_per_update_and_the_firing_bots_shoot() {
 
 /// server.py: each client gets every bot's first frame once its create
 /// arrived, without the nameplate until the mode UI has arrived, then the
-/// nameplate alone, with the bot's name as its text; a death's frames; and
-/// the respawned bot's new script.
+/// nameplate alone, with the bot's name as its text; a surviving hit's
+/// enabled nameplate; a death's frames; and the respawned bot's new script.
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
@@ -200,6 +200,53 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
             .iter()
             .all(|&entity| nameplate(&scene, &world, entity).is_some())
     );
+
+    // A hit a bot that doesn't fire survives enables its nameplate: a live
+    // frame with #8807 true, once (upstream `show_damage_nameplate`).
+    let enabled = |scene: &PreparedScene, world: &WorldDelivery, entity: u32| {
+        let child = scene
+            .bot_scripts()
+            .latest(entity)
+            .and_then(|latest| latest.plain.as_ref())
+            .unwrap()
+            .child;
+        world
+            .bot_stream(entity)
+            .and_then(|stream| stream.base())
+            .unwrap()
+            .1
+            .instance_variable(child, NAMEPLATE_ENABLED)
+            == Some(&Value::Bool(true))
+    };
+    let hit = scene.bots()[1..]
+        .iter()
+        .find(|bot| !bot.spawn.firing)
+        .unwrap()
+        .entity;
+    assert!(
+        entities
+            .iter()
+            .all(|&entity| !enabled(&scene, &world, entity))
+    );
+    tick += 1;
+    scene.bot_health(hit, 150.0);
+    let events = scene.take_bot_events();
+    assert!(matches!(
+        events.as_slice(),
+        [BotEvent::Live { entity, .. }] if *entity == hit
+    ));
+    world.update_bots(&scene, &events, tick, true);
+    assert_eq!(script_chunks(&deliver(&mut world)), [hit]);
+    assert!(enabled(&scene, &world, hit));
+    assert!(nameplate(&scene, &world, hit).is_some());
+    assert!(
+        entities
+            .iter()
+            .filter(|&&entity| entity != hit)
+            .all(|&entity| !enabled(&scene, &world, entity))
+    );
+    scene.bot_health(hit, 100.0);
+    assert!(scene.take_bot_events().is_empty());
 
     // A death: the script's death message, then its timers.
     let victim = scene.bots()[0].entity;

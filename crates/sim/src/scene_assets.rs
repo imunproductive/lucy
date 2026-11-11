@@ -792,9 +792,12 @@ impl PreparedScene {
             .died(entity, killer, critical, loadout, tick);
     }
 
-    /// A bot's pools after a hit it survived (combat.py `_sync_body_health`).
+    /// A bot's pools after a hit it survived (combat.py `_sync_body_health`),
+    /// then its nameplate enabled (`show_damage_nameplate`, leafall903/ORPHEUS
+    /// (MIT), commit c239a84).
     pub fn bot_health(&mut self, entity: u32, health: f64) {
         self.bot_scripts.set_health(entity, health);
+        self.bot_scripts.show_damage_nameplate(entity);
     }
 
     /// The dead bots' death scripts (combat.py `_advance_bot_death`).

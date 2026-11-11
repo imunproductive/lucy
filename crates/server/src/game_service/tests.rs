@@ -4012,9 +4012,9 @@ fn players_join_a_running_match_in_the_next_slots() {
 /// The Practice Range with the training bots' scripts (ow174/game/match.py
 /// `_prepare_bot_script`, server.py `_BotScriptDelivery`): the world waits
 /// for every bot's script; each bot's first frame follows its create, the
-/// nameplate follows the mode UI and carries the bot's name; a bot shot to
-/// death sends its death script's frames, and its replacement 3 s later
-/// starts a new script.
+/// nameplate follows the mode UI and carries the bot's name; a hit the bot
+/// survives sends its enabled nameplate; a bot shot to death sends its death
+/// script's frames, and its replacement 3 s later starts a new script.
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn practice_bots_run_their_scripts_for_a_client() {
@@ -4156,7 +4156,7 @@ fn practice_bots_run_their_scripts_for_a_client() {
         },
     );
 
-    // Shoot the target to death.
+    // Shoot the target: first a body shot it survives, then to death.
     let owner = watcher.owner;
     send_player_message(
         &mut watcher.client,
@@ -4168,6 +4168,36 @@ fn practice_bots_run_their_scripts_for_a_client() {
     );
     pump_until(&mut [&mut watcher], &schemas, "the body", |watchers| {
         watchers[0].created(owner | 1).is_some()
+    });
+    // The body shot (100 of its 200): its 25001, and with it or after it a
+    // frame of the bot's script, which doesn't fire: its nameplate enabled
+    // (upstream `show_damage_nameplate`).
+    let hits_from = |watcher: &Watcher, from: usize, id: u32| {
+        (from..watcher.datagrams.len())
+            .find(|&index| watcher.datagrams[index].0.iter().any(|item| item.id == id))
+    };
+    let fired = watcher.datagrams.len();
+    let body_shot = aimed_batch(watcher.tick + 1, 1, -16384, 0, FIRE, false);
+    watcher.client.send(ACK, body_shot.clone());
+    watcher.client.send(ACK, body_shot);
+    pump_until(
+        &mut [&mut watcher],
+        &schemas,
+        "the surviving hit's nameplate frame",
+        |watchers| {
+            let watcher = &watchers[0];
+            hits_from(watcher, fired, 25001)
+                .is_some_and(|hit| script(watcher, hit, target, false).is_some())
+        },
+    );
+    assert_eq!(hits_from(&watcher, fired, 25005), None);
+    // The button comes up, and the gun's 9 shots a second allow the next.
+    let release = aimed_batch(watcher.tick + 1, 1, -16384, 0, 0, false);
+    watcher.client.send(ACK, release.clone());
+    watcher.client.send(ACK, release);
+    let released = watcher.tick + 12;
+    pump_until(&mut [&mut watcher], &schemas, "the release", |watchers| {
+        watchers[0].tick >= released
     });
     let commands = aimed_batch(watcher.tick + 1, 1, -16384, AT_BOT_HEAD_4M, FIRE, false);
     watcher.client.send(ACK, commands.clone());

@@ -74,7 +74,8 @@ struct Plain {
 /// What the room's bot scripts produced since the clients last looked.
 #[derive(Clone, Debug)]
 pub enum BotEvent {
-    /// A firing bot's changed live frame (combat.py `queue_bot_live`).
+    /// A bot's changed live frame: a firing bot's (combat.py
+    /// `queue_bot_live`), or the nameplate a hit enabled.
     Live { entity: u32, frame: Arc<BotFrame> },
     /// The bot died; its script's immediate change, if any
     /// (`queue_bot_death`).
@@ -517,6 +518,49 @@ impl BotScripts {
         if let Err(error) = script.body.set_health(health) {
             eprintln!("bot {entity:08X}'s body script failed on its health ({error})");
             self.slots[slot] = None;
+        }
+    }
+
+    /// combat.py `_damage` after `_sync_body_health`, as leafall903/ORPHEUS
+    /// (MIT), commit c239a84, has it: a hit the bot survived enables its
+    /// nameplate ([`BotBody::show_damage_nameplate`]); the changed frame
+    /// goes to the clients as a live frame. Upstream does it for its Rialto
+    /// Talon NPCs only; here for every bot with a nameplate (assumption).
+    pub(crate) fn show_damage_nameplate(&mut self, entity: u32) {
+        let Some(slot) = self.slot(entity) else {
+            return;
+        };
+        let script = self.slots[slot].as_mut().expect("a running bot script");
+        let result = script
+            .body
+            .show_damage_nameplate()
+            .map_err(|error| error.to_string())
+            .and_then(|took| {
+                if !took {
+                    return Ok(None);
+                }
+                let script = self.slots[slot].as_ref().expect("a running bot script");
+                let snapshot = script.body.snapshot().ok_or("the script halted")?;
+                let frame = self
+                    .frame(&script.body, snapshot, &script.initial)
+                    .map_err(|error| error.to_string())?;
+                Ok((frame.full != script.produced).then_some(frame))
+            });
+        match result {
+            Ok(Some(frame)) => {
+                let script = self.slots[slot].as_mut().expect("a running bot script");
+                script.produced = frame.full.clone();
+                script.latest_live = Arc::new(frame);
+                self.events.push(BotEvent::Live {
+                    entity,
+                    frame: Arc::clone(&script.latest_live),
+                });
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                eprintln!("bot {entity:08X}'s body script failed on its nameplate ({reason})");
+                self.slots[slot] = None;
+            }
         }
     }
 
