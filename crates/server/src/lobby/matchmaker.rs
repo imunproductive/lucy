@@ -55,15 +55,16 @@ use orpheus_lobby::{
     login::Identity,
     matchmaker::{self as rules, ModeSettings, OpenMatch, QUICK_PLAY, QueueRules, Seekers},
     passes::{self, Pool},
+    progression::MatchPlay,
     queue::{self, PICKING, QueueFields, SEARCHING},
-    ranked::{LeaderboardPlaces, Queue},
+    ranked::LeaderboardPlaces,
     session::PreparedLogin,
     transport::LobbyMessage,
 };
 use orpheus_wire::jam::codec::{Fields, Value};
 
-use super::{Lobby, TICK, match_id, peer::Peer};
-use crate::game_service::{GameService, Outcome, WorldPlayer};
+use super::{Lobby, TICK, match_id, peer::Peer, services};
+use crate::game_service::{GameService, MatchResult, WorldPlayer};
 pub(crate) use parties::{Parties, Party};
 
 pub(crate) struct Matchmaker {
@@ -153,9 +154,15 @@ struct Seat {
     record: Fields,
     handoff: Handoff,
     joined: bool,
+    /// When its game connected: the match's time played runs from here
+    /// (`results.rs`).
+    joined_at: Option<Instant>,
     gone: bool,
     /// The server took the player out (Python `GameServer.going_home`).
     going_home: bool,
+    /// The server took the player out on its own (the dashboard, a queue
+    /// match found): his leaving is not a leave (`results.rs`).
+    excused: bool,
     /// The 20600 will not be used; the game service drops the seat.
     released: bool,
 }
@@ -190,8 +197,9 @@ enum Effect {
     Notify(Party, Option<QueueFields>),
     PassesChanged(Arc<Account>),
     GameLeft(u32, [u64; 2]),
-    /// A finished match into the player's profile, saved.
-    Recorded(Arc<Account>, Queue, Outcome),
+    /// A match that ended by its rules into the player's profile, saved and
+    /// pushed to his game.
+    Recorded(Arc<Account>, MatchPlay),
 }
 
 /// The card of a queue key (44100 +0x78): its +0x0 +0x0.
@@ -835,6 +843,9 @@ impl Matchmaker {
                             "the dashboard ended the matches"
                         };
                         ctx.take_out(room, seat, reason);
+                        // `.leave` is the player's own leave; the dashboard's
+                        // end of every match is not.
+                        ctx.state.rooms[room].seats[seat].excused = account_lo.is_none();
                         told += 1;
                     }
                 }
@@ -866,12 +877,29 @@ fn perform(lobby: &Lobby, effects: Vec<Effect>) {
                 Ok(())
             }),
             Effect::GameLeft(account_lo, match_id) => lobby.game_left(account_lo, match_id),
-            Effect::Recorded(account, queue, outcome) => results::save(&account, queue, outcome),
+            Effect::Recorded(account, play) => record(lobby, &account, &play),
         };
         if let Err(error) = done {
             tracing::error!("[MM] {error}");
         }
     }
+}
+
+/// A match into the profile, saved, and the profile sent to the player's
+/// game if it is connected, as a dashboard edit is (`results.rs`).
+fn record(lobby: &Lobby, account: &Account, play: &MatchPlay) -> io::Result<()> {
+    let earned = results::save(account, play, services::wall_now()?)?;
+    tracing::info!(
+        "[MM] {}: {} XP, {} levels, rating {:+}, {} competitive points{}",
+        account.name,
+        earned.experience,
+        earned.levels,
+        earned.rating,
+        earned.comp_points,
+        if earned.left { ", a leave" } else { "" }
+    );
+    lobby.services.push_profile(account.account_lo, Vec::new());
+    Ok(())
 }
 
 impl State {
@@ -1453,8 +1481,10 @@ impl Ctx<'_> {
                 record,
                 handoff: handoff.clone(),
                 joined: false,
+                joined_at: None,
                 gone: false,
                 going_home: false,
+                excused: false,
                 released: false,
             });
         self.state.rooms[room].seats.extend(seats);
@@ -1642,6 +1672,7 @@ impl Ctx<'_> {
                 });
                 if let Some(seat) = seat {
                     self.take_out(room, seat, "its queue match was found");
+                    self.state.rooms[room].seats[seat].excused = true;
                     away = true;
                 }
             }
@@ -1746,10 +1777,11 @@ impl Ctx<'_> {
     }
 
     /// The matches that ended by their rules since the last tick go into
-    /// the profiles of their seated players who were still in them (see
-    /// `results`). They come before the sweep, which drops a room once its
-    /// last game left. The room itself stays: its games leave the ended
-    /// match as from any other, and the sweep frees it after the last.
+    /// the profiles of their seated players, those who finished them and
+    /// those who left them (see `results`). They come before the sweep,
+    /// which drops a room once its last game left. The room itself stays:
+    /// its games leave the ended match as from any other, and the sweep
+    /// frees it after the last.
     fn record_results(&mut self) {
         let Some(game) = self.lobby.game.as_deref() else {
             return;
@@ -1761,23 +1793,31 @@ impl Ctx<'_> {
                 return;
             }
         };
+        let now = Instant::now();
         for result in ended {
-            let Some(room) = self.state.rooms.iter().find(|room| room.id == result.id) else {
-                tracing::info!("[MM] Match {:X?} ended without a room", result.id);
-                continue;
-            };
-            let ranked = &self.lobby.ranked;
-            for (account, queue, outcome) in
-                results::recorded(room, &result, |profile| ranked.season(profile))
-            {
-                tracing::info!(
-                    "[MM] {} finished match {:X?}: {outcome:?} in {}",
-                    account.name,
-                    result.id,
-                    queue.name()
-                );
-                self.effects.push(Effect::Recorded(account, queue, outcome));
-            }
+            self.record(&result, now);
+        }
+    }
+
+    /// One ended match into its room's players' profiles, as of `now`.
+    fn record(&mut self, result: &MatchResult, now: Instant) {
+        let Some(room) = self.state.rooms.iter().find(|room| room.id == result.id) else {
+            tracing::info!("[MM] Match {:X?} ended without a room", result.id);
+            return;
+        };
+        let ranked = &self.lobby.ranked;
+        for (account, play) in
+            results::recorded(room, result, |profile| ranked.season(profile), now)
+        {
+            tracing::info!(
+                "[MM] {} {} match {:X?}: {:?} in {}",
+                account.name,
+                if play.finished { "finished" } else { "left" },
+                result.id,
+                play.outcome,
+                play.queue.name()
+            );
+            self.effects.push(Effect::Recorded(account, play));
         }
     }
 
@@ -1804,6 +1844,7 @@ impl Ctx<'_> {
                     Ok(true) if !seat.joined && !seat.released && !seat.going_home => {
                         if let Ok(false) = game.handoff_pending(seat.handoff.conn) {
                             seat.joined = true;
+                            seat.joined_at = Some(Instant::now());
                             events.push((room_index, seat.account.account_lo, true));
                         }
                     }

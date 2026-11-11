@@ -77,8 +77,8 @@ struct Client {
 }
 
 /// A lobby as the server builds it, with the sessions the test logged in.
-struct Fixture {
-    lobby: Lobby,
+pub(super) struct Fixture {
+    pub(super) lobby: Arc<Lobby>,
     clients: RefCell<HashMap<u32, Client>>,
     _state: tempfile::TempDir,
 }
@@ -90,7 +90,7 @@ impl Fixture {
 
     /// The lobby with the game server off (`--game-port 0`: Python's
     /// `LobbyServer.game` stays `None`).
-    fn without_game() -> Self {
+    pub(super) fn without_game() -> Self {
         Self::build(false)
     }
 
@@ -115,7 +115,7 @@ impl Fixture {
             .unwrap()
         });
         let economy = Arc::new(orpheus_lobby::economy::Economy::load(&data).unwrap());
-        let lobby = Lobby {
+        let lobby = Arc::new(Lobby {
             signing_key: *orpheus_fixed::LOBBY_STATE_BLOB_KEY,
             schemas: Schemas::lobby(),
             presence: Presence::new(&templates).unwrap(),
@@ -136,7 +136,7 @@ impl Fixture {
             platform: Arc::new(Platform::new(Ipv4Addr::LOCALHOST, String::new(), None)),
             social: Social::default(),
             matchmaker: Matchmaker::new(&data, state.path(), 0).unwrap(),
-        };
+        });
         Self {
             lobby,
             clients: RefCell::default(),
@@ -294,8 +294,10 @@ impl Fixture {
                 record: Fields::new(),
                 handoff: handoff.clone(),
                 joined: false,
+                joined_at: None,
                 gone: false,
                 going_home: false,
+                excused: false,
                 released: false,
             })
             .collect();

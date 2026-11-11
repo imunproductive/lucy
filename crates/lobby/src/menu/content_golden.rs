@@ -233,6 +233,28 @@ fn session_order(part: &Json, party: &Json, extra: Option<&Json>) -> Json {
     Json::Array(messages)
 }
 
+/// The live part with the leave policy (20813) the Rust session sends after
+/// the level (24313) since a match's result can change it
+/// (`progression.rs`); a profile without leaves sends the captured one, as
+/// the golden login has it.
+fn with_leave_policy(live: Json, login: &Json) -> Json {
+    let lobby = format!("{LOBBY:08X}");
+    let policy = login
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message[0] == lobby.as_str() && message[1] == 20813)
+        .unwrap()
+        .clone();
+    let mut messages = live.as_array().unwrap().clone();
+    let level = messages
+        .iter()
+        .position(|message| message[1] == 24313)
+        .unwrap();
+    messages.insert(level + 1, policy);
+    Json::Array(messages)
+}
+
 struct Content {
     schemas: Schemas,
     templates: RetailTemplates,
@@ -376,7 +398,7 @@ impl Content {
 /// where the Python session moves it (after 35500, and last), and `login`
 /// ends with the settings (20802) the Python login handler adds; their golden
 /// lists are put in that order, with the golden `party` and `settings`
-/// hashes.
+/// hashes. `live` also has the leave policy (`with_leave_policy`).
 #[test]
 #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
 fn messages_are_unchanged() {
@@ -421,7 +443,10 @@ fn messages_are_unchanged() {
         let party = expected["party"].clone();
         let settings = expected["settings"].clone();
         let login = session_order(&expected["login"], &party, Some(&settings));
-        let live = session_order(&expected["live"], &party, None);
+        let live = with_leave_policy(
+            session_order(&expected["live"], &party, None),
+            &expected["login"],
+        );
         expected.insert("login".into(), login);
         expected.insert("live".into(), live);
         let mut parts: Vec<_> = actual.keys().collect();
