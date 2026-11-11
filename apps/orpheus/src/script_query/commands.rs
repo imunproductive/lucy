@@ -975,11 +975,14 @@ fn vm_text(cls: &str, is_state: bool) -> String {
         "STU_3387AB5D" => action("condition on m_condition"),
         "STU_821116A6" => action("condition: m_814F8EC3 contains m_value"),
         "STU_7DEB522D" => action("condition: the logical button is held"),
-        "STU_4E2BCAAB" => action("condition, assumed false"),
+        "STU_4E2BCAAB" => action("condition: the calling state is m_AA6E611E seconds old"),
         "STU_BC5E4622" => action("CycleIndex"),
         "STU_187D5125" => action("stops the instance's abilities"),
         "STU_08D6BA6E" => action("raycast, assumed to hit nothing"),
-        "STUStatescriptActionSwitch" => action("switch on m_262AE982"),
+        "STUStatescriptActionSwitch" => {
+            action("switch on m_262AE982, by case number when m_F0F0720B is 1")
+        }
+        "STU_1113EBD5" => action("joins m_B24D1794 distinct inputs, then aborts m_122DF0CA"),
         "STUStatescriptActionEffect"
         | "STUStatescriptActionCriteria"
         | "STU_CEBDAF17"
@@ -987,10 +990,11 @@ fn vm_text(cls: &str, is_state: bool) -> String {
         | "STUStatescriptActionSendClientGlobalGameMessage"
         | "STUStatescriptActionPlayScript"
         | "STU_7106C356"
-        | "STU_C43F9944" => action("no-op on the server"),
+        | "STU_C43F9944"
+        | "STU_6E5C5F66" => action("no-op on the server"),
         "STU_1C2CC6D5" => action("ClearArray: writes a fresh empty array to m_26E3B366"),
         "STU_4C3509FB" | "STU_CBE8BDAA" => action("inserts m_value into the m_26E3B366 array"),
-        "STU_E9694EFD" | "STU_6E5C5F66" => action("assumed no-op"),
+        "STU_E9694EFD" => action("assumed no-op"),
         "STUStatescriptState"
         | "STU_9D7BF987"
         | "STU_B4CD94F4"
