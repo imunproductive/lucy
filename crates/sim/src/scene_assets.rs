@@ -22,6 +22,7 @@ use crate::{
     combat::{BodyCombat, MeleeState, RespawnTimes, melee_states},
     controller::Controller,
     hitboxes::HitboxCatalog,
+    mode_graph_values::ModeGraphValues,
     notices::switch_notices,
     pools::PoolCatalog,
     projectiles::{BioticField, FIELD_ENTITY, FieldFrames},
@@ -104,6 +105,8 @@ pub struct SceneAssets {
     hitboxes: Arc<HitboxCatalog>,
     respawns: RespawnTimes,
     melee: Arc<[MeleeState]>,
+    /// The mode graphs' values the match flow uses.
+    mode_graph_values: ModeGraphValues,
     /// The Biotic Field, when its graph reads; without it no field opens.
     field: Option<BioticField>,
     stats: Arc<StatsCatalog>,
@@ -139,6 +142,8 @@ pub struct PreparedScene {
     switch_notices: bool,
     /// The map's AI navigation, when the data has it (Practice vs AI).
     navigation: Option<Arc<Navigation>>,
+    /// The mode graphs' values the match flow uses.
+    mode_graph_values: ModeGraphValues,
 }
 
 impl SceneAssets {
@@ -178,6 +183,7 @@ impl SceneAssets {
             building: Mutex::new(()),
             mode_props: read_mode_props(&data.join("collision_props_174.json"))?,
             melee: melee_states(&graphs)?.into(),
+            mode_graph_values: ModeGraphValues::read(&graphs)?,
             field,
             graphs,
             codecs,
@@ -337,6 +343,7 @@ impl SceneAssets {
             field_frames,
             switch_notices: switch_notices(self.modes.get(map_mode)),
             navigation,
+            mode_graph_values: self.mode_graph_values,
         };
         let mut factories = self
             .owner_bodies
@@ -543,6 +550,12 @@ impl PreparedScene {
     /// The statescript graphs, for runs outside the scene (the mode graph).
     pub fn shared_graphs(&self) -> Arc<GraphStore> {
         Arc::clone(&self.graphs)
+    }
+
+    /// The mode graphs' values the match flow uses (the wait after a
+    /// round, the overtime fuse, Control's capture times).
+    pub fn mode_graph_values(&self) -> ModeGraphValues {
+        self.mode_graph_values
     }
 
     pub fn bots(&self) -> &[Bot] {
