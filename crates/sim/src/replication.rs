@@ -293,8 +293,10 @@ impl BodyScript {
     /// projectiles.py `fired` for a leased projectile: the Biotic Field
     /// canister leaves its field where it lands, another spawning volley
     /// (Torbjörn's turret, Zarya's Graviton Surge) its entity; any other
-    /// flies, and the other clients see it. combat.py `_shoot`: an unleased
-    /// one flies for its damage alone.
+    /// flies, and the other clients see it (one copy, as Python, whatever
+    /// the volley's count of projectiles a shot), while each of the owner's
+    /// projectiles of the shot is confirmed. combat.py `_shoot`: an
+    /// unleased one flies for its damage alone.
     fn launch_projectile(&mut self, projectile: PosedProjectile) {
         let bound = (projectile.ballistics.bound() / TICK_PERIOD.as_secs_f64()).ceil() as u32;
         let definition = projectile.ballistics.definition;
@@ -320,7 +322,12 @@ impl BodyScript {
                     (None, Some(_)) => {
                         projectiles.admit_spawning(projectile.shot, definition, bound)
                     }
-                    (None, None) => projectiles.admit(projectile.shot, definition, bound),
+                    (None, None) => projectiles.admit_volley(
+                        projectile.shot,
+                        definition,
+                        bound,
+                        projectile.projectiles,
+                    ),
                 }
                 .map(|token| (token, definition))
             }

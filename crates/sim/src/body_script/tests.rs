@@ -626,8 +626,9 @@ fn secondary_volley_uses_authored_projectile_and_owner_lease() {
 /// under a lease (not predicted) flies for its damage alone, or not at all
 /// without damage; an arc, an aim id and a sticky collision config fly
 /// leased with the volley's gravity and the fuse; a motion the flight
-/// doesn't model flies as if it weren't there; several projectiles a shot
-/// are refused.
+/// doesn't model flies as if it weren't there; a volley of several
+/// projectiles a shot flies one along the aim, leased with as many ids a
+/// frame when predicted (up to 7 a shot), else for its damage alone.
 #[test]
 fn projectile_volleys_fly_leased_for_damage_alone_or_not_at_all() {
     use orpheus_script::weapons::STICK_FUSE;
@@ -694,8 +695,30 @@ fn projectile_volleys_fly_leased_for_damage_alone_or_not_at_all() {
     assert_eq!(wobble.ballistics.unmodelled, ["STU_7A5DFFF8"]);
 
     let mut fields = fixture_projectile_fields(40.0);
-    fields["m_numProjectilesPerShot"] = json!(2);
-    assert!(shoot(fields).is_none(), "m_numProjectilesPerShot");
+    fields["m_numProjectilesPerShot"] = json!(3);
+    let runtime = fixture_volley_factory(29, true, fields.clone())
+        .start(spawn)
+        .unwrap();
+    let leases = runtime.projectile_leases().unwrap();
+    assert!(
+        leases
+            .entity(FIXTURE_PROJECTILE_DEFINITION, fire.frame, 2)
+            .is_some()
+    );
+    assert_eq!(
+        leases.entity(FIXTURE_PROJECTILE_DEFINITION, fire.frame, 3),
+        None
+    );
+    let trio = shoot(fields.clone()).expect("a predicted volley of three flies");
+    assert!(trio.leased);
+    assert_eq!(trio.projectiles, 3);
+    assert_eq!(trio.direction, aim_direction(&fire));
+    // More than 7 a shot resolve to shots only (projectiles.py `_sync`).
+    fields["m_numProjectilesPerShot"] = json!(25);
+    let pellets = shoot(fields).expect("the pellets' damage flies");
+    assert!(!pellets.leased);
+    assert_eq!(pellets.projectiles, 25);
+    assert_eq!(pellets.ballistics.direct.unwrap().amount, 40.0);
 }
 
 /// projectiles.py `fired`: a volley whose projectile leaves an entity names

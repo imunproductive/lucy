@@ -271,6 +271,12 @@ pub struct PosedProjectile {
     /// The volley state's count of volleys, as the other clients' shot
     /// record names it (projectiles.py `_show_others`: `state.volleys`).
     pub volleys: u8,
+    /// The projectiles a shot of the volley fires (`m_numProjectilesPerShot`).
+    /// The server flies one, along the aim, for all of them (combat.py
+    /// `_shoot`, which never reads the count; the client's spread pattern is
+    /// unknown); a leased one's owner client shot each under its own id,
+    /// and each is confirmed and released.
+    pub projectiles: u8,
 }
 
 #[derive(Clone, Copy)]

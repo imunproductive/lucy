@@ -1038,7 +1038,7 @@ fn exercise_projectile(client: &mut Client, schemas: &Schemas) {
 
     let frame = pick_soldier_for_weapon(client, schemas);
     let definition = FIXTURE_PROJECTILE_DEFINITION;
-    let original = ProjectileLeases::new(0, frame, [definition])
+    let original = ProjectileLeases::new(0, frame, [(definition, 1)])
         .unwrap()
         .entity(definition, frame, 0)
         .unwrap();
@@ -2548,6 +2548,260 @@ fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_
             .find(0, |record| seen(record.entity)
                 || !record.launches.is_empty())
             .is_none()
+    );
+    server.stop().unwrap();
+}
+
+/// combat.py `_shoot` for Genji's fan (graph `0304` state 11, his secondary
+/// fire: three shuriken a shot, sync NONE): the server flies one shuriken
+/// along the aim for its damage alone, as Python does whatever the count,
+/// so a training bot 3.3 m ahead takes one hit of 29 (variable `01DC`,
+/// which node 79 sets) a shot. Nobody sees a server projectile: Genji's
+/// client gets no confirmation of a shuriken (definition `07CA`) and the
+/// other client no copy or shot record.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene"]
+fn genjis_fan_hits_a_bot_once_a_shot_for_its_damage_alone_unseen() {
+    use orpheus_script::vm::Unknowns;
+    use orpheus_sim::{
+        projectiles::{SEEN_FIRST, SEEN_SPAN},
+        scene_assets::SceneAssets,
+    };
+    use orpheus_wire::commands::SECONDARY;
+    const SHURIKEN: u32 = 0x07ca;
+    const AHEAD: f64 = 3.3;
+
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(Unknowns::Tolerate);
+    let mut aim = None;
+    let (mut server, schemas, [mut genji, mut viewer], _) = practice_world(
+        [
+            ("genji#1111", 0, "Genji"),
+            ("viewer#2222", 0, "Soldier: 76"),
+        ],
+        &assets,
+        |scene| {
+            // A hostile training bot that neither fires nor walks, ahead of
+            // his spawn along its facing.
+            let ([x, y, z], yaw) = scene.map().spawn_point(0, 0).unwrap();
+            let (sin, cos) = yaw.to_radians().sin_cos();
+            let bot = scene
+                .bots_mut()
+                .iter_mut()
+                .find(|bot| bot.spawn.team == 1 && !bot.spawn.firing && bot.spawn.route.is_empty())
+                .unwrap();
+            bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
+            aim = Some((bot.entity, (yaw * 65536.0 / 360.0).round() as i32 as i16));
+        },
+    );
+    let (bot, yaw) = aim.unwrap();
+    let seen = |entity: u32| (SEEN_FIRST..SEEN_FIRST + SEEN_SPAN).contains(&entity);
+    let hits_of = |watcher: &Watcher, from: usize| -> Vec<(u64, Value, Value)> {
+        watcher.datagrams[from..]
+            .iter()
+            .flat_map(|(messages, _)| messages.iter().filter(|message| message.id == 25001))
+            .map(|message| {
+                let Value::Unsigned(frame) = message.fields[&0x84] else {
+                    panic!("impact frame")
+                };
+                let Value::Struct(impact) = &message.fields[&0x78] else {
+                    panic!("hit body")
+                };
+                let Value::Struct(target) = &impact[&0] else {
+                    panic!("hit target")
+                };
+                (frame, target[&0].clone(), impact[&4].clone())
+            })
+            .collect()
+    };
+    // Genji faces the bot; his commands keep his script running.
+    let mut next = genji.tick + 1;
+    let mut command = |genji: &mut Watcher, buttons: u32| {
+        let count = if buttons == 0 { 16 } else { 1 };
+        if buttons != 0 || next <= genji.tick + 8 {
+            genji
+                .client
+                .send(ACK, command_batch(next, count, yaw, buttons, false));
+            next += u32::from(count);
+        }
+    };
+    let ready = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < ready {
+        command(&mut genji, 0);
+        genji.pump(&schemas);
+        viewer.pump(&schemas);
+    }
+    let fired = (genji.datagrams.len(), viewer.datagrams.len());
+    command(&mut genji, SECONDARY);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while hits_of(&genji, fired.0).is_empty() {
+        assert!(Instant::now() < deadline, "waiting for the fan's hit");
+        command(&mut genji, 0);
+        genji.pump(&schemas);
+        viewer.pump(&schemas);
+    }
+    // The other two shuriken of the shot never fly.
+    let settled = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < settled {
+        command(&mut genji, 0);
+        genji.pump(&schemas);
+        viewer.pump(&schemas);
+    }
+
+    let hits = hits_of(&genji, fired.0);
+    assert_eq!(
+        hits.iter()
+            .map(|(_, target, amount)| (target.clone(), amount.clone()))
+            .collect::<Vec<_>>(),
+        [(Value::Unsigned(u64::from(bot)), Value::Unsigned(29))],
+        "{hits:?}"
+    );
+    assert!(
+        genji
+            .find(fired.0, |record| record.definition == Some(SHURIKEN)
+                || seen(record.entity)
+                || !record.launches.is_empty())
+            .is_none(),
+        "Genji's client gets no shuriken"
+    );
+    assert!(
+        viewer
+            .find(fired.1, |record| seen(record.entity)
+                || record.definition == Some(SHURIKEN)
+                || !record.launches.is_empty())
+            .is_none(),
+        "the other client sees no shuriken"
+    );
+    server.stop().unwrap();
+}
+
+/// Echo's Tri-Shot (graph `19E5` state 3, her primary fire: three bolts a
+/// shot, predicted): her body's lease gives definition `2CBF` three ids a
+/// frame, so the three bolts she shot under the frame's consecutive ids
+/// are each confirmed, and each released once the server's one bolt
+/// (combat.py `_shoot`, along the aim) has hit the training bot ahead of
+/// her; the other client sees that one bolt as the room's first SEEN
+/// entity, started by one shot record.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene"]
+fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
+    use orpheus_script::vm::Unknowns;
+    use orpheus_sim::{
+        projectiles::{SEEN_FIRST, SEEN_SPAN},
+        scene_assets::SceneAssets,
+    };
+    use orpheus_wire::commands::FIRE;
+    const BOLT: u32 = 0x2cbf;
+    const AHEAD: f64 = 3.3;
+
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(Unknowns::Tolerate);
+    let mut aim = None;
+    let (mut server, schemas, [mut echo, mut viewer], _) = practice_world(
+        [("echo#1111", 0, "Echo"), ("viewer#2222", 0, "Soldier: 76")],
+        &assets,
+        |scene| {
+            let ([x, y, z], yaw) = scene.map().spawn_point(0, 0).unwrap();
+            let (sin, cos) = yaw.to_radians().sin_cos();
+            let bot = scene
+                .bots_mut()
+                .iter_mut()
+                .find(|bot| bot.spawn.team == 1 && !bot.spawn.firing && bot.spawn.route.is_empty())
+                .unwrap();
+            bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
+            aim = Some((bot.entity, (yaw * 65536.0 / 360.0).round() as i32 as i16));
+        },
+    );
+    let (bot, yaw) = aim.unwrap();
+    let echo_body = echo.owner | 1;
+    let seen = |entity: u32| (SEEN_FIRST..SEEN_FIRST + SEEN_SPAN).contains(&entity);
+    let bolt = |entity: u32| entity & 0xf000_0000 == 0xa000_0000 && !seen(entity);
+    let mut next = echo.tick + 1;
+    let mut command = |echo: &mut Watcher, buttons: u32| {
+        let count = if buttons == 0 { 16 } else { 1 };
+        if buttons != 0 || next <= echo.tick + 8 {
+            echo.client
+                .send(ACK, command_batch(next, count, yaw, buttons, false));
+            next += u32::from(count);
+        }
+    };
+    let ready = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < ready {
+        command(&mut echo, 0);
+        echo.pump(&schemas);
+        viewer.pump(&schemas);
+    }
+    let fired = (echo.datagrams.len(), viewer.datagrams.len());
+    command(&mut echo, FIRE);
+    let records = |watcher: &Watcher, from: usize, pick: &dyn Fn(&WorldRecord) -> bool| {
+        watcher.datagrams[from..]
+            .iter()
+            .flat_map(|(_, records)| records.iter().filter(|record| pick(record)))
+            .map(|record| record.entity)
+            .collect::<Vec<_>>()
+    };
+    let confirmed = |echo: &Watcher| {
+        records(echo, fired.0, &|record| {
+            bolt(record.entity) && record.definition == Some(BOLT)
+        })
+    };
+    let released = |echo: &Watcher| {
+        records(echo, fired.0, &|record| {
+            bolt(record.entity) && record.projectile_release.is_some()
+        })
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while released(&echo).len() < 3
+        || viewer
+            .find(fired.1, |record| {
+                seen(record.entity) && record.operation == Some(3)
+            })
+            .is_none()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "waiting for the Tri-Shot: confirmed {:x?}, released {:x?}",
+            confirmed(&echo),
+            released(&echo)
+        );
+        command(&mut echo, 0);
+        echo.pump(&schemas);
+        viewer.pump(&schemas);
+    }
+
+    // Three consecutive ids of one lease frame, each confirmed once and
+    // released once.
+    let mut ids = confirmed(&echo);
+    ids.sort_unstable();
+    assert_eq!(ids.len(), 3, "{ids:x?}");
+    assert_eq!([ids[1] - ids[0], ids[2] - ids[1]], [1, 1], "{ids:x?}");
+    let mut releases = released(&echo);
+    releases.sort_unstable();
+    assert_eq!(releases, ids);
+    // The server's one bolt hit the bot.
+    let hits: Vec<_> = echo.datagrams[fired.0..]
+        .iter()
+        .flat_map(|(messages, _)| messages.iter().filter(|message| message.id == 25001))
+        .map(|message| {
+            let Value::Struct(impact) = &message.fields[&0x78] else {
+                panic!("hit body")
+            };
+            let Value::Struct(target) = &impact[&0] else {
+                panic!("hit target")
+            };
+            target[&0].clone()
+        })
+        .collect();
+    assert_eq!(hits, [Value::Unsigned(u64::from(bot))]);
+    // The other client's one copy.
+    assert_eq!(
+        records(&viewer, fired.1, &|record| seen(record.entity)
+            && record.is_create()),
+        [SEEN_FIRST]
+    );
+    assert_eq!(
+        records(&viewer, fired.1, &|record| !record.launches.is_empty()),
+        [echo_body]
     );
     server.stop().unwrap();
 }

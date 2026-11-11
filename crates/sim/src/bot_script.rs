@@ -20,7 +20,8 @@ use crate::{
     bots::Bot,
     combat::PosedProjectile,
     projectiles::{
-        DELIVERY_GRACE, ObservedOut, ObservedProjectile, predicted_sync, spawned_definitions,
+        DELIVERY_GRACE, ObservedOut, ObservedProjectile, predicted_sync, projectiles_per_shot,
+        spawned_definitions,
     },
     replication::kill_feed_fresh,
 };
@@ -595,6 +596,9 @@ fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShot
                     field: None,
                     feet: bot.position,
                     volleys,
+                    // combat.py `_shoot`: the NPC path flies one whatever
+                    // the count, and leases none.
+                    projectiles: projectiles_per_shot(node, &mut evaluate).unwrap_or(1),
                 }),
                 observed,
             ));

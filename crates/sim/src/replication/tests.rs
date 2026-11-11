@@ -543,7 +543,7 @@ fn projectile_retirement_retries_destroys_and_ignores_stale_confirmations() {
     let mut world = WorldDelivery::new(OWNER);
     world.started = Some(100);
     activate_script(&mut world, id, SOLDIER, Arc::default());
-    let leases = ProjectileLeases::new(0, 100, [DEFINITION]).unwrap();
+    let leases = ProjectileLeases::new(0, 100, [(DEFINITION, 1)]).unwrap();
     let alias = leases.entity(DEFINITION, 101, 0).unwrap();
     let mut projectiles = OwnerProjectiles::new(id.entity, leases);
     let token = projectiles

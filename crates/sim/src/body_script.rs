@@ -15,7 +15,10 @@ use crate::{
     instance::RETAIL_QUANTA,
     others::ObserverActivity,
     pools::{BODY_GRAPH, FALLBACK_POOLS, HealthPools},
-    projectiles::{ProjectileLeases, local_prediction, predicted_sync, spawned_definitions},
+    projectiles::{
+        ProjectileLeases, local_prediction, predicted_sync, projectiles_per_shot,
+        spawned_definitions,
+    },
     replication::{BodyStep, OwnerBodyRuntime},
     voice::{SpawnBark, begin_spawn_bark},
 };
@@ -40,7 +43,7 @@ use orpheus_script::{
         Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest, Root, Snapshot, StateKind,
         Unknowns, World,
     },
-    weapons::{HitDefinition, ProjectileBallistics, authored_number},
+    weapons::{HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
 };
 use orpheus_wire::{
@@ -503,15 +506,11 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 };
                 let speed = node.field("m_projectileSpeed").unwrap_or(&Json::Null);
                 if !speed.is_null() && to_float(&evaluate(speed).ok()?) != 0.0 {
-                    // One projectile a shot: a volley of several (Roadhog's
-                    // pellets, Genji's fan) would need a lease of as many
-                    // ids a frame, which no body advertises.
-                    if authored_number(node.field("m_numProjectilesPerShot"), 1.0, &mut evaluate)
-                        .ok()?
-                        != 1.0
-                    {
-                        return None;
-                    }
+                    // Several projectiles a shot (Roadhog's pellets, Genji's
+                    // fan, Echo's Tri-Shot): combat.py `_shoot` flies one
+                    // along the aim whatever the count, as the client's
+                    // spread pattern is unknown.
+                    let projectiles = projectiles_per_shot(node, &mut evaluate).ok()?;
                     let ballistics =
                         ProjectileBallistics::from_authored(node, &mut evaluate).ok()??;
                     for class in &ballistics.unmodelled {
@@ -562,6 +561,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                         field,
                         feet: [x, y, z],
                         volleys,
+                        projectiles,
                     })));
                 }
                 let hit = HitDefinition::from_authored(node.field("m_6396149F")?, &mut evaluate)

@@ -9,7 +9,9 @@
 //! The allocator (0x7FF789AE59D0) takes the first block of the projectile's
 //! definition with `start <= f < stop` for command frame f and gives the id
 //! `0xA0000000 | startEntityID + (f - start) * perFrame` (one more per further
-//! projectile of that frame); no block, no projectile. Confirmation
+//! projectile of that frame); no block, no projectile. So a volley of N
+//! projectiles a shot takes N consecutive ids of one block, and a block whose
+//! perFrame is N keeps them apart from the next frame's. Confirmation
 //! (0x7FF78969D4CD): a create record of the same id sets component 91 +28 = 1
 //! and changes nothing else; a create for an id the client does not have yet
 //! makes an unflown entity and the client's own shot of that id is refused.
@@ -58,17 +60,22 @@ pub struct ProjectileLeases {
 }
 
 impl ProjectileLeases {
+    /// Two windows from `frame` for each predicted definition, with the
+    /// slot's own ids (projectiles.py `lease`), and as many ids a frame as
+    /// the most projectiles a shot of its predicted volleys (Python leases
+    /// one id a frame: its second and third bolt of Echo's Tri-Shot take
+    /// the next frames' ids). A window is as many frames as keep its ids in
+    /// the definition's range of LEASE_SPAN ids.
     pub fn new(
         slot: u8,
         frame: u32,
-        definitions: impl IntoIterator<Item = u64>,
+        definitions: impl IntoIterator<Item = (u64, u8)>,
     ) -> io::Result<Self> {
         if frame > MAX_LEASE_FRAME {
             return Err(invalid("projectile leases cannot cross the command epoch"));
         }
         let mut blocks = Vec::new();
-        let start = frame - frame % LEASE_SPAN;
-        for definition in definitions {
+        for (definition, per_frame) in definitions {
             if blocks.len() == DEFINITIONS_PER_BODY * LEASE_WINDOWS as usize {
                 break;
             }
@@ -79,20 +86,23 @@ impl ProjectileLeases {
             {
                 continue;
             }
+            let per_frame = per_frame.max(1);
             let index = blocks.len() / LEASE_WINDOWS as usize;
             let body = u32::from(slot) * DEFINITIONS_PER_BODY as u32 + index as u32;
             let first_id = LEASE_FIRST + body * LEASE_SPAN;
             if first_id > ID_LIMIT - LEASE_SPAN {
                 return Err(invalid("projectile leases exceed the body slot range"));
             }
+            let span = LEASE_SPAN / u32::from(per_frame);
+            let start = frame - frame % span;
             for window in 0..LEASE_WINDOWS {
-                let start = start + window * LEASE_SPAN;
+                let start = start + window * span;
                 blocks.push(LeaseBlock {
                     definition,
                     start,
-                    stop: start + LEASE_SPAN,
+                    stop: start + span,
                     first_id,
-                    per_frame: 1,
+                    per_frame,
                 });
             }
         }
@@ -100,7 +110,9 @@ impl ProjectileLeases {
     }
 
     /// Inspect authored volley candidates in instance, state and field order.
-    /// A conditional projectile field can name several predicted definitions.
+    /// A conditional projectile field can name several predicted definitions;
+    /// a definition takes the most projectiles a shot of the volleys naming
+    /// it (`m_numProjectilesPerShot`, at most 7 in a predicted volley).
     pub fn from_authored(
         graphs: &GraphStore,
         snapshot: &Snapshot,
@@ -108,7 +120,7 @@ impl ProjectileLeases {
         frame: u32,
         mut evaluate: impl FnMut(u16, u16, &Json) -> Result<Value, EvalError>,
     ) -> io::Result<Self> {
-        let mut definitions = Vec::new();
+        let mut definitions: Vec<(u64, u8)> = Vec::new();
         for (&instance, state) in &snapshot.instances {
             let graph = graphs
                 .graph(state.graph)
@@ -121,11 +133,22 @@ impl ProjectileLeases {
                     continue;
                 }
                 let raw = u16::try_from(raw).map_err(io::Error::other)?;
-                if predicted_sync(node, |config| evaluate(instance, raw, config))
-                    .map_err(io::Error::other)?
-                {
+                let mut evaluate = |config: &Json| evaluate(instance, raw, config);
+                if predicted_sync(node, &mut evaluate).map_err(io::Error::other)? {
+                    let projectiles =
+                        projectiles_per_shot(node, &mut evaluate).map_err(io::Error::other)?;
+                    let mut named = Vec::new();
                     if let Some(field) = node.field("m_projectileEntity") {
-                        projectile_definitions(field, &mut definitions);
+                        projectile_definitions(field, &mut named);
+                    }
+                    for definition in named {
+                        match definitions
+                            .iter_mut()
+                            .find(|(known, _)| *known == definition)
+                        {
+                            Some((_, most)) => *most = (*most).max(projectiles),
+                            None => definitions.push((definition, projectiles)),
+                        }
                     }
                 }
             }
@@ -174,6 +197,16 @@ pub fn predicted_sync(
     }
     Ok(field("m_projectileLifetime", 0.0)? >= 1.19e-5
         && field("m_numProjectilesPerShot", 1.0)? <= 7.0)
+}
+
+/// The projectiles a shot of the volley fires (`m_numProjectilesPerShot`,
+/// 1 when unset), at least 1 and at most `u8::MAX`.
+pub fn projectiles_per_shot(
+    node: &Node,
+    mut evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
+) -> Result<u8, EvalError> {
+    let count = authored_number(node.field("m_numProjectilesPerShot"), 1.0, &mut evaluate)?;
+    Ok(count.clamp(1.0, f64::from(u8::MAX)) as u8)
 }
 
 fn projectile_definitions(value: &Json, out: &mut Vec<u64>) {
@@ -225,6 +258,10 @@ struct PendingProjectile {
     /// other than the field: Torbjörn's turret, Zarya's Graviton Surge):
     /// its flight schedules no release, and its end releases no explosion.
     spawning: bool,
+    /// The projectiles of its shot the owner's client shot under consecutive
+    /// ids of a lease frame (`m_numProjectilesPerShot`): each is confirmed
+    /// and released.
+    projectiles: u8,
 }
 
 /// What the match does about an owner's projectile besides its own
@@ -354,6 +391,27 @@ impl OwnerProjectiles {
         Some(token)
     }
 
+    /// A volley of several projectiles a shot (Echo's Tri-Shot): the owner's
+    /// client shot each under the next id of the frame (the allocator's "one
+    /// more per further projectile"), so each is confirmed and released as
+    /// the shot's one projectile is (projectiles.py `_confirm`, `_end`, which
+    /// confirm only the first). The release goes for all of them when the
+    /// server's flight ends (assumption: the server flies one, along the
+    /// aim, combat.py `_shoot`; the client's spread is unknown).
+    pub fn admit_volley(
+        &mut self,
+        shot: ShotEvent,
+        definition: u64,
+        flight_bound_ticks: u32,
+        projectiles: u8,
+    ) -> Option<ProjectileToken> {
+        let token = self.admit(shot, definition, flight_bound_ticks)?;
+        if let Some(pending) = self.pending.last_mut() {
+            pending.projectiles = projectiles.max(1);
+        }
+        Some(token)
+    }
+
     /// What the match must do since the last call.
     pub fn take_events(&mut self) -> Vec<ProjectileEvent> {
         std::mem::take(&mut self.events)
@@ -383,7 +441,7 @@ impl OwnerProjectiles {
             .iter()
             .any(|active| active.definition == definition && active.shot.frame == shot.frame)
         {
-            return None; // the advertised lease has one projectile ID per definition and frame
+            return None; // the advertised lease has one shot's projectile IDs per definition and frame
         }
         self.next = self.next.checked_add(1)?;
         let token = ProjectileToken(self.next);
@@ -398,6 +456,7 @@ impl OwnerProjectiles {
             release_at: None,
             field: None,
             spawning: false,
+            projectiles: 1,
         });
         Some(token)
     }
@@ -598,7 +657,8 @@ impl OwnerProjectiles {
 
 /// projectiles.py `_confirm`: once an owner frame that reported the shot
 /// arrived (or none did for UNREPORTED_TICKS), a create of each leased id
-/// the client may have shot it under.
+/// the client may have shot it under: in each such frame, one per projectile
+/// of the shot.
 fn confirm(
     leases: &ProjectileLeases,
     occupied: &mut HashSet<u32>,
@@ -624,10 +684,14 @@ fn confirm(
                 .map(|report| report.frame),
         )
         .collect();
-    for frame in frames {
-        let Some(entity) = leases.entity(pending.definition, frame, 0) else {
-            continue;
-        };
+    let (definition, projectiles) = (pending.definition, pending.projectiles);
+    let ids: Vec<_> = frames
+        .into_iter()
+        .flat_map(|frame| {
+            (0..projectiles).filter_map(move |index| leases.entity(definition, frame, index))
+        })
+        .collect();
+    for entity in ids {
         if occupied.insert(entity) {
             pending.creates.insert(entity, false);
             pending.created_at.get_or_insert(tick);
@@ -1454,7 +1518,12 @@ mod tests {
     #[test]
     fn lease_windows_follow_body_slots_and_reserve_one_entity_per_frame() {
         let frame = LEASE_SPAN + 1234;
-        let leases = ProjectileLeases::new(0, frame, [CANISTER, CANISTER, VISOR, HELIX]).unwrap();
+        let leases = ProjectileLeases::new(
+            0,
+            frame,
+            [(CANISTER, 1), (CANISTER, 3), (VISOR, 1), (HELIX, 1)],
+        )
+        .unwrap();
         assert_eq!(leases.blocks().len(), 6);
         assert_eq!(
             leases.blocks()[4],
@@ -1473,11 +1542,62 @@ mod tests {
         );
         assert_eq!(leases.entity(HELIX, frame - LEASE_SPAN, 0), None);
         assert_eq!(leases.entity(HELIX, frame, 1), None);
-        let next = ProjectileLeases::new(1, frame, [CANISTER, VISOR, HELIX]).unwrap();
+        let next =
+            ProjectileLeases::new(1, frame, [(CANISTER, 1), (VISOR, 1), (HELIX, 1)]).unwrap();
         assert_eq!(next.entity(HELIX, frame, 0), Some(0xa190_04d2));
-        assert!(ProjectileLeases::new(u8::MAX, frame, [HELIX]).is_err());
-        assert!(ProjectileLeases::new(0, MAX_LEASE_FRAME + 1, [HELIX]).is_err());
-        assert!(ProjectileLeases::new(0, MAX_LEASE_FRAME, [HELIX]).is_ok());
+        assert!(ProjectileLeases::new(u8::MAX, frame, [(HELIX, 1)]).is_err());
+        assert!(ProjectileLeases::new(0, MAX_LEASE_FRAME + 1, [(HELIX, 1)]).is_err());
+        assert!(ProjectileLeases::new(0, MAX_LEASE_FRAME, [(HELIX, 1)]).is_ok());
+    }
+
+    /// The allocator gives a frame's further projectiles the next ids
+    /// (`startEntityID + (f - start) * perFrame`, one more per further
+    /// projectile): a definition shot three a frame takes three ids a frame,
+    /// in windows short enough to keep them in its own range.
+    #[test]
+    fn a_volley_of_several_projectiles_leases_as_many_ids_a_frame() {
+        let frame = LEASE_SPAN + 1234;
+        let leases = ProjectileLeases::new(0, frame, [(VISOR, 1), (HELIX, 3)]).unwrap();
+        let span = LEASE_SPAN / 3;
+        let start = frame - frame % span;
+        // The slot's second definition.
+        let first_id = LEASE_FIRST + LEASE_SPAN;
+        assert_eq!(
+            &leases.blocks()[2..],
+            [
+                LeaseBlock {
+                    definition: HELIX,
+                    start,
+                    stop: start + span,
+                    first_id,
+                    per_frame: 3,
+                },
+                LeaseBlock {
+                    definition: HELIX,
+                    start: start + span,
+                    stop: start + 2 * span,
+                    first_id,
+                    per_frame: 3,
+                },
+            ]
+        );
+        let first = PREDICTED_ID | (first_id + (frame - start) * 3);
+        assert_eq!(
+            (0..4)
+                .map(|index| leases.entity(HELIX, frame, index))
+                .collect::<Vec<_>>(),
+            [Some(first), Some(first + 1), Some(first + 2), None]
+        );
+        assert_eq!(leases.entity(HELIX, frame + 1, 0), Some(first + 3));
+        // The window's last ids stay below the next definition's range.
+        let last = leases.entity(HELIX, start + 2 * span - 1, 2).unwrap();
+        assert!(last < PREDICTED_ID | (first_id + LEASE_SPAN));
+        assert_eq!(leases.entity(HELIX, start + 2 * span, 0), None);
+        // A definition shot one a frame keeps Python's windows.
+        assert_eq!(
+            leases.blocks()[0].stop - leases.blocks()[0].start,
+            LEASE_SPAN
+        );
     }
 
     #[test]
@@ -1525,7 +1645,8 @@ mod tests {
     fn only_a_delivered_owner_introduction_confirms_an_alias_and_release_waits_for_creates() {
         let frame = 1000;
         let shot = shot(frame);
-        let leases = ProjectileLeases::new(0, frame, [CANISTER, VISOR, HELIX]).unwrap();
+        let leases =
+            ProjectileLeases::new(0, frame, [(CANISTER, 1), (VISOR, 1), (HELIX, 1)]).unwrap();
         let original = leases.entity(HELIX, frame, 0).unwrap();
         let alias = leases.entity(HELIX, frame + 4, 0).unwrap();
         let mut tracker = OwnerProjectiles::new(BODY, leases);
@@ -1582,11 +1703,71 @@ mod tests {
         assert!(tracker.advance(frame + 14, frame + 14).is_empty());
     }
 
+    /// Echo's Tri-Shot: the owner's client shot each projectile of the shot
+    /// under the frame's next id, so each is confirmed once an owner frame
+    /// that reported the shot arrived, and the release waits for every
+    /// create and then goes for each.
+    #[test]
+    fn each_projectile_of_a_volley_is_confirmed_and_released() {
+        let frame = 1000;
+        let shot = shot(frame);
+        let leases = ProjectileLeases::new(0, frame, [(HELIX, 3)]).unwrap();
+        let ids: Vec<_> = (0..3)
+            .map(|index| leases.entity(HELIX, frame, index).unwrap())
+            .collect();
+        let mut tracker = OwnerProjectiles::new(BODY, leases);
+        let token = tracker.admit_volley(shot, HELIX, 20, 3).unwrap();
+        assert!(tracker.admit_volley(shot, HELIX, 20, 3).is_none());
+        tracker.owner_sent(
+            2,
+            frame + 1,
+            |_, _| Some((shot.activation, shot.activation_ms)),
+            |_, _| false,
+        );
+        tracker.owner_arrival(2, true);
+        assert_eq!(
+            tracker.advance(frame + 3, frame + 3),
+            ids.iter()
+                .map(|&entity| ProjectileDelivery::Confirm {
+                    token,
+                    entity,
+                    definition: HELIX
+                })
+                .collect::<Vec<_>>()
+        );
+        tracker.flight_ended(token, 2, frame + 4);
+        tracker.create_arrived(token, ids[0]);
+        tracker.create_arrived(token, ids[1]);
+        let due = frame + 1 + 2 + RELEASE_MARGIN;
+        assert!(
+            tracker.advance(due, due).is_empty(),
+            "waits for every create"
+        );
+        tracker.create_arrived(token, ids[2]);
+        assert_eq!(
+            tracker.advance(due + 1, due + 1),
+            ids.iter()
+                .map(|&entity| ProjectileDelivery::Destroy {
+                    token,
+                    entity,
+                    explosion_frame: Some(due + 1 + RELEASE_AHEAD)
+                })
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            tracker.take_events(),
+            [ProjectileEvent::Ended {
+                token,
+                explode: true
+            }]
+        );
+    }
+
     #[test]
     fn lost_reports_fall_back_and_unacknowledged_confirmation_destroys_without_explosion() {
         let frame = 1000;
         let shot = shot(frame);
-        let leases = ProjectileLeases::new(0, frame, [HELIX]).unwrap();
+        let leases = ProjectileLeases::new(0, frame, [(HELIX, 1)]).unwrap();
         let entity = leases.entity(HELIX, frame, 0).unwrap();
         let mut tracker = OwnerProjectiles::new(BODY, leases);
         let token = tracker.admit(shot, HELIX, 20).unwrap();
@@ -1632,7 +1813,7 @@ mod tests {
     fn a_spawning_projectile_ends_on_its_bound_without_an_explosion() {
         let frame = 1000;
         let shot = shot(frame);
-        let leases = ProjectileLeases::new(0, frame, [HELIX]).unwrap();
+        let leases = ProjectileLeases::new(0, frame, [(HELIX, 1)]).unwrap();
         let entity = leases.entity(HELIX, frame, 0).unwrap();
         let mut tracker = OwnerProjectiles::new(BODY, leases);
         let token = tracker.admit_spawning(shot, HELIX, 20).unwrap();
@@ -1860,7 +2041,7 @@ mod tests {
     fn a_field_runs_on_its_clock_and_ends_with_its_shot() {
         let frame = 1000;
         let feet = [1.0, 2.0, 3.0];
-        let leases = ProjectileLeases::new(0, frame, [CANISTER]).unwrap();
+        let leases = ProjectileLeases::new(0, frame, [(CANISTER, 1)]).unwrap();
         let canister = leases.entity(CANISTER, frame, 0).unwrap();
         let mut tracker = OwnerProjectiles::new(BODY, leases);
         let token = tracker
