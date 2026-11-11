@@ -12,7 +12,7 @@ use serde_json::Value as Json;
 
 use crate::{
     codecs::CodecTable,
-    expr::EvalError,
+    expr::{EvalError, native_shape},
     graph::{GraphStore, Node},
     snapshot::SnapshotEncoder,
     vm::{
@@ -21,7 +21,7 @@ use crate::{
     },
     wire::{Value, Variables},
 };
-use orpheus_content::maps::PRACTICE_RANGE_MODE;
+use orpheus_content::maps::{PRACTICE_RANGE_MODE, TUTORIAL_MODE};
 use orpheus_wire::entity::GAME_MODE_ENTITY;
 
 /// `003E.025`: the body's authoritative death message.
@@ -158,6 +158,10 @@ impl World for BotWorld {
             }
             // See `assumption`.
             "STU_082FA44E" => self.graphs.tunables().value(config).map(Value::Float),
+            // IsTutorial (CE8580), as `PlayerWorld` answers it.
+            "STU_A77AC2AC" if native_shape(config, class, None) => {
+                Some(Value::Bool(self.mode == TUTORIAL_MODE))
+            }
             _ => None,
         }
     }

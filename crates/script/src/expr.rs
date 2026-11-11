@@ -167,6 +167,27 @@ pub trait Context {
         None
     }
 
+    /// Whether an entity exists; None: the world can't tell.
+    fn entity_exists(&mut self, _entity: u32) -> Option<bool> {
+        None
+    }
+
+    /// Where a bound entity stands; None: the world doesn't know it.
+    fn entity_position(&mut self, _entity: u32) -> Option<[f64; 3]> {
+        None
+    }
+
+    /// A body's yaw and pitch in turns of 65536 (the command's units; the
+    /// pitch is positive looking down); None: unknown.
+    fn entity_facing(&mut self, _entity: u32) -> Option<[i32; 2]> {
+        None
+    }
+
+    /// An entity's team index, 0 to 4, or -1 for none; None: unknown.
+    fn entity_team(&mut self, _entity: u32) -> Option<i64> {
+        None
+    }
+
     fn ruleset(&mut self, _id: u32) -> Value {
         Value::Null
     }
@@ -257,6 +278,71 @@ pub fn evaluate_with_budget(
         steps: 0,
     }
     .config(config, context, 0)
+}
+
+/// The config list, `STU_06610EBC`: an ordered group of configs.
+pub(crate) const CONFIG_LIST: &str = "STU_06610EBC";
+
+/// A config's value as an assignment reads it (the native +28 interface,
+/// which SetVar and SetVars use): a config list collects the values of all
+/// its configs into one array. Every other config reads as [`evaluate`]
+/// does. From leafall903/ORPHEUS (MIT), commit c239a84
+/// (`docs/VARIABLE_ASSIGNMENTS.txt`, `play.evaluate_value`).
+pub fn evaluate_value(config: &Json, context: &mut impl Context) -> Result<Value, EvalError> {
+    Evaluator {
+        limit: MAX_EXPRESSION_STEPS,
+        steps: 0,
+    }
+    .value(config, context, 0)
+}
+
+/// The configs of a config list in order, nested lists opened, missing
+/// configs left out (`array_actions._items` in leafall903/ORPHEUS, commit
+/// c239a84). Any other config is its own only member.
+pub(crate) fn config_list_members<'a>(
+    config: &'a Json,
+    depth: usize,
+    out: &mut Vec<&'a Json>,
+) -> Result<(), EvalError> {
+    if depth >= MAX_CONFIG_DEPTH {
+        return Err(EvalError::NestingExceeded);
+    }
+    if config.is_null() {
+        return Ok(());
+    }
+    if class(config) != Some(CONFIG_LIST) {
+        out.push(config);
+        return Ok(());
+    }
+    for member in array_field(config, "m_configVars")? {
+        config_list_members(member, depth + 1, out)?;
+    }
+    Ok(())
+}
+
+/// The rows one config value gives a collecting reader: null gives none, an
+/// array its members with nested arrays opened (a null member stays a row),
+/// any other value itself (`play._iter_pairs` in leafall903/ORPHEUS, commit
+/// c239a84).
+pub(crate) fn value_rows(value: Value, out: &mut Vec<Value>) -> Result<(), EvalError> {
+    fn rows(value: Value, depth: usize, out: &mut Vec<Value>) -> Result<(), EvalError> {
+        if depth >= MAX_CONFIG_DEPTH {
+            return Err(EvalError::NestingExceeded);
+        }
+        match value {
+            Value::Array(items) => items
+                .into_iter()
+                .try_for_each(|item| rows(item, depth + 1, out)),
+            item => {
+                out.push(item);
+                Ok(())
+            }
+        }
+    }
+    if value == Value::Null {
+        return Ok(());
+    }
+    rows(value, 0, out)
 }
 
 pub fn dynamic(config: &Json) -> Result<Option<Variable>, EvalError> {
@@ -404,6 +490,38 @@ pub(crate) fn contains(container: &Value, value: &Value) -> bool {
         Value::Array(items) => items.iter().any(|item| equal(item, value)),
         item => equal(item, value),
     }
+}
+
+/// The entity in a value: an entity, or the first member of an array
+/// (F64C20, `to_entity` in `ow174/game/script/expr.py`); none otherwise.
+fn to_entity(value: &Value) -> Option<u32> {
+    match first_scalar(value) {
+        Some(Value::Entity(id)) => Some(*id),
+        _ => None,
+    }
+}
+
+/// The team in an entity's filter bits (5D9570): bits 23 to 27 are teams 0
+/// to 4, the lowest set bit wins; -1 when none is set. The spectator bit and
+/// the other bits don't count. From leafall903/ORPHEUS (MIT), commit c239a84
+/// (`entity_team.index_from_filters`, `docs/ENTITY_TEAM_QUERY.txt`).
+pub fn team_from_filter(bits: u64) -> i64 {
+    let teams = (bits >> 23) & 0x1f;
+    if teams == 0 {
+        -1
+    } else {
+        i64::from(teams.trailing_zeros())
+    }
+}
+
+/// The unit vector a body looks along, each axis rounded to f32: forward is
+/// `(sin yaw, 0, cos yaw)` and a positive pitch looks down (`combat.aim` and
+/// `Match.script_body_facing` in leafall903/ORPHEUS, commit c239a84).
+fn aim([yaw, pitch]: [i32; 2]) -> [f64; 3] {
+    const TURN: f64 = std::f64::consts::TAU / 65536.0;
+    let (yaw_sin, yaw_cos) = (f64::from(yaw) * TURN).sin_cos();
+    let (pitch_sin, pitch_cos) = (f64::from(pitch) * TURN).sin_cos();
+    [yaw_sin * pitch_cos, -pitch_sin, yaw_cos * pitch_cos].map(rounded)
 }
 
 fn index(object: Value, index: &Value) -> Value {
@@ -690,6 +808,26 @@ impl Evaluator {
         }
     }
 
+    /// The +28 read of [`evaluate_value`]: a config list collects the rows
+    /// of each of its configs in order.
+    fn value(
+        &mut self,
+        config: &Json,
+        context: &mut impl Context,
+        depth: usize,
+    ) -> Result<Value, EvalError> {
+        if class(config) != Some(CONFIG_LIST) {
+            return self.config(config, context, depth);
+        }
+        let mut members = Vec::new();
+        config_list_members(config, depth, &mut members)?;
+        let mut rows = Vec::new();
+        for member in members {
+            value_rows(self.config(member, context, depth + 1)?, &mut rows)?;
+        }
+        Ok(Value::Array(rows))
+    }
+
     fn known_config(
         &mut self,
         config: &Json,
@@ -809,6 +947,125 @@ impl Evaluator {
                 // The retail classes share a native evaluator that writes a typed false.
                 Value::Bool(false)
             }
+            // CE5450 tests bit 15 of the local input record and writes false
+            // when there is none, as on a server (`CONFIG_EVALUATION.txt` in
+            // leafall903/ORPHEUS, commit c239a84).
+            "STU_D3685C04" if native_shape(config, class, None) => Value::Bool(false),
+            // TeamIndex (1B860F0): the authored signed 32-bit team, -1 kept; a
+            // literal, not the team of an entity (leafall903/ORPHEUS, commit
+            // c239a84, `CONFIG_EVALUATION.txt`).
+            "STU_BD6CC023" if native_shape(config, class, Some("m_6CE7A900")) => {
+                Value::Integer(i64::from(integer(child(config, "m_6CE7A900"))? as i32))
+            }
+            // The scalar read (+20, 1B77980) of a config list takes only its
+            // first config, failure included (`play._scalar` in
+            // leafall903/ORPHEUS, commit c239a84). An empty list fails
+            // without writing; this evaluator has no failure value, so it
+            // reads as the caller's unset destination, null.
+            CONFIG_LIST => match array_field(config, "m_configVars")?.first() {
+                Some(first) => return self.config(first, context, nested),
+                None => Value::Null,
+            },
+            // The item of an array at an index (1B79A60): the index reads as a
+            // scalar (failure 0, a float rounded half away from zero), the
+            // container as an assignment does; an index outside the array or
+            // a container that isn't an array reads null
+            // (`play.array_item` in leafall903/ORPHEUS, commit c239a84).
+            "STU_4BD39CFD" if native_fields(config, &["m_index", "m_814F8EC3"]) => {
+                let index = to_int(&self.config(child(config, "m_index"), context, nested)?, 0);
+                match self.value(child(config, "m_814F8EC3"), context, nested)? {
+                    Value::Array(items) => usize::try_from(index)
+                        .ok()
+                        .and_then(|index| items.into_iter().nth(index))
+                        .unwrap_or(Value::Null),
+                    _ => Value::Null,
+                }
+            }
+            // Does an entity exist (CE4A60): false for no entity or an
+            // invalid one (`entity_queries.evaluate` in leafall903/ORPHEUS,
+            // commit c239a84, `ENTITY_QUERIES.txt`).
+            "STU_E72F6348" if native_shape(config, class, Some("m_entity")) => {
+                match to_entity(&self.config(child(config, "m_entity"), context, nested)?) {
+                    Some(entity) if valid_entity(entity) => Value::Bool(
+                        context
+                            .entity_exists(entity)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    ),
+                    _ => Value::Bool(false),
+                }
+            }
+            // An entity's health total as f32 (CEB6C0; `SceneWorld.native`
+            // in leafall903/ORPHEUS, commit c239a84). No entity fails: null
+            // here, as for the empty config list.
+            "STU_9B7648C3" if native_shape(config, class, Some("m_entity")) => {
+                match to_entity(&self.config(child(config, "m_entity"), context, nested)?) {
+                    Some(entity) if valid_entity(entity) => Value::Float(rounded(
+                        context
+                            .body_health(entity, None, false)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    )),
+                    _ => Value::Null,
+                }
+            }
+            // Where an entity stands (CCC750): a bound entity's position; a
+            // vector that isn't zero passes through; anything else fails,
+            // null here (leafall903/ORPHEUS, commit c239a84). A world's own
+            // answer comes first.
+            "STU_71A87E92" if native_shape(config, class, Some("m_entity")) => {
+                if let Some(value) = context.native(config) {
+                    return Ok(value);
+                }
+                let value = self.config(child(config, "m_entity"), context, nested)?;
+                match (to_entity(&value), value) {
+                    (Some(entity), _) if valid_entity(entity) => Value::Vector(
+                        context
+                            .entity_position(entity)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    ),
+                    (None, Value::Vector(position)) if position != [0.0; 3] => {
+                        Value::Vector(position)
+                    }
+                    _ => Value::Null,
+                }
+            }
+            // Where a body looks: 2200A66D along its aim, 021D01CD along the
+            // ground, C8C4C20D its heading in degrees, atan2(x, z) of the
+            // ground direction (`BodyWorld.native` in leafall903/ORPHEUS,
+            // commit c239a84). A world's own answer comes first.
+            "STU_2200A66D" | "STU_021D01CD" | "STU_C8C4C20D"
+                if native_shape(config, class, Some("m_entity")) =>
+            {
+                if let Some(value) = context.native(config) {
+                    return Ok(value);
+                }
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let entity = to_entity(&self.config(child(config, "m_entity"), context, nested)?)
+                    .filter(|&entity| valid_entity(entity))
+                    .ok_or_else(unsupported)?;
+                let [yaw, pitch] = context.entity_facing(entity).ok_or_else(unsupported)?;
+                let pitch = if class == "STU_2200A66D" { pitch } else { 0 };
+                let facing = aim([yaw, pitch]);
+                if class == "STU_C8C4C20D" {
+                    const DEGREES: f64 = 57.295_780_181_884_766;
+                    let [x, _, z] = facing;
+                    Value::Float(rounded(rounded(x.atan2(z)) * DEGREES))
+                } else {
+                    Value::Vector(facing)
+                }
+            }
+            // An entity's team (CEEDC0): -1 for no entity or an invalid one
+            // (`entity_team.evaluate` in leafall903/ORPHEUS, commit c239a84,
+            // `ENTITY_TEAM_QUERY.txt`).
+            "STU_65ABFCCC" if native_shape(config, class, Some("m_target")) => {
+                match to_entity(&self.config(child(config, "m_target"), context, nested)?) {
+                    Some(entity) if valid_entity(entity) => Value::Integer(
+                        context
+                            .entity_team(entity)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    ),
+                    _ => Value::Integer(-1),
+                }
+            }
             "STU_F76C486C" | "STU_F7262B36" | "STU_0AC15F78" | "STU_DB742151" => {
                 let (relation, operand) = match class {
                     "STU_F76C486C" => (EntityRelation::OwningController, "m_D63CBEC2"),
@@ -838,15 +1095,21 @@ impl Evaluator {
                     }
                 }
             }
-            "STU_32E6E4D8" | "STU_7D7D2470" => {
+            // The normal pools' current (32E6E4D8) and maximum (7D7D2470)
+            // health, and the sum of the maximums of all active pools
+            // (60146072, D17AE0). No entity or an invalid one reads 0
+            // (`SceneWorld.native` in leafall903/ORPHEUS, commit c239a84).
+            "STU_32E6E4D8" | "STU_7D7D2470" | "STU_60146072" => {
                 let target = child(config, "m_entity");
-                let Value::Entity(entity) = self.config(target, context, nested)? else {
-                    return Err(EvalError::UnsupportedConfig(class.into()));
-                };
-                let health = context
-                    .body_health(entity, None, class == "STU_7D7D2470")
-                    .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
-                Value::Float(health)
+                match to_entity(&self.config(target, context, nested)?) {
+                    Some(entity) if valid_entity(entity) => {
+                        let health = context
+                            .body_health(entity, None, class != "STU_32E6E4D8")
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
+                        Value::Float(rounded(health))
+                    }
+                    _ => Value::Float(0.0),
+                }
             }
             "STU_783B4CF0" | "STU_68883EAC" => {
                 let unsupported = || EvalError::UnsupportedConfig(class.into());
@@ -1549,5 +1812,7 @@ fn arithmetic(opcode: u8, a: &Value, b: &Value, context: &mut impl Context) -> V
     Value::Float(rounded(value))
 }
 
+#[cfg(test)]
+mod native_tests;
 #[cfg(test)]
 mod tests;

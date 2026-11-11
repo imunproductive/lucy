@@ -16,8 +16,10 @@
 //! vt+0x128 and its output to a linked variable vt+0x188. SetVar
 //! (0x7FF78AA7D300): the value (failure: int 0), then a keyed insert, an
 //! element write or a plain assignment with the value's own type; then
-//! m_outPlug. ActiveQuery: a link into its m_inPlug (an STU_A1AAB8C4 input
-//! plug) does not begin it; it follows m_7273C81B when the state is on and
+//! m_outPlug. SetVar and SetVars read their values as assignments (+28, a
+//! config list collects into an array: `expr::evaluate_value`). ActiveQuery:
+//! a link into its m_inPlug (an STU_A1AAB8C4 input plug) does not begin it;
+//! it follows m_7273C81B when the state is on and
 //! m_C6F3744E when off (vt+0x198 0x7FF78AAA8920, called by the plug enter for
 //! every input plug that is not the abort plug). 01CF st70 is one: on while
 //! 01CF waits for 0A43.025, it pulses st108 (the kill feed line) when 003E.025
@@ -46,7 +48,6 @@ const SERVER_NO_OPS: &[&str] = &[
 const ASSUMED_NO_OPS: &[&str] = &[
     "STU_E9694EFD", // Soldier: 76's sprint, graph 0255 node 40; hashed fields only
     "STU_6E5C5F66", // melee, graph 0043 node 44; no fields
-    "STU_1C2CC6D5", // melee, graph 0043 node 8; one unnamed field
 ];
 
 /// Melee's states (graph 0043): health change, knockback and four unnamed
@@ -174,6 +175,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
+            "STU_1C2CC6D5" => self.clear_array(id, node, depth),
+            "STU_4C3509FB" | "STU_CBE8BDAA" => self.insert_array(id, node, caller, depth),
             "STU_12F5D52D" => {
                 let mut complete = true;
                 for item in array_field(&node.fields, "m_143D4C5B") {
@@ -295,6 +298,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
     }
 
+    /// SetVar (`indexed`) and one pair of SetVars. SetVar stores nothing when
+    /// its target or its value is missing; a SetVars pair with a target and
+    /// no value stores int 0 (`docs/VARIABLE_ASSIGNMENTS.txt` in
+    /// leafall903/ORPHEUS, commit c239a84).
     pub(super) fn store(
         &mut self,
         id: u16,
@@ -302,11 +309,21 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         fields: &Json,
         indexed: bool,
     ) -> Result<bool, InitFault> {
-        let Some(value) = self.evaluate(id, node, field(fields, "m_value"), None) else {
-            return Ok(false);
+        let target = field(fields, "m_out_Var");
+        let value = field(fields, "m_value");
+        if target.is_null() || (indexed && value.is_null()) {
+            return Ok(true);
+        }
+        let value = if value.is_null() {
+            Value::Integer(0)
+        } else {
+            let Some(value) = self.evaluate_value(id, node, value, None) else {
+                return Ok(false);
+            };
+            value
         };
         let site = self.site(id, node);
-        let target = match expr::lvalue(field(fields, "m_out_Var")) {
+        let target = match expr::lvalue(target) {
             Ok(Some(target)) => source_key(id, target),
             Ok(None) => return Ok(true),
             Err(error) => {

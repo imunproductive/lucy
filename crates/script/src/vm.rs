@@ -8,6 +8,7 @@
 
 mod abilities;
 mod actions;
+mod arrays;
 mod buttons;
 mod context;
 mod lifecycle;
@@ -323,6 +324,38 @@ pub trait World {
     /// them, and a search finds nothing.
     fn target_candidates(&self, _site: Site) -> Option<&[TargetCandidate]> {
         None
+    }
+
+    /// Whether `entity` exists; None: unknown. By default the bodies the
+    /// world lists exist.
+    fn entity_exists(&self, site: Site, entity: u32) -> Option<bool> {
+        self.target_candidates(site)?
+            .iter()
+            .any(|body| body.entity == entity)
+            .then_some(true)
+    }
+
+    /// Where `entity` stands; by default a listed body's feet.
+    fn entity_position(&self, site: Site, entity: u32) -> Option<[f64; 3]> {
+        self.target_candidates(site)?
+            .iter()
+            .find(|body| body.entity == entity)
+            .map(|body| body.feet)
+    }
+
+    /// A body's yaw and pitch, as [`expr::Context::entity_facing`].
+    fn entity_facing(&self, _site: Site, _entity: u32) -> Option<[i32; 2]> {
+        None
+    }
+
+    /// `entity`'s team index (0 to 4); by default a listed body's team. A
+    /// free-for-all body lists no team, so it is unknown.
+    fn entity_team(&self, site: Site, entity: u32) -> Option<i64> {
+        self.target_candidates(site)?
+            .iter()
+            .find(|body| body.entity == entity)?
+            .team
+            .map(i64::from)
     }
 
     fn body_on_fire(&mut self, _site: Site, _entity: u32) -> Option<bool> {
@@ -1741,6 +1774,28 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         config: &Json,
         watcher: Option<StateKey>,
     ) -> Option<Value> {
+        self.evaluate_as(id, node, config, watcher, false)
+    }
+
+    /// The value an assignment reads ([`expr::evaluate_value`]).
+    fn evaluate_value(
+        &mut self,
+        id: u16,
+        node: &Node,
+        config: &Json,
+        watcher: Option<StateKey>,
+    ) -> Option<Value> {
+        self.evaluate_as(id, node, config, watcher, true)
+    }
+
+    fn evaluate_as(
+        &mut self,
+        id: u16,
+        node: &Node,
+        config: &Json,
+        watcher: Option<StateKey>,
+        assignment: bool,
+    ) -> Option<Value> {
         let site = self.site(id, node);
         let mut context = InstanceContext {
             machine: self.machine,
@@ -1753,7 +1808,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             read_native: false,
             assumed: Vec::new(),
         };
-        let result = expr::evaluate(config, &mut context);
+        let result = if assignment {
+            expr::evaluate_value(config, &mut context)
+        } else {
+            expr::evaluate(config, &mut context)
+        };
         let reads = context.reads;
         let read_native = context.read_native;
         for (class, answer) in context.assumed {
@@ -2152,6 +2211,8 @@ struct InstanceContext<'a, W> {
     assumed: Vec<(String, &'static str)>,
 }
 
+#[cfg(test)]
+mod array_tests;
 #[cfg(test)]
 mod membership_tests;
 #[cfg(test)]
