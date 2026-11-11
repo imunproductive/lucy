@@ -34,7 +34,7 @@ use orpheus_script::{
     player::PlayerWorld,
     snapshot::{SnapshotEncoder, View},
     timeline::FRAME_MS,
-    ultimate::{ULT_SECONDS, UltimateCharge},
+    ultimate::UltimateCharge,
     vitals::Vitals,
     vm::{
         Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest, Root, Snapshot, StateKind,
@@ -78,6 +78,9 @@ pub struct PlayerBodyFactory {
     controller_on_fire: bool,
     combat: BodyCombat,
     unknowns: Unknowns,
+    /// Seconds an empty ultimate takes to fill (driver.py `BodyScript`'s
+    /// `ult_seconds`, ULT_SECONDS by default).
+    ult_seconds: f64,
 }
 
 impl PlayerBodyFactory {
@@ -91,6 +94,7 @@ impl PlayerBodyFactory {
         controller_on_fire: bool,
         combat: BodyCombat,
         unknowns: Unknowns,
+        ult_seconds: f64,
         probe: OwnerBodySpawn,
     ) -> io::Result<Self> {
         let body = graphs
@@ -116,6 +120,7 @@ impl PlayerBodyFactory {
             controller_on_fire,
             combat,
             unknowns,
+            ult_seconds,
         };
         let runtime = factory.start(probe)?;
         let encoder = runtime.encoder();
@@ -178,8 +183,8 @@ impl PlayerBodyFactory {
             },
         )?;
         // driver.py `BodyScript._spawn`: the abilities that start on the
-        // ultimate's charge, which fills over ULT_SECONDS.
-        let ultimate = UltimateCharge::new(&component, &self.graphs, ULT_SECONDS);
+        // ultimate's charge, which fills over `ult_seconds`.
+        let ultimate = UltimateCharge::new(&component, &self.graphs, self.ult_seconds);
         let runtime = PlayerBodyRuntime {
             component,
             world,
@@ -498,41 +503,46 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 };
                 let speed = node.field("m_projectileSpeed").unwrap_or(&Json::Null);
                 if !speed.is_null() && to_float(&evaluate(speed).ok()?) != 0.0 {
-                    // combat.py `_shoot`: a leased projectile flies whether or
-                    // not it does damage; the Biotic Field canister leaves its
-                    // field at the shooter's feet (projectiles.py `fired`).
-                    let spawn = spawned_definitions(node).first().copied();
-                    let field = self
-                        .combat
-                        .field
-                        .filter(|_| spawn == Some(crate::projectiles::FIELD_ENTITY))
-                        .map(Box::new);
-                    // The match flight handles one straight, owner-predicted
-                    // projectile per shot. The Biotic Field canister's arc
-                    // (0257's gravity) decides nothing: its field opens at
-                    // the shooter's feet, and Python flies it straight too.
-                    if !node.is_networked()
-                        || !local_prediction(node)
-                        || !predicted_sync(node, &mut evaluate).ok()?
-                        || (spawn != Some(crate::projectiles::FIELD_ENTITY)
-                            && node
-                                .field("m_projectileMotions")
-                                .is_some_and(|v| !v.is_null()))
-                        || node.field("m_aimID").is_some_and(|v| !v.is_null())
-                        || authored_number(
-                            node.field("m_numProjectilesPerShot"),
-                            1.0,
-                            &mut evaluate,
-                        )
+                    // One projectile a shot: a volley of several (Roadhog's
+                    // pellets, Genji's fan) would need a lease of as many
+                    // ids a frame, which no body advertises.
+                    if authored_number(node.field("m_numProjectilesPerShot"), 1.0, &mut evaluate)
                         .ok()?
-                            != 1.0
+                        != 1.0
                     {
                         return None;
                     }
                     let ballistics =
                         ProjectileBallistics::from_authored(node, &mut evaluate).ok()??;
-                    let definition = ballistics.definition?;
-                    self.leases.entity(definition, shot.frame, 0)?;
+                    for class in &ballistics.unmodelled {
+                        log_assumption(shot.graph, None, class, "flies as if it weren't there");
+                    }
+                    // projectiles.py `fired`: the owner's client shoots a
+                    // networked, predicted volley's projectile under its
+                    // body's lease, and the server confirms and releases it;
+                    // combat.py `_shoot`: any other flies only for its damage.
+                    // The volley's aim id (`m_aimID`) changes nothing here:
+                    // the server aims from the eye along the command, as it
+                    // does for Tracer's pistols, whose volley has one too.
+                    let leased = node.is_networked()
+                        && local_prediction(node)
+                        && predicted_sync(node, &mut evaluate).ok()?
+                        && ballistics
+                            .definition
+                            .and_then(|definition| self.leases.entity(definition, shot.frame, 0))
+                            .is_some();
+                    if !leased && !ballistics.damaging() {
+                        return None;
+                    }
+                    // The entity it leaves (projectiles.py `fired`): the
+                    // Biotic Field canister leaves its field at the
+                    // shooter's feet whatever its arc does.
+                    let spawn = spawned_definitions(node).first().copied();
+                    let field = self
+                        .combat
+                        .field
+                        .filter(|_| leased && spawn == Some(crate::projectiles::FIELD_ENTITY))
+                        .map(Box::new);
                     let volleys = self
                         .component
                         .snapshot()
@@ -542,16 +552,17 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                             StateKind::WeaponVolley { volleys, .. } => volleys,
                             _ => 0,
                         });
-                    return Some(PosedShot::Projectile(PosedProjectile {
+                    return Some(PosedShot::Projectile(Box::new(PosedProjectile {
                         shot,
                         ballistics,
                         origin,
                         direction: aim_direction(&command),
+                        leased,
                         spawn,
                         field,
                         feet: [x, y, z],
                         volleys,
-                    }));
+                    })));
                 }
                 let hit = HitDefinition::from_authored(node.field("m_6396149F")?, &mut evaluate)
                     .ok()??;
@@ -635,6 +646,7 @@ pub fn fixture_body_factory() -> (PlayerBodyFactory, OwnerBodySpawn) {
             field: None,
         },
         Unknowns::for_build(),
+        orpheus_script::ultimate::ULT_SECONDS,
         spawn,
     )
     .unwrap();

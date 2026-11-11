@@ -4,7 +4,7 @@ use serde_json::Value as Json;
 
 use crate::{
     expr::{EvalError, to_float},
-    graph::Node,
+    graph::{Node, asset_guid},
     wire::Value,
 };
 
@@ -83,6 +83,21 @@ impl HitDefinition {
 
 const DEFAULT_LIFETIME: f64 = 5.0;
 const RING_EPSILON: f64 = 1e-9;
+/// The projectile motion class of an arc: `m_599AB8D7` is its downward
+/// acceleration in m/s² (9.8 for Hanzo's arrows, Junkrat's grenades and
+/// Torbjörn's rivets; Tracer's Pulse Bomb sets its variable `1CDD` to 30).
+const GRAVITY_MOTION: &str = "STU_E1A5B579";
+/// Seconds a projectile that sticks waits before it explodes. No asset
+/// names it (assumption): the volleys that stick (Tracer's Pulse Bomb,
+/// graph `0034` state 0, and Echo's Sticky Bombs, `1C36` state 0) give no
+/// delay, and neither does the Pulse Bomb's entity (`0045.003`: a visual,
+/// model, target tag and statescript component). One second is the public
+/// rule for the Pulse Bomb and what ow1-preservation's server used (run 392,
+/// `HANDOFF.md:1770`). The explosion's `m_2FE97560` is 1.0 on the Pulse
+/// Bomb too, but also on explosives that go off where they hit (Soldier:
+/// 76's Helix Rockets, `0254`; Pharah's rocket has 1.875), so it isn't read
+/// as the fuse.
+pub const STICK_FUSE: f64 = 1.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectileBallistics {
@@ -91,6 +106,15 @@ pub struct ProjectileBallistics {
     pub definition: Option<u64>,
     pub direct: Option<HitDefinition>,
     pub blast: Option<Blast>,
+    /// The arc's downward acceleration in m/s²: the sum of the volley's
+    /// gravity motions (`m_projectileMotions`); 0 flies straight.
+    pub gravity: f64,
+    /// A projectile that sticks to the first body or surface it hits and
+    /// explodes this many seconds later; None ends where it hits.
+    pub fuse: Option<f64>,
+    /// The volley's motion classes the flight doesn't model, which it flies
+    /// as if they weren't there (Pharah's `STU_7A5DFFF8`).
+    pub unmodelled: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -151,14 +175,77 @@ impl ProjectileBallistics {
         } else {
             None
         };
+        // Beyond Python, which flew every projectile straight and ended it
+        // where it hit (ow174/game/combat.py `_fly`): the volley's arc and
+        // whether it sticks.
+        let mut gravity = 0.0;
+        let mut unmodelled = Vec::new();
+        if let Some(motions) = node.field("m_projectileMotions").and_then(Json::as_array) {
+            for motion in motions.iter().filter(|motion| motion.is_object()) {
+                match motion.get("$").and_then(Json::as_str) {
+                    Some(GRAVITY_MOTION) => {
+                        gravity += authored_number(motion.get("m_599AB8D7"), 0.0, &mut evaluate)?;
+                    }
+                    class => unmodelled.push(class.unwrap_or("?").to_owned()),
+                }
+            }
+        }
+        if !gravity.is_finite() {
+            return Ok(None);
+        }
+        // The collision config's `m_47999E82` is set on the volleys that
+        // stick to what they hit and on no other (assumption: its meaning
+        // is read from those two, the Pulse Bomb and Echo's Sticky Bombs).
+        let sticks =
+            authored_number(node.field("m_55E8761C.m_47999E82"), 0.0, &mut evaluate)? != 0.0;
         Ok(Some(Self {
             speed,
             lifetime,
             definition,
             direct,
             blast,
+            gravity,
+            fuse: sticks.then_some(STICK_FUSE),
+            unmodelled,
         }))
     }
+
+    /// The seconds the projectile lives at most: its flight, then its fuse.
+    pub fn bound(&self) -> f64 {
+        self.lifetime + self.fuse.unwrap_or(0.0)
+    }
+
+    /// Whether it does damage where it hits or explodes (combat.py `_shoot`:
+    /// `damaging`).
+    pub fn damaging(&self) -> bool {
+        self.direct.is_some_and(|hit| hit.amount > 0.0)
+            || self
+                .blast
+                .as_ref()
+                .is_some_and(|blast| blast.hit.amount > 0.0)
+    }
+}
+
+/// The tunable values (type `130`, `STU_A0E5F3ED`) the hero graphs read
+/// through `STU_082FA44E`, with the `m_3E5360A1` the install holds. The one
+/// read is Tracer's Pulse Bomb damage: graph `0034` node 51 sets variable
+/// `01DC` to 450 in the modes whose mode variable `3460` is set, else to
+/// this tunable, `0130:015D`, 350.
+const TUNABLES: [(u64, f64); 1] = [(0x0f48_0000_0000_015d, 350.0)];
+
+/// `STU_082FA44E` (a float config): the authored value of its tunable
+/// (`m_DBF61E9A`). Its entity operand (`m_entity`) could scale the value
+/// by something of that entity's; no asset says how, so it is left out
+/// (assumption).
+pub fn tunable(config: &Json) -> Option<f64> {
+    let guid = config
+        .get("m_DBF61E9A")?
+        .get("m_DBF61E9A")
+        .and_then(asset_guid)?;
+    TUNABLES
+        .iter()
+        .find(|&&(tunable, _)| tunable == guid)
+        .map(|&(_, value)| value)
 }
 
 impl Blast {
@@ -237,5 +324,19 @@ mod tests {
             ),
             (0.0, None, 1.0, None)
         );
+    }
+
+    /// Graph `0034` node 51's `STU_082FA44E`: the Pulse Bomb's damage is
+    /// its tunable's 350; a tunable the install table lacks reads nothing.
+    #[test]
+    fn the_pulse_bomb_damage_tunable_reads_its_authored_value() {
+        let config = |guid: &str| {
+            json!({"$": "STU_082FA44E",
+                "m_DBF61E9A": {"$": "STU_D9BDAA46", "m_DBF61E9A": guid, "m_resourceKey": null},
+                "m_entity": {"$": "STU_B5A0CAF0"}})
+        };
+        assert_eq!(tunable(&config("0x0F4800000000015D")), Some(350.0));
+        assert_eq!(tunable(&config("0x0F4800000000015E")), None);
+        assert_eq!(tunable(&json!({"$": "STU_082FA44E"})), None);
     }
 }

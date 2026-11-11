@@ -42,7 +42,9 @@ use orpheus_physics::{
     mover::ground::NOT_GROUND,
     mover::settings::{MoverCatalog, MoverSettings},
 };
-use orpheus_script::{codecs::CodecTable, graph::GraphStore, vm::Unknowns, wire::Variables};
+use orpheus_script::{
+    codecs::CodecTable, graph::GraphStore, ultimate::ULT_SECONDS, vm::Unknowns, wire::Variables,
+};
 use orpheus_wire::entity::{Component, EntityUpdate};
 
 const MOVER_CATEGORY: u16 = 0x18;
@@ -88,6 +90,8 @@ pub struct SceneAssets {
     bot_graphs: Option<Arc<GraphStore>>,
     bot_unknowns: Unknowns,
     player_unknowns: Unknowns,
+    /// Seconds a player's empty ultimate takes to fill.
+    ult_seconds: f64,
     bots: BotCatalog,
     movers: Arc<MoverCatalog>,
     eyes: Arc<EyeCatalog>,
@@ -170,6 +174,7 @@ impl SceneAssets {
             bot_graphs,
             bot_unknowns: Unknowns::for_build(),
             player_unknowns: Unknowns::for_build(),
+            ult_seconds: ULT_SECONDS,
             bots: BotCatalog::load(data.join("ai_spawners_174.json"))?,
             movers: Arc::new(MoverCatalog::load(
                 data.join("game_movers_174.json"),
@@ -227,6 +232,13 @@ impl SceneAssets {
     /// hero whose graphs still have gaps tolerate them as release builds do.
     pub fn set_player_unknowns(&mut self, unknowns: Unknowns) {
         self.player_unknowns = unknowns;
+    }
+
+    /// Seconds a player's empty ultimate takes to fill: ULT_SECONDS by
+    /// default, as driver.py `BodyScript` takes `ult_seconds`; tests of an
+    /// ultimate fill it sooner.
+    pub fn set_ult_seconds(&mut self, seconds: f64) {
+        self.ult_seconds = seconds;
     }
 
     /// Load the map before handing it to the worker. The render layouts and
@@ -357,6 +369,7 @@ impl SceneAssets {
         let eyes = Arc::clone(&self.eyes);
         let (melee, field) = (Arc::clone(&self.melee), self.field);
         let player_unknowns = self.player_unknowns;
+        let ult_seconds = self.ult_seconds;
         let mode = scene.map.mode_guid;
         let ready = self
             .codecs
@@ -390,6 +403,7 @@ impl SceneAssets {
                             field,
                         },
                         player_unknowns,
+                        ult_seconds,
                         spawn,
                     )
                     .map(Arc::new)

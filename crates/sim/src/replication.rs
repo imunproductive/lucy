@@ -194,7 +194,9 @@ struct BodyScript {
     unsent_delta: Option<(u32, DeltaKind)>,
     corrections: Option<CorrectionHistory>,
     projectiles: Option<OwnerProjectiles>,
-    flights: Vec<(ProjectileToken, ProjectileFlight)>,
+    /// Each projectile in flight, with its lease token when the owner's
+    /// client shot it too (combat.py `Combat.rockets`).
+    flights: Vec<(Option<ProjectileToken>, ProjectileFlight)>,
     /// The projectiles fired since the match last took them, for the other
     /// clients (projectiles.py `fired`: `_show_others`).
     fired: Vec<FiredProjectile>,
@@ -278,7 +280,7 @@ impl BodyScript {
         }
         for shot in shots {
             match shot {
-                PosedShot::Projectile(shot) => self.launch_projectile(shot),
+                PosedShot::Projectile(shot) => self.launch_projectile(*shot),
                 hit => hits.push(hit),
             }
         }
@@ -286,17 +288,14 @@ impl BodyScript {
     }
 
     /// projectiles.py `fired` for a leased projectile: the Biotic Field
-    /// canister leaves its field where it lands; any other flies, and the
-    /// other clients see it.
+    /// canister leaves its field where it lands, another spawning volley
+    /// (Torbjörn's turret, Zarya's Graviton Surge) its entity; any other
+    /// flies, and the other clients see it. combat.py `_shoot`: an unleased
+    /// one flies for its damage alone.
     fn launch_projectile(&mut self, projectile: PosedProjectile) {
-        let Some((projectiles, definition)) = self
-            .projectiles
-            .as_mut()
-            .zip(projectile.ballistics.definition)
-        else {
-            return;
-        };
-        let bound = (projectile.ballistics.lifetime / TICK_PERIOD.as_secs_f64()).ceil() as u32;
+        let bound = (projectile.ballistics.bound() / TICK_PERIOD.as_secs_f64()).ceil() as u32;
+        let definition = projectile.ballistics.definition;
+        let damaging = projectile.ballistics.damaging();
         let Some(flight) = ProjectileFlight::new(
             projectile.ballistics,
             projectile.origin,
@@ -305,17 +304,30 @@ impl BodyScript {
         ) else {
             return;
         };
-        let token = match projectile.field {
-            Some(field) => {
-                projectiles.admit_field(projectile.shot, definition, bound, projectile.feet, *field)
+        let token = match (&mut self.projectiles, definition) {
+            (Some(projectiles), Some(definition)) if projectile.leased => {
+                match (projectile.field, projectile.spawn) {
+                    (Some(field), _) => projectiles.admit_field(
+                        projectile.shot,
+                        definition,
+                        bound,
+                        projectile.feet,
+                        *field,
+                    ),
+                    (None, Some(_)) => {
+                        projectiles.admit_spawning(projectile.shot, definition, bound)
+                    }
+                    (None, None) => projectiles.admit(projectile.shot, definition, bound),
+                }
+                .map(|token| (token, definition))
             }
-            None => projectiles.admit(projectile.shot, definition, bound),
+            _ => None,
         };
-        let Some(token) = token else {
+        if token.is_none() && !damaging {
             return;
-        };
-        self.flights.push((token, flight));
-        if projectile.spawn.is_none() {
+        }
+        self.flights.push((token.map(|(token, _)| token), flight));
+        if let Some((token, definition)) = token.filter(|_| projectile.spawn.is_none()) {
             self.fired.push(FiredProjectile {
                 body: self.id,
                 token,
@@ -2167,25 +2179,30 @@ impl WorldDelivery {
         let Some(script) = &mut self.body_script else {
             return Ok(());
         };
-        let Some(projectiles) = &mut script.projectiles else {
-            return Ok(());
-        };
         let id = script.id;
         let mut deliveries = Vec::new();
-        script
-            .flights
-            .retain_mut(|(token, flight)| match step(id.entity, flight) {
+        let projectiles = &mut script.projectiles;
+        script.flights.retain_mut(|(token, flight)| {
+            let result = step(id.entity, flight);
+            let (Some(token), Some(projectiles)) = (*token, projectiles.as_mut()) else {
+                return matches!(result, Ok(None));
+            };
+            match result {
                 Ok(None) => true,
                 Ok(Some(end)) => {
                     let travelled = (end.travelled / TICK_PERIOD.as_secs_f64()).ceil() as u32;
-                    projectiles.flight_ended(*token, travelled, tick);
+                    projectiles.flight_ended(token, travelled, tick);
                     false
                 }
                 Err(_) => {
-                    projectiles.cancel(*token, &mut deliveries);
+                    projectiles.cancel(token, &mut deliveries);
                     false
                 }
-            });
+            }
+        });
+        let Some(projectiles) = &mut script.projectiles else {
+            return Ok(());
+        };
         deliveries.extend(projectiles.advance(tick, first_tick));
         self.projectile_events.extend(
             projectiles
