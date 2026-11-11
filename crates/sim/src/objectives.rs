@@ -116,6 +116,9 @@ pub const ASSAULT_LAST: CaptureTimes = [18.0, 12.0, 10.0];
 pub const HYBRID_POINT: CaptureTimes = [32.0, 21.0, 15.0];
 /// Rule 56: Control, 8/5/4 s.
 pub const CONTROL_CAPTURE: CaptureTimes = [8.0, 5.0, 4.0];
+/// Rule 100: Elimination's tiebreaker point, 3 s (custom default).
+/// Assumption: the same with more players on it.
+pub const ELIMINATION_CAPTURE: CaptureTimes = [3.0; 3];
 
 fn capture_seconds(times: &CaptureTimes, players: usize) -> f64 {
     times[players.clamp(1, 3) - 1]
@@ -336,6 +339,7 @@ pub struct ControlPoint {
     pub area: Area,
     pub name: Option<String>,
     locked: f64,
+    times: CaptureTimes,
     owner: Option<u8>,
     /// The team taking it and its progress, 0 to 1.
     taking: Option<(u8, f64)>,
@@ -353,6 +357,21 @@ impl ControlPoint {
             area: Area::point(objective),
             name: objective.name.clone(),
             locked: unlock,
+            times: CONTROL_CAPTURE,
+            owner: None,
+            taking: None,
+            percent: [0.0; 2],
+        }
+    }
+
+    /// Elimination's tiebreaker point (rule 100): it unlocks after
+    /// `unlock` and the first team to own it wins the round.
+    pub fn tiebreak(area: Area, unlock: f64) -> Self {
+        Self {
+            area,
+            name: None,
+            locked: unlock,
+            times: ELIMINATION_CAPTURE,
             owner: None,
             taking: None,
             percent: [0.0; 2],
@@ -404,7 +423,7 @@ impl ControlPoint {
                     Some((taker, progress)) if taker == team => progress,
                     _ => 0.0,
                 };
-                let rate = 1.0 / (capture_seconds(&CONTROL_CAPTURE, on[usize::from(team)]) * scale);
+                let rate = 1.0 / (capture_seconds(&self.times, on[usize::from(team)]) * scale);
                 let progress = progress + rate * seconds;
                 if progress >= 1.0 - 1e-9 {
                     self.owner = Some(team);
@@ -414,7 +433,7 @@ impl ControlPoint {
                 }
             }
             (None, Some((team, progress))) if !contested => {
-                let rate = 1.0 / (CONTROL_CAPTURE[0] * scale);
+                let rate = 1.0 / (self.times[0] * scale);
                 let progress = progress - rate * seconds;
                 self.taking = (progress > 0.0).then_some((team, progress));
             }

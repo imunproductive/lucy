@@ -32,7 +32,10 @@
 use std::{collections::HashMap, io};
 
 use crate::{body::yaw_rotation, bots::Bot, instance::FREE_FOR_ALL_TEAM};
-use orpheus_content::{maps::GameMap, stats::GMP_STATS};
+use orpheus_content::{
+    maps::{GameMap, SpawnChoice},
+    stats::GMP_STATS,
+};
 use orpheus_core::bits::BitWriter;
 use orpheus_script::{
     graph::GraphStore,
@@ -85,6 +88,8 @@ pub struct PlayerAppearance<'a> {
     /// The n-th player of the team takes the team's n-th spawn point; in a
     /// free-for-all the n-th player of the match (match.py Player).
     pub spawn: usize,
+    /// The spawn rooms the player's team uses now (the match flow's).
+    pub room: SpawnChoice,
     pub card: &'a PlayerCard,
 }
 
@@ -305,6 +310,7 @@ mod tests {
             slot: 0,
             team: 1,
             spawn: 0,
+            room: SpawnChoice::First,
             card: &card,
         };
         let board = stats.component(&PlayerStats::default(), map.mode_guid, None, None);
