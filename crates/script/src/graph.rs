@@ -14,7 +14,10 @@ use serde_json::{Map, Value};
 
 use orpheus_core::guid::parse_guid;
 
-use crate::rulesets::{self, Rulesets};
+use crate::{
+    rulesets::{self, Rulesets},
+    weapons::{TUNABLES_FILE, Tunables},
+};
 
 pub const MAX_GRAPH_BYTES: u64 = 128 * 1024 * 1024;
 const GRAPH_TYPE: u64 = 0x0580;
@@ -332,6 +335,9 @@ pub struct GraphStore {
     /// The heroes' and modes' ruleset defaults, which the server loads
     /// beside the bundle; none until [`GraphStore::with_rulesets`].
     rulesets: Arc<Rulesets>,
+    /// The install's tunable values (`STU_082FA44E`), loaded beside the
+    /// bundle; none until [`GraphStore::with_tunables`].
+    tunables: Arc<Tunables>,
     missing: Vec<u32>,
 }
 
@@ -377,16 +383,31 @@ impl GraphStore {
                 })
                 .collect::<io::Result<_>>()?,
             rulesets: Arc::default(),
+            tunables: Arc::default(),
             missing: bundle.missing,
         })
     }
 
     /// A bundle of the runtime `data` folder with the folder's ruleset
-    /// defaults (`game_rulesets_174.json`), as the server runs it.
+    /// defaults (`game_rulesets_174.json`) and tunable values
+    /// (`game_tunables_174.json`), as the server runs it.
     pub fn load_runtime(data: impl AsRef<Path>, bundle: &str) -> io::Result<Self> {
         let data = data.as_ref();
         let rulesets = Rulesets::load(data.join(rulesets::FILE))?;
-        Ok(Self::load(data.join(bundle))?.with_rulesets(Arc::new(rulesets)))
+        let tunables = Tunables::load(data.join(TUNABLES_FILE))?;
+        Ok(Self::load(data.join(bundle))?
+            .with_rulesets(Arc::new(rulesets))
+            .with_tunables(Arc::new(tunables)))
+    }
+
+    /// The tunable values the graphs read (`STU_082FA44E`).
+    pub fn with_tunables(mut self, tunables: Arc<Tunables>) -> Self {
+        self.tunables = tunables;
+        self
+    }
+
+    pub fn tunables(&self) -> &Tunables {
+        &self.tunables
     }
 
     /// The ruleset defaults the bodies' graphs read

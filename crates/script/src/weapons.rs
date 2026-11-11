@@ -1,5 +1,8 @@
 //! Damage and ballistics read from authored weapon volley nodes in build 104319.
 
+use std::{collections::HashMap, fs, io, path::Path};
+
+use serde::Deserialize;
 use serde_json::Value as Json;
 
 use crate::{
@@ -226,26 +229,69 @@ impl ProjectileBallistics {
     }
 }
 
-/// The tunable values (type `130`, `STU_A0E5F3ED`) the hero graphs read
-/// through `STU_082FA44E`, with the `m_3E5360A1` the install holds. The one
-/// read is Tracer's Pulse Bomb damage: graph `0034` node 51 sets variable
-/// `01DC` to 450 in the modes whose mode variable `3460` is set, else to
-/// this tunable, `0130:015D`, 350.
-const TUNABLES: [(u64, f64); 1] = [(0x0f48_0000_0000_015d, 350.0)];
+/// The derived tunables file, in the runtime `data` folder: every tunable
+/// value (type `130`, `STU_A0E5F3ED`) in the install, its `m_3E5360A1` by
+/// GUID (the `orpheus-assets` derivation `game_tunables`).
+pub const TUNABLES_FILE: &str = "game_tunables_174.json";
 
-/// `STU_082FA44E` (a float config): the authored value of its tunable
-/// (`m_DBF61E9A`). Its entity operand (`m_entity`) could scale the value
-/// by something of that entity's; no asset says how, so it is left out
-/// (assumption).
-pub fn tunable(config: &Json) -> Option<f64> {
-    let guid = config
-        .get("m_DBF61E9A")?
-        .get("m_DBF61E9A")
-        .and_then(asset_guid)?;
-    TUNABLES
-        .iter()
-        .find(|&&(tunable, _)| tunable == guid)
-        .map(|&(_, value)| value)
+/// The tunable values the graphs read through `STU_082FA44E`, by tunable
+/// GUID. One read decides play: Tracer's Pulse Bomb damage, graph `0034`
+/// node 51, sets variable `01DC` to 450 in the modes whose mode variable
+/// `3460` is set, else to tunable `0130:015D`, 350.
+#[derive(Debug, Default)]
+pub struct Tunables {
+    values: HashMap<u64, f64>,
+}
+
+#[derive(Deserialize)]
+struct RawTunables {
+    tunables: HashMap<String, f64>,
+}
+
+impl Tunables {
+    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
+        let data = fs::read(path).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
+        Self::from_json(&data)
+    }
+
+    pub fn from_json(data: &[u8]) -> io::Result<Self> {
+        let invalid = |error: String| io::Error::new(io::ErrorKind::InvalidData, error);
+        let raw: RawTunables =
+            serde_json::from_slice(data).map_err(|error| invalid(error.to_string()))?;
+        let values = raw
+            .tunables
+            .into_iter()
+            .map(|(guid, value)| {
+                asset_guid(&Json::String(guid.clone()))
+                    .map(|guid| (guid, value))
+                    .ok_or_else(|| invalid(format!("invalid tunable GUID {guid:?}")))
+            })
+            .collect::<io::Result<_>>()?;
+        Ok(Self { values })
+    }
+
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// `STU_082FA44E` (a float config): the authored value of its tunable
+    /// (`m_DBF61E9A`); none for a tunable the install lacks. Its entity
+    /// operand (`m_entity`) could scale the value by something of that
+    /// entity's; no asset says how, so it is left out (assumption).
+    pub fn value(&self, config: &Json) -> Option<f64> {
+        let guid = config
+            .get("m_DBF61E9A")?
+            .get("m_DBF61E9A")
+            .and_then(asset_guid)?;
+        self.values.get(&guid).copied()
+    }
 }
 
 impl Blast {
@@ -326,17 +372,34 @@ mod tests {
         );
     }
 
-    /// Graph `0034` node 51's `STU_082FA44E`: the Pulse Bomb's damage is
-    /// its tunable's 350; a tunable the install table lacks reads nothing.
+    /// Graph `0034` node 51's `STU_082FA44E` reads its tunable's value from
+    /// the derived table; a tunable the table lacks reads nothing.
     #[test]
-    fn the_pulse_bomb_damage_tunable_reads_its_authored_value() {
+    fn a_tunable_config_reads_its_value_from_the_table() {
+        let tunables = Tunables::from_json(
+            br#"{"source": "", "tunables": {"0x0F4800000000015D": 350.0, "0x0F48000000000001": 0.25}}"#,
+        )
+        .unwrap();
         let config = |guid: &str| {
             json!({"$": "STU_082FA44E",
                 "m_DBF61E9A": {"$": "STU_D9BDAA46", "m_DBF61E9A": guid, "m_resourceKey": null},
                 "m_entity": {"$": "STU_B5A0CAF0"}})
         };
-        assert_eq!(tunable(&config("0x0F4800000000015D")), Some(350.0));
-        assert_eq!(tunable(&config("0x0F4800000000015E")), None);
-        assert_eq!(tunable(&json!({"$": "STU_082FA44E"})), None);
+        assert_eq!(tunables.value(&config("0x0F4800000000015D")), Some(350.0));
+        assert_eq!(tunables.value(&config("0x0F48000000000001")), Some(0.25));
+        assert_eq!(tunables.value(&config("0x0F4800000000015E")), None);
+        assert_eq!(tunables.value(&json!({"$": "STU_082FA44E"})), None);
+        assert!(Tunables::from_json(br#"{"tunables": {"nope": 1.0}}"#).is_err());
+    }
+
+    /// The install's tunable `0130:015D` (Tracer's Pulse Bomb damage) is 350.
+    #[test]
+    #[ignore = "requires the 1.74 game data"]
+    fn the_install_s_pulse_bomb_tunable_is_350() {
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let tunables = Tunables::load(data.join(TUNABLES_FILE)).unwrap();
+        let config = json!({"$": "STU_082FA44E",
+            "m_DBF61E9A": {"$": "STU_D9BDAA46", "m_DBF61E9A": "0x0F4800000000015D"}});
+        assert_eq!(tunables.value(&config), Some(350.0));
     }
 }

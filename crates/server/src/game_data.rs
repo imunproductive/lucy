@@ -24,6 +24,7 @@ pub const FILES: &[&str] = &[
     "game_movers_174.json",
     "game_rulesets_174.json",
     "game_stats_174.json",
+    "game_tunables_174.json",
 ];
 
 /// The files of [`FILES`] missing from the game data folder `root`, as

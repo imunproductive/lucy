@@ -25,6 +25,7 @@ mod map_chunk;
 mod mode_props;
 mod navigation;
 mod props;
+mod tunables;
 
 use std::{
     fmt, fs, io,
@@ -137,6 +138,10 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "game_modes",
         derive: game_modes::derive,
+    },
+    Derivation {
+        name: "game_tunables",
+        derive: tunables::derive,
     },
     Derivation {
         name: "collision",
