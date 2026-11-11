@@ -1,5 +1,5 @@
 //! Match values read from the mode graphs of the install: the wait after a
-//! round, the overtime fuse and Control's capture rates.
+//! round, the overtime fuse and the capture points' rates.
 //!
 //! The VM can't run the mode graphs whole yet (`mode_script.rs`), so the
 //! match flow (`match_flow.rs`) plays their phases itself. These values are
@@ -16,10 +16,7 @@ use orpheus_script::{
 };
 use serde_json::Value as Json;
 
-use crate::{
-    match_flow::{CONTROL, Mode},
-    objectives::CaptureTimes,
-};
+use crate::match_flow::{ASSAULT, CONTROL, ELIMINATION, Mode};
 
 /// The mode graph of Assault, Escort and Hybrid.
 const SIDED_GRAPH: u32 = 0x0f4a;
@@ -85,17 +82,58 @@ const FUSE_FALL: (u32, u32) = (1115, 3393);
 /// The state that moves the full fuse (v7717) down to its floor.
 const FUSE_CHASE: (u32, u32) = (1117, 7717);
 
-/// 0EC2 uid 657 sends the capture rates to the Control point.
-const CAPTURE_SENDER: u32 = 657;
-/// The message (`025`) and its parameters (`0A4` indexes) that carry the
-/// rates by player count. Both parameters hold the same rates in 104319;
-/// which one is which is not known.
+/// What a mode graph tells its capture points (graph 0E8E, whose uid 101
+/// receives it): game message 0x79E with the rates by player count and
+/// the decay's delay (refs `CaptureAreas.md` §4-5).
 const CAPTURE_MESSAGE: u64 = 0x0240_0000_0000_079e;
-const CAPTURE_RATES: [u64; 2] = [0x0420, 0x0421];
-/// The rates are multiplied by v12304 (uid 658), which is v10354 (set to
-/// 1 by uid 525) times the ruleset's capture speed (key 9518).
-const CAPTURE_SPEED: (u32, u32) = (658, 12304);
-const CAPTURE_SPEED_BASE: (u32, u32) = (525, 10354);
+/// The message's parameters (`0A4` indexes): 0x420 the capture rates (0E8E
+/// v9868, by attackers), 0x421 the decay rates (v9870, by defenders), 0x422
+/// the decay's delay in seconds (v9871).
+const CAPTURE_RATES: u64 = 0x0420;
+const DECAY_RATES: u64 = 0x0421;
+const DECAY_DELAY: u64 = 0x0422;
+/// A list of config vars.
+const CONFIG_LIST: &str = "STU_06610EBC";
+/// A native factor in 0F4A's capture speed (uid 856) that no data names.
+/// Assumption: 1; with it the rates give the capture times of the rules
+/// (game-rules.md 33, 49).
+const CAPTURE_SPEED_NATIVE: &str = "STU_856F363B";
+
+/// The node that sends a mode's capture rates, and the nodes it reads that
+/// set its inputs first, in order: (uid, class, variable).
+struct CaptureSender {
+    graph: u32,
+    uid: u32,
+    /// The mode whose ruleset defaults the rates read.
+    mode: u64,
+    inputs: &'static [(u32, &'static str, u32)],
+}
+
+/// 0F4A uid 614 (Assault and Hybrid points): [1, 1.5, 2] times v12304, which
+/// uid 856 sets to v10354 (uid 525: 1) times the ruleset's capture speed
+/// (key 9518) and [`CAPTURE_SPEED_NATIVE`]; a 5 s delay.
+const SIDED_CAPTURE: CaptureSender = CaptureSender {
+    graph: SIDED_GRAPH,
+    uid: 614,
+    mode: ASSAULT,
+    inputs: &[(525, SET_VAR, 10354), (856, STACK, 12304)],
+};
+/// 0EC2 uid 657 (Control): [0.125, 0.1875, 0.25] times v12304, which uid
+/// 658 sets to v10354 (uid 525: 1) times the ruleset's capture speed; 5 s.
+const CONTROL_CAPTURE: CaptureSender = CaptureSender {
+    graph: CONTROL_GRAPH,
+    uid: 657,
+    mode: CONTROL,
+    inputs: &[(525, SET_VAR, 10354), (658, STACK, 12304)],
+};
+/// 0D0B uid 839 (Elimination's tiebreaker point): one rate, 1 over the
+/// ruleset's capture time (key 10595, 3 s); a 2 s delay.
+const ELIMINATION_CAPTURE: CaptureSender = CaptureSender {
+    graph: ELIMINATION_GRAPH,
+    uid: 839,
+    mode: ELIMINATION,
+    inputs: &[],
+};
 
 /// The values of the mode graphs the match flow uses.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -109,9 +147,37 @@ pub struct ModeGraphValues {
     pub elimination_round_end: f64,
     /// The overtime fuse of Assault, Escort and Hybrid (0F4A).
     pub fuse: Fuse,
-    /// Control's capture seconds with 1, 2 and 3 or more players on the
-    /// point (0EC2 uid 657).
-    pub control_capture: CaptureTimes,
+    /// The capture points' rates in Assault and Hybrid (0F4A uid 614).
+    pub sided_capture: CaptureRates,
+    /// In Control (0EC2 uid 657).
+    pub control_capture: CaptureRates,
+    /// Elimination's tiebreaker point (0D0B uid 839).
+    pub elimination_capture: CaptureRates,
+}
+
+/// The rates a mode graph gives its capture points (0E8E). A point's
+/// progress (0 to 1) rises by `capture[attackers]` over the point's base
+/// capture seconds (v12395) a second; once no attacker has been on it for
+/// `decay_delay` seconds it falls by `decay[defenders]` over its base decay
+/// seconds (v12396). One player or none uses the first rate, three or more
+/// the last (0E8E uids 154 and 175 clamp the count).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CaptureRates {
+    pub capture: [f64; 3],
+    pub decay: [f64; 3],
+    pub decay_delay: f64,
+}
+
+impl CaptureRates {
+    /// The capture rate with `attackers` on the point (at least one).
+    pub fn capture(&self, attackers: usize) -> f64 {
+        self.capture[attackers.clamp(1, 3) - 1]
+    }
+
+    /// The decay rate with `defenders` on the point.
+    pub fn decay(&self, defenders: usize) -> f64 {
+        self.decay[defenders.clamp(1, 3) - 1]
+    }
 }
 
 impl ModeGraphValues {
@@ -121,8 +187,20 @@ impl ModeGraphValues {
             control_round_end: round_end(graphs, &CONTROL_ROUND_END)?,
             elimination_round_end: round_end(graphs, &ELIMINATION_ROUND_END)?,
             fuse: Fuse::read(graphs)?,
-            control_capture: control_capture(graphs)?,
+            sided_capture: capture_rates(graphs, &SIDED_CAPTURE)?,
+            control_capture: capture_rates(graphs, &CONTROL_CAPTURE)?,
+            elimination_capture: capture_rates(graphs, &ELIMINATION_CAPTURE)?,
         })
+    }
+
+    /// The capture points' rates in `mode`: Assault's in the modes without
+    /// points of their own.
+    pub fn capture(&self, mode: Mode) -> CaptureRates {
+        match mode {
+            Mode::Control => self.control_capture,
+            Mode::Elimination => self.elimination_capture,
+            _ => self.sided_capture,
+        }
     }
 
     /// Seconds from a round's end to the next phase in `mode`. Assumption:
@@ -249,60 +327,67 @@ fn leads_to(graph: &Graph, wait: &Node, target: u32) -> bool {
     false
 }
 
-/// Control's capture seconds by player count: one over the rates 0EC2
-/// sends to the point.
-fn control_capture(graphs: &GraphStore) -> io::Result<CaptureTimes> {
-    let graph = graph(graphs, CONTROL_GRAPH)?;
-    let sender = node(graph, CAPTURE_SENDER, SEND_MESSAGE)?;
-    if sender
+/// The rates a mode graph sends its capture points.
+fn capture_rates(graphs: &GraphStore, sender: &CaptureSender) -> io::Result<CaptureRates> {
+    let graph = graph(graphs, sender.graph)?;
+    let at = || format!("graph {:04X} uid {}", sender.graph, sender.uid);
+    let message = node(graph, sender.uid, SEND_MESSAGE)?;
+    if message
         .field("m_gameMessage.m_gameMessage")
         .and_then(asset_guid)
         != Some(CAPTURE_MESSAGE)
     {
         return Err(invalid(format!(
-            "graph {CONTROL_GRAPH:04X} uid {CAPTURE_SENDER} no longer sends the capture rates"
+            "{} no longer sends the capture rates",
+            at()
         )));
     }
-    let mut authored = Authored::new(graphs, CONTROL);
-    let (uid, variable) = CAPTURE_SPEED_BASE;
-    let base = authored.eval(graph, writer(graph, uid, SET_VAR, variable)?)?;
-    authored.set(variable, base);
-    let (uid, variable) = CAPTURE_SPEED;
-    let speed = authored.eval(graph, writer(graph, uid, STACK, variable)?)?;
-    authored.set(variable, speed);
-    let mut tables = Vec::new();
-    for key in CAPTURE_RATES {
-        let rates = parameter(sender, key)
-            .and_then(|rates| rates.get("m_configVars")?.as_array())
-            .ok_or_else(|| {
-                invalid(format!(
-                    "graph {CONTROL_GRAPH:04X} uid {CAPTURE_SENDER} has no capture rates {key:#06X}"
-                ))
-            })?;
-        let mut times: CaptureTimes = [0.0; 3];
-        if rates.len() != times.len() {
-            return Err(invalid(format!(
-                "graph {CONTROL_GRAPH:04X} uid {CAPTURE_SENDER}: {} capture rates, not {}",
-                rates.len(),
-                times.len()
-            )));
-        }
-        for (time, rate) in times.iter_mut().zip(rates) {
-            let rate = positive(
+    let mut authored = Authored::new(graphs, sender.mode);
+    for &(uid, class, variable) in sender.inputs {
+        let value = authored.eval(graph, writer(graph, uid, class, variable)?)?;
+        authored.set(variable, value);
+    }
+    let mut table = |key: u64| -> io::Result<[f64; 3]> {
+        let value = parameter(message, key)
+            .ok_or_else(|| invalid(format!("{} has no parameter {key:#06X}", at())))?;
+        let configs: Vec<&Json> = if value.get("$").and_then(Json::as_str) == Some(CONFIG_LIST) {
+            value
+                .get("m_configVars")
+                .and_then(Json::as_array)
+                .map(|list| list.iter().collect())
+                .unwrap_or_default()
+        } else {
+            vec![value]
+        };
+        let mut rates = Vec::new();
+        for config in configs {
+            rates.push(positive(
                 graph,
-                CAPTURE_SENDER,
-                to_float(&authored.eval(graph, rate)?),
-            )?;
-            *time = 1.0 / rate;
+                sender.uid,
+                to_float(&authored.eval(graph, config)?),
+            )?);
         }
-        tables.push(times);
-    }
-    if tables.windows(2).any(|pair| pair[0] != pair[1]) {
-        return Err(invalid(format!(
-            "graph {CONTROL_GRAPH:04X} uid {CAPTURE_SENDER} sends two different capture rates"
-        )));
-    }
-    Ok(tables[0])
+        // 0E8E indexes the list by the player count, clamped to its end.
+        match rates[..] {
+            [rate] => Ok([rate; 3]),
+            [one, two, three] => Ok([one, two, three]),
+            _ => Err(invalid(format!(
+                "{}: {} rates in {key:#06X}, not 1 or 3",
+                at(),
+                rates.len()
+            ))),
+        }
+    };
+    let capture = table(CAPTURE_RATES)?;
+    let decay = table(DECAY_RATES)?;
+    let delay = parameter(message, DECAY_DELAY)
+        .ok_or_else(|| invalid(format!("{} has no decay delay", at())))?;
+    let decay_delay = positive(graph, sender.uid, to_float(&authored.eval(graph, delay)?))?;
+    Ok(CaptureRates {
+        capture,
+        decay,
+        decay_delay,
+    })
 }
 
 /// The message parameter whose `0A4` index is `key`.
@@ -427,6 +512,11 @@ impl Context for Authored<'_> {
             .rulesets()
             .default(id, 0, self.mode)
             .unwrap_or(Value::Null)
+    }
+
+    fn native(&mut self, config: &Json) -> Option<Value> {
+        (config.get("$").and_then(Json::as_str) == Some(CAPTURE_SPEED_NATIVE))
+            .then_some(Value::Float(1.0))
     }
 }
 

@@ -1,5 +1,12 @@
 use super::*;
-use crate::mode_rules_data::fixture;
+use crate::{
+    mode_rules_data::fixture,
+    objective_data::{ObjectiveTimes, PayloadData, PointData, WaypointData, WaypointEvent},
+    objectives::{
+        CaptureBox, Track,
+        tests::{CONTROL_RATES, ELIMINATION_RATES, SIDED_RATES},
+    },
+};
 use orpheus_content::maps::MapObjective;
 
 const STEP: f64 = 1.0 / 62.5;
@@ -19,7 +26,9 @@ const VALUES: ModeGraphValues = ModeGraphValues {
         shortening: 15.0,
         floor: 0.3,
     },
-    control_capture: [8.0, 16.0 / 3.0, 4.0],
+    sided_capture: SIDED_RATES,
+    control_capture: CONTROL_RATES,
+    elimination_capture: ELIMINATION_RATES,
 };
 
 fn objective(
@@ -57,10 +66,121 @@ fn assault() -> GameMap {
     )
 }
 
-/// The map's flow by the graph values and its mode's rules as the install
-/// has them.
+/// The objective data of a fixture map, like the install's: each point a
+/// 16 × 10 × 16 m box over its position, Assault A 30 s and B 18 s (decay
+/// 22 s), Hybrid's point 32 s, Control 1 s at Control's rates; Assault 4:00
+/// and +3:00 (+0:30 in extra rounds), Escort and Hybrid 4:00, +2:30, +1:30
+/// with Competitive rules and 5:00, +3:00, +2:00 without; the payload on a
+/// straight track through its checkpoints at Gibraltar's speed factor
+/// (1.1), its first checkpoint pausing it 7.5 s, Hybrid's waiting King's
+/// Row's 4 + 5 s once A falls. An Elimination map has its point at its
+/// spawn.
+fn objectives(map: &GameMap) -> Arc<MapObjectives> {
+    let mode = Mode::of(map.mode_guid);
+    let point = |placeable: u32, position: [f64; 3], capture: f64, decay: f64| PointData {
+        placeable,
+        position,
+        capture,
+        decay,
+        boxes: vec![CaptureBox {
+            centre: [position[0], position[1] + 4.0, position[2]],
+            half: [8.0, 5.0, 8.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        }],
+    };
+    let mut data = MapObjectives::default();
+    for objective in &map.objectives {
+        let times = |competitive, competitive_extra, quick_play| ObjectiveTimes {
+            placeable: objective.placeable,
+            objective: objective.order,
+            competitive,
+            competitive_extra,
+            quick_play,
+        };
+        let place = objective.placeable;
+        match (objective.kind, mode) {
+            (ObjectiveKind::Point, Some(Mode::Assault)) if objective.order == 0 => {
+                data.points
+                    .push(point(place, objective.position, 30.0, 30.0));
+                data.objectives.push(times(240.0, 0.0, 240.0));
+            }
+            (ObjectiveKind::Point, Some(Mode::Assault)) => {
+                data.points
+                    .push(point(place, objective.position, 18.0, 22.0));
+                data.objectives.push(times(180.0, 30.0, 180.0));
+            }
+            (ObjectiveKind::Point, _) => {
+                data.points
+                    .push(point(place, objective.position, 32.0, 32.0));
+                data.objectives.push(times(240.0, 0.0, 300.0));
+            }
+            (ObjectiveKind::Checkpoint, _) => data.objectives.push(match objective.order {
+                0 => times(240.0, 0.0, 300.0),
+                1 => times(150.0, 0.0, 180.0),
+                _ => times(90.0, 0.0, 120.0),
+            }),
+            (ObjectiveKind::ControlPoint, _) => {
+                data.points.push(point(place, objective.position, 1.0, 1.0));
+            }
+            (ObjectiveKind::Payload, _) => {
+                let start = WaypointData {
+                    placeable: place + 1000,
+                    position: objective.position,
+                    curve: None,
+                    length: None,
+                    barrier: false,
+                    event: None,
+                };
+                let mut track = vec![start];
+                for (k, checkpoint) in map.objectives_of(ObjectiveKind::Checkpoint).enumerate() {
+                    let pause = if k == 0 { 7.5 } else { 0.0 };
+                    track.push(WaypointData {
+                        placeable: checkpoint.placeable,
+                        position: checkpoint.position,
+                        curve: None,
+                        length: None,
+                        barrier: true,
+                        event: Some(WaypointEvent {
+                            pause,
+                            auto_next: false,
+                        }),
+                    });
+                }
+                for k in 0..track.len() - 1 {
+                    let [from, to] = [track[k].position, track[k + 1].position];
+                    let step: [f64; 3] = std::array::from_fn(|axis| to[axis] - from[axis]);
+                    track[k].curve = Some([[0.0; 3], [0.0; 3], step]);
+                    track[k].length = Some(step.iter().map(|part| part * part).sum::<f64>().sqrt());
+                }
+                let hybrid = mode == Some(Mode::Hybrid);
+                data.payloads.push(PayloadData {
+                    placeable: place,
+                    speed: 1.1,
+                    unlock: if hybrid { [4.0, 5.0] } else { [0.0, 0.0] },
+                    auto_start: false,
+                    track: Track::new(&track).unwrap(),
+                });
+            }
+        }
+    }
+    if mode == Some(Mode::Elimination) {
+        let centre = map.spawns[0].position;
+        data.points.push(point(900, centre, 1.0, 1.0));
+    }
+    Arc::new(data)
+}
+
+/// The map's flow by the graph values, its mode's rules and its objective
+/// data as the install has them.
 fn new_flow(map: &GameMap, competitive: bool, timers: Timers) -> Option<MatchFlow> {
-    MatchFlow::new(map, competitive, VALUES, fixture(map.mode_guid), timers)
+    MatchFlow::new(
+        map,
+        competitive,
+        VALUES,
+        fixture(map.mode_guid),
+        objectives(map),
+        timers,
+    )
 }
 
 fn at(slot: usize, team: u8, position: [f64; 3]) -> Participant {
@@ -195,7 +315,8 @@ fn quick_play_assault_runs_its_phases_and_attackers_win_by_taking_a_and_b() {
         run.flow.variables()[&OBJECTIVE_NAME],
         Value::String("Point B".into())
     );
-    // B with a defender on it holds; then three attackers take it in 10 s.
+    // B with a defender on it holds; then three attackers take it in 9 s:
+    // B's 18 s over 0F4A's ×2 (rule 34's 10 s was the community's figure).
     let contested = [at(0, 1, B), defender];
     assert!(run.until(20.0, &contested, |_| true).is_none());
     assert_eq!(run.flow.objective_progress(), Some(0.0));
@@ -203,7 +324,7 @@ fn quick_play_assault_runs_its_phases_and_attackers_win_by_taking_a_and_b() {
     let took = run
         .until(20.0, &three, |event| *event == FlowEvent::MatchOver)
         .unwrap();
-    close(took, 10.0);
+    close(took, 9.0);
     assert_eq!(run.flow.phase(), Phase::RoundEnd);
     assert_eq!(run.flow.standing(0, 1), Some(Standing::Won));
     assert_eq!(run.flow.standing(0, 0), Some(Standing::Lost));
@@ -379,45 +500,49 @@ fn escort() -> GameMap {
     map
 }
 
+/// Escort: 5:00 without Competitive rules, the checkpoints +3:00 and
+/// +2:00; with them 4:00, +2:30 and +1:30 (each checkpoint's own times).
 #[test]
 fn escort_checkpoints_add_time_and_the_delivery_wins() {
-    let mut run = Run::new(new_flow(&escort(), false, Timers::default()).unwrap());
-    run.flow.start();
-    run.phase(100.0, &[], Phase::Round);
-    assert_eq!(run.flow.clock(), ESCORT_TIME);
-    // One pusher at the payload moves it at 1.7 m/s (rule 41): the first
-    // checkpoint, 20 m out, falls after 11.8 s and adds time.
-    let mut elapsed = 0.0;
-    let mut pushed = |run: &mut Run, until: FlowEvent| {
-        let start = run.elapsed;
-        loop {
-            let position = run
-                .flow
-                .sided
-                .as_ref()
-                .map(|round| match &round.course {
-                    Course::Payload(payload) => payload.position(),
-                    _ => unreachable!(),
-                })
-                .unwrap();
-            let events = run.flow.advance(STEP, &[at(0, 1, position)]);
-            run.elapsed += STEP;
-            elapsed += STEP;
-            if events.contains(&until) {
-                return run.elapsed - start;
+    for (competitive, start, bonus) in [(false, 300.0, 180.0), (true, 240.0, 150.0)] {
+        let mut run = Run::new(new_flow(&escort(), competitive, Timers::default()).unwrap());
+        run.flow.start();
+        run.phase(100.0, &[], Phase::Round);
+        assert_eq!(run.flow.clock(), start);
+        // One pusher moves it at 1.5 m/s times Gibraltar's 1.1: the first
+        // checkpoint, 20 m out, falls after 12.1 s and adds time.
+        let mut elapsed = 0.0;
+        let mut pushed = |run: &mut Run, until: FlowEvent| {
+            let start = run.elapsed;
+            loop {
+                let position = run
+                    .flow
+                    .sided
+                    .as_ref()
+                    .map(|round| match &round.course {
+                        Course::Payload(payload) => payload.position(),
+                        _ => unreachable!(),
+                    })
+                    .unwrap();
+                let events = run.flow.advance(STEP, &[at(0, 1, position)]);
+                run.elapsed += STEP;
+                elapsed += STEP;
+                if events.contains(&until) {
+                    return run.elapsed - start;
+                }
+                assert!(run.elapsed - start < 100.0);
             }
-            assert!(run.elapsed - start < 100.0);
+        };
+        close(pushed(&mut run, FlowEvent::Objective(0)), 20.0 / 1.65);
+        close(run.flow.clock(), start - 20.0 / 1.65 + bonus);
+        // The checkpoint stops it for its 7.5 s pause.
+        close(pushed(&mut run, FlowEvent::Objective(1)), 7.5 + 20.0 / 1.65);
+        pushed(&mut run, FlowEvent::Phase(Phase::RoundEnd));
+        assert!(elapsed > 30.0);
+        if !competitive {
+            assert_eq!(run.flow.standing(0, 1), Some(Standing::Won));
         }
-    };
-    close(pushed(&mut run, FlowEvent::Objective(0)), 20.0 / 1.7);
-    close(
-        run.flow.clock(),
-        ESCORT_TIME - 20.0 / 1.7 + CHECKPOINT_BONUS[0],
-    );
-    close(pushed(&mut run, FlowEvent::Objective(1)), 20.0 / 1.7);
-    pushed(&mut run, FlowEvent::MatchOver);
-    assert_eq!(run.flow.standing(0, 1), Some(Standing::Won));
-    assert!(elapsed > 30.0);
+    }
 }
 
 #[test]
@@ -428,21 +553,25 @@ fn hybrid_moves_its_payload_only_after_point_a() {
     let mut run = Run::new(new_flow(&map, false, Timers::default()).unwrap());
     run.flow.start();
     run.phase(100.0, &[], Phase::Round);
+    assert_eq!(run.flow.clock(), 300.0);
     let on_a = [at(0, 1, [0.0, 0.0, 0.0])];
-    // Rule 49: 32 s for one attacker.
+    // The point's 32 s for one attacker.
     close(
         run.until(40.0, &on_a, |event| *event == FlowEvent::Objective(0))
             .unwrap(),
         32.0,
     );
-    close(run.flow.clock(), ESCORT_TIME - 32.0 + HYBRID_BONUS);
+    // The first payload leg adds its 3:00.
+    close(run.flow.clock(), 300.0 - 32.0 + 180.0);
     assert_eq!(run.flow.objective_progress(), Some(0.0));
-    run.until(5.0, &on_a, |_| false);
-    // It moves while he stays within its radius.
-    close(
-        run.flow.objective_progress().unwrap(),
-        crate::objectives::PAYLOAD_RADIUS,
-    );
+    // It waits 4 + 5 s once active.
+    run.until(8.9, &on_a, |_| false);
+    assert_eq!(run.flow.objective_progress(), Some(0.0));
+    run.until(10.0, &on_a, |_| false);
+    // It moves while he stays within 7 m of the point 2 m above it.
+    let reach = (7.0f64 * 7.0 - 2.0 * 2.0).sqrt();
+    let progress = run.flow.objective_progress().unwrap();
+    assert!((progress - reach).abs() < 0.05, "{progress}");
 }
 
 fn control() -> GameMap {
@@ -498,7 +627,14 @@ fn the_flow_plays_by_the_rules_it_is_given() {
     control_rules.control_unlock = 5.0;
     control_rules.control.percent_per_second = 10.0;
     control_rules.score_to_win = 1;
-    let flow = MatchFlow::new(&control(), false, VALUES, control_rules, Timers::default());
+    let flow = MatchFlow::new(
+        &control(),
+        false,
+        VALUES,
+        control_rules,
+        objectives(&control()),
+        Timers::default(),
+    );
     let mut run = Run::new(flow.unwrap());
     run.flow.start();
     close(run.phase(40.0, &[], Phase::Round), 10.0);
@@ -512,7 +648,14 @@ fn the_flow_plays_by_the_rules_it_is_given() {
 
     let mut assault_rules = fixture(ASSAULT);
     assault_rules.setup = 15.0;
-    let flow = MatchFlow::new(&assault(), false, VALUES, assault_rules, Timers::default());
+    let flow = MatchFlow::new(
+        &assault(),
+        false,
+        VALUES,
+        assault_rules,
+        objectives(&assault()),
+        Timers::default(),
+    );
     let mut run = Run::new(flow.unwrap());
     run.flow.start();
     close(run.phase(40.0, &[], Phase::Setup), 30.0);

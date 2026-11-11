@@ -79,12 +79,26 @@ fn rate(value: f64) -> Json {
     )
 }
 
-fn rates(key: u64, values: [f64; 3]) -> Json {
-    json!({
-        "$": "STU_814D595E",
-        "m_B5051BCE": format!("0x0A40{key:012X}"),
-        "m_value": {"$": "STU_06610EBC", "m_configVars": values.map(rate)}
-    })
+fn parameter(key: u64, value: Json) -> Json {
+    json!({"$": "STU_814D595E", "m_B5051BCE": format!("0x0A40{key:012X}"), "m_value": value})
+}
+
+fn rates(key: u64, values: &[f64]) -> Json {
+    let rates: Vec<Json> = values.iter().copied().map(rate).collect();
+    parameter(key, json!({"$": CONFIG_LIST, "m_configVars": rates}))
+}
+
+/// A mode graph's message to its points: rates by count and the delay.
+fn sender(pos: u16, uid: u32, capture: Json, decay: Json, delay: f64) -> Json {
+    node(
+        pos,
+        uid,
+        SEND_MESSAGE,
+        json!({
+            "m_gameMessage": {"$": "STUConfigVarGameMessage", "m_gameMessage": "0x024000000000079E"},
+            "m_params": [capture, decay, parameter(DECAY_DELAY, float(delay))]
+        }),
+    )
 }
 
 /// The nodes this module reads, with the values and the links of 104319.
@@ -101,6 +115,17 @@ fn fixture() -> Nodes {
         Json::Null,
         Json::Null,
     );
+    // v10354 times each config: 0F4A uid 856 has two, 0EC2 uid 658 one.
+    let speed = |configs: Json| {
+        let opcodes: &[u8] = if configs.as_array().map_or(0, Vec::len) == 2 {
+            &[8, 0, 14, 0, 25, 14, 1, 25, 0]
+        } else {
+            &[8, 0, 14, 0, 25, 0]
+        };
+        expression(opcodes, vec![var(10354, false)], Json::Null, configs)
+    };
+    let ruleset = |key: u32| json!({"$": "STU_3832D36C", "m_value": var(key, true)});
+    let doubled = [1.0, 1.5, 2.0];
     let sided = vec![
         wait(1, 359, float(11.6), 2),
         set_var(2, 529, var(7901, false), int(1), Some(3)),
@@ -116,13 +141,24 @@ fn fixture() -> Nodes {
             CHASE_VAR,
             json!({"m_out_Var": var(7717, false), "m_destination": floor}),
         ),
+        set_var(10, 525, var(10354, false), int(1), None),
+        node(
+            11,
+            856,
+            STACK,
+            json!({
+                "m_out_Var": var(12304, false),
+                "m_value": speed(json!([ruleset(9518), {"$": CAPTURE_SPEED_NATIVE}]))
+            }),
+        ),
+        sender(
+            12,
+            614,
+            rates(CAPTURE_RATES, &doubled),
+            rates(DECAY_RATES, &doubled),
+            5.0,
+        ),
     ];
-    let speed = expression(
-        &[8, 0, 14, 0, 25, 0],
-        vec![var(10354, false)],
-        Json::Null,
-        json!([{"$": "STU_3832D36C", "m_value": var(9518, true)}]),
-    );
     let quarter = [0.125, 0.1875, 0.25];
     let control = vec![
         wait(1, 359, float(10.9), 2),
@@ -133,18 +169,25 @@ fn fixture() -> Nodes {
             5,
             658,
             STACK,
-            json!({"m_out_Var": var(12304, false), "m_value": speed}),
+            json!({"m_out_Var": var(12304, false), "m_value": speed(json!([ruleset(9518)]))}),
         ),
-        node(
+        sender(
             6,
-            CAPTURE_SENDER,
-            SEND_MESSAGE,
-            json!({
-                "m_gameMessage": {"$": "STUConfigVarGameMessage", "m_gameMessage": "0x024000000000079E"},
-                "m_params": [rates(0x0420, quarter), rates(0x0421, quarter)]
-            }),
+            657,
+            rates(CAPTURE_RATES, &quarter),
+            rates(DECAY_RATES, &quarter),
+            5.0,
         ),
     ];
+    // One over the ruleset's capture time.
+    let over_time = || {
+        expression(
+            &[6, 0, 14, 0, 26, 0],
+            Vec::new(),
+            json!([1.0]),
+            json!([ruleset(10595)]),
+        )
+    };
     let elimination = vec![
         set_var(1, 621, var(8882, false), float(2.3), None),
         wait(2, 454, var(8882, false), 3),
@@ -155,6 +198,13 @@ fn fixture() -> Nodes {
             json!({"m_truePlug": plug(None), "m_falsePlug": plug(Some(4))}),
         ),
         set_var(4, 508, var(PHASE, false), int(1), None),
+        sender(
+            5,
+            839,
+            parameter(CAPTURE_RATES, over_time()),
+            parameter(DECAY_RATES, over_time()),
+            2.0,
+        ),
     ];
     Nodes::from([
         (SIDED_GRAPH, sided),
@@ -187,9 +237,16 @@ fn store(nodes: Nodes, speed: f64) -> GraphStore {
         .collect();
     let bundle = json!({"version": 1, "graphs": graphs, "bodies": {}, "missing": []});
     let rulesets = json!({
-        "schemas": {"0x0A3000000000000C": {"9518": speed}},
+        "schemas": {
+            "0x0A3000000000000C": {"9518": speed},
+            "0x0A30000000000009": {"10595": 3}
+        },
         "heroes": {},
-        "modes": {"0x0230000000000017": ["0x0A3000000000000C"]}
+        "modes": {
+            "0x0230000000000014": ["0x0A3000000000000C"],
+            "0x0230000000000017": ["0x0A3000000000000C"],
+            "0x0230000000000009": ["0x0A30000000000009"]
+        }
     });
     GraphStore::from_json(&serde_json::to_vec(&bundle).unwrap())
         .unwrap()
@@ -214,14 +271,19 @@ fn assert_close(actual: f64, expected: f64) {
     );
 }
 
-fn assert_times(actual: CaptureTimes, expected: CaptureTimes) {
-    for (actual, expected) in actual.into_iter().zip(expected) {
+fn assert_rates(actual: CaptureRates, capture: [f64; 3], delay: f64) {
+    for (actual, expected) in actual.capture.into_iter().zip(capture) {
         assert_close(actual, expected);
     }
+    assert_eq!(
+        actual.decay, actual.capture,
+        "the decay rates are the capture rates"
+    );
+    assert_close(actual.decay_delay, delay);
 }
 
 /// The values 104319 gives: the wait after a round per mode, the fuse,
-/// and Control's capture seconds by player count.
+/// and the capture rates of Assault and Hybrid, Control and Elimination.
 fn assert_104319(values: &ModeGraphValues) {
     assert_close(values.sided_round_end, 11.6);
     assert_close(values.control_round_end, 10.9);
@@ -240,19 +302,29 @@ fn assert_104319(values: &ModeGraphValues) {
     ] {
         assert_close(actual, expected);
     }
-    assert_times(values.control_capture, [8.0, 16.0 / 3.0, 4.0]);
+    assert_rates(values.sided_capture, [1.0, 1.5, 2.0], 5.0);
+    assert_rates(values.control_capture, [0.125, 0.1875, 0.25], 5.0);
+    assert_rates(values.elimination_capture, [1.0 / 3.0; 3], 2.0);
 }
 
 #[test]
-fn reads_the_round_ends_the_fuse_and_the_control_capture_times() {
+fn reads_the_round_ends_the_fuse_and_the_capture_rates() {
     let values = ModeGraphValues::read(&store(fixture(), 1.0)).unwrap();
     assert_104319(&values);
+    assert_eq!(values.capture(Mode::Hybrid), values.sided_capture);
+    assert_eq!(values.capture(Mode::Control), values.control_capture);
+    assert_eq!(
+        values.capture(Mode::Elimination),
+        values.elimination_capture
+    );
 }
 
 #[test]
-fn the_rulesets_capture_speed_scales_the_control_capture_times() {
+fn the_rulesets_capture_speed_scales_the_capture_rates() {
     let values = ModeGraphValues::read(&store(fixture(), 2.0)).unwrap();
-    assert_times(values.control_capture, [4.0, 8.0 / 3.0, 2.0]);
+    assert_rates(values.sided_capture, [2.0, 3.0, 4.0], 5.0);
+    assert_rates(values.control_capture, [0.25, 0.375, 0.5], 5.0);
+    assert_rates(values.elimination_capture, [1.0 / 3.0; 3], 2.0);
 }
 
 #[test]
@@ -298,7 +370,7 @@ type Change = (&'static str, u32, u32, fn(&mut Json));
 
 #[test]
 fn data_that_no_longer_matches_is_an_error() {
-    let cases: [Change; 7] = [
+    let cases: [Change; 8] = [
         ("a wait became a state", CONTROL_GRAPH, 359, |node| {
             node["class"] = json!("STUStatescriptState");
         }),
@@ -329,17 +401,17 @@ fn data_that_no_longer_matches_is_an_error() {
                 node["fields"]["m_value"]["m_expression"]["m_D99EF254"] = json!([2.0]);
             },
         ),
-        (
-            "the two rate tables differ",
-            CONTROL_GRAPH,
-            CAPTURE_SENDER,
-            |node| {
-                node["fields"]["m_params"][1] = rates(0x0421, [0.125, 0.25, 0.25]);
-            },
-        ),
-        ("a rate is zero", CONTROL_GRAPH, CAPTURE_SENDER, |node| {
-            node["fields"]["m_params"][0] = rates(0x0420, [0.0, 0.1875, 0.25]);
-            node["fields"]["m_params"][1] = rates(0x0421, [0.0, 0.1875, 0.25]);
+        ("two rates instead of three", CONTROL_GRAPH, 657, |node| {
+            node["fields"]["m_params"][1] = rates(DECAY_RATES, &[0.125, 0.25]);
+        }),
+        ("a rate is zero", SIDED_GRAPH, 614, |node| {
+            node["fields"]["m_params"][0] = rates(CAPTURE_RATES, &[0.0, 1.5, 2.0]);
+        }),
+        ("no decay delay", ELIMINATION_GRAPH, 839, |node| {
+            node["fields"]["m_params"]
+                .as_array_mut()
+                .unwrap()
+                .truncate(2);
         }),
     ];
     for (case, graph, uid, change) in cases {

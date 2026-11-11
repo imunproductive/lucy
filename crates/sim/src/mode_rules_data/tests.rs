@@ -9,6 +9,28 @@ fn int(value: i64) -> Json {
     json!({"$": "STUConfigVarInt", "m_value": value, "m_EE729DCB": 0})
 }
 
+fn float(value: f64) -> Json {
+    json!({"$": "STUConfigVarFloat", "m_value": value, "m_EE729DCB": 0})
+}
+
+/// One of 1225's TrackTargets: its range variable and its centre, the
+/// payload plus (0, 2.5, 0).
+fn tracker(uid: u32, range: u32) -> FixtureNode {
+    node(
+        uid,
+        TRACK_TARGETS,
+        json!({
+            "m_radius": dynamic(range),
+            "m_D59188D5": expression(
+                &[14, 0, 6, 0, 6, 1, 6, 0, 58, 23, 0],
+                &[],
+                &[0.0, 2.5],
+                json!([{"$": "STU_B5A0CAF0", "m_EE729DCB": 0}]),
+            ),
+        }),
+    )
+}
+
 fn expression(opcodes: &[u8], dynamics: &[u32], floats: &[f64], configs: Json) -> Json {
     json!({
         "$": "STU_919FD47C",
@@ -57,7 +79,9 @@ fn graph(index: u32, nodes: Vec<FixtureNode>) -> Json {
 
 /// The install's nodes (their opcodes and inputs), with other numbers:
 /// hero select 40/35 s, setup 50 s, banks 150/70 s, Control lock 20 s,
-/// 100 / (1 × 60) % a second, hold at 98%, rollback 0.5 m/s.
+/// 100 / (1 × 60) % a second, hold at 98%, rollback 0.5 m/s after 12 s,
+/// push 1.25 m/s rising by 0.375 to 2, runs of its own at 2.5 m/s, a 6 m
+/// range around 2.5 m above the payload, the contest 1.5 s after.
 fn nodes() -> Vec<FixtureGraph> {
     let bank = |constant: f64, index: f64| {
         expression(
@@ -196,6 +220,33 @@ fn nodes() -> Vec<FixtureGraph> {
                         ),
                     ),
                 ),
+                node(
+                    34,
+                    PATH_MOVE,
+                    json!({"m_speed": expression(
+                        &[
+                            8, 0, 6, 0, 6, 1, 6, 2, 8, 1, 18, 6, 3, 24, 25, 23, 63, 25, 6, 3, 8, 2,
+                            24, 6, 0, 8, 2, 25, 14, 0, 25, 23, 25, 8, 3, 25, 0,
+                        ],
+                        &[MAP_SPEED, PUSHERS, SPREAD.1, ROLLBACK_FACTOR],
+                        &[2.0, 1.25, 0.375, 1.0],
+                        json!([{"$": RANDOM, "m_EE729DCB": 0}]),
+                    )}),
+                ),
+                node(
+                    75,
+                    PATH_MOVE,
+                    json!({"m_speed": expression(&[6, 0, 8, 0, 25, 0], &[ROLLBACK_FACTOR], &[2.5], Json::Null)}),
+                ),
+                node(363, SET_VAR, set_var(SPREAD.1, float(0.25))),
+                node(183, SET_VAR, set_var(RANGES[0].1, int(6))),
+                node(184, SET_VAR, set_var(RANGES[1].1, int(6))),
+                node(185, SET_VAR, set_var(ROLLBACK_AFTER.1, int(12))),
+                node(204, SET_VAR, set_var(CONTEST_LINGER.1, float(1.5))),
+                tracker(3, RANGES[0].1),
+                tracker(5, RANGES[1].1),
+                tracker(433, RANGES[1].1),
+                tracker(434, RANGES[0].1),
             ],
         ),
     ]
@@ -258,7 +309,7 @@ fn the_rules_are_read_from_the_graphs_the_objectives_and_the_rulesets() {
                 hold_at: 98.0,
             },
             capture_marks: [0.25, 0.5],
-            rollback_speed: 0.0,
+            payload: None,
             score_to_win: 0,
             round_time: 0.0,
             hero_select: 0.0,
@@ -286,7 +337,18 @@ fn the_rules_are_read_from_the_graphs_the_objectives_and_the_rulesets() {
     let team = data.rules(&rulesets, TEAM_DEATHMATCH).unwrap();
     assert_eq!((team.score_to_win, team.round_time), (35, 900.0));
     let escort = data.rules(&rulesets, ESCORT).unwrap();
-    assert_eq!(escort.rollback_speed, 0.5 * 2.0);
+    assert_eq!(
+        escort.payload,
+        Some(PayloadRules {
+            push_speeds: [2.5, 3.25, 4.0],
+            auto_speed: 5.0,
+            rollback_speed: 1.0,
+            rollback_after: 12.0,
+            radius: 6.0,
+            centre: [0.0, 2.5, 0.0],
+            contest_linger: 1.5,
+        })
+    );
 }
 
 /// A mode whose schemas lack a setting its flow plays by doesn't get rules.
@@ -338,6 +400,18 @@ fn changed_data_fails_the_load() {
             json!(9521);
     });
     assert!(error.contains("doesn't read ruleset entry 9520"), "{error}");
+    let error = changed(PAYLOAD_GRAPH, 184, &|_, fields| {
+        fields["m_value"]["m_value"] = json!(5);
+    });
+    assert!(error.contains("ranges are 6 and 5"), "{error}");
+    let error = changed(PAYLOAD_GRAPH, 433, &|_, fields| {
+        fields["m_D59188D5"]["m_expression"]["m_D99EF254"] = json!([0.0, 3.0]);
+    });
+    assert!(error.contains("uid 433 tracks around"), "{error}");
+    let error = changed(PAYLOAD_GRAPH, 34, &|_, fields| {
+        fields["m_speed"]["m_expression"]["m_D99EF254"][0] = json!(9.0);
+    });
+    assert!(error.contains("capped at three"), "{error}");
     let mut nodes = nodes();
     nodes.retain(|(index, _)| *index != PAYLOAD_GRAPH);
     let error = ModeRulesData::read(&store(nodes), OBJECTIVES).unwrap_err();

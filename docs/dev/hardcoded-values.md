@@ -12,7 +12,7 @@ When you replace a value, remove its row here or move it to the right section.
 
 ### Values the server has wrong
 
-None left: the Control capture time, the round waits, the overtime fuse, match XP and the level curve are now read from the install.
+None left: the Control capture time, the round waits, the overtime fuse, match XP, the level curve, the capture times, the time per objective and the payload's speeds, range and timers are now read from the install.
 
 ### Values the server has right, but as copies in code
 
@@ -33,11 +33,9 @@ These look findable from the data alone, by comparing values across maps and mod
 
 | Item | Where | Code | What the install has |
 | --- | --- | --- | --- |
-| Capture area size | `sim/src/objectives.rs:16-20` | 8 m circle, 2 m below, 5 m above | Each capture point's `STUECCaptureAreaInstanceData` in the map's ENTITY chunk holds 8.0 or 8.5, then numbers that look like height and times. |
-| Assault and Hybrid capture times | `sim/src/objectives.rs:112-116` | 30/20/15 s and others | The ×1, 1.5 and 2 multipliers per player are confirmed (`0F4A` uid 614, and the capture area component). The base time is probably in the capture point's data. |
-| Time added per checkpoint, and the 240 s start | `sim/src/match_flow.rs:168-176` | +180, +150, +90 | `0F4A` uid 647 adds v10552 or v10553 of the current objective. The map's objective objects set these values (`0F4C` uids 5 and 6), so the real seconds are per map. |
-| Payload speed and pushers | `sim/src/objectives.rs:30,200-202` | 1.4 to 2.25 m/s by map; ×1, 1.165, 1.33 | `1225` uid 34: a base of 1.5 m/s and ×1, 1.167, 1.333 per pusher, capped at ×2. There is also a ±10% factor of unknown source. Per-map values may be overrides on the payload. |
-| Payload push radius | `sim/src/objectives.rs:23` | 5 m | `STUEscortComponent` has two radius pairs: 3.5 / 6.75 and 2.25 / 6.75. Which one is the push radius is unknown. |
+| Capture area shape | `sim/src/objectives.rs` (`Area::Boxes`) | Read: the boxes of the area placeable (map chunk `0x0A`) that the point's `STUTargetTagInstanceData.m_2746D7E4` names | Strong guess that this area is the capture volume: the boxes fit each point's floor ring and the legacy capture area names the same area, but no reader of the field was seen (refs `CaptureAreas.md` §3). |
+| Payload speed units | `sim/src/objectives.rs` (`Track`) | Read: `1225` uid 34 times v7779, in the track's stored-length metres a second | Strong guess: with the stored lengths (`m_9741DF92`) the speeds give the community's m/s within 0.04. The ±10% factor (`STU_B182C5C9`, a field-less config var) is read at its middle, so the server has no spread; when the client draws it is not known. |
+| Payload range shape, rollback end | `sim/src/objectives.rs` (`Payload`) | Read: a 7 m sphere 2 m above the payload; rollback stops at the last barrier waypoint | Strong guesses: the sphere from the TrackTargets' 360° angles, the barrier from the waypoints' missing previous links (refs `Payloads.md` §3-4). |
 | Target search filters (`TrackTargets`) | `script/src/vm/targets.rs` | `m_66747E7D` 1 allies, 2 enemies; `m_89831602` bit 4 leaves the searcher out; `m_84065FD1` 1 and 64 take players' bodies and bots; `m_4EA686DB` bit 16 leaves the dead out; a body counts when its capsule is within the radius | Each search's `STUConfigVarFilter`. The meanings come from comparing the 292 uses (heals use 1, enemy abilities 2, beams to others bit 4); the module doc lists the evidence. Other bits and fields are not read, and searches that set them find nothing. |
 | Loot box odds | `lobby/src/lootbox.rs:60-61` | One set of odds for every box type, fitted by Python to Blizzard's 2017 China disclosure (an epic about every 5.5 boxes, a legendary about every 13.5) | `054/011D` `STULootBoxRarityRules` gives each box type a fraction per rarity (rare, epic, legendary): base 1/20, 1/40, 1/100; the six event boxes 1/5, 1/12, 1/24; golden 1/8, 1/20, 2/30; legendary boxes 1/4, 1/6, 1/15. They are most likely chances, but no model (per item, per box, or rising each box without the rarity) gives both disclosed rates. `m_24391F9B` = 21 and `m_53B8C818` = 50 are the same on every box type; they might be bad-luck limits. The 1.74 client has no odds screen. Box contents were rolled on Blizzard's servers, so the client may never read these fields. Settling it needs IDA (code that reads the field hashes) or logs of many retail box openings. Report: `refs/reports/LootOdds.md` outside the repo. |
 | Credit share in loot box slots | `lobby/src/lootbox.rs:70-75` | 5%, 5%, 50% | Only the base box has `m_currencyRarityRules`: 11/30, 13/42, 91/250. A weak guess is the chance that a slot of that rarity gives credits (about 37%, 31%, 36%). Not confirmed. |
@@ -59,7 +57,8 @@ These were rules of Blizzard's servers, live-service data, or code inside the cl
 | Crouch-again delay | `physics/src/mover/posture.rs:37` | 0.15 s | No asset field found. |
 | AI difficulty: damage share, aim error, reaction time, behaviour | `sim/src/ai.rs` | 25/50/100% and guesses | Not found in the AI graphs. |
 | AI hero roster | `sim/src/ai.rs:44` | 12 heroes | Not found. |
-| Overtime respawn +3 s, extra-round +30 s, match end 20 s, rollback delay 10 s, Deathmatch top 4 | `sim/src/match_flow.rs`, `sim/src/objectives.rs` | As in the community rules | Not found in any graph. |
+| Overtime respawn +3 s, match end 20 s, Deathmatch top 4 | `sim/src/match_flow.rs` | As in the community rules | Not found in any graph. |
+| Objective details the graphs leave to native code | `sim/src/objectives.rs`, `sim/src/match_flow.rs` | Every attacker advances a point (0E8E ignores players with v10414 set; the server sets none); a Control tie picks team 0 (the graph picks at random); a payload event fires once; Hybrid's unlock run starts after the waits; a match with a ranked player plays with "Competitive Rules" | The graphs read native state the server doesn't have. |
 | Hitscan reach and projectile lifetime when a weapon has none | `sim/src/hitscan.rs:24`, `script/src/weapons.rs:87` | 200 m, 5 s | Fallbacks. Not found. |
 | Training Bot eye height | `sim/src/bots.rs:82` | 1.55 m | The bot asset says 2.0 m, but the Python server aimed from 1.55 m. Hit shapes now decide headshots for bots. |
 | Training Bot patrol timings | `sim/src/bots.rs:62-73` | First wait 3 s, walk gap 1.2 s, turn rate | The patrol graph `0B8E` is read, but these timings were not found in it. |

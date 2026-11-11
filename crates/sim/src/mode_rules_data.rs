@@ -3,7 +3,8 @@
 //! server kept (`ow174/game/match.py`):
 //! - the mode graphs' values: hero select and setup (`0F4A`), the time
 //!   banks of the extra rounds (`0F4A`), the Control point's lock, score
-//!   rate and overtime hold (`0EC2`), and the payload's rollback (`1225`);
+//!   rate and overtime hold (`0EC2`), and the payload's speeds, ranges and
+//!   timers (`1225`);
 //! - the capture area's progress marks (`game_objectives_174.json`);
 //! - the mode's ruleset defaults (`game_rulesets_174.json`): score to win,
 //!   time limits, Elimination's hero select and tiebreaker, and the speed
@@ -60,6 +61,7 @@ const BRANCH: &str = "STU_3387AB5D";
 /// The payload's move along its path (`m_speed`).
 const PATH_MOVE: &str = "STU_49FE0019";
 const RULESET_VALUE: &str = "STU_3832D36C";
+const TRACK_TARGETS: &str = "STUStatescriptStateTrackTargets";
 
 /// 0F4A: the round count (uid 529 adds 1 to it) and a flag uids 977/978
 /// set, both read by the hero select time (uid 896).
@@ -84,6 +86,36 @@ const PHASE: u32 = 59;
 /// 1225: the payload's rollback speed setting, `-0.3 * v9671` (uid 44);
 /// uid 376 sets v9671 to the payload speed setting times v10354.
 const ROLLBACK_FACTOR: u32 = 9671;
+/// 1225 uid 34: the push speed, `v7779 * min(2, 1.5 + 0.25 * (len(v573) -
+/// 1)) * (1 - v9083 + 2 * v9083 * random) * v9671`: the map's speed factor
+/// v7779, the pushers v573, the random spread v9083 (uid 363: 0.1).
+const PUSH_MOVE: u32 = 34;
+const MAP_SPEED: u32 = 7779;
+const PUSHERS: u32 = 573;
+const SPREAD: (u32, u32) = (363, 9083);
+/// The random number in [0, 1] of the push speed (refs `Payloads.md` §2:
+/// a field-less config var that the other graphs use as one). The server
+/// reads the speed at its middle, 0.5, which leaves the factor out: when it
+/// is drawn and whether the client draws it at all is unknown.
+const RANDOM: &str = "STU_B182C5C9";
+/// 1225 uid 75: the run of its own, `2.0 * v9671`.
+const AUTO_MOVE: u32 = 75;
+/// 1225 uid 44: the rollback.
+const ROLLBACK_MOVE: u32 = 44;
+/// 1225 uid 185: v2312, the seconds without an attacker in range before the
+/// rollback (wait uid 52).
+const ROLLBACK_AFTER: (u32, u32) = (185, 2312);
+/// 1225 uids 183 and 184: the two ranges (v2272, v2271) its four
+/// TrackTargets (uids 3, 5, 433, 434) find the players in, around the
+/// point their `m_D59188D5` gives.
+const RANGES: [(u32, u32); 2] = [(183, 2272), (184, 2271)];
+const TRACKERS: [u32; 4] = [3, 5, 433, 434];
+/// 1225 uid 204: v3032, how long the contest lasts after the last defender
+/// left (uid 205 holds v3033 while defenders are near, then waits v3032).
+const CONTEST_LINGER: (u32, u32) = (204, 3032);
+/// The payload's entity, as its expressions read it (`STU_B5A0CAF0`): the
+/// trackers' centre is read relative to it at the origin.
+const PAYLOAD_ENTITY: u32 = 1;
 
 /// The ruleset entries (`01C` indexes) the flow reads, with the custom game
 /// setting each one is (their defaults match the settings' documented
@@ -142,9 +174,9 @@ pub struct ModeRules {
     /// The marks a capture point's progress never falls below once reached
     /// (`STUCaptureAreaComponent.m_segments`: 1/3 and 2/3).
     pub capture_marks: [f64; 2],
-    /// The payload's rollback speed in m/s (1225 uid 44: 0.3 times the
-    /// payload speed setting and v10354); 0 in modes without a payload.
-    pub rollback_speed: f64,
+    /// The payload's rules in Escort and Hybrid (1225), its speeds times the
+    /// payload speed setting; none in the other modes.
+    pub payload: Option<PayloadRules>,
     /// The mode's "Score to win": rounds (Control, Elimination) or kills
     /// (Deathmatch, Team Deathmatch); 0 in the other modes.
     pub score_to_win: i64,
@@ -171,9 +203,41 @@ pub struct ModeRulesData {
     /// 0EC2 uid 511 at a score speed setting of 1.
     control_rate: f64,
     hold_at: f64,
-    /// 0.3 times 0F4A's v10354: the rollback at a payload speed of 1.
-    rollback_speed: f64,
+    /// 1225's values at a payload speed setting of 1 and 0F4A's v10354.
+    payload: PayloadRules,
     capture_marks: [f64; 2],
+}
+
+/// The payload as its graph (1225) moves it (refs `Payloads.md` §2-5).
+/// Speeds are in the track's stored-length metres a second.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PayloadRules {
+    /// With 1, 2 and 3 or more pushers at a map speed factor (v7779) of 1
+    /// (uid 34: 1.5, 1.75, 2; the speed is proportional to the factor).
+    pub push_speeds: [f64; 3],
+    /// Its runs of its own (uid 75: 2).
+    pub auto_speed: f64,
+    /// Rolling back (uid 44: 0.3).
+    pub rollback_speed: f64,
+    /// Seconds without an attacker in range before it rolls back (10).
+    pub rollback_after: f64,
+    /// The push, contest and heal range (7 m) ...
+    pub radius: f64,
+    /// ... around this point above the payload's origin (0, 2, 0).
+    pub centre: [f64; 3],
+    /// Seconds the contest lasts after the last defender left (1).
+    pub contest_linger: f64,
+}
+
+impl PayloadRules {
+    /// The rules at a payload speed setting of `factor`: v9671 scales
+    /// every speed (uid 376).
+    fn at_speed(mut self, factor: f64) -> Self {
+        self.push_speeds = self.push_speeds.map(|speed| speed * factor);
+        self.auto_speed *= factor;
+        self.rollback_speed *= factor;
+        self
+    }
 }
 
 #[derive(Deserialize)]
@@ -238,7 +302,7 @@ impl ModeRulesData {
             control_unlock: reader.control_unlock()?,
             control_rate,
             hold_at,
-            rollback_speed: reader.rollback()?,
+            payload: reader.payload()?,
             capture_marks,
         })
     }
@@ -276,7 +340,7 @@ impl ModeRulesData {
                 hold_at: self.hold_at,
             },
             capture_marks: self.capture_marks,
-            rollback_speed: 0.0,
+            payload: None,
             score_to_win: 0,
             round_time: 0.0,
             hero_select: 0.0,
@@ -302,7 +366,7 @@ impl ModeRulesData {
                 rules.round_time = number(TEAM_DEATHMATCH_TIME)? * 60.0;
             }
             Some(Mode::Escort | Mode::Hybrid) => {
-                rules.rollback_speed = self.rollback_speed * number(PAYLOAD_SPEED)?;
+                rules.payload = Some(self.payload.at_speed(number(PAYLOAD_SPEED)?));
             }
             Some(Mode::Assault | Mode::Skirmish) | None => {}
         }
@@ -466,20 +530,12 @@ impl Reader<'_> {
         Ok((rate, hold_at))
     }
 
-    /// The rollback speed at a payload speed setting of 1: 1225 uid 44
-    /// moves the payload at `-0.3 * v9671`; uid 376 sets v9671 to the
-    /// payload speed setting (ruleset entry 9520) times v10354, which 0F4A
-    /// (the mode graph of the payload modes) sets with uid 525.
-    fn rollback(&self) -> io::Result<f64> {
-        let factor = self.speed_factor(SIDED_GRAPH)?;
-        let rollback = self.node(PAYLOAD_GRAPH, 44, PATH_MOVE)?;
-        let speed = -to_float(&value(
-            PAYLOAD_GRAPH,
-            rollback,
-            "m_speed",
-            &[(ROLLBACK_FACTOR, Value::Float(1.0))],
-            &[],
-        )?);
+    /// The payload's rules at a payload speed setting of 1. 1225 uid 376
+    /// sets v9671 to the payload speed setting (ruleset entry 9520) times
+    /// v10354, which 0F4A (the mode graph of the payload modes) sets with
+    /// uid 525; every speed is a multiple of v9671.
+    fn payload(&self) -> io::Result<PayloadRules> {
+        let factor = to_float(&self.speed_factor(SIDED_GRAPH)?);
         let setter = self.writer(PAYLOAD_GRAPH, 376, STACK, ROLLBACK_FACTOR)?;
         let reads = |config: &Json| reads_ruleset(config, PAYLOAD_SPEED);
         if !setter.field("m_value").is_some_and(reads) {
@@ -487,12 +543,121 @@ impl Reader<'_> {
                 "{PAYLOAD_GRAPH:04X} uid 376 doesn't read ruleset entry {PAYLOAD_SPEED}"
             )));
         }
-        if speed <= 0.0 {
+        let unit = (ROLLBACK_FACTOR, Value::Float(1.0));
+        let speed = |uid: u32, sign: f64| -> io::Result<f64> {
+            let node = self.node(PAYLOAD_GRAPH, uid, PATH_MOVE)?;
+            let speed = to_float(&value(
+                PAYLOAD_GRAPH,
+                node,
+                "m_speed",
+                std::slice::from_ref(&unit),
+                &[],
+            )?);
+            positive(PAYLOAD_GRAPH, uid, sign * speed)
+        };
+        let spread = self.set(PAYLOAD_GRAPH, SPREAD)?;
+        let push = self.node(PAYLOAD_GRAPH, PUSH_MOVE, PATH_MOVE)?;
+        let push_at = |map: f64, pushers: usize| -> io::Result<f64> {
+            let variables = [
+                (MAP_SPEED, Value::Float(map)),
+                (PUSHERS, Value::Array(vec![Value::Null; pushers])),
+                (SPREAD.1, spread.clone()),
+                unit.clone(),
+            ];
+            let mut inputs = Inputs {
+                variables: &variables,
+                natives: &[(RANDOM, Value::Float(0.5))],
+                ..Inputs::default()
+            };
+            let at = || format!("{PAYLOAD_GRAPH:04X} uid {PUSH_MOVE}");
+            let config = push
+                .field("m_speed")
+                .ok_or_else(|| invalid(format!("{} has no m_speed", at())))?;
+            let speed = to_float(&inputs.evaluate(at, config)?);
+            positive(PAYLOAD_GRAPH, PUSH_MOVE, speed)
+        };
+        let push_speeds = [push_at(1.0, 1)?, push_at(1.0, 2)?, push_at(1.0, 3)?];
+        // More than three push as three; the map factor scales the speed.
+        if !close(push_at(1.0, 4)?, push_speeds[2])
+            || !close(push_at(2.0, 1)?, 2.0 * push_speeds[0])
+        {
             return Err(invalid(format!(
-                "{PAYLOAD_GRAPH:04X} uid 44 rolls back at {speed} m/s"
+                "{PAYLOAD_GRAPH:04X} uid {PUSH_MOVE}: the push speed is no longer capped at three \
+                 pushers and proportional to v{MAP_SPEED}"
             )));
         }
-        Ok(speed * to_float(&factor))
+        let near = to_float(&self.set(PAYLOAD_GRAPH, RANGES[0])?);
+        let far = to_float(&self.set(PAYLOAD_GRAPH, RANGES[1])?);
+        if !close(near, far) || near <= 0.0 {
+            return Err(invalid(format!(
+                "{PAYLOAD_GRAPH:04X}: the payload's ranges are {near} and {far} m"
+            )));
+        }
+        let centre = self.trackers_centre(RANGES.map(|(_, variable)| variable))?;
+        Ok(PayloadRules {
+            push_speeds: push_speeds.map(|speed| speed * factor),
+            auto_speed: speed(AUTO_MOVE, 1.0)? * factor,
+            rollback_speed: speed(ROLLBACK_MOVE, -1.0)? * factor,
+            rollback_after: positive(
+                PAYLOAD_GRAPH,
+                ROLLBACK_AFTER.0,
+                to_float(&self.set(PAYLOAD_GRAPH, ROLLBACK_AFTER)?),
+            )?,
+            radius: near,
+            centre,
+            contest_linger: positive(
+                PAYLOAD_GRAPH,
+                CONTEST_LINGER.0,
+                to_float(&self.set(PAYLOAD_GRAPH, CONTEST_LINGER)?),
+            )?,
+        })
+    }
+
+    /// The value a SetVar `(uid, variable)` gives, read without inputs.
+    fn set(&self, graph: u32, (uid, variable): (u32, u32)) -> io::Result<Value> {
+        let node = self.writer(graph, uid, SET_VAR, variable)?;
+        value(graph, node, "m_value", &[], &[])
+    }
+
+    /// The point the payload's trackers find players around, relative to
+    /// the payload: each tracker's range is one of `ranges` and all share
+    /// one centre.
+    fn trackers_centre(&self, ranges: [u32; 2]) -> io::Result<[f64; 3]> {
+        let mut centre = None;
+        for uid in TRACKERS {
+            let tracker = self.node(PAYLOAD_GRAPH, uid, TRACK_TARGETS)?;
+            let range = tracker
+                .field("m_radius.m_identifier")
+                .and_then(Json::as_u64);
+            if !range.is_some_and(|range| ranges.iter().any(|&known| u64::from(known) == range)) {
+                return Err(invalid(format!(
+                    "{PAYLOAD_GRAPH:04X} uid {uid} tracks within {range:?}, not v{} or v{}",
+                    ranges[0], ranges[1]
+                )));
+            }
+            let at = || format!("{PAYLOAD_GRAPH:04X} uid {uid}");
+            let config = tracker
+                .field("m_D59188D5")
+                .ok_or_else(|| invalid(format!("{} has no centre", at())))?;
+            let mut inputs = Inputs {
+                owner: Value::Entity(PAYLOAD_ENTITY),
+                ..Inputs::default()
+            };
+            let Value::Vector(found) = inputs.evaluate(at, config)? else {
+                return Err(invalid(format!("{}'s centre is not a point", at())));
+            };
+            match centre {
+                None => centre = Some(found),
+                Some(centre) if centre == found => {}
+                Some(centre) => {
+                    return Err(invalid(format!(
+                        "{} tracks around {found:?}, another tracker around {centre:?}",
+                        at()
+                    )));
+                }
+            }
+        }
+        Ok(centre.expect("four trackers"))
     }
 
     /// v10354 as a mode graph's uid 525 sets it.
@@ -553,21 +718,32 @@ fn evaluate_with(
     let mut inputs = Inputs {
         variables,
         rulesets,
-        unknown: None,
+        ..Inputs::default()
     };
-    let value =
-        evaluate(config, &mut inputs).map_err(|error| invalid(format!("{}: {error}", at())))?;
-    match inputs.unknown {
-        Some(read) => Err(invalid(format!("{} reads {read}", at()))),
-        None => Ok(value),
-    }
+    inputs.evaluate(at, config)
 }
 
-/// An expression's inputs; the first other thing it reads is kept.
+/// An expression's inputs: variables, ruleset entries, native configs (by
+/// class) and the entity that runs it (at the origin); the first other
+/// thing it reads is kept.
 struct Inputs<'a> {
     variables: &'a [(u32, Value)],
     rulesets: &'a [(u32, Value)],
+    natives: &'a [(&'a str, Value)],
+    owner: Value,
     unknown: Option<String>,
+}
+
+impl Default for Inputs<'_> {
+    fn default() -> Self {
+        Self {
+            variables: &[],
+            rulesets: &[],
+            natives: &[],
+            owner: Value::Null,
+            unknown: None,
+        }
+    }
 }
 
 impl Inputs<'_> {
@@ -580,6 +756,16 @@ impl Inputs<'_> {
             }
         }
     }
+
+    /// A config evaluated with these inputs only; `at` names it in errors.
+    fn evaluate(&mut self, at: impl Fn() -> String, config: &Json) -> io::Result<Value> {
+        let value =
+            evaluate(config, self).map_err(|error| invalid(format!("{}: {error}", at())))?;
+        match self.unknown.take() {
+            Some(read) => Err(invalid(format!("{} reads {read}", at()))),
+            None => Ok(value),
+        }
+    }
 }
 
 impl Context for Inputs<'_> {
@@ -590,6 +776,33 @@ impl Context for Inputs<'_> {
     fn ruleset(&mut self, id: u32) -> Value {
         self.input(self.rulesets, id, "ruleset entry")
     }
+
+    fn owner(&mut self) -> Value {
+        self.owner.clone()
+    }
+
+    fn native(&mut self, config: &Json) -> Option<Value> {
+        let class = config.get("$").and_then(Json::as_str)?;
+        self.natives
+            .iter()
+            .find(|(native, _)| *native == class)
+            .map(|(_, value)| value.clone())
+    }
+}
+
+fn positive(graph: u32, uid: u32, value: f64) -> io::Result<f64> {
+    if value.is_finite() && value > 0.0 {
+        Ok(value)
+    } else {
+        Err(invalid(format!(
+            "{graph:04X} uid {uid} gives {value}, not a positive number"
+        )))
+    }
+}
+
+/// Equal within the graphs' single precision.
+fn close(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1e-5 * b.abs().max(1.0)
 }
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {
@@ -614,7 +827,7 @@ pub(crate) fn fixture(mode: u64) -> ModeRules {
             hold_at: 99.0,
         },
         capture_marks: [0.33333334, 0.6666667],
-        rollback_speed: 0.0,
+        payload: None,
         score_to_win: 0,
         round_time: 0.0,
         hero_select: 0.0,
@@ -639,10 +852,25 @@ pub(crate) fn fixture(mode: u64) -> ModeRules {
             rules.score_to_win = 30;
             rules.round_time = 600.0;
         }
-        Some(Mode::Escort | Mode::Hybrid) => rules.rollback_speed = single(0.3),
+        Some(Mode::Escort | Mode::Hybrid) => rules.payload = Some(fixture_payload()),
         Some(Mode::Assault | Mode::Skirmish) | None => {}
     }
     rules
+}
+
+/// The payload's rules 1.74's data gives at a payload speed of 1.
+#[cfg(test)]
+pub(crate) fn fixture_payload() -> PayloadRules {
+    let single = |value: f64| f64::from(value as f32);
+    PayloadRules {
+        push_speeds: [1.5, 1.75, 2.0],
+        auto_speed: 2.0,
+        rollback_speed: single(0.3),
+        rollback_after: 10.0,
+        radius: 7.0,
+        centre: [0.0, 2.0, 0.0],
+        contest_linger: 1.0,
+    }
 }
 
 #[cfg(test)]

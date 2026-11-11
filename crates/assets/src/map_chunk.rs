@@ -143,6 +143,14 @@ impl<'a> Entity<'a> {
         })
     }
 
+    /// The placeable's UUID: the first 16 bytes of its header, which other
+    /// placeables link to.
+    pub fn uuid(&self) -> [u8; 16] {
+        self.data[self.body - 24..self.body - 8]
+            .try_into()
+            .expect("16 bytes")
+    }
+
     /// The component instance data blobs in STUv1, in the placeable's order;
     /// blobs in another format are skipped, as DataTool skips what it can't
     /// read.
@@ -220,6 +228,12 @@ impl<'a> StuV1<'a> {
         self.data
             .get(at..at + 8)
             .map(|bytes| u64::from_le_bytes(bytes.try_into().unwrap()))
+    }
+
+    /// A `teUUID` field: 16 bytes.
+    pub fn uuid(&self, at: usize) -> Option<[u8; 16]> {
+        let at = self.start + at;
+        self.data.get(at..at + 16)?.try_into().ok()
     }
 
     /// The GUID of an asset reference field.

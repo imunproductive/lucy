@@ -18,6 +18,7 @@ pub mod mode_graph_values;
 pub mod mode_rules_data;
 pub mod mode_script;
 pub mod notices;
+pub mod objective_data;
 pub mod objectives;
 pub mod others;
 pub mod pools;

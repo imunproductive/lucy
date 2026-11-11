@@ -128,9 +128,9 @@ struct Header {
 }
 
 /// An entity placeable with its instance data.
-struct Placed<'a> {
-    entity: Entity<'a>,
-    instances: Vec<(StuV1<'a>, usize)>,
+pub(crate) struct Placed<'a> {
+    pub entity: Entity<'a>,
+    pub instances: Vec<(StuV1<'a>, usize)>,
 }
 
 pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
@@ -139,10 +139,7 @@ pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
     let headers = headers(install)?;
     let mode_ids = modes(install);
     let mode_names = mode_names(install);
-    let mut chunks: HashMap<u64, Vec<u64>> = HashMap::new();
-    for guid in install.guids(MAP_CHUNK) {
-        chunks.entry(guid & 0xFFFF_FFFF).or_default().push(guid);
-    }
+    let chunks = chunk_index(install);
     let mut components = Components::default();
     let mut maps = Map::new();
     for header in &headers {
@@ -273,9 +270,37 @@ impl Components {
     }
 }
 
+/// Map index (lower 32 bits) -> the GUIDs of its chunks.
+pub(crate) fn chunk_index(install: &Install) -> HashMap<u64, Vec<u64>> {
+    let mut chunks: HashMap<u64, Vec<u64>> = HashMap::new();
+    for guid in install.guids(MAP_CHUNK) {
+        chunks.entry(guid & 0xFFFF_FFFF).or_default().push(guid);
+    }
+    chunks
+}
+
+/// The chunks of a map the install can read, as DataTool extracted them,
+/// sorted by kind.
+pub(crate) fn map_chunks(
+    install: &Install,
+    chunks: &HashMap<u64, Vec<u64>>,
+    map: u64,
+) -> Vec<(u64, Vec<u8>)> {
+    let mut guids = chunks
+        .get(&(map & 0xFFFF_FFFF))
+        .cloned()
+        .unwrap_or_default();
+    guids.sort_by_key(|guid| chunk_kind(*guid));
+    guids
+        .into_iter()
+        .filter_map(|guid| Some((guid, install.raw(guid).ok()?)))
+        .collect()
+}
+
 /// (first entity index, entity placeables) of a map: every chunk's
 /// placeables, the entities sorted by chunk kind and place in the chunk.
-fn read_map<'a>(chunks: &'a [(u64, Vec<u8>)]) -> Result<(usize, Vec<Placed<'a>>)> {
+/// An entity's flat placeable index is the first index plus its number.
+pub(crate) fn read_map<'a>(chunks: &'a [(u64, Vec<u8>)]) -> Result<(usize, Vec<Placed<'a>>)> {
     let mut lights_and_areas = 0;
     let mut out = Vec::new();
     for (guid, data) in chunks {
@@ -313,16 +338,7 @@ fn map_data(
     mode_ids: &HashMap<u64, BTreeSet<u64>>,
     components: &mut Components,
 ) -> Result<Map<String, Value>> {
-    let mut guids = chunks
-        .get(&(map & 0xFFFF_FFFF))
-        .cloned()
-        .unwrap_or_default();
-    guids.sort_by_key(|guid| chunk_kind(*guid));
-    // The chunks the install can read, as DataTool extracted them.
-    let chunk_data: Vec<(u64, Vec<u8>)> = guids
-        .into_iter()
-        .filter_map(|guid| Some((guid, install.raw(guid).ok()?)))
-        .collect();
+    let chunk_data = map_chunks(install, chunks, map);
     let (base, entities) = read_map(&chunk_data)?;
     components.load(
         install,
@@ -716,7 +732,7 @@ fn team_index(value: i32) -> String {
 }
 
 /// One graph's variable overrides: identifier index -> the STUConfigVar.
-struct GraphVars<'a> {
+pub(crate) struct GraphVars<'a> {
     stu: StuV1<'a>,
     values: BTreeMap<u64, Option<usize>>,
 }
@@ -730,12 +746,41 @@ impl GraphVars<'_> {
             _ => Ok(None),
         }
     }
+
+    /// A number override (an int, float or bool config var), `None` when
+    /// the graph doesn't override the variable; an error for a value of
+    /// another class.
+    pub fn number(&self, key: u64) -> Result<Option<f32>> {
+        let Some(Some(value)) = self.values.get(&key) else {
+            return Ok(None);
+        };
+        let class = self.stu.class(*value).unwrap_or(0);
+        let number = match class {
+            INT_VAR => self.stu.i32(value + 16).map(|value| value as f32),
+            FLOAT_VAR => self.stu.f32(value + 16),
+            BOOL_VAR => self.stu.u8(value + 16).map(f32::from),
+            other => {
+                return Err(asset_error(format!(
+                    "variable {key:X}: config var class {other:08X} is not a number"
+                )));
+            }
+        };
+        number
+            .map(Some)
+            .ok_or_else(|| asset_error(format!("variable {key:X} runs past its blob")))
+    }
 }
+
+/// The config var classes of numbers (`STUConfigVarInt`, `STUConfigVarFloat`,
+/// `STUConfigVarBool`), each with its value at +16.
+const INT_VAR: u32 = 0x12E4_34A1;
+const FLOAT_VAR: u32 = 0x7B45_B325;
+const BOOL_VAR: u32 = 0xB567_AADA;
 
 /// Graph index -> its variables, of the statescript instance data; a later
 /// graph of the same index replaces an earlier one, a later entry of the same
 /// variable an earlier one.
-fn graph_vars<'a>(instances: &[(StuV1<'a>, usize)]) -> HashMap<u64, GraphVars<'a>> {
+pub(crate) fn graph_vars<'a>(instances: &[(StuV1<'a>, usize)]) -> HashMap<u64, GraphVars<'a>> {
     let mut out = HashMap::new();
     for (stu, root) in instances {
         if stu.class(*root) != Some(STATESCRIPT_DATA) {
