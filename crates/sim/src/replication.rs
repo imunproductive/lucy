@@ -136,6 +136,12 @@ pub trait OwnerBodyRuntime: Send {
         Ok(())
     }
 
+    /// The hero dealt `points` of damage or healing: his ultimate charges
+    /// for it.
+    fn gain_ult(&mut self, _points: f64) -> io::Result<()> {
+        Ok(())
+    }
+
     /// A game message from another entity, run now (match.py
     /// `deliver_body_messages`, combat.py `_died`). Returns how many entries
     /// took it.
@@ -2104,6 +2110,25 @@ impl WorldDelivery {
             self.drop_failed_script(&error.to_string());
         }
         given
+    }
+
+    /// The player's living body dealt `points` of damage or healing: its
+    /// ultimate charges for it.
+    pub fn gain_ult(&mut self, points: f64) {
+        if self.death.is_some() {
+            return;
+        }
+        let Some(body) = self.body else {
+            return;
+        };
+        let failure = self
+            .body_script
+            .as_mut()
+            .filter(|script| script.id == body.id)
+            .and_then(|script| script.runtime.gain_ult(points).err());
+        if let Some(error) = failure {
+            self.drop_failed_script(&error.to_string());
+        }
     }
 
     /// combat.py `_respawn`: once the mode's time is up, a dead player gets

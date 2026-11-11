@@ -922,7 +922,8 @@ fn player_of(players: &[CombatPlayer<'_>], body: u32) -> Option<usize> {
 
 /// The hits on players' bodies (combat.py `_damage`, `_tell_hit`,
 /// `_died`, `_kill_notice`): the victim's pools take each; a player
-/// shooter gets 25001 and HERO_DAMAGE; a kill counts DEATHS for the victim,
+/// shooter gets 25001 and HERO_DAMAGE, and ultimate charge for damage to
+/// another; a kill counts DEATHS for the victim,
 /// ELIMINATIONS and 25005 for another player who killed him, and gives the
 /// victim 25004 ("YOU WERE KILLED BY", or "YOU DIED" for his own blow).
 /// Returns each player's notices, by slot.
@@ -962,6 +963,11 @@ pub fn apply_player_hits(
                 shot_frame: hit.frame,
             });
             players[shooter].stats.add(HERO_DAMAGE, damage.dealt);
+            if shooter != victim {
+                if let Some(world) = players[shooter].world.as_deref_mut() {
+                    world.gain_ult(damage.dealt);
+                }
+            }
         }
         if !damage.killed {
             continue;
@@ -984,7 +990,8 @@ pub fn apply_player_hits(
 }
 
 /// combat.py `heal_area` for players' bodies: each heals, and the healer's
-/// HEALING counts what they took, with what the bots took (`bots_healed`).
+/// HEALING counts what they took, with what the bots took (`bots_healed`);
+/// his ultimate charges for it, his own healing included (unverified).
 pub fn heal_players(
     scene: &PreparedScene,
     healer: u32,
@@ -1005,6 +1012,9 @@ pub fn heal_players(
     }
     if let Some(healer) = player_of(players, healer).filter(|_| healed > 0.0) {
         players[healer].stats.add(HEALING, healed);
+        if let Some(world) = players[healer].world.as_deref_mut() {
+            world.gain_ult(healed);
+        }
     }
 }
 

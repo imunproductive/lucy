@@ -802,13 +802,13 @@ fn ultimate_factory(ability: bool) -> PlayerBodyFactory {
 }
 
 /// driver.py `BodyScript._charge_ult`: after every command frame the body
-/// runs, the ultimate's charge (#342) rises by its cost (#338, from the
-/// entries) * 16 ms / ULT_SECONDS, in f32 steps; a timer frame charges
+/// runs, the ultimate's charge (#342) rises by PASSIVE_POINTS_PER_SECOND *
+/// 16 ms (no ruleset changes it here), in f32 steps; a timer frame charges
 /// nothing, and neither does any frame while an ability that starts on the
 /// charge (its m_150F0D92 reads #342) runs.
 #[test]
 fn the_ultimate_charges_on_command_frames_until_its_ability_runs() {
-    use orpheus_script::ultimate::{ULT_CHARGE, ULT_SECONDS};
+    use orpheus_script::ultimate::{PASSIVE_POINTS_PER_SECOND, ULT_CHARGE};
 
     let (_, spawn) = fixture_body_factory();
     let mover = Mover::new(
@@ -819,7 +819,7 @@ fn the_ultimate_charges_on_command_frames_until_its_ability_runs() {
         0x18,
     )
     .unwrap();
-    let step = (100.0 * 16.0 / (1000.0 * ULT_SECONDS)) as f32;
+    let step = (PASSIVE_POINTS_PER_SECOND * 16.0 / 1000.0) as f32;
     let next = |charge: f64| f64::from((charge + f64::from(step)) as f32);
     let charge = |runtime: &PlayerBodyRuntime| {
         runtime

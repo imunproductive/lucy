@@ -2382,7 +2382,11 @@ fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_
 
     let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     assets.set_player_unknowns(Unknowns::Tolerate);
-    assets.set_ult_seconds(1.0);
+    // Her 1,260-point ultimate fills in a second.
+    assets.set_ult_rates(orpheus_script::ultimate::ChargeRates {
+        passive: 1260.0,
+        combat: 1.0,
+    });
     let mut aim = None;
     let (mut server, schemas, [mut tracer, mut viewer], _) = practice_world(
         [

@@ -37,7 +37,7 @@ use orpheus_script::{
     player::PlayerWorld,
     snapshot::{SnapshotEncoder, View},
     timeline::FRAME_MS,
-    ultimate::UltimateCharge,
+    ultimate::{ChargeRates, UltimateCharge},
     vitals::Vitals,
     vm::{
         Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest, Root, Snapshot, StateKind,
@@ -81,9 +81,8 @@ pub struct PlayerBodyFactory {
     controller_on_fire: bool,
     combat: BodyCombat,
     unknowns: Unknowns,
-    /// Seconds an empty ultimate takes to fill (driver.py `BodyScript`'s
-    /// `ult_seconds`, ULT_SECONDS by default).
-    ult_seconds: f64,
+    /// How fast the hero's ultimate charges.
+    ult_rates: ChargeRates,
 }
 
 impl PlayerBodyFactory {
@@ -97,7 +96,7 @@ impl PlayerBodyFactory {
         controller_on_fire: bool,
         combat: BodyCombat,
         unknowns: Unknowns,
-        ult_seconds: f64,
+        ult_rates: Option<ChargeRates>,
         probe: OwnerBodySpawn,
     ) -> io::Result<Self> {
         let body = graphs
@@ -111,6 +110,8 @@ impl PlayerBodyFactory {
         let health = pools.unwrap_or(FALLBACK_POOLS).total();
         let variables = orpheus_script::vm::player_entity_variables(body, health, health);
         let target_tags = body.target_tags.clone();
+        let ult_rates =
+            ult_rates.unwrap_or_else(|| ChargeRates::of(graphs.rulesets(), hero.guid, mode));
         let factory = Self {
             graphs,
             codecs,
@@ -123,7 +124,7 @@ impl PlayerBodyFactory {
             controller_on_fire,
             combat,
             unknowns,
-            ult_seconds,
+            ult_rates,
         };
         let runtime = factory.start(probe)?;
         let encoder = runtime.encoder();
@@ -186,8 +187,8 @@ impl PlayerBodyFactory {
             },
         )?;
         // driver.py `BodyScript._spawn`: the abilities that start on the
-        // ultimate's charge, which fills over `ult_seconds`.
-        let ultimate = UltimateCharge::new(&component, &self.graphs, self.ult_seconds);
+        // ultimate's charge.
+        let ultimate = UltimateCharge::new(&component, &self.graphs, self.ult_rates);
         let runtime = PlayerBodyRuntime {
             component,
             world,
@@ -425,6 +426,12 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         Ok(())
     }
 
+    fn gain_ult(&mut self, points: f64) -> io::Result<()> {
+        self.ultimate
+            .gain(points, &mut self.component, &mut self.world)
+            .map_err(unsupported)
+    }
+
     fn receive_message(&mut self, message: u64, parameters: Variables) -> io::Result<usize> {
         let entries = self
             .component
@@ -646,7 +653,7 @@ pub fn fixture_body_factory() -> (PlayerBodyFactory, OwnerBodySpawn) {
             field: None,
         },
         Unknowns::for_build(),
-        orpheus_script::ultimate::ULT_SECONDS,
+        None,
         spawn,
     )
     .unwrap();

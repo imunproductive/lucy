@@ -1850,11 +1850,27 @@ impl State {
 
     /// combat.py `_damage` for bots and `_send_health`: the shooter's
     /// client gets the notices, every client of the room the bot's pools.
+    /// The shooter's ultimate charges for the damage (assumption: training
+    /// bots charge it as heroes do).
     fn deliver_bot_hits(&mut self, id: MatchId, shooter: Option<u32>, hits: Vec<BotHit>) {
         if let Some(world) = self.rooms.get_mut(&id).and_then(|room| room.world.as_mut()) {
             for hit in &hits {
                 bot_hit_script(&mut world.scene, hit);
             }
+        }
+        let dealt: f64 = hits
+            .iter()
+            .flat_map(|hit| &hit.notices)
+            .filter_map(|notice| match notice {
+                Some(CombatNotice::Hit { dealt, .. }) => Some(*dealt),
+                _ => None,
+            })
+            .sum();
+        if let Some(peer) = shooter
+            .filter(|_| dealt > 0.0)
+            .and_then(|shooter| self.peers.get_mut(&shooter))
+        {
+            peer.world.gain_ult(dealt);
         }
         for hit in hits {
             for (&connection, peer) in &mut self.peers {

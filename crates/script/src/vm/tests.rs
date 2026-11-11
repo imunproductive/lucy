@@ -3852,8 +3852,12 @@ fn messages_to_other_entities_go_through_the_world_and_reach_every_instance() {
 }
 
 #[test]
-fn ultimate_fills_over_its_seconds_and_waits_while_it_runs() {
-    use crate::ultimate::{ULT_CHARGE, ULT_COST, UltimateCharge, set_ult_charge};
+fn ultimate_charges_by_itself_and_for_damage_and_waits_while_it_runs() {
+    use crate::ultimate::{ChargeRates, ULT_CHARGE, ULT_COST, UltimateCharge, set_ult_charge};
+    const RATES: ChargeRates = ChargeRates {
+        passive: 5.0,
+        combat: 0.5,
+    };
 
     let graphs = Arc::new(store(vec![graph(
         42,
@@ -3880,14 +3884,23 @@ fn ultimate_fills_over_its_seconds_and_waits_while_it_runs() {
     );
     let charge =
         |component: &Component| component.snapshot().unwrap().variables[&ULT_CHARGE].clone();
-    let ultimate = UltimateCharge::new(&component, &graphs, 60.0);
+    let ultimate = UltimateCharge::new(&component, &graphs, RATES);
     ultimate.charge(&mut component, &mut EmptyWorld).unwrap();
-    let step = f64::from((100.0 * 16.0 / 60_000.0) as f32);
+    // 5 points a second for 16 ms, then half of 30 damage.
+    let step = f64::from(0.08_f32);
+    assert_eq!(charge(&component), Value::Float(step));
+    ultimate
+        .gain(30.0, &mut component, &mut EmptyWorld)
+        .unwrap();
+    let step = f64::from((step + 15.0) as f32);
     assert_eq!(charge(&component), Value::Float(step));
     // The charge starts the ultimate at its next tick; it doesn't charge
     // while running.
     component.advance_frame(101, &mut EmptyWorld).unwrap();
     ultimate.charge(&mut component, &mut EmptyWorld).unwrap();
+    ultimate
+        .gain(30.0, &mut component, &mut EmptyWorld)
+        .unwrap();
     assert_eq!(charge(&component), Value::Float(step));
     set_ult_charge(&mut component, 99.99, &mut EmptyWorld).unwrap();
     assert_eq!(charge(&component), Value::Float(f64::from(99.99_f32)));
@@ -3902,10 +3915,11 @@ fn ultimate_fills_over_its_seconds_and_waits_while_it_runs() {
         100,
         &mut EmptyWorld,
     );
-    let ultimate = UltimateCharge::new(&component, &store(Vec::new()), 60.0);
-    for _ in 0..2 {
-        ultimate.charge(&mut component, &mut EmptyWorld).unwrap();
-    }
+    let ultimate = UltimateCharge::new(&component, &store(Vec::new()), RATES);
+    ultimate.charge(&mut component, &mut EmptyWorld).unwrap();
+    ultimate
+        .gain(1000.0, &mut component, &mut EmptyWorld)
+        .unwrap();
     assert_eq!(charge(&component), Value::Float(100.0));
 }
 

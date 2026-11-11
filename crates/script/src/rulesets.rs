@@ -186,6 +186,37 @@ mod tests {
         );
     }
 
+    /// The ultimate's rates scale with the hero's ruleset settings, and a
+    /// hero without them charges at 100%.
+    #[test]
+    fn ultimate_rates_follow_the_generation_settings() {
+        use crate::ultimate::{ChargeRates, PASSIVE_POINTS_PER_SECOND};
+
+        let rulesets = Rulesets::from_json(
+            &serde_json::to_vec(&json!({
+                "schemas": {"0x0A30000000000007": {"9532": 2.0, "13022": 0.5, "12918": 0.25}},
+                "heroes": {"0x02E0000000000003": ["0x0A30000000000007"]},
+                "modes": {},
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            ChargeRates::of(&rulesets, TRACER, PRACTICE_RANGE),
+            ChargeRates {
+                passive: PASSIVE_POINTS_PER_SECOND * 0.5,
+                combat: 1.0,
+            }
+        );
+        assert_eq!(
+            ChargeRates::of(&rulesets, SOLDIER, PRACTICE_RANGE),
+            ChargeRates {
+                passive: PASSIVE_POINTS_PER_SECOND,
+                combat: 1.0,
+            }
+        );
+    }
+
     /// The install's table: 32 heroes and 24 modes list schemas, and the
     /// defaults answer as `rulesets.py` did (`test_script_expr.py`). Before
     /// the frozen tables were deleted, a test compared the derived table with
