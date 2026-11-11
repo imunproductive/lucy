@@ -31,7 +31,7 @@ use crate::{
     pools::PoolCatalog,
     projectiles::{BioticField, FIELD_ENTITY, FieldFrames},
     replication::OwnerBodyRuntime,
-    scene::{BotControllers, PlayerAppearance, initial_world, mode_ui},
+    scene::{PlayerAppearance, initial_world, mode_ui},
 };
 use orpheus_content::{
     heroes::{EyeCatalog, Hero, HeroCatalog, SOLDIER},
@@ -103,8 +103,6 @@ pub struct SceneAssets {
     owner_bodies: Mutex<HashMap<u64, Option<Arc<OwnerBodyFactory>>>>,
     bot_graphs: Option<Arc<GraphStore>>,
     bot_unknowns: Unknowns,
-    /// The training bots' stand-in controllers in each scene prepared.
-    bot_controllers: BotControllers,
     player_unknowns: Unknowns,
     /// How fast players' ultimates charge; None: by the rulesets.
     ult_rates: Option<ChargeRates>,
@@ -145,8 +143,6 @@ pub struct PreparedScene {
     graphs: Arc<GraphStore>,
     initial_board: Component,
     bots: Vec<Bot>,
-    /// The training bots' stand-in controllers (`scene.rs`).
-    bot_controllers: BotControllers,
     bot_scripts: BotScripts,
     script_anims: Arc<ScriptAnims>,
     movers: Arc<MoverCatalog>,
@@ -228,7 +224,6 @@ impl SceneAssets {
             owner_bodies: Mutex::default(),
             bot_graphs,
             bot_unknowns: Unknowns::for_build(),
-            bot_controllers: BotControllers::default(),
             player_unknowns: Unknowns::for_build(),
             ult_rates: None,
             bots: BotCatalog::load(data.join("ai_spawners_174.json"))?,
@@ -287,12 +282,6 @@ impl SceneAssets {
     /// need it tolerated, as the Python reference did.
     pub fn set_bot_unknowns(&mut self, unknowns: Unknowns) {
         self.bot_unknowns = unknowns;
-    }
-
-    /// The stand-in controller every scene's training bots get, the
-    /// server's `bot_controller` setting ([`BotControllers`]).
-    pub fn set_bot_controllers(&mut self, controllers: BotControllers) {
-        self.bot_controllers = controllers;
     }
 
     /// How the players' body scripts treat unknown statescript content. By
@@ -409,7 +398,6 @@ impl SceneAssets {
             graphs: Arc::clone(&self.graphs),
             initial_board,
             bots,
-            bot_controllers: self.bot_controllers,
             bot_scripts,
             script_anims: Arc::clone(&self.script_anims),
             movers: Arc::clone(&self.movers),
@@ -827,23 +815,8 @@ impl PreparedScene {
         self.bot_scripts.take_events()
     }
 
-    /// The training bots' stand-in controllers in this scene.
-    pub fn bot_controllers(&self) -> BotControllers {
-        self.bot_controllers
-    }
-
-    pub fn set_bot_controllers(&mut self, controllers: BotControllers) {
-        self.bot_controllers = controllers;
-    }
-
     pub fn initial_world(&self, viewer: &PlayerAppearance<'_>) -> io::Result<Vec<EntityUpdate>> {
-        initial_world(
-            &self.map,
-            viewer,
-            self.initial_board.clone(),
-            &self.bots,
-            self.bot_controllers,
-        )
+        initial_world(&self.map, viewer, self.initial_board.clone(), &self.bots)
     }
 }
 

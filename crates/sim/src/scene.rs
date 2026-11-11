@@ -32,7 +32,7 @@
 //!   `STU_CD7F3617`, which finds the body's controller (its component 44,
 //!   or the reverse table component 44 builds) and reads the controller's
 //!   name; a bot body has no name component of its own. So each training
-//!   bot gets a stand-in controller entity ([`BotControllers`]).
+//!   bot gets a stand-in controller entity ([`bot_controller_create`]).
 
 use std::{collections::HashMap, io};
 
@@ -71,59 +71,6 @@ const MODE_UI_STATE: usize = 21;
 /// down from `u32::MAX` (`game_service/ai.rs`).
 const BOT_ACCOUNT: u32 = 0xffff_f000;
 const ACCOUNT_HIGH: u64 = 1 << 56;
-/// Each bot body's AI definition, its `m_8B9A461F` in the 1.74 data
-/// (`003/1403`, `143E`, `146E`, `14ED` name `1404`; `14A9`, `14D2` name
-/// `14AF`; `orpheus_assets` `graphs.rs` `ai_definition` reads the same link).
-const AI_CONTROLLERS: [(u64, u64); 6] = [
-    (0x0400_0000_0000_1403, 0x0400_0000_0000_1404),
-    (0x0400_0000_0000_143e, 0x0400_0000_0000_1404),
-    (0x0400_0000_0000_146e, 0x0400_0000_0000_1404),
-    (0x0400_0000_0000_14ed, 0x0400_0000_0000_1404),
-    (0x0400_0000_0000_14a9, 0x0400_0000_0000_14af),
-    (0x0400_0000_0000_14d2, 0x0400_0000_0000_14af),
-];
-
-/// The stand-in controller each training bot gets, so the client can name
-/// the bot in "ELIMINATED <name>" and the kill feed (see the module notes).
-/// The Python reference sent none; retail probably spawned the body's AI
-/// definition as its possessor (unverified). A per-scene setting
-/// ([`crate::scene_assets::SceneAssets::set_bot_controllers`], the server's
-/// `bot_controller`), so a client that misbehaves on one can go without.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum BotControllers {
-    /// No controller: the bots go unnamed, as in the Python reference.
-    Off,
-    /// A player entity (definition `000E`, as players have): component 26
-    /// the bot's team bit only, 29 a stand-in account and the bot's name,
-    /// 44 the body. A player's create flags without the participant one,
-    /// and no 74, so it should stay out of the team list (unverified; what
-    /// the player-path flag does is unknown). The kills of AI heroes, whose
-    /// player entity has the same 29 and 44, show "ELIMINATED <HERO>" in
-    /// game.
-    #[default]
-    Player,
-    /// The body's own AI definition (its `m_8B9A461F`: `1404` for the four
-    /// Range bodies, `14AF` for `14A9` and `14D2`): component 26 the team
-    /// bit, 44 the body and 75 the bot's hero. The definitions declare
-    /// `STU_76AF64F0`, component 92 (the display-name override), but its
-    /// replicated fields are unknown, so the name goes by the hero (75, as
-    /// the possession pair sends it with 44) and not by 92 or by 29, the
-    /// player's account card. It goes with the body's create flags. A bot
-    /// whose body names no AI definition gets none.
-    Ai,
-}
-
-impl BotControllers {
-    pub fn parse(text: &str) -> Option<Self> {
-        match text {
-            "off" => Some(Self::Off),
-            "player" => Some(Self::Player),
-            "ai" => Some(Self::Ai),
-            _ => None,
-        }
-    }
-}
-
 /// The stand-in controller of the bot in `slot` (one per slot, kept across
 /// respawns): [`BOT_CONTROLLER_ENTITY`] + slot, below the bots' own ids.
 pub fn bot_controller_entity(slot: usize) -> io::Result<u32> {
@@ -134,85 +81,46 @@ pub fn bot_controller_entity(slot: usize) -> io::Result<u32> {
         .ok_or_else(|| invalid("too many training bots for their controller ids"))
 }
 
-/// The AI definition a bot body names ([`AI_CONTROLLERS`]).
-fn ai_definition(body: u64) -> Option<u64> {
-    AI_CONTROLLERS
-        .iter()
-        .find(|&&(known, _)| known == body)
-        .map(|&(_, ai)| ai)
-}
-
 fn possession_link(body: u32) -> Component {
     fields(44, vec![Some(ComponentValue::Entity(body)); 3])
 }
 
 /// The create of the bot's stand-in controller in `slot`, linked to its
-/// current body; `None` when the scene has none.
-pub fn bot_controller_create(
-    bot: &Bot,
-    slot: usize,
-    controllers: BotControllers,
-) -> io::Result<Option<EntityUpdate>> {
+/// current body, so the client can name the bot in "ELIMINATED <name>" and
+/// the kill feed (see the module notes; the Python reference sent none). A
+/// player entity (definition `000E`, as players have): component 26 the
+/// bot's team bit only, 29 a stand-in account and the bot's name, 44 the
+/// body. A player's create flags without the participant one, and no 74, so
+/// it stays out of the team list. Checked in game: the bots are named in
+/// "ELIMINATED" and the kill feed.
+pub fn bot_controller_create(bot: &Bot, slot: usize) -> io::Result<EntityUpdate> {
     use ComponentValue::*;
-    let team = fields(26, vec![Some(Id(team_bit(bot.spawn.team)?))]);
-    let definition = match controllers {
-        BotControllers::Off => return Ok(None),
-        BotControllers::Player => {
-            let account = BOT_ACCOUNT + (bot_controller_entity(slot)? - BOT_CONTROLLER_ENTITY);
-            let card = fields(
-                29,
-                vec![
-                    Some(DbId(u64::from(account), ACCOUNT_HIGH)),
-                    Some(Text(bot.spawn.name.clone())),
-                ],
-            );
-            let mut definition = Create::new(
-                PLAYER_DEFINITION,
-                vec![team, card, possession_link(bot.entity)],
-            );
-            definition.flags = PLAYER_PATH | WITH_TRANSFORM | WITH_SCALE;
-            definition
-        }
-        BotControllers::Ai => {
-            let Some(ai) = ai_definition(bot.spawn.body) else {
-                return Ok(None);
-            };
-            let possession = Possession {
-                body: bot.entity,
-                hero: bot.spawn.hero,
-                skin: None,
-            };
-            Create::new(
-                ai,
-                std::iter::once(team)
-                    .chain(possession.components())
-                    .collect(),
-            )
-        }
-    };
-    Ok(Some(create(bot_controller_entity(slot)?, definition)))
+    let entity = bot_controller_entity(slot)?;
+    let account = BOT_ACCOUNT + (entity - BOT_CONTROLLER_ENTITY);
+    let components = vec![
+        fields(26, vec![Some(Id(team_bit(bot.spawn.team)?))]),
+        fields(
+            29,
+            vec![
+                Some(DbId(u64::from(account), ACCOUNT_HIGH)),
+                Some(Text(bot.spawn.name.clone())),
+            ],
+        ),
+        possession_link(bot.entity),
+    ];
+    let mut definition = Create::new(PLAYER_DEFINITION, components);
+    definition.flags = PLAYER_PATH | WITH_TRANSFORM | WITH_SCALE;
+    Ok(create(entity, definition))
 }
 
 /// The respawned bot's controller in `slot` now controls its new body: its
-/// component 44 again; `None` when the bot has no controller.
-pub fn bot_controller_link(
-    bot: &Bot,
-    slot: usize,
-    controllers: BotControllers,
-) -> io::Result<Option<EntityUpdate>> {
-    let linked = match controllers {
-        BotControllers::Off => false,
-        BotControllers::Player => true,
-        BotControllers::Ai => ai_definition(bot.spawn.body).is_some(),
-    };
-    if !linked {
-        return Ok(None);
-    }
-    Ok(Some(EntityUpdate {
+/// component 44 again.
+pub fn bot_controller_link(bot: &Bot, slot: usize) -> io::Result<EntityUpdate> {
+    Ok(EntityUpdate {
         entity: bot_controller_entity(slot)?,
         operation: Some(Operation::Update(vec![possession_link(bot.entity)])),
         ..EntityUpdate::default()
-    }))
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -351,13 +259,12 @@ pub fn bot_create(
 }
 
 /// Build the initial world before the local player picks a hero; each bot's
-/// stand-in controller, if the scene has them, right after its body.
+/// stand-in controller right after its body.
 pub fn initial_world(
     map: &GameMap,
     player: &PlayerAppearance<'_>,
     board: Component,
     bots: &[Bot],
-    controllers: BotControllers,
 ) -> io::Result<Vec<EntityUpdate>> {
     let mut updates = Vec::with_capacity(map.placeables.len() + 2 + 2 * bots.len());
     updates.extend(map.placeables.iter().map(|&index| EntityUpdate {
@@ -369,7 +276,7 @@ pub fn initial_world(
     updates.push(mode_create(map.mode_guid));
     for (slot, bot) in bots.iter().enumerate() {
         updates.push(bot_create(bot, None)?);
-        updates.extend(bot_controller_create(bot, slot, controllers)?);
+        updates.push(bot_controller_create(bot, slot)?);
     }
     Ok(updates)
 }
@@ -475,8 +382,16 @@ mod tests {
             card: &card,
         };
         let board = stats.component(&PlayerStats::default(), map.mode_guid, None, None);
-        // The Python reference's world: no stand-in controllers.
-        let updates = initial_world(&map, &player, board, &bots, BotControllers::Off).unwrap();
+        // The Python reference's world has no stand-in controllers: each
+        // bot's controller comes right after its body here, and the other
+        // records match the Python frame byte for byte.
+        let updates = initial_world(&map, &player, board, &bots).unwrap();
+        let controllers = BOT_CONTROLLER_ENTITY..BOT_ENTITY;
+        let python: Vec<_> = updates
+            .iter()
+            .filter(|update| !controllers.contains(&update.entity))
+            .cloned()
+            .collect();
         let expected: Vec<_> = [
             0x8000_0088,
             0x8000_022e,
@@ -489,13 +404,25 @@ mod tests {
         .chain(BOT_ENTITY..BOT_ENTITY + 15)
         .collect();
         assert_eq!(
-            updates
+            python
                 .iter()
                 .map(|update| update.entity)
                 .collect::<Vec<_>>(),
             expected
         );
-        let encoded = frame(1234, 1234, &[], &[], &updates.iter().collect::<Vec<_>>()).unwrap();
+        let with_controllers: Vec<_> = expected[..6]
+            .iter()
+            .copied()
+            .chain((0..15).flat_map(|slot| [BOT_ENTITY + slot, BOT_CONTROLLER_ENTITY + slot]))
+            .collect();
+        assert_eq!(
+            updates
+                .iter()
+                .map(|update| update.entity)
+                .collect::<Vec<_>>(),
+            with_controllers
+        );
+        let encoded = frame(1234, 1234, &[], &[], &python.iter().collect::<Vec<_>>()).unwrap();
         assert_eq!(encoded.len(), 1674);
         assert_eq!(
             format!("{:x}", Sha256::digest(&encoded)),
@@ -521,11 +448,11 @@ mod tests {
             transmitted.extend(selected.entities.iter().map(|update| update.entity));
             remaining = &remaining[selected.entities.len()..];
         }
-        assert_eq!(transmitted, expected);
+        assert_eq!(transmitted, with_controllers);
     }
 
-    /// Two fixture bots: a Training Bot body (`1403`, AI definition `1404`)
-    /// on team 1, and a body that names no AI definition on team 0.
+    /// Two fixture bots: a Training Bot body (`1403`) on team 1, and
+    /// another body on team 0.
     fn fixture_bots() -> Vec<Bot> {
         BotCatalog::from_json(
             r#"{
@@ -565,9 +492,7 @@ mod tests {
     fn a_player_stand_in_names_the_bot_and_controls_its_body() {
         use ComponentValue::*;
         let bots = fixture_bots();
-        let update = bot_controller_create(&bots[0], 0, BotControllers::Player)
-            .unwrap()
-            .unwrap();
+        let update = bot_controller_create(&bots[0], 0).unwrap();
         assert_eq!(update.entity, BOT_CONTROLLER_ENTITY);
         let create = created(&update);
         assert_eq!(create.definition, PLAYER_DEFINITION);
@@ -587,9 +512,7 @@ mod tests {
                 link(BOT_ENTITY),
             ]
         );
-        let other = bot_controller_create(&bots[1], 1, BotControllers::Player)
-            .unwrap()
-            .unwrap();
+        let other = bot_controller_create(&bots[1], 1).unwrap();
         assert_eq!(other.entity, BOT_CONTROLLER_ENTITY + 1);
         let Some(Some(DbId(account, _))) = created(&other).components[1].fields.first() else {
             panic!("no account");
@@ -599,50 +522,9 @@ mod tests {
         frame(1234, 1234, &[], &[], &[&update, &other]).unwrap();
     }
 
-    /// The AI stand-in: the body's AI definition with the team bit, the
-    /// body and the hero; a body without an AI definition gets none.
-    #[test]
-    fn an_ai_stand_in_is_the_bodys_ai_definition() {
-        use ComponentValue::*;
-        let bots = fixture_bots();
-        let update = bot_controller_create(&bots[0], 0, BotControllers::Ai)
-            .unwrap()
-            .unwrap();
-        let create = created(&update);
-        assert_eq!(create.definition, 0x0400_0000_0000_1404);
-        assert_eq!(create.flags, WITH_TRANSFORM | WITH_SCALE);
-        assert_eq!(
-            create.components,
-            [
-                fields(26, vec![Some(Id(TEAM_BIT << 1))]),
-                link(BOT_ENTITY),
-                fields(
-                    75,
-                    vec![
-                        Some(Id(0x02e0_0000_0000_016b)),
-                        None,
-                        None,
-                        Some(Id(0x02e0_0000_0000_016b)),
-                    ],
-                ),
-            ]
-        );
-        frame(1234, 1234, &[], &[], &[&update]).unwrap();
-        assert!(
-            bot_controller_create(&bots[1], 1, BotControllers::Ai)
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            bot_controller_link(&bots[1], 1, BotControllers::Ai)
-                .unwrap()
-                .is_none()
-        );
-    }
-
     /// Each bot's controller comes right after its body in the initial
     /// world; a respawned body's link is the controller's component 44
-    /// again; with controllers off there are none.
+    /// again.
     #[test]
     fn the_initial_world_and_a_respawn_carry_the_controllers() {
         let bots = fixture_bots();
@@ -656,20 +538,18 @@ mod tests {
             room: SpawnChoice::First,
             card: &card,
         };
-        let board = || Component {
+        let board = Component {
             index: GMP_STATS,
             fields: Vec::new(),
         };
-        let entities = |controllers| -> Vec<u32> {
-            initial_world(&map, &player, board(), &bots, controllers)
-                .unwrap()
-                .iter()
-                .map(|update| update.entity)
-                .skip(map.placeables.len() + 2)
-                .collect()
-        };
+        let entities: Vec<u32> = initial_world(&map, &player, board, &bots)
+            .unwrap()
+            .iter()
+            .map(|update| update.entity)
+            .skip(map.placeables.len() + 2)
+            .collect();
         assert_eq!(
-            entities(BotControllers::Player),
+            entities,
             [
                 BOT_ENTITY,
                 BOT_CONTROLLER_ENTITY,
@@ -677,41 +557,17 @@ mod tests {
                 BOT_CONTROLLER_ENTITY + 1
             ]
         );
-        assert_eq!(
-            entities(BotControllers::Ai),
-            [BOT_ENTITY, BOT_CONTROLLER_ENTITY, BOT_ENTITY + 1]
-        );
-        assert_eq!(entities(BotControllers::Off), [BOT_ENTITY, BOT_ENTITY + 1]);
 
         let fresh = bots[0].respawned(BOT_ENTITY + 2, 0);
-        for controllers in [BotControllers::Player, BotControllers::Ai] {
-            assert_eq!(
-                bot_controller_link(&fresh, 0, controllers).unwrap(),
-                Some(EntityUpdate {
-                    entity: BOT_CONTROLLER_ENTITY,
-                    operation: Some(Operation::Update(vec![link(BOT_ENTITY + 2)])),
-                    ..EntityUpdate::default()
-                })
-            );
-        }
-        assert!(
-            bot_controller_link(&fresh, 0, BotControllers::Off)
-                .unwrap()
-                .is_none()
+        assert_eq!(
+            bot_controller_link(&fresh, 0).unwrap(),
+            EntityUpdate {
+                entity: BOT_CONTROLLER_ENTITY,
+                operation: Some(Operation::Update(vec![link(BOT_ENTITY + 2)])),
+                ..EntityUpdate::default()
+            }
         );
         assert!(bot_controller_entity((BOT_ENTITY - BOT_CONTROLLER_ENTITY) as usize).is_err());
-    }
-
-    #[test]
-    fn the_setting_names_each_variant() {
-        assert_eq!(BotControllers::default(), BotControllers::Player);
-        assert_eq!(
-            BotControllers::parse("player"),
-            Some(BotControllers::Player)
-        );
-        assert_eq!(BotControllers::parse("ai"), Some(BotControllers::Ai));
-        assert_eq!(BotControllers::parse("off"), Some(BotControllers::Off));
-        assert_eq!(BotControllers::parse("on"), None);
     }
 
     #[test]

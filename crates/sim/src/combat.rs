@@ -331,8 +331,8 @@ pub struct PlayerHit {
 pub struct BotReplacement {
     pub retired: u32,
     pub created: EntityUpdate,
-    /// The bot's stand-in controller's link to the new body, if the scene
-    /// has controllers (`scene.rs` `bot_controller_link`).
+    /// The bot's stand-in controller's link to the new body (`scene.rs`
+    /// `bot_controller_link`); `None` sends none.
     pub link: Option<EntityUpdate>,
 }
 
@@ -865,7 +865,7 @@ impl Combat {
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("bot entity IDs exhausted"))?;
             let created = bot_create(&fresh, None)?;
-            let link = bot_controller_link(&fresh, slot, scene.bot_controllers())?;
+            let link = Some(bot_controller_link(&fresh, slot)?);
             prepared.push((
                 slot,
                 fresh,

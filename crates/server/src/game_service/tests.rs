@@ -4734,38 +4734,28 @@ fn a_firing_practice_bot_shoots_the_player() {
 }
 
 /// Each training bot's stand-in controller (`orpheus_sim::scene`
-/// `BotControllers`), in both variants: the client gets its create, with
-/// the bot's name (player) or hero (AI) and its body (44), no earlier than
-/// the body's create; the kill notice 25005 names the body while the
-/// controller exists; after the respawn the controller's 44 names the new
-/// body, after its create; no card names a bot (the team list and the Tab
-/// board stay the players'), and the controller is never destroyed.
+/// `bot_controller_create`): the client gets its create, with the bot's
+/// name and its body (44), no earlier than the body's create; the kill
+/// notice 25005 names the body while the controller exists; after the
+/// respawn the controller's 44 names the new body, after its create; no
+/// card names a bot (the team list and the Tab board stay the players'),
+/// and the controller is never destroyed.
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn practice_bot_controllers_name_the_bots_for_a_client() {
-    use orpheus_sim::scene::BotControllers;
-    for controllers in [BotControllers::Player, BotControllers::Ai] {
-        exercise_bot_controllers(controllers);
-    }
-}
-
-fn exercise_bot_controllers(controllers: orpheus_sim::scene::BotControllers) {
     use DecodedField::{DbId, Entity, Id, Text};
     use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
     use orpheus_script::vm::Unknowns;
     use orpheus_sim::{
         body_script::fixture_hitscan_factory,
         bots::{BOT_CONTROLLER_ENTITY, BOT_ENTITY},
-        scene::BotControllers,
         scene_assets::SceneAssets,
     };
     use orpheus_wire::commands::FIRE;
 
     let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     assets.set_bot_unknowns(Unknowns::Tolerate);
-    assets.set_bot_controllers(controllers);
     let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
-    assert_eq!(scene.bot_controllers(), controllers);
     let [x, y, z] = scene.map().spawn_point(0, 0).unwrap().0;
     // An enemy bot that neither fires nor walks, 4 m beside the spawn.
     let slot = scene
@@ -4783,43 +4773,18 @@ fn exercise_bot_controllers(controllers: orpheus_sim::scene::BotControllers) {
         .iter()
         .enumerate()
         .map(|(slot, bot)| {
-            let team = (26, vec![Some(Id(0x80_0000 << bot.spawn.team))]);
-            let (definition, components) = match controllers {
-                BotControllers::Player => (
-                    0x000e,
+            let components = vec![
+                (26, vec![Some(Id(0x80_0000 << bot.spawn.team))]),
+                (
+                    29,
                     vec![
-                        team,
-                        (
-                            29,
-                            vec![
-                                Some(DbId(0xffff_f000 + slot as u64, 1 << 56)),
-                                Some(Text(bot.spawn.name.clone())),
-                            ],
-                        ),
-                        link(bot.entity),
+                        Some(DbId(0xffff_f000 + slot as u64, 1 << 56)),
+                        Some(Text(bot.spawn.name.clone())),
                     ],
                 ),
-                _ => (
-                    if [0x14a9, 0x14d2].contains(&(bot.spawn.body as u32)) {
-                        0x14af
-                    } else {
-                        0x1404
-                    },
-                    vec![
-                        team,
-                        link(bot.entity),
-                        (
-                            75,
-                            vec![
-                                Some(Id(bot.spawn.hero)),
-                                None,
-                                None,
-                                Some(Id(bot.spawn.hero)),
-                            ],
-                        ),
-                    ],
-                ),
-            };
+                link(bot.entity),
+            ];
+            let definition = 0x000e;
             (
                 bot.entity,
                 BOT_CONTROLLER_ENTITY + slot as u32,
