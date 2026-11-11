@@ -888,6 +888,58 @@ fn gravitys_part_of_the_velocity_follows_the_fall() {
     assert_eq!(body.mover.pose().fall, 0.0); // the landing hands it to the body
 }
 
+/// No Python test: a knockback ([`Mover::push`], after leafall903/ORPHEUS
+/// (MIT) `heavy_assault.py` `_push`). Pushed 6 m/s up from the floor (a
+/// Helix Rocket at Soldier: 76's feet) the body leaves the ground at the
+/// next posed frame, not the one before, and flies as a jump at the jump
+/// speed (6 m/s) does, then lands. Pushes before a frame add up, and one
+/// along the ground slides the body without lifting it.
+#[test]
+fn a_push_lifts_the_body_at_its_next_frame_and_it_flies_as_a_jump() {
+    let mut jumped = Body::soldier([0.0, 1.0, 0.0], None);
+    let mut pushed = Body::soldier([0.0, 1.0, 0.0], None);
+    jumped.walk(5, stand(0));
+    pushed.walk(5, stand(0));
+    pushed.mover.push([0.0, 3.0, 0.0]);
+    pushed.mover.push([0.0, 3.0, 0.0]);
+    assert!(!pushed.airborne());
+    jumped.walk(
+        1,
+        Command {
+            buttons: JUMP,
+            ..stand(5)
+        },
+    );
+    pushed.walk(1, stand(5));
+    assert!(pushed.airborne());
+    assert_eq!(pushed.flags() & (FELL | JUMPED), FELL);
+    assert!(pushed.position()[1] > 1.0);
+    let mut top: f64 = 0.0;
+    for tick in 6..80 {
+        jumped.walk(1, stand(tick));
+        pushed.walk(1, stand(tick));
+        assert!(
+            (pushed.position()[1] - jumped.position()[1]).abs() <= 2.0 * STEP,
+            "tick {tick}: {:?} {:?}",
+            pushed.position(),
+            jumped.position()
+        );
+        top = top.max(pushed.position()[1]);
+    }
+    // v² / 2g: 36 / (2 × 10 × 1.75) m.
+    assert!(close(top - 1.0, 36.0 / 35.0, 0.05), "{top}");
+    assert_eq!(pushed.position()[1], 1.0);
+    assert!(!pushed.airborne());
+
+    let mut slid = Body::soldier([0.0, 1.0, 0.0], None);
+    slid.walk(5, stand(0));
+    slid.mover.push([4.0, 0.0, 0.0]);
+    slid.walk(1, stand(5));
+    assert!(!slid.airborne());
+    assert!(slid.position()[0] > 0.0 && slid.velocity()[0] > 0.0);
+    assert_eq!(slid.position()[1], 1.0);
+}
+
 fn speed_mod(operation: Operation, value: f64) -> Modifier {
     Modifier {
         index: SPEED,

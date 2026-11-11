@@ -673,7 +673,28 @@ impl Combat {
                 scene.hitscan_wall(origin, direction, reach)
             })
             .map_err(io::Error::other)?;
-        hits.extend(step.impacts.iter().filter_map(|impact| {
+        // A player's explosion also reaches his own body (beyond Python,
+        // `ProjectileFlight::own_blast`): its damage comes after the others'
+        // (no ultimate charge for it: `apply_player_hits`), and its push
+        // goes back with the end for his mover.
+        let own = step
+            .end
+            .as_ref()
+            .filter(|_| !shooter.bot)
+            .and_then(|_| {
+                self.players
+                    .iter()
+                    .find(|slot| slot.target.body == shooter.source && !slot.target.dead)
+            })
+            .and_then(|slot| flight.own_blast(&slot.target.pose));
+        let own_hit = own.filter(|own| own.damage > 0.0).map(|own| Impact {
+            entity: shooter.source,
+            distance: own.distance,
+            damage: own.damage,
+            critical: false,
+            loadout: own.loadout,
+        });
+        hits.extend(step.impacts.iter().chain(&own_hit).filter_map(|impact| {
             self.apply_impact(
                 scene,
                 shooter,
@@ -683,7 +704,10 @@ impl Combat {
                 impact,
             )
         }));
-        Ok(step.end)
+        Ok(step.end.map(|end| FlightEnd {
+            knockback: own.and_then(|own| own.knockback),
+            ..end
+        }))
     }
 
     /// combat.py `_shoot` for a firing bot's projectile volley: a rocket
@@ -966,11 +990,14 @@ fn player_of(players: &[CombatPlayer<'_>], body: u32) -> Option<usize> {
 }
 
 /// The hits on players' bodies (combat.py `_damage`, `_tell_hit`,
-/// `_died`, `_kill_notice`): the victim's pools take each; a player
-/// shooter gets 25001 and Hero Damage Done, and ultimate charge for damage
-/// to another; a kill counts Deaths for the victim, Eliminations and 25005
-/// for another player who killed him (the scene's board stats), and gives the
-/// victim 25004 ("YOU WERE KILLED BY", or "YOU DIED" for his own blow).
+/// `_died`, `_kill_notice`): the victim's pools take each; a player who hit
+/// another gets 25001, Hero Damage Done and ultimate charge for it (his own
+/// explosion's damage to himself gives none of them: beyond Python, which
+/// never hurt the shooter; self damage gives no charge, game-rules.md 154,
+/// and isn't damage done or a hit to show, assumption); a kill counts
+/// Deaths for the victim, Eliminations and 25005 for another player who
+/// killed him (the scene's board stats), and gives the victim 25004 ("YOU
+/// WERE KILLED BY", or "YOU DIED" for his own blow).
 /// Returns each player's notices, by slot.
 pub fn apply_player_hits(
     scene: &PreparedScene,
@@ -1000,7 +1027,7 @@ pub fn apply_player_hits(
         let shooter = (!hit.shooter.bot)
             .then(|| player_of(players, hit.shooter.source))
             .flatten();
-        if let Some(shooter) = shooter {
+        if let Some(shooter) = shooter.filter(|&shooter| shooter != victim) {
             notices[shooter].push(CombatNotice::Hit {
                 target: hit.body,
                 dealt: damage.dealt,
@@ -1009,10 +1036,8 @@ pub fn apply_player_hits(
                 shot_frame: hit.frame,
             });
             players[shooter].stats.add(board.hero_damage, damage.dealt);
-            if shooter != victim {
-                if let Some(world) = players[shooter].world.as_deref_mut() {
-                    world.gain_ult(damage.dealt);
-                }
+            if let Some(world) = players[shooter].world.as_deref_mut() {
+                world.gain_ult(damage.dealt);
             }
         }
         if !damage.killed {

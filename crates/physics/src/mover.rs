@@ -45,9 +45,11 @@
 //! ground. Mover +0x14DD is "landed this tick", state +40 the frame the body
 //! last stood up in, state +24 the gravity scale of the last tick
 //! (0x7FF789B4D869). Not modelled: throttle mods (17-19), velocity mods
-//! (STU_FF3471E9 states), knockback, abilities that take over the move,
-//! moving platforms, other bodies. The capsule rests 5 mm out of a wall (the
-//! engine's contact skin).
+//! (STU_FF3471E9 states), abilities that take over the move, moving
+//! platforms, other bodies. Knockback is a velocity added at the next posed
+//! frame ([`Mover::push`]), a reconstruction (leafall903/ORPHEUS (MIT)
+//! `heavy_assault.py` `_push`), not the client's code. The capsule rests
+//! 5 mm out of a wall (the engine's contact skin).
 
 pub mod correction;
 pub mod ground;
@@ -130,6 +132,8 @@ pub struct Mover {
     motion: Option<motion::Motion>,
     /// Recent feet positions for a rewind.
     history: motion::History,
+    /// The velocity [`Mover::push`] adds at the next posed frame.
+    push: Option<[f64; 3]>,
 }
 
 impl Mover {
@@ -159,6 +163,7 @@ impl Mover {
             driven: false,
             motion: None,
             history: motion::History::with_capacity(motion::HISTORY),
+            push: None,
         })
     }
 
@@ -172,6 +177,34 @@ impl Mover {
 
     pub fn track_modifiers(&mut self, frame: u32, active: &BTreeMap<ModifierKey, Modifier>) {
         self.modifiers.track(frame, active);
+    }
+
+    /// Add `velocity` to the body's at its next posed frame, as a knockback
+    /// (leafall903/ORPHEUS (MIT) `heavy_assault.py` `_push`): each part in
+    /// float32, and an upward push of a body on the ground takes it off
+    /// (FELL, its air ticks from 0), so the frame flies it instead of
+    /// holding it to the ground. Pushes before that frame add up.
+    pub fn push(&mut self, velocity: [f64; 3]) {
+        if !velocity.iter().all(|part| part.is_finite()) {
+            return;
+        }
+        let pending = self.push.get_or_insert([0.0; 3]);
+        for (pending, part) in pending.iter_mut().zip(velocity) {
+            *pending += part;
+        }
+    }
+
+    fn take_push(&mut self) {
+        let Some(push) = self.push.take() else {
+            return;
+        };
+        for (velocity, part) in self.pose.velocity.iter_mut().zip(push) {
+            *velocity = f64::from((*velocity + part) as f32);
+        }
+        if push[1] > 0.0 && self.posture.flags & IN_AIR == 0 {
+            self.posture.flags |= FELL;
+            self.posture.air_ticks = 0;
+        }
     }
 
     /// Simulate the newest command and any reconstructible poses before it.
@@ -251,6 +284,7 @@ impl Mover {
         if self.driven && move_to.is_none() {
             self.pose.velocity = [0.0; 3];
         }
+        self.take_push();
         self.driven = move_to.is_some();
         let active = self.modifiers.at(command.frame);
         let settings = active.settings(&self.base);
