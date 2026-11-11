@@ -28,7 +28,7 @@ use super::*;
 /// Actions that change nothing the server tracks: the client runs the same
 /// graphs and plays effects, records stats and shows its own messages itself.
 /// The server only follows their out plug. The list is the Python reference's
-/// (`no_op` in `ow174/game/script/nodes.py`).
+/// (`no_op` in `ow174/game/script/nodes.py`) and one from upstream's research.
 const SERVER_NO_OPS: &[&str] = &[
     "STUStatescriptActionEffect",
     "STUStatescriptActionCriteria",
@@ -38,6 +38,10 @@ const SERVER_NO_OPS: &[&str] = &[
     "STUStatescriptActionPlayScript",
     "STU_7106C356", // unnamed, listed by the Python reference
     "STU_C43F9944", // unnamed, listed by the Python reference
+    // Records optional trace data, then follows m_outPlug (client function
+    // 1B6EBA0; leafall903/ORPHEUS (MIT), commit c239a84, nodes.py). Melee,
+    // graph 0043 node 44.
+    "STU_6E5C5F66",
 ];
 
 /// Unnamed actions the server runs as no-ops without knowing what they do,
@@ -45,7 +49,6 @@ const SERVER_NO_OPS: &[&str] = &[
 /// recorded as an [`Assumption`].
 const ASSUMED_NO_OPS: &[&str] = &[
     "STU_E9694EFD", // Soldier: 76's sprint, graph 0255 node 40; hashed fields only
-    "STU_6E5C5F66", // melee, graph 0043 node 44; no fields
     "STU_1C2CC6D5", // melee, graph 0043 node 8; one unnamed field
 ];
 
@@ -134,6 +137,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     self.post(id, event)?;
                     taken = true;
                 }
+            } else if target.class == "STU_1113EBD5" {
+                // A join knows which plug brought each input
+                // (`Instance._follow` keeps `plug_source` in upstream's runtime.py).
+                taken = self.join(id, target, node.pos, path, caller, depth + 1)? || taken;
             } else {
                 let caller = if target.is_action() { None } else { caller };
                 taken = self.run_node(id, target, caller, depth + 1)? || taken;
@@ -221,12 +228,15 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     .any(|&held| i64::from(held) == button);
                 self.branch(id, node, caller, held, depth)
             }
-            "STU_4E2BCAAB" => {
-                // The Python reference has no model for this condition and
-                // answers false (`unknown_condition` in nodes.py).
-                self.assume(self.site(id, node), &node.class, "false");
-                self.branch(id, node, caller, false, depth)
+            "STU_1113EBD5" => {
+                // A join is only reached through a plug (`follow`).
+                self.report(
+                    self.site(id, node),
+                    Issue::UnsupportedField("join input origin"),
+                );
+                Ok(false)
             }
+            "STU_4E2BCAAB" => self.state_elapsed(id, node, caller, depth),
             "STU_BC5E4622" => self.cycle_index(id, node, depth),
             "STU_187D5125" => {
                 self.stop_abilities(id, depth)?;
@@ -248,29 +258,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
-            "STUStatescriptActionSwitch" => {
-                let Some(value) = self.evaluate(id, node, field(&node.fields, "m_262AE982"), None)
-                else {
-                    return Ok(false);
-                };
-                let mut path = "m_CD38D5DB".to_owned();
-                for (number, case) in array_field(&node.fields, "m_FDD34C25").iter().enumerate() {
-                    if !case.is_object() {
-                        continue;
-                    }
-                    let Some(candidate) = self.evaluate(id, node, field(case, "m_value"), None)
-                    else {
-                        return Ok(false);
-                    };
-                    if equal(&value, &candidate) {
-                        path = format!("m_FDD34C25[{number}]");
-                        break;
-                    }
-                }
-                self.follow(id, node, &path, None, depth)?;
-                self.follow(id, node, "m_outPlug", None, depth)?;
-                Ok(true)
-            }
+            "STUStatescriptActionSwitch" => self.action_switch(id, node, depth),
             class if SERVER_NO_OPS.contains(&class) => {
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)

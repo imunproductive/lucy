@@ -41,6 +41,7 @@ impl Machine {
             volleys: BTreeMap::new(),
             shots: Vec::new(),
             ability_presses: BTreeMap::new(),
+            joins: BTreeMap::new(),
             next_id: 1,
             work_left: max_work,
             max_work,
