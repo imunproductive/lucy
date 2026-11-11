@@ -2030,6 +2030,16 @@ impl State {
                     .get_or_insert_with(|| Combat::new(&world.scene));
                 let first_tick = combat.catch_up(tick);
                 combat.record_poses(&world.scene, &targets, tick);
+                // The bodies the statescript's target searches (`TrackTargets`)
+                // find until the next update, as placed this tick.
+                let candidates = combat.target_candidates(&world.scene);
+                world.scene.set_bot_target_candidates(&candidates);
+                for peer in room_peers(&mut self.peers, &self.seats, id, players.len())
+                    .into_iter()
+                    .flatten()
+                {
+                    peer.world.set_target_candidates(&candidates);
+                }
                 let context = ShotContext {
                     quanta: RETAIL_QUANTA,
                     tick,

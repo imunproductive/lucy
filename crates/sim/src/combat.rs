@@ -49,7 +49,7 @@ use orpheus_script::{
     expr::{Context, evaluate, to_float},
     graph::GraphStore,
     vitals::{Death, Vitals},
-    vm::ShotEvent,
+    vm::{ShotEvent, TargetCandidate},
     weapons::{HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
 };
@@ -443,6 +443,33 @@ impl Combat {
                 target.history.record(tick, scene.bot_target(bot));
             }
         }
+    }
+
+    /// The bodies the statescript's target searches can find this tick
+    /// (`TrackTargets`): the players' bodies as recorded, then the bots, in
+    /// slot order; no teams in a free-for-all.
+    pub fn target_candidates(&self, scene: &PreparedScene) -> Vec<TargetCandidate> {
+        let free_for_all = scene.map().free_for_all;
+        let candidate = |entity, team, dead, pose: &TargetPose| TargetCandidate {
+            entity,
+            team: (!free_for_all).then_some(team),
+            dead,
+            feet: pose.feet,
+            height: pose.height,
+            radius: pose.radius,
+        };
+        self.players
+            .iter()
+            .map(|slot| {
+                let target = &slot.target;
+                candidate(target.body, target.team, target.dead, &target.pose)
+            })
+            .chain(
+                scene.bots().iter().map(|bot| {
+                    candidate(bot.entity, bot.spawn.team, bot.dead, &scene.bot_target(bot))
+                }),
+            )
+            .collect()
     }
 
     /// The hits on players' bodies since the last call, in order.

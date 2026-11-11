@@ -107,6 +107,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         state.pending_change = false;
         state.pending_timer = false;
         state.delayed_timers = [false; 2];
+        state.tracked.clear();
         if matches!(kind, StateKind::SubScript { .. }) {
             state.kind = StateKind::SubScript { child: None };
         }

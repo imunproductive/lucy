@@ -41,7 +41,7 @@ use orpheus_script::{
     vitals::Vitals,
     vm::{
         Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest, Root, Snapshot, StateKind,
-        Unknowns, World,
+        TargetCandidate, Unknowns, World,
     },
     weapons::{HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
@@ -357,6 +357,17 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         }
         let pose = mover.pose();
         self.world.position = pose.position;
+        // Its own body, as the target searches see it, stands where it moved.
+        let entity = self.world.entity;
+        if let Some(own) = self
+            .world
+            .targets
+            .iter_mut()
+            .flatten()
+            .find(|candidate| candidate.entity == entity)
+        {
+            own.feet = pose.position;
+        }
         // Command gaps and timer advances retain the last movement record.
         if step == BodyStep::Posed {
             self.world.movement = pose;
@@ -466,6 +477,12 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     fn take_motions(&mut self) -> Vec<Motion> {
         self.component.take_motions()
+    }
+
+    fn set_target_candidates(&mut self, candidates: &[TargetCandidate]) {
+        let targets = self.world.targets.get_or_insert_with(Vec::new);
+        targets.clear();
+        targets.extend_from_slice(candidates);
     }
 
     fn begin_spawn_bark(&mut self, now: Duration) -> io::Result<()> {

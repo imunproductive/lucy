@@ -52,7 +52,7 @@ use orpheus_script::{
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
-    vm::{GameMessage, Motion, MoveRequest, Snapshot},
+    vm::{GameMessage, Motion, MoveRequest, Snapshot, TargetCandidate},
     wire::{Value as ScriptValue, Variables},
 };
 use orpheus_wire::{
@@ -186,6 +186,10 @@ pub trait OwnerBodyRuntime: Send {
     fn expire_bark(&mut self, _now: Duration) -> io::Result<()> {
         Ok(())
     }
+
+    /// The bodies the body's target searches can find from now on
+    /// (`Combat::target_candidates`).
+    fn set_target_candidates(&mut self, _candidates: &[TargetCandidate]) {}
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -839,6 +843,9 @@ pub struct WorldDelivery {
     retained_elsewhere: HashSet<u32>,
     /// The training bots' statescript on this client.
     bot_views: BotViews,
+    /// The bodies the target searches can find, as the match last placed
+    /// them; a new body starts with them.
+    target_candidates: Vec<TargetCandidate>,
     /// The current body's death and respawn (combat.py `Vitals.died_at`).
     death: Option<BodyDeath>,
     /// The pools of a body that runs no script (combat.py `Vitals` from
@@ -928,6 +935,7 @@ impl WorldDelivery {
             notices: SwitchNotices::default(),
             retained_elsewhere: HashSet::new(),
             bot_views: BotViews::default(),
+            target_candidates: Vec::new(),
             death: None,
             plain_vitals: None,
             body_health: 0,
@@ -1019,6 +1027,7 @@ impl WorldDelivery {
         self.board = BoardDelivery::default();
         self.others.clear();
         self.bot_views.clear();
+        self.target_candidates.clear();
         self.notices = SwitchNotices::default();
     }
 
@@ -1937,6 +1946,16 @@ impl WorldDelivery {
         self.body.map(|body| body.id.entity)
     }
 
+    /// The bodies the target searches can find from now on
+    /// (`Combat::target_candidates`): the current body's and the next.
+    pub fn set_target_candidates(&mut self, candidates: &[TargetCandidate]) {
+        self.target_candidates.clear();
+        self.target_candidates.extend_from_slice(candidates);
+        if let Some(script) = &mut self.body_script {
+            script.runtime.set_target_candidates(candidates);
+        }
+    }
+
     /// Whether the player's current body is dead (combat.py `is_dead`).
     pub fn body_dead(&self) -> bool {
         self.death.is_some()
@@ -2748,6 +2767,10 @@ impl WorldDelivery {
             )
             .ok()
             .flatten()
+            .map(|mut runtime| {
+                runtime.set_target_candidates(&self.target_candidates);
+                runtime
+            })
             .and_then(|runtime| BodyScript::new(body, start_frame, runtime).ok());
         let create = body_create(
             BodyCreate {

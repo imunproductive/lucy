@@ -32,7 +32,7 @@ use orpheus_script::{
     snapshot::{ProjectedSnapshot, SnapshotEncoder, SnapshotError, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk},
     timeline::FRAME_MS,
-    vm::{ShotEvent, Snapshot, Unknowns},
+    vm::{ShotEvent, Snapshot, TargetCandidate, Unknowns},
     weapons::{HitDefinition, ProjectileBallistics, authored_number},
     wire::{Value, Variables},
 };
@@ -141,6 +141,9 @@ pub struct BotScripts {
     events: Vec<BotEvent>,
     /// The last world tick the weapons ran (combat.py `Combat.tick`).
     weapons_tick: u32,
+    /// The bodies the target searches can find, as the match last placed
+    /// them; a new script starts with them.
+    targets: Vec<TargetCandidate>,
 }
 
 impl BotScripts {
@@ -171,6 +174,7 @@ impl BotScripts {
             pending,
             events: Vec::new(),
             weapons_tick: 0,
+            targets: Vec::new(),
         }
     }
 
@@ -194,6 +198,15 @@ impl BotScripts {
     pub(crate) fn prepare_next(&mut self, bots: &[Bot], tick: u32) {
         if let Some(slot) = self.pending.pop_front() {
             self.prepare(slot, &bots[slot], tick);
+        }
+    }
+
+    /// The bodies every script's target searches can find from now on.
+    pub(crate) fn set_target_candidates(&mut self, candidates: &[TargetCandidate]) {
+        self.targets.clear();
+        self.targets.extend_from_slice(candidates);
+        for script in self.slots.iter_mut().flatten() {
+            script.body.set_target_candidates(candidates);
         }
     }
 
@@ -236,7 +249,8 @@ impl BotScripts {
         };
         let started = BotBody::start(Arc::clone(graphs), spawn, self.unknowns)
             .map_err(|error| error.to_string())
-            .and_then(|body| {
+            .and_then(|mut body| {
+                body.set_target_candidates(&self.targets);
                 let snapshot = body.snapshot().ok_or("the script halted")?;
                 let initial = body
                     .encoder(graphs, &self.codecs)

@@ -259,3 +259,55 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
     assert_eq!(bodies(false), [0xa000_0301]);
     assert_eq!(bodies(true), [0xa000_0201, 0xa000_0301]);
 }
+
+/// The bodies the statescript's target searches find (`TrackTargets`):
+/// the players' bodies as recorded this tick, then every bot, with their
+/// teams, capsules and deaths.
+#[test]
+#[ignore = "requires a derived 104319 Practice Range scene"]
+fn target_searches_see_the_players_then_the_bots() {
+    let scene = SceneAssets::load(orpheus_testkit::runtime_dir())
+        .unwrap()
+        .prepare(GameMap::practice_range())
+        .unwrap();
+    let mut combat = Combat::new(&scene);
+    let pose = TargetPose {
+        feet: [1.0, 2.0, 3.0],
+        height: 1.8,
+        radius: 0.4,
+        eye: 1.55,
+        yaw: 0.0,
+        shapes: None,
+    };
+    let player = PlayerTarget {
+        body: SHOOTER.source,
+        team: 1,
+        pose: pose.clone(),
+        dead: true,
+    };
+    combat.record_poses(&scene, &[player], 1000);
+    let candidates = combat.target_candidates(&scene);
+    assert_eq!(candidates.len(), 1 + scene.bots().len());
+    assert_eq!(
+        candidates[0],
+        TargetCandidate {
+            entity: SHOOTER.source,
+            team: Some(1),
+            dead: true,
+            feet: pose.feet,
+            height: pose.height,
+            radius: pose.radius,
+        }
+    );
+    for (candidate, bot) in candidates[1..].iter().zip(scene.bots()) {
+        let target = scene.bot_target(bot);
+        assert_eq!(
+            (candidate.entity, candidate.team, candidate.dead),
+            (bot.entity, Some(bot.spawn.team), bot.dead)
+        );
+        assert_eq!(
+            (candidate.feet, candidate.height, candidate.radius),
+            (target.feet, target.height, target.radius)
+        );
+    }
+}

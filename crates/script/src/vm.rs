@@ -16,6 +16,7 @@ mod machine;
 mod nodes;
 mod state_kinds;
 mod switches;
+mod targets;
 mod timers;
 mod volleys;
 
@@ -183,6 +184,35 @@ pub struct TargetTagEffect {
     pub present: bool,
 }
 
+/// A body a target search (`TrackTargets`) can find, as the match places it
+/// this tick: players' bodies and training bots alike.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TargetCandidate {
+    pub entity: u32,
+    /// Its team; none in a free-for-all, where a body is only its own ally.
+    pub team: Option<u8>,
+    pub dead: bool,
+    /// Its capsule: from the feet up `height`, `radius` round (the match's
+    /// `TargetPose`).
+    pub feet: [f64; 3],
+    pub height: f64,
+    pub radius: f64,
+}
+
+impl TargetCandidate {
+    /// How far `point` is from the capsule's surface (0 inside).
+    pub fn distance(&self, point: [f64; 3]) -> f64 {
+        let [x, y, z] = self.feet;
+        let low = y + self.radius;
+        let high = y + self.radius.max(self.height - self.radius);
+        let nearest = [x, point[1].clamp(low, high), z];
+        let offset: f64 = (0..3)
+            .map(|axis| (point[axis] - nearest[axis]).powi(2))
+            .sum();
+        (offset.sqrt() - self.radius).max(0.0)
+    }
+}
+
 /// External authored queries for this initialization. The caller owns mode,
 /// ruleset, and entity data and can decline a query without guessing its value.
 /// What the VM and the frame encoder do with graph content they don't
@@ -285,6 +315,13 @@ pub trait World {
     }
 
     fn entity_filter_flags(&self, _site: Site, _entity: u32) -> Option<u64> {
+        None
+    }
+
+    /// The bodies a target search on `site` can find, each once in a fixed
+    /// order, the searching body among them. None: this world can't list
+    /// them, and a search finds nothing.
+    fn target_candidates(&self, _site: Site) -> Option<&[TargetCandidate]> {
         None
     }
 
@@ -416,11 +453,13 @@ pub enum StateKind {
     CosmeticEntity,
     ChaseVar,
     Watch,
-    /// A target search. The server can't run one yet, so it finds nothing,
-    /// as in the Python reference. Unverified.
+    /// A target search (`vm/targets.rs`): the bodies it finds while active
+    /// are [`State::tracked`]. Forms the server can't run find nothing
+    /// (an assumption, as in the Python reference).
     TrackTargets,
-    /// Melee's hit list (`STU_77E13026`). The server doesn't run melee yet, so
-    /// it records no hits. Unverified.
+    /// Melee's hit list (`STU_77E13026`). Its hits come from melee's own
+    /// states, which the server doesn't run (the match applies quick melee's
+    /// damage itself), so it records none. Unverified.
     HitList,
     WeaponVolley {
         volleys: u8,
@@ -470,6 +509,9 @@ pub struct State {
     pub kind: StateKind,
     pub chase: Option<ChasePayload>,
     pub ability_cooldown: Option<AbilityCooldown>,
+    /// A target search's bodies, in the order they came in, while it runs
+    /// (`vm/targets.rs`).
+    pub tracked: Vec<TrackedTarget>,
     watch_seen: Option<Value>,
     ending: bool,
     pending_change: bool,
@@ -489,6 +531,7 @@ impl State {
             kind,
             chase: None,
             ability_cooldown: None,
+            tracked: Vec::new(),
             watch_seen: None,
             ending: false,
             pending_change: false,
@@ -499,6 +542,13 @@ impl State {
             ability_stack: None,
         }
     }
+}
+
+/// A body a target search found, and when it came in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TrackedTarget {
+    pub entity: u32,
+    pub since_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

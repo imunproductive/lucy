@@ -635,9 +635,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.state_mut(key).expect("active Watch").watch_seen = seen;
             }
             StateKind::WeaponVolley { .. } => self.begin_volley(key, node, depth)?,
-            StateKind::TrackTargets => {
-                self.assume(self.site(id, node), &node.class, "finds no targets");
-            }
+            StateKind::TrackTargets => self.begin_track_targets(key, node)?,
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
             StateKind::Plain if node.class == "STU_54FEB21C" && is_server_ended(node) => {
                 self.end_wind_up(key, node)?;

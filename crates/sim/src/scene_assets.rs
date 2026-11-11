@@ -47,7 +47,11 @@ use orpheus_physics::{
     nav::{self, Navigation},
 };
 use orpheus_script::{
-    codecs::CodecTable, graph::GraphStore, ultimate::ChargeRates, vm::Unknowns, wire::Variables,
+    codecs::CodecTable,
+    graph::GraphStore,
+    ultimate::ChargeRates,
+    vm::{TargetCandidate, Unknowns},
+    wire::Variables,
 };
 use orpheus_wire::entity::{Component, EntityUpdate};
 
@@ -702,6 +706,12 @@ impl PreparedScene {
         self.bot_scripts.weapons(&self.bots, tick)
     }
 
+    /// The bodies the bots' target searches can find from now on
+    /// (`Combat::target_candidates`).
+    pub fn set_bot_target_candidates(&mut self, candidates: &[TargetCandidate]) {
+        self.bot_scripts.set_target_candidates(candidates);
+    }
+
     /// A bot was killed: its script's death message (combat.py `_bot_died`).
     pub fn bot_died(
         &mut self,
@@ -976,7 +986,7 @@ mod tests {
                 (
                     0x0043,
                     Some(11),
-                    "STUStatescriptStateTrackTargets",
+                    "STUStatescriptStateTrackTargets m_D59188D5",
                     "finds no targets"
                 ),
                 (0x0043, Some(9), "STU_23A00A53", "no effect"),
@@ -1013,6 +1023,110 @@ mod tests {
             })
             .collect();
         assert_eq!(maps, [(0x05ad, 29859)]);
+    }
+
+    /// Soldier: 76's Biotic Field (ABILITY_2, graph `0257`): 0.65 s after
+    /// the cast its target search (st6, node 11) counts the living allies
+    /// within 10 m of a point a metre over his feet, himself left out, into
+    /// #1192, and the transition plug ends it at once (its criteria is the
+    /// client's). An allied bot 3 m away counts; the caster, an enemy bot
+    /// 2 m away and an ally 30 m away don't. Every frame encodes for the
+    /// owner and observers.
+    #[test]
+    #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
+    fn the_biotic_field_counts_the_allies_near_its_caster() {
+        use crate::replication::BodyStep;
+        use orpheus_script::{
+            snapshot::View,
+            vm::{StateKind, TargetCandidate},
+            wire::Value,
+        };
+        use orpheus_wire::commands::Command;
+
+        /// tests/test_game_projectiles.py `ABILITY_2`: 0257 st0's button.
+        const ABILITY_2: u32 = 0x10;
+        const FIELD_COUNT: u32 = 1192;
+        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let scene = assets.prepare(GameMap::practice_range()).unwrap();
+        let hero = scene.heroes().get(SOLDIER).unwrap();
+        let mover = scene
+            .player_spawn_mover(hero.body, 0, 0, SpawnChoice::First)
+            .unwrap();
+        let spawn = OwnerBodySpawn {
+            slot: 0,
+            controller: 0xa000_0100,
+            entity: 0xa000_0101,
+            body_filter: team_bit(0).unwrap(),
+            frame: FIRST_TICK,
+            pose: mover.pose(),
+            quanta: RETAIL_QUANTA,
+        };
+        let [x, y, z] = spawn.pose.position;
+        let body = |entity, team, dx: f64| TargetCandidate {
+            entity,
+            team: Some(team),
+            dead: false,
+            feet: [x + dx, y, z],
+            height: 1.8,
+            radius: 0.4,
+        };
+        let count = |candidates: &[TargetCandidate]| {
+            let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
+            runtime.set_target_candidates(candidates);
+            let buttons = std::iter::repeat_n(0, 30)
+                .chain([ABILITY_2])
+                .chain(std::iter::repeat_n(0, 120));
+            for (frame, buttons) in (spawn.frame + 1..).zip(buttons) {
+                let command = Command {
+                    frame,
+                    buttons,
+                    ..Command::default()
+                };
+                runtime.advance(command, &mover, BodyStep::Posed).unwrap();
+                runtime.take_shots(Some(command), &mover);
+                let snapshot = runtime.snapshot().unwrap();
+                assert!(
+                    snapshot.diagnostics.is_empty(),
+                    "{:?}",
+                    snapshot.diagnostics
+                );
+                let encoder = runtime.encoder();
+                for view in [View::Owner, View::Observer] {
+                    encoder
+                        .full(&encoder.project(snapshot, view).unwrap())
+                        .unwrap();
+                }
+            }
+            let snapshot = runtime.snapshot().unwrap();
+            let field = snapshot
+                .instances
+                .values()
+                .find(|instance| instance.graph == 0x0257)
+                .unwrap();
+            let search = &field.states[&6];
+            assert_eq!(search.kind, StateKind::TrackTargets);
+            assert_eq!((search.active, search.activation), (false, 1));
+            assert!(snapshot.assumptions.iter().any(|item| {
+                (
+                    item.site.graph,
+                    item.site.node,
+                    item.class.as_str(),
+                    item.answer,
+                ) == (
+                    0x0257,
+                    Some(11),
+                    "STUStatescriptStateTrackTargets",
+                    "a sphere search (flag fields unread)",
+                )
+            }));
+            field.variables.get(&FIELD_COUNT).cloned()
+        };
+        let caster = body(spawn.entity, 0, 0.0);
+        let enemy = body(BOT_ENTITY, 1, 2.0);
+        let far = body(BOT_ENTITY + 1, 0, 30.0);
+        let ally = body(BOT_ENTITY + 2, 0, 3.0);
+        assert_eq!(count(&[caster, enemy, far]), Some(Value::Integer(0)));
+        assert_eq!(count(&[caster, enemy, far, ally]), Some(Value::Integer(1)));
     }
 
     #[test]

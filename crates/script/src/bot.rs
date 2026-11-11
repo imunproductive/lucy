@@ -16,7 +16,8 @@ use crate::{
     graph::{GraphStore, Node},
     snapshot::SnapshotEncoder,
     vm::{
-        Component, InitFault, MAX_INIT_WORK, ShotEvent, Site, Snapshot, Unknowns, World, body_roots,
+        Component, InitFault, MAX_INIT_WORK, ShotEvent, Site, Snapshot, TargetCandidate, Unknowns,
+        World, body_roots,
     },
     wire::{Value, Variables},
 };
@@ -62,6 +63,9 @@ pub struct BotWorld {
     pub weapon_buttons: Vec<(i64, u8)>,
     /// Where the firing behavior's owner stands; none without the behavior.
     pub owner_position: Option<[f64; 3]>,
+    /// The bodies a target search can find, as the match placed them this
+    /// tick; none: the world lists no bodies.
+    pub targets: Option<Vec<TargetCandidate>>,
     pub unknowns: Unknowns,
 }
 
@@ -101,6 +105,10 @@ impl World for BotWorld {
     /// only its graph selects, and only with an owner position.
     fn selects_ai_behavior(&mut self, site: Site) -> Option<bool> {
         Some(self.owner_position.is_some() && site.graph == FIRING_GRAPH)
+    }
+
+    fn target_candidates(&self, _site: Site) -> Option<&[TargetCandidate]> {
+        self.targets.as_deref()
     }
 
     fn native(&mut self, site: Site, config: &Json) -> Option<Value> {
@@ -266,6 +274,7 @@ impl BotBody {
             mode: spawn.mode,
             weapon_buttons,
             owner_position: spawn.firing_position.filter(|_| firing),
+            targets: None,
             unknowns,
         };
         let mut component = Component::start(
@@ -374,6 +383,14 @@ impl BotBody {
         self.component
             .set_entity_variable(OWNER_HEALTH, Value::Float(health), &mut self.world)?;
         Ok(())
+    }
+
+    /// The bodies the body's target searches can find from now on, as the
+    /// match placed them this tick.
+    pub fn set_target_candidates(&mut self, candidates: &[TargetCandidate]) {
+        let targets = self.world.targets.get_or_insert_with(Vec::new);
+        targets.clear();
+        targets.extend_from_slice(candidates);
     }
 
     /// Advance a live body one server frame; the firing behavior's owner
@@ -699,6 +716,7 @@ mod tests {
             mode: PRACTICE_RANGE_MODE,
             weapon_buttons: vec![(0, 20)],
             owner_position: Some([1.0, 2.0, 3.0]),
+            targets: None,
             unknowns: Unknowns::Refuse,
         };
         assert_eq!(

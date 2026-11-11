@@ -20,7 +20,7 @@ use crate::{
     expr::{EntityRelation, native_shape, valid_entity},
     graph::GraphStore,
     vitals::{PoolKind, Vitals},
-    vm::{GameMessage, Site, TargetTagEffect, Unknowns, World},
+    vm::{GameMessage, Site, TargetCandidate, TargetTagEffect, Unknowns, World},
     wire::{Value, Variables},
 };
 use orpheus_physics::mover::sample_movement_flags;
@@ -41,6 +41,9 @@ pub struct PlayerWorld {
     pub target_tags: Option<BTreeSet<u64>>,
     target_tag_effects: BTreeMap<u64, TargetTagCounts>,
     pub controller_on_fire: bool,
+    /// The bodies a target search can find, as the match placed them this
+    /// tick (its own body among them); none: the world lists no bodies.
+    pub targets: Option<Vec<TargetCandidate>>,
     /// How the body treats graph content the VM doesn't implement; by
     /// default as every script does ([`Unknowns::for_build`]).
     pub unknowns: Unknowns,
@@ -223,6 +226,12 @@ impl World for PlayerWorld {
         (self.is_player_site(site) && entity == self.entity).then_some(self.body_filter)
     }
 
+    fn target_candidates(&self, site: Site) -> Option<&[TargetCandidate]> {
+        self.is_player_site(site)
+            .then_some(self.targets.as_deref())
+            .flatten()
+    }
+
     fn body_on_fire(&mut self, site: Site, entity: u32) -> Option<bool> {
         self.related_entity(site, EntityRelation::CurrentPossessor, entity)
             .map(|_| self.controller_on_fire)
@@ -311,6 +320,7 @@ impl PlayerWorld {
             target_tags: None,
             target_tag_effects: BTreeMap::new(),
             controller_on_fire: false,
+            targets: None,
             unknowns: Unknowns::for_build(),
             outbox: Vec::new(),
         }

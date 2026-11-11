@@ -85,6 +85,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                         let node = self.graph(id).state(usize::from(raw)).expect("wait");
                         self.tick_wait(key, node)?;
                     }
+                    Some(StateKind::TrackTargets) => {
+                        let node = self.graph(id).state(usize::from(raw)).expect("search");
+                        self.track_targets(key, node, false)?;
+                    }
                     _ => (),
                 }
             }

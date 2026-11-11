@@ -1386,9 +1386,26 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
         (StateKind::HitList, Some("hits")) => {
             StatePayload::from([("flag".into(), Value::Bool(false))])
         }
-        (StateKind::TrackTargets, Some("targets")) => {
-            StatePayload::from([("targets".into(), Value::Array(Vec::new()))])
-        }
+        // Each target's age is the milliseconds since it came in (assumed,
+        // `vm/targets.rs`).
+        (StateKind::TrackTargets, Some("targets")) => StatePayload::from([(
+            "targets".into(),
+            Value::Array(
+                state
+                    .tracked
+                    .iter()
+                    .map(|target| {
+                        let age = now_ms
+                            .saturating_sub(target.since_ms)
+                            .min(u64::from(u32::MAX));
+                        Value::Array(vec![
+                            Value::Entity(target.entity),
+                            Value::Integer(age as i64),
+                        ])
+                    })
+                    .collect(),
+            ),
+        )]),
         (StateKind::Anim, Some("anim")) => StatePayload::from([(
             "counter".into(),
             Value::Integer(i64::from(state.activation & 7)),
