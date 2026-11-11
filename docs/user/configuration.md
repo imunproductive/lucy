@@ -48,6 +48,7 @@ An unknown key is an error. `orpheus doctor` shows it.
 | `--name <name>` | | Your name on the server you join. Remembered in `player_name.txt`. |
 | `--timeout <seconds>` | | How long to wait for the game before the relay is loaded. Default 30. |
 | `--test-players <n>` | | Start a match once `n` players search. Default 0: full teams only. |
+| `--test-ai <level>` | | Fill the missing players of a match `--test-players` starts with AI heroes: `easy`, `medium` or `hard`. Default: no AI heroes. |
 | `--save <file>` | | The template profile for new accounts. Default `profile.json` in the state folder. |
 
 See the [commands reference](commands.md) for which command takes which option.

@@ -112,6 +112,7 @@ fn a_failed_collision_sends_connected_games_home_once_and_drops_the_others() {
                 world_player("b#2222", 0, 8),
                 world_player("c#3333", 0, 9),
             ],
+            None,
             prepare,
         )
         .unwrap();
@@ -230,6 +231,7 @@ fn seats_wait_for_their_scene_while_another_match_plays() {
             MATCH,
             GameMap::practice_range(),
             vec![world_player("a#1111", 0, 7), world_player("b#2222", 0, 8)],
+            None,
             prepare,
         )
         .unwrap();

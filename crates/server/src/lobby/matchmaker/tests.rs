@@ -304,6 +304,7 @@ mod results {
             card,
             map: GameMap::practice_range(),
             ranked: false,
+            ai: false,
             seats,
         }
     }

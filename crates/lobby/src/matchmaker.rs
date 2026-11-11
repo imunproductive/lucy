@@ -25,6 +25,8 @@ pub const QUICK_PLAY: u64 = 0x0630_0000_0000_00ed;
 pub const ANY_ROLE: [u8; 3] = [TANK_ROLE, DAMAGE_ROLE, SUPPORT_ROLE];
 /// Roster search steps per attempt.
 const SEARCH_LIMIT: usize = 20_000;
+/// The teams of the queue data, in team index order.
+const TEAMS: [&str; 2] = ["blue", "red"];
 
 /// One way a card is played: its game mode and the players each team takes.
 #[derive(Clone, Debug, PartialEq)]
@@ -70,6 +72,31 @@ pub struct QueueRules {
     /// Map GUID and the modes it is played in.
     pub maps: Vec<(u64, Vec<u64>)>,
     pub competitive: bool,
+    /// The teams the server fills with AI heroes, by team index (0 blue, 1
+    /// red), and their AI level (1 to 3: Easy, Medium, Hard). The Practice
+    /// vs AI cards (`0x0630000000000070`..`72`) have the red team at their
+    /// level (`game_queues_174.json` `ai_teams`, from the card's
+    /// `m_7FB46D96`).
+    pub ai_teams: BTreeMap<u8, u8>,
+}
+
+impl QueueRules {
+    /// A Practice vs AI card: its matches have an AI team.
+    pub fn versus_ai(&self) -> bool {
+        !self.ai_teams.is_empty()
+    }
+
+    /// The players of a ruleset the matchmaker places: none on the AI
+    /// teams.
+    pub fn human_ruleset(&self, ruleset: &Ruleset) -> Ruleset {
+        let mut humans = ruleset.clone();
+        for (team, size) in humans.team_sizes.iter_mut().enumerate() {
+            if u8::try_from(team).is_ok_and(|team| self.ai_teams.contains_key(&team)) {
+                *size = 0;
+            }
+        }
+        humans
+    }
 }
 
 impl Default for QueueRules {
@@ -80,6 +107,7 @@ impl Default for QueueRules {
             roles: BTreeMap::new(),
             maps: Vec::new(),
             competitive: false,
+            ai_teams: BTreeMap::new(),
         }
     }
 }
@@ -178,6 +206,22 @@ fn card_rules(entry: &Json) -> io::Result<QueueRules> {
         .flatten()
         .map(ruleset)
         .collect::<io::Result<_>>()?;
+    let mut ai_teams = BTreeMap::new();
+    for (side, level) in entry
+        .get("ai_teams")
+        .and_then(Json::as_object)
+        .into_iter()
+        .flatten()
+    {
+        let team = TEAMS
+            .iter()
+            .position(|name| name == side)
+            .ok_or_else(|| invalid(format!("unknown AI team {side}")))?;
+        let level = whole(level)
+            .and_then(|level| u8::try_from(level).ok())
+            .ok_or_else(|| invalid("invalid AI level"))?;
+        ai_teams.insert(team as u8, level);
+    }
     Ok(QueueRules {
         name: entry
             .get("name")
@@ -191,6 +235,7 @@ fn card_rules(entry: &Json) -> io::Result<QueueRules> {
             .get("competitive")
             .and_then(Json::as_bool)
             .unwrap_or(false),
+        ai_teams,
     })
 }
 
@@ -213,7 +258,7 @@ fn ruleset(item: &Json) -> io::Result<Ruleset> {
         }
     } else {
         let by_team = item.get("team_sizes").and_then(Json::as_object);
-        let sizes = ["blue", "red"]
+        let sizes = TEAMS
             .into_iter()
             .filter_map(|team| by_team.and_then(|teams| teams.get(team)))
             .map(size)
@@ -915,6 +960,31 @@ mod tests {
         let deathmatch = &rules[&0x0630_0000_0000_0002];
         assert!(deathmatch.rulesets[0].free_for_all);
         assert_eq!(deathmatch.rulesets[0].team_sizes, [8]);
+    }
+
+    /// A Practice vs AI card fills its red team with AI heroes: the
+    /// matchmaker places players on the blue team only, and starts the match
+    /// with whoever searches.
+    #[test]
+    fn a_versus_ai_card_places_its_players_on_the_human_team_only() {
+        let rules = parse_rules(
+            r#"{"cards": {"0x0630000000000070": {"name": "Play vs AI (AI level 1)",
+                "rulesets": [{"mode": "0x0230000000000014", "mode_name": "Assault",
+                    "team_sizes": {"blue": 6, "red": 6}}],
+                "ai_teams": {"red": 1}, "maps": []}}}"#,
+        )
+        .unwrap();
+        let versus = &rules[&0x0630_0000_0000_0070];
+        assert!(versus.versus_ai());
+        assert_eq!(versus.ai_teams, BTreeMap::from([(1, 1)]));
+        let humans = versus.human_ruleset(&versus.rulesets[0]);
+        assert_eq!(humans.team_sizes, [6, 0]);
+        let (two, one) = (vec![Vec::new(); 2], vec![Vec::new()]);
+        let parties: Vec<&Seekers> = vec![&two, &one];
+        let roster = build_roster(&parties, &humans, &BTreeMap::new(), 1).unwrap();
+        assert_eq!(roster.teams[0].len(), 3);
+        assert!(roster.teams[1].is_empty());
+        assert!(!parse_rules(QUEUES).unwrap()[&QUICK_PLAY].versus_ai());
     }
 
     #[test]

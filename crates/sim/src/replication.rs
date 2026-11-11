@@ -19,7 +19,10 @@ use crate::{
         death_message,
     },
     controller::ControllerFrame,
-    egress::{DeliveryReport, FrameRecords, GameEgress, RecordSource, SendError, SentFrame},
+    egress::{
+        DeliveryReport, FrameRecords, GameEgress, PacketDelivery, RecordSource, SendError,
+        SentFrame,
+    },
     notices::{NOTICE_GAP, Switch},
     others::{
         ObservedScript, ObserverActivity, OtherDelivery, Others, PlayerView, RemoteBody,
@@ -701,7 +704,7 @@ pub fn show_players(
             player
                 .world
                 .as_deref_mut()
-                .filter(|world| world.world_started())
+                .filter(|world| world.world_started() && !world.headless)
                 .map(|world| world.others.take())
         })
         .collect();
@@ -822,6 +825,10 @@ pub struct WorldDelivery {
     /// The PvP "assemble your team" countdown runs (match.py `assembling`):
     /// a pick keeps hero select open, which shows the skin selector.
     assembling: bool,
+    /// An AI player's world (`crate::ai`): no client receives it, so it
+    /// views nobody, and its records arrive as soon as they are ready
+    /// ([`Self::deliver_locally`]).
+    headless: bool,
 }
 
 /// A body's death (combat.py `Vitals.death_tick`, `killer`) and when it
@@ -898,7 +905,69 @@ impl WorldDelivery {
             body_health: 0,
             board: BoardDelivery::default(),
             assembling: false,
+            headless: false,
         }
+    }
+
+    /// The world of an AI player, whose body the server plays without a
+    /// client (`crate::ai`).
+    pub fn headless(owner: u32) -> Self {
+        Self {
+            headless: true,
+            ..Self::new(owner)
+        }
+    }
+
+    /// Whether this is an AI player's world.
+    pub fn is_headless(&self) -> bool {
+        self.headless
+    }
+
+    /// An AI player's send frame: what a client would get this frame
+    /// arrives at once, so his body's lifetime, statescript and pools go on
+    /// as a connected player's do. An arrival can make more records ready
+    /// (a body's possession after its create), so it repeats while records
+    /// are ready, a few times at most.
+    pub fn deliver_locally(&mut self, tick: u32, now: Duration) {
+        self.prepare_body_updates(tick);
+        for _ in 0..4 {
+            let ready = self.ready();
+            if ready.is_empty() {
+                break;
+            }
+            let records: Vec<Arc<Record>> = ready.iter().map(Ready::tracked).collect();
+            let indexes: Vec<usize> = ready.iter().map(|ready| ready.index).collect();
+            self.sent(&indexes);
+            self.acknowledge(
+                DeliveryReport {
+                    requeued_reliable: 0,
+                    packets: vec![PacketDelivery {
+                        sequence: 0,
+                        arrived: true,
+                        records,
+                    }],
+                },
+                now,
+            );
+        }
+    }
+
+    /// The player's body takes hero picks: his controller went out and
+    /// his entity arrived (server.py `can_handle_game_message`).
+    pub fn takes_game_messages(&self) -> bool {
+        self.can_handle_game_message()
+    }
+
+    /// His living body's health as a share of its most.
+    pub fn health_share(&self) -> Option<f64> {
+        self.body?;
+        let vitals = self
+            .body_script
+            .as_ref()
+            .and_then(|script| script.runtime.vitals())
+            .or(self.plain_vitals.as_ref())?;
+        let most = vitals.maximum();
+        (most > 0.0).then(|| vitals.total() / most)
     }
 
     pub fn clear(&mut self) {

@@ -16,7 +16,7 @@ use orpheus_lobby::{
     player_messages,
     ranked::LeaderboardPlaces,
 };
-use orpheus_sim::scene::PlayerCard;
+use orpheus_sim::{ai::Difficulty, scene::PlayerCard};
 use orpheus_wire::jam::codec::Fields;
 
 use crate::{
@@ -28,25 +28,33 @@ use crate::{
 /// come back in player order. The Practice Range prepared at start-up goes
 /// the first time; any other scene is prepared off the game thread while
 /// the players load, its collision built from the install when it has no
-/// cache yet (match.py `_refresh_collision`).
+/// cache yet (match.py `_refresh_collision`). With `ai`, AI heroes of that
+/// level fill the teams (Practice vs AI).
 pub(super) fn open_world(
     game: &GameService,
     id: [u64; 2],
     map: GameMap,
     lobby: &Lobby,
     players: Vec<WorldPlayer>,
+    ai: Option<Difficulty>,
 ) -> io::Result<Vec<Handoff>> {
     let first = lobby
         .first_scene
         .lock()
         .expect("prepared scene")
-        .take_if(|scene| *scene.map() == map);
+        .take_if(|scene| ai.is_none() && *scene.map() == map);
     if let Some(scene) = first {
         return game.open_prepared(id, scene, players);
     }
     let assets = Arc::clone(&lobby.assets);
     let prepare = map.clone();
-    game.open_world(id, map, players, Box::new(move || assets.prepare(prepare)))
+    game.open_world(
+        id,
+        map,
+        players,
+        ai,
+        Box::new(move || assets.prepare(prepare)),
+    )
 }
 
 /// Seats for more players in a match that is on (Python

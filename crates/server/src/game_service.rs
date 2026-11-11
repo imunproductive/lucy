@@ -8,7 +8,8 @@
 //! starts the match flow (orpheus_sim::match_flow): "assemble your team"
 //! (match.py `_end_assemble`), then the mode's setup, rounds, objectives and
 //! scoring; at the match's end the result goes to the lobby and the players
-//! go home.
+//! go home. In Practice vs AI, AI heroes fill the teams: players without a
+//! game, whose bodies the server plays (`ai.rs`, `orpheus_sim::ai`).
 //!
 //! How a player gets into the world (client research, 1.74): when the map is
 //! loaded the client sends 21601 (and later 21602). 0.3 s later the server
@@ -62,6 +63,7 @@ use orpheus_core::tick::FIRST_TICK;
 use orpheus_lobby::handoff::Handoff;
 use orpheus_script::{vm::GameMessage, wire::chunk};
 use orpheus_sim::{
+    ai::{Difficulty, Random},
     bot_script::{BotShotKind, SeenRocket},
     combat::{
         BotHit, BotReplacement, Combat, CombatPlayer, FieldHeal, PosedShot, Shooter, ShotContext,
@@ -97,6 +99,9 @@ const MAX_PENDING_COMBAT_NOTICES: usize = 256;
 /// The game mode entity gets a frame with the match flow's clock every
 /// second, and at each phase change (ow174/game/match.py `COUNTDOWN_EVERY`).
 const MODE_FRAME_EVERY: Duration = Duration::from_secs(1);
+/// The AI players' seats (Practice vs AI, `orpheus_sim::ai`) take
+/// connection ids no game link has.
+const FIRST_AI_CONNECTION: u32 = MAX_CONNECTION_ID + 1;
 
 #[derive(Debug)]
 pub struct MatchPlayer {
@@ -170,7 +175,9 @@ pub enum Outcome {
 }
 
 /// A match that ended by its rules, for the lobby's profiles: every seat of
-/// the room in slot order, which is the matchmaker's seat order.
+/// the room in slot order, which is the matchmaker's seat order. Results
+/// count for the players only: the AI heroes of a Practice vs AI match have
+/// none and take no slot here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MatchResult {
     pub id: MatchId,
@@ -181,6 +188,7 @@ pub struct MatchResult {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerResult {
+    /// The player's place among the room's players (not its AI heroes).
     pub slot: usize,
     pub name: String,
     pub account: [u64; 2],
@@ -277,6 +285,12 @@ enum Request {
         timers: Timers,
         reply: mpsc::SyncSender<()>,
     },
+    /// Tests: where every player's body of a match stands.
+    #[cfg(test)]
+    Bodies {
+        id: MatchId,
+        reply: mpsc::SyncSender<Vec<ai::BodyState>>,
+    },
 }
 
 struct OpenRequest {
@@ -284,6 +298,8 @@ struct OpenRequest {
     map: GameMap,
     players: Vec<WorldPlayer>,
     world: Option<WorldStart>,
+    /// Fill the teams with AI heroes of this level (Practice vs AI).
+    ai: Option<Difficulty>,
     reply: mpsc::SyncSender<io::Result<Vec<Handoff>>>,
 }
 
@@ -344,6 +360,7 @@ impl GameService {
                 map,
                 players,
                 world: None,
+                ai: None,
                 reply,
             }))
         })?
@@ -406,12 +423,15 @@ impl GameService {
     /// the map while `prepare` makes the scene on a thread of its own; their
     /// world comes once it is ready (match.py `_refresh_collision`). When it
     /// fails, their games go back to the menu and the match ends
-    /// (`_collision_failure`). Seats in player order.
+    /// (`_collision_failure`). Seats in player order. With `ai`, AI heroes
+    /// of that level fill the places the players leave free on the teams,
+    /// in the slots after theirs (Practice vs AI, `orpheus_sim::ai`).
     pub fn open_world(
         &self,
         id: MatchId,
         map: GameMap,
         players: Vec<WorldPlayer>,
+        ai: Option<Difficulty>,
         prepare: ScenePreparation,
     ) -> io::Result<Vec<Handoff>> {
         let handoffs = self.request(|reply| {
@@ -420,6 +440,7 @@ impl GameService {
                 map,
                 players,
                 world: None,
+                ai,
                 reply,
             }))
         })??;
@@ -462,6 +483,7 @@ impl GameService {
                     scene: Box::new(scene),
                     combat: None,
                 }),
+                ai: None,
                 reply,
             }))
         })?
@@ -493,6 +515,12 @@ impl GameService {
     #[cfg(test)]
     pub(crate) fn set_match_timers(&self, timers: Timers) -> io::Result<()> {
         self.request(|reply| Request::Timers { timers, reply })
+    }
+
+    /// Tests: every player of the match and his body, in slot order.
+    #[cfg(test)]
+    pub(crate) fn bodies(&self, id: MatchId) -> io::Result<Vec<ai::BodyState>> {
+        self.request(|reply| Request::Bodies { id, reply })
     }
 
     pub fn handoff_pending(&self, connection: u32) -> io::Result<bool> {
@@ -593,6 +621,8 @@ struct Player {
     gone: bool,
     /// The numbers his Tab board shows (match.py `Player.stats`).
     stats: PlayerStats,
+    /// An AI hero the server plays (Practice vs AI): no game, no result.
+    ai: bool,
 }
 
 impl Player {
@@ -617,6 +647,9 @@ struct Room {
     mode: Option<ModeRunner>,
     /// When the flow last advanced.
     flow_at: Duration,
+    /// The tick the flow started: the first player came into the world,
+    /// and the AI heroes with him.
+    flow_tick: u32,
     /// The mode entity's frame every client gets this tick, and when the
     /// next is due.
     mode_frame: Option<orpheus_core::bits::BitWriter>,
@@ -627,6 +660,8 @@ struct Room {
     ended: bool,
     /// When the match opened: the snapshot lists the oldest first.
     started: Instant,
+    /// The level of the AI heroes that fill its teams, if any.
+    ai: Option<Difficulty>,
 }
 
 impl Room {
@@ -639,11 +674,13 @@ impl Room {
             flow: None,
             mode: None,
             flow_at: Duration::ZERO,
+            flow_tick: 0,
             mode_frame: None,
             next_mode_frame: Duration::ZERO,
             assembled: false,
             ended: false,
             started: Instant::now(),
+            ai: None,
         };
         room.add(players);
         room
@@ -662,6 +699,7 @@ impl Room {
                 entity: player_entity(slot),
                 gone: false,
                 stats: PlayerStats::default(),
+                ai: false,
             });
         }
     }
@@ -700,6 +738,7 @@ impl Room {
         self.flow = Some(flow);
         self.mode = Some(ModeRunner::start(scene, tick));
         self.flow_at = now;
+        self.flow_tick = tick;
         self.next_mode_frame = now;
     }
 
@@ -751,6 +790,9 @@ struct Peer {
     combat_ui: CombatUi,
     /// The controller step ran (match.py `steps_done >= 4`).
     presented: bool,
+    /// An AI player's seat: no game connects to it; the server plays its
+    /// hero (`ai.rs`).
+    ai: Option<Box<ai::AiSeat>>,
 }
 
 #[derive(Default)]
@@ -827,6 +869,23 @@ fn script_record(entity: u32, payload: &orpheus_core::bits::BitWriter) -> io::Re
 
 fn player_entity(slot: usize) -> u32 {
     0xa000_0000 | ((slot as u32 + 1) << 8)
+}
+
+/// A pick of the hero for the player entity, as the client's own pick
+/// message (21616) carries it.
+fn pick_message(entity: u32, hero: u64) -> Message {
+    Message {
+        id: CLIENT_GAME_MESSAGE,
+        fields: Fields::from([
+            (
+                0x78,
+                Value::Struct(Fields::from([(0, Value::Unsigned(u64::from(entity)))])),
+            ),
+            (0x80, Value::Blob(hero.to_le_bytes().to_vec())),
+            (0xa8, Value::Unsigned(PICK_HERO)),
+            (0xb0, Value::Signed(0)),
+        ]),
+    }
 }
 
 /// A hit on a bot reaches its script (combat.py `_damage`): the death
@@ -910,6 +969,17 @@ impl Peer {
             world: WorldDelivery::new(owner),
             combat_ui: CombatUi::default(),
             presented: false,
+            ai: None,
+        }
+    }
+
+    /// An AI player's peer: a world no client receives, and the controller
+    /// that plays it.
+    fn ai(owner: u32, seat: ai::AiSeat) -> Self {
+        Self {
+            world: WorldDelivery::headless(owner),
+            ai: Some(Box::new(seat)),
+            ..Self::new(owner)
         }
     }
 
@@ -921,6 +991,9 @@ impl Peer {
 
     /// A hit's notices for this client (the shooter's).
     fn notice(&mut self, notice: CombatNotice) {
+        if self.ai.is_some() {
+            return;
+        }
         if self.combat_ui.notices.len() == MAX_PENDING_COMBAT_NOTICES {
             self.combat_ui.notices.pop_front();
         }
@@ -1113,6 +1186,8 @@ struct State {
     /// 20304 (server.py `_datagram`, `Client.received`).
     homeward: HashMap<u32, Peer>,
     next_connection: u32,
+    /// The next AI player's seat id ([`FIRST_AI_CONNECTION`] and up).
+    next_ai_connection: u32,
     next_input_peer: usize,
     /// Matches that ended by their rules, until the lobby takes them.
     results: Vec<MatchResult>,
@@ -1131,6 +1206,7 @@ impl State {
             peers: IndexMap::new(),
             homeward: HashMap::new(),
             next_connection: 1,
+            next_ai_connection: FIRST_AI_CONNECTION,
             next_input_peer: 0,
             results: Vec::new(),
             timers: Timers::default(),
@@ -1143,6 +1219,7 @@ impl State {
         map: GameMap,
         players: Vec<WorldPlayer>,
         world: Option<WorldStart>,
+        ai: Option<Difficulty>,
         now: Duration,
     ) -> io::Result<Vec<Handoff>> {
         let remaining = players.len();
@@ -1161,10 +1238,15 @@ impl State {
         if remaining == 0 || remaining > usize::from(u8::MAX) {
             return Err(invalid("invalid match roster size"));
         }
-        let room = Room::new(map, players, world);
+        let mut room = Room::new(map, players, world);
+        let seats = ai.map_or_else(Vec::new, |difficulty| {
+            let mut random = Random::new(ai::seed());
+            room.add_ai(difficulty, &mut random)
+        });
         self.check_roster(&room)?;
         let tickets = self.reserve(id, 0..remaining, now)?;
         self.rooms.insert(id, room);
+        self.seat_ai(id, seats);
         Ok(tickets)
     }
 
@@ -1339,9 +1421,10 @@ impl State {
                     map,
                     players,
                     world,
+                    ai,
                     reply,
                 } = *request;
-                let result = self.open_match(id, map, players, world, now);
+                let result = self.open_match(id, map, players, world, ai, now);
                 if let Err(mpsc::SendError(Ok(tickets))) = reply.send(result) {
                     for ticket in tickets {
                         self.links.cancel_handoff(ticket.conn);
@@ -1367,6 +1450,10 @@ impl State {
             Request::Timers { timers, reply } => {
                 self.timers = timers;
                 let _ = reply.send(());
+            }
+            #[cfg(test)]
+            Request::Bodies { id, reply } => {
+                let _ = reply.send(self.bodies(id));
             }
             Request::Pending { connection, reply } => {
                 let _ = reply.send(self.links.handoff_pending(connection, now));
@@ -1436,21 +1523,7 @@ impl State {
         if world.scene.heroes().get(hero).is_none() || !peer.world.world_started() {
             return false;
         }
-        let pick = Message {
-            id: CLIENT_GAME_MESSAGE,
-            fields: Fields::from([
-                (
-                    0x78,
-                    Value::Struct(Fields::from([(
-                        0,
-                        Value::Unsigned(u64::from(room.players[slot].entity)),
-                    )])),
-                ),
-                (0x80, Value::Blob(hero.to_le_bytes().to_vec())),
-                (0xa8, Value::Unsigned(PICK_HERO)),
-                (0xb0, Value::Signed(0)),
-            ]),
-        };
+        let pick = pick_message(room.players[slot].entity, hero);
         peer.world.queue_game_message(self.clock.frame(), now, pick);
         true
     }
@@ -1479,6 +1552,7 @@ impl State {
             room.remaining -= 1;
             if room.remaining == 0 {
                 self.rooms.remove(&id);
+                self.unseat_ai(id);
             }
         }
     }
@@ -1748,7 +1822,7 @@ impl State {
         }
         for hit in hits {
             for (&connection, peer) in &mut self.peers {
-                if self.seats[&connection].0 != id {
+                if self.seats[&connection].0 != id || peer.ai.is_some() {
                     continue;
                 }
                 peer.world.queue_health(hit.health.clone());
@@ -1776,6 +1850,7 @@ impl State {
             players,
             world,
             flow,
+            ai,
             ..
         }) = self.rooms.get_mut(&id)
         else {
@@ -1788,7 +1863,10 @@ impl State {
         else {
             return;
         };
-        let hits = combat.take_player_hits();
+        let mut hits = combat.take_player_hits();
+        if let Some(difficulty) = *ai {
+            ai::scale_damage(&mut hits, players, difficulty);
+        }
         let teams: Vec<u8> = players.iter().map(|player| player.info.team).collect();
         let mut peers = room_peers(&mut self.peers, &self.seats, id, players.len());
         let mut bot_heals = Vec::new();
@@ -2170,12 +2248,17 @@ impl State {
                     ),
                     FlowEvent::MatchOver => {
                         room.ended = true;
+                        // The AI heroes get no result: the slots of the
+                        // result count the players (the matchmaker's seats)
+                        // only.
                         let players = room
                             .players
                             .iter()
                             .enumerate()
-                            .map(|(slot, player)| PlayerResult {
-                                slot,
+                            .filter(|(_, player)| !player.ai)
+                            .enumerate()
+                            .map(|(seat, (slot, player))| PlayerResult {
+                                slot: seat,
                                 name: player.info.name.clone(),
                                 account: player.card.account,
                                 team: player.info.team,
@@ -2325,9 +2408,14 @@ impl State {
         // the players' steps.
         if !drain {
             self.update_flows(tick, now);
+            // The AI heroes' input for this tick (ai.rs).
+            self.drive_ai(tick, now);
         }
         let timers = self.timers;
         for (&connection, peer) in &mut self.peers {
+            if peer.ai.is_some() {
+                continue;
+            }
             let (id, slot) = self.seats[&connection];
             let room = self.rooms.get_mut(&id).expect("admitted room");
             if !drain
@@ -2366,6 +2454,13 @@ impl State {
             self.show_players(tick, now, send_frames);
         }
         for (&connection, peer) in &mut self.peers {
+            if peer.ai.is_some() {
+                // What a client would get arrives at once (ai.rs).
+                if send_frames && !drain {
+                    peer.world.deliver_locally(tick, now);
+                }
+                continue;
+            }
             let (id, _) = self.seats[&connection];
             let room = &self.rooms[&id];
             if send_frames && peer.open {
@@ -2499,6 +2594,8 @@ fn run(
     }
     Ok(())
 }
+
+mod ai;
 
 #[cfg(test)]
 mod tests;

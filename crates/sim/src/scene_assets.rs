@@ -41,6 +41,7 @@ use orpheus_physics::{
     mover::Mover,
     mover::ground::NOT_GROUND,
     mover::settings::{MoverCatalog, MoverSettings},
+    nav::{self, Navigation},
 };
 use orpheus_script::{codecs::CodecTable, graph::GraphStore, vm::Unknowns, wire::Variables};
 use orpheus_wire::entity::{Component, EntityUpdate};
@@ -76,6 +77,9 @@ pub type CollisionBuild = dyn Fn(u64, &str) -> io::Result<Vec<u8>> + Send + Sync
 
 pub struct SceneAssets {
     collision: PathBuf,
+    /// The runtime folder, whose `data/navigation` has each map's AI
+    /// navigation (`orpheus_physics::nav::file`).
+    runtime: PathBuf,
     build_collision: Option<Arc<CollisionBuild>>,
     /// One cache build at a time (collision.py `_building`).
     building: Mutex<()>,
@@ -125,6 +129,8 @@ pub struct PreparedScene {
     field_frames: Option<Arc<FieldFrames>>,
     /// The mode posts hero switches in the chat (notices.py).
     switch_notices: bool,
+    /// The map's AI navigation, when the data has it (Practice vs AI).
+    navigation: Option<Arc<Navigation>>,
 }
 
 impl SceneAssets {
@@ -159,6 +165,7 @@ impl SceneAssets {
         };
         Ok(Self {
             collision: runtime.join("collision"),
+            runtime: runtime.to_path_buf(),
             build_collision: None,
             building: Mutex::new(()),
             mode_props: read_mode_props(&data.join("collision_props_174.json"))?,
@@ -292,6 +299,7 @@ impl SceneAssets {
             _ => None,
         };
         let map_mode = map.mode_guid;
+        let navigation = self.navigation(&map);
         let mut scene = PreparedScene {
             respawn: self.respawns.for_mode(map.mode_guid),
             map,
@@ -311,6 +319,7 @@ impl SceneAssets {
             owner_body_factory: None,
             field_frames,
             switch_notices: switch_notices(self.modes.get(map_mode)),
+            navigation,
         };
         let mut factories = self
             .owner_bodies
@@ -345,6 +354,19 @@ impl SceneAssets {
         let temporary = path.with_extension("col.tmp");
         fs::write(&temporary, bytes)?;
         fs::rename(&temporary, path)
+    }
+
+    /// The map's AI navigation; none when the data has no file for it, as
+    /// derivations before version 7 (`orpheus_physics::nav`).
+    fn navigation(&self, map: &GameMap) -> Option<Arc<Navigation>> {
+        match Navigation::load(nav::file(&self.runtime, map.map_guid)) {
+            Ok(navigation) => Some(Arc::new(navigation)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => {
+                eprintln!("{}: no AI navigation ({error})", map.name);
+                None
+            }
+        }
     }
 
     /// Every hero's owner body script, as Python's `BODY_SCRIPT_HEROES = None`
@@ -560,6 +582,24 @@ impl PreparedScene {
         self.ground
             .cast_ray(origin, direction, reach, MOVER_CATEGORY)
             .map(|hit| hit.map(|hit| hit.distance))
+    }
+
+    /// The map's AI navigation, if the data has it.
+    pub fn navigation(&self) -> Option<&Navigation> {
+        self.navigation.as_deref()
+    }
+
+    /// Whether nothing of the map's collision stands between two points,
+    /// as a hitscan shot from one to the other sees it (an AI's line of
+    /// sight).
+    pub fn line_of_sight(&self, from: [f64; 3], to: [f64; 3]) -> bool {
+        let delta = [0, 1, 2].map(|axis| to[axis] - from[axis]);
+        let reach = (delta[0].powi(2) + delta[1].powi(2) + delta[2].powi(2)).sqrt();
+        if reach < 1e-6 {
+            return true;
+        }
+        let direction = delta.map(|value| value / reach);
+        matches!(self.hitscan_wall(from, direction, reach), Ok(None))
     }
 
     /// One more bot gets its script (match.py `update`: one per update,

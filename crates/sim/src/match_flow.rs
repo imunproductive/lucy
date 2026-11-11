@@ -263,6 +263,22 @@ impl Course {
         }
     }
 
+    /// Where the attackers play: the next point, or the payload.
+    fn position(&self) -> Option<[f64; 3]> {
+        match self {
+            Self::Points(points) => points
+                .iter()
+                .find(|point| !point.captured())
+                .map(|point| point.area.centre),
+            Self::Hybrid {
+                payload: Some(payload),
+                ..
+            }
+            | Self::Payload(payload) => Some(payload.position()),
+            Self::Hybrid { point, .. } => Some(point.area.centre),
+        }
+    }
+
     /// Whether an attacker stands on the objective (it keeps overtime).
     fn presence(&self, participants: &[Participant], attackers: u8) -> Presence {
         match self {
@@ -495,6 +511,25 @@ impl MatchFlow {
             | Course::Payload(payload) => Some(payload.distance()),
             Course::Hybrid { point, .. } => Some(point.progress()),
         }
+    }
+
+    /// Where the round is played, for the AI heroes (`crate::ai`): the
+    /// attackers' next point or the payload, the Control point (the next
+    /// round's stage between rounds). `None` in the modes without an
+    /// objective.
+    pub fn objective(&self) -> Option<[f64; 3]> {
+        if let Some(round) = &self.sided {
+            return round.course.position();
+        }
+        if let Some(point) = &self.control {
+            return Some(point.area.centre);
+        }
+        let stages: Vec<_> = self
+            .map
+            .objectives_of(ObjectiveKind::ControlPoint)
+            .collect();
+        (self.mode == Mode::Control && !stages.is_empty())
+            .then(|| stages[usize::from(self.round) % stages.len()].position)
     }
 
     /// The variables of the mode entity the HUD reads.

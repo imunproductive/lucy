@@ -70,6 +70,9 @@ pub struct ServerConfig {
     /// of its own; 0 = full teams only (`--test-players`,
     /// `ow174/lobby/settings.py`).
     pub test_players: usize,
+    /// AI heroes of this level fill the missing players of a match that
+    /// `test_players` starts (`--test-ai`; Practice vs AI, `orpheus_sim::ai`).
+    pub test_ai: Option<orpheus_sim::ai::Difficulty>,
     /// The template profile for new accounts (`--save`); `profile.json` in
     /// the state folder when unset.
     pub template: Option<PathBuf>,
@@ -92,6 +95,7 @@ impl ServerConfig {
             games: None,
             install: None,
             test_players: 0,
+            test_ai: None,
             template: None,
         }
     }
@@ -231,7 +235,7 @@ impl Server {
             platform: Arc::clone(&platform),
             services,
             social: Default::default(),
-            matchmaker: Matchmaker::new(&data, &config.data, config.test_players)?,
+            matchmaker: Matchmaker::new(&data, &config.data, config.test_players, config.test_ai)?,
         });
         let dashboard = config
             .dashboard_port

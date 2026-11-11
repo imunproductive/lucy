@@ -135,7 +135,7 @@ impl Fixture {
             hub: Hub::default(),
             platform: Arc::new(Platform::new(Ipv4Addr::LOCALHOST, String::new(), None)),
             social: Social::default(),
-            matchmaker: Matchmaker::new(&data, state.path(), 0).unwrap(),
+            matchmaker: Matchmaker::new(&data, state.path(), 0, None).unwrap(),
         };
         Self {
             lobby,
@@ -304,6 +304,7 @@ impl Fixture {
             card: 0,
             map,
             ranked: false,
+            ai: false,
             seats,
         });
         (id, handoffs)

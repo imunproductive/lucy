@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ai;
 pub mod body;
 pub mod body_script;
 pub mod bot_script;

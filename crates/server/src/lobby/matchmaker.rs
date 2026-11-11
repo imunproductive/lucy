@@ -64,6 +64,7 @@ use orpheus_wire::jam::codec::{Fields, Value};
 
 use super::{Lobby, TICK, match_id, peer::Peer};
 use crate::game_service::{GameService, Outcome, WorldPlayer};
+use orpheus_sim::ai::Difficulty;
 pub(crate) use parties::{Parties, Party};
 
 pub(crate) struct Matchmaker {
@@ -79,6 +80,9 @@ pub(crate) struct Matchmaker {
 struct State {
     /// Cards without a number of their own: 0 = full teams.
     minimum_players: usize,
+    /// AI heroes of this level fill the missing players of a match that
+    /// starts with fewer (`--test-ai`).
+    test_ai: Option<Difficulty>,
     /// The dashboard's map for every queue; `None` = the card's pick.
     forced_map: Option<u64>,
     modes: HashMap<u64, ModeSettings>,
@@ -141,6 +145,9 @@ struct Room {
     card: u64,
     map: GameMap,
     ranked: bool,
+    /// AI heroes fill its teams (a Practice vs AI card, or `--test-ai`):
+    /// nobody joins it.
+    ai: bool,
     seats: Vec<Seat>,
 }
 
@@ -219,9 +226,15 @@ fn pass_count(pool: Option<Pool>, account: &Account) -> i64 {
 
 impl Matchmaker {
     /// The queue rules and maps from the runtime `data` folder, the settings
-    /// saved in the `state` folder, and the players who start a match of a
-    /// card without a number of its own (`--test-players`; 0 = full teams).
-    pub(crate) fn new(data: &Path, state: &Path, minimum_players: usize) -> io::Result<Self> {
+    /// saved in the `state` folder, the players who start a match of a card
+    /// without a number of its own (`--test-players`; 0 = full teams), and
+    /// the level of the AI heroes that fill such a match (`--test-ai`).
+    pub(crate) fn new(
+        data: &Path,
+        state: &Path,
+        minimum_players: usize,
+        test_ai: Option<Difficulty>,
+    ) -> io::Result<Self> {
         let modes_path = state.join("matchmaking.json");
         let modes = rules::load_modes(&modes_path);
         Ok(Self {
@@ -230,6 +243,7 @@ impl Matchmaker {
             modes_path,
             state: Mutex::new(State {
                 minimum_players,
+                test_ai,
                 modes,
                 ..State::default()
             }),
@@ -1242,7 +1256,23 @@ impl Ctx<'_> {
             );
             return;
         };
-        let minimum = self.players_to_start(card);
+        // A Practice vs AI card puts its players on the human team and
+        // starts at once with whoever searches: AI heroes of the card's
+        // level fill both teams (rule 123). Elsewhere a match that starts
+        // with fewer players (`--test-players`) gets AI heroes for the
+        // missing ones when `--test-ai` asks for them.
+        let (ruleset, minimum, ai) = if rules.versus_ai() {
+            let level = rules.ai_teams.values().copied().max().unwrap_or(1);
+            (
+                rules.human_ruleset(ruleset),
+                1,
+                Difficulty::from_level(level).or(Some(Difficulty::Easy)),
+            )
+        } else {
+            let minimum = self.players_to_start(card);
+            let ai = self.state.test_ai.filter(|_| minimum != 0);
+            (ruleset.clone(), minimum, ai)
+        };
         let seekers: Vec<Vec<Vec<u8>>> = waiting
             .iter()
             .map(|&index| {
@@ -1254,7 +1284,7 @@ impl Ctx<'_> {
             })
             .collect();
         let parties: Vec<&Seekers> = seekers.iter().map(Vec::as_slice).collect();
-        let Some(roster) = rules::build_roster(&parties, ruleset, &rules.roles, minimum) else {
+        let Some(roster) = rules::build_roster(&parties, &ruleset, &rules.roles, minimum) else {
             let count: usize = seekers.iter().map(Vec::len).sum();
             let full: usize = ruleset
                 .team_sizes
@@ -1286,7 +1316,7 @@ impl Ctx<'_> {
                 }
             }
         }
-        self.start(map, entries, true, card, &used);
+        self.start(map, entries, true, card, &used, ai);
     }
 
     fn entry(
@@ -1341,7 +1371,8 @@ impl Ctx<'_> {
             let Some(&waiting) = waiting.get(&self.state.rooms[room].id) else {
                 continue;
             };
-            if self.state.rooms[room].card != card {
+            // AI heroes hold the free places of a match they fill.
+            if self.state.rooms[room].card != card || self.state.rooms[room].ai {
                 continue;
             }
             let mut index = 0;
@@ -1483,10 +1514,11 @@ impl Ctx<'_> {
             .collect();
         let mut map = GameMap::practice_range();
         map.team_sizes = vec![u8::try_from(members.len()).unwrap_or(u8::MAX), 0];
-        self.start(map, entries, false, 0, &[])
+        self.start(map, entries, false, 0, &[], None)
     }
 
-    /// Open the match and send its players there.
+    /// Open the match and send its players there; with `ai`, AI heroes of
+    /// that level fill its teams.
     fn start(
         &mut self,
         map: GameMap,
@@ -1494,6 +1526,7 @@ impl Ctx<'_> {
         popped: bool,
         card: u64,
         used: &[[u64; 2]],
+        ai: Option<Difficulty>,
     ) -> bool {
         let lobby = self.lobby;
         let Some(game) = lobby.game.as_deref() else {
@@ -1513,7 +1546,7 @@ impl Ctx<'_> {
                 return false;
             }
         };
-        let handoffs = match game::open_world(game, id, map.clone(), lobby, players) {
+        let handoffs = match game::open_world(game, id, map.clone(), lobby, players, ai) {
             Ok(handoffs) if handoffs.len() == entries.len() => handoffs,
             Ok(handoffs) => {
                 for handoff in &handoffs {
@@ -1553,6 +1586,7 @@ impl Ctx<'_> {
             card,
             map,
             ranked,
+            ai: ai.is_some(),
             seats: Vec::new(),
         });
         let room = self.state.rooms.len() - 1;

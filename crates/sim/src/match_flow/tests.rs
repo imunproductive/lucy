@@ -451,6 +451,43 @@ fn control_is_best_of_three_on_the_stages_in_turn() {
     assert_eq!(run.flow.standing(5, 0), Some(Standing::Won));
 }
 
+/// Where the AI heroes go: the next Assault point, the moving payload, the
+/// Control stage of the round (the next one's before it starts); nothing
+/// in a mode without an objective.
+#[test]
+fn the_objective_follows_the_round() {
+    let mut run = Run::new(MatchFlow::new(&assault(), false, Timers { scale: 0.1 }).unwrap());
+    assert_eq!(run.flow.objective(), Some(A));
+    run.flow.start();
+    run.phase(100.0, &[], Phase::Round);
+    run.until(100.0, &[at(0, 1, A)], |event| {
+        *event == FlowEvent::Objective(0)
+    })
+    .unwrap();
+    assert_eq!(run.flow.objective(), Some(B));
+
+    let mut run = Run::new(MatchFlow::new(&escort(), false, Timers::default()).unwrap());
+    run.flow.start();
+    run.phase(100.0, &[], Phase::Round);
+    assert_eq!(run.flow.objective(), Some([0.0; 3]));
+    run.until(2.0, &[at(0, 1, [0.0; 3])], |_| false);
+    assert!(run.flow.objective().unwrap()[0] > 3.0);
+
+    let mut run = Run::new(MatchFlow::new(&control(), false, Timers::default()).unwrap());
+    assert_eq!(run.flow.objective(), Some(A));
+    run.flow.start();
+    run.until(200.0, &[at(0, 0, A)], |event| {
+        *event == FlowEvent::RoundOver(Some(0))
+    })
+    .unwrap();
+    assert_eq!(run.flow.objective(), Some(A));
+    run.phase(20.0, &[], Phase::Round);
+    assert_eq!(run.flow.objective(), Some(B));
+
+    let flow = MatchFlow::new(&map(DEATHMATCH, Vec::new()), false, Timers::default()).unwrap();
+    assert_eq!(flow.objective(), None);
+}
+
 #[test]
 fn control_overtime_holds_at_99_percent_while_contested() {
     let mut run = Run::new(MatchFlow::new(&control(), false, Timers::default()).unwrap());

@@ -2548,6 +2548,7 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
             MATCH,
             map.clone(),
             vec![player("first#1111", 0, 7), player("second#2222", 1, 8)],
+            None,
             prepare,
         )
         .unwrap();
@@ -2877,6 +2878,7 @@ fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
             MATCH,
             map.clone(),
             vec![player("defender#1111", 0, 7), player("attacker#2222", 1, 8)],
+            None,
             prepare,
         )
         .unwrap();
@@ -3042,6 +3044,251 @@ fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
                 .all(|&width| width < widest)
         );
     }
+    server.stop().unwrap();
+}
+
+/// Practice vs AI, Easy, on Temple of Anubis (orpheus_sim::ai) at a time
+/// scale of 1/4: one player on the blue team (the defenders) and eleven AI
+/// heroes, five with him and six attacking. His game gets them as other
+/// players (their cards with their heroes' names, their bodies); the AI
+/// heroes pick roster heroes, the attackers walk from their spawn toward
+/// point A, the AI heroes of both teams fight (bodies lose health or die),
+/// and the match flow ends the match: the result has the player only, and
+/// his game goes home.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR); builds Anubis' collision once"]
+fn a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
+    use orpheus_content::{
+        heroes::SOLDIER,
+        maps::{MapCatalog, ObjectiveKind},
+        parameters::PICK_HERO,
+    };
+    use orpheus_sim::{
+        ai::{Difficulty, ROSTER},
+        match_flow::ASSAULT,
+        scene_assets::SceneAssets,
+    };
+
+    const ANUBIS: u64 = 0x0800_0000_0000_005b;
+    const SCALE: f64 = 0.25;
+
+    let runtime = orpheus_testkit::runtime_dir();
+    let assets = Arc::new(
+        SceneAssets::load(&runtime)
+            .unwrap()
+            .with_collision_build(collision_build(orpheus_testkit::game_dir())),
+    );
+    let catalog = MapCatalog::load(runtime.join("data")).unwrap();
+    let map = catalog
+        .game_map(ANUBIS, ASSAULT, "Assault", false, &[6, 6])
+        .expect("Temple of Anubis in Assault");
+    let point_a = map
+        .objectives_of(ObjectiveKind::Point)
+        .next()
+        .expect("point A")
+        .position;
+    let flat = |a: [f64; 3], b: [f64; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
+
+    let schemas = Arc::new(Schemas::game());
+    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    server
+        .set_match_timers(orpheus_sim::match_flow::Timers { scale: SCALE })
+        .unwrap();
+    let player = WorldPlayer {
+        player: MatchPlayer {
+            name: "player#1111".into(),
+            team: 0,
+            tournament: false,
+            ranked: false,
+        },
+        card: PlayerCard {
+            account: [7, 0x0100_0000_0000_0000],
+            battle_tag: "player#1111".into(),
+            record: Fields::from([(0x40, Value::String("player#1111".into()))]),
+            ..PlayerCard::default()
+        },
+        hero: 0,
+    };
+    let prepare = {
+        let (assets, map) = (Arc::clone(&assets), map.clone());
+        Box::new(move || assets.prepare(map))
+    };
+    let tickets = server
+        .open_world(
+            MATCH,
+            map.clone(),
+            vec![player],
+            Some(Difficulty::Easy),
+            prepare,
+        )
+        .unwrap();
+    assert_eq!(tickets.len(), 1);
+    // Five AI heroes with the player, six against him, each a roster hero
+    // of its own team.
+    let roster = server.bodies(MATCH).unwrap();
+    assert_eq!(roster.len(), 12);
+    assert!(!roster[0].ai);
+    for team in [0, 1] {
+        let names: Vec<_> = roster
+            .iter()
+            .filter(|body| body.ai && body.team == team)
+            .map(|body| body.name.as_str())
+            .collect();
+        assert_eq!(names.len(), 5 + usize::from(team));
+        assert!(names.iter().all(|name| ROSTER.contains(name)));
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len());
+    }
+
+    let mut watcher = Watcher {
+        client: Client::new(server.local_addr(), &tickets[0]),
+        owner: player_entity(0),
+        tick: 0,
+        sequences: HashSet::new(),
+        datagrams: Vec::new(),
+        ticks: Vec::new(),
+    };
+    watcher.client.handshake();
+    pump_until(&mut [&mut watcher], &schemas, "the instance", |watchers| {
+        watchers[0]
+            .datagrams
+            .iter()
+            .any(|(messages, _)| messages.iter().any(|message| message.id == 20300))
+    });
+    let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+    let mut payload = BitWriter::new();
+    write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+    watcher.client.send(ACK, payload.into_bytes());
+    pump_within(
+        &mut [&mut watcher],
+        &schemas,
+        "the player in the world",
+        Duration::from_secs(900),
+        |watchers| {
+            let watcher = &watchers[0];
+            watcher.created(GAME_MODE_ENTITY).is_some()
+                && watcher
+                    .find(0, |record| {
+                        record.entity == watcher.owner && record.script.is_some()
+                    })
+                    .is_some()
+        },
+    );
+    let owner = watcher.owner;
+    send_player_message(
+        &mut watcher.client,
+        &schemas,
+        owner,
+        1,
+        PICK_HERO,
+        SOLDIER.to_le_bytes().to_vec(),
+    );
+
+    // The match: a sample of the bodies every quarter second until the
+    // player's game goes home.
+    let deadline = Instant::now() + Duration::from_secs(900);
+    let mut samples = Vec::new();
+    let mut next_sample = Instant::now();
+    let mut home = false;
+    while !home {
+        watcher.pump(&schemas);
+        home = watcher
+            .datagrams
+            .last()
+            .is_some_and(|(messages, _)| messages.iter().any(|message| message.id == 20304));
+        if Instant::now() >= next_sample {
+            let bodies = server.bodies(MATCH).unwrap();
+            if !bodies.is_empty() {
+                samples.push(bodies);
+            }
+            next_sample += Duration::from_millis(250);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "waiting for the end of the match"
+        );
+    }
+
+    // The AI heroes are other players to the player's game: a card with
+    // each one's name, and his body.
+    for (slot, body) in roster.iter().enumerate().skip(1) {
+        assert!(
+            watcher.card(0, &body.name).is_some(),
+            "no card of {}",
+            body.name
+        );
+        let entity = player_entity(slot);
+        assert!(
+            watcher
+                .find(0, |record| record.entity & !0xff == entity
+                    && record.entity != entity
+                    && record.is_create())
+                .is_some(),
+            "no body of {}",
+            body.name
+        );
+    }
+    // Every AI hero played a hero with its weapons.
+    for slot in 1..12 {
+        assert!(
+            samples
+                .iter()
+                .any(|bodies| bodies[slot].hero.is_some() && bodies[slot].scripted),
+            "{} has no hero",
+            roster[slot].name
+        );
+    }
+    // The attackers walked toward point A: each came far closer than his
+    // spawn is.
+    let (attack_spawn, _) = map.spawn_point(1, 0).unwrap();
+    let start = flat(attack_spawn, point_a);
+    let closest = |slot: usize| {
+        samples
+            .iter()
+            .filter_map(|bodies| bodies[slot].position)
+            .map(|feet| flat(feet, point_a))
+            .fold(f64::INFINITY, f64::min)
+    };
+    let attackers: Vec<usize> = (1..12).filter(|&slot| roster[slot].team == 1).collect();
+    let approached = attackers
+        .iter()
+        .filter(|&&slot| closest(slot) < start - 40.0)
+        .count();
+    assert!(
+        approached >= 3,
+        "from {start:.0} m: {:?}",
+        attackers
+            .iter()
+            .map(|&slot| closest(slot))
+            .collect::<Vec<_>>()
+    );
+    // They fought: AI heroes were hurt or killed.
+    let hurt = (1..12)
+        .filter(|&slot| {
+            samples.iter().any(|bodies| {
+                bodies[slot].health.is_some_and(|health| health < 0.99)
+                    || (bodies[slot].hero.is_some() && bodies[slot].position.is_none())
+            })
+        })
+        .count();
+    assert!(hurt >= 2, "{hurt} AI heroes hurt");
+
+    // The result counts for the player only.
+    let results = server.take_results().unwrap();
+    assert_eq!(results.len(), 1);
+    let result = &results[0];
+    assert_eq!(
+        (result.id, result.map, result.mode),
+        (MATCH, ANUBIS, ASSAULT)
+    );
+    assert_eq!(result.players.len(), 1);
+    let me = &result.players[0];
+    assert_eq!(
+        (me.slot, me.name.as_str(), me.team, me.finished),
+        (0, "player#1111", 0, true)
+    );
     server.stop().unwrap();
 }
 

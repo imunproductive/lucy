@@ -105,4 +105,10 @@ The second game plays the account you choose. The local Battle.net tells the two
 
 By default a match starts only with full teams. `--test-players <n>` starts a match once `n` players search. This helps when you test alone or with few friends.
 
+Add `--test-ai <level>` (`easy`, `medium` or `hard`) to fill the missing players of such a match with AI heroes.
+
+## Practice vs AI
+
+**Training > Practice vs AI** works. The server picks an Assault, Control, Escort or Hybrid map at random. Your group plays on one team, and the server fills both teams with AI heroes at the level you chose. The AI heroes walk to the objective, fight, fall back when they are hurt and respawn. Easy AI heroes deal 25% of their damage, Medium 50% and Hard 100%. The match counts in your profile; the AI heroes get no result.
+
 Next: [hosting and joining](hosting.md).

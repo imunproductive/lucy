@@ -11,6 +11,7 @@ use std::{
 };
 
 use clap::{Args, ValueEnum};
+use orpheus_sim::ai::Difficulty;
 use serde::Deserialize;
 
 use crate::ask;
@@ -93,6 +94,10 @@ pub struct ServerArgs {
     /// only).
     #[arg(long, value_name = "PLAYERS")]
     pub test_players: Option<usize>,
+    /// Fill the missing players of a match --test-players starts with AI
+    /// heroes of this level (easy, medium or hard).
+    #[arg(long, value_name = "LEVEL", value_parser = parse_ai_level)]
+    pub test_ai: Option<Difficulty>,
     /// Template profile for new accounts [default: profile.json in the
     /// state folder].
     #[arg(long, value_name = "FILE")]
@@ -183,6 +188,10 @@ fn parse_timeout(text: &str) -> Result<Duration, String> {
         .ok_or_else(|| "give the seconds as a number above 0, such as 30".into())
 }
 
+fn parse_ai_level(text: &str) -> Result<Difficulty, String> {
+    Difficulty::parse(text).ok_or_else(|| "give easy, medium or hard".into())
+}
+
 #[derive(Debug)]
 pub struct Settings {
     pub state: PathBuf,
@@ -193,6 +202,8 @@ pub struct Settings {
     pub ports: Ports,
     /// Players who start a match (`--test-players`); 0 = full teams.
     pub test_players: usize,
+    /// AI heroes for the missing players of such a match (`--test-ai`).
+    pub test_ai: Option<Difficulty>,
     /// The template profile for new accounts (`--save`).
     pub template: Option<PathBuf>,
 }
@@ -227,6 +238,7 @@ impl Settings {
                     .unwrap_or(DEFAULT_PORTS.dashboard),
             },
             test_players: args.test_players.unwrap_or(0),
+            test_ai: args.test_ai,
             template: args.save.clone(),
         })
     }
