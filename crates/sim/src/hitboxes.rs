@@ -1,7 +1,8 @@
 //! The shapes a shot hits on each body (`game_hitboxes_174.json`, derived
 //! by `orpheus-assets`, whose `hitboxes` module says where they come from):
-//! spheres and capsules in the body's frame at rest, its origin at the feet,
-//! Y up and +Z forward, each critical or not.
+//! spheres and capsules in the body's frame (the bots' in their idle pose,
+//! the heroes' at rest), its origin at the feet, Y up and +Z forward, each
+//! critical or not.
 //!
 //! New: the Python reference hit every body as one capsule from the feet to
 //! the mover's height (combat.py `_targets`, `ray_capsule`) and called a

@@ -9,7 +9,9 @@
 #![forbid(unsafe_code)]
 
 mod ai_spawners;
+mod animation;
 mod arcade_cards;
+mod blend_trees;
 mod body_data;
 pub mod cache;
 mod collision;

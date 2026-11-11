@@ -1,5 +1,6 @@
 //! `data/game_hitboxes_174.json`: the shapes a shot hits on each hero and
-//! bot body, in the body's frame at rest.
+//! bot body, in the body's frame: the bots' in their idle pose, the heroes'
+//! at rest.
 //!
 //! The bodies are those of `data/game_heroes_174.json` and the bots' of
 //! `data/ai_spawners_174.json`, read from the build folder. A body's model is
@@ -80,21 +81,48 @@
 //! checked: the Training Bot and the 25 heroes before Brigitte): the top part of
 //! the model on 28 of the 32 heroes and on the Training Bots (not on
 //! Reinhardt, 6 mm under another part, Bastion, Torbjörn, and Wrecking
-//! Ball, whose hamster's head tops at 0.63 m in the ball); the Training
-//! Bot's tops at 1.92 m of its mover's 2.0 m.
+//! Ball, whose hamster's head tops at 0.63 m in the ball); at rest the
+//! Training Bot's tops at 1.92 m, posed (below) at 2.42 m.
 //! Bastion's second zone is on one part on bone `0x933`. The Friendly
 //! Bots' bodies (`143E`, `146E`) list no zone, so their model's head part
 //! is not critical there. The 2 is not used: a shot's critical multiplier
 //! is its weapon's (`HitDefinition::critical`).
 //!
+//! **Pose.** In the game the Training Bot hovers with its arms hanging
+//! down; at rest its body stands on the ground with the arms forward, the
+//! head sphere 0.5 m below the head players see. A bot body (those of
+//! `data/ai_spawners_174.json`) is placed by its idle clip: of the clips
+//! its blend tree set plays with no animation category set
+//! ([`crate::blend_trees`]), the one that keys every bone of the skeleton.
+//! Each of its tracks replaces that bone's parent-relative transform
+//! ([`crate::animation`]) and the bones are placed again from the root.
+//! All six bot bodies share the Training Bot's model and set (`5A8.021`);
+//! their trees reach four clips, one keying all 43 bones: `006:3920`,
+//! bound to alias `805A8009`, the standing branch of the locomotion tree
+//! (the moving one, category `0005`, plays `3990` and `3952`). It holds one
+//! key a bone: it lifts the body bone `0x2` by 0.5 m (0.824 to 1.324 m)
+//! and turns the upper arms (`0xD`, `0x36`) a quarter turn down, so the
+//! head sphere's centre is at 1.98 m (the mover's eye is at 2.0), the
+//! lowest sphere 0.30 m above the feet and the arm capsules vertical, from
+//! 1.46 to 0.59 m. The first frame is every frame. The trees also play a
+//! 4 s layer, `391F` (14 bones, added to the pose: its body bone moves
+//! −0.04 to +0.03 m), which bobs the bot by ±4 cm; it is left out (how
+//! the client adds a layer is not in the data, and its mean is within
+//! 1 cm of the pose). A hero's tree plays its base from an animation slot
+//! the game fills: on 29 of the 32 heroes the walk reaches no clip keying
+//! every bone (Reinhardt one, Winston two, untested); the heroes stay at
+//! rest (players are hit by the capsule, and the file keeps their shapes
+//! for later).
+//!
 //! The file: `{body: {"name", "model" (the model whose list was read),
-//! "shapes": [{"kind": "sphere", "centre", "radius", "critical"} |
-//! {"kind": "capsule", "a", "b", "radius", "critical"}]}}`, sorted by body,
-//! the shapes in list order, the numbers as `f32`. A body without a model,
-//! skeleton or parts has no shapes.
+//! "pose" (the idle clip, bots only), "shapes": [{"kind": "sphere",
+//! "centre", "radius", "critical"} | {"kind": "capsule", "a", "b",
+//! "radius", "critical"}]}}`, sorted by body, the shapes in list order, the
+//! numbers as `f32`. A body without a model, skeleton or parts has no
+//! shapes.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::Path,
 };
 
@@ -102,8 +130,10 @@ use orpheus_stu::{Asset, Object, Value};
 use serde_json::{Map, json};
 
 use crate::{
-    Install, Output, Result, asset_error, guid_hex,
-    heroes::{Assets, bodies, movers::float, parse_guid},
+    Install, Output, Result,
+    animation::{self, Bone},
+    asset_error, blend_trees, guid_hex,
+    heroes::{Assets, bodies, movers::float, parse_guid, read_json},
     props::{chunk, i64_at, model_components, slice},
 };
 
@@ -133,22 +163,20 @@ const POINT_B: u32 = 0xC320_C90B;
 const RADIUS: u32 = 0xED61_D926;
 /// Byte 92 of the skeleton header: the bone count.
 const BONE_COUNT: usize = 92;
-/// The header's offsets (i64 each): the 4×3 matrices and the bone ids.
+/// The header's offsets (i64 each): the hierarchy, the 4×3 matrices and
+/// their inverses, the bone ids.
+const HIERARCHY: usize = 0;
 const MODEL_MATRICES: usize = 3;
+const PARENT_MATRICES: usize = 4;
 const IDS: usize = 6;
 
-/// A bone's transform: rotation (x, y, z, w), scale, translation.
-#[derive(Clone, Copy, Debug)]
-struct Bone {
-    rotation: [f32; 4],
-    scale: [f32; 3],
-    translation: [f32; 3],
-}
-
-/// A model's skeleton (`mskl`): each bone's id and place in the model.
+/// A model's skeleton (`mskl`): each bone's id, parent, place in the model
+/// and transform relative to its parent.
 struct Skeleton {
     ids: Vec<u32>,
+    parents: Vec<Option<usize>>,
     model: Vec<Bone>,
+    local: Vec<Bone>,
 }
 
 impl Skeleton {
@@ -158,16 +186,45 @@ impl Skeleton {
         };
         let count = usize::from(u16::from_le_bytes(bytes(payload, BONE_COUNT)?));
         let ids = offset(payload, IDS)?;
+        let hierarchy = offset(payload, HIERARCHY)?;
         Ok(Some(Self {
             ids: (0..count)
                 .map(|k| bytes(payload, ids + 4 * k).map(u32::from_le_bytes))
                 .collect::<Result<_, _>>()?,
+            // Six bytes a bone, the parent index in the last two (OWLib
+            // skips four), -1 for a root.
+            parents: (0..count)
+                .map(|k| {
+                    bytes(payload, hierarchy + 6 * k + 4)
+                        .map(|parent| usize::try_from(i16::from_le_bytes(parent)).ok())
+                })
+                .collect::<Result<_, _>>()?,
             model: bones(payload, offset(payload, MODEL_MATRICES)?, count)?,
+            local: bones(payload, offset(payload, PARENT_MATRICES)?, count)?,
         }))
     }
 
     fn bone(&self, id: u32) -> Option<usize> {
         self.ids.iter().position(|bone| *bone == id)
+    }
+
+    /// Each bone's place in the model for parent-relative transforms
+    /// `local` (one a bone, in the skeleton's order, where each parent
+    /// comes before its children).
+    fn pose(&self, local: &[Bone]) -> Result<Vec<Bone>, String> {
+        let mut model: Vec<Bone> = Vec::with_capacity(local.len());
+        for (index, bone) in local.iter().enumerate() {
+            model.push(match self.parents[index] {
+                None => *bone,
+                Some(parent) => compose(
+                    model
+                        .get(parent)
+                        .ok_or_else(|| format!("bone {index} comes before its parent"))?,
+                    bone,
+                ),
+            });
+        }
+        Ok(model)
     }
 }
 
@@ -212,6 +269,25 @@ fn place(bone: &Bone, point: [f32; 3]) -> [f64; 3] {
     let scaled = std::array::from_fn(|k| f64::from(point[k]) * f64::from(bone.scale[k]));
     let turned = rotate(bone.rotation, scaled);
     std::array::from_fn(|k| turned[k] + f64::from(bone.translation[k]))
+}
+
+/// A child bone's transform relative to its parent, placed in the model by
+/// the parent's (the scales multiply, as for the unit and uniform scales
+/// the bodies have).
+fn compose(parent: &Bone, child: &Bone) -> Bone {
+    let [x1, y1, z1, w1] = parent.rotation.map(f64::from);
+    let [x2, y2, z2, w2] = child.rotation.map(f64::from);
+    Bone {
+        rotation: [
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        ]
+        .map(|v| v as f32),
+        scale: std::array::from_fn(|k| parent.scale[k] * child.scale[k]),
+        translation: place(parent, child.translation).map(|v| v as f32),
+    }
 }
 
 /// A part's geometry in its bone's frame.
@@ -359,10 +435,55 @@ fn point(value: [f64; 3]) -> serde_json::Value {
     json!(value.map(float))
 }
 
-/// The body's shapes as the file writes them.
+/// A bot body's blend tree set: its model component's `m_animBlendTreeSet`
+/// for `model`, 0 without one.
+fn blend_tree_set(body: &Asset, model: u64) -> u64 {
+    body.instances
+        .iter()
+        .flatten()
+        .find(|object| object.get("m_model") == Some(&Value::Guid(model)))
+        .and_then(|component| match component.get("m_animBlendTreeSet") {
+            Some(Value::Guid(set)) => Some(*set),
+            _ => None,
+        })
+        .unwrap_or(0)
+}
+
+/// The idle pose of a skeleton by its blend tree set (see the module
+/// notes): the one clip of the set's idle clips that keys every bone, at
+/// its first frame; `None` when there is no such clip or more than one.
+fn idle_pose(
+    install: &Install,
+    set: u64,
+    skeleton: &Skeleton,
+) -> Result<Option<(u64, Vec<Bone>)>, String> {
+    let mut full = Vec::new();
+    for clip in blend_trees::idle_clips(install, set)? {
+        let data = install.raw(clip).map_err(|error| error.to_string())?;
+        let animation = animation::read(&data)?;
+        let keyed = |id: &u32| animation.tracks.iter().any(|track| track.bone == *id);
+        if skeleton.ids.iter().all(keyed) {
+            full.push((clip, animation));
+        }
+    }
+    let [(clip, animation)] = &full[..] else {
+        return Ok(None);
+    };
+    let mut local = skeleton.local.clone();
+    for track in &animation.tracks {
+        if let Some(index) = skeleton.bone(track.bone) {
+            local[index] = track.sample(0.0, local[index]);
+        }
+    }
+    Ok(Some((*clip, skeleton.pose(&local)?)))
+}
+
+/// The body's shapes as the file writes them, each part on its bone's
+/// place `model` (the skeleton's order).
 fn shapes(
     parts: &[Part],
     skeleton: &Skeleton,
+    model: &[Bone],
     zones: &HashMap<u64, f64>,
 ) -> Result<Vec<serde_json::Value>, String> {
     parts
@@ -370,7 +491,7 @@ fn shapes(
         .map(|part| {
             let bone = skeleton
                 .bone(part.node)
-                .map(|index| &skeleton.model[index])
+                .map(|index| &model[index])
                 .ok_or_else(|| format!("bone {:X} is not in the skeleton", part.node))?;
             if bone.scale.iter().any(|scale| (scale - 1.0).abs() > 1e-3) {
                 return Err(format!("bone {:X} is scaled", part.node));
@@ -400,8 +521,26 @@ fn shapes(
         .collect()
 }
 
+/// The body keys of `data/ai_spawners_174.json`'s bots, when the build
+/// folder has it.
+fn bot_bodies(out: &Path) -> Result<HashSet<String>> {
+    if !out.join("data/ai_spawners_174.json").is_file() {
+        return Ok(HashSet::new());
+    }
+    let spawners = read_json(out, "data/ai_spawners_174.json")?;
+    Ok(spawners
+        .get("heroes")
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flat_map(|bots| bots.values())
+        .filter_map(|bot| bot.get("body").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+        .collect())
+}
+
 pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
     let assets = Assets::of(install, ENTITY);
+    let bots = bot_bodies(out)?;
     let mut table = BTreeMap::new();
     for record in bodies(out)? {
         let key = record
@@ -423,7 +562,21 @@ pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
                 |reason: String| asset_error(format!("{key} model {}: {reason}", guid_hex(model)));
             if let Some((source, parts, skeleton)) = hit_model(install, model).map_err(failed)? {
                 entry.insert("model".into(), json!(guid_hex(source)));
-                listed = shapes(&parts, &skeleton, &zones(install, &asset)?).map_err(failed)?;
+                let set = blend_tree_set(&asset, model);
+                let pose = if bots.contains(key) && set != 0 {
+                    idle_pose(install, set, &skeleton).map_err(failed)?
+                } else {
+                    None
+                };
+                let places = match pose {
+                    Some((clip, places)) => {
+                        entry.insert("pose".into(), json!(guid_hex(clip)));
+                        places
+                    }
+                    None => skeleton.model.clone(),
+                };
+                let zones = zones(install, &asset)?;
+                listed = shapes(&parts, &skeleton, &places, &zones).map_err(failed)?;
             }
         }
         entry.insert("shapes".into(), json!(listed));
@@ -441,9 +594,6 @@ mod tests {
     use super::*;
 
     const TRAINING_BOT_MODEL: u64 = 0x0D00_0000_0000_312E;
-    /// The skeleton header's hierarchy and parent-relative matrices.
-    const HIERARCHY: usize = 0;
-    const PARENT_MATRICES: usize = 4;
     /// STUModel m_FD232466: the model's bone table, STU_CB79EE74 {m_EDF0511C
     /// id, m_7DC1550F translation, m_AF9D3A0C rotation}.
     const BONES: u32 = 0xFD23_2466;
@@ -459,20 +609,6 @@ mod tests {
             .sqrt()
     }
 
-    fn compose(parent: &Bone, child: &Bone) -> ([f64; 3], [f64; 4]) {
-        let [x1, y1, z1, w1] = parent.rotation.map(f64::from);
-        let [x2, y2, z2, w2] = child.rotation.map(f64::from);
-        (
-            place(parent, child.translation),
-            [
-                w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-                w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-                w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-                w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-            ],
-        )
-    }
-
     /// The skeleton's 4×3 matrices place each bone in the model (its
     /// parent's place composed with its parent-relative one, the inverse
     /// set), and the STUModel's bone table agrees with the parent-relative
@@ -483,28 +619,18 @@ mod tests {
         let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
         let data = install.raw(TRAINING_BOT_MODEL).unwrap();
         let skeleton = Skeleton::read(&data).unwrap().unwrap();
-        let count = skeleton.ids.len();
-        assert_eq!(count, 43);
-        let payload = chunk(&data, b"mskl").unwrap().unwrap();
-        let local = bones(payload, offset(payload, PARENT_MATRICES).unwrap(), count).unwrap();
-        let hierarchy = offset(payload, HIERARCHY).unwrap();
-        for (index, local) in local.iter().enumerate() {
-            // Six bytes a bone, the parent in the last two (OWLib skips four).
-            let parent = i16::from_le_bytes(bytes(payload, hierarchy + 6 * index + 4).unwrap());
-            let Ok(parent) = usize::try_from(parent) else {
-                assert_eq!(index, 0);
-                continue;
-            };
-            let (translation, rotation) = compose(&skeleton.model[parent], local);
-            let model = &skeleton.model[index];
+        assert_eq!(skeleton.ids.len(), 43);
+        assert_eq!(skeleton.parents[0], None);
+        assert!(skeleton.parents[1..].iter().all(Option::is_some));
+        let posed = skeleton.pose(&skeleton.local).unwrap();
+        for (index, (model, posed)) in skeleton.model.iter().zip(&posed).enumerate() {
+            let translation = posed.translation.map(f64::from);
             assert!(
                 distance(model.translation, translation) < 1e-5,
                 "bone {index}"
             );
-            let dot: f64 = (0..4)
-                .map(|k| f64::from(model.rotation[k]) * rotation[k])
-                .sum();
-            assert!(dot.abs() > 1.0 - 1e-6, "bone {index}");
+            let dot: f32 = (0..4).map(|k| model.rotation[k] * posed.rotation[k]).sum();
+            assert!(dot.abs() > 1.0 - 1e-5, "bone {index}");
         }
         let stu = model_stu(&data).unwrap().unwrap();
         let Some(Value::Array(table)) = stu.root().and_then(|root| field(root, BONES)) else {
@@ -520,7 +646,7 @@ mod tests {
                 panic!("a bone without an id");
             };
             let id = *id as u32;
-            let local = &local[skeleton.bone(id).unwrap()];
+            let local = &skeleton.local[skeleton.bone(id).unwrap()];
             let translation = floats::<3>(bone, TRANSLATION).unwrap_or_default();
             let rotation = floats::<4>(bone, ROTATION).unwrap_or([0.0, 0.0, 0.0, 1.0]);
             assert!(

@@ -711,10 +711,12 @@ mod tests {
         assert_eq!(vitals.death().unwrap().killer, source);
     }
 
-    /// A Practice Range Training Bot as its hit shapes place it, facing its
-    /// yaw: a shot from its side passing 0.45 m in front of its centre at
-    /// 1.2 m (its upper chest) misses, where its capsule (0.5 m round) took
-    /// it; a shot at its head is critical, one at its chest is not.
+    /// A Practice Range Training Bot as its hit shapes place it, in its
+    /// idle pose (hovering 0.5 m up, arms down), facing its yaw: a shot from
+    /// its side passing under it 0.15 m above its feet misses, where its
+    /// capsule (from the feet) took it; a shot at its 2 m eye hits the head
+    /// and is critical; one at 1.5 m, where the rest pose had the head,
+    /// hits the chest and is not.
     #[test]
     #[ignore = "requires a derived 104319 Practice Range scene"]
     fn a_practice_bot_is_hit_by_its_shapes() {
@@ -745,23 +747,23 @@ mod tests {
                 .resolve([(bot.entity, pose.clone())], |_, _, _| Ok(None))
                 .unwrap()
         };
-        let beside = point(0.45, -8.0, 1.2);
-        assert!(shoot(&target, beside, side).is_none());
+        let under = point(0.0, -8.0, 0.15);
+        assert!(shoot(&target, under, side).is_none());
         let capsule = TargetPose {
             shapes: None,
             ..target.clone()
         };
-        assert!(shoot(&capsule, beside, side).is_some());
+        assert!(shoot(&capsule, under, side).is_some());
         let back = forward.map(|part| -part);
-        let head = shoot(&target, point(8.0, 0.0, 1.5), back).unwrap();
+        let head = shoot(&target, point(8.0, 0.0, 2.0), back).unwrap();
         assert!(head.critical, "{head:?}");
         assert_eq!(head.damage, 40.0);
-        // The head sphere: 0.44 m round, its centre 1.48 m up.
+        // The head sphere: 0.44 m round, its centre 1.98 m up.
         assert!((head.distance - 7.57).abs() < 0.01, "{head:?}");
-        let chest = shoot(&target, point(8.0, 0.0, 0.9), back).unwrap();
+        let chest = shoot(&target, point(8.0, 0.0, 1.5), back).unwrap();
         assert!(!chest.critical, "{chest:?}");
         assert_eq!(chest.damage, 20.0);
-        // The chest sphere: 0.48 m round, its centre 0.87 m up.
-        assert!((chest.distance - 7.52).abs() < 0.01, "{chest:?}");
+        // The chest sphere: 0.48 m round, its centre 1.37 m up.
+        assert!((chest.distance - 7.54).abs() < 0.01, "{chest:?}");
     }
 }
