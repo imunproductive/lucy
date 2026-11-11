@@ -12,10 +12,10 @@ Tell `orpheus` where the game is. Any of these works:
 
 If you give none of these, `orpheus` looks for:
 
-1. the game you picked last time (`game_path.txt` in the state folder);
+1. the game you picked or gave with `--game` last time (`game_path.txt` in the state folder);
 2. an unpacked copy in the folder `game` under the current folder.
 
-If it still finds nothing, the modes that start the game open a file dialog. Pick `_retail_\Overwatch.exe`. `orpheus` remembers your choice.
+If it still finds nothing, the modes that start the game (`play`, `host`, `serve`, `join`) open a file dialog. Pick `_retail_\Overwatch.exe`. `orpheus` remembers your choice. Commands that only read the game's data (`doctor`, `assets`, `script query`) never open the dialog: they stop with an error that asks for `--game`.
 
 ## 2. Check the setup
 

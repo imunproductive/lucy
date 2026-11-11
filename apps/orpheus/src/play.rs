@@ -24,19 +24,43 @@ pub fn known_game(settings: &Settings) -> io::Result<Option<PathBuf>> {
         .transpose()
 }
 
-/// The game to start: a known one, else one the player picks now, which is
-/// remembered for next time.
+/// The game to start: a known one, else one the player picks now. Either
+/// way it is remembered for next time, so commands that only read the
+/// game's data (`assets`, `script query`) find it without asking.
 pub fn game(settings: &Settings) -> io::Result<PathBuf> {
     if let Some(game) = known_game(settings)? {
+        if settings.game.is_some() {
+            remember(settings, &game)?;
+        }
         return Ok(game);
     }
-    let picked = pick_game()?;
+    let picked = checked(pick_game()?)?;
+    remember(settings, &picked)?;
+    Ok(picked)
+}
+
+/// The game for a command that only reads its data: a known one, never a
+/// file dialog (scripts and agents run these without anyone to answer it).
+pub fn configured_game(settings: &Settings) -> io::Result<PathBuf> {
+    known_game(settings)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "no game configured: pass --game with the path of {GAME_EXE}, set ORPHEUS_GAME, \
+                 or run `orpheus play` once to pick it"
+            ),
+        )
+    })
+}
+
+fn remember(settings: &Settings, game: &Path) -> io::Result<()> {
+    let saved = settings.state.join(GAME_PATH_FILE);
+    let text = game.display().to_string();
+    if fs::read_to_string(&saved).is_ok_and(|old| old.trim() == text) {
+        return Ok(());
+    }
     fs::create_dir_all(&settings.state)?;
-    fs::write(
-        settings.state.join(GAME_PATH_FILE),
-        picked.display().to_string(),
-    )?;
-    checked(picked)
+    fs::write(saved, text)
 }
 
 fn checked(game: PathBuf) -> io::Result<PathBuf> {

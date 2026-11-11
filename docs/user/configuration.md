@@ -24,7 +24,7 @@ dashboard = 3725              # TCP; 0 turns the dashboard off
 
 | Key | Flag | Environment | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `game` | `--game` | `ORPHEUS_GAME` | the last picked game, then `game\` in the current folder, then a file dialog | The Overwatch 1.74 install. The server also reads its game data from it. |
+| `game` | `--game` | `ORPHEUS_GAME` | the last picked or given game, then `game\` in the current folder, then a file dialog (only the modes that start the game) | The Overwatch 1.74 install. The server also reads its game data from it. |
 | `account` | `--account` | | `default_account.txt` | The saved account the game on this PC logs in as |
 | `locale` | `--locale` | | `auto` | The game language: `auto`, `none` or a code such as `enUS` (see [playing](playing.md#game-language)) |
 | `ports.lobby` | `--lobby-port` | | 3724 | Lobby, TCP |

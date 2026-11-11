@@ -20,7 +20,7 @@ ok    relay    D:\ORPHEUS\target\release\owwfd_relay.dll
 
 A problem shows `FAIL`, what is wrong, and a line `fix:` with what to do. The exit code is 0 when every check passes, else 1.
 
-`doctor` changes nothing in the state folder, with two exceptions: it derives the game data if the cache is not ready, and if no game is known it opens the file dialog and remembers your choice.
+`doctor` changes nothing in the state folder, with one exception: it derives the game data if the cache is not ready. If no game is known it says so; it doesn't open the file dialog.
 
 Run `doctor` while no server runs. A running server holds the ports, so the `ports` check fails.
 

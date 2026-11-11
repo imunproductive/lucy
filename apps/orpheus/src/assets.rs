@@ -9,7 +9,7 @@ use crate::{play, settings::Settings};
 
 /// Print each derived file's comparison with `pack`; true when all match.
 pub fn diff(settings: &Settings, pack: &Path) -> io::Result<bool> {
-    let game = play::game(settings)?;
+    let game = play::configured_game(settings)?;
     let install = install_root(&game).ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "no .build.info next to the game")
     })?;

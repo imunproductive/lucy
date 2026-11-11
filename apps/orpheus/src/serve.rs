@@ -75,7 +75,7 @@ pub fn start(settings: &Settings, hosting: Hosting) -> io::Result<Server> {
 /// The game data the server reads, derived from the configured install on
 /// the first start and kept in the state folder's cache.
 pub fn game_data(settings: &Settings) -> io::Result<PathBuf> {
-    let game = play::game(settings)?;
+    let game = play::configured_game(settings)?;
     let install = install(&game)?;
     let locale = play::locale(settings, &game).unwrap_or_else(|| TEXT_LOCALE.into());
     fs::create_dir_all(settings.cache())?;
