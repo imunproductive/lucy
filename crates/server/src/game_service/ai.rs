@@ -115,9 +115,10 @@ impl Room {
 }
 
 /// Rule 123: an AI hero deals its difficulty's share of his weapons'
-/// damage, to players and AI heroes alike.
+/// damage, to players and AI heroes alike. His heals stay whole
+/// (assumption: the rule speaks of damage alone).
 pub(super) fn scale_damage(hits: &mut [PlayerHit], players: &[Player], difficulty: Difficulty) {
-    for hit in hits {
+    for hit in hits.iter_mut().filter(|hit| !hit.heal) {
         let shooter = hit.shooter.source & !0xff;
         if players
             .iter()

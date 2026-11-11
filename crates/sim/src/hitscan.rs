@@ -234,6 +234,9 @@ pub struct Impact {
     pub damage: f64,
     pub critical: bool,
     pub loadout: Option<u64>,
+    /// What the body takes as healing when it is an ally the hit strikes
+    /// ([`HitDefinition::ally_heal`]); 0: an ally takes nothing.
+    pub heal: f64,
 }
 
 impl HitscanShot {
@@ -293,6 +296,7 @@ impl HitscanShot {
             damage: self.hit.damage_at(distance, head),
             critical: head && self.hit.critical > 1.0,
             loadout: self.hit.loadout,
+            heal: self.hit.ally_heal(),
         }))
     }
 }
@@ -308,7 +312,7 @@ pub(crate) fn aim_direction(command: &Command) -> Vec3 {
 mod tests {
     use super::*;
     use orpheus_physics::collision::index::{SceneTriangle, TriangleIndex};
-    use orpheus_script::weapons::DamageFalloff;
+    use orpheus_script::weapons::{AllyHits, DamageFalloff};
     use orpheus_wire::commands::Click;
 
     const MOVER: u16 = 0x18;
@@ -321,6 +325,7 @@ mod tests {
             end: 50.0,
             floor: 0.3,
         }),
+        allies: AllyHits::None,
     };
 
     fn standing(x: f64, z: f64) -> TargetPose {
@@ -376,7 +381,8 @@ mod tests {
                 distance: 9.5,
                 damage: 20.0,
                 critical: false,
-                loadout: RIFLE.loadout
+                loadout: RIFLE.loadout,
+                heal: 0.0,
             }
         );
         assert_eq!(resolve(&coincident), Some(hit));

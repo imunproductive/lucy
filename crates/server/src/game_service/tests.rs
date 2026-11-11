@@ -3342,6 +3342,149 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
     server.stop().unwrap();
 }
 
+/// Ana's Biotic Rifle (graph `0B94`) over the wire, after leafall903/ORPHEUS
+/// (MIT) `test_game_ana.py` (c239a84): a Friendly Bot below full health
+/// heals 70 a dart (to full at most), with no 25001 to Ana; an enemy takes
+/// the dart's 70 with her 25001. An enemy Soldier: 76 wounds the bot: he
+/// walks ahead of the spawn both share and fires at it, 8 m out along their
+/// facing. Ana then fires along the same line: her darts strike him (the
+/// enemy) until he dies, and the next one the bot behind him.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene"]
+fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
+    use orpheus_script::vm::Unknowns;
+    use orpheus_sim::scene_assets::SceneAssets;
+    use orpheus_wire::commands::FIRE;
+    const AHEAD: f64 = 8.0;
+
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(Unknowns::Tolerate);
+    let mut aim = None;
+    let (mut server, schemas, [mut ana, mut soldier], _) = practice_world(
+        [("ana#1111", 0, "Ana"), ("soldier#2222", 1, "Soldier: 76")],
+        &assets,
+        |scene| {
+            // A Friendly Bot (Ana's team) that neither fires nor walks,
+            // ahead of the spawn along its facing.
+            let ([x, y, z], yaw) = scene.map().spawn_point(0, 0).unwrap();
+            let (sin, cos) = yaw.to_radians().sin_cos();
+            let bot = scene
+                .bots_mut()
+                .iter_mut()
+                .find(|bot| bot.spawn.team == 0 && !bot.spawn.firing && bot.spawn.route.is_empty())
+                .unwrap();
+            bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
+            aim = Some((
+                bot.entity,
+                bot.spawn.health,
+                (yaw * 65536.0 / 360.0).round() as i32 as i16,
+            ));
+        },
+    );
+    let (bot, full, yaw) = aim.unwrap();
+    let bot_health = |watcher: &Watcher| {
+        watcher
+            .datagrams
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter(|record| record.entity == bot)
+            .filter_map(|record| record.base_health)
+            .next_back()
+    };
+    // Ana's 25001s from `from` on: whom each struck and for how much.
+    let hits_of = |watcher: &Watcher, from: usize| -> Vec<(Value, Value)> {
+        watcher.datagrams[from..]
+            .iter()
+            .flat_map(|(messages, _)| messages.iter().filter(|message| message.id == 25001))
+            .map(|message| {
+                let Value::Struct(impact) = &message.fields[&0x78] else {
+                    panic!("hit body")
+                };
+                let Value::Struct(target) = &impact[&0] else {
+                    panic!("hit target")
+                };
+                (target[&0].clone(), impact[&4].clone())
+            })
+            .collect()
+    };
+    /// One player's commands from frame `next` on: an idle batch keeps his
+    /// script running, a press goes alone.
+    fn command(watcher: &mut Watcher, next: &mut u32, yaw: i16, buttons: u32) {
+        let count = if buttons == 0 { 16 } else { 1 };
+        if buttons != 0 || *next <= watcher.tick + 8 {
+            watcher
+                .client
+                .send(ACK, command_batch(*next, count, yaw, buttons, false));
+            *next += u32::from(count);
+        }
+    }
+    /// Both idle for `seconds`.
+    fn settle(
+        watchers: [&mut Watcher; 2],
+        frames: &mut [u32; 2],
+        yaw: i16,
+        schemas: &Schemas,
+        seconds: f64,
+    ) {
+        let until = Instant::now() + Duration::from_secs_f64(seconds);
+        let [first, second] = watchers;
+        while Instant::now() < until {
+            command(first, &mut frames[0], yaw, 0);
+            command(second, &mut frames[1], yaw, 0);
+            first.pump(schemas);
+            second.pump(schemas);
+        }
+    }
+    let full = full as f32;
+    let mut frames = [ana.tick + 1, soldier.tick + 1];
+    settle([&mut ana, &mut soldier], &mut frames, yaw, &schemas, 1.0);
+    // No health update for the bot yet: it is at full health.
+    assert_eq!(bot_health(&ana), None);
+
+    // The Soldier walks about 2 m ahead (25 ticks), then fires at the bot.
+    soldier
+        .client
+        .send(ACK, command_batch(frames[1], 25, yaw, 0, true));
+    frames[1] += 25;
+    settle([&mut ana, &mut soldier], &mut frames, yaw, &schemas, 0.5);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !bot_health(&ana).is_some_and(|health| health < full) {
+        assert!(Instant::now() < deadline, "waiting for the bot's wound");
+        command(&mut soldier, &mut frames[1], yaw, FIRE);
+        command(&mut ana, &mut frames[0], yaw, 0);
+        ana.pump(&schemas);
+        soldier.pump(&schemas);
+    }
+    settle([&mut ana, &mut soldier], &mut frames, yaw, &schemas, 0.5);
+    let wounded = bot_health(&ana).unwrap();
+    assert!(wounded < full, "wounded to {wounded}");
+
+    // Ana fires along the line: the Soldier first, then the bot.
+    let fired = ana.datagrams.len();
+    let soldier_body = Value::Unsigned(u64::from(soldier.owner | 1));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !bot_health(&ana).is_some_and(|health| health > wounded) {
+        assert!(
+            Instant::now() < deadline,
+            "waiting for the heal: hits {:?}",
+            hits_of(&ana, fired)
+        );
+        command(&mut ana, &mut frames[0], yaw, FIRE);
+        settle([&mut ana, &mut soldier], &mut frames, yaw, &schemas, 1.0);
+    }
+    assert_eq!(bot_health(&ana), Some((wounded + 70.0).min(full)));
+    let hits = hits_of(&ana, fired);
+    assert!(
+        hits.contains(&(soldier_body.clone(), Value::Unsigned(70))),
+        "the enemy takes 70: {hits:?}"
+    );
+    assert!(
+        hits.iter().all(|(target, _)| *target == soldier_body),
+        "no 25001 for the heal: {hits:?}"
+    );
+    server.stop().unwrap();
+}
+
 /// projectiles.py `_field`, `_deliver_field`: Soldier: 76's Biotic Field
 /// (ABILITY_2: 0257) heals a wounded teammate standing in it, the healer's
 /// Tab board counts the healing, and every client gets the field entity

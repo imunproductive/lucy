@@ -2202,17 +2202,27 @@ impl WorldDelivery {
     }
 
     /// The player's body as a target this tick (combat.py `_targets`: a
-    /// player in the world with a body).
+    /// player in the world with a body), hurt when its pools are below
+    /// their maximum.
     pub fn combat_target(&self, scene: &PreparedScene, team: u8) -> Option<PlayerTarget> {
         self.started?;
         let body = self.body?;
         let mover = self.mover.as_ref()?;
         let hero = scene.heroes().get(body.hero)?;
+        let vitals = match self
+            .body_script
+            .as_ref()
+            .filter(|script| script.id == body.id)
+        {
+            Some(script) => script.runtime.vitals(),
+            None => self.plain_vitals.as_ref(),
+        };
         Some(PlayerTarget {
             body: body.id.entity,
             team,
             pose: scene.player_target(hero, mover.pose().position, mover.crouched()),
             dead: self.death.is_some(),
+            hurt: vitals.is_some_and(Vitals::hurt),
         })
     }
 
