@@ -99,3 +99,12 @@ Run `doctor` while no server runs. A running server holds the ports, so the `por
 | Something else | Read `logs\orpheus.log` in the state folder. |
 
 For problems when joining, see [hosting and joining](hosting.md#join-messages).
+
+## Debugging switches
+
+These environment variables are for research. Leave them unset to play.
+
+| Variable | What it does |
+| --- | --- |
+| `ORPHEUS_DEBUG_DROP_NOTICES` | A comma list of combat notices the server leaves out: `hit`, `kill-flag`, `elimination`, `death` |
+| `ORPHEUS_DEBUG_HELLO_FLAGS=1` | The lobby's hello message (20500) sends its six unknown flags true, to look for hidden admin or developer features |

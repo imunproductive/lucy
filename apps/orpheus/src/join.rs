@@ -159,6 +159,7 @@ mod client {
             game_log: logs.join("game.log"),
             relay_log: logs.join("relay.log"),
             timeout: options.timeout,
+            extra_arguments: settings.game_args.clone(),
         });
         let (child, started) = games.start()?;
         play::log_relay(&started, None);

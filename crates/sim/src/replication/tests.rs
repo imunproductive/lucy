@@ -1367,14 +1367,16 @@ fn body_messages_to_unknown_entities_go_nowhere_and_the_rest_are_capped() {
 }
 
 /// The client's hero settings (21604) reach the current body's graphs as
-/// entity variables at once: ALLIED HEALTH BARS is `#8336e`, the hero's own
-/// entry wins over the general one, DEFAULT clears it, and an entry for
-/// another hero changes nothing.
+/// entity variables at once: ALLIED HEALTH BARS is `#8336e`, SHOW FRIENDLY
+/// OUTLINES `#27568e`; the hero's own entry wins over the general one, an
+/// entry for another hero changes nothing, and each list replaces the last,
+/// so a setting it leaves out (the client's DEFAULT) is cleared.
 #[test]
 fn hero_settings_reach_the_bodys_graphs_as_entity_variables() {
     use crate::body_script::{fixture_body_factory, fixture_graph_factory};
     use orpheus_content::hero_settings::{
-        ALLIED_HEALTH_BARS, ALLIED_HEALTH_BARS_ALWAYS, ALLIED_HEALTH_BARS_OFF, HeroSetting,
+        ALLIED_HEALTH_BARS, ALLIED_HEALTH_BARS_ALWAYS, ALLIED_HEALTH_BARS_OFF, FRIENDLY_OUTLINES,
+        FRIENDLY_OUTLINES_ALWAYS, HeroSetting,
     };
     use orpheus_script::wire::Value as ScriptValue;
     use serde_json::json;
@@ -1398,12 +1400,12 @@ fn hero_settings_reach_the_bodys_graphs_as_entity_variables() {
         .unwrap();
     let mut world = scripted_world(spawn.controller, id, Box::new(runtime));
     let hero = world.body.unwrap().hero;
-    let setting = |hero, value| HeroSetting {
+    let setting = |hero, setting, value| HeroSetting {
         hero,
-        setting: ALLIED_HEALTH_BARS,
+        setting,
         value,
     };
-    let allied = |world: &WorldDelivery| {
+    let variable = |world: &WorldDelivery, id: u64| {
         world
             .body_script
             .as_ref()
@@ -1412,27 +1414,43 @@ fn hero_settings_reach_the_bodys_graphs_as_entity_variables() {
             .snapshot()
             .unwrap()
             .variables
-            .get(&8336)
+            .get(&(id as u32))
             .cloned()
+            .filter(|value| *value != ScriptValue::Null)
     };
+    let allied = |world: &WorldDelivery| variable(world, ALLIED_HEALTH_BARS);
+    let outlines = |world: &WorldDelivery| variable(world, FRIENDLY_OUTLINES);
     assert_eq!(allied(&world), None);
-    world.update_hero_settings(&[setting(0, ALLIED_HEALTH_BARS_ALWAYS)]);
+    let always = setting(0, ALLIED_HEALTH_BARS, ALLIED_HEALTH_BARS_ALWAYS);
+    world.update_hero_settings(&[always]);
     assert_eq!(
         allied(&world),
         Some(ScriptValue::Asset(ALLIED_HEALTH_BARS_ALWAYS))
     );
-    world.update_hero_settings(&[setting(hero + 1, ALLIED_HEALTH_BARS_OFF)]);
+    world.update_hero_settings(&[
+        always,
+        setting(hero + 1, ALLIED_HEALTH_BARS, ALLIED_HEALTH_BARS_OFF),
+        setting(0, FRIENDLY_OUTLINES, FRIENDLY_OUTLINES_ALWAYS),
+    ]);
     assert_eq!(
         allied(&world),
         Some(ScriptValue::Asset(ALLIED_HEALTH_BARS_ALWAYS))
     );
-    world.update_hero_settings(&[setting(hero, ALLIED_HEALTH_BARS_OFF)]);
+    assert_eq!(
+        outlines(&world),
+        Some(ScriptValue::Asset(FRIENDLY_OUTLINES_ALWAYS))
+    );
+    world.update_hero_settings(&[
+        always,
+        setting(hero, ALLIED_HEALTH_BARS, ALLIED_HEALTH_BARS_OFF),
+    ]);
     assert_eq!(
         allied(&world),
         Some(ScriptValue::Asset(ALLIED_HEALTH_BARS_OFF))
     );
-    world.update_hero_settings(&[setting(hero, 0)]);
-    assert!(matches!(allied(&world), None | Some(ScriptValue::Null)));
+    assert_eq!(outlines(&world), None, "left out: back at DEFAULT");
+    world.update_hero_settings(&[]);
+    assert_eq!(allied(&world), None);
     assert!(!world.script_failed);
 }
 
@@ -1440,14 +1458,21 @@ fn hero_settings_reach_the_bodys_graphs_as_entity_variables() {
 /// `0042`, which the nameplate `0D24` asks of the local view for an ally's
 /// health bar (`#17553`): ALWAYS gives it to Soldier: 76 (st116 → st117), on
 /// his running body and on the next one; OFF takes Ana's own tag away (st115
-/// → st114); DEFAULT does neither. Each frame encodes for the owner.
+/// → st114); DEFAULT (an empty list) does neither. The owner frames the
+/// client acknowledges carry each of these states and `#8336e`.
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
 fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
     use orpheus_content::hero_settings::{
         ALLIED_HEALTH_BARS, ALLIED_HEALTH_BARS_ALWAYS, ALLIED_HEALTH_BARS_OFF, HeroSetting,
     };
-    use orpheus_script::vm::{StateKind, TargetTagEffect};
+    use orpheus_script::{
+        snapshot::ProjectedSnapshot,
+        stream::BodyStream,
+        vm::{StateKind, TargetTagEffect},
+        wire::Value as ScriptValue,
+    };
+    use std::cell::Cell;
 
     const SUPPORT_TAG: u64 = 0x0d60_0000_0000_0042;
     let runtime = orpheus_testkit::runtime_dir();
@@ -1473,26 +1498,73 @@ fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
         setting: ALLIED_HEALTH_BARS,
         value,
     };
+    // What the owner's client is sent: the body's first frame, then an
+    // owner frame after each change, each acknowledged before the next.
+    let open = |world: &WorldDelivery| {
+        let script = world.body_script.as_ref().unwrap();
+        let encoder = script.runtime.encoder();
+        let first = encoder
+            .project(script.runtime.snapshot().unwrap(), View::Owner)
+            .unwrap();
+        let mut stream = BodyStream::<ProjectedSnapshot>::new(script.id.entity);
+        let chunk = encoder.queue_full(&mut stream, &first).unwrap();
+        stream.create_arrived();
+        stream.sent(chunk.last);
+        stream.arrived(chunk.last);
+        stream
+    };
+    let frame = Cell::new(FIRST_TICK);
     // The 01CF states 114 (OFF: drop the tag) and 117 (ALWAYS: take it):
-    // each one's effect while it is active.
-    let tag_states = |world: &WorldDelivery| {
+    // each one's effect while it is active, which the next owner frame
+    // carries, with the setting's variable.
+    let tag_states = |world: &WorldDelivery, stream: &mut BodyStream<ProjectedSnapshot>| {
         let script = world.body_script.as_ref().unwrap();
         let snapshot = script.runtime.snapshot().unwrap();
         let encoder = script.runtime.encoder();
-        encoder
-            .full(&encoder.project(snapshot, View::Owner).unwrap())
+        frame.set(frame.get() + 32);
+        let kind = stream
+            .owner_kind(frame.get(), false, false)
+            .unwrap()
             .unwrap();
-        let instance = snapshot
+        let next = encoder
+            .project_next(snapshot, stream.base().unwrap().1)
+            .unwrap();
+        let chunk = encoder
+            .queue_delta(stream, &next, kind, FRAME_MS as u32)
+            .unwrap()
+            .unwrap();
+        stream.sent(chunk.last);
+        stream.arrived(chunk.last);
+        let delivered = stream.base().unwrap().1;
+        assert_eq!(
+            delivered
+                .entity_variable(ALLIED_HEALTH_BARS as u32)
+                .filter(|value| **value != ScriptValue::Null),
+            snapshot
+                .variables
+                .get(&(ALLIED_HEALTH_BARS as u32))
+                .filter(|value| **value != ScriptValue::Null),
+            "#8336e in the owner frame"
+        );
+        let (&id, instance) = snapshot
             .instances
-            .values()
-            .find(|instance| instance.graph == 0x01cf)
+            .iter()
+            .find(|(_, instance)| instance.graph == 0x01cf)
             .expect("the body runs 01CF");
-        [114, 117].map(|raw| match instance.states.get(&raw) {
-            Some(state) if state.active => match state.kind {
-                StateKind::TargetTag { effect } => effect,
+        [114, 117].map(|raw| {
+            let effect = match instance.states.get(&raw) {
+                Some(state) if state.active => match state.kind {
+                    StateKind::TargetTag { effect } => effect,
+                    _ => None,
+                },
                 _ => None,
-            },
-            _ => None,
+            };
+            assert_eq!(
+                delivered.state(id, raw).is_some(),
+                effect.is_some(),
+                "st{raw} in the owner frame"
+            );
+            effect
         })
     };
     let tag = |entity, present| {
@@ -1515,26 +1587,55 @@ fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
             )
             .unwrap();
         assert!(world.body_script.is_some(), "{} has no script", hero.name);
+        open(world)
     };
 
     let soldier = scene.heroes().get(SOLDIER).unwrap();
-    spawn(&mut world, owner | 1, soldier);
-    assert_eq!(tag_states(&world), [None, None], "DEFAULT");
+    let mut stream = spawn(&mut world, owner | 1, soldier);
+    assert_eq!(tag_states(&world, &mut stream), [None, None], "DEFAULT");
     world.update_hero_settings(&[general(ALLIED_HEALTH_BARS_ALWAYS)]);
-    assert_eq!(tag_states(&world), [None, tag(owner | 1, true)]);
-    world.update_hero_settings(&[general(0)]);
-    assert_eq!(tag_states(&world), [None, None], "back to DEFAULT");
+    assert_eq!(
+        tag_states(&world, &mut stream),
+        [None, tag(owner | 1, true)]
+    );
+    world.update_hero_settings(&[]);
+    assert_eq!(
+        tag_states(&world, &mut stream),
+        [None, None],
+        "back to DEFAULT"
+    );
     world.update_hero_settings(&[general(ALLIED_HEALTH_BARS_ALWAYS)]);
-    spawn(&mut world, owner | 2, soldier);
-    assert_eq!(tag_states(&world), [None, tag(owner | 2, true)], "respawn");
+    let mut stream = spawn(&mut world, owner | 2, soldier);
+    assert_eq!(
+        tag_states(&world, &mut stream),
+        [None, tag(owner | 2, true)],
+        "respawn"
+    );
 
     let ana = scene.heroes().find_hero("Ana").unwrap();
-    spawn(&mut world, owner | 3, ana);
-    assert_eq!(tag_states(&world), [None, None], "ALWAYS: a support has it");
+    let mut stream = spawn(&mut world, owner | 3, ana);
+    assert_eq!(
+        tag_states(&world, &mut stream),
+        [None, None],
+        "ALWAYS: a support has it"
+    );
     world.update_hero_settings(&[general(ALLIED_HEALTH_BARS_OFF)]);
-    assert_eq!(tag_states(&world), [tag(owner | 3, false), None]);
-    spawn(&mut world, owner | 4, ana);
-    assert_eq!(tag_states(&world), [tag(owner | 4, false), None], "respawn");
+    assert_eq!(
+        tag_states(&world, &mut stream),
+        [tag(owner | 3, false), None]
+    );
+    let mut stream = spawn(&mut world, owner | 4, ana);
+    assert_eq!(
+        tag_states(&world, &mut stream),
+        [tag(owner | 4, false), None],
+        "respawn"
+    );
+    world.update_hero_settings(&[]);
+    assert_eq!(
+        tag_states(&world, &mut stream),
+        [None, None],
+        "back to DEFAULT"
+    );
     assert!(!world.script_failed);
 }
 

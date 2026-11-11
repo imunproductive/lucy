@@ -194,6 +194,7 @@ mod client {
             game_log: logs.join("game.log"),
             relay_log: logs.join("relay.log"),
             timeout,
+            extra_arguments: settings.game_args.clone(),
         }));
         let game_host = hosting.game_host.clone();
         let mut server = serve::start(
@@ -252,6 +253,7 @@ mod client {
         if let Some(locale) = logged_locale(settings, game) {
             arguments.push(format!("--tank_Locale={locale}"));
         }
+        arguments.extend(settings.game_args.iter().cloned());
         process::start_game(game, &arguments, &settings.logs().join("game.log"), None)?;
         Ok(())
     }

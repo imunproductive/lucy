@@ -1242,7 +1242,9 @@ impl Flush<'_, '_> {
                 view.stream
                     .pending()
                     .find(|&(last, _, _)| last == chunk.last)
-                    .is_some_and(|(_, _, keys)| keys.iter().all(|&key| key_instance(key) == child))
+                    .is_some_and(|(_, _, keys)| {
+                        keys.iter().all(|&key| key_instance(key) == Some(child))
+                    })
             });
             if !view.stream.discard_unsent(old) {
                 view.cancelled.insert(old);
@@ -1254,12 +1256,14 @@ impl Flush<'_, '_> {
     }
 }
 
-fn key_instance(key: ChangeKey) -> u16 {
+/// The instance a change belongs to; none for a frame action.
+fn key_instance(key: ChangeKey) -> Option<u16> {
     match key {
         ChangeKey::Instance(instance)
         | ChangeKey::Variable(instance, _)
         | ChangeKey::State(instance, _)
-        | ChangeKey::VolleyIntroduction(instance, _) => instance,
+        | ChangeKey::VolleyIntroduction(instance, _) => Some(instance),
+        ChangeKey::Action { .. } => None,
     }
 }
 

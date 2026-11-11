@@ -307,6 +307,7 @@ fn keyed_row(key: &Value) -> bool {
             | Value::Float(_)
             | Value::Array(_)
             | Value::Map(_)
+            | Value::Pairs(_)
     )
 }
 

@@ -123,6 +123,16 @@ impl<W: World> Context for InstanceContext<'_, W> {
         true
     }
 
+    fn equipped_cosmetic(
+        &mut self,
+        entity: u32,
+        kind: crate::wheel::Cosmetic,
+        slot: i64,
+    ) -> Option<u64> {
+        self.read_native = true;
+        self.world.equipped_cosmetic(self.site, entity, kind, slot)
+    }
+
     fn has_target_tag(&mut self, entity: u32, tag: u64) -> Option<bool> {
         self.read_native = true;
         self.world.has_target_tag(self.site, entity, tag)

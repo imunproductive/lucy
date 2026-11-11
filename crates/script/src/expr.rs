@@ -22,6 +22,7 @@ pub use crate::wire::Value;
 use crate::{
     graph::{asset_guid, target_tag_guid},
     vitals::PoolKind,
+    wheel::{self, Cosmetic},
 };
 use orpheus_core::guid::parse_guid;
 
@@ -202,6 +203,12 @@ pub trait Context {
 
     /// None means the native is unavailable. Some(Null) is a computed result.
     fn native(&mut self, _config: &Json) -> Option<Value> {
+        None
+    }
+
+    /// The asset a body has equipped in a wheel slot (zero for an empty
+    /// slot); None: the world doesn't know that body's loadout.
+    fn equipped_cosmetic(&mut self, _entity: u32, _kind: Cosmetic, _slot: i64) -> Option<u64> {
         None
     }
 
@@ -400,7 +407,7 @@ pub fn truthy(value: &Value) -> bool {
         Some(Value::Entity(id)) => valid_entity(*id),
         Some(Value::Vector(parts)) => parts.iter().any(|&part| part != 0.0),
         Some(Value::Handle { instance, .. }) => *instance != 0,
-        Some(Value::Map(entries)) => !entries.is_empty(),
+        Some(Value::Map(entries) | Value::Pairs(entries)) => !entries.is_empty(),
         _ => false,
     }
 }
@@ -471,7 +478,7 @@ pub fn equal(a: &Value, b: &Value) -> bool {
             a.len() == b.len() && a.iter().zip(b).all(|(a, b)| equal(a, b))
         }
         (Value::Array(a), b) => matches!(a.as_slice(), [item] if equal(item, b)),
-        (Value::Map(a), Value::Map(b)) => {
+        (Value::Map(a), Value::Map(b)) | (Value::Pairs(a), Value::Pairs(b)) => {
             a.len() == b.len()
                 && a.iter()
                     .zip(b)
@@ -524,7 +531,29 @@ fn aim([yaw, pitch]: [i32; 2]) -> [f64; 3] {
     [yaw_sin * pitch_cos, -pitch_sin, yaw_cos * pitch_cos].map(rounded)
 }
 
+/// MEMBER_BY_INDEX. Typed pairs take a number as a position and any other
+/// index as a key of the same type (`expr._index` for `PairArray` in
+/// leafall903/ORPHEUS (MIT)).
 fn index(object: Value, index: &Value) -> Value {
+    if let Value::Pairs(entries) = object {
+        let numeric = matches!(
+            index,
+            Value::Null | Value::Bool(_) | Value::Integer(_) | Value::Float(_)
+        );
+        let found = if numeric {
+            usize::try_from(to_int(index, 0))
+                .ok()
+                .and_then(|number| entries.into_iter().nth(number))
+                .map(|(_, value)| value)
+        } else {
+            entries.into_iter().find_map(|(key, value)| {
+                (std::mem::discriminant(&key) == std::mem::discriminant(index)
+                    && equal(&key, index))
+                .then_some(value)
+            })
+        };
+        return found.unwrap_or(Value::Null);
+    }
     if let Value::Map(entries) = object {
         return entries
             .into_iter()
@@ -580,6 +609,12 @@ fn child<'a>(config: &'a Json, field: &str) -> &'a Json {
     config.get(field).unwrap_or(&Json::Null)
 }
 
+/// The operand of a config that only wraps it, such as the entity of a
+/// target selector: `config.field` when the config is `class`.
+fn wrapped<'a>(config: &'a Json, class_name: &str, field: &str) -> Option<&'a Json> {
+    (class(config) == Some(class_name)).then(|| child(config, field))
+}
+
 fn literal_asset(config: &Json, expected: &str, field: &str, kind: u64) -> Option<Value> {
     if class(config) != Some(expected)
         || !native_fields(config, &[field, "m_resourceKey"])
@@ -591,31 +626,33 @@ fn literal_asset(config: &Json, expected: &str, field: &str, kind: u64) -> Optio
     (guid >> 48 == kind).then_some(Value::Asset(guid))
 }
 
-fn literal_message_map(config: &Json) -> Result<Value, EvalError> {
+/// Authored typed pairs (`STU_7757D403`, 104319 1B78280/1B77090): each
+/// row's value, then its key, which must be a resource, in authored order
+/// (`play._authored_pairs` in leafall903/ORPHEUS (MIT)).
+fn authored_pairs(
+    evaluator: &mut Evaluator,
+    config: &Json,
+    context: &mut impl Context,
+    depth: usize,
+) -> Result<Value, EvalError> {
     let unsupported = || EvalError::UnsupportedConfig("STU_7757D403".into());
     if !native_fields(config, &["m_configVars"]) {
         return Err(unsupported());
     }
-    let pairs = array_field(config, "m_configVars")?
-        .iter()
-        .map(|entry| {
-            if class(entry) != Some("STU_98DD1872") || !native_fields(entry, &["m_key", "m_value"])
-            {
-                return Err(unsupported());
-            }
-            let key = literal_asset(child(entry, "m_key"), "STU_B70476F3", "m_548E5344", 0x0a90)
-                .ok_or_else(unsupported)?;
-            let value = literal_asset(
-                child(entry, "m_value"),
-                "STUConfigVarGameMessage",
-                "m_gameMessage",
-                0x0240,
-            )
-            .ok_or_else(unsupported)?;
-            Ok((key, value))
-        })
-        .collect::<Result<_, _>>()?;
-    Ok(Value::Map(pairs))
+    let mut pairs = Vec::new();
+    for entry in array_field(config, "m_configVars")? {
+        if class(entry) != Some("STU_98DD1872") || !native_fields(entry, &["m_key", "m_value"]) {
+            return Err(unsupported());
+        }
+        let value = evaluator.config(child(entry, "m_value"), context, depth)?;
+        let key = match evaluator.config(child(entry, "m_key"), context, depth) {
+            Ok(key @ Value::Asset(_)) => key,
+            Ok(_) | Err(EvalError::UnsupportedConfig(_)) => return Err(unsupported()),
+            Err(error) => return Err(error),
+        };
+        pairs.push((key, value));
+    }
+    Ok(Value::Pairs(pairs))
 }
 
 fn json_truthy(value: &Json) -> bool {
@@ -784,6 +821,8 @@ fn resource_field(class: &str) -> Option<&'static str> {
         "STUConfigVarGameMode" => Some("m_gamemode"),
         "STU_BCD1C634" => Some("m_id"),
         "STU_8A491388" => Some("m_priority"),
+        // An unset texture is the zero asset (0686 node 28 clears 3793).
+        "STUConfigVarTexture" => Some("m_texture"),
         _ => None,
     }
 }
@@ -907,7 +946,80 @@ impl Evaluator {
                 // The native evaluator writes zero with the identifier's asset type.
                 Value::Asset(0)
             }
-            "STU_7757D403" => literal_message_map(config)?,
+            "STU_7757D403" => authored_pairs(self, config, context, nested)?,
+            // The communication wheel (`crate::wheel`; leafall903/ORPHEUS
+            // (MIT) `BodyWorld.native` in `driver.py`). An action category
+            // test (STU_4460419A) and the three slot queries (44A7D0,
+            // 44A980, 44A950) read only the action.
+            "STU_4460419A" if native_fields(config, &["m_D929182B", "m_548E5344"]) => {
+                let category = child(child(config, "m_D929182B"), "m_value");
+                let action = self.config(child(config, "m_548E5344"), context, nested)?;
+                Value::Bool(match (action, asset_guid(child(category, "m_id"))) {
+                    (Value::Asset(action), Some(id)) => wheel::has_category(
+                        action,
+                        id,
+                        asset_guid(child(category, "m_type")).unwrap_or(0),
+                    ),
+                    _ => false,
+                })
+            }
+            "STU_3E7F59D8" | "STU_955C40AE" | "STU_2E708EC1"
+                if native_fields(config, &["m_548E5344"]) =>
+            {
+                let table = match class {
+                    "STU_3E7F59D8" => &wheel::EMOTE_ACTIONS,
+                    "STU_955C40AE" => &wheel::VOICE_ACTIONS,
+                    _ => &wheel::SPRAY_ACTIONS,
+                };
+                // 069A gets its action in a one-item PlayScript array.
+                let action = match self.config(child(config, "m_548E5344"), context, nested)? {
+                    Value::Array(items) if items.len() == 1 => items.into_iter().next(),
+                    action => Some(action),
+                };
+                Value::Integer(match action {
+                    Some(Value::Asset(action)) => wheel::slot(action, table),
+                    _ => -1,
+                })
+            }
+            "STU_1ECB66A0" if native_fields(config, &["m_548E5344", "m_resourceKey"]) => {
+                match self.config(child(config, "m_548E5344"), context, nested)? {
+                    Value::Asset(action) => Value::Asset(wheel::callout_texture(action)),
+                    _ => Value::Asset(0),
+                }
+            }
+            // The equipped cosmetic in a slot of the named body: CD7490
+            // (emote alias; its target is STU_33980609), CE18E0 (emote blend
+            // tree), 93D1F0 (voice effect; the target is the body's
+            // component 43 owner, STU_F7262B36) and 92E7E0 (spray unlock).
+            "STU_250DEABD" | "STU_DF7C7C63" | "STU_2977339D" | "STU_17B517B9" => {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let (kind, entity) = match class {
+                    "STU_250DEABD" => (
+                        Cosmetic::EmoteAlias,
+                        wrapped(child(config, "m_target"), "STU_33980609", "m_entity"),
+                    ),
+                    "STU_DF7C7C63" => (Cosmetic::EmoteBlendTree, Some(child(config, "m_entity"))),
+                    "STU_2977339D" => (
+                        Cosmetic::VoiceEffect,
+                        wrapped(child(config, "m_target"), "STU_F7262B36", "m_801B298F"),
+                    ),
+                    _ => (Cosmetic::Spray, Some(child(config, "m_entity"))),
+                };
+                if !child(config, "m_resourceKey").is_null() {
+                    return Err(unsupported());
+                }
+                let Value::Entity(entity) =
+                    self.config(entity.ok_or_else(unsupported)?, context, nested)?
+                else {
+                    return Err(unsupported());
+                };
+                let slot = to_int(&self.config(child(config, "m_slot"), context, nested)?, -1);
+                Value::Asset(
+                    context
+                        .equipped_cosmetic(entity, kind, slot)
+                        .ok_or_else(unsupported)?,
+                )
+            }
             "STU_B5A0CAF0" => context.owner(),
             "STU_25ECB55F" => {
                 let unsupported = || EvalError::UnsupportedConfig(class.into());
