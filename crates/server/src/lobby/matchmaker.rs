@@ -912,7 +912,7 @@ fn perform(lobby: &Lobby, effects: Vec<Effect>) {
 /// A match into the profile, saved, and the profile sent to the player's
 /// game if it is connected, as a dashboard edit is (`results.rs`).
 fn record(lobby: &Lobby, account: &Account, play: &MatchPlay) -> io::Result<()> {
-    let earned = results::save(account, play, services::wall_now()?)?;
+    let earned = results::save(account, play, &lobby.xp, services::wall_now()?)?;
     tracing::info!(
         "[MM] {}: {} XP, {} levels, rating {:+}, {} competitive points{}",
         account.name,

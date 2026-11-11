@@ -34,6 +34,7 @@ use orpheus_lobby::{
     presence::{PRO_ACCOUNT_BITS, Presence},
     ranked::Ranked,
     templates::RetailTemplates,
+    xp_table::XpTable,
 };
 use orpheus_sim::scene_assets::SceneAssets;
 use orpheus_wire::jam::codec::Schemas;
@@ -133,6 +134,7 @@ impl Server {
         let ranked = Ranked::new(&templates)?;
         let arcade = Arcade::load(data.join("arcade_cards_174.json"), &templates)?;
         let economy = Arc::new(Economy::load(&data)?);
+        let xp = XpTable::load(&data)?;
         let celebrations = Celebrations::load(&data, &templates, Arc::clone(&economy))?;
         let mut assets = SceneAssets::load(&config.runtime)?;
         if let Some(install) = &config.install {
@@ -225,6 +227,7 @@ impl Server {
             ranked,
             arcade,
             celebrations,
+            xp,
             extra_preload,
             assets: Arc::new(assets),
             first_scene: Mutex::new(scene),

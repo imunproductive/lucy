@@ -25,6 +25,7 @@ mod lists;
 mod map_chunk;
 mod mode_props;
 mod navigation;
+mod progression;
 mod props;
 mod tunables;
 
@@ -163,6 +164,10 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "navigation",
         derive: navigation::derive,
+    },
+    Derivation {
+        name: "game_progression",
+        derive: progression::derive,
     },
 ];
 
