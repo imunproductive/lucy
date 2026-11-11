@@ -182,7 +182,9 @@ fn a_players_body_walks_on_the_maps_collision_with_its_heros_values() {
     assert!(scene.movement_ready());
     let walk = |hero: u64, first: u32| {
         let body = scene.heroes().get(hero).unwrap().body;
-        let mut mover = scene.player_spawn_mover(body, 0, 0).unwrap();
+        let mut mover = scene
+            .player_spawn_mover(body, 0, 0, SpawnChoice::First)
+            .unwrap();
         let (spawn, yaw) = (mover.pose().position, mover.pose().yaw);
         for frame in first..first + 60 {
             let command = Command {

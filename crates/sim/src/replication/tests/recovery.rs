@@ -237,6 +237,7 @@ fn a_same_hero_pick_after_a_fault_replaces_the_body_and_waits_for_fresh_acks() {
         slot: 0,
         team: 0,
         spawn: 0,
+        room: orpheus_content::maps::SpawnChoice::First,
         card: &card,
     };
     let mut world = soldier(&scene, &viewer);
@@ -284,7 +285,10 @@ fn a_same_hero_pick_after_a_fault_replaces_the_body_and_waits_for_fresh_acks() {
     assert!(!world.script_failed);
     // A new mover at the spawn point, not the one the command moved.
     let hero = scene.heroes().get(SOLDIER).unwrap();
-    let spawned = scene.player_spawn_mover(hero.body, 0, 0).unwrap().pose();
+    let spawned = scene
+        .player_spawn_mover(hero.body, 0, 0, orpheus_content::maps::SpawnChoice::First)
+        .unwrap()
+        .pose();
     assert_eq!(world.mover.as_ref().unwrap().pose(), spawned);
     assert!(
         world
@@ -356,6 +360,7 @@ fn healthy_and_scriptless_same_hero_picks_keep_the_body() {
             slot: 0,
             team: 0,
             spawn: 0,
+            room: orpheus_content::maps::SpawnChoice::First,
             card: &card,
         };
         let mut world = soldier(&scene, &viewer);

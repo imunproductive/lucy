@@ -834,6 +834,9 @@ pub struct WorldDelivery {
     /// The PvP "assemble your team" countdown runs (match.py `assembling`):
     /// a pick keeps hero select open, which shows the skin selector.
     assembling: bool,
+    /// Time the match flow adds to a death's respawn now (overtime,
+    /// game-rules.md 11).
+    respawn_extra: Duration,
 }
 
 /// A body's death (combat.py `Vitals.death_tick`, `killer`) and when it
@@ -910,6 +913,7 @@ impl WorldDelivery {
             body_health: 0,
             board: BoardDelivery::default(),
             assembling: false,
+            respawn_extra: Duration::ZERO,
         }
     }
 
@@ -1674,6 +1678,11 @@ impl WorldDelivery {
         self.assembling = assembling;
     }
 
+    /// What the match flow adds to the respawn of a death from now on.
+    pub fn set_respawn_extra(&mut self, extra: Duration) {
+        self.respawn_extra = extra;
+    }
+
     /// A full frame of the game mode entity, such as the countdown; false
     /// when the client has no mode entity yet (server.py `queue_mode_frame`).
     pub fn queue_mode_frame(&mut self, frame: &orpheus_core::bits::BitWriter) -> io::Result<bool> {
@@ -1959,7 +1968,9 @@ impl WorldDelivery {
                 body: body.id,
                 killer: hit.shooter.source,
                 tick: death_tick,
-                respawn_at: now.saturating_add(scene.respawn_time()),
+                respawn_at: now
+                    .saturating_add(scene.respawn_time())
+                    .saturating_add(self.respawn_extra),
             });
             if let Some(script) = self
                 .body_script
@@ -2019,23 +2030,6 @@ impl WorldDelivery {
         given
     }
 
-    /// A dead player's timer is up now: a new Elimination round brings
-    /// everyone back at its start (game-rules.md 99). See
-    /// [`Self::respawn_due`].
-    pub fn respawn_now(
-        &mut self,
-        scene: &PreparedScene,
-        viewer: &PlayerAppearance<'_>,
-        tick: u32,
-        now: Duration,
-        quanta: u32,
-    ) -> io::Result<bool> {
-        if let Some(death) = &mut self.death {
-            death.respawn_at = death.respawn_at.min(now);
-        }
-        self.respawn_due(scene, viewer, tick, now, quanta)
-    }
-
     /// combat.py `_respawn`: once the mode's time is up, a dead player gets
     /// a new body of the same hero at his spawn point, as a hero switch does
     /// (match.py `switch_hero`), and his spawn voice line. While every id of
@@ -2077,6 +2071,50 @@ impl WorldDelivery {
             .unwrap_or_default();
         self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
         self.begin_spawn_bark(now);
+        Ok(true)
+    }
+
+    /// A new round puts the player back in his team's spawn room: a new
+    /// body of his hero there, dead or alive. With `select` hero select
+    /// opens too, as before the second side of an Assault, Escort or Hybrid
+    /// match (game-rules.md 2), and stays open while the heroes assemble. A
+    /// player without a hero keeps waiting in hero select. True when he got
+    /// a new body.
+    pub fn spawn_again(
+        &mut self,
+        scene: &PreparedScene,
+        viewer: &PlayerAppearance<'_>,
+        tick: u32,
+        now: Duration,
+        quanta: u32,
+        select: bool,
+    ) -> io::Result<bool> {
+        if select {
+            self.assembling = true;
+        }
+        let Some(body) = self.body else {
+            return Ok(false);
+        };
+        let Some(entity) = self.next_body(now) else {
+            return Ok(false);
+        };
+        let hero = scene
+            .heroes()
+            .get(body.hero)
+            .ok_or_else(|| invalid("the body's hero is unknown"))?;
+        self.switch(
+            scene,
+            viewer,
+            tick,
+            quanta,
+            entity,
+            (hero, body.skin),
+            false,
+        )?;
+        self.begin_spawn_bark(now);
+        if select && self.can_handle_game_message() {
+            self.queue_controller(scene, tick, true, Some(hero.guid), None)?;
+        }
         Ok(true)
     }
 
@@ -2579,7 +2617,7 @@ impl WorldDelivery {
         pick: bool,
     ) -> io::Result<()> {
         let (hero, skin) = selection;
-        let mover = scene.player_spawn_mover(hero.body, viewer.team, viewer.spawn)?;
+        let mover = scene.player_spawn_mover(hero.body, viewer.team, viewer.spawn, viewer.room)?;
         let movement = mover.pose();
         let pose = owner_pose(movement);
         let generation = self

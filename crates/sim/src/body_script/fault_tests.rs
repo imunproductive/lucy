@@ -219,6 +219,7 @@ fn appearance(owner: u32, slot: i8, team: u8, card: &PlayerCard) -> PlayerAppear
         slot,
         team,
         spawn: 0,
+        room: orpheus_content::maps::SpawnChoice::First,
         card,
     }
 }

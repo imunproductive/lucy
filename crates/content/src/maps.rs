@@ -41,6 +41,34 @@ pub struct GameMap {
     /// instances (`game_maps` `objectives`): capture points in their order,
     /// the payload and its checkpoints, the Control stages.
     pub objectives: Vec<MapObjective>,
+    /// The teams' spawn rooms with the objectives or the Control stage
+    /// they serve (`game_maps` `objectives` and `stage`), in source order.
+    pub rooms: Vec<SpawnRoom>,
+}
+
+/// A spawn point of a team's spawn room and when the mode uses it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpawnRoom {
+    pub spawn: Spawn,
+    /// Assault, Escort and Hybrid: the objectives (their order, 0x2934)
+    /// during which the room is the defenders' (false) or the attackers'
+    /// (true): its target tag is the objective's 0x2935 or 0x2936.
+    pub objectives: Vec<(u32, bool)>,
+    /// Control: the stage whose round it serves (tags 0x310/0x341 stage 0,
+    /// 0x30D/0x3CC stage 1, 0x3CE/0x3CD stage 2).
+    pub stage: Option<u32>,
+}
+
+/// Which spawn rooms a team uses now (the match flow's choice).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SpawnChoice {
+    /// The first round's rooms ([`GameMap::spawns`]).
+    #[default]
+    First,
+    /// The attackers' or the defenders' rooms of an objective.
+    Objective { objective: u32, attack: bool },
+    /// The team's room of a Control stage.
+    Stage(u32),
 }
 
 /// What an objective entity of the map is.
@@ -104,32 +132,71 @@ impl GameMap {
             team_sizes: vec![1, 0],
             free_for_all: false,
             objectives: Vec::new(),
+            rooms: Vec::new(),
         }
     }
 
     /// Cycle through a team's points (or all points if that team has none).
     /// Players sharing a point alternate along its local right-hand axis.
     pub fn spawn_point(&self, team: u8, number: usize) -> Option<([f64; 3], f64)> {
-        let for_team = |spawn: &&Spawn| spawn.team.is_none() || spawn.team == Some(team);
-        let count = self.spawns.iter().filter(for_team).count();
-        let row_size = if count == 0 { self.spawns.len() } else { count };
-        let index = number.checked_rem(row_size)?;
-        let spawn = self
+        let mine: Vec<&Spawn> = self
             .spawns
             .iter()
-            .filter(|spawn| count == 0 || for_team(spawn))
-            .nth(index)?;
-        let row = number / row_size;
-        let side = row.div_ceil(2) as f64 * SPAWN_SPACING;
-        let side = if row != 0 && row % 2 == 0 {
-            -side
+            .filter(|spawn| spawn.team.is_none() || spawn.team == Some(team))
+            .collect();
+        if mine.is_empty() {
+            place(&self.spawns.iter().collect::<Vec<_>>(), number)
         } else {
-            side
-        };
-        let (sin, cos) = spawn.yaw.to_radians().sin_cos();
-        let [x, y, z] = spawn.position;
-        Some(([x - cos * side, y, z + sin * side], spawn.yaw))
+            place(&mine, number)
+        }
     }
+
+    /// The `number`-th point of the rooms `choice` names for `team`, as
+    /// [`Self::spawn_point`] places them; the first round's points when the
+    /// map has no such room. An objective's rooms are the attackers' or the
+    /// defenders' whatever their tag's team: the teams swap sides.
+    pub fn spawn_point_in(
+        &self,
+        team: u8,
+        number: usize,
+        choice: SpawnChoice,
+    ) -> Option<([f64; 3], f64)> {
+        let chosen: Vec<&Spawn> = self
+            .rooms
+            .iter()
+            .filter(|room| match choice {
+                SpawnChoice::First => false,
+                SpawnChoice::Objective { objective, attack } => {
+                    room.objectives.contains(&(objective, attack))
+                }
+                SpawnChoice::Stage(stage) => {
+                    room.stage == Some(stage) && room.spawn.team == Some(team)
+                }
+            })
+            .map(|room| &room.spawn)
+            .collect();
+        if chosen.is_empty() {
+            self.spawn_point(team, number)
+        } else {
+            place(&chosen, number)
+        }
+    }
+}
+
+/// The `number`-th of `spawns`, rows past the first offset sideways.
+fn place(spawns: &[&Spawn], number: usize) -> Option<([f64; 3], f64)> {
+    let index = number.checked_rem(spawns.len())?;
+    let spawn = spawns[index];
+    let row = number / spawns.len();
+    let side = row.div_ceil(2) as f64 * SPAWN_SPACING;
+    let side = if row != 0 && row % 2 == 0 {
+        -side
+    } else {
+        side
+    };
+    let (sin, cos) = spawn.yaw.to_radians().sin_cos();
+    let [x, y, z] = spawn.position;
+    Some(([x - cos * side, y, z + sin * side], spawn.yaw))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -186,9 +253,13 @@ impl MapCatalog {
                 .map(|entry| SpawnEntry {
                     spawn: entry.spawn,
                     free_for_all: entry.ffa.unwrap_or_default(),
-                    first_objective: entry
+                    objectives: entry
                         .objectives
-                        .is_some_and(|objectives| objectives.iter().any(|(index, _)| *index == 0)),
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(objective, role)| (objective, role == "attack"))
+                        .collect(),
+                    stage: entry.stage,
                 })
                 .collect();
             entries.insert(
@@ -285,6 +356,16 @@ impl MapCatalog {
                     position: objective.position,
                 })
                 .collect(),
+            rooms: entry
+                .spawns
+                .iter()
+                .filter(|entry| !entry.free_for_all && entry.spawn.team.is_some())
+                .map(|entry| SpawnRoom {
+                    spawn: entry.spawn,
+                    objectives: entry.objectives.clone(),
+                    stage: entry.stage,
+                })
+                .collect(),
         })
     }
 }
@@ -315,9 +396,9 @@ impl MapEntry {
                 .spawns
                 .iter()
                 .filter(|entry| !entry.free_for_all && entry.spawn.team == Some(team));
-            let has_first = mine.clone().any(|entry| entry.first_objective);
+            let has_first = mine.clone().any(|entry| entry.first_objective());
             chosen.extend(
-                mine.filter(|entry| !has_first || entry.first_objective)
+                mine.filter(|entry| !has_first || entry.first_objective())
                     .map(|entry| entry.spawn),
             );
         }
@@ -329,7 +410,14 @@ impl MapEntry {
 struct SpawnEntry {
     spawn: Spawn,
     free_for_all: bool,
-    first_objective: bool,
+    objectives: Vec<(u32, bool)>,
+    stage: Option<u32>,
+}
+
+impl SpawnEntry {
+    fn first_objective(&self) -> bool {
+        self.objectives.iter().any(|(objective, _)| *objective == 0)
+    }
 }
 
 /// The game modes (`0C5`) as the derivation `game_modes` describes them.
@@ -471,6 +559,7 @@ struct RawSpawn {
     spawn: Spawn,
     ffa: Option<bool>,
     objectives: Option<Vec<(u32, String)>>,
+    stage: Option<u32>,
 }
 
 fn hex_guid(text: &str) -> io::Result<u64> {
@@ -739,6 +828,49 @@ mod tests {
             ..arena
         };
         assert_eq!(empty.spawn_point(0, 0), None);
+    }
+
+    #[test]
+    fn spawn_rooms_follow_the_objective_side_or_the_control_stage() {
+        let catalog = MapCatalog::from_json(ARENA).unwrap();
+        let arena = catalog.game_map(0x80, 0x20, "", false, &[]).unwrap();
+        let x = |team, number, choice| arena.spawn_point_in(team, number, choice).unwrap().0[0];
+        let attack = |objective| SpawnChoice::Objective {
+            objective,
+            attack: true,
+        };
+        let defense = |objective| SpawnChoice::Objective {
+            objective,
+            attack: false,
+        };
+        // A side's rooms whatever the team's tag: team 0 attacks from 8.
+        assert_eq!(x(0, 0, attack(1)), 8.0);
+        assert_eq!(x(1, 0, defense(0)), 2.0);
+        assert_eq!(x(1, 1, defense(0)), 4.0);
+        assert_eq!(x(1, 0, defense(1)), 4.0);
+        // No room for it: the first round's points.
+        assert_eq!(x(1, 1, attack(5)), 3.0);
+        assert_eq!(x(0, 0, SpawnChoice::First), 2.0);
+
+        let control = MapCatalog::from_json(
+            r#"{"0x80": {"name": "Stages", "modes": ["20"], "spawns": [
+                {"team": 0, "position": [1, 0, 0], "stage": 0},
+                {"team": 1, "position": [2, 0, 0], "stage": 0},
+                {"team": 0, "position": [3, 0, 0], "stage": 1},
+                {"team": 1, "position": [4, 0, 0], "stage": 1}
+            ]}}"#,
+        )
+        .unwrap()
+        .game_map(0x80, 0x20, "", false, &[])
+        .unwrap();
+        let stage = |team, stage| {
+            control
+                .spawn_point_in(team, 0, SpawnChoice::Stage(stage))
+                .unwrap()
+                .0[0]
+        };
+        assert_eq!([stage(0, 0), stage(1, 0)], [1.0, 2.0]);
+        assert_eq!([stage(0, 1), stage(1, 1)], [3.0, 4.0]);
     }
 
     #[test]

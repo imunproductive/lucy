@@ -54,7 +54,7 @@ use crate::{
 };
 use orpheus_content::{
     heroes::SOLDIER,
-    maps::GameMap,
+    maps::{GameMap, SpawnChoice},
     parameters::{CLIENT_GAME_MESSAGE, PICK_HERO},
     stats::PlayerStats,
 };
@@ -712,6 +712,10 @@ impl Room {
             slot: i8::try_from(slot).ok()?,
             team,
             spawn: spawn_number(&self.map, earlier, team),
+            room: self
+                .flow
+                .as_ref()
+                .map_or(SpawnChoice::First, |flow| flow.spawn_choice(team)),
             card: &player.card,
         })
     }
@@ -800,6 +804,7 @@ fn check_scene(
             slot: i8::try_from(slot).map_err(invalid)?,
             team,
             spawn: spawn_number(map, teams[..slot].iter().copied(), team),
+            room: SpawnChoice::First,
             card,
         };
         let creates = scene.initial_world(&viewer)?;
@@ -2085,7 +2090,8 @@ impl State {
     /// advances with where the players' bodies stand, the game mode
     /// entity's frame is made when due, hero select closes once the heroes
     /// are assembled, the phase messages and the mode graph's go to the
-    /// players' bodies, a new Elimination round brings the dead back, a
+    /// players' bodies, a new side, Control round or Elimination round puts
+    /// everyone back in spawn, overtime lengthens respawns, a
     /// decided match goes to the lobby's results, and once its end is over
     /// everyone goes home.
     fn update_flows(&mut self, tick: u32, now: Duration) {
@@ -2134,7 +2140,7 @@ impl State {
                 room.next_mode_frame = now.saturating_add(MODE_FRAME_EVERY);
             }
             room.assembled = was == Phase::Assemble && flow.phase() != Phase::Assemble;
-            let mut revive = false;
+            let mut respawn = None;
             for event in &events {
                 match event {
                     FlowEvent::Phase(phase) => {
@@ -2143,7 +2149,23 @@ impl State {
                             id[0] & 0xFFFF,
                             flow.clock()
                         );
-                        revive |= *phase == Phase::Round && flow.mode() == Mode::Elimination;
+                        // A new side (after the first) reopens hero select
+                        // in its spawn rooms; a new Control round after the
+                        // first and every Elimination round put everyone
+                        // back in spawn.
+                        let sided = flow.attackers().is_some();
+                        match phase {
+                            Phase::Assemble if sided && flow.round() > 0 => {
+                                respawn = Some(true);
+                            }
+                            Phase::Round
+                                if flow.mode() == Mode::Elimination
+                                    || (flow.mode() == Mode::Control && flow.round() > 1) =>
+                            {
+                                respawn = Some(false);
+                            }
+                            _ => {}
+                        }
                     }
                     FlowEvent::Message {
                         message,
@@ -2201,6 +2223,7 @@ impl State {
                     }
                 }
             }
+            let extra = Duration::from_secs_f64(flow.respawn_extra());
             for message in messages {
                 for (connection, _) in &connections {
                     let peer = self.peers.get_mut(connection).expect("room peer");
@@ -2209,20 +2232,26 @@ impl State {
                     }
                 }
             }
-            if revive {
+            if let Some(select) = respawn {
                 let world = room.world.as_ref().expect("room with a world");
                 for &(connection, slot) in &connections {
                     let viewer = room.appearance(slot).expect("seated player");
                     let peer = self.peers.get_mut(&connection).expect("room peer");
-                    if let Err(error) = peer.world.respawn_now(
+                    if let Err(error) = peer.world.spawn_again(
                         &world.scene,
                         &viewer,
                         tick,
                         now,
                         room.players[slot].quanta(),
+                        select,
                     ) {
                         eprintln!("{:08X} could not respawn ({error})", viewer.entity);
                     }
+                }
+            }
+            for (connection, _) in &connections {
+                if let Some(peer) = self.peers.get_mut(connection) {
+                    peer.world.set_respawn_extra(extra);
                 }
             }
         }

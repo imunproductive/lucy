@@ -29,7 +29,7 @@ use crate::{
 };
 use orpheus_content::{
     heroes::{EyeCatalog, Hero, HeroCatalog, SOLDIER},
-    maps::{GameMap, GameModes, MODES_FILE},
+    maps::{GameMap, GameModes, MODES_FILE, SpawnChoice},
     stats::{PlayerStats, StatsCatalog, initial_on_fire},
 };
 use orpheus_core::{bits::BitWriter, guid::parse_guid};
@@ -440,16 +440,18 @@ impl PreparedScene {
     }
 
     /// The body's mover at the player's spawn point: the team's `number`-th,
-    /// side by side when the team has fewer points (match.py Player.spawn).
+    /// side by side when the team has fewer points (match.py Player.spawn),
+    /// in the spawn rooms the match flow names (`GameMap::spawn_point_in`).
     pub(crate) fn player_spawn_mover(
         &self,
         body: u64,
         team: u8,
         number: usize,
+        room: SpawnChoice,
     ) -> io::Result<Mover> {
         let (position, yaw) = self
             .map
-            .spawn_point(team, number)
+            .spawn_point_in(team, number, room)
             .ok_or_else(|| invalid("no spawn for the selected hero"))?;
         let yaw = (yaw * 65536.0 / 360.0).round_ties_even() as i32;
         let contacts = self.contacts.as_ref().ok_or_else(|| {
@@ -722,7 +724,10 @@ mod tests {
             entity: 0xa000_0101,
             body_filter: team_bit(0).unwrap(),
             frame: FIRST_TICK,
-            pose: scene.player_spawn_mover(hero.body, 0, 0).unwrap().pose(),
+            pose: scene
+                .player_spawn_mover(hero.body, 0, 0, SpawnChoice::First)
+                .unwrap()
+                .pose(),
             quanta: RETAIL_QUANTA,
         };
         let soldier = scene.owner_body_runtime(hero, spawn).unwrap();
@@ -734,7 +739,10 @@ mod tests {
         // no unknown content).
         let pharah = scene.heroes().find_hero("Pharah").unwrap();
         let spawn = OwnerBodySpawn {
-            pose: scene.player_spawn_mover(pharah.body, 0, 0).unwrap().pose(),
+            pose: scene
+                .player_spawn_mover(pharah.body, 0, 0, SpawnChoice::First)
+                .unwrap()
+                .pose(),
             ..spawn
         };
         assert!(
@@ -786,7 +794,9 @@ mod tests {
         let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let hero = scene.heroes().get(SOLDIER).unwrap();
-        let mover = scene.player_spawn_mover(hero.body, 0, 0).unwrap();
+        let mover = scene
+            .player_spawn_mover(hero.body, 0, 0, SpawnChoice::First)
+            .unwrap();
         let spawn = OwnerBodySpawn {
             slot: 0,
             controller: 0xa000_0100,

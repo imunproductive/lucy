@@ -3251,6 +3251,198 @@ fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
     server.stop().unwrap();
 }
 
+/// A Competitive Assault match on Temple of Anubis plays both sides on a
+/// time scale of 1/50 (orpheus_sim::match_flow): team 1 attacks first and
+/// takes A, then time runs out on B; before the second side hero select
+/// reopens and both players get a new body in their new side's spawn room
+/// (team 0 now in the attackers' room, team 1 in the defenders'), where
+/// team 0 takes A too. Equal progress: a draw for both (rules 63-64).
+///
+/// A stands in the attackers' first room and B in the defenders' room, so
+/// each attacker captures A where he spawns and no one can reach B: the
+/// test client plays no movement. Team 0 can only take A if the side swap
+/// moved him.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR); builds Anubis' collision once"]
+fn a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
+    use orpheus_content::{
+        heroes::SOLDIER,
+        maps::{MapCatalog, ObjectiveKind, SpawnChoice},
+        parameters::PICK_HERO,
+    };
+    use orpheus_sim::{match_flow::ASSAULT, scene_assets::SceneAssets};
+
+    const ANUBIS: u64 = 0x0800_0000_0000_005b;
+    const SCALE: f64 = 0.02;
+
+    let runtime = orpheus_testkit::runtime_dir();
+    let assets = Arc::new(
+        SceneAssets::load(&runtime)
+            .unwrap()
+            .with_collision_build(collision_build(orpheus_testkit::game_dir())),
+    );
+    let catalog = MapCatalog::load(runtime.join("data")).unwrap();
+    let mut map = catalog
+        .game_map(ANUBIS, ASSAULT, "Assault", false, &[6, 6])
+        .expect("Temple of Anubis in Assault");
+    let room = |attack| SpawnChoice::Objective {
+        objective: 0,
+        attack,
+    };
+    let (attack_spawn, _) = map.spawn_point_in(0, 0, room(true)).unwrap();
+    let (defense_spawn, _) = map.spawn_point_in(1, 0, room(false)).unwrap();
+    // The rooms of a side are the same whichever team plays it.
+    assert_eq!(
+        map.spawn_point_in(1, 0, room(true)).unwrap().0,
+        attack_spawn
+    );
+    assert_eq!(map.spawn_point(1, 0).unwrap().0, attack_spawn);
+    assert_eq!(map.spawn_point(0, 0).unwrap().0, defense_spawn);
+    for objective in &mut map.objectives {
+        if objective.kind == ObjectiveKind::Point {
+            objective.position = if objective.order == 0 {
+                attack_spawn
+            } else {
+                defense_spawn
+            };
+        }
+    }
+
+    let schemas = Arc::new(Schemas::game());
+    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    server
+        .set_match_timers(orpheus_sim::match_flow::Timers { scale: SCALE })
+        .unwrap();
+    let player = |tag: &str, team, account| WorldPlayer {
+        player: MatchPlayer {
+            name: tag.into(),
+            team,
+            tournament: false,
+            ranked: true,
+        },
+        card: PlayerCard {
+            account: [account, 0x0100_0000_0000_0000],
+            battle_tag: tag.into(),
+            record: Fields::from([(0x40, Value::String(tag.into()))]),
+            ..PlayerCard::default()
+        },
+        hero: 0,
+    };
+    let prepare = {
+        let (assets, map) = (Arc::clone(&assets), map.clone());
+        Box::new(move || assets.prepare(map))
+    };
+    let tickets = server
+        .open_world(
+            MATCH,
+            map.clone(),
+            vec![player("blue#1111", 0, 7), player("red#2222", 1, 8)],
+            prepare,
+        )
+        .unwrap();
+    let mut watchers: Vec<_> = tickets
+        .iter()
+        .enumerate()
+        .map(|(slot, ticket)| {
+            let mut client = Client::new(server.local_addr(), ticket);
+            client.handshake();
+            Watcher {
+                client,
+                owner: player_entity(slot),
+                tick: 0,
+                sequences: HashSet::new(),
+                datagrams: Vec::new(),
+                ticks: Vec::new(),
+            }
+        })
+        .collect();
+    let [blue, red] = &mut watchers[..] else {
+        unreachable!()
+    };
+    let received = |watcher: &Watcher, id: u32| {
+        watcher
+            .datagrams
+            .iter()
+            .position(|(messages, _)| messages.iter().any(|message| message.id == id))
+    };
+    pump_until(&mut [blue, red], &schemas, "the instances", |watchers| {
+        watchers
+            .iter()
+            .all(|watcher| received(watcher, 20300).is_some())
+    });
+    for watcher in [&mut *blue, &mut *red] {
+        let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+        let mut payload = BitWriter::new();
+        write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+        watcher.client.send(ACK, payload.into_bytes());
+    }
+    pump_within(
+        &mut [blue, red],
+        &schemas,
+        "the players in the world",
+        Duration::from_secs(900),
+        |watchers| {
+            watchers.iter().all(|watcher| {
+                watcher.created(GAME_MODE_ENTITY).is_some()
+                    && watcher
+                        .find(0, |record| {
+                            record.entity == watcher.owner && record.script.is_some()
+                        })
+                        .is_some()
+            })
+        },
+    );
+    for watcher in [&mut *blue, &mut *red] {
+        let owner = watcher.owner;
+        send_player_message(
+            &mut watcher.client,
+            &schemas,
+            owner,
+            1,
+            PICK_HERO,
+            SOLDIER.to_le_bytes().to_vec(),
+        );
+    }
+    pump_until(&mut [blue, red], &schemas, "the bodies", |watchers| {
+        watchers
+            .iter()
+            .all(|watcher| watcher.created(watcher.owner | 1).is_some())
+    });
+    // Per side: 0.5-0.6 s of hero select, 0.9 s of setup, 7.8 s of round
+    // (A in 0.6 s adds 3.6 s), 0.23 s of round end; then 0.4 s of match end.
+    pump_within(
+        &mut [blue, red],
+        &schemas,
+        "the end of the match",
+        Duration::from_secs(120),
+        |watchers| {
+            watchers
+                .iter()
+                .all(|watcher| received(watcher, 20304).is_some())
+        },
+    );
+    // The second side's bodies, in the swapped rooms.
+    for watcher in [&*blue, &*red] {
+        assert!(
+            watcher.created(watcher.owner | 2).is_some(),
+            "{:08X}: a new body for the second side",
+            watcher.owner
+        );
+    }
+    let results = server.take_results().unwrap();
+    assert_eq!(results.len(), 1);
+    let outcomes: Vec<_> = results[0]
+        .players
+        .iter()
+        .map(|player| (player.team, player.outcome, player.finished))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [(0, Outcome::Draw, true), (1, Outcome::Draw, true)]
+    );
+    server.stop().unwrap();
+}
+
 /// Players join a match that is on, in the next slots, and a match that is
 /// over takes nobody (ow174/game/server.py `join_match`); the snapshot lists
 /// every player, with the lobby's hero until his pick (match.py `snapshot`).
