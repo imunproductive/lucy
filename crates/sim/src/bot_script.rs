@@ -228,6 +228,7 @@ impl BotScripts {
         let spawn = ScriptSpawn {
             body: bot.spawn.body,
             hero: bot.spawn.hero,
+            name: &bot.spawn.name,
             entity: bot.entity,
             frame: tick,
             mode: self.mode,

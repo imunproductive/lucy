@@ -67,6 +67,11 @@ impl ProjectedSnapshot {
             .map(|instance| (instance.graph, instance.parent))
     }
 
+    /// An instance's variable as this projection sends it.
+    pub fn instance_variable(&self, instance: u16, id: u32) -> Option<&Value> {
+        self.instances.get(&instance)?.variables.values.get(&id)
+    }
+
     /// This projection with `other`'s instance `id` added, its variables,
     /// states and events with it (the practice nameplate on an acknowledged
     /// baseline: server.py `_flush_bot_nameplates`).

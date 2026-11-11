@@ -10,6 +10,7 @@ use crate::{
     scene_assets::{PreparedScene, SceneAssets},
 };
 use orpheus_core::tick::FIRST_TICK;
+use orpheus_script::bot::NAMEPLATE_TEXT;
 use orpheus_wire::entity::EntityUpdate;
 
 const OWNER: u32 = 0xa000_0100;
@@ -123,7 +124,8 @@ fn practice_bots_start_one_script_per_update_and_the_firing_bots_shoot() {
 
 /// server.py: each client gets every bot's first frame once its create
 /// arrived, without the nameplate until the mode UI has arrived, then the
-/// nameplate alone; a death's frames; and the respawned bot's new script.
+/// nameplate alone, with the bot's name as its text; a death's frames; and
+/// the respawned bot's new script.
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
@@ -153,6 +155,8 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     let full = script_chunks(&deliver(&mut world));
     assert_eq!(full.iter().copied().collect::<BTreeSet<_>>(), entities);
     assert_eq!(full.len(), entities.len());
+    // Whether the client's acknowledged frame has the bot's nameplate; one
+    // that has it shows the bot's hero name.
     let nameplate = |scene: &PreparedScene, world: &WorldDelivery, entity: u32| {
         let child = scene
             .bot_scripts()
@@ -160,18 +164,25 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
             .and_then(|latest| latest.plain.as_ref())
             .unwrap()
             .child;
-        world
+        let base = &world
             .bot_stream(entity)
             .and_then(|stream| stream.base())
             .unwrap()
-            .1
-            .instance(child)
-            .is_some()
+            .1;
+        base.instance(child)?;
+        let bot = scene.bots().iter().find(|bot| bot.entity == entity)?;
+        assert!(!bot.spawn.name.is_empty());
+        assert_eq!(
+            base.instance_variable(child, NAMEPLATE_TEXT),
+            Some(&Value::String(bot.spawn.name.clone())),
+            "{entity:08X}'s nameplate text"
+        );
+        Some(())
     };
     assert!(
         entities
             .iter()
-            .all(|&entity| !nameplate(&scene, &world, entity))
+            .all(|&entity| nameplate(&scene, &world, entity).is_none())
     );
 
     // The mode UI arrives: each bot's nameplate follows alone.
@@ -187,7 +198,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     assert!(
         entities
             .iter()
-            .all(|&entity| nameplate(&scene, &world, entity))
+            .all(|&entity| nameplate(&scene, &world, entity).is_some())
     );
 
     // A death: the script's death message, then its timers.
@@ -238,7 +249,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     world.update_bots(&scene, &[], tick, true);
     assert!(script_chunks(&deliver(&mut world)).is_empty());
     assert_eq!(script_chunks(&deliver(&mut world)), [BOT_ENTITY + 15]);
-    assert!(nameplate(&scene, &world, BOT_ENTITY + 15));
+    assert!(nameplate(&scene, &world, BOT_ENTITY + 15).is_some());
 }
 
 /// combat.py `_bot_weapons` and `_fly`: a firing bot's rockets leave its eye

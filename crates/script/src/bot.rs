@@ -30,8 +30,19 @@ pub const RESET: u64 = 0x0240_0000_0000_0013;
 /// The Practice Range firing placement behavior (`FIRING` in
 /// `ow174/game/bots.py`).
 pub const FIRING_GRAPH: u32 = 0x0b92;
+/// The nameplate and overhead health bar graph (client-only presenters; for
+/// a player under `01CF` state 29, for a training bot under `0C18` state 3).
 pub const PRACTICE_NAMEPLATE: u32 = 0x0d24;
 pub const PRACTICE_NAMEPLATE_PARENT: u32 = 0x0c18;
+/// `0D24`'s text override #8812 (`226C.01C`, a public schema entry and a
+/// synced instance variable with a presence bit). Its name field (`01D0.01C`
+/// of presenters st42 and st53) shows `#17476 = #8812 || STU_CD7F3617(…)`,
+/// the entity's own name, which a bot body doesn't have: the elimination
+/// label (`1FC0`) reads the same name and shows none. The stock `0C18`
+/// passes no override; graph `0D00` passes a UX display text this way. The
+/// server sets it to the bot hero's name as a string, the type the native
+/// name has. Assumption, not seen in retail traffic.
+pub const NAMEPLATE_TEXT: u32 = 8812;
 const PRACTICE_BOT_HEROES: Range<u64> = 0x02e0_0000_0000_016b..0x02e0_0000_0000_016f;
 const OWNER_HEALTH: u32 = 253;
 
@@ -218,10 +229,13 @@ impl From<InitFault> for BotError {
 
 /// Where and as what an NPC body starts.
 #[derive(Clone, Copy, Debug)]
-pub struct BotSpawn {
+pub struct BotSpawn<'a> {
     /// The entity body definition (`0x0400…`).
     pub body: u64,
     pub hero: u64,
+    /// The hero's display name (`075` `m_0EDCE350`, "Training Bot"); empty
+    /// for none. See [`NAMEPLATE_TEXT`].
+    pub name: &'a str,
     pub entity: u32,
     pub frame: u32,
     pub mode: u64,
@@ -242,10 +256,11 @@ pub struct BotBody {
 impl BotBody {
     /// Run the body's graphs through their spawn frame and, with a firing
     /// position and AI weapon buttons, start the firing behavior with its
-    /// scoped reset.
+    /// scoped reset. Each nameplate instance (`0D24`) then gets the name as
+    /// its text override ([`NAMEPLATE_TEXT`]).
     pub fn start(
         graphs: Arc<GraphStore>,
-        spawn: BotSpawn,
+        spawn: BotSpawn<'_>,
         unknowns: Unknowns,
     ) -> Result<Self, BotError> {
         let body = graphs
@@ -286,6 +301,23 @@ impl BotBody {
                 // other 0013 receivers have their own rules.
                 component.queue_message(id, RESET, Variables::new())?;
                 component.run_now(&mut world)?;
+            }
+        }
+        if !spawn.name.is_empty() {
+            let nameplates: Vec<u16> = component
+                .snapshot()
+                .into_iter()
+                .flat_map(|snapshot| &snapshot.instances)
+                .filter(|(_, instance)| instance.graph == PRACTICE_NAMEPLATE)
+                .map(|(&id, _)| id)
+                .collect();
+            for id in nameplates {
+                component.set_instance_variable(
+                    id,
+                    NAMEPLATE_TEXT,
+                    Value::String(spawn.name.to_owned()),
+                    &mut world,
+                )?;
             }
         }
         Ok(Self {
@@ -468,6 +500,7 @@ mod tests {
     use serde_json::json;
 
     const BODY: u64 = 0x0400_0000_0000_1403;
+    const NAMED_BODY: u64 = 0x0400_0000_0000_f0fd;
     const TRAINING_BOT: u64 = 0x02e0_0000_0000_016b;
     const ENTITY: u32 = 0xc000_1000;
     const WEAPON: u32 = 0xf0fe;
@@ -579,16 +612,32 @@ mod tests {
             json!([2]),
             json!([0]),
         );
+        // A body whose one graph is a nameplate stand-in.
+        let nameplate = graph(
+            PRACTICE_NAMEPLATE,
+            vec![node(0, "STUStatescriptEntry", None, json!({}))],
+            json!([]),
+            json!([0]),
+        );
         let body = json!({
             "hero":null, "name":"Fixture", "manager":null, "weapons":[],
             "graphs":[{"graph":WEAPON, "m_1EB5A024":null, "m_75408640":0}],
             "ai_weapon_buttons":{"0":20},
         });
+        let named = json!({
+            "hero":null, "name":"Named", "manager":null, "weapons":[],
+            "graphs":[{"graph":PRACTICE_NAMEPLATE, "m_1EB5A024":null, "m_75408640":0}],
+            "ai_weapon_buttons":{},
+        });
         Arc::new(
             GraphStore::from_json(
                 &serde_json::to_vec(&json!({
-                    "version":1, "graphs":[weapon, firing], "bodies":{},
-                    "entities":{format!("0x{BODY:016X}"):body}, "missing":[]
+                    "version":1, "graphs":[weapon, firing, nameplate], "bodies":{},
+                    "entities":{
+                        format!("0x{BODY:016X}"):body,
+                        format!("0x{NAMED_BODY:016X}"):named,
+                    },
+                    "missing":[]
                 }))
                 .unwrap(),
             )
@@ -596,16 +645,55 @@ mod tests {
         )
     }
 
-    fn spawn(firing_position: Option<[f64; 3]>) -> BotSpawn {
+    fn spawn(firing_position: Option<[f64; 3]>) -> BotSpawn<'static> {
         BotSpawn {
             body: BODY,
             hero: TRAINING_BOT,
+            name: "Training Bot",
             entity: ENTITY,
             frame: 100,
             mode: PRACTICE_RANGE_MODE,
             health: 200.0,
             firing_position,
         }
+    }
+
+    #[test]
+    fn a_nameplate_instance_takes_the_bots_name_as_its_text() {
+        let graphs = graphs();
+        let named = BotSpawn {
+            body: NAMED_BODY,
+            ..spawn(None)
+        };
+        let bot = BotBody::start(Arc::clone(&graphs), named, Unknowns::Refuse).unwrap();
+        let snapshot = bot.snapshot().unwrap();
+        let (_, nameplate) = snapshot
+            .instances
+            .iter()
+            .find(|(_, instance)| instance.graph == PRACTICE_NAMEPLATE)
+            .unwrap();
+        assert_eq!(
+            nameplate.variables.get(&NAMEPLATE_TEXT),
+            Some(&Value::String("Training Bot".into()))
+        );
+        // No name, no override; other graphs never get one.
+        let nameless = BotSpawn { name: "", ..named };
+        let bot = BotBody::start(Arc::clone(&graphs), nameless, Unknowns::Refuse).unwrap();
+        let snapshot = bot.snapshot().unwrap();
+        assert!(
+            snapshot
+                .instances
+                .values()
+                .all(|instance| !instance.variables.contains_key(&NAMEPLATE_TEXT))
+        );
+        let bot = BotBody::start(graphs, spawn(None), Unknowns::Refuse).unwrap();
+        assert!(
+            bot.snapshot()
+                .unwrap()
+                .instances
+                .values()
+                .all(|instance| !instance.variables.contains_key(&NAMEPLATE_TEXT))
+        );
     }
 
     #[test]
@@ -743,7 +831,9 @@ mod tests {
 
     /// The pack's Training Bot in the Practice Range, unknown content read as
     /// the Python reference did: the firing behavior runs out of sight, the
-    /// stock nameplate mounts under 0C18, and the death runs to its end.
+    /// stock nameplate mounts under 0C18 with the bot's name as its text and
+    /// the observers' full frame carries that name; the death runs to its
+    /// end.
     #[test]
     #[ignore = "requires the derived game data's bot graph bundle"]
     fn the_practice_training_bot_starts_its_behavior_and_dies() {
@@ -767,12 +857,31 @@ mod tests {
             snapshot.instances[&parent.0].graph,
             PRACTICE_NAMEPLATE_PARENT
         );
+        let name = Value::String("Training Bot".into());
+        assert_eq!(
+            snapshot.instances[&nameplate]
+                .variables
+                .get(&NAMEPLATE_TEXT),
+            Some(&name)
+        );
         let encoder = bot.encoder(&graphs, &codecs);
         let observed = encoder
             .project(snapshot, crate::snapshot::View::Observer)
             .unwrap();
         assert_eq!(observed.instance_count(), snapshot.instances.len() - 1);
-        encoder.full(&observed).unwrap();
+        assert_eq!(
+            observed.instance_variable(nameplate, NAMEPLATE_TEXT),
+            Some(&name)
+        );
+        let full = encoder.full(&observed).unwrap();
+        let mut text = orpheus_core::bits::BitWriter::new();
+        crate::wire::write_value(&mut text, &name, crate::wire::ValueEncoding::Compact).unwrap();
+        assert!(orpheus_testkit::contains_bits(
+            full.as_bytes(),
+            full.bit_len(),
+            text.as_bytes(),
+            text.bit_len()
+        ));
         for frame in 101..=160 {
             assert!(bot.advance_live(frame, Some([0.0, 0.0, 3.0])).unwrap());
         }

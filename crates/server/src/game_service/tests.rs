@@ -3995,8 +3995,9 @@ fn players_join_a_running_match_in_the_next_slots() {
 /// The Practice Range with the training bots' scripts (ow174/game/match.py
 /// `_prepare_bot_script`, server.py `_BotScriptDelivery`): the world waits
 /// for every bot's script; each bot's first frame follows its create, the
-/// nameplate follows the mode UI; a bot shot to death sends its death
-/// script's frames, and its replacement 3 s later starts a new script.
+/// nameplate follows the mode UI and carries the bot's name; a bot shot to
+/// death sends its death script's frames, and its replacement 3 s later
+/// starts a new script.
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn practice_bots_run_their_scripts_for_a_client() {
@@ -4017,6 +4018,11 @@ fn practice_bots_run_their_scripts_for_a_client() {
         .bots()
         .iter()
         .map(|bot| (bot.entity, bot.spawn.firing))
+        .collect();
+    let names: Vec<(u32, String)> = scene
+        .bots()
+        .iter()
+        .map(|bot| (bot.entity, bot.spawn.name.clone()))
         .collect();
     // An enemy bot that neither fires nor walks, 4 m beside the spawn.
     let target = scene
@@ -4086,6 +4092,49 @@ fn practice_bots_run_their_scripts_for_a_client() {
                 full.is_some()
                     && (firing
                         || mode.is_some_and(|mode| script(watcher, mode, entity, false).is_some()))
+            })
+        },
+    );
+    // Each bot's nameplate text, its hero's name, in its frames after the
+    // mode UI (a firing bot's goes with a live frame).
+    let texts: Vec<(u32, BitWriter)> = names
+        .iter()
+        .map(|(entity, name)| {
+            let mut text = BitWriter::new();
+            orpheus_script::wire::write_value(
+                &mut text,
+                &orpheus_script::wire::Value::String(name.clone()),
+                orpheus_script::wire::ValueEncoding::Compact,
+            )
+            .unwrap();
+            (*entity, text)
+        })
+        .collect();
+    pump_until(
+        &mut [&mut watcher],
+        &schemas,
+        "the bots' names in their nameplates",
+        |watchers| {
+            let watcher = &watchers[0];
+            let Some(mode) = watcher.find(0, |record| {
+                record.entity == GAME_MODE_ENTITY && record.script.is_some()
+            }) else {
+                return false;
+            };
+            texts.iter().all(|(entity, text)| {
+                watcher
+                    .find(mode, |record| {
+                        record.entity == *entity
+                            && record.script.as_ref().is_some_and(|chunk| {
+                                orpheus_testkit::contains_bits(
+                                    &chunk.data,
+                                    chunk.width,
+                                    text.as_bytes(),
+                                    text.bit_len(),
+                                )
+                            })
+                    })
+                    .is_some()
             })
         },
     );
