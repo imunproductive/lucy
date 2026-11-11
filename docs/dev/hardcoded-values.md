@@ -14,9 +14,6 @@ When you replace a value, remove its row here or move it to the right section.
 
 | Item | Where | Code | Install |
 | --- | --- | --- | --- |
-| Control: capture time with 2 players | `sim/src/objectives.rs:118` | 5 s | 5.33 s. Graph `0EC2` uid 657 gives 0.125, 0.1875 and 0.25 per second for 1, 2 and 3 players. |
-| Control: wait after a round | `sim/src/match_flow.rs:178` | 11.6 s for every mode | 10.9 s for Control (`0EC2` uid 359). 11.6 s is right for Assault, Escort and Hybrid (`0F4A` uid 359). |
-| Overtime fuse | `sim/src/match_flow.rs:200` | 5 s, then 3 s after 20 s, then 1.5 s after 30 s | 5 s for the first 15 s of overtime, then it falls smoothly to 1.5 s at 30 s (`0F4A` uids 1090-1123, same in `0EC2`). |
 | Match XP | `lobby/src/progression.rs:50-63` | Community numbers: 4.01 a second, finish 250, win 500, medals 150/100/50 | `054/0008` `STUGenericSettings_XPGains`: 1.75 a second, finish 75, win 250, medals 75/50/25, first win of the day 1500. It also lists Backfill 200 and Consecutive Match 150, which the server does not give. |
 | Level XP curve | `lobby/src/progression.rs:74-80` | The launch table, 1500 to 19500, then 20000 | `054/0018` `m_88922C14`: 0, 0, 2000, 3500, 5000, then steps of 500 up to 20000. It is not confirmed which entry is which level. |
 
