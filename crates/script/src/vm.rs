@@ -10,6 +10,7 @@ mod abilities;
 mod actions;
 mod buttons;
 mod context;
+mod flow;
 mod lifecycle;
 mod links;
 mod machine;
@@ -516,6 +517,8 @@ pub struct State {
     ending: bool,
     pending_change: bool,
     pending_timer: bool,
+    /// A completion check (`Event::Check`) is queued.
+    pending_check: bool,
     delayed_timers: [bool; 2],
     buffered_press: Option<BufferedPress>,
     linked_variable: Option<VarKey>,
@@ -536,6 +539,7 @@ impl State {
             ending: false,
             pending_change: false,
             pending_timer: false,
+            pending_check: false,
             delayed_timers: [false; 2],
             buffered_press: None,
             linked_variable: None,
@@ -1268,6 +1272,14 @@ struct AbilityPress {
     activation: u16,
 }
 
+/// One distinct input that reached a state-input join (`STU_1113EBD5`) of an
+/// instance: the join, the node whose plug led there and that plug's path.
+struct JoinArrival {
+    join: u16,
+    producer: u16,
+    plug: Box<str>,
+}
+
 enum Event {
     Entry(u16),
     ExitInstance,
@@ -1279,6 +1291,8 @@ enum Event {
     Timer(u16, u16),
     Button(ButtonEdge),
     AbilityCheck(u16),
+    /// A completion check of the state (TryComplete) a join asked for.
+    Check(u16),
     ChaseReached(u16),
     WatchChanged(u16),
     Message {
@@ -1297,6 +1311,7 @@ impl Event {
             | Self::Changed(state)
             | Self::Reevaluate(state)
             | Self::AbilityCheck(state)
+            | Self::Check(state)
             | Self::ChaseReached(state)
             | Self::WatchChanged(state)
             | Self::Timer(state, _) => Some(state),
@@ -1313,6 +1328,8 @@ struct Machine {
     volleys: BTreeMap<StateKey, Volley>,
     shots: Vec<ShotEvent>,
     ability_presses: BTreeMap<StateKey, Vec<AbilityPress>>,
+    /// Each instance's pending join inputs, in arrival order.
+    joins: BTreeMap<u16, Vec<JoinArrival>>,
     next_id: u32,
     work_left: usize,
     max_work: usize,
@@ -1512,6 +1529,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 Event::Timer(raw, parameter) => self.timer(key(raw), parameter)?,
                 Event::Button(edge) => self.button_edge(id, edge)?,
                 Event::AbilityCheck(raw) => self.timer(key(raw), 1)?,
+                Event::Check(raw) => self.check(key(raw))?,
                 Event::ChaseReached(raw) => {
                     if self.state(key(raw)).is_some_and(|state| state.active) {
                         let node = self.graph(id).state(usize::from(raw)).expect("chase state");

@@ -74,7 +74,19 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(())
     }
 
-    pub(super) fn take_ability_press(&mut self, key: StateKey, node: &Node, button: u8) -> bool {
+    /// A buffered press of `button` within the early-press time
+    /// (m_246438AD) for this activation (`Ability.take_press` in
+    /// `ow174/game/script/nodes.py`). `retain` leaves it buffered: the start
+    /// check looks at the press first and takes it only when the ability
+    /// starts. Ported from leafall903/ORPHEUS (MIT), commit c239a84
+    /// (`take_press(retain=True)`, `docs/MCCREE_ROLL.txt`).
+    pub(super) fn take_ability_press(
+        &mut self,
+        key: StateKey,
+        node: &Node,
+        button: u8,
+        retain: bool,
+    ) -> bool {
         let early = field(&node.fields, "m_246438AD");
         let window = if early.is_null() {
             0.0
@@ -96,7 +108,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }) else {
             return false;
         };
-        presses.remove(index);
+        if !retain {
+            presses.remove(index);
+        }
         true
     }
 
@@ -194,7 +208,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     .evaluate(key.instance, node, keep_held, Some(key))
                     .is_some_and(|value| truthy(&value)))
         {
-            if stop != 0 && self.take_ability_press(key, node, stop) {
+            if stop != 0 && self.take_ability_press(key, node, stop, false) {
                 if stop == start {
                     self.set_ability_flags(key, flags | ABILITY_HELD);
                 }
@@ -219,9 +233,16 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         [start, hold, _]: [u8; 3],
         depth: usize,
     ) -> Result<(), InitFault> {
+        // The press stays buffered with its own time until every gate passes:
+        // putting it back with the current time on each unready frame kept a
+        // released early press alive forever, so the ability started by
+        // itself when its cooldown ended (leafall903/ORPHEUS (MIT), commit
+        // c239a84, `docs/MCCREE_ROLL.txt`: "Retain the original press until
+        // gates pass, consume only on start, and let its authored early-press
+        // window expire").
         let mut pressed = false;
         if start != 0 {
-            pressed = self.take_ability_press(key, node, start);
+            pressed = self.take_ability_press(key, node, start, true);
             if !pressed {
                 if !self.ability_held(start) {
                     self.set_ability_flags(key, flags & !ABILITY_HELD);
@@ -239,18 +260,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             || !self.ability_condition(key, node, "m_F495731F")
             || !self.ability_stack_allows(key, node, "m_3C0EB4A6")
         {
-            if pressed {
-                let activation = self.state(key).expect("active ability").activation;
-                self.machine.ability_presses.entry(key).or_default().insert(
-                    0,
-                    AbilityPress {
-                        button: start,
-                        time_ms: self.machine.now_ms,
-                        activation,
-                    },
-                );
-            }
             return Ok(());
+        }
+        if pressed {
+            self.take_ability_press(key, node, start, false);
         }
         self.set_ability_flags(key, flags | if start != 0 { ABILITY_HELD } else { 0 });
         if ability_is_stacked(node) {
