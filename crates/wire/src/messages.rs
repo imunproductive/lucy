@@ -124,7 +124,10 @@ pub fn encode(schemas: &Schemas, id: u32, fields: &Fields) -> Result<Vec<u8>, Ch
 }
 
 /// Write pre-encoded messages in caller order. Reliable sequences are assigned
-/// by the caller, and loss recovery belongs to the session.
+/// by the caller, and loss recovery belongs to the session. An encoded message
+/// fills its last byte with zeros; only the last message's unused bits are
+/// free for what follows, so the frame goes on right after its last field
+/// (a final packed bool, as in 25005, ends inside its byte).
 pub fn write_channel(
     bits: &mut BitWriter,
     reliable: &[(u32, Vec<u8>)],
@@ -137,19 +140,45 @@ pub fn write_channel(
     if reliable.len() > MAX_PER_KIND || unreliable.len() > MAX_PER_KIND {
         return Err(ChannelError::TooManyMessages);
     }
+    let final_message = unreliable
+        .last()
+        .or_else(|| reliable.last().map(|(_, message)| message))
+        .expect("a message");
+    // Only the last byte's unused bits are given back. Bytes whose fields
+    // don't end in their last byte (test payloads, not game messages of the
+    // client's layouts) are written whole.
+    let whole = final_message.len() * 8;
+    let final_end = read_message(&GAME_SCHEMAS, final_message, 0)
+        .ok()
+        .map(|(_, end)| end)
+        .filter(|&end| end <= whole && whole - end < 8)
+        .unwrap_or(whole);
     bits.bit(true);
     bits.bits(reliable.len() as u64, 4)?;
     bits.bits(unreliable.len() as u64, 4)?;
     bits.align();
-    for (sequence, message) in reliable {
-        bits.raw(&sequence.to_le_bytes());
-        bits.raw(message);
-    }
-    for message in unreliable {
-        bits.raw(message);
+    let last = reliable.len() + unreliable.len() - 1;
+    let messages = reliable
+        .iter()
+        .map(|(sequence, message)| (Some(*sequence), message))
+        .chain(unreliable.iter().map(|message| (None, message)));
+    for (index, (sequence, message)) in messages.enumerate() {
+        if let Some(sequence) = sequence {
+            bits.raw(&sequence.to_le_bytes());
+        }
+        if index == last {
+            bits.raw_bits(message, final_end)
+                .expect("a message ends within its bytes");
+        } else {
+            bits.raw(message);
+        }
     }
     Ok(())
 }
+
+/// The game link's message layouts, for finding where a message's last
+/// field ends.
+static GAME_SCHEMAS: std::sync::LazyLock<Schemas> = std::sync::LazyLock::new(Schemas::game);
 
 /// Decode the channel and leave the reader at the next field in the frame.
 /// A set presence bit with both counts zero ends immediately after the counts.
@@ -175,24 +204,29 @@ pub fn read_channel(
         unreliable: Vec::with_capacity(unreliable_count),
     };
     let mut position = 0;
+    let mut end = 0;
     for _ in 0..reliable_count {
         let sequence = data
             .get(position..position + 4)
             .ok_or(ChannelError::TruncatedSequence)?;
         let sequence = u32::from_le_bytes(sequence.try_into().unwrap());
-        let (message, end) = read_message(schemas, data, position + 4)?;
+        let (message, bit_end) = read_message(schemas, data, position + 4)?;
         channel.reliable.push(ReliableMessage { sequence, message });
-        position = end;
+        end = bit_end;
+        position = bit_end.div_ceil(8);
     }
     for _ in 0..unreliable_count {
-        let (message, end) = read_message(schemas, data, position)?;
+        let (message, bit_end) = read_message(schemas, data, position)?;
         channel.unreliable.push(message);
-        position = end;
+        end = bit_end;
+        position = bit_end.div_ceil(8);
     }
-    reader.advance(position * 8)?;
+    // The next field starts right after the last message's last field.
+    reader.advance(end)?;
     Ok(channel)
 }
 
+/// A message at a byte position and the bit after its last field.
 fn read_message(
     schemas: &Schemas,
     data: &[u8],
@@ -206,7 +240,7 @@ fn read_message(
         .get(usize::from(index))
         .ok_or(ChannelError::UnknownProtocol(index))?;
     let id = first + u32::from(header[1]);
-    let (fields, end) = schemas.read(crc, id, data, position + 2)?;
+    let (fields, end) = schemas.read_bit_end(crc, id, data, position + 2)?;
     Ok((Message { id, fields }, end))
 }
 
@@ -353,5 +387,46 @@ mod tests {
             read_channel(&mut body, &schemas),
             Err(ChannelError::Codec(_))
         ));
+    }
+
+    /// 25005 ends in a packed bool, so its last field ends inside its last
+    /// byte; the world frame must go on right after that bit, alone or after
+    /// other messages, or the client misreads the rest of the frame (the
+    /// freeze after a kill, leafall903/ORPHEUS issue 14).
+    #[test]
+    fn the_frame_goes_on_after_a_final_packed_bool() {
+        use crate::combat_messages::CombatNotice;
+
+        let schemas = Schemas::game();
+        let elimination = CombatNotice::Elimination {
+            killer: 0xa000_0101,
+            victim: 0xa002_0005,
+        }
+        .encode(&schemas)
+        .unwrap();
+        let (_, end) = read_message(&schemas, &elimination, 0).unwrap();
+        assert!(end % 8 != 0 && elimination.len() * 8 - end < 8);
+        for reliable in [
+            vec![(7, elimination.clone())],
+            vec![(7, elimination.clone()), (8, elimination.clone())],
+        ] {
+            let mut bits = BitWriter::new();
+            write_channel(&mut bits, &reliable, &[]).unwrap();
+            // Presence and counts, aligned; then each message's sequence and
+            // body, every one but the last whole.
+            let before_last = 16 + (reliable.len() - 1) * (32 + elimination.len() * 8) + 32;
+            assert_eq!(bits.bit_len(), before_last + end);
+            bits.bits(0b101, 3).unwrap();
+            let mut reader = BitReader::new(bits.as_bytes());
+            let channel = read_channel(&mut reader, &schemas).unwrap();
+            assert_eq!(channel.reliable.len(), reliable.len());
+            assert!(
+                channel
+                    .reliable
+                    .iter()
+                    .all(|message| message.message.id == 25005)
+            );
+            assert_eq!(reader.bits(3).unwrap(), 0b101);
+        }
     }
 }

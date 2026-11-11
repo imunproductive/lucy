@@ -334,6 +334,35 @@ impl Schemas {
         Ok((fields, decoder.pos))
     }
 
+    /// Like [`Self::read`], but the end is the bit after the last field: a
+    /// message ending in packed bools stops inside its last byte, and the
+    /// game link goes on right there (client JAM field reader, RVA 5670E0;
+    /// leafall903/ORPHEUS `messages.py`, `docs/MCCREE_COMBAT.txt`).
+    pub fn read_bit_end(
+        &self,
+        crc: u32,
+        id: u32,
+        data: &[u8],
+        pos: usize,
+    ) -> Result<(Fields, usize), CodecError> {
+        if pos > data.len() {
+            return Err(CodecError::Truncated("message body"));
+        }
+        let mut decoder = Decoder {
+            data,
+            pos,
+            bit: 8,
+            byte: 0,
+        };
+        let fields = decoder.fields(self.fields(crc, id)?)?;
+        let end = if decoder.bit == 8 {
+            decoder.pos * 8
+        } else {
+            (decoder.pos - 1) * 8 + usize::from(decoder.bit)
+        };
+        Ok((fields, end))
+    }
+
     pub fn encode(&self, crc: u32, id: u32, value: &Fields) -> Result<Vec<u8>, CodecError> {
         let mut encoder = Encoder {
             data: Vec::new(),

@@ -824,6 +824,10 @@ struct CombatUi {
     notices: VecDeque<CombatNotice>,
     last_notice_by_entity: HashMap<u32, u32>,
     replacements: VecDeque<(Duration, BotReplacement)>,
+    /// The frame of the last hit notice queued: the client's hit list drops
+    /// a hit older than its last entry (leafall903/ORPHEUS `server.py`
+    /// `_promote_combat_notice`), and held notices can leave out of order.
+    last_hit_frame: u32,
 }
 
 fn initial_controller(
@@ -1070,6 +1074,26 @@ impl Peer {
                 self.combat_ui.notices.push_back(notice);
                 continue;
             }
+            let notice = match notice {
+                CombatNotice::Hit {
+                    target,
+                    dealt,
+                    critical,
+                    killed,
+                    shot_frame,
+                } => {
+                    let shot_frame = shot_frame.max(self.combat_ui.last_hit_frame);
+                    self.combat_ui.last_hit_frame = shot_frame;
+                    CombatNotice::Hit {
+                        target,
+                        dealt,
+                        critical,
+                        killed,
+                        shot_frame,
+                    }
+                }
+                notice => notice,
+            };
             if let Ok(bytes) = notice.encode(schemas) {
                 if let (Ok(ordinal), Some(entity)) = (self.egress.queue_reliable(bytes), entity) {
                     self.combat_ui.last_notice_by_entity.insert(entity, ordinal);
