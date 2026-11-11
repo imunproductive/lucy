@@ -31,6 +31,7 @@ use orpheus_script::wire::{Value, Variables};
 
 use crate::{
     mode_graph_values::ModeGraphValues,
+    mode_rules_data::ModeRules,
     objectives::{
         ASSAULT_FIRST, ASSAULT_LAST, Area, CapturePoint, ControlPoint, HYBRID_POINT, POINT_ABOVE,
         POINT_BELOW, POINT_RADIUS, Participant, Payload, Presence, payload_speeds,
@@ -159,14 +160,6 @@ impl Default for Timers {
     }
 }
 
-/// Rule 1: hero select at the start, 30 s.
-pub const ASSEMBLE: f64 = 30.0;
-/// Rule 2: hero select before round 2 of Assault, Escort and Hybrid, 25 s.
-pub const ASSEMBLE_LATER: f64 = 25.0;
-/// Rule 100: Elimination's hero selection, 20 s (custom default).
-pub const ELIMINATION_ASSEMBLE: f64 = 20.0;
-/// Rule 3: setup, 45 s.
-pub const SETUP: f64 = 45.0;
 /// Rule 31: 4:00 for Assault point A, 3:00 more for B.
 pub const ASSAULT_TIME: f64 = 240.0;
 pub const ASSAULT_BONUS: f64 = 180.0;
@@ -180,29 +173,12 @@ pub const HYBRID_BONUS: f64 = 180.0;
 /// Assumption: how long the match's end shows before the players go home.
 /// Neither POTG nor the cards are played; their length is unknown (rule 167).
 pub const MATCH_END: f64 = 20.0;
-/// Rule 55: the Control point unlocks 30 s into the round.
-pub const CONTROL_UNLOCK: f64 = 30.0;
-/// Rule 54: Control is best of 3.
-pub const CONTROL_ROUNDS_TO_WIN: u8 = 2;
-/// Rules 95 and 96: first to 20 (free-for-all) or 30 (teams) in 10 min.
-pub const DEATHMATCH_SCORE: i64 = 20;
-pub const TEAM_DEATHMATCH_SCORE: i64 = 30;
-pub const DEATHMATCH_TIME: f64 = 600.0;
 /// Rule 95: the top 4 of a free-for-all get win credit.
 pub const DEATHMATCH_WINNERS: usize = 4;
-/// Rule 99: Elimination is first to 3 rounds; rule 100: a round is a draw
-/// after 135 s.
-pub const ELIMINATION_ROUNDS_TO_WIN: u8 = 3;
-pub const ELIMINATION_ROUND: f64 = 135.0;
-/// Rule 100: the capture tiebreaker's point unlocks 105 s into the round.
-pub const ELIMINATION_TIEBREAK: f64 = 105.0;
+
 /// Rule 11: overtime adds 3 s to a respawn (the notes favour the wiki's
 /// 3 s over the Jul 2016 patch's 2 s).
 pub const OVERTIME_RESPAWN: f64 = 3.0;
-/// Rules 67 and 68: the time banks of extra rounds are cut to 2:00 or
-/// raised to 1:00.
-pub const BANK_CAP: f64 = 120.0;
-pub const BANK_FLOOR: f64 = 60.0;
 /// Rule 69: in Assault's extra rounds point A adds 30 s.
 pub const EXTRA_ASSAULT_BONUS: f64 = 30.0;
 
@@ -240,21 +216,20 @@ enum Course {
 
 impl Course {
     /// Progress for the tiebreak (rules 63-65): the objectives taken and
-    /// the share of the next one that counts.
+    /// the share of the next one that counts, its last capture mark.
     fn progress(&self) -> (u32, f64) {
-        let ticks = |point: &CapturePoint| f64::from(point.ticks()) / 3.0;
         match self {
             Self::Points(points) => {
                 let taken = points.iter().filter(|point| point.captured()).count() as u32;
                 let next = points
                     .iter()
                     .find(|point| !point.captured())
-                    .map_or(0.0, ticks);
+                    .map_or(0.0, CapturePoint::mark);
                 (taken, next)
             }
             Self::Hybrid { point, payload } => match payload {
                 Some(payload) => (1 + payload.reached() as u32, payload.best()),
-                None => (0, ticks(point)),
+                None => (0, point.mark()),
             },
             Self::Payload(payload) => (payload.reached() as u32, payload.best()),
         }
@@ -340,7 +315,7 @@ impl Course {
 }
 
 /// The objectives of one side's round.
-fn course(map: &GameMap, mode: Mode) -> Option<Course> {
+fn course(map: &GameMap, mode: Mode, rules: &ModeRules) -> Option<Course> {
     let points: Vec<_> = map.objectives_of(ObjectiveKind::Point).collect();
     let checkpoints: Vec<[f64; 3]> = map
         .objectives_of(ObjectiveKind::Checkpoint)
@@ -364,13 +339,13 @@ fn course(map: &GameMap, mode: Mode) -> Option<Course> {
                         } else {
                             ASSAULT_FIRST
                         };
-                        CapturePoint::new(objective, times)
+                        CapturePoint::new(objective, times, rules.capture_marks)
                     })
                     .collect(),
             ))
         }
         Mode::Hybrid => {
-            let point = CapturePoint::new(points.first()?, HYBRID_POINT);
+            let point = CapturePoint::new(points.first()?, HYBRID_POINT, rules.capture_marks);
             start?;
             (!checkpoints.is_empty()).then_some(Course::Hybrid {
                 point,
@@ -379,8 +354,14 @@ fn course(map: &GameMap, mode: Mode) -> Option<Course> {
         }
         Mode::Escort => {
             let start = start?;
-            (!checkpoints.is_empty())
-                .then(|| Course::Payload(Payload::new(start, &checkpoints, speeds)))
+            (!checkpoints.is_empty()).then(|| {
+                Course::Payload(Payload::new(
+                    start,
+                    &checkpoints,
+                    speeds,
+                    rules.rollback_speed,
+                ))
+            })
         }
         _ => None,
     }
@@ -412,10 +393,17 @@ struct SidedRound {
 }
 
 impl SidedRound {
-    fn new(map: &GameMap, mode: Mode, attackers: u8, time: f64, extra: bool) -> Option<Self> {
+    fn new(
+        map: &GameMap,
+        mode: Mode,
+        rules: &ModeRules,
+        attackers: u8,
+        time: f64,
+        extra: bool,
+    ) -> Option<Self> {
         Some(Self {
             attackers,
-            course: course(map, mode)?,
+            course: course(map, mode, rules)?,
             time,
             extra,
             result: None,
@@ -436,6 +424,8 @@ struct Overtime {
 pub struct MatchFlow {
     mode: Mode,
     map: GameMap,
+    /// The mode's timers and thresholds as the install has them.
+    rules: ModeRules,
     timers: Timers,
     /// The mode graphs' values: the wait after a round, the overtime fuse
     /// and Control's capture times.
@@ -472,19 +462,22 @@ pub struct MatchFlow {
 }
 
 impl MatchFlow {
-    /// The flow of a map's mode; none for the modes the server doesn't run
-    /// a flow for (Practice Range, Arcade brawls), or when the map lacks
-    /// the objectives its mode plays for.
+    /// The flow of a map's mode by the mode graphs' values and `rules` (the
+    /// mode's); none for the modes the server doesn't run a flow for
+    /// (Practice Range, Arcade brawls), or when the map lacks the
+    /// objectives its mode plays for.
     pub fn new(
         map: &GameMap,
         competitive: bool,
         graph_values: ModeGraphValues,
+        rules: ModeRules,
         timers: Timers,
     ) -> Option<Self> {
         let mode = Mode::of(map.mode_guid)?;
         let mut flow = Self {
             mode,
             map: map.clone(),
+            rules,
             timers,
             graph_values,
             competitive,
@@ -512,7 +505,7 @@ impl MatchFlow {
             };
             // game_maps.rs: team 1 attacks first; in Competitive team 0
             // attacks second with the same time.
-            flow.sided = Some(SidedRound::new(map, mode, 1, time, false)?);
+            flow.sided = Some(SidedRound::new(map, mode, &rules, 1, time, false)?);
             if competitive {
                 flow.upcoming.push_back((0, time));
             }
@@ -685,7 +678,7 @@ impl MatchFlow {
     /// starts "assemble your team" at the first spawn).
     pub fn start(&mut self) {
         if self.phase == Phase::Waiting {
-            let seconds = ASSEMBLE;
+            let seconds = self.rules.assemble;
             self.enter(Phase::Assemble, seconds);
         }
     }
@@ -731,7 +724,7 @@ impl MatchFlow {
             Phase::Assemble => {
                 if self.left <= 0.0 {
                     if self.mode.sided() {
-                        self.enter(Phase::Setup, SETUP);
+                        self.enter(Phase::Setup, self.rules.setup);
                     } else {
                         self.begin_round();
                     }
@@ -811,8 +804,7 @@ impl MatchFlow {
             Mode::Assault | Mode::Escort | Mode::Hybrid => {
                 self.sided.as_ref().map_or(ESCORT_TIME, |round| round.time)
             }
-            Mode::Deathmatch | Mode::TeamDeathmatch => DEATHMATCH_TIME,
-            Mode::Elimination => ELIMINATION_ROUND,
+            Mode::Deathmatch | Mode::TeamDeathmatch | Mode::Elimination => self.rules.round_time,
             // No round clock (rule 58), no score (rule 112).
             Mode::Control | Mode::Skirmish => 0.0,
         };
@@ -820,8 +812,9 @@ impl MatchFlow {
             let stage = self.stage(self.round);
             self.control = Some(ControlPoint::new(
                 stage,
-                self.scaled(CONTROL_UNLOCK),
+                self.scaled(self.rules.control_unlock),
                 self.graph_values.control_capture,
+                self.rules.control,
             ));
         }
         if self.mode == Mode::Elimination {
@@ -833,7 +826,7 @@ impl MatchFlow {
                         below: POINT_BELOW,
                         above: POINT_ABOVE,
                     },
-                    self.scaled(ELIMINATION_TIEBREAK),
+                    self.scaled(self.rules.tiebreak),
                 )
             });
         }
@@ -862,12 +855,19 @@ impl MatchFlow {
                 // a hero select of 25 s.
                 let (attackers, time) = self.upcoming.pop_front().expect("a side to play");
                 self.sided = Some(
-                    SidedRound::new(&self.map, self.mode, attackers, time, self.extra)
-                        .expect("the map's course"),
+                    SidedRound::new(
+                        &self.map,
+                        self.mode,
+                        &self.rules,
+                        attackers,
+                        time,
+                        self.extra,
+                    )
+                    .expect("the map's course"),
                 );
-                self.enter(Phase::Assemble, ASSEMBLE_LATER);
+                self.enter(Phase::Assemble, self.rules.assemble_later);
             }
-            Mode::Elimination => self.enter(Phase::Assemble, ELIMINATION_ASSEMBLE),
+            Mode::Elimination => self.enter(Phase::Assemble, self.rules.hero_select),
             // Rule 8: no source gives the time between Control rounds; the
             // point's 30 s lock is the only pause.
             _ => self.begin_round(),
@@ -880,14 +880,14 @@ impl MatchFlow {
             Mode::Control => self.play_control(seconds, participants),
             Mode::Deathmatch => {
                 let best = self.scores.iter().copied().max().unwrap_or(0);
-                if best >= DEATHMATCH_SCORE || self.left <= 0.0 {
+                if best >= self.rules.score_to_win || self.left <= 0.0 {
                     self.decide_free_for_all(participants);
                 }
             }
             Mode::TeamDeathmatch => {
                 let [blue, red] = [self.team_score(0), self.team_score(1)];
-                if blue >= TEAM_DEATHMATCH_SCORE || red >= TEAM_DEATHMATCH_SCORE || self.left <= 0.0
-                {
+                let goal = self.rules.score_to_win;
+                if blue >= goal || red >= goal || self.left <= 0.0 {
                     let winner = match blue.cmp(&red) {
                         std::cmp::Ordering::Greater => Some(0),
                         std::cmp::Ordering::Less => Some(1),
@@ -904,6 +904,7 @@ impl MatchFlow {
     fn play_sided(&mut self, seconds: f64, participants: &[Participant]) {
         let scale = self.timers.scale;
         let speeds = payload_speeds(&self.map.name);
+        let rollback = self.rules.rollback_speed;
         let round = self.sided.as_mut().expect("a sided round");
         let attackers = round.attackers;
         let extra = round.extra;
@@ -953,7 +954,7 @@ impl MatchFlow {
                             .next()
                             .map_or(point.area.centre, |payload| payload.position);
                         // Rule 51: the payload moves once A is taken.
-                        *payload = Some(Payload::new(start, &checkpoints, speeds));
+                        *payload = Some(Payload::new(start, &checkpoints, speeds, rollback));
                     }
                 }
                 Some(payload) => {
@@ -1116,17 +1117,18 @@ impl MatchFlow {
         self.extra = true;
         let low = banks[0].min(banks[1]);
         let high = banks[0].max(banks[1]);
+        let (cap, floor) = (self.rules.bank_cap, self.rules.bank_floor);
         self.single =
-            matches!(self.mode, Mode::Assault | Mode::Hybrid) && low <= 0.0 && high >= BANK_FLOOR;
+            matches!(self.mode, Mode::Assault | Mode::Hybrid) && low <= 0.0 && high >= floor;
         if self.single {
-            let team = if banks[0] >= BANK_FLOOR { 0 } else { 1 };
+            let team = if banks[0] >= floor { 0 } else { 1 };
             self.upcoming.push_back((team, banks[usize::from(team)]));
             return;
         }
-        let shift = if low >= BANK_CAP {
-            BANK_CAP - low
-        } else if low < BANK_FLOOR {
-            BANK_FLOOR - low
+        let shift = if low >= cap {
+            cap - low
+        } else if low < floor {
+            floor - low
         } else {
             0.0
         };
@@ -1151,10 +1153,10 @@ impl MatchFlow {
         let point = self.control.as_mut().expect("a Control round");
         let won = point.step(seconds, scale, participants);
         let contested = point.contested(participants);
-        let at_99 = point
+        let at_hold = point
             .owner()
-            .is_some_and(|owner| point.percent(owner) >= 99.0);
-        match (self.overtime.is_some(), at_99 && contested) {
+            .is_some_and(|owner| point.percent(owner) >= self.rules.control.hold_at);
+        match (self.overtime.is_some(), at_hold && contested) {
             (false, true) => {
                 self.overtime = Some(Overtime {
                     elapsed: 0.0,
@@ -1172,7 +1174,7 @@ impl MatchFlow {
             self.overtime = None;
             self.rounds_won[usize::from(team)] += 1;
             self.events.push(FlowEvent::RoundOver(Some(team)));
-            if self.rounds_won[usize::from(team)] >= CONTROL_ROUNDS_TO_WIN {
+            if i64::from(self.rounds_won[usize::from(team)]) >= self.rules.score_to_win {
                 self.decide(Some(team));
             } else {
                 self.enter_round_end();
@@ -1181,11 +1183,11 @@ impl MatchFlow {
     }
 
     /// Rule 99: a team with no one left alive loses the round; a round
-    /// still on after [`ELIMINATION_ROUND`] is a draw. A team counts once
-    /// one of its players was alive in the round, so the respawns at its
-    /// start come first. Rule 100: from [`ELIMINATION_TIEBREAK`] on, the
-    /// team that captures the arena's point (3 s, any enemy on it blocks)
-    /// wins the round.
+    /// still on after the rules' round time (135 s) is a draw. A team
+    /// counts once one of its players was alive in the round, so the
+    /// respawns at its start come first. Rule 100: from the rules'
+    /// tiebreak (105 s) on, the team that captures the arena's point (3 s,
+    /// any enemy on it blocks) wins the round.
     fn play_elimination(&mut self, seconds: f64, participants: &[Participant]) {
         let alive = |team: u8| {
             participants
@@ -1213,7 +1215,7 @@ impl MatchFlow {
         self.events.push(FlowEvent::RoundOver(winner));
         if let Some(team) = winner {
             self.rounds_won[usize::from(team)] += 1;
-            if self.rounds_won[usize::from(team)] >= ELIMINATION_ROUNDS_TO_WIN {
+            if i64::from(self.rounds_won[usize::from(team)]) >= self.rules.score_to_win {
                 self.decide(Some(team));
                 return;
             }

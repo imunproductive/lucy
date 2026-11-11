@@ -18,17 +18,6 @@ None left: the Control capture time, the round waits, the overtime fuse, match X
 
 | Item | Where | Install |
 | --- | --- | --- |
-| Setup time 45 s | `sim/src/match_flow.rs:166` | `0F4A` uid 895 sets v1303 (the countdown) to 45. |
-| Assemble 30 s, then 25 s in later rounds | `sim/src/match_flow.rs:160-162` | `0F4A` uid 896. |
-| Control unlock 30 s | `sim/src/match_flow.rs:183` | `0EC2` uids 310, 830 and 831. |
-| Control score rate, 1% per 1.2 s | `sim/src/objectives.rs:350` | `0EC2` uid 511. |
-| Control overtime hold at 99% | `sim/src/objectives.rs:352` | `0EC2` uid 879. |
-| Time bank: cap 120 s, floor 60 s | `sim/src/match_flow.rs:206-207` | `0F4A` uids 1297, 1298, 671, 673 and 698. |
-| Payload rollback speed, 0.3 m/s | `sim/src/objectives.rs:28` | `1225` uid 44: −0.3 × the payload speed setting (ruleset entry 9520). |
-| Elimination: 3 rounds to win, 135 s rounds, 105 s tiebreak, 20 s assemble | `sim/src/match_flow.rs:164,194-197` | Already derived: `game_rulesets_174.json`, schema `0x0A30…000D`. |
-| Control: 2 rounds to win | `sim/src/match_flow.rs:185` | Already derived: schema `0x0A30…000C`. |
-| Deathmatch 20 kills, Team Deathmatch 30 kills, 10 minutes | `sim/src/match_flow.rs:186-189` | Already derived: schemas `0x2A` and `0x28`. |
-| Capture progress marks at 1/3 and 2/3 | `sim/src/objectives.rs:162,178` | `STUCaptureAreaComponent.m_segments` in `0x37.003`. |
 | Leave policy: window 20, thresholds 0.3 and 0.2 | `lobby/src/progression.rs:85,90` | `054/0008` `m_94EA7D40`, `m_84F13CFF`, `m_398CB1D9`. The thresholds' meaning is not known. |
 | Group XP 120%, leaver XP 25% | `lobby/src/progression.rs:66,70` | `054/0008` has 1.2 (three unnamed fields) and 0.25. It is not known which 1.2 is the group bonus. |
 

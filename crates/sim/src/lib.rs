@@ -15,6 +15,7 @@ pub mod hitscan;
 pub mod instance;
 pub mod match_flow;
 pub mod mode_graph_values;
+pub mod mode_rules_data;
 pub mod mode_script;
 pub mod notices;
 pub mod objectives;

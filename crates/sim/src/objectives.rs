@@ -10,6 +10,8 @@
 
 use orpheus_content::maps::MapObjective;
 
+use crate::mode_rules_data::{ControlScoring, MARK_TOLERANCE};
+
 /// Assumption: a capture area is a vertical cylinder around the objective
 /// entity's position. Neither the area placeables (map chunk kind 8) nor
 /// `STUECCaptureAreaInstanceData` are decoded, and the rules give no radius.
@@ -23,9 +25,6 @@ pub const POINT_ABOVE: f64 = 5.0;
 pub const PAYLOAD_RADIUS: f64 = 5.0;
 /// Rule 39: the payload rolls back after 10 s without an attacker near.
 pub const ROLLBACK_AFTER: f64 = 10.0;
-/// Assumption: the rollback speed, the Overwatch 2 value (rule 45, ⚠️OW2);
-/// no Overwatch 1 value is known.
-pub const ROLLBACK_SPEED: f64 = 0.3;
 /// Rule 40: speed multiplier by pusher count, for maps without a table entry.
 pub const PUSH_MULTIPLIERS: [f64; 3] = [1.0, 1.165, 1.33];
 
@@ -123,22 +122,25 @@ fn capture_seconds(times: &CaptureTimes, players: usize) -> f64 {
 }
 
 /// An Assault or Hybrid capture point (rules 32-35). Progress runs 0 to 1;
-/// its three ticks (1/3, 2/3, 1) are checkpoints it never falls below.
+/// its marks (`ModeRules::capture_marks`, 1/3 and 2/3) are checkpoints it
+/// never falls below.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CapturePoint {
     pub area: Area,
     pub name: Option<String>,
     times: CaptureTimes,
+    marks: [f64; 2],
     progress: f64,
     captured: bool,
 }
 
 impl CapturePoint {
-    pub fn new(objective: &MapObjective, times: CaptureTimes) -> Self {
+    pub fn new(objective: &MapObjective, times: CaptureTimes, marks: [f64; 2]) -> Self {
         Self {
             area: Area::point(objective),
             name: objective.name.clone(),
             times,
+            marks,
             progress: 0.0,
             captured: false,
         }
@@ -152,13 +154,18 @@ impl CapturePoint {
         self.captured
     }
 
-    /// The ticks reached, 0 to 3 (rule 35).
-    pub fn ticks(&self) -> u8 {
+    /// The last mark its progress reached (rule 35): 0 before the first, 1
+    /// once captured.
+    pub fn mark(&self) -> f64 {
         if self.captured {
-            3
-        } else {
-            ((self.progress * 3.0 + 1e-9).floor() as u8).min(3)
+            return 1.0;
         }
+        self.marks
+            .iter()
+            .rev()
+            .copied()
+            .find(|&mark| self.progress >= mark - MARK_TOLERANCE)
+            .unwrap_or(0.0)
     }
 
     /// One step of `seconds` (already on the match's time scale) with
@@ -173,7 +180,7 @@ impl CapturePoint {
         }
         match (presence.attackers, presence.defenders) {
             (0, _) => {
-                let floor = f64::from(self.ticks()) / 3.0;
+                let floor = self.mark();
                 let rate = 1.0 / (self.times[0] * scale);
                 self.progress = (self.progress - rate * seconds).max(floor);
             }
@@ -218,6 +225,8 @@ pub struct Payload {
     /// Distance along the path of each path point.
     lengths: Vec<f64>,
     speeds: [f64; 3],
+    /// The rollback speed in m/s (`ModeRules::rollback_speed`).
+    rollback: f64,
     distance: f64,
     /// The farthest it got (rule 63).
     best: f64,
@@ -227,8 +236,9 @@ pub struct Payload {
 }
 
 impl Payload {
-    /// From `start` through `checkpoints` (the last is the delivery point).
-    pub fn new(start: [f64; 3], checkpoints: &[[f64; 3]], speeds: [f64; 3]) -> Self {
+    /// From `start` through `checkpoints` (the last is the delivery point),
+    /// rolling back at `rollback` m/s.
+    pub fn new(start: [f64; 3], checkpoints: &[[f64; 3]], speeds: [f64; 3], rollback: f64) -> Self {
         let mut path = vec![start];
         path.extend_from_slice(checkpoints);
         let mut lengths = vec![0.0];
@@ -242,6 +252,7 @@ impl Payload {
             path,
             lengths,
             speeds,
+            rollback,
             distance: 0.0,
             best: 0.0,
             reached: 0,
@@ -323,7 +334,7 @@ impl Payload {
             }
         } else if presence.attackers == 0 && self.idle >= ROLLBACK_AFTER * scale {
             let floor = self.lengths[self.reached];
-            self.distance = (self.distance - ROLLBACK_SPEED / scale * seconds).max(floor);
+            self.distance = (self.distance - self.rollback / scale * seconds).max(floor);
         }
         None
     }
@@ -331,32 +342,35 @@ impl Payload {
 
 /// The Control point of a round (rules 55-58): it unlocks after 30 s,
 /// a team captures it (in the times 0EC2 gives, `mode_graph_values.rs`;
-/// any enemy on it blocks), and the owner's percentage rises 1% every
-/// 1.2 s to 100.
+/// any enemy on it blocks), and the owner's percentage rises at its
+/// scoring rate (1% every 1.2 s) to 100.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ControlPoint {
     pub area: Area,
     pub name: Option<String>,
     locked: f64,
     times: CaptureTimes,
+    /// None for Elimination's tiebreaker point, which only needs an owner.
+    scoring: Option<ControlScoring>,
     owner: Option<u8>,
     /// The team taking it and its progress, 0 to 1.
     taking: Option<(u8, f64)>,
     percent: [f64; 2],
 }
 
-/// Rule 57: 1% every 1.2 s.
-pub const CONTROL_SCORE_SECONDS: f64 = 1.2;
-/// Rule 27: overtime holds the owner at 99% while the other team contests.
-pub const CONTROL_OVERTIME_AT: f64 = 99.0;
-
 impl ControlPoint {
-    pub fn new(objective: &MapObjective, unlock: f64, times: CaptureTimes) -> Self {
+    pub fn new(
+        objective: &MapObjective,
+        unlock: f64,
+        times: CaptureTimes,
+        scoring: ControlScoring,
+    ) -> Self {
         Self {
             area: Area::point(objective),
             name: objective.name.clone(),
             locked: unlock,
             times,
+            scoring: Some(scoring),
             owner: None,
             taking: None,
             percent: [0.0; 2],
@@ -371,6 +385,7 @@ impl ControlPoint {
             name: None,
             locked: unlock,
             times: ELIMINATION_CAPTURE,
+            scoring: None,
             owner: None,
             taking: None,
             percent: [0.0; 2],
@@ -395,7 +410,7 @@ impl ControlPoint {
     }
 
     /// Whether the team that doesn't own it stands on it, which holds the
-    /// owner at 99% (overtime).
+    /// owner at the scoring's hold (99%, overtime).
     pub fn contested(&self, participants: &[Participant]) -> bool {
         let Some(owner) = self.owner else {
             return false;
@@ -439,11 +454,12 @@ impl ControlPoint {
             _ => {}
         }
         let owner = self.owner?;
+        let scoring = self.scoring?;
         let score = &mut self.percent[usize::from(owner)];
-        *score += seconds / (CONTROL_SCORE_SECONDS * scale);
+        *score += seconds * scoring.percent_per_second / scale;
         let held = on[usize::from(1 - owner)] > 0;
-        if held && *score >= CONTROL_OVERTIME_AT {
-            *score = CONTROL_OVERTIME_AT;
+        if held && *score >= scoring.hold_at {
+            *score = scoring.hold_at;
         }
         (*score >= 100.0).then(|| {
             *score = 100.0;
@@ -455,7 +471,16 @@ impl ControlPoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        match_flow::{CONTROL, ESCORT},
+        mode_rules_data::fixture,
+    };
     use orpheus_content::maps::ObjectiveKind;
+
+    /// The install's capture marks (`fixture` pins them to the data).
+    fn marks() -> [f64; 2] {
+        fixture(ESCORT).capture_marks
+    }
 
     const STEP: f64 = 1.0 / 60.0;
 
@@ -499,33 +524,40 @@ mod tests {
                 (3, expected[2]),
                 (6, expected[2]),
             ] {
-                let mut point = CapturePoint::new(&objective([0.0; 3]), times);
+                let mut point = CapturePoint::new(&objective([0.0; 3]), times, marks());
                 let took = run(60.0, || point.step(STEP, 1.0, on(attackers, 0))).unwrap();
                 assert!((took - seconds).abs() < 2.0 * STEP, "{attackers}: {took} s");
             }
         }
         // The time scale shortens it.
-        let mut point = CapturePoint::new(&objective([0.0; 3]), ASSAULT_FIRST);
+        let mut point = CapturePoint::new(&objective([0.0; 3]), ASSAULT_FIRST, marks());
         let took = run(60.0, || point.step(STEP, 0.1, on(1, 0))).unwrap();
         assert!((took - 3.0).abs() < 2.0 * STEP);
     }
 
     #[test]
-    fn a_contested_point_holds_and_an_empty_one_falls_back_to_its_tick() {
-        let mut point = CapturePoint::new(&objective([0.0; 3]), ASSAULT_FIRST);
+    fn a_contested_point_holds_and_an_empty_one_falls_back_to_its_mark() {
+        let mut point = CapturePoint::new(&objective([0.0; 3]), ASSAULT_FIRST, marks());
         run(12.0, || point.step(STEP, 1.0, on(1, 0)));
-        assert_eq!(point.ticks(), 1);
+        assert_eq!(point.mark(), marks()[0]);
         let held = point.progress();
         run(20.0, || point.step(STEP, 1.0, on(2, 1)));
         assert_eq!(point.progress(), held, "contested: no change");
         run(20.0, || point.step(STEP, 1.0, on(0, 0)));
-        assert!(
-            (point.progress() - 1.0 / 3.0).abs() < 1e-9,
-            "back to the first tick"
-        );
+        assert_eq!(point.progress(), marks()[0], "back to the first mark");
         run(20.0, || point.step(STEP, 1.0, on(0, 2)));
-        assert!((point.progress() - 1.0 / 3.0).abs() < 1e-9);
+        assert_eq!(point.progress(), marks()[0]);
         assert!(!point.captured());
+    }
+
+    /// The marks are the rules': with others, the point keeps those.
+    #[test]
+    fn a_point_falls_back_to_the_marks_it_is_given() {
+        let mut point = CapturePoint::new(&objective([0.0; 3]), ASSAULT_FIRST, [0.25, 0.75]);
+        run(10.0, || point.step(STEP, 1.0, on(1, 0)));
+        assert_eq!(point.mark(), 0.25);
+        run(30.0, || point.step(STEP, 1.0, on(0, 0)));
+        assert_eq!(point.progress(), 0.25);
     }
 
     #[test]
@@ -554,7 +586,13 @@ mod tests {
         assert_eq!(speeds, [1.7, 2.0, 2.25]);
         assert_eq!(payload_speeds("Route 66"), [1.4, 1.65, 1.85]);
         assert_eq!(payload_speeds("King's Row"), [1.55, 1.8, 2.05]);
-        let mut payload = Payload::new([0.0; 3], &[[20.0, 0.0, 0.0], [40.0, 0.0, 0.0]], speeds);
+        let rollback = fixture(ESCORT).rollback_speed;
+        let mut payload = Payload::new(
+            [0.0; 3],
+            &[[20.0, 0.0, 0.0], [40.0, 0.0, 0.0]],
+            speeds,
+            rollback,
+        );
         assert_eq!(payload.length(), 40.0);
         for (pushers, speed) in [(1, 1.7), (2, 2.0), (3, 2.25), (5, 2.25)] {
             let mut payload = payload.clone();
@@ -576,6 +614,10 @@ mod tests {
         assert_eq!(payload.distance(), pushed, "a defender stops it");
         run(9.0, || payload.step(STEP, 1.0, on(0, 0)).is_some());
         assert_eq!(payload.distance(), pushed, "no rollback before 10 s");
+        // Then 0.3 m/s (the rules' rollback speed).
+        run(2.0, || payload.step(STEP, 1.0, on(0, 0)).is_some());
+        let back = pushed - payload.distance();
+        assert!((back - rollback).abs() < 0.02, "{back}");
         run(60.0, || payload.step(STEP, 1.0, on(0, 0)).is_some());
         assert_eq!(payload.distance(), 20.0, "rolls back to the checkpoint");
         assert!(payload.best() > 20.0);
@@ -590,7 +632,8 @@ mod tests {
     #[test]
     fn control_unlocks_captures_scores_and_holds_at_99_while_contested() {
         let point_at = [0.0; 3];
-        let mut point = ControlPoint::new(&objective(point_at), 30.0, CONTROL_TIMES);
+        let control = fixture(CONTROL).control;
+        let mut point = ControlPoint::new(&objective(point_at), 30.0, CONTROL_TIMES, control);
         let blue = Participant {
             slot: 0,
             team: 0,
@@ -621,11 +664,38 @@ mod tests {
         assert_eq!(point.percent(1), 100.0);
     }
 
+    /// The score rate and the overtime hold are the rules'.
+    #[test]
+    fn control_scores_at_the_rate_and_holds_at_the_percentage_it_is_given() {
+        let scoring = ControlScoring {
+            percent_per_second: 2.0,
+            hold_at: 90.0,
+        };
+        let mut point = ControlPoint::new(&objective([0.0; 3]), 0.0, CONTROL_TIMES, scoring);
+        let blue = Participant {
+            slot: 0,
+            team: 0,
+            position: Some([0.0; 3]),
+        };
+        let red = Participant { team: 1, ..blue };
+        run(8.0 + STEP, || point.step(STEP, 1.0, &[blue]).is_some());
+        assert_eq!(point.owner(), Some(0));
+        run(10.0, || point.step(STEP, 1.0, &[blue]).is_some());
+        assert!(
+            (point.percent(0) - 20.0).abs() < 0.2,
+            "{}",
+            point.percent(0)
+        );
+        run(60.0, || point.step(STEP, 1.0, &[blue, red]).is_some());
+        assert_eq!(point.percent(0), 90.0);
+    }
+
     #[test]
     fn control_capture_time_follows_the_player_count() {
         let point_at = [0.0; 3];
         for (players, seconds) in [(1, 8.0), (2, 16.0 / 3.0), (3, 4.0), (4, 4.0)] {
-            let mut point = ControlPoint::new(&objective(point_at), 0.0, CONTROL_TIMES);
+            let control = fixture(CONTROL).control;
+            let mut point = ControlPoint::new(&objective(point_at), 0.0, CONTROL_TIMES, control);
             let team: Vec<_> = (0..players)
                 .map(|slot| Participant {
                     slot,

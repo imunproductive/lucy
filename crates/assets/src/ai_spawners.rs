@@ -284,7 +284,7 @@ fn body_values(asset: &Asset, entry: &mut Map<String, Value>) -> Result<(), Stri
 }
 
 /// The first component of a class in the entity's component map.
-fn component<'a>(asset: &'a Asset, class: &str) -> Option<&'a Object> {
+pub(crate) fn component<'a>(asset: &'a Asset, class: &str) -> Option<&'a Object> {
     let Some(Stu::Map(entries)) = asset.root()?.get("m_componentMap") else {
         return None;
     };
