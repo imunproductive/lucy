@@ -72,6 +72,11 @@ impl ProjectedSnapshot {
         self.instances.get(&instance)?.variables.values.get(&id)
     }
 
+    /// An entity variable as this projection sends it.
+    pub fn entity_variable(&self, id: u32) -> Option<&Value> {
+        self.variables.values.get(&id)
+    }
+
     /// This projection with `other`'s instance `id` added, its variables,
     /// states and events with it (the practice nameplate on an acknowledged
     /// baseline: server.py `_flush_bot_nameplates`).
