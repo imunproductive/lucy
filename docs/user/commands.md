@@ -65,6 +65,7 @@ The mode commands (`play`, `host`, `tournament`, `serve`, `server`, `join`, `joi
 | `--server <HOST:PORT>` | Address of the server to join, such as `1.2.3.4:3724` |
 | `--name <NAME>` | Your name on the server you join with the full menu |
 | `--timeout <SECONDS>` | Seconds to wait for the game to be ready for the relay. Default 30. |
+| `-- <ARGUMENTS>` | Everything after `--` goes to `Overwatch.exe` as it is, after the arguments `orpheus` passes itself. For example `orpheus play --game D:\Games\Overwatch -- --tank_Console`. Only the modes that start the game use them. |
 
 ## Modes
 

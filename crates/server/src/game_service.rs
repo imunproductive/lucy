@@ -1698,7 +1698,9 @@ impl State {
                     MessageKind::MapLoaded => {
                         loading.mark_loaded(now);
                     }
-                    MessageKind::GameMessage if room.world.is_some() => {
+                    MessageKind::GameMessage | MessageKind::CommunicationAction
+                        if room.world.is_some() =>
+                    {
                         world.queue_game_message(self.clock.frame(), now, message);
                     }
                     MessageKind::HeroSettings => {

@@ -963,25 +963,24 @@ pub struct WorldDelivery {
     /// Time the match flow adds to a death's respawn now (overtime,
     /// game-rules.md 11).
     respawn_extra: Duration,
-    /// The hero settings the player's client sent (21604); every body he
-    /// plays takes them. They are the client's, so a new world keeps them.
+    /// The hero settings the player's client last sent (21604); every body
+    /// he plays takes them. They are the client's, so a new world keeps them.
     hero_settings: HeroSettings,
 }
 
-/// The entity variables of the hero settings a body's graphs read
+/// The entity variables of the hero settings the client sends
 /// (`orpheus_content::hero_settings`): the setting identifier's index holds
-/// the chosen entry's identifier, or nothing for an entry without one
-/// (DEFAULT). A setting the client never sent stays unset.
+/// the chosen entry's identifier, or nothing (null) at DEFAULT, which the
+/// client sends as no entry.
 pub fn hero_setting_variables(settings: &HeroSettings, hero: u64) -> Variables {
     SCRIPT_SETTINGS
         .iter()
-        .filter_map(|&setting| {
-            let value = settings.value(hero, setting)?;
-            let value = match value {
-                0 => ScriptValue::Null,
-                value => ScriptValue::Asset(value),
+        .map(|&setting| {
+            let value = match settings.value(hero, setting) {
+                None | Some(0) => ScriptValue::Null,
+                Some(value) => ScriptValue::Asset(value),
             };
-            Some((setting as u32, value))
+            (setting as u32, value)
         })
         .collect()
 }
@@ -1959,6 +1958,10 @@ impl WorldDelivery {
         if !self.can_handle_game_message() {
             return Ok(());
         }
+        if message.id == crate::wheel::COMMUNICATION_ACTION {
+            self.communication_action(message);
+            return Ok(());
+        }
         let Some(message) = ClientGameMessage::read(message) else {
             return Ok(());
         };
@@ -2003,6 +2006,25 @@ impl WorldDelivery {
             _ => {}
         }
         Ok(())
+    }
+
+    /// A communication wheel choice (21608) runs on the current body as
+    /// game message `02A3` ([`crate::wheel`]; match.py
+    /// `communication_action` in leafall903/ORPHEUS); a failure stops the
+    /// body's script, as any other body message does.
+    fn communication_action(&mut self, message: &Message) {
+        let Some((selection, parameters)) = crate::wheel::selection(message) else {
+            return;
+        };
+        if !self.world_started() {
+            return;
+        }
+        let Some(script) = &mut self.body_script else {
+            return;
+        };
+        if let Err(error) = script.runtime.receive_message(selection, parameters) {
+            self.drop_failed_script(&error.to_string());
+        }
     }
 
     pub fn command_ack(&self, tick: u32) -> u32 {
@@ -2117,11 +2139,38 @@ impl WorldDelivery {
             })
     }
 
-    /// The client's hero settings (21604): kept for every body the player
-    /// plays from now on, and given to the current one at once, whose graphs
-    /// react to them (`01CF` st115/st116 watch ALLIED HEALTH BARS).
+    /// Tests: whether the client acknowledged an owner frame of the current
+    /// body in which state `state` of its instance of graph `graph` runs
+    /// (the owner stream's base), and the entity variable `variable` as
+    /// that frame left it.
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn body_delivered(&self, graph: u32, state: u16, variable: u32) -> (bool, ScriptValue) {
+        let Some((script, (_, base))) = self
+            .body_script
+            .as_ref()
+            .and_then(|script| Some((script, script.stream.base()?)))
+        else {
+            return (false, ScriptValue::Null);
+        };
+        let running = script.runtime.snapshot().is_some_and(|snapshot| {
+            snapshot
+                .instances
+                .iter()
+                .any(|(&id, instance)| instance.graph == graph && base.state(id, state).is_some())
+        });
+        let value = base
+            .entity_variable(variable)
+            .cloned()
+            .unwrap_or(ScriptValue::Null);
+        (running, value)
+    }
+
+    /// The client's hero settings (21604, the whole list): kept for every
+    /// body the player plays from now on, and given to the current one at
+    /// once, whose graphs react to them (`01CF` st115/st116 watch ALLIED
+    /// HEALTH BARS); a setting the list leaves out goes back to DEFAULT.
     pub fn update_hero_settings(&mut self, entries: &[HeroSetting]) {
-        self.hero_settings.update(entries);
+        self.hero_settings.replace(entries);
         let Some(body) = self.body else {
             return;
         };
@@ -2129,7 +2178,7 @@ impl WorldDelivery {
         let failure = self
             .body_script
             .as_mut()
-            .filter(|script| script.id == body.id && !variables.is_empty())
+            .filter(|script| script.id == body.id)
             .and_then(|script| script.runtime.set_hero_settings(&variables).err());
         if let Some(error) = failure {
             self.drop_failed_script(&error.to_string());
@@ -2960,7 +3009,7 @@ impl WorldDelivery {
             .and_then(|mut runtime| {
                 runtime.set_target_candidates(&self.target_candidates);
                 let settings = hero_setting_variables(&self.hero_settings, hero.guid);
-                if !settings.is_empty() {
+                if settings.values().any(|value| *value != ScriptValue::Null) {
                     runtime.set_hero_settings(&settings).ok()?;
                 }
                 Some(runtime)

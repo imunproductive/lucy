@@ -32,6 +32,7 @@ impl Machine {
                 resolved_bindings: IndexMap::new(),
                 diagnostics: Vec::new(),
                 assumptions: Vec::new(),
+                frame_actions: Vec::new(),
                 now_ms: frame_start(frame),
             },
             queues: Timeline::new(MAX_PENDING_EVENTS),

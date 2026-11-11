@@ -16,6 +16,7 @@ mod lifecycle;
 mod links;
 mod machine;
 mod nodes;
+mod play;
 mod state_kinds;
 mod switches;
 mod targets;
@@ -41,6 +42,7 @@ use crate::{
     graph::{Body, Graph, GraphStore, Node, asset_guid},
     timeline::{ButtonEdge, FRAME_MS, QueueFull, Timeline, button_edges, frame_start},
     vitals::PoolKind,
+    wheel,
     wire::{Value, Variables},
 };
 use orpheus_physics::mover::modifiers::{Modifier, ModifierKey, Operation};
@@ -401,6 +403,18 @@ pub trait World {
         None
     }
 
+    /// The asset a body has equipped in a communication wheel slot (zero for
+    /// an empty slot); None: unknown body.
+    fn equipped_cosmetic(
+        &self,
+        _site: Site,
+        _entity: u32,
+        _kind: crate::wheel::Cosmetic,
+        _slot: i64,
+    ) -> Option<u64> {
+        None
+    }
+
     /// Deliver a game message to another entity (`World.send_message` in
     /// `ow174/game/script/runtime.py`). The world owns delivery outside the
     /// current body; the receiving body takes it with
@@ -681,8 +695,30 @@ pub struct Snapshot {
     pub diagnostics: Vec<Diagnostic>,
     /// Unverified answers given so far, each site and class once.
     pub assumptions: Vec<Assumption>,
+    /// The communication wheel's networked actions that ran, oldest first,
+    /// the last [`MAX_FRAME_ACTIONS`].
+    pub frame_actions: Vec<FrameAction>,
     /// The component's clock when this snapshot was taken.
     pub now_ms: u64,
+}
+
+/// How many recent wheel actions a body keeps (upstream
+/// `MAX_WHEEL_CALLOUTS`, server delivery policy).
+pub const MAX_FRAME_ACTIONS: usize = 32;
+
+/// A networked action that ran on the server and goes to the clients in
+/// the remote message list of the body's frames (104319 A0CCA0; upstream
+/// `WheelCallout`): a callout (`STU_7106C356`) or an effect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameAction {
+    /// Counts up from 1 on this body.
+    pub serial: u32,
+    pub instance: u16,
+    /// The instance's creation time, so a reused id doesn't match.
+    pub instance_start_ms: u64,
+    /// The node's position in its graph.
+    pub node: u16,
+    pub time_ms: u64,
 }
 
 impl Snapshot {
