@@ -18,6 +18,7 @@ use orpheus_lobby::{
     progression::{self, Earned, MatchPlay},
     queue,
     ranked::{DAMAGE, Queue, SUPPORT, Season, TANK},
+    xp_table::XpTable,
 };
 
 use super::Room;
@@ -85,14 +86,19 @@ pub(super) fn recorded(
         .collect()
 }
 
-/// The match into the account's profile, saved as other profile changes
-/// are. `wall_time` is seconds since 1970; the day it falls on is the
+/// The match into the account's profile with the install's experience
+/// table, saved as other profile changes are. `wall_time` is seconds since 1970; the day it falls on is the
 /// lobby's (`clock::server_time`).
-pub(super) fn save(account: &Account, play: &MatchPlay, wall_time: u64) -> io::Result<Earned> {
+pub(super) fn save(
+    account: &Account,
+    play: &MatchPlay,
+    xp: &XpTable,
+    wall_time: u64,
+) -> io::Result<Earned> {
     account
         .edit_profile(|profile| {
             let now = server_time(&profile.server_date, wall_time)?;
-            progression::apply(profile, play, now).map(Some)
+            progression::apply(profile, play, now, xp).map(Some)
         })
         .map(Option::unwrap_or_default)
 }

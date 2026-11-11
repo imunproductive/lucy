@@ -719,6 +719,7 @@ impl Room {
             return;
         }
         let competitive = self.players.iter().any(|player| player.info.ranked);
+        let graph_values = scene.mode_graph_values();
         let rules = scene.mode_rules();
         // A PvP mode without a flow of its own (a brawl) keeps the
         // assemble phase and plays on like Skirmish.
@@ -727,10 +728,10 @@ impl Room {
                 mode_guid: orpheus_sim::match_flow::SKIRMISH,
                 ..self.map.clone()
             };
-            MatchFlow::new(&map, competitive, rules, timers)
+            MatchFlow::new(&map, competitive, graph_values, rules, timers)
         };
         let Some(mut flow) =
-            MatchFlow::new(&self.map, competitive, rules, timers).or_else(skirmish)
+            MatchFlow::new(&self.map, competitive, graph_values, rules, timers).or_else(skirmish)
         else {
             return;
         };

@@ -122,6 +122,7 @@ impl Fixture {
             ranked: Ranked::new(&templates).unwrap(),
             arcade: Arcade::load(data.join("arcade_cards_174.json"), &templates).unwrap(),
             celebrations: Celebrations::load(&data, &templates, Arc::clone(&economy)).unwrap(),
+            xp: orpheus_lobby::xp_table::XpTable::load(&data).unwrap(),
             templates,
             services: Arc::new(Services::new(&collection, economy)),
             collection,

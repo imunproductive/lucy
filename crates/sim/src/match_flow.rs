@@ -30,6 +30,7 @@ use orpheus_content::maps::{GameMap, ObjectiveKind, SpawnChoice};
 use orpheus_script::wire::{Value, Variables};
 
 use crate::{
+    mode_graph_values::ModeGraphValues,
     mode_rules_data::ModeRules,
     objectives::{
         ASSAULT_FIRST, ASSAULT_LAST, Area, CapturePoint, ControlPoint, HYBRID_POINT, POINT_ABOVE,
@@ -169,16 +170,12 @@ pub const ESCORT_TIME: f64 = 240.0;
 pub const CHECKPOINT_BONUS: [f64; 2] = [150.0, 90.0];
 /// Assumption: time added when Hybrid's point A falls, as Assault's B.
 pub const HYBRID_BONUS: f64 = 180.0;
-/// Phase 4 of 0F4A, 11.6 s (ow1-preservation `Assault flow on Anubis`).
-pub const ROUND_END: f64 = 11.6;
 /// Assumption: how long the match's end shows before the players go home.
 /// Neither POTG nor the cards are played; their length is unknown (rule 167).
 pub const MATCH_END: f64 = 20.0;
 /// Rule 95: the top 4 of a free-for-all get win credit.
 pub const DEATHMATCH_WINNERS: usize = 4;
-/// Rule 26 (mechanics probably Overwatch 1): the overtime fuse burns 5 s,
-/// 3 s after 20 s of overtime, 1.5 s after 30 s.
-pub const FUSE: [(f64, f64); 3] = [(0.0, 5.0), (20.0, 3.0), (30.0, 1.5)];
+
 /// Rule 11: overtime adds 3 s to a respawn (the notes favour the wiki's
 /// 3 s over the Jul 2016 patch's 2 s).
 pub const OVERTIME_RESPAWN: f64 = 3.0;
@@ -430,6 +427,9 @@ pub struct MatchFlow {
     /// The mode's timers and thresholds as the install has them.
     rules: ModeRules,
     timers: Timers,
+    /// The mode graphs' values: the wait after a round, the overtime fuse
+    /// and Control's capture times.
+    graph_values: ModeGraphValues,
     /// Competitive: both teams attack (sided modes); otherwise one round.
     competitive: bool,
     phase: Phase,
@@ -462,16 +462,24 @@ pub struct MatchFlow {
 }
 
 impl MatchFlow {
-    /// The flow of a map's mode by `rules` (the mode's); none for the modes
-    /// the server doesn't run a flow for (Practice Range, Arcade brawls), or
-    /// when the map lacks the objectives its mode plays for.
-    pub fn new(map: &GameMap, competitive: bool, rules: ModeRules, timers: Timers) -> Option<Self> {
+    /// The flow of a map's mode by the mode graphs' values and `rules` (the
+    /// mode's); none for the modes the server doesn't run a flow for
+    /// (Practice Range, Arcade brawls), or when the map lacks the
+    /// objectives its mode plays for.
+    pub fn new(
+        map: &GameMap,
+        competitive: bool,
+        graph_values: ModeGraphValues,
+        rules: ModeRules,
+        timers: Timers,
+    ) -> Option<Self> {
         let mode = Mode::of(map.mode_guid)?;
         let mut flow = Self {
             mode,
             map: map.clone(),
             rules,
             timers,
+            graph_values,
             competitive,
             phase: Phase::Waiting,
             left: 0.0,
@@ -747,6 +755,11 @@ impl MatchFlow {
         seconds * self.timers.scale
     }
 
+    /// A round's end, for as long as the mode's graph waits after a round.
+    fn enter_round_end(&mut self) {
+        self.enter(Phase::RoundEnd, self.graph_values.round_end(self.mode));
+    }
+
     fn enter(&mut self, phase: Phase, seconds: f64) {
         self.phase = phase;
         self.left = self.scaled(seconds);
@@ -800,6 +813,7 @@ impl MatchFlow {
             self.control = Some(ControlPoint::new(
                 stage,
                 self.scaled(self.rules.control_unlock),
+                self.graph_values.control_capture,
                 self.rules.control,
             ));
         }
@@ -992,13 +1006,8 @@ impl MatchFlow {
     /// the challengers) are on the objective. True when the fuse burned out.
     fn overtime_step(&mut self, seconds: f64, held: bool) {
         let scale = self.timers.scale;
-        let fuse_for = |elapsed: f64| {
-            FUSE.iter()
-                .rev()
-                .find(|(after, _)| elapsed >= after * scale)
-                .map_or(FUSE[0].1, |(_, fuse)| *fuse)
-                * scale
-        };
+        let fuse = self.graph_values.fuse;
+        let fuse_for = |elapsed: f64| fuse.seconds(elapsed / scale) * scale;
         match &mut self.overtime {
             None if held => {
                 self.overtime = Some(Overtime {
@@ -1047,7 +1056,7 @@ impl MatchFlow {
             return;
         }
         if !self.upcoming.is_empty() {
-            self.enter(Phase::RoundEnd, ROUND_END);
+            self.enter_round_end();
             return;
         }
         let score = |side: &SidedRound| side.result.unwrap_or((0, 0.0));
@@ -1083,7 +1092,7 @@ impl MatchFlow {
         };
         if let Some((by_team, first)) = banks {
             self.extra_rounds(by_team, first);
-            self.enter(Phase::RoundEnd, ROUND_END);
+            self.enter_round_end();
             return;
         }
         self.events.push(FlowEvent::RoundOver(winner));
@@ -1168,7 +1177,7 @@ impl MatchFlow {
             if i64::from(self.rounds_won[usize::from(team)]) >= self.rules.score_to_win {
                 self.decide(Some(team));
             } else {
-                self.enter(Phase::RoundEnd, ROUND_END);
+                self.enter_round_end();
             }
         }
     }
@@ -1211,7 +1220,7 @@ impl MatchFlow {
                 return;
             }
         }
-        self.enter(Phase::RoundEnd, ROUND_END);
+        self.enter_round_end();
     }
 
     fn decide_free_for_all(&mut self, participants: &[Participant]) {
@@ -1231,7 +1240,7 @@ impl MatchFlow {
             self.standings[slot] = Standing::Won;
         }
         self.events.push(FlowEvent::MatchOver);
-        self.enter(Phase::RoundEnd, ROUND_END);
+        self.enter_round_end();
     }
 
     /// The match is decided for the teams: a winner or a draw.
@@ -1244,7 +1253,7 @@ impl MatchFlow {
             })
             .collect();
         self.events.push(FlowEvent::MatchOver);
-        self.enter(Phase::RoundEnd, ROUND_END);
+        self.enter_round_end();
     }
 }
 

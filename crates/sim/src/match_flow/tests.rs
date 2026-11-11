@@ -7,6 +7,21 @@ const A: [f64; 3] = [100.0, 0.0, 0.0];
 const B: [f64; 3] = [200.0, 0.0, 0.0];
 const SPAWN: [f64; 3] = [0.0; 3];
 
+/// The mode graphs' values in 104319; `mode_graph_values` pins them to the
+/// install in a game-tier test.
+const VALUES: ModeGraphValues = ModeGraphValues {
+    sided_round_end: 11.6,
+    control_round_end: 10.9,
+    elimination_round_end: 2.3,
+    fuse: crate::mode_graph_values::Fuse {
+        full: 5.0,
+        steady: 15.0,
+        shortening: 15.0,
+        floor: 0.3,
+    },
+    control_capture: [8.0, 16.0 / 3.0, 4.0],
+};
+
 fn objective(
     kind: ObjectiveKind,
     order: u32,
@@ -42,9 +57,10 @@ fn assault() -> GameMap {
     )
 }
 
-/// The map's flow by its mode's rules as the install has them.
+/// The map's flow by the graph values and its mode's rules as the install
+/// has them.
 fn new_flow(map: &GameMap, competitive: bool, timers: Timers) -> Option<MatchFlow> {
-    MatchFlow::new(map, competitive, fixture(map.mode_guid), timers)
+    MatchFlow::new(map, competitive, VALUES, fixture(map.mode_guid), timers)
 }
 
 fn at(slot: usize, team: u8, position: [f64; 3]) -> Participant {
@@ -128,10 +144,11 @@ fn close(actual: f64, expected: f64) {
 
 #[test]
 fn modes_without_a_flow_or_their_objectives_get_none() {
-    assert!(new_flow(&GameMap::practice_range(), false, Timers::default()).is_none());
-    assert!(new_flow(&map(ASSAULT, Vec::new()), false, Timers::default()).is_none());
-    assert!(new_flow(&map(ESCORT, Vec::new()), false, Timers::default()).is_none());
-    assert!(new_flow(&map(CONTROL, Vec::new()), false, Timers::default()).is_none());
+    let none = |map: &GameMap| new_flow(map, false, Timers::default()).is_none();
+    assert!(none(&GameMap::practice_range()));
+    assert!(none(&map(ASSAULT, Vec::new())));
+    assert!(none(&map(ESCORT, Vec::new())));
+    assert!(none(&map(CONTROL, Vec::new())));
     let skirmish = new_flow(&map(SKIRMISH, Vec::new()), false, Timers::default()).unwrap();
     assert_eq!(skirmish.mode(), Mode::Skirmish);
     assert_eq!(Mode::of(ASSAULT_TEST), Some(Mode::Assault));
@@ -190,7 +207,10 @@ fn quick_play_assault_runs_its_phases_and_attackers_win_by_taking_a_and_b() {
     assert_eq!(run.flow.phase(), Phase::RoundEnd);
     assert_eq!(run.flow.standing(0, 1), Some(Standing::Won));
     assert_eq!(run.flow.standing(0, 0), Some(Standing::Lost));
-    close(run.phase(20.0, &three, Phase::MatchEnd), ROUND_END);
+    close(
+        run.phase(20.0, &three, Phase::MatchEnd),
+        VALUES.sided_round_end,
+    );
     let finished = run
         .until(30.0, &three, |event| *event == FlowEvent::Finished)
         .unwrap();
@@ -240,34 +260,39 @@ fn the_time_scale_shortens_every_timer_and_capture() {
     close(took, 3.0);
 }
 
+/// The fuse (0F4A): 5 s for the first 15 s of overtime, then it falls
+/// evenly to 1.5 s at 30 s. Before the graph was read the server burned
+/// 5 s, then 3 s after 20 s, then 1.5 s after 30 s.
 #[test]
 fn time_out_with_an_attacker_on_the_point_is_overtime_until_the_fuse_burns() {
-    let mut run = Run::new(new_flow(&assault(), false, Timers::default()).unwrap());
-    run.flow.start();
-    let away = [at(0, 1, SPAWN)];
-    run.phase(100.0, &away, Phase::Round);
-    // An attacker contested by a defender when time runs out.
-    let contested = [at(0, 1, A), at(1, 0, A)];
-    let overtime = run
-        .until(300.0, &contested, |event| {
-            *event == FlowEvent::Overtime(true)
-        })
-        .unwrap();
-    close(overtime, 240.0);
-    assert!(run.flow.in_overtime());
-    assert_eq!(run.flow.clock(), 0.0);
-    // Held as long as he stays.
-    assert!(run.until(25.0, &contested, |_| true).is_none());
-    // He leaves after 25 s of overtime: the fuse is 3 s (rule 26).
-    let ended = run
-        .until(10.0, &away, |event| *event == FlowEvent::MatchOver)
-        .unwrap();
-    close(ended, 3.0);
-    assert_eq!(
-        run.flow.standing(0, 0),
-        Some(Standing::Won),
-        "defenders hold"
-    );
+    for (held, fuse) in [(10.0, 5.0), (25.0, 8.0 / 3.0), (40.0, 1.5)] {
+        let mut run = Run::new(new_flow(&assault(), false, Timers::default()).unwrap());
+        run.flow.start();
+        let away = [at(0, 1, SPAWN)];
+        run.phase(100.0, &away, Phase::Round);
+        // An attacker contested by a defender when time runs out.
+        let contested = [at(0, 1, A), at(1, 0, A)];
+        let overtime = run
+            .until(300.0, &contested, |event| {
+                *event == FlowEvent::Overtime(true)
+            })
+            .unwrap();
+        close(overtime, 240.0);
+        assert!(run.flow.in_overtime());
+        assert_eq!(run.flow.clock(), 0.0);
+        // Held as long as he stays.
+        assert!(run.until(held, &contested, |_| true).is_none());
+        // He leaves: the fuse the overtime has reached burns.
+        let ended = run
+            .until(10.0, &away, |event| *event == FlowEvent::MatchOver)
+            .unwrap();
+        close(ended, fuse);
+        assert_eq!(
+            run.flow.standing(0, 0),
+            Some(Standing::Won),
+            "defenders hold"
+        );
+    }
 }
 
 #[test]
@@ -303,7 +328,10 @@ fn competitive_assault_swaps_sides_and_the_farther_attack_wins() {
     .unwrap();
     assert!(run.flow.standing(0, 0).is_none(), "not decided yet");
     // Hero select before the second round is 25 s (rule 2), then setup.
-    close(run.phase(20.0, &[], Phase::Assemble), ROUND_END);
+    close(
+        run.phase(20.0, &[], Phase::Assemble),
+        VALUES.sided_round_end,
+    );
     assert_eq!(run.flow.attackers(), Some(0));
     close(run.phase(30.0, &[], Phase::Setup), 25.0);
     run.phase(50.0, &[], Phase::Round);
@@ -447,7 +475,8 @@ fn control_is_best_of_three_on_the_stages_in_turn() {
         })
         .unwrap();
     assert!((took - 158.0).abs() < 0.5, "{took}");
-    run.phase(20.0, &[], Phase::Round);
+    // Control waits 10.9 s after a round (0EC2), not Assault's 11.6 s.
+    close(run.phase(20.0, &[], Phase::Round), VALUES.control_round_end);
     assert_eq!(
         run.flow.variables()[&OBJECTIVE_NAME],
         Value::String("B".into())
@@ -469,7 +498,7 @@ fn the_flow_plays_by_the_rules_it_is_given() {
     control_rules.control_unlock = 5.0;
     control_rules.control.percent_per_second = 10.0;
     control_rules.score_to_win = 1;
-    let flow = MatchFlow::new(&control(), false, control_rules, Timers::default());
+    let flow = MatchFlow::new(&control(), false, VALUES, control_rules, Timers::default());
     let mut run = Run::new(flow.unwrap());
     run.flow.start();
     close(run.phase(40.0, &[], Phase::Round), 10.0);
@@ -483,7 +512,7 @@ fn the_flow_plays_by_the_rules_it_is_given() {
 
     let mut assault_rules = fixture(ASSAULT);
     assault_rules.setup = 15.0;
-    let flow = MatchFlow::new(&assault(), false, assault_rules, Timers::default());
+    let flow = MatchFlow::new(&assault(), false, VALUES, assault_rules, Timers::default());
     let mut run = Run::new(flow.unwrap());
     run.flow.start();
     close(run.phase(40.0, &[], Phase::Setup), 30.0);
@@ -621,7 +650,11 @@ fn elimination_rounds_go_to_the_last_team_standing_first_to_three() {
         .unwrap();
         assert_eq!(run.flow.team_score(0), round + 1);
         if round < 2 {
-            close(run.phase(20.0, &alive, Phase::Assemble), ROUND_END);
+            // Elimination waits 2.3 s after a round (0D0B).
+            close(
+                run.phase(20.0, &alive, Phase::Assemble),
+                VALUES.elimination_round_end,
+            );
         }
     }
     assert_eq!(run.flow.standing(0, 0), Some(Standing::Won));

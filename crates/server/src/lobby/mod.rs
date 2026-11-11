@@ -33,6 +33,7 @@ use orpheus_lobby::{
     session::{LobbySession, LoginContent, LoginRequest},
     social::Social,
     templates::RetailTemplates,
+    xp_table::XpTable,
 };
 use orpheus_sim::scene_assets::{PreparedScene, SceneAssets};
 use orpheus_wire::{
@@ -67,6 +68,8 @@ pub(crate) struct Lobby {
     pub ranked: Ranked,
     pub arcade: Arcade,
     pub celebrations: Celebrations,
+    /// The install's match experience and level curve.
+    pub xp: XpTable,
     pub extra_preload: Vec<u64>,
     /// Shared with the threads that prepare match scenes.
     pub assets: Arc<SceneAssets>,

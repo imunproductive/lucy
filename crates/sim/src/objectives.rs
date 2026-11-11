@@ -113,8 +113,6 @@ pub const ASSAULT_FIRST: CaptureTimes = [30.0, 20.0, 15.0];
 pub const ASSAULT_LAST: CaptureTimes = [18.0, 12.0, 10.0];
 /// Rule 49: Hybrid point A, 32/21/15 s for its three ticks.
 pub const HYBRID_POINT: CaptureTimes = [32.0, 21.0, 15.0];
-/// Rule 56: Control, 8/5/4 s.
-pub const CONTROL_CAPTURE: CaptureTimes = [8.0, 5.0, 4.0];
 /// Rule 100: Elimination's tiebreaker point, 3 s (custom default).
 /// Assumption: the same with more players on it.
 pub const ELIMINATION_CAPTURE: CaptureTimes = [3.0; 3];
@@ -343,8 +341,9 @@ impl Payload {
 }
 
 /// The Control point of a round (rules 55-58): it unlocks after 30 s,
-/// a team captures it (8/5/4 s, any enemy on it blocks), and the owner's
-/// percentage rises at its scoring rate (1% every 1.2 s) to 100.
+/// a team captures it (in the times 0EC2 gives, `mode_graph_values.rs`;
+/// any enemy on it blocks), and the owner's percentage rises at its
+/// scoring rate (1% every 1.2 s) to 100.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ControlPoint {
     pub area: Area,
@@ -360,12 +359,17 @@ pub struct ControlPoint {
 }
 
 impl ControlPoint {
-    pub fn new(objective: &MapObjective, unlock: f64, scoring: ControlScoring) -> Self {
+    pub fn new(
+        objective: &MapObjective,
+        unlock: f64,
+        times: CaptureTimes,
+        scoring: ControlScoring,
+    ) -> Self {
         Self {
             area: Area::point(objective),
             name: objective.name.clone(),
             locked: unlock,
-            times: CONTROL_CAPTURE,
+            times,
             scoring: Some(scoring),
             owner: None,
             taking: None,
@@ -622,10 +626,14 @@ mod tests {
         assert!(payload.delivered());
     }
 
+    /// The capture times 0EC2 gives (`mode_graph_values.rs`).
+    const CONTROL_TIMES: CaptureTimes = [8.0, 16.0 / 3.0, 4.0];
+
     #[test]
     fn control_unlocks_captures_scores_and_holds_at_99_while_contested() {
         let point_at = [0.0; 3];
-        let mut point = ControlPoint::new(&objective(point_at), 30.0, fixture(CONTROL).control);
+        let control = fixture(CONTROL).control;
+        let mut point = ControlPoint::new(&objective(point_at), 30.0, CONTROL_TIMES, control);
         let blue = Participant {
             slot: 0,
             team: 0,
@@ -663,7 +671,7 @@ mod tests {
             percent_per_second: 2.0,
             hold_at: 90.0,
         };
-        let mut point = ControlPoint::new(&objective([0.0; 3]), 0.0, scoring);
+        let mut point = ControlPoint::new(&objective([0.0; 3]), 0.0, CONTROL_TIMES, scoring);
         let blue = Participant {
             slot: 0,
             team: 0,
@@ -680,5 +688,25 @@ mod tests {
         );
         run(60.0, || point.step(STEP, 1.0, &[blue, red]).is_some());
         assert_eq!(point.percent(0), 90.0);
+    }
+
+    #[test]
+    fn control_capture_time_follows_the_player_count() {
+        let point_at = [0.0; 3];
+        for (players, seconds) in [(1, 8.0), (2, 16.0 / 3.0), (3, 4.0), (4, 4.0)] {
+            let control = fixture(CONTROL).control;
+            let mut point = ControlPoint::new(&objective(point_at), 0.0, CONTROL_TIMES, control);
+            let team: Vec<_> = (0..players)
+                .map(|slot| Participant {
+                    slot,
+                    team: 0,
+                    position: Some(point_at),
+                })
+                .collect();
+            run(seconds - 0.1, || point.step(STEP, 1.0, &team).is_some());
+            assert_eq!(point.owner(), None, "{players} players");
+            run(0.2, || point.step(STEP, 1.0, &team).is_some());
+            assert_eq!(point.owner(), Some(0), "{players} players");
+        }
     }
 }

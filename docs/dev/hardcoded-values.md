@@ -12,15 +12,7 @@ When you replace a value, remove its row here or move it to the right section.
 
 ### Values the server has wrong
 
-| Item | Where | Code | Install |
-| --- | --- | --- | --- |
-| Control: capture time with 2 players | `sim/src/objectives.rs:118` | 5 s | 5.33 s. Graph `0EC2` uid 657 gives 0.125, 0.1875 and 0.25 per second for 1, 2 and 3 players. |
-| Control: wait after a round | `sim/src/match_flow.rs:178` | 11.6 s for every mode | 10.9 s for Control (`0EC2` uid 359). 11.6 s is right for Assault, Escort and Hybrid (`0F4A` uid 359). |
-| Overtime fuse | `sim/src/match_flow.rs:200` | 5 s, then 3 s after 20 s, then 1.5 s after 30 s | 5 s for the first 15 s of overtime, then it falls smoothly to 1.5 s at 30 s (`0F4A` uids 1090-1123, same in `0EC2`). |
-| Match XP | `lobby/src/progression.rs:50-63` | Community numbers: 4.01 a second, finish 250, win 500, medals 150/100/50 | `054/0008` `STUGenericSettings_XPGains`: 1.75 a second, finish 75, win 250, medals 75/50/25, first win of the day 1500. It also lists Backfill 200 and Consecutive Match 150, which the server does not give. |
-| Level XP curve | `lobby/src/progression.rs:74-80` | The launch table, 1500 to 19500, then 20000 | `054/0018` `m_88922C14`: 0, 0, 2000, 3500, 5000, then steps of 500 up to 20000. It is not confirmed which entry is which level. |
-
-The install's XP values are much lower than the community figures. Decide whether to use them as they are before you change the code.
+None left: the Control capture time, the round waits, the overtime fuse, match XP and the level curve are now read from the install.
 
 ### Values the server has right, but as copies in code
 
@@ -51,8 +43,8 @@ These look findable from the data alone, by comparing values across maps and mod
 | Time added per checkpoint, and the 240 s start | `sim/src/match_flow.rs:168-176` | +180, +150, +90 | `0F4A` uid 647 adds v10552 or v10553 of the current objective. The map's objective objects set these values (`0F4C` uids 5 and 6), so the real seconds are per map. |
 | Payload speed and pushers | `sim/src/objectives.rs:30,200-202` | 1.4 to 2.25 m/s by map; ×1, 1.165, 1.33 | `1225` uid 34: a base of 1.5 m/s and ×1, 1.167, 1.333 per pusher, capped at ×2. There is also a ±10% factor of unknown source. Per-map values may be overrides on the payload. |
 | Payload push radius | `sim/src/objectives.rs:23` | 5 m | `STUEscortComponent` has two radius pairs: 3.5 / 6.75 and 2.25 / 6.75. Which one is the push radius is unknown. |
-| Loot box odds | `lobby/src/lootbox.rs:60-61` | One set of odds for every box type | `054/011D` `STULootBoxRarityRules` has separate values per box type: 1/20, 1/40, 1/100 for the base box and 1/5, 1/12, 1/24 for event boxes. The fields are not decoded. |
-| Credit share in loot box slots | `lobby/src/lootbox.rs:70-75` | 5%, 5%, 50% | `m_currencyRarityRules` has 11/30, 13/42, 91/250. Not decoded. |
+| Loot box odds | `lobby/src/lootbox.rs:60-61` | One set of odds for every box type, fitted by Python to Blizzard's 2017 China disclosure (an epic about every 5.5 boxes, a legendary about every 13.5) | `054/011D` `STULootBoxRarityRules` gives each box type a fraction per rarity (rare, epic, legendary): base 1/20, 1/40, 1/100; the six event boxes 1/5, 1/12, 1/24; golden 1/8, 1/20, 2/30; legendary boxes 1/4, 1/6, 1/15. They are most likely chances, but no model (per item, per box, or rising each box without the rarity) gives both disclosed rates. `m_24391F9B` = 21 and `m_53B8C818` = 50 are the same on every box type; they might be bad-luck limits. The 1.74 client has no odds screen. Box contents were rolled on Blizzard's servers, so the client may never read these fields. Settling it needs IDA (code that reads the field hashes) or logs of many retail box openings. Report: `refs/reports/LootOdds.md` outside the repo. |
+| Credit share in loot box slots | `lobby/src/lootbox.rs:70-75` | 5%, 5%, 50% | Only the base box has `m_currencyRarityRules`: 11/30, 13/42, 91/250. A weak guess is the chance that a slot of that rarity gives credits (about 37%, 31%, 36%). Not confirmed. |
 | Level-up loot box | `lobby/src/progression.rs:82` | Box type 0 | `054/0018` `m_C84D463F` names unlock `03E1`. It is probably the standard box. |
 | Shop prices | `lobby/src/shop.rs` | From the captured shop catalog (see below) | `054/0018` `m_0C6A363E` prices by rarity: 25/75/250/1000 credits for normal items, 75/225/750/3000 for event items, 3000 for golden weapons. The install does not say which event items cost the event price. In the capture, most event items cost the normal price, and only some cost 3×. |
 
@@ -86,9 +78,9 @@ These were rules of Blizzard's servers, live-service data, or code inside the cl
 
 ## Suggested order
 
-1. Fix the five wrong values in section 1. For the XP tables, decide first whether to use the install's lower values.
+1. Done: the wrong values in section 1 are read from the install.
 2. Read the copies in section 1 from the data, and add the Arcade win loot boxes.
 3. Confirm the capture area and payload fields in section 2.
-4. Decode the loot box odds per box type.
+4. Loot box odds per box type: tried from the data alone (see the row above); settling them needs IDA or retail logs.
 
 Section 3 waits for reverse engineering of the client.

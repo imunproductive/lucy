@@ -22,6 +22,7 @@ use crate::{
     combat::{BodyCombat, MeleeState, RespawnTimes, melee_states},
     controller::Controller,
     hitboxes::HitboxCatalog,
+    mode_graph_values::ModeGraphValues,
     mode_rules_data::{ModeRules, ModeRulesData},
     notices::switch_notices,
     pools::PoolCatalog,
@@ -105,6 +106,8 @@ pub struct SceneAssets {
     hitboxes: Arc<HitboxCatalog>,
     respawns: RespawnTimes,
     melee: Arc<[MeleeState]>,
+    /// The mode graphs' values the match flow uses.
+    mode_graph_values: ModeGraphValues,
     /// The Biotic Field, when its graph reads; without it no field opens.
     field: Option<BioticField>,
     stats: Arc<StatsCatalog>,
@@ -144,6 +147,8 @@ pub struct PreparedScene {
     navigation: Option<Arc<Navigation>>,
     /// The rules of the mode's match flow.
     mode_rules: ModeRules,
+    /// The mode graphs' values the match flow uses.
+    mode_graph_values: ModeGraphValues,
 }
 
 impl SceneAssets {
@@ -184,6 +189,7 @@ impl SceneAssets {
             building: Mutex::new(()),
             mode_props: read_mode_props(&data.join("collision_props_174.json"))?,
             melee: melee_states(&graphs)?.into(),
+            mode_graph_values: ModeGraphValues::read(&graphs)?,
             field,
             graphs,
             codecs,
@@ -348,6 +354,7 @@ impl SceneAssets {
             switch_notices: switch_notices(self.modes.get(map_mode)),
             navigation,
             mode_rules,
+            mode_graph_values: self.mode_graph_values,
         };
         let mut factories = self
             .owner_bodies
@@ -559,6 +566,12 @@ impl PreparedScene {
     /// The statescript graphs, for runs outside the scene (the mode graph).
     pub fn shared_graphs(&self) -> Arc<GraphStore> {
         Arc::clone(&self.graphs)
+    }
+
+    /// The mode graphs' values the match flow uses (the wait after a
+    /// round, the overtime fuse, Control's capture times).
+    pub fn mode_graph_values(&self) -> ModeGraphValues {
+        self.mode_graph_values
     }
 
     pub fn bots(&self) -> &[Bot] {
