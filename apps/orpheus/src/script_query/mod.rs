@@ -33,7 +33,7 @@ which graphs a hero or a mode runs, what a graph's nodes do, who reads and write
 where a node class is used.
 
     orpheus script query graphs --hero soldier
-    orpheus script query show 0255 --state 1 --depth 1
+    orpheus script query show 0255 --state-index 1 --depth 1
     orpheus script query var 699 --graph 0255
     orpheus script query class MovementMod
     orpheus script query find \"hero select\"
@@ -84,9 +84,10 @@ pub enum QueryCommand {
     Show {
         /// Graph index (hex) or GUID.
         graph: String,
-        /// Start at this m_states index.
+        /// Start at this m_states index (ssq.py `--state`; here `--state`
+        /// is the state folder).
         #[arg(long, allow_negative_numbers = true)]
-        state: Option<i64>,
+        state_index: Option<i64>,
         /// Follow links this deep.
         #[arg(long, allow_negative_numbers = true)]
         depth: Option<i64>,
@@ -150,9 +151,9 @@ impl Query {
             }
             QueryCommand::Show {
                 graph,
-                state,
+                state_index,
                 depth,
-            } => self.show(graph, *state, *depth),
+            } => self.show(graph, *state_index, *depth),
             QueryCommand::Var { var, graph } => self.var(var, graph.as_deref()),
             QueryCommand::Class { name } => self.class(name),
             QueryCommand::Find { text, limit } => self.find(text, *limit),

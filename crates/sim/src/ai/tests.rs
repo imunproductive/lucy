@@ -2,7 +2,7 @@ use std::{io, sync::Arc};
 
 use orpheus_content::{
     heroes::SOLDIER,
-    maps::{MapCatalog, ObjectiveKind},
+    maps::{MapCatalog, ObjectiveKind, SpawnChoice},
 };
 use serde_json::{Value, json};
 
@@ -581,7 +581,9 @@ fn an_attacker_walks_from_the_anubis_spawn_to_point_a() {
     let sight = |from, to| scene.line_of_sight(from, to);
     let paths = unlimited();
     for gap in [1, 40] {
-        let mut mover = scene.player_spawn_mover(body, 1, 0).unwrap();
+        let mut mover = scene
+            .player_spawn_mover(body, 1, 0, SpawnChoice::First)
+            .unwrap();
         let spawn = mover.pose().position;
         let mut ai = AiController::new(Difficulty::Easy, 0, 6, 1);
         let mut frame = 0;

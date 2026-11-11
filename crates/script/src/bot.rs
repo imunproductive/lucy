@@ -70,6 +70,12 @@ impl World for BotWorld {
         self.unknowns
     }
 
+    fn assumption(&self, class: &str) -> Option<&'static str> {
+        // As `PlayerWorld`: the tunable's authored value, not scaled for the
+        // entity.
+        (class == "STU_082FA44E").then_some("the tunable's authored value")
+    }
+
     fn ruleset(&mut self, id: u32) -> Option<Value> {
         self.graphs.rulesets().default(id, self.hero, self.mode)
     }
@@ -127,8 +133,14 @@ impl World for BotWorld {
                 }
             }
         }
-        (class == "STU_A3DEF368" && self.graphs.mode_variables(self.mode).is_some())
-            .then_some(Value::Entity(GAME_MODE_ENTITY))
+        match class {
+            "STU_A3DEF368" if self.graphs.mode_variables(self.mode).is_some() => {
+                Some(Value::Entity(GAME_MODE_ENTITY))
+            }
+            // See `assumption`.
+            "STU_082FA44E" => self.graphs.tunables().value(config).map(Value::Float),
+            _ => None,
+        }
     }
 }
 

@@ -2100,11 +2100,22 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
 fn practice_players<const N: usize>(
     players: [(&str, u8, &str); N],
 ) -> (GameService, Arc<Schemas>, [Watcher; N], [[f64; 3]; N]) {
-    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
-    use orpheus_sim::scene_assets::SceneAssets;
+    let assets =
+        orpheus_sim::scene_assets::SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    practice_world(players, &assets, |_| {})
+}
 
-    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+/// [`practice_players`] with these assets, and `arrange` changing the
+/// prepared scene first.
+fn practice_world<const N: usize>(
+    players: [(&str, u8, &str); N],
+    assets: &orpheus_sim::scene_assets::SceneAssets,
+    arrange: impl FnOnce(&mut orpheus_sim::scene_assets::PreparedScene),
+) -> (GameService, Arc<Schemas>, [Watcher; N], [[f64; 3]; N]) {
+    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
+
+    let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
+    arrange(&mut scene);
     let heroes = players.map(|(_, _, name)| assets.heroes().find_hero(name).unwrap().guid);
     // match.py Player.spawn: the n-th player of a team.
     let spawns = std::array::from_fn(|slot| {
@@ -2339,6 +2350,201 @@ fn another_client_sees_a_players_helix_rocket() {
     }
     assert!(
         shooter
+            .find(0, |record| seen(record.entity)
+                || !record.launches.is_empty())
+            .is_none()
+    );
+    server.stop().unwrap();
+}
+
+/// Tracer's Pulse Bomb (graph `0034` state 0; no Python reference): thrown
+/// level at a training bot 3.3 m ahead, it falls on its arc onto the bot
+/// and sticks (5 damage), and a second later explodes and kills it. The
+/// other client sees the bomb as the room's first SEEN entity of definition
+/// 0045, started by the shot record in Tracer's channel 2 and destroyed
+/// with the explosion's release once it went off; Tracer's own client gets
+/// the confirmation of the bomb she shot under her lease and its release
+/// after the explosion, and none of the other client's copy. Her graphs
+/// still reach content the debug VM refuses, so her body tolerates it as
+/// release builds do, and her ultimate fills in a second.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene"]
+fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_it() {
+    use orpheus_script::vm::Unknowns;
+    use orpheus_sim::{
+        projectiles::{SEEN_FIRST, SEEN_SPAN},
+        scene_assets::SceneAssets,
+    };
+    const PULSE_BOMB: u32 = 0x0045;
+    /// Q, the ultimate's button.
+    const ULTIMATE: u32 = 0x20;
+    const AHEAD: f64 = 3.3;
+
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(Unknowns::Tolerate);
+    assets.set_ult_seconds(1.0);
+    let mut aim = None;
+    let (mut server, schemas, [mut tracer, mut viewer], _) = practice_world(
+        [
+            ("tracer#1111", 0, "Tracer"),
+            ("viewer#2222", 0, "Soldier: 76"),
+        ],
+        &assets,
+        |scene| {
+            // A hostile training bot that neither fires nor walks, ahead of
+            // her spawn along its facing.
+            let ([x, y, z], yaw) = scene.map().spawn_point(0, 0).unwrap();
+            let (sin, cos) = yaw.to_radians().sin_cos();
+            let bot = scene
+                .bots_mut()
+                .iter_mut()
+                .find(|bot| bot.spawn.team == 1 && !bot.spawn.firing && bot.spawn.route.is_empty())
+                .unwrap();
+            bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
+            aim = Some((bot.entity, (yaw * 65536.0 / 360.0).round() as i32 as i16));
+        },
+    );
+    let (bot, yaw) = aim.unwrap();
+    let tracer_body = tracer.owner | 1;
+    let seen = |entity: u32| (SEEN_FIRST..SEEN_FIRST + SEEN_SPAN).contains(&entity);
+    let messages_of = |watcher: &Watcher, id: u32| -> Vec<(usize, Fields)> {
+        watcher
+            .datagrams
+            .iter()
+            .enumerate()
+            .flat_map(|(index, (messages, _))| {
+                messages
+                    .iter()
+                    .filter(move |message| message.id == id)
+                    .map(move |message| (index, message.fields.clone()))
+            })
+            .collect()
+    };
+    // Tracer faces the bot; her commands keep her script running.
+    let mut next = tracer.tick + 1;
+    let mut command = |tracer: &mut Watcher, buttons: u32| {
+        let count = if buttons == 0 { 16 } else { 1 };
+        if buttons != 0 || next <= tracer.tick + 8 {
+            tracer
+                .client
+                .send(ACK, command_batch(next, count, yaw, buttons, false));
+            next += u32::from(count);
+        }
+    };
+    let charged = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < charged {
+        command(&mut tracer, 0);
+        tracer.pump(&schemas);
+        viewer.pump(&schemas);
+    }
+    let thrown = (tracer.datagrams.len(), viewer.datagrams.len());
+    command(&mut tracer, ULTIMATE);
+    let released = |watcher: &Watcher, entity: &dyn Fn(u32) -> bool| {
+        watcher
+            .find(0, |record| {
+                entity(record.entity)
+                    && record.operation == Some(3)
+                    && record.projectile_release.is_some()
+            })
+            .is_some()
+    };
+    let bomb = |entity: u32| entity & 0xf000_0000 == 0xa000_0000 && !seen(entity);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while messages_of(&tracer, 25005).is_empty()
+        || !released(&viewer, &seen)
+        || !released(&tracer, &bomb)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "waiting for the Pulse Bomb: hits {:?}",
+            messages_of(&tracer, 25001)
+        );
+        command(&mut tracer, 0);
+        tracer.pump(&schemas);
+        viewer.pump(&schemas);
+    }
+
+    // Her hits on the bot: the stick, then the explosion a second later.
+    let hits: Vec<(u64, Value, Value)> = messages_of(&tracer, 25001)
+        .into_iter()
+        .filter(|(index, _)| *index >= thrown.0)
+        .map(|(_, fields)| {
+            let Value::Unsigned(frame) = fields[&0x84] else {
+                panic!("impact frame")
+            };
+            let Value::Struct(impact) = &fields[&0x78] else {
+                panic!("hit body")
+            };
+            let Value::Struct(target) = &impact[&0] else {
+                panic!("hit target")
+            };
+            (frame, target[&0].clone(), impact[&4].clone())
+        })
+        .collect();
+    let target = Value::Unsigned(u64::from(bot));
+    assert_eq!(
+        hits.iter()
+            .map(|(_, target, amount)| (target.clone(), amount.clone()))
+            .collect::<Vec<_>>(),
+        [
+            (target.clone(), Value::Unsigned(5)),
+            (target.clone(), Value::Unsigned(195))
+        ],
+        "{hits:?}"
+    );
+    // STICK_FUSE: 1 s, 62.5 ticks of 16 ms.
+    let fuse = hits[1].0 - hits[0].0;
+    assert!((62..=63).contains(&fuse), "fuse of {fuse} ticks");
+    let (_, notice) = messages_of(&tracer, 25005).remove(0);
+    assert_eq!(notice[&0x84], Value::Struct(Fields::from([(0, target)])));
+    let exploded = hits[1].0 as u32;
+
+    // The other client's copy.
+    let created = viewer
+        .find(thrown.1, |record| seen(record.entity) && record.is_create())
+        .expect("the bomb's create");
+    let create = viewer.datagrams[created]
+        .1
+        .iter()
+        .find(|record| seen(record.entity) && record.is_create())
+        .unwrap();
+    assert_eq!(
+        (create.entity, create.definition),
+        (SEEN_FIRST, Some(PULSE_BOMB))
+    );
+    let launched = viewer
+        .find(created, |record| {
+            record.entity == tracer_body && record.launches == [SEEN_FIRST]
+        })
+        .expect("the shot record");
+    let destroyed = viewer
+        .find(launched, |record| {
+            record.entity == SEEN_FIRST && record.operation == Some(3)
+        })
+        .unwrap();
+    assert!(viewer.ticks[destroyed] >= exploded);
+    assert!(
+        viewer.datagrams[destroyed]
+            .1
+            .iter()
+            .any(|record| record.entity == SEEN_FIRST && record.projectile_release.is_some()),
+        "the bomb that went off is released"
+    );
+
+    // Her own bomb: confirmed, then released after the explosion.
+    let confirmed = tracer
+        .find(thrown.0, |record| {
+            bomb(record.entity) && record.definition == Some(PULSE_BOMB)
+        })
+        .expect("the bomb's confirmation");
+    let release = tracer
+        .find(confirmed, |record| {
+            bomb(record.entity) && record.projectile_release.is_some()
+        })
+        .unwrap();
+    assert!(tracer.ticks[release] >= exploded);
+    assert!(
+        tracer
             .find(0, |record| seen(record.entity)
                 || !record.launches.is_empty())
             .is_none()
@@ -3293,6 +3499,199 @@ fn a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
     assert_eq!(
         (me.slot, me.name.as_str(), me.team, me.finished),
         (0, "player#1111", 0, true)
+    );
+    server.stop().unwrap();
+}
+
+/// A Competitive Assault match on Temple of Anubis plays both sides on a
+/// time scale of 1/50 (orpheus_sim::match_flow): team 1 attacks first and
+/// takes A, then time runs out on B; before the second side hero select
+/// reopens and both players get a new body in their new side's spawn room
+/// (team 0 now in the attackers' room, team 1 in the defenders'), where
+/// team 0 takes A too. Equal progress: a draw for both (rules 63-64).
+///
+/// A stands in the attackers' first room and B in the defenders' room, so
+/// each attacker captures A where he spawns and no one can reach B: the
+/// test client plays no movement. Team 0 can only take A if the side swap
+/// moved him.
+#[test]
+#[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR); builds Anubis' collision once"]
+fn a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
+    use orpheus_content::{
+        heroes::SOLDIER,
+        maps::{MapCatalog, ObjectiveKind, SpawnChoice},
+        parameters::PICK_HERO,
+    };
+    use orpheus_sim::{match_flow::ASSAULT, scene_assets::SceneAssets};
+
+    const ANUBIS: u64 = 0x0800_0000_0000_005b;
+    const SCALE: f64 = 0.02;
+
+    let runtime = orpheus_testkit::runtime_dir();
+    let assets = Arc::new(
+        SceneAssets::load(&runtime)
+            .unwrap()
+            .with_collision_build(collision_build(orpheus_testkit::game_dir())),
+    );
+    let catalog = MapCatalog::load(runtime.join("data")).unwrap();
+    let mut map = catalog
+        .game_map(ANUBIS, ASSAULT, "Assault", false, &[6, 6])
+        .expect("Temple of Anubis in Assault");
+    let room = |attack| SpawnChoice::Objective {
+        objective: 0,
+        attack,
+    };
+    let (attack_spawn, _) = map.spawn_point_in(0, 0, room(true)).unwrap();
+    let (defense_spawn, _) = map.spawn_point_in(1, 0, room(false)).unwrap();
+    // The rooms of a side are the same whichever team plays it.
+    assert_eq!(
+        map.spawn_point_in(1, 0, room(true)).unwrap().0,
+        attack_spawn
+    );
+    assert_eq!(map.spawn_point(1, 0).unwrap().0, attack_spawn);
+    assert_eq!(map.spawn_point(0, 0).unwrap().0, defense_spawn);
+    for objective in &mut map.objectives {
+        if objective.kind == ObjectiveKind::Point {
+            objective.position = if objective.order == 0 {
+                attack_spawn
+            } else {
+                defense_spawn
+            };
+        }
+    }
+
+    let schemas = Arc::new(Schemas::game());
+    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    server
+        .set_match_timers(orpheus_sim::match_flow::Timers { scale: SCALE })
+        .unwrap();
+    let player = |tag: &str, team, account| WorldPlayer {
+        player: MatchPlayer {
+            name: tag.into(),
+            team,
+            tournament: false,
+            ranked: true,
+        },
+        card: PlayerCard {
+            account: [account, 0x0100_0000_0000_0000],
+            battle_tag: tag.into(),
+            record: Fields::from([(0x40, Value::String(tag.into()))]),
+            ..PlayerCard::default()
+        },
+        hero: 0,
+    };
+    let prepare = {
+        let (assets, map) = (Arc::clone(&assets), map.clone());
+        Box::new(move || assets.prepare(map))
+    };
+    let tickets = server
+        .open_world(
+            MATCH,
+            map.clone(),
+            vec![player("blue#1111", 0, 7), player("red#2222", 1, 8)],
+            None,
+            prepare,
+        )
+        .unwrap();
+    let mut watchers: Vec<_> = tickets
+        .iter()
+        .enumerate()
+        .map(|(slot, ticket)| {
+            let mut client = Client::new(server.local_addr(), ticket);
+            client.handshake();
+            Watcher {
+                client,
+                owner: player_entity(slot),
+                tick: 0,
+                sequences: HashSet::new(),
+                datagrams: Vec::new(),
+                ticks: Vec::new(),
+            }
+        })
+        .collect();
+    let [blue, red] = &mut watchers[..] else {
+        unreachable!()
+    };
+    let received = |watcher: &Watcher, id: u32| {
+        watcher
+            .datagrams
+            .iter()
+            .position(|(messages, _)| messages.iter().any(|message| message.id == id))
+    };
+    pump_until(&mut [blue, red], &schemas, "the instances", |watchers| {
+        watchers
+            .iter()
+            .all(|watcher| received(watcher, 20300).is_some())
+    });
+    for watcher in [&mut *blue, &mut *red] {
+        let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+        let mut payload = BitWriter::new();
+        write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+        watcher.client.send(ACK, payload.into_bytes());
+    }
+    pump_within(
+        &mut [blue, red],
+        &schemas,
+        "the players in the world",
+        Duration::from_secs(900),
+        |watchers| {
+            watchers.iter().all(|watcher| {
+                watcher.created(GAME_MODE_ENTITY).is_some()
+                    && watcher
+                        .find(0, |record| {
+                            record.entity == watcher.owner && record.script.is_some()
+                        })
+                        .is_some()
+            })
+        },
+    );
+    for watcher in [&mut *blue, &mut *red] {
+        let owner = watcher.owner;
+        send_player_message(
+            &mut watcher.client,
+            &schemas,
+            owner,
+            1,
+            PICK_HERO,
+            SOLDIER.to_le_bytes().to_vec(),
+        );
+    }
+    pump_until(&mut [blue, red], &schemas, "the bodies", |watchers| {
+        watchers
+            .iter()
+            .all(|watcher| watcher.created(watcher.owner | 1).is_some())
+    });
+    // Per side: 0.5-0.6 s of hero select, 0.9 s of setup, 7.8 s of round
+    // (A in 0.6 s adds 3.6 s), 0.23 s of round end; then 0.4 s of match end.
+    pump_within(
+        &mut [blue, red],
+        &schemas,
+        "the end of the match",
+        Duration::from_secs(120),
+        |watchers| {
+            watchers
+                .iter()
+                .all(|watcher| received(watcher, 20304).is_some())
+        },
+    );
+    // The second side's bodies, in the swapped rooms.
+    for watcher in [&*blue, &*red] {
+        assert!(
+            watcher.created(watcher.owner | 2).is_some(),
+            "{:08X}: a new body for the second side",
+            watcher.owner
+        );
+    }
+    let results = server.take_results().unwrap();
+    assert_eq!(results.len(), 1);
+    let outcomes: Vec<_> = results[0]
+        .players
+        .iter()
+        .map(|player| (player.team, player.outcome, player.finished))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [(0, Outcome::Draw, true), (1, Outcome::Draw, true)]
     );
     server.stop().unwrap();
 }

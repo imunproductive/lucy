@@ -1,8 +1,13 @@
-//! Server-side straight projectile flight and splash for build 104319.
+//! Server-side projectile flight and splash for build 104319.
 //!
 //! Uses the swept target capsules and map ray from the match. Damage and
 //! network delivery are separate so a predicted alias never hits twice.
-//! The reference is ow174/game/combat.py.
+//! The reference is ow174/game/combat.py (`_fly`), which flew every
+//! projectile straight and ended it where it hit. Beyond it (no reference;
+//! the values are the volley's, see [`ProjectileBallistics`]): a projectile
+//! with gravity flies an arc, swept as one straight chord a tick at most,
+//! and one that sticks stays on the body or surface it hit, moving with the
+//! body, until its fuse ends and it explodes there.
 
 use crate::hitscan::{Impact, TargetPose};
 use orpheus_core::tick::TICK_PERIOD;
@@ -15,18 +20,40 @@ use orpheus_script::weapons::ProjectileBallistics;
 pub struct ProjectileFlight {
     ballistics: ProjectileBallistics,
     position: Vec3,
+    /// The launch direction (a unit vector).
     direction: Vec3,
+    /// The downward speed gravity added so far, m/s.
+    fall: f64,
     remaining: f64,
     travelled: f64,
     last_tick: Option<u32>,
+    stuck: Option<Stuck>,
     ended: bool,
+}
+
+/// A projectile that stuck: to a body (`entity`) at `offset` from its feet,
+/// or where it hit a surface; and the seconds its fuse has left.
+#[derive(Clone, Copy, Debug)]
+struct Stuck {
+    entity: Option<u32>,
+    offset: Vec3,
+    fuse: f64,
+}
+
+/// One advance: the damage it did (the direct hit of a projectile that
+/// stuck, or the direct hit and explosion of one that ended), and whether
+/// it ended.
+#[derive(Debug, Default, PartialEq)]
+pub struct FlightStep {
+    pub impacts: Vec<Impact>,
+    pub end: Option<FlightEnd>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct FlightEnd {
     pub point: Vec3,
+    /// Seconds from the launch to the end, a fuse included.
     pub travelled: f64,
-    pub impacts: Vec<Impact>,
 }
 
 impl ProjectileFlight {
@@ -41,6 +68,10 @@ impl ProjectileFlight {
             || !ballistics.lifetime.is_finite()
             || ballistics.lifetime <= 0.0
             || !(ballistics.speed * ballistics.lifetime).is_finite()
+            || !ballistics.gravity.is_finite()
+            || ballistics
+                .fuse
+                .is_some_and(|fuse| !fuse.is_finite() || fuse < 0.0)
             || !position.into_iter().chain(direction).all(f64::is_finite)
             || (direction.iter().map(|value| value * value).sum::<f64>() - 1.0).abs() > 1e-6
         {
@@ -51,62 +82,115 @@ impl ProjectileFlight {
             ballistics,
             position,
             direction,
+            fall: 0.0,
             travelled: 0.0,
             last_tick: fired_at,
+            stuck: None,
             ended: false,
         })
     }
 
     /// Advance the elapsed portion of a tick, even when it ends inside the
-    /// tick due to range or lifetime. Static geometry wins only a closer hit.
+    /// tick due to range, lifetime or fuse. Static geometry wins only a
+    /// closer hit.
     pub fn advance(
         &mut self,
         tick: u32,
         targets: &[(u32, TargetPose)],
-        wall: impl FnOnce(Vec3, Vec3, f64) -> Result<Option<f64>, IndexError>,
-    ) -> Result<Option<FlightEnd>, IndexError> {
+        mut wall: impl FnMut(Vec3, Vec3, f64) -> Result<Option<f64>, IndexError>,
+    ) -> Result<FlightStep, IndexError> {
+        let mut step = FlightStep::default();
         if self.ended {
-            return Ok(None);
+            return Ok(step);
         }
         let elapsed = self.last_tick.map_or(1, |last| tick.saturating_sub(last));
         if elapsed == 0 {
-            return Ok(None);
-        }
-        let duration = (f64::from(elapsed) * TICK_PERIOD.as_secs_f64()).min(self.remaining);
-        let reach = self.ballistics.speed * duration;
-        let mut closest = None;
-        for &(entity, target) in targets {
-            let [a, b] = target.segment();
-            if let Some(distance) =
-                capsule_entry_distance(self.position, self.direction, reach, a, b, target.radius)
-            {
-                if closest.is_none_or(|(best, _)| distance < best) {
-                    closest = Some((distance, Some(entity)));
-                }
-            }
-        }
-        if let Some(distance) = wall(self.position, self.direction, reach)?
-            .filter(|distance| (0.0..=reach).contains(distance))
-        {
-            if closest.is_none_or(|(best, _)| distance < best) {
-                closest = Some((distance, None));
-            }
+            return Ok(step);
         }
         self.last_tick = Some(tick);
-        let Some((distance, target)) = closest else {
-            self.move_forward(reach);
-            self.travelled += duration;
-            self.remaining -= duration;
-            return Ok((self.remaining <= 0.0).then(|| self.finish(Vec::new())));
+        let mut time = f64::from(elapsed) * TICK_PERIOD.as_secs_f64();
+        if self.stuck.is_none() {
+            time = self.fly(time, targets, &mut wall, &mut step)?;
+        }
+        if self.stuck.is_some() && step.end.is_none() {
+            self.hold(time, targets, &mut step);
+        }
+        Ok(step)
+    }
+
+    /// Fly up to `time` seconds; what is left of them once it stuck.
+    fn fly(
+        &mut self,
+        time: f64,
+        targets: &[(u32, TargetPose)],
+        wall: &mut impl FnMut(Vec3, Vec3, f64) -> Result<Option<f64>, IndexError>,
+        step: &mut FlightStep,
+    ) -> Result<f64, IndexError> {
+        let duration = time.min(self.remaining);
+        let (speed, gravity) = (self.ballistics.speed, self.ballistics.gravity);
+        // A straight flight sweeps the whole duration at once (combat.py
+        // `_fly`); an arc a chord of at most one tick at a time.
+        let pieces = if gravity == 0.0 {
+            1
+        } else {
+            (duration / TICK_PERIOD.as_secs_f64()).ceil().max(1.0) as u32
         };
-        self.move_forward(distance);
-        self.travelled += distance / self.ballistics.speed;
-        let mut impacts = Vec::new();
+        let piece = duration / f64::from(pieces);
+        let mut flown = 0.0;
+        for _ in 0..pieces {
+            let (direction, reach) = if gravity == 0.0 {
+                (self.direction, speed * piece)
+            } else {
+                let mut chord = self.direction.map(|part| part * speed * piece);
+                chord[1] -= (self.fall + 0.5 * gravity * piece) * piece;
+                let length = chord.iter().map(|part| part * part).sum::<f64>().sqrt();
+                (
+                    chord.map(|part| part / length.max(f64::MIN_POSITIVE)),
+                    length,
+                )
+            };
+            let hit = if reach > 0.0 {
+                closest(self.position, direction, reach, targets, wall)?
+            } else {
+                None
+            };
+            let (distance, seconds) = match hit {
+                Some((distance, _)) if gravity == 0.0 => (distance, distance / speed),
+                Some((distance, _)) => (distance, piece * distance / reach),
+                None => (reach, piece),
+            };
+            for (position, direction) in self.position.iter_mut().zip(direction) {
+                *position += direction * distance;
+            }
+            self.fall += gravity * seconds;
+            self.travelled += seconds;
+            self.remaining -= seconds;
+            flown += seconds;
+            if let Some((distance, target)) = hit {
+                self.hit(distance, target, targets, step);
+                return Ok((time - flown).max(0.0));
+            }
+        }
+        if self.remaining <= 0.0 {
+            step.end = Some(self.finish());
+        }
+        Ok(0.0)
+    }
+
+    /// What it hit `distance` into this sweep: the direct hit's damage to a
+    /// struck body, then it sticks, or it ends with its explosion.
+    fn hit(
+        &mut self,
+        distance: f64,
+        target: Option<u32>,
+        targets: &[(u32, TargetPose)],
+        step: &mut FlightStep,
+    ) {
         if let (Some(entity), Some(direct)) = (
             target,
             self.ballistics.direct.filter(|hit| hit.amount > 0.0),
         ) {
-            impacts.push(Impact {
+            step.impacts.push(Impact {
                 entity,
                 distance,
                 damage: direct.amount,
@@ -114,6 +198,44 @@ impl ProjectileFlight {
                 loadout: direct.loadout,
             });
         }
+        let Some(fuse) = self.ballistics.fuse else {
+            self.explode(targets, step);
+            return;
+        };
+        let offset = target
+            .and_then(|entity| pose_of(targets, entity))
+            .map_or([0.0; 3], |pose| {
+                std::array::from_fn(|axis| self.position[axis] - pose.feet[axis])
+            });
+        self.stuck = Some(Stuck {
+            entity: target,
+            offset,
+            fuse,
+        });
+    }
+
+    /// `time` seconds stuck: on the body where it still is a target, until
+    /// the fuse ends.
+    fn hold(&mut self, time: f64, targets: &[(u32, TargetPose)], step: &mut FlightStep) {
+        let Some(stuck) = &mut self.stuck else {
+            return;
+        };
+        if let Some(pose) = stuck.entity.and_then(|entity| pose_of(targets, entity)) {
+            self.position = std::array::from_fn(|axis| pose.feet[axis] + stuck.offset[axis]);
+        }
+        if time < stuck.fuse {
+            stuck.fuse -= time;
+            self.travelled += time;
+            return;
+        }
+        self.travelled += stuck.fuse;
+        stuck.fuse = 0.0;
+        self.explode(targets, step);
+    }
+
+    /// The explosion at its position (combat.py `_fly`: every target's
+    /// distance to the capsule scales the damage), and the end.
+    fn explode(&mut self, targets: &[(u32, TargetPose)], step: &mut FlightStep) {
         if let Some(blast) = self
             .ballistics
             .blast
@@ -125,7 +247,7 @@ impl ProjectileFlight {
                 let distance = (segment_distance(self.position, a, b) - pose.radius).max(0.0);
                 let damage = blast.hit.amount * blast.multiplier(distance);
                 if damage > 0.0 {
-                    impacts.push(Impact {
+                    step.impacts.push(Impact {
                         entity,
                         distance,
                         damage,
@@ -135,52 +257,104 @@ impl ProjectileFlight {
                 }
             }
         }
-        Ok(Some(self.finish(impacts)))
+        step.end = Some(self.finish());
     }
 
-    fn move_forward(&mut self, distance: f64) {
-        for (position, direction) in self.position.iter_mut().zip(self.direction) {
-            *position += direction * distance;
-        }
-    }
-
-    fn finish(&mut self, impacts: Vec<Impact>) -> FlightEnd {
+    fn finish(&mut self) -> FlightEnd {
         self.ended = true;
         FlightEnd {
             point: self.position,
             travelled: self.travelled,
-            impacts,
         }
     }
+}
+
+/// The closest body or surface along a sweep: its distance and the body.
+fn closest(
+    origin: Vec3,
+    direction: Vec3,
+    reach: f64,
+    targets: &[(u32, TargetPose)],
+    wall: &mut impl FnMut(Vec3, Vec3, f64) -> Result<Option<f64>, IndexError>,
+) -> Result<Option<(f64, Option<u32>)>, IndexError> {
+    let mut closest = None;
+    for &(entity, target) in targets {
+        let [a, b] = target.segment();
+        if let Some(distance) =
+            capsule_entry_distance(origin, direction, reach, a, b, target.radius)
+        {
+            if closest.is_none_or(|(best, _)| distance < best) {
+                closest = Some((distance, Some(entity)));
+            }
+        }
+    }
+    if let Some(distance) =
+        wall(origin, direction, reach)?.filter(|distance| (0.0..=reach).contains(distance))
+    {
+        if closest.is_none_or(|(best, _)| distance < best) {
+            closest = Some((distance, None));
+        }
+    }
+    Ok(closest)
+}
+
+fn pose_of(targets: &[(u32, TargetPose)], entity: u32) -> Option<TargetPose> {
+    targets
+        .iter()
+        .find(|&&(target, _)| target == entity)
+        .map(|&(_, pose)| pose)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use orpheus_physics::collision::index::{SceneTriangle, TriangleIndex};
-    use orpheus_script::weapons::{Blast, HitDefinition};
+    use orpheus_script::weapons::{Blast, HitDefinition, STICK_FUSE};
 
     const LOADOUT: u64 = 0x0b90_0000_0000_008e;
+    const TICK: f64 = 0.016;
 
-    fn helix() -> ProjectileBallistics {
-        let hit = HitDefinition {
-            amount: 40.0,
+    fn hit(amount: f64) -> HitDefinition {
+        HitDefinition {
+            amount,
             loadout: Some(LOADOUT),
             critical: 1.0,
             falloff: None,
-        };
+        }
+    }
+
+    fn helix() -> ProjectileBallistics {
         ProjectileBallistics {
             speed: 50.0,
             lifetime: 2.0,
             definition: Some(0x0400_0000_0000_072c),
-            direct: Some(hit),
+            direct: Some(hit(40.0)),
             blast: Some(Blast {
-                hit: HitDefinition {
-                    amount: 80.0,
-                    ..hit
-                },
+                hit: hit(80.0),
                 rings: vec![(1.0, 1.0), (3.0, 0.5)],
             }),
+            gravity: 0.0,
+            fuse: None,
+            unmodelled: Vec::new(),
+        }
+    }
+
+    /// Tracer's Pulse Bomb as graph `0034` state 0 has it in the Practice
+    /// Range: 15 m/s, 5 damage where it sticks, 350 within 2 m falling to
+    /// ×0.2 at 4 m. Its gravity (30) is left out where a test aims straight.
+    fn pulse_bomb(gravity: f64) -> ProjectileBallistics {
+        ProjectileBallistics {
+            speed: 15.0,
+            lifetime: 5.0,
+            definition: Some(0x0400_0000_0000_0045),
+            direct: Some(hit(5.0)),
+            blast: Some(Blast {
+                hit: hit(350.0),
+                rings: vec![(2.0, 1.0), (4.0, 0.2)],
+            }),
+            gravity,
+            fuse: Some(STICK_FUSE),
+            unmodelled: Vec::new(),
         }
     }
 
@@ -193,6 +367,62 @@ mod tests {
         }
     }
 
+    fn no_wall(_: Vec3, _: Vec3, _: f64) -> Result<Option<f64>, IndexError> {
+        Ok(None)
+    }
+
+    fn damage(step: &FlightStep) -> Vec<(u32, f64)> {
+        step.impacts
+            .iter()
+            .map(|impact| (impact.entity, impact.damage))
+            .collect()
+    }
+
+    /// A wall across the flight at `z`, from x −50 to 50 and y 0 to 50.
+    fn wall_at(z: f64) -> TriangleIndex {
+        let corner = |x: f64, y: f64| [x, y, z];
+        TriangleIndex::new([
+            SceneTriangle {
+                vertices: [corner(-50.0, 0.0), corner(50.0, 0.0), corner(50.0, 50.0)],
+                mask: 0x18,
+                surface: 0,
+            },
+            SceneTriangle {
+                vertices: [corner(-50.0, 0.0), corner(50.0, 50.0), corner(-50.0, 50.0)],
+                mask: 0x18,
+                surface: 0,
+            },
+        ])
+        .unwrap()
+    }
+
+    /// A floor at y 0, x and z from −50 to 50.
+    fn floor() -> TriangleIndex {
+        TriangleIndex::new([
+            SceneTriangle {
+                vertices: [[-50.0, 0.0, -50.0], [50.0, 0.0, 50.0], [50.0, 0.0, -50.0]],
+                mask: 0x18,
+                surface: 0,
+            },
+            SceneTriangle {
+                vertices: [[-50.0, 0.0, -50.0], [-50.0, 0.0, 50.0], [50.0, 0.0, 50.0]],
+                mask: 0x18,
+                surface: 0,
+            },
+        ])
+        .unwrap()
+    }
+
+    fn cast(
+        world: &TriangleIndex,
+    ) -> impl FnMut(Vec3, Vec3, f64) -> Result<Option<f64>, IndexError> + '_ {
+        |origin, direction, reach| {
+            world
+                .cast_ray(origin, direction, reach, 0x18)
+                .map(|hit| hit.map(|hit| hit.distance))
+        }
+    }
+
     #[test]
     fn helix_sweeps_missed_ticks_and_applies_direct_damage_before_splash() {
         let targets = [
@@ -202,88 +432,219 @@ mod tests {
         ];
         let mut flight =
             ProjectileFlight::new(helix(), [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], None).unwrap();
-        assert!(
-            flight
-                .advance(1000, &targets, |_, _, _| Ok(None))
-                .unwrap()
-                .is_none()
+        assert_eq!(
+            flight.advance(1000, &targets, no_wall).unwrap(),
+            FlightStep::default()
         );
-        assert!(
+        assert_eq!(
             flight
                 .advance(1000, &targets, |_, _, _| panic!("duplicate tick"))
-                .unwrap()
-                .is_none()
+                .unwrap(),
+            FlightStep::default()
         );
-        let end = flight
-            .advance(1004, &targets, |_, _, _| Ok(None))
-            .unwrap()
-            .unwrap();
+        let step = flight.advance(1004, &targets, no_wall).unwrap();
+        let end = step.end.as_ref().unwrap();
         assert_eq!(end.point, [0.0, 1.0, 2.5]);
         assert!((end.travelled - 0.05).abs() < 1e-12);
+        assert_eq!(damage(&step), [(1, 40.0), (1, 80.0), (2, 60.0)]);
+        assert!(
+            step.impacts
+                .iter()
+                .all(|impact| impact.loadout == Some(LOADOUT) && !impact.critical)
+        );
         assert_eq!(
-            end.impacts
-                .iter()
-                .map(|hit| (hit.entity, hit.damage, hit.critical))
-                .collect::<Vec<_>>(),
-            [(1, 40.0, false), (1, 80.0, false), (2, 60.0, false)]
-        );
-        assert!(
-            end.impacts
-                .iter()
-                .all(|impact| impact.loadout == Some(LOADOUT))
-        );
-        assert!(
             flight
                 .advance(1005, &targets, |_, _, _| panic!("already ended"))
-                .unwrap()
-                .is_none()
+                .unwrap(),
+            FlightStep::default()
         );
     }
 
     #[test]
     fn walls_win_closer_impact_and_last_partial_tick_is_swept() {
-        let world = TriangleIndex::new([SceneTriangle {
-            vertices: [[-5.0, 0.0, 1.0], [5.0, 0.0, 1.0], [0.0, 5.0, 1.0]],
-            mask: 0x18,
-            surface: 0,
-        }])
-        .unwrap();
+        let world = wall_at(1.0);
         let mut flight =
             ProjectileFlight::new(helix(), [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], Some(1000)).unwrap();
-        let end = flight
-            .advance(
-                1002,
-                &[(1, target(0.0, 3.0))],
-                |origin, direction, reach| {
-                    world
-                        .cast_ray(origin, direction, reach, 0x18)
-                        .map(|hit| hit.map(|hit| hit.distance))
-                },
-            )
-            .unwrap()
+        let step = flight
+            .advance(1002, &[(1, target(0.0, 3.0))], cast(&world))
             .unwrap();
-        assert_eq!(end.point, [0.0, 1.0, 1.0]);
-        assert_eq!(end.impacts.len(), 1); // splash reaches the capsule beyond the wall
-        assert_eq!(end.impacts[0].damage, 70.0);
+        assert_eq!(step.end.as_ref().unwrap().point, [0.0, 1.0, 1.0]);
+        // The splash reaches the capsule beyond the wall.
+        assert_eq!(damage(&step), [(1, 70.0)]);
         let short = ProjectileBallistics {
             lifetime: 0.01,
             ..helix()
         };
         let mut flight =
             ProjectileFlight::new(short.clone(), [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], None).unwrap();
-        let end = flight
-            .advance(1000, &[(1, target(0.0, 1.0))], |_, _, _| Ok(None))
-            .unwrap()
+        let step = flight
+            .advance(1000, &[(1, target(0.0, 1.0))], no_wall)
             .unwrap();
+        let end = step.end.as_ref().unwrap();
         assert_eq!((end.point[2], end.travelled), (0.5, 0.01));
-        assert_eq!(end.impacts[0].damage, 40.0);
+        assert_eq!(step.impacts[0].damage, 40.0);
         let mut flight =
             ProjectileFlight::new(short, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], None).unwrap();
-        let end = flight
-            .advance(1000, &[(1, target(1.0, 1.0))], |_, _, _| Ok(None))
-            .unwrap()
+        let step = flight
+            .advance(1000, &[(1, target(1.0, 1.0))], no_wall)
             .unwrap();
+        let end = step.end.as_ref().unwrap();
         assert_eq!((end.point[2], end.travelled), (0.5, 0.01));
-        assert!(end.impacts.is_empty());
+        assert!(step.impacts.is_empty());
+    }
+
+    /// Fired level from 1.5 m at 20 m/s under 9.8 m/s² (Junkrat's and
+    /// Hanzo's arc), the projectile lands where and when the parabola meets
+    /// the floor, sweeping the ticks it missed.
+    #[test]
+    fn an_arc_lands_where_its_parabola_meets_the_ground() {
+        let grenade = ProjectileBallistics {
+            speed: 20.0,
+            gravity: 9.8,
+            ..helix()
+        };
+        let ground = floor();
+        let mut flight =
+            ProjectileFlight::new(grenade, [0.0, 1.5, 0.0], [1.0, 0.0, 0.0], Some(1000)).unwrap();
+        let mut end = None;
+        let mut tick = 1000;
+        while end.is_none() {
+            tick += 3;
+            end = flight.advance(tick, &[], cast(&ground)).unwrap().end;
+        }
+        let end = end.unwrap();
+        let fall = (2.0 * 1.5 / 9.8f64).sqrt();
+        assert!((end.travelled - fall).abs() < 1e-3, "{}", end.travelled);
+        assert!((end.point[0] - 20.0 * fall).abs() < 0.02, "{:?}", end.point);
+        assert!(end.point[1].abs() < 1e-9 && end.point[2] == 0.0);
+        assert_eq!(tick, 1000 + 3 * (fall / (3.0 * TICK)).ceil() as u32);
+    }
+
+    /// The arc dips onto a short target that a straight shot passes over.
+    #[test]
+    fn an_arc_hits_a_target_below_its_line_of_fire() {
+        let short = TargetPose {
+            feet: [10.0, 0.0, 0.0],
+            height: 0.9,
+            radius: 0.3,
+            eye: 0.7,
+        };
+        let fly = |gravity| {
+            let ballistics = ProjectileBallistics {
+                speed: 20.0,
+                lifetime: 0.7,
+                gravity,
+                blast: None,
+                ..helix()
+            };
+            let mut flight =
+                ProjectileFlight::new(ballistics, [0.0, 1.5, 0.0], [1.0, 0.0, 0.0], Some(1000))
+                    .unwrap();
+            (1001..1100)
+                .map(|tick| flight.advance(tick, &[(7, short)], no_wall).unwrap())
+                .find(|step| step.end.is_some())
+                .unwrap()
+        };
+        let straight = fly(0.0);
+        assert!(straight.impacts.is_empty());
+        assert!((straight.end.unwrap().point[0] - 14.0).abs() < 1e-9);
+        let arc = fly(9.8);
+        assert_eq!(damage(&arc), [(7, 40.0)]);
+        let point = arc.end.unwrap().point;
+        assert!(point[0] > 9.0 && point[0] < 10.0, "{point:?}");
+        assert!(point[1] > 0.0 && point[1] < 0.9, "{point:?}");
+    }
+
+    /// The Pulse Bomb sticks to the bot it hits (5 damage), rides along as
+    /// the bot moves, and explodes a second later where the bot then is:
+    /// 350 to the bot it is on, ×0.6 to a body 3 m away, nothing to the one
+    /// it passed.
+    #[test]
+    fn a_sticking_projectile_rides_its_target_and_explodes_after_its_fuse() {
+        let mut flight =
+            ProjectileFlight::new(pulse_bomb(0.0), [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], Some(999))
+                .unwrap();
+        let mut bot = target(0.0, 3.0);
+        let behind = target(-3.0, 0.0);
+        let mut stuck = None;
+        for tick in 1000..1100 {
+            let step = flight
+                .advance(tick, &[(1, bot), (2, behind)], no_wall)
+                .unwrap();
+            assert!(step.end.is_none());
+            if !step.impacts.is_empty() {
+                assert_eq!(damage(&step), [(1, 5.0)]);
+                stuck = Some(tick);
+                break;
+            }
+        }
+        // 2.5 m at 15 m/s: in the 11th tick.
+        let stuck = stuck.unwrap();
+        assert_eq!(stuck, 1010);
+        let mut tick = stuck;
+        let step = loop {
+            tick += 1;
+            bot.feet[0] += 0.05;
+            let near = target(bot.feet[0] + 3.5, 2.5);
+            let step = flight
+                .advance(tick, &[(1, bot), (2, behind), (3, near)], |_, _, _| {
+                    panic!("a stuck projectile sweeps nothing")
+                })
+                .unwrap();
+            if step.end.is_some() {
+                break step;
+            }
+            assert!(step.impacts.is_empty());
+        };
+        let end = step.end.as_ref().unwrap();
+        let fuse_end = 2.5 / 15.0 + STICK_FUSE;
+        assert!((end.travelled - fuse_end).abs() < 1e-9);
+        assert_eq!(tick, 999 + (fuse_end / TICK).ceil() as u32);
+        assert_eq!(end.point, [bot.feet[0], 1.0, 2.5]);
+        let hits = damage(&step);
+        assert_eq!(hits.len(), 2, "{hits:?}");
+        assert_eq!(hits[0], (1, 350.0));
+        assert_eq!(hits[1].0, 3);
+        assert!((hits[1].1 - 210.0).abs() < 1e-9);
+    }
+
+    /// It sticks to a surface too, damages nothing there, and its explosion
+    /// reaches a body behind the wall; a bomb that hits nothing in its
+    /// lifetime ends without one.
+    #[test]
+    fn a_sticking_projectile_holds_on_a_surface_and_a_miss_ends_quietly() {
+        let world = wall_at(1.0);
+        let mut flight = ProjectileFlight::new(
+            pulse_bomb(30.0),
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            Some(999),
+        )
+        .unwrap();
+        let bot = (1, target(0.0, 3.0));
+        let mut steps =
+            (1000..1200).map(|tick| flight.advance(tick, &[bot], cast(&world)).unwrap());
+        let step = steps
+            .find(|step| step.end.is_some() || !step.impacts.is_empty())
+            .unwrap();
+        assert_eq!(damage(&step), [(1, 350.0)]);
+        // It met the wall after 1/15 s, 1/15 m lower (the chord within 1 mm).
+        let end = step.end.unwrap();
+        let flight = 1.0 / 15.0;
+        assert!((end.travelled - (flight + STICK_FUSE)).abs() < 1e-9);
+        assert!((end.point[2] - 1.0).abs() < 1e-9);
+        assert!((end.point[1] - (1.0 - 15.0 * flight * flight)).abs() < 1e-3);
+        let quick = ProjectileBallistics {
+            lifetime: 0.1,
+            ..pulse_bomb(0.0)
+        };
+        let mut flight =
+            ProjectileFlight::new(quick, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], Some(999)).unwrap();
+        let step = (1000..1100)
+            .map(|tick| flight.advance(tick, &[bot], no_wall).unwrap())
+            .find(|step| step.end.is_some())
+            .unwrap();
+        assert!(step.impacts.is_empty());
+        assert!((step.end.unwrap().travelled - 0.1).abs() < 1e-12);
     }
 }

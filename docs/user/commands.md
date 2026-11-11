@@ -104,7 +104,7 @@ Copies `profiles\*.json`, `profile.json` and `default_account.txt` from an older
 | Command | Meaning |
 | --- | --- |
 | `graphs` | Graphs with their role and size, for example `graphs --hero soldier` |
-| `show` | A graph as a tree, for example `show 0255 --state 1 --depth 1` |
+| `show` | A graph as a tree, for example `show 0255 --state-index 1 --depth 1`. `--state-index` is the `m_states` index to start at (`--state` is the state folder, as everywhere) |
 | `var` | Every use of a variable, for example `var 699 --graph 0255` |
 | `class` | Where a class is used and its fields, for example `class MovementMod` |
 | `find` | Names, aliases, hashes, GUIDs, for example `find "hero select"` |

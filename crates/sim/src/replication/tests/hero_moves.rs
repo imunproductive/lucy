@@ -1,7 +1,7 @@
 //! Tracer's Blink and Recall through the player's tick: her body script on
 //! the derived Practice Range scene, with its collision. Her graphs still
 //! reach config classes the VM doesn't compute (`STU_60146072`,
-//! `STU_038C32E8`, `STU_082FA44E`) and `StateBlinkEffect`, none of which
+//! `STU_038C32E8`) and `StateBlinkEffect`, none of which
 //! decides the moves tested here, so the body tolerates them as release
 //! builds do.
 
@@ -41,6 +41,7 @@ impl Tracer {
             slot: 0,
             team: 0,
             spawn: 0,
+            room: orpheus_content::maps::SpawnChoice::First,
             card: &tracer.card,
         };
         tracer
@@ -71,6 +72,7 @@ impl Tracer {
             slot: 0,
             team: 0,
             spawn: 0,
+            room: orpheus_content::maps::SpawnChoice::First,
             card: &self.card,
         };
         self.world.queue_commands(self.frame, &[command]);
@@ -151,7 +153,9 @@ fn horizontal(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// `yaw`, run on the mover alone.
 fn mover_dash(scene: &PreparedScene, yaw: i32) -> f64 {
     let hero = scene.heroes().get(TRACER).unwrap();
-    let mut mover = scene.player_spawn_mover(hero.body, 0, 0).unwrap();
+    let mut mover = scene
+        .player_spawn_mover(hero.body, 0, 0, orpheus_content::maps::SpawnChoice::First)
+        .unwrap();
     let rays = scene.movement_index();
     let command = |frame| Command {
         frame,

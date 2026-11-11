@@ -622,8 +622,15 @@ fn secondary_volley_uses_authored_projectile_and_owner_lease() {
     );
 }
 
+/// combat.py `_shoot`: a projectile volley the owner's client doesn't shoot
+/// under a lease (not predicted) flies for its damage alone, or not at all
+/// without damage; an arc, an aim id and a sticky collision config fly
+/// leased with the volley's gravity and the fuse; a motion the flight
+/// doesn't model flies as if it weren't there; several projectiles a shot
+/// are refused.
 #[test]
-fn unsupported_projectile_modes_do_not_become_hitscan_or_straight_damage() {
+fn projectile_volleys_fly_leased_for_damage_alone_or_not_at_all() {
+    use orpheus_script::weapons::STICK_FUSE;
     use serde_json::json;
 
     let (_, spawn) = fixture_body_factory();
@@ -640,30 +647,63 @@ fn unsupported_projectile_modes_do_not_become_hitscan_or_straight_damage() {
         buttons: orpheus_wire::commands::SECONDARY,
         ..Command::default()
     };
-    // A leased projectile with no direct damage still flies (combat.py
-    // `_shoot`: `damaging or shot is not None`), so only the modes the flight
-    // can't model are refused.
-    for (field, value) in [
-        ("m_45271E8C", json!(false)),
-        ("m_projectileMotions", json!([{"$":"STU_E1A5B579"}])),
-        ("m_numProjectilesPerShot", json!(2)),
-    ] {
-        let mut fields = fixture_projectile_fields(40.0);
-        fields[field] = value;
+    let shoot = |fields: Json| {
         let mut runtime = fixture_volley_factory(29, true, fields)
             .start(spawn)
             .unwrap();
         runtime.advance(fire, &mover, BodyStep::Posed).unwrap();
-        assert!(runtime.take_shots(Some(fire), &mover).is_empty(), "{field}");
-    }
+        let mut shots = runtime.take_shots(Some(fire), &mover);
+        assert!(shots.len() <= 1);
+        shots.pop().map(|shot| match shot {
+            PosedShot::Projectile(projectile) => projectile,
+            _ => panic!("a projectile volley became another shot"),
+        })
+    };
+
+    let mut fields = fixture_projectile_fields(40.0);
+    fields["m_45271E8C"] = json!(false);
+    let unpredicted = shoot(fields.clone()).expect("the damage flies");
+    assert!(!unpredicted.leased);
+    fields["m_D2D11CE9"]["m_modifyHealth"]["m_amount"] = json!(0.0);
+    fields["m_6396149F"]["m_modifyHealth"]["m_amount"] = json!(0.0);
+    assert!(shoot(fields).is_none(), "nothing flies without damage");
+
+    let mut fields = fixture_projectile_fields(5.0);
+    fields["m_projectileMotions"] =
+        json!([{"$":"STU_E1A5B579","m_599AB8D7":{"$":"STUConfigVarFloat","m_value":30.0}}]);
+    fields["m_aimID"] = json!({"$":"STU_91EFD5B1","m_value":null,
+        "m_default":{"$":"STUConfigVarInt","m_value":1}});
+    fields["m_55E8761C"] = json!({"$":"STU_3A858EF7",
+        "m_47999E82":{"$":"STUConfigVarBool","m_value":1}});
+    let bomb = shoot(fields).expect("the arc flies");
+    assert!(bomb.leased);
+    assert_eq!(
+        (bomb.ballistics.gravity, bomb.ballistics.fuse),
+        (30.0, Some(STICK_FUSE))
+    );
+    assert_eq!(bomb.ballistics.bound(), 2.0 + STICK_FUSE);
+
+    let mut fields = fixture_projectile_fields(40.0);
+    fields["m_projectileMotions"] = json!([{"$":"STU_7A5DFFF8"}]);
+    let wobble = shoot(fields).expect("an unmodelled motion flies");
+    assert!(wobble.leased);
+    assert_eq!(
+        (wobble.ballistics.gravity, wobble.ballistics.fuse),
+        (0.0, None)
+    );
+    assert_eq!(wobble.ballistics.unmodelled, ["STU_7A5DFFF8"]);
+
+    let mut fields = fixture_projectile_fields(40.0);
+    fields["m_numProjectilesPerShot"] = json!(2);
+    assert!(shoot(fields).is_none(), "m_numProjectilesPerShot");
 }
 
 /// projectiles.py `fired`: a volley whose projectile leaves an entity names
-/// it as the shot's spawn, and the Biotic Field canister flies despite its
-/// arc (combat.py `_shoot` flies it straight). The shot carries the volley
-/// state's count of volleys for the other clients' shot record.
+/// it as the shot's spawn, and the Biotic Field canister flies its arc. The
+/// shot carries the volley state's count of volleys for the other clients'
+/// shot record.
 #[test]
-fn a_spawning_canister_flies_despite_its_arc_and_names_its_field() {
+fn a_spawning_canister_flies_its_arc_and_names_its_field() {
     use crate::projectiles::FIELD_ENTITY;
     use serde_json::json;
 
@@ -695,6 +735,7 @@ fn a_spawning_canister_flies_despite_its_arc_and_names_its_field() {
         panic!("expected the canister");
     };
     assert_eq!(canister.spawn, Some(FIELD_ENTITY));
+    assert!(canister.leased);
     assert_eq!(canister.feet, spawn.pose.position);
     assert_eq!(canister.volleys, 1);
 }
@@ -744,7 +785,7 @@ fn ultimate_factory(ability: bool) -> PlayerBodyFactory {
 /// charge (its m_150F0D92 reads #342) runs.
 #[test]
 fn the_ultimate_charges_on_command_frames_until_its_ability_runs() {
-    use orpheus_script::ultimate::ULT_CHARGE;
+    use orpheus_script::ultimate::{ULT_CHARGE, ULT_SECONDS};
 
     let (_, spawn) = fixture_body_factory();
     let mover = Mover::new(

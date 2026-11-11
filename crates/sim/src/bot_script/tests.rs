@@ -139,6 +139,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         slot: 0,
         team: 0,
         spawn: 0,
+        room: orpheus_content::maps::SpawnChoice::First,
         card: &card,
     };
     let mut world = WorldDelivery::new(OWNER);

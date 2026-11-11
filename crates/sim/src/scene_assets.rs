@@ -29,7 +29,7 @@ use crate::{
 };
 use orpheus_content::{
     heroes::{EyeCatalog, Hero, HeroCatalog, SOLDIER},
-    maps::{GameMap, GameModes, MODES_FILE},
+    maps::{GameMap, GameModes, MODES_FILE, SpawnChoice},
     stats::{PlayerStats, StatsCatalog, initial_on_fire},
 };
 use orpheus_core::{bits::BitWriter, guid::parse_guid};
@@ -43,7 +43,9 @@ use orpheus_physics::{
     mover::settings::{MoverCatalog, MoverSettings},
     nav::{self, Navigation},
 };
-use orpheus_script::{codecs::CodecTable, graph::GraphStore, vm::Unknowns, wire::Variables};
+use orpheus_script::{
+    codecs::CodecTable, graph::GraphStore, ultimate::ULT_SECONDS, vm::Unknowns, wire::Variables,
+};
 use orpheus_wire::entity::{Component, EntityUpdate};
 
 const MOVER_CATEGORY: u16 = 0x18;
@@ -92,6 +94,8 @@ pub struct SceneAssets {
     bot_graphs: Option<Arc<GraphStore>>,
     bot_unknowns: Unknowns,
     player_unknowns: Unknowns,
+    /// Seconds a player's empty ultimate takes to fill.
+    ult_seconds: f64,
     bots: BotCatalog,
     movers: Arc<MoverCatalog>,
     eyes: Arc<EyeCatalog>,
@@ -177,6 +181,7 @@ impl SceneAssets {
             bot_graphs,
             bot_unknowns: Unknowns::for_build(),
             player_unknowns: Unknowns::for_build(),
+            ult_seconds: ULT_SECONDS,
             bots: BotCatalog::load(data.join("ai_spawners_174.json"))?,
             movers: Arc::new(MoverCatalog::load(
                 data.join("game_movers_174.json"),
@@ -234,6 +239,13 @@ impl SceneAssets {
     /// hero whose graphs still have gaps tolerate them as release builds do.
     pub fn set_player_unknowns(&mut self, unknowns: Unknowns) {
         self.player_unknowns = unknowns;
+    }
+
+    /// Seconds a player's empty ultimate takes to fill: ULT_SECONDS by
+    /// default, as driver.py `BodyScript` takes `ult_seconds`; tests of an
+    /// ultimate fill it sooner.
+    pub fn set_ult_seconds(&mut self, seconds: f64) {
+        self.ult_seconds = seconds;
     }
 
     /// Load the map before handing it to the worker. The render layouts and
@@ -379,6 +391,7 @@ impl SceneAssets {
         let eyes = Arc::clone(&self.eyes);
         let (melee, field) = (Arc::clone(&self.melee), self.field);
         let player_unknowns = self.player_unknowns;
+        let ult_seconds = self.ult_seconds;
         let mode = scene.map.mode_guid;
         let ready = self
             .codecs
@@ -412,6 +425,7 @@ impl SceneAssets {
                             field,
                         },
                         player_unknowns,
+                        ult_seconds,
                         spawn,
                     )
                     .map(Arc::new)
@@ -448,16 +462,18 @@ impl PreparedScene {
     }
 
     /// The body's mover at the player's spawn point: the team's `number`-th,
-    /// side by side when the team has fewer points (match.py Player.spawn).
+    /// side by side when the team has fewer points (match.py Player.spawn),
+    /// in the spawn rooms the match flow names (`GameMap::spawn_point_in`).
     pub(crate) fn player_spawn_mover(
         &self,
         body: u64,
         team: u8,
         number: usize,
+        room: SpawnChoice,
     ) -> io::Result<Mover> {
         let (position, yaw) = self
             .map
-            .spawn_point(team, number)
+            .spawn_point_in(team, number, room)
             .ok_or_else(|| invalid("no spawn for the selected hero"))?;
         let yaw = (yaw * 65536.0 / 360.0).round_ties_even() as i32;
         let contacts = self.contacts.as_ref().ok_or_else(|| {
@@ -748,7 +764,10 @@ mod tests {
             entity: 0xa000_0101,
             body_filter: team_bit(0).unwrap(),
             frame: FIRST_TICK,
-            pose: scene.player_spawn_mover(hero.body, 0, 0).unwrap().pose(),
+            pose: scene
+                .player_spawn_mover(hero.body, 0, 0, SpawnChoice::First)
+                .unwrap()
+                .pose(),
             quanta: RETAIL_QUANTA,
         };
         let soldier = scene.owner_body_runtime(hero, spawn).unwrap();
@@ -760,7 +779,10 @@ mod tests {
         // no unknown content).
         let pharah = scene.heroes().find_hero("Pharah").unwrap();
         let spawn = OwnerBodySpawn {
-            pose: scene.player_spawn_mover(pharah.body, 0, 0).unwrap().pose(),
+            pose: scene
+                .player_spawn_mover(pharah.body, 0, 0, SpawnChoice::First)
+                .unwrap()
+                .pose(),
             ..spawn
         };
         assert!(
@@ -812,7 +834,9 @@ mod tests {
         let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let hero = scene.heroes().get(SOLDIER).unwrap();
-        let mover = scene.player_spawn_mover(hero.body, 0, 0).unwrap();
+        let mover = scene
+            .player_spawn_mover(hero.body, 0, 0, SpawnChoice::First)
+            .unwrap();
         let spawn = OwnerBodySpawn {
             slot: 0,
             controller: 0xa000_0100,

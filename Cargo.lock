@@ -866,6 +866,7 @@ dependencies = [
  "indexmap",
  "lzma-rust2",
  "orpheus-core",
+ "orpheus-physics",
  "orpheus-testkit",
  "orpheus-wire",
  "serde",

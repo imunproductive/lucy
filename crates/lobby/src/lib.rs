@@ -23,6 +23,7 @@ pub mod party;
 pub mod passes;
 pub mod player_messages;
 pub mod presence;
+pub mod progression;
 pub mod queue;
 pub mod ranked;
 pub mod saved_settings;

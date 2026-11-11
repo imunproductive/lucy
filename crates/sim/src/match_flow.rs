@@ -14,13 +14,24 @@
 //!
 //! Where the rules leave a value open, the machine takes an assumption,
 //! named where it is used.
+//!
+//! Spawn rooms: the flow names the rooms each team uses
+//! ([`MatchFlow::spawn_choice`]): in Assault, Escort and Hybrid the current
+//! objective's attackers' or defenders' rooms (they move forward as the
+//! objectives fall, and swap with the sides), in Control the stage's.
+//! Spawn doors: the map data names no door entities (the doors run graph
+//! 0D32, related-projects.md, but the `game_maps` derivation doesn't list
+//! them), so the server opens none. Assumption: the doors are map entities
+//! the client drives itself; nothing holds the attackers in during setup.
 
-use orpheus_content::maps::{GameMap, ObjectiveKind};
+use std::collections::VecDeque;
+
+use orpheus_content::maps::{GameMap, ObjectiveKind, SpawnChoice};
 use orpheus_script::wire::{Value, Variables};
 
 use crate::objectives::{
-    ASSAULT_FIRST, ASSAULT_LAST, CapturePoint, ControlPoint, HYBRID_POINT, Participant, Payload,
-    Presence, payload_speeds,
+    ASSAULT_FIRST, ASSAULT_LAST, Area, CapturePoint, ControlPoint, HYBRID_POINT, POINT_ABOVE,
+    POINT_BELOW, POINT_RADIUS, Participant, Payload, Presence, payload_speeds,
 };
 
 /// The game modes (`0C5`) whose flow the server runs.
@@ -179,13 +190,23 @@ pub const DEATHMATCH_TIME: f64 = 600.0;
 /// Rule 95: the top 4 of a free-for-all get win credit.
 pub const DEATHMATCH_WINNERS: usize = 4;
 /// Rule 99: Elimination is first to 3 rounds; rule 100: a round is a draw
-/// after 135 s. The capture tiebreaker (rule 100, after 105 s) needs the
-/// arena's point, which isn't derived, so it is not run.
+/// after 135 s.
 pub const ELIMINATION_ROUNDS_TO_WIN: u8 = 3;
 pub const ELIMINATION_ROUND: f64 = 135.0;
+/// Rule 100: the capture tiebreaker's point unlocks 105 s into the round.
+pub const ELIMINATION_TIEBREAK: f64 = 105.0;
 /// Rule 26 (mechanics probably Overwatch 1): the overtime fuse burns 5 s,
 /// 3 s after 20 s of overtime, 1.5 s after 30 s.
 pub const FUSE: [(f64, f64); 3] = [(0.0, 5.0), (20.0, 3.0), (30.0, 1.5)];
+/// Rule 11: overtime adds 3 s to a respawn (the notes favour the wiki's
+/// 3 s over the Jul 2016 patch's 2 s).
+pub const OVERTIME_RESPAWN: f64 = 3.0;
+/// Rules 67 and 68: the time banks of extra rounds are cut to 2:00 or
+/// raised to 1:00.
+pub const BANK_CAP: f64 = 120.0;
+pub const BANK_FLOOR: f64 = 60.0;
+/// Rule 69: in Assault's extra rounds point A adds 30 s.
+pub const EXTRA_ASSAULT_BONUS: f64 = 30.0;
 
 /// Something the room acts on.
 #[derive(Clone, Debug, PartialEq)]
@@ -238,6 +259,28 @@ impl Course {
                 None => (0, ticks(point)),
             },
             Self::Payload(payload) => (payload.reached() as u32, payload.best()),
+        }
+    }
+
+    /// The objective (its order, 0x2934) the attackers play for now, whose
+    /// rooms the teams spawn in: the next point, or the checkpoint the
+    /// payload heads for (a Hybrid's point is objective 0, its
+    /// checkpoints 1 and 2). The derived orders run 0, 1, 2 in the map.
+    fn objective(&self) -> u32 {
+        match self {
+            Self::Points(points) => {
+                let taken = points.iter().filter(|point| point.captured()).count();
+                taken.min(points.len().saturating_sub(1)) as u32
+            }
+            Self::Hybrid { payload: None, .. } => 0,
+            Self::Hybrid {
+                payload: Some(payload),
+                ..
+            } => (1 + payload.reached()).min(payload.checkpoints()) as u32,
+            Self::Payload(payload) => payload
+                .reached()
+                .min(payload.checkpoints().saturating_sub(1))
+                as u32,
         }
     }
 
@@ -345,12 +388,42 @@ fn course(map: &GameMap, mode: Mode) -> Option<Course> {
     }
 }
 
+/// Where Elimination's tiebreaker point stands. Assumption: halfway
+/// between the two teams' first spawn points; the arena maps are
+/// symmetrical and their point entity isn't derived (`game_maps` lists no
+/// objective for them).
+fn arena_centre(map: &GameMap) -> Option<[f64; 3]> {
+    let (blue, _) = map.spawn_point(0, 0)?;
+    let (red, _) = map.spawn_point(1, 0)?;
+    Some(std::array::from_fn(|axis| (blue[axis] + red[axis]) / 2.0))
+}
+
 #[derive(Clone, Debug)]
 struct SidedRound {
     attackers: u8,
     course: Course,
+    /// The clock it starts with, in unscaled seconds.
+    time: f64,
+    /// An extra round of the time bank (rules 67-69): no time added, but
+    /// 30 s for Assault's A.
+    extra: bool,
     /// The round's result for the tiebreak.
     result: Option<(u32, f64)>,
+    /// The time left when the attackers completed the map (unscaled).
+    bank: Option<f64>,
+}
+
+impl SidedRound {
+    fn new(map: &GameMap, mode: Mode, attackers: u8, time: f64, extra: bool) -> Option<Self> {
+        Some(Self {
+            attackers,
+            course: course(map, mode)?,
+            time,
+            extra,
+            result: None,
+            bank: None,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -373,7 +446,17 @@ pub struct MatchFlow {
     left: f64,
     round: u8,
     sided: Option<SidedRound>,
-    finished_sides: Vec<SidedRound>,
+    /// Competitive: the sides still to play in this set (the second side,
+    /// or the extra rounds), each its attackers and clock.
+    upcoming: VecDeque<(u8, f64)>,
+    /// The sides played in this set.
+    played: Vec<SidedRound>,
+    /// The set is rule 69's single attack: its attackers win with a tick.
+    single: bool,
+    /// Whether the set's sides are extra rounds.
+    extra: bool,
+    /// Elimination: the capture tiebreaker's point (rule 100).
+    tiebreak: Option<ControlPoint>,
     control: Option<ControlPoint>,
     /// Control and Elimination: rounds won per team.
     rounds_won: [u8; 2],
@@ -402,7 +485,11 @@ impl MatchFlow {
             left: 0.0,
             round: 0,
             sided: None,
-            finished_sides: Vec::new(),
+            upcoming: VecDeque::new(),
+            played: Vec::new(),
+            single: false,
+            extra: false,
+            tiebreak: None,
             control: None,
             rounds_won: [0; 2],
             seen_alive: [false; 2],
@@ -412,12 +499,16 @@ impl MatchFlow {
             events: Vec::new(),
         };
         if mode.sided() {
-            flow.sided = Some(SidedRound {
-                // game_maps.rs: team 1 attacks first.
-                attackers: 1,
-                course: course(map, mode)?,
-                result: None,
-            });
+            let time = match mode {
+                Mode::Assault => ASSAULT_TIME,
+                _ => ESCORT_TIME,
+            };
+            // game_maps.rs: team 1 attacks first; in Competitive team 0
+            // attacks second with the same time.
+            flow.sided = Some(SidedRound::new(map, mode, 1, time, false)?);
+            if competitive {
+                flow.upcoming.push_back((0, time));
+            }
         }
         if mode == Mode::Control {
             map.objectives_of(ObjectiveKind::ControlPoint).next()?;
@@ -453,6 +544,32 @@ impl MatchFlow {
     /// The attacking team of a sided round.
     pub fn attackers(&self) -> Option<u8> {
         self.sided.as_ref().map(|round| round.attackers)
+    }
+
+    /// The spawn rooms `team` uses now: the current objective's attackers'
+    /// or defenders' (rules 36 and 47: they move forward as objectives
+    /// fall; the teams swap them with the sides), the Control stage's
+    /// (rule 60), else the first round's.
+    pub fn spawn_choice(&self, team: u8) -> SpawnChoice {
+        if let Some(round) = &self.sided {
+            return SpawnChoice::Objective {
+                objective: round.course.objective(),
+                attack: team == round.attackers,
+            };
+        }
+        if self.mode == Mode::Control {
+            return SpawnChoice::Stage(self.stage(self.round).order);
+        }
+        SpawnChoice::First
+    }
+
+    /// Seconds added to a respawn now: rule 11's 3 s in overtime.
+    pub fn respawn_extra(&self) -> f64 {
+        if self.overtime.is_some() {
+            self.scaled(OVERTIME_RESPAWN)
+        } else {
+            0.0
+        }
     }
 
     /// Hero select stays open while the heroes assemble.
@@ -679,23 +796,42 @@ impl MatchFlow {
         self.overtime = None;
         self.seen_alive = [false; 2];
         let seconds = match self.mode {
-            Mode::Assault => ASSAULT_TIME,
-            Mode::Escort | Mode::Hybrid => ESCORT_TIME,
+            Mode::Assault | Mode::Escort | Mode::Hybrid => {
+                self.sided.as_ref().map_or(ESCORT_TIME, |round| round.time)
+            }
             Mode::Deathmatch | Mode::TeamDeathmatch => DEATHMATCH_TIME,
             Mode::Elimination => ELIMINATION_ROUND,
             // No round clock (rule 58), no score (rule 112).
             Mode::Control | Mode::Skirmish => 0.0,
         };
         if self.mode == Mode::Control {
-            // Rule 59: a stage per round; assumption: in their order.
-            let stages: Vec<_> = self
-                .map
-                .objectives_of(ObjectiveKind::ControlPoint)
-                .collect();
-            let stage = stages[(usize::from(self.round) - 1) % stages.len()];
+            let stage = self.stage(self.round);
             self.control = Some(ControlPoint::new(stage, self.scaled(CONTROL_UNLOCK)));
         }
+        if self.mode == Mode::Elimination {
+            self.tiebreak = arena_centre(&self.map).map(|centre| {
+                ControlPoint::tiebreak(
+                    Area {
+                        centre,
+                        radius: POINT_RADIUS,
+                        below: POINT_BELOW,
+                        above: POINT_ABOVE,
+                    },
+                    self.scaled(ELIMINATION_TIEBREAK),
+                )
+            });
+        }
         self.enter(Phase::Round, seconds);
+    }
+
+    /// Rule 59: a Control stage per round. Assumption: the stages in their
+    /// order (rule 59 says random; the order keeps rounds reproducible).
+    fn stage(&self, round: u8) -> &orpheus_content::maps::MapObjective {
+        let stages: Vec<_> = self
+            .map
+            .objectives_of(ObjectiveKind::ControlPoint)
+            .collect();
+        stages[usize::from(round.max(1) - 1) % stages.len()]
     }
 
     /// The next round after a round's end, or the match's end.
@@ -706,13 +842,13 @@ impl MatchFlow {
         }
         match self.mode {
             Mode::Assault | Mode::Escort | Mode::Hybrid => {
-                let sided = self.sided.as_ref().expect("a sided mode's round");
-                let attackers = 1 - sided.attackers;
-                self.sided = Some(SidedRound {
-                    attackers,
-                    course: course(&self.map, self.mode).expect("the map's course"),
-                    result: None,
-                });
+                // Rule 2: the sides swap (or an extra round starts) after
+                // a hero select of 25 s.
+                let (attackers, time) = self.upcoming.pop_front().expect("a side to play");
+                self.sided = Some(
+                    SidedRound::new(&self.map, self.mode, attackers, time, self.extra)
+                        .expect("the map's course"),
+                );
                 self.enter(Phase::Assemble, ASSEMBLE_LATER);
             }
             Mode::Elimination => self.enter(Phase::Assemble, ELIMINATION_ASSEMBLE),
@@ -744,7 +880,7 @@ impl MatchFlow {
                     self.decide(winner);
                 }
             }
-            Mode::Elimination => self.play_elimination(participants),
+            Mode::Elimination => self.play_elimination(seconds, participants),
             Mode::Skirmish => {}
         }
     }
@@ -754,6 +890,7 @@ impl MatchFlow {
         let speeds = payload_speeds(&self.map.name);
         let round = self.sided.as_mut().expect("a sided round");
         let attackers = round.attackers;
+        let extra = round.extra;
         let mut taken = Vec::new();
         let mut bonus = 0.0;
         match &mut round.course {
@@ -769,8 +906,13 @@ impl MatchFlow {
                         taken.push(index as u32);
                         if index != last {
                             // Rule 29: A taken in overtime goes on with 3:00
-                            // (the bonus is added to what is left, 0).
-                            bonus = ASSAULT_BONUS;
+                            // (the bonus is added to what is left, 0); rule
+                            // 69: 30 s in an extra round.
+                            bonus = if extra {
+                                EXTRA_ASSAULT_BONUS
+                            } else {
+                                ASSAULT_BONUS
+                            };
                         }
                     }
                 }
@@ -780,7 +922,10 @@ impl MatchFlow {
                     let presence = point.area.presence(participants, attackers);
                     if point.step(seconds, scale, presence) {
                         taken.push(0);
-                        bonus = HYBRID_BONUS;
+                        // Rule 69: nothing in an extra round.
+                        if !extra {
+                            bonus = HYBRID_BONUS;
+                        }
                         let checkpoints: Vec<_> = self
                             .map
                             .objectives_of(ObjectiveKind::Checkpoint)
@@ -799,7 +944,7 @@ impl MatchFlow {
                     let presence = payload.area().presence(participants, attackers);
                     if let Some(reached) = payload.step(seconds, scale, presence) {
                         taken.push(reached as u32);
-                        if !payload.delivered() {
+                        if !payload.delivered() && !extra {
                             bonus = CHECKPOINT_BONUS[(reached - 1).min(1)];
                         }
                     }
@@ -809,7 +954,7 @@ impl MatchFlow {
                 let presence = payload.area().presence(participants, attackers);
                 if let Some(reached) = payload.step(seconds, scale, presence) {
                     taken.push((reached - 1) as u32);
-                    if !payload.delivered() {
+                    if !payload.delivered() && !extra {
                         bonus = CHECKPOINT_BONUS[(reached - 1).min(1)];
                     }
                 }
@@ -885,8 +1030,11 @@ impl MatchFlow {
         round.result = Some(round.course.progress());
         let attackers = round.attackers;
         let complete = round.course.complete();
+        if complete {
+            round.bank = Some(self.left.max(0.0) / self.timers.scale);
+        }
         self.sided = Some(round.clone());
-        self.finished_sides.push(round);
+        self.played.push(round);
         if !self.competitive {
             // Quick Play plays one round: the attackers win by completing
             // the map, the defenders by holding it.
@@ -895,25 +1043,96 @@ impl MatchFlow {
             self.decide(Some(winner));
             return;
         }
-        if self.finished_sides.len() < 2 {
+        if !self.upcoming.is_empty() {
             self.enter(Phase::RoundEnd, ROUND_END);
             return;
         }
-        // Rules 63-65: more objectives, or more progress on the next one,
-        // wins; progress on a point counts by ticks (33.3%); equal is a
-        // draw. Assumption: the time bank's extra rounds (rules 67-69) are
-        // not played.
         let score = |side: &SidedRound| side.result.unwrap_or((0, 0.0));
-        let first = &self.finished_sides[0];
-        let second = &self.finished_sides[1];
-        let (a, b) = (score(first), score(second));
-        let winner = match a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)) {
-            std::cmp::Ordering::Greater => Some(first.attackers),
-            std::cmp::Ordering::Less => Some(second.attackers),
-            std::cmp::Ordering::Equal => None,
+        let mut banks = None;
+        let winner = match self.played.as_slice() {
+            // Rule 69: the lone attackers win with a tick (33.3%) or a
+            // moved payload; otherwise the match is a draw.
+            [side] if self.single => {
+                let (taken, next) = score(side);
+                (taken > 0 || next > 0.0).then_some(side.attackers)
+            }
+            // Rules 63-65: more objectives, or more progress on the next
+            // one, wins; progress on a point counts by ticks (33.3%).
+            [.., first, second] => {
+                let (a, b) = (score(first), score(second));
+                match a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)) {
+                    std::cmp::Ordering::Greater => Some(first.attackers),
+                    std::cmp::Ordering::Less => Some(second.attackers),
+                    // Rule 67: both completed the map: extra rounds on
+                    // their time banks. Otherwise a tie is a draw (rule 30).
+                    std::cmp::Ordering::Equal => {
+                        if let (Some(one), Some(other)) = (first.bank, second.bank) {
+                            let mut by_team = [0.0; 2];
+                            by_team[usize::from(first.attackers)] = one;
+                            by_team[usize::from(second.attackers)] = other;
+                            banks = Some((by_team, first.attackers));
+                        }
+                        None
+                    }
+                }
+            }
+            _ => None,
         };
+        if let Some((by_team, first)) = banks {
+            self.extra_rounds(by_team, first);
+            self.enter(Phase::RoundEnd, ROUND_END);
+            return;
+        }
         self.events.push(FlowEvent::RoundOver(winner));
         self.decide(winner);
+    }
+
+    /// Rules 67-69: the extra rounds when both teams completed the map,
+    /// from the time each had left (`banks` per team, unscaled).
+    /// - Assault and Hybrid: a team with no time against one with at least
+    ///   1:00: only the other attacks (rule 69).
+    /// - Both at 2:00 or more: both are cut by the same amount until the
+    ///   lower is 2:00 (rules 67 and 68).
+    /// - Either under 1:00: the lower is raised to 1:00 and the other by
+    ///   the same amount (rule 67; both at 0 s get 1:00, rule 69).
+    ///
+    /// The team with less time attacks first (rule 67). Assumption: with
+    /// equal banks the team that attacked first in the set attacks first
+    /// again. Assumption: each extra side opens hero select for 25 s and
+    /// has setup, as the second side does.
+    fn extra_rounds(&mut self, mut banks: [f64; 2], first: u8) {
+        self.played.clear();
+        self.extra = true;
+        let low = banks[0].min(banks[1]);
+        let high = banks[0].max(banks[1]);
+        self.single =
+            matches!(self.mode, Mode::Assault | Mode::Hybrid) && low <= 0.0 && high >= BANK_FLOOR;
+        if self.single {
+            let team = if banks[0] >= BANK_FLOOR { 0 } else { 1 };
+            self.upcoming.push_back((team, banks[usize::from(team)]));
+            return;
+        }
+        let shift = if low >= BANK_CAP {
+            BANK_CAP - low
+        } else if low < BANK_FLOOR {
+            BANK_FLOOR - low
+        } else {
+            0.0
+        };
+        for bank in &mut banks {
+            *bank += shift;
+        }
+        let first = if banks[0] == banks[1] {
+            first
+        } else if banks[0] < banks[1] {
+            0
+        } else {
+            1
+        };
+        let second = 1 - first;
+        self.upcoming.push_back((first, banks[usize::from(first)]));
+        self.upcoming
+            .push_back((second, banks[usize::from(second)]));
     }
 
     fn play_control(&mut self, seconds: f64, participants: &[Participant]) {
@@ -953,8 +1172,10 @@ impl MatchFlow {
     /// Rule 99: a team with no one left alive loses the round; a round
     /// still on after [`ELIMINATION_ROUND`] is a draw. A team counts once
     /// one of its players was alive in the round, so the respawns at its
-    /// start come first.
-    fn play_elimination(&mut self, participants: &[Participant]) {
+    /// start come first. Rule 100: from [`ELIMINATION_TIEBREAK`] on, the
+    /// team that captures the arena's point (3 s, any enemy on it blocks)
+    /// wins the round.
+    fn play_elimination(&mut self, seconds: f64, participants: &[Participant]) {
         let alive = |team: u8| {
             participants
                 .iter()
@@ -963,14 +1184,21 @@ impl MatchFlow {
         for team in 0..2u8 {
             self.seen_alive[usize::from(team)] |= alive(team);
         }
+        let scale = self.timers.scale;
+        let captured = self.tiebreak.as_mut().and_then(|point| {
+            point.step(seconds, scale, participants);
+            point.owner()
+        });
         let out = |team: u8| self.seen_alive[usize::from(team)] && !alive(team);
         let winner = match (out(0), out(1)) {
             (false, true) => Some(0),
             (true, false) => Some(1),
             (true, true) => None,
+            (false, false) if captured.is_some() => captured,
             (false, false) if self.left <= 0.0 => None,
             (false, false) => return,
         };
+        self.tiebreak = None;
         self.events.push(FlowEvent::RoundOver(winner));
         if let Some(team) = winner {
             self.rounds_won[usize::from(team)] += 1;

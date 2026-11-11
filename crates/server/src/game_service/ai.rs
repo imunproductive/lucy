@@ -210,7 +210,7 @@ impl AiSeat {
         let feet = delivery.body_position();
         let home = room
             .map
-            .spawn_point(team, viewer.spawn)
+            .spawn_point_in(team, viewer.spawn, viewer.room)
             .map_or_else(|| feet.unwrap_or_default(), |(point, _)| point);
         let sight = |from, to| scene.line_of_sight(from, to);
         let senses = Senses {

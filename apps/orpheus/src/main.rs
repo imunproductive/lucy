@@ -374,4 +374,65 @@ mod tests {
             assert_eq!(cli.state, Some(PathBuf::from("elsewhere")));
         }
     }
+
+    /// `show --state-index` is the graph's state; `--state` stays the state
+    /// folder, before or after the command.
+    #[test]
+    fn script_query_show_takes_a_state_index_beside_the_state_folder() {
+        for arguments in [
+            &[
+                "script",
+                "query",
+                "show",
+                "0255",
+                "--state-index",
+                "1",
+                "--depth",
+                "-1",
+            ][..],
+            &[
+                "--state",
+                "elsewhere",
+                "script",
+                "query",
+                "show",
+                "0255",
+                "--state-index",
+                "1",
+                "--depth",
+                "-1",
+            ],
+            &[
+                "script",
+                "query",
+                "show",
+                "0255",
+                "--state-index",
+                "1",
+                "--state",
+                "elsewhere",
+                "--depth",
+                "-1",
+            ],
+        ] {
+            let cli = parse(arguments);
+            let Some(Command::Script(ScriptCommand::Query(query))) = cli.command else {
+                panic!("script query: {arguments:?}")
+            };
+            let script_query::QueryCommand::Show {
+                graph,
+                state_index,
+                depth,
+            } = query.command
+            else {
+                panic!("show: {arguments:?}")
+            };
+            assert_eq!(
+                (graph.as_str(), state_index, depth),
+                ("0255", Some(1), Some(-1))
+            );
+            let folder = (arguments.len() > 8).then(|| PathBuf::from("elsewhere"));
+            assert_eq!(cli.state, folder, "{arguments:?}");
+        }
+    }
 }

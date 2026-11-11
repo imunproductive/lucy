@@ -68,6 +68,9 @@ impl World for PlayerWorld {
             "STU_ED45C5E8" => Some("no entities"),
             // An entity filter the evaluator can't compute (`native`).
             "STU_AC829876" => Some("false"),
+            // A tunable value for an entity (`native`): the authored value,
+            // not scaled for the entity.
+            "STU_082FA44E" => Some("the tunable's authored value"),
             _ => None,
         }
     }
@@ -261,6 +264,8 @@ impl World for PlayerWorld {
                 Some(Value::Entity(GAME_MODE_ENTITY))
             }
             "STU_4A101787" => Some(Value::Bool(false)),
+            // See `assumption`.
+            "STU_082FA44E" => self.graphs.tunables().value(config).map(Value::Float),
             // See `assumption`.
             "STU_ED45C5E8" if self.is_player_site(site) => Some(Value::Array(Vec::new())),
             // Does an entity pass a filter (teams, tags): the forms the

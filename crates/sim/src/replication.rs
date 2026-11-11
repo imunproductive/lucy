@@ -197,7 +197,9 @@ struct BodyScript {
     unsent_delta: Option<(u32, DeltaKind)>,
     corrections: Option<CorrectionHistory>,
     projectiles: Option<OwnerProjectiles>,
-    flights: Vec<(ProjectileToken, ProjectileFlight)>,
+    /// Each projectile in flight, with its lease token when the owner's
+    /// client shot it too (combat.py `Combat.rockets`).
+    flights: Vec<(Option<ProjectileToken>, ProjectileFlight)>,
     /// The projectiles fired since the match last took them, for the other
     /// clients (projectiles.py `fired`: `_show_others`).
     fired: Vec<FiredProjectile>,
@@ -281,7 +283,7 @@ impl BodyScript {
         }
         for shot in shots {
             match shot {
-                PosedShot::Projectile(shot) => self.launch_projectile(shot),
+                PosedShot::Projectile(shot) => self.launch_projectile(*shot),
                 hit => hits.push(hit),
             }
         }
@@ -289,17 +291,14 @@ impl BodyScript {
     }
 
     /// projectiles.py `fired` for a leased projectile: the Biotic Field
-    /// canister leaves its field where it lands; any other flies, and the
-    /// other clients see it.
+    /// canister leaves its field where it lands, another spawning volley
+    /// (Torbjörn's turret, Zarya's Graviton Surge) its entity; any other
+    /// flies, and the other clients see it. combat.py `_shoot`: an unleased
+    /// one flies for its damage alone.
     fn launch_projectile(&mut self, projectile: PosedProjectile) {
-        let Some((projectiles, definition)) = self
-            .projectiles
-            .as_mut()
-            .zip(projectile.ballistics.definition)
-        else {
-            return;
-        };
-        let bound = (projectile.ballistics.lifetime / TICK_PERIOD.as_secs_f64()).ceil() as u32;
+        let bound = (projectile.ballistics.bound() / TICK_PERIOD.as_secs_f64()).ceil() as u32;
+        let definition = projectile.ballistics.definition;
+        let damaging = projectile.ballistics.damaging();
         let Some(flight) = ProjectileFlight::new(
             projectile.ballistics,
             projectile.origin,
@@ -308,17 +307,30 @@ impl BodyScript {
         ) else {
             return;
         };
-        let token = match projectile.field {
-            Some(field) => {
-                projectiles.admit_field(projectile.shot, definition, bound, projectile.feet, *field)
+        let token = match (&mut self.projectiles, definition) {
+            (Some(projectiles), Some(definition)) if projectile.leased => {
+                match (projectile.field, projectile.spawn) {
+                    (Some(field), _) => projectiles.admit_field(
+                        projectile.shot,
+                        definition,
+                        bound,
+                        projectile.feet,
+                        *field,
+                    ),
+                    (None, Some(_)) => {
+                        projectiles.admit_spawning(projectile.shot, definition, bound)
+                    }
+                    (None, None) => projectiles.admit(projectile.shot, definition, bound),
+                }
+                .map(|token| (token, definition))
             }
-            None => projectiles.admit(projectile.shot, definition, bound),
+            _ => None,
         };
-        let Some(token) = token else {
+        if token.is_none() && !damaging {
             return;
-        };
-        self.flights.push((token, flight));
-        if projectile.spawn.is_none() {
+        }
+        self.flights.push((token.map(|(token, _)| token), flight));
+        if let Some((token, definition)) = token.filter(|_| projectile.spawn.is_none()) {
             self.fired.push(FiredProjectile {
                 body: self.id,
                 token,
@@ -829,6 +841,9 @@ pub struct WorldDelivery {
     /// views nobody, and its records arrive as soon as they are ready
     /// ([`Self::deliver_locally`]).
     headless: bool,
+    /// Time the match flow adds to a death's respawn now (overtime,
+    /// game-rules.md 11).
+    respawn_extra: Duration,
 }
 
 /// A body's death (combat.py `Vitals.death_tick`, `killer`) and when it
@@ -906,6 +921,7 @@ impl WorldDelivery {
             board: BoardDelivery::default(),
             assembling: false,
             headless: false,
+            respawn_extra: Duration::ZERO,
         }
     }
 
@@ -1731,6 +1747,11 @@ impl WorldDelivery {
         self.assembling = assembling;
     }
 
+    /// What the match flow adds to the respawn of a death from now on.
+    pub fn set_respawn_extra(&mut self, extra: Duration) {
+        self.respawn_extra = extra;
+    }
+
     /// A full frame of the game mode entity, such as the countdown; false
     /// when the client has no mode entity yet (server.py `queue_mode_frame`).
     pub fn queue_mode_frame(&mut self, frame: &orpheus_core::bits::BitWriter) -> io::Result<bool> {
@@ -2016,7 +2037,9 @@ impl WorldDelivery {
                 body: body.id,
                 killer: hit.shooter.source,
                 tick: death_tick,
-                respawn_at: now.saturating_add(scene.respawn_time()),
+                respawn_at: now
+                    .saturating_add(scene.respawn_time())
+                    .saturating_add(self.respawn_extra),
             });
             if let Some(script) = self
                 .body_script
@@ -2076,23 +2099,6 @@ impl WorldDelivery {
         given
     }
 
-    /// A dead player's timer is up now: a new Elimination round brings
-    /// everyone back at its start (game-rules.md 99). See
-    /// [`Self::respawn_due`].
-    pub fn respawn_now(
-        &mut self,
-        scene: &PreparedScene,
-        viewer: &PlayerAppearance<'_>,
-        tick: u32,
-        now: Duration,
-        quanta: u32,
-    ) -> io::Result<bool> {
-        if let Some(death) = &mut self.death {
-            death.respawn_at = death.respawn_at.min(now);
-        }
-        self.respawn_due(scene, viewer, tick, now, quanta)
-    }
-
     /// combat.py `_respawn`: once the mode's time is up, a dead player gets
     /// a new body of the same hero at his spawn point, as a hero switch does
     /// (match.py `switch_hero`), and his spawn voice line. While every id of
@@ -2134,6 +2140,50 @@ impl WorldDelivery {
             .unwrap_or_default();
         self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
         self.begin_spawn_bark(now);
+        Ok(true)
+    }
+
+    /// A new round puts the player back in his team's spawn room: a new
+    /// body of his hero there, dead or alive. With `select` hero select
+    /// opens too, as before the second side of an Assault, Escort or Hybrid
+    /// match (game-rules.md 2), and stays open while the heroes assemble. A
+    /// player without a hero keeps waiting in hero select. True when he got
+    /// a new body.
+    pub fn spawn_again(
+        &mut self,
+        scene: &PreparedScene,
+        viewer: &PlayerAppearance<'_>,
+        tick: u32,
+        now: Duration,
+        quanta: u32,
+        select: bool,
+    ) -> io::Result<bool> {
+        if select {
+            self.assembling = true;
+        }
+        let Some(body) = self.body else {
+            return Ok(false);
+        };
+        let Some(entity) = self.next_body(now) else {
+            return Ok(false);
+        };
+        let hero = scene
+            .heroes()
+            .get(body.hero)
+            .ok_or_else(|| invalid("the body's hero is unknown"))?;
+        self.switch(
+            scene,
+            viewer,
+            tick,
+            quanta,
+            entity,
+            (hero, body.skin),
+            false,
+        )?;
+        self.begin_spawn_bark(now);
+        if select && self.can_handle_game_message() {
+            self.queue_controller(scene, tick, true, Some(hero.guid), None)?;
+        }
         Ok(true)
     }
 
@@ -2236,25 +2286,30 @@ impl WorldDelivery {
         let Some(script) = &mut self.body_script else {
             return Ok(());
         };
-        let Some(projectiles) = &mut script.projectiles else {
-            return Ok(());
-        };
         let id = script.id;
         let mut deliveries = Vec::new();
-        script
-            .flights
-            .retain_mut(|(token, flight)| match step(id.entity, flight) {
+        let projectiles = &mut script.projectiles;
+        script.flights.retain_mut(|(token, flight)| {
+            let result = step(id.entity, flight);
+            let (Some(token), Some(projectiles)) = (*token, projectiles.as_mut()) else {
+                return matches!(result, Ok(None));
+            };
+            match result {
                 Ok(None) => true,
                 Ok(Some(end)) => {
                     let travelled = (end.travelled / TICK_PERIOD.as_secs_f64()).ceil() as u32;
-                    projectiles.flight_ended(*token, travelled, tick);
+                    projectiles.flight_ended(token, travelled, tick);
                     false
                 }
                 Err(_) => {
-                    projectiles.cancel(*token, &mut deliveries);
+                    projectiles.cancel(token, &mut deliveries);
                     false
                 }
-            });
+            }
+        });
+        let Some(projectiles) = &mut script.projectiles else {
+            return Ok(());
+        };
         deliveries.extend(projectiles.advance(tick, first_tick));
         self.projectile_events.extend(
             projectiles
@@ -2631,7 +2686,7 @@ impl WorldDelivery {
         pick: bool,
     ) -> io::Result<()> {
         let (hero, skin) = selection;
-        let mover = scene.player_spawn_mover(hero.body, viewer.team, viewer.spawn)?;
+        let mover = scene.player_spawn_mover(hero.body, viewer.team, viewer.spawn, viewer.room)?;
         let movement = mover.pose();
         let pose = owner_pose(movement);
         let generation = self

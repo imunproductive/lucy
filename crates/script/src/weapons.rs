@@ -1,10 +1,13 @@
 //! Damage and ballistics read from authored weapon volley nodes in build 104319.
 
+use std::{collections::HashMap, fs, io, path::Path};
+
+use serde::Deserialize;
 use serde_json::Value as Json;
 
 use crate::{
     expr::{EvalError, to_float},
-    graph::Node,
+    graph::{Node, asset_guid},
     wire::Value,
 };
 
@@ -83,6 +86,21 @@ impl HitDefinition {
 
 const DEFAULT_LIFETIME: f64 = 5.0;
 const RING_EPSILON: f64 = 1e-9;
+/// The projectile motion class of an arc: `m_599AB8D7` is its downward
+/// acceleration in m/s² (9.8 for Hanzo's arrows, Junkrat's grenades and
+/// Torbjörn's rivets; Tracer's Pulse Bomb sets its variable `1CDD` to 30).
+const GRAVITY_MOTION: &str = "STU_E1A5B579";
+/// Seconds a projectile that sticks waits before it explodes. No asset
+/// names it (assumption): the volleys that stick (Tracer's Pulse Bomb,
+/// graph `0034` state 0, and Echo's Sticky Bombs, `1C36` state 0) give no
+/// delay, and neither does the Pulse Bomb's entity (`0045.003`: a visual,
+/// model, target tag and statescript component). One second is the public
+/// rule for the Pulse Bomb and what ow1-preservation's server used (run 392,
+/// `HANDOFF.md:1770`). The explosion's `m_2FE97560` is 1.0 on the Pulse
+/// Bomb too, but also on explosives that go off where they hit (Soldier:
+/// 76's Helix Rockets, `0254`; Pharah's rocket has 1.875), so it isn't read
+/// as the fuse.
+pub const STICK_FUSE: f64 = 1.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectileBallistics {
@@ -91,6 +109,15 @@ pub struct ProjectileBallistics {
     pub definition: Option<u64>,
     pub direct: Option<HitDefinition>,
     pub blast: Option<Blast>,
+    /// The arc's downward acceleration in m/s²: the sum of the volley's
+    /// gravity motions (`m_projectileMotions`); 0 flies straight.
+    pub gravity: f64,
+    /// A projectile that sticks to the first body or surface it hits and
+    /// explodes this many seconds later; None ends where it hits.
+    pub fuse: Option<f64>,
+    /// The volley's motion classes the flight doesn't model, which it flies
+    /// as if they weren't there (Pharah's `STU_7A5DFFF8`).
+    pub unmodelled: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -151,13 +178,119 @@ impl ProjectileBallistics {
         } else {
             None
         };
+        // Beyond Python, which flew every projectile straight and ended it
+        // where it hit (ow174/game/combat.py `_fly`): the volley's arc and
+        // whether it sticks.
+        let mut gravity = 0.0;
+        let mut unmodelled = Vec::new();
+        if let Some(motions) = node.field("m_projectileMotions").and_then(Json::as_array) {
+            for motion in motions.iter().filter(|motion| motion.is_object()) {
+                match motion.get("$").and_then(Json::as_str) {
+                    Some(GRAVITY_MOTION) => {
+                        gravity += authored_number(motion.get("m_599AB8D7"), 0.0, &mut evaluate)?;
+                    }
+                    class => unmodelled.push(class.unwrap_or("?").to_owned()),
+                }
+            }
+        }
+        if !gravity.is_finite() {
+            return Ok(None);
+        }
+        // The collision config's `m_47999E82` is set on the volleys that
+        // stick to what they hit and on no other (assumption: its meaning
+        // is read from those two, the Pulse Bomb and Echo's Sticky Bombs).
+        let sticks =
+            authored_number(node.field("m_55E8761C.m_47999E82"), 0.0, &mut evaluate)? != 0.0;
         Ok(Some(Self {
             speed,
             lifetime,
             definition,
             direct,
             blast,
+            gravity,
+            fuse: sticks.then_some(STICK_FUSE),
+            unmodelled,
         }))
+    }
+
+    /// The seconds the projectile lives at most: its flight, then its fuse.
+    pub fn bound(&self) -> f64 {
+        self.lifetime + self.fuse.unwrap_or(0.0)
+    }
+
+    /// Whether it does damage where it hits or explodes (combat.py `_shoot`:
+    /// `damaging`).
+    pub fn damaging(&self) -> bool {
+        self.direct.is_some_and(|hit| hit.amount > 0.0)
+            || self
+                .blast
+                .as_ref()
+                .is_some_and(|blast| blast.hit.amount > 0.0)
+    }
+}
+
+/// The derived tunables file, in the runtime `data` folder: every tunable
+/// value (type `130`, `STU_A0E5F3ED`) in the install, its `m_3E5360A1` by
+/// GUID (the `orpheus-assets` derivation `game_tunables`).
+pub const TUNABLES_FILE: &str = "game_tunables_174.json";
+
+/// The tunable values the graphs read through `STU_082FA44E`, by tunable
+/// GUID. One read decides play: Tracer's Pulse Bomb damage, graph `0034`
+/// node 51, sets variable `01DC` to 450 in the modes whose mode variable
+/// `3460` is set, else to tunable `0130:015D`, 350.
+#[derive(Debug, Default)]
+pub struct Tunables {
+    values: HashMap<u64, f64>,
+}
+
+#[derive(Deserialize)]
+struct RawTunables {
+    tunables: HashMap<String, f64>,
+}
+
+impl Tunables {
+    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
+        let data = fs::read(path).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
+        Self::from_json(&data)
+    }
+
+    pub fn from_json(data: &[u8]) -> io::Result<Self> {
+        let invalid = |error: String| io::Error::new(io::ErrorKind::InvalidData, error);
+        let raw: RawTunables =
+            serde_json::from_slice(data).map_err(|error| invalid(error.to_string()))?;
+        let values = raw
+            .tunables
+            .into_iter()
+            .map(|(guid, value)| {
+                asset_guid(&Json::String(guid.clone()))
+                    .map(|guid| (guid, value))
+                    .ok_or_else(|| invalid(format!("invalid tunable GUID {guid:?}")))
+            })
+            .collect::<io::Result<_>>()?;
+        Ok(Self { values })
+    }
+
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// `STU_082FA44E` (a float config): the authored value of its tunable
+    /// (`m_DBF61E9A`); none for a tunable the install lacks. Its entity
+    /// operand (`m_entity`) could scale the value by something of that
+    /// entity's; no asset says how, so it is left out (assumption).
+    pub fn value(&self, config: &Json) -> Option<f64> {
+        let guid = config
+            .get("m_DBF61E9A")?
+            .get("m_DBF61E9A")
+            .and_then(asset_guid)?;
+        self.values.get(&guid).copied()
     }
 }
 
@@ -237,5 +370,36 @@ mod tests {
             ),
             (0.0, None, 1.0, None)
         );
+    }
+
+    /// Graph `0034` node 51's `STU_082FA44E` reads its tunable's value from
+    /// the derived table; a tunable the table lacks reads nothing.
+    #[test]
+    fn a_tunable_config_reads_its_value_from_the_table() {
+        let tunables = Tunables::from_json(
+            br#"{"source": "", "tunables": {"0x0F4800000000015D": 350.0, "0x0F48000000000001": 0.25}}"#,
+        )
+        .unwrap();
+        let config = |guid: &str| {
+            json!({"$": "STU_082FA44E",
+                "m_DBF61E9A": {"$": "STU_D9BDAA46", "m_DBF61E9A": guid, "m_resourceKey": null},
+                "m_entity": {"$": "STU_B5A0CAF0"}})
+        };
+        assert_eq!(tunables.value(&config("0x0F4800000000015D")), Some(350.0));
+        assert_eq!(tunables.value(&config("0x0F48000000000001")), Some(0.25));
+        assert_eq!(tunables.value(&config("0x0F4800000000015E")), None);
+        assert_eq!(tunables.value(&json!({"$": "STU_082FA44E"})), None);
+        assert!(Tunables::from_json(br#"{"tunables": {"nope": 1.0}}"#).is_err());
+    }
+
+    /// The install's tunable `0130:015D` (Tracer's Pulse Bomb damage) is 350.
+    #[test]
+    #[ignore = "requires the 1.74 game data"]
+    fn the_install_s_pulse_bomb_tunable_is_350() {
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let tunables = Tunables::load(data.join(TUNABLES_FILE)).unwrap();
+        let config = json!({"$": "STU_082FA44E",
+            "m_DBF61E9A": {"$": "STU_D9BDAA46", "m_DBF61E9A": "0x0F4800000000015D"}});
+        assert_eq!(tunables.value(&config), Some(350.0));
     }
 }

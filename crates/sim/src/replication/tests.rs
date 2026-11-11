@@ -250,6 +250,7 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
         slot: 0,
         team: 0,
         spawn: 0,
+        room: orpheus_content::maps::SpawnChoice::First,
         card: &PlayerCard::default(),
     };
     let mut world = WorldDelivery::new(owner);
@@ -339,7 +340,7 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
         );
     }
     let mut synchronous = scene
-        .player_spawn_mover(hero.body, viewer.team, viewer.spawn)
+        .player_spawn_mover(hero.body, viewer.team, viewer.spawn, viewer.room)
         .unwrap();
     for command in [actual, gap] {
         synchronous
@@ -358,7 +359,7 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
     assert_eq!(world.body.unwrap().id.entity, owner | 2);
     assert_eq!(world.command_ack(FIRST_TICK + 90), later.frame);
     let mut synchronous = scene
-        .player_spawn_mover(tracer.body, viewer.team, viewer.spawn)
+        .player_spawn_mover(tracer.body, viewer.team, viewer.spawn, viewer.room)
         .unwrap();
     synchronous
         .step(scene.movement_index(), later, 0.016, |_, _| {})
@@ -903,6 +904,7 @@ fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
         slot: 0,
         team: 0,
         spawn: 0,
+        room: orpheus_content::maps::SpawnChoice::First,
         card: &PlayerCard::default(),
     };
     let mut world = WorldDelivery::new(OWNER);

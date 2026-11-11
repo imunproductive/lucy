@@ -50,6 +50,12 @@ impl World for ModeWorld {
         self.unknowns
     }
 
+    fn assumption(&self, class: &str) -> Option<&'static str> {
+        // As `PlayerWorld`: the tunable's authored value, not scaled for the
+        // entity.
+        (class == "STU_082FA44E").then_some("the tunable's authored value")
+    }
+
     fn ruleset(&mut self, id: u32) -> Option<Value> {
         self.graphs.rulesets().default(id, 0, self.mode)
     }
@@ -66,9 +72,14 @@ impl World for ModeWorld {
     }
 
     /// `STU_A3DEF368` is the first entity with component 114, the mode
-    /// entity itself (ow1-preservation: getter 0xcdd340).
+    /// entity itself (ow1-preservation: getter 0xcdd340). `STU_082FA44E`
+    /// reads a tunable's authored value, as `PlayerWorld` does.
     fn native(&mut self, _site: Site, config: &Json) -> Option<Value> {
-        (config.get("$")?.as_str()? == "STU_A3DEF368").then_some(Value::Entity(GAME_MODE_ENTITY))
+        match config.get("$")?.as_str()? {
+            "STU_A3DEF368" => Some(Value::Entity(GAME_MODE_ENTITY)),
+            "STU_082FA44E" => self.graphs.tunables().value(config).map(Value::Float),
+            _ => None,
+        }
     }
 
     fn send_message(

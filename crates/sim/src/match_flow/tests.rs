@@ -603,3 +603,217 @@ fn an_elimination_round_still_on_after_its_time_is_a_draw() {
     close(ended, ELIMINATION_ROUND);
     assert_eq!(run.flow.team_score(0) + run.flow.team_score(1), 0);
 }
+
+#[test]
+fn overtime_adds_three_seconds_to_respawns() {
+    let mut run = Run::new(MatchFlow::new(&assault(), false, Timers::default()).unwrap());
+    run.flow.start();
+    run.phase(100.0, &[], Phase::Round);
+    assert_eq!(run.flow.respawn_extra(), 0.0);
+    run.until(300.0, &[at(0, 1, A), at(1, 0, A)], |event| {
+        *event == FlowEvent::Overtime(true)
+    })
+    .unwrap();
+    assert_eq!(run.flow.respawn_extra(), OVERTIME_RESPAWN);
+}
+
+#[test]
+fn spawn_rooms_follow_the_objective_and_swap_with_the_sides() {
+    let mut run = Run::new(MatchFlow::new(&assault(), true, Timers::default()).unwrap());
+    let room = |objective, attack| SpawnChoice::Objective { objective, attack };
+    assert_eq!(run.flow.spawn_choice(1), room(0, true));
+    assert_eq!(run.flow.spawn_choice(0), room(0, false));
+    run.flow.start();
+    run.phase(100.0, &[], Phase::Round);
+    run.until(40.0, &[at(0, 1, A)], |event| {
+        *event == FlowEvent::Objective(0)
+    })
+    .unwrap();
+    // Rule 36: the attackers' spawn moves forward after A.
+    assert_eq!(run.flow.spawn_choice(1), room(1, true));
+    assert_eq!(run.flow.spawn_choice(0), room(1, false));
+    run.phase(500.0, &[], Phase::RoundEnd);
+    run.phase(20.0, &[], Phase::Assemble);
+    // The sides swap: team 0 attacks from objective 0's attack rooms.
+    assert_eq!(run.flow.spawn_choice(0), room(0, true));
+    assert_eq!(run.flow.spawn_choice(1), room(0, false));
+
+    // Escort: the checkpoint the payload heads for.
+    let mut run = Run::new(MatchFlow::new(&escort(), false, Timers::default()).unwrap());
+    run.flow.start();
+    run.phase(100.0, &[], Phase::Round);
+    assert_eq!(run.flow.spawn_choice(1), room(0, true));
+    // An attacker walks along with the payload (its path runs along x).
+    let mut reached = false;
+    for _ in 0..(30.0 / STEP) as usize {
+        let x = run.flow.objective_progress().unwrap();
+        let events = run.flow.advance(STEP, &[at(0, 1, [x, 0.0, 0.0])]);
+        if events.contains(&FlowEvent::Objective(0)) {
+            reached = true;
+            break;
+        }
+    }
+    assert!(reached, "the first checkpoint");
+    assert_eq!(run.flow.spawn_choice(0), room(1, false));
+
+    // Control: the stage of the round (rule 60).
+    let mut run = Run::new(MatchFlow::new(&control(), false, Timers::default()).unwrap());
+    assert_eq!(run.flow.spawn_choice(0), SpawnChoice::Stage(0));
+    run.flow.start();
+    run.phase(40.0, &[], Phase::Round);
+    run.until(200.0, &[at(0, 0, A)], |event| {
+        *event == FlowEvent::RoundOver(Some(0))
+    })
+    .unwrap();
+    run.phase(20.0, &[], Phase::Round);
+    assert_eq!(run.flow.spawn_choice(1), SpawnChoice::Stage(1));
+}
+
+/// Both sides of a Competitive Assault take A and B: extra rounds on the
+/// time banks (rules 67-69).
+#[test]
+fn competitive_assault_completed_by_both_goes_to_extra_rounds_on_the_time_banks() {
+    let mut run = Run::new(MatchFlow::new(&assault(), true, Timers::default()).unwrap());
+    run.flow.start();
+    // Team 1 alone: A in 30 s, B in 18 s, 372 s left. Team 0 with two
+    // players: A in 20 s, B in 12 s, 388 s left.
+    for (team, players) in [(1, 1), (0, 2)] {
+        run.phase(200.0, &[], Phase::Round);
+        for point in [A, B] {
+            let on: Vec<_> = (0..players).map(|slot| at(slot, team, point)).collect();
+            run.until(40.0, &on, |event| matches!(event, FlowEvent::Objective(_)))
+                .unwrap();
+        }
+    }
+    assert!(run.flow.standing(0, 0).is_none(), "extra rounds, no result");
+    assert!(
+        !run.events
+            .iter()
+            .any(|(_, event)| matches!(event, FlowEvent::RoundOver(_)))
+    );
+    // Both over 2:00: cut by 252 s to 120 s and 136 s; the lower attacks
+    // first.
+    run.phase(20.0, &[], Phase::Assemble);
+    assert_eq!(run.flow.attackers(), Some(1));
+    run.phase(100.0, &[], Phase::Round);
+    close(run.flow.clock(), 120.0);
+    // A in an extra round adds 30 s (rule 69), then team 1 is stopped.
+    run.until(40.0, &[at(0, 1, A)], |event| {
+        *event == FlowEvent::Objective(0)
+    })
+    .unwrap();
+    close(run.flow.clock(), 120.0);
+    run.phase(200.0, &[], Phase::RoundEnd);
+    run.phase(20.0, &[], Phase::Assemble);
+    assert_eq!(run.flow.attackers(), Some(0));
+    run.phase(100.0, &[], Phase::Round);
+    close(run.flow.clock(), 136.0);
+    // Team 0 takes A and a tick of B: farther, it wins.
+    run.until(40.0, &[at(0, 0, A)], |event| {
+        *event == FlowEvent::Objective(0)
+    })
+    .unwrap();
+    run.until(7.0, &[at(0, 0, B)], |_| false);
+    run.until(300.0, &[], |event| *event == FlowEvent::MatchOver)
+        .unwrap();
+    assert_eq!(run.flow.standing(0, 0), Some(Standing::Won));
+    assert_eq!(run.flow.standing(0, 1), Some(Standing::Lost));
+}
+
+#[test]
+fn time_banks_are_cut_to_two_minutes_or_raised_to_one() {
+    let banks = |mode, banks: [f64; 2]| {
+        let mut map = escort();
+        map.mode_guid = mode;
+        if mode == HYBRID {
+            map.objectives[0] = objective(ObjectiveKind::Point, 0, Some("Point A"), A);
+        }
+        if mode == ASSAULT {
+            map = assault();
+        }
+        let mut flow = MatchFlow::new(&map, true, Timers::default()).unwrap();
+        flow.upcoming.clear();
+        flow.extra_rounds(banks, 1);
+        (flow.single, flow.upcoming.into_iter().collect::<Vec<_>>())
+    };
+    // Rule 68: 4:37 and 2:50 become 3:47 and 2:00.
+    assert_eq!(
+        banks(ESCORT, [277.0, 170.0]),
+        (false, vec![(1, 120.0), (0, 227.0)])
+    );
+    // Rule 67: 1:00 to 1:59 stay.
+    assert_eq!(
+        banks(ESCORT, [90.0, 70.0]),
+        (false, vec![(1, 70.0), (0, 90.0)])
+    );
+    // Rule 67: under 1:00 the lower is raised to 1:00, the other alike.
+    assert_eq!(
+        banks(ESCORT, [30.0, 100.0]),
+        (false, vec![(0, 60.0), (1, 130.0)])
+    );
+    // Rule 69: both at 0 s get 1:00; equal banks keep the first attackers.
+    assert_eq!(
+        banks(HYBRID, [0.0, 0.0]),
+        (false, vec![(1, 60.0), (0, 60.0)])
+    );
+    // Rule 69: 0 s against 1:00 or more: only the other team attacks.
+    assert_eq!(banks(ASSAULT, [75.0, 0.0]), (true, vec![(0, 75.0)]));
+    assert_eq!(
+        banks(ESCORT, [75.0, 0.0]),
+        (false, vec![(1, 60.0), (0, 135.0)])
+    );
+}
+
+#[test]
+fn a_lone_extra_attack_wins_with_a_tick_or_draws() {
+    for (seconds, expected) in [(12.0, Standing::Won), (5.0, Standing::Drew)] {
+        let mut flow = MatchFlow::new(&assault(), true, Timers::default()).unwrap();
+        flow.upcoming.clear();
+        flow.extra_rounds([75.0, 0.0], 1);
+        flow.sided = None;
+        flow.phase = Phase::RoundEnd;
+        flow.left = 0.0;
+        let mut run = Run::new(flow);
+        run.phase(1.0, &[], Phase::Assemble);
+        assert_eq!(run.flow.attackers(), Some(0));
+        run.phase(100.0, &[], Phase::Round);
+        close(run.flow.clock(), 75.0);
+        // 10 s on A is a tick (rule 33).
+        run.until(seconds, &[at(0, 0, A)], |_| false);
+        run.until(100.0, &[], |event| *event == FlowEvent::MatchOver)
+            .unwrap();
+        assert_eq!(run.flow.standing(0, 0), Some(expected), "{seconds} s");
+    }
+}
+
+#[test]
+fn an_elimination_point_unlocks_at_105_seconds_and_its_capture_wins() {
+    let mut run =
+        Run::new(MatchFlow::new(&map(ELIMINATION, Vec::new()), false, Timers::default()).unwrap());
+    run.flow.start();
+    // The fixture's one spawn point serves both teams: the point is there.
+    let centre = GameMap::practice_range().spawns[0].position;
+    let players = [at(0, 0, centre), at(1, 1, SPAWN)];
+    run.phase(40.0, &players, Phase::Round);
+    let won = run
+        .until(200.0, &players, |event| {
+            *event == FlowEvent::RoundOver(Some(0))
+        })
+        .unwrap();
+    close(won, ELIMINATION_TIEBREAK + 3.0);
+    assert_eq!(run.flow.team_score(0), 1);
+    // Contested, it isn't taken: the round is a draw at 135 s.
+    let contested = [at(0, 0, centre), at(1, 1, centre)];
+    run.phase(40.0, &contested, Phase::Round);
+    let drawn = run
+        .until(200.0, &contested, |event| {
+            matches!(event, FlowEvent::RoundOver(_))
+        })
+        .unwrap();
+    close(drawn, ELIMINATION_ROUND);
+    assert!(
+        run.events
+            .iter()
+            .any(|(_, event)| *event == FlowEvent::RoundOver(None))
+    );
+}

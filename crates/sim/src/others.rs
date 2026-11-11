@@ -974,6 +974,7 @@ impl Others {
                     slot: other.slot,
                     team: other.team,
                     spawn: 0,
+                    room: orpheus_content::maps::SpawnChoice::First,
                     card: other.card,
                 },
                 None,

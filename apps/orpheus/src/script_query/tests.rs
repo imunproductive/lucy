@@ -31,7 +31,7 @@ fn run(command: QueryCommand) -> Vec<String> {
 fn show(graph: &str, state: i64) -> Vec<String> {
     run(QueryCommand::Show {
         graph: graph.into(),
-        state: Some(state),
+        state_index: Some(state),
         depth: Some(0),
     })
 }
