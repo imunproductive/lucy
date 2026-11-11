@@ -10,7 +10,7 @@ use crate::{
     scene_assets::{PreparedScene, SceneAssets},
 };
 use orpheus_core::tick::FIRST_TICK;
-use orpheus_script::bot::{NAMEPLATE_ENABLED, NAMEPLATE_TEXT};
+use orpheus_script::bot::{DEAD_FLAG, NAMEPLATE_ENABLED, NAMEPLATE_TEXT};
 use orpheus_wire::entity::EntityUpdate;
 
 const OWNER: u32 = 0xa000_0100;
@@ -124,8 +124,9 @@ fn practice_bots_start_one_script_per_update_and_the_firing_bots_shoot() {
 
 /// server.py: each client gets every bot's first frame once its create
 /// arrived, without the nameplate until the mode UI has arrived, then the
-/// nameplate alone, with the bot's name as its text; a surviving hit's
-/// enabled nameplate; a death's frames; and the respawned bot's new script.
+/// nameplate alone, with the bot's name as its text, enabled for the bots
+/// on the player's team; a surviving hit's enabled nameplate; a death's
+/// frames with the dead flag; and the respawned bot's new script.
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
@@ -201,8 +202,10 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
             .all(|&entity| nameplate(&scene, &world, entity).is_some())
     );
 
-    // A hit a bot that doesn't fire survives enables its nameplate: a live
-    // frame with #8807 true, once (upstream `show_damage_nameplate`).
+    // The player's team's bots, which no player can hit, have it enabled
+    // from the start; a hit an enemy bot that doesn't fire survives enables
+    // its nameplate: a live frame with #8807 true, once (upstream
+    // `show_damage_nameplate`).
     let enabled = |scene: &PreparedScene, world: &WorldDelivery, entity: u32| {
         let child = scene
             .bot_scripts()
@@ -218,15 +221,22 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
             .instance_variable(child, NAMEPLATE_ENABLED)
             == Some(&Value::Bool(true))
     };
+    let allies: BTreeSet<u32> = scene
+        .bots()
+        .iter()
+        .filter(|bot| bot.spawn.team == viewer.team)
+        .map(|bot| bot.entity)
+        .collect();
+    assert_eq!(allies.len(), 4);
     let hit = scene.bots()[1..]
         .iter()
-        .find(|bot| !bot.spawn.firing)
+        .find(|bot| !bot.spawn.firing && bot.spawn.team != viewer.team)
         .unwrap()
         .entity;
     assert!(
         entities
             .iter()
-            .all(|&entity| !enabled(&scene, &world, entity))
+            .all(|&entity| enabled(&scene, &world, entity) == allies.contains(&entity))
     );
     tick += 1;
     scene.bot_health(hit, 150.0);
@@ -243,7 +253,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         entities
             .iter()
             .filter(|&&entity| entity != hit)
-            .all(|&entity| !enabled(&scene, &world, entity))
+            .all(|&entity| enabled(&scene, &world, entity) == allies.contains(&entity))
     );
     scene.bot_health(hit, 100.0);
     assert!(scene.take_bot_events().is_empty());
@@ -262,6 +272,18 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     assert!(world.bot_frames_pending(victim));
     assert_eq!(script_chunks(&deliver(&mut world)), [victim]);
     assert!(!world.bot_frames_pending(victim));
+    // Its acknowledged frame has the dead flag up, which hides the health
+    // bar (0D24's #17549 reads `!#478e`).
+    let dead = |world: &WorldDelivery| {
+        world
+            .bot_stream(victim)
+            .and_then(|stream| stream.base())
+            .unwrap()
+            .1
+            .entity_variable(DEAD_FLAG)
+            .cloned()
+    };
+    assert_eq!(dead(&world), Some(Value::Bool(true)));
     let mut updates = 0;
     // The death script runs for its lifetime, 187 frames.
     for _ in 0..200 {
@@ -280,6 +302,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         );
     }
     assert!(updates > 0);
+    assert_eq!(dead(&world), Some(Value::Bool(true)));
 
     // The respawn: a new script under the new entity, sent after its create.
     let fresh = scene.bots()[0].respawned(BOT_ENTITY + 15, tick + 8);
@@ -297,6 +320,16 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     assert!(script_chunks(&deliver(&mut world)).is_empty());
     assert_eq!(script_chunks(&deliver(&mut world)), [BOT_ENTITY + 15]);
     assert!(nameplate(&scene, &world, BOT_ENTITY + 15).is_some());
+    // The replacement starts alive: no dead flag.
+    assert_eq!(
+        world
+            .bot_stream(BOT_ENTITY + 15)
+            .and_then(|stream| stream.base())
+            .unwrap()
+            .1
+            .entity_variable(DEAD_FLAG),
+        None
+    );
 }
 
 /// combat.py `_bot_weapons` and `_fly`: a firing bot's rockets leave its eye
