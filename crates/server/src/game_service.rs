@@ -1047,6 +1047,9 @@ impl Peer {
         if self.ai.is_some() {
             return;
         }
+        let Some(notice) = DROPPED_NOTICES.filter(notice) else {
+            return;
+        };
         if self.combat_ui.notices.len() == MAX_PENDING_COMBAT_NOTICES {
             self.combat_ui.notices.pop_front();
         }
@@ -2703,6 +2706,64 @@ fn run(
         }
     }
     Ok(())
+}
+
+/// A debugging switch: `ORPHEUS_DEBUG_DROP_NOTICES` lists combat notices the
+/// server leaves out (`hit`, `kill-flag` (25001 sent without its kill bit),
+/// `elimination` (25005), `death` (25004)), to find which one stalls the
+/// client's own body after a kill (leafall903/ORPHEUS issue 14).
+#[derive(Default)]
+struct DroppedNotices {
+    hit: bool,
+    kill_flag: bool,
+    elimination: bool,
+    death: bool,
+}
+
+static DROPPED_NOTICES: std::sync::LazyLock<DroppedNotices> = std::sync::LazyLock::new(|| {
+    let Ok(list) = std::env::var("ORPHEUS_DEBUG_DROP_NOTICES") else {
+        return DroppedNotices::default();
+    };
+    let mut dropped = DroppedNotices::default();
+    for item in list
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        match item {
+            "hit" => dropped.hit = true,
+            "kill-flag" => dropped.kill_flag = true,
+            "elimination" => dropped.elimination = true,
+            "death" => dropped.death = true,
+            other => tracing::warn!("ORPHEUS_DEBUG_DROP_NOTICES: unknown notice {other:?}"),
+        }
+    }
+    tracing::warn!("debugging: dropping combat notices {list:?}");
+    dropped
+});
+
+impl DroppedNotices {
+    fn filter(&self, notice: CombatNotice) -> Option<CombatNotice> {
+        match notice {
+            CombatNotice::Hit { .. } if self.hit => None,
+            CombatNotice::Hit {
+                target,
+                dealt,
+                critical,
+                shot_frame,
+                ..
+            } if self.kill_flag => Some(CombatNotice::Hit {
+                target,
+                dealt,
+                critical,
+                killed: false,
+                shot_frame,
+            }),
+            CombatNotice::Elimination { .. } if self.elimination => None,
+            CombatNotice::Death { .. } if self.death => None,
+            notice => Some(notice),
+        }
+    }
 }
 
 mod ai;
