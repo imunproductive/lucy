@@ -2768,6 +2768,107 @@ fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_
     server.stop().unwrap();
 }
 
+/// The owner's Helix Rocket explodes on his screen soon after it hit. His
+/// client holds the explosion until the destroy with the release state
+/// arrives (072C: `m_delayCollisionEffectsBasedOnLatency`), so that destroy
+/// must follow the server's impact (25001's impact frame `0x84`, the server
+/// tick of the hit) closely. The client leads the packet frame by `LEAD`
+/// frames, as the real client does (`correction.rs`: at most 16), and runs
+/// three commands a datagram, as the server sends one every `SEND_EVERY`
+/// ticks.
+///
+/// `WITHIN` = 4 ticks: the release is due at the impact tick plus the
+/// alias offset K − f (the first owner frame that reported the shot, K,
+/// after the shot's frame f; the server runs a datagram's three commands
+/// in one tick, so its owner frame reports the last of them: at most 2
+/// later), and goes with the next send frame (at most `SEND_EVERY` − 1 =
+/// 2 ticks). The rocket flies 8 m (10 ticks at 50 m/s), long enough for
+/// its confirmation to arrive over loopback first. Before, the release
+/// waited for the shot's command frame plus the flight plus 6, compared
+/// with server ticks: `LEAD` + 6 ticks after the impact at least.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene"]
+fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
+    use orpheus_sim::scene_assets::SceneAssets;
+    use orpheus_wire::commands::SECONDARY;
+    const HELIX: u32 = 0x072c;
+    const LEAD: u32 = 8;
+    const AHEAD: f64 = 8.0;
+    const WITHIN: u32 = 4;
+
+    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut aim = None;
+    let (mut server, schemas, [mut soldier], _) =
+        practice_world([("soldier#1111", 0, "Soldier: 76")], &assets, |scene| {
+            // A hostile training bot that neither fires nor walks, ahead of
+            // his spawn along its facing.
+            let ([x, y, z], yaw) = scene.map().spawn_point(0, 0).unwrap();
+            let (sin, cos) = yaw.to_radians().sin_cos();
+            let bot = scene
+                .bots_mut()
+                .iter_mut()
+                .find(|bot| bot.spawn.team == 1 && !bot.spawn.firing && bot.spawn.route.is_empty())
+                .unwrap();
+            bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
+            aim = Some((bot.entity, (yaw * 65536.0 / 360.0).round() as i32 as i16));
+        });
+    let (bot, yaw) = aim.unwrap();
+    // The client's command frames run LEAD ahead of the last packet frame.
+    let mut next = soldier.tick + 1;
+    let fire = soldier.tick + LEAD + 60;
+    let mut command = |soldier: &mut Watcher| {
+        while next <= soldier.tick + LEAD {
+            let buttons = if next == fire { SECONDARY } else { 0 };
+            soldier
+                .client
+                .send(ACK, command_batch(next, 1, yaw, buttons, false));
+            next += 1;
+        }
+    };
+    let leased = |entity: u32| (0xa010_0000..0xc000_0000).contains(&entity);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (impact, release) = loop {
+        assert!(Instant::now() < deadline, "waiting for the Helix release");
+        command(&mut soldier);
+        soldier.pump(&schemas);
+        let hit_bot = |fields: &Fields| {
+            let Value::Struct(impact) = &fields[&0x78] else {
+                return false;
+            };
+            matches!(&impact[&0], Value::Struct(target)
+                if target[&0] == Value::Unsigned(u64::from(bot)))
+        };
+        let impact = soldier.datagrams.iter().find_map(|(messages, _)| {
+            messages
+                .iter()
+                .find(|message| message.id == 25001 && hit_bot(&message.fields))
+                .map(|message| message.fields[&0x84].clone())
+        });
+        let confirmed = soldier.find(0, |record| {
+            leased(record.entity) && record.definition == Some(HELIX)
+        });
+        let release = confirmed.and_then(|confirmed| {
+            soldier.find(confirmed, |record| {
+                leased(record.entity)
+                    && record.operation == Some(3)
+                    && record.projectile_release.is_some()
+            })
+        });
+        if let (Some(impact), Some(release)) = (impact, release) {
+            break (impact, release);
+        }
+    };
+    let Value::Unsigned(impact) = impact else {
+        panic!("impact frame")
+    };
+    let released = soldier.ticks[release];
+    assert!(
+        u64::from(released) >= impact && u64::from(released) <= impact + u64::from(WITHIN),
+        "released at {released}, the impact at {impact}"
+    );
+    server.stop().unwrap();
+}
+
 /// combat.py `_shoot` for Genji's fan (graph `0304` state 11, his secondary
 /// fire: three shuriken a shot, sync NONE): the server flies one shuriken
 /// along the aim for its damage alone, as Python does whatever the count,
