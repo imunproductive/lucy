@@ -1959,6 +1959,10 @@ impl WorldDelivery {
         if !self.can_handle_game_message() {
             return Ok(());
         }
+        if message.id == crate::wheel::COMMUNICATION_ACTION {
+            self.communication_action(message);
+            return Ok(());
+        }
         let Some(message) = ClientGameMessage::read(message) else {
             return Ok(());
         };
@@ -2003,6 +2007,25 @@ impl WorldDelivery {
             _ => {}
         }
         Ok(())
+    }
+
+    /// A communication wheel choice (21608) runs on the current body as
+    /// game message `02A3` ([`crate::wheel`]; match.py
+    /// `communication_action` in leafall903/ORPHEUS); a failure stops the
+    /// body's script, as any other body message does.
+    fn communication_action(&mut self, message: &Message) {
+        let Some((selection, parameters)) = crate::wheel::selection(message) else {
+            return;
+        };
+        if !self.world_started() {
+            return;
+        }
+        let Some(script) = &mut self.body_script else {
+            return;
+        };
+        if let Err(error) = script.runtime.receive_message(selection, parameters) {
+            self.drop_failed_script(&error.to_string());
+        }
     }
 
     pub fn command_ack(&self, tick: u32) -> u32 {

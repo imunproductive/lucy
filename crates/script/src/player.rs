@@ -21,6 +21,7 @@ use crate::{
     graph::GraphStore,
     vitals::{PoolKind, Vitals},
     vm::{GameMessage, Site, TargetCandidate, TargetTagEffect, Unknowns, World},
+    wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
 };
 use orpheus_content::maps::TUTORIAL_MODE;
@@ -50,6 +51,10 @@ pub struct PlayerWorld {
     /// How the body treats graph content the VM doesn't implement; by
     /// default as every script does ([`Unknowns::for_build`]).
     pub unknowns: Unknowns,
+    /// The communication wheel cosmetics the player has equipped for this
+    /// hero (`BodyWorld.spray_unlocks` and the others in leafall903/ORPHEUS
+    /// (MIT) `driver.py`).
+    pub cosmetics: Cosmetics,
     /// Game messages to other entities, for the match to route.
     outbox: Vec<GameMessage>,
 }
@@ -95,6 +100,11 @@ impl World for PlayerWorld {
     fn animation_scalar(&self, site: Site, alias: u64, category: u64) -> Option<f64> {
         let body = self.body.filter(|_| site.entity == self.entity)?;
         self.graphs.anim_lengths().scalar(body, alias, category)
+    }
+
+    fn equipped_cosmetic(&self, site: Site, entity: u32, kind: Cosmetic, slot: i64) -> Option<u64> {
+        (self.is_player_site(site) && entity == self.entity)
+            .then(|| self.cosmetics.equipped(kind, slot))
     }
 
     /// The body's messages to other entities wait for the match
@@ -379,6 +389,7 @@ impl PlayerWorld {
             controller_on_fire: false,
             targets: None,
             unknowns: Unknowns::for_build(),
+            cosmetics: Cosmetics::default(),
             outbox: Vec::new(),
         }
     }
