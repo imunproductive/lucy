@@ -213,6 +213,8 @@ struct BodyScript {
     /// The projectiles fired since the match last took them, for the other
     /// clients (projectiles.py `fired`: `_show_others`).
     fired: Vec<FiredProjectile>,
+    /// The buttons of the last command traced (`orpheus::owner` at debug).
+    traced_buttons: u32,
 }
 
 impl BodyScript {
@@ -243,6 +245,7 @@ impl BodyScript {
             projectiles,
             flights: Vec::new(),
             fired: Vec::new(),
+            traced_buttons: 0,
         })
     }
 
@@ -258,6 +261,18 @@ impl BodyScript {
         if command.frame > self.frame {
             self.runtime.advance(command, mover, step)?;
             self.frame = command.frame;
+            if command.buttons != self.traced_buttons {
+                self.traced_buttons = command.buttons;
+                tracing::debug!(
+                    target: "orpheus::owner",
+                    body = format_args!("{:08X}", self.id.entity),
+                    frame = command.frame,
+                    buttons = format_args!("{:#x}", command.buttons),
+                    step = ?step,
+                    volleys = %self.volleys(),
+                    "command buttons changed"
+                );
+            }
         }
         if !self
             .runtime
@@ -395,10 +410,11 @@ impl BodyScript {
             else {
                 return Ok(None);
             };
-            let (_, base) = self
+            let (base_last, base) = self
                 .stream
                 .base()
                 .expect("owner delta requires the baseline");
+            tracing::debug!(target: "orpheus::owner", base = base_last, "owner delta base");
             let mut snapshot = encoder.project_next(snapshot, base).map_err(invalid)?;
             if let Some(allowed) = kill_feed {
                 snapshot = snapshot.gate_kill_feed(encoder.graphs(), &self.stream, allowed);
@@ -424,6 +440,17 @@ impl BodyScript {
                 last
             })
         });
+        tracing::debug!(
+            target: "orpheus::owner",
+            body = format_args!("{:08X}", self.id.entity),
+            chunk = last,
+            kind = ?kind,
+            processed = self.frame,
+            bytes = packet.len(),
+            replaced = ?replaced,
+            volleys = %self.volleys(),
+            "owner frame queued"
+        );
         let record = Record {
             update: chunk.update,
             delivery: Delivery::BodyScript {
@@ -433,6 +460,36 @@ impl BodyScript {
             },
         };
         Ok(Some((record, replaced)))
+    }
+
+    /// The body's weapon volleys for the `orpheus::owner` trace: each active
+    /// one as `instance/state #activation start=ms ammo0 var=value`.
+    fn volleys(&self) -> String {
+        use std::fmt::Write;
+
+        let mut out = String::new();
+        let Some(snapshot) = self.runtime.snapshot() else {
+            return out;
+        };
+        for (id, instance) in &snapshot.instances {
+            for (raw, state) in &instance.states {
+                let orpheus_script::vm::StateKind::WeaponVolley {
+                    ammo0, ammo_var, ..
+                } = state.kind
+                else {
+                    continue;
+                };
+                let value = ammo_var.and_then(|var| instance.variables.get(&var.id));
+                let _ = write!(
+                    out,
+                    "{id}/{raw}{} #{} start={} ammo0={ammo0} var={value:?}; ",
+                    if state.active { "" } else { "(ended)" },
+                    state.activation,
+                    state.start_ms,
+                );
+            }
+        }
+        out
     }
 
     fn sent(&mut self, last: u32) {
@@ -1327,6 +1384,12 @@ impl WorldDelivery {
                 match (packet.arrived, record.delivery) {
                     (arrived, Delivery::BodyScript { last, .. }) => {
                         let script = self.body_script.as_mut().expect("current body stream");
+                        tracing::debug!(
+                            target: "orpheus::owner",
+                            chunk = last,
+                            arrived,
+                            "owner frame acknowledged"
+                        );
                         let delivery = if arrived {
                             script.stream.arrived(last)
                         } else {

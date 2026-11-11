@@ -16,6 +16,7 @@ orpheus-script.workspace = true
 orpheus-wire.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 
 [features]
 # Test builders shared with the tests of dependent crates.
