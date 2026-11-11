@@ -992,7 +992,9 @@ fn vm_text(cls: &str, is_state: bool) -> String {
         | "STU_7106C356"
         | "STU_C43F9944"
         | "STU_6E5C5F66" => action("no-op on the server"),
-        "STU_E9694EFD" | "STU_1C2CC6D5" => action("assumed no-op"),
+        "STU_1C2CC6D5" => action("ClearArray: writes a fresh empty array to m_26E3B366"),
+        "STU_4C3509FB" | "STU_CBE8BDAA" => action("inserts m_value into the m_26E3B366 array"),
+        "STU_E9694EFD" => action("assumed no-op"),
         "STUStatescriptState"
         | "STU_9D7BF987"
         | "STU_B4CD94F4"

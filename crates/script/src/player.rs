@@ -17,12 +17,13 @@ use std::{
 use serde_json::Value as Json;
 
 use crate::{
-    expr::{EntityRelation, native_shape, valid_entity},
+    expr::{EntityRelation, native_shape, team_from_filter, valid_entity},
     graph::GraphStore,
     vitals::{PoolKind, Vitals},
     vm::{GameMessage, Site, TargetCandidate, TargetTagEffect, Unknowns, World},
     wire::{Value, Variables},
 };
+use orpheus_content::maps::TUTORIAL_MODE;
 use orpheus_physics::mover::sample_movement_flags;
 use orpheus_wire::entity::{GAME_MODE_ENTITY, Movement};
 
@@ -240,6 +241,50 @@ impl World for PlayerWorld {
         (self.is_player_site(site) && entity == self.entity).then_some(self.body_filter)
     }
 
+    /// The body, its controller, the mode entity (when the mode has one) and
+    /// the bodies the match lists exist; any other entity is unknown.
+    fn entity_exists(&self, site: Site, entity: u32) -> Option<bool> {
+        if !self.is_player_site(site) {
+            return None;
+        }
+        let known = entity == self.entity
+            || (valid_entity(self.controller) && entity == self.controller)
+            || (entity == GAME_MODE_ENTITY && self.graphs.mode_variables(self.mode).is_some())
+            || self.listed(entity).is_some();
+        known.then_some(true)
+    }
+
+    /// The body stands where its mover put it; the other bodies where the
+    /// match placed them this tick.
+    fn entity_position(&self, site: Site, entity: u32) -> Option<[f64; 3]> {
+        if !self.is_player_site(site) {
+            return None;
+        }
+        if entity == self.entity {
+            return Some(self.position);
+        }
+        self.listed(entity).map(|body| body.feet)
+    }
+
+    /// The body looks along its last movement record's yaw and pitch
+    /// (`Match.script_body_facing` in leafall903/ORPHEUS, commit c239a84).
+    /// Other bodies' facing is unknown here.
+    fn entity_facing(&self, site: Site, entity: u32) -> Option<[i32; 2]> {
+        (self.is_player_site(site) && entity == self.entity)
+            .then_some([self.movement.yaw, self.movement.pitch])
+    }
+
+    /// The body's team from its filter bits; the other bodies' as listed.
+    fn entity_team(&self, site: Site, entity: u32) -> Option<i64> {
+        if !self.is_player_site(site) {
+            return None;
+        }
+        if entity == self.entity {
+            return Some(team_from_filter(self.body_filter));
+        }
+        self.listed(entity)?.team.map(i64::from)
+    }
+
     fn target_candidates(&self, site: Site) -> Option<&[TargetCandidate]> {
         self.is_player_site(site)
             .then_some(self.targets.as_deref())
@@ -295,13 +340,10 @@ impl World for PlayerWorld {
             // evaluator can't compute answer false, as
             // `ow174/game/script/driver.py` does.
             "STU_AC829876" if self.is_player_site(site) => Some(Value::Bool(false)),
-            // A human player's own body takes the falsey branch for this
-            // parameterless query, in every mode (`TRUSTED_NATIVES` in
-            // `ow174/game/script/driver.py`). Its native meaning is open.
-            "STU_A77AC2AC"
-                if self.is_player_site(site) && native_shape(config, "STU_A77AC2AC", None) =>
-            {
-                Some(Value::Null)
+            // IsTutorial (CE8580): whether the mode is the Tutorial
+            // (`SceneWorld.native` in leafall903/ORPHEUS, commit c239a84).
+            "STU_A77AC2AC" if native_shape(config, "STU_A77AC2AC", None) => {
+                Some(Value::Bool(self.mode == TUTORIAL_MODE))
             }
             _ => None,
         }
@@ -350,5 +392,80 @@ impl PlayerWorld {
 
     fn is_player_site(&self, site: Site) -> bool {
         site.entity == self.entity && valid_entity(self.entity)
+    }
+
+    /// A body the match lists this tick.
+    fn listed(&self, entity: u32) -> Option<&TargetCandidate> {
+        self.targets
+            .iter()
+            .flatten()
+            .find(|body| body.entity == entity)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BODY: u32 = 0xa000_0101;
+    const CONTROLLER: u32 = 0xa000_0001;
+
+    fn body(entity: u32, team: Option<u8>, feet: [f64; 3]) -> TargetCandidate {
+        TargetCandidate {
+            entity,
+            team,
+            dead: false,
+            feet,
+            height: 1.8,
+            radius: 0.4,
+        }
+    }
+
+    /// The body's own facts come from its world; other bodies' from the
+    /// match's list; anything else stays unknown.
+    #[test]
+    fn entity_answers_come_from_the_body_and_the_listed_bodies() {
+        let graphs =
+            GraphStore::from_json(br#"{"version":1,"graphs":[],"bodies":{},"missing":[]}"#)
+                .unwrap();
+        // Team 1's filter bit, with the player bit.
+        let filter = 0x0004_0001 | (0x80_0000 << 1);
+        let mut world = PlayerWorld::new(Arc::new(graphs), CONTROLLER, BODY, filter, 0, 0);
+        world.position = [1.0, 2.0, 3.0];
+        world.movement.yaw = 16384;
+        world.movement.pitch = -100;
+        world.targets = Some(vec![
+            body(BODY, Some(1), [1.0, 2.0, 3.0]),
+            body(0xa000_0102, Some(0), [4.0, 0.0, 4.0]),
+            body(0xa000_0103, None, [5.0, 0.0, 5.0]),
+        ]);
+        let site = Site {
+            entity: BODY,
+            instance: 1,
+            graph: 42,
+            node: None,
+        };
+        for entity in [BODY, CONTROLLER, 0xa000_0102] {
+            assert_eq!(world.entity_exists(site, entity), Some(true));
+        }
+        assert_eq!(world.entity_exists(site, 0xa000_0104), None);
+        assert_eq!(world.entity_exists(site, GAME_MODE_ENTITY), None);
+        assert_eq!(world.entity_position(site, BODY), Some([1.0, 2.0, 3.0]));
+        assert_eq!(
+            world.entity_position(site, 0xa000_0102),
+            Some([4.0, 0.0, 4.0])
+        );
+        assert_eq!(world.entity_position(site, CONTROLLER), None);
+        assert_eq!(world.entity_facing(site, BODY), Some([16384, -100]));
+        assert_eq!(world.entity_facing(site, 0xa000_0102), None);
+        assert_eq!(world.entity_team(site, BODY), Some(1));
+        assert_eq!(world.entity_team(site, 0xa000_0102), Some(0));
+        // A free-for-all body lists no team.
+        assert_eq!(world.entity_team(site, 0xa000_0103), None);
+        let other_site = Site {
+            entity: 0xa000_0102,
+            ..site
+        };
+        assert_eq!(world.entity_exists(other_site, BODY), None);
     }
 }

@@ -179,7 +179,10 @@ impl ProjectileFlight {
     }
 
     /// What it hit `distance` into this sweep: the direct hit's damage to a
-    /// struck body, then it sticks, or it ends with its explosion.
+    /// struck body, then it sticks, or it ends with its explosion. The
+    /// direct hit falls off with the distance flown, its seconds in flight
+    /// times its speed (leafall903/ORPHEUS (MIT) `combat.py` `_fly`, commit
+    /// b3c5138: Doomfist's 6 damage is 3.9 at 23 m and 1.8 at 35 m).
     fn hit(
         &mut self,
         distance: f64,
@@ -194,7 +197,7 @@ impl ProjectileFlight {
             step.impacts.push(Impact {
                 entity,
                 distance,
-                damage: direct.amount,
+                damage: direct.damage_at(self.travelled * self.ballistics.speed, false),
                 critical: false,
                 loadout: direct.loadout,
             });
@@ -309,7 +312,7 @@ fn pose_of(targets: &[(u32, TargetPose)], entity: u32) -> Option<&TargetPose> {
 mod tests {
     use super::*;
     use orpheus_physics::collision::index::{SceneTriangle, TriangleIndex};
-    use orpheus_script::weapons::{Blast, HitDefinition, STICK_FUSE};
+    use orpheus_script::weapons::{Blast, DamageFalloff, HitDefinition, STICK_FUSE};
 
     const LOADOUT: u64 = 0x0b90_0000_0000_008e;
     const TICK: f64 = 0.016;
@@ -696,5 +699,49 @@ mod tests {
             .unwrap();
         assert!(step.impacts.is_empty());
         assert!((step.end.unwrap().travelled - 0.1).abs() < 1e-12);
+    }
+
+    /// Upstream `test_hand_cannon_direct_damage_uses_the_authored_falloff`
+    /// (b3c5138): a Hand Cannon pellet (graph `0D0A` state 2: 80 m/s, 500 m
+    /// reach, 6 damage falling from 15 m to ×0.3 at 30 m) does 6.0, 3.9 and
+    /// 1.8 to a body 5, 23 and 35 m ahead, whose capsule it meets 0.5 m
+    /// short.
+    #[test]
+    fn a_direct_hit_falls_off_with_the_distance_flown() {
+        let hand_cannon = ProjectileBallistics {
+            speed: 80.0,
+            lifetime: 500.0 / 80.0,
+            definition: None,
+            direct: Some(HitDefinition {
+                falloff: Some(DamageFalloff {
+                    start: 15.0,
+                    end: 30.0,
+                    floor: 0.3,
+                }),
+                ..hit(6.0)
+            }),
+            blast: None,
+            gravity: 0.0,
+            fuse: None,
+            unmodelled: Vec::new(),
+        };
+        for (ahead, expected) in [(5.0, 6.0), (23.0, 3.9), (35.0, 1.8)] {
+            let mut flight = ProjectileFlight::new(
+                hand_cannon.clone(),
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                Some(999),
+            )
+            .unwrap();
+            let body = [(1, target(0.0, ahead))];
+            let step = (1000..1100)
+                .map(|tick| flight.advance(tick, &body, no_wall).unwrap())
+                .find(|step| step.end.is_some())
+                .unwrap();
+            let [(1, damage)] = damage(&step)[..] else {
+                panic!("one direct hit: {step:?}")
+            };
+            assert!((damage - expected).abs() < 0.02, "{ahead} m: {damage}");
+        }
     }
 }

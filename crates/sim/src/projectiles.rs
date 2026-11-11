@@ -1512,6 +1512,7 @@ mod tests {
             activation: 2,
             activation_ms: u64::from(frame) * 16,
             ordinal: 0,
+            spread: None,
         }
     }
 

@@ -8,6 +8,7 @@
 
 mod abilities;
 mod actions;
+mod arrays;
 mod buttons;
 mod context;
 mod flow;
@@ -324,6 +325,38 @@ pub trait World {
     /// them, and a search finds nothing.
     fn target_candidates(&self, _site: Site) -> Option<&[TargetCandidate]> {
         None
+    }
+
+    /// Whether `entity` exists; None: unknown. By default the bodies the
+    /// world lists exist.
+    fn entity_exists(&self, site: Site, entity: u32) -> Option<bool> {
+        self.target_candidates(site)?
+            .iter()
+            .any(|body| body.entity == entity)
+            .then_some(true)
+    }
+
+    /// Where `entity` stands; by default a listed body's feet.
+    fn entity_position(&self, site: Site, entity: u32) -> Option<[f64; 3]> {
+        self.target_candidates(site)?
+            .iter()
+            .find(|body| body.entity == entity)
+            .map(|body| body.feet)
+    }
+
+    /// A body's yaw and pitch, as [`expr::Context::entity_facing`].
+    fn entity_facing(&self, _site: Site, _entity: u32) -> Option<[i32; 2]> {
+        None
+    }
+
+    /// `entity`'s team index (0 to 4); by default a listed body's team. A
+    /// free-for-all body lists no team, so it is unknown.
+    fn entity_team(&self, site: Site, entity: u32) -> Option<i64> {
+        self.target_candidates(site)?
+            .iter()
+            .find(|body| body.entity == entity)?
+            .team
+            .map(i64::from)
     }
 
     fn body_on_fire(&mut self, _site: Site, _entity: u32) -> Option<bool> {
@@ -767,7 +800,7 @@ pub struct StackBinding {
     pub slot: u8,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShotEvent {
     pub entity: u32,
     pub instance: u16,
@@ -778,6 +811,9 @@ pub struct ShotEvent {
     pub activation: u16,
     pub activation_ms: u64,
     pub ordinal: u32,
+    /// The volley's normalized spread when the shot left (0 to 1), for a
+    /// launch `STU_239B571E` with a spread ramp; else None.
+    pub spread: Option<f64>,
 }
 
 /// A single body using the same authored graph engine as one-shot initialization.
@@ -1253,6 +1289,12 @@ struct Volley {
     ammo0: i64,
     per_shot: i64,
     rate: f64,
+    /// The spread variable's value when the volley began, 0 to 1.
+    spread0: f64,
+    /// The shots that take the spread from `spread0` to 1: launch
+    /// `STU_239B571E`'s `m_AC20B1C1` as float32 (none: the spread stays).
+    ramp: Option<f32>,
+    /// The spread output as last published (each tick re-evaluates it).
     spread: f64,
     planned: u32,
     reported: u32,
@@ -1260,15 +1302,39 @@ struct Volley {
 }
 
 impl Volley {
+    /// The float-based shot index the outputs use; None before the start
+    /// (`WeaponVolley.shots_at` in `ow174/game/script/nodes.py`).
+    fn shots_at(&self, now_ms: u64) -> Option<i64> {
+        let elapsed = now_ms.checked_sub(self.start_ms)?;
+        let seconds = f64::from(elapsed as f32 * 0.001_f32);
+        Some(((seconds * self.rate) as f32).floor() as i64)
+    }
+
     fn ammo_at(&self, now_ms: u64) -> i64 {
-        let Some(elapsed) = now_ms.checked_sub(self.start_ms) else {
+        let Some(shots) = self.shots_at(now_ms) else {
             return self.ammo0;
         };
-        let seconds = f64::from(elapsed as f32 * 0.001_f32);
-        let shots = ((seconds * self.rate) as f32).floor() as i64;
         self.ammo0
             .saturating_sub(self.per_shot.saturating_mul(shots.saturating_add(1)))
             .max(0)
+    }
+
+    /// The normalized spread (0 to 1, not an angle) of launch
+    /// `STU_239B571E`: the completed shots plus one over the ramp, added to
+    /// the spread the volley began with, at most 1; a ramp below 1e-7 is
+    /// full spread at once. Client PC104319 `D80A50`-`D80A99`, the shots
+    /// from `D5F979`-`D5F996`, as leafall903/ORPHEUS (MIT) has it in
+    /// `nodes.py` `WeaponVolley.spread_at` (commit e5463e3).
+    fn spread_at(&self, now_ms: u64) -> f64 {
+        let Some(ramp) = self.ramp else {
+            return self.spread0;
+        };
+        if ramp < 1e-7 {
+            return 1.0;
+        }
+        let shots = self.shots_at(now_ms).map_or(0, |shots| (shots + 1).max(0));
+        let increase = (shots as f64 / f64::from(ramp)) as f32;
+        f64::from((increase + self.spread0 as f32).min(1.0))
     }
 
     fn output(&self, slot: u8, now_ms: u64) -> Value {
@@ -1775,6 +1841,28 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         config: &Json,
         watcher: Option<StateKey>,
     ) -> Option<Value> {
+        self.evaluate_as(id, node, config, watcher, false)
+    }
+
+    /// The value an assignment reads ([`expr::evaluate_value`]).
+    fn evaluate_value(
+        &mut self,
+        id: u16,
+        node: &Node,
+        config: &Json,
+        watcher: Option<StateKey>,
+    ) -> Option<Value> {
+        self.evaluate_as(id, node, config, watcher, true)
+    }
+
+    fn evaluate_as(
+        &mut self,
+        id: u16,
+        node: &Node,
+        config: &Json,
+        watcher: Option<StateKey>,
+        assignment: bool,
+    ) -> Option<Value> {
         let site = self.site(id, node);
         let mut context = InstanceContext {
             machine: self.machine,
@@ -1787,7 +1875,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             read_native: false,
             assumed: Vec::new(),
         };
-        let result = expr::evaluate(config, &mut context);
+        let result = if assignment {
+            expr::evaluate_value(config, &mut context)
+        } else {
+            expr::evaluate(config, &mut context)
+        };
         let reads = context.reads;
         let read_native = context.read_native;
         for (class, answer) in context.assumed {
@@ -2186,6 +2278,8 @@ struct InstanceContext<'a, W> {
     assumed: Vec<(String, &'static str)>,
 }
 
+#[cfg(test)]
+mod array_tests;
 #[cfg(test)]
 mod membership_tests;
 #[cfg(test)]

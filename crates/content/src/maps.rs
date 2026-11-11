@@ -11,6 +11,9 @@ use orpheus_core::guid::parse_guid;
 
 pub const PRACTICE_RANGE_MAP: u64 = 0x0800_0000_0000_0688;
 pub const PRACTICE_RANGE_MODE: u64 = 0x0230_0000_0000_0018;
+/// The Tutorial game mode (`TUTORIAL_MODE` in `content.py` of
+/// leafall903/ORPHEUS, commit c239a84).
+pub const TUTORIAL_MODE: u64 = 0x0230_0000_0000_0019;
 pub const SPAWN_SPACING: f64 = 1.5;
 /// The map catalog in the runtime `data` folder (the `game_maps` derivation).
 pub const MAPS_FILE: &str = "game_maps_174.json";

@@ -2048,9 +2048,11 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     // The dead body's statescript goes on to both clients while the dead
     // player's client keeps sending commands: its owner frames and the
     // shooter's observer frames carry the kill feed pulse. Soldier: 76's
-    // death path reaches an action the VM doesn't implement (graph 01CA
-    // node 118, `STU_4C3509FB`), which debug builds refuse and release
-    // builds follow as Python does; so this part runs in release builds.
+    // death path now runs its array inserts (graph 01CA nodes 118 and 121,
+    // `STU_4C3509FB`), then reaches a config the VM doesn't compute (graph
+    // 01D8 node 98, `STU_309B0570`, a velocity), which debug builds refuse
+    // and release builds read as null as Python does; so this part runs in
+    // release builds.
     let tolerant =
         orpheus_script::vm::Unknowns::for_build() == orpheus_script::vm::Unknowns::Tolerate;
     let owner_frames = |watcher: &Watcher| {
@@ -2697,13 +2699,120 @@ fn genjis_fan_hits_a_bot_once_a_shot_for_its_damage_alone_unseen() {
     server.stop().unwrap();
 }
 
+/// Doomfist's Hand Cannon (graph `0D0A` state 2: 11 projectiles a shot in
+/// rings of 1, 4 and 6, 6 damage each, shots only): each pellet flies for
+/// its damage (leafall903/ORPHEUS 7cb4018 `test_hand_cannon_sweeps_all_eleven_pellets_from_one_shot`),
+/// so a training bot 2 m ahead takes eleven hits of 6, 66 in all, from one
+/// shot; nobody sees a server projectile.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene"]
+fn doomfists_hand_cannon_hits_with_all_eleven_pellets() {
+    use orpheus_script::vm::Unknowns;
+    use orpheus_sim::{
+        projectiles::{SEEN_FIRST, SEEN_SPAN},
+        scene_assets::SceneAssets,
+    };
+    use orpheus_wire::commands::FIRE;
+    const AHEAD: f64 = 2.0;
+
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(Unknowns::Tolerate);
+    let mut aim = None;
+    let (mut server, schemas, [mut doomfist, mut viewer], _) = practice_world(
+        [
+            ("doomfist#1111", 0, "Doomfist"),
+            ("viewer#2222", 0, "Soldier: 76"),
+        ],
+        &assets,
+        |scene| {
+            let ([x, y, z], yaw) = scene.map().spawn_point(0, 0).unwrap();
+            let (sin, cos) = yaw.to_radians().sin_cos();
+            let bot = scene
+                .bots_mut()
+                .iter_mut()
+                .find(|bot| bot.spawn.team == 1 && !bot.spawn.firing && bot.spawn.route.is_empty())
+                .unwrap();
+            bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
+            aim = Some((bot.entity, (yaw * 65536.0 / 360.0).round() as i32 as i16));
+        },
+    );
+    let (bot, yaw) = aim.unwrap();
+    let seen = |entity: u32| (SEEN_FIRST..SEEN_FIRST + SEEN_SPAN).contains(&entity);
+    let hits_of = |watcher: &Watcher, from: usize| -> Vec<(Value, Value)> {
+        watcher.datagrams[from..]
+            .iter()
+            .flat_map(|(messages, _)| messages.iter().filter(|message| message.id == 25001))
+            .map(|message| {
+                let Value::Struct(impact) = &message.fields[&0x78] else {
+                    panic!("hit body")
+                };
+                let Value::Struct(target) = &impact[&0] else {
+                    panic!("hit target")
+                };
+                (target[&0].clone(), impact[&4].clone())
+            })
+            .collect()
+    };
+    let mut next = doomfist.tick + 1;
+    let mut command = |doomfist: &mut Watcher, buttons: u32| {
+        let count = if buttons == 0 { 16 } else { 1 };
+        if buttons != 0 || next <= doomfist.tick + 8 {
+            doomfist
+                .client
+                .send(ACK, command_batch(next, count, yaw, buttons, false));
+            next += u32::from(count);
+        }
+    };
+    let ready = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < ready {
+        command(&mut doomfist, 0);
+        doomfist.pump(&schemas);
+        viewer.pump(&schemas);
+    }
+    let fired = (doomfist.datagrams.len(), viewer.datagrams.len());
+    command(&mut doomfist, FIRE);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while hits_of(&doomfist, fired.0).len() < 11 {
+        assert!(
+            Instant::now() < deadline,
+            "waiting for the pellets: {:?}",
+            hits_of(&doomfist, fired.0)
+        );
+        command(&mut doomfist, 0);
+        doomfist.pump(&schemas);
+        viewer.pump(&schemas);
+    }
+    let settled = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < settled {
+        command(&mut doomfist, 0);
+        doomfist.pump(&schemas);
+        viewer.pump(&schemas);
+    }
+
+    assert_eq!(
+        hits_of(&doomfist, fired.0),
+        vec![(Value::Unsigned(u64::from(bot)), Value::Unsigned(6)); 11]
+    );
+    assert!(
+        viewer
+            .find(fired.1, |record| seen(record.entity)
+                || !record.launches.is_empty())
+            .is_none(),
+        "the other client sees no pellet"
+    );
+    server.stop().unwrap();
+}
+
 /// Echo's Tri-Shot (graph `19E5` state 3, her primary fire: three bolts a
 /// shot, predicted): her body's lease gives definition `2CBF` three ids a
 /// frame, so the three bolts she shot under the frame's consecutive ids
-/// are each confirmed, and each released once the server's one bolt
-/// (combat.py `_shoot`, along the aim) has hit the training bot ahead of
-/// her; the other client sees that one bolt as the room's first SEEN
-/// entity, started by one shot record.
+/// are each confirmed, and each released once the server's tracking bolt
+/// (along the aim) has reached the training bot ahead of her; the other
+/// client sees that one bolt as the room's first SEEN entity, started by
+/// one shot record. Each of the three bolts of the volley's ring
+/// (`STU_613BDDB0`, leafall903/ORPHEUS 7cb4018) flies for its damage and
+/// hits the bot: three hits, where the one bolt along the aim hit once
+/// before the ring layout.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
@@ -2773,7 +2882,23 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
         })
     };
     let deadline = Instant::now() + Duration::from_secs(5);
+    let hits_of = |echo: &Watcher| -> Vec<Value> {
+        echo.datagrams[fired.0..]
+            .iter()
+            .flat_map(|(messages, _)| messages.iter().filter(|message| message.id == 25001))
+            .map(|message| {
+                let Value::Struct(impact) = &message.fields[&0x78] else {
+                    panic!("hit body")
+                };
+                let Value::Struct(target) = &impact[&0] else {
+                    panic!("hit target")
+                };
+                target[&0].clone()
+            })
+            .collect()
+    };
     while released(&echo).len() < 3
+        || hits_of(&echo).len() < 3
         || viewer
             .find(fired.1, |record| {
                 seen(record.entity) && record.operation == Some(3)
@@ -2800,21 +2925,8 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
     let mut releases = released(&echo);
     releases.sort_unstable();
     assert_eq!(releases, ids);
-    // The server's one bolt hit the bot.
-    let hits: Vec<_> = echo.datagrams[fired.0..]
-        .iter()
-        .flat_map(|(messages, _)| messages.iter().filter(|message| message.id == 25001))
-        .map(|message| {
-            let Value::Struct(impact) = &message.fields[&0x78] else {
-                panic!("hit body")
-            };
-            let Value::Struct(target) = &impact[&0] else {
-                panic!("hit target")
-            };
-            target[&0].clone()
-        })
-        .collect();
-    assert_eq!(hits, [Value::Unsigned(u64::from(bot))]);
+    // Each bolt of the ring hit the bot.
+    assert_eq!(hits_of(&echo), vec![Value::Unsigned(u64::from(bot)); 3]);
     // The other client's one copy.
     assert_eq!(
         records(&viewer, fired.1, &|record| seen(record.entity)
@@ -4012,9 +4124,9 @@ fn players_join_a_running_match_in_the_next_slots() {
 /// The Practice Range with the training bots' scripts (ow174/game/match.py
 /// `_prepare_bot_script`, server.py `_BotScriptDelivery`): the world waits
 /// for every bot's script; each bot's first frame follows its create, the
-/// nameplate follows the mode UI and carries the bot's name; a bot shot to
-/// death sends its death script's frames, and its replacement 3 s later
-/// starts a new script.
+/// nameplate follows the mode UI and carries the bot's name; a hit the bot
+/// survives sends its enabled nameplate; a bot shot to death sends its death
+/// script's frames, and its replacement 3 s later starts a new script.
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn practice_bots_run_their_scripts_for_a_client() {
@@ -4156,7 +4268,7 @@ fn practice_bots_run_their_scripts_for_a_client() {
         },
     );
 
-    // Shoot the target to death.
+    // Shoot the target: first a body shot it survives, then to death.
     let owner = watcher.owner;
     send_player_message(
         &mut watcher.client,
@@ -4168,6 +4280,36 @@ fn practice_bots_run_their_scripts_for_a_client() {
     );
     pump_until(&mut [&mut watcher], &schemas, "the body", |watchers| {
         watchers[0].created(owner | 1).is_some()
+    });
+    // The body shot (100 of its 200): its 25001, and with it or after it a
+    // frame of the bot's script, which doesn't fire: its nameplate enabled
+    // (upstream `show_damage_nameplate`).
+    let hits_from = |watcher: &Watcher, from: usize, id: u32| {
+        (from..watcher.datagrams.len())
+            .find(|&index| watcher.datagrams[index].0.iter().any(|item| item.id == id))
+    };
+    let fired = watcher.datagrams.len();
+    let body_shot = aimed_batch(watcher.tick + 1, 1, -16384, 0, FIRE, false);
+    watcher.client.send(ACK, body_shot.clone());
+    watcher.client.send(ACK, body_shot);
+    pump_until(
+        &mut [&mut watcher],
+        &schemas,
+        "the surviving hit's nameplate frame",
+        |watchers| {
+            let watcher = &watchers[0];
+            hits_from(watcher, fired, 25001)
+                .is_some_and(|hit| script(watcher, hit, target, false).is_some())
+        },
+    );
+    assert_eq!(hits_from(&watcher, fired, 25005), None);
+    // The button comes up, and the gun's 9 shots a second allow the next.
+    let release = aimed_batch(watcher.tick + 1, 1, -16384, 0, 0, false);
+    watcher.client.send(ACK, release.clone());
+    watcher.client.send(ACK, release);
+    let released = watcher.tick + 12;
+    pump_until(&mut [&mut watcher], &schemas, "the release", |watchers| {
+        watchers[0].tick >= released
     });
     let commands = aimed_batch(watcher.tick + 1, 1, -16384, AT_BOT_HEAD_4M, FIRE, false);
     watcher.client.send(ACK, commands.clone());

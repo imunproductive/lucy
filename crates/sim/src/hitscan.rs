@@ -237,17 +237,8 @@ pub struct Impact {
 }
 
 impl HitscanShot {
-    pub fn from_command(origin: Vec3, command: &Command, reach: f64, hit: HitDefinition) -> Self {
-        Self {
-            origin,
-            direction: aim_direction(command),
-            reach: if reach == 0.0 { DEFAULT_REACH } else { reach },
-            hit,
-        }
-    }
-
-    /// A shot along a direction from an origin (a bot's volley: combat.py
-    /// `_shoot` aims it from the bot's yaw).
+    /// A shot along a direction from an origin: a player's aim, turned by
+    /// his volley's spread, or a bot's yaw (combat.py `_shoot`).
     pub fn along(origin: Vec3, direction: Vec3, reach: f64, hit: HitDefinition) -> Self {
         Self {
             origin,
@@ -356,7 +347,12 @@ mod tests {
         let blocked = wall(4.0);
         let behind = wall(11.0);
         let coincident = wall(9.5);
-        let direct = HitscanShot::from_command([0.0, 1.0, 0.0], &Command::default(), 180.0, RIFLE);
+        let direct = HitscanShot::along(
+            [0.0, 1.0, 0.0],
+            aim_direction(&Command::default()),
+            180.0,
+            RIFLE,
+        );
         let targets = [
             (1, standing(0.0, 12.0)),
             (2, standing(0.0, 10.0)),
@@ -436,7 +432,7 @@ mod tests {
             }),
             ..Command::default()
         };
-        let shot = HitscanShot::from_command([0.0, 1.0, 0.0], &command, 0.0, RIFLE);
+        let shot = HitscanShot::along([0.0, 1.0, 0.0], aim_direction(&command), 0.0, RIFLE);
         assert_eq!(shot.reach, DEFAULT_REACH);
         assert!((shot.direction[0] - 1.0).abs() < 1e-12 && shot.direction[2].abs() < 1e-12);
         let before = standing(8.0, 0.0);
@@ -696,7 +692,7 @@ mod tests {
                 frame,
                 ..Command::default()
             };
-            HitscanShot::from_command(origin, &command, 180.0, RIFLE)
+            HitscanShot::along(origin, aim_direction(&command), 180.0, RIFLE)
                 .resolve(
                     [(bot.entity, target.clone())],
                     |origin, direction, length| scene.hitscan_wall(origin, direction, length),

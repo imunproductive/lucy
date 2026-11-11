@@ -314,6 +314,104 @@ impl Blast {
     }
 }
 
+/// The launch class whose `m_0D30E40C` rows lay a shot's projectiles out
+/// in rings (`STU_B101467F`: `m_6425FFB9` the ring's share of `m_spread`
+/// degrees, `m_B19BD35D` its pellets).
+const RING_LAUNCH: &str = "STU_613BDDB0";
+const RING_ROW: &str = "STU_B101467F";
+/// The most pellets the server flies for one shot (upstream's limit of
+/// its collision work, `projectiles.py` `MAX_PELLETS`).
+const MAX_PELLETS: f64 = 64.0;
+/// The launch class whose spread grows with the shots (`m_AC20B1C1` the
+/// ramp; `m_7F0FED02` and `m_429A6C85` the cone in degrees at no and full
+/// spread).
+const SPREAD_LAUNCH: &str = "STU_239B571E";
+
+/// The pellet rings of a volley that fires several projectiles a shot:
+/// each ring's tilt from the aim in radians and its pellets, in authored
+/// order. None when the launch has no rings, or they don't add up to the
+/// volley's `m_numProjectilesPerShot` (2 to 64), a ring's share is outside
+/// 0 to 1, or the spread outside 0° to 180°. Ported from leafall903/ORPHEUS
+/// (MIT) `projectiles.py` `launch_directions`, commit 7cb4018 (Doomfist's
+/// Hand Cannon: 1, 4 and 6 pellets at 0, 0.5 and 1 of 2.5°). Unlike
+/// upstream, this holds for any sync, not only SHOTS_ONLY.
+pub fn pellet_rings(
+    node: &Node,
+    mut evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
+) -> Result<Option<Vec<(f64, u32)>>, EvalError> {
+    let launch = match node.field("m_5EC1EB38") {
+        Some(launch) if launch.get("$").and_then(Json::as_str) == Some(RING_LAUNCH) => launch,
+        _ => return Ok(None),
+    };
+    // Upstream reads only plain numbers: anything else is no layout.
+    let mut number = |config: Option<&Json>| -> Result<Option<f64>, EvalError> {
+        let Some(config) = config.filter(|config| !config.is_null()) else {
+            return Ok(None);
+        };
+        Ok(match evaluate(config)? {
+            Value::Integer(value) => Some(value as f64),
+            Value::Float(value) if value.is_finite() => Some(value),
+            _ => None,
+        })
+    };
+    let Some(count) = number(node.field("m_numProjectilesPerShot"))?
+        .filter(|count| (2.0..=MAX_PELLETS).contains(count))
+    else {
+        return Ok(None);
+    };
+    let Some(rows) = launch
+        .get("m_0D30E40C")
+        .and_then(Json::as_array)
+        .filter(|rows| rows.len() as f64 <= count)
+    else {
+        return Ok(None);
+    };
+    let Some(spread) =
+        number(launch.get("m_spread"))?.filter(|spread| (0.0..=180.0).contains(spread))
+    else {
+        return Ok(None);
+    };
+    let mut rings = Vec::with_capacity(rows.len());
+    for row in rows {
+        if row.get("$").and_then(Json::as_str) != Some(RING_ROW) {
+            return Ok(None);
+        }
+        let share = number(row.get("m_6425FFB9"))?;
+        let pellets = number(row.get("m_B19BD35D"))?;
+        let (Some(share), Some(pellets)) = (share, pellets) else {
+            return Ok(None);
+        };
+        if !(0.0..=1.0).contains(&share)
+            || !(1.0..=count).contains(&pellets)
+            || pellets.fract() != 0.0
+        {
+            return Ok(None);
+        }
+        rings.push(((share * spread).to_radians(), pellets as u32));
+    }
+    let total: f64 = rings.iter().map(|&(_, pellets)| f64::from(pellets)).sum();
+    Ok((total == count).then_some(rings))
+}
+
+/// The cone of a growing spread at `normalized` (0 to 1): `m_7F0FED02`
+/// degrees plus `normalized` of the way to `m_429A6C85`, in radians, at
+/// float32 steps. None when the launch isn't `STU_239B571E`. Ported from
+/// leafall903/ORPHEUS (MIT) `mccree.py` `fan_direction`, commit c239a84.
+pub fn spread_cone(
+    node: &Node,
+    normalized: f64,
+    mut evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
+) -> Result<Option<f32>, EvalError> {
+    let launch = match node.field("m_5EC1EB38") {
+        Some(launch) if launch.get("$").and_then(Json::as_str) == Some(SPREAD_LAUNCH) => launch,
+        _ => return Ok(None),
+    };
+    let low = authored_number(launch.get("m_7F0FED02"), 0.0, &mut evaluate)?;
+    let high = authored_number(launch.get("m_429A6C85"), 0.0, &mut evaluate)?;
+    let degrees = (f64::from((high - low) as f32) * normalized) as f32 + low as f32;
+    Ok(Some(degrees * (std::f64::consts::PI / 180.0) as f32))
+}
+
 pub fn authored_number(
     config: Option<&Json>,
     default: f64,
@@ -401,5 +499,81 @@ mod tests {
         let config = json!({"$": "STU_082FA44E",
             "m_DBF61E9A": {"$": "STU_D9BDAA46", "m_DBF61E9A": "0x0F4800000000015D"}});
         assert_eq!(tunables.value(&config), Some(350.0));
+    }
+
+    fn volley(fields: Json) -> Node {
+        serde_json::from_value(json!({"pos":2,"class":"STUStatescriptStateWeaponVolley",
+            "uid":2,"rid":2,"remote":-1,"state":1,"client_only":false,"server_only":false,
+            "fields":fields}))
+        .unwrap()
+    }
+
+    fn rings(count: i64, spread: Json, rows: &[(f64, i64)]) -> Node {
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|&(share, pellets)| {
+                json!({"$":"STU_B101467F","m_6425FFB9":{"$":"STUConfigVarFloat","m_value":share},
+                    "m_B19BD35D":{"$":"STUConfigVarInt","m_value":pellets}})
+            })
+            .collect();
+        volley(json!({
+            "m_numProjectilesPerShot":{"$":"STUConfigVarInt","m_value":count},
+            "m_5EC1EB38":{"$":"STU_613BDDB0","m_0D30E40C":rows,"m_spread":spread}
+        }))
+    }
+
+    /// Graph `0D0A` state 2's rings (upstream 7cb4018): 1, 4 and 6 pellets
+    /// at 0, 0.5 and 1 of the spread, in degrees; anything that doesn't add
+    /// up, or isn't a plain number in range, is no layout.
+    #[test]
+    fn pellet_rings_read_the_authored_layout() {
+        let read = |node: &Node| pellet_rings(node, |value| evaluate(value, &mut EmptyContext));
+        let float = |value: f64| json!({"$":"STUConfigVarFloat","m_value":value});
+        let hand_cannon = [(0.0, 1), (0.5, 4), (1.0, 6)];
+        let layout = read(&rings(11, float(2.5), &hand_cannon)).unwrap().unwrap();
+        assert_eq!(
+            layout,
+            [
+                (0.0, 1),
+                (1.25f64.to_radians(), 4),
+                (2.5f64.to_radians(), 6)
+            ]
+        );
+        for node in [
+            rings(12, float(2.5), &hand_cannon),
+            rings(11, float(181.0), &hand_cannon),
+            rings(11, json!(null), &hand_cannon),
+            rings(1, float(2.5), &[(0.0, 1)]),
+            rings(11, float(2.5), &[(0.0, 1), (1.5, 4), (1.0, 6)]),
+            rings(11, float(2.5), &[(0.0, 1), (0.5, 4), (1.0, 6), (1.0, 0)]),
+            volley(json!({"m_numProjectilesPerShot":3,
+                "m_5EC1EB38":{"$":"STU_1145C42E","m_spread":9}})),
+        ] {
+            assert_eq!(read(&node).unwrap(), None);
+        }
+    }
+
+    /// mccree.py `fan_direction`: low + (high - low) × normalized degrees,
+    /// in radians as float32; another launch has no cone.
+    #[test]
+    fn spread_cone_runs_from_low_to_high() {
+        let node = volley(json!({"m_5EC1EB38":{"$":"STU_239B571E",
+            "m_7F0FED02":{"$":"STUConfigVarFloat","m_value":0.5},
+            "m_429A6C85":{"$":"STUConfigVarFloat","m_value":2.5}}}));
+        let cone = |normalized| {
+            spread_cone(&node, normalized, |value| {
+                evaluate(value, &mut EmptyContext)
+            })
+            .unwrap()
+            .unwrap()
+        };
+        assert!((cone(0.0) - 0.5f32.to_radians()).abs() < 1e-8);
+        assert!((cone(0.25) - 1.0f32.to_radians()).abs() < 1e-8);
+        assert!((cone(1.0) - 2.5f32.to_radians()).abs() < 1e-8);
+        let other = volley(json!({"m_5EC1EB38":{"$":"STU_613BDDB0"}}));
+        assert_eq!(
+            spread_cone(&other, 1.0, |_| panic!("no configs")).unwrap(),
+            None
+        );
     }
 }
