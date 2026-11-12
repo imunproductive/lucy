@@ -38,7 +38,7 @@ use crate::{
         BioticField, FieldDeliver, FieldIds, FiredProjectile, ProjectileEvent, SeenIds, ShotKey,
     },
     replication::WorldDelivery,
-    scene::{bot_controller_link, bot_controllers_linked, bot_create, bot_filter},
+    scene::{BOT_PLATE, bot_controller_link, bot_create, bot_filter},
     scene_assets::PreparedScene,
 };
 use orpheus_content::{heroes::Eyes, stats::PlayerStats};
@@ -927,7 +927,7 @@ impl Combat {
         if result.dealt == 0.0 {
             return None;
         }
-        let mut components = vec![target.vitals.component()];
+        let mut components = vec![BOT_PLATE.pools(target.vitals.component())];
         if result.killed {
             bot.died(death_tick);
             target.respawn_at = Some(context.now.saturating_add(respawn));
@@ -995,9 +995,7 @@ impl Combat {
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("bot entity IDs exhausted"))?;
             let created = bot_create(&fresh, None)?;
-            let link = bot_controllers_linked()
-                .then(|| bot_controller_link(&fresh, slot))
-                .transpose()?;
+            let link = Some(bot_controller_link(&fresh, slot)?);
             prepared.push((
                 slot,
                 fresh,
@@ -1072,7 +1070,9 @@ impl Combat {
 fn healed_bot(bot: &Bot, target: &mut Target, given: f64) -> BotHit {
     let health = EntityUpdate {
         entity: bot.entity,
-        operation: Some(Operation::Update(vec![target.vitals.component()])),
+        operation: Some(Operation::Update(vec![
+            BOT_PLATE.pools(target.vitals.component()),
+        ])),
         ..EntityUpdate::default()
     };
     target.vitals.clear_changed();

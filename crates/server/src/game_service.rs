@@ -49,7 +49,7 @@ use indexmap::IndexMap;
 use mio::{Events, Interest, Poll, Token, Waker, net::UdpSocket};
 
 use crate::{
-    clock::{GameClock, Step, next_tick_after},
+    clock::{GameClock, Step, next_tick_after, send_every},
     connection::{GameConnections, MAX_CONNECTION_ID, Outgoing, Received, SILENCE_TIME},
     ingress::{GameIngress, MapReadiness, MapReadyStep, MessageKind, WorldReadiness, pong},
 };
@@ -1293,7 +1293,7 @@ impl State {
     fn new(schemas: Arc<Schemas>) -> Self {
         Self {
             schemas,
-            clock: GameClock::default(),
+            clock: GameClock::new(send_every()),
             links: GameConnections::default(),
             rooms: HashMap::new(),
             seats: HashMap::new(),
@@ -2688,6 +2688,7 @@ impl State {
             self.say_player_lines(tick);
             self.show_players(tick, now, send_frames);
         }
+        let every = self.clock.send_every();
         for (&connection, peer) in &mut self.peers {
             if peer.ai.is_some() {
                 // What a client would get arrives at once (ai.rs).
@@ -2705,9 +2706,9 @@ impl State {
                 let movements = if drain {
                     Vec::new()
                 } else {
-                    room.world
-                        .as_ref()
-                        .map_or_else(Vec::new, |world| peer.world.movement(&world.scene, tick))
+                    room.world.as_ref().map_or_else(Vec::new, |world| {
+                        peer.world.movement(&world.scene, tick, every)
+                    })
                 };
                 peer.send_frame(&mut self.links, socket, connection, tick, movements, drain);
             }

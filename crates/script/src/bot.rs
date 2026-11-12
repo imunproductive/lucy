@@ -540,6 +540,14 @@ impl BotBody {
         Ok(())
     }
 
+    /// Set one of the body's entity variables now; the next frame carries
+    /// it to the clients when a graph shares it.
+    pub fn set_entity_variable(&mut self, id: u32, value: Value) -> Result<(), BotError> {
+        self.component
+            .set_entity_variable(id, value, &mut self.world)?;
+        Ok(())
+    }
+
     /// The hit the body took and survived: `0011.025` ([`DAMAGED`]) with
     /// its parameters runs now. The Training Bot's `0E8C` sets its flinch
     /// (#1024, #6500, #1018, synced by st17 for the clients' own flinch

@@ -44,7 +44,7 @@ use orpheus_content::{
     heroes::{ANA, Hero, SOLDIER},
     parameters::{ClientGameMessage, HeroSelectRequest},
 };
-use orpheus_core::tick::{MAX_LEASE_FRAME, SEND_EVERY, TICK_PERIOD};
+use orpheus_core::tick::{MAX_LEASE_FRAME, TICK_PERIOD};
 use orpheus_physics::{
     mover::Mover,
     mover::correction::CorrectionHistory,
@@ -3382,8 +3382,9 @@ impl WorldDelivery {
 
     /// The movement records of this send frame: every other player's body
     /// from the frame after its create (match.py `remote_movements`), then
-    /// the training bots once their creates had time to arrive.
-    pub fn movement(&self, scene: &PreparedScene, tick: u32) -> Vec<EntityUpdate> {
+    /// the training bots once their creates had time to arrive. `every`:
+    /// the ticks between send frames (`SEND_EVERY` unless switched).
+    pub fn movement(&self, scene: &PreparedScene, tick: u32, every: u32) -> Vec<EntityUpdate> {
         let mut records = self.others.movements().to_vec();
         if self
             .started
@@ -3393,9 +3394,7 @@ impl WorldDelivery {
                 scene
                     .bots()
                     .iter()
-                    .filter(|bot| {
-                        self.created.contains(&bot.entity) && bot.record_due(tick, SEND_EVERY)
-                    })
+                    .filter(|bot| self.created.contains(&bot.entity) && bot.record_due(tick, every))
                     .map(|bot| EntityUpdate {
                         entity: bot.entity,
                         movement: Some(bot.movement(tick)),
