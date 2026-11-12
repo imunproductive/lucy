@@ -810,8 +810,11 @@ fn the_state_keeps_the_throttle_bytes_the_way_the_client_rounds_them() {
 #[test]
 fn the_spring_offsets_go_as_steps_of_their_range_and_the_second_follows_the_first() {
     let mut body = Body::soldier([0.0, 1.0, 0.0], None);
-    body.walk(5, stand(0));
     let rest = 23406; // Soldier's range [-2.5, 1.0]: 2.5 / 3.5 of 32768
+    // Before its first step too: Python's fresh pose said 0, the bottom of
+    // the range (`Posture::spring_steps`).
+    assert_eq!(body.mover.pose().spring, [rest, rest]);
+    body.walk(5, stand(0));
     assert_eq!(
         (body.mover.pose().spring, body.mover.posture.spring_offset()),
         ([rest, rest], 2f32.powi(-15))

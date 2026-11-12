@@ -83,6 +83,9 @@ impl Posture {
             speed: 0.0,
         };
         spring.set_limits(base);
+        // At rest the offsets are 0, which is not step 0 (the bottom of the
+        // range): see `spring_steps`.
+        spring.encoded = [spring.step(0.0).unwrap_or(0); 2];
         Self {
             flags: 0,
             air_ticks: 0,
@@ -113,6 +116,14 @@ impl Posture {
         self.spring.speed
     }
 
+    /// Both spring offsets as steps of their range (state +52, +56). At rest
+    /// (offset 0) they are not 0: step 0 is the bottom of the range, the
+    /// capsule a whole stance and pogo below the feet. Another client places
+    /// a body's collision capsule at its feet plus the pogo plus the first
+    /// offset decoded from them (0x7FF789ACF010, 0x7FF789ACF060): with step 0
+    /// a remote body's capsule was below the floor, measured in the original
+    /// client (leafall903/ORPHEUS (MIT) `docs/MCCREE_ROLL.txt`, "Spring
+    /// fields in the movement record").
     pub fn spring_steps(&self) -> [u16; 2] {
         self.spring.encoded
     }
@@ -296,19 +307,26 @@ impl Spring {
         self.speed = snap(f64::from(speed)) as f32;
     }
 
-    fn encode(&mut self) {
+    /// An offset's step on the 1/32768 grid of the range (0x7FF789B745E0),
+    /// or None when the range is empty.
+    fn step(&self, offset: f32) -> Option<u16> {
         let span = self.high - self.low;
-        if span <= TINY {
+        (span > TINY).then(|| {
+            let fraction = ((offset - self.low) * (1.0 / span)).clamp(0.0, 1.0);
+            (fraction * SPRING_STEPS + 0.5).floor() as u16
+        })
+    }
+
+    fn encode(&mut self) {
+        let (Some(primary), Some(secondary)) = (self.step(self.primary), self.step(self.secondary))
+        else {
             self.primary = 0.0;
             self.secondary = 0.0;
             self.encoded = [0; 2];
             return;
-        }
-        let inverse = 1.0 / span;
-        self.encoded = [self.primary, self.secondary].map(|offset| {
-            let fraction = ((offset - self.low) * inverse).clamp(0.0, 1.0);
-            (fraction * SPRING_STEPS + 0.5).floor() as u16
-        });
+        };
+        let span = self.high - self.low;
+        self.encoded = [primary, secondary];
         [self.primary, self.secondary] = self
             .encoded
             .map(|steps| span * (f32::from(steps) / SPRING_STEPS) + self.low);

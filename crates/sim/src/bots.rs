@@ -38,8 +38,9 @@
 //! bullets on their body (its run 343); ours, in class 2 (`0xC…`, the map's
 //! own entities, such as the bots' spawn markers `0xC0000004…`), took the
 //! client's Helix Rockets but not its hitscan shots (checked in the game,
-//! 2026-11-12). Assumption: the client's hitscan ray leaves out class-2
-//! entities.
+//! 2026-11-12). The guess that the client's hitscan ray leaves out class-2
+//! entities did not hold: in class 0 they were still shot through. The
+//! lead now is their records' spring steps (`Bot::movement`).
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -60,7 +61,7 @@ use orpheus_physics::mover::ground::{pogo, standing_body, standing_origin};
 use orpheus_physics::mover::settings::MoverSettings;
 use orpheus_physics::{
     collision::index::TriangleIndex,
-    mover::{Mover, sample_movement_flags},
+    mover::{Mover, resting_spring, sample_movement_flags},
 };
 use orpheus_script::bot::BOT_MOVEMENT_SAMPLE;
 use orpheus_wire::commands::Command;
@@ -102,13 +103,15 @@ pub const BOT_EYE: f64 = 1.55;
 
 /// A bot body's walk, from its mover (bots.py `mover_data`): run speed,
 /// acceleration and braking, and the gravity scale its movement records
-/// carry (mover.py `GRAVITY_SCALE`).
+/// carry (mover.py `GRAVITY_SCALE`); and the spring steps of its records,
+/// the body's at rest (`resting_spring`; see `Bot::movement`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BotWalk {
     pub speed: f64,
     pub acceleration: f64,
     pub brake: f64,
     pub gravity: f64,
+    pub spring: [i32; 2],
 }
 
 impl BotWalk {
@@ -118,6 +121,7 @@ impl BotWalk {
             acceleration: mover.accel_ground * mover.run_forward,
             brake: mover.decel_ground_base * mover.run_forward,
             gravity: mover.gravity_scale,
+            spring: resting_spring(mover),
         }
     }
 }
@@ -901,7 +905,18 @@ impl Bot {
     }
 
     /// Its movement record for `tick`; while it flies, its mover's pose
-    /// (flags, air time, fall) with its own facing and no input.
+    /// (flags, air time, fall, spring) with its own facing and no input.
+    ///
+    /// On its patrol its spring is at rest. Python (bots.py `Bot.movement`)
+    /// sent the spring steps as 0, the bottom of their range, -(stance 2.0 +
+    /// pogo 0.5): the client put the bot's collision capsule 2.5 m too low,
+    /// its top 0.5 m under the bot's feet (`Posture::spring_steps` in
+    /// `orpheus-physics`), so players walked through the bots; inferred, not
+    /// yet checked: the client's own shots passed through them for the same
+    /// reason (module notes of `scene.rs`).
+    /// Upstream measured that capsule on its NPCs and sent them their rest
+    /// steps (leafall903/ORPHEUS (MIT) `bots.py` `Bot.movement`, "Wire step
+    /// zero decodes to the bottom of the spring range").
     pub fn movement(&self, tick: u32) -> Movement {
         let input_frame = if self.held != [0; 2] {
             None
@@ -932,6 +947,7 @@ impl Bot {
             input_frame,
             input_throttles: self.last_held,
             gravity: self.walk.gravity,
+            spring: self.walk.spring,
             ..Movement::default()
         }
     }

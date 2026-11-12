@@ -37,16 +37,31 @@ fn walker(target: [f64; 3]) -> Bot {
     )
 }
 
+/// The spring steps of a Training Bot body at rest (1403, 14ED and the
+/// fixture mover share the stance): its range is [-max(2.0 + 0.5, 1.25 +
+/// 0.25), 2 × 0.5] = [-2.5, 1.0], and offset 0 is 2.5 / 3.5 of 32768 steps
+/// (23405.7, rounded half up).
+const RESTING_SPRING: [i32; 2] = [23406; 2];
+
 /// The bots' movement records at each tick, as Python's. The digests were
 /// Python's with each record's `record_due` too; that cadence went (every
 /// frame carries a bot's record now, `Bot::record_due`), and they were
-/// taken again from the same records without it.
+/// taken again from the same records without it. Python's records left the
+/// spring steps at 0, which put the bot's capsule under the floor
+/// (`Bot::movement`): every record has them at rest now, and the digests
+/// take every other field of each record as Python had it.
 fn route_vector(bots: &mut [Bot], ticks: impl IntoIterator<Item = u32>) -> String {
     let mut digest = Sha256::new();
     for tick in ticks {
         for bot in &mut *bots {
             bot.step(tick, |_, _, _, _| None);
-            let bits = movement_record(&bot.movement(tick), Some(tick)).unwrap();
+            let record = bot.movement(tick);
+            assert_eq!(record.spring, RESTING_SPRING, "tick {tick}");
+            let python = Movement {
+                spring: [0; 2],
+                ..record
+            };
+            let bits = movement_record(&python, Some(tick)).unwrap();
             digest.update(tick.to_le_bytes());
             digest.update(u32::try_from(bits.bit_len()).unwrap().to_le_bytes());
             digest.update(bits.as_bytes());

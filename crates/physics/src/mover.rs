@@ -115,6 +115,13 @@ pub fn sample_movement_flags(pose: &Movement) -> Option<u16> {
     )
 }
 
+/// The spring steps of a body on `base` at rest (spring offsets 0), for the
+/// movement records of a body the server places without a mover (a training
+/// bot on its patrol). Not 0: see `Posture::spring_steps`.
+pub fn resting_spring(base: &MoverSettings) -> [i32; 2] {
+    Posture::new(base).spring_steps().map(i32::from)
+}
+
 pub struct Mover {
     base: MoverSettings,
     category: u16,
@@ -145,12 +152,14 @@ impl Mover {
         category: u16,
     ) -> Result<Self, PointSetSize> {
         let position = position.map(snap);
+        let posture = Posture::new(&base);
+        let spring = posture.spring_steps().map(i32::from);
         Ok(Self {
             base,
             category,
             probe: GroundProbe::new(&base)?,
             body: standing_body(&base, world, position, category),
-            posture: Posture::new(&base),
+            posture,
             modifiers: ModifierTimeline::default(),
             last_command: None,
             last_input: None,
@@ -158,6 +167,7 @@ impl Mover {
                 position,
                 yaw,
                 gravity: base.gravity_scale,
+                spring,
                 ..Movement::default()
             },
             driven: false,

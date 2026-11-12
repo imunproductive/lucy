@@ -56,6 +56,14 @@ pub fn owner_pose(source: Movement) -> Movement {
 /// last command with throttles is not older than this tick, so a standing
 /// body carries the frame of that command. The gravity scale is the body's
 /// mover's (mover.py `GRAVITY_SCALE`, every hero's 1.75).
+///
+/// The spring steps and speed are the mover's. Python sent neither: steps 0,
+/// the bottom of their range, on which the other clients put the body's
+/// collision capsule a whole stance and pogo too low, under the floor
+/// (`Posture::spring_steps` in `orpheus-physics`; measured on remote NPC
+/// bodies, leafall903/ORPHEUS (MIT) `docs/MCCREE_ROLL.txt`). Not checked
+/// with two clients: that an enemy player now blocks the other's walk, and
+/// that the other's own shots now meet his body.
 pub fn remote_movement(pose: Movement, tick: u32, gravity: f64) -> Movement {
     // The mover's pose says None when its own frame had throttles.
     let last_input = match pose.input_frame {
@@ -79,6 +87,8 @@ pub fn remote_movement(pose: Movement, tick: u32, gravity: f64) -> Movement {
         input_throttles: pose.input_throttles,
         air_ticks: pose.air_ticks,
         gravity,
+        spring: pose.spring,
+        spring_speed: pose.spring_speed,
         ..Movement::default()
     }
 }
@@ -270,9 +280,13 @@ mod tests {
             input_frame: Some(990),
             crouch_frame: Some(995),
             spring: [4, 5],
+            spring_speed: 0.25,
             ..Movement::default()
         };
         let record = remote_movement(standing, 1003, 1.75);
+        // The spring goes as the mover has it: Python's records left it out,
+        // and the client then put the body's capsule under the floor
+        // (`remote_movement`).
         assert_eq!(
             record,
             Movement {
@@ -284,6 +298,8 @@ mod tests {
                 input_throttles: [0, 127],
                 air_ticks: 3,
                 gravity: 1.75,
+                spring: [4, 5],
+                spring_speed: 0.25,
                 ..Movement::default()
             }
         );

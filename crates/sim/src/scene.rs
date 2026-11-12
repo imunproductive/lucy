@@ -48,9 +48,15 @@
 //!   (Soldier: 76's bullets and Ana's darts left a hole and the map's
 //!   impact sound on the wall behind it, Helix Rockets flew through it),
 //!   though the server hit it. The filter bits were not the cause; nor was
-//!   the record cadence (`bots.rs` `Bot::record_due`: every frame now, and
-//!   Helix Rockets then hit, but bullets still did not). The bots' entity
-//!   id class is the lead now (`bots.rs` module notes).
+//!   the record cadence (`bots.rs` `Bot::record_due`: every frame now;
+//!   Helix Rockets then exploded on the bot, perhaps only at the server's
+//!   release point, but bullets still went through), nor the bots' entity
+//!   id class (`bots.rs` module notes). The lead now (2026-11-12, not yet
+//!   checked in the game): every bot record left the spring steps at 0,
+//!   which puts the bot's collision capsule (its physics proxy, of its
+//!   team's category) 2.5 m too low, under the floor (`Bot::movement`), and
+//!   players also walked through the bots. Assumption: the client's own
+//!   shots find a body through that capsule.
 //! - Component 29 (MPlayerComponentData): the player's 16-byte id, BattleTag
 //!   (the client names the entity by it), level, and on a competitive card
 //!   the rank (m_rankedLevel, m_heroicRank, m_rankedLevelTier), which the team
