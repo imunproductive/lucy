@@ -1,5 +1,6 @@
 //! `data/game_map_areas_174.json`: the volumes of each map that the server
-//! tests a player's body against: the spawn rooms.
+//! tests a player's body against (the spawn rooms and the damage areas) and
+//! the spawn door barriers the server must create.
 //!
 //! A spawn room is a map entity that runs graph `0D62` (definition `1806` on
 //! every map read: one per room). Its `STUTargetTagInstanceData` names the
@@ -17,6 +18,27 @@
 //! boxes hold the room around the team 0 spawn point, and the client's
 //! "is in spawn room" (`STU_E4C6AAB4`) reads only the server's component 74
 //! flag (`docs/notes/related-projects.md`).
+//!
+//! A damage area is a map entity with `STUECDamageAreaInstanceData`
+//! (class `6E7ED1C2`, definition `0109` on every map read; 65 entities): its
+//! `m_2746D7E4` (+8) names a box area as a spawn room's does, `m_B81F7395`
+//! (+24, a float) is its damage, and the bytes `m_1BB427AE` (+28) and
+//! `m_13F2925E` (+29) are flags not read here. The damages are 100 (most
+//! maps: the pits and edges of Ilios, Nepal, Lijiang Tower, Oasis,
+//! Eichenwalde, Volskaya, ...), 9000 (Busan), 9999 (Petra) and 0 (the two
+//! car-sized boxes on Oasis City Center's road and a box under Lijiang
+//! Night Market and Nepal Village (Winter), which their graphs may turn on).
+//! An area whose box area is not in the map's chunks is left out (Nepal
+//! Village `0736` and map `0794` name such areas).
+//!
+//! A spawn door barrier is a server-owned entity placeable (client id 0)
+//! running graph `00F6`: on the Practice Range six of them stand in the
+//! three doorways of the spawn room (definitions `1307` and `130C`, a model
+//! with the contact set `0092.049`, and `1225`, a model with the child
+//! `12F4`'s effect `178C.00D`), each with `00F6` overrides `0877` = 0 and
+//! `0878` = 1. The client builds a server-owned placeable only when the
+//! server creates it (`crate::game_maps`), so without the create the doorway
+//! is bare. Strong guess: these are the doorways' glowing barrier frames.
 
 use std::path::Path;
 
@@ -25,11 +47,11 @@ use serde_json::{Map, Value as Json, json};
 use crate::{
     Install, Output, Result, asset_error,
     game_maps::{
-        TARGET_AREA, TARGET_TAG_DATA, chunk_index, graph_vars, instance, map_chunks, read_map,
-        target_tags,
+        Placed, TARGET_AREA, TARGET_TAG_DATA, chunk_index, graph_vars, instance, map_chunks,
+        read_map, target_tags,
     },
     guid_hex,
-    map_chunk::{area_boxes, guid_of, name_index},
+    map_chunk::{area_boxes, guid_of, name_index, short},
 };
 
 pub(crate) const PATH: &str = "data/game_map_areas_174.json";
@@ -38,6 +60,13 @@ pub(crate) const PATH: &str = "data/game_map_areas_174.json";
 const SPAWN_ROOM_GRAPH: u64 = 0x0D62;
 /// `0D62`'s team: its TrackTargets find this team's heroes.
 const ROOM_TEAM: u64 = 1777;
+/// The spawn door barrier graph.
+const DOOR_BARRIER_GRAPH: u64 = 0x00F6;
+/// `STUECDamageAreaInstanceData`: the area (a teUUID) at +8, the damage (a
+/// float) at +24.
+const DAMAGE_AREA_DATA: u32 = 0x6E7E_D1C2;
+const DAMAGE_AREA: usize = 8;
+const DAMAGE: usize = 24;
 const TARGET_TAG: u16 = 0x06C;
 const MAP: u16 = 0x002;
 
@@ -45,7 +74,11 @@ const SOURCE: &str = "Build 1.74.0.0.104319: per map (keys as game_maps_174.json
 every entity placeable running graph 0D62 (placeable = its flat index), its team (the placeable's 0D62 \
 override of v1777, STU_BD6CC023 TeamIndex: 0 blue, 1 red, -1 none), its target tags \
 (STUTargetTagInstanceData.m_targetTags) and the boxes of the area placeable its \
-STUTargetTagInstanceData.m_2746D7E4 names (chunk 0x0A: centre, half extents, rotation x y z w).";
+STUTargetTagInstanceData.m_2746D7E4 names (chunk 0x0A: centre, half extents, rotation x y z w); \
+its damage areas: every entity placeable with STUECDamageAreaInstanceData whose m_2746D7E4 names a box \
+area of the map, its first identifier (a placeable with one exists only in the modes that list it), \
+its damage (m_B81F7395) and its boxes; its door barriers: every entity placeable with client id 0 \
+running graph 00F6, with its first identifier.";
 
 pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
     let chunks = chunk_index(install);
@@ -56,17 +89,75 @@ pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
         let data = map_chunks(install, &chunks, map);
         // A map whose rooms don't fit keeps the reason instead: the server
         // then counts nobody in its rooms.
-        let entry = match spawn_rooms(&data) {
-            Ok(rooms) if rooms.is_empty() => continue,
-            Ok(rooms) => json!({"spawn_rooms": rooms}),
-            Err(error) => json!({"error": error.to_string()}),
+        let mut entry = match spawn_rooms(&data) {
+            Ok(rooms) if rooms.is_empty() => Map::new(),
+            Ok(rooms) => Map::from_iter([("spawn_rooms".into(), json!(rooms))]),
+            Err(error) => Map::from_iter([("error".into(), json!(error.to_string()))]),
         };
-        derived.insert(guid_hex(guid_of(map, MAP)), entry);
+        let (damage_areas, door_barriers) = match read_map(&data) {
+            Ok((base, entities)) => (
+                damage_areas(&data, base, &entities),
+                door_barriers(base, &entities),
+            ),
+            Err(_) => (Vec::new(), Vec::new()),
+        };
+        if !damage_areas.is_empty() {
+            entry.insert("damage_areas".into(), json!(damage_areas));
+        }
+        if !door_barriers.is_empty() {
+            entry.insert("door_barriers".into(), json!(door_barriers));
+        }
+        if !entry.is_empty() {
+            derived.insert(guid_hex(guid_of(map, MAP)), Json::Object(entry));
+        }
     }
     Ok(vec![Output::json(
         PATH,
         &json!({"source": SOURCE, "maps": derived}),
     )])
+}
+
+/// The damage areas of a map with a box area, in placeable order.
+fn damage_areas(chunks: &[(u64, Vec<u8>)], base: usize, entities: &[Placed<'_>]) -> Vec<Json> {
+    let areas = area_boxes(chunks);
+    entities
+        .iter()
+        .enumerate()
+        .filter_map(|(number, placed)| {
+            let (stu, root) = instance(placed, DAMAGE_AREA_DATA)?;
+            let boxes = areas.get(&stu.uuid(root + DAMAGE_AREA)?)?;
+            let damage = stu.f32(root + DAMAGE)?;
+            let mut area = placeable_entry(base + number, placed);
+            area.insert("damage".into(), json!(short(damage)));
+            area.insert("boxes".into(), json!(boxes));
+            Some(Json::Object(area))
+        })
+        .collect()
+}
+
+/// The server-owned spawn door barriers of a map, in placeable order.
+fn door_barriers(base: usize, entities: &[Placed<'_>]) -> Vec<Json> {
+    entities
+        .iter()
+        .enumerate()
+        .filter(|(_, placed)| {
+            placed.entity.client_id == 0
+                && graph_vars(&placed.instances).contains_key(&DOOR_BARRIER_GRAPH)
+        })
+        .map(|(number, placed)| Json::Object(placeable_entry(base + number, placed)))
+        .collect()
+}
+
+/// A placeable's flat index and, when it has one, its first identifier.
+fn placeable_entry(flat: usize, placed: &Placed<'_>) -> Map<String, Json> {
+    let mut entry = Map::from_iter([("placeable".into(), json!(flat))]);
+    if placed.entity.identifier != 0 {
+        entry.insert(
+            "identifier".into(),
+            json!(guid_hex(placed.entity.identifier)),
+        );
+    }
+    entry
 }
 
 /// The spawn rooms of a map, in placeable order.

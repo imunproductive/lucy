@@ -75,21 +75,51 @@ fn spawn_rooms_belong_to_their_team_or_hold_its_spawn_point() {
     );
 }
 
-/// The derived file: a map's rooms, and a map whose derivation failed has
-/// none.
+/// The derived file: a map's rooms, damage areas and door barriers, and a
+/// map whose rooms' derivation failed has no rooms. Damage areas of 100 and
+/// more kill, an area of 0 doesn't; an area or barrier with an identifier
+/// exists only in the modes that list it.
 #[test]
-fn the_area_file_reads_rooms_and_failures() {
+fn the_area_file_reads_rooms_damage_areas_barriers_and_failures() {
     let data = MapAreaData::read(
         br#"{"maps": {
             "0x0800000000000001": {"spawn_rooms": [{"placeable": 126, "team": 0,
-                "boxes": [{"centre": [0, 0, 0], "half": [1, 1, 1], "rotation": [0, 0, 0, 1]}]}]},
+                "boxes": [{"centre": [0, 0, 0], "half": [1, 1, 1], "rotation": [0, 0, 0, 1]}]}],
+                "damage_areas": [
+                    {"placeable": 700, "damage": 100.0,
+                     "boxes": [{"centre": [0, -20, 0], "half": [10, 2, 10], "rotation": [0, 0, 0, 1]}]},
+                    {"placeable": 701, "damage": 0.0,
+                     "boxes": [{"centre": [0, 0, 0], "half": [1, 1, 1], "rotation": [0, 0, 0, 1]}]},
+                    {"placeable": 702, "identifier": "0x0D80000000002962", "damage": 9999.0,
+                     "boxes": [{"centre": [0, -40, 0], "half": [1, 1, 1], "rotation": [0, 0, 0, 1]}]}],
+                "door_barriers": [{"placeable": 340},
+                    {"placeable": 341, "identifier": "0x0D80000000002962"}]},
             "0x0800000000000002": {"error": "a room's area is not a box"}
         }}"#,
     )
     .unwrap();
-    let rooms = data.maps[&0x0800_0000_0000_0001].as_ref().unwrap();
+    let mut map = GameMap::practice_range();
+    map.map_guid = 0x0800_0000_0000_0001;
+    let rooms = data.spawn_rooms(&map);
     assert_eq!(rooms.len(), 1);
     assert_eq!(rooms[0].team, Some(0));
     assert!(rooms[0].contains([0.5, 0.5, 0.5]));
-    assert!(data.maps[&0x0800_0000_0000_0002].is_err());
+    let none = BTreeSet::new();
+    let listed = BTreeSet::from([0x0D80_0000_0000_2962]);
+    let lethal = data.lethal_areas(&map, &none);
+    assert_eq!(lethal.len(), 1);
+    assert_eq!(lethal[0].placeable, 700);
+    assert!(lethal[0].contains([5.0, -21.0, -5.0]));
+    assert!(!lethal[0].contains([5.0, -17.0, -5.0]));
+    let placeables: Vec<u32> = data
+        .lethal_areas(&map, &listed)
+        .iter()
+        .map(|area| area.placeable)
+        .collect();
+    assert_eq!(placeables, [700, 702]);
+    assert_eq!(data.door_barriers(&map, &none), [340]);
+    assert_eq!(data.door_barriers(&map, &listed), [340, 341]);
+    map.map_guid = 0x0800_0000_0000_0002;
+    assert!(data.spawn_rooms(&map).is_empty());
+    assert!(data.lethal_areas(&map, &listed).is_empty());
 }

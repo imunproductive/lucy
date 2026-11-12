@@ -14,7 +14,7 @@ use crate::{Install, Result, asset_error, build};
 /// The build the derivations read.
 pub const BUILD: &str = "104319";
 /// Bump when a derivation's output changes, so caches are derived again.
-pub const DERIVATIONS_VERSION: u32 = 17;
+pub const DERIVATIONS_VERSION: u32 = 18;
 const STAMP: &str = "derived.txt";
 
 /// The derived pack for `install` under `cache_root`, derived first if it is
