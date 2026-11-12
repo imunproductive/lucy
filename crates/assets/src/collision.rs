@@ -247,6 +247,42 @@ fn parse_chunk(data: &[u8]) -> Result<(Vec<Mesh>, Vec<Hull>), String> {
     Ok((meshes, hulls))
 }
 
+/// The triangles of a collision chunk's meshes whose mask is exactly `mask`,
+/// as their corners, in chunk order.
+pub(crate) fn mask_triangles(data: &[u8], mask: u16) -> Result<Vec<[[f32; 3]; 3]>, String> {
+    let u16_at = |at: usize| -> Result<u16, String> { Ok(u16::from_le_bytes(take(data, at)?)) };
+    let u32_at = |at: usize| -> Result<u32, String> { Ok(u32::from_le_bytes(take(data, at)?)) };
+    let u64_at = |at: usize| -> Result<usize, String> {
+        usize::try_from(u64::from_le_bytes(take(data, at)?))
+            .map_err(|_| "offset out of range".into())
+    };
+    let f32_at = |at: usize| -> Result<f32, String> { Ok(f32::from_le_bytes(take(data, at)?)) };
+    let (mesh_count, mesh_table) = (u32_at(12)? as usize, u64_at(40)?);
+    let mut out = Vec::new();
+    for number in 0..mesh_count {
+        let base = mesh_table + 56 * number;
+        let verts = u64_at(base + 8)?;
+        let tris = u64_at(base + 16)?;
+        let vert_count = u32_at(base + 28)? as usize;
+        let tri_count = u32_at(base + 32)? as usize;
+        for record in (0..tri_count).map(|k| tris + 32 * k) {
+            if u16_at(record + 28)? != mask {
+                continue;
+            }
+            let corner = |k: usize| -> Result<[f32; 3], String> {
+                let vertex = u32_at(record + 4 * k)? as usize;
+                if vertex >= vert_count {
+                    return Err("triangle corner out of the mesh".into());
+                }
+                let at = verts + 16 * vertex;
+                Ok([f32_at(at)?, f32_at(at + 4)?, f32_at(at + 8)?])
+            };
+            out.push([corner(0)?, corner(1)?, corner(2)?]);
+        }
+    }
+    Ok(out)
+}
+
 fn take<const N: usize>(data: &[u8], at: usize) -> Result<[u8; N], String> {
     data.get(at..at + N)
         .map(|bytes| bytes.try_into().unwrap())

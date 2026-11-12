@@ -41,23 +41,34 @@
 //!   the 9000 and 9999 do whatever it means. A living body whose feet are in
 //!   a lethal area of the mode dies. The areas of damage 0 are left out
 //!   (assumption: off unless a graph turns them on; no graph does here).
-//! - The catch floor, on a map without damage areas. The Practice Range has
-//!   none, and its collision has no other volume of its own. What it has
-//!   under the playable area are invisible floors of the world's player clip
-//!   (triangles with mask [`WORLD_CLIP`], which only the team proxies 0x08
-//!   and 0x10 and category 0x02 meet): a pit floor at -11 m and the world's
-//!   bottom at -19.8 m, while the lowest floor a player walks on is about
-//!   -5.25 m. Strong guess: such a catch floor is where retail's environment
-//!   kills, so a living body whose feet reach the highest catch floor dies
-//!   ([`kill_height`]). A catch floor is a level, walkable clip triangle of
-//!   at least [`CATCH_AREA`] below every spawn point; Watchpoint: Gibraltar's
-//!   clip has none (its level clip faces are small ledges).
+//! - Kill volumes (`game_map_areas` `kill_volumes`): the boxes of the map's
+//!   collision that only query category 0x02 meets (`orpheus_assets`'
+//!   `map_areas` notes), nearly all 4 m thick slabs under a map's drops; 77
+//!   of the 95 map records with a header have them, Watchpoint: Gibraltar,
+//!   Dorado and Route 66 among the maps without damage areas. Strong guess:
+//!   a body that falls off the map dies where it enters one. The slabs are
+//!   the only shapes of their own under those drops, a few metres below the
+//!   lowest floor (`docs/notes/behavior.md` has the table), and retail
+//!   kills there well before the map's lowest triangle (seen in the game).
+//!   Not read in the client: which query category 0x02 is. A living body
+//!   whose feet are in one dies.
+//! - The catch floor, on a map with neither damage areas nor kill volumes.
+//!   The Practice Range has none, and its collision has no other volume of
+//!   its own. What it has under the playable area are invisible floors of
+//!   the world's player clip (triangles with mask [`WORLD_CLIP`], which only
+//!   the team proxies 0x08 and 0x10 and category 0x02 meet): a pit floor at
+//!   -11 m and the world's bottom at -19.8 m, while the lowest floor a
+//!   player walks on is about -5.25 m. Strong guess: such a catch floor is
+//!   where retail's environment kills, so a living body whose feet reach the
+//!   highest catch floor dies ([`kill_height`]). A catch floor is a level,
+//!   walkable clip triangle of at least [`CATCH_AREA`] below every spawn
+//!   point.
 //! - Below the whole map: feet under the map's lowest collision triangle.
 //!   The mover stops a falling body 100 m lower (`ABYSS`, `Mover._place` in
 //!   upstream leafall903/ORPHEUS `mover.py`, whose note says the mode's kill
 //!   volumes are separate), so without this a body that falls off a map
-//!   with neither (Gibraltar, Ecopoint) would stand alive on nothing.
-//!   Assumption: nothing playable is under the lowest triangle.
+//!   with none of the above (Ecopoint: Antarctica) would stand alive on
+//!   nothing. Assumption: nothing playable is under the lowest triangle.
 //!
 //! Spawn door barriers (`game_map_areas` `door_barriers`): the server-owned
 //! placeables running graph `00F6` in the spawn room doorways. The client
@@ -157,9 +168,11 @@ struct MapAreas {
     rooms: Result<Arc<[SpawnRoom]>, String>,
     damage_areas: Vec<DamageArea>,
     door_barriers: Vec<MapPlaceable>,
+    kill_volumes: Arc<[CaptureBox]>,
 }
 
-/// Every map's spawn rooms, damage areas and door barriers, by map GUID.
+/// Every map's spawn rooms, damage areas, door barriers and kill volumes, by
+/// map GUID.
 #[derive(Debug, Default)]
 pub struct MapAreaData {
     maps: HashMap<u64, MapAreas>,
@@ -179,6 +192,8 @@ struct RawMap {
     damage_areas: Vec<RawDamageArea>,
     #[serde(default)]
     door_barriers: Vec<RawPlaceable>,
+    #[serde(default)]
+    kill_volumes: Vec<CaptureBox>,
 }
 
 #[derive(Deserialize)]
@@ -280,12 +295,16 @@ impl MapAreaData {
                 .into_iter()
                 .map(|barrier| barrier.read(&key))
                 .collect::<io::Result<_>>()?;
+            for (number, volume) in (0u32..).zip(&raw.kill_volumes) {
+                check_boxes(std::slice::from_ref(volume), &key, "kill volume", number)?;
+            }
             maps.insert(
                 guid,
                 MapAreas {
                     rooms,
                     damage_areas,
                     door_barriers,
+                    kill_volumes: raw.kill_volumes.into(),
                 },
             );
         }
@@ -341,6 +360,14 @@ impl MapAreaData {
                     .map(|barrier| barrier.placeable)
                     .collect()
             })
+            .unwrap_or_default()
+    }
+
+    /// The map's kill volumes (see the module notes).
+    pub fn kill_volumes(&self, map: &GameMap) -> Arc<[CaptureBox]> {
+        self.maps
+            .get(&map.map_guid)
+            .map(|areas| Arc::clone(&areas.kill_volumes))
             .unwrap_or_default()
     }
 }

@@ -1,7 +1,7 @@
 //! The Practice Range's spawn room and its fall out of the map
 //! (`crate::map_areas`): invulnerable and healed inside, hero change only
 //! inside and where the hero stands, the client's spawn room flag, and the
-//! environment's kill.
+//! environment's kill; and Watchpoint: Gibraltar's kill volumes.
 
 use super::*;
 use crate::combat::{Combat, CombatPlayer, ENVIRONMENT_DAMAGE, Shooter, apply_player_hits};
@@ -278,6 +278,37 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
         .unwrap();
     let back = world.body_position().unwrap();
     assert!((back[0] - spawn[0]).abs() < 0.01 && (back[2] - spawn[2]).abs() < 0.01);
+}
+
+/// Watchpoint: Gibraltar has no damage areas and no catch floor: a body that
+/// falls off it dies in one of its kill volumes, 4 m slabs a few metres below
+/// its lowest floor, not 50 m lower under the map's lowest triangle.
+#[test]
+#[ignore = "requires a derived 104319 pack and the install (Gibraltar's collision)"]
+fn a_fall_off_gibraltar_dies_in_its_kill_volume() {
+    const GIBRALTAR: u64 = 0x0800_0000_0000_0184;
+    let runtime = orpheus_testkit::runtime_dir();
+    let install = orpheus_testkit::game_dir();
+    let assets = SceneAssets::load(&runtime)
+        .unwrap()
+        .with_collision_build(std::sync::Arc::new(move |map, name| {
+            let opened = orpheus_assets::Install::open(&install, "enUS")
+                .map_err(std::io::Error::other)?;
+            let output = orpheus_assets::collision_cache(&opened, map, name)
+                .map_err(std::io::Error::other)?;
+            Ok(output.bytes)
+        }));
+    let map = orpheus_content::maps::MapCatalog::load(runtime.join("data"))
+        .unwrap()
+        .game_map(GIBRALTAR, crate::match_flow::ESCORT, "Escort", false, &[6, 6])
+        .unwrap();
+    let scene = assets.prepare(map).unwrap();
+    assert_eq!(scene.kill_height(), None);
+    // The lowest floor the AI walks on (-10.84 m) is safe.
+    assert!(!scene.fell_out([33.375, -10.85, -104.625]));
+    // The slab under the drop by the first checkpoint: top -11.72 m.
+    assert!(!scene.fell_out([100.7, -11.6, 58.4]));
+    assert!(scene.fell_out([100.7, -11.8, 58.4]));
 }
 
 /// A pick while dead waits for the respawn, which plays the new hero.
