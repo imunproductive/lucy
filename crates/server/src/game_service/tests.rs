@@ -1948,7 +1948,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
         .unwrap();
     assert_eq!(
         create.components.as_deref().and_then(filter),
-        Some((26, vec![Some(DecodedField::Id(0x0100_0041))]))
+        Some((26, vec![Some(DecodedField::Id(0x0001_0000_0100_0041))]))
     );
     let dead = |watcher: &Watcher| {
         watcher
@@ -1957,7 +1957,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
                     && record.operation == Some(2)
                     && record.components.as_deref().and_then(first_pool) == Some(0.0)
                     && record.components.as_deref().and_then(filter)
-                        == Some((26, vec![Some(DecodedField::Id(0x0100_0051))]))
+                        == Some((26, vec![Some(DecodedField::Id(0x0001_0000_0100_0051))]))
             })
             .is_some()
     };
@@ -3349,7 +3349,9 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
 /// the dart's 70 with her 25001. An enemy Soldier: 76 wounds the bot: he
 /// walks ahead of the spawn both share and fires at it, 8 m out along their
 /// facing. Ana then fires along the same line: her darts strike him (the
-/// enemy) until he dies, and the next one the bot behind him.
+/// enemy) until he dies, and the next one the bot behind him. Ana's client
+/// gets her own body's state, as Soldier: 76's does (owner corrections,
+/// `replication.rs` `CORRECTED_HEROES`).
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
@@ -3483,6 +3485,24 @@ fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
         hits.iter().all(|(target, _)| *target == soldier_body),
         "no 25001 for the heal: {hits:?}"
     );
+    // Her body's state: pure movement records on her body, at most one a
+    // datagram, each the datagram's last record.
+    let own = ana.owner | 1;
+    let mut corrections = 0;
+    for (_, records) in &ana.datagrams {
+        let moves: Vec<_> = records
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| {
+                record.entity == own && record.movement && record.operation.is_none()
+            })
+            .map(|(index, _)| index)
+            .collect();
+        assert!(moves.len() <= 1, "{moves:?}");
+        assert!(moves.iter().all(|&index| index + 1 == records.len()));
+        corrections += moves.len();
+    }
+    assert!(corrections > 0, "no correction of Ana's body");
     server.stop().unwrap();
 }
 

@@ -41,7 +41,7 @@ use crate::{
 };
 use orpheus_content::{
     hero_settings::{HeroSetting, HeroSettings, SCRIPT_SETTINGS},
-    heroes::{Hero, SOLDIER},
+    heroes::{ANA, Hero, SOLDIER},
     parameters::{ClientGameMessage, HeroSelectRequest},
 };
 use orpheus_core::tick::{MAX_LEASE_FRAME, SEND_EVERY, TICK_PERIOD};
@@ -78,6 +78,19 @@ const MAX_PENDING_INPUT: usize = 256;
 // BodyScript.command retains this many intermediate VM frames before its
 // requested frame. The first neutral release runs even across a larger gap.
 const MAX_SCRIPT_TAIL: u32 = 256;
+
+/// correction.py `HEROES`: the heroes whose owner gets his body's state
+/// (owner corrections): the ones whose movement the server's mover follows.
+/// Python had Soldier: 76 alone. Ana is beyond it (2026-11-12): no ability
+/// of hers moves her, and her scoped walk (`01C7` st49 takes the speed down
+/// by `#23184`, which `0B94` st77 sets to 0.65 while the zoom `#169` is
+/// full) runs at the reference's speeds on the reference's frames. Without
+/// corrections, any other difference between her client's body and the
+/// server's lasted until she died, and her shots left from the wrong place.
+/// Widowmaker stays out: the server can't run her Grappling Hook (`005A`
+/// st1, a `MoveTo` to an entity and bone), so a correction would pull her
+/// back.
+const CORRECTED_HEROES: [u64; 2] = [SOLDIER, ANA];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BodyId {
@@ -247,8 +260,9 @@ impl BodyScript {
             .encoder()
             .project(snapshot, View::Owner)
             .map_err(invalid)?;
-        let corrections = (body.hero == SOLDIER && runtime.movement_modifiers().is_some())
-            .then(|| CorrectionHistory::new(body.id.entity, body.id.generation));
+        let corrections = (CORRECTED_HEROES.contains(&body.hero)
+            && runtime.movement_modifiers().is_some())
+        .then(|| CorrectionHistory::new(body.id.entity, body.id.generation));
         let projectiles = runtime
             .projectile_leases()
             .filter(|leases| !leases.blocks().is_empty())
