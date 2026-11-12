@@ -327,6 +327,11 @@ pub struct BotHit {
     pub healed: f64,
 }
 
+/// What the environment deals a body it kills: more than any hero's pools
+/// (the kill volumes of other maps deal 9000 or 9999,
+/// `STUECDamageAreaInstanceData`).
+pub const ENVIRONMENT_DAMAGE: f64 = 9999.0;
+
 /// A hit on a player's body, for the match to apply to his body's pools
 /// (combat.py `_damage` for a human victim).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -507,6 +512,29 @@ impl Combat {
     /// The hits on players' bodies since the last call, in order.
     pub fn take_player_hits(&mut self) -> Vec<PlayerHit> {
         std::mem::take(&mut self.player_hits)
+    }
+
+    /// The environment kills the player's body at `tick` (`map_areas`
+    /// module notes: it fell onto the map's catch floor): a hit on it of
+    /// [`ENVIRONMENT_DAMAGE`] that goes the way of any other, so the
+    /// victim gets "YOU DIED" (25004), his body the death message and his
+    /// board a death, and he respawns after the mode's time. Assumption:
+    /// the body is its own killer, as in a self-inflicted explosion.
+    pub fn environment_kill(&mut self, body: u32, team: u8, tick: u32) {
+        self.player_hits.push(PlayerHit {
+            body,
+            shooter: Shooter {
+                source: body,
+                team,
+                bot: false,
+            },
+            amount: ENVIRONMENT_DAMAGE,
+            critical: false,
+            loadout: None,
+            frame: tick,
+            world_tick: Some(tick),
+            heal: false,
+        });
     }
 
     /// The bodies a shooter's hit can strike (combat.py `_enemies`, and

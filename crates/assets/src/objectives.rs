@@ -51,9 +51,12 @@ use crate::{
     Install, Output, Result,
     ai_spawners::component,
     asset_error,
-    game_maps::{self, GraphVars, Placed, chunk_index, graph_vars, map_chunks, read_map},
+    game_maps::{
+        self, GraphVars, TARGET_AREA, TARGET_TAG_DATA, chunk_index, graph_vars, instance,
+        map_chunks, read_map,
+    },
     guid_hex,
-    map_chunk::{AREA, StuV1, chunk_kind, name_index, placeables, short},
+    map_chunk::{area_boxes, name_index, short},
 };
 
 pub(crate) const OBJECTIVES: &str = "data/game_objectives_174.json";
@@ -89,14 +92,7 @@ const AUTO_START: u64 = 1362;
 const PAUSE: u64 = 955;
 const AUTO_NEXT: u64 = 3572;
 
-/// The chunk kind of the area placeables.
-const AREA_CHUNK: u16 = 0x0A;
-const BOX_SIZE: usize = 40;
-
 /// STUv1 instance data classes.
-const TARGET_TAG_DATA: u32 = 0x6410_0592;
-/// `STUTargetTagInstanceData.m_2746D7E4`: the entity's area.
-const TARGET_AREA: usize = 24;
 const WAYPOINT_DATA: u32 = 0xB1B9_C667;
 const MOVEMENT_DATA: u32 = 0xE42D_9464;
 /// `STUParametricMovementComponentInstanceData.m_destination`.
@@ -250,58 +246,6 @@ fn schema_defaults(asset: &Asset) -> Result<HashMap<u64, f32>, String> {
     Ok(out)
 }
 
-/// The capture areas of a map: area UUID -> its boxes.
-fn areas(chunks: &[(u64, Vec<u8>)]) -> HashMap<[u8; 16], Vec<Json>> {
-    let mut out = HashMap::new();
-    for (guid, data) in chunks {
-        if chunk_kind(*guid) != AREA_CHUNK {
-            continue;
-        }
-        for placeable in placeables(data) {
-            if placeable.kind != AREA {
-                continue;
-            }
-            let uuid: [u8; 16] = data[placeable.offset..placeable.offset + 16]
-                .try_into()
-                .expect("16 bytes");
-            let size = u32_at(data, placeable.offset + 20) as usize;
-            let body = &data[placeable.offset + 24..placeable.offset + size];
-            if let Some(boxes) = area_boxes(body) {
-                out.insert(uuid, boxes);
-            }
-        }
-    }
-    out
-}
-
-/// An area placeable's boxes, `None` for a body that lists none or that
-/// runs past its placeable.
-fn area_boxes(body: &[u8]) -> Option<Vec<Json>> {
-    let word = |k: usize| (k * 4 + 4 <= body.len()).then(|| u32_at(body, k * 4));
-    let count = (word(3)? & 0xFFFF) as usize;
-    let (start, end) = (word(6)? as usize, word(7)? as usize);
-    if count == 0 || end != start + count * BOX_SIZE || end > body.len() {
-        return None;
-    }
-    Some(
-        (0..count)
-            .map(|k| {
-                let at = start + k * BOX_SIZE;
-                let floats = |from: usize, n: usize| -> Vec<f64> {
-                    (0..n)
-                        .map(|i| short(f32::from_bits(u32_at(body, at + from + 4 * i))))
-                        .collect()
-                };
-                json!({"centre": floats(16, 3), "half": floats(28, 3), "rotation": floats(0, 4)})
-            })
-            .collect(),
-    )
-}
-
-fn u32_at(data: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(data[at..at + 4].try_into().expect("4 bytes"))
-}
-
 /// One waypoint of a track.
 struct Waypoint {
     placeable: usize,
@@ -317,7 +261,7 @@ struct Waypoint {
 /// The points, objectives and payloads of a map.
 fn map_objectives(chunks: &[(u64, Vec<u8>)], defaults: &Defaults) -> Result<Map<String, Json>> {
     let (base, entities) = read_map(chunks)?;
-    let areas = areas(chunks);
+    let areas = area_boxes(chunks);
     let mut points = Vec::new();
     let mut objectives = Vec::new();
     let mut payloads = Vec::new();
@@ -424,15 +368,6 @@ fn map_objectives(chunks: &[(u64, Vec<u8>)], defaults: &Defaults) -> Result<Map<
         );
     }
     Ok(out)
-}
-
-/// The first instance of a class among the entity's.
-fn instance<'a>(placed: &Placed<'a>, class: u32) -> Option<(StuV1<'a>, usize)> {
-    placed
-        .instances
-        .iter()
-        .find(|(stu, root)| stu.class(*root) == Some(class))
-        .copied()
 }
 
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {

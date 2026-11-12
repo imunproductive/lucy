@@ -163,6 +163,11 @@ impl TriangleIndex {
         self.lowest.unwrap_or(0.0)
     }
 
+    /// Every triangle, in insertion order.
+    pub fn triangles(&self) -> impl ExactSizeIterator<Item = &SceneTriangle> {
+        self.triangles.iter().map(|indexed| &indexed.triangle)
+    }
+
     /// Return triangles whose bounds overlap the box, in first-column order.
     pub fn nearby(&self, min: Vec3, max: Vec3, category: u16) -> Vec<&SceneTriangle> {
         let bounds = Bounds { min, max };

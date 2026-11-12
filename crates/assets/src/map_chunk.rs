@@ -16,6 +16,16 @@
 //! instance count, ...}`, its client id (u16) at +104 and from +112 one `{u32
 //! type, u32 offset from that entry}` per component instance, each an STUv1
 //! blob.
+//!
+//! An area placeable (chunk kind [`AREA_CHUNK`], placeable type [`AREA`]) is
+//! a volume other placeables name by its UUID: a body of `{u32 ×3, u32 box
+//! count (low 16 bits), u32, u32 flags, u32 offsets [6..13] from the body
+//! start}`, the boxes from offset [6] to [7], each 40 bytes: rotation `{x, y,
+//! z, w}`, world centre, half extents (refs report `CaptureAreas.md` §3).
+
+use std::collections::HashMap;
+
+use serde_json::{Value as Json, json};
 
 use crate::{Install, Result, asset_error};
 
@@ -25,6 +35,9 @@ pub(crate) const MAP_CHUNK: u16 = 0x0BC;
 pub(crate) const ENTITY: u16 = 0x0B;
 /// The chunk kind of the static collision shapes.
 pub(crate) const COLLISION: u16 = 0x11;
+/// The chunk kind of the area placeables.
+pub(crate) const AREA_CHUNK: u16 = 0x0A;
+const BOX_SIZE: usize = 40;
 
 /// The placeable types, byte 19 of each placeable.
 pub(crate) const LIGHT: u8 = 7;
@@ -290,6 +303,55 @@ impl<'a> StuV1<'a> {
 
 fn u32_at(data: &[u8], at: usize) -> u32 {
     read_u32(&data[at..at + 4])
+}
+
+/// The box areas of a map: area UUID -> its boxes as
+/// `{"centre", "half", "rotation"}` (an area that lists no box is left out).
+pub(crate) fn area_boxes(chunks: &[(u64, Vec<u8>)]) -> HashMap<[u8; 16], Vec<Json>> {
+    let mut out = HashMap::new();
+    for (guid, data) in chunks {
+        if chunk_kind(*guid) != AREA_CHUNK {
+            continue;
+        }
+        for placeable in placeables(data) {
+            if placeable.kind != AREA {
+                continue;
+            }
+            let uuid: [u8; 16] = data[placeable.offset..placeable.offset + 16]
+                .try_into()
+                .expect("16 bytes");
+            let size = u32_at(data, placeable.offset + 20) as usize;
+            let body = &data[placeable.offset + 24..placeable.offset + size];
+            if let Some(boxes) = boxes(body) {
+                out.insert(uuid, boxes);
+            }
+        }
+    }
+    out
+}
+
+/// An area placeable's boxes, `None` for a body that lists none or that
+/// runs past its placeable.
+fn boxes(body: &[u8]) -> Option<Vec<Json>> {
+    let word = |k: usize| (k * 4 + 4 <= body.len()).then(|| u32_at(body, k * 4));
+    let count = (word(3)? & 0xFFFF) as usize;
+    let (start, end) = (word(6)? as usize, word(7)? as usize);
+    if count == 0 || end != start + count * BOX_SIZE || end > body.len() {
+        return None;
+    }
+    Some(
+        (0..count)
+            .map(|k| {
+                let at = start + k * BOX_SIZE;
+                let floats = |from: usize, n: usize| -> Vec<f64> {
+                    (0..n)
+                        .map(|i| short(f32_at(body, at + from + 4 * i)))
+                        .collect()
+                };
+                json!({"centre": floats(16, 3), "half": floats(28, 3), "rotation": floats(0, 4)})
+            })
+            .collect(),
+    )
 }
 
 fn u64_at(data: &[u8], at: usize) -> u64 {

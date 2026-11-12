@@ -258,6 +258,20 @@ pub fn player_create(
     Ok(create(player.entity, definition))
 }
 
+/// The player entity's spawn room flag alone: component 74 field 6, which
+/// the client checks before it opens hero select ("You must be in a spawn
+/// room to change heroes", `map_areas` module notes). The player's create
+/// sends it set.
+pub fn spawn_room_flag(player: u32, inside: bool) -> EntityUpdate {
+    let mut values = vec![None; 7];
+    values[6] = Some(ComponentValue::U8(u8::from(inside)));
+    EntityUpdate {
+        entity: player,
+        operation: Some(Operation::Update(vec![fields(74, values)])),
+        ..EntityUpdate::default()
+    }
+}
+
 pub fn mode_create(mode: u64) -> EntityUpdate {
     create(
         GAME_MODE_ENTITY,

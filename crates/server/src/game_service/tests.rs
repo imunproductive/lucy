@@ -2080,6 +2080,120 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     server.stop().unwrap();
 }
 
+/// The Practice Range's spawn room (`orpheus_sim::map_areas`): a player
+/// who walks out of it toward the bots gets his player entity's component
+/// 74 (field 6, the spawn room flag the client checks before H opens hero
+/// select) updated once, and no more while he stays out.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
+fn walking_out_of_the_spawn_room_clears_the_hero_select_flag() {
+    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use orpheus_sim::scene_assets::SceneAssets;
+
+    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let spawn = scene.map().spawn_point(0, 0).unwrap().0;
+    let bot = scene.bots()[0].position;
+    let schemas = Arc::new(Schemas::game());
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
+    let tag = "walker#1111";
+    let members = vec![WorldPlayer {
+        player: MatchPlayer {
+            name: tag.into(),
+            team: 0,
+            tournament: false,
+            ranked: false,
+        },
+        card: PlayerCard {
+            account: [7, 0x0100_0000_0000_0000],
+            battle_tag: tag.into(),
+            record: Fields::from([(0x40, Value::String(tag.into()))]),
+            ..PlayerCard::default()
+        },
+        hero: 0,
+    }];
+    let tickets = server.open_prepared(MATCH, scene, members).unwrap();
+    let mut client = Client::new(&server, &tickets[0]);
+    client.handshake();
+    let mut walker = Watcher {
+        client,
+        owner: player_entity(0),
+        tick: 0,
+        sequences: HashSet::new(),
+        datagrams: Vec::new(),
+        ticks: Vec::new(),
+    };
+    let owner = walker.owner;
+    pump_until(&mut [&mut walker], &schemas, "the instance", |watchers| {
+        watchers[0].datagrams.iter().any(|(messages, _)| {
+            messages.iter().any(|message| {
+                message.id == 20300 && message.fields[&0x80] != Value::Struct(Fields::new())
+            })
+        })
+    });
+    let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+    let mut payload = BitWriter::new();
+    write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+    walker.client.send(ACK, payload.into_bytes());
+    pump_until(&mut [&mut walker], &schemas, "the controller", |watchers| {
+        watchers[0]
+            .find(0, |record| {
+                record.entity == owner && record.script.is_some()
+            })
+            .is_some()
+    });
+    send_player_message(
+        &mut walker.client,
+        &schemas,
+        owner,
+        1,
+        PICK_HERO,
+        SOLDIER.to_le_bytes().to_vec(),
+    );
+    pump_until(&mut [&mut walker], &schemas, "the body", |watchers| {
+        watchers[0].created(owner | 1).is_some()
+    });
+    let spawned = walker.datagrams.len();
+    let flag = |watcher: &Watcher| {
+        watcher.find(spawned, |record| {
+            record.entity == owner && record.updated == Some(74)
+        })
+    };
+    // He runs toward the first bot, out on the range.
+    let [dx, _, dz] = std::array::from_fn::<_, 3, _>(|axis| bot[axis] - spawn[axis]);
+    let yaw = (dx.atan2(dz) * 32768.0 / std::f64::consts::PI).round() as i32 as i16;
+    let mut frame = walker.tick + 1;
+    let deadline = server.now() + Duration::from_secs(30);
+    while flag(&walker).is_none() {
+        assert!(server.now() < deadline, "waiting for the flag");
+        if frame <= walker.tick + 8 {
+            walker
+                .client
+                .send(ACK, command_batch(frame, 16, yaw, 0, true));
+            frame += 16;
+        }
+        walker.pump(&schemas);
+    }
+    let cleared = flag(&walker).unwrap();
+    for _ in 0..60 {
+        if frame <= walker.tick + 8 {
+            walker
+                .client
+                .send(ACK, command_batch(frame, 16, yaw, 0, true));
+            frame += 16;
+        }
+        walker.pump(&schemas);
+    }
+    assert!(
+        walker
+            .find(cleared + 1, |record| record.entity == owner
+                && record.updated == Some(74))
+            .is_none(),
+        "one update while he stays out"
+    );
+    server.stop().unwrap();
+}
+
 /// Players (BattleTag, team, hero name) in one prepared Practice Range, once
 /// each client has every other body, its possession and, for a body that
 /// runs a statescript (Soldier: 76's), its frames. Also where each spawned.

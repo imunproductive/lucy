@@ -14,6 +14,7 @@ pub mod egress;
 pub mod hitboxes;
 pub mod hitscan;
 pub mod instance;
+pub mod map_areas;
 pub mod match_flow;
 pub mod mode_graph_values;
 pub mod mode_rules_data;

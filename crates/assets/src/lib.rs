@@ -26,6 +26,7 @@ mod heroes;
 mod hitboxes;
 mod install;
 mod lists;
+mod map_areas;
 mod map_chunk;
 mod mode_props;
 mod navigation;
@@ -182,6 +183,10 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "game_objectives",
         derive: objectives::derive,
+    },
+    Derivation {
+        name: "game_map_areas",
+        derive: map_areas::derive,
     },
     Derivation {
         name: "game_progression",

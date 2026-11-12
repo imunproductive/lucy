@@ -106,7 +106,11 @@ const RULESET: u16 = 0x0C0;
 
 // STUv1 instance data classes and their field offsets (TankLib's generated
 // types).
-const TARGET_TAG_DATA: u32 = 0x6410_0592; // STUTargetTagInstanceData: m_targetTags +8
+/// STUTargetTagInstanceData: m_targetTags +8.
+pub(crate) const TARGET_TAG_DATA: u32 = 0x6410_0592;
+/// `STUTargetTagInstanceData.m_2746D7E4` (a teUUID): the entity's area, an
+/// area placeable (`crate::map_chunk`).
+pub(crate) const TARGET_AREA: usize = 24;
 const SPAWN_TEAMS_DATA: u32 = 0x7D17_5935; // STU_7D175935: TeamIndex[] m_3A6C757E +8
 const STATESCRIPT_DATA: u32 = 0x7552_6BC2; // STUStatescriptComponentInstanceData
 /// Its two inline arrays of STUStatescriptGraphWithOverrides (40 bytes: the
@@ -131,6 +135,15 @@ struct Header {
 pub(crate) struct Placed<'a> {
     pub entity: Entity<'a>,
     pub instances: Vec<(StuV1<'a>, usize)>,
+}
+
+/// The first instance of a class among the entity's.
+pub(crate) fn instance<'a>(placed: &Placed<'a>, class: u32) -> Option<(StuV1<'a>, usize)> {
+    placed
+        .instances
+        .iter()
+        .find(|(stu, root)| stu.class(*root) == Some(class))
+        .copied()
 }
 
 pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
@@ -683,7 +696,7 @@ fn variant(path: &str) -> Option<&str> {
 }
 
 /// The target tags (`06C` indexes) of the entity's STUTargetTagInstanceData.
-fn target_tags(instances: &[(StuV1<'_>, usize)]) -> Vec<u64> {
+pub(crate) fn target_tags(instances: &[(StuV1<'_>, usize)]) -> Vec<u64> {
     let Some((stu, root)) = instances
         .iter()
         .find(|(stu, root)| stu.class(*root) == Some(TARGET_TAG_DATA))
@@ -769,6 +782,25 @@ impl GraphVars<'_> {
             .map(Some)
             .ok_or_else(|| asset_error(format!("variable {key:X} runs past its blob")))
     }
+
+    /// A team override (`STU_BD6CC023`, its TeamIndex `m_6CE7A900` at +16:
+    /// 0 blue, 1 red, -1 none), `None` when the graph doesn't override the
+    /// variable; an error for a value of another class.
+    pub fn team(&self, key: u64) -> Result<Option<i32>> {
+        let Some(Some(value)) = self.values.get(&key) else {
+            return Ok(None);
+        };
+        match self.stu.class(*value).unwrap_or(0) {
+            TEAM_VAR => self
+                .stu
+                .i32(value + 16)
+                .map(Some)
+                .ok_or_else(|| asset_error(format!("variable {key:X} runs past its blob"))),
+            other => Err(asset_error(format!(
+                "variable {key:X}: config var class {other:08X} is not a team"
+            ))),
+        }
+    }
 }
 
 /// The config var classes of numbers (`STUConfigVarInt`, `STUConfigVarFloat`,
@@ -776,6 +808,8 @@ impl GraphVars<'_> {
 const INT_VAR: u32 = 0x12E4_34A1;
 const FLOAT_VAR: u32 = 0x7B45_B325;
 const BOOL_VAR: u32 = 0xB567_AADA;
+/// The config var class of a team (`STU_BD6CC023`).
+const TEAM_VAR: u32 = 0xBD6C_C023;
 
 /// Graph index -> its variables, of the statescript instance data; a later
 /// graph of the same index replaces an earlier one, a later entry of the same

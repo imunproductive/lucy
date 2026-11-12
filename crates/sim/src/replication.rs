@@ -23,6 +23,7 @@ use crate::{
         DeliveryReport, FrameRecords, GameEgress, PacketDelivery, RecordSource, SendError,
         SentFrame,
     },
+    map_areas::SPAWN_HEALING,
     notices::{NOTICE_GAP, Switch},
     others::{
         ObservedScript, ObserverActivity, OtherDelivery, Others, PlayerView, RemoteBody,
@@ -622,6 +623,11 @@ enum Delivery {
     BotLink {
         body: u32,
     },
+    /// The player's spawn room flag (component 74 field 6, `scene.rs`
+    /// `spawn_room_flag`); a newer one supersedes it.
+    SpawnFlag {
+        revision: u64,
+    },
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -978,6 +984,15 @@ pub struct WorldDelivery {
     /// The voice of the current body (its entity): its stimuli's cooldowns
     /// and lines' turns ([`crate::voice_lines`]).
     voice: Option<(u32, VoiceState)>,
+    /// Whether the living body stood in one of its team's spawn rooms when
+    /// last measured ([`Self::area_step`]); `None` when it is dead or gone,
+    /// or its team has no room on the map.
+    spawn_room: Option<bool>,
+    /// The spawn room flag (component 74 field 6) as last queued, and its
+    /// revision; the player's create sends it set.
+    spawn_flag: (bool, u64),
+    /// A hero picked while the body was dead: the respawn plays it.
+    respawn_hero: Option<(u64, SkinTheme)>,
 }
 
 /// The entity variables of the hero settings the client sends
@@ -1076,6 +1091,9 @@ impl WorldDelivery {
             respawn_extra: Duration::ZERO,
             hero_settings: HeroSettings::default(),
             voice: None,
+            spawn_room: None,
+            spawn_flag: (true, 0),
+            respawn_hero: None,
         }
     }
 
@@ -1162,6 +1180,7 @@ impl WorldDelivery {
         self.bot_views.clear();
         self.target_candidates.clear();
         self.notices = SwitchNotices::default();
+        self.spawn_room = None;
     }
 
     /// This player as the other clients of the room see him this tick. His
@@ -1424,6 +1443,7 @@ impl WorldDelivery {
             Delivery::BotDestroy => self.bots.get(&entity) == Some(&BotLifetime::Retiring),
             Delivery::Health { revision } => self.health_updates.get(&entity) == Some(&revision),
             Delivery::Board { revision } => self.board.revision == revision,
+            Delivery::SpawnFlag { revision } => self.spawn_flag.1 == revision,
             Delivery::Script {
                 last, close: true, ..
             } => last == self.controller.latest_data(),
@@ -1519,7 +1539,12 @@ impl WorldDelivery {
                     (true, Delivery::BotDestroy) => {
                         self.bots.remove(&record.update.entity);
                     }
-                    (true, Delivery::Board { .. } | Delivery::BotLink { .. }) => {}
+                    (
+                        true,
+                        Delivery::Board { .. }
+                        | Delivery::BotLink { .. }
+                        | Delivery::SpawnFlag { .. },
+                    ) => {}
                     (true, Delivery::Health { .. }) => {
                         self.health_updates.remove(&record.update.entity);
                     }
@@ -1621,6 +1646,9 @@ impl WorldDelivery {
                         return None;
                     }
                     Delivery::Health { .. } if !self.identity_ready(record.update.entity) => {
+                        return None;
+                    }
+                    Delivery::SpawnFlag { .. } if !self.created.contains(&self.owner) => {
                         return None;
                     }
                     Delivery::CreateBody(id) if Some(id) == body => created = true,
@@ -1903,6 +1931,8 @@ impl WorldDelivery {
             }
         }
         self.started = Some(tick);
+        // The player's create sends the spawn room flag set.
+        self.spawn_flag = (true, self.spawn_flag.1 + 1);
         Ok(())
     }
 
@@ -2004,6 +2034,28 @@ impl WorldDelivery {
                     .get(&hero.guid)
                     .copied()
                     .unwrap_or_default();
+                let open = self.assembling && self.select_open;
+                // A dead player's pick waits for his respawn: the new hero
+                // comes back at the spawn after the delay (assumption: as in
+                // retail, where a hero change while dead keeps the timer).
+                if self.death.is_some() {
+                    self.respawn_hero = Some((hero.guid, skin));
+                    self.queue_controller(scene, tick, open, Some(hero.guid), None)?;
+                    return Ok(());
+                }
+                // Only in a spawn room (game-rules.md 23); the client asks
+                // only there, so a pick from outside crossed the room's
+                // edge on its way: the screen closes on the current hero.
+                if !self.may_change_hero() {
+                    self.queue_controller(
+                        scene,
+                        tick,
+                        false,
+                        self.body.map(|body| body.hero),
+                        None,
+                    )?;
+                    return Ok(());
+                }
                 // match.py `game_message`: the same hero and skin keep the
                 // body, unless its script failed (`needs_body`).
                 if !self.script_failed
@@ -2021,7 +2073,9 @@ impl WorldDelivery {
                 }
             }
             Some(HeroSelectRequest::OpenOrClose(wanted)) => {
-                let open = self.body.is_none() || wanted.unwrap_or(!self.select_open);
+                // Hero select opens only where a pick is taken.
+                let open = self.body.is_none()
+                    || (self.may_change_hero() && wanted.unwrap_or(!self.select_open));
                 self.queue_controller(scene, tick, open, self.body.map(|body| body.hero), None)?;
             }
             _ => {}
@@ -2296,6 +2350,10 @@ impl WorldDelivery {
         if self.death.is_some() || hit.amount.is_nan() || hit.amount <= 0.0 {
             return None;
         }
+        // Invulnerable in his team's spawn room (`map_areas`: 0C8E `03D4`).
+        if self.spawn_room == Some(true) {
+            return None;
+        }
         let death_tick = hit.world_tick.unwrap_or(tick);
         let source = Death {
             time: now.as_secs_f64(),
@@ -2391,6 +2449,51 @@ impl WorldDelivery {
         given
     }
 
+    /// Whether the player may change heroes now: while dead (assumption:
+    /// the dead change heroes as in retail, the new hero taking the
+    /// respawn), before his first body, or while his body is not known to
+    /// stand outside his team's spawn rooms (game-rules.md 23).
+    pub fn may_change_hero(&self) -> bool {
+        self.death.is_some() || self.body.is_none() || self.spawn_room != Some(false)
+    }
+
+    /// Whether his living body stood in one of his team's spawn rooms when
+    /// last measured; `None` when dead, gone or the team has no room.
+    pub fn in_spawn_room(&self) -> Option<bool> {
+        self.spawn_room
+    }
+
+    /// The spawn rooms each tick (`map_areas` module notes, mode body graph
+    /// `0C8E`): where the living body stands; inside, it heals
+    /// [`SPAWN_HEALING`] a second (one tick's share, [`TICK_PERIOD`]) and
+    /// takes no damage ([`Self::damage_body`]); the client's spawn room
+    /// flag (component 74 field 6) follows [`Self::may_change_hero`].
+    pub fn area_step(&mut self, scene: &PreparedScene, viewer: &PlayerAppearance<'_>) {
+        if self.started.is_none() {
+            return;
+        }
+        self.spawn_room = match (self.body, &self.mover, self.death) {
+            (Some(_), Some(mover), None) => {
+                scene.in_spawn_room(viewer.team, viewer.room, mover.pose().position)
+            }
+            _ => None,
+        };
+        if let (Some(true), Some(body)) = (self.spawn_room, self.body) {
+            let amount = SPAWN_HEALING * TICK_PERIOD.as_secs_f64();
+            self.heal_body(scene, body.id.entity, amount);
+        }
+        let inside = self.may_change_hero();
+        if inside != self.spawn_flag.0 {
+            let revision = self.spawn_flag.1 + 1;
+            self.spawn_flag = (inside, revision);
+            self.push(Record {
+                update: crate::scene::spawn_room_flag(self.owner, inside),
+                delivery: Delivery::SpawnFlag { revision },
+            });
+            self.remove_stale();
+        }
+    }
+
     /// The player's living body dealt `points` of damage or healing: its
     /// ultimate charges for it.
     pub fn gain_ult(&mut self, points: f64) {
@@ -2439,16 +2542,19 @@ impl WorldDelivery {
             }
             return Ok(false);
         };
+        let (guid, skin) = self.respawn_hero.unwrap_or_else(|| {
+            let skin = viewer
+                .card
+                .skins
+                .get(&body.hero)
+                .copied()
+                .unwrap_or_default();
+            (body.hero, skin)
+        });
         let hero = scene
             .heroes()
-            .get(body.hero)
+            .get(guid)
             .ok_or_else(|| invalid("the dead body's hero is unknown"))?;
-        let skin = viewer
-            .card
-            .skins
-            .get(&hero.guid)
-            .copied()
-            .unwrap_or_default();
         self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
         self.begin_spawn_bark(now);
         Ok(true)
@@ -2478,19 +2584,12 @@ impl WorldDelivery {
         let Some(entity) = self.next_body(now) else {
             return Ok(false);
         };
+        let (guid, skin) = self.respawn_hero.unwrap_or((body.hero, body.skin));
         let hero = scene
             .heroes()
-            .get(body.hero)
+            .get(guid)
             .ok_or_else(|| invalid("the body's hero is unknown"))?;
-        self.switch(
-            scene,
-            viewer,
-            tick,
-            quanta,
-            entity,
-            (hero, body.skin),
-            false,
-        )?;
+        self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
         self.begin_spawn_bark(now);
         if select && self.can_handle_game_message() {
             self.queue_controller(scene, tick, true, Some(hero.guid), None)?;
@@ -3054,7 +3153,18 @@ impl WorldDelivery {
         pick: bool,
     ) -> io::Result<()> {
         let (hero, skin) = selection;
-        let mover = scene.player_spawn_mover(hero.body, viewer.team, viewer.spawn, viewer.room)?;
+        // A pick of a living body changes the hero where he stands, facing
+        // the same way (no teleport: hero change in the spawn room); a
+        // respawn or a first pick starts at the spawn point.
+        let here = self
+            .mover
+            .as_ref()
+            .filter(|_| pick && self.body.is_some() && self.death.is_none())
+            .map(Mover::pose);
+        let mover = match here {
+            Some(here) => scene.player_mover_at(hero.body, viewer.team, here.position, here.yaw)?,
+            None => scene.player_spawn_mover(hero.body, viewer.team, viewer.spawn, viewer.room)?,
+        };
         let movement = mover.pose();
         let pose = owner_pose(movement);
         let generation = self
@@ -3140,6 +3250,8 @@ impl WorldDelivery {
         // with it.
         self.death = None;
         self.plain_vitals = None;
+        self.respawn_hero = None;
+        self.spawn_room = None;
         if pick {
             self.select_open = open;
         }

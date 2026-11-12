@@ -23,6 +23,7 @@ use crate::{
     combat::{BodyCombat, MeleeState, RespawnTimes, melee_states},
     controller::Controller,
     hitboxes::HitboxCatalog,
+    map_areas::{self, MapAreaData, SpawnRoom},
     match_flow::{MatchFlow, Mode, Timers},
     mode_graph_values::ModeGraphValues,
     mode_rules_data::{ModeRules, ModeRulesData},
@@ -133,6 +134,8 @@ pub struct SceneAssets {
     mode_rules: ModeRulesData,
     /// Each map's objective data (`game_objectives_174.json` `maps`).
     objectives: ObjectiveData,
+    /// Each map's spawn rooms (`game_map_areas_174.json`).
+    map_areas: MapAreaData,
 }
 
 pub struct PreparedScene {
@@ -170,6 +173,10 @@ pub struct PreparedScene {
     mode_graph_values: ModeGraphValues,
     /// The map's objective data.
     objectives: Arc<MapObjectives>,
+    /// The map's spawn rooms.
+    spawn_rooms: Arc<[SpawnRoom]>,
+    /// Where a falling body dies (`map_areas::kill_height`).
+    kill_height: Option<f64>,
 }
 
 impl SceneAssets {
@@ -206,6 +213,7 @@ impl SceneAssets {
         let board = stats.board()?;
         let mode_rules = ModeRulesData::load(&graphs, &data)?;
         let objectives = ObjectiveData::load(&data)?;
+        let map_areas = MapAreaData::load(&data)?;
         let script_anims = Arc::new(
             bot_graphs
                 .as_deref()
@@ -245,6 +253,7 @@ impl SceneAssets {
             modes: GameModes::load(data.join(MODES_FILE))?,
             mode_rules,
             objectives,
+            map_areas,
         })
     }
 
@@ -373,6 +382,15 @@ impl SceneAssets {
             .mode_rules
             .rules(self.graphs.rulesets(), map.mode_guid)?;
         let objectives = self.objectives.map(&map)?;
+        let spawn_rooms = self.map_areas.spawn_rooms(&map);
+        let lowest_spawn = map
+            .spawns
+            .iter()
+            .chain(map.rooms.iter().map(|room| &room.spawn))
+            .map(|spawn| spawn.position[1])
+            .min_by(f64::total_cmp);
+        let kill_height = lowest_spawn
+            .and_then(|below| map_areas::kill_height(ground.triangles().triangles(), below));
         // A mode that plays for objectives needs their data, checked here
         // rather than when the match begins.
         if Mode::of(map.mode_guid).is_some_and(Mode::has_objectives)
@@ -418,6 +436,8 @@ impl SceneAssets {
             mode_rules,
             mode_graph_values: self.mode_graph_values,
             objectives,
+            spawn_rooms,
+            kill_height,
         };
         let mut factories = self
             .owner_bodies
@@ -566,6 +586,18 @@ impl PreparedScene {
             .spawn_point_in(team, number, room)
             .ok_or_else(|| invalid("no spawn for the selected hero"))?;
         let yaw = (yaw * 65536.0 / 360.0).round_ties_even() as i32;
+        self.player_mover_at(body, team, position, yaw)
+    }
+
+    /// The body's mover with its feet at `position`, facing `yaw` (1/65536
+    /// turns).
+    pub(crate) fn player_mover_at(
+        &self,
+        body: u64,
+        team: u8,
+        position: [f64; 3],
+        yaw: i32,
+    ) -> io::Result<Mover> {
         let contacts = self.contacts.as_ref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -580,6 +612,25 @@ impl PreparedScene {
             mover_category(&self.map, team),
         )
         .map_err(invalid)
+    }
+
+    /// Whether feet at `position` are in one of `team`'s spawn rooms now
+    /// (`map_areas::in_spawn_room`); `None` when the team has no room on
+    /// the map.
+    pub fn in_spawn_room(&self, team: u8, room: SpawnChoice, position: [f64; 3]) -> Option<bool> {
+        map_areas::in_spawn_room(&self.spawn_rooms, &self.map, team, room, position)
+    }
+
+    /// Whether feet at `position` have fallen out of the playable area onto
+    /// a catch floor (`map_areas::kill_height`).
+    pub fn fell_out(&self, position: [f64; 3]) -> bool {
+        self.kill_height
+            .is_some_and(|height| map_areas::caught(height, position[1]))
+    }
+
+    /// The height of the map's catch floor, if it has one.
+    pub fn kill_height(&self) -> Option<f64> {
+        self.kill_height
     }
 
     pub(crate) fn owner_body_runtime(

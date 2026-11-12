@@ -2254,6 +2254,31 @@ impl State {
             for (connection, hits) in struck {
                 self.deliver_bot_hits(id, Some(connection), hits);
             }
+            // The environment kills a living body that fell onto the map's
+            // catch floor (`orpheus_sim::map_areas`), with the tick's hits.
+            {
+                let Room { players, world, .. } = self.rooms.get_mut(&id).expect("room");
+                let world = world.as_mut().expect("room with a world");
+                let combat = world
+                    .combat
+                    .get_or_insert_with(|| Combat::new(&world.scene));
+                for (slot, peer) in room_peers(&mut self.peers, &self.seats, id, players.len())
+                    .into_iter()
+                    .enumerate()
+                {
+                    let Some(peer) = peer else { continue };
+                    if peer.world.body_dead() {
+                        continue;
+                    }
+                    let fell = peer
+                        .world
+                        .body_position()
+                        .is_some_and(|position| world.scene.fell_out(position));
+                    if let Some(body) = peer.world.current_body().filter(|_| fell) {
+                        combat.environment_kill(body, players[slot].info.team, tick);
+                    }
+                }
+            }
             let heals = self.deliver_projectiles(id, tick);
             self.resolve_player_hits(id, tick, now, Some(heals));
             let connections: Vec<u32> = self
@@ -2288,6 +2313,7 @@ impl State {
                     eprintln!("{:08X} could not respawn ({error})", viewer.entity);
                 }
                 peer.world.expire_bark(now);
+                peer.world.area_step(&world.scene, &viewer);
             }
         }
     }
