@@ -493,7 +493,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
             .iter()
             .all(|event| matches!(event, BotEvent::Live { entity, .. } if live.contains(entity)))
     );
-    world.update_bots(&scene, &events, tick, true);
+    world.update_bots(&scene, &events, tick);
     let changed = script_chunks(&deliver(&mut world));
     assert_eq!(changed.iter().copied().collect::<BTreeSet<_>>(), live);
     for &entity in &live {
@@ -533,7 +533,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         created,
         link: None,
     });
-    world.update_bots(&scene, &[], tick, true);
+    world.update_bots(&scene, &[], tick);
     deliver(&mut world);
     assert_eq!(script_chunks(&deliver(&mut world)), [BOT_ENTITY + 16]);
     assert_eq!(
@@ -553,7 +553,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     );
     let events = scene.take_bot_events();
     assert_eq!(events.len(), live.len() + 1);
-    world.update_bots(&scene, &events, tick, true);
+    world.update_bots(&scene, &events, tick);
     deliver(&mut world);
     for entity in live.iter().copied().chain([BOT_ENTITY + 16]) {
         assert_eq!(variable(&world, entity, 6036), None, "{entity:08X}");

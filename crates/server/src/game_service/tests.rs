@@ -4937,12 +4937,17 @@ fn practice_bots_run_their_scripts_for_a_client() {
     // commands were made before the client could draw the bot. So: wait
     // for the target's first movement record, then send one idle command;
     // the shot goes in the next one.
-    pump_until(&mut [&mut watcher], &schemas, "the body and the target", |watchers| {
-        watchers[0].created(owner | 1).is_some()
-            && watchers[0]
-                .find(0, |record| record.entity == target && record.movement)
-                .is_some()
-    });
+    pump_until(
+        &mut [&mut watcher],
+        &schemas,
+        "the body and the target",
+        |watchers| {
+            watchers[0].created(owner | 1).is_some()
+                && watchers[0]
+                    .find(0, |record| record.entity == target && record.movement)
+                    .is_some()
+        },
+    );
     let idle = watcher.tick + 1;
     watcher
         .client
