@@ -17,8 +17,9 @@ pub const CROUCHED_MOVEMENT_FLAG: u32 = 0x2;
 pub struct BodyCreate<'a> {
     pub entity: u32,
     pub hero: &'a Hero,
-    /// The body filter bit, including the shared free-for-all bit if applicable.
-    pub team_bit: u64,
+    /// The body's filter bits (component 26, `scene::body_filter`): its
+    /// team's (the shared free-for-all one if applicable) and its kind.
+    pub filter: u64,
     pub position: [f64; 3],
     pub yaw: i32,
     pub skin: SkinTheme,
@@ -98,7 +99,7 @@ pub fn body_create(input: BodyCreate<'_>, view: BodyView<'_>, pools: &PoolCatalo
         health,
         Component {
             index: 26,
-            fields: vec![Some(ComponentValue::Id(input.team_bit))],
+            fields: vec![Some(ComponentValue::Id(input.filter))],
         },
         Component {
             index: 123,
@@ -203,7 +204,7 @@ mod tests {
             BodyCreate {
                 entity: BODY,
                 hero: &hero,
-                team_bit: TEAM_BIT << 1,
+                filter: TEAM_BIT << 1,
                 position: [54.56507, 1.0, 42.14788],
                 yaw: -31000,
                 skin: SkinTheme {
@@ -322,7 +323,7 @@ mod tests {
             BodyCreate {
                 entity: 0xa000_0201,
                 hero: &hero,
-                team_bit: TEAM_BIT,
+                filter: TEAM_BIT,
                 position: [4.5, 2.0, -3.25],
                 yaw: 16384,
                 skin: SkinTheme {
@@ -402,7 +403,7 @@ mod tests {
                     BodyCreate {
                         entity: BODY,
                         hero,
-                        team_bit: TEAM_BIT << (index % 2),
+                        filter: TEAM_BIT << (index % 2),
                         position: pose.position,
                         yaw: pose.yaw,
                         skin: SkinTheme {

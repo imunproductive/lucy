@@ -63,7 +63,9 @@ const ASSUMED_NO_OPS: &[&str] = &[
     "STU_71FE9852",
     // A game message whose targets the engine picks (0686 node 21 sends
     // 0307 after Need Healing). Who receives it is unknown; it goes nowhere,
-    // as in upstream's release mode.
+    // as in upstream's release mode. (If the sender took it, `05AD`'s `0307`
+    // entry would need the pool natives `STU_F1C45C59`/`STU_005D99E6`
+    // before raising Need Healing's voice criteria `0724`.)
     "STU_57692020",
 ];
 
@@ -339,19 +341,31 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     }
 
     /// A criteria action changes nothing the VM tracks; one whose target is
-    /// the owner and whose identifier is a literal tells the world
-    /// ([`World::criteria`]). Others stay no-ops, as in the Python reference
-    /// (`no_op` in `ow174/game/script/nodes.py`): nothing is evaluated, so
-    /// nothing can fail here.
+    /// the owner tells the world its identifier ([`World::criteria`]): a
+    /// literal, or an expression that gives one (`0686` node 56, the
+    /// configurable wheel choices' `#29862.id(1384)`, the identifier its map
+    /// gives the action). Others stay no-ops, as in the Python reference
+    /// (`no_op` in `ow174/game/script/nodes.py`), and an identifier that
+    /// can't be evaluated raises nothing: nothing here can fail.
     fn raise_criteria(&mut self, id: u16, node: &Node) {
         let owner = field(&node.fields, "m_targets")
             .get("$")
             .and_then(Json::as_str)
             == Some("STU_B5A0CAF0");
-        let identifier = node
+        if !owner {
+            return;
+        }
+        let identifier = match node
             .field("m_identifier.m_identifier")
-            .and_then(crate::graph::asset_guid);
-        if let Some(identifier) = identifier.filter(|_| owner) {
+            .and_then(crate::graph::asset_guid)
+        {
+            Some(identifier) => Some(identifier),
+            None => match self.evaluate_quietly(id, node, field(&node.fields, "m_identifier")) {
+                Some(Value::Asset(identifier)) if identifier != 0 => Some(identifier),
+                _ => None,
+            },
+        };
+        if let Some(identifier) = identifier {
             let site = self.site(id, node);
             self.world.criteria(site, identifier);
         }

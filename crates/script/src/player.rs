@@ -57,6 +57,9 @@ pub struct PlayerWorld {
     pub cosmetics: Cosmetics,
     /// Game messages to other entities, for the match to route.
     outbox: Vec<GameMessage>,
+    /// The criteria the body's graphs raised on it, for the match to answer
+    /// with the body's voice lines.
+    criteria: Vec<u64>,
 }
 
 #[derive(Default)]
@@ -126,6 +129,17 @@ impl World for PlayerWorld {
             parameters: parameters.clone(),
         });
         true
+    }
+
+    /// A criteria on the body itself from the communication wheel's graphs:
+    /// `0686` raises the choice's voice criteria (Hello `0AEB`), which the
+    /// body's voice set answers with a line (ClientInVoice 27500). The
+    /// hero graphs' other criteria on the body (ability and pain lines,
+    /// `01CA`) are left out: nothing has checked them in the game yet.
+    fn criteria(&mut self, site: Site, identifier: u64) {
+        if site.entity == self.entity && crate::wheel::ACTION_GRAPHS.contains(&site.graph) {
+            self.criteria.push(identifier);
+        }
     }
 
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
@@ -391,6 +405,7 @@ impl PlayerWorld {
             unknowns: Unknowns::for_build(),
             cosmetics: Cosmetics::default(),
             outbox: Vec::new(),
+            criteria: Vec::new(),
         }
     }
 
@@ -399,6 +414,11 @@ impl PlayerWorld {
     /// recipient takes each with `Component::receive_message`.
     pub fn take_messages(&mut self) -> Vec<GameMessage> {
         std::mem::take(&mut self.outbox)
+    }
+
+    /// The criteria the body's graphs raised on it since the last call.
+    pub fn take_criteria(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.criteria)
     }
 
     fn is_player_site(&self, site: Site) -> bool {

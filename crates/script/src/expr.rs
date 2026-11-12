@@ -1814,6 +1814,10 @@ fn lookup(key: &Value, scope: Scope) -> Option<Variable> {
     })
 }
 
+/// MEMBER (`.id(n)`): an entity's variable, or the entry of a map value
+/// whose key is the identifier (`0686` node 56 reads `#29862.id(1384)`, the
+/// configurable wheel choice's voice criteria, from the map its node 57
+/// builds with `id(2464)` and `id(1384)` keys).
 fn entity_member(object: &Value, key: &Value, context: &mut impl Context) -> Value {
     let id = match object {
         Value::Entity(id) => *id,
@@ -1821,6 +1825,7 @@ fn entity_member(object: &Value, key: &Value, context: &mut impl Context) -> Val
             Some(Value::Entity(id)) => *id,
             _ => return Value::Null,
         },
+        Value::Map(_) => return index(object.clone(), key),
         _ => return Value::Null,
     };
     let key = match key {

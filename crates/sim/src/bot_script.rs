@@ -15,7 +15,6 @@ use std::{
 };
 
 use crate::{
-    bot_voice::{BotVoice, BotVoiceState},
     bots::BOT_EYE,
     bots::Bot,
     combat::{BotDamage, PosedProjectile},
@@ -24,8 +23,12 @@ use crate::{
         spawned_definitions,
     },
     replication::kill_feed_fresh,
+    voice_lines::{VoiceLine, VoiceState},
 };
-use orpheus_content::maps::{GameMap, PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE};
+use orpheus_content::{
+    maps::{GameMap, PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE},
+    voice_sets::VoiceCatalog,
+};
 use orpheus_script::{
     bot::{
         BotBody, BotSpawn as ScriptSpawn, DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE,
@@ -131,8 +134,8 @@ struct BotScript {
     /// The world tick of the death and the killer's entity
     /// (`Vitals.death_tick`, `Vitals.killer`).
     death: Option<(u32, u32)>,
-    /// The lifetime's voice lines ([`crate::bot_voice`]).
-    voice: BotVoiceState,
+    /// The lifetime's voice lines ([`crate::voice_lines`]).
+    voice: VoiceState,
 }
 
 /// Every training bot's script in one room, one slot per spawner.
@@ -156,8 +159,10 @@ pub struct BotScripts {
     /// The bodies the target searches can find, as the match last placed
     /// them; a new script starts with them.
     targets: Vec<TargetCandidate>,
+    /// The bodies' voice sets.
+    voice_sets: Arc<VoiceCatalog>,
     /// The lines the bots said since the match last looked.
-    voices: Vec<BotVoice>,
+    voices: Vec<VoiceLine>,
 }
 
 impl BotScripts {
@@ -167,6 +172,7 @@ impl BotScripts {
         graphs: Option<Arc<GraphStore>>,
         codecs: Arc<CodecTable>,
         unknowns: Unknowns,
+        voice_sets: Arc<VoiceCatalog>,
         map: &GameMap,
         bots: &[Bot],
     ) -> Self {
@@ -200,6 +206,7 @@ impl BotScripts {
             events: Vec::new(),
             weapons_tick: 0,
             targets: Vec::new(),
+            voice_sets,
             voices: Vec::new(),
         }
     }
@@ -303,7 +310,7 @@ impl BotScripts {
                     initial,
                     body,
                     death: None,
-                    voice: BotVoiceState::default(),
+                    voice: VoiceState::default(),
                 })
             });
         match started {
@@ -648,7 +655,7 @@ impl BotScripts {
     /// and pain waits): a bot the weapons didn't run this tick runs the
     /// tick when something is due, and its changed frame goes out. Then the
     /// criteria every bot raised become its voice lines
-    /// ([`crate::bot_voice`]).
+    /// ([`crate::voice_lines`]).
     pub(crate) fn advance_live(&mut self, bots: &[Bot], tick: u32) {
         for (slot, bot) in bots.iter().enumerate() {
             let Some(script) = self.slots[slot].as_mut() else {
@@ -671,11 +678,8 @@ impl BotScripts {
                 if bot.dead {
                     continue;
                 }
-                if let Some(voice) =
-                    script
-                        .voice
-                        .answer(bot.spawn.body, script.entity, criteria, tick)
-                {
+                let set = self.voice_sets.for_body(bot.spawn.body);
+                if let Some(voice) = script.voice.answer(set, script.entity, criteria, tick) {
                     self.voices.push(voice);
                 }
             }
@@ -702,7 +706,7 @@ impl BotScripts {
         Ok(())
     }
 
-    pub fn take_voices(&mut self) -> Vec<BotVoice> {
+    pub fn take_voices(&mut self) -> Vec<VoiceLine> {
         std::mem::take(&mut self.voices)
     }
 

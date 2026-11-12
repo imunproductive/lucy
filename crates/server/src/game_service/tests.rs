@@ -331,12 +331,14 @@ enum DecodedField {
     DbId(u64, u64),
     Entity(u32),
     Text(String),
+    /// A field of plain bytes (a health pool's 20).
+    Bytes(Vec<u8>),
 }
 
 /// The components of a create or update (`orpheus_wire::entity`
-/// `write_components`) when each is a 26, 29 (id and BattleTag), 44 or 75,
-/// the components of a player's or a bot's stand-in controller; `None` for
-/// any other.
+/// `write_components`) when each is a 26, 29 (id and BattleTag), 44, 51
+/// (the pools), 75 or 123, the components of a player's or a bot's stand-in
+/// controller and of an observed or a bot's body; `None` for any other.
 fn decode_components(mut reader: BitReader<'_>) -> Option<Vec<DecodedComponent>> {
     #[derive(Clone, Copy)]
     enum Kind {
@@ -344,7 +346,19 @@ fn decode_components(mut reader: BitReader<'_>) -> Option<Vec<DecodedComponent>>
         DbId,
         Entity,
         Text,
+        Bytes(usize),
     }
+    /// `orpheus_wire::entity` HEALTH: 48 pools, then two u32, the killer
+    /// and two u8.
+    const HEALTH: [Kind; 53] = {
+        let mut fields = [Kind::Bytes(20); 53];
+        fields[48] = Kind::Bytes(4);
+        fields[49] = Kind::Bytes(4);
+        fields[50] = Kind::Entity;
+        fields[51] = Kind::Bytes(1);
+        fields[52] = Kind::Bytes(1);
+        fields
+    };
     fn byte_masked(reader: &mut BitReader<'_>) -> Option<u64> {
         let present = reader.bits(8).ok()?;
         let mut value = 0;
@@ -360,9 +374,10 @@ fn decode_components(mut reader: BitReader<'_>) -> Option<Vec<DecodedComponent>>
     for _ in 0..count {
         let index = reader.bits(8).ok()? as u8;
         let layout: &[Kind] = match index {
-            26 => &[Kind::Id],
+            26 | 123 => &[Kind::Id],
             29 => &[Kind::DbId, Kind::Text],
             44 => &[Kind::Entity; 3],
+            51 => &HEALTH,
             75 => &[Kind::Id; 6],
             _ => return None,
         };
@@ -397,6 +412,12 @@ fn decode_components(mut reader: BitReader<'_>) -> Option<Vec<DecodedComponent>>
                         .ok()?;
                     DecodedField::Text(String::from_utf8(bytes).ok()?)
                 }
+                Kind::Bytes(length) => DecodedField::Bytes(
+                    (0..*length)
+                        .map(|_| reader.bits(8).map(|byte| byte as u8))
+                        .collect::<Result<_, _>>()
+                        .ok()?,
+                ),
             };
             fields.push(Some(value));
         }
@@ -406,6 +427,18 @@ fn decode_components(mut reader: BitReader<'_>) -> Option<Vec<DecodedComponent>>
         components.push((index, fields));
     }
     Some(components)
+}
+
+/// The current amount of pool 0 in decoded components that start with the
+/// pools (51): its bytes 8 to 12 (after its id and maximum).
+fn first_pool(components: &[DecodedComponent]) -> Option<f32> {
+    let (51, fields) = components.first()? else {
+        return None;
+    };
+    let Some(DecodedField::Bytes(pool)) = fields.first()? else {
+        return None;
+    };
+    Some(f32::from_le_bytes(pool.get(8..12)?.try_into().ok()?))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -526,7 +559,8 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
                         if count == 1 {
                             record.updated = Some(index);
                         }
-                        if count == 1 && index == 51 {
+                        // Pool 0 of an update that starts with the pools.
+                        if index == 51 {
                             components.align();
                             if components.bits(8).unwrap() == 7 && components.bits(56).unwrap() == 1
                             {
@@ -1977,7 +2011,8 @@ fn two_players_in_one_practice_range_see_each_other() {
 /// naming the shooter's body; both clients get frames of the dead body's
 /// statescript, which carry its "died" kill feed line (003E); the shooter's
 /// Tab board changes; and the victim gets a new body after the Practice
-/// Range's 3 s, which the shooter's client gets too.
+/// Range's 3 s, which the shooter's client gets too. The target's body is
+/// a hero that can be hit, and its pools of 0 come with its dead bit.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
@@ -2151,6 +2186,43 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
         Value::Struct(Fields::from([(0, Value::Unsigned(u64::from(target_body)))]))
     );
     assert!(hits.iter().all(|(index, _)| *index <= eliminated));
+    // The target's body is a hero that can be hit on team 1 (its filter
+    // bits at its create, `orpheus_sim::scene` module notes), and each
+    // client gets its pools of 0 with its dead bit.
+    let filter = |components: &[DecodedComponent]| {
+        components.iter().find(|(index, _)| *index == 26).cloned()
+    };
+    let created = shooter
+        .find(0, |record| {
+            record.entity == target_body && record.is_create()
+        })
+        .unwrap();
+    let create = shooter.datagrams[created]
+        .1
+        .iter()
+        .find(|record| record.entity == target_body && record.is_create())
+        .unwrap();
+    assert_eq!(
+        create.components.as_deref().and_then(filter),
+        Some((26, vec![Some(DecodedField::Id(0x0100_0041))]))
+    );
+    let dead = |watcher: &Watcher| {
+        watcher
+            .find(0, |record| {
+                record.entity == target_body
+                    && record.operation == Some(2)
+                    && record.components.as_deref().and_then(first_pool) == Some(0.0)
+                    && record.components.as_deref().and_then(filter)
+                        == Some((26, vec![Some(DecodedField::Id(0x0100_0051))]))
+            })
+            .is_some()
+    };
+    pump_until(
+        &mut [shooter, target],
+        &schemas,
+        "the dead body's filter bits",
+        |watchers| watchers.iter().all(|watcher| dead(watcher)),
+    );
     pump_until(&mut [shooter, target], &schemas, "the board", |watchers| {
         watchers[0]
             .find(fired, |record| {
@@ -5228,7 +5300,9 @@ fn a_firing_practice_bot_shoots_the_player() {
 /// notice 25005 names the body while the controller exists; after the
 /// respawn the controller's 44 names the new body, after its create; no
 /// card names a bot (the team list and the Tab board stay the players'),
-/// and the controller is never destroyed.
+/// and the controller is never destroyed. Each bot's body is a hero that
+/// can be hit, on its team (its filter bits, `orpheus_sim::scene` module
+/// notes), and the killed bot's pools of 0 come with its dead bit.
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn practice_bot_controllers_name_the_bots_for_a_client() {
@@ -5255,6 +5329,12 @@ fn practice_bot_controllers_name_the_bots_for_a_client() {
     scene.bots_mut()[slot].position = [x - 4.0, y, z];
     let target = scene.bots()[slot].entity;
     let controller = BOT_CONTROLLER_ENTITY + slot as u32;
+    // Each bot body's team bit.
+    let team_bits: HashMap<u32, u64> = scene
+        .bots()
+        .iter()
+        .map(|bot| (bot.entity, 0x80_0000 << bot.spawn.team))
+        .collect();
     // Each bot's body, controller and the components its create carries.
     let link = |body: u32| (44, vec![Some(Entity(body)); 3]);
     let expected: Vec<(u32, u32, u32, Vec<DecodedComponent>)> = scene
@@ -5340,7 +5420,7 @@ fn practice_bot_controllers_name_the_bots_for_a_client() {
             (
                 index,
                 record.definition,
-                record.components.clone().expect("decodable controller"),
+                record.components.clone().expect("decodable components"),
             )
         };
     for (body, controller, definition, components) in &expected {
@@ -5348,6 +5428,17 @@ fn practice_bot_controllers_name_the_bots_for_a_client() {
         assert!(created >= watcher.created(*body).unwrap());
         assert_eq!(kind, Some(*definition));
         assert_eq!(&received, components, "controller {controller:08X}");
+    }
+    // The bodies' filter bits: their team's, a hero (0x1) that can be hit
+    // (0x40).
+    for (body, ..) in &expected {
+        let (_, _, received) = create_of(&watcher, *body);
+        let filter = received.iter().find(|(index, _)| *index == 26).cloned();
+        assert_eq!(
+            filter,
+            Some((26, vec![Some(Id(team_bits[body] | 0x41))])),
+            "body {body:08X}"
+        );
     }
 
     // Kill the target with a head shot.
@@ -5384,6 +5475,28 @@ fn practice_bot_controllers_name_the_bots_for_a_client() {
         Value::Struct(Fields::from([(0, Value::Unsigned(u64::from(target)))]))
     );
     assert!(watcher.created(controller).unwrap() < killed);
+    // Its pools of 0 come with the dead bit (0x10) in its filter bits.
+    let dead = |watcher: &Watcher| {
+        watcher.find(0, |record| {
+            record.entity == target
+                && record.operation == Some(2)
+                && record.components.as_ref().is_some_and(|components| {
+                    components
+                        .iter()
+                        .map(|(index, _)| *index)
+                        .collect::<Vec<_>>()
+                        == [51, 26]
+                        && first_pool(components) == Some(0.0)
+                        && components[1] == (26, vec![Some(Id(team_bits[&target] | 0x51))])
+                })
+        })
+    };
+    pump_until(
+        &mut [&mut watcher],
+        &schemas,
+        "the dead bot's filter bits",
+        |watchers| dead(watchers[0]).is_some(),
+    );
 
     // The respawn: the controller now controls the new body.
     let replacement = BOT_ENTITY + expected.len() as u32;

@@ -356,7 +356,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
 
     /// A config's value now, or None where the server can't evaluate it; a
     /// search that can't run finds nothing instead of stopping the body.
-    fn evaluate_quietly(&mut self, id: u16, node: &Node, config: &Json) -> Option<Value> {
+    pub(super) fn evaluate_quietly(
+        &mut self,
+        id: u16,
+        node: &Node,
+        config: &Json,
+    ) -> Option<Value> {
         let site = self.site(id, node);
         let mut context = InstanceContext {
             machine: self.machine,

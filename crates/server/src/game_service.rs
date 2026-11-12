@@ -81,6 +81,7 @@ use orpheus_sim::{
     replication::{Record, RoomPlayer, WorldDelivery, show_players},
     scene::{PlayerAppearance, PlayerCard},
     scene_assets::{CollisionBuild, PreparedScene},
+    voice_lines::VoiceLine,
 };
 use orpheus_wire::entity::Component as WorldComponent;
 use orpheus_wire::{
@@ -2623,8 +2624,8 @@ impl State {
                     peer.world
                         .update_bots(&world.scene, events, tick, send_frames);
                 }
-                // ClientInVoice 27500: each line to every client of the
-                // room with a body (bot_voice.rs).
+                // ClientInVoice 27500: each bot line to every client of the
+                // room with a body (voice_lines.rs).
                 if let Some(body) = peer.world.current_body() {
                     for voice in bot_voices.get(&id).into_iter().flatten() {
                         peer.notice(voice.notice(body));
@@ -2646,6 +2647,7 @@ impl State {
             }
         }
         if !drain {
+            self.say_player_lines(tick);
             self.show_players(tick, now, send_frames);
         }
         for (&connection, peer) in &mut self.peers {
@@ -2680,6 +2682,51 @@ impl State {
             }
         }
         self.clock.renew_if_idle(self.connections_pending(), false);
+    }
+
+    /// ClientInVoice 27500 for the lines the players' bodies said this tick
+    /// (the communication wheel's, `orpheus_sim::voice_lines`): each goes to
+    /// every client of the room whose body is within the stimulus's radius
+    /// of the speaker's (35 m for the wheel's), the speaker's own client
+    /// too. Assumption: the client doesn't apply the radius itself (the
+    /// bots' lines go to every client, which leaves it to the client).
+    fn say_player_lines(&mut self, tick: u32) {
+        let mut said: HashMap<MatchId, Vec<(VoiceLine, [f64; 3])>> = HashMap::new();
+        for (connection, peer) in &mut self.peers {
+            let Some(&(id, _)) = self.seats.get(connection) else {
+                continue;
+            };
+            let Some(world) = self.rooms.get(&id).and_then(|room| room.world.as_ref()) else {
+                continue;
+            };
+            let lines = peer.world.take_voice_lines(&world.scene, tick);
+            if let Some(position) = peer.world.hearing_position() {
+                said.entry(id)
+                    .or_default()
+                    .extend(lines.into_iter().map(|line| (line, position)));
+            }
+        }
+        if said.is_empty() {
+            return;
+        }
+        for (connection, peer) in &mut self.peers {
+            if peer.ai.is_some() {
+                continue;
+            }
+            let Some(lines) = self.seats.get(connection).and_then(|(id, _)| said.get(id)) else {
+                continue;
+            };
+            let (Some(body), Some(position)) =
+                (peer.world.current_body(), peer.world.hearing_position())
+            else {
+                continue;
+            };
+            for (line, speaker) in lines {
+                if line.heard(*speaker, position) {
+                    peer.notice(line.notice(body));
+                }
+            }
+        }
     }
 
     /// Seats and games still connected or awaited keep the clock from

@@ -7,10 +7,34 @@
 //!   `0x10040001 | team bit` (0x7FF78973950E), but 0x10000000 is the
 //!   spectator bit (GetEntityIsSpectator, 0x7FF789B2F000): a player with it
 //!   gets the spectator HUD, and a body with only it has no collision and no
-//!   enemy outline. So a player gets `0x00040001 | team bit`, a body only the
-//!   team bit. The client knows five teams, bits 23-27 (GetTeam
-//!   0x7FF7894E9570); team 4 is free-for-all, whose members are all enemies
-//!   (0x7FF789B2C690). Bit 28 is the spectator.
+//!   enemy outline. So a player gets `0x00040001 | team bit`. The client
+//!   knows five teams, bits 23-27 (GetTeam 0x7FF7894E9570); team 4 is
+//!   free-for-all, whose members are all enemies (0x7FF789B2C690). Bit 28 is
+//!   the spectator.
+//! - The low filter bits say what kind of entity it is. The graphs' entity
+//!   filters (`STUConfigVarFilter`) take an entity whose bits meet
+//!   `m_84065FD1` and leave out one whose bits meet `m_4EA686DB` (the native
+//!   test, leafall903/ORPHEUS (MIT) `CHANGELOG.md` "node 231 filter"). Read
+//!   from their uses in 104319: 0x1 is a hero (the Biotic Field `0258`
+//!   heals it, Deadeye `022F` and the Pulse Bomb `0034` take it, Ana's rifle
+//!   `0B94` nodes 122 and 126 count an enemy or ally hero hit), 0x40 a body
+//!   that can be hit (quick melee `0043` searches for 0x40, then tests its
+//!   finds for an enemy 0x1, so a hero carries both). Nearly every hit and
+//!   heal search leaves out 0x10, taken as the dead bit (as upstream's
+//!   `junkenstein_ai.py` `enemy_filter_bits`: team, 1, and 0x10 when dead).
+//! - So every body, a player's or a training bot's (the bots are heroes,
+//!   `02E0…016B`-`016E`), gets its team bit and [`BODY_KINDS`]
+//!   ([`body_filter`]); a body that dies gets [`DEAD`] too, with the pools
+//!   of its death. Checked in the game before this: a body with only its
+//!   team bit was not hit by the client's own shots; Soldier: 76's bullets
+//!   and Ana's darts went through a Training Bot and left a hole and the
+//!   map's impact sound on the wall behind it, though the server hit it.
+//!   ow1-preservation's bots, with `0x11040001`, showed the impact sparks
+//!   on their body (its run 343) without any combat event (25000).
+//!   Assumptions: which bit the client's shot test asks for is not known
+//!   (no client code read; 0x1 is the one those bots and ours now share),
+//!   and that the retail server set 0x10 at a death (the Python reference
+//!   sent the team bit alone and never changed it).
 //! - Component 29 (MPlayerComponentData): the player's 16-byte id, BattleTag
 //!   (the client names the entity by it), level, and on a competitive card
 //!   the rank (m_rankedLevel, m_heroicRank, m_rankedLevelTier), which the team
@@ -63,6 +87,11 @@ const PLAYER_DEFINITION: u64 = 0x0400_0000_0000_000e;
 const GAME_MODE_DEFINITION: u64 = 0x0400_0000_0000_16b2;
 const PLAYER_FILTER: u64 = 0x0004_0001;
 const TEAM_BIT: u64 = 0x0080_0000;
+/// The kind bits of a living body (see the module notes): a hero (0x1) that
+/// can be hit (0x40).
+pub const BODY_KINDS: u64 = 0x41;
+/// The filter bit of a dead body (see the module notes).
+pub const DEAD: u64 = 0x10;
 const MODE_UI: u32 = 0x0cb6;
 const MODE_UI_STATE: usize = 21;
 /// The training bots' stand-in accounts: `BOT_ACCOUNT + slot`, with the
@@ -248,11 +277,7 @@ pub fn bot_create(
         || health(bot.spawn.health as f32, bot.spawn.health as f32, 0.0, 0.0),
         orpheus_script::vitals::Vitals::component,
     );
-    let team = fields(
-        26,
-        vec![Some(ComponentValue::Id(team_bit(bot.spawn.team)?))],
-    );
-    let mut definition = Create::new(bot.spawn.body, vec![pools, team]);
+    let mut definition = Create::new(bot.spawn.body, vec![pools, bot_filter(bot)?]);
     definition.position = bot.position.map(|position| position as f32);
     definition.rotation = yaw_rotation(bot.yaw.round_ties_even());
     Ok(create(bot.entity, definition))
@@ -333,6 +358,25 @@ pub(crate) fn player_team_bit(map: &GameMap, team: u8) -> io::Result<u64> {
     })
 }
 
+/// A body's filter bits (component 26): its team bit with [`BODY_KINDS`],
+/// and [`DEAD`] once it died (see the module notes).
+pub fn body_filter(team_bit: u64, dead: bool) -> u64 {
+    team_bit | BODY_KINDS | if dead { DEAD } else { 0 }
+}
+
+/// The filter bits component of a body.
+pub fn filter_component(bits: u64) -> Component {
+    fields(26, vec![Some(ComponentValue::Id(bits))])
+}
+
+/// A training bot's filter bits component now: dead or alive.
+pub fn bot_filter(bot: &Bot) -> io::Result<Component> {
+    Ok(filter_component(body_filter(
+        team_bit(bot.spawn.team)?,
+        bot.dead,
+    )))
+}
+
 fn invalid(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
@@ -383,14 +427,25 @@ mod tests {
         };
         let board = stats.component(&PlayerStats::default(), map.mode_guid, None, None);
         // The Python reference's world has no stand-in controllers: each
-        // bot's controller comes right after its body here, and the other
-        // records match the Python frame byte for byte.
+        // bot's controller comes right after its body here. Its bots' filter
+        // bits were their team bit alone; ours add the body's kind (module
+        // notes). The other records match the Python frame byte for byte.
         let updates = initial_world(&map, &player, board, &bots).unwrap();
         let controllers = BOT_CONTROLLER_ENTITY..BOT_ENTITY;
         let python: Vec<_> = updates
             .iter()
             .filter(|update| !controllers.contains(&update.entity))
             .cloned()
+            .map(|mut update| {
+                let bot = bots.iter().find(|bot| bot.entity == update.entity);
+                if let (Some(bot), Some(Operation::Create(create))) = (bot, &mut update.operation) {
+                    let team = team_bit(bot.spawn.team).unwrap();
+                    let filter = &mut create.components[1];
+                    assert_eq!(*filter, filter_component(team | BODY_KINDS));
+                    *filter = filter_component(team);
+                }
+                update
+            })
             .collect();
         let expected: Vec<_> = [
             0x8000_0088,
@@ -520,6 +575,27 @@ mod tests {
         assert_eq!(*account, u64::from(BOT_ACCOUNT) + 1);
         // The wire takes every component.
         frame(1234, 1234, &[], &[], &[&update, &other]).unwrap();
+    }
+
+    /// A bot's body is a hero that can be hit, on its team (module notes):
+    /// its create's filter bits; a bot created dead also says so.
+    #[test]
+    fn a_bot_body_is_a_hero_that_can_be_hit_until_it_dies() {
+        let mut bots = fixture_bots();
+        let filter = |bot: &Bot| created(&bot_create(bot, None).unwrap()).components[1].clone();
+        assert_eq!(
+            filter(&bots[0]),
+            fields(26, vec![Some(ComponentValue::Id(0x0100_0041))])
+        );
+        assert_eq!(
+            filter(&bots[1]),
+            fields(26, vec![Some(ComponentValue::Id(0x0080_0041))])
+        );
+        bots[0].died(10);
+        assert_eq!(
+            filter(&bots[0]),
+            fields(26, vec![Some(ComponentValue::Id(0x0100_0051))])
+        );
     }
 
     /// Each bot's controller comes right after its body in the initial

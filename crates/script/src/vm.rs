@@ -429,13 +429,14 @@ pub trait World {
         false
     }
 
-    /// A server-only `STUStatescriptActionCriteria` on the body itself (its
-    /// `m_targets` the owner) raised `identifier`: the event the body's
-    /// voice set answers with a voice stimulus whose criteria names it (the
-    /// Training Bot's `0C17` raises `0608` / `0609` after a hit, which its
-    /// voice set `011D.05F` answers with its pain lines). The client never
-    /// runs these nodes; the server plays the line (ClientInVoice 27500).
-    /// By default nothing listens.
+    /// A `STUStatescriptActionCriteria` on the body itself (its `m_targets`
+    /// the owner) raised `identifier`: the event the body's voice set
+    /// answers with a voice stimulus whose criteria names it (the Training
+    /// Bot's server-only `0C17` nodes raise `0608` / `0609` after a hit,
+    /// which its voice set `011D.05F` answers with its pain lines; a
+    /// player's `0686` raises the wheel choice's line, Hello `0AEB`). The
+    /// server plays the line (ClientInVoice 27500). By default nothing
+    /// listens.
     fn criteria(&mut self, _site: Site, _identifier: u64) {}
 }
 

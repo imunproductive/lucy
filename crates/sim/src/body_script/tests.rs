@@ -1451,9 +1451,14 @@ fn a_body_that_dies_raises_its_dead_flag() {
 /// The communication wheel on Soldier: 76's own graphs
 /// ([`crate::wheel`]): a choice reaches `05AD` as `02A3`, which plays
 /// `0686`. Need Healing sends effect 40 (remote 8), Hello its callout 27
-/// (remote 6), the Voice Line slot pulses 0686's voice state 13; each a
-/// frame action or state the clients get. Nothing in the path is
-/// unsupported.
+/// (remote 6), a configurable choice (`01EC`) callout 59 (remote 11), the
+/// Voice Line slot pulses 0686's voice state 13; each a frame action or
+/// state the clients get. Hello and a configurable choice raise their voice
+/// criteria on the body, which its voice set answers with a line
+/// ([`crate::voice_lines`]): Hello `0AEB` 0.3 s later, `01EC` the `0721` its
+/// map gives. Need Healing raises none: its line hangs on the `0307` that
+/// `0686`'s engine-routed `STU_57692020` sends, which goes nowhere. Nothing
+/// in the path is unsupported.
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn wheel_choices_run_the_callout_graph() {
@@ -1473,7 +1478,12 @@ fn wheel_choices_run_the_callout_graph() {
         .hero_pools(SOLDIER)
         .unwrap();
     let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
-    for (action, expected_node) in [(0x16c, Some(40)), (0x16b, Some(27)), (0x16f, None)] {
+    for (action, expected_node, criteria) in [
+        (0x16c, Some(40), None),
+        (0x16b, Some(27), Some(0x0d80_0000_0000_0aeb)),
+        (0x1ec, Some(59), Some(0x0d80_0000_0000_0721)),
+        (0x16f, None, None),
+    ] {
         let roots = orpheus_script::vm::player_roots(body, &graphs).unwrap();
         let health = pools.total();
         let variables = orpheus_script::vm::player_entity_variables(body, health, health);
@@ -1514,11 +1524,16 @@ fn wheel_choices_run_the_callout_graph() {
                 .unwrap(),
             0
         );
-        for frame in 1..4 {
+        for frame in 1..30 {
             component
                 .advance_frame(FIRST_TICK + frame, &mut world)
                 .unwrap();
         }
+        assert_eq!(
+            world.take_criteria(),
+            Vec::from_iter(criteria),
+            "{action:X}'s voice criteria"
+        );
         let snapshot = component.snapshot().unwrap();
         assert!(
             snapshot.diagnostics.is_empty(),
@@ -1548,4 +1563,88 @@ fn wheel_choices_run_the_callout_graph() {
             }
         }
     }
+}
+
+/// The wheel's spam limit runs on the server as `05AD` has it: each Hello
+/// counts (`#4052e`), at three `#7416` holds and a fourth choice only shows
+/// the refusal; one count goes every 4 s, after which a choice speaks
+/// again. Choices 0.64 s apart (past `05AD` st6's 0.5 s).
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn the_wheel_refuses_a_fourth_choice_until_a_count_expires() {
+    use orpheus_content::maps::GameMap;
+    use orpheus_core::tick::FIRST_TICK;
+    use orpheus_wire::{
+        jam::codec::{Fields, Value as Field},
+        messages::Message,
+    };
+
+    const HELLO: u64 = 0x0d80_0000_0000_0aeb;
+    let root = orpheus_testkit::runtime_dir();
+    let graphs =
+        Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap());
+    let health = crate::pools::PoolCatalog::from_graphs(&graphs)
+        .unwrap()
+        .hero_pools(SOLDIER)
+        .unwrap()
+        .total();
+    let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
+    let mut world = PlayerWorld::new(
+        Arc::clone(&graphs),
+        0xa000_0100,
+        0xa000_0101,
+        crate::scene::team_bit(0).unwrap(),
+        PRACTICE_RANGE_MODE,
+        SOLDIER,
+    );
+    world.position = GameMap::practice_range().spawn_point(0, 0).unwrap().0;
+    world.vitals = Vitals::empty();
+    world.pool_types_known = true;
+    world.target_tags = body.target_tags.clone();
+    let mut component = Component::start(
+        Arc::clone(&graphs),
+        world.entity,
+        orpheus_script::vm::player_entity_variables(body, health, health),
+        orpheus_script::vm::player_roots(body, &graphs).unwrap(),
+        FIRST_TICK,
+        &mut world,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    component.advance_frame(FIRST_TICK, &mut world).unwrap();
+    let mut frame = FIRST_TICK;
+    let mut hello = |component: &mut Component, world: &mut PlayerWorld, frames: u32| {
+        let mut choice = Fields::new();
+        choice.insert(0x78, Field::Unsigned(0x0a90_0000_0000_016b));
+        choice.insert(0x80, Field::Bool(false));
+        let (message, parameters) = crate::wheel::selection(&Message {
+            id: crate::wheel::COMMUNICATION_ACTION,
+            fields: choice,
+        })
+        .unwrap();
+        component
+            .receive_message(message, parameters, world)
+            .unwrap();
+        for _ in 0..frames {
+            frame += 1;
+            component.advance_frame(frame, world).unwrap();
+        }
+        world.take_criteria()
+    };
+    for _ in 0..3 {
+        assert_eq!(hello(&mut component, &mut world, 40), [HELLO]);
+    }
+    assert!(hello(&mut component, &mut world, 40).is_empty(), "refused");
+    // The first count goes 4 s after the first choice (250 frames).
+    assert!(
+        hello(&mut component, &mut world, 160).is_empty(),
+        "still refused"
+    );
+    assert_eq!(hello(&mut component, &mut world, 40), [HELLO]);
+    let snapshot = component.snapshot().unwrap();
+    assert!(
+        snapshot.diagnostics.is_empty(),
+        "{:?}",
+        snapshot.diagnostics
+    );
 }

@@ -8,3 +8,4 @@ pub mod heroes;
 pub mod maps;
 pub mod parameters;
 pub mod stats;
+pub mod voice_sets;

@@ -34,8 +34,9 @@ use crate::{
         FieldCopies, FieldDeliver, FieldDelivery, FiredProjectile, OwnerProjectiles,
         ProjectileDelivery, ProjectileEvent, ProjectileLeases, ProjectileToken, ShotKey,
     },
-    scene::{PlayerAppearance, Possession, player_team_bit},
+    scene::{PlayerAppearance, Possession, body_filter, filter_component, player_team_bit},
     scene_assets::PreparedScene,
+    voice_lines::{VoiceLine, VoiceState},
 };
 use orpheus_content::{
     hero_settings::{HeroSetting, HeroSettings, SCRIPT_SETTINGS},
@@ -88,6 +89,8 @@ struct Body {
     id: BodyId,
     hero: u64,
     skin: SkinTheme,
+    /// The filter bit of the player's team (`scene::player_team_bit`).
+    team_bit: u64,
 }
 
 /// A running owner VM and the authored data used to encode its snapshots.
@@ -153,6 +156,12 @@ pub trait OwnerBodyRuntime: Send {
 
     /// The game messages the body sent other entities since the last call.
     fn take_messages(&mut self) -> Vec<GameMessage> {
+        Vec::new()
+    }
+
+    /// The criteria the body's graphs raised on it since the last call
+    /// ([`crate::voice_lines`]).
+    fn take_criteria(&mut self) -> Vec<u64> {
         Vec::new()
     }
 
@@ -966,6 +975,9 @@ pub struct WorldDelivery {
     /// The hero settings the player's client last sent (21604); every body
     /// he plays takes them. They are the client's, so a new world keeps them.
     hero_settings: HeroSettings,
+    /// The voice of the current body (its entity): its stimuli's cooldowns
+    /// and lines' turns ([`crate::voice_lines`]).
+    voice: Option<(u32, VoiceState)>,
 }
 
 /// The entity variables of the hero settings the client sends
@@ -1063,6 +1075,7 @@ impl WorldDelivery {
             headless: false,
             respawn_extra: Duration::ZERO,
             hero_settings: HeroSettings::default(),
+            voice: None,
         }
     }
 
@@ -1764,22 +1777,30 @@ impl WorldDelivery {
             return;
         }
         let health = match (&mut self.body_script, &mut self.plain_vitals) {
-            (Some(script), _) => script
-                .runtime
-                .take_health_update()
-                .map(|health| (script.id.entity, health)),
+            (Some(script), _) => script.runtime.take_health_update().map(|health| {
+                let dead = script.runtime.vitals().and_then(Vitals::death).is_some();
+                (script.id.entity, health, dead)
+            }),
             (None, Some(vitals)) if vitals.has_changed() => {
                 vitals.clear_changed();
-                self.body
-                    .map(|body| (body.id.entity, vitals.cumulative_component()))
+                self.body.map(|body| {
+                    let dead = vitals.death().is_some();
+                    (body.id.entity, vitals.cumulative_component(), dead)
+                })
             }
             _ => None,
         };
-        if let Some((entity, health)) = health {
+        if let Some((entity, health, dead)) = health {
+            let mut components = vec![health];
+            // A death's pools come with the filter bits that say the body
+            // is dead (`scene` module notes).
+            if let Some(body) = self.body.filter(|body| dead && body.id.entity == entity) {
+                components.push(filter_component(body_filter(body.team_bit, true)));
+            }
             self.body_health += 1;
             self.queue_health(EntityUpdate {
                 entity,
-                operation: Some(Operation::Update(vec![health])),
+                operation: Some(Operation::Update(components)),
                 ..EntityUpdate::default()
             });
         }
@@ -2512,6 +2533,51 @@ impl WorldDelivery {
             .map_or_else(Vec::new, |script| script.runtime.take_messages())
     }
 
+    /// The voice lines the current body says for the criteria its graphs
+    /// raised since the last call (the communication wheel's lines), by its
+    /// hero's voice set ([`crate::voice_lines`]).
+    pub fn take_voice_lines(&mut self, scene: &PreparedScene, tick: u32) -> Vec<VoiceLine> {
+        if !self.world_started() {
+            return Vec::new();
+        }
+        let Some(script) = self.body_script.as_mut() else {
+            return Vec::new();
+        };
+        let criteria = script.runtime.take_criteria();
+        let id = script.id;
+        let Some(body) = self.body.filter(|body| body.id == id) else {
+            return Vec::new();
+        };
+        if criteria.is_empty() || self.death.is_some() {
+            return Vec::new();
+        }
+        let speaker = body.id.entity;
+        let set = scene
+            .heroes()
+            .get(body.hero)
+            .and_then(|hero| scene.voice_sets().for_body(hero.body));
+        if self
+            .voice
+            .as_ref()
+            .is_none_or(|(entity, _)| *entity != speaker)
+        {
+            self.voice = Some((speaker, VoiceState::default()));
+        }
+        let (_, voice) = self.voice.as_mut().expect("the body's voice");
+        criteria
+            .into_iter()
+            .filter_map(|criteria| voice.answer(set, speaker, criteria, tick))
+            .collect()
+    }
+
+    /// Where the player's body stands, alive or dead, while it is in the
+    /// world: where he hears voice lines from.
+    pub fn hearing_position(&self) -> Option<[f64; 3]> {
+        self.started?;
+        self.body?;
+        Some(self.mover.as_ref()?.pose().position)
+    }
+
     /// Whether this client's current body runs a script that takes messages
     /// sent to `target` (match.py `_message_player`).
     pub fn takes_body_message(&self, target: u32) -> bool {
@@ -2996,12 +3062,15 @@ impl WorldDelivery {
             .checked_add(1)
             .ok_or_else(|| invalid("player body lifetime exhausted"))?;
         let id = BodyId { entity, generation };
+        let team_bit = player_team_bit(scene.map(), viewer.team)?;
         let body = Body {
             id,
             hero: hero.guid,
             skin,
+            team_bit,
         };
-        let body_filter = player_team_bit(scene.map(), viewer.team)?;
+        // A new body is alive (`scene` module notes).
+        let body_filter = body_filter(team_bit, false);
         let start_frame = self.input.processed.unwrap_or(tick);
         let script = scene
             .owner_body_runtime(
@@ -3031,7 +3100,7 @@ impl WorldDelivery {
             BodyCreate {
                 entity,
                 hero,
-                team_bit: body_filter,
+                filter: body_filter,
                 position: pose.position,
                 yaw: pose.yaw,
                 skin,
