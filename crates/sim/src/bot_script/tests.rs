@@ -258,10 +258,27 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     scene.bot_health(hit, 100.0);
     assert!(scene.take_bot_events().is_empty());
 
-    // A death: the script's death message, then its timers.
-    let victim = scene.bots()[0].entity;
+    // A death: the script's death message, then its timers. The victim, an
+    // enemy bot that doesn't fire, survives a hit first (its nameplate's
+    // live frame) and dies before the client acknowledged that frame. The
+    // death's frame goes out at once all the same: with the dead flag up,
+    // 0D24 hides the health bar (`#17549` reads `!#478e`).
+    let slot = scene
+        .bots()
+        .iter()
+        .position(|bot| !bot.spawn.firing && bot.spawn.team != viewer.team && bot.entity != hit)
+        .unwrap();
+    let victim = scene.bots()[slot].entity;
     tick += 1;
-    scene.bots_mut()[0].died(tick);
+    scene.bot_health(victim, 150.0);
+    let events = scene.take_bot_events();
+    assert!(matches!(
+        events.as_slice(),
+        [BotEvent::Live { entity, .. }] if *entity == victim
+    ));
+    world.update_bots(&scene, &events, tick, true);
+    tick += 1;
+    scene.bots_mut()[slot].died(tick);
     scene.bot_died(victim, OWNER | 1, false, None, tick);
     let events = scene.take_bot_events();
     assert!(matches!(
@@ -270,10 +287,9 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     ));
     world.update_bots(&scene, &events, tick, true);
     assert!(world.bot_frames_pending(victim));
-    assert_eq!(script_chunks(&deliver(&mut world)), [victim]);
+    assert_eq!(script_chunks(&deliver(&mut world)), [victim, victim]);
     assert!(!world.bot_frames_pending(victim));
-    // Its acknowledged frame has the dead flag up, which hides the health
-    // bar (0D24's #17549 reads `!#478e`).
+    // Its acknowledged frame has the dead flag up.
     let dead = |world: &WorldDelivery| {
         world
             .bot_stream(victim)
@@ -305,9 +321,9 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     assert_eq!(dead(&world), Some(Value::Bool(true)));
 
     // The respawn: a new script under the new entity, sent after its create.
-    let fresh = scene.bots()[0].respawned(BOT_ENTITY + 15, tick + 8);
+    let fresh = scene.bots()[slot].respawned(BOT_ENTITY + 15, tick + 8);
     let created = bot_create(&fresh, None).unwrap();
-    scene.bots_mut()[0] = fresh;
+    scene.bots_mut()[slot] = fresh;
     scene.prepare_respawned_bots(tick);
     assert!(scene.bot_scripts().latest(BOT_ENTITY + 15).is_some());
     assert!(scene.bot_scripts().latest(victim).is_none());
