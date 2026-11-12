@@ -38,7 +38,7 @@ use crate::{
         BioticField, FieldDeliver, FieldIds, FiredProjectile, ProjectileEvent, SeenIds, ShotKey,
     },
     replication::WorldDelivery,
-    scene::{bot_controller_link, bot_create},
+    scene::{bot_controller_link, bot_create, bot_filter},
     scene_assets::PreparedScene,
 };
 use orpheus_content::{heroes::Eyes, stats::PlayerStats};
@@ -889,13 +889,17 @@ impl Combat {
         if result.dealt == 0.0 {
             return None;
         }
+        let mut components = vec![target.vitals.component()];
         if result.killed {
             bot.died(death_tick);
             target.respawn_at = Some(context.now.saturating_add(respawn));
+            // Its filter bits say it is dead (`scene` module notes); its
+            // team was checked at its create.
+            components.extend(bot_filter(bot).ok());
         }
         let health = EntityUpdate {
             entity: bot.entity,
-            operation: Some(Operation::Update(vec![target.vitals.component()])),
+            operation: Some(Operation::Update(components)),
             ..EntityUpdate::default()
         };
         target.vitals.clear_changed();

@@ -34,7 +34,7 @@ use crate::{
         FieldCopies, FieldDeliver, FieldDelivery, FiredProjectile, OwnerProjectiles,
         ProjectileDelivery, ProjectileEvent, ProjectileLeases, ProjectileToken, ShotKey,
     },
-    scene::{PlayerAppearance, Possession, player_team_bit},
+    scene::{PlayerAppearance, Possession, body_filter, filter_component, player_team_bit},
     scene_assets::PreparedScene,
     voice_lines::{VoiceLine, VoiceState},
 };
@@ -89,6 +89,8 @@ struct Body {
     id: BodyId,
     hero: u64,
     skin: SkinTheme,
+    /// The filter bit of the player's team (`scene::player_team_bit`).
+    team_bit: u64,
 }
 
 /// A running owner VM and the authored data used to encode its snapshots.
@@ -1775,22 +1777,30 @@ impl WorldDelivery {
             return;
         }
         let health = match (&mut self.body_script, &mut self.plain_vitals) {
-            (Some(script), _) => script
-                .runtime
-                .take_health_update()
-                .map(|health| (script.id.entity, health)),
+            (Some(script), _) => script.runtime.take_health_update().map(|health| {
+                let dead = script.runtime.vitals().and_then(Vitals::death).is_some();
+                (script.id.entity, health, dead)
+            }),
             (None, Some(vitals)) if vitals.has_changed() => {
                 vitals.clear_changed();
-                self.body
-                    .map(|body| (body.id.entity, vitals.cumulative_component()))
+                self.body.map(|body| {
+                    let dead = vitals.death().is_some();
+                    (body.id.entity, vitals.cumulative_component(), dead)
+                })
             }
             _ => None,
         };
-        if let Some((entity, health)) = health {
+        if let Some((entity, health, dead)) = health {
+            let mut components = vec![health];
+            // A death's pools come with the filter bits that say the body
+            // is dead (`scene` module notes).
+            if let Some(body) = self.body.filter(|body| dead && body.id.entity == entity) {
+                components.push(filter_component(body_filter(body.team_bit, true)));
+            }
             self.body_health += 1;
             self.queue_health(EntityUpdate {
                 entity,
-                operation: Some(Operation::Update(vec![health])),
+                operation: Some(Operation::Update(components)),
                 ..EntityUpdate::default()
             });
         }
@@ -3052,12 +3062,15 @@ impl WorldDelivery {
             .checked_add(1)
             .ok_or_else(|| invalid("player body lifetime exhausted"))?;
         let id = BodyId { entity, generation };
+        let team_bit = player_team_bit(scene.map(), viewer.team)?;
         let body = Body {
             id,
             hero: hero.guid,
             skin,
+            team_bit,
         };
-        let body_filter = player_team_bit(scene.map(), viewer.team)?;
+        // A new body is alive (`scene` module notes).
+        let body_filter = body_filter(team_bit, false);
         let start_frame = self.input.processed.unwrap_or(tick);
         let script = scene
             .owner_body_runtime(
@@ -3087,7 +3100,7 @@ impl WorldDelivery {
             BodyCreate {
                 entity,
                 hero,
-                team_bit: body_filter,
+                filter: body_filter,
                 position: pose.position,
                 yaw: pose.yaw,
                 skin,
