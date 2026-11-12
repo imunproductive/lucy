@@ -4937,12 +4937,17 @@ fn practice_bots_run_their_scripts_for_a_client() {
     // commands were made before the client could draw the bot. So: wait
     // for the target's first movement record, then send one idle command;
     // the shot goes in the next one.
-    pump_until(&mut [&mut watcher], &schemas, "the body and the target", |watchers| {
-        watchers[0].created(owner | 1).is_some()
-            && watchers[0]
-                .find(0, |record| record.entity == target && record.movement)
-                .is_some()
-    });
+    pump_until(
+        &mut [&mut watcher],
+        &schemas,
+        "the body and the target",
+        |watchers| {
+            watchers[0].created(owner | 1).is_some()
+                && watchers[0]
+                    .find(0, |record| record.entity == target && record.movement)
+                    .is_some()
+        },
+    );
     let idle = watcher.tick + 1;
     watcher
         .client
@@ -5307,11 +5312,12 @@ mod collision_ready;
 
 /// A living enemy training bot blocks Soldier: 76's body on the server
 /// (`orpheus_sim::replication::blocks`), as the client's own mover stops at
-/// the bot's capsule: he runs straight at a Training Bot standing 3 m past
-/// his spawn room's end and stops with their axes the sum of their radii
-/// apart (0.5 + 0.5, less at most the solver's 5 mm slop and 5 mm
-/// tolerance), never past it. His owner corrections are his server body's
-/// poses, so none pulls his client through the bot.
+/// the bot's capsule: he runs out of his spawn room at a Training Bot
+/// standing 3 m past its end, turning toward the bot every 4 frames, and
+/// stops against it, their axes the sum of their radii apart (0.5 + 0.5,
+/// less at most the solver's 5 mm slop and 5 mm tolerance), never nearer.
+/// His owner corrections are his server body's poses, so none pulls his
+/// client through the bot.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn soldier_runs_into_an_enemy_bot_and_stops_short_of_it() {
@@ -5343,10 +5349,12 @@ fn soldier_runs_into_an_enemy_bot_and_stops_short_of_it() {
             placed = Some((bot.position, facing));
         });
     let ([bx, _, bz], facing) = placed.unwrap();
-    let (sin, cos) = facing.to_radians().sin_cos();
-    let ahead = |[px, _, pz]: [f64; 3]| (bx - px) * sin + (bz - pz) * cos;
     let gap = |[px, _, pz]: [f64; 3]| (bx - px).hypot(bz - pz);
-    let yaw = (facing * 65536.0 / 360.0).round() as i32 as i16;
+    // Yaw 0 faces +z, a quarter turn +x.
+    let toward = |[px, _, pz]: [f64; 3]| {
+        ((bx - px).atan2(bz - pz) * 32768.0 / std::f64::consts::PI).round() as i32 as i16
+    };
+    let mut yaw = (facing * 65536.0 / 360.0).round() as i32 as i16;
     // He runs for 8 s, at most 44 m at 5.5 m/s, far more than the way to
     // the bot; his body's feet after every datagram.
     let mut frame = soldier.tick + 1;
@@ -5356,15 +5364,23 @@ fn soldier_runs_into_an_enemy_bot_and_stops_short_of_it() {
         if frame <= soldier.tick + 8 {
             soldier
                 .client
-                .send(ACK, command_batch(frame, 16, yaw, 0, true));
-            frame += 16;
+                .send(ACK, command_batch(frame, 4, yaw, 0, true));
+            frame += 4;
         }
         soldier.pump(&schemas);
-        feet.extend(server.bodies(MATCH).unwrap()[0].position);
+        let at = server.bodies(MATCH).unwrap()[0].position;
+        if let Some(at) = at.filter(|&at| gap(at) < 6.0) {
+            yaw = toward(at);
+        }
+        feet.extend(at);
     }
-    assert!(
-        feet.iter().all(|&at| ahead(at) > 0.0 && gap(at) >= 0.99),
-        "{feet:?}"
+    let wrong = feet.iter().position(|&at| gap(at) < 0.99);
+    assert_eq!(
+        wrong,
+        None,
+        "the bot at {:?}: {:?}",
+        [bx, bz],
+        wrong.map(|first| &feet[first.saturating_sub(3)..(first + 3).min(feet.len())])
     );
     let last = *feet.last().unwrap();
     assert!(gap(last) <= 1.0, "{last:?}");
