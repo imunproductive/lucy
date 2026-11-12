@@ -38,7 +38,7 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk},
     timeline::FRAME_MS,
     vm::{ShotEvent, Snapshot, TargetCandidate, Unknowns},
-    weapons::{HitDefinition, ProjectileBallistics, authored_number},
+    weapons::{HitDefinition, ProjectileBallistics, authored_number, ray_profile},
     wire::{Value, Variables},
 };
 use orpheus_wire::entity::{EntityUpdate, MAX_PAYLOAD, frame};
@@ -117,6 +117,8 @@ pub enum BotShotKind {
         direction: [f64; 3],
         reach: f64,
         hit: HitDefinition,
+        /// The volley's ray profile (`orpheus_script::weapons::ray_profile`).
+        ray_profile: Option<u64>,
         shot_frame: u32,
     },
 }
@@ -949,6 +951,7 @@ fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShot
                 direction,
                 reach: if reach == 0.0 { RANGE } else { reach },
                 hit,
+                ray_profile: ray_profile(node, &mut evaluate),
                 shot_frame: shot.frame,
             },
             false,

@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::combat::{Combat, CombatPlayer, ENVIRONMENT_DAMAGE, Shooter, apply_player_hits};
+use crate::scene_assets::install_collision_build;
 use orpheus_content::{maps::SpawnChoice, stats::PlayerStats};
 use orpheus_wire::combat_messages::CombatNotice;
 
@@ -290,16 +291,9 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
 fn a_fall_off_gibraltar_dies_in_its_kill_volume() {
     const GIBRALTAR: u64 = 0x0800_0000_0000_0184;
     let runtime = orpheus_testkit::runtime_dir();
-    let install = orpheus_testkit::game_dir();
     let assets = SceneAssets::load(&runtime)
         .unwrap()
-        .with_collision_build(std::sync::Arc::new(move |map, name| {
-            let opened =
-                orpheus_assets::Install::open(&install, "enUS").map_err(std::io::Error::other)?;
-            let output = orpheus_assets::collision_cache(&opened, map, name)
-                .map_err(std::io::Error::other)?;
-            Ok(output.bytes)
-        }));
+        .with_collision_build(install_collision_build(orpheus_testkit::game_dir()));
     let map = orpheus_content::maps::MapCatalog::load(runtime.join("data"))
         .unwrap()
         .game_map(

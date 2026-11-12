@@ -44,7 +44,7 @@ use orpheus_script::{
         Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest, Root, Snapshot, StateKind,
         TargetCandidate, Unknowns, World,
     },
-    weapons::{HitDefinition, ProjectileBallistics, pellet_rings},
+    weapons::{HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
 };
 use orpheus_wire::{
@@ -674,6 +674,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                     shot_frame: shot.frame,
                     reach,
                     hit,
+                    ray_profile: ray_profile(node, &mut evaluate),
                 }))
             })
             .collect();

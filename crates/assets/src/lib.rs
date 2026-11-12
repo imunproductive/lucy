@@ -33,6 +33,7 @@ mod navigation;
 mod objectives;
 mod progression;
 mod props;
+mod ray_profiles;
 mod tunables;
 mod voice_sets;
 
@@ -41,7 +42,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub use collision::collision_cache;
+pub use collision::{collision_cache, ray_cache};
 pub use install::{Install, guid_hex, guid_name, guid_type};
 
 /// One derived file: its path inside the pack (`data/…` or `collision/…`)
@@ -167,6 +168,14 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "collision",
         derive: collision::derive,
+    },
+    Derivation {
+        name: "collision_rays",
+        derive: collision::derive_rays,
+    },
+    Derivation {
+        name: "game_ray_profiles",
+        derive: ray_profiles::derive,
     },
     Derivation {
         name: "collision_props",
