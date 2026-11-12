@@ -128,10 +128,23 @@ impl Command {
     }
 }
 
-/// Decode a single input record, oldest command first.
-pub fn read_commands(reader: &mut BitReader<'_>) -> Result<Vec<Command>, InputError> {
+/// One client input record: the latency the client measures, its key flags
+/// and its commands, oldest first. The default is a datagram without one.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct InputRecord {
+    /// The client's round trip to the server in ms, as it reports it
+    /// (record writer 0x7FF789B3DDC0); None without a record. Above about
+    /// 220 ms the client stops predicting impact effects on other bodies
+    /// (GDC 2017, Ford ~39:16).
+    pub latency: Option<u16>,
+    pub key_flags: u8,
+    pub commands: Vec<Command>,
+}
+
+/// Decode a single input record.
+pub fn read_input(reader: &mut BitReader<'_>) -> Result<InputRecord, InputError> {
     if reader.left() == 0 || !reader.bit()? {
-        return Ok(Vec::new());
+        return Ok(InputRecord::default());
     }
     let declared = reader.bits(32)? as u32;
     if declared as usize > reader.left() {
@@ -140,7 +153,8 @@ pub fn read_commands(reader: &mut BitReader<'_>) -> Result<Vec<Command>, InputEr
             remaining: reader.left(),
         });
     }
-    reader.advance(24)?; // Latency and key flags.
+    let latency = reader.bits(16)? as u16;
+    let key_flags = reader.bits(8)? as u8;
     let count = reader.bits(8)? as u8;
     if !(1..=MAX_COMMANDS).contains(&count) {
         return Err(InputError::CommandCount(count));
@@ -153,7 +167,11 @@ pub fn read_commands(reader: &mut BitReader<'_>) -> Result<Vec<Command>, InputEr
         command = next_command(reader, command)?;
         commands.push(command);
     }
-    Ok(commands)
+    Ok(InputRecord {
+        latency: Some(latency),
+        key_flags,
+        commands,
+    })
 }
 
 fn first_command(reader: &mut BitReader<'_>) -> Result<Command, BitError> {
@@ -341,7 +359,9 @@ impl CommandQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::{Click, Command, CommandQueue, FRAME_HALF, InputError, SUBFRAME, read_commands};
+    use super::{
+        Click, Command, CommandQueue, FRAME_HALF, InputError, InputRecord, SUBFRAME, read_input,
+    };
     use orpheus_core::bits::{BitReader, BitWriter};
 
     #[test]
@@ -364,7 +384,7 @@ mod tests {
             yaw: 300,
             ..first
         };
-        assert_eq!(read_commands(&mut reader).unwrap(), [first, second]);
+        assert_eq!(read_input(&mut reader).unwrap().commands, [first, second]);
         assert_eq!(reader.position(), 203);
     }
 
@@ -378,7 +398,7 @@ mod tests {
             0x00, 0x01, 0x00, 0x17, 0x00, 0x40, 0xf9, 0xff, 0x2b, 0x00, 0x00, 0x50, 0x15,
         ];
         let mut reader = BitReader::new(&bytes);
-        let commands = read_commands(&mut reader).unwrap();
+        let commands = read_input(&mut reader).unwrap().commands;
         let first = Command {
             frame: u32::MAX - 1,
             forward: 73,
@@ -431,16 +451,19 @@ mod tests {
 
     #[test]
     fn handles_absent_records_and_rejects_invalid_counts_and_truncation() {
-        assert!(read_commands(&mut BitReader::new(&[])).unwrap().is_empty());
+        assert_eq!(
+            read_input(&mut BitReader::new(&[])).unwrap(),
+            InputRecord::default()
+        );
         let mut absent = BitReader::new(&[0]);
-        assert!(read_commands(&mut absent).unwrap().is_empty());
+        assert_eq!(read_input(&mut absent).unwrap(), InputRecord::default());
         assert_eq!(absent.position(), 1);
 
         let mut writer = BitWriter::new();
         writer.bit(true);
         writer.bits(32, 32).unwrap();
         assert_eq!(
-            read_commands(&mut BitReader::new(writer.as_bytes())),
+            read_input(&mut BitReader::new(writer.as_bytes())),
             Err(InputError::RecordLength {
                 declared: 32,
                 remaining: 7,
@@ -456,10 +479,37 @@ mod tests {
             let mut record = writer.clone();
             record.bits(count, 8).unwrap();
             assert_eq!(
-                read_commands(&mut BitReader::new(record.as_bytes())),
+                read_input(&mut BitReader::new(record.as_bytes())),
                 Err(expected)
             );
         }
+    }
+
+    /// The record's latency and key flags come before its commands.
+    #[test]
+    fn reads_the_reported_latency_and_key_flags() {
+        let mut writer = BitWriter::new();
+        writer.bit(true);
+        // 16 + 8 + 8 header bits, then a 113-bit complete command.
+        writer.bits(32 + 113, 32).unwrap();
+        writer.bits(229, 16).unwrap();
+        writer.bits(0x5, 8).unwrap();
+        writer.bits(1, 8).unwrap();
+        writer.bits(7000, 32).unwrap();
+        writer.bit(false);
+        // Yaw, pitch, buttons, action, extra: all 0.
+        for width in [16, 16, 24, 8, 16] {
+            writer.bits(0, width).unwrap();
+        }
+        let record = read_input(&mut BitReader::new(writer.as_bytes())).unwrap();
+        assert_eq!((record.latency, record.key_flags), (Some(229), 0x5));
+        assert_eq!(
+            record.commands,
+            [Command {
+                frame: 7000,
+                ..Command::default()
+            }]
+        );
     }
 
     fn at_frames(frames: &[u32]) -> Vec<Command> {

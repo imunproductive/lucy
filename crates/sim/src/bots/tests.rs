@@ -1,6 +1,5 @@
 use super::*;
 use orpheus_content::maps::PRACTICE_RANGE_MAP;
-use orpheus_core::tick::SEND_EVERY;
 use orpheus_wire::entity::movement_record;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -38,6 +37,10 @@ fn walker(target: [f64; 3]) -> Bot {
     )
 }
 
+/// The bots' movement records at each tick, as Python's. The digests were
+/// Python's with each record's `record_due` too; that cadence went (every
+/// frame carries a bot's record now, `Bot::record_due`), and they were
+/// taken again from the same records without it.
 fn route_vector(bots: &mut [Bot], ticks: impl IntoIterator<Item = u32>) -> String {
     let mut digest = Sha256::new();
     for tick in ticks {
@@ -46,7 +49,6 @@ fn route_vector(bots: &mut [Bot], ticks: impl IntoIterator<Item = u32>) -> Strin
             let bits = movement_record(&bot.movement(tick), Some(tick)).unwrap();
             digest.update(tick.to_le_bytes());
             digest.update(u32::try_from(bits.bit_len()).unwrap().to_le_bytes());
-            digest.update([u8::from(bot.record_due(tick, SEND_EVERY))]);
             digest.update(bits.as_bytes());
         }
     }
@@ -117,7 +119,7 @@ fn backward_walk_brake_and_next_leg_match_python_wire_vectors() {
     let mut bot = walker([0.0, 0.0, -20.0]);
     assert_eq!(
         route_vector(std::slice::from_mut(&mut bot), 1..=750),
-        "80053f3ad91f5ca2e6e9fb638a2cb5fd1ac83851602e4079a6385c9ce39a7ee7"
+        "a7d4ccfed08132ae435ed48eecdfa9b418123700b7c5ef3ab42f84cb27e0a6ac"
     );
 }
 
@@ -216,7 +218,7 @@ fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
     bot.step(250, |_, _, _, _| None);
     assert!(bot.walking());
     let death_position = bot.position;
-    bot.died(250);
+    bot.died();
     bot.step(400, |_, _, _, _| unreachable!());
     assert!(!bot.walking());
     assert_eq!(bot.position, death_position);
@@ -226,7 +228,8 @@ fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
     assert_eq!(state.throttles, [0; 2]);
     assert_eq!(state.input_frame, None);
     assert_eq!(bot.movement(251).input_frame, Some(250));
-    assert!(bot.record_due(250 + SETTLE_TICKS - 1, SEND_EVERY));
+    // A dead bot's record goes in every frame, as a living one's.
+    assert!((251..400).all(|tick| bot.record_due(tick)));
 
     let replacement = BOT_ENTITY + 15;
     // Respawned after the practice modes' 3 s (`game_respawns`).
@@ -241,15 +244,11 @@ fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
     assert!(!fresh.dead);
     assert_eq!(fresh.position, [0.0; 3]);
     assert_eq!(fresh.movement(tick).input_frame, Some(NO_INPUT));
-    let turn = |at: &u32| at % SETTLE_TICKS == fresh.entity % SETTLE_TICKS;
-    let before = (records_from - SETTLE_TICKS..records_from)
-        .find(turn)
-        .unwrap();
-    let after = (records_from..records_from + SETTLE_TICKS)
-        .find(turn)
-        .unwrap();
-    assert!(!fresh.record_due(before, 1));
-    assert!(fresh.record_due(after, 1));
+    // Its records start once its create had time to arrive, then go in
+    // every frame, resting or not (retail; Python's came about once a
+    // second, so the client couldn't place the bot until its turn).
+    assert!(!fresh.record_due(records_from - 1));
+    assert!((records_from..records_from + 200).all(|at| fresh.record_due(at)));
     fresh.step(tick, |_, _, _, _| None);
     fresh.step(tick + 186, |_, _, _, _| None);
     assert!(!fresh.walking());
@@ -323,6 +322,6 @@ fn fifteen_practice_bots_match_python_roster_and_patrol_frames() {
     );
     assert_eq!(
         route_vector(&mut bots, (1..=1300).chain([1325, 1955, 1956, 1960])),
-        "b149457ffd1e86f976def1ffb6d53c7a955582cced2fbcc03fd424c1a0a893e9"
+        "ed1015f90ebf13f2100c3a31b4da1e79719551aec9c363f6e3df607d1e1a3ce5"
     );
 }

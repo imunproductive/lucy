@@ -107,6 +107,6 @@ These environment variables are for research. Leave them unset to play.
 | Variable | What it does |
 | --- | --- |
 | `ORPHEUS_DEBUG_DROP_NOTICES` | A comma list of combat notices the server leaves out: `hit`, `kill-flag`, `elimination`, `death` |
-| `ORPHEUS_DEBUG_BOT_LOOK` | A comma list of changes to the training bots, to find why their nameplate and health bar look like a player's: `no-hero-bit` (their filter bits leave out the hero bit 0x1), `no-controller` (their stand-in controllers don't possess them; "ELIMINATED" then shows no name) |
+| `ORPHEUS_DEBUG_BOT_LOOK` | A comma list of changes to the training bots, to find why their nameplate and health bar look like a player's: `no-hero-bit` (their filter bits leave out the hero bit 0x1), `no-controller` (their stand-in controllers don't possess them; "ELIMINATED" then shows no name), `filter=0x…` (adds these bits to their filter bits, component 26, e.g. `filter=0x10040000`, to find which ones make your own shots stop on a bot) |
 | `ORPHEUS_SEND_EVERY=1` | The server sends each game a datagram every tick (62.5 a second, as retail's "high bandwidth" did) in place of every third tick (20.8 a second). `2` sends every second tick. The server logs a warning when it is set. A test: explosions, bots and your own corrections should show sooner |
 | `ORPHEUS_DEBUG_HELLO_FLAGS=1` | The lobby's hello message (20500) sends its six unknown flags true, to look for hidden admin or developer features |

@@ -278,7 +278,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     ));
     world.update_bots(&scene, &events, tick, true);
     tick += 1;
-    scene.bots_mut()[slot].died(tick);
+    scene.bots_mut()[slot].died();
     scene.bot_died(victim, OWNER | 1, false, None, tick);
     let events = scene.take_bot_events();
     assert!(matches!(

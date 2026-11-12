@@ -93,10 +93,6 @@ impl GameClock {
         }
     }
 
-    pub fn send_every(self) -> u32 {
-        self.send_every
-    }
-
     pub fn frame(self) -> u32 {
         self.frame
     }

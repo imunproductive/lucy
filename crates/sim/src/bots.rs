@@ -60,7 +60,6 @@ use crate::{
 pub const BOT_ENTITY: u32 = 0xc000_1000;
 pub const BOT_CONTROLLER_ENTITY: u32 = 0xc000_0800;
 pub const DEAD_MOVEMENT_FLAG: u32 = 0x2000;
-pub const SETTLE_TICKS: u32 = 63;
 pub const BOT_RECORD_DELAY: u32 = 8;
 
 const PATROL: u64 = 0x0580_0000_0000_0b8e;
@@ -363,7 +362,6 @@ pub struct Bot {
     held: [i8; 2],
     last_held: [i8; 2],
     input_tick: Option<u32>,
-    moved_tick: Option<u32>,
     last_tick: Option<u32>,
     records_from: Option<u32>,
     /// Its body's animation, when the data has a rig for it.
@@ -398,7 +396,6 @@ impl Bot {
             held: [0; 2],
             last_held: [0; 2],
             input_tick: None,
-            moved_tick: None,
             last_tick: None,
             records_from: None,
             animation: None,
@@ -554,7 +551,6 @@ impl Bot {
         dt: f64,
         ground: &mut impl FnMut(f64, f64, f64, f64) -> Option<f64>,
     ) {
-        let before = (self.position, self.yaw.round_ties_even());
         self.held = [0; 2];
         if !self.keys {
             self.wait -= dt;
@@ -583,9 +579,6 @@ impl Bot {
                 self.turning -= dt;
                 self.turn(dt);
             }
-        }
-        if (self.position, self.yaw.round_ties_even()) != before {
-            self.moved_tick = Some(tick);
         }
     }
 
@@ -745,12 +738,11 @@ impl Bot {
         self.target.is_some()
     }
 
-    pub fn died(&mut self, tick: u32) {
+    pub fn died(&mut self) {
         self.dead = true;
         self.keys = false;
         self.held = [0; 2];
         self.stand();
-        self.moved_tick = Some(tick);
     }
 
     pub fn respawned(&self, entity: u32, records_from: u32) -> Self {
@@ -766,20 +758,17 @@ impl Bot {
         fresh
     }
 
-    pub fn record_due(&self, tick: u32, every: u32) -> bool {
-        if self.records_from.is_some_and(|from| tick < from) {
-            return false;
-        }
-        if self.walking()
-            || self
-                .moved_tick
-                .is_some_and(|moved| tick.saturating_sub(moved) < SETTLE_TICKS)
-        {
-            return true;
-        }
-        let every = every.max(1);
-        let period = (SETTLE_TICKS / every).max(1);
-        (tick / every) % period == self.entity % period
+    /// Whether a send frame at `tick` carries the bot's movement record:
+    /// every one, once a respawned bot's create had time to arrive
+    /// (`records_from`). Retail's Practice Range sent every bot's record in
+    /// every frame, idle or not (module notes). Python (bots.py
+    /// `record_due`) sent a resting bot's about once a second, so a bot
+    /// that respawned stayed unseen until its turn came (the client places
+    /// a mover only from its movement records), while the server already
+    /// let it be hit; and the client may leave a body whose newest record
+    /// is that old out of its own hit tests (assumption, see `scene.rs`).
+    pub fn record_due(&self, tick: u32) -> bool {
+        self.records_from.is_none_or(|from| tick >= from)
     }
 
     pub fn movement(&self, tick: u32) -> Movement {

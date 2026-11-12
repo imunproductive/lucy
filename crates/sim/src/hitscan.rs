@@ -74,24 +74,27 @@ impl TargetPose {
             })
     }
 
-    /// Where a ray first enters the body within `length`: the distance, and
-    /// for a body with shapes whether the shape it enters is critical (the
-    /// nearest shape; the earlier one of the list on a tie). `None` for the
-    /// capsule, whose head zone the caller applies.
+    /// Where a ray, or a sphere of radius `size` swept along it, first
+    /// enters the body within `length`: the distance, and for a body with
+    /// shapes whether the shape it enters is critical (the nearest shape;
+    /// the earlier one of the list on a tie). `None` for the capsule, whose
+    /// head zone the caller applies. A sphere meets a shape where its centre
+    /// comes within the shape's radius plus `size`.
     pub(crate) fn entry(
         &self,
         origin: Vec3,
         direction: Vec3,
         length: f64,
+        size: f64,
     ) -> Option<(f64, Option<bool>)> {
         if self.shapes.is_none() {
             let [a, b] = self.segment();
-            return capsule_entry_distance(origin, direction, length, a, b, self.radius)
+            return capsule_entry_distance(origin, direction, length, a, b, self.radius + size)
                 .map(|distance| (distance, None));
         }
         self.placed()
             .filter_map(|(a, b, radius, critical)| {
-                capsule_entry_distance(origin, direction, length, a, b, radius)
+                capsule_entry_distance(origin, direction, length, a, b, radius + size)
                     .map(|distance| (distance, Some(critical)))
             })
             .min_by(|left, right| left.0.total_cmp(&right.0))
@@ -278,7 +281,8 @@ impl HitscanShot {
             let length = nearest
                 .as_ref()
                 .map_or(self.reach, |(distance, ..)| *distance);
-            if let Some((distance, critical)) = pose.entry(self.origin, self.direction, length) {
+            if let Some((distance, critical)) = pose.entry(self.origin, self.direction, length, 0.0)
+            {
                 if nearest.is_none() || distance < length {
                     nearest = Some((distance, entity, pose, critical));
                     if distance == 0.0 {

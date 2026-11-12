@@ -825,7 +825,15 @@ struct Peer {
     /// An AI player's seat: no game connects to it; the server plays its
     /// hero (`ai.rs`).
     ai: Option<Box<ai::AiSeat>>,
+    /// The round trip the game last reported in its input record, as
+    /// logged ([`LATENCY_STEP`]).
+    reported_latency: Option<u16>,
 }
+
+/// A game's reported round trip is logged when it moves this far (ms) from
+/// the last one logged: the client predicts no impact effects on other
+/// bodies above about 220 ms (`orpheus_wire::commands::InputRecord`).
+const LATENCY_STEP: u16 = 20;
 
 #[derive(Default)]
 struct CombatUi {
@@ -1041,6 +1049,7 @@ impl Peer {
             combat_ui: CombatUi::default(),
             presented: false,
             ai: None,
+            reported_latency: None,
         }
     }
 
@@ -1676,6 +1685,7 @@ impl State {
             let report = peer.egress.acknowledge(ack, bits);
             if !self.clock.draining() {
                 peer.world.acknowledge(report, now);
+                peer.world.acknowledge_movement(ack, bits);
             }
         }
         if let Some(Ok(control)) = received.control {
@@ -1702,9 +1712,10 @@ impl State {
                 egress,
                 loading,
                 world,
+                reported_latency,
                 ..
             } = peer;
-            let commands = ingress.receive(&self.schemas, &payload, |message| {
+            let incoming = ingress.receive(&self.schemas, &payload, |message| {
                 match MessageKind::from(message.id) {
                     MessageKind::Ping => {
                         let received = wall_nanoseconds();
@@ -1750,8 +1761,21 @@ impl State {
                     _ => {}
                 }
             });
-            if let (Ok(commands), Some(_)) = (commands, &room.world) {
-                world.queue_commands(self.clock.frame(), &commands);
+            if let Ok(input) = incoming {
+                if let Some(latency) = input.latency.filter(|&latency| {
+                    reported_latency.is_none_or(|last| last.abs_diff(latency) >= LATENCY_STEP)
+                }) {
+                    *reported_latency = Some(latency);
+                    let view_delay = input.commands.last().map(|command| command.extra);
+                    tracing::info!(
+                        target: "orpheus::latency",
+                        "[game] {} reports a {latency} ms round trip (view delay {view_delay:?} ms)",
+                        room.players[slot].info.name
+                    );
+                }
+                if room.world.is_some() {
+                    world.queue_commands(self.clock.frame(), &input.commands);
+                }
             }
         }
     }
@@ -1830,9 +1854,10 @@ impl State {
                 // combat.py `Combat.command`: the shots, then quick melee.
                 let mut hits = Vec::new();
                 for shot in shots {
-                    let visible = |entity| peer.world.identity_ready(entity);
                     match shot {
                         PosedShot::Hitscan(shot) => {
+                            let frame = shot.command.frame;
+                            let visible = |entity| peer.world.bot_shown(entity, frame);
                             let shooter = Shooter {
                                 source: shot.source,
                                 team,
@@ -1845,6 +1870,8 @@ impl State {
                             }
                         }
                         PosedShot::Melee(melee) => {
+                            let frame = melee.command.frame;
+                            let visible = |entity| peer.world.bot_shown(entity, frame);
                             let shooter = Shooter {
                                 source: melee.source,
                                 team,
@@ -2688,7 +2715,6 @@ impl State {
             self.say_player_lines(tick);
             self.show_players(tick, now, send_frames);
         }
-        let every = self.clock.send_every();
         for (&connection, peer) in &mut self.peers {
             if peer.ai.is_some() {
                 // What a client would get arrives at once (ai.rs).
@@ -2706,9 +2732,9 @@ impl State {
                 let movements = if drain {
                     Vec::new()
                 } else {
-                    room.world.as_ref().map_or_else(Vec::new, |world| {
-                        peer.world.movement(&world.scene, tick, every)
-                    })
+                    room.world
+                        .as_ref()
+                        .map_or_else(Vec::new, |world| peer.world.movement(&world.scene, tick))
                 };
                 peer.send_frame(&mut self.links, socket, connection, tick, movements, drain);
             }

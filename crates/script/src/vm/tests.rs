@@ -2337,6 +2337,7 @@ fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
     .unwrap();
     assert_eq!(rocket.definition, Some(0x0400_0000_0000_072c));
     assert_eq!((rocket.speed, rocket.lifetime), (50.0, 2.0));
+    assert_eq!(rocket.radius, f64::from(0.2_f32));
     let direct = rocket.direct.unwrap();
     assert_eq!(
         (direct.amount, direct.loadout),

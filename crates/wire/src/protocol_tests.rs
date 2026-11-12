@@ -1,4 +1,4 @@
-use crate::commands::{CommandQueue, read_commands};
+use crate::commands::{CommandQueue, read_input};
 use crate::jam::codec::{Schemas, Value};
 use crate::link::{LinkCipher, ReceiveWindow};
 use crate::messages::read_channel;
@@ -49,7 +49,7 @@ fn opens_a_python_game_datagram_and_dispatches_its_command_prefix_once() {
     assert_eq!(channel.unreliable[0].id, 27500);
     assert_eq!(channel.unreliable[0].fields[&120], Value::Unsigned(7));
 
-    let commands = read_commands(&mut reader).unwrap();
+    let commands = read_input(&mut reader).unwrap().commands;
     let mut queue = CommandQueue::new();
     let fresh = queue.consume(&commands);
     assert_eq!(fresh.len(), 2);

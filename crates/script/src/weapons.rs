@@ -314,6 +314,17 @@ pub struct ProjectileBallistics {
     pub definition: Option<u64>,
     pub direct: Option<HitDefinition>,
     pub blast: Option<Blast>,
+    /// The radius in metres of the sphere the projectile sweeps against
+    /// bodies: its direct hit's `m_57DAE1B5` (`STU_00D9C7E1`), 0 when not
+    /// set. The field is the one `STUStatescriptStateTrackRay` reads as its
+    /// ray's radius (leafall903/ORPHEUS (MIT) `script/nodes.py`), and its
+    /// 104319 values are projectile sizes: Helix Rockets (`0254`) and
+    /// Pharah's rockets (`0023`) 0.2, Junkrat's grenades (`022B`) 0.2,
+    /// Hanzo's arrows (`00B9`) and Genji's shuriken (`0304`) 0.1, Mercy's
+    /// blaster (`02B8`) 0.25, as the community lists them for Junkrat,
+    /// Hanzo, Genji and Mercy; Ana's darts (`0B94`) 0, where the community
+    /// says 0.2 (a later patch, assumption). Hitscan volleys don't set it.
+    pub radius: f64,
     /// The arc's downward acceleration in m/s²: the sum of the volley's
     /// gravity motions (`m_projectileMotions`); 0 flies straight.
     pub gravity: f64,
@@ -436,6 +447,12 @@ impl ProjectileBallistics {
             node.field("m_6396149F").unwrap_or(&Json::Null),
             &mut evaluate,
         )?;
+        let radius = authored_number(node.field("m_6396149F.m_57DAE1B5"), 0.0, &mut evaluate)?;
+        let radius = if radius.is_finite() {
+            radius.max(0.0)
+        } else {
+            0.0
+        };
         let config = node.field("m_D2D11CE9").unwrap_or(&Json::Null);
         let blast = if let Some(hit) = HitDefinition::from_authored(config, &mut evaluate)? {
             let rings = authored_rings(config.get("m_0D30E40C"), "m_B399CACB", 0.0, &mut evaluate)?;
@@ -482,6 +499,7 @@ impl ProjectileBallistics {
             definition,
             direct,
             blast,
+            radius,
             gravity,
             fuse: sticks.then_some(STICK_FUSE),
             unmodelled,
@@ -930,6 +948,41 @@ mod tests {
         assert_eq!(multipliers(0x0023), [(8, 1.0)]);
         assert_eq!(multipliers(0x0254), [(25, 2.0), (38, 1.0)]);
         assert_eq!(multipliers(0x0b94), [(7, 1.0), (88, 1.0)]);
+    }
+
+    /// A projectile's radius is its direct hit's `m_57DAE1B5`: Pharah's
+    /// rocket (`0023`) and the Helix Rocket (`0254` node 38) 0.2, Mercy's
+    /// blaster (`02B8`) 0.25, Genji's shuriken (`0304`) 0.1, Doomfist's
+    /// hand cannon (`0D0A`) 0.
+    #[test]
+    #[ignore = "requires the derived 104319 statescript catalog"]
+    fn projectile_radii_come_from_the_data() {
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let graphs =
+            crate::graph::GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap();
+        let radii = |index| {
+            let graph = graphs.graph(index).unwrap();
+            let mut found: Vec<_> = graph
+                .nodes
+                .iter()
+                .filter_map(|node| {
+                    let ballistics = ProjectileBallistics::from_authored(node, |value| {
+                        Ok(evaluate(value, &mut EmptyContext).unwrap_or(Value::Null))
+                    })
+                    .unwrap()?;
+                    Some((node.pos, ballistics.radius))
+                })
+                .collect();
+            found.sort_by_key(|&(pos, _)| pos);
+            found
+        };
+        // The data's floats are single precision.
+        let size = |radius: f32| f64::from(radius);
+        assert_eq!(radii(0x0023), [(8, size(0.2))]);
+        assert_eq!(radii(0x0254), [(38, size(0.2))]);
+        assert_eq!(radii(0x02b8), [(10, size(0.25))]);
+        assert_eq!(radii(0x0304), [(6, size(0.1)), (29, size(0.1))]);
+        assert_eq!(radii(0x0d0a), [(5, 0.0)]);
     }
 
     /// Graph `0034` node 51's `STU_082FA44E` reads its tunable's value from

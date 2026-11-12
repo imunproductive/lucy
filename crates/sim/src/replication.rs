@@ -65,6 +65,7 @@ use orpheus_wire::{
         Component as WorldComponent, EntityUpdate, GAME_MODE_ENTITY, MAX_PAYLOAD, Operation,
         SkinTheme, frame,
     },
+    link::delivery,
     messages::Message,
 };
 
@@ -644,6 +645,18 @@ enum Delivery {
     },
 }
 
+/// How far a bot got on this client's screen (`WorldDelivery::bot_shown`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BotSight {
+    /// Its first movement record went out in this datagram.
+    Sent(u32),
+    /// That datagram arrived; the commands of the datagram that said so
+    /// were made before the client could draw it.
+    Arrived,
+    /// Drawn for commands after this frame (none: all of them).
+    Shown(Option<u32>),
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum BotLifetime {
     Live,
@@ -936,6 +949,8 @@ pub struct WorldDelivery {
     queued: Vec<Arc<Record>>,
     created: HashSet<u32>,
     bots: HashMap<u32, BotLifetime>,
+    /// Each live bot's way onto this client's screen (`bot_shown`).
+    bot_sights: HashMap<u32, BotSight>,
     health_updates: HashMap<u32, u64>,
     health_revision: u64,
     started: Option<u32>,
@@ -1070,6 +1085,7 @@ impl WorldDelivery {
             queued: Vec::new(),
             created: HashSet::new(),
             bots: HashMap::new(),
+            bot_sights: HashMap::new(),
             health_updates: HashMap::new(),
             health_revision: 0,
             started: None,
@@ -1152,6 +1168,12 @@ impl WorldDelivery {
                 now,
             );
         }
+        // What a client would get arrives at once: every bot it has is drawn.
+        for (&entity, &lifetime) in &self.bots {
+            if lifetime == BotLifetime::Live && self.created.contains(&entity) {
+                self.bot_sights.insert(entity, BotSight::Shown(None));
+            }
+        }
     }
 
     /// The player's body takes hero picks: his controller went out and
@@ -1176,6 +1198,7 @@ impl WorldDelivery {
         self.queued.clear();
         self.created.clear();
         self.bots.clear();
+        self.bot_sights.clear();
         self.health_updates.clear();
         self.started = None;
         self.presentation_due = false;
@@ -1323,6 +1346,43 @@ impl WorldDelivery {
         self.world_started() && self.created.contains(&entity)
     }
 
+    /// Whether this client's command at `frame` was made with bot `entity`
+    /// on its screen, so his shot or melee then can strike it: its create
+    /// arrived, a datagram with its first movement record arrived (the
+    /// client places a mover only from its movement records; Prometheus
+    /// (0.8 beta, facts only): the movement-state history alone places it,
+    /// not component 1), and the command came in a later datagram than the
+    /// one that said so. Before, the server let a respawned bot be hit as
+    /// soon as its create arrived, while the client showed nothing there.
+    /// Beyond Python (server.py `combat_identity_ready` alone). A rewind
+    /// of the targets to the shooter's view would place the bot by its
+    /// history instead.
+    pub fn bot_shown(&self, entity: u32, frame: u32) -> bool {
+        self.identity_ready(entity)
+            && matches!(
+                self.bot_sights.get(&entity),
+                Some(BotSight::Shown(from))
+                    if from.is_none_or(|from| (frame.wrapping_sub(from) as i32) > 0)
+            )
+    }
+
+    /// The client's ACK window of a datagram (`ack`, `ack_bits`), for the
+    /// bots' first movement records ([`WorldDelivery::bot_shown`]): their
+    /// datagram arrived, or was lost and the next record's counts.
+    pub fn acknowledge_movement(&mut self, ack: u32, ack_bits: u64) {
+        self.bot_sights.retain(|_, sight| match *sight {
+            BotSight::Sent(sequence) => match delivery(sequence, ack, ack_bits) {
+                Some(true) => {
+                    *sight = BotSight::Arrived;
+                    true
+                }
+                Some(false) => false,
+                None => true,
+            },
+            _ => true,
+        });
+    }
+
     pub fn mode_ready(&self) -> bool {
         self.mode.delivered() != 0
     }
@@ -1426,6 +1486,7 @@ impl WorldDelivery {
         self.bot_views.forget(old);
         self.bots.insert(new, BotLifetime::Live);
         self.created.remove(&old);
+        self.bot_sights.remove(&old);
         self.health_updates.remove(&old);
         self.remove_stale();
         self.push(Record {
@@ -1803,6 +1864,17 @@ impl WorldDelivery {
         if let (Some((_, correction)), Some(history)) = (selected, history) {
             history.sent(&correction);
         }
+        for source in &sent.records {
+            let RecordSource::Movement(index) = *source else {
+                continue;
+            };
+            let entity = movements[index].entity;
+            if self.bots.get(&entity) == Some(&BotLifetime::Live) {
+                self.bot_sights
+                    .entry(entity)
+                    .or_insert(BotSight::Sent(sent.sequence));
+            }
+        }
         Ok(sent)
     }
 
@@ -2174,6 +2246,13 @@ impl WorldDelivery {
     pub fn queue_commands(&mut self, tick: u32, commands: &[Command]) {
         if self.started.is_some() {
             self.input.commands(tick, commands);
+        }
+        // The datagram that said a bot's first record arrived ends here.
+        let admitted = self.input.admitted;
+        for sight in self.bot_sights.values_mut() {
+            if *sight == BotSight::Arrived {
+                *sight = BotSight::Shown(admitted);
+            }
         }
     }
 
@@ -3376,9 +3455,8 @@ impl WorldDelivery {
 
     /// The movement records of this send frame: every other player's body
     /// from the frame after its create (match.py `remote_movements`), then
-    /// the training bots once their creates had time to arrive. `every`:
-    /// the ticks between send frames (`SEND_EVERY` unless switched).
-    pub fn movement(&self, scene: &PreparedScene, tick: u32, every: u32) -> Vec<EntityUpdate> {
+    /// the training bots once their creates had time to arrive.
+    pub fn movement(&self, scene: &PreparedScene, tick: u32) -> Vec<EntityUpdate> {
         let mut records = self.others.movements().to_vec();
         if self
             .started
@@ -3388,7 +3466,7 @@ impl WorldDelivery {
                 scene
                     .bots()
                     .iter()
-                    .filter(|bot| self.created.contains(&bot.entity) && bot.record_due(tick, every))
+                    .filter(|bot| self.created.contains(&bot.entity) && bot.record_due(tick))
                     .map(|bot| EntityUpdate {
                         entity: bot.entity,
                         movement: Some(bot.movement(tick)),

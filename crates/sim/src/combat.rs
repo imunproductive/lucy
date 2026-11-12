@@ -919,7 +919,7 @@ impl Combat {
         }
         let mut components = vec![target.vitals.component()];
         if result.killed {
-            bot.died(death_tick);
+            bot.died();
             target.respawn_at = Some(context.now.saturating_add(respawn));
             // Its filter bits say it is dead (`scene` module notes); its
             // team was checked at its create.

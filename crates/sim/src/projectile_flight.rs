@@ -13,11 +13,11 @@
 //! direct hit on the head is critical as a shot's is ([`TargetPose::head`];
 //! the reference did so for Mei's icicle alone, `combat.py`
 //! `projectile_headshot`): Hanzo's arrows and Genji's shuriken score
-//! headshots, a rocket whose hit says 1 doesn't. A projectile is swept as a
-//! point: no 104319 volley or projectile entity gives a collision size (the
-//! rockets', arrows' and shuriken's models list no shapes), and the
-//! reference swept points too. An explosion also hurts and pushes its own
-//! shooter ([`ProjectileFlight::own_blast`]).
+//! headshots, a rocket whose hit says 1 doesn't. A projectile meets bodies
+//! as a sphere of its volley's radius ([`ProjectileBallistics::radius`],
+//! 0.2 m for Helix Rockets) and surfaces as a point; the reference swept
+//! points. An explosion also hurts and pushes its own shooter
+//! ([`ProjectileFlight::own_blast`]).
 
 use crate::hitscan::{Impact, TargetPose};
 use orpheus_core::tick::TICK_PERIOD;
@@ -181,7 +181,14 @@ impl ProjectileFlight {
                 )
             };
             let hit = if reach > 0.0 {
-                closest(self.position, direction, reach, targets, wall)?
+                closest(
+                    self.position,
+                    direction,
+                    reach,
+                    self.ballistics.radius,
+                    targets,
+                    wall,
+                )?
             } else {
                 None
             };
@@ -363,17 +370,18 @@ impl ProjectileFlight {
 type Struck = (u32, Option<bool>);
 
 /// The closest body or surface along a sweep: its distance, and the body
-/// it struck.
+/// it struck. Bodies meet a sphere of radius `size`, surfaces its centre.
 fn closest(
     origin: Vec3,
     direction: Vec3,
     reach: f64,
+    size: f64,
     targets: &[(u32, TargetPose)],
     wall: &mut impl FnMut(Vec3, Vec3, f64) -> Result<Option<f64>, IndexError>,
 ) -> Result<Option<(f64, Option<Struck>)>, IndexError> {
     let mut closest = None;
     for (entity, target) in targets {
-        if let Some((distance, entered)) = target.entry(origin, direction, reach) {
+        if let Some((distance, entered)) = target.entry(origin, direction, reach, size) {
             if closest.is_none_or(|(best, _)| distance < best) {
                 closest = Some((distance, Some((*entity, entered))));
             }
@@ -418,7 +426,8 @@ mod tests {
         }
     }
 
-    /// Soldier: 76's Helix Rocket as graph `0254` node 35 has it.
+    /// Soldier: 76's Helix Rocket as graph `0254` node 35 has it, swept as
+    /// a point (its 0.2 m radius: `a_projectile_meets_bodies_by_its_radius`).
     fn helix() -> ProjectileBallistics {
         ProjectileBallistics {
             speed: 50.0,
@@ -436,6 +445,7 @@ mod tests {
                     upward_rings: vec![(0.5, 1.0), (3.0, 0.25)],
                 }),
             }),
+            radius: 0.0,
             gravity: 0.0,
             fuse: None,
             unmodelled: Vec::new(),
@@ -457,6 +467,7 @@ mod tests {
                 self_damage: 0.0,
                 knockback: None,
             }),
+            radius: 0.0,
             gravity,
             fuse: Some(STICK_FUSE),
             unmodelled: Vec::new(),
@@ -565,6 +576,49 @@ mod tests {
                 .unwrap(),
             FlightStep::default()
         );
+    }
+
+    /// A Helix Rocket (radius 0.2 m) flying 0.6 m beside a body's axis
+    /// strikes its capsule (radius 0.5) where the rocket's surface meets
+    /// it; as a point it would pass by. A wall stops its centre.
+    #[test]
+    fn a_projectile_meets_bodies_by_its_radius() {
+        let targets = [(1, target(0.6, 3.0))];
+        let rocket = ProjectileBallistics {
+            radius: 0.2,
+            ..helix()
+        };
+        let mut point =
+            ProjectileFlight::new(helix(), [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], Some(1000)).unwrap();
+        assert!(
+            point
+                .advance(1004, &targets, no_wall)
+                .unwrap()
+                .impacts
+                .is_empty()
+        );
+        let mut flight =
+            ProjectileFlight::new(rocket.clone(), [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], Some(1000))
+                .unwrap();
+        let step = flight.advance(1004, &targets, no_wall).unwrap();
+        let end = step.end.as_ref().unwrap();
+        // The centres are 0.7 m apart where they meet: 0.6 across, so
+        // sqrt(0.49 - 0.36) along the flight before the body's axis.
+        let met = 3.0 - (0.7f64 * 0.7 - 0.6 * 0.6).sqrt();
+        assert!((end.point[2] - met).abs() < 1e-9, "{:?}", end.point);
+        assert_eq!(step.impacts[0].entity, 1);
+        assert_eq!(step.impacts[0].damage, 40.0);
+
+        let world = wall_at(2.0);
+        let mut walled =
+            ProjectileFlight::new(rocket, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], Some(1000)).unwrap();
+        let step = walled
+            .advance(1004, &[(1, target(0.0, 2.8))], cast(&world))
+            .unwrap();
+        // The sphere would meet the capsule at 2.1, the wall stops its
+        // centre at 2.0: only the splash reaches the body.
+        assert_eq!(step.end.as_ref().unwrap().point, [0.0, 1.0, 2.0]);
+        assert_eq!(damage(&step), [(1, 80.0)]);
     }
 
     #[test]
@@ -905,6 +959,7 @@ mod tests {
                 ..hit(6.0)
             }),
             blast: None,
+            radius: 0.0,
             gravity: 0.0,
             fuse: None,
             unmodelled: Vec::new(),

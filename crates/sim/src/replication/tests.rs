@@ -127,6 +127,97 @@ fn bot_health_replaces_stale_packets_and_respawn_keeps_creation_order() {
     assert!(world.identity_ready(new));
 }
 
+/// A bot can be struck by a client's command only once the datagram with
+/// its first movement record arrived (the client draws it from its movement
+/// records) and the command came in a later datagram; a lost first record
+/// waits for the next one. Its create's arrival alone isn't enough.
+#[test]
+fn a_bot_is_struck_only_by_commands_made_after_its_first_movement_arrived() {
+    use crate::bots::BOT_ENTITY;
+    let [bot, other] = [BOT_ENTITY, BOT_ENTITY + 1];
+    let mut world = WorldDelivery::new(OWNER);
+    world.started = Some(100);
+    for entity in [bot, other] {
+        world.bots.insert(entity, BotLifetime::Live);
+        world.created.insert(entity);
+    }
+    let moving = |entity| EntityUpdate {
+        entity,
+        movement: Some(Movement::default()),
+        ..EntityUpdate::default()
+    };
+    let frames = |range: std::ops::RangeInclusive<u32>| range.map(forward).collect::<Vec<_>>();
+    let mut egress = GameEgress::default();
+    world.queue_commands(100, &frames(100..=103));
+    assert!(world.identity_ready(bot));
+    assert!(!world.bot_shown(bot, 104));
+
+    // Datagram 5 carries both bots' first records; 6 the next ones.
+    for sequence in [5, 6] {
+        let sent = world
+            .send_frame(
+                100 + sequence,
+                vec![moving(bot), moving(other)],
+                false,
+                &mut egress,
+                |_| Ok::<_, ()>(sequence),
+            )
+            .unwrap();
+        assert_eq!(
+            sent.records,
+            [RecordSource::Movement(0), RecordSource::Movement(1)]
+        );
+    }
+    // The client has seen up to 4: nothing about 5 yet.
+    world.acknowledge_movement(5, 0b1);
+    world.queue_commands(104, &frames(104..=105));
+    assert!(!world.bot_shown(bot, 106));
+    // 5 arrived: commands of this datagram (106, 107) were made before
+    // the client could draw the bot; those of the next one after it.
+    world.acknowledge_movement(6, 0b1);
+    world.queue_commands(106, &frames(106..=107));
+    assert!(!world.bot_shown(bot, 107));
+    assert!(world.bot_shown(bot, 108));
+    assert!(world.bot_shown(other, 108));
+
+    // A replacement starts again. Its first record (datagram 7) is lost;
+    // 8 went while 7 was pending, so the next one counted is 9's.
+    let new = BOT_ENTITY + 15;
+    world.replace_bot(BotReplacement {
+        retired: bot,
+        created: EntityUpdate {
+            entity: new,
+            ..EntityUpdate::default()
+        },
+        link: None,
+    });
+    assert!(!world.bot_shown(bot, 108));
+    world.created.insert(new);
+    for sequence in [7, 8] {
+        world
+            .send_frame(
+                100 + sequence,
+                vec![moving(new)],
+                false,
+                &mut egress,
+                |_| Ok::<_, ()>(sequence),
+            )
+            .unwrap();
+    }
+    world.acknowledge_movement(9, 0b01);
+    world.queue_commands(108, &frames(108..=109));
+    assert!(!world.bot_shown(new, 110));
+    world
+        .send_frame(110, vec![moving(new)], false, &mut egress, |_| {
+            Ok::<_, ()>(9)
+        })
+        .unwrap();
+    world.acknowledge_movement(10, 0b1);
+    world.queue_commands(110, &frames(110..=110));
+    assert!(!world.bot_shown(new, 110));
+    assert!(world.bot_shown(new, 111));
+}
+
 /// A respawned bot's stand-in controller names the new body (component 44)
 /// only with or after the body's create, and again if lost; the link of a
 /// body that a newer respawn retired goes no more.

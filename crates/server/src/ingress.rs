@@ -3,7 +3,7 @@
 use std::{collections::HashMap, error::Error, fmt, time::Duration};
 
 use orpheus_core::bits::BitReader;
-use orpheus_wire::commands::{Command, InputError, read_commands};
+use orpheus_wire::commands::{InputError, InputRecord, read_input};
 use orpheus_wire::jam::codec::{Fields, Schemas, Value};
 use orpheus_wire::messages::{ChannelError, Message, read_channel};
 
@@ -80,7 +80,7 @@ impl GameIngress {
         schemas: &Schemas,
         payload: &[u8],
         mut dispatch: impl FnMut(Message),
-    ) -> Result<Vec<Command>, IngressError> {
+    ) -> Result<InputRecord, IngressError> {
         let mut reader = BitReader::new(payload);
         let channel = read_channel(&mut reader, schemas).map_err(IngressError::Channel)?;
         for reliable in channel.reliable {
@@ -99,7 +99,7 @@ impl GameIngress {
         for message in channel.unreliable {
             dispatch(message);
         }
-        read_commands(&mut reader).map_err(IngressError::Commands)
+        read_input(&mut reader).map_err(IngressError::Commands)
     }
 }
 
@@ -266,11 +266,11 @@ mod tests {
         let second = channel(&schemas, &[(1, 21616)], &[]);
         let third = channel(&schemas, &[(0, 21600), (1, 21603)], &[21602]);
         for frame in [first, second, third] {
-            assert!(
+            assert_eq!(
                 ingress
                     .receive(&schemas, frame.as_bytes(), &mut dispatch)
-                    .unwrap()
-                    .is_empty()
+                    .unwrap(),
+                InputRecord::default()
             );
         }
         assert_eq!(delivered, [21602, 21600, 21616, 21604, 21602]);
@@ -336,7 +336,8 @@ mod tests {
                 assert_eq!(MessageKind::from(message.id), MessageKind::GameMessage);
                 body = Some(9);
             })
-            .unwrap();
+            .unwrap()
+            .commands;
         assert_eq!(body, Some(9));
         assert_eq!(
             commands
@@ -422,7 +423,8 @@ mod tests {
                     kind => panic!("unexpected message kind {kind:?}"),
                 }
             })
-            .unwrap();
+            .unwrap()
+            .commands;
         assert_eq!(commands[0].frame, 5000);
         assert_eq!(commands[1].frame, 5001);
         let reply = reply.unwrap();
