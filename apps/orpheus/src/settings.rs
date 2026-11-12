@@ -160,6 +160,10 @@ pub struct ModeArgs {
     /// Seconds to wait for the game to be ready for the relay.
     #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = parse_timeout)]
     pub timeout: Duration,
+    /// Arguments passed to Overwatch.exe as they are, after `--` (for example
+    /// `-- --tank_Console`). They come after the ones orpheus passes itself.
+    #[arg(last = true, value_name = "GAME ARGUMENTS")]
+    pub game_args: Vec<String>,
 }
 
 impl ModeArgs {
@@ -206,6 +210,9 @@ pub struct Settings {
     pub test_ai: Option<Difficulty>,
     /// The template profile for new accounts (`--save`).
     pub template: Option<PathBuf>,
+    /// Extra arguments for Overwatch.exe (after `--`), for the modes that
+    /// start the game.
+    pub game_args: Vec<String>,
 }
 
 impl Settings {
@@ -240,6 +247,7 @@ impl Settings {
             test_players: args.test_players.unwrap_or(0),
             test_ai: args.test_ai,
             template: args.save.clone(),
+            game_args: Vec::new(),
         })
     }
 

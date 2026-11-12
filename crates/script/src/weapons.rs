@@ -6,8 +6,9 @@ use serde::Deserialize;
 use serde_json::Value as Json;
 
 use crate::{
-    expr::{EvalError, to_float},
+    expr::{Context, EvalError, evaluate, to_float, truthy},
     graph::{Node, asset_guid},
+    vitals::PoolKind,
     wire::Value,
 };
 
@@ -17,6 +18,96 @@ pub struct HitDefinition {
     pub loadout: Option<u64>,
     pub critical: f64,
     pub falloff: Option<DamageFalloff>,
+    /// The shooter's allies it strikes, who take `amount` as healing.
+    pub allies: AllyHits,
+}
+
+/// Which of the shooter's allies a hit strikes. An ally it strikes takes
+/// the hit's amount as healing, whatever the distance or the body part: the
+/// Biotic Rifle's darts heal the 70 they deal (leafall903/ORPHEUS (MIT)
+/// `combat.py` `hit_def` `ally_heal`, `_hitscan`, `_fly_step`, commit
+/// c239a84).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AllyHits {
+    /// It passes through allies.
+    #[default]
+    None,
+    /// Allies below their maximum health; it passes through the others.
+    Hurt,
+    /// Every living ally.
+    All,
+}
+
+/// The parameters a hit definition's target filter reads: the candidate
+/// and the shooter (the Biotic Rifle's `hostile(#8, #10) || health(#8) <
+/// max(#8)`; assumption: read from that use).
+const FILTER_CANDIDATE: u32 = 8;
+const FILTER_SHOOTER: u32 = 10;
+
+/// The allies a hit definition (`STU_00D9C7E1`) strikes. Its flag
+/// `m_50C84E9E` is set on the support heroes' volleys alone: Ana's rifle
+/// (`0B94` st5 hip, st44 scoped) and Sleep Dart (`0B97`), `0B9E`, Moira's
+/// orbs (`10E4`), Baptiste (`1932`) and `0F76` (assumption: it means "may
+/// strike allies"). Its target filter `m_DBAC4DDB` then says which: the
+/// rifle's condition is `hostile(#8, #10) || health(#8) < max(#8)`, so an
+/// ally is struck only while hurt and a full one lets the dart through
+/// (upstream's `_shot_targets`). The condition is evaluated here for an
+/// ally at full health and below it. No filter (Moira's orbs), or one it
+/// can't evaluate (Baptiste's asks for the candidate's filter flags),
+/// strikes no ally.
+fn ally_hits(config: &Json) -> AllyHits {
+    if config.get("m_50C84E9E").and_then(Json::as_u64) != Some(1) {
+        return AllyHits::None;
+    }
+    let Some(condition) = config
+        .get("m_DBAC4DDB")
+        .and_then(|filter| filter.get("m_condition"))
+        .filter(|condition| !condition.is_null())
+    else {
+        return AllyHits::None;
+    };
+    let admits =
+        |hurt| evaluate(condition, &mut AllyProbe { hurt }).is_ok_and(|value| truthy(&value));
+    match (admits(false), admits(true)) {
+        (true, true) => AllyHits::All,
+        (false, true) => AllyHits::Hurt,
+        _ => AllyHits::None,
+    }
+}
+
+/// An ally of the shooter as a hit's target filter sees it, at full health
+/// or below it.
+struct AllyProbe {
+    hurt: bool,
+}
+
+const PROBE_SHOOTER: u32 = 0x101;
+const PROBE_ALLY: u32 = 0x201;
+
+impl Context for AllyProbe {
+    fn parameter(&mut self, id: u32) -> Value {
+        match id {
+            FILTER_CANDIDATE => Value::Entity(PROBE_ALLY),
+            FILTER_SHOOTER => Value::Entity(PROBE_SHOOTER),
+            _ => Value::Null,
+        }
+    }
+
+    fn body_health(&mut self, entity: u32, kind: Option<PoolKind>, maximum: bool) -> Option<f64> {
+        (entity == PROBE_ALLY && kind.is_none()).then_some(if maximum || !self.hurt {
+            200.0
+        } else {
+            100.0
+        })
+    }
+
+    /// `STU_A58C1E63` asks whether `m_target` is hostile to `m_source`: of
+    /// another team (`C1CF60`'s two-team branch; leafall903/ORPHEUS (MIT)
+    /// `scene.py` `native`, commit c239a84). An ally is not.
+    fn native(&mut self, config: &Json) -> Option<Value> {
+        (config.get("$").and_then(Json::as_str) == Some("STU_A58C1E63"))
+            .then_some(Value::Bool(false))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,7 +157,18 @@ impl HitDefinition {
             loadout,
             critical: number(field(config, "m_A872C70E")?).unwrap_or(1.0),
             falloff,
+            allies: ally_hits(config),
         }))
+    }
+
+    /// What an ally it strikes is healed: its amount; nothing when it
+    /// strikes no ally.
+    pub fn ally_heal(self) -> f64 {
+        if self.allies == AllyHits::None {
+            0.0
+        } else {
+            self.amount
+        }
     }
 
     pub fn damage_at(self, distance: f64, head: bool) -> f64 {
@@ -566,6 +668,96 @@ mod tests {
                 defaults.falloff
             ),
             (0.0, None, 1.0, None)
+        );
+    }
+
+    /// The Biotic Rifle's hit filter (`0B94` st5 and st44, `m_DBAC4DDB`):
+    /// `hostile(#8, #10) || health(#8) < max(#8)`.
+    fn rifle_filter() -> Json {
+        let parameter = |id| {
+            json!({"$": "STU_919FD47C", "m_expression": {"$": "STUConfigVarExpressionData",
+                "m_fragments": null, "m_opcodes": [13, 0, 0], "m_dynamicVars": [
+                    {"$": "STUConfigVarDynamic", "m_identifier": id, "m_60DB8F99": 0,
+                        "m_EE729DCB": 0}],
+                "m_D99EF254": null}, "m_configVars": null, "m_EE729DCB": 0})
+        };
+        json!({"$": "STUConfigVarFilter", "m_84065FD1": 0x3fff_ffff, "m_66747E7D": 0,
+            "m_condition": {"$": "STU_919FD47C", "m_expression": {
+                "$": "STUConfigVarExpressionData", "m_fragments": null,
+                "m_opcodes": [14, 0, 3, 7, 14, 1, 14, 2, 34, 0], "m_dynamicVars": null,
+                "m_D99EF254": null},
+            "m_configVars": [
+                {"$": "STU_A58C1E63", "m_target": parameter(8), "m_source": parameter(10),
+                    "m_AFBBE9C3": null, "m_EE729DCB": 0},
+                {"$": "STU_32E6E4D8", "m_entity": parameter(8), "m_EE729DCB": 0},
+                {"$": "STU_7D7D2470", "m_entity": parameter(8), "m_EE729DCB": 0}],
+            "m_EE729DCB": 0}})
+    }
+
+    /// A hit flagged `m_50C84E9E` strikes the allies its filter admits:
+    /// the rifle's, the hurt ones, for its amount; a filter that admits
+    /// any, all of them. Unflagged, or without a filter, it strikes none.
+    #[test]
+    fn a_flagged_hit_strikes_the_allies_its_filter_admits() {
+        let hit = |config: Json| {
+            HitDefinition::from_authored(&config, |value| evaluate(value, &mut EmptyContext))
+                .unwrap()
+                .unwrap()
+        };
+        let amount = json!({"m_amount": {"$": "STUConfigVarInt", "m_value": 70}});
+        let rifle = hit(json!({"m_modifyHealth": amount, "m_50C84E9E": 1,
+            "m_DBAC4DDB": rifle_filter()}));
+        assert_eq!((rifle.allies, rifle.ally_heal()), (AllyHits::Hurt, 70.0));
+        let any = hit(json!({"m_modifyHealth": amount, "m_50C84E9E": 1,
+            "m_DBAC4DDB": {"m_condition": {"$": "STUConfigVarBool", "m_value": 1}}}));
+        assert_eq!(any.allies, AllyHits::All);
+        for config in [
+            json!({"m_modifyHealth": amount, "m_50C84E9E": 0, "m_DBAC4DDB": rifle_filter()}),
+            json!({"m_modifyHealth": amount, "m_50C84E9E": 1}),
+            json!({"m_modifyHealth": amount, "m_50C84E9E": 1,
+                "m_DBAC4DDB": {"m_condition": {"$": "STU_53F4CA65"}}}),
+        ] {
+            let hit = hit(config);
+            assert_eq!((hit.allies, hit.ally_heal()), (AllyHits::None, 0.0));
+        }
+    }
+
+    /// In the install, Ana's rifle alone strikes allies with an amount:
+    /// its hip (`0B94` st5) and scoped (st44) volleys heal the hurt for 70.
+    /// Sleep Dart (`0B97`) admits them too but has no amount.
+    #[test]
+    #[ignore = "requires the derived 104319 statescript catalog"]
+    fn only_anas_volleys_strike_allies() {
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let graphs =
+            crate::graph::GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap();
+        let mut striking = Vec::new();
+        for index in graphs.graph_indexes() {
+            let graph = graphs.graph(index).unwrap();
+            for node in &graph.nodes {
+                for field in ["m_6396149F", "m_D2D11CE9"] {
+                    let Some(config) = node.field(field) else {
+                        continue;
+                    };
+                    let Ok(Some(hit)) = HitDefinition::from_authored(config, |value| {
+                        evaluate(value, &mut EmptyContext)
+                    }) else {
+                        continue;
+                    };
+                    if hit.allies != AllyHits::None {
+                        striking.push((index, node.pos, field, hit.allies, hit.ally_heal()));
+                    }
+                }
+            }
+        }
+        striking.sort_by_key(|&(index, pos, ..)| (index, pos));
+        assert_eq!(
+            striking,
+            [
+                (0x0b94, 7, "m_6396149F", AllyHits::Hurt, 70.0),
+                (0x0b94, 88, "m_6396149F", AllyHits::Hurt, 70.0),
+                (0x0b97, 1, "m_6396149F", AllyHits::Hurt, 0.0),
+            ]
         );
     }
 

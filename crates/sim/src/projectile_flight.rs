@@ -17,7 +17,7 @@
 use crate::hitscan::{Impact, TargetPose};
 use orpheus_core::tick::TICK_PERIOD;
 use orpheus_physics::{collision::index::IndexError, static_ray::Vec3};
-use orpheus_script::weapons::ProjectileBallistics;
+use orpheus_script::weapons::{HitDefinition, ProjectileBallistics};
 
 pub struct ProjectileFlight {
     ballistics: ProjectileBallistics,
@@ -106,6 +106,11 @@ impl ProjectileFlight {
             ended: false,
             exploded: false,
         })
+    }
+
+    /// The direct hit of the projectile, if it has one.
+    pub fn direct(&self) -> Option<HitDefinition> {
+        self.ballistics.direct
     }
 
     /// Advance the elapsed portion of a tick, even when it ends inside the
@@ -217,6 +222,7 @@ impl ProjectileFlight {
                 damage: direct.damage_at(self.travelled * self.ballistics.speed, false),
                 critical: false,
                 loadout: direct.loadout,
+                heal: direct.ally_heal(),
             });
         }
         let Some(fuse) = self.ballistics.fuse else {
@@ -276,6 +282,7 @@ impl ProjectileFlight {
                         damage,
                         critical: false,
                         loadout: blast.hit.loadout,
+                        heal: 0.0,
                     });
                 }
             }
@@ -373,7 +380,9 @@ fn pose_of(targets: &[(u32, TargetPose)], entity: u32) -> Option<&TargetPose> {
 mod tests {
     use super::*;
     use orpheus_physics::collision::index::{SceneTriangle, TriangleIndex};
-    use orpheus_script::weapons::{Blast, DamageFalloff, HitDefinition, Knockback, STICK_FUSE};
+    use orpheus_script::weapons::{
+        AllyHits, Blast, DamageFalloff, HitDefinition, Knockback, STICK_FUSE,
+    };
 
     const LOADOUT: u64 = 0x0b90_0000_0000_008e;
     const TICK: f64 = 0.016;
@@ -384,6 +393,7 @@ mod tests {
             loadout: Some(LOADOUT),
             critical: 1.0,
             falloff: None,
+            allies: AllyHits::None,
         }
     }
 

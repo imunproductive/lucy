@@ -16,6 +16,8 @@ pub enum MessageKind {
     Ping,
     MapLoaded,
     GameMessage,
+    /// A communication wheel choice (`orpheus_sim::wheel`).
+    CommunicationAction,
     /// The client's hero settings (`orpheus_content::hero_settings`).
     HeroSettings,
     Other,
@@ -27,6 +29,7 @@ impl From<u32> for MessageKind {
             21610 => Self::Ping,
             21601 | 21602 => Self::MapLoaded,
             21616 => Self::GameMessage,
+            orpheus_sim::wheel::COMMUNICATION_ACTION => Self::CommunicationAction,
             orpheus_content::hero_settings::HERO_SETTINGS => Self::HeroSettings,
             _ => Self::Other,
         }
@@ -391,6 +394,7 @@ mod tests {
         assert_eq!(MessageKind::from(21601), MessageKind::MapLoaded);
         assert_eq!(MessageKind::from(21603), MessageKind::Other);
         assert_eq!(MessageKind::from(21604), MessageKind::HeroSettings);
+        assert_eq!(MessageKind::from(21608), MessageKind::CommunicationAction);
     }
 
     #[test]

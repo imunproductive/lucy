@@ -20,6 +20,12 @@ use crate::wire::{
 use orpheus_core::bits::{BitError, BitWriter};
 
 const OWNER_HEALTH: u32 = 253;
+/// How long a wheel action stays sendable after it ran (upstream
+/// `WHEEL_CALLOUT_MS`, server delivery policy).
+const ACTION_LIFETIME_MS: u64 = 2000;
+/// The wheel's callout graph: its actions go out only while its root wait
+/// (state 0) runs (upstream `callout_snapshot`).
+const CALLOUT_GRAPH: u32 = 0x0686;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum View {
@@ -34,6 +40,11 @@ pub struct ProjectedSnapshot {
     entity_exclusions: BTreeSet<u32>,
     variables: ProjectedVariables,
     instances: BTreeMap<u16, ProjectedInstance>,
+    /// The wheel actions still sendable, oldest first.
+    actions: Vec<ProjectedAction>,
+    /// The newest action this projection has passed: a full frame's
+    /// baseline takes the newest one there is, a delta the one it carried.
+    action_serial: u32,
 }
 
 impl ProjectedSnapshot {
@@ -234,6 +245,17 @@ impl ProjectedVariables {
         self.values.insert(variable, Value::Integer(ammo));
         self.bindings.remove(&variable);
     }
+}
+
+/// A wheel action in the remote message list of a frame (104319 A0CCA0):
+/// its instance and node, raw for the owner, remote for an observer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProjectedAction {
+    serial: u32,
+    instance: u16,
+    graph: u32,
+    raw: u16,
+    remote: u16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -540,13 +562,61 @@ impl<'a> SnapshotEncoder<'a> {
         }
         let variables =
             self.project_variables(snapshot, 0, &snapshot.variables, &entity_exclusions, view)?;
+        let actions = self.project_actions(snapshot, &instances)?;
         Ok(ProjectedSnapshot {
             entity: snapshot.entity,
             view,
             variables,
             entity_exclusions,
             instances,
+            actions,
+            action_serial: snapshot
+                .frame_actions
+                .last()
+                .map_or(0, |action| action.serial),
         })
+    }
+
+    /// The wheel actions the frames may still carry: of a live instance
+    /// (the same one, not a reused id), at most [`ACTION_LIFETIME_MS`] old;
+    /// `0686`'s only while its root wait runs (upstream `callout_snapshot`).
+    fn project_actions(
+        &self,
+        snapshot: &Snapshot,
+        instances: &BTreeMap<u16, ProjectedInstance>,
+    ) -> Result<Vec<ProjectedAction>, SnapshotError> {
+        let mut actions = Vec::new();
+        for action in &snapshot.frame_actions {
+            let Some(instance) = snapshot
+                .instances
+                .get(&action.instance)
+                .filter(|instance| instance.start_ms == action.instance_start_ms)
+                .filter(|_| instances.contains_key(&action.instance))
+            else {
+                continue;
+            };
+            if snapshot.now_ms.saturating_sub(action.time_ms) > ACTION_LIFETIME_MS
+                || (instance.graph == CALLOUT_GRAPH
+                    && !instance.states.get(&0).is_some_and(|state| state.active))
+            {
+                continue;
+            }
+            let graph = self.graph(action.instance, instance.graph)?;
+            let Some(node) = graph.node(action.node) else {
+                continue;
+            };
+            let Ok(remote) = u16::try_from(node.remote) else {
+                continue;
+            };
+            actions.push(ProjectedAction {
+                serial: action.serial,
+                instance: action.instance,
+                graph: instance.graph,
+                raw: node.rid,
+                remote,
+            });
+        }
+        Ok(actions)
     }
 
     fn project_variables(
@@ -576,13 +646,6 @@ impl<'a> SnapshotEncoder<'a> {
                 if !links.is_empty() {
                     projected.bindings.insert(variable, links);
                 }
-            }
-            // A map has no known wire form: the client's tagged values have a
-            // keyed array that nobody has decoded. The client runs the same
-            // graphs and keeps its own map; the Python reference never sent one
-            // (it didn't evaluate map literals).
-            if matches!(value, Value::Map(_)) && !projected.bindings.contains_key(&variable) {
-                continue;
             }
             if !matches!(value, Value::Null) || projected.bindings.contains_key(&variable) {
                 projected.values.insert(variable, value.clone());
@@ -713,12 +776,38 @@ impl<'a> SnapshotEncoder<'a> {
             BTreeSet::new()
         };
         let mut delta = self.differences(base, snapshot, &touched, &known)?;
+        // The oldest action the client hasn't acknowledged, under the stamp
+        // of the chunk that first carried it (upstream `frame_callout`).
+        let action = snapshot
+            .actions
+            .iter()
+            .find(|action| action.serial > base.action_serial)
+            .map(|action| {
+                let stamp = touched
+                    .iter()
+                    .filter_map(|key| match *key {
+                        ChangeKey::Action { serial, stamp } if serial == action.serial => {
+                            Some(stamp)
+                        }
+                        _ => None,
+                    })
+                    .min()
+                    .unwrap_or(stream.last().wrapping_add(1));
+                (stamp, *action)
+            });
+        if let Some((stamp, action)) = action {
+            delta.keys.insert(ChangeKey::Action {
+                serial: action.serial,
+                stamp,
+            });
+        }
         if view == View::Observer && delta.keys.is_empty() {
             return Ok(None);
         }
         let mut delivered = snapshot.clone();
+        delivered.action_serial = action.map_or(base.action_serial, |(_, action)| action.serial);
         delta.seed_owner_ammo(&mut delivered);
-        let frame = self.delta_frame(snapshot, &delta, kind, frame_ms)?;
+        let frame = self.delta_frame(snapshot, &delta, kind, frame_ms, action)?;
         Ok(Some(stream.delta(&frame, delivered, delta.keys, kind)?))
     }
 
@@ -858,6 +947,7 @@ impl<'a> SnapshotEncoder<'a> {
         delta: &SnapshotDelta<'_>,
         kind: DeltaKind,
         frame_ms: u32,
+        action: Option<(u32, ProjectedAction)>,
     ) -> Result<BitWriter, SnapshotError> {
         let (cmfd, correction, mode) = match kind {
             DeltaKind::Observer { .. } => (None, false, PayloadMode::Remote { full: false }),
@@ -920,8 +1010,48 @@ impl<'a> SnapshotEncoder<'a> {
         if cmfd.is_some() {
             frame.bit(false);
         }
-        frame.bits(0, 2)?;
+        self.frame_action(&mut frame, action, cmfd.is_some())?;
         Ok(frame)
+    }
+
+    /// The frame's remote messages (104319 A0CCA0; upstream
+    /// `_write_frame_action`): a group present bit, then for the action its
+    /// stamp (RMFr), the group size (RMSz, without the group's terminator)
+    /// and one short entry: target present, the instance (TrID) and the node,
+    /// raw for the owner (H = 1), its remote index for an observer; then no
+    /// more entries, no more groups and no ungrouped entries.
+    fn frame_action(
+        &self,
+        frame: &mut BitWriter,
+        action: Option<(u32, ProjectedAction)>,
+        owner: bool,
+    ) -> Result<(), SnapshotError> {
+        frame.bit(action.is_some());
+        if let Some((stamp, action)) = action {
+            let graph = self.graph(action.instance, action.graph)?;
+            let mut entry = BitWriter::new();
+            entry.bit(true);
+            entry.w_u16(action.instance);
+            if owner {
+                entry.bits(u64::from(action.raw), usize::from(graph.header.nodes_bits))?;
+            } else {
+                entry.bits(
+                    u64::from(action.remote),
+                    usize::from(graph.header.remote_bits),
+                )?;
+            }
+            let length = 8 + entry.bit_len();
+            frame.w_u32(stamp);
+            frame.w_var(u32::try_from(2 + length).map_err(|_| WireError::ChunkRange)?);
+            frame.bit(true); // an entry
+            frame.bit(false); // short: an 8-bit length, no node payload
+            frame.bits(length as u64, 8)?;
+            frame.append(&entry);
+            frame.bit(false); // no more entries
+            frame.bit(false); // no more groups
+        }
+        frame.bit(false); // no ungrouped entries
+        Ok(())
     }
 
     fn owner_events(

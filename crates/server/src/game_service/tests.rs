@@ -2430,29 +2430,27 @@ fn pump_commanding(
     }
 }
 
-/// The client's hero settings (21604) reach his body in the world: with
-/// ALLIED HEALTH BARS at ALWAYS, Soldier: 76's body graph `01CF` gives him
-/// the support tag (st117) that `0D24` asks of the viewer for an ally's
-/// health bar; back at DEFAULT the tag goes.
+/// The client's hero settings (21604) reach his body in the world and his
+/// owner frames: with ALLIED HEALTH BARS at ALWAYS, Soldier: 76's body graph
+/// `01CF` gives him the support tag (st117) that `0D24` asks of the viewer
+/// for an ally's health bar, and the client acknowledges a frame with st117
+/// and `#8336e`; back at DEFAULT the client sends an empty list (seen in the
+/// game) and the tag and the variable go, in his frames too.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn a_clients_allied_health_bars_setting_reaches_his_body() {
     use orpheus_content::hero_settings::{
         ALLIED_HEALTH_BARS, ALLIED_HEALTH_BARS_ALWAYS, HERO_SETTINGS,
     };
+    use orpheus_script::wire::Value as ScriptValue;
 
     let (mut server, schemas, [mut soldier], _) =
         practice_players([("soldier#1111", 0, "Soldier: 76")]);
     assert!(!server.bodies(MATCH).unwrap()[0].support_tag_given);
     // practice_world sent records 0 (map loaded) and 1 (the pick).
-    let send = |watcher: &mut Watcher, ordinal: u32, value: u64| {
-        let entry = Value::Struct(Fields::from([
-            (0, Value::Unsigned(0)),
-            (8, Value::Unsigned(ALLIED_HEALTH_BARS)),
-            (0x10, Value::Unsigned(value)),
-        ]));
+    let send = |watcher: &mut Watcher, ordinal: u32, entries: Vec<Value>| {
         let settings = Fields::from([
-            (0x78, Value::Array(vec![entry])),
+            (0x78, Value::Array(entries)),
             (0x90, Value::Bool(false)),
             (0x91, Value::Bool(false)),
         ]);
@@ -2461,17 +2459,128 @@ fn a_clients_allied_health_bars_setting_reaches_his_body() {
         write_channel(&mut payload, &[(ordinal, message)], &[]).unwrap();
         watcher.client.send(ACK, payload.into_bytes());
     };
-    let wait_for = |watcher: &mut Watcher, given: bool| {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while server.bodies(MATCH).unwrap()[0].support_tag_given != given {
-            assert!(Instant::now() < deadline, "the tag is not {given}");
+    // His body's script runs, and its owner frames go out, on his commands.
+    let mut next = soldier.tick + 1;
+    let mut wait_for = |watcher: &mut Watcher, given: bool, variable: ScriptValue| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let body = server.bodies(MATCH).unwrap().remove(0);
+            if body.support_tag_given == given
+                && body.support_tag_delivered == (given, variable.clone())
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the tag is not {given}: {body:?}"
+            );
+            if next <= watcher.tick + 8 {
+                watcher
+                    .client
+                    .send(ACK, command_batch(next, 16, 0, 0, false));
+                next += 16;
+            }
             watcher.pump(&schemas);
         }
     };
-    send(&mut soldier, 2, ALLIED_HEALTH_BARS_ALWAYS);
-    wait_for(&mut soldier, true);
-    send(&mut soldier, 3, 0);
-    wait_for(&mut soldier, false);
+    let always = Value::Struct(Fields::from([
+        (0, Value::Unsigned(0)),
+        (8, Value::Unsigned(ALLIED_HEALTH_BARS)),
+        (0x10, Value::Unsigned(ALLIED_HEALTH_BARS_ALWAYS)),
+    ]));
+    send(&mut soldier, 2, vec![always]);
+    wait_for(
+        &mut soldier,
+        true,
+        ScriptValue::Asset(ALLIED_HEALTH_BARS_ALWAYS),
+    );
+    send(&mut soldier, 3, Vec::new());
+    wait_for(&mut soldier, false, ScriptValue::Null);
+    server.stop().unwrap();
+}
+
+/// Whether a body script frame ends with a remote message group of one short
+/// entry for `node` (`bits` wide) of any instance, then no more entries,
+/// groups or ungrouped entries (104319 A0CCA0; `SnapshotEncoder` frame
+/// actions).
+fn ends_with_frame_action(chunk: &ReceivedChunk, node: u16, bits: u8) -> bool {
+    let bit = |data: &[u8], index: usize| data[index / 8] >> (index % 8) & 1;
+    (1..=512).any(|instance| {
+        let mut entry = BitWriter::new();
+        entry.bit(true);
+        entry.w_u16(instance);
+        entry.bits(u64::from(node), usize::from(bits)).unwrap();
+        let mut tail = BitWriter::new();
+        tail.bit(true);
+        tail.bit(false);
+        tail.bits(8 + entry.bit_len() as u64, 8).unwrap();
+        tail.append(&entry);
+        tail.bits(0, 3).unwrap();
+        let length = tail.bit_len();
+        chunk.width >= length
+            && (0..length).all(|index| {
+                bit(&chunk.data, chunk.width - length + index) == bit(tail.as_bytes(), index)
+            })
+    })
+}
+
+/// A player's communication wheel choice (21608, Need Healing) reaches his
+/// body as `02A3`; `05AD` plays `0686`, whose effect 40 goes to his teammate
+/// in his body's observer frames (remote index 8) and to his own client in
+/// its owner frames (raw index 36), each as the frame's remote message
+/// (`orpheus_sim::wheel`).
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
+fn a_need_healing_callout_reaches_a_teammate() {
+    let graphs = orpheus_script::graph::GraphStore::load_runtime(
+        orpheus_testkit::runtime_dir().join("data"),
+        "game_graphs_174.json.gz",
+    )
+    .unwrap();
+    let callouts = graphs.graph(0x0686).unwrap();
+    let effect = callouts.node(40).unwrap();
+    assert_eq!((effect.remote, effect.rid), (8, 36));
+    let (remote_bits, raw_bits) = (callouts.header.remote_bits, callouts.header.nodes_bits);
+    let (mut server, schemas, [mut speaker, mut teammate], _) = practice_players([
+        ("speaker#1111", 0, "Soldier: 76"),
+        ("teammate#2222", 0, "Soldier: 76"),
+    ]);
+    let body = speaker.owner | 1;
+    let (speaker_from, teammate_from) = (speaker.datagrams.len(), teammate.datagrams.len());
+    // practice_world sent records 0 (map loaded) and 1 (the pick).
+    let choice = Fields::from([
+        (0x78, Value::Unsigned(0x0a90_0000_0000_016c)),
+        (0x80, Value::Bool(false)),
+        (0x84, Value::Struct(Fields::from([(0, Value::Unsigned(0))]))),
+    ]);
+    let message = encode(&schemas, orpheus_sim::wheel::COMMUNICATION_ACTION, &choice).unwrap();
+    let mut payload = BitWriter::new();
+    write_channel(&mut payload, &[(2, message)], &[]).unwrap();
+    speaker.client.send(ACK, payload.into_bytes());
+    let carries = |watcher: &Watcher, from: usize, node: u16, bits: u8| {
+        watcher
+            .find(from, |record| {
+                record.entity == body
+                    && record
+                        .script
+                        .as_ref()
+                        .is_some_and(|chunk| ends_with_frame_action(chunk, node, bits))
+            })
+            .is_some()
+    };
+    let mut next = speaker.tick + 1;
+    let mut all = [&mut speaker, &mut teammate];
+    pump_commanding(
+        &mut all,
+        &schemas,
+        "the callout",
+        0,
+        &mut next,
+        |watchers| {
+            carries(watchers[1], teammate_from, 8, remote_bits)
+                && carries(watchers[0], speaker_from, 36, raw_bits)
+        },
+    );
     server.stop().unwrap();
 }
 
@@ -3187,6 +3296,149 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
     assert_eq!(
         records(&viewer, fired.1, &|record| !record.launches.is_empty()),
         [echo_body]
+    );
+    server.stop().unwrap();
+}
+
+/// Ana's Biotic Rifle (graph `0B94`) over the wire, after leafall903/ORPHEUS
+/// (MIT) `test_game_ana.py` (c239a84): a Friendly Bot below full health
+/// heals 70 a dart (to full at most), with no 25001 to Ana; an enemy takes
+/// the dart's 70 with her 25001. An enemy Soldier: 76 wounds the bot: he
+/// walks ahead of the spawn both share and fires at it, 8 m out along their
+/// facing. Ana then fires along the same line: her darts strike him (the
+/// enemy) until he dies, and the next one the bot behind him.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene"]
+fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
+    use orpheus_script::vm::Unknowns;
+    use orpheus_sim::scene_assets::SceneAssets;
+    use orpheus_wire::commands::FIRE;
+    const AHEAD: f64 = 8.0;
+
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(Unknowns::Tolerate);
+    let mut aim = None;
+    let (mut server, schemas, [mut ana, mut soldier], _) = practice_world(
+        [("ana#1111", 0, "Ana"), ("soldier#2222", 1, "Soldier: 76")],
+        &assets,
+        |scene| {
+            // A Friendly Bot (Ana's team) that neither fires nor walks,
+            // ahead of the spawn along its facing.
+            let ([x, y, z], yaw) = scene.map().spawn_point(0, 0).unwrap();
+            let (sin, cos) = yaw.to_radians().sin_cos();
+            let bot = scene
+                .bots_mut()
+                .iter_mut()
+                .find(|bot| bot.spawn.team == 0 && !bot.spawn.firing && bot.spawn.route.is_empty())
+                .unwrap();
+            bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
+            aim = Some((
+                bot.entity,
+                bot.spawn.health,
+                (yaw * 65536.0 / 360.0).round() as i32 as i16,
+            ));
+        },
+    );
+    let (bot, full, yaw) = aim.unwrap();
+    let bot_health = |watcher: &Watcher| {
+        watcher
+            .datagrams
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter(|record| record.entity == bot)
+            .filter_map(|record| record.base_health)
+            .next_back()
+    };
+    // Ana's 25001s from `from` on: whom each struck and for how much.
+    let hits_of = |watcher: &Watcher, from: usize| -> Vec<(Value, Value)> {
+        watcher.datagrams[from..]
+            .iter()
+            .flat_map(|(messages, _)| messages.iter().filter(|message| message.id == 25001))
+            .map(|message| {
+                let Value::Struct(impact) = &message.fields[&0x78] else {
+                    panic!("hit body")
+                };
+                let Value::Struct(target) = &impact[&0] else {
+                    panic!("hit target")
+                };
+                (target[&0].clone(), impact[&4].clone())
+            })
+            .collect()
+    };
+    /// One player's commands from frame `next` on: an idle batch keeps his
+    /// script running, a press goes alone.
+    fn command(watcher: &mut Watcher, next: &mut u32, yaw: i16, buttons: u32) {
+        let count = if buttons == 0 { 16 } else { 1 };
+        if buttons != 0 || *next <= watcher.tick + 8 {
+            watcher
+                .client
+                .send(ACK, command_batch(*next, count, yaw, buttons, false));
+            *next += u32::from(count);
+        }
+    }
+    /// Both idle for `seconds`.
+    fn settle(
+        watchers: [&mut Watcher; 2],
+        frames: &mut [u32; 2],
+        yaw: i16,
+        schemas: &Schemas,
+        seconds: f64,
+    ) {
+        let until = Instant::now() + Duration::from_secs_f64(seconds);
+        let [first, second] = watchers;
+        while Instant::now() < until {
+            command(first, &mut frames[0], yaw, 0);
+            command(second, &mut frames[1], yaw, 0);
+            first.pump(schemas);
+            second.pump(schemas);
+        }
+    }
+    let full = full as f32;
+    let mut frames = [ana.tick + 1, soldier.tick + 1];
+    settle([&mut ana, &mut soldier], &mut frames, yaw, &schemas, 1.0);
+    // No health update for the bot yet: it is at full health.
+    assert_eq!(bot_health(&ana), None);
+
+    // The Soldier walks about 2 m ahead (25 ticks), then fires at the bot.
+    soldier
+        .client
+        .send(ACK, command_batch(frames[1], 25, yaw, 0, true));
+    frames[1] += 25;
+    settle([&mut ana, &mut soldier], &mut frames, yaw, &schemas, 0.5);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !bot_health(&ana).is_some_and(|health| health < full) {
+        assert!(Instant::now() < deadline, "waiting for the bot's wound");
+        command(&mut soldier, &mut frames[1], yaw, FIRE);
+        command(&mut ana, &mut frames[0], yaw, 0);
+        ana.pump(&schemas);
+        soldier.pump(&schemas);
+    }
+    settle([&mut ana, &mut soldier], &mut frames, yaw, &schemas, 0.5);
+    let wounded = bot_health(&ana).unwrap();
+    assert!(wounded < full, "wounded to {wounded}");
+
+    // Ana fires along the line: the Soldier first, then the bot.
+    let fired = ana.datagrams.len();
+    let soldier_body = Value::Unsigned(u64::from(soldier.owner | 1));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !bot_health(&ana).is_some_and(|health| health > wounded) {
+        assert!(
+            Instant::now() < deadline,
+            "waiting for the heal: hits {:?}",
+            hits_of(&ana, fired)
+        );
+        command(&mut ana, &mut frames[0], yaw, FIRE);
+        settle([&mut ana, &mut soldier], &mut frames, yaw, &schemas, 1.0);
+    }
+    assert_eq!(bot_health(&ana), Some((wounded + 70.0).min(full)));
+    let hits = hits_of(&ana, fired);
+    assert!(
+        hits.contains(&(soldier_body.clone(), Value::Unsigned(70))),
+        "the enemy takes 70: {hits:?}"
+    );
+    assert!(
+        hits.iter().all(|(target, _)| *target == soldier_body),
+        "no 25001 for the heal: {hits:?}"
     );
     server.stop().unwrap();
 }

@@ -159,6 +159,13 @@ impl Vitals {
         self.amount(None, true)
     }
 
+    /// Whether the pools are below their maximum, as a statescript
+    /// expression compares them (`<` within its epsilon): what the Biotic
+    /// Rifle's hit filter asks of an ally (`health(#8) < max(#8)`).
+    pub fn hurt(&self) -> bool {
+        self.total() < self.maximum() - crate::expr::EPSILON
+    }
+
     pub fn amount(&self, kind: Option<PoolKind>, maximum: bool) -> f64 {
         self.pools
             .iter()
