@@ -4334,8 +4334,8 @@ fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
 /// and the match flow ends the match: the result has the player only, and
 /// his game goes home.
 #[test]
-#[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR); builds Anubis' collision once"]
-fn a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
+#[ignore = "slow: plays a whole match in real time at 1/4 scale, about 95 s; requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
     use orpheus_content::{
         heroes::SOLDIER,
         maps::{MapCatalog, ObjectiveKind},
