@@ -10,6 +10,7 @@ use serde::Deserialize;
 use orpheus_core::guid::parse_guid;
 
 pub const SOLDIER: u64 = 0x02e0_0000_0000_006e;
+pub const ANA: u64 = 0x02e0_0000_0000_013b;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Hero {
