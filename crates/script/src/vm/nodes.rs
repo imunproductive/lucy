@@ -557,6 +557,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // A voice stimulus only plays a bark on the client that runs it;
             // the server keeps it as a plain state (`ow174/game/voicelines.py`).
             "STU_40E05F6B" => StateKind::Plain,
+            // The field of view (Ana's and Widowmaker's zoom, `0B94` st23,
+            // `001B` st7) acts on the owner's camera, which the server
+            // doesn't have: a plain state, as Python ran it, that its frames
+            // carry for the client to run.
+            "STU_75D1C308" => StateKind::Plain,
             "STUStatescriptStateHealthPool" if is_base_health_pool(node) => {
                 StateKind::HealthPool { pool: None }
             }

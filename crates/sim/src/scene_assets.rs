@@ -29,6 +29,7 @@ use crate::{
     mode_rules_data::{ModeRules, ModeRulesData},
     notices::switch_notices,
     objective_data::{MapObjectives, ObjectiveData},
+    objectives::CaptureBox,
     pools::PoolCatalog,
     projectiles::{BioticField, FIELD_ENTITY, FieldFrames},
     replication::OwnerBodyRuntime,
@@ -179,12 +180,14 @@ pub struct PreparedScene {
     spawn_rooms: Arc<[SpawnRoom]>,
     /// The map's damage areas that kill, in this mode.
     lethal_areas: Arc<[DamageArea]>,
+    /// The map's kill volumes (`map_areas` module notes).
+    kill_volumes: Arc<[CaptureBox]>,
     /// The map's spawn door barriers in this mode: server-owned placeables
     /// the loading screen doesn't wait for, created after the player and
     /// the mode.
     door_barriers: Vec<u32>,
-    /// Where a falling body dies on a map without damage areas
-    /// (`map_areas::kill_height`).
+    /// Where a falling body dies on a map with neither damage areas nor
+    /// kill volumes (`map_areas::kill_height`).
     kill_height: Option<f64>,
     /// The height of the map's lowest collision triangle: feet below it are
     /// below the whole map (`map_areas` module notes).
@@ -396,6 +399,7 @@ impl SceneAssets {
         let objectives = self.objectives.map(&map)?;
         let spawn_rooms = self.map_areas.spawn_rooms(&map);
         let lethal_areas = self.map_areas.lethal_areas(&map, identifiers);
+        let kill_volumes = self.map_areas.kill_volumes(&map);
         // The spawn door barriers are server-owned placeables: the client
         // shows them only once the server creates them.
         let door_barriers: Vec<u32> = self
@@ -411,7 +415,7 @@ impl SceneAssets {
             .map(|spawn| spawn.position[1])
             .min_by(f64::total_cmp);
         let kill_height = lowest_spawn
-            .filter(|_| lethal_areas.is_empty())
+            .filter(|_| lethal_areas.is_empty() && kill_volumes.is_empty())
             .and_then(|below| map_areas::kill_height(ground.triangles().triangles(), below));
         let lowest = ground.triangles().lowest();
         // A mode that plays for objectives needs their data, checked here
@@ -461,6 +465,7 @@ impl SceneAssets {
             objectives,
             spawn_rooms,
             lethal_areas,
+            kill_volumes,
             kill_height,
             lowest,
             door_barriers,
@@ -649,10 +654,14 @@ impl PreparedScene {
 
     /// Whether the environment kills a living body whose feet are at
     /// `position` (`map_areas` module notes): in a lethal damage area of the
-    /// mode, on the catch floor of a map without damage areas, or below the
-    /// whole map.
+    /// mode or a kill volume of the map, on the catch floor of a map with
+    /// neither, or below the whole map.
     pub fn fell_out(&self, position: [f64; 3]) -> bool {
         self.lethal_areas.iter().any(|area| area.contains(position))
+            || self
+                .kill_volumes
+                .iter()
+                .any(|volume| volume.contains(position))
             || self
                 .kill_height
                 .is_some_and(|height| map_areas::caught(height, position[1]))
