@@ -27,22 +27,50 @@
 //! a room belongs to the teams whose current spawn point (the match flow's
 //! choice) stands in it.
 //!
-//! Environmental death: the Practice Range has no damage area entity (the
-//! `STUECDamageAreaInstanceData` kill volumes of maps like Ilios and Nepal),
-//! and its collision has no other volume of its own. What it has under the
-//! playable area are invisible floors of the world's player clip (triangles
-//! with mask [`WORLD_CLIP`], which only the team proxies 0x08 and 0x10 and
-//! category 0x02 meet): a pit floor at -11 m and the world's bottom at
-//! -19.8 m, while the lowest floor a player walks on is about -5.25 m. A
-//! body that falls out of the playable area lands on one of them. Strong
-//! guess: such a catch floor is where retail's environment kills, so a
-//! living body whose feet reach the highest catch floor dies
-//! ([`kill_height`]). A catch floor is a level, walkable clip triangle of at
-//! least [`CATCH_AREA`] below every spawn point; Watchpoint: Gibraltar's
-//! clip has none (its level clip faces are small ledges), so the rule finds
-//! nothing there.
+//! Environmental death, in this order of evidence:
+//! - Damage areas (`game_map_areas` `damage_areas`: entities with
+//!   `STUECDamageAreaInstanceData`, definition `0109`) on the maps that have
+//!   them (Ilios, Nepal, Lijiang Tower, Oasis, Eichenwalde, Volskaya, Busan,
+//!   Horizon, Junkertown, Blizzard World, Rialto, Castillo, Black Forest,
+//!   Necropolis, Petra, ...: see `docs/notes/behavior.md`). Their damage
+//!   (`m_B81F7395`) is 100 on most, 9000 on Busan, 9999 on Petra, 0 on a few.
+//!   Retail kills any hero at once in the Ilios well or a Lijiang pit, and
+//!   those areas have 100, so 100 can't be 100 health a second (a 600 HP
+//!   hero would live 6 s): strong guess, the damage is a share of the body's
+//!   health in percent, so 100 and more kill at once ([`LETHAL_DAMAGE`]), as
+//!   the 9000 and 9999 do whatever it means. A living body whose feet are in
+//!   a lethal area of the mode dies. The areas of damage 0 are left out
+//!   (assumption: off unless a graph turns them on; no graph does here).
+//! - The catch floor, on a map without damage areas. The Practice Range has
+//!   none, and its collision has no other volume of its own. What it has
+//!   under the playable area are invisible floors of the world's player clip
+//!   (triangles with mask [`WORLD_CLIP`], which only the team proxies 0x08
+//!   and 0x10 and category 0x02 meet): a pit floor at -11 m and the world's
+//!   bottom at -19.8 m, while the lowest floor a player walks on is about
+//!   -5.25 m. Strong guess: such a catch floor is where retail's environment
+//!   kills, so a living body whose feet reach the highest catch floor dies
+//!   ([`kill_height`]). A catch floor is a level, walkable clip triangle of
+//!   at least [`CATCH_AREA`] below every spawn point; Watchpoint: Gibraltar's
+//!   clip has none (its level clip faces are small ledges).
+//! - Below the whole map: feet under the map's lowest collision triangle.
+//!   The mover stops a falling body 100 m lower (`ABYSS`, `Mover._place` in
+//!   upstream leafall903/ORPHEUS `mover.py`, whose note says the mode's kill
+//!   volumes are separate), so without this a body that falls off a map
+//!   with neither (Gibraltar, Ecopoint) would stand alive on nothing.
+//!   Assumption: nothing playable is under the lowest triangle.
+//!
+//! Spawn door barriers (`game_map_areas` `door_barriers`): the server-owned
+//! placeables running graph `00F6` in the spawn room doorways. The client
+//! makes a server-owned placeable only when the server creates it, so the
+//! scene creates them from the map after the player and the mode (see
+//! `orpheus_assets`' `map_areas` notes).
 
-use std::{collections::HashMap, fs, io, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fs, io,
+    path::Path,
+    sync::Arc,
+};
 
 use orpheus_content::maps::{GameMap, SpawnChoice};
 use orpheus_physics::collision::index::SceneTriangle;
@@ -60,6 +88,9 @@ pub const WORLD_CLIP: u16 = 0x1a;
 pub const CATCH_AREA: f64 = 100.0;
 /// How close above a catch floor the feet count as on it, m.
 const CATCH_MARGIN: f64 = 0.1;
+/// The least damage of a damage area that kills: 100 % of the body's
+/// health (see the module notes).
+pub const LETHAL_DAMAGE: f64 = 100.0;
 /// What the room's `ModifyHealth` heals a second (0C8E st13, `m_amount`).
 pub const SPAWN_HEALING: f64 = 400.0;
 /// A ground triangle whose surface has this bit is not ground
@@ -80,10 +111,58 @@ impl SpawnRoom {
     }
 }
 
-/// Every map's spawn rooms, by map GUID.
+/// A damage area of a map (`STUECDamageAreaInstanceData`): its damage and
+/// boxes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DamageArea {
+    pub placeable: u32,
+    /// Its first identifier: it exists only in the modes that list it.
+    pub identifier: Option<u64>,
+    /// `m_B81F7395`: a share of the body's maximum health in percent (see
+    /// the module notes).
+    pub damage: f64,
+    pub boxes: Vec<CaptureBox>,
+}
+
+impl DamageArea {
+    /// Whether it kills what enters it (see the module notes).
+    pub fn lethal(&self) -> bool {
+        self.damage >= LETHAL_DAMAGE
+    }
+
+    pub fn contains(&self, position: [f64; 3]) -> bool {
+        self.boxes.iter().any(|area| area.contains(position))
+    }
+}
+
+/// A server-owned placeable of a map: its flat index and first identifier.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapPlaceable {
+    pub placeable: u32,
+    pub identifier: Option<u64>,
+}
+
+impl MapPlaceable {
+    /// Whether the placeable exists in a mode that lists `identifiers`: one
+    /// without an identifier exists in every mode.
+    pub fn in_mode(&self, identifiers: &BTreeSet<u64>) -> bool {
+        self.identifier
+            .is_none_or(|identifier| identifiers.contains(&identifier))
+    }
+}
+
+/// One map's areas.
+#[derive(Debug)]
+struct MapAreas {
+    rooms: Result<Arc<[SpawnRoom]>, String>,
+    damage_areas: Vec<DamageArea>,
+    door_barriers: Vec<MapPlaceable>,
+}
+
+/// Every map's spawn rooms, damage areas and door barriers, by map GUID.
 #[derive(Debug, Default)]
 pub struct MapAreaData {
-    maps: HashMap<u64, Result<Arc<[SpawnRoom]>, String>>,
+    maps: HashMap<u64, MapAreas>,
 }
 
 #[derive(Deserialize)]
@@ -96,6 +175,10 @@ struct RawMap {
     #[serde(default)]
     spawn_rooms: Vec<RawRoom>,
     error: Option<String>,
+    #[serde(default)]
+    damage_areas: Vec<RawDamageArea>,
+    #[serde(default)]
+    door_barriers: Vec<RawPlaceable>,
 }
 
 #[derive(Deserialize)]
@@ -103,6 +186,48 @@ struct RawRoom {
     placeable: u32,
     team: Option<i8>,
     boxes: Vec<CaptureBox>,
+}
+
+#[derive(Deserialize)]
+struct RawDamageArea {
+    #[serde(flatten)]
+    placeable: RawPlaceable,
+    damage: f64,
+    boxes: Vec<CaptureBox>,
+}
+
+#[derive(Deserialize)]
+struct RawPlaceable {
+    placeable: u32,
+    identifier: Option<String>,
+}
+
+impl RawPlaceable {
+    fn read(self, key: &str) -> io::Result<MapPlaceable> {
+        let identifier = self
+            .identifier
+            .map(|text| {
+                u64::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|_| {
+                    invalid(format!(
+                        "{FILE}: map {key}: placeable {}: identifier {text}",
+                        self.placeable
+                    ))
+                })
+            })
+            .transpose()?;
+        Ok(MapPlaceable {
+            placeable: self.placeable,
+            identifier,
+        })
+    }
+}
+
+fn check_boxes(boxes: &[CaptureBox], key: &str, what: &str, placeable: u32) -> io::Result<()> {
+    for area in boxes {
+        area.check()
+            .map_err(|error| invalid(format!("{FILE}: map {key}: {what} {placeable}: {error}")))?;
+    }
+    Ok(())
 }
 
 impl MapAreaData {
@@ -121,20 +246,13 @@ impl MapAreaData {
         for (key, raw) in file.maps {
             let guid = u64::from_str_radix(key.trim_start_matches("0x"), 16)
                 .map_err(|_| invalid(format!("{FILE}: map key {key}")))?;
-            let entry = match raw.error {
+            let rooms = match raw.error {
                 Some(error) => Err(error),
                 None => Ok(raw
                     .spawn_rooms
                     .into_iter()
                     .map(|room| {
-                        for area in &room.boxes {
-                            area.check().map_err(|error| {
-                                invalid(format!(
-                                    "{FILE}: map {key}: room {}: {error}",
-                                    room.placeable
-                                ))
-                            })?;
-                        }
+                        check_boxes(&room.boxes, &key, "room", room.placeable)?;
                         Ok(SpawnRoom {
                             placeable: room.placeable,
                             team: room.team.and_then(|team| u8::try_from(team).ok()),
@@ -143,7 +261,33 @@ impl MapAreaData {
                     })
                     .collect::<io::Result<Arc<[SpawnRoom]>>>()?),
             };
-            maps.insert(guid, entry);
+            let damage_areas = raw
+                .damage_areas
+                .into_iter()
+                .map(|area| {
+                    let placeable = area.placeable.read(&key)?;
+                    check_boxes(&area.boxes, &key, "damage area", placeable.placeable)?;
+                    Ok(DamageArea {
+                        placeable: placeable.placeable,
+                        identifier: placeable.identifier,
+                        damage: area.damage,
+                        boxes: area.boxes,
+                    })
+                })
+                .collect::<io::Result<_>>()?;
+            let door_barriers = raw
+                .door_barriers
+                .into_iter()
+                .map(|barrier| barrier.read(&key))
+                .collect::<io::Result<_>>()?;
+            maps.insert(
+                guid,
+                MapAreas {
+                    rooms,
+                    damage_areas,
+                    door_barriers,
+                },
+            );
         }
         Ok(Self { maps })
     }
@@ -151,7 +295,7 @@ impl MapAreaData {
     /// The map's spawn rooms; none when the data has none or its
     /// derivation failed (the reason goes to the log).
     pub fn spawn_rooms(&self, map: &GameMap) -> Arc<[SpawnRoom]> {
-        match self.maps.get(&map.map_guid) {
+        match self.maps.get(&map.map_guid).map(|areas| &areas.rooms) {
             Some(Ok(rooms)) => Arc::clone(rooms),
             Some(Err(error)) => {
                 eprintln!("{}: no spawn rooms ({error})", map.name);
@@ -159,6 +303,45 @@ impl MapAreaData {
             }
             None => Arc::default(),
         }
+    }
+
+    /// The map's lethal damage areas that exist in a mode that lists
+    /// `identifiers`.
+    pub fn lethal_areas(&self, map: &GameMap, identifiers: &BTreeSet<u64>) -> Arc<[DamageArea]> {
+        self.maps
+            .get(&map.map_guid)
+            .map(|areas| {
+                areas
+                    .damage_areas
+                    .iter()
+                    .filter(|area| {
+                        area.lethal()
+                            && MapPlaceable {
+                                placeable: area.placeable,
+                                identifier: area.identifier,
+                            }
+                            .in_mode(identifiers)
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The flat indexes of the map's spawn door barriers that exist in a
+    /// mode that lists `identifiers`.
+    pub fn door_barriers(&self, map: &GameMap, identifiers: &BTreeSet<u64>) -> Vec<u32> {
+        self.maps
+            .get(&map.map_guid)
+            .map(|areas| {
+                areas
+                    .door_barriers
+                    .iter()
+                    .filter(|barrier| barrier.in_mode(identifiers))
+                    .map(|barrier| barrier.placeable)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 

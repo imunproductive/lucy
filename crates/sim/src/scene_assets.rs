@@ -23,7 +23,7 @@ use crate::{
     combat::{BodyCombat, MeleeState, RespawnTimes, melee_states},
     controller::Controller,
     hitboxes::HitboxCatalog,
-    map_areas::{self, MapAreaData, SpawnRoom},
+    map_areas::{self, DamageArea, MapAreaData, SpawnRoom},
     match_flow::{MatchFlow, Mode, Timers},
     mode_graph_values::ModeGraphValues,
     mode_rules_data::{ModeRules, ModeRulesData},
@@ -58,7 +58,7 @@ use orpheus_script::{
     vm::{TargetCandidate, Unknowns},
     wire::Variables,
 };
-use orpheus_wire::entity::{Component, EntityUpdate};
+use orpheus_wire::entity::{Component, EntityUpdate, Operation};
 
 const MOVER_CATEGORY: u16 = 0x18;
 
@@ -134,7 +134,8 @@ pub struct SceneAssets {
     mode_rules: ModeRulesData,
     /// Each map's objective data (`game_objectives_174.json` `maps`).
     objectives: ObjectiveData,
-    /// Each map's spawn rooms (`game_map_areas_174.json`).
+    /// Each map's spawn rooms, damage areas and spawn door barriers
+    /// (`game_map_areas_174.json`).
     map_areas: MapAreaData,
 }
 
@@ -175,8 +176,18 @@ pub struct PreparedScene {
     objectives: Arc<MapObjectives>,
     /// The map's spawn rooms.
     spawn_rooms: Arc<[SpawnRoom]>,
-    /// Where a falling body dies (`map_areas::kill_height`).
+    /// The map's damage areas that kill, in this mode.
+    lethal_areas: Arc<[DamageArea]>,
+    /// The map's spawn door barriers in this mode: server-owned placeables
+    /// the loading screen doesn't wait for, created after the player and
+    /// the mode.
+    door_barriers: Vec<u32>,
+    /// Where a falling body dies on a map without damage areas
+    /// (`map_areas::kill_height`).
     kill_height: Option<f64>,
+    /// The height of the map's lowest collision triangle: feet below it are
+    /// below the whole map (`map_areas` module notes).
+    lowest: f64,
 }
 
 impl SceneAssets {
@@ -383,6 +394,15 @@ impl SceneAssets {
             .rules(self.graphs.rulesets(), map.mode_guid)?;
         let objectives = self.objectives.map(&map)?;
         let spawn_rooms = self.map_areas.spawn_rooms(&map);
+        let lethal_areas = self.map_areas.lethal_areas(&map, identifiers);
+        // The spawn door barriers are server-owned placeables: the client
+        // shows them only once the server creates them.
+        let door_barriers: Vec<u32> = self
+            .map_areas
+            .door_barriers(&map, identifiers)
+            .into_iter()
+            .filter(|barrier| !map.placeables.contains(barrier))
+            .collect();
         let lowest_spawn = map
             .spawns
             .iter()
@@ -390,7 +410,9 @@ impl SceneAssets {
             .map(|spawn| spawn.position[1])
             .min_by(f64::total_cmp);
         let kill_height = lowest_spawn
+            .filter(|_| lethal_areas.is_empty())
             .and_then(|below| map_areas::kill_height(ground.triangles().triangles(), below));
+        let lowest = ground.triangles().lowest();
         // A mode that plays for objectives needs their data, checked here
         // rather than when the match begins.
         if Mode::of(map.mode_guid).is_some_and(Mode::has_objectives)
@@ -437,7 +459,10 @@ impl SceneAssets {
             mode_graph_values: self.mode_graph_values,
             objectives,
             spawn_rooms,
+            lethal_areas,
             kill_height,
+            lowest,
+            door_barriers,
         };
         let mut factories = self
             .owner_bodies
@@ -621,11 +646,16 @@ impl PreparedScene {
         map_areas::in_spawn_room(&self.spawn_rooms, &self.map, team, room, position)
     }
 
-    /// Whether feet at `position` have fallen out of the playable area onto
-    /// a catch floor (`map_areas::kill_height`).
+    /// Whether the environment kills a living body whose feet are at
+    /// `position` (`map_areas` module notes): in a lethal damage area of the
+    /// mode, on the catch floor of a map without damage areas, or below the
+    /// whole map.
     pub fn fell_out(&self, position: [f64; 3]) -> bool {
-        self.kill_height
-            .is_some_and(|height| map_areas::caught(height, position[1]))
+        self.lethal_areas.iter().any(|area| area.contains(position))
+            || self
+                .kill_height
+                .is_some_and(|height| map_areas::caught(height, position[1]))
+            || position[1] < self.lowest
     }
 
     /// The height of the map's catch floor, if it has one.
@@ -922,7 +952,18 @@ impl PreparedScene {
     }
 
     pub fn initial_world(&self, viewer: &PlayerAppearance<'_>) -> io::Result<Vec<EntityUpdate>> {
-        initial_world(&self.map, viewer, self.initial_board.clone(), &self.bots)
+        let mut updates = initial_world(&self.map, viewer, self.initial_board.clone(), &self.bots)?;
+        // After the placeables, the player and the mode, before the bots.
+        let at = self.map.placeables.len() + 2;
+        updates.splice(
+            at..at,
+            self.door_barriers.iter().map(|&index| EntityUpdate {
+                entity: 0x8000_0000 | index,
+                operation: Some(Operation::Placeable(index)),
+                ..EntityUpdate::default()
+            }),
+        );
+        Ok(updates)
     }
 }
 
