@@ -315,10 +315,7 @@ struct WorldStart {
 
 impl GameService {
     pub fn bind(address: SocketAddr, schemas: Arc<Schemas>) -> io::Result<Self> {
-        for id in [20300, 20301, 20302, 20304, 20306, 21601, 21602, 21610] {
-            let (_, crc, _) = locate(id).map_err(invalid)?;
-            schemas.fields(crc, id).map_err(invalid)?;
-        }
+        check_schemas(&schemas)?;
 
         let mut socket = UdpSocket::bind(address)?;
         let address = socket.local_addr()?;
@@ -609,6 +606,15 @@ impl GameService {
         }
         Ok(())
     }
+}
+
+/// The schemas know the messages the worker sends and reads.
+fn check_schemas(schemas: &Schemas) -> io::Result<()> {
+    for id in [20300, 20301, 20302, 20304, 20306, 21601, 21602, 21610] {
+        let (_, crc, _) = locate(id).map_err(invalid)?;
+        schemas.fields(crc, id).map_err(invalid)?;
+    }
+    Ok(())
 }
 
 impl Drop for GameService {
@@ -1155,7 +1161,7 @@ impl Peer {
     fn send_frame(
         &mut self,
         links: &mut GameConnections,
-        socket: &UdpSocket,
+        socket: &impl Transport,
         connection: u32,
         tick: u32,
         movements: Vec<EntityUpdate>,
@@ -1645,7 +1651,13 @@ impl State {
         }
     }
 
-    fn receive(&mut self, socket: &UdpSocket, bytes: &[u8], address: SocketAddr, now: Duration) {
+    fn receive(
+        &mut self,
+        socket: &impl Transport,
+        bytes: &[u8],
+        address: SocketAddr,
+        now: Duration,
+    ) {
         let Ok(received) = self.links.receive(bytes, address, now) else {
             return;
         };
@@ -1748,7 +1760,7 @@ impl State {
     /// once its link opens it goes back to the menu (20304), and nothing it
     /// sends reaches a match (server.py `Client.received`, `player.gone`).
     /// While the clock drains it is sent home at its SYN (`_datagram`).
-    fn receive_homeward(&mut self, socket: &UdpSocket, received: Received, now: Duration) {
+    fn receive_homeward(&mut self, socket: &impl Transport, received: Received, now: Duration) {
         let connection = received.connection;
         let peer = self.homeward.get_mut(&connection).expect("homeward peer");
         if let Some((ack, bits)) = received.ack {
@@ -2538,7 +2550,7 @@ impl State {
         }
     }
 
-    fn tick(&mut self, socket: &UdpSocket, now: Duration, missed: u64) {
+    fn tick(&mut self, socket: &impl Transport, now: Duration, missed: u64) {
         let step = self.clock.step(missed, self.connections_pending());
         let (tick, send_frames, drain, force) = match step {
             Step::Simulate { frame, send_world } => (frame, send_world, false, false),
@@ -2758,7 +2770,24 @@ fn wall_nanoseconds() -> u64 {
     u64::try_from(now.as_nanos()).unwrap_or(u64::MAX)
 }
 
-fn send(socket: &UdpSocket, outgoing: Outgoing) -> io::Result<u32> {
+/// Where the game's datagrams go and come from: the UDP socket, or in tests
+/// an in-memory network on a virtual clock (`lockstep.rs`).
+trait Transport {
+    fn send_to(&self, datagram: &[u8], address: SocketAddr) -> io::Result<usize>;
+    fn recv_from(&self, buffer: &mut [u8]) -> io::Result<(usize, SocketAddr)>;
+}
+
+impl Transport for UdpSocket {
+    fn send_to(&self, datagram: &[u8], address: SocketAddr) -> io::Result<usize> {
+        UdpSocket::send_to(self, datagram, address)
+    }
+
+    fn recv_from(&self, buffer: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        UdpSocket::recv_from(self, buffer)
+    }
+}
+
+fn send(socket: &impl Transport, outgoing: Outgoing) -> io::Result<u32> {
     let count = socket.send_to(&outgoing.datagram, outgoing.address)?;
     if count != outgoing.datagram.len() {
         return Err(io::Error::new(
@@ -2769,31 +2798,59 @@ fn send(socket: &UdpSocket, outgoing: Outgoing) -> io::Result<u32> {
     Ok(outgoing.sequence)
 }
 
-fn run(
-    socket: UdpSocket,
-    mut poll: Poll,
-    requests: mpsc::Receiver<Request>,
-    stopping: Arc<AtomicBool>,
-    schemas: Arc<Schemas>,
-) -> io::Result<()> {
-    let mut state = State::new(schemas);
-    let start = Instant::now();
-    let mut due = Duration::ZERO;
-    let mut events = Events::with_capacity(2);
-    // An oversized datagram must never be accepted as a truncated valid one.
-    let mut buffer = [0; 65_536];
-    let mut socket_ready = false;
-    while !stopping.load(Ordering::Acquire) {
+/// The game thread's loop: the matches and when the next tick is due.
+struct GameLoop {
+    state: State,
+    due: Duration,
+    /// An oversized datagram must never be accepted as a truncated valid one.
+    buffer: [u8; 65_536],
+}
+
+/// What one pass of the loop left waiting.
+struct Pass {
+    handled: usize,
+    socket_ready: bool,
+    input_ready: bool,
+}
+
+impl Pass {
+    /// More waits than one pass took: the next pass runs at once.
+    fn busy(&self) -> bool {
+        self.socket_ready || self.input_ready || self.handled == RECEIVE_BATCH
+    }
+}
+
+impl GameLoop {
+    fn new(schemas: Arc<Schemas>) -> Self {
+        Self {
+            state: State::new(schemas),
+            due: Duration::ZERO,
+            buffer: [0; 65_536],
+        }
+    }
+
+    /// One pass of the loop: a batch of requests, a batch of datagrams if
+    /// the socket is readable, the queued input, then the tick if it is
+    /// due. `clock` reads the time since the loop started; the real loop
+    /// (`run`) reads the wall clock, the tests a virtual one (`lockstep.rs`).
+    fn pass(
+        &mut self,
+        socket: &impl Transport,
+        requests: &mpsc::Receiver<Request>,
+        mut socket_ready: bool,
+        clock: impl Fn() -> Duration,
+    ) -> io::Result<Pass> {
         let mut handled = 0;
         for request in requests.try_iter().take(RECEIVE_BATCH) {
-            state.handle_request(request, start.elapsed());
+            self.state.handle_request(request, clock());
             handled += 1;
         }
         if socket_ready {
             for _ in 0..RECEIVE_BATCH {
-                match socket.recv_from(&mut buffer) {
+                match socket.recv_from(&mut self.buffer) {
                     Ok((count, address)) => {
-                        state.receive(&socket, &buffer[..count], address, start.elapsed());
+                        self.state
+                            .receive(socket, &self.buffer[..count], address, clock());
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                         socket_ready = false;
@@ -2813,18 +2870,40 @@ fn run(
                 }
             }
         }
-        let input_ready = state.advance_input(start.elapsed());
-        let now = start.elapsed();
-        if now >= due {
-            let (next, missed) = next_tick_after(due, now)
+        let input_ready = self.state.advance_input(clock());
+        let now = clock();
+        if now >= self.due {
+            let (next, missed) = next_tick_after(self.due, now)
                 .ok_or_else(|| io::Error::other("game tick clock exhausted"))?;
-            due = next;
-            state.tick(&socket, now, missed);
+            self.due = next;
+            self.state.tick(socket, now, missed);
         }
-        let timeout = if socket_ready || input_ready || handled == RECEIVE_BATCH {
+        Ok(Pass {
+            handled,
+            socket_ready,
+            input_ready,
+        })
+    }
+}
+
+fn run(
+    socket: UdpSocket,
+    mut poll: Poll,
+    requests: mpsc::Receiver<Request>,
+    stopping: Arc<AtomicBool>,
+    schemas: Arc<Schemas>,
+) -> io::Result<()> {
+    let mut game = GameLoop::new(schemas);
+    let start = Instant::now();
+    let mut events = Events::with_capacity(2);
+    let mut socket_ready = false;
+    while !stopping.load(Ordering::Acquire) {
+        let pass = game.pass(&socket, &requests, socket_ready, || start.elapsed())?;
+        socket_ready = pass.socket_ready;
+        let timeout = if pass.busy() {
             Duration::ZERO
         } else {
-            due.saturating_sub(start.elapsed())
+            game.due.saturating_sub(start.elapsed())
         };
         match poll.poll(&mut events, Some(timeout)) {
             Ok(()) => {
@@ -2896,6 +2975,8 @@ impl DroppedNotices {
 }
 
 mod ai;
+#[cfg(test)]
+mod lockstep;
 
 #[cfg(test)]
 mod tests;

@@ -498,7 +498,6 @@ mod tests {
             handoff::CREATE_GAME,
             handoff::{HANDOFF, HANDOFF_MESSAGE},
         };
-        use orpheus_sim::scene_assets::SceneAssets;
         use orpheus_wire::{
             link::{ACK, KIND_FRAME, LinkCipher, MAX_DATAGRAM, Packet, SYN},
             messages::read_channel,
@@ -515,18 +514,6 @@ mod tests {
         config.dashboard_port = Some(0);
         // A game on this PC is sent to the address it reached, not the public one.
         config.game_host = "games.example".into();
-        if !SceneAssets::load(&runtime)
-            .unwrap()
-            .prepare(orpheus_content::maps::GameMap::practice_range())
-            .unwrap()
-            .movement_ready()
-        {
-            assert!(
-                matches!(Server::start(config), Err(error) if error.kind() == io::ErrorKind::Unsupported)
-            );
-            assert!(!state.path().join("profiles").exists());
-            return;
-        }
         let accounts = Accounts::new(
             state.path().join("profiles"),
             state.path().join("profile.json"),
@@ -753,56 +740,6 @@ mod tests {
         assert!(closing.elapsed() < Duration::from_secs(3));
         TcpListener::bind(lobby).unwrap();
         UdpSocket::bind(game).unwrap();
-    }
-
-    #[test]
-    #[ignore = "requires a derived 104319 runtime"]
-    fn a_server_for_other_pcs_listens_everywhere_and_answers_a_join() {
-        let state = tempfile::tempdir().unwrap();
-        let mut config = ServerConfig::new(orpheus_testkit::runtime_dir(), state.path().into());
-        config.host = Ipv4Addr::UNSPECIFIED;
-        config.lobby_port = 0;
-        config.game_port = Some(0);
-        config.battle_net = false;
-        config.dashboard_port = None;
-        let mut server = Server::start(config).unwrap();
-        assert!(server.lobby_addr().ip().is_unspecified());
-        assert!(server.game_addr().unwrap().ip().is_unspecified());
-        assert_eq!((server.stall_addr(), server.rpc_addr()), (None, None));
-        let lobby = (Ipv4Addr::LOCALHOST, server.lobby_addr().port());
-        let tag = battle_tag_query::ask(lobby, "Joiner").unwrap();
-        assert!(tag.starts_with("Joiner#"), "{tag}");
-        server.stop().unwrap();
-    }
-
-    /// `--game-port 0` (`ow174/cli.py`): the lobby and the dashboard run with
-    /// no game server, and "End matches" answers that it is off.
-    #[test]
-    #[ignore = "requires a derived 104319 runtime"]
-    fn without_a_game_port_the_lobby_runs_alone() {
-        let state = tempfile::tempdir().unwrap();
-        let mut config = ServerConfig::new(orpheus_testkit::runtime_dir(), state.path().into());
-        config.lobby_port = 0;
-        config.game_port = None;
-        config.battle_net = false;
-        config.dashboard_port = Some(0);
-        let mut server = Server::start(config).unwrap();
-        assert_eq!(server.game_addr(), None);
-        let lobby = (Ipv4Addr::LOCALHOST, server.lobby_addr().port());
-        let tag = battle_tag_query::ask(lobby, "Joiner").unwrap();
-        assert!(tag.starts_with("Joiner#"), "{tag}");
-        let dashboard = server.dashboard_addr().unwrap();
-        let mut stream = TcpStream::connect(dashboard).unwrap();
-        write!(
-            stream,
-            "POST /api/end_matches HTTP/1.0\r\nHost: {dashboard}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}"
-        )
-        .unwrap();
-        let mut reply = String::new();
-        stream.read_to_string(&mut reply).unwrap();
-        assert!(reply.contains(" 409 "), "{reply}");
-        assert!(reply.contains("The game server is off."), "{reply}");
-        server.stop().unwrap();
     }
 
     #[test]

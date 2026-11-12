@@ -1,17 +1,21 @@
 use super::*;
+use lockstep::{Lockstep, Network};
 use orpheus_content::maps::PRACTICE_RANGE_MAP;
-use orpheus_core::bits::{BitReader, BitWriter};
+use orpheus_core::{
+    bits::{BitReader, BitWriter},
+    tick::SEND_EVERY,
+};
 use orpheus_wire::{
-    link::{FIN, KIND_CONTROL, LinkCipher, MAX_DATAGRAM, ReceiveWindow, SYN},
+    link::{FIN, KIND_CONTROL, LinkCipher, ReceiveWindow, SYN},
     messages::{read_channel, write_channel},
 };
-use std::{collections::HashSet, net::UdpSocket as ClientSocket};
+use std::collections::HashSet;
 
 const MATCH: MatchId = [5, 8];
 
-fn local() -> SocketAddr {
-    "127.0.0.1:0".parse().unwrap()
-}
+/// How long a client waits for its next datagram: the 2 s read timeout its
+/// socket had over UDP, in ticks.
+const RECEIVE_TICKS: u32 = 125;
 
 fn player() -> Vec<MatchPlayer> {
     vec![MatchPlayer {
@@ -45,8 +49,11 @@ fn fixture() -> Schemas {
     .unwrap()
 }
 
+/// A game on the service's in-memory network ([`Lockstep`]). Waiting for a
+/// datagram runs the service's ticks.
 struct Client {
-    socket: ClientSocket,
+    network: Network,
+    address: SocketAddr,
     cipher: LinkCipher,
     connection: u32,
     next: u32,
@@ -54,14 +61,12 @@ struct Client {
 }
 
 impl Client {
-    fn new(address: SocketAddr, ticket: &Handoff) -> Self {
-        let socket = ClientSocket::bind(local()).unwrap();
-        socket.connect(address).unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
+    fn new(server: &Lockstep, ticket: &Handoff) -> Self {
+        let network = server.network().clone();
+        let address = network.bind();
         Self {
-            socket,
+            network,
+            address,
             cipher: LinkCipher::new(ticket.key_out, ticket.key_in),
             connection: ticket.conn,
             next: 0,
@@ -69,6 +74,7 @@ impl Client {
         }
     }
 
+    /// A datagram that arrives before the service's next tick.
     fn send(&mut self, flags: u8, payload: Vec<u8>) {
         let packet = Packet {
             conn: self.connection,
@@ -84,17 +90,33 @@ impl Client {
             payload,
         };
         self.next += 1;
-        self.socket
-            .send(&self.cipher.seal(&packet).unwrap())
-            .unwrap();
+        self.network
+            .send(self.address, self.cipher.seal(&packet).unwrap());
     }
 
+    /// The next datagram, running ticks until one comes (at most
+    /// [`RECEIVE_TICKS`]).
     fn receive(&self) -> Packet {
-        let mut bytes = [0; MAX_DATAGRAM];
-        let count = self.socket.recv(&mut bytes).unwrap();
-        let packet = self.cipher.open(&bytes[..count]).unwrap();
-        assert_eq!(packet.conn, self.connection);
-        packet
+        for _ in 0..=RECEIVE_TICKS {
+            if let Some(bytes) = self.network.take(self.address) {
+                let packet = self.cipher.open(&bytes).unwrap();
+                assert_eq!(packet.conn, self.connection);
+                return packet;
+            }
+            self.network.step();
+        }
+        panic!("no datagram in {RECEIVE_TICKS} ticks");
+    }
+
+    /// Nothing comes for the ticks of `time`.
+    fn hears_nothing(&self, time: Duration) {
+        self.network.run(time);
+        assert!(self.network.take(self.address).is_none());
+    }
+
+    /// The time of the service's last tick.
+    fn now(&self) -> Duration {
+        self.network.now()
     }
 
     fn handshake(&mut self) {
@@ -106,6 +128,23 @@ impl Client {
     }
 }
 
+/// The server tick a frame datagram was sent at.
+fn tick_of(packet: &Packet) -> u32 {
+    BitReader::new(&packet.payload).var_a().unwrap()
+}
+
+/// The tick the service ran at `time`: the first runs at time 0
+/// (`GameClock`).
+fn tick_at(time: Duration) -> u32 {
+    FIRST_TICK + 1 + lockstep::ticks(time)
+}
+
+/// The first send frame (`SEND_EVERY`) from `tick` on: it carries what
+/// `tick` queued.
+fn send_frame_from(tick: u32) -> u32 {
+    tick.next_multiple_of(SEND_EVERY)
+}
+
 fn messages(schemas: &Schemas, packet: &Packet) -> Vec<orpheus_wire::messages::ReliableMessage> {
     assert_eq!(packet.kind, KIND_FRAME);
     let mut reader = BitReader::new(&packet.payload);
@@ -115,13 +154,13 @@ fn messages(schemas: &Schemas, packet: &Packet) -> Vec<orpheus_wire::messages::R
 
 fn exercise_loading(schemas: Schemas) {
     let schemas = Arc::new(schemas);
-    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let mut tickets = server
         .open_match(MATCH, GameMap::practice_range(), player())
         .unwrap();
     let ticket = tickets.pop().unwrap();
     assert!(server.handoff_pending(ticket.conn).unwrap());
-    let mut client = Client::new(server.local_addr(), &ticket);
+    let mut client = Client::new(&server, &ticket);
     client.handshake();
     assert!(!server.handoff_pending(ticket.conn).unwrap());
 
@@ -137,14 +176,10 @@ fn exercise_loading(schemas: Schemas) {
     assert!(messages(&schemas, &heartbeat).is_empty());
     assert!(client.window.accept(heartbeat.seq));
     client.send(ACK, Vec::new());
-    let until = Instant::now() + Duration::from_secs(2);
-    let retry = loop {
-        let packet = client.receive();
-        if !messages(&schemas, &packet).is_empty() {
-            break packet;
-        }
-        assert!(Instant::now() < until, "waiting for retransmitted instance");
-    };
+    // The ACK leaves the first datagram out: its reliable messages are
+    // lost, and go again in the next frame (`GameEgress::acknowledge`).
+    let retry = client.receive();
+    assert_eq!(tick_of(&retry), tick_of(&heartbeat) + SEND_EVERY);
     assert_eq!(messages(&schemas, &retry), initial);
     assert!(client.window.accept(retry.seq));
 
@@ -160,23 +195,37 @@ fn exercise_loading(schemas: Schemas) {
     .unwrap();
     let mut payload = BitWriter::new();
     write_channel(&mut payload, &[(0, loaded)], &[ping]).unwrap();
-    let start = Instant::now();
+    // The map is loaded at the last tick's time, when the datagram arrives.
+    let loaded_at = client.now();
     client.send(ACK, payload.into_bytes());
     let mut received = Vec::new();
-    while received.len() < 3 && start.elapsed() < Duration::from_secs(2) {
+    while received.len() < 3 && client.now() < loaded_at + Duration::from_secs(2) {
         let packet = client.receive();
         assert!(client.window.accept(packet.seq));
-        received.extend(messages(&schemas, &packet));
+        let tick = tick_of(&packet);
+        received.extend(messages(&schemas, &packet).into_iter().map(|item| (tick, item)));
         client.send(ACK, Vec::new());
     }
     assert_eq!(
         received
             .iter()
-            .map(|message| (message.sequence, message.message.id))
+            .map(|(_, message)| (message.sequence, message.message.id))
             .collect::<Vec<_>>(),
         [(1, 20306), (2, 20302), (3, 20301)]
     );
-    assert!(start.elapsed() >= Duration::from_millis(400));
+    // The pong goes with the next frame; the ownership (20302) and the
+    // game (20301) with the first frame 0.3 s and 0.4 s after the map
+    // loaded (`MapReadyStep::delay`): 19 and 25 ticks of 16 ms.
+    let loaded = tick_at(loaded_at);
+    assert_eq!(
+        received.iter().map(|(tick, _)| *tick).collect::<Vec<_>>(),
+        [
+            send_frame_from(loaded + 1),
+            send_frame_from(loaded + 19),
+            send_frame_from(loaded + 25)
+        ]
+    );
+    let received: Vec<_> = received.into_iter().map(|(_, message)| message).collect();
     assert_eq!(received[0].message.fields[&0x78], Value::Unsigned(17));
     let Value::Array(stamps) = &received[0].message.fields[&0x80] else {
         panic!("expected ping timestamps");
@@ -185,18 +234,16 @@ fn exercise_loading(schemas: Schemas) {
     assert_eq!(stamps[0], Value::Unsigned(25));
 
     client.send(FIN | ACK, Vec::new());
-    let until = Instant::now() + Duration::from_secs(2);
+    let until = client.now() + Duration::from_secs(2);
     loop {
         let packet = client.receive();
         if packet.kind == KIND_CONTROL {
             assert_eq!(packet.flags, FIN | ACK);
             break;
         }
-        assert!(Instant::now() < until, "waiting for FIN acknowledgement");
+        assert!(client.now() < until, "waiting for FIN acknowledgement");
     }
-    let address = server.local_addr();
     server.stop().unwrap();
-    assert!(ClientSocket::bind(address).is_ok());
     assert_eq!(
         server
             .open_match(MATCH, GameMap::practice_range(), player())
@@ -220,7 +267,7 @@ fn worker_serves_loading_using_the_retail_schemas() {
 
 #[test]
 fn canceled_seat_is_rejected_before_tick_and_released() {
-    let mut server = GameService::bind(local(), Arc::new(fixture())).unwrap();
+    let mut server = Lockstep::new(Arc::new(fixture())).unwrap();
     let ticket = server
         .open_match(MATCH, GameMap::practice_range(), player())
         .unwrap()
@@ -229,18 +276,9 @@ fn canceled_seat_is_rejected_before_tick_and_released() {
     assert!(server.handoff_pending(ticket.conn).unwrap());
     assert!(server.cancel_handoff(ticket.conn).unwrap());
     assert!(!server.handoff_pending(ticket.conn).unwrap());
-    let mut client = Client::new(server.local_addr(), &ticket);
-    client
-        .socket
-        .set_read_timeout(Some(Duration::from_millis(100)))
-        .unwrap();
+    let mut client = Client::new(&server, &ticket);
     client.send(SYN, Vec::new());
-    let mut buffer = [0; MAX_DATAGRAM];
-    let error = client.socket.recv(&mut buffer).unwrap_err();
-    assert!(matches!(
-        error.kind(),
-        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-    ));
+    client.hears_nothing(Duration::from_millis(100));
     let retry = server
         .open_match(MATCH, GameMap::practice_range(), player())
         .unwrap()
@@ -252,8 +290,8 @@ fn canceled_seat_is_rejected_before_tick_and_released() {
 
 /// The id of the first reliable message the server sends.
 fn first_reliable(client: &Client, schemas: &Schemas) -> u32 {
-    let until = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < until {
+    let until = client.now() + Duration::from_secs(3);
+    while client.now() < until {
         let packet = client.receive();
         if packet.kind != KIND_FRAME {
             continue;
@@ -270,7 +308,7 @@ fn first_reliable(client: &Client, schemas: &Schemas) -> u32 {
 #[test]
 fn a_player_taken_out_before_his_game_connects_leaves_at_once_and_only_gets_20304() {
     let schemas = Arc::new(Schemas::game());
-    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let ticket = server
         .open_match(MATCH, GameMap::practice_range(), player())
         .unwrap()
@@ -281,23 +319,23 @@ fn a_player_taken_out_before_his_game_connects_leaves_at_once_and_only_gets_2030
     assert!(!server.seat_exists(&ticket).unwrap());
     assert!(server.snapshot().unwrap().is_empty());
 
-    let mut client = Client::new(server.local_addr(), &ticket);
+    let mut client = Client::new(&server, &ticket);
     client.handshake();
     assert_eq!(first_reliable(&client, &schemas), 20304);
-    thread::sleep(Duration::from_millis(100));
+    server.run(Duration::from_millis(100));
     // The game never joined a match.
     assert!(!server.seat_exists(&ticket).unwrap());
     assert!(server.snapshot().unwrap().is_empty());
 
     client.send(FIN | ACK, Vec::new());
-    let until = Instant::now() + Duration::from_secs(2);
+    let until = client.now() + Duration::from_secs(2);
     loop {
         let packet = client.receive();
         if packet.kind == KIND_CONTROL {
             assert_eq!(packet.flags, FIN | ACK);
             break;
         }
-        assert!(Instant::now() < until, "waiting for FIN acknowledgement");
+        assert!(client.now() < until, "waiting for FIN acknowledgement");
     }
     server.stop().unwrap();
 }
@@ -647,12 +685,6 @@ fn command_batch(first: u32, count: u8, yaw: i16, buttons: u32, forward: bool) -
     aimed_batch(first, count, yaw, 0, buttons, forward)
 }
 
-/// Soldier: 76's level shot from his 1.55 m eye meets a Training Bot's
-/// chest: its idle pose centres the head sphere 1.98 m up. This pitch
-/// (1/65536 turns, negative up) aims from the eye at the head 4 m away,
-/// atan(0.43 / 4).
-const AT_BOT_HEAD_4M: i16 = -1114;
-
 fn aimed_batch(
     first: u32,
     count: u8,
@@ -762,25 +794,13 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
 }
 
 #[test]
-#[ignore = "serial: expects exact datagrams whose contents depend on how far the server's ticks have run when the test's packets arrive (no owner correction beside the reopened hero selection), which other tests' load shifts; requires a derived 104319 Practice Range scene"]
-fn serial_prepared_world_waits_for_ownership_and_retries_baselines_before_scripts() {
+#[ignore = "requires a derived 104319 Practice Range scene"]
+fn prepared_world_waits_for_ownership_and_retries_baselines_before_scripts() {
     exercise_prepared_world(PreparedFixture::Stock);
 }
 
 #[test]
-#[ignore = "requires a derived 104319 Practice Range scene without bot VM graphs"]
-fn prepared_worker_retries_a_concrete_owner_vm_on_encrypted_loopback() {
-    exercise_prepared_world(PreparedFixture::Owner);
-}
-
-#[test]
-#[ignore = "requires a derived 104319 Practice Range scene without bot VM graphs"]
-fn prepared_worker_delivers_a_volley_hit_and_replaces_the_bot_over_encrypted_udp() {
-    exercise_prepared_world(PreparedFixture::Combat);
-}
-
-#[test]
-#[ignore = "requires a derived 104319 Practice Range scene without bot VM graphs"]
+#[ignore = "requires a derived 104319 Practice Range scene"]
 fn prepared_worker_delivers_helix_flight_damage_and_predicted_release_over_encrypted_udp() {
     exercise_prepared_world(PreparedFixture::Projectile);
 }
@@ -788,8 +808,6 @@ fn prepared_worker_delivers_helix_flight_damage_and_predicted_release_over_encry
 #[derive(Clone, Copy)]
 enum PreparedFixture {
     Stock,
-    Owner,
-    Combat,
     Projectile,
 }
 
@@ -806,9 +824,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         templates::RetailTemplates,
     };
     use orpheus_sim::{
-        body_script::{fixture_body_factory, fixture_hitscan_factory, fixture_projectile_factory},
-        bots::BOT_ENTITY,
-        scene_assets::SceneAssets,
+        body_script::fixture_projectile_factory, bots::BOT_ENTITY, scene_assets::SceneAssets,
     };
     use orpheus_wire::jam::codec::id16;
 
@@ -818,7 +834,6 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     let schemas = Arc::new(Schemas::game());
     let lobby = Schemas::lobby();
     let assets = SceneAssets::load(runtime).unwrap();
-    let scripted_bots = assets.graphs().entity_body(0x0400_0000_0000_143e).is_some();
     let collection = Collection::new(
         &RetailTemplates::captured(),
         Arc::new(ItemDb::load(&data).unwrap()),
@@ -840,7 +855,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         .decode(GAME_REQUEST, CREATE_GAME, b"\x02\x00\x04\x00\x00\x00", true)
         .unwrap();
     let request = (GAME_REQUEST, CREATE_GAME, fields);
-    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let channel = |id: MatchId, kind| {
         Fields::from([
             (0, Value::Struct(id16(id[0], id[1]))),
@@ -862,37 +877,21 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         (&assets, &collection),
         |map| {
             let mut scene = assets.prepare(map)?;
-            if !matches!(fixture, PreparedFixture::Stock) {
-                assert!(!scripted_bots);
-                let factory = match fixture {
-                    PreparedFixture::Combat => {
-                        let [x, y, z] = scene.map().spawn_point(0, 0).unwrap().0;
-                        let bot = scene
-                            .bots_mut()
-                            .iter_mut()
-                            .find(|bot| bot.entity == BOT_ENTITY + 1)
-                            .unwrap();
-                        bot.position = [x - 4.0, y, z];
-                        fixture_hitscan_factory(100.0)
-                    }
-                    PreparedFixture::Projectile => {
-                        let [x, y, z] = scene.map().spawn_point(0, 0).unwrap().0;
-                        let bots = scene.bots_mut();
-                        assert_eq!(
-                            bots[..3]
-                                .iter()
-                                .map(|bot| bot.spawn.team)
-                                .collect::<Vec<_>>(),
-                            [0, 1, 1]
-                        );
-                        assert!(bots[..3].iter().all(|bot| bot.spawn.route.is_empty()));
-                        bots[0].position = [x - 3.5, y, z];
-                        bots[1].position = [x - 5.0, y, z];
-                        bots[2].position = [x - 5.0, y, z + 0.8];
-                        fixture_projectile_factory(40.0)
-                    }
-                    _ => fixture_body_factory().0,
-                };
+            if let PreparedFixture::Projectile = fixture {
+                let [x, y, z] = scene.map().spawn_point(0, 0).unwrap().0;
+                let bots = scene.bots_mut();
+                assert_eq!(
+                    bots[..3]
+                        .iter()
+                        .map(|bot| bot.spawn.team)
+                        .collect::<Vec<_>>(),
+                    [0, 1, 1]
+                );
+                assert!(bots[..3].iter().all(|bot| bot.spawn.route.is_empty()));
+                bots[0].position = [x - 3.5, y, z];
+                bots[1].position = [x - 5.0, y, z];
+                bots[2].position = [x - 5.0, y, z + 0.8];
+                let factory = fixture_projectile_factory(40.0);
                 scene.owner_body_factory = Some(Arc::new(move |hero, spawn| {
                     if hero.guid != orpheus_content::heroes::SOLDIER {
                         return Ok(None);
@@ -908,11 +907,6 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
             Ok(true)
         },
     );
-    if scripted_bots {
-        assert_eq!(result.err().unwrap().kind(), io::ErrorKind::Unsupported);
-        assert!(outgoing.is_empty());
-        return;
-    }
     let ticket = result.unwrap().unwrap().handoff;
     assert_eq!(
         outgoing.iter().map(|(_, id, _)| *id).collect::<Vec<_>>(),
@@ -941,7 +935,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         key_out: key(0xce),
         ..ticket
     };
-    let mut client = Client::new(server.local_addr(), &client_ticket);
+    let mut client = Client::new(&server, &client_ticket);
     client.handshake();
     let load = client.receive();
     assert_eq!(messages(&schemas, &load)[0].message.id, 20300);
@@ -949,11 +943,11 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     let mut payload = BitWriter::new();
     let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
     write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
-    let started = Instant::now();
+    let loaded_at = client.now();
     client.send(ACK, payload.into_bytes());
 
     let mut ownership = false;
-    while started.elapsed() < Duration::from_millis(650) {
+    while client.now() < loaded_at + Duration::from_millis(650) {
         let frame = client.receive();
         assert!(client.window.accept(frame.seq));
         assert!(world_records(&schemas, &frame).is_empty());
@@ -964,7 +958,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     assert!(ownership);
     client.send(ACK, Vec::new());
 
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = client.now() + Duration::from_secs(3);
     let lost = loop {
         let frame = client.receive();
         let records = world_records(&schemas, &frame);
@@ -979,7 +973,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         }
         assert!(client.window.accept(frame.seq));
         client.send(ACK, Vec::new());
-        assert!(Instant::now() < deadline, "waiting for first world creates");
+        assert!(client.now() < deadline, "waiting for first world creates");
     };
     let mut creates = HashSet::new();
     loop {
@@ -994,7 +988,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
             break;
         }
         client.send(ACK, Vec::new());
-        assert!(Instant::now() < deadline, "waiting for baseline retransmit");
+        assert!(client.now() < deadline, "waiting for baseline retransmit");
     }
     // The rest of the world follows, still without a script before the
     // retransmitted creates are acknowledged: 4 placeables, the player, the
@@ -1008,7 +1002,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
             assert!(creates.insert(record.entity));
         }
         assert!(
-            Instant::now() < deadline,
+            client.now() < deadline,
             "waiting for the rest of the world"
         );
     }
@@ -1027,7 +1021,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     let mut mode = false;
     let mut controller = false;
     let mut moving_bot = false;
-    while !(mode && controller && moving_bot) && Instant::now() < deadline {
+    while !(mode && controller && moving_bot) && client.now() < deadline {
         let frame = client.receive();
         assert!(client.window.accept(frame.seq));
         for record in world_records(&schemas, &frame) {
@@ -1055,10 +1049,6 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     }
     assert!(mode && controller && moving_bot);
     match fixture {
-        PreparedFixture::Owner => exercise_owner_vm(&mut client, &schemas),
-        PreparedFixture::Combat => {
-            exercise_combat(&mut client, &schemas, BOT_ENTITY + 1, BOT_ENTITY + 15)
-        }
         PreparedFixture::Projectile => exercise_projectile(&mut client, &schemas),
         PreparedFixture::Stock => {
             exercise_hero_selection(&mut client, &schemas, &assets, &server, &ticket)
@@ -1115,7 +1105,7 @@ fn pick_soldier_for_weapon(client: &mut Client, schemas: &Schemas) -> u32 {
         PICK_HERO,
         SOLDIER.to_le_bytes().to_vec(),
     );
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = client.now() + Duration::from_secs(3);
     loop {
         let packet = client.receive();
         assert!(client.window.accept(packet.seq));
@@ -1126,77 +1116,7 @@ fn pick_soldier_for_weapon(client: &mut Client, schemas: &Schemas) -> u32 {
         {
             return BitReader::new(&packet.payload).var_a().unwrap() + 1;
         }
-        assert!(Instant::now() < deadline, "waiting for weapon fixture body");
-    }
-}
-
-fn exercise_combat(client: &mut Client, schemas: &Schemas, target: u32, replacement: u32) {
-    let frame = pick_soldier_for_weapon(client, schemas);
-    let fire = orpheus_wire::commands::FIRE;
-    let commands = aimed_batch(frame, 1, -16384, AT_BOT_HEAD_4M, fire, false);
-    client.send(ACK, commands.clone());
-    client.send(ACK, commands);
-
-    let deadline = Instant::now() + Duration::from_secs(7);
-    let mut lost = None;
-    let mut delivered_hit = false;
-    let mut delivered_kill = false;
-    let mut delivered_health = false;
-    let mut destroyed = false;
-    let mut created = false;
-    while !created {
-        let packet = client.receive();
-        let reliable = messages(schemas, &packet);
-        let hit = reliable.iter().find(|item| item.message.id == 25001);
-        if lost.is_none() {
-            if let Some(hit) = hit {
-                lost = Some((hit.sequence, hit.message.fields.clone()));
-                continue; // let a following ACK reveal loss of the original hit
-            }
-        }
-        for item in reliable {
-            match item.message.id {
-                25001 => {
-                    let (ordinal, fields) = lost.as_ref().unwrap();
-                    assert_eq!((&item.sequence, &item.message.fields), (ordinal, fields));
-                    assert_eq!(fields[&0x84], Value::Unsigned(u64::from(frame)));
-                    let Value::Struct(impact) = &fields[&0x78] else {
-                        panic!("hit body")
-                    };
-                    assert_eq!(impact[&4], Value::Unsigned(200));
-                    assert_eq!(impact[&8], Value::Unsigned(3));
-                    delivered_hit = true;
-                }
-                25005 => {
-                    let Value::Struct(victim) = &item.message.fields[&0x84] else {
-                        panic!("elimination body")
-                    };
-                    assert_eq!(victim[&0], Value::Unsigned(u64::from(target)));
-                    delivered_kill = true;
-                }
-                _ => {}
-            }
-        }
-        for record in world_records(schemas, &packet) {
-            if record.entity == target {
-                if record.operation == Some(2) {
-                    delivered_health = true;
-                }
-                if record.operation == Some(3) {
-                    assert!(delivered_hit && delivered_kill && delivered_health);
-                    destroyed = true;
-                }
-            } else if record.entity == replacement && record.is_create() {
-                assert!(destroyed);
-                created = true;
-            }
-        }
-        assert!(client.window.accept(packet.seq));
-        client.send(ACK, Vec::new());
-        assert!(
-            Instant::now() < deadline,
-            "waiting for combat recovery and bot respawn"
-        );
+        assert!(client.now() < deadline, "waiting for weapon fixture body");
     }
 }
 
@@ -1216,7 +1136,7 @@ fn exercise_projectile(client: &mut Client, schemas: &Schemas) {
     client.send(ACK, commands.clone());
     client.send(ACK, commands);
 
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = client.now() + Duration::from_secs(3);
     let mut noticed = HashSet::new();
     let mut impacts = Vec::new();
     let mut health = HashMap::new();
@@ -1279,7 +1199,7 @@ fn exercise_projectile(client: &mut Client, schemas: &Schemas) {
         assert!(client.window.accept(packet.seq));
         client.send(ACK, Vec::new());
         assert!(
-            Instant::now() < deadline,
+            client.now() < deadline,
             "waiting for Helix: shot {frame}, entity {original:#x}, impacts {impacts:?}, health {health:?}, creates {creates:?}, releases {releases:?}"
         );
     }
@@ -1297,105 +1217,6 @@ fn exercise_projectile(client: &mut Client, schemas: &Schemas) {
         health,
         HashMap::from([(BOT_ENTITY + 1, 80.0), (BOT_ENTITY + 2, 120.0)])
     );
-}
-
-fn exercise_owner_vm(client: &mut Client, schemas: &Schemas) {
-    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
-
-    let owner = player_entity(0);
-    let body = owner | 1;
-    send_game_message(
-        client,
-        schemas,
-        1,
-        PICK_HERO,
-        SOLDIER.to_le_bytes().to_vec(),
-    );
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let start = loop {
-        let packet = client.receive();
-        let records = world_records(schemas, &packet);
-        assert!(
-            records
-                .iter()
-                .all(|record| record.entity != body || record.script.is_none())
-        );
-        assert!(client.window.accept(packet.seq));
-        client.send(ACK, Vec::new());
-        if records
-            .iter()
-            .any(|record| record.entity == body && record.is_create())
-        {
-            let controller = records
-                .iter()
-                .find(|record| record.entity == owner && record.script.is_some())
-                .unwrap();
-            let mut bits = controller.script.as_ref().unwrap().bits();
-            assert_eq!(bits.bits(3).unwrap(), 2);
-            break bits.w_var().unwrap();
-        }
-        assert!(Instant::now() < deadline, "waiting for fixture body create");
-    };
-    let wait_chunk = |client: &mut Client| {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let packet = client.receive();
-            if let Some(script) = world_records(schemas, &packet)
-                .into_iter()
-                .find(|record| record.entity == body && record.script.is_some())
-                .and_then(|record| record.script)
-            {
-                return (packet.seq, script);
-            }
-            assert!(client.window.accept(packet.seq));
-            client.send(ACK, Vec::new());
-            assert!(Instant::now() < deadline, "waiting for fixture body script");
-        }
-    };
-    let skip_chunk = |client: &mut Client, payload| {
-        let packet = client.receive();
-        assert!(
-            world_records(schemas, &packet)
-                .iter()
-                .all(|record| record.entity != body || record.script.is_none())
-        );
-        assert!(client.window.accept(packet.seq));
-        client.send(ACK, payload);
-    };
-    let accept_chunk = |client: &mut Client, sequence| {
-        assert!(client.window.accept(sequence));
-        client.send(ACK, Vec::new());
-    };
-    let check_delta = |chunk: &ReceivedChunk, corrected, command_frame| {
-        let mut bits = chunk.bits();
-        assert_eq!(bits.bits(3).unwrap(), if corrected { 6 } else { 2 });
-        assert_eq!(bits.w_var().unwrap(), command_frame);
-    };
-
-    let (_, h0) = wait_chunk(client);
-    assert_eq!((h0.first, h0.span), (0, 1));
-    assert_eq!(h0.bits().bits(2).unwrap(), 0);
-    skip_chunk(client, Vec::new());
-    let (sequence, retry) = wait_chunk(client);
-    assert_eq!(retry, h0);
-    accept_chunk(client, sequence);
-
-    let (_, c0) = wait_chunk(client);
-    assert_eq!((c0.first, c0.span), (2, 0));
-    check_delta(&c0, false, start);
-    skip_chunk(client, input_batch(start + 1, 16, 0));
-    let (sequence, retry) = wait_chunk(client);
-    assert_eq!(retry, c0);
-    accept_chunk(client, sequence);
-
-    let (_, c1) = wait_chunk(client);
-    assert_eq!((c1.first, c1.span), (3, 0));
-    check_delta(&c1, true, start + 16);
-    skip_chunk(client, input_batch(start + 17, 1, 0));
-    let (sequence, cumulative) = wait_chunk(client);
-    assert_eq!((cumulative.first, cumulative.span), (3, 1));
-    check_delta(&cumulative, true, start + 17);
-    accept_chunk(client, sequence);
 }
 
 fn exercise_hero_selection(
@@ -1417,7 +1238,7 @@ fn exercise_hero_selection(
         send_game_message(client, schemas, ordinal, guid, parameters);
     };
     let next_body_frame = |client: &mut Client, body| {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = client.now() + Duration::from_secs(2);
         loop {
             let packet = client.receive();
             let records = world_records(schemas, &packet);
@@ -1429,7 +1250,7 @@ fn exercise_hero_selection(
             }
             assert!(client.window.accept(packet.seq));
             client.send(ACK, Vec::new());
-            assert!(Instant::now() < deadline, "waiting for the selected body");
+            assert!(client.now() < deadline, "waiting for the selected body");
         }
     };
     let describe = |records: &[WorldRecord]| {
@@ -1506,7 +1327,7 @@ fn exercise_hero_selection(
     let first_input = tick + 32;
     let mut newest = first_input + 4;
     let await_input = |client: &mut Client, expected| {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = client.now() + Duration::from_secs(2);
         loop {
             let packet = client.receive();
             assert!(client.window.accept(packet.seq));
@@ -1529,7 +1350,7 @@ fn exercise_hero_selection(
             }
             client.send(ACK, Vec::new());
             assert!(
-                Instant::now() < deadline,
+                client.now() < deadline,
                 "waiting for command acknowledgement"
             );
         }
@@ -1554,7 +1375,7 @@ fn exercise_hero_selection(
     open.extend(OWNER.to_le_bytes());
     open.extend(OWNER.to_le_bytes());
     send(client, 2, OPEN_OR_CLOSE, open);
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = client.now() + Duration::from_secs(2);
     let reopen_cmfd = loop {
         let packet = client.receive();
         assert!(client.window.accept(packet.seq));
@@ -1564,7 +1385,7 @@ fn exercise_hero_selection(
             break verify_controller(&records, SOLDIER, true);
         }
         assert!(
-            Instant::now() < deadline,
+            client.now() < deadline,
             "waiting for hero selection to reopen"
         );
     };
@@ -1626,16 +1447,21 @@ struct Watcher {
 impl Watcher {
     fn pump(&mut self, schemas: &Schemas) {
         let packet = self.client.receive();
+        self.record(schemas, &packet);
+    }
+
+    /// Takes in a datagram the client received, and acknowledges it.
+    fn record(&mut self, schemas: &Schemas, packet: &Packet) {
         if packet.kind != KIND_FRAME {
             return;
         }
-        self.tick = BitReader::new(&packet.payload).var_a().unwrap();
-        let messages = messages(schemas, &packet)
+        self.tick = tick_of(packet);
+        let messages = messages(schemas, packet)
             .into_iter()
             .filter(|item| self.sequences.insert(item.sequence))
             .map(|item| item.message)
             .collect();
-        let records = world_records(schemas, &packet);
+        let records = world_records(schemas, packet);
         self.client.window.accept(packet.seq);
         self.client.send(ACK, Vec::new());
         self.datagrams.push((messages, records));
@@ -1685,12 +1511,12 @@ fn pump_within(
     within: Duration,
     done: impl Fn(&[&mut Watcher]) -> bool,
 ) {
-    let deadline = Instant::now() + within;
+    let deadline = watchers[0].client.now() + within;
     while !done(watchers) {
         for watcher in watchers.iter_mut() {
             watcher.pump(schemas);
         }
-        assert!(Instant::now() < deadline, "waiting for {what}");
+        assert!(watchers[0].client.now() < deadline, "waiting for {what}");
     }
 }
 
@@ -1713,7 +1539,7 @@ fn two_players_in_one_practice_range_see_each_other() {
     assert!(scene.movement_ready());
     let tracer = assets.heroes().find_hero("Tracer").unwrap().guid;
     let schemas = Arc::new(Schemas::game());
-    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let tags = ["first#1111", "second#2222"];
     let members = tags
         .iter()
@@ -1740,7 +1566,7 @@ fn two_players_in_one_practice_range_see_each_other() {
         .iter()
         .enumerate()
         .map(|(slot, ticket)| {
-            let mut client = Client::new(server.local_addr(), ticket);
+            let mut client = Client::new(&server, ticket);
             client.handshake();
             Watcher {
                 client,
@@ -1997,10 +1823,10 @@ fn two_players_in_one_practice_range_see_each_other() {
 
     // The match ends with its last player.
     second.client.send(FIN | ACK, Vec::new());
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = server.now() + Duration::from_secs(2);
     while server.seat_exists(&tickets[1]).unwrap() {
-        assert!(Instant::now() < deadline, "waiting for the match to end");
-        thread::sleep(Duration::from_millis(10));
+        assert!(server.now() < deadline, "waiting for the match to end");
+        server.step();
     }
     server.stop().unwrap();
 }
@@ -2024,7 +1850,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let spawns = [0, 1].map(|team| scene.map().spawn_point(team, 0).unwrap().0);
     let schemas = Arc::new(Schemas::game());
-    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let tags = ["shooter#1111", "target#2222"];
     let members = tags
         .iter()
@@ -2050,7 +1876,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
         .iter()
         .enumerate()
         .map(|(slot, ticket)| {
-            let mut client = Client::new(server.local_addr(), ticket);
+            let mut client = Client::new(&server, ticket);
             client.handshake();
             Watcher {
                 client,
@@ -2147,9 +1973,9 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     };
     let fired = shooter.datagrams.len();
     let mut frame = shooter.tick + 1;
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = server.now() + Duration::from_secs(20);
     while messages_of(target, 25004).is_empty() {
-        assert!(Instant::now() < deadline, "waiting for the kill");
+        assert!(server.now() < deadline, "waiting for the kill");
         if frame <= shooter.tick + 8 {
             shooter
                 .client
@@ -2260,10 +2086,10 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
             .is_some()
     };
     let mut idle = target.tick + 1;
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = server.now() + Duration::from_secs(10);
     while tolerant && !(owner_frames(target) && observer_frames(shooter)) {
         assert!(
-            Instant::now() < deadline,
+            server.now() < deadline,
             "waiting for the dead body's frames: owner {}, observer {}",
             owner_frames(target),
             observer_frames(shooter)
@@ -2319,9 +2145,13 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     let created = target.created(respawned).unwrap();
     let respawn_tick = target.ticks[created];
     assert!(created > died);
+    // combat.py `PRACTICE_RESPAWN`: 3 s, 187.5 ticks, so the first tick
+    // 188 ticks after the death's. The death notice and the new body's
+    // create each go with the next send frame: their datagrams are 188
+    // ticks apart, give or take `SEND_EVERY` - 1.
     let waited = respawn_tick - death_tick;
     assert!(
-        (3000 / 16 - 4..3000 / 16 + 60).contains(&waited),
+        (188 - (SEND_EVERY - 1)..=188 + (SEND_EVERY - 1)).contains(&waited),
         "respawned after {waited} ticks"
     );
     assert!(
@@ -2338,7 +2168,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
 /// runs a statescript (Soldier: 76's), its frames. Also where each spawned.
 fn practice_players<const N: usize>(
     players: [(&str, u8, &str); N],
-) -> (GameService, Arc<Schemas>, [Watcher; N], [[f64; 3]; N]) {
+) -> (Lockstep, Arc<Schemas>, [Watcher; N], [[f64; 3]; N]) {
     let assets =
         orpheus_sim::scene_assets::SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     practice_world(players, &assets, |_| {})
@@ -2350,7 +2180,7 @@ fn practice_world<const N: usize>(
     players: [(&str, u8, &str); N],
     assets: &orpheus_sim::scene_assets::SceneAssets,
     arrange: impl FnOnce(&mut orpheus_sim::scene_assets::PreparedScene),
-) -> (GameService, Arc<Schemas>, [Watcher; N], [[f64; 3]; N]) {
+) -> (Lockstep, Arc<Schemas>, [Watcher; N], [[f64; 3]; N]) {
     use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
 
     let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
@@ -2366,7 +2196,7 @@ fn practice_world<const N: usize>(
         scene.map().spawn_point(team, number).unwrap().0
     });
     let schemas = Arc::new(Schemas::game());
-    let server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let members = players
         .iter()
         .enumerate()
@@ -2391,7 +2221,7 @@ fn practice_world<const N: usize>(
         .iter()
         .enumerate()
         .map(|(slot, ticket)| {
-            let mut client = Client::new(server.local_addr(), ticket);
+            let mut client = Client::new(&server, ticket);
             client.handshake();
             Watcher {
                 client,
@@ -2486,9 +2316,9 @@ fn pump_commanding(
     next: &mut u32,
     done: impl Fn(&[&mut Watcher]) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = watchers[0].client.now() + Duration::from_secs(15);
     while !done(watchers) {
-        assert!(Instant::now() < deadline, "waiting for {what}");
+        assert!(watchers[0].client.now() < deadline, "waiting for {what}");
         let commander = &mut watchers[player];
         if *next <= commander.tick + 8 {
             commander
@@ -2534,7 +2364,7 @@ fn a_clients_allied_health_bars_setting_reaches_his_body() {
     // His body's script runs, and its owner frames go out, on his commands.
     let mut next = soldier.tick + 1;
     let mut wait_for = |watcher: &mut Watcher, given: bool, variable: ScriptValue| {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = server.now() + Duration::from_secs(15);
         loop {
             let body = server.bodies(MATCH).unwrap().remove(0);
             if body.support_tag_given == given
@@ -2543,7 +2373,7 @@ fn a_clients_allied_health_bars_setting_reaches_his_body() {
                 break;
             }
             assert!(
-                Instant::now() < deadline,
+                server.now() < deadline,
                 "the tag is not {given}: {body:?}"
             );
             if next <= watcher.tick + 8 {
@@ -2779,7 +2609,7 @@ fn a_helix_at_soldiers_feet_hurts_him_and_lifts_him() {
         .send(ACK, aimed_batch(next, 1, 0, DOWN, SECONDARY, false));
     next += 1;
     let mut top = floor;
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = server.now() + Duration::from_secs(15);
     let landed = loop {
         let body = server.bodies(MATCH).unwrap().remove(0);
         let height = body.position.unwrap()[1];
@@ -2788,7 +2618,7 @@ fn a_helix_at_soldiers_feet_hurts_him_and_lifts_him() {
             break body;
         }
         assert!(
-            Instant::now() < deadline,
+            server.now() < deadline,
             "waiting for the rocket jump: {:.3} m up at most, health {:?}",
             top - floor,
             body.health
@@ -2895,8 +2725,8 @@ fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_
             next += u32::from(count);
         }
     };
-    let charged = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < charged {
+    let charged = server.now() + Duration::from_secs(2);
+    while server.now() < charged {
         command(&mut tracer, 0);
         tracer.pump(&schemas);
         viewer.pump(&schemas);
@@ -2913,13 +2743,13 @@ fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_
             .is_some()
     };
     let bomb = |entity: u32| entity & 0xf000_0000 == 0xa000_0000 && !seen(entity);
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = server.now() + Duration::from_secs(10);
     while messages_of(&tracer, 25005).is_empty()
         || !released(&viewer, &seen)
         || !released(&tracer, &bomb)
     {
         assert!(
-            Instant::now() < deadline,
+            server.now() < deadline,
             "waiting for the Pulse Bomb: hits {:?}",
             messages_of(&tracer, 25001)
         );
@@ -3074,9 +2904,9 @@ fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
         }
     };
     let leased = |entity: u32| (0xa010_0000..0xc000_0000).contains(&entity);
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = server.now() + Duration::from_secs(10);
     let (impact, release) = loop {
-        assert!(Instant::now() < deadline, "waiting for the Helix release");
+        assert!(server.now() < deadline, "waiting for the Helix release");
         command(&mut soldier);
         soldier.pump(&schemas);
         let hit_bot = |fields: &Fields| {
@@ -3190,24 +3020,24 @@ fn genjis_fan_hits_a_bot_once_a_shot_for_its_damage_alone_unseen() {
             next += u32::from(count);
         }
     };
-    let ready = Instant::now() + Duration::from_secs(1);
-    while Instant::now() < ready {
+    let ready = server.now() + Duration::from_secs(1);
+    while server.now() < ready {
         command(&mut genji, 0);
         genji.pump(&schemas);
         viewer.pump(&schemas);
     }
     let fired = (genji.datagrams.len(), viewer.datagrams.len());
     command(&mut genji, SECONDARY);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = server.now() + Duration::from_secs(5);
     while hits_of(&genji, fired.0).is_empty() {
-        assert!(Instant::now() < deadline, "waiting for the fan's hit");
+        assert!(server.now() < deadline, "waiting for the fan's hit");
         command(&mut genji, 0);
         genji.pump(&schemas);
         viewer.pump(&schemas);
     }
     // The other two shuriken of the shot never fly.
-    let settled = Instant::now() + Duration::from_secs(1);
-    while Instant::now() < settled {
+    let settled = server.now() + Duration::from_secs(1);
+    while server.now() < settled {
         command(&mut genji, 0);
         genji.pump(&schemas);
         viewer.pump(&schemas);
@@ -3304,18 +3134,18 @@ fn doomfists_hand_cannon_hits_with_all_eleven_pellets() {
             next += u32::from(count);
         }
     };
-    let ready = Instant::now() + Duration::from_secs(1);
-    while Instant::now() < ready {
+    let ready = server.now() + Duration::from_secs(1);
+    while server.now() < ready {
         command(&mut doomfist, 0);
         doomfist.pump(&schemas);
         viewer.pump(&schemas);
     }
     let fired = (doomfist.datagrams.len(), viewer.datagrams.len());
     command(&mut doomfist, FIRE);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = server.now() + Duration::from_secs(5);
     while hits_of(&doomfist, fired.0).len() < 11 {
         assert!(
-            Instant::now() < deadline,
+            server.now() < deadline,
             "waiting for the pellets: {:?}",
             hits_of(&doomfist, fired.0)
         );
@@ -3323,8 +3153,8 @@ fn doomfists_hand_cannon_hits_with_all_eleven_pellets() {
         doomfist.pump(&schemas);
         viewer.pump(&schemas);
     }
-    let settled = Instant::now() + Duration::from_millis(500);
-    while Instant::now() < settled {
+    let settled = server.now() + Duration::from_millis(500);
+    while server.now() < settled {
         command(&mut doomfist, 0);
         doomfist.pump(&schemas);
         viewer.pump(&schemas);
@@ -3397,8 +3227,8 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
             next += u32::from(count);
         }
     };
-    let ready = Instant::now() + Duration::from_secs(1);
-    while Instant::now() < ready {
+    let ready = server.now() + Duration::from_secs(1);
+    while server.now() < ready {
         command(&mut echo, 0);
         echo.pump(&schemas);
         viewer.pump(&schemas);
@@ -3422,7 +3252,7 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
             bolt(record.entity) && record.projectile_release.is_some()
         })
     };
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = server.now() + Duration::from_secs(5);
     let hits_of = |echo: &Watcher| -> Vec<Value> {
         echo.datagrams[fired.0..]
             .iter()
@@ -3447,7 +3277,7 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
             .is_none()
     {
         assert!(
-            Instant::now() < deadline,
+            server.now() < deadline,
             "waiting for the Tri-Shot: confirmed {:x?}, released {:x?}",
             confirmed(&echo),
             released(&echo)
@@ -3565,9 +3395,9 @@ fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
         schemas: &Schemas,
         seconds: f64,
     ) {
-        let until = Instant::now() + Duration::from_secs_f64(seconds);
         let [first, second] = watchers;
-        while Instant::now() < until {
+        let until = first.client.now() + Duration::from_secs_f64(seconds);
+        while first.client.now() < until {
             command(first, &mut frames[0], yaw, 0);
             command(second, &mut frames[1], yaw, 0);
             first.pump(schemas);
@@ -3586,9 +3416,9 @@ fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
         .send(ACK, command_batch(frames[1], 25, yaw, 0, true));
     frames[1] += 25;
     settle([&mut ana, &mut soldier], &mut frames, yaw, &schemas, 0.5);
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = server.now() + Duration::from_secs(10);
     while !bot_health(&ana).is_some_and(|health| health < full) {
-        assert!(Instant::now() < deadline, "waiting for the bot's wound");
+        assert!(server.now() < deadline, "waiting for the bot's wound");
         command(&mut soldier, &mut frames[1], yaw, FIRE);
         command(&mut ana, &mut frames[0], yaw, 0);
         ana.pump(&schemas);
@@ -3601,10 +3431,10 @@ fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
     // Ana fires along the line: the Soldier first, then the bot.
     let fired = ana.datagrams.len();
     let soldier_body = Value::Unsigned(u64::from(soldier.owner | 1));
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = server.now() + Duration::from_secs(20);
     while !bot_health(&ana).is_some_and(|health| health > wounded) {
         assert!(
-            Instant::now() < deadline,
+            server.now() < deadline,
             "waiting for the heal: hits {:?}",
             hits_of(&ana, fired)
         );
@@ -3665,9 +3495,9 @@ fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
     let away = ((-dx).atan2(-dz) * 32768.0 / std::f64::consts::PI).round() as i32 as i16;
     let full = 150.0;
     let mut frame = enemy.tick + 1;
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = server.now() + Duration::from_secs(10);
     while !health(&patient).is_some_and(|health| health < full) {
-        assert!(Instant::now() < deadline, "waiting for the wound");
+        assert!(server.now() < deadline, "waiting for the wound");
         if frame <= enemy.tick + 8 {
             enemy
                 .client
@@ -3801,7 +3631,7 @@ fn slow_a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player()
     let controller = Controller::load(assets.graphs(), SKIRMISH).unwrap();
     assert!(!controller.practice());
     let schemas = Arc::new(Schemas::game());
-    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let player = |tag: &str, team, account| WorldPlayer {
         player: MatchPlayer {
             name: tag.into(),
@@ -3830,8 +3660,10 @@ fn slow_a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player()
             prepare,
         )
         .unwrap();
+    // The scene is prepared on its own thread: the clock waits for it.
+    server.await_scenes();
     let watch = |ticket: &Handoff, slot| {
-        let mut client = Client::new(server.local_addr(), ticket);
+        let mut client = Client::new(&server, ticket);
         client.handshake();
         Watcher {
             client,
@@ -3917,12 +3749,11 @@ fn slow_a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player()
     );
     load(first);
     load(second);
-    // The world waits for the collision, which is built on its own thread.
-    pump_within(
+    // The world on the collision built from the install.
+    pump_until(
         &mut [first, second],
         &schemas,
         "the controllers on the built collision",
-        Duration::from_secs(600),
         |watchers| {
             watchers
                 .iter()
@@ -4128,7 +3959,7 @@ fn slow_an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home()
     }
 
     let schemas = Arc::new(Schemas::game());
-    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     server
         .set_match_timers(orpheus_sim::match_flow::Timers { scale: SCALE })
         .unwrap();
@@ -4160,11 +3991,13 @@ fn slow_an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home()
             prepare,
         )
         .unwrap();
+    // The scene is prepared on its own thread: the clock waits for it.
+    server.await_scenes();
     let mut watchers: Vec<_> = tickets
         .iter()
         .enumerate()
         .map(|(slot, ticket)| {
-            let mut client = Client::new(server.local_addr(), ticket);
+            let mut client = Client::new(&server, ticket);
             client.handshake();
             Watcher {
                 client,
@@ -4201,11 +4034,10 @@ fn slow_an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home()
         write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
         watcher.client.send(ACK, payload.into_bytes());
     }
-    pump_within(
+    pump_until(
         &mut [defender, attacker],
         &schemas,
         "the players in the world",
-        Duration::from_secs(900),
         |watchers| {
             watchers.iter().all(|watcher| {
                 watcher.created(GAME_MODE_ENTITY).is_some()
@@ -4373,7 +4205,7 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
     let flat = |a: [f64; 3], b: [f64; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
 
     let schemas = Arc::new(Schemas::game());
-    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     server
         .set_match_timers(orpheus_sim::match_flow::Timers { scale: SCALE })
         .unwrap();
@@ -4405,6 +4237,8 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
             prepare,
         )
         .unwrap();
+    // The scene is prepared on its own thread: the clock waits for it.
+    server.await_scenes();
     assert_eq!(tickets.len(), 1);
     // Five AI heroes with the player, six against him, each a roster hero
     // of its own team.
@@ -4426,7 +4260,7 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
     }
 
     let mut watcher = Watcher {
-        client: Client::new(server.local_addr(), &tickets[0]),
+        client: Client::new(&server, &tickets[0]),
         owner: player_entity(0),
         tick: 0,
         sequences: HashSet::new(),
@@ -4444,11 +4278,10 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
     let mut payload = BitWriter::new();
     write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
     watcher.client.send(ACK, payload.into_bytes());
-    pump_within(
+    pump_until(
         &mut [&mut watcher],
         &schemas,
         "the player in the world",
-        Duration::from_secs(900),
         |watchers| {
             let watcher = &watchers[0];
             watcher.created(GAME_MODE_ENTITY).is_some()
@@ -4471,9 +4304,9 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
 
     // The match: a sample of the bodies every quarter second until the
     // player's game goes home.
-    let deadline = Instant::now() + Duration::from_secs(900);
+    let deadline = server.now() + Duration::from_secs(900);
     let mut samples = Vec::new();
-    let mut next_sample = Instant::now();
+    let mut next_sample = server.now();
     let mut home = false;
     while !home {
         watcher.pump(&schemas);
@@ -4481,7 +4314,7 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
             .datagrams
             .last()
             .is_some_and(|(messages, _)| messages.iter().any(|message| message.id == 20304));
-        if Instant::now() >= next_sample {
+        if server.now() >= next_sample {
             let bodies = server.bodies(MATCH).unwrap();
             if !bodies.is_empty() {
                 samples.push(bodies);
@@ -4489,7 +4322,7 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
             next_sample += Duration::from_millis(250);
         }
         assert!(
-            Instant::now() < deadline,
+            server.now() < deadline,
             "waiting for the end of the match"
         );
     }
@@ -4633,7 +4466,7 @@ fn slow_a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
     }
 
     let schemas = Arc::new(Schemas::game());
-    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     server
         .set_match_timers(orpheus_sim::match_flow::Timers { scale: SCALE })
         .unwrap();
@@ -4665,11 +4498,13 @@ fn slow_a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
             prepare,
         )
         .unwrap();
+    // The scene is prepared on its own thread: the clock waits for it.
+    server.await_scenes();
     let mut watchers: Vec<_> = tickets
         .iter()
         .enumerate()
         .map(|(slot, ticket)| {
-            let mut client = Client::new(server.local_addr(), ticket);
+            let mut client = Client::new(&server, ticket);
             client.handshake();
             Watcher {
                 client,
@@ -4701,11 +4536,10 @@ fn slow_a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
         write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
         watcher.client.send(ACK, payload.into_bytes());
     }
-    pump_within(
+    pump_until(
         &mut [blue, red],
         &schemas,
         "the players in the world",
-        Duration::from_secs(900),
         |watchers| {
             watchers.iter().all(|watcher| {
                 watcher.created(GAME_MODE_ENTITY).is_some()
@@ -4775,7 +4609,7 @@ fn slow_a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
 fn players_join_a_running_match_in_the_next_slots() {
     use orpheus_content::heroes::SOLDIER;
 
-    let mut server = GameService::bind(local(), Arc::new(fixture())).unwrap();
+    let mut server = Lockstep::new(Arc::new(fixture())).unwrap();
     let opened = server
         .open_match(MATCH, GameMap::practice_range(), player())
         .unwrap();
@@ -4806,12 +4640,13 @@ fn players_join_a_running_match_in_the_next_slots() {
 }
 
 /// The Practice Range with the training bots' scripts (ow174/game/match.py
-/// `_prepare_bot_script`, server.py `_BotScriptDelivery`): the world waits
-/// for every bot's script; each bot's first frame follows its create, the
-/// nameplate follows the mode UI and carries the bot's name, enabled for
-/// the player's team's bots; a hit the bot survives sends its enabled
-/// nameplate; a bot shot to death sends its death script's frames with its
-/// dead flag up, and its replacement 3 s later starts a new script.
+/// `_prepare_bot_script`, server.py `_BotScriptDelivery`), over the wire: a
+/// hit the bot survives sends a frame of its script, its pain line and no
+/// elimination; the next kills it: its hit notice (25001), lost once,
+/// goes again under its sequence, the elimination (25005) names it, its
+/// death script's frames go before its destroy, and its replacement comes
+/// 3 s later with a new script. No card names a bot: the team list and the
+/// Tab board stay the players'.
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn practice_bots_run_their_scripts_for_a_client() {
@@ -4828,23 +4663,11 @@ fn practice_bots_run_their_scripts_for_a_client() {
     assets.set_bot_unknowns(Unknowns::Tolerate);
     let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
     let [x, y, z] = scene.map().spawn_point(0, 0).unwrap().0;
-    let bots: Vec<(u32, bool)> = scene
+    let names: Vec<String> = scene
         .bots()
         .iter()
-        .map(|bot| (bot.entity, bot.spawn.firing))
+        .map(|bot| bot.spawn.name.clone())
         .collect();
-    let names: Vec<(u32, String)> = scene
-        .bots()
-        .iter()
-        .map(|bot| (bot.entity, bot.spawn.name.clone()))
-        .collect();
-    let allies: Vec<u32> = scene
-        .bots()
-        .iter()
-        .filter(|bot| bot.spawn.team == 0)
-        .map(|bot| bot.entity)
-        .collect();
-    assert!(!allies.is_empty());
     // An enemy bot that neither fires nor walks, 4 m beside the spawn.
     let target = scene
         .bots_mut()
@@ -4861,11 +4684,11 @@ fn practice_bots_run_their_scripts_for_a_client() {
         Ok(Some(Box::new(factory.start(spawn)?)))
     }));
     let schemas = Arc::new(Schemas::game());
-    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let ticket = server
         .open_prepared_practice(MATCH, scene, player().remove(0), PlayerCard::default())
         .unwrap();
-    let mut client = Client::new(server.local_addr(), &ticket);
+    let mut client = Client::new(&server, &ticket);
     client.handshake();
     let mut watcher = Watcher {
         client,
@@ -4885,9 +4708,7 @@ fn practice_bots_run_their_scripts_for_a_client() {
     let mut payload = BitWriter::new();
     write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
     watcher.client.send(ACK, payload.into_bytes());
-
-    // Each bot's first frame, after its create; then, after the mode UI, a
-    // bot that doesn't fire changes only by its nameplate.
+    // A bot's script frame from `from` on, full (its first) or a delta.
     let script = |watcher: &Watcher, from: usize, entity: u32, full: bool| {
         watcher.find(from, |record| {
             record.entity == entity
@@ -4897,121 +4718,20 @@ fn practice_bots_run_their_scripts_for_a_client() {
                     .is_some_and(|script| (script.first == 0) == full)
         })
     };
-    pump_until(
-        &mut [&mut watcher],
-        &schemas,
-        "the bots' first frames and nameplates",
-        |watchers| {
-            let watcher = &watchers[0];
-            let mode = watcher.find(0, |record| {
-                record.entity == GAME_MODE_ENTITY && record.script.is_some()
-            });
-            bots.iter().all(|&(entity, firing)| {
-                let created = watcher.created(entity);
-                let full = script(watcher, 0, entity, true);
-                assert!(full.is_none() || created < full);
-                full.is_some()
-                    && (firing
-                        || mode.is_some_and(|mode| script(watcher, mode, entity, false).is_some()))
+    // The world waits for every bot's script (match.py `_spawn_steps`).
+    pump_until(&mut [&mut watcher], &schemas, "the world", |watchers| {
+        let watcher = &watchers[0];
+        watcher
+            .find(0, |record| {
+                record.entity == watcher.owner && record.script.is_some()
             })
-        },
-    );
-    // Each bot's nameplate text, its hero's name, in its frames after the
-    // mode UI (a firing bot's goes with a live frame).
-    let texts: Vec<(u32, BitWriter)> = names
-        .iter()
-        .map(|(entity, name)| {
-            let mut text = BitWriter::new();
-            orpheus_script::wire::write_value(
-                &mut text,
-                &orpheus_script::wire::Value::String(name.clone()),
-                orpheus_script::wire::ValueEncoding::Compact,
-            )
-            .unwrap();
-            (*entity, text)
-        })
-        .collect();
-    pump_until(
-        &mut [&mut watcher],
-        &schemas,
-        "the bots' names in their nameplates",
-        |watchers| {
-            let watcher = &watchers[0];
-            let Some(mode) = watcher.find(0, |record| {
-                record.entity == GAME_MODE_ENTITY && record.script.is_some()
-            }) else {
-                return false;
-            };
-            texts.iter().all(|(entity, text)| {
-                watcher
-                    .find(mode, |record| {
-                        record.entity == *entity
-                            && record.script.as_ref().is_some_and(|chunk| {
-                                orpheus_testkit::contains_bits(
-                                    &chunk.data,
-                                    chunk.width,
-                                    text.as_bytes(),
-                                    text.bit_len(),
-                                )
-                            })
-                    })
-                    .is_some()
-            })
-        },
-    );
-    // The first datagram from `from` on with a script chunk of `entity`
-    // that has `bits`.
-    let first_with = |watcher: &Watcher, from: usize, entity: u32, bits: &BitWriter| {
-        watcher.find(from, |record| {
-            record.entity == entity
-                && record.script.as_ref().is_some_and(|chunk| {
-                    orpheus_testkit::contains_bits(
-                        &chunk.data,
-                        chunk.width,
-                        bits.as_bytes(),
-                        bits.bit_len(),
-                    )
-                })
-        })
-    };
-    // The player's team's bots arrive with their nameplate enabled: in the
-    // nameplate's variables #8807 true (0D24 sync slot 7) comes right before
-    // the name (slot 12). The enemy target's nameplate, not hit yet, has
-    // only its name there.
-    let enabled_name = |name: &str| {
-        let mut bits = BitWriter::new();
-        for value in [
-            orpheus_script::wire::Value::Bool(true),
-            orpheus_script::wire::Value::String(name.into()),
-        ] {
-            orpheus_script::wire::write_value(
-                &mut bits,
-                &value,
-                orpheus_script::wire::ValueEncoding::Compact,
-            )
-            .unwrap();
-            bits.bit(false); // no stack binding
-        }
-        bits
-    };
-    for &ally in &allies {
-        let name = &names.iter().find(|(entity, _)| *entity == ally).unwrap().1;
-        assert!(
-            first_with(&watcher, 0, ally, &enabled_name(name)).is_some(),
-            "{ally:08X}'s nameplate is not enabled"
-        );
-    }
-    let target_name = &names
-        .iter()
-        .find(|(entity, _)| *entity == target)
-        .unwrap()
-        .1;
-    assert_eq!(
-        first_with(&watcher, 0, target, &enabled_name(target_name)),
-        None
-    );
+            .is_some()
+    });
 
-    // Shoot the target: first a body shot it survives, then to death.
+    // Shoot the target: the fixture gun (`fixture_hitscan_factory`) fires
+    // shots of 100, 9 a second (every 7 frames) while the button is held:
+    // the commands of 16 frames with it held fire three. The bot (200)
+    // survives the first and dies of the second.
     let owner = watcher.owner;
     send_player_message(
         &mut watcher.client,
@@ -5024,32 +4744,101 @@ fn practice_bots_run_their_scripts_for_a_client() {
     pump_until(&mut [&mut watcher], &schemas, "the body", |watchers| {
         watchers[0].created(owner | 1).is_some()
     });
-    // The body shot (100 of its 200): its 25001, and with it or after it a
-    // frame of the bot's script, which doesn't fire: its nameplate enabled
-    // (upstream `show_damage_nameplate`).
+    // The first hit's 25001, and with it or after it a frame of the bot's
+    // script, which doesn't fire: its nameplate enabled (upstream
+    // `show_damage_nameplate`); no elimination yet.
     let hits_from = |watcher: &Watcher, from: usize, id: u32| {
         (from..watcher.datagrams.len())
             .find(|&index| watcher.datagrams[index].0.iter().any(|item| item.id == id))
     };
     let fired = watcher.datagrams.len();
-    let body_shot = aimed_batch(watcher.tick + 1, 1, -16384, 0, FIRE, false);
-    watcher.client.send(ACK, body_shot.clone());
-    watcher.client.send(ACK, body_shot);
-    pump_until(
-        &mut [&mut watcher],
-        &schemas,
-        "the surviving hit's nameplate frame",
-        |watchers| {
-            let watcher = &watchers[0];
-            hits_from(watcher, fired, 25001)
-                .is_some_and(|hit| script(watcher, hit, target, false).is_some())
-        },
-    );
+    // The client sends each frame's command as its frame comes, the next
+    // one after each datagram.
+    let shot_frame = watcher.tick + 1;
+    let mut next = shot_frame;
+    let mut command = |watcher: &mut Watcher, buttons: u32| {
+        while next <= watcher.tick + 1 {
+            watcher
+                .client
+                .send(ACK, aimed_batch(next, 1, -16384, 0, buttons, false));
+            next += 1;
+        }
+    };
+    let deadline = server.now() + Duration::from_secs(2);
+    while !hits_from(&watcher, fired, 25001)
+        .is_some_and(|hit| script(&watcher, hit, target, false).is_some())
+    {
+        assert!(
+            server.now() < deadline,
+            "waiting for the surviving hit's nameplate frame"
+        );
+        command(&mut watcher, FIRE);
+        watcher.pump(&schemas);
+    }
     assert_eq!(hits_from(&watcher, fired, 25005), None);
-    // 0.1 s after the hit the bot's 0C17 raises its pain criteria (100 of
-    // the 100 left: "severe", 0609); the client gets the bot's voice set's
-    // line for it (ClientInVoice 27500): the bot speaks, to the player's
-    // body, stimulus 0004.078 ("PnSvr"), its first line (key 000B).
+
+    // The second shot kills the bot. The client leaves the datagram with
+    // its hit notice out of its ACKs; the next ACK shows it lost, and the
+    // notice goes again under the same sequence (`GameEgress::acknowledge`).
+    let killed = watcher.datagrams.len();
+    let hit_in = |packet: &Packet, known: &HashSet<u32>| {
+        (packet.kind == KIND_FRAME)
+            .then(|| {
+                messages(&schemas, packet)
+                    .into_iter()
+                    .find(|item| item.message.id == 25001 && !known.contains(&item.sequence))
+            })
+            .flatten()
+    };
+    let (lost, kill_sent) = loop {
+        assert!(server.now() < deadline, "waiting for the kill's hit");
+        command(&mut watcher, FIRE);
+        let packet = watcher.client.receive();
+        if let Some(hit) = hit_in(&packet, &watcher.sequences) {
+            break (hit, tick_of(&packet));
+        }
+        watcher.record(&schemas, &packet);
+    };
+    // Each hit names the frame its shot left the gun: shot k leaves
+    // round(k / 9 s) after the press (`vm/volleys.rs`), the second 111 ms
+    // later, in the 16 ms frame from 96 ms on: the press's frame + 6. 100
+    // dealt, killing (bit 2), not critical.
+    let first = &watcher.datagrams[hits_from(&watcher, fired, 25001).unwrap()]
+        .0
+        .iter()
+        .find(|message| message.id == 25001)
+        .unwrap()
+        .fields;
+    assert_eq!(first[&0x84], Value::Unsigned(u64::from(shot_frame)));
+    assert_eq!(
+        lost.message.fields[&0x84],
+        Value::Unsigned(u64::from(shot_frame + 111 / 16))
+    );
+    let Value::Struct(impact) = &lost.message.fields[&0x78] else {
+        panic!("hit body")
+    };
+    let entity = |id: u32| Value::Struct(Fields::from([(0, Value::Unsigned(u64::from(id)))]));
+    assert_eq!(impact[&0], entity(target));
+    assert_eq!(impact[&4], Value::Unsigned(100), "damage");
+    assert_eq!(impact[&8], Value::Unsigned(2), "killing");
+    // The button comes up.
+    let resent = loop {
+        assert!(server.now() < deadline, "waiting for the hit's resend");
+        command(&mut watcher, 0);
+        let packet = watcher.client.receive();
+        let hit = hit_in(&packet, &watcher.sequences);
+        watcher.record(&schemas, &packet);
+        if let Some(hit) = hit {
+            break hit;
+        }
+    };
+    assert_eq!(resent, lost);
+
+    // 0.1 s after the first hit the bot's 0C17 raises its pain criteria
+    // (100 of the 100 left: "severe", 0609); the client gets the bot's
+    // voice set's line for it (ClientInVoice 27500): the bot speaks, to the
+    // player's body, stimulus 0004.078 ("PnSvr"), its first line (key
+    // 000B).
     pump_until(
         &mut [&mut watcher],
         &schemas,
@@ -5065,39 +4854,37 @@ fn practice_bots_run_their_scripts_for_a_client() {
         .find(|message| message.id == 27500)
         .unwrap()
         .fields;
-    let entity = |id: u32| Value::Struct(Fields::from([(0, Value::Unsigned(u64::from(id)))]));
     assert_eq!(voice[&0x78], entity(target));
     assert_eq!(voice[&0x7c], entity(owner | 1));
     assert_eq!(voice[&0x88], Value::Unsigned(0x0ee0_0000_0000_0004));
     assert_eq!(voice[&0x90], Value::Unsigned(0x0760_0000_0000_000b));
-    // The button comes up, and the gun's 9 shots a second allow the next.
-    let release = aimed_batch(watcher.tick + 1, 1, -16384, 0, 0, false);
-    watcher.client.send(ACK, release.clone());
-    watcher.client.send(ACK, release);
-    let released = watcher.tick + 12;
-    pump_until(&mut [&mut watcher], &schemas, "the release", |watchers| {
-        watchers[0].tick >= released
-    });
-    let commands = aimed_batch(watcher.tick + 1, 1, -16384, AT_BOT_HEAD_4M, FIRE, false);
-    watcher.client.send(ACK, commands.clone());
-    watcher.client.send(ACK, commands);
     let replacement = BOT_ENTITY + 15;
     pump_until(&mut [&mut watcher], &schemas, "the kill", |watchers| {
-        watchers[0]
-            .datagrams
-            .iter()
-            .any(|(messages, _)| messages.iter().any(|message| message.id == 25005))
+        hits_from(watchers[0], killed, 25005).is_some()
     });
-    let killed_at = Instant::now();
-    let kill = hits_from(&watcher, fired, 25005).unwrap();
+    let kill = hits_from(&watcher, killed, 25005).unwrap();
+    let elimination = watcher.datagrams[kill]
+        .0
+        .iter()
+        .find(|message| message.id == 25005)
+        .unwrap();
+    assert_eq!(elimination.fields[&0x84], entity(target));
     pump_until(
         &mut [&mut watcher],
         &schemas,
         "the replacement",
         |watchers| watchers[0].created(replacement).is_some(),
     );
-    // combat.py `BOT_RESPAWN`: 3 s.
-    assert!(killed_at.elapsed() >= Duration::from_millis(2_800));
+    // combat.py `BOT_RESPAWN`: 3 s, 187.5 ticks, so the first tick 188
+    // ticks after the kill's. The kill's notices and the replacement's
+    // create each go with the next send frame: their datagrams are 188
+    // ticks apart, give or take `SEND_EVERY` - 1.
+    let created = watcher.created(replacement).unwrap();
+    let respawned = watcher.ticks[created] - kill_sent;
+    assert!(
+        (188 - (SEND_EVERY - 1)..=188 + (SEND_EVERY - 1)).contains(&respawned),
+        "replaced after {respawned} ticks"
+    );
     pump_until(
         &mut [&mut watcher],
         &schemas,
@@ -5117,23 +4904,19 @@ fn practice_bots_run_their_scripts_for_a_client() {
             record.entity == target && record.operation == Some(3)
         })
         .unwrap();
-    let created = watcher.created(replacement).unwrap();
     assert!(death <= destroyed && destroyed <= created);
-    // The death's frames raise the target's dead flag (entity variable
-    // #478 true), which hides its health bar (0D24's #17549 reads
-    // `!#478e`); its frames before the kill didn't have it.
-    let mut dead_flag = BitWriter::new();
-    dead_flag.w_var(orpheus_script::bot::DEAD_FLAG);
-    orpheus_script::wire::write_value(
-        &mut dead_flag,
-        &orpheus_script::wire::Value::Bool(true),
-        orpheus_script::wire::ValueEncoding::Compact,
-    )
-    .unwrap();
-    dead_flag.bit(false); // no stack binding
-    let raised = first_with(&watcher, 0, target, &dead_flag).unwrap();
-    assert!(kill <= raised && raised <= destroyed);
     assert!(created < script(&watcher, 0, replacement, true).unwrap());
+    // No card names a bot.
+    assert!(!watcher.datagrams.iter().any(|(messages, _)| {
+        messages.iter().any(|message| {
+            message.id == 20308
+                && matches!(
+                    message.fields.get(&0x80),
+                    Some(Value::Struct(card))
+                        if matches!(card.get(&0x40), Some(Value::String(tag)) if names.contains(tag))
+                )
+        })
+    }));
     server.stop().unwrap();
 }
 
@@ -5164,11 +4947,11 @@ fn a_firing_practice_bot_shoots_the_player() {
     shooter.yaw = 16384.0;
     let shooter = shooter.entity;
     let schemas = Arc::new(Schemas::game());
-    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let ticket = server
         .open_prepared_practice(MATCH, scene, player().remove(0), PlayerCard::default())
         .unwrap();
-    let mut client = Client::new(server.local_addr(), &ticket);
+    let mut client = Client::new(&server, &ticket);
     client.handshake();
     let mut watcher = Watcher {
         client,
@@ -5291,250 +5074,6 @@ fn a_firing_practice_bot_shoots_the_player() {
         })
         .expect("the rocket's destroy");
     assert!(destroyed >= launched);
-    server.stop().unwrap();
-}
-
-/// Each training bot's stand-in controller (`orpheus_sim::scene`
-/// `bot_controller_create`): the client gets its create, with the bot's
-/// name and its body (44), no earlier than the body's create; the kill
-/// notice 25005 names the body while the controller exists; after the
-/// respawn the controller's 44 names the new body, after its create; no
-/// card names a bot (the team list and the Tab board stay the players'),
-/// and the controller is never destroyed. Each bot's body is a hero that
-/// can be hit, on its team (its filter bits, `orpheus_sim::scene` module
-/// notes), and the killed bot's pools of 0 come with its dead bit.
-#[test]
-#[ignore = "requires the derived 104319 data with its bot graph bundle"]
-fn practice_bot_controllers_name_the_bots_for_a_client() {
-    use DecodedField::{DbId, Entity, Id, Text};
-    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
-    use orpheus_script::vm::Unknowns;
-    use orpheus_sim::{
-        body_script::fixture_hitscan_factory,
-        bots::{BOT_CONTROLLER_ENTITY, BOT_ENTITY},
-        scene_assets::SceneAssets,
-    };
-    use orpheus_wire::commands::FIRE;
-
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-    assets.set_bot_unknowns(Unknowns::Tolerate);
-    let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
-    let [x, y, z] = scene.map().spawn_point(0, 0).unwrap().0;
-    // An enemy bot that neither fires nor walks, 4 m beside the spawn.
-    let slot = scene
-        .bots()
-        .iter()
-        .position(|bot| !bot.spawn.firing && bot.spawn.team != 0 && bot.spawn.route.is_empty())
-        .unwrap();
-    scene.bots_mut()[slot].position = [x - 4.0, y, z];
-    let target = scene.bots()[slot].entity;
-    let controller = BOT_CONTROLLER_ENTITY + slot as u32;
-    // Each bot body's team bit.
-    let team_bits: HashMap<u32, u64> = scene
-        .bots()
-        .iter()
-        .map(|bot| (bot.entity, 0x80_0000 << bot.spawn.team))
-        .collect();
-    // Each bot's body, controller and the components its create carries.
-    let link = |body: u32| (44, vec![Some(Entity(body)); 3]);
-    let expected: Vec<(u32, u32, u32, Vec<DecodedComponent>)> = scene
-        .bots()
-        .iter()
-        .enumerate()
-        .map(|(slot, bot)| {
-            let components = vec![
-                (26, vec![Some(Id(0x80_0000 << bot.spawn.team))]),
-                (
-                    29,
-                    vec![
-                        Some(DbId(0xffff_f000 + slot as u64, 1 << 56)),
-                        Some(Text(bot.spawn.name.clone())),
-                    ],
-                ),
-                link(bot.entity),
-            ];
-            let definition = 0x000e;
-            (
-                bot.entity,
-                BOT_CONTROLLER_ENTITY + slot as u32,
-                definition,
-                components,
-            )
-        })
-        .collect();
-    let names: HashSet<String> = scene
-        .bots()
-        .iter()
-        .map(|bot| bot.spawn.name.clone())
-        .collect();
-    let factory = fixture_hitscan_factory(100.0);
-    scene.owner_body_factory = Some(Arc::new(move |hero, spawn| {
-        if hero.guid != SOLDIER {
-            return Ok(None);
-        }
-        Ok(Some(Box::new(factory.start(spawn)?)))
-    }));
-    let schemas = Arc::new(Schemas::game());
-    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
-    let ticket = server
-        .open_prepared_practice(MATCH, scene, player().remove(0), PlayerCard::default())
-        .unwrap();
-    let mut client = Client::new(server.local_addr(), &ticket);
-    client.handshake();
-    let mut watcher = Watcher {
-        client,
-        owner: player_entity(0),
-        tick: 0,
-        sequences: HashSet::new(),
-        datagrams: Vec::new(),
-        ticks: Vec::new(),
-    };
-    pump_until(&mut [&mut watcher], &schemas, "the instance", |watchers| {
-        watchers[0]
-            .datagrams
-            .iter()
-            .any(|(messages, _)| messages.iter().any(|message| message.id == 20300))
-    });
-    let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
-    let mut payload = BitWriter::new();
-    write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
-    watcher.client.send(ACK, payload.into_bytes());
-    pump_until(
-        &mut [&mut watcher],
-        &schemas,
-        "the bots and their controllers",
-        |watchers| {
-            expected.iter().all(|(body, controller, _, _)| {
-                watchers[0].created(*body).is_some() && watchers[0].created(*controller).is_some()
-            })
-        },
-    );
-    let create_of =
-        |watcher: &Watcher, entity: u32| -> (usize, Option<u32>, Vec<DecodedComponent>) {
-            let index = watcher.created(entity).unwrap();
-            let record = watcher.datagrams[index]
-                .1
-                .iter()
-                .find(|record| record.entity == entity && record.is_create())
-                .unwrap();
-            (
-                index,
-                record.definition,
-                record.components.clone().expect("decodable components"),
-            )
-        };
-    for (body, controller, definition, components) in &expected {
-        let (created, kind, received) = create_of(&watcher, *controller);
-        assert!(created >= watcher.created(*body).unwrap());
-        assert_eq!(kind, Some(*definition));
-        assert_eq!(&received, components, "controller {controller:08X}");
-    }
-    // The bodies' filter bits: their team's, a hero (0x1) that can be hit
-    // (0x40).
-    for (body, ..) in &expected {
-        let (_, _, received) = create_of(&watcher, *body);
-        let filter = received.iter().find(|(index, _)| *index == 26).cloned();
-        assert_eq!(
-            filter,
-            Some((26, vec![Some(Id(team_bits[body] | 0x41))])),
-            "body {body:08X}"
-        );
-    }
-
-    // Kill the target with a head shot.
-    let owner = watcher.owner;
-    send_player_message(
-        &mut watcher.client,
-        &schemas,
-        owner,
-        1,
-        PICK_HERO,
-        SOLDIER.to_le_bytes().to_vec(),
-    );
-    pump_until(&mut [&mut watcher], &schemas, "the body", |watchers| {
-        watchers[0].created(owner | 1).is_some()
-    });
-    let commands = aimed_batch(watcher.tick + 1, 1, -16384, AT_BOT_HEAD_4M, FIRE, false);
-    watcher.client.send(ACK, commands.clone());
-    watcher.client.send(ACK, commands);
-    let notice = |watcher: &Watcher| {
-        (0..watcher.datagrams.len()).find_map(|index| {
-            watcher.datagrams[index]
-                .0
-                .iter()
-                .find(|message| message.id == 25005)
-                .map(|message| (index, message.fields[&0x84].clone()))
-        })
-    };
-    pump_until(&mut [&mut watcher], &schemas, "the kill", |watchers| {
-        notice(watchers[0]).is_some()
-    });
-    let (killed, victim) = notice(&watcher).unwrap();
-    assert_eq!(
-        victim,
-        Value::Struct(Fields::from([(0, Value::Unsigned(u64::from(target)))]))
-    );
-    assert!(watcher.created(controller).unwrap() < killed);
-    // Its pools of 0 come with the dead bit (0x10) in its filter bits.
-    let dead = |watcher: &Watcher| {
-        watcher.find(0, |record| {
-            record.entity == target
-                && record.operation == Some(2)
-                && record.components.as_ref().is_some_and(|components| {
-                    components
-                        .iter()
-                        .map(|(index, _)| *index)
-                        .collect::<Vec<_>>()
-                        == [51, 26]
-                        && first_pool(components) == Some(0.0)
-                        && components[1] == (26, vec![Some(Id(team_bits[&target] | 0x51))])
-                })
-        })
-    };
-    pump_until(
-        &mut [&mut watcher],
-        &schemas,
-        "the dead bot's filter bits",
-        |watchers| dead(watchers[0]).is_some(),
-    );
-
-    // The respawn: the controller now controls the new body.
-    let replacement = BOT_ENTITY + expected.len() as u32;
-    let relinked = |watcher: &Watcher| {
-        watcher.find(0, |record| {
-            record.entity == controller
-                && record.operation == Some(2)
-                && record.components == Some(vec![link(replacement)])
-        })
-    };
-    pump_until(
-        &mut [&mut watcher],
-        &schemas,
-        "the replacement's controller link",
-        |watchers| relinked(watchers[0]).is_some(),
-    );
-    assert!(relinked(&watcher).unwrap() >= watcher.created(replacement).unwrap());
-    // Never destroyed, never a card or a team list entry of its own.
-    assert!(
-        watcher
-            .find(0, |record| {
-                expected
-                    .iter()
-                    .any(|(_, controller, _, _)| record.entity == *controller)
-                    && record.operation == Some(3)
-            })
-            .is_none()
-    );
-    assert!(!watcher.datagrams.iter().any(|(messages, _)| {
-        messages.iter().any(|message| {
-            message.id == 20308
-                && matches!(
-                    message.fields.get(&0x80),
-                    Some(Value::Struct(card))
-                        if matches!(card.get(&0x40), Some(Value::String(tag)) if names.contains(tag))
-                )
-        })
-    }));
     server.stop().unwrap();
 }
 

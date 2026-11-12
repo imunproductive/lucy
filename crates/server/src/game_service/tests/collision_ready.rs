@@ -25,8 +25,8 @@ fn world_player(tag: &str, team: u8, account: u64) -> WorldPlayer {
     }
 }
 
-fn watch(server: &GameService, ticket: &Handoff, slot: usize) -> Watcher {
-    let mut client = Client::new(server.local_addr(), ticket);
+fn watch(server: &Lockstep, ticket: &Handoff, slot: usize) -> Watcher {
+    let mut client = Client::new(server, ticket);
     client.handshake();
     Watcher {
         client,
@@ -100,7 +100,7 @@ fn states(server: &GameService, id: MatchId) -> Vec<PlayerState> {
 #[test]
 fn a_failed_collision_sends_connected_games_home_once_and_drops_the_others() {
     let schemas = Arc::new(Schemas::game());
-    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let (release, wait) = mpsc::channel::<io::Error>();
     let prepare: ScenePreparation = Box::new(move || Err(wait.recv().unwrap()));
     let tickets = server
@@ -136,6 +136,7 @@ fn a_failed_collision_sends_connected_games_home_once_and_drops_the_others() {
     release
         .send(io::Error::other("missing collision chunk"))
         .unwrap();
+    server.await_scenes();
     pump_until(
         &mut [&mut a, &mut b],
         &schemas,
@@ -147,8 +148,8 @@ fn a_failed_collision_sends_connected_games_home_once_and_drops_the_others() {
         },
     );
     // Later ticks send nobody home again.
-    let until = Instant::now() + Duration::from_secs(1);
-    while Instant::now() < until {
+    let until = server.now() + Duration::from_secs(1);
+    while server.now() < until {
         a.pump(&schemas);
         b.pump(&schemas);
     }
@@ -160,22 +161,14 @@ fn a_failed_collision_sends_connected_games_home_once_and_drops_the_others() {
 
     // The seat nobody connected to is gone, and a late game gets no answer.
     assert!(!server.handoff_pending(tickets[2].conn).unwrap());
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = server.now() + Duration::from_secs(2);
     while server.seat_exists(&tickets[2]).unwrap() {
-        assert!(Instant::now() < deadline, "waiting for the dropped seat");
-        thread::sleep(Duration::from_millis(10));
+        assert!(server.now() < deadline, "waiting for the dropped seat");
+        server.step();
     }
-    let mut late = Client::new(server.local_addr(), &tickets[2]);
-    late.socket
-        .set_read_timeout(Some(Duration::from_millis(100)))
-        .unwrap();
+    let mut late = Client::new(&server, &tickets[2]);
     late.send(SYN, Vec::new());
-    let mut buffer = [0; MAX_DATAGRAM];
-    let error = late.socket.recv(&mut buffer).unwrap_err();
-    assert!(matches!(
-        error.kind(),
-        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-    ));
+    late.hears_nothing(Duration::from_millis(100));
     assert!(
         server
             .join_match(MATCH, vec![world_player("d#4444", 0, 10)])
@@ -187,13 +180,13 @@ fn a_failed_collision_sends_connected_games_home_once_and_drops_the_others() {
     for watcher in [&mut a, &mut b] {
         watcher.client.send(FIN | ACK, Vec::new());
     }
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = server.now() + Duration::from_secs(2);
     while !server.snapshot().unwrap().is_empty() {
         assert!(
-            Instant::now() < deadline,
+            server.now() < deadline,
             "waiting for the players to leave"
         );
-        thread::sleep(Duration::from_millis(10));
+        server.step();
     }
     assert!(!server.seat_exists(&tickets[0]).unwrap());
     assert!(!server.seat_exists(&tickets[1]).unwrap());
@@ -215,7 +208,7 @@ fn seats_wait_for_their_scene_while_another_match_plays() {
 
     let assets = Arc::new(SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap());
     let schemas = Arc::new(Schemas::game());
-    let mut server = GameService::bind(local(), Arc::clone(&schemas)).unwrap();
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let (release, wait) = mpsc::channel::<()>();
     let prepared = Arc::new(AtomicUsize::new(0));
     let prepare: ScenePreparation = {
@@ -282,6 +275,7 @@ fn seats_wait_for_their_scene_while_another_match_plays() {
     assert_eq!(states(&server, OTHER), [PlayerState::Playing]);
 
     release.send(()).unwrap();
+    server.await_scenes();
     pump_until(
         &mut all,
         &schemas,
