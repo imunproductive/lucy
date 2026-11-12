@@ -149,9 +149,7 @@ pub fn bot_controller_create(bot: &Bot, slot: usize) -> io::Result<EntityUpdate>
             ],
         ),
     ];
-    if bot_controllers_linked() {
-        components.push(possession_link(bot.entity));
-    }
+    components.push(possession_link(bot.entity));
     let mut definition = Create::new(PLAYER_DEFINITION, components);
     definition.flags = PLAYER_PATH | WITH_TRANSFORM | WITH_SCALE;
     Ok(create(entity, definition))
@@ -303,8 +301,15 @@ pub fn bot_create(
     vitals: Option<&orpheus_script::vitals::Vitals>,
 ) -> io::Result<EntityUpdate> {
     let pools = vitals.map_or_else(
-        || health(bot.spawn.health as f32, bot.spawn.health as f32, 0.0, 0.0),
-        orpheus_script::vitals::Vitals::component,
+        || {
+            BOT_PLATE.pools(health(
+                bot.spawn.health as f32,
+                bot.spawn.health as f32,
+                0.0,
+                0.0,
+            ))
+        },
+        |vitals| BOT_PLATE.pools(vitals.component()),
     );
     let mut definition = Create::new(bot.spawn.body, vec![pools, bot_filter(bot)?]);
     definition.position = bot.position.map(|position| position as f32);
@@ -400,55 +405,136 @@ pub fn filter_component(bits: u64) -> Component {
 
 /// A training bot's filter bits component now: dead or alive.
 pub fn bot_filter(bot: &Bot) -> io::Result<Component> {
-    let mut bits = body_filter(team_bit(bot.spawn.team)?, bot.dead);
-    if BOT_LOOK.no_hero_bit {
-        bits &= !HERO;
-    }
-    Ok(filter_component(bits))
+    Ok(filter_component(body_filter(
+        team_bit(bot.spawn.team)?,
+        bot.dead,
+    )))
 }
 
-/// The hero kind bit of [`BODY_KINDS`].
-const HERO: u64 = 0x1;
-
-/// A debugging switch: `ORPHEUS_DEBUG_BOT_LOOK` lists changes to what the
-/// clients learn about the training bots, to find which one makes the
-/// client draw a bot's nameplate and health bar in a player's style (a bar
-/// before the name, black outlines on the bar; `docs/notes/behavior.md`):
-/// `no-hero-bit` leaves the hero bit (0x1) out of the bots' filter bits
-/// (component 26); `no-controller` leaves the stand-in controllers' link to
-/// their body (component 44) out, so no player possesses a bot body (and
-/// "ELIMINATED" names no bot).
-#[derive(Default)]
-struct BotLook {
-    no_hero_bit: bool,
-    no_controller: bool,
+/// A debugging switch: `ORPHEUS_DEBUG_BOT_PLATE` lists changes to what the
+/// clients learn about the training bots, one input of their nameplate or
+/// health bar each, to find which one makes the client draw the bar with
+/// black segment outlines and a mark before the name ("▌TRAINING BOT";
+/// retail has neither, `docs/notes/behavior.md`). Leaving out the hero bit
+/// and the stand-in controllers changed nothing (2026-11-12). The bar's
+/// presenter (`0D24` st51, layout `019C.116`) gets the body itself and
+/// fills most of its fields natively, from the body; the name's (st42,
+/// `012B.116`) gets its text, a meter and a status icon from what the
+/// server sends:
+/// - `no-name`: no text override #8812 ([`orpheus_script::bot::NAMEPLATE_TEXT`],
+///   a string, our assumption); the name then comes from the stand-in
+///   controller (`#17476 = #8812 || STU_CD7F3617(…)`).
+/// - `meter=<number>`: entity variable #6036, which `0D24` shares: the
+///   name's meter (`3523`) shows `1 - #6036e`; other than 0 it also takes
+///   `0D24` st4's first case, another status icon.
+/// - `status`: entity variable #2143 true: the status icon (`23D1`) `25E9`
+///   instead of `654A` (`0D24` st5).
+/// - `pool-id=<n>`, `pool-kind=<n>`, `pool-tail=<a>.<b>.<c>.<d>`: each pool's
+///   id, kind and last four bytes (`orpheus_wire::entity::pool`: 1, 0 and
+///   0.1.0.1, unverified).
+#[derive(Debug, Default, PartialEq)]
+pub struct BotPlate {
+    pub no_name: bool,
+    pub meter: Option<f64>,
+    pub status: bool,
+    pool_id: Option<u32>,
+    pool_kind: Option<u32>,
+    pool_tail: Option<[u8; 4]>,
 }
 
-static BOT_LOOK: std::sync::LazyLock<BotLook> = std::sync::LazyLock::new(|| {
-    let Ok(list) = std::env::var("ORPHEUS_DEBUG_BOT_LOOK") else {
-        return BotLook::default();
+pub static BOT_PLATE: std::sync::LazyLock<BotPlate> = std::sync::LazyLock::new(|| {
+    let Ok(list) = std::env::var("ORPHEUS_DEBUG_BOT_PLATE") else {
+        return BotPlate::default();
     };
-    let mut look = BotLook::default();
-    for item in list
-        .split(',')
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-    {
-        match item {
-            "no-hero-bit" => look.no_hero_bit = true,
-            "no-controller" => look.no_controller = true,
-            other => tracing::warn!("ORPHEUS_DEBUG_BOT_LOOK: unknown change {other:?}"),
-        }
-    }
-    tracing::warn!("debugging: training bots changed by {list:?}");
-    look
+    let plate = BotPlate::parse(&list);
+    tracing::warn!("debugging: training bots changed by {plate:?}");
+    plate
 });
 
-/// Whether the stand-in controllers link to their bot's body (see
-/// [`BotLook`]).
-pub fn bot_controllers_linked() -> bool {
-    !BOT_LOOK.no_controller
+impl BotPlate {
+    fn parse(list: &str) -> Self {
+        let mut plate = Self::default();
+        for item in list
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+        {
+            let (name, value) = item.split_once('=').unwrap_or((item, ""));
+            let known = match name {
+                "no-name" => {
+                    plate.no_name = true;
+                    true
+                }
+                "status" => {
+                    plate.status = true;
+                    true
+                }
+                "meter" => value.parse().map(|meter| plate.meter = Some(meter)).is_ok(),
+                "pool-id" => value.parse().map(|id| plate.pool_id = Some(id)).is_ok(),
+                "pool-kind" => value
+                    .parse()
+                    .map(|kind| plate.pool_kind = Some(kind))
+                    .is_ok(),
+                "pool-tail" => value
+                    .split('.')
+                    .map(str::parse)
+                    .collect::<Result<Vec<u8>, _>>()
+                    .ok()
+                    .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                    .map(|tail| plate.pool_tail = Some(tail))
+                    .is_some(),
+                _ => false,
+            };
+            if !known {
+                tracing::warn!("ORPHEUS_DEBUG_BOT_PLATE: unknown change {item:?}");
+            }
+        }
+        plate
+    }
+
+    /// The bots' entity variables this switch sets when their script
+    /// starts.
+    pub fn entity_variables(&self) -> Vec<(u32, wire::Value)> {
+        let mut variables = Vec::new();
+        if let Some(meter) = self.meter {
+            variables.push((METER, wire::Value::Float(meter)));
+        }
+        if self.status {
+            variables.push((STATUS, wire::Value::Bool(true)));
+        }
+        variables
+    }
+
+    /// A bot's pools component (51) with this switch's changes; a cleared
+    /// slot (id 0) stays cleared.
+    pub fn pools(&self, mut pools: Component) -> Component {
+        for value in pools.fields.iter_mut().flatten() {
+            let ComponentValue::Blob20(bytes) = value else {
+                continue;
+            };
+            if bytes[..4] == [0; 4] {
+                continue;
+            }
+            if let Some(id) = self.pool_id {
+                bytes[..4].copy_from_slice(&id.to_le_bytes());
+            }
+            if let Some(kind) = self.pool_kind {
+                bytes[12..16].copy_from_slice(&kind.to_le_bytes());
+            }
+            if let Some(tail) = self.pool_tail {
+                bytes[16..].copy_from_slice(&tail);
+            }
+        }
+        pools
+    }
 }
+
+/// `0D24`'s shared entity variable #6036: the name's meter shows
+/// `1 - #6036e` (st17). `0E8F` writes it for a dead player's body.
+const METER: u32 = 6036;
+/// `0D24`'s shared entity variable #2143: its status icon is `25E9` when
+/// it is true, else `654A` (st5).
+const STATUS: u32 = 2143;
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
@@ -741,5 +827,25 @@ mod tests {
                 .collect();
             assert_eq!((frame.bit_len(), actual.as_str()), (length, expected));
         }
+    }
+
+    /// `ORPHEUS_DEBUG_BOT_PLATE`: the pool changes go into every pool the
+    /// bots send and leave a cleared slot cleared; an unknown change is
+    /// skipped.
+    #[test]
+    fn the_bot_plate_switch_rewrites_the_bots_pools() {
+        use orpheus_wire::entity::{pool, pool_component};
+        let plate = BotPlate::parse("pool-id=3, pool-kind=2,pool-tail=1.0.1.0,meter=1,bogus");
+        assert_eq!(plate.meter, Some(1.0));
+        assert!(!plate.no_name && !plate.status);
+        let pools = plate.pools(pool_component([
+            (0, pool(1, 0, 200.0, 150.0)),
+            (1, [0; 20]),
+        ]));
+        let mut changed = pool(3, 2, 200.0, 150.0);
+        changed[16..].copy_from_slice(&[1, 0, 1, 0]);
+        assert_eq!(pools.fields[0], Some(ComponentValue::Blob20(changed)));
+        assert_eq!(pools.fields[1], Some(ComponentValue::Blob20([0; 20])));
+        assert_eq!(BotPlate::parse(""), BotPlate::default());
     }
 }
