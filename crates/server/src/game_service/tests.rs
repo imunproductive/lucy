@@ -3485,8 +3485,10 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
 /// heals 70 a dart (to full at most), with no 25001 to Ana; an enemy takes
 /// the dart's 70 with her 25001. An enemy Soldier: 76 wounds the bot: he
 /// walks ahead of the spawn both share and fires at it, 8 m out along their
-/// facing. Ana then fires along the same line: her darts strike him (the
-/// enemy) until he dies, and the next one the bot behind him. Ana's client
+/// facing. They share the practice spawn, and as enemies their capsules
+/// push them apart (Ana about 1 m sideways), so Ana aims from where she
+/// then stands: at him until a dart strikes him (the enemy), then at the
+/// bot. Ana's client
 /// gets her own body's state, as Soldier: 76's does (owner corrections,
 /// `replication.rs` `CORRECTED_HEROES`).
 #[test]
@@ -3516,12 +3518,13 @@ fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
             bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
             aim = Some((
                 bot.entity,
+                bot.position,
                 bot.spawn.health,
                 (yaw * 65536.0 / 360.0).round() as i32 as i16,
             ));
         },
     );
-    let (bot, full, yaw) = aim.unwrap();
+    let (bot, bot_at, full, yaw) = aim.unwrap();
     let bot_health = |watcher: &Watcher| {
         watcher
             .datagrams
@@ -3599,9 +3602,14 @@ fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
     let wounded = bot_health(&ana).unwrap();
     assert!(wounded < full, "wounded to {wounded}");
 
-    // Ana fires along the line: the Soldier first, then the bot.
+    // Ana fires from where the push left her: at the Soldier until a dart
+    // strikes him, then at the bot. Bodies: Ana's, then the Soldier's.
     let fired = ana.datagrams.len();
     let soldier_body = Value::Unsigned(u64::from(soldier.owner | 1));
+    let facing = |from: [f64; 3], to: [f64; 3]| {
+        let degrees = (to[0] - from[0]).atan2(to[2] - from[2]).to_degrees();
+        (degrees * 65536.0 / 360.0).round() as i32 as i16
+    };
     let deadline = server.now() + Duration::from_secs(20);
     while !bot_health(&ana).is_some_and(|health| health > wounded) {
         assert!(
@@ -3609,8 +3617,16 @@ fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
             "waiting for the heal: hits {:?}",
             hits_of(&ana, fired)
         );
-        command(&mut ana, &mut frames[0], yaw, FIRE);
-        settle([&mut ana, &mut soldier], &mut frames, yaw, &schemas, 1.0);
+        let bodies = server.bodies(MATCH).unwrap();
+        let ana_at = bodies[0].position.unwrap();
+        let target = if hits_of(&ana, fired).is_empty() {
+            bodies[1].position.unwrap()
+        } else {
+            bot_at
+        };
+        let aim = facing(ana_at, target);
+        command(&mut ana, &mut frames[0], aim, FIRE);
+        settle([&mut ana, &mut soldier], &mut frames, aim, &schemas, 1.0);
     }
     assert_eq!(bot_health(&ana), Some((wounded + 70.0).min(full)));
     let hits = hits_of(&ana, fired);
