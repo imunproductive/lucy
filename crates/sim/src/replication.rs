@@ -46,6 +46,7 @@ use orpheus_content::{
 };
 use orpheus_core::tick::{MAX_LEASE_FRAME, TICK_PERIOD};
 use orpheus_physics::{
+    contact::cache::CapsulePose,
     mover::Mover,
     mover::correction::CorrectionHistory,
     mover::kinematics::{Poses, poses as kinematics_poses},
@@ -98,6 +99,45 @@ const MAX_SCRIPT_TAIL: u32 = 256;
 /// server runs all of their movement (`docs/notes/behavior.md`, "Owner
 /// corrections").
 const CORRECTED_HEROES: [u64; 2] = [SOLDIER, ANA];
+
+/// Whether a living body of team `other` blocks the moves of a body of
+/// `team` (the server's mover then takes its capsule,
+/// [`WorldDelivery::set_blockers`]): an enemy's does, an ally's does not,
+/// and in a free-for-all everyone is an enemy, as combat counts them. Retail
+/// OW1: "you can clip through other allies ... However, you cannot clip
+/// through enemies" (Furious Paul's Overwatch mechanics guide, 2017);
+/// upstream's server leaves allies out the same way (leafall903/ORPHEUS
+/// (MIT) `mccree.py` `_npc_peer_contacts`). A dead body blocks nobody. The
+/// client's own masks admit both team categories before its callers'
+/// overrides (0x1499 and 0x1498, upstream `docs/MCCREE_ROLL.txt`), and a
+/// state turns a mover's same-team contact off (`STU_6CC90892`, in
+/// Junkenstein's graphs `0CBC` and `0F68` only): which override leaves a
+/// player's allies out is not known.
+pub fn blocks(free_for_all: bool, team: u8, other: u8) -> bool {
+    free_for_all || team != other
+}
+
+/// The capsules that block the body of a player of `team` ([`blocks`]),
+/// where they are now: the other players' living bodies (`others`, each
+/// with his team) and the living training bots.
+pub fn blockers<'a>(
+    scene: &PreparedScene,
+    team: u8,
+    others: impl IntoIterator<Item = (u8, &'a WorldDelivery)>,
+) -> Vec<CapsulePose> {
+    let free_for_all = scene.map().free_for_all;
+    let enemy = |other| blocks(free_for_all, team, other);
+    let bots = scene
+        .bot_capsules()
+        .filter(|&(other, _)| enemy(other))
+        .map(|(_, capsule)| capsule);
+    others
+        .into_iter()
+        .filter(|&(other, _)| enemy(other))
+        .filter_map(|(_, world)| world.body_capsule())
+        .chain(bots)
+        .collect()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BodyId {
@@ -970,6 +1010,9 @@ pub struct WorldDelivery {
     bodies: HashMap<u32, (u64, Lifetime)>,
     input: InputQueue,
     mover: Option<Mover>,
+    /// The other bodies that block the moves of this player's body
+    /// ([`WorldDelivery::set_blockers`]).
+    blockers: Vec<CapsulePose>,
     body_script: Option<BodyScript>,
     /// The body's script stopped on a fault: a pick of the same hero gets a
     /// new body with a new script (match.py `body_script_failed`).
@@ -1105,6 +1148,7 @@ impl WorldDelivery {
             bodies: HashMap::new(),
             input: InputQueue::default(),
             mover: None,
+            blockers: Vec::new(),
             body_script: None,
             script_failed: false,
             projectile_destroys: HashMap::new(),
@@ -2375,6 +2419,19 @@ impl WorldDelivery {
         Some(self.mover.as_ref()?.pose().position)
     }
 
+    /// The capsule of the player's body while it is alive in the world, as
+    /// it blocks other bodies' moves ([`blocks`]).
+    pub fn body_capsule(&self) -> Option<CapsulePose> {
+        self.body_position()?;
+        Some(self.mover.as_ref()?.capsule())
+    }
+
+    /// The capsules of the living bodies that block this player's body
+    /// ([`blocks`]) where they are now, for the commands it runs next.
+    pub fn set_blockers(&mut self, blockers: Vec<CapsulePose>) {
+        self.blockers = blockers;
+    }
+
     /// The player's body as a target this tick (combat.py `_targets`: a
     /// player in the world with a body), hurt when its pools are below
     /// their maximum.
@@ -3178,6 +3235,7 @@ impl WorldDelivery {
             }
             return Ok((used, pending.poses.len() == 0));
         }
+        mover.set_peers(&self.blockers);
         let rays = scene.movement_index();
         let stepped =
             mover.step_pending_with(&mut pending.poses, budget - used, |mover, command| {

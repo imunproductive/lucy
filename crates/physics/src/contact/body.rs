@@ -15,6 +15,14 @@
 //! segment; per shape 0x7FF789D05710 (mesh triangles 0x7FF789CF44A0 ->
 //! 0x7FF789CEDCF0, polytopes 0x7FF789CEA060, capsules 0x7FF789CDC480, spheres
 //! 0x7FF789CDC7F0). Move toward a target 0x7FF789D102D0.
+//!
+//! Other characters ([`CharacterBody::set_peers`]): the client registers a
+//! remote body's capsule as a proxy of its team's category (0x08, 0x10)
+//! that the local mover's filter admits (leafall903/ORPHEUS (MIT)
+//! `docs/MCCREE_ROLL.txt`: masks 0x1499 and 0x1498 before the callers'
+//! overrides). The server has no such proxies in its static world: a move
+//! takes the capsules it is given as round obstacles, as upstream's
+//! `mccree.py` `step_rialto_pose` does with `contacts.py` `PeerShape`.
 
 use std::{collections::HashSet, fmt, sync::Arc};
 
@@ -24,7 +32,7 @@ use crate::{
     contact::hull::HullContactError,
     contact::math::{TINY, Vec3, add, dot, maxps, minps, scale, sub},
     contact::mesh::ContactBounds,
-    contact::round::{RoundShape, splat_tiny},
+    contact::round::{Capsule, RoundShape, splat_tiny},
     contact::solver::{Constraint, ContactPlane, project_target},
     contact::triangle::{SKIN, TOUCH, closest_parameters},
     contact::world::{ContactWorld, PROXY_MARGIN, StaticGeometry, StaticShape, WorldHit, overlaps},
@@ -32,6 +40,9 @@ use crate::{
 
 const MAX_ROUNDS: u32 = 20;
 const FIT_SHRINK: f32 = 0.02;
+/// Another character's capsule takes both team proxy categories as its
+/// mask (`MOVER` in `ow174/game/collision.py`).
+const PEER_MASK: u16 = 0x18;
 
 pub struct BodyMove<'a> {
     pub position: Vec3,
@@ -47,6 +58,11 @@ pub struct CharacterBody {
     proxy_moved: bool,
     contacts: Vec<(u32, ProxyContact)>,
     pairs: HashSet<u32>,
+    /// The capsules of the other characters that block the moves
+    /// ([`CharacterBody::set_peers`]).
+    peer_capsules: Vec<Capsule>,
+    /// Their contacts during a move, with their fat AABBs.
+    peers: Vec<(ContactBounds, ProxyContact)>,
     budget: u32,
     constraints: Vec<Constraint>,
     planes: Vec<ContactPlane>,
@@ -72,6 +88,8 @@ impl CharacterBody {
             proxy_moved: true,
             contacts: Vec::new(),
             pairs: HashSet::new(),
+            peer_capsules: Vec::new(),
+            peers: Vec::new(),
             budget: MAX_ROUNDS,
             constraints: Vec::new(),
             planes: Vec::new(),
@@ -80,6 +98,25 @@ impl CharacterBody {
 
     pub fn position(&self) -> Vec3 {
         self.pose.position
+    }
+
+    /// The capsule where it stands now.
+    pub fn pose(&self) -> CapsulePose {
+        self.pose
+    }
+
+    /// The capsules of the other characters that block this body's moves
+    /// from now on, in place of the last ones (none at first). Each move
+    /// takes them as static obstacles, fresh contacts at the head of its
+    /// contact list, ahead of the map's shapes, and drops them when it ends
+    /// (upstream `mccree.py` `step_rialto_pose` adds its NPCs' capsules so
+    /// for each pose and takes them out after it). A move drops one sooner
+    /// once its fat AABB leaves the body's, as the map's. The ground probe,
+    /// the sweeps and the stance fit test leave them out: the body cannot
+    /// stand on another character, and nothing stops a stance change.
+    pub fn set_peers(&mut self, peers: impl IntoIterator<Item = Capsule>) {
+        self.peer_capsules.clear();
+        self.peer_capsules.extend(peers);
     }
 
     pub fn radius(&self) -> f32 {
@@ -168,10 +205,25 @@ impl CharacterBody {
         let mut current = self.pose.position;
         let target = add(add(scale([0.0; 3], dt), current), displacement);
         let mut passes_total = 0;
+        self.peers.clear();
+        for &capsule in &self.peer_capsules {
+            let geometry = StaticGeometry::Round {
+                shape: RoundShape::Capsule(capsule),
+                mask: PEER_MASK,
+            };
+            let Ok(shape) = StaticShape::new(geometry, None) else {
+                continue;
+            };
+            if let Some(fat) = shape.fat_bounds() {
+                self.peers
+                    .push((fat, ProxyContact::new(&shape, self.category)));
+            }
+        }
         for _ in 0..rounds {
             self.update_pairs();
             self.constraints.clear();
-            for (_, contact) in &mut self.contacts {
+            let peers = self.peers.iter_mut().map(|(_, contact)| contact);
+            for contact in peers.chain(self.contacts.iter_mut().map(|(_, contact)| contact)) {
                 let sign = contact.normal_sign();
                 let manifolds = contact.manifolds(self.pose)?;
                 for (normal, points) in manifolds.iter() {
@@ -199,6 +251,7 @@ impl CharacterBody {
                 break;
             }
         }
+        self.peers.clear();
         self.budget = if passes_total > (rounds * 100).min(500) {
             (self.budget / 2).max(1)
         } else {
@@ -255,6 +308,8 @@ impl CharacterBody {
         let translation = sub(target, self.pose.position);
         let low = self.fat.low.map(f64::from);
         let high = self.fat.high.map(f64::from);
+        self.peers
+            .retain(|(bounds, _)| overlaps(low, high, *bounds));
         self.contacts.retain(|(id, _)| {
             let bounds = self.world.shapes()[*id as usize].fat_bounds();
             let keep = bounds.is_some_and(|bounds| overlaps(low, high, bounds));
@@ -265,7 +320,8 @@ impl CharacterBody {
         });
         let mut fraction = 1.0;
         if translation != [0.0; 3] {
-            for (_, contact) in &mut self.contacts {
+            let peers = self.peers.iter_mut().map(|(_, contact)| contact);
+            for contact in peers.chain(self.contacts.iter_mut().map(|(_, contact)| contact)) {
                 if let Some(candidate) = contact.cast(self.pose, swept, translation)? {
                     fraction = minps(fraction, candidate);
                 }

@@ -55,9 +55,10 @@ use serde::Deserialize;
 use orpheus_core::guid::parse_guid;
 use orpheus_core::tick::TICK_PERIOD;
 use orpheus_physics::contact::body::CharacterBody;
+use orpheus_physics::contact::cache::CapsulePose;
 use orpheus_physics::contact::math::{add, sub};
 use orpheus_physics::contact::world::ContactWorld;
-use orpheus_physics::mover::ground::{pogo, standing_body, standing_origin};
+use orpheus_physics::mover::ground::{pogo, standing_body, standing_capsule, standing_origin};
 use orpheus_physics::mover::settings::MoverSettings;
 use orpheus_physics::{
     collision::index::TriangleIndex,
@@ -868,6 +869,20 @@ impl Bot {
 
     pub fn walking(&self) -> bool {
         self.target.is_some()
+    }
+
+    /// Its capsule where it is now, as other characters meet it, on its
+    /// body's mover `settings`: standing on its patrol (its spring at rest,
+    /// as its records say: `Bot::movement`), its mover's while it flies.
+    /// None once it is dead: a dead body blocks nobody.
+    pub fn capsule(&self, settings: &MoverSettings) -> Option<CapsulePose> {
+        if self.dead {
+            return None;
+        }
+        Some(self.flight.as_ref().map_or_else(
+            || standing_capsule(settings, self.position),
+            |flight| flight.mover.capsule(),
+        ))
     }
 
     pub fn died(&mut self) {

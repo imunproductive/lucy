@@ -5316,3 +5316,68 @@ fn a_firing_practice_bot_shoots_the_player() {
 }
 
 mod collision_ready;
+
+/// A living enemy training bot blocks Soldier: 76's body on the server
+/// (`orpheus_sim::replication::blocks`), as the client's own mover stops at
+/// the bot's capsule: he runs straight at a Training Bot standing 3 m past
+/// his spawn room's end and stops with their axes the sum of their radii
+/// apart (0.5 + 0.5, less at most the solver's 5 mm slop and 5 mm
+/// tolerance), never past it. His owner corrections are his server body's
+/// poses, so none pulls his client through the bot.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
+fn soldier_runs_into_an_enemy_bot_and_stops_short_of_it() {
+    let assets =
+        orpheus_sim::scene_assets::SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let mut placed = None;
+    let (server, schemas, [mut soldier], _) =
+        practice_world([("soldier#1111", 0, "Soldier: 76")], &assets, |scene| {
+            let ([x, y, z], facing) = scene.map().spawn_point(0, 0).unwrap();
+            // The way the spawn point faces (yaw 0 faces +z, a quarter turn
+            // +x), 3 m past where the spawn room ends, as
+            // `a_firing_practice_bot_shoots_the_player` finds it clear.
+            let (sin, cos) = facing.to_radians().sin_cos();
+            let exit = (0..400)
+                .map(|step| f64::from(step) * 0.25)
+                .find(|&reach| {
+                    let point = [x + reach * sin, y, z + reach * cos];
+                    scene.in_spawn_room(0, orpheus_content::maps::SpawnChoice::First, point)
+                        == Some(false)
+                })
+                .unwrap();
+            let reach = exit + 3.0;
+            let bot = scene
+                .bots_mut()
+                .iter_mut()
+                .find(|bot| !bot.spawn.firing && bot.spawn.team != 0 && bot.spawn.route.is_empty())
+                .unwrap();
+            bot.position = [x + reach * sin, y, z + reach * cos];
+            placed = Some((bot.position, facing));
+        });
+    let ([bx, _, bz], facing) = placed.unwrap();
+    let (sin, cos) = facing.to_radians().sin_cos();
+    let ahead = |[px, _, pz]: [f64; 3]| (bx - px) * sin + (bz - pz) * cos;
+    let gap = |[px, _, pz]: [f64; 3]| (bx - px).hypot(bz - pz);
+    let yaw = (facing * 65536.0 / 360.0).round() as i32 as i16;
+    // He runs for 8 s, at most 44 m at 5.5 m/s, far more than the way to
+    // the bot; his body's feet after every datagram.
+    let mut frame = soldier.tick + 1;
+    let end = server.now() + Duration::from_secs(8);
+    let mut feet = Vec::new();
+    while server.now() < end {
+        if frame <= soldier.tick + 8 {
+            soldier
+                .client
+                .send(ACK, command_batch(frame, 16, yaw, 0, true));
+            frame += 16;
+        }
+        soldier.pump(&schemas);
+        feet.extend(server.bodies(MATCH).unwrap()[0].position);
+    }
+    assert!(
+        feet.iter().all(|&at| ahead(at) > 0.0 && gap(at) >= 0.99),
+        "{feet:?}"
+    );
+    let last = *feet.last().unwrap();
+    assert!(gap(last) <= 1.0, "{last:?}");
+}

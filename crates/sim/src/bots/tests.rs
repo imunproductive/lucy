@@ -233,7 +233,13 @@ fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
     bot.step(250, |_, _, _, _| None);
     assert!(bot.walking());
     let death_position = bot.position;
+    // A living bot blocks other bodies with its standing capsule; a dead one
+    // blocks nobody.
+    let settings = MoverSettings::default();
+    let standing = orpheus_physics::mover::ground::standing_capsule(&settings, bot.position);
+    assert_eq!(bot.capsule(&settings), Some(standing));
     bot.died();
+    assert_eq!(bot.capsule(&settings), None);
     bot.step(400, |_, _, _, _| unreachable!());
     assert!(!bot.walking());
     assert_eq!(bot.position, death_position);

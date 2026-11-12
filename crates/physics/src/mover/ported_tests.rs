@@ -14,6 +14,7 @@ use orpheus_wire::commands::{CROUCH, Command, JUMP};
 
 use super::{
     Mover, STEP,
+    ground::standing_capsule,
     posture::{Posture, snap},
     settings::MoverSettings,
 };
@@ -1404,4 +1405,49 @@ fn the_things_on_the_desk_are_not_ground() {
             .iter()
             .any(|shape| matches!(shape.geometry(), StaticGeometry::Round { .. }))
     );
+}
+
+/// No Python test: another character's capsule ([`Mover::set_peers`],
+/// after leafall903/ORPHEUS (MIT) `mccree.py` `step_rialto_pose`). Soldier:
+/// 76 runs at a Training Bot standing 3 m ahead (the same stance, radius
+/// 0.5) and stops with their axes the sum of the radii apart, less at most
+/// the solver's 5 mm slop; without it he runs on through. Once the bot no
+/// longer blocks him (it died: the server gives his mover no capsule for
+/// it), he runs on.
+#[test]
+fn another_character_stops_the_body_until_it_no_longer_blocks() {
+    let bot = [0.0, 1.0, 3.0];
+    let capsule = standing_capsule(&MoverSettings::default(), bot);
+    let mut free = Body::soldier([0.0, 1.0, 0.0], None);
+    let mut blocked = Body::soldier([0.0, 1.0, 0.0], None);
+    blocked.mover.set_peers(&[capsule]);
+    let through = free.walk(90, run(0));
+    let stopped = blocked.walk(90, run(0));
+    assert!(through[89][2] > bot[2] + 1.0, "{:?}", through[89]);
+    let gap = |feet: &[f64; 3]| (bot[0] - feet[0]).hypot(bot[2] - feet[2]);
+    assert!(stopped.iter().all(|feet| gap(feet) >= 0.995), "{stopped:?}");
+    assert!(gap(&stopped[89]) <= 1.0, "{:?}", stopped[89]);
+    // He stays on the floor and faces it, his speed taken by the contact.
+    assert_eq!(stopped[89][1], 1.0);
+    assert_eq!(blocked.velocity()[2], 0.0);
+    blocked.mover.set_peers(&[]);
+    let on = blocked.walk(60, run(90));
+    assert!(on[59][2] > bot[2] + 1.0, "{:?}", on[59]);
+}
+
+/// No Python test: Soldier: 76 runs at a Training Bot 0.4 m to the side of
+/// his way; he slides along its capsule, never nearer its axis than the
+/// sum of the radii less the solver's 5 mm slop and 5 mm tolerance, and
+/// gets past it on the side away from it.
+#[test]
+fn a_body_slides_along_another_characters_capsule() {
+    let bot = [0.4, 1.0, 3.0];
+    let mut body = Body::soldier([0.0, 1.0, 0.0], None);
+    body.mover
+        .set_peers(&[standing_capsule(&MoverSettings::default(), bot)]);
+    let path = body.walk(120, run(0));
+    let gap = |feet: &[f64; 3]| (bot[0] - feet[0]).hypot(bot[2] - feet[2]);
+    assert!(path.iter().all(|feet| gap(feet) >= 0.99), "{path:?}");
+    assert!(path[119][2] > bot[2] + 1.0, "{:?}", path[119]);
+    assert!(path[119][0] < 0.0, "{:?}", path[119]);
 }

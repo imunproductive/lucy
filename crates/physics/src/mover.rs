@@ -66,6 +66,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::{
     collision::index::TriangleIndex,
     contact::body::CharacterBody,
+    contact::cache::CapsulePose,
     contact::gjk::PointSetSize,
     contact::hull::HullContactError,
     contact::solver::clip_velocity,
@@ -183,6 +184,22 @@ impl Mover {
 
     pub fn crouched(&self) -> bool {
         self.posture.crouched()
+    }
+
+    /// The body's capsule where it stands now: its lowest point at the feet
+    /// plus the lift (the pogo plus the spring offset), its stance's radius
+    /// and segment. The client places another player's proxy so from his
+    /// records (`Posture::spring_steps`).
+    pub fn capsule(&self) -> CapsulePose {
+        self.body.pose()
+    }
+
+    /// The other characters that block the body's moves from now on
+    /// ([`CharacterBody::set_peers`]), each a capsule as [`Mover::capsule`]
+    /// gives it.
+    pub fn set_peers(&mut self, peers: &[CapsulePose]) {
+        self.body
+            .set_peers(peers.iter().map(|peer| peer.world_capsule()));
     }
 
     pub fn track_modifiers(&mut self, frame: u32, active: &BTreeMap<ModifierKey, Modifier>) {

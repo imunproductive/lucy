@@ -78,7 +78,7 @@ use orpheus_sim::{
     mode_script::ModeRunner,
     objectives::Participant,
     projectiles::FiredProjectile,
-    replication::{Record, RoomPlayer, WorldDelivery, show_players},
+    replication::{Record, RoomPlayer, WorldDelivery, blockers, show_players},
     scene::{PlayerAppearance, PlayerCard},
     scene_assets::{CollisionBuild, PreparedScene},
     voice_lines::VoiceLine,
@@ -1823,8 +1823,21 @@ impl State {
             }
             let (id, slot) = self.seats[&connection];
             let retained = self.retained_elsewhere(connection, now);
+            // The living enemy bodies of his room, the other players' and
+            // the training bots', block his body's moves.
+            let blocking = {
+                let room = &self.rooms[&id];
+                let world = room.world.as_ref().expect("prepared world with input");
+                let others = self.peers.iter().filter_map(|(&other, other_peer)| {
+                    let (match_id, other_slot) = self.seats[&other];
+                    (other != connection && match_id == id)
+                        .then(|| (room.players[other_slot].info.team, &other_peer.world))
+                });
+                blockers(&world.scene, room.players[slot].info.team, others)
+            };
             let (_, peer) = self.peers.get_index_mut(index).expect("active peer index");
             peer.world.retain_elsewhere(retained);
+            peer.world.set_blockers(blocking);
             let room = self.rooms.get_mut(&id).expect("prepared room with input");
             let world = room.world.as_ref().expect("prepared world with input");
             let viewer = room.appearance(slot).expect("prepared player");

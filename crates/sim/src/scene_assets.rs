@@ -45,6 +45,7 @@ use orpheus_physics::{
     collision::cache::{MAGIC, VERSION, chunk_guid, read_movement_cache},
     collision::index::TriangleIndex,
     collision::scene::CollisionScene,
+    contact::cache::CapsulePose,
     contact::world::ContactWorld,
     mover::Mover,
     mover::ground::NOT_GROUND,
@@ -738,6 +739,16 @@ impl PreparedScene {
 
     pub fn bots_mut(&mut self) -> &mut [Bot] {
         &mut self.bots
+    }
+
+    /// The living training bots' capsules where they are now, with their
+    /// teams (`Bot::capsule`), for the bodies they block
+    /// (`replication::blocks`).
+    pub fn bot_capsules(&self) -> impl Iterator<Item = (u8, CapsulePose)> + '_ {
+        self.bots.iter().filter_map(|bot| {
+            let capsule = bot.capsule(self.mover(bot.spawn.body))?;
+            Some((bot.spawn.team, capsule))
+        })
     }
 
     /// A bot's body as a target: the capsule of its mover's standing height
