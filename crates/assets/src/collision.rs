@@ -1,7 +1,8 @@
 //! The collision caches `collision/<map>.col` (format 5): a map's static
 //! collision as the character mover sees it (`tools/build_collision.py`,
-//! `ow174/game/collision.py`). The server's reader is
-//! `orpheus_physics::collision::cache`.
+//! `ow174/game/collision.py`), and `collision/<map>.rays.col`, the same
+//! with every category, as the shots see it (`--ray-geometry`). The
+//! server's reader is `orpheus_physics::collision::cache`.
 //!
 //! Where it comes from (the client's map chunk 0x11): each map has one chunk
 //! of kind 0x11 (see [`crate::map_chunk`]). It holds the game's own physics
@@ -33,9 +34,12 @@
 //! polytopes whole, the props as their models' shapes placed with the
 //! placeable's translation, rotation and scale.
 //!
-//! The Python builder could also write `<map>.rays.col` side caches with
-//! every category (`--ray-geometry`); the server doesn't read them (only
-//! `orpheus_physics` tests do), so they aren't derived.
+//! The ray cache (Python's `--ray-geometry` side cache) keeps every shape of
+//! every category, the props' static shapes too, and says so in its header
+//! (`geometry`, `category_mask`, `prop_scope`). The shots and projectiles
+//! query it with their ray profile's map mask: about six times the
+//! movement cache's triangles, the visual detail the mover's hull leaves
+//! out (refs report `WeaponRays.md`).
 
 use std::io::Write;
 
@@ -54,6 +58,29 @@ const PRACTICE_RANGE: u64 = 0x0800_0000_0000_0688;
 const PRACTICE_RANGE_NAME: &str = "Practice Range";
 /// The preset of Python's `lzma.compress`.
 const XZ_PRESET: u32 = 6;
+/// The ray cache's header marks (collision.py `RAY_GEOMETRY`,
+/// `ALL_CATEGORIES`, `RAY_PROP_SCOPE`), which the server's reader checks.
+const RAY_GEOMETRY: &str = "expanded-static-rays";
+const ALL_CATEGORIES: u16 = 0xFFFF;
+const RAY_PROP_SCOPE: &str = "indexed-static-models";
+
+/// Which shapes a cache keeps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Geometry {
+    /// Those that stop the mover ([`MOVER`]).
+    Movement,
+    /// Every one ([`ALL_CATEGORIES`]).
+    Rays,
+}
+
+impl Geometry {
+    fn category(self) -> u16 {
+        match self {
+            Self::Movement => MOVER,
+            Self::Rays => ALL_CATEGORIES,
+        }
+    }
+}
 
 /// The derivation: the Practice Range's cache, the only one the runtime
 /// pack has; the server builds the others on demand with [`collision_cache`].
@@ -65,9 +92,30 @@ pub(crate) fn derive(install: &Install, _out: &std::path::Path) -> Result<Vec<Ou
     )?])
 }
 
+/// The derivation of the Practice Range's ray cache; the server builds the
+/// others on demand with [`ray_cache`].
+pub(crate) fn derive_rays(install: &Install, _out: &std::path::Path) -> Result<Vec<Output>> {
+    Ok(vec![ray_cache(
+        install,
+        PRACTICE_RANGE,
+        PRACTICE_RANGE_NAME,
+    )?])
+}
+
 /// One map's movement collision cache, `collision/<index>.col`, named in its
 /// header (the server's map name).
 pub fn collision_cache(install: &Install, map: u64, name: &str) -> Result<Output> {
+    cache(install, map, name, Geometry::Movement)
+}
+
+/// One map's ray cache, `collision/<index>.rays.col`: every shape of the
+/// chunk and the props' static shapes, whatever their masks (collision.py
+/// `build(..., ray_geometry=True)`).
+pub fn ray_cache(install: &Install, map: u64, name: &str) -> Result<Output> {
+    cache(install, map, name, Geometry::Rays)
+}
+
+fn cache(install: &Install, map: u64, name: &str, geometry: Geometry) -> Result<Output> {
     let chunk = chunk_guid(map, COLLISION);
     let data = read_chunk(install, map, COLLISION)?
         .ok_or_else(|| asset_error(format!("no collision chunk for map {map:#x}")))?;
@@ -82,9 +130,10 @@ pub fn collision_cache(install: &Install, map: u64, name: &str) -> Result<Output
                 .collect::<String>()
         })
         .expect("a chunk that reads has a manifest record");
-    let (meshes, hulls) = parse_chunk(&data)
+    let category = geometry.category();
+    let (meshes, hulls) = parse_chunk(&data, category)
         .map_err(|reason| asset_error(format!("{}: {reason}", guid_name(chunk))))?;
-    let (models, placed) = props::map_shapes(install, map)
+    let (models, placed) = props::map_shapes(install, map, category)
         .map_err(|error| asset_error(format!("the props of map {map:#x}: {error}")))?;
     let mut identifiers: Vec<u64> = placed
         .iter()
@@ -98,9 +147,14 @@ pub fn collision_cache(install: &Install, map: u64, name: &str) -> Result<Output
         chunk,
         ckey,
         props: placed.len(),
+        geometry,
+    };
+    let suffix = match geometry {
+        Geometry::Movement => "col",
+        Geometry::Rays => "rays.col",
     };
     Ok(Output {
-        path: format!("collision/{:04X}.col", map & 0xFFFF_FFFF),
+        path: format!("collision/{:04X}.{suffix}", map & 0xFFFF_FFFF),
         bytes: pack(
             name,
             &meshes,
@@ -117,11 +171,11 @@ pub fn collision_cache(install: &Install, map: u64, name: &str) -> Result<Output
 /// the kept vertices.
 type Mesh = (Vec<[f32; 3]>, Vec<Record>);
 
-/// The shapes of a collision chunk that stop the mover: (meshes, polytopes).
-/// A mesh keeps only its triangles that stop the mover, in chunk order, its
-/// vertices renumbered in the order those triangles name them (corners and
-/// wings; a wing out of the mesh is -1).
-fn parse_chunk(data: &[u8]) -> Result<(Vec<Mesh>, Vec<Hull>), String> {
+/// The shapes of a collision chunk that stop the category: (meshes,
+/// polytopes). A mesh keeps only its triangles that stop it, in chunk order,
+/// its vertices renumbered in the order those triangles name them (corners
+/// and wings; a wing out of the mesh is -1).
+fn parse_chunk(data: &[u8], category: u16) -> Result<(Vec<Mesh>, Vec<Hull>), String> {
     let u16_at = |at: usize| -> Result<u16, String> { Ok(u16::from_le_bytes(take(data, at)?)) };
     let u32_at = |at: usize| -> Result<u32, String> { Ok(u32::from_le_bytes(take(data, at)?)) };
     let u64_at = |at: usize| -> Result<usize, String> {
@@ -144,7 +198,7 @@ fn parse_chunk(data: &[u8]) -> Result<(Vec<Mesh>, Vec<Hull>), String> {
         let face_count = u32_at(base + 48)? as usize;
         let edge_count = u32_at(base + 52)? as usize;
         let mask = u16_at(base + 76)?;
-        if mask & MOVER == 0 {
+        if mask & category == 0 {
             continue;
         }
         let points = (0..vert_count)
@@ -209,7 +263,7 @@ fn parse_chunk(data: &[u8]) -> Result<(Vec<Mesh>, Vec<Hull>), String> {
             let word = |k: usize| i32::from_le_bytes(record[4 * k..4 * k + 4].try_into().unwrap());
             let half = |k: usize| u16::from_le_bytes([record[2 * k], record[2 * k + 1]]);
             let (surface, mask) = (half(13), half(14));
-            if mask & MOVER == 0 {
+            if mask & category == 0 {
                 continue;
             }
             // The corners are unsigned, the wings signed; both index the mesh.
@@ -295,6 +349,7 @@ struct Source {
     chunk: u64,
     ckey: String,
     props: usize,
+    geometry: Geometry,
 }
 
 /// The cache file: magic, version, a JSON header and the LZMA-packed shapes:
@@ -434,7 +489,7 @@ fn header(
         .map(|id| python_string(&format!("0x{id:016X}")))
         .collect();
     let triangles: usize = meshes.iter().map(|(_, records)| records.len()).sum();
-    let fields = [
+    let mut fields = vec![
         ("chunk", python_string(&format!("0x{:016X}", source.chunk))),
         ("ckey", python_string(&source.ckey)),
         ("hulls", hulls.len().to_string()),
@@ -447,6 +502,14 @@ fn header(
         ("props", source.props.to_string()),
         ("triangles", triangles.to_string()),
     ];
+    if source.geometry == Geometry::Rays {
+        fields.extend([
+            ("category_mask", ALL_CATEGORIES.to_string()),
+            ("geometry", python_string(RAY_GEOMETRY)),
+            ("prop_scope", python_string(RAY_PROP_SCOPE)),
+        ]);
+        fields.sort_unstable_by_key(|(key, _)| *key);
+    }
     let items: Vec<String> = fields
         .iter()
         .map(|(key, value)| format!("\"{key}\": {value}"))

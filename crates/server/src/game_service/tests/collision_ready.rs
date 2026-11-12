@@ -309,11 +309,14 @@ fn a_cache_only_server_fails_a_missing_map_and_a_builder_still_builds_it() {
 
     let builds = Arc::new(AtomicUsize::new(0));
     let build: Arc<CollisionBuild> = {
-        let (builds, built) = (Arc::clone(&builds), runtime.join("collision/0688.col"));
+        let (builds, built) = (Arc::clone(&builds), runtime.join("collision"));
         Arc::new(move |map, _name| {
             assert_eq!(map, GameMap::practice_range().map_guid);
             builds.fetch_add(1, Ordering::Relaxed);
-            std::fs::read(&built)
+            Ok(CollisionFiles {
+                movement: std::fs::read(built.join("0688.col"))?,
+                rays: std::fs::read(built.join("0688.rays.col"))?,
+            })
         })
     };
     let local = SceneAssets::load(&runtime)

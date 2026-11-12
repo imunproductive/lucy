@@ -334,6 +334,35 @@ pub struct ProjectileBallistics {
     /// The volley's motion classes the flight doesn't model, which it flies
     /// as if they weren't there (Pharah's `STU_7A5DFFF8`).
     pub unmodelled: Vec<String>,
+    /// The volley's ray profile ([`ray_profile`]), whose map mask its sweep
+    /// meets the map with.
+    pub ray_profile: Option<u64>,
+}
+
+/// The class of a volley's literal ray profile reference (`m_C1903771`).
+const RAY_PROFILE_REFERENCE: &str = "STU_20DB8AB5";
+
+/// A weapon volley's ray profile (`m_C1903771`: a `097`, `STU_8EFC337B`),
+/// which says what map collision its shots and projectiles meet. None when
+/// it names none, as nearly every hitscan volley does, when its reference
+/// is empty (Junkrat's `09BA`), or when it is a variable (Sombra's `0C19`,
+/// Moira's `10E4`) that doesn't read as an asset.
+pub fn ray_profile(
+    node: &Node,
+    mut evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
+) -> Option<u64> {
+    let config = node
+        .field("m_C1903771")
+        .filter(|config| !config.is_null())?;
+    let guid = if config.get("$").and_then(Json::as_str) == Some(RAY_PROFILE_REFERENCE) {
+        config.get("m_C1903771").and_then(asset_guid)
+    } else {
+        match evaluate(config) {
+            Ok(Value::Asset(guid)) => Some(guid),
+            _ => None,
+        }
+    };
+    guid.filter(|guid| *guid != 0)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -503,6 +532,7 @@ impl ProjectileBallistics {
             gravity,
             fuse: sticks.then_some(STICK_FUSE),
             unmodelled,
+            ray_profile: ray_profile(node, &mut evaluate),
         }))
     }
 

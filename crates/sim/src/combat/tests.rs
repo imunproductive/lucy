@@ -55,6 +55,7 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
             tags: [0x0d80_0000_0000_09a2].into_iter().collect(),
             allies: AllyHits::None,
         },
+        ray_profile: None,
     };
     assert!(
         combat
@@ -432,6 +433,7 @@ fn the_biotic_rifle_heals_hurt_allies_and_damages_enemies() {
         shot_frame: 999,
         reach: 100.0,
         hit: RIFLE,
+        ray_profile: None,
     };
     let fire = |combat: &mut Combat, scene: &mut PreparedScene| {
         combat
@@ -509,6 +511,7 @@ fn the_biotic_rifle_heals_hurt_allies_and_damages_enemies() {
         gravity: 0.0,
         fuse: None,
         unmodelled: Vec::new(),
+        ray_profile: None,
     };
     let mut flight =
         ProjectileFlight::new(dart, shot.origin, shot.direction, Some(context.tick)).unwrap();

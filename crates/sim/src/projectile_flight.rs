@@ -127,6 +127,11 @@ impl ProjectileFlight {
         self.ballistics.direct
     }
 
+    /// The volley's ray profile, whose map mask the sweep meets the map with.
+    pub fn ray_profile(&self) -> Option<u64> {
+        self.ballistics.ray_profile
+    }
+
     /// Advance the elapsed portion of a tick, even when it ends inside the
     /// tick due to range, lifetime or fuse. Static geometry wins only a
     /// closer hit.
@@ -468,6 +473,7 @@ mod tests {
             gravity: 0.0,
             fuse: None,
             unmodelled: Vec::new(),
+            ray_profile: None,
         }
     }
 
@@ -490,6 +496,7 @@ mod tests {
             gravity,
             fuse: Some(STICK_FUSE),
             unmodelled: Vec::new(),
+            ray_profile: None,
         }
     }
 
@@ -982,6 +989,7 @@ mod tests {
             gravity: 0.0,
             fuse: None,
             unmodelled: Vec::new(),
+            ray_profile: None,
         };
         for (ahead, expected) in [(5.0, 6.0), (23.0, 3.9), (35.0, 1.8)] {
             let mut flight = ProjectileFlight::new(

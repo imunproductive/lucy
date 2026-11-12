@@ -82,7 +82,7 @@ use orpheus_sim::{
     projectiles::FiredProjectile,
     replication::{Record, RoomPlayer, WorldDelivery, blockers, show_players},
     scene::{PlayerAppearance, PlayerCard},
-    scene_assets::{CollisionBuild, PreparedScene},
+    scene_assets::{CollisionBuild, CollisionFiles, PreparedScene},
     voice_lines::VoiceLine,
 };
 use orpheus_wire::entity::Component as WorldComponent;
@@ -206,21 +206,26 @@ pub struct PlayerResult {
     pub medals: [u32; 3],
 }
 
-/// Builds a map's collision cache from the game install, as the Python
+/// Builds a map's collision caches from the game install, as the Python
 /// server did when a match opened on a map without one
-/// (ow174/game/collision.py `_read_cache`, `build`). The collision reads no
-/// display strings, so any text locale does.
+/// (ow174/game/collision.py `_read_cache`, `build`): the movement cache and
+/// the ray cache the shots meet. The collision reads no display strings, so
+/// any text locale does.
 pub fn collision_build(install: PathBuf) -> Arc<CollisionBuild> {
     Arc::new(move |map, name| {
         let started = Instant::now();
         let opened = orpheus_assets::Install::open(&install, "enUS").map_err(io::Error::other)?;
-        let output =
+        let movement =
             orpheus_assets::collision_cache(&opened, map, name).map_err(io::Error::other)?;
+        let rays = orpheus_assets::ray_cache(&opened, map, name).map_err(io::Error::other)?;
         tracing::info!(
             "[game] built the collision of {name} in {:.1} s",
             started.elapsed().as_secs_f64()
         );
-        Ok(output.bytes)
+        Ok(CollisionFiles {
+            movement: movement.bytes,
+            rays: rays.bytes,
+        })
     })
 }
 
@@ -2321,6 +2326,7 @@ impl State {
                             direction,
                             reach,
                             hit,
+                            ray_profile,
                             ..
                         } => {
                             let context = ShotContext {
@@ -2335,6 +2341,7 @@ impl State {
                                 direction,
                                 reach,
                                 hit,
+                                ray_profile,
                                 context,
                             ) {
                                 hits.push(hit);

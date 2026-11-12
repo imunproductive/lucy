@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use orpheus_physics::{
     collision::{
-        cache::{self, CacheError, read_movement_cache},
+        cache::{self, CacheError, RayCacheIdentity, read_movement_cache, read_ray_cache},
         scene::CollisionScene,
     },
     contact::{
@@ -160,6 +160,7 @@ fn source() -> Source {
         chunk: 0,
         ckey: String::new(),
         props: 0,
+        geometry: Geometry::Movement,
     }
 }
 
@@ -211,7 +212,7 @@ fn kind(geometry: &StaticGeometry) -> &'static str {
 /// `tests/test_game_mover.py::ChunkTests::test_only_what_stops_the_mover_is_kept_and_survives_the_cache`
 #[test]
 fn only_what_stops_the_mover_is_kept_and_survives_the_cache() {
-    let (meshes, hulls) = parse_chunk(&chunk()).unwrap();
+    let (meshes, hulls) = parse_chunk(&chunk(), CATEGORY).unwrap();
     // The 0x04C0 triangle stops only shots; vertex numbers are the kept ones,
     // wings too.
     assert_eq!(
@@ -258,6 +259,55 @@ fn only_what_stops_the_mover_is_kept_and_survives_the_cache() {
         .map(|shape| kind(shape.geometry()))
         .collect();
     assert_eq!(kinds, ["hull", "mesh", "mesh"]); // polytopes first
+}
+
+/// Beyond the Python port: the ray cache keeps the triangles the mover's
+/// leaves out, says so in its header, and reads as ray geometry. A shot
+/// (the profiles' map mask `1FDF`) meets the `0x04C0` triangle the movement
+/// geometry lacks, before the `1FDF` floor behind it.
+#[test]
+fn the_ray_cache_keeps_every_category() {
+    let (meshes, hulls) = parse_chunk(&chunk(), ALL_CATEGORIES).unwrap();
+    assert_eq!(
+        meshes[0].1,
+        [
+            ([0, 1, 2, 3, -1, -1], 0x1FDF, 0),
+            ([0, 1, 3, 3, -1, -1], 0x04C0, 0)
+        ]
+    );
+    let map = PRACTICE_RANGE;
+    let source = Source {
+        map,
+        chunk: chunk_guid(map, COLLISION),
+        ckey: "ab".into(),
+        props: 0,
+        geometry: Geometry::Rays,
+    };
+    let blob = pack("test", &meshes, &hulls, &source, &[], &[], &[]).unwrap();
+    assert!(matches!(
+        read_movement_cache(blob.as_slice()),
+        Err(CacheError::RayUsedForMovement)
+    ));
+    let identity = RayCacheIdentity {
+        map_guid: map,
+        collision_ckey: "ab",
+        placement_ckey: None,
+        prop_records_sha256: None,
+    };
+    let cache = read_ray_cache(blob.as_slice(), identity).unwrap();
+    let scene = CollisionScene::expanded_rays(&cache, &BTreeSet::new(), identity).unwrap();
+    // Toward (0.3, 0.1, 0.1) on the 0x04C0 triangle, along its normal; the
+    // floor (y = 0) is 0.64 m along.
+    let half = std::f64::consts::FRAC_1_SQRT_2;
+    let origin = [0.3, 0.1 + 0.5 * half, 0.1 - 0.5 * half];
+    let direction = [0.0, -half, half];
+    let micrometres = |distance: f64| (distance * 1e6).round() / 1e6;
+    let hit = |category| {
+        let hit = scene.cast_ray(origin, direction, 1.0, category).unwrap();
+        micrometres(hit.unwrap().distance)
+    };
+    assert_eq!(hit(0x1FDF), 0.5);
+    assert_eq!(hit(CATEGORY), micrometres(origin[1] / half));
 }
 
 /// The 12 triangles of an axis-aligned box, as a mesh from loose triangles:

@@ -1,5 +1,3 @@
-use std::{io, sync::Arc};
-
 use orpheus_content::{
     heroes::SOLDIER,
     maps::{MapCatalog, ObjectiveKind, SpawnChoice},
@@ -7,7 +5,11 @@ use orpheus_content::{
 use serde_json::{Value, json};
 
 use super::*;
-use crate::{instance::RETAIL_QUANTA, match_flow::ASSAULT, scene_assets::SceneAssets};
+use crate::{
+    instance::RETAIL_QUANTA,
+    match_flow::ASSAULT,
+    scene_assets::{SceneAssets, install_collision_build},
+};
 
 const FLOOR: f32 = 0.35;
 const SPEED: f64 = 5.5;
@@ -555,16 +557,9 @@ fn a_team_gets_each_roster_hero_once() {
 fn an_attacker_walks_from_the_anubis_spawn_to_point_a() {
     const ANUBIS: u64 = 0x0800_0000_0000_005b;
     let runtime = orpheus_testkit::runtime_dir();
-    let install = orpheus_testkit::game_dir();
     let assets = SceneAssets::load(&runtime)
         .unwrap()
-        .with_collision_build(Arc::new(move |map, name| {
-            let opened =
-                orpheus_assets::Install::open(&install, "enUS").map_err(io::Error::other)?;
-            let output =
-                orpheus_assets::collision_cache(&opened, map, name).map_err(io::Error::other)?;
-            Ok(output.bytes)
-        }));
+        .with_collision_build(install_collision_build(orpheus_testkit::game_dir()));
     let catalog = MapCatalog::load(runtime.join("data")).unwrap();
     let map = catalog
         .game_map(ANUBIS, ASSAULT, "Assault", false, &[6, 6])

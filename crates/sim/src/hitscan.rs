@@ -13,14 +13,22 @@
 //! heroes' shapes are a rest pose, which cannot follow a crouch or an
 //! animation).
 
-use std::{collections::VecDeque, f64::consts::PI, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    f64::consts::PI,
+    fs, io,
+    path::Path,
+    sync::Arc,
+};
 
+use orpheus_core::guid::parse_guid;
 use orpheus_physics::{
     collision::index::IndexError,
     static_ray::{Vec3, capsule_entry_distance, segment_distance},
 };
 use orpheus_script::weapons::{DamageTags, HitDefinition};
 use orpheus_wire::commands::Command;
+use serde::Deserialize;
 
 use crate::hitboxes::HitShape;
 
@@ -28,6 +36,65 @@ pub const DEFAULT_REACH: f64 = 200.0;
 const HISTORY: usize = 64;
 const HEAD_BELOW_EYE: f64 = 0.2;
 const ANGLE_STEP: f64 = std::f64::consts::TAU / 65536.0;
+
+/// The derived ray profiles file, in the runtime `data` folder (the
+/// `orpheus-assets` derivation `game_ray_profiles`).
+pub const RAY_PROFILES_FILE: &str = "game_ray_profiles_174.json";
+
+/// The map mask of a shot or projectile whose volley names no ray profile,
+/// which is nearly every hitscan weapon's (Soldier: 76's rifle, Tracer's
+/// pistols, Cassidy's Peacekeeper, Widowmaker's rifle). Assumption: the
+/// client fills such a request with `STU_8EFC337B`'s class defaults, whose
+/// `m_category` packs to it; every 104319 profile's map mask is this one or
+/// `0x1F9F` (refs report `WeaponRays.md`, IDA question 1).
+pub const DEFAULT_MAP_MASK: u16 = 0x1FDF;
+
+/// Each ray profile's map mask (`097`, `STU_8EFC337B` `m_category` packed):
+/// a map triangle or prop shape stops a shot or projectile of the profile
+/// when its mask shares a bit with it.
+#[derive(Debug, Default)]
+pub struct RayProfiles {
+    masks: HashMap<u64, u16>,
+}
+
+#[derive(Deserialize)]
+struct RawRayProfiles {
+    profiles: HashMap<String, u16>,
+}
+
+impl RayProfiles {
+    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
+        let invalid = |error: String| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{}: {error}", path.display()),
+            )
+        };
+        let data = fs::read(path).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
+        let raw: RawRayProfiles =
+            serde_json::from_slice(&data).map_err(|error| invalid(error.to_string()))?;
+        let masks = raw
+            .profiles
+            .into_iter()
+            .map(|(guid, mask)| {
+                let guid = parse_guid(&guid).ok_or_else(|| invalid(format!("bad GUID {guid}")))?;
+                Ok((guid, mask))
+            })
+            .collect::<io::Result<_>>()?;
+        Ok(Self { masks })
+    }
+
+    /// The map mask of a volley's profile: [`DEFAULT_MAP_MASK`] when it
+    /// names none, or one the install lacks.
+    pub fn map_mask(&self, profile: Option<u64>) -> u16 {
+        profile
+            .and_then(|profile| self.masks.get(&profile).copied())
+            .unwrap_or(DEFAULT_MAP_MASK)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TargetPose {
@@ -707,7 +774,7 @@ mod tests {
             HitscanShot::along(origin, aim_direction(&command), 180.0, RIFLE)
                 .resolve(
                     [(bot.entity, target.clone())],
-                    |origin, direction, length| scene.hitscan_wall(origin, direction, length),
+                    |origin, direction, length| scene.hitscan_wall(origin, direction, length, None),
                 )
                 .unwrap()
         };

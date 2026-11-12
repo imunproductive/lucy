@@ -21,10 +21,15 @@
 //!
 //! A model's physics shapes are its STUModel m_CB4D298D list (MSTU chunk of
 //! the 00C model, an STUv2 blob): {shape, holder}. The holder's inline
-//! STUDominoFlags (STU_933AD0A9) is the shape's mask, packed as the client
-//! packs it (bits of fields 0..12: 0, 8, 12, 7, 6, 5, 2, 9, 1, 3, 4, 10, 11; a
-//! field left out keeps its default, every field on but the sixth: 0x1FDF),
-//! which every mesh triangle also carries. A shape stops the mover when its
+//! STUDominoFlags (STU_933AD0A9) is the shape's mask, packed as Python packs
+//! it (bits of fields 0..12: 0, 8, 12, 7, 6, 5, 2, 9, 1, 3, 4, 10, 11; a field
+//! left out keeps its default, every field on but the sixth: 0x1FDF), which
+//! every mesh triangle also carries. Measured on the install's model meshes
+//! (refs report `WeaponRays.md`), the client puts field 0 at bit 2, field 6 at
+//! bit 0 and field 5 at bit 13; the cache keeps Python's packing, which gives
+//! the same answer to every query the server makes (the mover's bits 3 and 4,
+//! the shots' `1FDF` and `1F9F` hold bits 0 and 2 both and neither 5 nor 13).
+//! A shape stops the mover when its
 //! mask has a team proxy bit (0x08, 0x10), as the static triangles do, and
 //! when the client makes it a static shape: the mover's filter (category
 //! 0x08/0x10, include 0x1481, 0x7FF789B463F0) meets only shapes of category 1,
@@ -132,6 +137,20 @@ const BUILDERS: [(u8, u32, u32, u8); 3] = [
     (4, 0x82C2_BA2C, 0x8C9E_3EE1, 0),
 ];
 
+/// An STUDominoFlags packed into a mask, each field given by `flag` (its hash
+/// to its value, `None` when the asset leaves it at its default).
+pub(crate) fn pack_flags(flag: impl Fn(u32) -> Option<bool>) -> u16 {
+    let mut mask = DEFAULT_MASK;
+    for (field, bit) in FLAG_FIELDS.into_iter().zip(FLAG_BITS) {
+        match flag(field) {
+            Some(true) => mask |= 1 << bit,
+            Some(false) => mask &= !(1 << bit),
+            None => {}
+        }
+    }
+    mask
+}
+
 /// A triangle record of chunk 0x11 and of model meshes: corners, wing
 /// vertices (the far corner of the neighbour across each edge, -1 none),
 /// mask, surface.
@@ -164,10 +183,17 @@ pub(crate) enum Shape {
 /// game mode must list), translation, scale, rotation.
 pub(crate) type Placed = (usize, u64, [f32; 3], [f32; 3], [f32; 4]);
 
-/// A map's props: (models: each model's shapes, placements in placeable
-/// order). A placement is kept only when its model has shapes; every model
-/// a prop names is listed, with or without shapes.
-pub(crate) fn map_shapes(install: &Install, map: u64) -> Result<(Vec<Vec<Shape>>, Vec<Placed>)> {
+/// A map's props: (models: each model's shapes that stop `category`,
+/// placements in placeable order). A placement is kept only when its model
+/// has shapes; every model a prop names is listed, with or without shapes.
+/// Which models are props doesn't depend on the category (Python's
+/// `map_shapes` takes them from one catalogue for the movement and the ray
+/// caches); `category` must hold the mover's bits ([`MOVER`]).
+pub(crate) fn map_shapes(
+    install: &Install,
+    map: u64,
+    category: u16,
+) -> Result<(Vec<Vec<Shape>>, Vec<Placed>)> {
     let Some(data) = read_chunk(install, map, ENTITY)? else {
         return Ok((Vec::new(), Vec::new()));
     };
@@ -192,9 +218,9 @@ pub(crate) fn map_shapes(install: &Install, map: u64) -> Result<(Vec<Vec<Shape>>
         let number = match index.get(&model) {
             Some(number) => *number,
             None => {
-                let read = read_model(&install.raw(model)?)
+                let read = read_model(&install.raw(model)?, category)
                     .map_err(|reason| asset_error(format!("{}: {reason}", guid_name(model))))?;
-                let number = (read.catalogued || !read.shapes.is_empty()).then(|| {
+                let number = read.catalogued.then(|| {
                     models.push(read.shapes);
                     models.len() - 1
                 });
@@ -473,27 +499,19 @@ impl<'a> Structured<'a> {
             .unwrap_or(default)
     }
 
-    /// The holder's STUDominoFlags as the client packs them.
+    /// The holder's STUDominoFlags, packed ([`pack_flags`]).
     fn mask(&self, holder: Option<usize>) -> Result<u16, String> {
         let flags = match holder {
             Some(holder) => self.inline(holder, FLAGS)?,
             None => None,
         };
-        let mut mask = DEFAULT_MASK;
-        for (field, bit) in FLAG_FIELDS.iter().zip(FLAG_BITS) {
-            if let Some(value) = flags
+        Ok(pack_flags(|field| {
+            flags
                 .as_ref()
-                .and_then(|flags| self.raw(flags, *field))
-                .filter(|v| !v.is_empty())
-            {
-                if value[0] != 0 {
-                    mask |= 1 << bit;
-                } else {
-                    mask &= !(1 << bit);
-                }
-            }
-        }
-        Ok(mask)
+                .and_then(|flags| self.raw(flags, field))
+                .and_then(|value| value.first())
+                .map(|value| *value != 0)
+        }))
     }
 
     /// Whether the client makes a model's list entry a static shape
@@ -671,18 +689,20 @@ fn at_node(shape: Shape, frame: ([f32; 3], [f32; 4])) -> Shape {
 
 /// A 00C model as the props need it.
 struct Model {
-    /// Its physics shapes that stop the mover, in model space, as the engine
-    /// keeps them: only the static ones, each moved to its node's place in
-    /// the model. A mesh's triangles carry their own masks; the other shapes
-    /// the holder's.
+    /// Its physics shapes that stop the category, in model space, as the
+    /// engine keeps them: only the static ones, each moved to its node's
+    /// place in the model. A mesh's triangles carry their own masks; the
+    /// other shapes the holder's.
     shapes: Vec<Shape>,
-    /// The prop catalogue's older test (see [`root_model`]): a list entry
-    /// whose motion type isn't 2 has a polytope, capsule or sphere, or a mesh
-    /// triangle with a team proxy bit.
+    /// Whether the model is a prop's (see [`root_model`]): it has a static
+    /// shape that stops the mover, or, the prop catalogue's older test, a
+    /// list entry whose motion type isn't 2 has a polytope, capsule or
+    /// sphere, or a mesh triangle with a team proxy bit.
     catalogued: bool,
 }
 
-fn read_model(data: &[u8]) -> Result<Model, String> {
+/// Read a model's shapes that stop `category`, which holds the mover's bits.
+fn read_model(data: &[u8], category: u16) -> Result<Model, String> {
     let mut model = Model {
         shapes: Vec::new(),
         catalogued: false,
@@ -736,10 +756,10 @@ fn read_model(data: &[u8]) -> Result<Model, String> {
         let fields = &stu.fields[shape];
         let made = match kind {
             MESH => {
-                let (points, records) = mesh_records(&stu, shape, MOVER)?;
+                let (points, records) = mesh_records(&stu, shape, category)?;
                 (!records.is_empty()).then_some(Shape::Mesh(mask, points, records))
             }
-            _ if mask & MOVER == 0 => None,
+            _ if mask & category == 0 => None,
             // Faces as loops of half edges {s8 twin, u8 origin, u8 face, u8 next}.
             CONVEX => {
                 let points: Vec<[f32; 3]> = stu
@@ -790,6 +810,10 @@ fn read_model(data: &[u8]) -> Result<Model, String> {
             _ => None,
         };
         if let Some(made) = made {
+            model.catalogued |= match &made {
+                Shape::Mesh(_, _, records) => records.iter().any(|record| record.1 & MOVER != 0),
+                _ => mask & MOVER != 0,
+            };
             model.shapes.push(match frame {
                 Some(frame) => at_node(made, frame),
                 None => made,

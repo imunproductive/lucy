@@ -1,8 +1,10 @@
 //! Load the authorized data needed before the game worker can create a world.
 //!
 //! Any map of the catalog: its collision comes from the cache folder, built
-//! from the install first when the cache is missing or of another version
-//! (ow174/game/collision.py `_read_cache`).
+//! from the install first when a cache is missing or of another version
+//! (ow174/game/collision.py `_read_cache`): the movement cache the movers
+//! and probes meet, and the ray cache with every category, which the shots
+//! and projectiles meet ([`PreparedScene::hitscan_wall`]).
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -24,6 +26,7 @@ use crate::{
     combat::{BodyCombat, MeleeState, RespawnTimes, melee_states},
     controller::Controller,
     hitboxes::HitboxCatalog,
+    hitscan::{RAY_PROFILES_FILE, RayProfiles},
     map_areas::{self, DamageArea, MapAreaData, SpawnRoom},
     match_flow::{MatchFlow, Mode, Timers},
     mode_graph_values::ModeGraphValues,
@@ -44,7 +47,9 @@ use orpheus_content::{
 };
 use orpheus_core::{bits::BitWriter, guid::parse_guid};
 use orpheus_physics::{
-    collision::cache::{MAGIC, VERSION, chunk_guid, read_movement_cache},
+    collision::cache::{
+        MAGIC, RayCacheIdentity, VERSION, chunk_guid, read_movement_cache, read_ray_cache,
+    },
     collision::index::TriangleIndex,
     collision::scene::CollisionScene,
     contact::cache::CapsulePose,
@@ -89,9 +94,17 @@ fn ground_height(
 type OwnerBodyFactory =
     dyn Fn(&Hero, OwnerBodySpawn) -> io::Result<Option<Box<dyn OwnerBodyRuntime>>> + Send + Sync;
 
-/// Builds a map's collision cache file from the install: (map GUID, the
-/// server's map name) to the file's bytes (`orpheus_assets::collision_cache`).
-pub type CollisionBuild = dyn Fn(u64, &str) -> io::Result<Vec<u8>> + Send + Sync;
+/// A map's two collision cache files: the movement cache
+/// (`orpheus_assets::collision_cache`) and the ray cache the shots meet
+/// (`orpheus_assets::ray_cache`).
+pub struct CollisionFiles {
+    pub movement: Vec<u8>,
+    pub rays: Vec<u8>,
+}
+
+/// Builds a map's collision cache files from the install: (map GUID, the
+/// server's map name) to the files' bytes.
+pub type CollisionBuild = dyn Fn(u64, &str) -> io::Result<CollisionFiles> + Send + Sync;
 
 pub struct SceneAssets {
     collision: PathBuf,
@@ -138,6 +151,8 @@ pub struct SceneAssets {
     mode_rules: ModeRulesData,
     /// Each map's objective data (`game_objectives_174.json` `maps`).
     objectives: ObjectiveData,
+    /// Each ray profile's map mask (`game_ray_profiles_174.json`).
+    ray_profiles: Arc<RayProfiles>,
     /// Each map's spawn rooms, damage areas and spawn door barriers
     /// (`game_map_areas_174.json`).
     map_areas: MapAreaData,
@@ -146,6 +161,11 @@ pub struct SceneAssets {
 pub struct PreparedScene {
     map: GameMap,
     ground: CollisionScene,
+    /// The map's collision as the shots and projectiles meet it: every
+    /// category (the ray cache), queried with the volley's ray profile's map
+    /// mask ([`PreparedScene::hitscan_wall`]).
+    rays: CollisionScene,
+    ray_profiles: Arc<RayProfiles>,
     contacts: Option<Arc<ContactWorld>>,
     controller: Controller,
     mode_ui: BitWriter,
@@ -272,6 +292,7 @@ impl SceneAssets {
             modes: GameModes::load(data.join(MODES_FILE))?,
             mode_rules,
             objectives,
+            ray_profiles: Arc::new(RayProfiles::load(data.join(RAY_PROFILES_FILE))?),
             map_areas,
         })
     }
@@ -329,14 +350,14 @@ impl SceneAssets {
 
     /// Load the map before handing it to the worker. The render layouts and
     /// graph requirements are checked without blocking a game tick. A map's
-    /// collision is built from the install when its cache is missing or
+    /// collision is built from the install when its caches are missing or
     /// outdated, which can take a while: callers prepare off the game thread
     /// (match.py `_refresh_collision`).
     pub fn prepare(&self, map: GameMap) -> io::Result<PreparedScene> {
-        let path = self
-            .collision
-            .join(format!("{:04X}.col", map.map_guid as u32));
-        self.ensure_collision(&map, &path)?;
+        let index = map.map_guid as u32;
+        let path = self.collision.join(format!("{index:04X}.col"));
+        let rays_path = self.collision.join(format!("{index:04X}.rays.col"));
+        self.ensure_collision(&map, [&path, &rays_path])?;
         let cache = read_movement_cache(BufReader::new(File::open(path)?)).map_err(invalid)?;
         for (field, expected) in [("map", map.map_guid), ("chunk", chunk_guid(map.map_guid))] {
             if let Some(value) = cache.header.source.get(field) {
@@ -348,6 +369,25 @@ impl SceneAssets {
         let empty = BTreeSet::new();
         let identifiers = self.mode_props.get(&map.mode_guid).unwrap_or(&empty);
         let ground = CollisionScene::movement_probe(&cache, identifiers).map_err(invalid)?;
+        // The ray cache is of the movement cache's chunk (both are built
+        // together).
+        let ckey = cache
+            .header
+            .source
+            .get("ckey")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| invalid("movement cache without its chunk's content key"))?;
+        let identity = RayCacheIdentity {
+            map_guid: map.map_guid,
+            collision_ckey: ckey,
+            placement_ckey: None,
+            prop_records_sha256: None,
+        };
+        let rays = {
+            let cache = read_ray_cache(BufReader::new(File::open(rays_path)?), identity)
+                .map_err(invalid)?;
+            CollisionScene::expanded_rays(&cache, identifiers, identity).map_err(invalid)?
+        };
         let mut bots = self.bots.make(map.map_guid, |body| {
             BotWalk::from_mover(self.movers.for_body(Some(body)))
         });
@@ -444,6 +484,8 @@ impl SceneAssets {
             respawn: self.respawns.for_mode(map.mode_guid),
             map,
             ground,
+            rays,
+            ray_profiles: Arc::clone(&self.ray_profiles),
             contacts,
             controller,
             mode_ui,
@@ -486,14 +528,19 @@ impl SceneAssets {
         Ok(scene)
     }
 
-    /// Build the map's cache from the install when it is missing or of
+    /// Build the map's caches from the install when either is missing or of
     /// another version, one build at a time (collision.py `_read_cache`).
-    /// Without an install the cache must be there already.
-    fn ensure_collision(&self, map: &GameMap, path: &Path) -> io::Result<()> {
+    /// Without an install the caches must be there already.
+    fn ensure_collision(&self, map: &GameMap, paths: [&Path; 2]) -> io::Result<()> {
         let Some(build) = &self.build_collision else {
             return Ok(());
         };
-        if cache_version(path) == Some(VERSION) {
+        let ready = || {
+            paths
+                .iter()
+                .all(|path| cache_version(path) == Some(VERSION))
+        };
+        if ready() {
             return Ok(());
         }
         // One cache build at a time in the process (collision.py
@@ -504,14 +551,17 @@ impl SceneAssets {
         let _building = BUILDING
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if cache_version(path) == Some(VERSION) {
+        if ready() {
             return Ok(());
         }
-        let bytes = build(map.map_guid, &map.name)?;
+        let files = build(map.map_guid, &map.name)?;
         fs::create_dir_all(&self.collision)?;
-        let temporary = path.with_extension("col.tmp");
-        fs::write(&temporary, bytes)?;
-        fs::rename(&temporary, path)
+        for (path, bytes) in paths.into_iter().zip([files.movement, files.rays]) {
+            let temporary = path.with_extension("col.tmp");
+            fs::write(&temporary, bytes)?;
+            fs::rename(&temporary, path)?;
+        }
+        Ok(())
     }
 
     /// The map's AI navigation; none when the data has no file for it, as
@@ -823,14 +873,27 @@ impl PreparedScene {
         }
     }
 
+    /// How far along a shot or a projectile's sweep the map's collision
+    /// first stops it: the ray cache's shapes whose masks share a bit with
+    /// the map mask of the volley's ray profile (`profile`, its
+    /// `m_C1903771`; [`RayProfiles::map_mask`]). The movement hull alone
+    /// let shots through every shape the mover doesn't meet, the visual
+    /// detail (refs report `WeaponRays.md`; Python queried the movement
+    /// geometry, combat.py `ray_world`).
     pub(crate) fn hitscan_wall(
         &self,
         origin: [f64; 3],
         direction: [f64; 3],
         reach: f64,
+        profile: Option<u64>,
     ) -> Result<Option<f64>, orpheus_physics::collision::index::IndexError> {
-        self.ground
-            .cast_ray(origin, direction, reach, MOVER_CATEGORY)
+        self.rays
+            .cast_ray(
+                origin,
+                direction,
+                reach,
+                self.ray_profiles.map_mask(profile),
+            )
             .map(|hit| hit.map(|hit| hit.distance))
     }
 
@@ -841,7 +904,8 @@ impl PreparedScene {
 
     /// Whether nothing of the map's collision stands between two points,
     /// as a hitscan shot from one to the other sees it (an AI's line of
-    /// sight).
+    /// sight): a shot of a volley that names no ray profile, as most
+    /// heroes' main weapons do.
     pub fn line_of_sight(&self, from: [f64; 3], to: [f64; 3]) -> bool {
         let delta = [0, 1, 2].map(|axis| to[axis] - from[axis]);
         let reach = (delta[0].powi(2) + delta[1].powi(2) + delta[2].powi(2)).sqrt();
@@ -849,7 +913,7 @@ impl PreparedScene {
             return true;
         }
         let direction = delta.map(|value| value / reach);
-        matches!(self.hitscan_wall(from, direction, reach), Ok(None))
+        matches!(self.hitscan_wall(from, direction, reach, None), Ok(None))
     }
 
     /// One more bot gets its script (match.py `update`: one per update,
@@ -1133,6 +1197,23 @@ fn cache_version(path: &Path) -> Option<u32> {
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+}
+
+/// Builds a map's collision caches from `install`, for tests that prepare
+/// a map the runtime pack has no caches for.
+#[cfg(test)]
+pub(crate) fn install_collision_build(install: PathBuf) -> Arc<CollisionBuild> {
+    Arc::new(move |map, name| {
+        let opened = orpheus_assets::Install::open(&install, "enUS").map_err(io::Error::other)?;
+        Ok(CollisionFiles {
+            movement: orpheus_assets::collision_cache(&opened, map, name)
+                .map_err(io::Error::other)?
+                .bytes,
+            rays: orpheus_assets::ray_cache(&opened, map, name)
+                .map_err(io::Error::other)?
+                .bytes,
+        })
+    })
 }
 
 #[cfg(test)]
@@ -1510,5 +1591,29 @@ mod tests {
             }
         }
         assert_eq!(visited, [2; 2], "last positions {previous:?}");
+    }
+
+    /// A Practice Range wall of the visual detail (mask `0x04C0`, 10 m above
+    /// the spawn): a shot along its normal meets it 1 m out, where the
+    /// movement geometry, which the shots met before, has nothing within 3 m.
+    #[test]
+    #[ignore = "requires a derived 104319 Practice Range scene"]
+    fn a_shot_meets_range_detail_the_movement_geometry_lacks() {
+        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let scene = assets.prepare(GameMap::practice_range()).unwrap();
+        let centre = [55.025_806_427, 11.672_472_954, 41.542_596_181];
+        let normal = [-0.985_830_895, 0.0, 0.167_742_206];
+        let origin = [0, 1, 2].map(|axis| centre[axis] + normal[axis]);
+        let back = normal.map(|axis| -axis);
+        let shot = scene
+            .hitscan_wall(origin, back, 3.0, None)
+            .unwrap()
+            .unwrap();
+        assert!((shot - 1.0).abs() < 1e-6, "{shot}");
+        let movement = scene
+            .ground
+            .cast_ray(origin, back, 3.0, MOVER_CATEGORY)
+            .unwrap();
+        assert!(movement.is_none(), "{movement:?}");
     }
 }

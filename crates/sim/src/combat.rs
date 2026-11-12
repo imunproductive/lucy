@@ -270,6 +270,8 @@ pub struct PosedHitscan {
     pub shot_frame: u32,
     pub reach: f64,
     pub hit: HitDefinition,
+    /// The volley's ray profile (`orpheus_script::weapons::ray_profile`).
+    pub ray_profile: Option<u64>,
 }
 
 /// A quick melee hit (combat.py `_melee`): a sphere ahead of the eye along
@@ -637,7 +639,7 @@ impl Combat {
         let ray = HitscanShot::along(shot.origin, shot.direction, shot.reach, shot.hit);
         self.fire_hitscan(
             scene,
-            &ray,
+            (&ray, shot.ray_profile),
             shooter,
             view,
             (shot.shot_frame, None),
@@ -647,7 +649,8 @@ impl Combat {
     }
 
     /// combat.py `_shoot` for a firing bot's hitscan volley: from `origin`
-    /// along `direction`, at the poses of this tick.
+    /// along `direction`, at the poses of this tick, meeting the map as its
+    /// volley's ray profile says.
     #[allow(clippy::too_many_arguments)]
     pub fn bot_hitscan(
         &mut self,
@@ -657,12 +660,13 @@ impl Combat {
         direction: Vec3,
         reach: f64,
         hit: HitDefinition,
+        ray_profile: Option<u64>,
         context: ShotContext,
     ) -> io::Result<Option<BotHit>> {
         let ray = HitscanShot::along(origin, direction, reach, hit);
         self.fire_hitscan(
             scene,
-            &ray,
+            (&ray, ray_profile),
             shooter,
             ViewFrame::at(context.tick),
             (context.tick, Some(context.tick)),
@@ -671,11 +675,13 @@ impl Combat {
         )
     }
 
+    /// A shot along `ray` meets the map as its volley's ray profile says
+    /// ([`PreparedScene::hitscan_wall`]).
     #[allow(clippy::too_many_arguments)]
     fn fire_hitscan(
         &mut self,
         scene: &mut PreparedScene,
-        ray: &HitscanShot,
+        (ray, ray_profile): (&HitscanShot, Option<u64>),
         shooter: Shooter,
         view: ViewFrame,
         (shot_frame, world_tick): (u32, Option<u32>),
@@ -706,7 +712,9 @@ impl Combat {
         let Some(impact) = ray
             .resolve(
                 players.into_iter().chain(bots),
-                |origin, direction, reach| scene.hitscan_wall(origin, direction, reach),
+                |origin, direction, reach| {
+                    scene.hitscan_wall(origin, direction, reach, ray_profile)
+                },
             )
             .map_err(io::Error::other)?
         else {
@@ -801,9 +809,10 @@ impl Combat {
                 .filter(|(bot, target)| eligible_bot(bot, target, shooter, free_for_all, allies))
                 .map(|(bot, _)| (bot.entity, scene.bot_target(bot))),
         );
+        let ray_profile = flight.ray_profile();
         let step = flight
             .advance(context.tick, &candidates, |origin, direction, reach| {
-                scene.hitscan_wall(origin, direction, reach)
+                scene.hitscan_wall(origin, direction, reach, ray_profile)
             })
             .map_err(io::Error::other)?;
         hits.extend(step.impacts.iter().filter_map(|impact| {
