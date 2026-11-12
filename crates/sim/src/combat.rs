@@ -38,7 +38,7 @@ use crate::{
         BioticField, FieldDeliver, FieldIds, FiredProjectile, ProjectileEvent, SeenIds, ShotKey,
     },
     replication::WorldDelivery,
-    scene::{bot_controller_link, bot_create, bot_filter},
+    scene::{bot_controller_link, bot_controllers_linked, bot_create, bot_filter},
     scene_assets::PreparedScene,
 };
 use orpheus_content::{heroes::Eyes, stats::PlayerStats};
@@ -957,7 +957,9 @@ impl Combat {
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("bot entity IDs exhausted"))?;
             let created = bot_create(&fresh, None)?;
-            let link = Some(bot_controller_link(&fresh, slot)?);
+            let link = bot_controllers_linked()
+                .then(|| bot_controller_link(&fresh, slot))
+                .transpose()?;
             prepared.push((
                 slot,
                 fresh,

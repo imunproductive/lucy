@@ -107,4 +107,5 @@ These environment variables are for research. Leave them unset to play.
 | Variable | What it does |
 | --- | --- |
 | `ORPHEUS_DEBUG_DROP_NOTICES` | A comma list of combat notices the server leaves out: `hit`, `kill-flag`, `elimination`, `death` |
+| `ORPHEUS_DEBUG_BOT_LOOK` | A comma list of changes to the training bots, to find why their nameplate and health bar look like a player's: `no-hero-bit` (their filter bits leave out the hero bit 0x1), `no-controller` (their stand-in controllers don't possess them; "ELIMINATED" then shows no name) |
 | `ORPHEUS_DEBUG_HELLO_FLAGS=1` | The lobby's hello message (20500) sends its six unknown flags true, to look for hidden admin or developer features |
