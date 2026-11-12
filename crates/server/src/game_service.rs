@@ -66,6 +66,7 @@ use orpheus_lobby::handoff::Handoff;
 use orpheus_script::{vm::GameMessage, wire::chunk};
 use orpheus_sim::{
     ai::{Difficulty, Random},
+    bot_plate::{BotPlate, PlateChange, PlateView},
     bot_script::{BotShotKind, SeenRocket},
     combat::{
         BotHit, BotReplacement, Combat, CombatPlayer, FieldHeal, PosedShot, Shooter, ShotContext,
@@ -266,6 +267,11 @@ enum Request {
         id: MatchId,
         hero: u64,
         reply: mpsc::SyncSender<bool>,
+    },
+    /// The live nameplate tool: a change, if any, then what it shows.
+    BotPlate {
+        change: Option<PlateChange>,
+        reply: mpsc::SyncSender<Result<PlateView, String>>,
     },
     /// More players for a match that is on (server.py `join_match`).
     Join {
@@ -571,6 +577,14 @@ impl GameService {
             hero,
             reply,
         })
+    }
+
+    /// The live nameplate tool (`orpheus_sim::bot_plate`): apply a change,
+    /// if any, to every match's training bots at once, and show the changes
+    /// in force with what the first live bot sends now. A change the tool
+    /// refuses comes back as its reason.
+    pub fn bot_plate(&self, change: Option<PlateChange>) -> io::Result<Result<PlateView, String>> {
+        self.request(|reply| Request::BotPlate { change, reply })
     }
 
     fn seat(&self, handoff: &Handoff, release: bool) -> io::Result<bool> {
@@ -1297,6 +1311,8 @@ struct State {
     results: Vec<MatchResult>,
     /// The match flow's timers (tests shorten them).
     timers: Timers,
+    /// The live nameplate tool's changes, which every match takes.
+    bot_plate: Arc<BotPlate>,
 }
 
 impl State {
@@ -1314,6 +1330,7 @@ impl State {
             next_input_peer: 0,
             results: Vec::new(),
             timers: Timers::default(),
+            bot_plate: Arc::default(),
         }
     }
 
@@ -1610,6 +1627,9 @@ impl State {
             } => {
                 let _ = reply.send(self.switch_hero(connection, id, hero, now));
             }
+            Request::BotPlate { change, reply } => {
+                let _ = reply.send(self.tune_bot_plate(change));
+            }
         }
     }
 
@@ -1630,6 +1650,79 @@ impl State {
         let pick = pick_message(room.players[slot].entity, hero);
         peer.world.queue_game_message(self.clock.frame(), now, pick);
         true
+    }
+
+    /// The live nameplate tool's change: the plate every match takes now
+    /// ([`Self::sync_bot_plates`]), then the game messages it names to the
+    /// live bots.
+    fn tune_bot_plate(&mut self, change: Option<PlateChange>) -> Result<PlateView, String> {
+        if let Some(change) = change {
+            let messages = change.messages();
+            let mut plate = (*self.bot_plate).clone();
+            plate.change(change)?;
+            if plate != *self.bot_plate {
+                self.bot_plate = Arc::new(plate);
+                self.sync_bot_plates();
+            }
+            for message in messages {
+                let taken: usize = self
+                    .rooms
+                    .values_mut()
+                    .filter_map(|room| room.world.as_mut())
+                    .map(|world| world.scene.message_bot_plates(message))
+                    .sum();
+                if taken == 0 {
+                    return Err(format!("No live training bot took message {message:016X}."));
+                }
+            }
+        }
+        let bot = self
+            .rooms
+            .values()
+            .filter_map(|room| room.world.as_ref())
+            .find_map(|world| {
+                let combat = world.combat.as_ref();
+                world
+                    .scene
+                    .bot_plate_sample(|slot| combat.and_then(|combat| combat.bot_vitals(slot)))
+            });
+        Ok(PlateView {
+            commands: self.bot_plate.commands(),
+            bot,
+        })
+    }
+
+    /// Every match that hasn't taken the live nameplate tool's plate yet
+    /// takes it: its bots' scripts at once, their pools as an update to
+    /// each of its clients.
+    fn sync_bot_plates(&mut self) {
+        let Self {
+            rooms,
+            peers,
+            seats,
+            bot_plate,
+            ..
+        } = self;
+        for (id, room) in rooms.iter_mut() {
+            let Some(WorldStart { scene, combat }) = &mut room.world else {
+                continue;
+            };
+            if Arc::ptr_eq(scene.bot_plate(), bot_plate) {
+                continue;
+            }
+            let combat = combat.as_ref();
+            let updates = scene.set_bot_plate(Arc::clone(bot_plate), |slot| {
+                combat.and_then(|combat| combat.bot_vitals(slot))
+            });
+            for (connection, peer) in peers.iter_mut() {
+                if peer.ai.is_some() || seats.get(connection).is_none_or(|seat| seat.0 != *id) {
+                    continue;
+                }
+                for update in &updates {
+                    peer.world.queue_health(update.clone());
+                }
+            }
+        }
     }
 
     /// A player whose game has not connected leaves the match now; if his
@@ -2644,6 +2737,9 @@ impl State {
         let mut bot_events = HashMap::new();
         let mut bot_voices = HashMap::new();
         if !drain {
+            // A match that started since takes the live nameplate tool's
+            // plate before its bots' scripts start.
+            self.sync_bot_plates();
             for room in self.rooms.values_mut() {
                 if let Some(world) = &mut room.world {
                     world.scene.step_bots(tick);
