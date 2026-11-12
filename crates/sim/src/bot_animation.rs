@@ -20,12 +20,14 @@
 //! base clip replaces the locomotion's base and its layers add to it, timed
 //! from the state's start, stretched to the state's play-over duration
 //! (`m_86701C3E`) when it has one, and held at its end. The latest started
-//! state wins. On today's server neither happens: the bots' scripts enter
-//! no `Anim` state (`0BA8`'s needs the reset message `0013`, which only
-//! the firing behaviour gets; `0BA3`'s reload names alias `0004`, which the
-//! bots' set doesn't bind; `0E8C`'s hit flinch needs message `0011`, which
-//! nothing sends) and the `007F` push sits behind `0BA8`'s variable 7143,
-//! which nothing writes.
+//! state wins. The one `Anim` state the bots' scripts enter on today's
+//! server is `0E8C`'s knockback (st7, alias `0174`), which a splash hit
+//! (tag `078D`) starts and which ends 0.25 s later, once the bot's
+//! movement sample says it is on the ground (`orpheus_script::bot`); the
+//! hit flinch (st3) is client-only, `0BA8`'s needs the reset message
+//! `0013`, which only the firing behaviour gets, and `0BA3`'s reload names
+//! alias `0004`, which the bots' set doesn't bind. The `007F` push sits
+//! behind `0BA8`'s variable 7143, which nothing writes.
 //!
 //! **Clips.** A branch's base clips play in order, those marked `once`
 //! one after the other and then the first that isn't, looping; a branch

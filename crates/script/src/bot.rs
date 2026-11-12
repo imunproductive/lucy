@@ -89,6 +89,9 @@ pub const NAMEPLATE_ENABLED: u32 = 8807;
 pub const DEAD_FLAG: u32 = 478;
 const PRACTICE_BOT_HEROES: Range<u64> = 0x02e0_0000_0000_016b..0x02e0_0000_0000_016f;
 const OWNER_HEALTH: u32 = 253;
+/// A bot's movement sample: grounded (bit 1 of the 13 movement bits,
+/// `orpheus_physics::mover::sample_movement_flags`).
+const BOT_MOVEMENT_SAMPLE: u16 = 1 << 1;
 
 /// The practice nameplate instance: graph `0D24` under state 3 of a `0C18`
 /// instance (`practice_nameplate` in bot.py).
@@ -176,6 +179,16 @@ impl World for BotWorld {
 
     fn criteria(&mut self, _site: Site, identifier: u64) {
         self.criteria.push(identifier);
+    }
+
+    /// The body's movement sampler (`STU_96F1DBCF`): a training bot is on
+    /// the ground (bit 1), as nothing pushes it off. `0E8C`'s knockback
+    /// anim (st7, which a splash hit starts) ends 0.25 s on once this bit is
+    /// set (st11 on #545); before, no answer left it for ever. Assumption:
+    /// the other bits stay off, moving (bit 4) too on a patrol route, as the
+    /// match keeps no velocity for a bot.
+    fn movement_sample(&self, _site: Site) -> Option<u16> {
+        Some(BOT_MOVEMENT_SAMPLE)
     }
 
     /// From the body's compiled animation data
@@ -1393,6 +1406,67 @@ mod tests {
         assert_ne!(
             settled.instance_variable(flinch, STRENGTH),
             Some(&rifle_flinch)
+        );
+
+        // A Helix Rocket's explosion (`0254` rid 35, its `m_D2D11CE9` tags)
+        // carries the splash tag `078D` and not `0302`, so `0E8C` (rid 13,
+        // 15) also starts its networked knockback anim, st7 (alias `0174`,
+        // no timer: `m_37EE887D`). Its subgraph's movement sampler (st10)
+        // writes #545, the body's grounded bit; after its 0.25 s wait (st12)
+        // st11 ends the anim once #545 is true. A training bot stands on the
+        // ground, so the anim ends then. Before, the bot's world answered no
+        // movement sample, #545 stayed unset and the clients played the anim
+        // for ever.
+        const KNOCKBACK: u16 = 7;
+        let explosion: crate::weapons::DamageTags = [0x03bf, 0x04b1, 0x078d, 0x0980, 0x2d30]
+            .map(|tag| 0x0d80_0000_0000_0000 | tag)
+            .into_iter()
+            .collect();
+        let blast = hit + 60;
+        assert!(
+            bot.take_damage(
+                blast,
+                Variables::from([
+                    (DAMAGE_TAGS, explosion.to_value()),
+                    (DAMAGE_SOURCE, Value::Entity(0xa000_0101)),
+                    (DAMAGE_AMOUNT, Value::Float(40.0)),
+                    (DAMAGE_DIRECTION, Value::Vector([0.0, 0.0, 1.0])),
+                ]),
+            )
+            .unwrap()
+        );
+        let knocked = bot
+            .encoder(&graphs, &codecs)
+            .project_next(bot.snapshot().unwrap(), &settled)
+            .unwrap();
+        assert!(knocked.state(flinch, KNOCKBACK).is_some());
+        let knockback = |bot: &BotBody| {
+            bot.snapshot().unwrap().instances[&flinch]
+                .states
+                .get(&KNOCKBACK)
+                .is_some_and(|state| state.active)
+        };
+        let mut ended = None;
+        for frame in blast..blast + 120 {
+            if bot.due_by(frame) {
+                assert!(bot.advance_live(frame, None).unwrap());
+            }
+            if !knockback(&bot) {
+                ended = Some(frame);
+                break;
+            }
+        }
+        // The message ran at the start of frame `blast - 1`; the 250 ms wait
+        // is over in frame `blast - 1 + ceil(250 / 16)`.
+        assert_eq!(ended, Some(blast + 15));
+        // The observers' frame turns it off.
+        let recovered = bot
+            .encoder(&graphs, &codecs)
+            .project_next(bot.snapshot().unwrap(), &knocked)
+            .unwrap();
+        assert_ne!(
+            recovered.state(flinch, KNOCKBACK),
+            knocked.state(flinch, KNOCKBACK)
         );
         encoder_full(&graphs, &codecs, &bot);
     }

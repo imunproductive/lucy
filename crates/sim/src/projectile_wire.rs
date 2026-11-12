@@ -4,7 +4,9 @@
 //! state 0x7FF789A34600 -> record 0x7FF789C78980 (blank baseline
 //! 0x7FF789A348DD). A ch2 projectile state for a frame ahead of the rocket's,
 //! alive, with an impact count, in the same entity block as the destroy, makes
-//! the destructor play the explosion at the client's own impact point. Other
+//! the destructor play the explosion at the client's own impact point; a count
+//! above the client's own plays one more at the state's position
+//! (projectiles.py `RELEASE_POS`). Other
 //! clients see a SHOTS_AND_PROJECTILES volley's projectile as a server entity
 //! that a shot record starts (reader 0x7FF789C91F80): in ch2 of the shooter's
 //! entity block (events bit, per event a bit, the frame (first a var_b, then
@@ -38,7 +40,9 @@ use orpheus_wire::entity::{Create, EntityUpdate, Movement, Operation, SkinTheme}
 
 use crate::projectiles::FIELD_ENTITY;
 
-const HIDDEN_POSITION: [f32; 3] = [0.0, -1000.0, 0.0];
+/// Where a projectile the client did not fly is made, and where a release
+/// whose count is above the client's plays its extra explosion out of sight.
+pub const HIDDEN_POSITION: [f32; 3] = [0.0, -1000.0, 0.0];
 const NO_BASELINE: u32 = u32::MAX;
 
 pub fn confirmation(entity: u32, definition: u64) -> EntityUpdate {
@@ -146,15 +150,17 @@ pub fn field_frame(
 
 /// Release an acknowledged predicted projectile at its client impact point.
 /// The count-only state uses a blank baseline and a frame ahead of its flight.
-pub fn release(frame: u32, impacts: u32) -> Result<BitWriter, BitError> {
+/// `position` is where an impact the client hasn't had yet plays (the state's
+/// position, +16): [`HIDDEN_POSITION`] keeps it out of sight.
+pub fn release(frame: u32, impacts: u32, position: [f32; 3]) -> Result<BitWriter, BitError> {
     let mut out = BitWriter::new();
     out.bit(false); // no shot events
     out.bit(true); // one projectile state
     out.var_b(NO_BASELINE);
     out.var_b(frame.wrapping_add(1));
     out.bits(0, 2)?; // alive, no optional field at +260
-    for position in HIDDEN_POSITION {
-        out.f32(position);
+    for value in position {
+        out.f32(value);
     }
     out.bits(0, 5)?; // unchanged velocity, +88 and three lists
     out.bit(true); // impact count
@@ -337,7 +343,11 @@ mod tests {
                 "feffffff9f0e0c0000000000007ac400000000200001000000",
             ),
         ] {
-            check(&release(12345, count).unwrap(), bits, bytes);
+            check(
+                &release(12345, count, HIDDEN_POSITION).unwrap(),
+                bits,
+                bytes,
+            );
         }
     }
 
