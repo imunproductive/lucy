@@ -11,7 +11,7 @@ use std::{
     collections::HashMap,
     io,
     sync::{Arc, Mutex},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use orpheus_lobby::{
@@ -52,7 +52,8 @@ struct Session {
     /// The login's party id, unique to the session: a replaced session must
     /// not take the newer one's pushes.
     key: [u64; 2],
-    logged_in: Instant,
+    /// The lobby's clock at login.
+    logged_in: Duration,
     features_sent: usize,
     pushes: Vec<Push>,
 }
@@ -94,13 +95,13 @@ impl Services {
         self.sessions.lock().expect("lobby service sessions")
     }
 
-    /// A session finished its login messages.
-    pub(crate) fn logged_in(&self, login: &PreparedLogin) {
+    /// A session finished its login messages, at `now` on the lobby's clock.
+    pub(crate) fn logged_in(&self, login: &PreparedLogin, now: Duration) {
         self.sessions().insert(
             login.account.account_lo,
             Session {
                 key: login.identity.party_id,
-                logged_in: Instant::now(),
+                logged_in: now,
                 features_sent: 0,
                 pushes: Vec::new(),
             },
@@ -112,8 +113,9 @@ impl Services {
         self.sessions().remove(&account.account_lo);
     }
 
-    /// Whether the account features are due again, and the dashboard's pushes.
-    fn due(&self, login: &PreparedLogin) -> (bool, Vec<Push>) {
+    /// Whether the account features are due again at `now`, and the
+    /// dashboard's pushes.
+    fn due(&self, login: &PreparedLogin, now: Duration) -> (bool, Vec<Push>) {
         let mut sessions = self.sessions();
         let Some(session) = sessions
             .get_mut(&login.account.account_lo)
@@ -125,8 +127,8 @@ impl Services {
             .iter()
             .take(session.features_sent + 1)
             .sum();
-        let features =
-            session.features_sent < MENU_READY_DELAYS.len() && session.logged_in.elapsed() >= next;
+        let features = session.features_sent < MENU_READY_DELAYS.len()
+            && now.saturating_sub(session.logged_in) >= next;
         if features {
             session.features_sent += 1;
         }
@@ -137,7 +139,7 @@ impl Services {
 /// Every module's timed work for a session: the account features after
 /// login, then the dashboard's pushes.
 pub(crate) fn tick(peer: &mut Peer<'_, '_>) -> io::Result<()> {
-    let (features, pushes) = peer.lobby.services.due(peer.login);
+    let (features, pushes) = peer.lobby.services.due(peer.login, peer.lobby.clock.now());
     if features {
         peer.send(&(PERMISSIONS, 55500, player::features()))?;
     }
@@ -379,9 +381,9 @@ mod tests {
         let first = login(&accounts, "Alpha", 1);
         let lo = first.account.account_lo;
         services.push_profile(lo, vec![5]);
-        services.logged_in(&first);
+        services.logged_in(&first, Duration::ZERO);
         assert!(
-            services.due(&first).1.is_empty(),
+            services.due(&first, Duration::ZERO).1.is_empty(),
             "offline edits are not kept"
         );
 
@@ -389,20 +391,22 @@ mod tests {
         services.push_settings(lo);
         let replaced = login(&accounts, "Alpha", 2);
         assert!(
-            services.due(&replaced).1.is_empty(),
+            services.due(&replaced, Duration::ZERO).1.is_empty(),
             "another session's pushes"
         );
-        let (features, due) = services.due(&first);
+        let (features, due) = services.due(&first, Duration::ZERO);
         assert!(!features);
         assert_eq!(pushes(&due), [Some(vec![7, 8]), None]);
-        assert!(services.due(&first).1.is_empty());
+        assert!(services.due(&first, Duration::ZERO).1.is_empty());
 
         services.logged_out(&first.account);
         services.push_settings(lo);
-        services.logged_in(&first);
-        assert!(services.due(&first).1.is_empty());
+        services.logged_in(&first, Duration::ZERO);
+        assert!(services.due(&first, Duration::ZERO).1.is_empty());
     }
 
+    /// Login at 0: the features go again at 3 s, then 7 s later (10 s),
+    /// and no more (`MENU_READY_DELAYS`).
     #[test]
     fn account_features_go_again_three_then_ten_seconds_after_login() {
         let state = tempfile::tempdir().unwrap();
@@ -410,21 +414,14 @@ mod tests {
             Accounts::new(state.path().join("profiles"), state.path().join("t")).unwrap();
         let services = services();
         let session = login(&accounts, "Alpha", 1);
-        services.logged_in(&session);
-        let rewind = |seconds| {
-            let mut sessions = services.sessions();
-            let entry = sessions.get_mut(&session.account.account_lo).unwrap();
-            entry.logged_in = Instant::now() - Duration::from_secs(seconds);
-        };
-        assert!(!services.due(&session).0);
-        rewind(3);
-        assert!(services.due(&session).0);
-        assert!(!services.due(&session).0);
-        rewind(9);
-        assert!(!services.due(&session).0);
-        rewind(10);
-        assert!(services.due(&session).0);
-        rewind(600);
-        assert!(!services.due(&session).0, "only twice");
+        services.logged_in(&session, Duration::ZERO);
+        let due = |millis| services.due(&session, Duration::from_millis(millis)).0;
+        assert!(!due(0));
+        assert!(!due(2_999));
+        assert!(due(3_000));
+        assert!(!due(3_000));
+        assert!(!due(9_999));
+        assert!(due(10_000));
+        assert!(!due(600_000), "only twice");
     }
 }

@@ -1,11 +1,10 @@
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
-    time::{Duration, Instant},
 };
 
 use orpheus_lobby::{
-    handoff::{HANDOFF, HANDOFF_MESSAGE},
+    handoff::{FOUND_DELAY, HANDOFF, HANDOFF_MESSAGE},
     lineup::MATCH_LOBBY,
     login::{LOGIN_MESSAGE, OUT_CONNECT},
     matchmaker::QUICK_PLAY,
@@ -13,13 +12,15 @@ use orpheus_lobby::{
     queue::{ENTER_QUEUE, MATCHMAKE, QUEUE, QUEUE_WAITS, SET_ROLES, TANK_ROLE},
     templates::IN_CONNECT,
 };
-use orpheus_wire::jam::{
-    codec::{Fields, Schemas, Value},
-    framing::{self, FrameReader},
-    handshake::client_handshake,
-};
+use orpheus_wire::jam::codec::{Fields, Schemas, Value};
 
-use crate::server::{Server, ServerConfig};
+use crate::{
+    lobby::{
+        TICK,
+        test_client::{Client, run},
+    },
+    server::{Server, ServerConfig},
+};
 
 const CHAT_IN: u32 = 0x5f91_3f6b;
 
@@ -46,10 +47,21 @@ fn structure(value: &Value) -> &Fields {
 
 /// One player searches Quick Play with one player to start and the
 /// Practice Range forced: the queue pops, "Game Found!" shows, and the game
-/// gets its 20600 after it.
+/// gets its 20600 `FOUND_DELAY` after it.
 #[test]
 #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
 fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
+    const GROUPS: [u32; 9] = [
+        IN_CONNECT,
+        OUT_CONNECT,
+        MATCHMAKE,
+        QUEUE,
+        QUEUE_WAITS,
+        PARTY,
+        MATCH_LOBBY,
+        HANDOFF,
+        CHAT_IN,
+    ];
     let runtime = orpheus_testkit::runtime_dir();
     let state = tempfile::tempdir().unwrap();
     let mut config = ServerConfig::new(runtime, state.path().into());
@@ -58,7 +70,7 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
     config.stall_port = 0;
     config.rpc_port = 0;
     config.dashboard_port = Some(0);
-    let mut server = Server::start(config).unwrap();
+    let (mut server, time) = Server::start_virtual(config).unwrap();
     let dashboard = server.dashboard_addr().unwrap();
     let card = format!("0x{QUICK_PLAY:016X}");
     assert_eq!(
@@ -84,44 +96,43 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
     );
 
     let schemas = Schemas::lobby();
-    let mut tcp = TcpStream::connect(server.lobby_addr()).unwrap();
-    tcp.set_read_timeout(Some(Duration::from_millis(500)))
-        .unwrap();
-    let (mut tx, rx) = client_handshake(&mut tcp);
-    let groups = [
-        IN_CONNECT,
-        OUT_CONNECT,
-        MATCHMAKE,
-        QUEUE,
-        QUEUE_WAITS,
-        PARTY,
-        MATCH_LOBBY,
-        HANDOFF,
-        CHAT_IN,
-    ];
-    let wire = |group: u32| groups.iter().position(|&known| known == group).unwrap() as u8 + 1;
-    let mut announcement = vec![0, 0];
-    announcement.extend_from_slice(&(groups.len() as u32).to_le_bytes());
-    for group in groups {
-        announcement.extend_from_slice(&group.to_le_bytes());
-    }
-    framing::send_frame(&mut tcp, &mut tx, &announcement).unwrap();
+    let mut client = Client::connect(&schemas, SocketAddr::from(server.lobby_addr()), &GROUPS);
     let key = Fields::from([(
         0,
         Value::Struct(Fields::from([(0, Value::Unsigned(QUICK_PLAY))])),
     )]);
-    let mut send = |tcp: &mut TcpStream, group: u32, id: u32, fields: Fields| {
-        let mut frame = schemas.header(group, wire(group), id).unwrap();
-        frame.extend(schemas.encode(group, id, &fields).unwrap());
-        framing::send_frame(tcp, &mut tx, &frame).unwrap();
-    };
-    send(&mut tcp, OUT_CONNECT, LOGIN_MESSAGE, Fields::new());
-    send(
-        &mut tcp,
+    client.send(OUT_CONNECT, LOGIN_MESSAGE, Fields::new());
+    client.send(
         MATCHMAKE,
         ENTER_QUEUE,
         Fields::from([(0x78, Value::Struct(key.clone()))]),
     );
+    // The role screen: Ready as a tank once the role check started.
+    assert!(client.received.iter().any(|&(_, id, _)| id == 56200));
+    client.send(
+        MATCHMAKE,
+        SET_ROLES,
+        Fields::from([(
+            0x78,
+            Value::Array(vec![Value::Unsigned(u64::from(TANK_ROLE))]),
+        )]),
+    );
+    // The queue popped: "Game Found!" (53003) came with it.
+    assert!(client.received.iter().any(|&(_, id, _)| id == 53003));
+    let found_at = time.lobby.now();
+    // The 20600 goes at the session's first tick at or after the pop's
+    // `FOUND_DELAY` (4 s; the game was in no other match). The clock moves
+    // a lobby tick (250 ms) at a time from the pop, so the 16th tick, 4 s
+    // after it, sends it, and none before.
+    while !client
+        .received
+        .iter()
+        .any(|&(_, id, _)| id == HANDOFF_MESSAGE)
+    {
+        assert!(time.lobby.now() - found_at < FOUND_DELAY, "no handoff");
+        run(&time.lobby, &mut [&mut client], TICK);
+    }
+    assert_eq!(time.lobby.now() - found_at, FOUND_DELAY);
 
     let wanted = [
         (QUEUE, 44201),
@@ -134,60 +145,15 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
         (CHAT_IN, 20404),
         (HANDOFF, HANDOFF_MESSAGE),
     ];
-    let mut received: Vec<(u32, Fields, Instant)> = Vec::new();
-    let mut reader = FrameReader::new(rx);
-    let mut buf = [0; 16384];
-    let limit = Instant::now() + Duration::from_secs(15);
-    let mut roles_sent = false;
-    while !received.iter().any(|(id, ..)| *id == HANDOFF_MESSAGE) {
-        assert!(
-            Instant::now() < limit,
-            "no handoff: {:?}",
-            received.iter().map(|(id, ..)| id).collect::<Vec<_>>()
-        );
-        let count = match tcp.read(&mut buf) {
-            Ok(0) => panic!("the lobby closed the connection"),
-            Ok(count) => count,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue;
-            }
-            Err(error) => panic!("{error}"),
-        };
-        for frame in reader.feed(&buf[..count]) {
-            for (group, id) in wanted {
-                if let Some(body) =
-                    frame.strip_prefix(schemas.header(group, wire(group), id).unwrap().as_slice())
-                {
-                    received.push((
-                        id,
-                        schemas.decode(group, id, body, true).unwrap(),
-                        Instant::now(),
-                    ));
-                }
-            }
-        }
-        // The role screen: Ready as a tank once the role check started.
-        if !roles_sent && received.iter().any(|(id, ..)| *id == 56200) {
-            roles_sent = true;
-            send(
-                &mut tcp,
-                MATCHMAKE,
-                SET_ROLES,
-                Fields::from([(
-                    0x78,
-                    Value::Array(vec![Value::Unsigned(u64::from(TANK_ROLE))]),
-                )]),
-            );
-        }
-    }
+    let received: Vec<(u32, Fields)> = client
+        .received
+        .iter()
+        .filter(|&&(crc, id, _)| wanted.contains(&(crc, id)))
+        .map(|(_, id, fields)| (*id, fields.clone()))
+        .collect();
     let order: Vec<u32> = received
         .iter()
-        .map(|(id, ..)| *id)
+        .map(|(id, _)| *id)
         .filter(|id| *id != 20700)
         .collect();
     // 20402 General at login; then the queue, the role check, the search, the
@@ -207,18 +173,12 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
             HANDOFF_MESSAGE
         ]
     );
-    let find = |wanted: u32, nth: usize| {
-        received
-            .iter()
-            .filter(|(id, ..)| *id == wanted)
-            .nth(nth)
-            .unwrap()
-    };
+    let find = |wanted: u32| &received.iter().find(|(id, _)| *id == wanted).unwrap().1;
     // The role check shows the queue entry in the party state.
     let party_states: Vec<&Fields> = received
         .iter()
-        .filter(|(id, ..)| *id == 20700)
-        .map(|(_, fields, _)| fields)
+        .filter(|(id, _)| *id == 20700)
+        .map(|(_, fields)| fields)
         .collect();
     let queue_state = |fields: &Fields| match &structure(&fields[&0x78])[&0x18] {
         Value::Array(entries) => entries.first().map(|entry| structure(entry)[&0x54].clone()),
@@ -234,19 +194,14 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
         [None, Some(Value::Signed(1)), Some(Value::Signed(3)), None]
     );
 
-    let (_, popped, _) = find(44202, 0);
-    assert_eq!(popped[&0xa8], Value::Unsigned(1));
-    let (_, found, found_at) = find(53003, 0);
-    assert_eq!(found[&0xa0], Value::Signed(4));
-    let (_, handoff, handoff_at) = find(HANDOFF_MESSAGE, 0);
-    assert!(handoff_at.duration_since(*found_at) >= Duration::from_millis(3500));
-    let ticket = structure(&handoff[&0x80]);
+    assert_eq!(find(44202)[&0xa8], Value::Unsigned(1));
+    assert_eq!(find(53003)[&0xa0], Value::Signed(4));
+    let ticket = structure(&find(HANDOFF_MESSAGE)[&0x80]);
     assert_eq!(
         ticket[&0x2c],
         Value::Unsigned(u64::from(server.game_addr().unwrap().port()))
     );
-    let (_, lobby, _) = find(53000, 0);
-    let match_id = &structure(&lobby[&0x78])[&0x30];
+    let match_id = &structure(&find(53000)[&0x78])[&0x30];
     assert_eq!(
         structure(match_id)[&0],
         Value::Array(match &structure(&ticket[&0])[&0] {
@@ -254,6 +209,7 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
             other => panic!("{other:?}"),
         })
     );
+    client.close();
     server.stop().unwrap();
 }
 
@@ -261,11 +217,10 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
 /// players (`results.rs`), and on to their games.
 mod results {
     use std::{
-        io::Read,
-        net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
+        net::{Ipv4Addr, TcpListener},
         sync::{Arc, mpsc},
         thread,
-        time::{Duration, Instant},
+        time::Duration,
     };
 
     use orpheus_content::maps::GameMap;
@@ -273,7 +228,7 @@ mod results {
         accounts::{Account, Accounts, Profile, load_or_create_profile},
         collection::PROGRESSION,
         handoff::Handoff,
-        login::{Identity, LOGIN_MESSAGE, OUT_CONNECT},
+        login::{Identity, OUT_CONNECT},
         matchmaker::QUICK_PLAY,
         progression::{self, Earned, MatchPlay},
         queue::{DAMAGE_ROLE, SUPPORT_ROLE, TANK_ROLE},
@@ -284,11 +239,7 @@ mod results {
         templates::{IN_CONNECT, LOBBY},
         xp_table::XpTable,
     };
-    use orpheus_wire::jam::{
-        codec::{Fields, Schemas, Value},
-        framing::{self, FrameReader},
-        handshake::client_handshake,
-    };
+    use orpheus_wire::jam::codec::{Fields, Value};
     use serde_json::json;
 
     use super::super::{
@@ -298,18 +249,23 @@ mod results {
     };
     use crate::{
         game_service::{MatchResult, Outcome, PlayerResult},
-        lobby::serve,
+        lobby::{
+            TICK, serve,
+            test_client::{Client, run},
+        },
     };
 
     const ID: [u64; 2] = [1, 2];
     /// The seats' games connected this long before the match ended.
     const PLAYED: Duration = Duration::from_secs(600);
+    /// When the seats' games connected, on the lobby's clock.
+    const JOINED: Duration = Duration::from_secs(60);
     /// Seconds since 1970 when the results are saved.
     const WALL_TIME: u64 = 1_700_000_000;
     /// The Practice vs AI card "Medium".
     const VERSUS_AI_MEDIUM: u64 = 0x0630_0000_0000_0071;
 
-    fn seat(account: &Arc<Account>, conn: u32, team: u8, role: u8, joined: Instant) -> Seat {
+    fn seat(account: &Arc<Account>, conn: u32, team: u8, role: u8, joined: Duration) -> Seat {
         Seat {
             account: Arc::clone(account),
             party: [u64::from(conn); 2],
@@ -380,7 +336,7 @@ mod results {
         room: &Room,
         versus_ai: bool,
         players: Vec<PlayerResult>,
-        joined: Instant,
+        joined: Duration,
     ) -> Vec<(String, MatchPlay)> {
         recorded(
             room,
@@ -395,7 +351,7 @@ mod results {
     }
 
     /// The room's result, recorded and saved as the matchmaker does.
-    fn record(room: &Room, players: Vec<PlayerResult>, joined: Instant) -> Vec<Earned> {
+    fn record(room: &Room, players: Vec<PlayerResult>, joined: Duration) -> Vec<Earned> {
         recorded(room, &result(players), false, |_| season(), joined + PLAYED)
             .into_iter()
             .map(|(account, play)| save(&account, &play, &xp_table(), WALL_TIME).unwrap())
@@ -452,7 +408,7 @@ mod results {
         let fresh = |account: &Account| account.profile().clone();
         let (alpha_before, beta_before, gamma_before, delta_before) =
             (fresh(&alpha), fresh(&beta), fresh(&gamma), fresh(&delta));
-        let joined = Instant::now();
+        let joined = JOINED;
 
         // Quick Play: no competitive queue, so the role played, or open.
         let quick_play = room(
@@ -542,7 +498,7 @@ mod results {
         let accounts = registry(&state);
         let [alpha, beta, gamma] =
             ["Alpha", "Beta", "Gamma"].map(|name| accounts.get(name).unwrap());
-        let joined = Instant::now();
+        let joined = JOINED;
         let mut friend = seat(&beta, 2, 0, DAMAGE_ROLE, joined);
         friend.party = [1; 2];
         let quick_play = room(
@@ -639,7 +595,7 @@ mod results {
         let accounts = registry(&state);
         let [alpha, beta, gamma, delta] =
             ["Alpha", "Beta", "Gamma", "Delta"].map(|name| accounts.get(name).unwrap());
-        let joined = Instant::now();
+        let joined = JOINED;
         let mut excused = seat(&alpha, 1, 0, 0, joined);
         excused.excused = true;
         let mut unconnected = seat(&beta, 2, 0, 0, joined);
@@ -684,7 +640,7 @@ mod results {
         let alpha = accounts.get("Alpha").unwrap();
         prepare(&alpha);
         let boxes = alpha.profile().loot_boxes.len();
-        let joined = Instant::now();
+        let joined = JOINED;
         let competitive = room(
             ROLE_QUEUE,
             true,
@@ -737,96 +693,7 @@ mod results {
         assert_eq!(profile.leave_mask, 0);
     }
 
-    /// The lobby side of a game client: the login, then what it receives.
-    struct Client<'a> {
-        schemas: &'a Schemas,
-        tcp: TcpStream,
-        reader: FrameReader,
-        received: Vec<(u32, u32, Fields)>,
-    }
-
     const ANNOUNCED: [u32; 5] = [IN_CONNECT, OUT_CONNECT, LOBBY, PROGRESSION, RANKED];
-
-    impl<'a> Client<'a> {
-        fn login(schemas: &'a Schemas, lobby: SocketAddr, name: &str) -> Self {
-            let mut tcp = TcpStream::connect(lobby).unwrap();
-            tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            let (mut tx, rx) = client_handshake(&mut tcp);
-            tcp.set_read_timeout(Some(Duration::from_millis(100)))
-                .unwrap();
-            let mut announcement = vec![0, 0];
-            announcement.extend_from_slice(&(ANNOUNCED.len() as u32).to_le_bytes());
-            for group in ANNOUNCED {
-                announcement.extend_from_slice(&group.to_le_bytes());
-            }
-            framing::send_frame(&mut tcp, &mut tx, &announcement).unwrap();
-            let wire = ANNOUNCED
-                .iter()
-                .position(|&group| group == OUT_CONNECT)
-                .unwrap() as u8
-                + 1;
-            let mut frame = schemas.header(OUT_CONNECT, wire, LOGIN_MESSAGE).unwrap();
-            let login = Fields::from([(0x78, Value::String(name.into()))]);
-            frame.extend(schemas.encode(OUT_CONNECT, LOGIN_MESSAGE, &login).unwrap());
-            framing::send_frame(&mut tcp, &mut tx, &frame).unwrap();
-            Self {
-                schemas,
-                tcp,
-                reader: FrameReader::new(rx),
-                received: Vec::new(),
-            }
-        }
-
-        fn read(&mut self) {
-            let mut buffer = [0; 65_536];
-            match self.tcp.read(&mut buffer) {
-                Ok(0) => panic!("the lobby closed the connection"),
-                Ok(count) => {
-                    for frame in self.reader.feed(&buffer[..count]) {
-                        let Some(&wire) = frame.first().filter(|&&wire| wire != 0) else {
-                            continue;
-                        };
-                        let crc = ANNOUNCED[usize::from(wire) - 1];
-                        let (id, body) = self.schemas.split(crc, &frame).unwrap();
-                        let fields = self.schemas.decode(crc, id, body, true).unwrap();
-                        self.received.push((crc, id, fields));
-                    }
-                }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) => {}
-                Err(error) => panic!("{error}"),
-            }
-        }
-
-        /// The first message of this kind received so far or within a
-        /// while; it and everything before it are consumed.
-        fn expect(&mut self, crc: u32, id: u32) -> Fields {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                if let Some(index) = self
-                    .received
-                    .iter()
-                    .position(|&(group, message, _)| (group, message) == (crc, id))
-                {
-                    return self.received.drain(..=index).next_back().unwrap().2;
-                }
-                assert!(Instant::now() < deadline, "no {crc:08X}/{id}");
-                self.read();
-            }
-        }
-
-        /// Drop everything that arrives within a short while.
-        fn settle(&mut self) {
-            let until = Instant::now() + Duration::from_millis(700);
-            while Instant::now() < until {
-                self.read();
-            }
-            self.received.clear();
-        }
-    }
 
     fn integer(value: &Value) -> i128 {
         match value {
@@ -868,12 +735,12 @@ mod results {
             let lobby = Arc::clone(lobby);
             thread::spawn(move || serve(listener, lobby, shutdown))
         };
-        let mut client = Client::login(&lobby.schemas, address, "Alpha");
+        let mut client = Client::login(&lobby.schemas, address, &ANNOUNCED, "Alpha");
         // The login ends with the settings (20802).
         client.expect(LOBBY, 20802);
         client.settle();
 
-        let joined = Instant::now();
+        let joined = JOINED;
         lobby.matchmaker.lock().rooms.push(room(
             ROLE_QUEUE,
             true,
@@ -888,6 +755,10 @@ mod results {
             boxes,
         );
 
+        // The push waits for the session's next tick, a lobby tick later
+        // (`services.rs`).
+        assert!(client.settle().is_empty());
+        run(&fixture.clock, &mut [&mut client], TICK);
         let boxes_sent = client.expect(PROGRESSION, 24302);
         assert_eq!(array(&boxes_sent[&0x78]).len(), boxes + 1);
         assert_eq!(integer(&client.expect(PROGRESSION, 24308)[&0x78]), 15);
@@ -910,7 +781,7 @@ mod results {
         };
         assert_eq!((integer(&tank[&0x18]), integer(&tank[&0x22])), (2515, 3));
 
-        drop(client);
+        client.close();
         stop.send(()).unwrap();
         server.join().unwrap().unwrap();
     }

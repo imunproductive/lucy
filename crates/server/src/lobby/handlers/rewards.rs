@@ -26,7 +26,9 @@ pub(crate) const MODULE: Module = Module {
 };
 
 fn logged_in(peer: &mut Peer<'_, '_>) -> io::Result<()> {
-    peer.lobby.services.logged_in(peer.login);
+    peer.lobby
+        .services
+        .logged_in(peer.login, peer.lobby.clock.now());
     Ok(())
 }
 

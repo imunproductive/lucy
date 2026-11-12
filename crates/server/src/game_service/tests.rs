@@ -1,21 +1,17 @@
 use super::*;
-use lockstep::{Lockstep, Network};
+use lockstep::{Client, Lockstep};
 use orpheus_content::maps::PRACTICE_RANGE_MAP;
 use orpheus_core::{
     bits::{BitReader, BitWriter},
     tick::SEND_EVERY,
 };
 use orpheus_wire::{
-    link::{FIN, KIND_CONTROL, LinkCipher, ReceiveWindow, SYN},
+    link::{FIN, KIND_CONTROL, SYN},
     messages::{read_channel, write_channel},
 };
 use std::collections::HashSet;
 
 const MATCH: MatchId = [5, 8];
-
-/// How long a client waits for its next datagram: the 2 s read timeout its
-/// socket had over UDP, in ticks.
-const RECEIVE_TICKS: u32 = 125;
 
 fn player() -> Vec<MatchPlayer> {
     vec![MatchPlayer {
@@ -47,85 +43,6 @@ fn fixture() -> Schemas {
             }"#,
     )
     .unwrap()
-}
-
-/// A game on the service's in-memory network ([`Lockstep`]). Waiting for a
-/// datagram runs the service's ticks.
-struct Client {
-    network: Network,
-    address: SocketAddr,
-    cipher: LinkCipher,
-    connection: u32,
-    next: u32,
-    window: ReceiveWindow,
-}
-
-impl Client {
-    fn new(server: &Lockstep, ticket: &Handoff) -> Self {
-        let network = server.network().clone();
-        let address = network.bind();
-        Self {
-            network,
-            address,
-            cipher: LinkCipher::new(ticket.key_out, ticket.key_in),
-            connection: ticket.conn,
-            next: 0,
-            window: ReceiveWindow::default(),
-        }
-    }
-
-    /// A datagram that arrives before the service's next tick.
-    fn send(&mut self, flags: u8, payload: Vec<u8>) {
-        let packet = Packet {
-            conn: self.connection,
-            kind: if payload.is_empty() {
-                KIND_CONTROL
-            } else {
-                KIND_FRAME
-            },
-            seq: self.next,
-            ack: self.window.expected,
-            ack_bits: self.window.bits,
-            flags,
-            payload,
-        };
-        self.next += 1;
-        self.network
-            .send(self.address, self.cipher.seal(&packet).unwrap());
-    }
-
-    /// The next datagram, running ticks until one comes (at most
-    /// [`RECEIVE_TICKS`]).
-    fn receive(&self) -> Packet {
-        for _ in 0..=RECEIVE_TICKS {
-            if let Some(bytes) = self.network.take(self.address) {
-                let packet = self.cipher.open(&bytes).unwrap();
-                assert_eq!(packet.conn, self.connection);
-                return packet;
-            }
-            self.network.step();
-        }
-        panic!("no datagram in {RECEIVE_TICKS} ticks");
-    }
-
-    /// Nothing comes for the ticks of `time`.
-    fn hears_nothing(&self, time: Duration) {
-        self.network.run(time);
-        assert!(self.network.take(self.address).is_none());
-    }
-
-    /// The time of the service's last tick.
-    fn now(&self) -> Duration {
-        self.network.now()
-    }
-
-    fn handshake(&mut self) {
-        self.send(SYN, Vec::new());
-        let response = self.receive();
-        assert_eq!((response.kind, response.flags), (KIND_CONTROL, SYN | ACK));
-        assert!(self.window.accept(response.seq));
-        self.send(ACK, Vec::new());
-    }
 }
 
 /// The server tick a frame datagram was sent at.

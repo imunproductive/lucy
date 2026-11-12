@@ -6,15 +6,6 @@ use orpheus_lobby::accounts::Profile;
 
 use super::*;
 
-/// Everything the player is sent within a short while.
-fn gather(client: &mut Client<'_>) -> Vec<(u32, u32, Fields)> {
-    let until = Instant::now() + Duration::from_millis(700);
-    while Instant::now() < until {
-        client.read();
-    }
-    std::mem::take(&mut client.received)
-}
-
 /// The texts of the chat lines the player gets after saying "hi" in a
 /// channel the bot is in (General).
 fn channel_texts(alpha: &mut Client<'_>) -> Vec<String> {
@@ -26,7 +17,8 @@ fn channel_texts(alpha: &mut Client<'_>) -> Vec<String> {
             (0x90, Value::String("hi".into())),
         ]),
     );
-    gather(alpha)
+    alpha
+        .take()
         .into_iter()
         .filter(|&(crc, id, _)| (crc, id) == (CHAT_IN, 20400))
         .map(|(_, _, line)| match &line[&0x100] {
@@ -48,7 +40,8 @@ fn whisper_replies(alpha: &mut Client<'_>) -> Vec<Fields> {
             (0xa0, Value::String("hi".into())),
         ]),
     );
-    gather(alpha)
+    alpha
+        .take()
         .into_iter()
         .filter(|&(crc, id, _)| (crc, id) == (FRIENDS, 27117))
         .map(|(_, _, whisper)| whisper)
@@ -57,7 +50,7 @@ fn whisper_replies(alpha: &mut Client<'_>) -> Vec<Fields> {
 
 /// Alpha logged in and in General, with nothing left to read.
 fn logged_in<'a>(schemas: &'a Schemas, server: &Server) -> Client<'a> {
-    let mut alpha = Client::login(schemas, SocketAddr::from(server.lobby_addr()), "Alpha");
+    let mut alpha = login(schemas, SocketAddr::from(server.lobby_addr()), "Alpha");
     alpha.expect(CHAT_IN, 20402);
     alpha.settle();
     alpha
@@ -70,7 +63,7 @@ fn logged_in<'a>(schemas: &'a Schemas, server: &Server) -> Client<'a> {
 fn the_bot_answers_only_when_the_switch_is_on() {
     assert!(!Profile::default().bot_chat);
     let state = tempfile::tempdir().unwrap();
-    let mut server = start(&state);
+    let (mut server, time) = start(&state);
     let dashboard = server.dashboard_addr().unwrap();
     let schemas = Schemas::lobby();
     let mut alpha = logged_in(&schemas, &server);
@@ -87,12 +80,14 @@ fn the_bot_answers_only_when_the_switch_is_on() {
         reply.starts_with("HTTP/1.0 200") || reply.starts_with("HTTP/1.1 200"),
         "{reply}"
     );
+    // The edit reaches the game at the session's next tick (`services.rs`).
+    run(&time.lobby, &mut [&mut alpha], TICK);
     alpha.settle();
 
     let texts = channel_texts(&mut alpha);
     assert_eq!((texts.len(), texts[0].as_str()), (2, "hi"), "{texts:?}");
     assert_eq!(whisper_replies(&mut alpha).len(), 1);
 
-    drop(alpha);
+    alpha.close();
     server.stop().unwrap();
 }

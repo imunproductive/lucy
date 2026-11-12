@@ -11,7 +11,7 @@
 use std::{
     io,
     sync::{Arc, MutexGuard},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use orpheus_lobby::{
@@ -94,7 +94,7 @@ impl<'a> Turn<'a> {
                 presence: &lobby.presence,
                 places: Box::new(move |account| services::top500_places(lobby, account)),
                 wall_time,
-                now: Instant::now(),
+                now: lobby.clock.now(),
                 queue,
             },
             out: Outbox::default(),

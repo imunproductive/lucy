@@ -41,7 +41,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use orpheus_content::maps::{GameMap, MapCatalog, MapListing};
@@ -105,7 +105,8 @@ struct State {
     /// The game clock refused a match: retry what waits until it opens again
     /// (Python `clock_ready`).
     clock_blocked: bool,
-    last_sweep: Option<Instant>,
+    /// The lobby's clock at the last sweep.
+    last_sweep: Option<Duration>,
 }
 
 struct Online {
@@ -163,9 +164,9 @@ struct Seat {
     record: Fields,
     handoff: Handoff,
     joined: bool,
-    /// When its game connected: the match's time played runs from here
-    /// (`results.rs`).
-    joined_at: Option<Instant>,
+    /// When its game connected, on the lobby's clock: the match's time
+    /// played runs from here (`results.rs`).
+    joined_at: Option<Duration>,
     gone: bool,
     /// The server took the player out (Python `GameServer.going_home`).
     going_home: bool,
@@ -186,7 +187,8 @@ struct Found {
     map_name: String,
     team: u8,
     teams: Vec<u8>,
-    deadline: Instant,
+    /// On the lobby's clock.
+    deadline: Duration,
 }
 
 /// A player going into a match.
@@ -345,7 +347,7 @@ impl Matchmaker {
         let lobby = peer.lobby;
         let account_lo = peer.login.account.account_lo;
         let session = peer.login.identity.session;
-        let now = Instant::now();
+        let now = lobby.clock.now();
         let (going, retry) = self.with(lobby, |ctx| {
             let mut due = Vec::new();
             let mut index = 0;
@@ -374,7 +376,7 @@ impl Matchmaker {
             let sweep = ctx
                 .state
                 .last_sweep
-                .is_none_or(|last| now.duration_since(last) >= TICK);
+                .is_none_or(|last| now.saturating_sub(last) >= TICK);
             let mut retry = None;
             if sweep {
                 ctx.state.last_sweep = Some(now);
@@ -1686,7 +1688,7 @@ impl Ctx<'_> {
             delay = handoff::handoff_delay(true, FOUND_DELAY, away);
             self.game_found(&players, map_name, delay);
         }
-        let deadline = Instant::now() + delay;
+        let deadline = self.lobby.clock.now() + delay;
         for (entry, handoff) in players {
             self.state.found.push(Found {
                 account_lo: entry.account.account_lo,
@@ -1837,14 +1839,14 @@ impl Ctx<'_> {
                 return;
             }
         };
-        let now = Instant::now();
+        let now = self.lobby.clock.now();
         for result in ended {
             self.record(&result, now);
         }
     }
 
     /// One ended match into its room's players' profiles, as of `now`.
-    fn record(&mut self, result: &MatchResult, now: Instant) {
+    fn record(&mut self, result: &MatchResult, now: Duration) {
         let Some(room) = self.state.rooms.iter().find(|room| room.id == result.id) else {
             tracing::info!("[MM] Match {:X?} ended without a room", result.id);
             return;
@@ -1877,6 +1879,7 @@ impl Ctx<'_> {
         let Some(game) = self.lobby.game.as_deref() else {
             return;
         };
+        let now = self.lobby.clock.now();
         let mut events = Vec::new();
         for (room_index, room) in self.state.rooms.iter_mut().enumerate() {
             for seat in room.seats.iter_mut().filter(|seat| !seat.gone) {
@@ -1893,7 +1896,7 @@ impl Ctx<'_> {
                     Ok(true) if !seat.joined && !seat.released && !seat.going_home => {
                         if let Ok(false) = game.handoff_pending(seat.handoff.conn) {
                             seat.joined = true;
-                            seat.joined_at = Some(Instant::now());
+                            seat.joined_at = Some(now);
                             events.push((room_index, seat.account.account_lo, true));
                         }
                     }

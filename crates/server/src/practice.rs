@@ -201,18 +201,17 @@ fn release(game: &GameService, connection: u32, error: io::Error) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{net::UdpSocket, sync::Arc, time::Duration};
+    use std::sync::Arc;
 
     use orpheus_content::maps::{PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE};
     use orpheus_lobby::{
         accounts::Accounts,
-        handoff::{CREATE_GAME, GAME_REQUEST, HANDOFF, HANDOFF_MESSAGE},
+        handoff::{CREATE_GAME, GAME_REQUEST, HANDOFF, HANDOFF_MESSAGE, Handoff},
         login::Identity,
     };
-    use orpheus_wire::{
-        jam::codec::{Schemas, Value},
-        link::{ACK, KIND_CONTROL, LinkCipher, MAX_DATAGRAM, Packet, SYN},
-    };
+    use orpheus_wire::jam::codec::{Schemas, Value};
+
+    use crate::game_service::lockstep::{Client, Lockstep};
 
     const REQUEST: &[u8] = b"\x02\x00\x04\x00\x00\x00";
 
@@ -246,7 +245,7 @@ mod tests {
     fn practice_request_hands_off_an_authenticated_udp_seat_and_releases_failed_sends() {
         let lobby = Schemas::lobby();
         let game_schemas = Arc::new(Schemas::game());
-        let mut game = GameService::bind("127.0.0.1:0".parse().unwrap(), game_schemas).unwrap();
+        let game = Lockstep::new(game_schemas).unwrap();
         let fields = lobby
             .decode(GAME_REQUEST, CREATE_GAME, REQUEST, true)
             .unwrap();
@@ -332,23 +331,16 @@ mod tests {
         assert_eq!(&address[..10], b"127.0.0.1\0");
         assert_eq!(require_bytes::<64>(ticket, 0x6e), address);
         assert!(game.handoff_pending(connection).unwrap());
-        let cipher = LinkCipher::new(require_bytes(ticket, 0xce), require_bytes(ticket, 0xae));
-        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
-        client.connect(game.local_addr()).unwrap();
-        client
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let syn = Packet {
-            conn: connection,
-            kind: KIND_CONTROL,
-            flags: SYN,
-            ..Packet::default()
-        };
-        client.send(&cipher.seal(&syn).unwrap()).unwrap();
-        let mut buffer = [0; MAX_DATAGRAM];
-        let count = client.recv(&mut buffer).unwrap();
-        let response = cipher.open(&buffer[..count]).unwrap();
-        assert_eq!((response.conn, response.flags), (connection, SYN | ACK));
+        let mut client = Client::new(
+            &game,
+            &Handoff {
+                conn: connection,
+                key_in: require_bytes(ticket, 0xae),
+                key_out: require_bytes(ticket, 0xce),
+                match_id,
+            },
+        );
+        client.handshake();
         assert!(!game.handoff_pending(connection).unwrap());
 
         for (index, failed_id, kind) in [
@@ -379,6 +371,7 @@ mod tests {
             assert_eq!(error.kind(), kind);
             assert!(!game.handoff_pending(failed_seat.unwrap()).unwrap());
         }
+        let (mut game, _) = game.into_parts();
         game.stop().unwrap();
     }
 }

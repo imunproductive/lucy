@@ -11,7 +11,6 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, atomic::AtomicBool},
     thread::{self, JoinHandle},
-    time::Instant,
 };
 
 use serde_json::{Map, Value as Json, json};
@@ -20,6 +19,7 @@ use tiny_http::{Header, Method, Request, Response, Server as HttpServer};
 use api::{Api, ApiError, ApiResult};
 use orpheus_lobby::{
     accounts::{Account, Accounts},
+    clock::Clock,
     collection::Collection,
 };
 
@@ -73,6 +73,8 @@ pub struct DashboardParts {
     /// The running lobby, for the actions on its live state (none in tests
     /// of the dashboard alone).
     pub(crate) lobby: Option<Arc<crate::lobby::Lobby>>,
+    /// The lobby's clock: the uptime is its time.
+    pub clock: Clock,
 }
 
 impl Dashboard {
@@ -86,7 +88,6 @@ impl Dashboard {
             .ok_or_else(|| io::Error::other("dashboard is not on an IP address"))?;
         let requests = Arc::clone(&http);
         let port = addr.port();
-        let started = Instant::now();
         let worker = thread::Builder::new()
             .name("orpheus-dashboard".into())
             .spawn(move || {
@@ -102,7 +103,7 @@ impl Dashboard {
                         platform: &parts.platform,
                         services: &parts.services,
                         lobby: parts.lobby.as_deref(),
-                        uptime: started.elapsed(),
+                        uptime: parts.clock.now(),
                     };
                     let _ = handle(&api, parts.lobby.as_deref(), port, request);
                 }
@@ -417,6 +418,7 @@ mod tests {
                 None,
             )),
             lobby: None,
+            clock: Clock::wall(),
         };
         let mut dashboard = Dashboard::start(0, parts).unwrap();
         let addr = dashboard.addr();

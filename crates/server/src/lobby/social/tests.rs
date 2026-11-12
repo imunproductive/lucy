@@ -1,16 +1,17 @@
 //! Game clients on the native lobby over loopback: friends, presence,
 //! parties, chat, whispers, the bot, the group finder and the match chat.
+//! The server runs on virtual clocks (`Server::start_virtual`), and each
+//! client reads in step with its session (`lobby/test_client.rs`).
 
 use std::{
     io::{Read, Write},
-    net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket},
-    time::{Duration, Instant},
+    net::{SocketAddr, TcpStream},
 };
 
 use orpheus_lobby::{
     accounts::{account_id_for, battle_tag},
-    handoff::{CREATE_GAME, GAME_REQUEST, HANDOFF, HANDOFF_MESSAGE, general_channel},
-    login::{LOGIN_MESSAGE, OUT_CONNECT},
+    handoff::{CREATE_GAME, GAME_REQUEST, HANDOFF, HANDOFF_MESSAGE, Handoff, general_channel},
+    login::OUT_CONNECT,
     party::PARTY,
     presence::FRIENDS,
     social::{
@@ -20,15 +21,17 @@ use orpheus_lobby::{
     },
     templates::{IN_CONNECT, LOBBY},
 };
-use orpheus_wire::{
-    jam::cipher::Jam,
-    jam::codec::{Fields, Schemas, Value, id16},
-    jam::framing::{self, FrameReader},
-    jam::handshake::client_handshake,
-    link::{ACK, LinkCipher, MAX_DATAGRAM, Packet, SYN},
-};
+use orpheus_wire::jam::codec::{Fields, Schemas, Value, id16};
 
-use crate::server::{Server, ServerConfig};
+use crate::{
+    connection::LEAVE_GRACE,
+    game_service::lockstep::Client as GameClient,
+    lobby::{
+        TICK,
+        test_client::{Client, run},
+    },
+    server::{Server, ServerConfig, VirtualTime},
+};
 
 mod bot_chat;
 
@@ -47,100 +50,9 @@ const ANNOUNCED: [u32; 13] = [
     GAME_REQUEST,
     HANDOFF,
 ];
-const WAIT: Duration = Duration::from_secs(5);
 
-struct Client<'a> {
-    schemas: &'a Schemas,
-    tcp: TcpStream,
-    tx: Jam,
-    reader: FrameReader,
-    received: Vec<(u32, u32, Fields)>,
-}
-
-impl<'a> Client<'a> {
-    fn login(schemas: &'a Schemas, lobby: SocketAddr, name: &str) -> Self {
-        let mut tcp = TcpStream::connect(lobby).unwrap();
-        tcp.set_read_timeout(Some(WAIT)).unwrap();
-        let (mut tx, rx) = client_handshake(&mut tcp);
-        tcp.set_read_timeout(Some(Duration::from_millis(100)))
-            .unwrap();
-        let mut announcement = vec![0, 0];
-        announcement.extend_from_slice(&(ANNOUNCED.len() as u32).to_le_bytes());
-        for group in ANNOUNCED {
-            announcement.extend_from_slice(&group.to_le_bytes());
-        }
-        framing::send_frame(&mut tcp, &mut tx, &announcement).unwrap();
-        let mut client = Self {
-            schemas,
-            tcp,
-            tx,
-            reader: FrameReader::new(rx),
-            received: Vec::new(),
-        };
-        client.send(
-            OUT_CONNECT,
-            LOGIN_MESSAGE,
-            Fields::from([(0x78, Value::String(name.into()))]),
-        );
-        client
-    }
-
-    fn send(&mut self, crc: u32, id: u32, fields: Fields) {
-        let wire = ANNOUNCED.iter().position(|&group| group == crc).unwrap() as u8 + 1;
-        let mut frame = self.schemas.header(crc, wire, id).unwrap();
-        frame.extend(self.schemas.encode(crc, id, &fields).unwrap());
-        framing::send_frame(&mut self.tcp, &mut self.tx, &frame).unwrap();
-    }
-
-    fn read(&mut self) {
-        let mut buffer = [0; 65_536];
-        match self.tcp.read(&mut buffer) {
-            Ok(0) => panic!("the lobby closed the connection"),
-            Ok(count) => {
-                for frame in self.reader.feed(&buffer[..count]) {
-                    let Some(&wire) = frame.first().filter(|&&wire| wire != 0) else {
-                        continue;
-                    };
-                    let crc = ANNOUNCED[usize::from(wire) - 1];
-                    let (id, body) = self.schemas.split(crc, &frame).unwrap();
-                    let fields = self.schemas.decode(crc, id, body, true).unwrap();
-                    self.received.push((crc, id, fields));
-                }
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(error) => panic!("{error}"),
-        }
-    }
-
-    /// The first message of this kind received so far or within a while;
-    /// it and everything before it are consumed.
-    fn expect(&mut self, crc: u32, id: u32) -> Fields {
-        let deadline = Instant::now() + WAIT;
-        loop {
-            if let Some(index) = self
-                .received
-                .iter()
-                .position(|&(group, message, _)| (group, message) == (crc, id))
-            {
-                return self.received.drain(..=index).next_back().unwrap().2;
-            }
-            assert!(Instant::now() < deadline, "no {crc:08X}/{id}");
-            self.read();
-        }
-    }
-
-    /// Everything that arrives within a short while.
-    fn settle(&mut self) -> Vec<u32> {
-        let until = Instant::now() + Duration::from_millis(700);
-        while Instant::now() < until {
-            self.read();
-        }
-        self.received.drain(..).map(|(_, id, _)| id).collect()
-    }
+fn login<'a>(schemas: &'a Schemas, lobby: SocketAddr, name: &str) -> Client<'a> {
+    Client::login(schemas, lobby, &ANNOUNCED, name)
 }
 
 fn id(name: &str) -> Value {
@@ -174,7 +86,7 @@ fn post(dashboard: SocketAddr, path: &str, body: &str) -> String {
     reply
 }
 
-fn start(state: &tempfile::TempDir) -> Server {
+fn start(state: &tempfile::TempDir) -> (Server, VirtualTime) {
     let runtime = orpheus_testkit::runtime_dir();
     let mut config = ServerConfig::new(runtime, state.path().into());
     config.lobby_port = 0;
@@ -182,14 +94,14 @@ fn start(state: &tempfile::TempDir) -> Server {
     config.stall_port = 0;
     config.rpc_port = 0;
     config.dashboard_port = Some(0);
-    Server::start(config).unwrap()
+    Server::start_virtual(config).unwrap()
 }
 
 #[test]
 #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
 fn two_players_befriend_party_chat_and_find_the_bot_group() {
     let state = tempfile::tempdir().unwrap();
-    let mut server = start(&state);
+    let (mut server, _) = start(&state);
     let lobby = SocketAddr::from(server.lobby_addr());
     let dashboard = server.dashboard_addr().unwrap();
     let schemas = Schemas::lobby();
@@ -198,7 +110,7 @@ fn two_players_befriend_party_chat_and_find_the_bot_group() {
 
     // Login: the party state, the settings, the friends list and the cards,
     // then General.
-    let mut alpha = Client::login(&schemas, lobby, "Alpha");
+    let mut alpha = login(&schemas, lobby, "Alpha");
     let solo = alpha.expect(PARTY, 20700);
     assert_eq!(members(&solo), [u64::from(alpha_lo)]);
     alpha.expect(LOBBY, 20802);
@@ -207,7 +119,7 @@ fn two_players_befriend_party_chat_and_find_the_bot_group() {
     let cards = alpha.expect(LOBBY, 20809);
     assert_eq!(array(cards.get(&0x78)).len(), 1);
     alpha.expect(CHAT_IN, 20402);
-    let mut beta = Client::login(&schemas, lobby, "Beta");
+    let mut beta = login(&schemas, lobby, "Beta");
     beta.expect(CHAT_IN, 20402);
     // Not friends yet: nobody hears of the other's login.
     assert!(!alpha.settle().contains(&27113));
@@ -314,7 +226,7 @@ fn two_players_befriend_party_chat_and_find_the_bot_group() {
     assert_eq!(array(found.get(&0x78)).len(), 1);
 
     // Beta leaves: the party is Alpha's alone again and its chat goes.
-    drop(beta);
+    beta.close();
     let state = alpha.expect(PARTY, 20700);
     assert_eq!(members(&state), [u64::from(alpha_lo)]);
     alpha.expect(CHAT_IN, 20404);
@@ -326,7 +238,7 @@ fn two_players_befriend_party_chat_and_find_the_bot_group() {
     let state = alpha.expect(PARTY, 20700);
     assert_eq!(members(&state), [u64::from(alpha_lo), u64::from(bot)]);
 
-    drop(alpha);
+    alpha.close();
     server.stop().unwrap();
 }
 
@@ -347,10 +259,10 @@ fn say(client: &mut Client<'_>, channel: &Fields, text: &str) {
 #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
 fn match_commands_and_general_again_after_the_match() {
     let state = tempfile::tempdir().unwrap();
-    let mut server = start(&state);
+    let (mut server, time) = start(&state);
     let lobby = SocketAddr::from(server.lobby_addr());
     let schemas = Schemas::lobby();
-    let mut alpha = Client::login(&schemas, lobby, "Alpha");
+    let mut alpha = login(&schemas, lobby, "Alpha");
     let joined_general = alpha.expect(CHAT_IN, 20402)[&0x78].clone();
     alpha.send(
         GAME_REQUEST,
@@ -375,8 +287,7 @@ fn match_commands_and_general_again_after_the_match() {
     );
     assert_eq!(array(alpha.expect(CHAT_IN, 20401).get(&0x90)).len(), 1);
 
-    // The game connects; .leave sends it home, and once it is gone the
-    // player leaves the match chat and is in General again.
+    // The game connects, and the lobby's next sweep sees it in the match.
     let ticket = structure(handoff.get(&0x80)).unwrap();
     let Value::Unsigned(connection) = ticket[&0x28] else {
         panic!("no UDP connection");
@@ -387,31 +298,32 @@ fn match_commands_and_general_again_after_the_match() {
             _ => panic!("invalid key byte"),
         })
     };
-    let cipher = LinkCipher::new(key(0xce), key(0xae));
-    let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    udp.connect(server.game_addr().unwrap()).unwrap();
-    udp.set_read_timeout(Some(WAIT)).unwrap();
-    let mut packet = Packet {
-        conn: u32::try_from(connection).unwrap(),
-        flags: SYN,
-        ..Packet::default()
-    };
-    udp.send(&cipher.seal(&packet).unwrap()).unwrap();
-    let mut buffer = [0; MAX_DATAGRAM];
-    let count = udp.recv(&mut buffer).unwrap();
-    let syn_ack = cipher.open(&buffer[..count]).unwrap();
-    packet.seq += 1;
-    packet.flags = ACK;
-    packet.ack = syn_ack.seq.wrapping_add(1);
-    udp.send(&cipher.seal(&packet).unwrap()).unwrap();
-    udp.recv(&mut buffer).unwrap();
+    time.game.await_scenes();
+    let mut game = GameClient::on(
+        &time.game,
+        // The game needs only its connection and keys.
+        &Handoff {
+            conn: u32::try_from(connection).unwrap(),
+            key_in: key(0xae),
+            key_out: key(0xce),
+            match_id: [0; 2],
+        },
+    );
+    game.handshake();
+    game.receive();
+    run(&time.lobby, &mut [&mut alpha], TICK);
+    // .leave sends it home; it stays, so the leave grace (`LEAVE_GRACE`)
+    // drops it, and the lobby's next sweep takes the player out of the
+    // match chat and back to General.
     say(&mut alpha, &matched, ".leave");
+    time.game.run(LEAVE_GRACE);
+    run(&time.lobby, &mut [&mut alpha], TICK);
     let left = alpha.expect(CHAT_IN, 20404);
     assert_eq!(left[&0x78], Value::Struct(matched));
     let joined = alpha.expect(CHAT_IN, 20402);
     assert_eq!(joined[&0x78], joined_general);
     alpha.expect(PARTY, 20700);
 
-    drop(alpha);
+    alpha.close();
     server.stop().unwrap();
 }

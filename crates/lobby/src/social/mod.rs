@@ -15,7 +15,8 @@
 //! The state is one [`SocialState`] behind a mutex: a caller locks it for a
 //! whole client request, as the Python handlers ran under one state lock.
 //! Lock order: the social state, then profiles, then the menu heroes; never
-//! the social state while a profile is locked.
+//! the social state while a profile is locked. Times (`now`) are the lobby's
+//! clock ([`Clock`](crate::clock::Clock)): the time since it started.
 
 pub mod content;
 mod groups;
@@ -27,7 +28,7 @@ use std::{
     collections::{HashMap, HashSet},
     io,
     sync::{Arc, Mutex, MutexGuard},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use indexmap::IndexMap;
@@ -74,16 +75,17 @@ pub type PartyId = [u64; 2];
 pub struct Invite {
     pub inviter: Arc<Account>,
     pub invitee: Arc<Account>,
-    pub sent: Instant,
+    /// The lobby's clock when it was sent.
+    pub sent: Duration,
 }
 
 impl Invite {
-    pub fn remaining_ms(&self, now: Instant) -> u64 {
+    pub fn remaining_ms(&self, now: Duration) -> u64 {
         let deadline = self.sent + INVITE_TIME;
-        u64::try_from(deadline.saturating_duration_since(now).as_millis()).unwrap_or(u64::MAX)
+        u64::try_from(deadline.saturating_sub(now).as_millis()).unwrap_or(u64::MAX)
     }
 
-    fn expired(&self, now: Instant) -> bool {
+    fn expired(&self, now: Duration) -> bool {
         now >= self.sent + INVITE_TIME
     }
 }
@@ -237,14 +239,14 @@ pub struct Session {
     /// Party ids picked in the group finder (52204).
     pub watched_groups: HashSet<PartyId>,
     /// When the offline friends' presence goes again, and how often it went.
-    presence_due: Instant,
+    presence_due: Duration,
     presence_resends: usize,
     /// The match whose seat this session saw last.
     seat_seen: Option<PartyId>,
 }
 
 impl Session {
-    fn new(now: Instant) -> Self {
+    fn new(now: Duration) -> Self {
         Self {
             party_channel: None,
             watched_groups: HashSet::new(),
@@ -321,7 +323,7 @@ impl SocialState {
 
     /// A session of the account logged in; a newer one replaces the older
     /// one's per-session state.
-    pub fn connect(&mut self, account: &Arc<Account>, now: Instant) {
+    pub fn connect(&mut self, account: &Arc<Account>, now: Duration) {
         self.online.insert(account.account_lo, Arc::clone(account));
         self.sessions.insert(account.account_lo, Session::new(now));
         self.match_chats.remove(&account.account_lo);
@@ -375,7 +377,7 @@ impl SocialState {
 
     /// True when the session's offline-friends presence is due now; the next
     /// one is then scheduled (+3 s, +7 s, then every 60 s).
-    pub fn presence_due(&mut self, account_lo: u32, now: Instant) -> bool {
+    pub fn presence_due(&mut self, account_lo: u32, now: Duration) -> bool {
         let Some(session) = self.sessions.get_mut(&account_lo) else {
             return false;
         };
@@ -493,7 +495,7 @@ impl SocialState {
         &mut self,
         inviter: &Arc<Account>,
         target: &Arc<Account>,
-        now: Instant,
+        now: Duration,
     ) -> io::Result<PartyId> {
         let id = self.party_of(inviter)?;
         let party = self.parties.get_mut(&id).expect("the inviter's party");
@@ -526,7 +528,7 @@ impl SocialState {
 
     /// Drop the invites nobody answered in time. Returns the parties whose
     /// pending tiles changed.
-    pub fn expire_invites(&mut self, now: Instant) -> Vec<PartyId> {
+    pub fn expire_invites(&mut self, now: Duration) -> Vec<PartyId> {
         let mut changed = Vec::new();
         for party in self.parties.values_mut() {
             let before = party.invites.len();

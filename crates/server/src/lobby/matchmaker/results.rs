@@ -10,7 +10,7 @@
 //! goes to its connected game through the dashboard's live push
 //! (`Services::push_profile`).
 
-use std::{io, sync::Arc, time::Instant};
+use std::{io, sync::Arc, time::Duration};
 
 use orpheus_lobby::{
     accounts::{Account, Profile},
@@ -33,13 +33,14 @@ use crate::game_service::{MatchResult, Outcome};
 /// card's queue rules' Practice vs AI (`QueueRules::versus_ai`), which rule
 /// 125 gives 90% experience; its AI heroes hold no seats and get nothing.
 /// `season_of` is the competitive season the profile is in; a seat's time
-/// in the match runs from its game's connection to `now`.
+/// in the match runs from its game's connection to `now` (the lobby's
+/// clock).
 pub(super) fn recorded(
     room: &Room,
     result: &MatchResult,
     versus_ai: bool,
     season_of: impl Fn(&Profile) -> Season,
-    now: Instant,
+    now: Duration,
 ) -> Vec<(Arc<Account>, MatchPlay)> {
     let seated = |slot: usize, account: [u64; 2]| {
         room.seats
@@ -78,7 +79,7 @@ pub(super) fn recorded(
                 group,
                 seconds: seat
                     .joined_at
-                    .map_or(0.0, |joined| now.duration_since(joined).as_secs_f64()),
+                    .map_or(0.0, |joined| now.saturating_sub(joined).as_secs_f64()),
                 medals: player.medals,
             };
             Some((Arc::clone(&seat.account), play))

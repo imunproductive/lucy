@@ -74,7 +74,7 @@ impl World {
         bot
     }
 
-    fn content(&self, now: Instant) -> SocialContent<'_> {
+    fn content(&self, now: Duration) -> SocialContent<'_> {
         SocialContent {
             social: &self.social,
             collection: &self.collection,
@@ -172,7 +172,7 @@ fn joining_another_party_leaves_the_old_one_and_drops_the_invite() {
     let world = World::new();
     let [alpha, beta, gamma] = ["Alpha", "Beta", "Gamma"].map(|name| world.account(name));
     let mut state = SocialState::default();
-    let now = Instant::now();
+    let now = Duration::ZERO;
     let theirs = state.party_of(&gamma).unwrap();
     state.join(&beta, theirs);
     let ours = state.invite(&alpha, &beta, now).unwrap();
@@ -188,7 +188,7 @@ fn an_unanswered_invite_times_out_and_a_new_one_restarts_the_timer() {
     let world = World::new();
     let [alpha, beta, gamma] = ["Alpha", "Beta", "Gamma"].map(|name| world.account(name));
     let mut state = SocialState::default();
-    let start = Instant::now();
+    let start = Duration::ZERO;
     let id = state.invite(&alpha, &beta, start).unwrap();
     state.invite(&alpha, &gamma, start).unwrap();
     let later = start + Duration::from_secs(20);
@@ -218,7 +218,7 @@ fn the_party_chat_channel_follows_group_membership() {
     let world = World::new();
     let [alpha, beta] = ["Alpha", "Beta"].map(|name| world.account(name));
     let mut state = SocialState::default();
-    let now = Instant::now();
+    let now = Duration::ZERO;
     state.connect(&alpha, now);
     let id = state.party_of(&alpha).unwrap();
     assert_eq!(
@@ -257,7 +257,7 @@ fn channel_members_are_general_the_party_or_the_match() {
     let [alpha, beta, gamma] = ["Alpha", "Beta", "Gamma"].map(|name| world.account(name));
     let bot = world.bot();
     let mut state = SocialState::default();
-    let now = Instant::now();
+    let now = Duration::ZERO;
     for account in [&alpha, &beta, &gamma] {
         state.connect(account, now);
     }
@@ -310,7 +310,7 @@ fn a_seat_is_seen_once() {
     let world = World::new();
     let alpha = world.account("Alpha");
     let mut state = SocialState::default();
-    state.connect(&alpha, Instant::now());
+    state.connect(&alpha, Duration::ZERO);
     assert!(state.seat_seen(alpha.account_lo, [1, 2]));
     assert!(!state.seat_seen(alpha.account_lo, [1, 2]));
     assert!(state.seat_seen(alpha.account_lo, [3, 4]));
@@ -321,7 +321,7 @@ fn offline_presence_goes_again_at_3_s_then_7_s_then_every_minute() {
     let world = World::new();
     let alpha = world.account("Alpha");
     let mut state = SocialState::default();
-    let login = Instant::now();
+    let login = Duration::ZERO;
     state.connect(&alpha, login);
     let lo = alpha.account_lo;
     let at = |seconds| login + Duration::from_secs(seconds);
@@ -343,7 +343,7 @@ fn friends_see_the_chosen_status_and_the_bot_always_online() {
     let mut state = SocialState::default();
     assert_eq!(state.effective_status(&alpha), STATUS_OFFLINE);
     assert_eq!(state.effective_status(&world.bot()), STATUS_ONLINE);
-    state.connect(&alpha, Instant::now());
+    state.connect(&alpha, Duration::ZERO);
     alpha.set_status(crate::presence::STATUS_BUSY);
     assert_eq!(state.effective_status(&alpha), crate::presence::STATUS_BUSY);
     assert!(state.is_online(&world.bot()));
@@ -556,7 +556,7 @@ fn the_bot_group_takes_the_first_slot_and_a_merge_the_next_ones() {
         SUPPORT_SLOT,
     ];
     // The bot in a player's party leaves it to lead its own group.
-    let theirs = state.invite(&beta, &bot, Instant::now()).unwrap();
+    let theirs = state.invite(&beta, &bot, Duration::ZERO).unwrap();
     state.join(&bot, theirs);
     let (group, left) = state
         .list_bot_group(&bot, listing("Bot's group", &slots))
@@ -592,7 +592,7 @@ fn watchers_hear_a_group_until_it_closes() {
     let world = World::new();
     let [alpha, beta] = ["Alpha", "Beta"].map(|name| world.account(name));
     let mut state = SocialState::default();
-    let now = Instant::now();
+    let now = Duration::ZERO;
     state.connect(&alpha, now);
     state.connect(&beta, now);
     let id = list(&mut state, &alpha, listing("Tanks wanted", &[ANY_SLOT]));
@@ -615,7 +615,7 @@ fn the_party_state_carries_the_listing_slots_and_pending_tiles() {
     let world = World::new();
     let [alpha, beta, gamma] = ["Alpha", "Beta", "Gamma"].map(|name| world.account(name));
     let mut state = SocialState::default();
-    let now = Instant::now();
+    let now = Duration::ZERO;
     let id = list(
         &mut state,
         &alpha,
@@ -674,7 +674,7 @@ fn the_friends_list_has_presence_for_every_friend_and_cards_for_online_ones() {
     let gamma = world.account("Gamma");
     request_friend(&world.accounts, &gamma, &alpha.battle_tag()).unwrap();
     let mut state = SocialState::default();
-    let now = Instant::now();
+    let now = Duration::ZERO;
     state.connect(&alpha, now);
     let content = world.content(now);
 
@@ -727,7 +727,7 @@ fn the_friends_list_has_presence_for_every_friend_and_cards_for_online_ones() {
 fn the_other_social_messages_encode_as_the_client_reads_them() {
     let world = World::new();
     let alpha = world.account("Alpha");
-    let content = world.content(Instant::now());
+    let content = world.content(Duration::ZERO);
     let card = content.record(&alpha);
     let general = Struct(crate::handoff::general_channel());
     let chat = world.wire(&messages::chat_message(

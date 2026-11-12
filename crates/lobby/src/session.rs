@@ -16,7 +16,7 @@ use crate::{
     arcade::Arcade,
     battle_tag_query,
     celebrations::Celebrations,
-    clock::server_time,
+    clock::{Clock, server_time},
     collection::{Collection, HERO_CATALOG, PROGRESSION},
     handoff::game_host,
     login::{self, INCOMPATIBLE_CLIENT, Identity, LOGIN_MESSAGE, Login, OUT_CONNECT},
@@ -74,13 +74,15 @@ pub struct LoginContent<'a> {
 }
 
 impl<'a> LobbySession<'a> {
-    /// Handle a launcher BattleTag query, or open the encrypted game connection.
+    /// Handle a launcher BattleTag query, or open the encrypted game
+    /// connection; `clock` is the lobby's.
     pub fn accept(
         stream: TcpStream,
         connection_id: u32,
         signing_key: &[u8; 64],
         accounts: &Accounts,
         schemas: &'a Schemas,
+        clock: Clock,
     ) -> io::Result<Option<Self>> {
         Self::accept_peer(
             PeerStream::new(stream, Arc::default())?,
@@ -88,6 +90,7 @@ impl<'a> LobbySession<'a> {
             signing_key,
             accounts,
             schemas,
+            clock,
         )
     }
 
@@ -97,6 +100,7 @@ impl<'a> LobbySession<'a> {
         signing_key: &[u8; 64],
         accounts: &Accounts,
         schemas: &'a Schemas,
+        clock: Clock,
     ) -> io::Result<Option<Self>> {
         let (SocketAddr::V4(peer), SocketAddr::V4(address)) =
             (stream.peer_addr()?, stream.local_addr()?)
@@ -113,7 +117,7 @@ impl<'a> LobbySession<'a> {
         }
         let channel = handshake_io(&mut stream, address, connection_id, signing_key)?;
         stream.set_deadline(Some(Instant::now() + HELLO_TIMEOUT));
-        let transport = LobbyTransport::from_peer(stream, channel);
+        let transport = LobbyTransport::from_peer(stream, channel, clock);
         Ok(Some(Self {
             transport,
             schemas,

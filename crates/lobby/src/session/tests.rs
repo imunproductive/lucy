@@ -39,7 +39,7 @@ fn answers_battle_tag_queries_without_creating_unknown_accounts() {
         for _ in 0..2 {
             let (stream, _) = listener.accept().unwrap();
             assert!(
-                LobbySession::accept(stream, 1, &[0; 64], &accounts, &schemas)
+                LobbySession::accept(stream, 1, &[0; 64], &accounts, &schemas, Clock::wall())
                     .unwrap()
                     .is_none()
             );
@@ -86,9 +86,10 @@ fn negotiates_pings_and_accepts_practice_messages_after_login() {
         )
         .unwrap();
         let (stream, _) = listener.accept().unwrap();
-        let mut session = LobbySession::accept(stream, 2, &[42; 64], &accounts, &schemas)
-            .unwrap()
-            .unwrap();
+        let mut session =
+            LobbySession::accept(stream, 2, &[42; 64], &accounts, &schemas, Clock::wall())
+                .unwrap()
+                .unwrap();
         assert_eq!(
             session.receive_message().unwrap_err().kind(),
             io::ErrorKind::PermissionDenied

@@ -28,6 +28,7 @@ use orpheus_lobby::{
     accounts::{Account, Accounts, load_or_create_profile},
     arcade::Arcade,
     celebrations::Celebrations,
+    clock::Clock,
     collection::Collection,
     economy::Economy,
     menu::extra_preload_themes,
@@ -116,6 +117,35 @@ impl Server {
     /// Validate the data before starting the listeners. This entry point
     /// serves the base graph bundle.
     pub fn start(config: ServerConfig) -> io::Result<Self> {
+        Self::start_on(config, Clock::wall(), GameService::bind)
+    }
+
+    /// Tests: the server on virtual clocks: the lobby's, and the game
+    /// service's lockstep with its in-memory network
+    /// (`game_service/lockstep.rs`). The configuration must turn the game
+    /// server on.
+    #[cfg(test)]
+    pub(crate) fn start_virtual(config: ServerConfig) -> io::Result<(Self, VirtualTime)> {
+        use crate::game_service::lockstep::Lockstep;
+
+        let lobby = crate::lobby::clock::VirtualClock::default();
+        let mut network = None;
+        let server = Self::start_on(config, lobby.clock(), |_, schemas| {
+            let (service, game) = Lockstep::new(schemas)?.into_parts();
+            network = Some(game);
+            Ok(service)
+        })?;
+        let game = network.expect("the game server is on");
+        Ok((server, VirtualTime { lobby, game }))
+    }
+
+    /// The server with the lobby on `clock` and the game service that
+    /// `game_service` starts at an address.
+    fn start_on(
+        config: ServerConfig,
+        clock: Clock,
+        game_service: impl FnOnce(SocketAddr, Arc<Schemas>) -> io::Result<GameService>,
+    ) -> io::Result<Self> {
         let missing = game_data::missing_files(&config.runtime);
         if !missing.is_empty() {
             return Err(io::Error::new(
@@ -181,7 +211,7 @@ impl Server {
         let game = config
             .game_port
             .map(|port| {
-                GameService::bind(SocketAddrV4::new(config.host, port).into(), game_schemas)
+                game_service(SocketAddrV4::new(config.host, port).into(), game_schemas)
                     .map(Arc::new)
                     .map_err(|error| taken(format!("UDP port {port} is taken"), error))
             })
@@ -240,6 +270,7 @@ impl Server {
             services,
             social: Default::default(),
             matchmaker,
+            clock: clock.clone(),
         });
         let dashboard = config
             .dashboard_port
@@ -255,6 +286,7 @@ impl Server {
                     platform,
                     services: Arc::clone(&shared.services),
                     lobby: Some(Arc::clone(&shared)),
+                    clock,
                 };
                 Dashboard::start(port, parts)
             })
@@ -320,6 +352,16 @@ impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.stop();
     }
+}
+
+/// Tests: the clocks of a server on virtual clocks
+/// ([`Server::start_virtual`]): the lobby's, which the test moves a lobby
+/// tick at a time (`lobby/test_client.rs`), and the game service's network,
+/// which runs its ticks.
+#[cfg(test)]
+pub(crate) struct VirtualTime {
+    pub(crate) lobby: crate::lobby::clock::VirtualClock,
+    pub(crate) game: crate::game_service::lockstep::Network,
 }
 
 /// Battle.net logs a game in as the account the lobby will use, with the ids
@@ -758,7 +800,12 @@ mod tests {
             shop::{Currency, PURCHASE, Shop},
             templates::LOBBY,
         };
-        use std::{collections::HashMap, time::Instant};
+        use std::collections::HashMap;
+
+        use crate::lobby::{
+            TICK,
+            test_client::{Client, run},
+        };
 
         let runtime = orpheus_testkit::runtime_dir();
         let state = tempfile::tempdir().unwrap();
@@ -795,12 +842,9 @@ mod tests {
         let price = shop.product(product).unwrap().price;
         let credits = other.profile().credits;
         let first_box = other.profile().loot_boxes[0].id;
-        let mut server = Server::start(config).unwrap();
+        let (mut server, time) = Server::start_virtual(config).unwrap();
         let dashboard = server.dashboard_addr().unwrap();
 
-        let mut tcp = TcpStream::connect(server.lobby_addr()).unwrap();
-        tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-        let (mut tx, rx) = client_handshake(&mut tcp);
         let groups = [
             IN_CONNECT,
             OUT_CONNECT,
@@ -819,20 +863,8 @@ mod tests {
             LEADERBOARD_OUT,
             player::PERMISSIONS,
         ];
-        let wire = |crc| groups.iter().position(|&group| group == crc).unwrap() as u8 + 1;
-        let mut announcement = vec![0, 0];
-        announcement.extend_from_slice(&(groups.len() as u32).to_le_bytes());
-        for group in groups {
-            announcement.extend_from_slice(&group.to_le_bytes());
-        }
-        framing::send_frame(&mut tcp, &mut tx, &announcement).unwrap();
         let schemas = Schemas::lobby();
-        let mut writer = tcp.try_clone().unwrap();
-        let mut send = |crc: u32, id: u32, fields: Fields| {
-            let mut frame = schemas.header(crc, wire(crc), id).unwrap();
-            frame.extend(schemas.encode(crc, id, &fields).unwrap());
-            framing::send_frame(&mut writer, &mut tx, &frame).unwrap();
-        };
+        let mut client = Client::connect(&schemas, SocketAddr::from(server.lobby_addr()), &groups);
         let id16 = |lo: u64| {
             Value::Struct(Fields::from([
                 (0, Value::Unsigned(lo)),
@@ -841,12 +873,12 @@ mod tests {
         };
         let lo = u64::from(other.account_lo);
         // A local game that logs in by name: the dashboard follows it.
-        send(
+        client.send(
             OUT_CONNECT,
             LOGIN_MESSAGE,
             Fields::from([(0x78, Value::String("other".into()))]),
         );
-        send(
+        client.send(
             PROGRESSION_OUT,
             OPEN_BOX,
             Fields::from([(
@@ -857,12 +889,12 @@ mod tests {
                 )])),
             )]),
         );
-        send(
+        client.send(
             PROGRESSION_OUT,
             PURCHASE,
             Fields::from([(0x78, Value::Unsigned(product))]),
         );
-        send(
+        client.send(
             SOCIAL_OUT,
             22202,
             Fields::from([(
@@ -873,19 +905,19 @@ mod tests {
                 ])),
             )]),
         );
-        send(STORE_QUERY, STORE_PAGE, Fields::new());
-        send(
+        client.send(STORE_QUERY, STORE_PAGE, Fields::new());
+        client.send(
             NAME_QUERY,
             NAMES,
             Fields::from([(0x78, Value::Array(vec![id16(lo)]))]),
         );
-        send(OWL_POLL, OWL_MATCHES, Fields::new());
-        send(
+        client.send(OWL_POLL, OWL_MATCHES, Fields::new());
+        client.send(
             SOCIAL_OUT,
             PROFILE_REQUEST,
             Fields::from([(0x78, id16(lo)), (0x88, id16(lo))]),
         );
-        send(
+        client.send(
             LEADERBOARD_OUT,
             PAGE_REQUEST,
             Fields::from([(
@@ -897,34 +929,25 @@ mod tests {
             )]),
         );
 
-        let mut reader = FrameReader::new(rx);
-        let mut buf = [0; 65536];
-        let mut wait_for = |wanted: &[(u32, u32)], seconds: u64| {
-            let mut received: HashMap<u32, Fields> = HashMap::new();
-            let limit = Instant::now() + Duration::from_secs(seconds);
-            while wanted.iter().any(|(_, id)| !received.contains_key(id)) {
+        // What the client received of these, by id; each must be there.
+        let take = |client: &mut Client<'_>, wanted: &[(u32, u32)]| {
+            let received: HashMap<u32, Fields> = client
+                .take()
+                .into_iter()
+                .filter(|&(crc, id, _)| wanted.contains(&(crc, id)))
+                .map(|(_, id, fields)| (id, fields))
+                .collect();
+            for (_, id) in wanted {
                 assert!(
-                    Instant::now() < limit,
-                    "missing {wanted:?}, got {:?}",
+                    received.contains_key(id),
+                    "missing {id}, got {:?}",
                     received.keys()
                 );
-                let Ok(count) = tcp.read(&mut buf) else {
-                    continue;
-                };
-                assert_ne!(count, 0, "the lobby closed");
-                for frame in reader.feed(&buf[..count]) {
-                    for &(crc, id) in wanted {
-                        if let Some(body) = frame
-                            .strip_prefix(schemas.header(crc, wire(crc), id).unwrap().as_slice())
-                        {
-                            received.insert(id, schemas.decode(crc, id, body, true).unwrap());
-                        }
-                    }
-                }
             }
             received
         };
-        let replies = wait_for(
+        let replies = take(
+            &mut client,
             &[
                 (PROGRESSION, 24305),
                 (PROGRESSION, 24307),
@@ -936,7 +959,6 @@ mod tests {
                 (PROFILES, 39002),
                 (PROFILES, 39000),
             ],
-            10,
         );
         assert_eq!(replies[&24306][&0x78], Value::Unsigned(product));
         let Value::Struct(opened) = &replies[&24305][&0x78] else {
@@ -987,8 +1009,14 @@ mod tests {
             reply.starts_with("HTTP/1.0 200") || reply.starts_with("HTTP/1.1 200"),
             "{reply}"
         );
-        let pushed = wait_for(&[(PROGRESSION, 24313), (player::PERMISSIONS, 55500)], 10);
+        // The edit reaches the game at the session's next tick (`services.rs`).
+        run(&time.lobby, &mut [&mut client], TICK);
+        let pushed = take(
+            &mut client,
+            &[(PROGRESSION, 24313), (player::PERMISSIONS, 55500)],
+        );
         assert_eq!(pushed[&24313][&0x78], Value::Signed(777));
+        client.close();
         server.stop().unwrap();
     }
 }

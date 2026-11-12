@@ -1,5 +1,10 @@
 //! The lobby: one thread per client connection, the shared state they read,
-//! and the loop that answers each logged-in client.
+//! and the loop that answers each logged-in client. Every lobby timer reads
+//! the lobby's clock ([`Lobby::clock`]): the server's is the wall clock,
+//! tests move a virtual one (`clock.rs`, `test_client.rs`).
+
+#[cfg(test)]
+pub(crate) mod clock;
 
 mod handlers;
 pub(crate) mod hub;
@@ -8,6 +13,8 @@ pub(crate) mod peer;
 pub(crate) mod router;
 pub(crate) mod services;
 pub(crate) mod social;
+#[cfg(test)]
+pub(crate) mod test_client;
 
 use std::{
     collections::HashMap,
@@ -18,13 +25,14 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use orpheus_lobby::{
     accounts::{Account, Accounts},
     arcade::Arcade,
     celebrations::Celebrations,
+    clock::Clock,
     collection::Collection,
     handoff::{LobbySeat, general_channel, join_chat_channel},
     login::SIGNED_IN_ELSEWHERE,
@@ -48,7 +56,7 @@ use router::Router;
 
 const MAX_LOBBY_PEERS: usize = 32;
 const ACCEPT_POLL: Duration = Duration::from_millis(10);
-/// The longest a session sleeps between ticks.
+/// The longest a session waits between ticks, on the lobby's clock.
 pub(crate) const TICK: Duration = Duration::from_millis(250);
 /// How long a kicked client keeps the link after the disconnect reason, so
 /// its login screen shows the reason, not "lost connection"
@@ -90,6 +98,9 @@ pub(crate) struct Lobby {
     pub social: Social,
     /// Queues, the matchmaker and the games it starts.
     pub matchmaker: matchmaker::Matchmaker,
+    /// The time since the lobby started: the wall clock, or in tests a
+    /// virtual one (`clock.rs`).
+    pub clock: Clock,
 }
 
 struct LoginLease<'a> {
@@ -167,6 +178,7 @@ impl Lobby {
             &self.signing_key,
             &self.accounts,
             &self.schemas,
+            self.clock.clone(),
         )?
         else {
             return Ok(());
@@ -256,9 +268,9 @@ impl Lobby {
                     tick(&mut peer)?;
                 }
             }
-            let woke = Instant::now();
+            let woke = self.clock.now();
             let received = peer.session.receive_message_until(|| {
-                current() && !mailbox.has_mail() && woke.elapsed() < TICK
+                current() && !mailbox.has_mail() && self.clock.now().saturating_sub(woke) < TICK
             })?;
             if let Some((group, message, fields)) = received {
                 dispatch(&mut peer, group, message, fields);

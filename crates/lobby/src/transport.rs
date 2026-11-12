@@ -12,6 +12,8 @@ use orpheus_wire::jam::framing::{self, FrameReader};
 use orpheus_wire::jam::handshake::Channel;
 use orpheus_wire::tcp::PeerStream;
 
+use crate::clock::Clock;
+
 const KEEPALIVE: Duration = Duration::from_secs(10);
 
 /// Protocol CRC, message ID and its decoded fields.
@@ -30,20 +32,23 @@ pub struct LobbyTransport {
     pending: VecDeque<Vec<u8>>,
     groups: Vec<u32>,
     wire_of: HashMap<u32, u8>,
-    last_keepalive: Instant,
+    clock: Clock,
+    /// When the client last pinged, or the lobby last sent a keepalive.
+    last_keepalive: Duration,
     closed: bool,
     pub sequence: u32,
 }
 
 impl LobbyTransport {
-    pub fn new(stream: TcpStream, channel: Channel) -> io::Result<Self> {
+    pub fn new(stream: TcpStream, channel: Channel, clock: Clock) -> io::Result<Self> {
         Ok(Self::from_peer(
             PeerStream::new(stream, Arc::default())?,
             channel,
+            clock,
         ))
     }
 
-    pub(crate) fn from_peer(stream: PeerStream, channel: Channel) -> Self {
+    pub(crate) fn from_peer(stream: PeerStream, channel: Channel, clock: Clock) -> Self {
         Self {
             stream,
             reader: FrameReader::new(channel.rx),
@@ -51,7 +56,8 @@ impl LobbyTransport {
             pending: VecDeque::new(),
             groups: Vec::new(),
             wire_of: HashMap::new(),
-            last_keepalive: Instant::now(),
+            last_keepalive: clock.now(),
+            clock,
             closed: false,
             sequence: channel.seq,
         }
@@ -111,9 +117,10 @@ impl LobbyTransport {
                     if self.stream.deadline_expired() {
                         return Err(error);
                     }
-                    if self.last_keepalive.elapsed() > KEEPALIVE {
+                    let now = self.clock.now();
+                    if now.saturating_sub(self.last_keepalive) > KEEPALIVE {
                         self.send(&framing::PONG)?;
-                        self.last_keepalive = Instant::now();
+                        self.last_keepalive = now;
                     }
                 }
                 Err(error) => return Err(error),
@@ -152,7 +159,7 @@ impl LobbyTransport {
                 Ok(Some(Event::Announced))
             }
             framing::PING => {
-                self.last_keepalive = Instant::now();
+                self.last_keepalive = self.clock.now();
                 self.send(&framing::PONG)?;
                 Ok(None)
             }
@@ -178,7 +185,7 @@ mod tests {
                 tx: Jam::new(&[2; 32]),
                 seq: 42,
             };
-            let mut transport = LobbyTransport::new(stream, channel).unwrap();
+            let mut transport = LobbyTransport::new(stream, channel, Clock::wall()).unwrap();
 
             assert_eq!(transport.receive().unwrap(), Some(Event::Announced));
             assert_eq!(transport.groups(), [1, 2, 1]);

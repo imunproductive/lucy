@@ -89,7 +89,18 @@ To write one:
 - `open_world` prepares the scene on a thread of its own, in real time: call `server.await_scenes()` after it. The clock waits until every match has its scene, so the scene comes at a known tick. A test that holds the preparation back itself (`collision_ready.rs`) calls it after it lets the scene go.
 - Timing is exact. A client sends right after each datagram, so its input arrives at a send frame's time (every `SEND_EVERY` = 3 ticks), after that tick, and what a tick queues goes with the next send frame. Derive the expected tick from the rule and write the derivation in a comment, as `a_player_kills_another_who_respawns_after_the_practice_range_delay` does for the respawn (186 ticks after the death notice) and `exercise_loading` for the loading steps. Never give a window for the PC's speed.
 
-A test on the real clock and real UDP only proves the real loop and its sockets: `server::tests::serial_native_server_logs_in_saved_profile_and_loads_practice_over_udp` runs the whole server so. Do not add another for behaviour. (The lobby's tests in `lobby/` still run a real game service until the lobby has a clock of its own.)
+A test on the real clock and real UDP only proves the real loop and its sockets: `server::tests::serial_native_server_logs_in_saved_profile_and_loads_practice_over_udp` runs the whole server so. Do not add another for behaviour.
+
+#### Lobby tests
+
+Every lobby timer reads the lobby's clock (`orpheus_lobby::clock::Clock`, the time since the lobby started): a session's ticks and keepalive, the matchmaker's handoff delays, sweeps and time played, the account features after login, the offline friends' presence, party invites and the dashboard's uptime. The server reads the wall clock. A test's lobby clock is virtual (`lobby/clock.rs`, `VirtualClock`): it stands until the test moves it.
+
+To write one:
+
+- Start the whole server with `Server::start_virtual(config)`, not `Server::start`: the lobby on a virtual clock and the game service on its lockstep (above). It returns the clocks: `time.lobby` and the game service's network `time.game`. The matchmaker's tests that need no client build the lobby alone (`matchmaker/ported_tests.rs`, `Fixture`) and call its sweep themselves.
+- Connect a game's lobby client with `lobby::test_client::Client` (loopback TCP). A session answers a ping in turn with its client's messages, once it has sent everything it had to send by then. So `send` returns once the lobby handled the message, with its replies; `expect`, `settle` and `take` read up to such a ping; `close` returns once the session ended and its logout ran. Mail one session posts to another is there when the other client reads next. A game on the game service is a `game_service::lockstep::Client` on `time.game`.
+- Move the lobby's clock with `test_client::run(&time.lobby, &mut [&mut client], time)`: it moves a lobby tick (`TICK`, 250 ms) at a time, and each client's session ticks after each. The game service's clock moves only with its network (`time.game.run(time)`, or a game client that waits for a datagram). Never wait in real time: the socket's read timeout only fails a test whose lobby hangs.
+- Timing is exact. Derive the expected time from the rule and write the derivation in a comment: the 20600 of a popped queue comes `FOUND_DELAY` (4 s) after "Game Found!", at the 16th lobby tick (`one_player_to_start_pops_the_queue_and_hands_the_game_off`); a game that stays after 20304 is dropped at the first game tick 3 s after its release, the 188th (`a_game_that_stays_after_20304_is_dropped`).
 
 #### Slow tests
 
@@ -104,7 +115,7 @@ just test-slow C:\Games\Overwatch
 
 #### Serial tests
 
-The load of other tests stretches real time: a server on the real clock skips the ticks it falls behind on. A game-install test on the real clock whose assertion depends on that timing (a window of ticks or milliseconds, or the exact contents of a datagram) is in the serial group. A game service test on the virtual clock never is.
+The load of other tests stretches real time: a server on the real clock skips the ticks it falls behind on. A game-install test on the real clock whose assertion depends on that timing (a window of ticks or milliseconds, or the exact contents of a datagram) is in the serial group. A game service or lobby test on a virtual clock never is.
 
 - Its name starts with `serial_`. `just test-game` runs the other tests first, then the `serial_` tests one at a time (`--test-threads=1`). Do not use `serial_` in the name of another ignored test.
 - Its `#[ignore]` reason starts with `serial:` and says which timing it depends on.

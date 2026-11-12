@@ -1,7 +1,7 @@
 //! The social messages that carry player content: cards, presence and party
 //! states (`ow174/services/social.py` with `ow174/content/player.py`).
 
-use std::{io, sync::Arc, time::Instant};
+use std::{io, sync::Arc, time::Duration};
 
 use orpheus_wire::jam::codec::{
     Fields,
@@ -31,7 +31,8 @@ pub struct SocialContent<'a> {
     pub places: PlacesOf<'a>,
     /// Seconds since 1970.
     pub wall_time: u64,
-    pub now: Instant,
+    /// The lobby's clock.
+    pub now: Duration,
     /// The role queue a party is in, from the matchmaker: its entry and each
     /// member's choice go into the party state (`content/queue.py`).
     pub queue: QueueOf<'a>,

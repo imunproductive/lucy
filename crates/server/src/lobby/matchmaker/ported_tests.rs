@@ -1,16 +1,17 @@
 //! Ports of `tests/test_queue.py` and `tests/test_leaving.py`: the queue
 //! handlers (44100-44107) and the leave handlers (52902, 21801) on a lobby
 //! built from the derived game data. What each client receives is read from
-//! its session's mailbox; the matches are opened on the real game service, and
-//! the tests that need a connected game dial it over UDP.
+//! its session's mailbox; the matches are opened on the game service on its
+//! virtual clock (`game_service/lockstep.rs`), and the tests that need a
+//! connected game dial it on its in-memory network. The lobby's clock is
+//! virtual too and stands: these tests call the sweep themselves.
 
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
-    net::{Ipv4Addr, SocketAddr, UdpSocket},
+    net::Ipv4Addr,
     sync::{Arc, LazyLock, Mutex},
-    thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use orpheus_content::{catalog::ItemDb, maps::GameMap};
@@ -35,17 +36,19 @@ use orpheus_wire::{
         Fields, Schemas,
         Value::{self, Array, Bool, Signed, Struct, Unsigned},
     },
-    link::{
-        ACK, FIN, KIND_CONTROL, KIND_FRAME, LinkCipher, MAX_DATAGRAM, Packet, ReceiveWindow, SYN,
-    },
+    link::{ACK, FIN, KIND_FRAME},
     messages::read_channel,
 };
 
 use super::{Matchmaker, Room, Seat};
 use crate::{
-    game_service::{GameService, MatchPlayer},
+    game_service::{
+        GameService, MatchPlayer,
+        lockstep::{Client as GameClient, Lockstep, Network, ticks},
+    },
     lobby::{
         Lobby,
+        clock::VirtualClock,
         hub::{Hub, Mailbox},
         match_id,
         services::Services,
@@ -53,6 +56,10 @@ use crate::{
     },
     platform::Platform,
 };
+
+/// How long [`Fixture::wait_for`] runs the game service at most: the 10 s it
+/// waited in real time, in ticks.
+const WAIT: Duration = Duration::from_secs(10);
 
 /// The game's 20304: back to the menu (`ow174/game/server.py` LEAVE_GAME).
 const LEAVE_GAME: u32 = 20304;
@@ -79,6 +86,10 @@ struct Client {
 /// A lobby as the server builds it, with the sessions the test logged in.
 pub(super) struct Fixture {
     pub(super) lobby: Arc<Lobby>,
+    /// The lobby's clock.
+    pub(super) clock: VirtualClock,
+    /// The game service's network and clock, when it is on.
+    network: Option<Network>,
     clients: RefCell<HashMap<u32, Client>>,
     _state: tempfile::TempDir,
 }
@@ -106,14 +117,15 @@ impl Fixture {
         )
         .unwrap();
         let selected = accounts.get("Alpha").unwrap();
-        let game = with_game.then(|| {
-            GameService::bind(
-                SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-                Arc::new(Schemas::game()),
-            )
-            .map(Arc::new)
-            .unwrap()
-        });
+        let (game, network) = if with_game {
+            let (service, network) = Lockstep::new(Arc::new(Schemas::game()))
+                .unwrap()
+                .into_parts();
+            (Some(Arc::new(service)), Some(network))
+        } else {
+            (None, None)
+        };
+        let clock = VirtualClock::default();
         let economy = Arc::new(orpheus_lobby::economy::Economy::load(&data).unwrap());
         let lobby = Arc::new(Lobby {
             signing_key: *orpheus_fixed::LOBBY_STATE_BLOB_KEY,
@@ -137,9 +149,12 @@ impl Fixture {
             platform: Arc::new(Platform::new(Ipv4Addr::LOCALHOST, String::new(), None)),
             social: Social::default(),
             matchmaker: Matchmaker::new(&data, state.path(), 0, None).unwrap(),
+            clock: clock.clock(),
         });
         Self {
             lobby,
+            clock,
+            network,
             clients: RefCell::default(),
             _state: state,
         }
@@ -361,104 +376,65 @@ impl Fixture {
         self.lobby.matchmaker.with(&self.lobby, |ctx| ctx.sweep());
     }
 
-    /// Sweep until the condition holds (Python `wait_for`).
-    fn wait_for(&self, what: &str, done: impl Fn(&Self) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
+    /// Sweep after each tick of the game service until the condition holds
+    /// (Python `wait_for`), at most [`WAIT`]; the ticks it took.
+    fn wait_for(&self, what: &str, done: impl Fn(&Self) -> bool) -> u32 {
+        for ran in 0..=ticks(WAIT) {
             self.sweep();
             if done(self) {
-                return;
+                return ran;
             }
-            assert!(Instant::now() < deadline, "not in time: {what}");
-            thread::sleep(Duration::from_millis(20));
+            self.network().step();
         }
+        panic!("not in {WAIT:?}: {what}");
     }
 
     fn game(&self, handoff: &Handoff) -> Game {
-        Game::connect(self.service().local_addr(), handoff)
+        Game::connect(self.network(), handoff)
     }
 
     fn service(&self) -> &GameService {
         self.lobby.game.as_deref().expect("the game server is on")
+    }
+
+    fn network(&self) -> &Network {
+        self.network.as_ref().expect("the game server is on")
     }
 }
 
 /// The client's side of the game link, as far as these tests need it
 /// (`tests/test_leaving.py` `PretendGame`).
 struct Game {
-    socket: UdpSocket,
-    cipher: LinkCipher,
-    connection: u32,
-    next: u32,
-    window: ReceiveWindow,
+    client: GameClient,
     schemas: Schemas,
 }
 
 impl Game {
-    fn connect(address: SocketAddr, handoff: &Handoff) -> Self {
-        let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
-        socket.connect(address).unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .unwrap();
-        let mut game = Self {
-            socket,
-            cipher: LinkCipher::new(handoff.key_out, handoff.key_in),
-            connection: handoff.conn,
-            next: 0,
-            window: ReceiveWindow::default(),
+    fn connect(network: &Network, handoff: &Handoff) -> Self {
+        let mut client = GameClient::on(network, handoff);
+        client.handshake();
+        Self {
+            client,
             schemas: Schemas::game(),
-        };
-        game.send(SYN);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let reply = loop {
-            if let Some(reply) = game.receive() {
-                break reply;
-            }
-            assert!(Instant::now() < deadline, "no SYN answer");
-        };
-        assert_eq!((reply.kind, reply.flags), (KIND_CONTROL, SYN | ACK));
-        game.window.accept(reply.seq);
-        game.send(ACK);
-        game
+        }
     }
 
     fn send(&mut self, flags: u8) {
-        let packet = Packet {
-            conn: self.connection,
-            kind: KIND_CONTROL,
-            seq: self.next,
-            ack: self.window.expected,
-            ack_bits: self.window.bits,
-            flags,
-            payload: Vec::new(),
-        };
-        self.next += 1;
-        self.socket
-            .send(&self.cipher.seal(&packet).unwrap())
-            .unwrap();
+        self.client.send(flags, Vec::new());
     }
 
-    fn receive(&self) -> Option<Packet> {
-        let mut bytes = [0; MAX_DATAGRAM];
-        let count = self.socket.recv(&mut bytes).ok()?;
-        self.cipher.open(&bytes[..count])
-    }
-
-    /// The ids of the reliable messages received until `wanted` came;
-    /// every new datagram is acknowledged.
+    /// The ids of the reliable messages received until `wanted` came, within
+    /// 5 s of game time; every new datagram is acknowledged.
     fn reliable_until(&mut self, wanted: u32) -> Vec<u32> {
         let mut seen = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = self.client.now() + Duration::from_secs(5);
         loop {
             assert!(
-                Instant::now() < deadline,
+                self.client.now() < deadline,
                 "{wanted} not seen in time: {seen:?}"
             );
-            let Some(packet) = self.receive() else {
-                continue;
-            };
-            if !self.window.accept(packet.seq) {
+            let packet = self.client.receive();
+            if !self.client.window.accept(packet.seq) {
                 continue;
             }
             self.send(ACK);
@@ -850,6 +826,13 @@ mod leaving {
     /// A lobby id no match has (`tests/test_leaving.py` `fake_match(1)`).
     const NO_MATCH: [u64; 2] = [1, 101];
 
+    /// How long after the release a game that stays after 20304 is dropped:
+    /// the leave grace (`connection.rs` `LEAVE_GRACE`, 3 s) runs from the
+    /// release, which the service takes at its last tick's time, and the
+    /// first tick at least 3 s later drops the game. Ticks are 16 ms apart
+    /// (`TICK_PERIOD`): the 187th comes at 2.992 s, the 188th at 3.008 s.
+    const DROPPED_AFTER: Duration = Duration::from_millis(188 * 16);
+
     /// The party states (20700) each account received.
     fn party_states(fixture: &Fixture, accounts: &[&Arc<Account>]) -> Vec<usize> {
         accounts
@@ -1189,12 +1172,14 @@ mod leaving {
         fixture.wait_for("the game joined", |fixture| {
             fixture.seat(&alpha, |seat| seat.joined) == Some(true)
         });
+        let released = fixture.network().now();
         fixture.leave(&alpha, false, match_id, false);
         game.reliable_until(LEAVE_GAME);
         // The game sends nothing more: the leave grace drops it.
         fixture.wait_for("the game was dropped", |fixture| {
             fixture.seat(&alpha, |_| ()).is_none()
         });
+        assert_eq!(fixture.network().now() - released, DROPPED_AFTER);
         // The match ends with its last player.
         fixture.wait_for("the match ended", |fixture| {
             fixture.lobby.matchmaker.lock().rooms.is_empty()
@@ -1214,6 +1199,7 @@ mod leaving {
         fixture.wait_for("the game joined", |fixture| {
             fixture.seat(&alpha, |seat| seat.joined) == Some(true)
         });
+        let released = fixture.network().now();
         assert_eq!(
             fixture
                 .lobby
@@ -1226,6 +1212,7 @@ mod leaving {
         fixture.wait_for("the game was dropped", |fixture| {
             fixture.seat(&alpha, |_| ()).is_none()
         });
+        assert_eq!(fixture.network().now() - released, DROPPED_AFTER);
     }
 
     /// `tests/test_leaving.py::TakeOutTests::test_a_player_taken_out_before_his_game_connects_leaves_at_once_and_only_gets_20304`,

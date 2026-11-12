@@ -1,6 +1,38 @@
-//! The lobby's wall time, optional UTC date override and packed STU dates.
+//! The lobby's clock, its wall time, optional UTC date override and packed
+//! STU dates.
 
-use std::io;
+use std::{
+    io,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+/// The lobby's clock: the time since the lobby started. Every lobby timer
+/// reads it: a session's keepalive and ticks, the matchmaker's handoff
+/// delays, sweeps and time played, the account features after login, the
+/// offline friends' presence and party invites. The server reads the wall
+/// clock ([`Clock::wall`]); tests give a virtual one that stands until they
+/// move it, as the game service's loop reads the clock it is given.
+#[derive(Clone)]
+pub struct Clock(Arc<dyn Fn() -> Duration + Send + Sync>);
+
+impl Clock {
+    /// The wall clock, from now.
+    pub fn wall() -> Self {
+        let start = Instant::now();
+        Self::new(move || start.elapsed())
+    }
+
+    /// A clock that reads `now`.
+    pub fn new(now: impl Fn() -> Duration + Send + Sync + 'static) -> Self {
+        Self(Arc::new(now))
+    }
+
+    /// The time since the lobby started.
+    pub fn now(&self) -> Duration {
+        (self.0)()
+    }
+}
 
 pub const DAY: u64 = 86_400;
 const NOON: u64 = DAY / 2;

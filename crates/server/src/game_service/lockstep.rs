@@ -14,6 +14,10 @@
 //! A match's scene is still prepared on a thread of its own, in real time
 //! ([`GameService::open_world`]): [`Lockstep::await_scenes`] holds the clock
 //! until every match has its scene, so it comes at a known tick.
+//!
+//! A test's game is a [`Client`] on the network: waiting for its next
+//! datagram runs the service's ticks. A lobby test gives the lobby the
+//! service and keeps the network ([`Lockstep::into_parts`]).
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -31,7 +35,11 @@ use std::{
 
 use mio::{Events, Poll, Waker};
 use orpheus_core::tick::TICK_PERIOD;
-use orpheus_wire::jam::codec::Schemas;
+use orpheus_lobby::handoff::Handoff;
+use orpheus_wire::{
+    jam::codec::Schemas,
+    link::{ACK, KIND_CONTROL, KIND_FRAME, LinkCipher, Packet, ReceiveWindow, SYN},
+};
 
 use super::{
     GameLoop, GameService, RECEIVE_BATCH, REQUESTS, Request, State, Transport, check_schemas,
@@ -86,6 +94,12 @@ impl Lockstep {
         &self.network
     }
 
+    /// The service alone, for a lobby that holds it, and the network that
+    /// runs its clock.
+    pub(crate) fn into_parts(self) -> (GameService, Network) {
+        (self.service, self.network)
+    }
+
     /// Runs the next tick.
     pub(crate) fn step(&self) {
         self.network.step();
@@ -104,7 +118,7 @@ impl Lockstep {
     /// Holds the clock until every match has the scene its thread prepares
     /// (or knows that it failed).
     pub(crate) fn await_scenes(&self) {
-        self.network.control(|reply| Control::AwaitScenes { reply });
+        self.network.await_scenes();
     }
 }
 
@@ -171,6 +185,12 @@ impl Network {
         *self.now.lock().expect("clock")
     }
 
+    /// Holds the clock until every match has the scene its thread prepares
+    /// (or knows that it failed).
+    pub(crate) fn await_scenes(&self) {
+        self.control(|reply| Control::AwaitScenes { reply });
+    }
+
     fn control<T>(&self, control: impl FnOnce(mpsc::SyncSender<T>) -> Control) -> T {
         let (reply, receive) = mpsc::sync_channel(1);
         self.controls
@@ -184,6 +204,94 @@ impl Network {
 /// The ticks that `time` takes, the last one partly.
 pub(crate) fn ticks(time: Duration) -> u32 {
     u32::try_from(time.as_nanos().div_ceil(TICK_PERIOD.as_nanos())).expect("ticks")
+}
+
+/// How long a client waits for its next datagram: the 2 s read timeout its
+/// socket had over UDP, in ticks.
+pub(crate) const RECEIVE_TICKS: u32 = 125;
+
+/// A game on the service's in-memory network. Waiting for a datagram runs
+/// the service's ticks.
+pub(crate) struct Client {
+    network: Network,
+    address: SocketAddr,
+    cipher: LinkCipher,
+    connection: u32,
+    next: u32,
+    pub(crate) window: ReceiveWindow,
+}
+
+impl Client {
+    pub(crate) fn new(server: &Lockstep, ticket: &Handoff) -> Self {
+        Self::on(server.network(), ticket)
+    }
+
+    /// A game on `network` with the lobby's `ticket`.
+    pub(crate) fn on(network: &Network, ticket: &Handoff) -> Self {
+        let network = network.clone();
+        let address = network.bind();
+        Self {
+            network,
+            address,
+            cipher: LinkCipher::new(ticket.key_out, ticket.key_in),
+            connection: ticket.conn,
+            next: 0,
+            window: ReceiveWindow::default(),
+        }
+    }
+
+    /// A datagram that arrives before the service's next tick.
+    pub(crate) fn send(&mut self, flags: u8, payload: Vec<u8>) {
+        let packet = Packet {
+            conn: self.connection,
+            kind: if payload.is_empty() {
+                KIND_CONTROL
+            } else {
+                KIND_FRAME
+            },
+            seq: self.next,
+            ack: self.window.expected,
+            ack_bits: self.window.bits,
+            flags,
+            payload,
+        };
+        self.next += 1;
+        self.network
+            .send(self.address, self.cipher.seal(&packet).unwrap());
+    }
+
+    /// The next datagram, running ticks until one comes (at most
+    /// [`RECEIVE_TICKS`]).
+    pub(crate) fn receive(&self) -> Packet {
+        for _ in 0..=RECEIVE_TICKS {
+            if let Some(bytes) = self.network.take(self.address) {
+                let packet = self.cipher.open(&bytes).unwrap();
+                assert_eq!(packet.conn, self.connection);
+                return packet;
+            }
+            self.network.step();
+        }
+        panic!("no datagram in {RECEIVE_TICKS} ticks");
+    }
+
+    /// Nothing comes for the ticks of `time`.
+    pub(crate) fn hears_nothing(&self, time: Duration) {
+        self.network.run(time);
+        assert!(self.network.take(self.address).is_none());
+    }
+
+    /// The time of the service's last tick.
+    pub(crate) fn now(&self) -> Duration {
+        self.network.now()
+    }
+
+    pub(crate) fn handshake(&mut self) {
+        self.send(SYN, Vec::new());
+        let response = self.receive();
+        assert_eq!((response.kind, response.flags), (KIND_CONTROL, SYN | ACK));
+        assert!(self.window.accept(response.seq));
+        self.send(ACK, Vec::new());
+    }
 }
 
 enum Control {

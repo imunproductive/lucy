@@ -2976,7 +2976,7 @@ impl DroppedNotices {
 
 mod ai;
 #[cfg(test)]
-mod lockstep;
+pub(crate) mod lockstep;
 
 #[cfg(test)]
 mod tests;
