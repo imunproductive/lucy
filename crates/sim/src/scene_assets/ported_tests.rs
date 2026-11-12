@@ -224,6 +224,13 @@ fn a_players_body_walks_on_the_maps_collision_with_its_heros_values() {
 /// st49's MovementMod adds minus that to the speed scalar from the next
 /// frame on: 5.5 m/s slows to 1.925 in five frames. Letting go ends it at
 /// once.
+///
+/// The zoom itself is the client's camera: the field of view state
+/// (`STU_75D1C308`, Ana `0B94` st23, Widowmaker `001B` st7, both entered
+/// with the graph) reads `#168`, which a Stack (`0B94` st35, `001B` st27)
+/// sets to `#172` (30) once the zoom is full. The owner frames carry that
+/// state, with no link (its payload is a link alone), as the Python
+/// reference sent it.
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
 fn ana_and_widowmaker_walk_at_35_percent_once_fully_zoomed() {
@@ -232,7 +239,10 @@ fn ana_and_widowmaker_walk_at_35_percent_once_fully_zoomed() {
     const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
     // The frame the zoom gets full in, after the press in 1050, and where
     // the reference has the body when the button goes up in 1150.
-    for (hero, zoomed, released_at) in [(ANA, 1065, 5.857421875), (WIDOWMAKER, 1070, 6.140625)] {
+    for (hero, zoomed, released_at, fov) in [
+        (ANA, 1065, 5.857421875, (0x0B94, 23, 35)),
+        (WIDOWMAKER, 1070, 6.140625, (0x001B, 7, 27)),
+    ] {
         // Their graphs still have gaps: tolerated, as release builds do.
         let mut body = Sprinter::of(hero, Unknowns::Tolerate);
         let mut speeds = Vec::new();
@@ -246,16 +256,38 @@ fn ana_and_widowmaker_walk_at_35_percent_once_fully_zoomed() {
             // (none: kept only for its binding to the stack) for the client
             // to add the stack's 0.65 itself, not the stacked 0.65.
             if frame == 1100 {
+                let snapshot = body.runtime.snapshot().unwrap();
                 let owner = body
                     .runtime
                     .encoder()
-                    .project(
-                        body.runtime.snapshot().unwrap(),
-                        orpheus_script::snapshot::View::Owner,
-                    )
+                    .project(snapshot, orpheus_script::snapshot::View::Owner)
                     .unwrap();
                 assert_eq!(
                     owner.entity_variable(23184),
+                    Some(&orpheus_script::wire::Value::Null),
+                    "{hero:x}"
+                );
+                let (graph, field_of_view, stack) = fov;
+                let (&weapon, script) = snapshot
+                    .instances
+                    .iter()
+                    .find(|(_, instance)| instance.graph == graph)
+                    .unwrap();
+                assert!(script.states[&field_of_view].active, "{hero:x}");
+                assert!(script.states[&stack].active, "{hero:x}");
+                assert_eq!(
+                    owner.state_payload(weapon, field_of_view),
+                    Some(&orpheus_script::codecs::StatePayload::new()),
+                    "{hero:x}"
+                );
+                assert_eq!(
+                    owner.instance_variable(weapon, 172),
+                    Some(&orpheus_script::wire::Value::Integer(30)),
+                    "{hero:x}"
+                );
+                // Nothing else sets `#168`: the client adds the stack's 30.
+                assert_eq!(
+                    owner.instance_variable(weapon, 168),
                     Some(&orpheus_script::wire::Value::Null),
                     "{hero:x}"
                 );
