@@ -1,6 +1,6 @@
 use super::*;
 use crate::{instance::RETAIL_QUANTA, scene_assets::SceneAssets};
-use orpheus_content::maps::{GameMap, PRACTICE_RANGE_MODE};
+use orpheus_content::maps::GameMap;
 
 const SHOOTER: Shooter = Shooter {
     source: 0xa000_0101,
@@ -215,20 +215,6 @@ fn quick_melee_reads_the_python_sphere_from_its_graph() {
             reach: 1.5,
             radius: 1.0
         }]
-    );
-}
-
-/// combat.py `RESPAWN` and `PRACTICE_RESPAWN` from the derived mode times.
-#[test]
-#[ignore = "requires the derived 104319 mode respawn times"]
-fn derived_respawn_times_match_the_python_reference() {
-    let times =
-        RespawnTimes::load(orpheus_testkit::runtime_dir().join("data/game_respawns_174.json"))
-            .unwrap();
-    assert_eq!(times.for_mode(PRACTICE_RANGE_MODE), Duration::from_secs(3));
-    assert_eq!(
-        times.for_mode(0x0230_0000_0000_0014),
-        Duration::from_secs(10)
     );
 }
 

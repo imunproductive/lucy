@@ -764,6 +764,26 @@ fn body_script_retries_frozen_initial_frames_and_ignores_old_generation_reports(
     activate_script(&mut world, id, 7, Arc::default());
     world.push(record(id.entity, Delivery::CreateBody(id)));
     let mut egress = GameEgress::default();
+    // The script record a datagram carried: its chunk (first, span), the
+    // owner frame's `lead | H | C` bits (6: a correction, 2: the initial
+    // owner delta) and its CmFD.
+    let owner_frame = |report: &DeliveryReport<Arc<Record>>| {
+        let records: Vec<_> = report
+            .packets
+            .iter()
+            .flat_map(|packet| &packet.records)
+            .collect();
+        let [record] = records.as_slice() else {
+            panic!("expected only the script record");
+        };
+        let chunk = record.update.chunk.as_ref().unwrap();
+        let mut bits = BitReader::new(chunk.as_bytes());
+        let first = bits.w_u32().unwrap();
+        let span = bits.w_var().unwrap();
+        assert!(!bits.bit().unwrap());
+        bits.w_var().unwrap();
+        (first, span, bits.bits(3).unwrap(), bits.w_var().unwrap())
+    };
     assert_eq!(
         transmit(&mut world, &mut egress, 100, 0).1.records,
         [RecordSource::Queued(0)]
@@ -847,12 +867,20 @@ fn body_script_retries_frozen_initial_frames_and_ignores_old_generation_reports(
     );
     transport_outcome(&mut world, &mut egress, 7, false);
     assert_eq!(transmit(&mut world, &mut egress, 102, 9).0, c0);
-    transport_outcome(&mut world, &mut egress, 9, true);
+    // c0, the initial owner delta at the first command (101): chunks 2 to
+    // 3, the pending frame above.
+    let arrived = egress.acknowledge(10, 1);
+    assert_eq!(owner_frame(&arrived), (2, 1, 2, 101));
+    world.acknowledge(arrived, Duration::ZERO);
     assert_eq!(
         transmit(&mut world, &mut egress, 117, 10).1.records,
         [RecordSource::Queued(0)]
     );
-    transport_outcome(&mut world, &mut egress, 10, false);
+    // After the commands up to 117 the owner frame is a correction in the
+    // next chunk.
+    let lost = egress.acknowledge(11, 0);
+    assert_eq!(owner_frame(&lost), (4, 0, 6, 117));
+    world.acknowledge(lost, Duration::ZERO);
     assert!(
         transmit(&mut world, &mut egress, 118, 11)
             .1
@@ -877,7 +905,11 @@ fn body_script_retries_frozen_initial_frames_and_ignores_old_generation_reports(
     world.cancel_body_script();
     let reused = avatar(1, 257);
     activate_script(&mut world, reused, 7, Arc::default());
-    transport_outcome(&mut world, &mut egress, 12, true);
+    // The lost correction is covered by the next one: chunk 4 again, with
+    // the one more command.
+    let arrived = egress.acknowledge(13, 1);
+    assert_eq!(owner_frame(&arrived), (4, 1, 6, 118));
+    world.acknowledge(arrived, Duration::ZERO);
     assert_eq!(world.body_script.as_ref().unwrap().stream.last(), 0);
     assert!(world.queued.is_empty());
 }

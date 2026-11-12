@@ -19,7 +19,8 @@ fn derived(path: &str) -> Value {
     serde_json::from_slice(&output.bytes).unwrap()
 }
 
-/// combat.py `EYE` and `EYE_CROUCHED`: Soldier: 76's `03CF.003` eyes.
+/// combat.py `EYE` and `EYE_CROUCHED`: Soldier: 76's `03CF.003` eyes; every
+/// body, each hero's among them, crouches to a lower eye.
 #[test]
 #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
 fn eyes_match_the_python_reference() {
@@ -32,6 +33,11 @@ fn eyes_match_the_python_reference() {
     // `EYE` and `EYE_CROUCHED_DEFAULT`.
     assert_eq!(eyes["0x040000000000143E"]["eye"], json!(1.55));
     assert_eq!(eyes["0x040000000000143E"]["eye_crouched"], json!(1.15));
+    for (body, eye) in eyes.as_object().unwrap() {
+        let standing = eye["eye"].as_f64().unwrap();
+        let crouched = eye["eye_crouched"].as_f64().unwrap();
+        assert!(0.0 < crouched && crouched <= standing, "{body} {eye}");
+    }
 }
 
 /// combat.py `RESPAWN` (`0F4A` and `0EC2` send 06FD.025 {10}) and

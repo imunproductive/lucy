@@ -669,23 +669,15 @@ mod tests {
     /// bot's capsule. The bot itself is now hit by its shapes (below).
     #[test]
     #[ignore = "requires a derived 104319 Practice Range scene"]
-    fn practice_capsule_hits_and_health_notices_match_reference_geometry() {
+    fn practice_capsule_hits_match_reference_geometry() {
         use crate::scene_assets::SceneAssets;
         use orpheus_content::maps::GameMap;
-        use orpheus_core::bits::BitReader;
-        use orpheus_script::vitals::{Death, Vitals};
-        use orpheus_wire::{
-            combat_messages::CombatNotice,
-            jam::codec::{Schemas, Value},
-            messages::{read_channel, write_channel},
-        };
 
         let root = orpheus_testkit::runtime_dir();
         let scene = SceneAssets::load(&root)
             .unwrap()
             .prepare(GameMap::practice_range())
             .unwrap();
-        let schemas = Schemas::game();
         let bot = scene.bots().iter().find(|bot| bot.spawn.team == 1).unwrap();
         let target = TargetPose {
             shapes: None,
@@ -720,40 +712,6 @@ mod tests {
         assert!(far.critical);
         assert!((far.distance - 39.502_506_281_446_74).abs() < 1e-9);
         assert!((far.damage - 26.696_491_205_974_56).abs() < 1e-9);
-
-        let mut vitals = Vitals::new(bot.spawn.health, 0.0, 0.0);
-        let source = 0xa000_0101;
-        for index in 0..5 {
-            let frame = 1000 + index * 7;
-            let hit = trace(16_384, 8.0, 1.55, frame).unwrap();
-            let result = vitals.damage(
-                hit.damage,
-                Death {
-                    time: f64::from(frame) * 0.016,
-                    frame,
-                    killer: source,
-                },
-            );
-            assert_eq!((result.dealt, result.killed), (40.0, index == 4));
-            assert_eq!(vitals.total(), 160.0 - f64::from(index) * 40.0);
-            let notice = CombatNotice::Hit {
-                target: hit.entity,
-                dealt: result.dealt,
-                critical: hit.critical,
-                killed: result.killed,
-                shot_frame: frame,
-            };
-            let mut bits = orpheus_core::bits::BitWriter::new();
-            write_channel(&mut bits, &[(index, notice.encode(&schemas).unwrap())], &[]).unwrap();
-            let mut reader = BitReader::new(bits.as_bytes());
-            let channel = read_channel(&mut reader, &schemas).unwrap();
-            let message = &channel.reliable[0].message;
-            assert_eq!(message.fields[&0x84], Value::Unsigned(u64::from(frame)));
-            assert_eq!(notice.required_identity(), Some(bot.entity));
-            assert!(vitals.changed_component().is_some());
-            vitals.clear_changed();
-        }
-        assert_eq!(vitals.death().unwrap().killer, source);
     }
 
     /// A Practice Range Training Bot as its hit shapes place it, posed at

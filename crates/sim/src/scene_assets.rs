@@ -922,7 +922,9 @@ mod tests {
         let assets = SceneAssets::load(runtime).unwrap();
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         assert!(scene.movement_ready());
-        let hero = scene.heroes().get(SOLDIER).unwrap();
+        // Not only Soldier: 76 (`stock_soldier_plays_a_scripted_session`) has
+        // an owner script: Pharah's starts with no unknown content.
+        let pharah = scene.heroes().find_hero("Pharah").unwrap();
         let spawn = OwnerBodySpawn {
             slot: 0,
             controller: 0xa000_0100,
@@ -930,25 +932,10 @@ mod tests {
             body_filter: team_bit(0).unwrap(),
             frame: FIRST_TICK,
             pose: scene
-                .player_spawn_mover(hero.body, 0, 0, SpawnChoice::First)
-                .unwrap()
-                .pose(),
-            quanta: RETAIL_QUANTA,
-        };
-        let soldier = scene.owner_body_runtime(hero, spawn).unwrap();
-        assert!(
-            soldier.is_some(),
-            "the stock Soldier: 76 owner script did not start"
-        );
-        // Every hero has a script, not only Soldier: 76 (Pharah's starts with
-        // no unknown content).
-        let pharah = scene.heroes().find_hero("Pharah").unwrap();
-        let spawn = OwnerBodySpawn {
-            pose: scene
                 .player_spawn_mover(pharah.body, 0, 0, SpawnChoice::First)
                 .unwrap()
                 .pose(),
-            ..spawn
+            quanta: RETAIL_QUANTA,
         };
         assert!(
             scene.owner_body_runtime(pharah, spawn).unwrap().is_some(),

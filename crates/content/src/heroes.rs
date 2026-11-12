@@ -320,28 +320,4 @@ mod tests {
             io::ErrorKind::InvalidData
         );
     }
-
-    /// combat.py `EYE`, `EYE_CROUCHED` and `EYE_CROUCHED_DEFAULT`: Soldier:
-    /// 76's eyes are 1.55 and 1.085; a body without a first-person component
-    /// (the Friendly Bot 143E) has the component's defaults, 1.55 and 1.15.
-    #[test]
-    #[ignore = "requires the derived 104319 eye catalog"]
-    fn derived_eyes_match_the_python_reference() {
-        let root = orpheus_testkit::runtime_dir();
-        let catalog =
-            EyeCatalog::load(root.join("data/game_eyes_174.json"), 0x0400_0000_0000_03cf).unwrap();
-        let soldier = catalog.for_body(0x0400_0000_0000_03cf);
-        assert_eq!((soldier.standing, soldier.crouched), (1.55, 1.085));
-        let friendly = catalog.for_body(0x0400_0000_0000_143e);
-        assert_eq!((friendly.standing, friendly.crouched), (1.55, 1.15));
-        let heroes = HeroCatalog::load(root.join("data/game_heroes_174.json")).unwrap();
-        for hero in heroes.heroes() {
-            let eyes = catalog.for_body(hero.body);
-            assert!(
-                0.0 < eyes.crouched && eyes.crouched <= eyes.standing,
-                "{}",
-                hero.name
-            );
-        }
-    }
 }

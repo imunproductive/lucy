@@ -2,7 +2,7 @@
 //! collision, ported from `tests/test_game_mover.py` (the frozen Python
 //! specification of `ow174/game/mover.py`). Soldier: 76's values are the
 //! built-in [`MoverSettings::default`] ones: the derived table has the same
-//! (`soldiers_derived_mover_values_are_the_built_in_ones`).
+//! (`settings::tests::actual_mover_components_match_the_python_reference`).
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -15,11 +15,8 @@ use orpheus_wire::commands::{CROUCH, Command, JUMP};
 use super::{
     Mover, STEP,
     posture::{Posture, snap},
-    settings::{MoverCatalog, MoverSettings},
+    settings::MoverSettings,
 };
-
-/// Soldier: 76's body, the server's fallback (mover.py `SOLDIER_BODY`).
-const SOLDIER_BODY: u64 = 0x0400_0000_0000_03cf;
 use crate::{
     collision::{
         cache::{HalfEdge, Hull, Mesh, Triangle, read_movement_cache},
@@ -1120,20 +1117,6 @@ fn a_shape_with_one_teams_proxy_stops_only_that_team() {
             "category {category:#x}"
         );
     }
-}
-
-/// Soldier: 76's derived mover component has the built-in values the box
-/// world tests run with (`mover_data(SOLDIER_BODY)` in
-/// `ow174/game/mover.py`).
-#[test]
-#[ignore = "requires the derived 104319 mover catalog"]
-fn soldiers_derived_mover_values_are_the_built_in_ones() {
-    let path = orpheus_testkit::runtime_dir().join("data/game_movers_174.json");
-    let catalog = MoverCatalog::load(path, SOLDIER_BODY).unwrap();
-    assert_eq!(
-        catalog.for_body(Some(SOLDIER_BODY)),
-        &MoverSettings::default()
-    );
 }
 
 /// The Practice Range's movement world for the modes without placeable

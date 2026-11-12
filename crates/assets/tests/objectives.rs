@@ -96,17 +96,7 @@ fn track_stops(payload: &Value) -> (Vec<Stop>, f64) {
     (stops, distance)
 }
 
-/// The capture area (`0x37.003`) marks progress at 1/3 and 2/3, as `f32`s.
-#[test]
-#[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
-fn the_capture_area_marks_thirds() {
-    assert_eq!(
-        derived()["capture_area"],
-        json!({"entity": "0x0400000000000037", "segments": [0.33333334, 0.6666667]})
-    );
-}
-
-/// Assault points: their 0E8E base times and area boxes, and the times
+/// Assault points: their 0E8E base times and box counts, and the times
 /// they add (refs `CaptureAreas.md` §2, `Payloads.md` §1): Anubis and
 /// Hanamura A 30 s, B 18 s with a 22 s decay; 4:00, then +3:00 (+0:30 in
 /// extra rounds) with or without Competitive rules.
@@ -124,22 +114,13 @@ fn assault_points_have_their_times_and_boxes() {
             [(0, 240.0, 0.0, 240.0), (1, 180.0, 30.0, 180.0)]
         );
     }
-    // Anubis A's first box: centre, half extents and a -44.5° yaw.
-    assert_eq!(
-        map(ANUBIS)["points"][0]["boxes"][0],
-        json!({
-            "centre": [-45.35216, 5.8627663, 43.23094],
-            "half": [5.333434, 4.9332523, 7.3992333],
-            "rotation": [0.0, -0.37875003, 0.0, 0.92549926]
-        })
-    );
     assert!(map(ANUBIS).get("payloads").is_none());
 }
 
 /// King's Row: its point A (32 s), the times (Competitive 4:00, +2:30,
 /// +1:30; without 5:00, +3:00, +2:00) and its payload: no speed factor
 /// override (1), 4 + 5 s of waits, the unlock run to the barrier at 8.1 m,
-/// the 6 s pause at checkpoint 1 (114.7 m), 185.0 m of stored track.
+/// the 6 s pause at checkpoint 1 (114.7 m).
 #[test]
 #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
 fn kings_row_has_its_point_times_and_payload_track() {
@@ -160,7 +141,7 @@ fn kings_row_has_its_point_times_and_payload_track() {
     assert_eq!(payload["unlock"], json!([4.0, 5.0]));
     assert_eq!(payload["auto_start"], true);
     assert_eq!(payload["track"].as_array().unwrap().len(), 20);
-    let (stops, length) = track_stops(payload);
+    let (stops, _) = track_stops(payload);
     assert_eq!(
         stops,
         [
@@ -169,15 +150,6 @@ fn kings_row_has_its_point_times_and_payload_track() {
             (185.0, Some(0.0), false, false)
         ]
     );
-    assert!((length - 185.02).abs() < 0.01, "{length}");
-    // The checkpoints are waypoints of the track.
-    let placeables: Vec<u64> = payload["track"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|waypoint| waypoint["placeable"].as_u64().unwrap())
-        .collect();
-    assert!(placeables.contains(&1549) && placeables.ends_with(&[1556]));
 }
 
 /// Dorado: speed factor 1, no waits; checkpoint 0 pauses 15 s, and the

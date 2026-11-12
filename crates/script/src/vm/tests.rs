@@ -1923,6 +1923,18 @@ fn authored_sprint_stack_gates_track_input_and_reveal_the_base_on_release() {
         )
     };
     assert_eq!(var(&component, 9570), Some(Value::Bool(true)));
+    // The primary, crouch and melee edges (states 4, 7 and 16) follow 0x881.
+    let edges = |snapshot: &Snapshot| {
+        [4, 7, 16].map(|raw| {
+            (
+                snapshot.instances[&5].states[&raw].kind,
+                snapshot.instances[&5].states[&raw].activation,
+            )
+        })
+    };
+    let up = StateKind::LogicalButton { down: false };
+    let down = StateKind::LogicalButton { down: true };
+    assert_eq!(edges(component.snapshot().unwrap()), [(up, 1); 3]);
     for (frame, forward, buttons, throttle, held) in [
         (1030, 63, 0, Value::Null, Value::Null),
         (1031, 64, 0, Value::Bool(true), Value::Null),
@@ -1943,6 +1955,13 @@ fn authored_sprint_stack_gates_track_input_and_reveal_the_base_on_release() {
             .unwrap();
         assert_eq!(var(&component, 2333), Some(throttle));
         assert_eq!(var(&component, 7681), Some(held));
+        let snapshot = component.snapshot().unwrap();
+        let edge = if buttons == 0 { up } else { down };
+        assert_eq!(edges(snapshot), [(edge, 1); 3], "frame {frame}");
+        if buttons != 0 {
+            assert_eq!(snapshot.instances[&5].variables[&1919], Value::Bool(true));
+            assert!(snapshot.initialization_complete());
+        }
     }
     component
         .set_entity_variable(9535, Value::Bool(false), &mut world)
@@ -2698,59 +2717,6 @@ fn buffered_action_press_uses_the_shared_clock_and_releases_after_one_millisecon
             assert!(snapshot.pending_timers.is_empty());
         }
     }
-}
-
-#[test]
-#[ignore = "requires a derived 1.74 graph bundle"]
-fn soldier_sprint_graph_reads_primary_crouch_and_melee_edges_as_in_python() {
-    let data = orpheus_testkit::runtime_dir().join("data");
-    let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
-    let mut world = soldier_world(&graphs);
-    let mut component = Component::start(
-        Arc::clone(&graphs),
-        0xa000_0101,
-        Variables::new(),
-        vec![Root::new(5, 0x0255)],
-        1029,
-        &mut world,
-        MAX_INIT_WORK,
-    )
-    .unwrap();
-    let sprint = |snapshot: &Snapshot| {
-        [4, 7, 16].map(|raw| {
-            (
-                snapshot.instances[&5].states[&raw].kind,
-                snapshot.instances[&5].states[&raw].activation,
-            )
-        })
-    };
-    let up = StateKind::LogicalButton { down: false };
-    let down = StateKind::LogicalButton { down: true };
-    assert_eq!(sprint(component.snapshot().unwrap()), [(up, 1); 3]);
-    component
-        .advance_command(
-            Command {
-                frame: 1030,
-                buttons: 0x881,
-                ..Command::default()
-            },
-            &mut world,
-        )
-        .unwrap();
-    let snapshot = component.snapshot().unwrap();
-    assert_eq!(sprint(snapshot), [(down, 1); 3]);
-    assert_eq!(snapshot.instances[&5].variables[&1919], Value::Bool(true));
-    assert!(snapshot.initialization_complete());
-    component
-        .advance_command(
-            Command {
-                frame: 1031,
-                ..Command::default()
-            },
-            &mut world,
-        )
-        .unwrap();
-    assert_eq!(sprint(component.snapshot().unwrap()), [(up, 1); 3]);
 }
 
 #[test]

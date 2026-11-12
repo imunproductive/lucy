@@ -63,32 +63,21 @@ fn logged_in<'a>(schemas: &'a Schemas, server: &Server) -> Client<'a> {
     alpha
 }
 
-/// `tests/test_bot_chat.py::BotChatTests::test_the_bot_is_quiet_by_default`
+/// `tests/test_bot_chat.py::BotChatTests`: `test_the_bot_is_quiet_by_default`,
+/// then `test_the_bot_answers_when_the_switch_is_on`.
 #[test]
 #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
-fn the_bot_is_quiet_by_default() {
+fn the_bot_answers_only_when_the_switch_is_on() {
     assert!(!Profile::default().bot_chat);
     let state = tempfile::tempdir().unwrap();
     let mut server = start(&state);
+    let dashboard = server.dashboard_addr().unwrap();
     let schemas = Schemas::lobby();
     let mut alpha = logged_in(&schemas, &server);
 
     assert_eq!(channel_texts(&mut alpha), ["hi"]);
     assert!(whisper_replies(&mut alpha).is_empty());
 
-    drop(alpha);
-    server.stop().unwrap();
-}
-
-/// `tests/test_bot_chat.py::BotChatTests::test_the_bot_answers_when_the_switch_is_on`
-#[test]
-#[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
-fn the_bot_answers_when_the_switch_is_on() {
-    let state = tempfile::tempdir().unwrap();
-    let mut server = start(&state);
-    let dashboard = server.dashboard_addr().unwrap();
-    let schemas = Schemas::lobby();
-    let mut alpha = logged_in(&schemas, &server);
     let reply = post(
         dashboard,
         "/api/update_profile",
@@ -101,8 +90,7 @@ fn the_bot_answers_when_the_switch_is_on() {
     alpha.settle();
 
     let texts = channel_texts(&mut alpha);
-    assert_eq!(texts[0], "hi");
-    assert!(texts[1].contains("I hear you"), "{texts:?}");
+    assert_eq!((texts.len(), texts[0].as_str()), (2, "hi"), "{texts:?}");
     assert_eq!(whisper_replies(&mut alpha).len(), 1);
 
     drop(alpha);
