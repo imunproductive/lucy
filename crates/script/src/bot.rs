@@ -93,6 +93,17 @@ const OWNER_HEALTH: u32 = 253;
 /// `orpheus_physics::mover::sample_movement_flags`).
 pub const BOT_MOVEMENT_SAMPLE: u16 = 1 << 1;
 
+/// Every nameplate (`0D24`) instance of a body's script.
+fn nameplates(component: &Component) -> Vec<u16> {
+    component
+        .snapshot()
+        .into_iter()
+        .flat_map(|snapshot| &snapshot.instances)
+        .filter(|(_, instance)| instance.graph == PRACTICE_NAMEPLATE)
+        .map(|(&id, _)| id)
+        .collect()
+}
+
 /// The practice nameplate instance: graph `0D24` under state 3 of a `0C18`
 /// instance (`practice_nameplate` in bot.py).
 pub fn practice_nameplate(snapshot: &Snapshot) -> Option<u16> {
@@ -425,14 +436,7 @@ impl BotBody {
             }
         }
         if !spawn.name.is_empty() {
-            let nameplates: Vec<u16> = component
-                .snapshot()
-                .into_iter()
-                .flat_map(|snapshot| &snapshot.instances)
-                .filter(|(_, instance)| instance.graph == PRACTICE_NAMEPLATE)
-                .map(|(&id, _)| id)
-                .collect();
-            for id in nameplates {
+            for id in nameplates(&component) {
                 component.set_instance_variable(
                     id,
                     NAMEPLATE_TEXT,
@@ -548,6 +552,60 @@ impl BotBody {
         Ok(())
     }
 
+    /// One of the body's entity variables as stored now (none: never set).
+    pub fn entity_variable(&self, id: u32) -> Option<&Value> {
+        self.component.snapshot()?.variables.get(&id)
+    }
+
+    /// One of the first nameplate (`0D24`) instance's own variables as
+    /// stored now (none: never set, or no nameplate).
+    pub fn nameplate_variable(&self, id: u32) -> Option<&Value> {
+        let snapshot = self.component.snapshot()?;
+        let first = nameplates(&self.component).into_iter().next()?;
+        snapshot.instances.get(&first)?.variables.get(&id)
+    }
+
+    /// What one of the body's variables reads now, a nameplate instance's
+    /// (`nameplate`) or the body's own, after the states that hold it.
+    pub fn resolved(&self, nameplate: bool, id: u32) -> Option<Value> {
+        let (instance, scope) = if nameplate {
+            (
+                nameplates(&self.component).into_iter().next()?,
+                Scope::Instance,
+            )
+        } else {
+            (0, Scope::Entity)
+        };
+        self.component
+            .resolved_variable(instance, Variable { scope, id })
+    }
+
+    /// Set one variable of every nameplate (`0D24`) instance now; the next
+    /// frame carries it to the clients when `0D24` shares it.
+    pub fn set_nameplate_variable(&mut self, id: u32, value: Value) -> Result<(), BotError> {
+        for instance in nameplates(&self.component) {
+            self.component
+                .set_instance_variable(instance, id, value.clone(), &mut self.world)?;
+        }
+        Ok(())
+    }
+
+    /// Every nameplate (`0D24`) instance gets the message, and the script
+    /// runs now. True: a nameplate took it.
+    pub fn message_nameplates(&mut self, message: u64) -> Result<bool, BotError> {
+        let mut taken = 0;
+        for id in nameplates(&self.component) {
+            taken += self
+                .component
+                .queue_message(id, message, Variables::new())?;
+        }
+        if taken == 0 {
+            return Ok(false);
+        }
+        self.component.run_now(&mut self.world)?;
+        Ok(true)
+    }
+
     /// The hit the body took and survived: `0011.025` ([`DAMAGED`]) with
     /// its parameters runs now. The Training Bot's `0E8C` sets its flinch
     /// (#1024, #6500, #1018, synced by st17 for the clients' own flinch
@@ -611,13 +669,8 @@ impl BotBody {
             scope: Scope::Instance,
             id: NAMEPLATE_ENABLED,
         };
-        let due: Vec<u16> = self
-            .component
-            .snapshot()
+        let due: Vec<u16> = nameplates(&self.component)
             .into_iter()
-            .flat_map(|snapshot| &snapshot.instances)
-            .filter(|(_, instance)| instance.graph == PRACTICE_NAMEPLATE)
-            .map(|(&id, _)| id)
             .filter(|&id| self.component.resolved_variable(id, enabled) != Some(Value::Bool(true)))
             .collect();
         let mut taken = 0;

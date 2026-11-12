@@ -424,11 +424,14 @@ fn fifteen_practice_bots_match_python_roster_and_patrol_frames() {
         4
     );
 
+    // Python's bots were `0xC0001000 + n`; ours are in id class 0 (module
+    // notes), so the digest takes Python's id for each.
+    const PYTHON_BOT_ENTITY: u32 = 0xc000_1000;
     let mut roster = Sha256::new();
     for (index, bot) in bots.iter().enumerate() {
         let spawn = &bot.spawn;
         assert_eq!(bot.entity, BOT_ENTITY + index as u32);
-        roster.update(bot.entity.to_le_bytes());
+        roster.update((bot.entity - BOT_ENTITY + PYTHON_BOT_ENTITY).to_le_bytes());
         roster.update(spawn.hero.to_le_bytes());
         roster.update(spawn.body.to_le_bytes());
         roster.update([spawn.team]);

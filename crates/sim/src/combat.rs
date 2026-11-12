@@ -30,6 +30,7 @@
 use std::{collections::HashMap, fs, io, path::Path, sync::Arc, time::Duration};
 
 use crate::{
+    bot_plate::BotPlate,
     bot_script::SeenRocket,
     bots::{BOT_ENTITY, BOT_RECORD_DELAY, Bot},
     hitscan::{HitscanShot, Impact, TargetHistory, TargetPose, ViewFrame},
@@ -38,7 +39,7 @@ use crate::{
         BioticField, FieldDeliver, FieldIds, FiredProjectile, ProjectileEvent, SeenIds, ShotKey,
     },
     replication::WorldDelivery,
-    scene::{BOT_PLATE, bot_controller_entity, bot_controller_link, bot_create, bot_filter},
+    scene::{bot_controller_entity, bot_controller_link, bot_create, bot_filter},
     scene_assets::PreparedScene,
 };
 use orpheus_content::{heroes::Eyes, stats::PlayerStats};
@@ -566,6 +567,11 @@ impl Combat {
             .collect()
     }
 
+    /// The pools of the bot in `slot` now.
+    pub fn bot_vitals(&self, slot: usize) -> Option<&Vitals> {
+        self.targets.get(slot).map(|target| &target.vitals)
+    }
+
     /// The hits on players' bodies since the last call, in order.
     pub fn take_player_hits(&mut self) -> Vec<PlayerHit> {
         std::mem::take(&mut self.player_hits)
@@ -988,6 +994,7 @@ impl Combat {
         // (`game_respawns`: 3 s in the practice modes).
         let respawn = scene.respawn_time();
         let free_for_all = scene.map().free_for_all;
+        let plate = Arc::clone(scene.bot_plate());
         let (bot, target) = scene
             .bots_mut()
             .iter_mut()
@@ -995,7 +1002,7 @@ impl Combat {
             .find(|(bot, _)| !bot.dead && bot.entity == impact.entity)?;
         if !free_for_all && bot.spawn.team == shooter.team {
             let given = target.vitals.heal(impact.heal);
-            return (given > 0.0).then(|| healed_bot(bot, target, given));
+            return (given > 0.0).then(|| healed_bot(bot, target, given, &plate));
         }
         let death_tick = world_tick.unwrap_or(context.tick);
         let result = target.vitals.damage(
@@ -1009,7 +1016,7 @@ impl Combat {
         if result.dealt == 0.0 {
             return None;
         }
-        let mut components = vec![BOT_PLATE.pools(target.vitals.component())];
+        let mut components = vec![plate.pools(&target.vitals)];
         if result.killed {
             bot.died();
             target.respawn_at = Some(context.now.saturating_add(respawn));
@@ -1076,7 +1083,7 @@ impl Combat {
             next_bot = next_bot
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("bot entity IDs exhausted"))?;
-            let created = bot_create(&fresh, None)?;
+            let created = bot_create(&fresh, scene.bot_plate())?;
             let link = Some(bot_controller_link(&fresh, slot)?);
             prepared.push((
                 slot,
@@ -1140,7 +1147,7 @@ impl Combat {
             let target = &mut self.targets[slot];
             let given = target.vitals.heal(amount);
             if given > 0.0 {
-                bots.push(healed_bot(bot, target, given));
+                bots.push(healed_bot(bot, target, given, scene.bot_plate()));
             }
         }
         (players, bots)
@@ -1149,12 +1156,10 @@ impl Combat {
 
 /// A bot's heal of `given`: its new pools for every client, and no notice
 /// (combat.py `_heal` sends none).
-fn healed_bot(bot: &Bot, target: &mut Target, given: f64) -> BotHit {
+fn healed_bot(bot: &Bot, target: &mut Target, given: f64, plate: &BotPlate) -> BotHit {
     let health = EntityUpdate {
         entity: bot.entity,
-        operation: Some(Operation::Update(vec![
-            BOT_PLATE.pools(target.vitals.component()),
-        ])),
+        operation: Some(Operation::Update(vec![plate.pools(&target.vitals)])),
         ..EntityUpdate::default()
     };
     target.vitals.clear_changed();

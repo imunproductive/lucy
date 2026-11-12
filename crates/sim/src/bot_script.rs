@@ -10,11 +10,12 @@
 //! `_project_bot_snapshot`, `_flush_bot_nameplates`, `_queue_bot_snapshot`).
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     sync::Arc,
 };
 
 use crate::{
+    bot_plate::{BotPlate, INPUTS, PlateVariable},
     bots::BOT_EYE,
     bots::Bot,
     combat::{BotDamage, PosedProjectile, damage_direction, damage_message},
@@ -23,7 +24,6 @@ use crate::{
         spawned_definitions,
     },
     replication::kill_feed_fresh,
-    scene::BOT_PLATE,
     voice_lines::{VoiceLine, VoiceState},
 };
 use orpheus_content::{
@@ -31,7 +31,7 @@ use orpheus_content::{
     voice_sets::VoiceCatalog,
 };
 use orpheus_script::{
-    bot::{BotBody, BotSpawn as ScriptSpawn, practice_nameplate},
+    bot::{BotBody, BotError, BotSpawn as ScriptSpawn, practice_nameplate},
     codecs::CodecTable,
     graph::GraphStore,
     snapshot::{ProjectedSnapshot, SnapshotEncoder, SnapshotError, View},
@@ -134,6 +134,9 @@ struct BotScript {
     death: Option<(u32, u32)>,
     /// The lifetime's voice lines ([`crate::voice_lines`]).
     voice: VoiceState,
+    /// What each variable the live nameplate tool set had before it (none:
+    /// never set), to put back when the tool lets it go.
+    plate: BTreeMap<PlateVariable, Option<Value>>,
 }
 
 /// Every training bot's script in one room, one slot per spawner.
@@ -235,9 +238,9 @@ impl BotScripts {
 
     /// One script per update, within the loading window and off the
     /// world-create burst (match.py `update`).
-    pub(crate) fn prepare_next(&mut self, bots: &[Bot], tick: u32) {
+    pub(crate) fn prepare_next(&mut self, bots: &[Bot], tick: u32, plate: &BotPlate) {
         if let Some(slot) = self.pending.pop_front() {
-            self.prepare(slot, &bots[slot], tick);
+            self.prepare(slot, &bots[slot], tick, plate);
         }
     }
 
@@ -252,7 +255,7 @@ impl BotScripts {
 
     /// A respawned bot gets a new script under its new entity
     /// (combat.py `_respawn_bot`).
-    pub(crate) fn prepare_respawned(&mut self, bots: &[Bot], tick: u32) {
+    pub(crate) fn prepare_respawned(&mut self, bots: &[Bot], tick: u32, plate: &BotPlate) {
         let Some(graphs) = &self.graphs else {
             return;
         };
@@ -266,13 +269,14 @@ impl BotScripts {
             .map(|(slot, _)| slot)
             .collect();
         for slot in due {
-            self.prepare(slot, &bots[slot], tick);
+            self.prepare(slot, &bots[slot], tick, plate);
         }
     }
 
     /// match.py `_prepare_bot_script`: a firing bot of the Practice Range
-    /// starts its firing behavior at its spawner.
-    fn prepare(&mut self, slot: usize, bot: &Bot, tick: u32) {
+    /// starts its firing behavior at its spawner. The live nameplate tool's
+    /// variables are set before the first frame.
+    fn prepare(&mut self, slot: usize, bot: &Bot, tick: u32, plate: &BotPlate) {
         self.prepared[slot] = Some(bot.entity);
         self.slots[slot] = None;
         let Some(graphs) = &self.graphs else {
@@ -281,11 +285,7 @@ impl BotScripts {
         let spawn = ScriptSpawn {
             body: bot.spawn.body,
             hero: bot.spawn.hero,
-            name: if BOT_PLATE.no_name {
-                ""
-            } else {
-                &bot.spawn.name
-            },
+            name: &bot.spawn.name,
             entity: bot.entity,
             frame: tick,
             mode: self.mode,
@@ -293,13 +293,11 @@ impl BotScripts {
             firing_position: (bot.spawn.firing && self.practice).then_some(bot.position),
             nameplate_enabled: self.players_team == Some(bot.spawn.team),
         };
+        let mut originals = BTreeMap::new();
         let started = BotBody::start(Arc::clone(graphs), spawn, self.unknowns)
             .map_err(|error| error.to_string())
             .and_then(|mut body| {
-                for (id, value) in BOT_PLATE.entity_variables() {
-                    body.set_entity_variable(id, value)
-                        .map_err(|error| error.to_string())?;
-                }
+                tune(&mut body, &mut originals, plate).map_err(|error| error.to_string())?;
                 body.set_target_candidates(&self.targets);
                 let snapshot = body.snapshot().ok_or("the script halted")?;
                 let initial = body
@@ -317,6 +315,7 @@ impl BotScripts {
                     body,
                     death: None,
                     voice: VoiceState::default(),
+                    plate: originals,
                 })
             });
         match started {
@@ -326,6 +325,95 @@ impl BotScripts {
                 bot.spawn.name
             ),
         }
+    }
+
+    /// The live nameplate tool changed its variables: each live bot's
+    /// script takes them now, and its changed frame goes to the clients.
+    pub(crate) fn apply_plate(&mut self, bots: &[Bot], plate: &BotPlate) {
+        for (slot, bot) in bots.iter().enumerate() {
+            let Some(script) = self.slots[slot]
+                .as_mut()
+                .filter(|script| !bot.dead && script.entity == bot.entity)
+            else {
+                continue;
+            };
+            let result = tune(&mut script.body, &mut script.plate, plate)
+                .map_err(|error| error.to_string())
+                .and_then(|()| self.publish_live(slot));
+            if let Err(reason) = result {
+                eprintln!(
+                    "bot {:08X}'s body script failed on the plate tool ({reason})",
+                    bot.entity
+                );
+                self.slots[slot] = None;
+            }
+        }
+    }
+
+    /// The live nameplate tool's game message to every live bot's
+    /// nameplate instances; their changed frames go to the clients. The
+    /// number of bots that took it.
+    pub(crate) fn message_plates(&mut self, bots: &[Bot], message: u64) -> usize {
+        let mut taken = 0;
+        for (slot, bot) in bots.iter().enumerate() {
+            let Some(script) = self.slots[slot]
+                .as_mut()
+                .filter(|script| !bot.dead && script.entity == bot.entity)
+            else {
+                continue;
+            };
+            let result = script
+                .body
+                .message_nameplates(message)
+                .map_err(|error| error.to_string())
+                .and_then(|took| {
+                    taken += usize::from(took);
+                    if took {
+                        self.publish_live(slot)
+                    } else {
+                        Ok(())
+                    }
+                });
+            if let Err(reason) = result {
+                eprintln!(
+                    "bot {:08X}'s body script failed on the plate tool ({reason})",
+                    bot.entity
+                );
+                self.slots[slot] = None;
+            }
+        }
+        taken
+    }
+
+    /// What a live bot's plate variables read now: [`INPUTS`] and every
+    /// other one the plate sets, each with whether the plate sets it. None
+    /// without its script.
+    pub(crate) fn plate_variables(
+        &self,
+        entity: u32,
+        plate: &BotPlate,
+    ) -> Option<Vec<(PlateVariable, Option<Value>, bool)>> {
+        let script = self.script(entity)?;
+        let mut variables: Vec<PlateVariable> = INPUTS.iter().map(|input| input.variable).collect();
+        variables.extend(
+            plate
+                .variables()
+                .map(|(variable, _)| variable)
+                .filter(|variable| INPUTS.iter().all(|input| input.variable != *variable)),
+        );
+        Some(
+            variables
+                .into_iter()
+                .map(|variable| {
+                    let value = match variable {
+                        PlateVariable::Entity(id) => script.body.resolved(false, id),
+                        PlateVariable::Nameplate(id) => script.body.resolved(true, id),
+                    };
+                    let tuned = plate.variables().any(|(set, _)| set == variable);
+                    (variable, value, tuned)
+                })
+                .collect(),
+        )
     }
 
     fn frame(
@@ -741,6 +829,40 @@ impl BotScripts {
                 .with_unknowns(self.unknowns),
         )
     }
+}
+
+/// Set the live nameplate tool's variables on a bot's script, noting what
+/// each had before the tool first set it, and put back what one the tool
+/// let go had (null for one the bot never had: the VM can't unset it).
+fn tune(
+    body: &mut BotBody,
+    originals: &mut BTreeMap<PlateVariable, Option<Value>>,
+    plate: &BotPlate,
+) -> Result<(), BotError> {
+    let set = |body: &mut BotBody, variable, value| match variable {
+        PlateVariable::Entity(id) => body.set_entity_variable(id, value),
+        PlateVariable::Nameplate(id) => body.set_nameplate_variable(id, value),
+    };
+    for (variable, value) in plate.variables() {
+        originals.entry(variable).or_insert_with(|| {
+            match variable {
+                PlateVariable::Entity(id) => body.entity_variable(id),
+                PlateVariable::Nameplate(id) => body.nameplate_variable(id),
+            }
+            .cloned()
+        });
+        set(body, variable, value.clone())?;
+    }
+    let dropped: Vec<PlateVariable> = originals
+        .keys()
+        .copied()
+        .filter(|&variable| plate.variables().all(|(set, _)| set != variable))
+        .collect();
+    for variable in dropped {
+        let had = originals.remove(&variable).flatten();
+        set(body, variable, had.unwrap_or(Value::Null))?;
+    }
+    Ok(())
 }
 
 /// The observer projection of one frame, and in the Practice Range the same

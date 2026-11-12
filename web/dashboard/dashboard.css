@@ -185,3 +185,4 @@ body{font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased}h1,h2,h3
 .level-control{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px}.level-control input,.level-control select{width:60%}
 .bot-actions{display:flex;flex-wrap:wrap;gap:10px}
 .mode-players{width:72px}
+.plate-table input{height:32px;min-width:4.5em;padding:4px 7px}.plate-table tr.tuned th,.plate-table tr.tuned input{font-weight:700}
