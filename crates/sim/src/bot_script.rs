@@ -922,9 +922,6 @@ pub(crate) struct BotViewContext<'a> {
     pub identity: &'a dyn Fn(u32) -> bool,
     /// The bots whose create this client holds, current lifetimes only.
     pub live: &'a [u32],
-    /// A send frame follows this update (`_flush_bot_nameplates` runs as
-    /// the frame is built).
-    pub send: bool,
 }
 
 /// Every bot's statescript on one client.
@@ -1113,7 +1110,7 @@ impl BotViews {
                 flush.frames(entity, view, false);
             }
         }
-        if context.send && context.mode_ready && scripts.practice {
+        if context.mode_ready && scripts.practice {
             for (&entity, view) in &mut self.views {
                 flush.nameplate(entity, view);
             }

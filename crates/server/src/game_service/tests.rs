@@ -1,10 +1,7 @@
 use super::*;
 use lockstep::{Client, Lockstep};
 use orpheus_content::maps::PRACTICE_RANGE_MAP;
-use orpheus_core::{
-    bits::{BitReader, BitWriter},
-    tick::SEND_EVERY,
-};
+use orpheus_core::bits::{BitReader, BitWriter};
 use orpheus_wire::{
     link::{FIN, KIND_CONTROL, SYN},
     messages::{read_channel, write_channel},
@@ -56,12 +53,6 @@ fn tick_at(time: Duration) -> u32 {
     FIRST_TICK + 1 + lockstep::ticks(time)
 }
 
-/// The first send frame (`SEND_EVERY`) from `tick` on: it carries what
-/// `tick` queued.
-fn send_frame_from(tick: u32) -> u32 {
-    tick.next_multiple_of(SEND_EVERY)
-}
-
 fn messages(schemas: &Schemas, packet: &Packet) -> Vec<orpheus_wire::messages::ReliableMessage> {
     assert_eq!(packet.kind, KIND_FRAME);
     let mut reader = BitReader::new(&packet.payload);
@@ -96,7 +87,8 @@ fn exercise_loading(schemas: Schemas) {
     // The ACK leaves the first datagram out: its reliable messages are
     // lost, and go again in the next frame (`GameEgress::acknowledge`).
     let retry = client.receive();
-    assert_eq!(tick_of(&retry), tick_of(&heartbeat) + SEND_EVERY);
+    // A datagram every tick: the retry is the heartbeat's next tick.
+    assert_eq!(tick_of(&retry), tick_of(&heartbeat) + 1);
     assert_eq!(messages(&schemas, &retry), initial);
     assert!(client.window.accept(retry.seq));
 
@@ -134,17 +126,14 @@ fn exercise_loading(schemas: Schemas) {
             .collect::<Vec<_>>(),
         [(1, 20306), (2, 20302), (3, 20301)]
     );
-    // The pong goes with the next frame; the ownership (20302) and the
-    // game (20301) with the first frame 0.3 s and 0.4 s after the map
-    // loaded (`MapReadyStep::delay`): 19 and 25 ticks of 16 ms.
+    // The pong goes with the next tick's datagram; the ownership (20302)
+    // and the game (20301) with the tick 0.3 s and 0.4 s after the map
+    // loaded (`MapReadyStep::delay`): 19 and 25 ticks of 16 ms. Each tick
+    // sends what it queued.
     let loaded = tick_at(loaded_at);
     assert_eq!(
         received.iter().map(|(tick, _)| *tick).collect::<Vec<_>>(),
-        [
-            send_frame_from(loaded + 1),
-            send_frame_from(loaded + 19),
-            send_frame_from(loaded + 25)
-        ]
+        [loaded + 1, loaded + 19, loaded + 25]
     );
     let received: Vec<_> = received.into_iter().map(|(_, message)| message).collect();
     assert_eq!(received[0].message.fields[&0x78], Value::Unsigned(17));
@@ -1457,8 +1446,8 @@ fn pump_within(
 /// Two clients in one Practice Range see each other, in the order of
 /// ow174/game/match.py: the other's card and controller entity, his team
 /// list entry once the entity arrived, his body, his possession once the
-/// body arrived, a movement record for his body in every send frame from the
-/// frame after its create, his body's statescript once the create arrived;
+/// body arrived, a movement record for his body in every datagram from the
+/// one after its create, his body's statescript once the create arrived;
 /// a hero switch replaces his body, and leaving posts "left the game" and
 /// destroys his body and entity.
 #[test]
@@ -2080,13 +2069,13 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     let respawn_tick = target.ticks[created];
     assert!(created > died);
     // combat.py `PRACTICE_RESPAWN`: 3 s. The shooter sends his commands
-    // after a datagram, so the killing one arrives at a send frame's time,
-    // tick T, after its tick: the death notice goes with the next send
-    // frame, T + 3. The respawn is due at the first tick 3 s after the
-    // death, T + 188 (3000 / 16 = 187.5), and the new body goes with the
-    // next send frame, T + 189: 186 ticks after the death notice.
+    // after a datagram, so the killing one arrives at tick T's time, after
+    // that tick: the death notice goes in the next tick's datagram, T + 1.
+    // The respawn is due at the first tick 3 s after the death, T + 188
+    // (3000 / 16 = 187.5), and the new body goes in that tick's datagram,
+    // T + 188: 187 ticks after the death notice.
     let waited = respawn_tick - death_tick;
-    assert_eq!(waited, 186, "respawned after {waited} ticks");
+    assert_eq!(waited, 187, "respawned after {waited} ticks");
     assert!(
         target
             .find(died, |record| record.entity == target_body
@@ -2226,17 +2215,6 @@ fn practice_world<const N: usize>(
     assets: &orpheus_sim::scene_assets::SceneAssets,
     arrange: impl FnOnce(&mut orpheus_sim::scene_assets::PreparedScene),
 ) -> (Lockstep, Arc<Schemas>, [Watcher; N], [[f64; 3]; N]) {
-    practice_world_sending_every(SEND_EVERY, players, assets, arrange)
-}
-
-/// [`practice_world`] with a datagram to each client every `every` ticks
-/// (the `ORPHEUS_SEND_EVERY` switch).
-fn practice_world_sending_every<const N: usize>(
-    every: u32,
-    players: [(&str, u8, &str); N],
-    assets: &orpheus_sim::scene_assets::SceneAssets,
-    arrange: impl FnOnce(&mut orpheus_sim::scene_assets::PreparedScene),
-) -> (Lockstep, Arc<Schemas>, [Watcher; N], [[f64; 3]; N]) {
     use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
 
     let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
@@ -2252,7 +2230,7 @@ fn practice_world_sending_every<const N: usize>(
         scene.map().spawn_point(team, number).unwrap().0
     });
     let schemas = Arc::new(Schemas::game());
-    let server = Lockstep::with_send_every(Arc::clone(&schemas), every).unwrap();
+    let server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let members = players
         .iter()
         .enumerate()
@@ -2952,41 +2930,30 @@ fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_
 /// must follow the server's impact (25001's impact frame `0x84`, the server
 /// tick of the hit) closely. The client leads the packet frame by `lead`
 /// frames, as the real client does (`correction.rs`: at most 16), and runs
-/// three commands a datagram, as the server sends one every `SEND_EVERY`
-/// ticks.
+/// a command a datagram, as the server sends one every tick.
 ///
 /// The timeline of a shot, from the server tick T of the datagram after
 /// which the client sent the shot's command (the client simulates that
 /// frame then): the server runs the command before tick T + 1, its first
 /// flight step flies a whole tick, so its rocket leaves at T as the
-/// client's does; the confirmation goes with the next send frame, T + 3;
-/// the rocket hits the bot 8 m ahead (7.6 m to its shapes, 9.1 ticks at
-/// 50 m/s) in tick T + 10, whatever the lead; the release goes with the
-/// first send frame from there, T + 12. So the server adds less than a tick
-/// to the client's own flight, and the rest is the send cadence (at most
-/// `SEND_EVERY` − 1 ticks) and the trip to the client. The shot's frame
-/// comes 60 frames after the batch's last, so it is the last of its three:
-/// K = f. Before, the release waited for the shot's command frame plus the
-/// flight plus 6, compared with server ticks: `lead` + 6 ticks after the
-/// impact at least.
+/// client's does; the confirmation goes in the datagram of the tick that
+/// queued it, T + 1; the rocket hits the bot 8 m ahead (7.6 m to its
+/// shapes, 9.1 ticks at 50 m/s) in tick T + 10, whatever the lead, and the
+/// release goes in that tick's own datagram, T + 10, as the confirmation's
+/// ACK came back before T + 2. So the server adds less than a tick to the
+/// client's own flight, and the rest is the trip to the client. Before,
+/// the release waited for the shot's command frame plus the flight plus 6,
+/// compared with server ticks: `lead` + 6 ticks after the impact at least.
 ///
 /// The second shot, 16 frames ahead, loses the datagram with its
-/// confirmation (T + 3): the next ACK shows it lost, the create goes again
-/// with the send frame after (T + 9) and arrives before the impact, so the
-/// release still goes at T + 12 with its explosion. Each release carries
+/// confirmation (T + 1): the ACK sent after T + 2's datagram shows it lost,
+/// so the create goes again at T + 3, arrives before the impact, and the
+/// release still goes at T + 10 with its explosion. Each release carries
 /// the server's impact point, on the bot, where an explosion the client's
 /// rocket hasn't had yet plays (before, out of sight at y −1000). Each shot
 /// has a bot of its own, 8 m out, the second 30° round from the first
 /// (4 m from it, beyond the blast's 3 m): the first shot's explosion throws
 /// its bot back.
-///
-/// With `ORPHEUS_SEND_EVERY=1` (a datagram every tick, as retail's 63 Hz)
-/// every tick is a send frame: the confirmation goes on the tick that
-/// queued it, T + 1; the impact is still in T + 10, and the release goes in
-/// that tick's own datagram, T + 10, as the confirmation's ACK came back
-/// before T + 2. A lost confirmation (the T + 1 datagram) shows lost in the
-/// ACK after T + 2's datagram, so the create goes again at T + 3 and the
-/// release still goes at T + 10.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
@@ -2997,151 +2964,144 @@ fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
     const APART: f64 = 30.0;
 
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-    // (ticks between datagrams, confirmation, its resend, release) after
-    // the shot's tick T; the derivations are in the notes above.
-    for (every, confirm_at, resend_at, release_at) in [(SEND_EVERY, 3, 9, 12), (1, 1, 3, 10)] {
-        let mut aims = Vec::new();
-        let (mut server, schemas, [mut soldier], _) = practice_world_sending_every(
-            every,
-            [("soldier#1111", 0, "Soldier: 76")],
-            &assets,
-            |scene| {
-                // Two hostile training bots that neither fire nor walk, ahead
-                // of his spawn: along its facing and 30° round from it, the
-                // second turned 30° from the first's facing too, so each
-                // shot meets its bot alike.
-                let ([x, y, z], facing) = scene.map().spawn_point(0, 0).unwrap();
-                let mut bots = scene.bots_mut().iter_mut().filter(|bot| {
-                    bot.spawn.team == 1 && !bot.spawn.firing && bot.spawn.route.is_empty()
-                });
-                let mut turned = None;
-                for (turn, yaw) in [(0.0, facing), (APART, facing + APART)] {
-                    let bot = bots.next().unwrap();
-                    let first = *turned.get_or_insert(bot.yaw);
-                    bot.yaw =
-                        (first + turn * 65536.0 / 360.0 + 32768.0).rem_euclid(65536.0) - 32768.0;
-                    let (sin, cos) = yaw.to_radians().sin_cos();
-                    bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
-                    aims.push((
-                        bot.entity,
-                        bot.position,
-                        (yaw * 65536.0 / 360.0).round() as i32 as i16,
-                    ));
-                }
-            },
-        );
-        let leased = |entity: u32| (0xa010_0000..0xc000_0000).contains(&entity);
-        let hit = |bot: u32, fields: &Fields| {
-            let Value::Struct(impact) = &fields[&0x78] else {
-                return false;
-            };
-            matches!(&impact[&0], Value::Struct(target)
-                if target[&0] == Value::Unsigned(u64::from(bot)))
-        };
-        let mut next = soldier.tick + 1;
-        // The client's command frames run `lead` ahead of the last packet frame.
-        // The second shot comes after Helix's 6 s cooldown, and its client
-        // misses the datagram with the confirmation.
-        for ((lead, lose_confirmation), (bot, at, yaw)) in
-            [(8, false), (16, true)].into_iter().zip(aims)
-        {
-            let hit_bot = |fields: &Fields| hit(bot, fields);
-            let fire = soldier.tick + lead + 60;
-            let from = soldier.datagrams.len();
-            let mut sent = None;
-            let mut lost = None;
-            let deadline = server.now() + Duration::from_secs(10);
-            let (impact, confirmed, release) = loop {
-                assert!(server.now() < deadline, "waiting for the Helix release");
-                while next <= soldier.tick + lead {
-                    let buttons = if next == fire { SECONDARY } else { 0 };
-                    if next == fire {
-                        sent = Some(soldier.tick);
-                    }
-                    soldier
-                        .client
-                        .send(ACK, command_batch(next, 1, yaw, buttons, false));
-                    next += 1;
-                }
-                let packet = soldier.client.receive();
-                if lose_confirmation
-                    && lost.is_none()
-                    && world_records(&schemas, &packet)
-                        .iter()
-                        .any(|record| leased(record.entity) && record.definition == Some(HELIX))
-                {
-                    lost = Some(tick_of(&packet));
-                    continue;
-                }
-                soldier.record(&schemas, &packet);
-                let impact = soldier.datagrams[from..].iter().find_map(|(messages, _)| {
-                    messages
-                        .iter()
-                        .find(|message| message.id == 25001 && hit_bot(&message.fields))
-                        .map(|message| message.fields[&0x84].clone())
-                });
-                let confirmed = soldier.find(from, |record| {
-                    leased(record.entity) && record.definition == Some(HELIX)
-                });
-                let release = confirmed.and_then(|confirmed| {
-                    soldier.find(confirmed, |record| {
-                        leased(record.entity)
-                            && record.operation == Some(3)
-                            && record.projectile_release.is_some()
-                    })
-                });
-                if let (Some(impact), Some(confirmed), Some(release)) = (impact, confirmed, release)
-                {
-                    break (impact, confirmed, release);
-                }
-            };
-            let Value::Unsigned(impact) = impact else {
-                panic!("impact frame")
-            };
-            let sent = sent.unwrap();
-            let position = soldier.datagrams[release]
-                .1
-                .iter()
-                .find_map(|record| record.release_position)
-                .unwrap();
-            let resent = lost.map(|lost| (lost, soldier.ticks[confirmed]));
-            assert_eq!(
-                (
-                    lost.is_none().then(|| soldier.ticks[confirmed]),
-                    resent,
-                    u32::try_from(impact).unwrap(),
-                    soldier.ticks[release]
-                ),
-                (
-                    (!lose_confirmation).then_some(sent + confirm_at),
-                    lose_confirmation.then_some((sent + confirm_at, sent + resend_at)),
-                    sent + 10,
-                    sent + release_at
-                ),
-                "every {every}, lead {lead}: the command sent after tick {sent}"
-            );
-            // On the bot's shapes, as the rocket's centre meets them: its
-            // 0.2 m radius beyond them (within 0.6 m of the bot's axis, below
-            // its 2.6 m top).
-            let [x, y, z] = position.map(f64::from);
-            assert!(
-                (x - at[0]).hypot(z - at[2]) < 0.6 + 0.2 && (at[1]..at[1] + 2.6 + 0.2).contains(&y),
-                "released at {position:?}, the bot at {at:?}"
-            );
-            // Helix Rockets' 6 s cooldown.
-            let ready = server.now() + Duration::from_millis(6500);
-            while server.now() < ready {
-                while next <= soldier.tick + lead {
-                    soldier
-                        .client
-                        .send(ACK, command_batch(next, 1, yaw, 0, false));
-                    next += 1;
-                }
-                soldier.pump(&schemas);
+    // Confirmation, its resend and release after the shot's tick T; the
+    // derivations are in the notes above.
+    let (confirm_at, resend_at, release_at) = (1, 3, 10);
+    let mut aims = Vec::new();
+    let (mut server, schemas, [mut soldier], _) =
+        practice_world([("soldier#1111", 0, "Soldier: 76")], &assets, |scene| {
+            // Two hostile training bots that neither fire nor walk, ahead
+            // of his spawn: along its facing and 30° round from it, the
+            // second turned 30° from the first's facing too, so each
+            // shot meets its bot alike.
+            let ([x, y, z], facing) = scene.map().spawn_point(0, 0).unwrap();
+            let mut bots = scene.bots_mut().iter_mut().filter(|bot| {
+                bot.spawn.team == 1 && !bot.spawn.firing && bot.spawn.route.is_empty()
+            });
+            let mut turned = None;
+            for (turn, yaw) in [(0.0, facing), (APART, facing + APART)] {
+                let bot = bots.next().unwrap();
+                let first = *turned.get_or_insert(bot.yaw);
+                bot.yaw = (first + turn * 65536.0 / 360.0 + 32768.0).rem_euclid(65536.0) - 32768.0;
+                let (sin, cos) = yaw.to_radians().sin_cos();
+                bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
+                aims.push((
+                    bot.entity,
+                    bot.position,
+                    (yaw * 65536.0 / 360.0).round() as i32 as i16,
+                ));
             }
+        });
+    let leased = |entity: u32| (0xa010_0000..0xc000_0000).contains(&entity);
+    let hit = |bot: u32, fields: &Fields| {
+        let Value::Struct(impact) = &fields[&0x78] else {
+            return false;
+        };
+        matches!(&impact[&0], Value::Struct(target)
+            if target[&0] == Value::Unsigned(u64::from(bot)))
+    };
+    let mut next = soldier.tick + 1;
+    // The client's command frames run `lead` ahead of the last packet frame.
+    // The second shot comes after Helix's 6 s cooldown, and its client
+    // misses the datagram with the confirmation.
+    for ((lead, lose_confirmation), (bot, at, yaw)) in
+        [(8, false), (16, true)].into_iter().zip(aims)
+    {
+        let hit_bot = |fields: &Fields| hit(bot, fields);
+        let fire = soldier.tick + lead + 60;
+        let from = soldier.datagrams.len();
+        let mut sent = None;
+        let mut lost = None;
+        let deadline = server.now() + Duration::from_secs(10);
+        let (impact, confirmed, release) = loop {
+            assert!(server.now() < deadline, "waiting for the Helix release");
+            while next <= soldier.tick + lead {
+                let buttons = if next == fire { SECONDARY } else { 0 };
+                if next == fire {
+                    sent = Some(soldier.tick);
+                }
+                soldier
+                    .client
+                    .send(ACK, command_batch(next, 1, yaw, buttons, false));
+                next += 1;
+            }
+            let packet = soldier.client.receive();
+            if lose_confirmation
+                && lost.is_none()
+                && world_records(&schemas, &packet)
+                    .iter()
+                    .any(|record| leased(record.entity) && record.definition == Some(HELIX))
+            {
+                lost = Some(tick_of(&packet));
+                continue;
+            }
+            soldier.record(&schemas, &packet);
+            let impact = soldier.datagrams[from..].iter().find_map(|(messages, _)| {
+                messages
+                    .iter()
+                    .find(|message| message.id == 25001 && hit_bot(&message.fields))
+                    .map(|message| message.fields[&0x84].clone())
+            });
+            let confirmed = soldier.find(from, |record| {
+                leased(record.entity) && record.definition == Some(HELIX)
+            });
+            let release = confirmed.and_then(|confirmed| {
+                soldier.find(confirmed, |record| {
+                    leased(record.entity)
+                        && record.operation == Some(3)
+                        && record.projectile_release.is_some()
+                })
+            });
+            if let (Some(impact), Some(confirmed), Some(release)) = (impact, confirmed, release) {
+                break (impact, confirmed, release);
+            }
+        };
+        let Value::Unsigned(impact) = impact else {
+            panic!("impact frame")
+        };
+        let sent = sent.unwrap();
+        let position = soldier.datagrams[release]
+            .1
+            .iter()
+            .find_map(|record| record.release_position)
+            .unwrap();
+        let resent = lost.map(|lost| (lost, soldier.ticks[confirmed]));
+        assert_eq!(
+            (
+                lost.is_none().then(|| soldier.ticks[confirmed]),
+                resent,
+                u32::try_from(impact).unwrap(),
+                soldier.ticks[release]
+            ),
+            (
+                (!lose_confirmation).then_some(sent + confirm_at),
+                lose_confirmation.then_some((sent + confirm_at, sent + resend_at)),
+                sent + 10,
+                sent + release_at
+            ),
+            "lead {lead}: the command sent after tick {sent}"
+        );
+        // On the bot's shapes, as the rocket's centre meets them: its
+        // 0.2 m radius beyond them (within 0.6 m of the bot's axis, below
+        // its 2.6 m top).
+        let [x, y, z] = position.map(f64::from);
+        assert!(
+            (x - at[0]).hypot(z - at[2]) < 0.6 + 0.2 && (at[1]..at[1] + 2.6 + 0.2).contains(&y),
+            "released at {position:?}, the bot at {at:?}"
+        );
+        // Helix Rockets' 6 s cooldown.
+        let ready = server.now() + Duration::from_millis(6500);
+        while server.now() < ready {
+            while next <= soldier.tick + lead {
+                soldier
+                    .client
+                    .send(ACK, command_batch(next, 1, yaw, 0, false));
+                next += 1;
+            }
+            soldier.pump(&schemas);
         }
-        server.stop().unwrap();
     }
+    server.stop().unwrap();
 }
 
 /// combat.py `_shoot` for Genji's fan (graph `0304` state 11, his secondary
@@ -3797,10 +3757,10 @@ fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
                 .unwrap();
             if watcher.owner != healer.owner {
                 let lived = watcher.ticks[gone] - watcher.ticks[create];
-                // The cast arrives at a send frame's time, tick T, after
-                // its tick: the create goes with the next send frame,
-                // T + 3. The field ends FIELD_TICKS ticks later, T + 313,
-                // and its destroy goes with the next send frame, T + 315.
+                // The cast arrives at tick T's time, after that tick: the
+                // create goes in the next tick's datagram, T + 1. The field
+                // ends FIELD_TICKS ticks after T, T + 313, and its destroy
+                // goes in that tick's datagram: 312 ticks after the create.
                 assert_eq!(lived, FIELD_TICKS - 1, "the field lived {lived} ticks");
             }
         }
@@ -5090,15 +5050,15 @@ fn practice_bots_run_their_scripts_for_a_client() {
         "the replacement",
         |watchers| watchers[0].created(replacement).is_some(),
     );
-    // combat.py `BOT_RESPAWN`: 3 s. The killing command arrives at a send
-    // frame's time, tick T, after its tick (the client sends after each
-    // datagram): the kill's notices go with the next send frame, T + 3.
-    // The replacement is due at the first tick 3 s after the kill, T + 188
-    // (3000 / 16 = 187.5), and goes with the next send frame, T + 189: 186
-    // ticks after the kill's notices.
+    // combat.py `BOT_RESPAWN`: 3 s. The killing command arrives at tick
+    // T's time, after that tick (the client sends after each datagram): the
+    // kill's notices go in the next tick's datagram, T + 1. The replacement
+    // is due at the first tick 3 s after the kill, T + 188 (3000 / 16 =
+    // 187.5), and goes in that tick's datagram, T + 188: 187 ticks after
+    // the kill's notices.
     let created = watcher.created(replacement).unwrap();
     let respawned = watcher.ticks[created] - kill_sent;
-    assert_eq!(respawned, 186, "replaced after {respawned} ticks");
+    assert_eq!(respawned, 187, "replaced after {respawned} ticks");
     pump_until(
         &mut [&mut watcher],
         &schemas,
