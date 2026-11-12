@@ -151,7 +151,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     };
     let mut world = WorldDelivery::new(OWNER);
     world.start(&scene, &viewer, tick).unwrap();
-    world.update_bots(&scene, &[], tick, true);
+    world.update_bots(&scene, &[], tick);
     let entities: BTreeSet<u32> = scene.bots().iter().map(|bot| bot.entity).collect();
     // The first frames wait for the creates.
     let first = deliver(&mut world);
@@ -195,9 +195,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     world.present(&scene, tick).unwrap();
     deliver(&mut world);
     assert!(world.mode_ready());
-    world.update_bots(&scene, &[], tick, false);
-    assert!(script_chunks(&deliver(&mut world)).is_empty());
-    world.update_bots(&scene, &[], tick, true);
+    world.update_bots(&scene, &[], tick);
     let nameplates = script_chunks(&deliver(&mut world));
     assert_eq!(nameplates.len(), entities.len());
     assert!(
@@ -249,7 +247,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         events.as_slice(),
         [BotEvent::Live { entity, .. }] if *entity == hit
     ));
-    world.update_bots(&scene, &events, tick, true);
+    world.update_bots(&scene, &events, tick);
     assert_eq!(script_chunks(&deliver(&mut world)), [hit]);
     assert!(enabled(&scene, &world, hit));
     assert!(nameplate(&scene, &world, hit).is_some());
@@ -280,7 +278,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         events.as_slice(),
         [BotEvent::Live { entity, .. }] if *entity == victim
     ));
-    world.update_bots(&scene, &events, tick, true);
+    world.update_bots(&scene, &events, tick);
     tick += 1;
     scene.bots_mut()[slot].died();
     scene.bot_died(victim, OWNER | 1, false, None, tick);
@@ -289,7 +287,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         events.as_slice(),
         [BotEvent::Death { entity, frame: Some(_) }] if *entity == victim
     ));
-    world.update_bots(&scene, &events, tick, true);
+    world.update_bots(&scene, &events, tick);
     assert!(world.bot_frames_pending(victim));
     assert_eq!(script_chunks(&deliver(&mut world)), [victim, victim]);
     assert!(!world.bot_frames_pending(victim));
@@ -314,7 +312,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         assert!(events.iter().all(
             |event| matches!(event, BotEvent::DeathUpdate { entity, .. } if *entity == victim)
         ));
-        world.update_bots(&scene, &events, tick, true);
+        world.update_bots(&scene, &events, tick);
         assert!(
             script_chunks(&deliver(&mut world))
                 .iter()
@@ -347,7 +345,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
             world.show_bot_rocket(rocket, tick, || ids.next());
         }
         let events = scene.take_bot_events();
-        world.update_bots(&scene, &events, tick, true);
+        world.update_bots(&scene, &events, tick);
         deliver(&mut world);
         if rocket.is_some() {
             break;
@@ -364,7 +362,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     scene.bots_mut()[shooter].died();
     scene.bot_died(source, OWNER | 1, false, None, tick);
     let events = scene.take_bot_events();
-    world.update_bots(&scene, &events, tick, true);
+    world.update_bots(&scene, &events, tick);
     let died = deliver(&mut world);
     assert_eq!(script_chunks(&died), [source]);
     assert!(!launch(&died));
@@ -385,7 +383,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     for _ in 0..4 {
         tick += 1;
         world.advance_observed(tick);
-        world.update_bots(&scene, &[], tick, true);
+        world.update_bots(&scene, &[], tick);
         deliver(&mut world);
     }
     assert_eq!(dead_flag(&world), Some(Value::Bool(true)));
@@ -403,7 +401,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         link: None,
     });
     assert!(world.bot_stream(victim).is_none());
-    world.update_bots(&scene, &[], tick, true);
+    world.update_bots(&scene, &[], tick);
     assert!(script_chunks(&deliver(&mut world)).is_empty());
     assert_eq!(script_chunks(&deliver(&mut world)), [BOT_ENTITY + 15]);
     assert!(nameplate(&scene, &world, BOT_ENTITY + 15).is_some());

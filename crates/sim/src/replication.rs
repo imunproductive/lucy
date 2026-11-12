@@ -862,7 +862,6 @@ pub fn show_players(
     players: &mut [RoomPlayer<'_, '_>],
     tick: u32,
     now: Duration,
-    frames: bool,
 ) -> Vec<Vec<Message>> {
     let controller = scene.controller();
     let entry = move |hero| controller.team_entry_frame(hero);
@@ -871,7 +870,6 @@ pub fn show_players(
         pools: scene.pools(),
         entry: &entry,
         tick,
-        frames,
         switch_notices: scene.switch_notices(),
     };
     let mut taken: Vec<_> = players
@@ -885,13 +883,12 @@ pub fn show_players(
         })
         .collect();
     let outputs: Vec<_> = {
-        // A body is projected for observers only on a send tick, and only
-        // when another client of the room takes its frames.
+        // A body is projected for observers only when another client of
+        // the room takes its frames.
         let observed = |slot: usize, body: BodyId| {
-            frames
-                && taken.iter().enumerate().any(|(viewer, others)| {
-                    viewer != slot && others.as_ref().is_some_and(|others| others.observes(body))
-                })
+            taken.iter().enumerate().any(|(viewer, others)| {
+                viewer != slot && others.as_ref().is_some_and(|others| others.observes(body))
+            })
         };
         let views: Vec<_> = players
             .iter()
@@ -1419,16 +1416,10 @@ impl WorldDelivery {
 
     /// The training bots' statescript on this client this tick: new bot
     /// lifetimes' first frames, the room's live and death frames, what this
-    /// client's ACKs made due and, on a send frame, the practice nameplates
+    /// client's ACKs made due and the practice nameplates
     /// (server.py `queue_bot_live`, `queue_bot_death`, `_flush_bot_frames`,
     /// `_flush_bot_nameplates`).
-    pub fn update_bots(
-        &mut self,
-        scene: &PreparedScene,
-        events: &[BotEvent],
-        tick: u32,
-        send: bool,
-    ) {
+    pub fn update_bots(&mut self, scene: &PreparedScene, events: &[BotEvent], tick: u32) {
         if self.started.is_none() {
             return;
         }
@@ -1445,7 +1436,6 @@ impl WorldDelivery {
             mode_ready: self.mode_ready(),
             identity: &identity,
             live: &live,
-            send,
         };
         let chunks = views.update(scene.bot_scripts(), events, &context);
         // A lifetime registered after its create already arrived (a fast

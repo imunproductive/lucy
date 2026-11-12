@@ -178,7 +178,7 @@ pub(crate) struct RemoteBody<'a> {
     pub health: u64,
     /// Its death, while it is dead.
     pub death: Option<RemoteDeath>,
-    /// Its statescript, on send ticks, when another client takes its frames.
+    /// Its statescript, each tick, when another client takes its frames.
     pub script: Option<ObservedScript<'a>>,
 }
 
@@ -229,8 +229,6 @@ pub(crate) struct ShowContext<'a> {
     /// 288D's plain full frame for a pick (heroselect.py `team_entry_frame`).
     pub entry: &'a dyn Fn(Option<u64>) -> Result<BitWriter, WireError>,
     pub tick: u32,
-    /// This tick sends datagrams: statescript frames and movement records.
-    pub frames: bool,
     /// The mode posts hero switches in the chat (notices.py).
     pub switch_notices: bool,
 }
@@ -344,7 +342,7 @@ pub(crate) struct Others {
     destroyed: HashMap<u32, u64>,
     seen: HashMap<u32, Seen>,
     serial: u64,
-    /// This send tick's movement records of the other bodies.
+    /// This tick's movement records of the other bodies.
     movements: Vec<EntityUpdate>,
     /// The other players' projectiles this client is shown, in the order
     /// they were fired.
@@ -735,10 +733,8 @@ impl Others {
         for other in others() {
             self.departed(other, &mut output);
         }
-        if context.frames {
-            for other in others() {
-                self.observe(context, other, readiness, &mut output);
-            }
+        for other in others() {
+            self.observe(context, other, readiness, &mut output);
         }
         if !self.card_sent {
             self.card_sent = true;
@@ -758,21 +754,19 @@ impl Others {
         for other in others() {
             self.send_health(context.map, other, &mut output)?;
         }
-        if context.frames {
-            self.movements = others()
-                .filter_map(|other| {
-                    let body = other.body.as_ref()?;
-                    let seen = self.seen.get(&body.id.entity)?;
-                    (seen.id == body.id && seen.lifetime == Lifetime::Live && seen.sent).then(
-                        || EntityUpdate {
-                            entity: body.id.entity,
-                            movement: Some(remote_movement(body.pose, context.tick, body.gravity)),
-                            ..EntityUpdate::default()
-                        },
-                    )
+        self.movements = others()
+            .filter_map(|other| {
+                let body = other.body.as_ref()?;
+                let seen = self.seen.get(&body.id.entity)?;
+                (seen.id == body.id && seen.lifetime == Lifetime::Live && seen.sent).then(|| {
+                    EntityUpdate {
+                        entity: body.id.entity,
+                        movement: Some(remote_movement(body.pose, context.tick, body.gravity)),
+                        ..EntityUpdate::default()
+                    }
                 })
-                .collect();
-        }
+            })
+            .collect();
         Ok(output)
     }
 
@@ -1312,7 +1306,6 @@ mod tests {
             pools: &pools,
             entry: &entry,
             tick: 1010,
-            frames: true,
             switch_notices: false,
         };
         let soldier = hero();
@@ -1408,7 +1401,6 @@ mod tests {
             pools: &pools,
             entry: &entry,
             tick: 1000,
-            frames: false,
             switch_notices: true,
         };
         let switch = |serial| Switch {
@@ -1467,7 +1459,6 @@ mod tests {
             pools: &pools,
             entry: &entry,
             tick: 1000,
-            frames: false,
             switch_notices: false,
         };
         let cards: Vec<_> = (0..6).map(|slot| card(&format!("player#{slot}"))).collect();

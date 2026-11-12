@@ -28,8 +28,9 @@
 //! component 44 possesses it. A switch replaces the body under a new id in
 //! the same frame (the client ignores a destroyed id for 30 s). In the PvP
 //! modes the first spawn shows 30 s of "assemble your team" on the hero
-//! select screen, which stays open after a pick. Retail sent a datagram every
-//! third tick (48 ms, OW2 traffic).
+//! select screen, which stays open after a pick. The server sends each client
+//! a datagram every tick (16 ms), as retail PC's default did from August 2016
+//! (GDC 2017 netcode talks); OW2 traffic shows every third tick (48 ms).
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -49,7 +50,7 @@ use indexmap::IndexMap;
 use mio::{Events, Interest, Poll, Token, Waker, net::UdpSocket};
 
 use crate::{
-    clock::{GameClock, Step, next_tick_after, send_every},
+    clock::{GameClock, Step, next_tick_after},
     connection::{GameConnections, MAX_CONNECTION_ID, Outgoing, Received, SILENCE_TIME},
     ingress::{GameIngress, MapReadiness, MapReadyStep, MessageKind, WorldReadiness, pong},
 };
@@ -1318,7 +1319,7 @@ impl State {
     fn new(schemas: Arc<Schemas>) -> Self {
         Self {
             schemas,
-            clock: GameClock::new(send_every()),
+            clock: GameClock::default(),
             links: GameConnections::default(),
             rooms: HashMap::new(),
             seats: HashMap::new(),
@@ -2660,7 +2661,7 @@ impl State {
 
     /// Every client of a room learns about the other players this tick
     /// (ow174/game/match.py `update`); their cards go reliably.
-    fn show_players(&mut self, tick: u32, now: Duration, frames: bool) {
+    fn show_players(&mut self, tick: u32, now: Duration) {
         for (&id, room) in &self.rooms {
             let Some(world) = &room.world else {
                 continue;
@@ -2682,7 +2683,7 @@ impl State {
             if connections.iter().all(Option::is_none) {
                 continue;
             }
-            let cards = show_players(&world.scene, &mut players, tick, now, frames);
+            let cards = show_players(&world.scene, &mut players, tick, now);
             drop(players);
             for (connection, messages) in connections.into_iter().zip(cards) {
                 let Some(peer) = connection.and_then(|connection| self.peers.get_mut(&connection))
@@ -2698,13 +2699,12 @@ impl State {
 
     fn tick(&mut self, socket: &impl Transport, now: Duration, missed: u64) {
         let step = self.clock.step(missed, self.connections_pending());
-        let (tick, send_frames, drain, force) = match step {
-            Step::Simulate { frame, send_world } => (frame, send_world, false, false),
+        let (tick, drain, force) = match step {
+            Step::Simulate { frame } => (frame, false, false),
             Step::Drain {
                 frame,
                 entered,
                 force,
-                send_reliable,
             } => {
                 if entered {
                     for (&connection, peer) in self.peers.iter_mut().chain(&mut self.homeward) {
@@ -2714,7 +2714,7 @@ impl State {
                         }
                     }
                 }
-                (frame, send_reliable, true, force)
+                (frame, true, force)
             }
         };
         for expired in self.links.expire(now, force) {
@@ -2782,8 +2782,7 @@ impl State {
             if !drain {
                 if let Some(world) = &room.world {
                     let events = bot_events.get(&id).map_or(&[][..], Vec::as_slice);
-                    peer.world
-                        .update_bots(&world.scene, events, tick, send_frames);
+                    peer.world.update_bots(&world.scene, events, tick);
                 }
                 // ClientInVoice 27500: each bot line to every client of the
                 // room with a body (voice_lines.rs).
@@ -2809,19 +2808,21 @@ impl State {
         }
         if !drain {
             self.say_player_lines(tick);
-            self.show_players(tick, now, send_frames);
+            self.show_players(tick, now);
         }
         for (&connection, peer) in &mut self.peers {
             if peer.ai.is_some() {
                 // What a client would get arrives at once (ai.rs).
-                if send_frames && !drain {
+                if !drain {
                     peer.world.deliver_locally(tick, now);
                 }
                 continue;
             }
             let (id, _) = self.seats[&connection];
             let room = &self.rooms[&id];
-            if send_frames && peer.open {
+            // Each tick sends every client a datagram (62.5 a second, as
+            // retail's PC default); the forced last drain step only retires.
+            if !force && peer.open {
                 if !drain {
                     peer.flush_combat(&self.schemas, now);
                 }
@@ -2838,7 +2839,7 @@ impl State {
         // Games taken out before they connected get nothing but their 20304
         // (server.py `_tick`, `Client.send_frame`).
         for (&connection, peer) in &mut self.homeward {
-            if send_frames && peer.open {
+            if !force && peer.open {
                 peer.send_frame(&mut self.links, socket, connection, tick, Vec::new(), true);
             }
         }
