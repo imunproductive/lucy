@@ -65,9 +65,8 @@ fn flat_floor() -> (TriangleIndex, Arc<ContactWorld>) {
     (rays, Arc::new(ContactWorld::new(vec![shape]).unwrap()))
 }
 
-/// Soldier: 76 on a flat floor with the stock owner script
-/// (`SprintTests.setUp`: `BodyScript(SOLDIER, 0xA0000101, 999)` and 30 still
-/// frames).
+/// A hero on a flat floor with his stock owner script (`SprintTests.setUp`:
+/// `BodyScript(SOLDIER, 0xA0000101, 999)` and 30 still frames).
 struct Sprinter {
     mover: Mover,
     rays: TriangleIndex,
@@ -76,9 +75,14 @@ struct Sprinter {
 
 impl Sprinter {
     fn new() -> Self {
-        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        Self::of(SOLDIER, Unknowns::for_build())
+    }
+
+    fn of(hero: u64, unknowns: Unknowns) -> Self {
+        let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        assets.set_player_unknowns(unknowns);
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
-        let hero = scene.heroes().get(SOLDIER).unwrap();
+        let hero = scene.heroes().get(hero).unwrap();
         let (rays, contacts) = flat_floor();
         let settings = *scene.movers.for_body(Some(hero.body));
         let mover = Mover::new(settings, contacts, [0.0, 1.0, 0.0], 0, MOVER_CATEGORY).unwrap();
@@ -210,4 +214,53 @@ fn a_players_body_walks_on_the_maps_collision_with_its_heros_values() {
     let [vx, vy, vz] = tracer.pose().velocity;
     assert_eq!(vy, 0.0);
     assert!((vx.hypot(vz) - 6.0).abs() <= 0.01, "{}", vx.hypot(vz));
+}
+
+/// Ana's and Widowmaker's scoped walk, as the Python reference runs it (the
+/// same frames and speeds; `BodyScript` and `Mover` of leafall903/ORPHEUS
+/// (MIT) `src/ow174/game`, run 2026-11-12). Secondary fire zooms in: `#169`
+/// chases 1 (Ana `0B94` st20 at 4 a second, Widowmaker `001B` st19 at 3);
+/// once full, `#23184` is 0.65 (`0B94` st77, `001B` st102), and `01C7`
+/// st49's MovementMod adds minus that to the speed scalar from the next
+/// frame on: 5.5 m/s slows to 1.925 in five frames. Letting go ends it at
+/// once.
+#[test]
+#[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
+fn ana_and_widowmaker_walk_at_35_percent_once_fully_zoomed() {
+    use orpheus_content::heroes::ANA;
+    use orpheus_wire::commands::SECONDARY;
+    const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
+    // The frame the zoom gets full in, after the press in 1050, and where
+    // the reference has the body when the button goes up in 1150.
+    for (hero, zoomed, released_at) in [(ANA, 1065, 5.857421875), (WIDOWMAKER, 1070, 6.140625)] {
+        // Their graphs still have gaps: tolerated, as release builds do.
+        let mut body = Sprinter::of(hero, Unknowns::Tolerate);
+        let mut speeds = Vec::new();
+        for frame in 1030..1155 {
+            let scoped = (1050..1150).contains(&frame);
+            speeds.push(body.frame(frame, if scoped { SECONDARY } else { 0 }, 127));
+            if frame == 1150 {
+                assert_eq!(body.mover.pose().position, [0.0, 1.0, released_at]);
+            }
+        }
+        let from = |frame: u32| &speeds[(frame - 1030) as usize..];
+        assert_eq!(
+            from(zoomed)[..6],
+            [
+                5.5,
+                4.4521484375,
+                3.5888671875,
+                2.876953125,
+                2.291015625,
+                1.9248046875
+            ],
+            "{hero:x}"
+        );
+        assert!(
+            from(zoomed + 5)[..=(1150 - zoomed - 5) as usize]
+                .iter()
+                .all(|&speed| speed == 1.9248046875)
+        );
+        assert_eq!(from(1151)[..3], [3.6845703125, 5.4443359375, 5.5]);
+    }
 }

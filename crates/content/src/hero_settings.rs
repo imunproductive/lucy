@@ -123,8 +123,7 @@ mod tests {
     use super::*;
     use orpheus_wire::jam::codec::Fields;
 
-    const SOLDIER: u64 = crate::heroes::SOLDIER;
-    const ANA: u64 = 0x02e0_0000_0000_013b;
+    use crate::heroes::{ANA, SOLDIER};
 
     fn entry(hero: u64, setting: u64, value: u64) -> Value {
         Value::Struct(Fields::from([
