@@ -62,7 +62,7 @@
 //! Spawn door barriers (`game_map_areas` `door_barriers`): the server-owned
 //! placeables running graph `00F6` in the spawn room doorways. The client
 //! makes a server-owned placeable only when the server creates it, so the
-//! scene creates them with the map's other placeables (see
+//! scene creates them from the map after the player and the mode (see
 //! `orpheus_assets`' `map_areas` notes).
 
 use std::{

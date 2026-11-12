@@ -58,7 +58,7 @@ use orpheus_script::{
     vm::{TargetCandidate, Unknowns},
     wire::Variables,
 };
-use orpheus_wire::entity::{Component, EntityUpdate};
+use orpheus_wire::entity::{Component, EntityUpdate, Operation};
 
 const MOVER_CATEGORY: u16 = 0x18;
 
@@ -178,6 +178,10 @@ pub struct PreparedScene {
     spawn_rooms: Arc<[SpawnRoom]>,
     /// The map's damage areas that kill, in this mode.
     lethal_areas: Arc<[DamageArea]>,
+    /// The map's spawn door barriers in this mode: server-owned placeables
+    /// the loading screen doesn't wait for, created after the player and
+    /// the mode.
+    door_barriers: Vec<u32>,
     /// Where a falling body dies on a map without damage areas
     /// (`map_areas::kill_height`).
     kill_height: Option<f64>,
@@ -320,7 +324,7 @@ impl SceneAssets {
     /// collision is built from the install when its cache is missing or
     /// outdated, which can take a while: callers prepare off the game thread
     /// (match.py `_refresh_collision`).
-    pub fn prepare(&self, mut map: GameMap) -> io::Result<PreparedScene> {
+    pub fn prepare(&self, map: GameMap) -> io::Result<PreparedScene> {
         let path = self
             .collision
             .join(format!("{:04X}.col", map.map_guid as u32));
@@ -393,11 +397,12 @@ impl SceneAssets {
         let lethal_areas = self.map_areas.lethal_areas(&map, identifiers);
         // The spawn door barriers are server-owned placeables: the client
         // shows them only once the server creates them.
-        for barrier in self.map_areas.door_barriers(&map, identifiers) {
-            if !map.placeables.contains(&barrier) {
-                map.placeables.push(barrier);
-            }
-        }
+        let door_barriers: Vec<u32> = self
+            .map_areas
+            .door_barriers(&map, identifiers)
+            .into_iter()
+            .filter(|barrier| !map.placeables.contains(barrier))
+            .collect();
         let lowest_spawn = map
             .spawns
             .iter()
@@ -457,6 +462,7 @@ impl SceneAssets {
             lethal_areas,
             kill_height,
             lowest,
+            door_barriers,
         };
         let mut factories = self
             .owner_bodies
@@ -921,7 +927,18 @@ impl PreparedScene {
     }
 
     pub fn initial_world(&self, viewer: &PlayerAppearance<'_>) -> io::Result<Vec<EntityUpdate>> {
-        initial_world(&self.map, viewer, self.initial_board.clone(), &self.bots)
+        let mut updates = initial_world(&self.map, viewer, self.initial_board.clone(), &self.bots)?;
+        // After the placeables, the player and the mode, before the bots.
+        let at = self.map.placeables.len() + 2;
+        updates.splice(
+            at..at,
+            self.door_barriers.iter().map(|&index| EntityUpdate {
+                entity: 0x8000_0000 | index,
+                operation: Some(Operation::Placeable(index)),
+                ..EntityUpdate::default()
+            }),
+        );
+        Ok(updates)
     }
 }
 

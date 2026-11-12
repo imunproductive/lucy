@@ -318,8 +318,8 @@ fn a_pick_while_dead_takes_the_respawn() {
 
 /// The spawn room's three doorways get their barriers: the six
 /// server-owned `00F6` placeables (two in each doorway: the frame model and
-/// the glowing effect) are created from the map with the four the loading
-/// screen waits for.
+/// the glowing effect) are created from the map after the player and the
+/// mode, before the bots.
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
 fn the_spawn_doorways_get_their_barriers() {

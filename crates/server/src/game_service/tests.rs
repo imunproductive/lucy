@@ -913,8 +913,8 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         assert!(client.now() < deadline, "waiting for baseline retransmit");
     }
     // The rest of the world follows, still without a script before the
-    // retransmitted creates are acknowledged: 4 placeables, the 6 spawn
-    // door barriers, the player, the mode, 15 bots and their 15 stand-in
+    // retransmitted creates are acknowledged: 4 placeables, the player, the
+    // mode, the 6 spawn door barriers, 15 bots and their 15 stand-in
     // controllers.
     while creates.len() < 42 {
         let frame = client.receive();
