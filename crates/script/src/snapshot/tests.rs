@@ -298,6 +298,51 @@ fn unsupported_active_states_and_initialization_diagnostics_are_explicit() {
     ));
 }
 
+/// A plain state whose payload is a link alone (the field of view
+/// `STU_75D1C308`, the aim speed `STU_3716E1D4`, `CombatModFilter`) goes out
+/// with no link, in both builds, as the Python reference sent it (the base
+/// `State.payload` is empty; codecs.py `write` writes the absent link as one
+/// 0 bit). Left out, the owner's client never ran Ana's and Widowmaker's
+/// field of view.
+#[test]
+fn a_plain_state_whose_payload_is_a_link_goes_out_with_no_link() {
+    let (graphs, snapshot) = fixture();
+    let mut raw: Json = serde_json::from_str(CODECS).unwrap();
+    raw["classes"]["12340001"]["codec"] = json!("link");
+    raw["classes"]["12340001"]["layout"] = json!([{"op":"link","f":"link"}]);
+    let codecs = CodecTable::from_json(&raw.to_string()).unwrap();
+    for unknowns in [crate::vm::Unknowns::Refuse, crate::vm::Unknowns::Tolerate] {
+        let encoder = SnapshotEncoder::new(&graphs, &codecs).with_unknowns(unknowns);
+        let owner = encoder.project(&snapshot, View::Owner).unwrap();
+        assert_eq!(owner.state_payload(1, 2), Some(&StatePayload::new()));
+        let mut stream = BodyStream::new(ENTITY);
+        let full = encoder.queue_full(&mut stream, &owner).unwrap();
+        stream.create_arrived();
+        assert!(stream.arrived(full.last).advanced);
+        let (_, baseline) = stream.base().unwrap();
+        let delta = encoder
+            .differences(baseline, &owner, &BTreeSet::new(), &BTreeSet::new())
+            .unwrap();
+        assert!(delta.instances[&1].states.contains_key(&2));
+        encoder
+            .delta_frame(&owner, &delta, DeltaKind::InitialOwner(1001), 16, None)
+            .unwrap();
+    }
+    let link = codecs
+        .codec("STUStatescriptState")
+        .unwrap()
+        .payload(
+            &StatePayload::new(),
+            PayloadMode::Owner {
+                full: true,
+                frame_time: 0,
+                frame_ms: 0,
+            },
+        )
+        .unwrap();
+    check(&link, 1, "00");
+}
+
 #[test]
 fn stack_projection_rejects_missing_values_and_invalid_owner_binding_sources() {
     let (graphs, mut snapshot) = fixture();

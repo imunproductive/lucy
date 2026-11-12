@@ -1004,7 +1004,8 @@ fn vm_text(cls: &str, is_state: bool) -> String {
         | "STUStatescriptStateUXPresenter"
         | "STUStatescriptStateAnimatedCamera"
         | "STU_7B9E8909"
-        | "STU_40E05F6B" => state("Plain"),
+        | "STU_40E05F6B"
+        | "STU_75D1C308" => state("Plain"),
         "STU_D9843704" => state("Plain, in its zero-valued networked form"),
         "STU_BD02E168" => state("Plain, as a client subgraph controller"),
         "STU_CD46AF93" => state("Plain, when networked"),
