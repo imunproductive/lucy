@@ -898,6 +898,9 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         assert!(client.now() < deadline, "waiting for first world creates");
     };
     let mut creates = HashSet::new();
+    // The creates of the datagrams the client acknowledged: a script may
+    // follow only its own entity's acknowledged create.
+    let mut acknowledged = HashSet::new();
     loop {
         let frame = client.receive();
         assert!(client.window.accept(frame.seq));
@@ -909,18 +912,44 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         if lost.iter().all(|id| creates.contains(id)) {
             break;
         }
+        acknowledged.clone_from(&creates);
         client.send(ACK, Vec::new());
         assert!(client.now() < deadline, "waiting for baseline retransmit");
     }
-    // The rest of the world follows, still without a script before the
-    // retransmitted creates are acknowledged: 4 placeables, the player, the
-    // mode, the 6 spawn door barriers, 15 bots and their 15 stand-in
-    // controllers.
+    let mut mode = false;
+    let mut controller = false;
+    // The mode's and the controller's first script chunks.
+    let first_script = |record: &WorldRecord, mode: &mut bool, controller: &mut bool| {
+        let Some(script) = &record.script else {
+            return;
+        };
+        assert_eq!((script.first, script.span), (0, 1));
+        if record.entity == GAME_MODE_ENTITY {
+            assert_eq!(script.data, [0x08, 0x5b, 0x06, 0x00, 0x0c]);
+            *mode = true;
+        } else {
+            assert_eq!(record.entity, CONTROLLER);
+            let mut bits = script.bits();
+            assert_eq!(bits.bits(3).unwrap(), 2);
+            assert!(bits.w_var().unwrap() >= orpheus_core::tick::FIRST_TICK);
+            *controller = true;
+        }
+    };
+    // The rest of the world follows, with no script whose create the
+    // client hasn't acknowledged: 4 placeables, the player, the mode, the
+    // 6 spawn door barriers, 15 bots and their 15 stand-in controllers.
     while creates.len() < 42 {
         let frame = client.receive();
         assert!(client.window.accept(frame.seq));
         let records = world_records(&schemas, &frame);
-        assert!(records.iter().all(|record| record.script.is_none()));
+        assert!(
+            records
+                .iter()
+                .all(|record| record.script.is_none() || acknowledged.contains(&record.entity))
+        );
+        for record in &records {
+            first_script(record, &mut mode, &mut controller);
+        }
         for record in records.iter().filter(|record| record.is_create()) {
             assert!(creates.insert(record.entity));
         }
@@ -928,18 +957,15 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     }
     assert_eq!(creates.len(), 42);
 
-    // Even after the retransmission, the script stays behind its create ACK.
+    // Even after the retransmission, a script stays behind its create ACK.
     let withheld = client.receive();
     assert!(client.window.accept(withheld.seq));
-    assert!(
-        world_records(&schemas, &withheld)
-            .iter()
-            .all(|record| record.script.is_none())
-    );
+    for record in world_records(&schemas, &withheld) {
+        assert!(record.script.is_none() || acknowledged.contains(&record.entity));
+        first_script(&record, &mut mode, &mut controller);
+    }
     client.send(ACK, Vec::new());
 
-    let mut mode = false;
-    let mut controller = false;
     let mut moving_bot = false;
     while !(mode && controller && moving_bot) && client.now() < deadline {
         let frame = client.receive();
@@ -951,19 +977,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
                 assert!(creates.contains(&record.entity));
                 moving_bot = true;
             }
-            if let Some(script) = record.script {
-                assert_eq!((script.first, script.span), (0, 1));
-                if record.entity == GAME_MODE_ENTITY {
-                    assert_eq!(script.data, [0x08, 0x5b, 0x06, 0x00, 0x0c]);
-                    mode = true;
-                } else {
-                    assert_eq!(record.entity, CONTROLLER);
-                    let mut bits = script.bits();
-                    assert_eq!(bits.bits(3).unwrap(), 2);
-                    assert!(bits.w_var().unwrap() >= orpheus_core::tick::FIRST_TICK);
-                    controller = true;
-                }
-            }
+            first_script(&record, &mut mode, &mut controller);
         }
         client.send(ACK, Vec::new());
     }
