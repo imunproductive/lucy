@@ -3684,8 +3684,8 @@ fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
     const FIELD_TICKS: u32 = 313;
 
     // The enemy and the patient share the spawn point; the healer stands
-    // 1.5 m beside it, out of the enemy's line of fire.
-    let (mut server, schemas, [mut enemy, mut patient, mut healer], spawns) = practice_players([
+    // 1.5 m beside it.
+    let (mut server, schemas, [mut enemy, mut patient, mut healer], _) = practice_players([
         ("enemy#1111", 0, "Soldier: 76"),
         ("patient#2222", 1, "Tracer"),
         ("healer#3333", 1, "Soldier: 76"),
@@ -3700,18 +3700,23 @@ fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
             .filter_map(|record| record.base_health)
             .next_back()
     };
-    // The enemy wounds the patient with short bursts away from the healer.
-    let [dx, _, dz] = std::array::from_fn::<_, 3, _>(|axis| spawns[2][axis] - spawns[0][axis]);
-    let away = ((-dx).atan2(-dz) * 32768.0 / std::f64::consts::PI).round() as i32 as i16;
+    // The enemy wounds the patient with short bursts. They start on the
+    // same spawn point and, as enemies, push each other apart, so each
+    // burst aims from where the two bodies stand (bodies: the enemy's, the
+    // patient's, the healer's).
     let full = 150.0;
     let mut frame = enemy.tick + 1;
     let deadline = server.now() + Duration::from_secs(10);
     while !health(&patient).is_some_and(|health| health < full) {
         assert!(server.now() < deadline, "waiting for the wound");
         if frame <= enemy.tick + 8 {
+            let bodies = server.bodies(MATCH).unwrap();
+            let [from, to] = [0, 1].map(|index| bodies[index].position.unwrap());
+            let aim = ((to[0] - from[0]).atan2(to[2] - from[2]) * 32768.0 / std::f64::consts::PI)
+                .round() as i32 as i16;
             enemy
                 .client
-                .send(ACK, command_batch(frame, 8, away, FIRE, false));
+                .send(ACK, command_batch(frame, 8, aim, FIRE, false));
             frame += 8;
         }
         for watcher in [&mut enemy, &mut patient, &mut healer] {
