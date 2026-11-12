@@ -49,6 +49,9 @@ const PREDICTED_ID: u32 = 0xa000_0000;
 const ID_LIMIT: u32 = 0x2000_0000;
 const REPORT_WINDOW: u32 = 64;
 const UNREPORTED_TICKS: u32 = 32;
+/// Ticks after its bound that a shot the server doesn't fly is released
+/// (projectiles.py `_step`); a flown shot's release goes at its end
+/// ([`OwnerProjectiles::flight_ended`]).
 const RELEASE_MARGIN: u32 = 6;
 const RELEASE_AHEAD: u32 = 4096;
 pub(crate) const DELIVERY_GRACE: u32 = 64;
@@ -512,7 +515,24 @@ impl OwnerProjectiles {
             .any(|pending| pending.token == token && pending.creates.contains_key(&entity))
     }
 
-    pub fn flight_ended(&mut self, token: ProjectileToken, travelled_ticks: u32, tick: u32) {
+    /// The server's flight of the shot ended at server tick `tick`
+    /// (projectiles.py `flown`): its release is due then, later by K − f
+    /// when the first owner frame that reported the shot and wasn't lost
+    /// came at command frame K after the shot's frame f, as the client may
+    /// have shot it at K (`_confirm`).
+    ///
+    /// Python's due is `start + ceil(seconds * 1000 / 16) + RELEASE_MARGIN`
+    /// with `start` = K or f, then at least the match tick. K and f are the
+    /// client's command frames, but the due is compared with server ticks,
+    /// and the client runs its frames ahead of the packet frame by up to 16
+    /// (`correction.rs`), so the release waited that lead plus 6 after the
+    /// server's impact. Here it is on the server's clock (beyond Python).
+    /// Assumption: the client flies the rocket as the server does; then no
+    /// margin is needed, as the server runs command f only after the client
+    /// sent it, so its flight ends at least the one-way delay after the
+    /// client's rocket hit, and the release reaches the client about a
+    /// round trip after that.
+    pub fn flight_ended(&mut self, token: ProjectileToken, tick: u32) {
         let Some(pending) = self
             .pending
             .iter_mut()
@@ -526,12 +546,8 @@ impl OwnerProjectiles {
                 .values()
                 .find(|report| report.arrived != Some(false))
                 .map_or(pending.shot.frame, |report| report.frame);
-            pending.release_at = Some(
-                start
-                    .saturating_add(travelled_ticks)
-                    .saturating_add(RELEASE_MARGIN)
-                    .max(tick),
-            );
+            pending.release_at =
+                Some(tick.saturating_add(start.saturating_sub(pending.shot.frame)));
         }
     }
 
@@ -1679,7 +1695,7 @@ mod tests {
                 },
             ]
         );
-        tracker.flight_ended(token, 2, frame + 5);
+        tracker.flight_ended(token, frame + 5);
         tracker.create_arrived(token, original);
         assert!(tracker.advance(frame + 12, frame + 12).is_empty());
         assert!(tracker.confirmation_current(token, alias));
@@ -1736,10 +1752,11 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         );
-        tracker.flight_ended(token, 2, frame + 4);
+        tracker.flight_ended(token, frame + 4);
         tracker.create_arrived(token, ids[0]);
         tracker.create_arrived(token, ids[1]);
-        let due = frame + 1 + 2 + RELEASE_MARGIN;
+        // The flight's end plus the reporting frame's offset from the shot.
+        let due = frame + 4 + 1;
         assert!(
             tracker.advance(due, due).is_empty(),
             "waits for every create"
@@ -1779,7 +1796,7 @@ mod tests {
             |_, _| true,
         );
         tracker.owner_arrival(2, false);
-        tracker.flight_ended(token, 2, frame + 2);
+        tracker.flight_ended(token, frame + 2);
         let late = frame + UNREPORTED_TICKS - 1;
         assert!(tracker.advance(late, late).is_empty());
         assert_eq!(
@@ -1790,7 +1807,7 @@ mod tests {
                 definition: HELIX
             }]
         );
-        let grace = frame + 8 + DELIVERY_GRACE;
+        let grace = frame + 2 + DELIVERY_GRACE;
         assert!(tracker.advance(grace - 1, grace - 1).is_empty());
         assert_eq!(
             tracker.advance(grace, grace),
@@ -1835,7 +1852,7 @@ mod tests {
             }]
         );
         tracker.create_arrived(token, entity);
-        tracker.flight_ended(token, 2, frame + 5);
+        tracker.flight_ended(token, frame + 5);
         let due = created + 20 + RELEASE_MARGIN;
         assert!(tracker.advance(due - 1, due - 1).is_empty());
         assert_eq!(
@@ -1852,6 +1869,88 @@ mod tests {
                 token,
                 explode: true
             }]
+        );
+    }
+
+    /// The release is due when the server's flight ends, on the server's
+    /// clock. The client's command frames run ahead of the server's ticks
+    /// (here by 10: the server ran command `frame` at tick 990), and its
+    /// lead no longer delays the release, nor does Python's margin.
+    #[test]
+    fn a_flown_release_is_due_when_the_servers_flight_ends() {
+        let frame = 1000;
+        let shot = shot(frame);
+        let leases = ProjectileLeases::new(0, frame, [(HELIX, 1)]).unwrap();
+        let entity = leases.entity(HELIX, frame, 0).unwrap();
+        let mut tracker = OwnerProjectiles::new(BODY, leases);
+        let token = tracker.admit(shot, HELIX, 80).unwrap();
+        tracker.owner_sent(
+            2,
+            frame,
+            |_, _| Some((shot.activation, shot.activation_ms)),
+            |_, _| true,
+        );
+        tracker.owner_arrival(2, true);
+        assert_eq!(
+            tracker.advance(992, 992),
+            [ProjectileDelivery::Confirm {
+                token,
+                entity,
+                definition: HELIX
+            }]
+        );
+        tracker.create_arrived(token, entity);
+        assert!(tracker.advance(999, 999).is_empty(), "still flying");
+        tracker.flight_ended(token, 1000);
+        assert_eq!(
+            tracker.advance(1000, 1000),
+            [ProjectileDelivery::Destroy {
+                token,
+                entity,
+                explosion_frame: Some(1000 + RELEASE_AHEAD)
+            }]
+        );
+    }
+
+    /// The client may have shot the rocket at the frame K of the first owner
+    /// frame that reported it and wasn't lost (`_confirm`), K − f after the
+    /// shot's frame f: its rocket then hits that much later, and the release
+    /// waits as long after the server's flight ends.
+    #[test]
+    fn a_flown_release_waits_for_the_reporting_frames_offset() {
+        let frame = 1000;
+        let shot = shot(frame);
+        let leases = ProjectileLeases::new(0, frame, [(HELIX, 1)]).unwrap();
+        let original = leases.entity(HELIX, frame, 0).unwrap();
+        let alias = leases.entity(HELIX, frame + 3, 0).unwrap();
+        let mut tracker = OwnerProjectiles::new(BODY, leases);
+        let token = tracker.admit(shot, HELIX, 80).unwrap();
+        let identity = |_, _| Some((shot.activation, shot.activation_ms));
+        tracker.owner_sent(2, frame + 1, identity, |_, _| true);
+        tracker.owner_sent(3, frame + 3, identity, |_, _| true);
+        tracker.owner_arrival(2, false);
+        tracker.owner_arrival(3, true);
+        assert_eq!(tracker.advance(992, 992).len(), 2);
+        tracker.create_arrived(token, original);
+        tracker.create_arrived(token, alias);
+        tracker.flight_ended(token, 1000);
+        assert!(tracker.advance(1000, 1000).is_empty());
+        assert!(tracker.advance(1002, 1002).is_empty());
+        let explosion_frame = Some(1003 + RELEASE_AHEAD);
+        assert_eq!(
+            tracker.advance(1003, 1003),
+            [
+                ProjectileDelivery::Destroy {
+                    token,
+                    entity: original,
+                    explosion_frame
+                },
+                ProjectileDelivery::Destroy {
+                    token,
+                    entity: alias,
+                    explosion_frame
+                },
+            ]
         );
     }
 

@@ -2586,9 +2586,8 @@ impl WorldDelivery {
             };
             match result {
                 Ok(None) => true,
-                Ok(Some(end)) => {
-                    let travelled = (end.travelled / TICK_PERIOD.as_secs_f64()).ceil() as u32;
-                    projectiles.flight_ended(token, travelled, tick);
+                Ok(Some(_)) => {
+                    projectiles.flight_ended(token, tick);
                     false
                 }
                 Err(_) => {
