@@ -1064,7 +1064,7 @@ impl BotViews {
                                     })
                                     .collect(),
                             );
-                            flush.frames(*entity, view, false);
+                            flush.death_now(*entity, view);
                         }
                     }
                 }
@@ -1197,6 +1197,29 @@ impl Flush<'_, '_> {
             // on a corpse.
             let base = view.stream.base().map(|(_, base)| base.clone());
             self.death(entity, view, &chosen, base.as_ref());
+        }
+    }
+
+    /// A death's first frame goes out at once, even while an earlier frame
+    /// waits for its acknowledgement (server.py `_flush_bot_frames` waited,
+    /// so a bot that died within a round trip of a hit it survived kept its
+    /// health bar until that hit's frame arrived: 0D24 hides the bar on the
+    /// dead flag #478, st38 `!#478e`). It is a cumulative update from the
+    /// acknowledged frame, as the other clients' body frames are
+    /// (`others.rs`), and the death's state holds every live change, so a
+    /// live frame still waiting goes with it. A rocket copy whose launch
+    /// still needs its volley keeps the old order (`volley`).
+    fn death_now(&mut self, entity: u32, view: &mut BotView) {
+        if view.stream.base().is_none() || !view.volleys.is_empty() {
+            self.frames(entity, view, false);
+            return;
+        }
+        view.live = None;
+        while let Some(chosen) = view.death_frames.as_mut().and_then(VecDeque::pop_front) {
+            view.death_snapshot = Some(chosen.clone());
+            if self.death(entity, view, &chosen, None) {
+                return;
+            }
         }
     }
 
