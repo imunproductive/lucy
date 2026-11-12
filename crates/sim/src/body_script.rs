@@ -470,6 +470,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         self.world.take_messages()
     }
 
+    fn take_criteria(&mut self) -> Vec<u64> {
+        self.world.take_criteria()
+    }
+
     fn move_requests(&self) -> Vec<MoveRequest> {
         self.component.move_requests()
     }

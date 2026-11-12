@@ -33,6 +33,7 @@ mod objectives;
 mod progression;
 mod props;
 mod tunables;
+mod voice_sets;
 
 use std::{
     fmt, fs, io,
@@ -141,6 +142,10 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "game_body_data",
         derive: body_data::derive,
+    },
+    Derivation {
+        name: "game_voice_sets",
+        derive: voice_sets::derive,
     },
     Derivation {
         name: "game_queues",

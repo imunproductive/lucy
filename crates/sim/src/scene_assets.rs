@@ -37,6 +37,7 @@ use orpheus_content::{
     heroes::{EyeCatalog, Hero, HeroCatalog, SOLDIER},
     maps::{GameMap, GameModes, MODES_FILE, SpawnChoice},
     stats::{BoardStats, PlayerStats, StatsCatalog, initial_on_fire},
+    voice_sets::VoiceCatalog,
 };
 use orpheus_core::{bits::BitWriter, guid::parse_guid};
 use orpheus_physics::{
@@ -109,6 +110,8 @@ pub struct SceneAssets {
     bots: BotCatalog,
     movers: Arc<MoverCatalog>,
     eyes: Arc<EyeCatalog>,
+    /// Each body's voice set (`game_voice_sets_174.json`).
+    voice_sets: Arc<VoiceCatalog>,
     /// Each body's hit shapes (`game_hitboxes_174.json`).
     hitboxes: Arc<HitboxCatalog>,
     /// The bot bodies' rigs (`game_bot_animation_174.json`).
@@ -147,6 +150,7 @@ pub struct PreparedScene {
     script_anims: Arc<ScriptAnims>,
     movers: Arc<MoverCatalog>,
     eyes: Arc<EyeCatalog>,
+    voice_sets: Arc<VoiceCatalog>,
     hitboxes: Arc<HitboxCatalog>,
     /// The mode's respawn time for heroes.
     respawn: Duration,
@@ -232,6 +236,7 @@ impl SceneAssets {
                 fallback,
             )?),
             eyes: Arc::new(EyeCatalog::load(data.join("game_eyes_174.json"), fallback)?),
+            voice_sets: Arc::new(VoiceCatalog::load(data.join("game_voice_sets_174.json"))?),
             hitboxes: Arc::new(HitboxCatalog::load(data.join("game_hitboxes_174.json"))?),
             bot_rigs: BotRigCatalog::load(data.join("game_bot_animation_174.json"))?,
             script_anims,
@@ -349,6 +354,7 @@ impl SceneAssets {
                 .clone()
                 .unwrap_or_else(|| Arc::new(CodecTable::client())),
             self.bot_unknowns,
+            Arc::clone(&self.voice_sets),
             &map,
             &bots,
         );
@@ -402,6 +408,7 @@ impl SceneAssets {
             script_anims: Arc::clone(&self.script_anims),
             movers: Arc::clone(&self.movers),
             eyes: Arc::clone(&self.eyes),
+            voice_sets: Arc::clone(&self.voice_sets),
             hitboxes: Arc::clone(&self.hitboxes),
             heroes: Arc::clone(&self.heroes),
             pools: Arc::clone(&self.pools),
@@ -586,6 +593,11 @@ impl PreparedScene {
 
     pub fn heroes(&self) -> &HeroCatalog {
         &self.heroes
+    }
+
+    /// Each body's voice set ([`crate::voice_lines`]).
+    pub fn voice_sets(&self) -> &VoiceCatalog {
+        &self.voice_sets
     }
 
     /// The mode's respawn time for heroes (combat.py `respawn_seconds`).
@@ -818,7 +830,7 @@ impl PreparedScene {
     }
 
     /// The voice lines the bots said since the last call, for every client.
-    pub fn take_bot_voices(&mut self) -> Vec<crate::bot_voice::BotVoice> {
+    pub fn take_bot_voices(&mut self) -> Vec<crate::voice_lines::VoiceLine> {
         self.bot_scripts.take_voices()
     }
 

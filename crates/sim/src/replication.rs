@@ -36,6 +36,7 @@ use crate::{
     },
     scene::{PlayerAppearance, Possession, player_team_bit},
     scene_assets::PreparedScene,
+    voice_lines::{VoiceLine, VoiceState},
 };
 use orpheus_content::{
     hero_settings::{HeroSetting, HeroSettings, SCRIPT_SETTINGS},
@@ -153,6 +154,12 @@ pub trait OwnerBodyRuntime: Send {
 
     /// The game messages the body sent other entities since the last call.
     fn take_messages(&mut self) -> Vec<GameMessage> {
+        Vec::new()
+    }
+
+    /// The criteria the body's graphs raised on it since the last call
+    /// ([`crate::voice_lines`]).
+    fn take_criteria(&mut self) -> Vec<u64> {
         Vec::new()
     }
 
@@ -966,6 +973,9 @@ pub struct WorldDelivery {
     /// The hero settings the player's client last sent (21604); every body
     /// he plays takes them. They are the client's, so a new world keeps them.
     hero_settings: HeroSettings,
+    /// The voice of the current body (its entity): its stimuli's cooldowns
+    /// and lines' turns ([`crate::voice_lines`]).
+    voice: Option<(u32, VoiceState)>,
 }
 
 /// The entity variables of the hero settings the client sends
@@ -1063,6 +1073,7 @@ impl WorldDelivery {
             headless: false,
             respawn_extra: Duration::ZERO,
             hero_settings: HeroSettings::default(),
+            voice: None,
         }
     }
 
@@ -2510,6 +2521,51 @@ impl WorldDelivery {
         self.body_script
             .as_mut()
             .map_or_else(Vec::new, |script| script.runtime.take_messages())
+    }
+
+    /// The voice lines the current body says for the criteria its graphs
+    /// raised since the last call (the communication wheel's lines), by its
+    /// hero's voice set ([`crate::voice_lines`]).
+    pub fn take_voice_lines(&mut self, scene: &PreparedScene, tick: u32) -> Vec<VoiceLine> {
+        if !self.world_started() {
+            return Vec::new();
+        }
+        let Some(script) = self.body_script.as_mut() else {
+            return Vec::new();
+        };
+        let criteria = script.runtime.take_criteria();
+        let id = script.id;
+        let Some(body) = self.body.filter(|body| body.id == id) else {
+            return Vec::new();
+        };
+        if criteria.is_empty() || self.death.is_some() {
+            return Vec::new();
+        }
+        let speaker = body.id.entity;
+        let set = scene
+            .heroes()
+            .get(body.hero)
+            .and_then(|hero| scene.voice_sets().for_body(hero.body));
+        if self
+            .voice
+            .as_ref()
+            .is_none_or(|(entity, _)| *entity != speaker)
+        {
+            self.voice = Some((speaker, VoiceState::default()));
+        }
+        let (_, voice) = self.voice.as_mut().expect("the body's voice");
+        criteria
+            .into_iter()
+            .filter_map(|criteria| voice.answer(set, speaker, criteria, tick))
+            .collect()
+    }
+
+    /// Where the player's body stands, alive or dead, while it is in the
+    /// world: where he hears voice lines from.
+    pub fn hearing_position(&self) -> Option<[f64; 3]> {
+        self.started?;
+        self.body?;
+        Some(self.mover.as_ref()?.pose().position)
     }
 
     /// Whether this client's current body runs a script that takes messages
