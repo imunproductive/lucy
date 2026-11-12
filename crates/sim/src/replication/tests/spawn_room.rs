@@ -292,15 +292,21 @@ fn a_fall_off_gibraltar_dies_in_its_kill_volume() {
     let assets = SceneAssets::load(&runtime)
         .unwrap()
         .with_collision_build(std::sync::Arc::new(move |map, name| {
-            let opened = orpheus_assets::Install::open(&install, "enUS")
-                .map_err(std::io::Error::other)?;
+            let opened =
+                orpheus_assets::Install::open(&install, "enUS").map_err(std::io::Error::other)?;
             let output = orpheus_assets::collision_cache(&opened, map, name)
                 .map_err(std::io::Error::other)?;
             Ok(output.bytes)
         }));
     let map = orpheus_content::maps::MapCatalog::load(runtime.join("data"))
         .unwrap()
-        .game_map(GIBRALTAR, crate::match_flow::ESCORT, "Escort", false, &[6, 6])
+        .game_map(
+            GIBRALTAR,
+            crate::match_flow::ESCORT,
+            "Escort",
+            false,
+            &[6, 6],
+        )
         .unwrap();
     let scene = assets.prepare(map).unwrap();
     assert_eq!(scene.kill_height(), None);

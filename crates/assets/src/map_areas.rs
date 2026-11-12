@@ -34,13 +34,17 @@
 //! A kill volume is a box of the map's collision (chunk 0x11, see
 //! `crate::collision`) whose triangles have mask `0x0002` and nothing else:
 //! the query category `0x02`, which also meets every player clip (`0x1a`),
-//! and no other. Every one is a box of 12 triangles, most of them 4 m thick
-//! slabs under a map's drops (Watchpoint: Gibraltar three, tops -11.72,
+//! and no other. Every one is a box of 12 triangles: 168 on 73 of the 95 map
+//! records with a header. Most are 4 m thick slabs under a map's drops,
+//! holding the drop's bottom (Watchpoint: Gibraltar three, tops -11.72,
 //! -14.26 and -17.92 m; Dorado one, top -7.97 m; Route 66 two, tops -6.80
-//! and -17.49 m; one under each part of Lijiang Tower, Nepal and Ilios); the
-//! Practice Range, Hollywood and Ecopoint: Antarctica have none. They are
-//! written as boxes like the areas': world centre, half extents along the
-//! box's own axes, rotation `{x, y, z, w}` from those axes to the world's.
+//! and -17.49 m; one under each part of Lijiang Tower, Nepal and Ilios).
+//! King's Row also has walls round its pit east of the attackers' first
+//! spawn, and Junkenstein's Revenge four 4 by 9 by 4 m boxes standing on
+//! walkable floor. Temple of Anubis, the Practice Range, Hollywood and
+//! Ecopoint: Antarctica have none. They are written as boxes like the
+//! areas': world centre, half extents along the box's own axes, rotation
+//! `{x, y, z, w}` from those axes to the world's.
 //!
 //! A spawn door barrier is a server-owned entity placeable (client id 0)
 //! running graph `00F6`: on the Practice Range six of them stand in the
@@ -126,8 +130,8 @@ pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
         if !door_barriers.is_empty() {
             entry.insert("door_barriers".into(), json!(door_barriers));
         }
-        let kill_volumes = kill_volumes(&data)
-            .map_err(|error| asset_error(format!("map {map:X}: {error}")))?;
+        let kill_volumes =
+            kill_volumes(&data).map_err(|error| asset_error(format!("map {map:X}: {error}")))?;
         if !kill_volumes.is_empty() {
             entry.insert("kill_volumes".into(), json!(kill_volumes));
         }
@@ -441,19 +445,29 @@ mod tests {
     /// turn's quaternion.
     #[test]
     fn a_kill_volume_is_the_box_its_triangles_make() {
-        let slab = box_of(&turned_box([100.0, -15.0, 50.0], [40.0, 2.0, 20.0], 30f64.to_radians()))
-            .unwrap();
+        let slab = box_of(&turned_box(
+            [100.0, -15.0, 50.0],
+            [40.0, 2.0, 20.0],
+            30f64.to_radians(),
+        ))
+        .unwrap();
         let close = |found: Vec<f64>, wanted: [f64; 3]| {
             found
                 .iter()
                 .zip(wanted)
                 .all(|(found, wanted)| (found - wanted).abs() < 1e-4)
         };
-        assert!(close(numbers(&slab["centre"]), [100.0, -15.0, 50.0]), "{slab}");
+        assert!(
+            close(numbers(&slab["centre"]), [100.0, -15.0, 50.0]),
+            "{slab}"
+        );
         assert!(close(numbers(&slab["half"]), [40.0, 2.0, 20.0]), "{slab}");
         let rotation = numbers(&slab["rotation"]);
         let half_turn = 15f64.to_radians();
-        assert!(close(rotation[..3].to_vec(), [0.0, half_turn.sin(), 0.0]), "{slab}");
+        assert!(
+            close(rotation[..3].to_vec(), [0.0, half_turn.sin(), 0.0]),
+            "{slab}"
+        );
         assert!((rotation[3] - half_turn.cos()).abs() < 1e-4, "{slab}");
     }
 

@@ -50,7 +50,92 @@ With the Rust server: the client entered the Practice Range, but weapons were mi
 
 - **2026-11-12, spawn room and falling out of the Practice Range (Rust server, loopback only, not checked with the client).** A living body in one of its team's spawn rooms (`game_map_areas_174.json`) takes no damage and heals 400 HP a second (mode body graph `0C8E`: status type 0, a strong guess for invulnerable; `ModifyHealth` 400/s). The player entity's component 74 field 6, which the client checks before H opens hero select, is on inside the room and while dead, off outside; a pick from outside is refused, a pick while dead plays the new hero at the respawn, and a pick in the room changes the hero where he stands, facing the same way. A body whose feet reach the map's catch floor (the highest large, level player-clip floor below every spawn: -11 m on the Range, none on Gibraltar) dies as by its own blow ("YOU DIED", a death on the board) and respawns after the mode's time. Assumptions: the catch floor as the kill rule, the body as its own killer, hero change while dead. Not done: the damage areas of other maps (`STUECDamageAreaInstanceData`, damage 100/9000/9999) and the 400/s to intruders in an enemy room.
 
-- **2026-11-12, kill volumes on every map and spawn door barriers (Rust server, not checked with the client).** This replaces the line above that says the damage areas are "Not done". The environment now kills a living body whose feet are in one of the mode's damage areas. These are the entities with `STUECDamageAreaInstanceData`, definition `0109`: 65 on 52 map records. The damage is 100 on most, 9000 on Busan and 9999 on Petra. Strong guess: the damage is a percentage of maximum health, so 100 or more kills at once. The areas with damage 0 (Oasis City Center, Lijiang Night Market, Nepal Village (Winter)) do nothing. On a map without damage areas the catch floor rule still applies. On every map, feet below the lowest collision triangle kill. Maps with no damage areas: Gibraltar, Ecopoint, Hanamura, King's Row, Dorado, Route 66, Anubis, Numbani, Hollywood, Paris, Havana, Château Guillard, the arenas and the Workshop maps. The Practice Range's spawn room doorways now get their barriers: the server creates the six server-owned placeables running graph `00F6` (definitions `1307`, `130C`, `1225`) with the map's other placeables (`crates/assets/src/map_areas.rs`, `crates/sim/src/map_areas.rs`).
+- **2026-11-12, kill volumes on every map and spawn door barriers (Rust server, not checked with the client).** This replaces the line above that says the damage areas are "Not done". The environment now kills a living body whose feet are in one of the mode's damage areas. These are the entities with `STUECDamageAreaInstanceData`, definition `0109`: 65 on 52 map records. The damage is 100 on most, 9000 on Busan and 9999 on Petra. Strong guess: the damage is a percentage of maximum health, so 100 or more kills at once. The areas with damage 0 (Oasis City Center, Lijiang Night Market, Nepal Village (Winter)) do nothing. Then the map's kill volumes kill (the entry below). On a map with neither, the catch floor rule still applies. On every map, feet below the lowest collision triangle kill. Maps with no damage areas: Gibraltar, Ecopoint, Hanamura, King's Row, Dorado, Route 66, Anubis, Numbani, Hollywood, Paris, Havana, Château Guillard, the arenas and the Workshop maps. The Practice Range's spawn room doorways now get their barriers: the server creates the six server-owned placeables running graph `00F6` (definitions `1307`, `130C`, `1225`) with the map's other placeables (`crates/assets/src/map_areas.rs`, `crates/sim/src/map_areas.rs`).
+
+- **2026-11-12, kill volumes under the drops (Rust server, tests only, not checked with the client).** On Watchpoint: Gibraltar, Dorado and Route 66 a fall went on far too long: those maps have no damage areas and no catch floor, so only the lowest collision triangle killed (about -63.5, -54.7 and -51.8 m). Every map's collision chunk also has boxes of 12 triangles with mask `0x0002` alone (query category 0x02, which also meets every player clip `0x1a`; the movers query their team's proxy bit, 0x08 or 0x10, so nobody stands on them): 168 on 73 of the 95 map records with a header. Most are 4 m thick slabs whose inside holds the bottom of a drop, a few metres below the lowest floor. Strong guess: these are the kill volumes, and a living body whose feet enter one dies (`crates/assets/src/map_areas.rs` derives them as `kill_volumes` in `game_map_areas_174.json`, `DERIVATIONS_VERSION` 19; `crates/sim/src/map_areas.rs`, `scene_assets.rs` `fell_out`: damage areas, then kill volumes, then the catch floor on a map with neither, then the lowest triangle). Not read in the client: which query uses category 0x02, and which point of the body it tests (the feet here). The survey below (from the derived pack: the boxes' highest corners, the lowest floor of the AI navigation, and the AI's walkable cells whose estimated floor lies in a box) found walkable cells inside boxes on three maps only. Checked against the collision's own floors: King's Row's are a pocket of the AI map with no links, on the floor of the pit east of the attackers' first spawn (38 cells, -13.2 m, inside the -11.23 m slab), and its other cells' real floors lie above the boxes; King's Row (Uprising) has none; Junkenstein's Revenge has 78 in four 4 by 9 by 4 m boxes (at about (56, 18, -109), (74, 11, -114), (83, 11, -112), (99, 12, -101)) whose floors are walkable for the AI. Assumption: these are closets only the enemies use (Junkenstein's Revenge is not a mode the server plays). The menu maps are left out of the table. `a_fall_off_gibraltar_dies_in_its_kill_volume` checks Gibraltar: the lowest floor (-10.85 m) is safe, -11.6 m above the slab is safe, -11.8 m inside it kills.
+
+  | Map | Record | Damage areas | Kill volume tops (m) | Lowest AI floor (m) | AI cells inside |
+  |---|---|---|---|---|---|
+  | Temple of Anubis | `005B` | 0 | none | -2.44 | 0 |
+  | King's Row | `00D4` | 0 | -11.23, -3.92, -3.31, -1.76, -1.76, -1.76, -1.57 | -12.94 | 107 |
+  | Hanamura | `0165` | 0 | -11.28, -11.28 | -4.89 | 0 |
+  | Watchpoint: Gibraltar | `0184` | 0 | -17.92, -14.26, -11.72 | -10.84 | 0 |
+  | Numbani | `01D4` | 0 | -11.09, -9.89, -9.83, -9.83, -8.92, -5.36, -4.21 | -5.59 | 0 |
+  | Volskaya Industries | `01DB` | 1 | -27.64, -27.64, -7.93, -7.93, -7.93, -7.93, -7.91 | -6.64 | 0 |
+  | Hollywood | `02AF` | 0 | none | -0.35 | 0 |
+  | Dorado | `02C3` | 0 | -7.97 | -1.75 | 0 |
+  | Nepal | `04B7` | 2 | -115.24, -5.92, 115.49 | -102.15 | 0 |
+  | Route 66 | `05BB` | 0 | -17.49, -6.8 | 0.0 | 0 |
+  | Tutorial | `0661` | 0 | none | -26.93 | 0 |
+  | Lijiang Tower | `0662` | 1 | -13.76, 72.83, 238.32 | -27.63 | 0 |
+  | Ilios | `066D` | 3 | -53.74, -10.37, 43.69 | -28.33 | 0 |
+  | Practice Range | `0688` | 0 | none | -8.74 | 0 |
+  | Eichenwalde | `068D` | 2 | -8.03, -6.93, -5.25, -2.72, -1.09 | -1.75 | 0 |
+  | Oasis | `069E` | 5 | -4.65, 0.77, 3.49 | 0.7 | 0 |
+  | Hollywood (Halloween) | `06AB` | 0 | none | -0.35 | 0 |
+  | King's Row (Winter) | `06B1` | 0 | -11.23, -3.92, -3.31, -1.76, -1.76, -1.76, -1.57 | -12.94 | 107 |
+  | Estádio das Rãs | `06B3` | 0 | none | 0.0 | 0 |
+  | Hanamura (Winter) | `06B5` | 0 | -11.28, -11.28 | -4.89 | 0 |
+  | Lijiang Tower (Lunar) | `06B7` | 1 | -13.76, 72.83, 238.32 | -2.79 | 0 |
+  | Junkenstein's Revenge | `06C9` | 1 | -2.72, 15.22, 15.22, 16.39, 22.22 | 5.25 | 78 |
+  | Ecopoint: Antarctica | `06D1` | 0 | none | 3.15 | 0 |
+  | Horizon Lunar Colony | `06D3` | 1 | -6.94 | 2.1 | 0 |
+  | King's Row (Uprising) | `06FE` | 0 | -11.23, -3.92, -3.31, -1.76, -1.76, -1.76, -1.57 | -4.19 | 70 |
+  | Necropolis | `0705` | 1 | -8.91 | -5.94 | 0 |
+  | Black Forest | `070C` | 1 | 4.14 | 9.1 | 0 |
+  | Ecopoint: Antarctica | `070D` | 0 | none | 3.15 | 0 |
+  | Lijiang Garden (Lunar) | `0711` | 1 | -13.76, 72.83, 238.32 | 94.11 | 0 |
+  | Lijiang Night Market (Lunar) | `0712` | 1 | -13.76, 72.83, 238.32 | -2.79 | 0 |
+  | Nepal Sanctum | `0717` | 2 | -5.92, 115.49 | 128.05 | 0 |
+  | Lijiang Control Center (Lunar) | `071A` | 1 | -13.76, 72.83, 238.32 | 264.49 | 0 |
+  | Castillo | `071C` | 1 | 21.56 | 32.19 | 0 |
+  | Nepal Village | `0736` | 1 | -115.24, -5.92, 115.49 | -102.15 | 0 |
+  | Nepal Shrine | `0738` | 2 | -115.24, -5.92, 115.49 | 8.05 | 0 |
+  | Ilios Well | `073A` | 3 | -10.37, 43.69 | -4.89 | 0 |
+  | Ilios Lighthouse | `073D` | 1 | -53.74 | -28.33 | 0 |
+  | Ilios Ruins | `073E` | 1 | 43.69 | 57.38 | 0 |
+  | Lijiang Control Center | `0744` | 1 | -13.76, 72.83, 238.32 | 264.49 | 0 |
+  | Lijiang Garden | `0745` | 1 | -13.76, 72.83, 238.32 | 94.11 | 0 |
+  | Lijiang Night Market | `0746` | 1 | -13.76, 72.83, 238.32 | -2.79 | 0 |
+  | Oasis City Center | `074A` | 3 | -4.65 | 0.7 | 0 |
+  | Oasis Gardens | `074C` | 1 | 0.77 | 2.45 | 0 |
+  | Oasis University | `074D` | 1 | 3.49 | 9.1 | 0 |
+  | Numbani | `0751` | 0 | -11.09, -9.89, -9.83, -9.83, -8.92, -5.36, -4.21 | -5.59 | 0 |
+  | Junkertown | `0756` | 1 | -15.18 | 1.75 | 0 |
+  | Blizzard World | `075E` | 1 | -14.03, -5.89, -5.89 | -4.89 | 0 |
+  | Sydney Harbour Arena Classic | `0793` | 0 | none | 0.0 | 0 |
+  | Rialto (Retribution) | `079F` | 1 | -10.01 | -2.44 | 0 |
+  | Ayutthaya | `07A1` | 0 | -7.08 | -2.79 | 0 |
+  | Château Guillard | `07A4` | 0 | -0.97 | 0.0 | 0 |
+  | Busan | `07E2` | 2 | -7.94, -0.71, 2.6 | 4.9 | 0 |
+  | Eichenwalde (Halloween) | `07F4` | 2 | -8.03, -6.93, -5.25, -2.72, -1.09 | -1.75 | 0 |
+  | Black Forest (Winter) | `07F7` | 1 | 4.14 | 9.1 | 0 |
+  | Nepal Village (Winter) | `07FD` | 1 | -115.24, -5.92, 115.49 | -102.15 | 0 |
+  | Château Guillard (Halloween) | `0836` | 0 | -0.97 | 0.0 | 0 |
+  | Rialto | `0871` | 1 | -3.01, -3.01, -3.01 | -8.04 | 0 |
+  | Petra | `0890` | 1 | -18.5 | -12.94 | 0 |
+  | Paris | `0891` | 0 | 8.37 | 9.1 | 0 |
+  | Busan Stadium Classic | `092A` | 0 | none | 0.0 | 0 |
+  | Busan | `0A14` | 0 | none | — | 0 |
+  | Havana | `0A44` | 0 | -9.7 | 0.35 | 0 |
+  | Blizzard World (Winter) | `0A5B` | 1 | -14.03, -5.89, -5.89 | -4.89 | 0 |
+  | Busan Sanctuary (Lunar) | `0A7A` | 1 | 2.6 | 8.4 | 0 |
+  | Route 66 | `0A84` | 0 | -17.49, -6.8 | — | 0 |
+  | Busan Downtown (Lunar) | `0A86` | 1 | -7.94, -0.71, 2.6 | 4.9 | 0 |
+  | Havana (Storm Rising) | `0AFE` | 0 | -9.7 | -3.49 | 0 |
+  | Workshop Island | `0C40` | 0 | -26.82 | 0.0 | 0 |
+  | Workshop Expanse | `0C44` | 0 | -26.82 | 0.0 | 0 |
+  | Workshop Chamber | `0C48` | 0 | none | 0.0 | 0 |
+  | Workshop Expanse (Night) | `0CD0` | 0 | -26.82 | 0.0 | 0 |
+  | Workshop Island (Night) | `0CD1` | 0 | -26.82 | 0.0 | 0 |
+  | Kanezaka | `0CD3` | 1 | 0.43 | 4.2 | 0 |
+  | Malevento | `0CD7` | 1 | -5.84 | -3.49 | 0 |
+  | Busan Stadium | `0CDC` | 0 | none | 0.0 | 0 |
+  | Sydney Harbour Arena | `0CEB` | 0 | none | 0.0 | 0 |
+  | Workshop Green Screen | `0D4C` | 0 | none | 0.35 | 0 |
+  | Kanezaka | `0D86` | 0 | 0.43 | — | 0 |
+  | Kanezaka | `0DBC` | 0 | 0.43 | — | 0 |
+  | Malevento | `0E49` | 1 | -5.84 | — | 0 |
 
 ## Upstream author's claims (not independently verified)
 

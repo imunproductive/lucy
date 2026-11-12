@@ -43,7 +43,7 @@
 //!   (assumption: off unless a graph turns them on; no graph does here).
 //! - Kill volumes (`game_map_areas` `kill_volumes`): the boxes of the map's
 //!   collision that only query category 0x02 meets (`orpheus_assets`'
-//!   `map_areas` notes), nearly all 4 m thick slabs under a map's drops; 77
+//!   `map_areas` notes), nearly all 4 m thick slabs under a map's drops; 73
 //!   of the 95 map records with a header have them, Watchpoint: Gibraltar,
 //!   Dorado and Route 66 among the maps without damage areas. Strong guess:
 //!   a body that falls off the map dies where it enters one. The slabs are
