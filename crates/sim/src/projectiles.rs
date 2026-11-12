@@ -265,8 +265,9 @@ struct PendingProjectile {
     reports: IndexMap<u32, OwnerReport>,
     creates: IndexMap<u32, LeasedCreate>,
     created_at: Option<u32>,
-    /// The server tick its flight ended ([`OwnerProjectiles::flight_ended`]).
-    flown: Option<u32>,
+    /// The server tick its flight ended, and where it exploded
+    /// ([`OwnerProjectiles::flight_ended`]).
+    flown: Option<(u32, Option<[f32; 3]>)>,
     /// [`ProjectileEvent::Ended`] went.
     ended: bool,
     /// The Biotic Field it leaves, and the shooter's feet when he fired
@@ -290,7 +291,7 @@ impl PendingProjectile {
     /// (projectiles.py `_step`).
     fn due(&self, create: &LeasedCreate) -> Option<u32> {
         self.flown
-            .map(|end| end.saturating_add(create.frame.saturating_sub(self.shot.frame)))
+            .map(|(end, _)| end.saturating_add(create.frame.saturating_sub(self.shot.frame)))
             .or_else(|| {
                 self.created_at.map(|created| {
                     created
@@ -298,6 +299,24 @@ impl PendingProjectile {
                         .saturating_add(RELEASE_MARGIN)
                 })
             })
+    }
+
+    /// Where `create`'s release plays an explosion the client's rocket
+    /// hasn't had yet: where the server's flight exploded for an id of the
+    /// shot's own frame, else out of sight. Python released every id at
+    /// [`projectile_wire::HIDDEN_POSITION`], so a release that came before
+    /// the client's own impact played its explosion there, unseen
+    /// (projectiles.py `RELEASE_POS`: a count above the client's plays one
+    /// more explosion at the state's position). The client flew the id of
+    /// the shot's frame (it shoots at f before it sends command f); an
+    /// alias K it may not have flown, and its unflown entity would play the
+    /// count as a second explosion, so it keeps the hidden place, as does a
+    /// flight that ran out in the air.
+    fn explosion_at(&self, create: &LeasedCreate) -> [f32; 3] {
+        match self.flown {
+            Some((_, Some(point))) if create.frame == self.shot.frame => point,
+            _ => projectile_wire::HIDDEN_POSITION,
+        }
     }
 
     /// No owner frame that reported the shot can still bring an alias: one
@@ -343,7 +362,15 @@ pub enum ProjectileEvent {
     FieldFaded { token: ProjectileToken },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A release: the destroy's projectile state for `frame`, and where an
+/// explosion the client hasn't had yet plays ([`projectile_wire::release`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Explosion {
+    pub frame: u32,
+    pub position: [f32; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ProjectileDelivery {
     Confirm {
         token: ProjectileToken,
@@ -353,7 +380,7 @@ pub enum ProjectileDelivery {
     Destroy {
         token: ProjectileToken,
         entity: u32,
-        explosion_frame: Option<u32>,
+        explosion: Option<Explosion>,
     },
 }
 
@@ -364,14 +391,14 @@ impl ProjectileDelivery {
                 entity, definition, ..
             } => Ok(projectile_wire::confirmation(entity, definition)),
             Self::Destroy {
-                entity,
-                explosion_frame,
-                ..
+                entity, explosion, ..
             } => Ok(EntityUpdate {
                 entity,
                 operation: Some(Operation::Destroy),
-                ch2: explosion_frame
-                    .map(|frame| projectile_wire::release(frame, 1))
+                ch2: explosion
+                    .map(|explosion| {
+                        projectile_wire::release(explosion.frame, 1, explosion.position)
+                    })
                     .transpose()?,
                 ..EntityUpdate::default()
             }),
@@ -567,11 +594,14 @@ impl OwnerProjectiles {
         })
     }
 
-    /// The server's flight of the shot ended at server tick `tick`
+    /// The server's flight of the shot ended at server tick `tick`, with
+    /// its explosion at `exploded` (none: it ran out in the air)
     /// (projectiles.py `flown`): each confirmed id's release is due then,
     /// later by its lease frame's offset from the shot's frame: K − f for
     /// an alias of an owner frame that came at command frame K, as the
-    /// client may have shot it at K (`_confirm`).
+    /// client may have shot it at K (`_confirm`). The release of an id of
+    /// the shot's frame plays an explosion the client's rocket hasn't had
+    /// yet there (`PendingProjectile::explosion_at`).
     ///
     /// Python's due is `start + ceil(seconds * 1000 / 16) + RELEASE_MARGIN`
     /// with `start` = K or f, then at least the match tick. K and f are the
@@ -583,8 +613,10 @@ impl OwnerProjectiles {
     /// margin is needed, as the server runs command f only after the client
     /// sent it, so its flight ends at least the one-way delay after the
     /// client's rocket hit, and the release reaches the client about a
-    /// round trip after that.
-    pub fn flight_ended(&mut self, token: ProjectileToken, tick: u32) {
+    /// round trip after that. Where the flights differ (a bot that walks, or
+    /// stands where the client doesn't show it yet), the release can come
+    /// first; its explosion then plays where the server's exploded.
+    pub fn flight_ended(&mut self, token: ProjectileToken, tick: u32, exploded: Option<Vec3>) {
         let Some(pending) = self
             .pending
             .iter_mut()
@@ -593,7 +625,8 @@ impl OwnerProjectiles {
             return;
         };
         if pending.flown.is_none() && pending.field.is_none() && !pending.spawning {
-            pending.flown = Some(tick);
+            let point = exploded.map(|point| point.map(|value| value as f32));
+            pending.flown = Some((tick, point));
         }
     }
 
@@ -671,8 +704,10 @@ impl OwnerProjectiles {
                 out.push(ProjectileDelivery::Destroy {
                     token,
                     entity,
-                    explosion_frame: (create.arrived && !pending.spawning)
-                        .then(|| tick.saturating_add(RELEASE_AHEAD)),
+                    explosion: (create.arrived && !pending.spawning).then(|| Explosion {
+                        frame: tick.saturating_add(RELEASE_AHEAD),
+                        position: pending.explosion_at(&create),
+                    }),
                 });
                 retired = true;
             }
@@ -682,7 +717,7 @@ impl OwnerProjectiles {
             let unconfirmable = pending.creates.is_empty()
                 && pending
                     .flown
-                    .is_some_and(|end| tick >= end.saturating_add(DELIVERY_GRACE));
+                    .is_some_and(|(end, _)| tick >= end.saturating_add(DELIVERY_GRACE));
             if (retired || unconfirmable) && !pending.ended {
                 pending.ended = true;
                 events.push(ProjectileEvent::Ended {
@@ -803,7 +838,7 @@ fn retire(
         out.push(ProjectileDelivery::Destroy {
             token: pending.token,
             entity,
-            explosion_frame: None,
+            explosion: None,
         });
     }
 }
@@ -1525,8 +1560,12 @@ impl ObservedProjectile {
             }
             if !self.pending_create {
                 let ch2 = (source_live && self.explode && launched).then(|| {
-                    projectile_wire::release(tick.wrapping_add(RELEASE_AHEAD), 1)
-                        .expect("a one-impact release fits its fields")
+                    projectile_wire::release(
+                        tick.wrapping_add(RELEASE_AHEAD),
+                        1,
+                        projectile_wire::HIDDEN_POSITION,
+                    )
+                    .expect("a one-impact release fits its fields")
                 });
                 out.push(ObservedOut::Destroy(EntityUpdate {
                     entity: self.entity,
@@ -1586,6 +1625,18 @@ mod tests {
     const CANISTER: u64 = 0x0400_0000_0000_072d;
     const VISOR: u64 = 0x0400_0000_0000_1c86;
     const HELIX: u64 = 0x0400_0000_0000_072c;
+    /// Where the server's flight of a test shot ended.
+    const LANDED: Vec3 = [4.0, 0.5, -2.25];
+    const HIDDEN: Vec3 = [0.0, -1000.0, 0.0];
+
+    /// The release at `tick`, playing an explosion the client hasn't had yet
+    /// at `position`.
+    fn explosion(tick: u32, position: Vec3) -> Option<Explosion> {
+        Some(Explosion {
+            frame: tick + RELEASE_AHEAD,
+            position: position.map(|value| value as f32),
+        })
+    }
 
     fn shot(frame: u32) -> ShotEvent {
         ShotEvent {
@@ -1760,12 +1811,14 @@ mod tests {
         tracker.owner_arrival(3, true);
         tracker.owner_arrival(4, true);
         assert_eq!(tracker.advance(frame + 5, frame + 5), [confirm(alias)]);
-        tracker.flight_ended(token, frame + 5);
+        tracker.flight_ended(token, frame + 5, Some(LANDED));
         tracker.create_arrived(token, original);
+        // The own id's release plays an explosion the client's rocket
+        // hasn't had yet where the server's ended; the alias's out of sight.
         let destroy = |entity, tick: u32| ProjectileDelivery::Destroy {
             token,
             entity,
-            explosion_frame: Some(tick + RELEASE_AHEAD),
+            explosion: explosion(tick, if entity == original { LANDED } else { HIDDEN }),
         };
         assert_eq!(
             tracker.advance(frame + 6, frame + 6),
@@ -1825,13 +1878,13 @@ mod tests {
         );
         tracker.owner_arrival(2, true);
         assert!(tracker.advance(frame + 3, frame + 3).is_empty());
-        tracker.flight_ended(token, frame + 4);
+        tracker.flight_ended(token, frame + 4, Some(LANDED));
         tracker.create_arrived(token, ids[0]);
         tracker.create_arrived(token, ids[1]);
         let destroy = |entity, tick: u32| ProjectileDelivery::Destroy {
             token,
             entity,
-            explosion_frame: Some(tick + RELEASE_AHEAD),
+            explosion: explosion(tick, LANDED),
         };
         // Due when the flight ended: they were all leased at the shot's frame.
         let due = frame + 4;
@@ -1881,7 +1934,7 @@ mod tests {
             |_, _| true,
         );
         tracker.owner_arrival(2, false);
-        tracker.flight_ended(token, frame + 2);
+        tracker.flight_ended(token, frame + 2, Some(LANDED));
         let grace = frame + 2 + DELIVERY_GRACE;
         assert!(tracker.advance(grace - 1, grace - 1).is_empty());
         assert_eq!(
@@ -1889,7 +1942,7 @@ mod tests {
             [ProjectileDelivery::Destroy {
                 token,
                 entity,
-                explosion_frame: None
+                explosion: None
             }]
         );
         tracker.create_arrived(token, entity);
@@ -1927,7 +1980,7 @@ mod tests {
             }]
         );
         tracker.create_arrived(token, entity);
-        tracker.flight_ended(token, frame + 5);
+        tracker.flight_ended(token, frame + 5, Some(LANDED));
         let due = created + 20 + RELEASE_MARGIN;
         assert!(tracker.advance(due - 1, due - 1).is_empty());
         assert_eq!(
@@ -1935,7 +1988,7 @@ mod tests {
             [ProjectileDelivery::Destroy {
                 token,
                 entity,
-                explosion_frame: None
+                explosion: None
             }]
         );
         assert_eq!(
@@ -1950,7 +2003,9 @@ mod tests {
     /// The release is due when the server's flight ends, on the server's
     /// clock. The client's command frames run ahead of the server's ticks
     /// (here by 10: the server ran command `frame` at tick 990), and its
-    /// lead no longer delays the release, nor does Python's margin.
+    /// lead no longer delays the release, nor does Python's margin. Should
+    /// the release come before the client's own rocket hit, its explosion
+    /// plays where the server's ended.
     #[test]
     fn a_flown_release_is_due_when_the_servers_flight_ends() {
         let frame = 1000;
@@ -1976,13 +2031,13 @@ mod tests {
         );
         tracker.create_arrived(token, entity);
         assert!(tracker.advance(999, 999).is_empty(), "still flying");
-        tracker.flight_ended(token, 1000);
+        tracker.flight_ended(token, 1000, Some(LANDED));
         assert_eq!(
             tracker.advance(1000, 1000),
             [ProjectileDelivery::Destroy {
                 token,
                 entity,
-                explosion_frame: Some(1000 + RELEASE_AHEAD)
+                explosion: explosion(1000, LANDED)
             }]
         );
     }
@@ -1991,7 +2046,9 @@ mod tests {
     /// that introduced the volley (`_confirm`), K − f after the shot's frame
     /// f: that rocket then hits that much later, so the alias's release
     /// waits as long after the server's flight ends; the shot's own id goes
-    /// when the flight ends.
+    /// when the flight ends. The own id's explosion, should the client's
+    /// rocket not have hit yet, plays where the server's ended; the alias's
+    /// out of sight, as the client may not have flown it.
     #[test]
     fn an_aliased_release_waits_for_its_frames_offset() {
         let frame = 1000;
@@ -2009,15 +2066,18 @@ mod tests {
         assert_eq!(tracker.advance(992, 992).len(), 2);
         tracker.create_arrived(token, original);
         tracker.create_arrived(token, alias);
-        tracker.flight_ended(token, 1000);
-        let destroy = |entity, tick: u32| ProjectileDelivery::Destroy {
+        tracker.flight_ended(token, 1000, Some(LANDED));
+        let destroy = |entity, tick: u32, position| ProjectileDelivery::Destroy {
             token,
             entity,
-            explosion_frame: Some(tick + RELEASE_AHEAD),
+            explosion: explosion(tick, position),
         };
-        assert_eq!(tracker.advance(1000, 1000), [destroy(original, 1000)]);
+        assert_eq!(
+            tracker.advance(1000, 1000),
+            [destroy(original, 1000, LANDED)]
+        );
         assert!(tracker.advance(1002, 1002).is_empty());
-        assert_eq!(tracker.advance(1003, 1003), [destroy(alias, 1003)]);
+        assert_eq!(tracker.advance(1003, 1003), [destroy(alias, 1003, HIDDEN)]);
     }
 
     /// projectiles.py's Biotic Field numbers.
@@ -2152,7 +2212,7 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(
             destroy(&out[0]).ch2.as_ref().unwrap().as_bytes(),
-            projectile_wire::release(1010 + RELEASE_AHEAD, 1)
+            projectile_wire::release(1010 + RELEASE_AHEAD, 1, projectile_wire::HIDDEN_POSITION)
                 .unwrap()
                 .as_bytes()
         );
@@ -2275,7 +2335,7 @@ mod tests {
             [ProjectileDelivery::Destroy {
                 token,
                 entity: canister,
-                explosion_frame: None,
+                explosion: None,
             }]
         );
         assert_eq!(

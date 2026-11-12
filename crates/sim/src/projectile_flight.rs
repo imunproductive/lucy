@@ -56,6 +56,9 @@ pub struct FlightStep {
 #[derive(Debug, PartialEq)]
 pub struct FlightEnd {
     pub point: Vec3,
+    /// It ended with its explosion (it hit something or its fuse ran
+    /// out), not by running out of range or lifetime in the air.
+    pub exploded: bool,
     /// Seconds from the launch to the end, a fuse included.
     pub travelled: f64,
     /// The velocity its explosion adds to its shooter's own body
@@ -296,6 +299,7 @@ impl ProjectileFlight {
         self.ended = true;
         FlightEnd {
             point: self.position,
+            exploded: self.exploded,
             travelled: self.travelled,
             knockback: None,
         }

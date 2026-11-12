@@ -2665,8 +2665,8 @@ impl WorldDelivery {
             };
             match result {
                 Ok(None) => true,
-                Ok(Some(_)) => {
-                    projectiles.flight_ended(token, tick);
+                Ok(Some(end)) => {
+                    projectiles.flight_ended(token, tick, end.exploded.then_some(end.point));
                     false
                 }
                 Err(_) => {

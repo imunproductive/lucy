@@ -270,6 +270,9 @@ struct WorldRecord {
     skin: Option<(u32, bool)>,
     script: Option<ReceivedChunk>,
     projectile_release: Option<u32>,
+    /// The release state's position: where an explosion the client's own
+    /// projectile hasn't had yet plays.
+    release_position: Option<[f32; 3]>,
     /// The channel-2 shot records' projectile ids (projectiles.py
     /// `shot_events`): a launch the other clients see.
     launches: Vec<u32>,
@@ -437,6 +440,7 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
                 skin: None,
                 script: None,
                 projectile_release: None,
+                release_position: None,
                 launches: Vec::new(),
                 base_health: None,
                 updated: None,
@@ -469,10 +473,7 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
                 assert_eq!(reader.var_b().unwrap(), u32::MAX);
                 record.projectile_release = Some(reader.var_b().unwrap());
                 assert_eq!(reader.bits(2).unwrap(), 0);
-                assert_eq!(
-                    std::array::from_fn::<_, 3, _>(|_| reader.f32().unwrap()),
-                    [0.0, -1000.0, 0.0]
-                );
+                record.release_position = Some(std::array::from_fn(|_| reader.f32().unwrap()));
                 assert_eq!(reader.bits(5).unwrap(), 0);
                 assert!(reader.bit().unwrap()); // impact count is present
                 assert!(reader.bit().unwrap()); // short count
@@ -2765,30 +2766,38 @@ fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_
 /// client holds the explosion until the destroy with the release state
 /// arrives (072C: `m_delayCollisionEffectsBasedOnLatency`), so that destroy
 /// must follow the server's impact (25001's impact frame `0x84`, the server
-/// tick of the hit) closely. The client leads the packet frame by `LEAD`
+/// tick of the hit) closely. The client leads the packet frame by `lead`
 /// frames, as the real client does (`correction.rs`: at most 16), and runs
 /// three commands a datagram, as the server sends one every `SEND_EVERY`
 /// ticks.
 ///
-/// The shot's own id is released at the impact tick, an alias K − f later
-/// (an owner frame that introduced the volley, at K after the shot's frame
-/// f; the server runs a datagram's three commands in one go, so its owner
-/// frame reports the last of them), each with the next send frame. After
-/// each datagram the client sends its frames up to the packet frame +
-/// `LEAD`, three at a time; the shot's frame comes 60 frames (a multiple of
-/// `SEND_EVERY`) after the first batch's last, so it is the last of its
-/// three: K = f, and the release goes with the first send frame from the
-/// impact's tick. The rocket flies 8 m (10 ticks at 50 m/s), long enough
-/// for its confirmation to arrive first. Before, the release waited for
-/// the shot's command frame plus the flight plus 6, compared with server
-/// ticks: `LEAD` + 6 ticks after the impact at least.
+/// The timeline of a shot, from the server tick T of the datagram after
+/// which the client sent the shot's command (the client simulates that
+/// frame then): the server runs the command before tick T + 1, its first
+/// flight step flies a whole tick, so its rocket leaves at T as the
+/// client's does; the confirmation goes with the next send frame, T + 3;
+/// the rocket hits the bot 8 m ahead (7.6 m to its shapes, 9.1 ticks at
+/// 50 m/s) in tick T + 10, whatever the lead; the release goes with the
+/// first send frame from there, T + 12. So the server adds less than a tick
+/// to the client's own flight, and the rest is the send cadence (at most
+/// `SEND_EVERY` − 1 ticks) and the trip to the client. The shot's frame
+/// comes 60 frames after the batch's last, so it is the last of its three:
+/// K = f. Before, the release waited for the shot's command frame plus the
+/// flight plus 6, compared with server ticks: `lead` + 6 ticks after the
+/// impact at least.
+///
+/// The second shot, 16 frames ahead, loses the datagram with its
+/// confirmation (T + 3): the next ACK shows it lost, the create goes again
+/// with the send frame after (T + 9) and arrives before the impact, so the
+/// release still goes at T + 12 with its explosion. Each release carries
+/// the server's impact point, on the bot, where an explosion the client's
+/// rocket hasn't had yet plays (before, out of sight at y −1000).
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
     use orpheus_sim::scene_assets::SceneAssets;
     use orpheus_wire::commands::SECONDARY;
     const HELIX: u32 = 0x072c;
-    const LEAD: u32 = 8;
     const AHEAD: f64 = 8.0;
 
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
@@ -2805,63 +2814,117 @@ fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
                 .find(|bot| bot.spawn.team == 1 && !bot.spawn.firing && bot.spawn.route.is_empty())
                 .unwrap();
             bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
-            aim = Some((bot.entity, (yaw * 65536.0 / 360.0).round() as i32 as i16));
+            aim = Some((
+                bot.entity,
+                bot.position,
+                (yaw * 65536.0 / 360.0).round() as i32 as i16,
+            ));
         });
-    let (bot, yaw) = aim.unwrap();
-    // The client's command frames run LEAD ahead of the last packet frame.
-    let mut next = soldier.tick + 1;
-    let fire = soldier.tick + LEAD + 60;
-    let mut command = |soldier: &mut Watcher| {
-        while next <= soldier.tick + LEAD {
-            let buttons = if next == fire { SECONDARY } else { 0 };
-            soldier
-                .client
-                .send(ACK, command_batch(next, 1, yaw, buttons, false));
-            next += 1;
-        }
-    };
+    let (bot, at, yaw) = aim.unwrap();
     let leased = |entity: u32| (0xa010_0000..0xc000_0000).contains(&entity);
-    let deadline = server.now() + Duration::from_secs(10);
-    let (impact, release) = loop {
-        assert!(server.now() < deadline, "waiting for the Helix release");
-        command(&mut soldier);
-        soldier.pump(&schemas);
-        let hit_bot = |fields: &Fields| {
-            let Value::Struct(impact) = &fields[&0x78] else {
-                return false;
-            };
-            matches!(&impact[&0], Value::Struct(target)
-                if target[&0] == Value::Unsigned(u64::from(bot)))
+    let hit_bot = |fields: &Fields| {
+        let Value::Struct(impact) = &fields[&0x78] else {
+            return false;
         };
-        let impact = soldier.datagrams.iter().find_map(|(messages, _)| {
-            messages
-                .iter()
-                .find(|message| message.id == 25001 && hit_bot(&message.fields))
-                .map(|message| message.fields[&0x84].clone())
-        });
-        let confirmed = soldier.find(0, |record| {
-            leased(record.entity) && record.definition == Some(HELIX)
-        });
-        let release = confirmed.and_then(|confirmed| {
-            soldier.find(confirmed, |record| {
-                leased(record.entity)
-                    && record.operation == Some(3)
-                    && record.projectile_release.is_some()
-            })
-        });
-        if let (Some(impact), Some(release)) = (impact, release) {
-            break (impact, release);
+        matches!(&impact[&0], Value::Struct(target)
+            if target[&0] == Value::Unsigned(u64::from(bot)))
+    };
+    let mut next = soldier.tick + 1;
+    // The client's command frames run `lead` ahead of the last packet frame.
+    // The second shot comes after Helix's 6 s cooldown, and its client
+    // misses the datagram with the confirmation.
+    for (lead, lose_confirmation) in [(8, false), (16, true)] {
+        let fire = soldier.tick + lead + 60;
+        let from = soldier.datagrams.len();
+        let mut sent = None;
+        let mut lost = None;
+        let deadline = server.now() + Duration::from_secs(10);
+        let (impact, confirmed, release) = loop {
+            assert!(server.now() < deadline, "waiting for the Helix release");
+            while next <= soldier.tick + lead {
+                let buttons = if next == fire { SECONDARY } else { 0 };
+                if next == fire {
+                    sent = Some(soldier.tick);
+                }
+                soldier
+                    .client
+                    .send(ACK, command_batch(next, 1, yaw, buttons, false));
+                next += 1;
+            }
+            let packet = soldier.client.receive();
+            if lose_confirmation
+                && lost.is_none()
+                && world_records(&schemas, &packet)
+                    .iter()
+                    .any(|record| leased(record.entity) && record.definition == Some(HELIX))
+            {
+                lost = Some(tick_of(&packet));
+                continue;
+            }
+            soldier.record(&schemas, &packet);
+            let impact = soldier.datagrams[from..].iter().find_map(|(messages, _)| {
+                messages
+                    .iter()
+                    .find(|message| message.id == 25001 && hit_bot(&message.fields))
+                    .map(|message| message.fields[&0x84].clone())
+            });
+            let confirmed = soldier.find(from, |record| {
+                leased(record.entity) && record.definition == Some(HELIX)
+            });
+            let release = confirmed.and_then(|confirmed| {
+                soldier.find(confirmed, |record| {
+                    leased(record.entity)
+                        && record.operation == Some(3)
+                        && record.projectile_release.is_some()
+                })
+            });
+            if let (Some(impact), Some(confirmed), Some(release)) = (impact, confirmed, release) {
+                break (impact, confirmed, release);
+            }
+        };
+        let Value::Unsigned(impact) = impact else {
+            panic!("impact frame")
+        };
+        let sent = sent.unwrap();
+        let position = soldier.datagrams[release]
+            .1
+            .iter()
+            .find_map(|record| record.release_position)
+            .unwrap();
+        let resent = lost.map(|lost| (lost, soldier.ticks[confirmed]));
+        assert_eq!(
+            (
+                lost.is_none().then(|| soldier.ticks[confirmed]),
+                resent,
+                u32::try_from(impact).unwrap(),
+                soldier.ticks[release]
+            ),
+            (
+                (!lose_confirmation).then_some(sent + SEND_EVERY),
+                lose_confirmation.then_some((sent + SEND_EVERY, sent + 3 * SEND_EVERY)),
+                sent + 10,
+                sent + 12
+            ),
+            "lead {lead}: the command sent after tick {sent}"
+        );
+        // On the bot's shapes: within 0.6 m of its axis, below its 2.6 m top.
+        let [x, y, z] = position.map(f64::from);
+        assert!(
+            (x - at[0]).hypot(z - at[2]) < 0.6 && (at[1]..at[1] + 2.6).contains(&y),
+            "released at {position:?}, the bot at {at:?}"
+        );
+        // Helix Rockets' 6 s cooldown.
+        let ready = server.now() + Duration::from_millis(6500);
+        while server.now() < ready {
+            while next <= soldier.tick + lead {
+                soldier
+                    .client
+                    .send(ACK, command_batch(next, 1, yaw, 0, false));
+                next += 1;
+            }
+            soldier.pump(&schemas);
         }
-    };
-    let Value::Unsigned(impact) = impact else {
-        panic!("impact frame")
-    };
-    let impact = u32::try_from(impact).unwrap();
-    assert_eq!(
-        soldier.ticks[release],
-        send_frame_from(impact),
-        "the impact at {impact}"
-    );
+    }
     server.stop().unwrap();
 }
 
