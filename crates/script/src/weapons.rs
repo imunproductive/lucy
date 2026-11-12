@@ -196,6 +196,25 @@ pub struct DamageFalloff {
     pub floor: f64,
 }
 
+/// The critical multiplier of a hit definition that names none
+/// (`m_A872C70E` absent). Read from the 104319 volleys (no client code
+/// read): the hits that leave it out are those of the weapons that score
+/// headshots, Cassidy's Peacekeeper (`01D2`), Tracer's pistols, Hanzo's
+/// arrows, Genji's shuriken, Mei's icicle, Torbjörn's rivets and the rest;
+/// the ones that can't (Pharah's rockets, Junkrat's grenades, the Helix
+/// Rockets, Fan the Hammer, Ana's darts, Moira's orbs) set it to 1. Every
+/// hero body's head zone says 2 (`hitboxes.rs`), as do the hits that name
+/// it (Soldier: 76's rifle outside Tactical Visor). Python fell back to 1,
+/// and to 2 for Cassidy's primary and Mei's icicle alone (leafall903/ORPHEUS
+/// (MIT) `combat.py` `hit_def`, `mccree.py` `critical_default`).
+pub const DEFAULT_CRITICAL: f64 = 2.0;
+
+/// The hit definition field that scales its critical multiplier when it
+/// is above 0: 0 on every 104319 hit but Widowmaker's scoped shot (`001B`),
+/// 1.25, which makes its headshot the public 2.5 times (assumption: read
+/// from that one use).
+const CRITICAL_SCALE: &str = "m_BC54C84B";
+
 impl HitDefinition {
     pub fn from_authored(
         config: &Json,
@@ -231,10 +250,14 @@ impl HitDefinition {
             }
             _ => None,
         };
+        let scale = number(field(config, CRITICAL_SCALE)?)
+            .filter(|scale| *scale > 0.0)
+            .unwrap_or(1.0);
+        let critical = number(field(config, "m_A872C70E")?).unwrap_or(DEFAULT_CRITICAL) * scale;
         Ok(Some(Self {
             amount,
             loadout,
-            critical: number(field(config, "m_A872C70E")?).unwrap_or(1.0),
+            critical,
             falloff,
             tags: DamageTags::from_authored(modify, &mut evaluate),
             allies: ally_hits(config),
@@ -762,8 +785,22 @@ mod tests {
                 defaults.falloff,
                 defaults.tags
             ),
-            (0.0, None, 1.0, None, DamageTags::default())
+            (0.0, None, DEFAULT_CRITICAL, None, DamageTags::default())
         );
+        // A hit that can't score a headshot says 1; the scale above 0 (the
+        // scoped Widow's Kiss) multiplies the multiplier, named or not.
+        let critical = |config| {
+            HitDefinition::from_authored(&config, |value| evaluate(value, &mut EmptyContext))
+                .unwrap()
+                .unwrap()
+                .critical
+        };
+        let scale = |value| json!({"$": "STUConfigVarFloat", "m_value": value});
+        assert_eq!(
+            critical(json!({"m_A872C70E": int(1), "m_BC54C84B": scale(0.0)})),
+            1.0
+        );
+        assert_eq!(critical(json!({"m_BC54C84B": scale(1.25)})), 2.5);
     }
 
     /// The Biotic Rifle's hit filter (`0B94` st5 and st44, `m_DBAC4DDB`):
@@ -854,6 +891,45 @@ mod tests {
                 (0x0b97, 1, "m_6396149F", AllyHits::Hurt, 0.0),
             ]
         );
+    }
+
+    /// The direct hits' critical multipliers in the install, by graph and
+    /// node: Cassidy's Peacekeeper (`01D2` node 31) names none, so it scores
+    /// 2 times on the head, and Fan the Hammer (node 37) says 1;
+    /// Widowmaker's scoped shot scores 2.5 and her automatic fire 2
+    /// (`001B`); Hanzo's arrows score 2 (`00B9`); Soldier: 76's rifle scores
+    /// 2 outside Tactical Visor (`0254` node 25: `842 ? 1 : 2`, the visor's
+    /// variable reads nothing here); Pharah's rocket (`0023`), the Helix
+    /// Rocket (`0254` node 38) and Ana's darts (`0B94`) say 1.
+    #[test]
+    #[ignore = "requires the derived 104319 statescript catalog"]
+    fn direct_hits_take_their_critical_multiplier_from_the_data() {
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let graphs =
+            crate::graph::GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap();
+        let multipliers = |index| {
+            let graph = graphs.graph(index).unwrap();
+            let mut found: Vec<_> = graph
+                .nodes
+                .iter()
+                .filter_map(|node| {
+                    let config = node.field("m_6396149F")?;
+                    let hit = HitDefinition::from_authored(config, |value| {
+                        Ok(evaluate(value, &mut EmptyContext).unwrap_or(Value::Null))
+                    })
+                    .unwrap()?;
+                    Some((node.pos, hit.critical))
+                })
+                .collect();
+            found.sort_by_key(|&(pos, _)| pos);
+            found
+        };
+        assert_eq!(multipliers(0x01d2), [(31, 2.0), (37, 1.0)]);
+        assert_eq!(multipliers(0x001b), [(9, 2.0), (19, 2.5)]);
+        assert_eq!(multipliers(0x00b9), [(5, 2.0), (114, 2.0)]);
+        assert_eq!(multipliers(0x0023), [(8, 1.0)]);
+        assert_eq!(multipliers(0x0254), [(25, 2.0), (38, 1.0)]);
+        assert_eq!(multipliers(0x0b94), [(7, 1.0), (88, 1.0)]);
     }
 
     /// Graph `0034` node 51's `STU_082FA44E` reads its tunable's value from

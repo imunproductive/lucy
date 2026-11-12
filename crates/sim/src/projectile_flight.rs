@@ -10,9 +10,14 @@
 //! body, until its fuse ends and it explodes there. A body with hit shapes
 //! is met by its shapes, as a shot meets it ([`TargetPose::entry`]): the
 //! sweep and an explosion's distance; others by the reference's capsule. A
-//! projectile is swept as a point (the ballistics have no radius to grow
-//! the shapes by, and the reference swept points too). An explosion also
-//! hurts and pushes its own shooter ([`ProjectileFlight::own_blast`]).
+//! direct hit on the head is critical as a shot's is ([`TargetPose::head`];
+//! the reference did so for Mei's icicle alone, `combat.py`
+//! `projectile_headshot`): Hanzo's arrows and Genji's shuriken score
+//! headshots, a rocket whose hit says 1 doesn't. A projectile is swept as a
+//! point: no 104319 volley or projectile entity gives a collision size (the
+//! rockets', arrows' and shuriken's models list no shapes), and the
+//! reference swept points too. An explosion also hurts and pushes its own
+//! shooter ([`ProjectileFlight::own_blast`]).
 
 use crate::hitscan::{Impact, TargetPose};
 use orpheus_core::tick::TICK_PERIOD;
@@ -203,27 +208,33 @@ impl ProjectileFlight {
         Ok(0.0)
     }
 
-    /// What it hit `distance` into this sweep: the direct hit's damage to a
-    /// struck body, then it sticks, or it ends with its explosion. The
-    /// direct hit falls off with the distance flown, its seconds in flight
-    /// times its speed (leafall903/ORPHEUS (MIT) `combat.py` `_fly`, commit
-    /// b3c5138: Doomfist's 6 damage is 3.9 at 23 m and 1.8 at 35 m).
+    /// What it hit `distance` into this sweep (the body and how it entered
+    /// it, [`TargetPose::entry`]), now at its position: the direct hit's
+    /// damage to a struck body, then it sticks, or it ends with its
+    /// explosion. The direct hit falls off with the distance flown, its
+    /// seconds in flight times its speed (leafall903/ORPHEUS (MIT)
+    /// `combat.py` `_fly`, commit b3c5138: Doomfist's 6 damage is 3.9 at
+    /// 23 m and 1.8 at 35 m), and scores its critical multiplier on the
+    /// head.
     fn hit(
         &mut self,
         distance: f64,
-        target: Option<u32>,
+        target: Option<Struck>,
         targets: &[(u32, TargetPose)],
         step: &mut FlightStep,
     ) {
-        if let (Some(entity), Some(direct)) = (
+        let entity = target.map(|(entity, _)| entity);
+        if let (Some((entity, entered)), Some(direct)) = (
             target,
             self.ballistics.direct.filter(|hit| hit.amount > 0.0),
         ) {
+            let head =
+                pose_of(targets, entity).is_some_and(|pose| pose.head(entered, self.position[1]));
             step.impacts.push(Impact {
                 entity,
                 distance,
-                damage: direct.damage_at(self.travelled * self.ballistics.speed, false),
-                critical: false,
+                damage: direct.damage_at(self.travelled * self.ballistics.speed, head),
+                critical: head && direct.critical > 1.0,
                 loadout: direct.loadout,
                 tags: direct.tags,
                 heal: direct.ally_heal(),
@@ -233,13 +244,13 @@ impl ProjectileFlight {
             self.explode(targets, step);
             return;
         };
-        let offset = target
+        let offset = entity
             .and_then(|entity| pose_of(targets, entity))
             .map_or([0.0; 3], |pose| {
                 std::array::from_fn(|axis| self.position[axis] - pose.feet[axis])
             });
         self.stuck = Some(Stuck {
-            entity: target,
+            entity,
             offset,
             fuse,
         });
@@ -348,20 +359,23 @@ impl ProjectileFlight {
     }
 }
 
-/// The closest body or surface along a sweep: its distance and the body.
+/// A body a sweep struck, and how it entered it ([`TargetPose::entry`]).
+type Struck = (u32, Option<bool>);
+
+/// The closest body or surface along a sweep: its distance, and the body
+/// it struck.
 fn closest(
     origin: Vec3,
     direction: Vec3,
     reach: f64,
     targets: &[(u32, TargetPose)],
     wall: &mut impl FnMut(Vec3, Vec3, f64) -> Result<Option<f64>, IndexError>,
-) -> Result<Option<(f64, Option<u32>)>, IndexError> {
+) -> Result<Option<(f64, Option<Struck>)>, IndexError> {
     let mut closest = None;
     for (entity, target) in targets {
-        if let Some((distance, _)) = target.entry(origin, direction, reach) {
-            let entity = *entity;
+        if let Some((distance, entered)) = target.entry(origin, direction, reach) {
             if closest.is_none_or(|(best, _)| distance < best) {
-                closest = Some((distance, Some(entity)));
+                closest = Some((distance, Some((*entity, entered))));
             }
         }
     }
@@ -711,6 +725,9 @@ mod tests {
     /// A body with hit shapes is met by them: a bolt passing 0.4 m from its
     /// one 0.3 m sphere flies by, where the capsule (0.5 m) caught it; one
     /// at the sphere stops on its surface, and its blast there is at 0 m.
+    /// A direct hit that scores headshots (2, as Genji's shuriken) doubles
+    /// on a critical shape, and on the capsule at or above the eye less
+    /// 0.2 m (1.35 m up), not below; the Helix Rocket's (1) never does.
     #[test]
     fn a_body_with_shapes_is_swept_and_blasted_by_its_shapes() {
         use crate::hitboxes::HitShape;
@@ -739,6 +756,31 @@ mod tests {
         let struck = fly(0.0, &shaped);
         assert_eq!(damage(&struck), [(4, 40.0), (4, 80.0)]);
         assert!((struck.end.unwrap().point[0] - 4.7).abs() < 1e-9);
+        assert!(struck.impacts.iter().all(|impact| !impact.critical));
+        let shuriken = |y, body: &TargetPose| {
+            let ballistics = ProjectileBallistics {
+                direct: Some(HitDefinition {
+                    critical: 2.0,
+                    ..hit(30.0)
+                }),
+                blast: None,
+                ..helix()
+            };
+            let mut flight =
+                ProjectileFlight::new(ballistics, [0.0, y, 0.0], [1.0, 0.0, 0.0], Some(1000))
+                    .unwrap();
+            let step = (1001..1200)
+                .map(|tick| flight.advance(tick, &[(4, body.clone())], no_wall).unwrap())
+                .find(|step| step.end.is_some())
+                .unwrap();
+            let [impact] = step.impacts[..] else {
+                panic!("{step:?}");
+            };
+            (impact.damage, impact.critical)
+        };
+        assert_eq!(shuriken(1.0, &shaped), (60.0, true));
+        assert_eq!(shuriken(1.4, &target(5.0, 0.0)), (60.0, true));
+        assert_eq!(shuriken(1.0, &target(5.0, 0.0)), (30.0, false));
     }
 
     /// The Pulse Bomb sticks to the bot it hits (5 damage), rides along as

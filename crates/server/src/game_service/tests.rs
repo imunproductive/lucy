@@ -1949,7 +1949,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
         .unwrap();
     assert_eq!(
         create.components.as_deref().and_then(filter),
-        Some((26, vec![Some(DecodedField::Id(0x0100_0041))]))
+        Some((26, vec![Some(DecodedField::Id(0x0001_0000_0100_0041))]))
     );
     let dead = |watcher: &Watcher| {
         watcher
@@ -1958,7 +1958,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
                     && record.operation == Some(2)
                     && record.components.as_deref().and_then(first_pool) == Some(0.0)
                     && record.components.as_deref().and_then(filter)
-                        == Some((26, vec![Some(DecodedField::Id(0x0100_0051))]))
+                        == Some((26, vec![Some(DecodedField::Id(0x0001_0000_0100_0051))]))
             })
             .is_some()
     };
