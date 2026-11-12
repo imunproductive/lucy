@@ -44,7 +44,10 @@ fn deliver(world: &mut WorldDelivery) -> Vec<EntityUpdate> {
 fn script_chunks(updates: &[EntityUpdate]) -> Vec<u32> {
     updates
         .iter()
-        .filter(|update| update.chunk.is_some() && update.entity & 0xf000_0000 == 0xc000_0000)
+        .filter(|update| {
+            update.chunk.is_some()
+                && (crate::bots::BOT_CONTROLLER_ENTITY..0xa000_0000).contains(&update.entity)
+        })
         .map(|update| update.entity)
         .collect()
 }
