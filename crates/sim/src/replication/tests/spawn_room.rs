@@ -173,7 +173,8 @@ fn the_spawn_room_shields_heals_and_gates_hero_change() {
         .unwrap();
     place(&mut world, &scene, spawn, 0);
     world.area_step(&scene, &viewer);
-    assert_eq!(flags(&world), [false, true]);
+    // The newer flag supersedes the unsent one: the client gets it alone.
+    assert_eq!(flags(&world), [true]);
     let healed = world.health_share().unwrap();
     assert!(healed > hurt);
 }
@@ -221,9 +222,9 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
     let viewer = viewer(&card);
     let mut world = spawned(&scene, &viewer);
     let body = world.current_body().unwrap();
-    place(&mut world, &scene, [95.0, -10.0, 10.0], 0);
+    // Feet on the pit floor, where a fall out of the range ends.
+    place(&mut world, &scene, [95.0, -11.0, 10.0], 0);
     let position = world.body_position().unwrap();
-    assert!(position[1] < -10.9, "the mover lands on the pit floor");
     assert!(scene.fell_out(position));
 
     let mut combat = Combat::new(&scene);

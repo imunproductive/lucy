@@ -2092,8 +2092,7 @@ fn walking_out_of_the_spawn_room_clears_the_hero_select_flag() {
 
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
-    let spawn = scene.map().spawn_point(0, 0).unwrap().0;
-    let bot = scene.bots()[0].position;
+    let facing = scene.map().spawn_point(0, 0).unwrap().1;
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let tag = "walker#1111";
@@ -2159,9 +2158,8 @@ fn walking_out_of_the_spawn_room_clears_the_hero_select_flag() {
             record.entity == owner && record.updated == Some(74)
         })
     };
-    // He runs toward the first bot, out on the range.
-    let [dx, _, dz] = std::array::from_fn::<_, 3, _>(|axis| bot[axis] - spawn[axis]);
-    let yaw = (dx.atan2(dz) * 32768.0 / std::f64::consts::PI).round() as i32 as i16;
+    // He runs the way the spawn point faces, out of the room.
+    let yaw = (facing * 65536.0 / 360.0).round() as i32 as i16;
     let mut frame = walker.tick + 1;
     let deadline = server.now() + Duration::from_secs(30);
     while flag(&walker).is_none() {
