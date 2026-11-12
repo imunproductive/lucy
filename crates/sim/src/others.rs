@@ -46,7 +46,10 @@ use crate::{
         DELIVERY_GRACE, FiredProjectile, ObservedOut, ObservedProjectile, ProjectileToken,
     },
     replication::{BODY_REUSE_DELAY, BodyId, Lifetime, kill_feed_fresh},
-    scene::{PlayerAppearance, PlayerCard, Possession, player_create, player_team_bit},
+    scene::{
+        PlayerAppearance, PlayerCard, Possession, body_filter, filter_component, player_create,
+        player_team_bit,
+    },
 };
 use orpheus_content::{heroes::Hero, maps::GameMap};
 use orpheus_core::bits::BitWriter;
@@ -753,7 +756,7 @@ impl Others {
             self.ensure_body(context, other, &mut output)?;
         }
         for other in others() {
-            self.send_health(other, &mut output);
+            self.send_health(context.map, other, &mut output)?;
         }
         if context.frames {
             self.movements = others()
@@ -1109,7 +1112,10 @@ impl Others {
             BodyCreate {
                 entity: body.id.entity,
                 hero: body.hero,
-                team_bit: player_team_bit(context.map, other.team)?,
+                filter: body_filter(
+                    player_team_bit(context.map, other.team)?,
+                    body.vitals.and_then(Vitals::death).is_some(),
+                ),
                 position: body.pose.position,
                 yaw: body.pose.yaw,
                 skin: body.skin,
@@ -1138,29 +1144,40 @@ impl Others {
     }
 
     /// combat.py `_send_health`: the body's pools when they changed since
-    /// what this client has, once its create arrived.
-    fn send_health(&mut self, other: &PlayerView<'_>, output: &mut ShowOutput) {
+    /// what this client has, once its create arrived; with a death, its
+    /// filter bits that say it is dead (`scene` module notes).
+    fn send_health(
+        &mut self,
+        map: &GameMap,
+        other: &PlayerView<'_>,
+        output: &mut ShowOutput,
+    ) -> io::Result<()> {
         let Some(body) = other.body.as_ref().filter(|_| other.entered.is_some()) else {
-            return;
+            return Ok(());
         };
         let Some(vitals) = body.vitals else {
-            return;
+            return Ok(());
         };
         let Some(seen) = self
             .seen
             .get_mut(&body.id.entity)
             .filter(|seen| seen.id == body.id && seen.lifetime == Lifetime::Live && seen.arrived)
         else {
-            return;
+            return Ok(());
         };
         if seen.health == body.health {
-            return;
+            return Ok(());
+        }
+        let mut components = vec![vitals.component()];
+        if vitals.death().is_some() {
+            let team = player_team_bit(map, other.team)?;
+            components.push(filter_component(body_filter(team, true)));
         }
         seen.health = body.health;
         output.records.push((
             EntityUpdate {
                 entity: body.id.entity,
-                operation: Some(Operation::Update(vec![vitals.component()])),
+                operation: Some(Operation::Update(components)),
                 ..EntityUpdate::default()
             },
             OtherDelivery::Health {
@@ -1168,6 +1185,7 @@ impl Others {
                 revision: body.health,
             },
         ));
+        Ok(())
     }
 
     /// Everything this client had of the others is gone with its world.

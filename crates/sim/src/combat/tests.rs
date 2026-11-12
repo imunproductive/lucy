@@ -124,6 +124,19 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
             })
         );
         assert_eq!(scene.bots()[slot].dead, terminal);
+        // Its pools for every client; with the killing hit, the filter bits
+        // of a dead body (`scene` module notes).
+        let Some(Operation::Update(components)) = &result.health.operation else {
+            panic!("the hit's health update");
+        };
+        let indices: Vec<u8> = components.iter().map(|component| component.index).collect();
+        assert_eq!(indices, if terminal { vec![51, 26] } else { vec![51] });
+        if terminal {
+            assert_eq!(
+                components[1],
+                crate::scene::filter_component(0x0100_0000 | 0x41 | 0x10)
+            );
+        }
     }
     assert!(
         combat

@@ -479,6 +479,7 @@ fn body(id: BodyId) -> Body {
         id,
         hero: 7,
         skin: SkinTheme::default(),
+        team_bit: 0x80_0000,
     }
 }
 
