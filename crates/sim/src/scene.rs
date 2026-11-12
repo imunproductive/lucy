@@ -47,9 +47,10 @@
 //!   with bit 48 too, a Training Bot was not hit by the client's own shots
 //!   (Soldier: 76's bullets and Ana's darts left a hole and the map's
 //!   impact sound on the wall behind it, Helix Rockets flew through it),
-//!   though the server hit it. The filter bits were not the cause; what
-//!   else differs is in `bots.rs` `Bot::record_due` (each bot's movement
-//!   record was sent only about once a second while it rested).
+//!   though the server hit it. The filter bits were not the cause; nor was
+//!   the record cadence (`bots.rs` `Bot::record_due`: every frame now, and
+//!   Helix Rockets then hit, but bullets still did not). The bots' entity
+//!   id class is the lead now (`bots.rs` module notes).
 //! - Component 29 (MPlayerComponentData): the player's 16-byte id, BattleTag
 //!   (the client names the entity by it), level, and on a competitive card
 //!   the rank (m_rankedLevel, m_heroicRank, m_rankedLevelTier), which the team
@@ -302,7 +303,8 @@ pub fn mode_create(mode: u64) -> EntityUpdate {
 /// has them ([`BotPlate::pools`]), and its filter bits.
 pub fn bot_create(bot: &Bot, plate: &BotPlate) -> io::Result<EntityUpdate> {
     let pools = plate.pools(&Vitals::new(bot.spawn.health, 0.0, 0.0));
-    let mut definition = Create::new(bot.spawn.body, vec![pools, bot_filter(bot)?]);
+    let body = BOT_BODY.unwrap_or(bot.spawn.body);
+    let mut definition = Create::new(body, vec![pools, bot_filter(bot)?]);
     definition.position = bot.position.map(|position| position as f32);
     definition.rotation = yaw_rotation(bot.yaw.round_ties_even());
     Ok(create(bot.entity, definition))
@@ -403,6 +405,27 @@ pub fn bot_filter(bot: &Bot) -> io::Result<Component> {
     )))
 }
 
+/// A debugging switch: `ORPHEUS_DEBUG_BOT_BODY=<hex GUID>` creates every
+/// training bot with that body definition instead of its own (the server
+/// still runs its own body's scripts and shapes). ow1-preservation's bots,
+/// which took the client's bullets, were `04000000000014D2`; ours are
+/// `1403`/`14ED`, which carry first-person and weapon components that
+/// `14D2` has not.
+pub static BOT_BODY: std::sync::LazyLock<Option<u64>> = std::sync::LazyLock::new(|| {
+    let text = std::env::var("ORPHEUS_DEBUG_BOT_BODY").ok()?;
+    let body = u64::from_str_radix(text.trim().trim_start_matches("0x"), 16);
+    match body {
+        Ok(body) => {
+            tracing::warn!("debugging: training bots created as body {body:016X}");
+            Some(body)
+        }
+        Err(_) => {
+            tracing::warn!("ORPHEUS_DEBUG_BOT_BODY: not a hex GUID: {text:?}");
+            None
+        }
+    }
+});
+
 fn invalid(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
@@ -455,8 +478,11 @@ mod tests {
         // The Python reference's world has no stand-in controllers: each
         // bot's controller comes right after its body here. Its bots' filter
         // bits were their team bit alone; ours add the body's kind (module
-        // notes). The other records match the Python frame byte for byte.
+        // notes). Its bots were `0xC0001000 + n`; ours are in id class 0
+        // (`bots.rs` module notes). The other records match the Python frame
+        // byte for byte.
         let updates = initial_world(&map, &player, board, &bots, &BotPlate::default()).unwrap();
+        const PYTHON_BOT_ENTITY: u32 = 0xc000_1000;
         let controllers = BOT_CONTROLLER_ENTITY..BOT_ENTITY;
         let python: Vec<_> = updates
             .iter()
@@ -469,6 +495,7 @@ mod tests {
                     let filter = &mut create.components[1];
                     assert_eq!(*filter, filter_component(team | BODY_KINDS));
                     *filter = filter_component(team);
+                    update.entity = update.entity - BOT_ENTITY + PYTHON_BOT_ENTITY;
                 }
                 update
             })
@@ -482,7 +509,7 @@ mod tests {
             GAME_MODE_ENTITY,
         ]
         .into_iter()
-        .chain(BOT_ENTITY..BOT_ENTITY + 15)
+        .chain(PYTHON_BOT_ENTITY..PYTHON_BOT_ENTITY + 15)
         .collect();
         assert_eq!(
             python

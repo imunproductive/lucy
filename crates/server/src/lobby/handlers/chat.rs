@@ -1,7 +1,8 @@
 //! Chat: channel messages (21700, 21701), whispers (27004), the `.hero`,
-//! `.leave` and `.plate` commands a player types in any chat while in a match, and the
-//! match chat a player leaves when its game is back in the menu. Ports
-//! `ow174/lobby/handlers/chat.py` and the chat part of `server.py` game_left.
+//! `.leave` and `.plate` commands a player types in any chat while in a
+//! match, and the match chat a player leaves when its game is back in the
+//! menu. Ports `ow174/lobby/handlers/chat.py` and the chat part of
+//! `server.py` game_left.
 
 use std::{io, sync::Arc};
 

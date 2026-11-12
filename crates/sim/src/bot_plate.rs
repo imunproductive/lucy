@@ -756,8 +756,8 @@ impl BotPlate {
     /// The fields after the pools that this plate or `previous` sets; one
     /// only `previous` set goes as 0.
     fn fill_trailer(&self, pools: &mut Component, previous: &[Option<u32>; TRAILER]) {
-        for slot in 0..TRAILER {
-            let Some(value) = self.trailer[slot].or(previous[slot].map(|_| 0)) else {
+        for (slot, previous) in previous.iter().enumerate() {
+            let Some(value) = self.trailer[slot].or(previous.map(|_| 0)) else {
                 continue;
             };
             pools

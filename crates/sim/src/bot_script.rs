@@ -858,13 +858,13 @@ fn tune(
         PlateVariable::Nameplate(id) => body.set_nameplate_variable(id, value),
     };
     for (variable, value) in plate.variables() {
-        if !originals.contains_key(&variable) {
-            let had = match variable {
+        originals.entry(variable).or_insert_with(|| {
+            match variable {
                 PlateVariable::Entity(id) => body.entity_variable(id),
                 PlateVariable::Nameplate(id) => body.nameplate_variable(id),
-            };
-            originals.insert(variable, had.cloned());
-        }
+            }
+            .cloned()
+        });
         set(body, variable, value.clone())?;
     }
     let dropped: Vec<PlateVariable> = originals
