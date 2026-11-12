@@ -887,7 +887,7 @@ impl Bot {
         fresh
     }
 
-    /// Whether a send frame at `tick` carries the bot's movement record:
+    /// Whether the datagram of `tick` carries the bot's movement record:
     /// every one, once a respawned bot's create had time to arrive
     /// (`records_from`). Retail's Practice Range sent every bot's record in
     /// every frame, idle or not (module notes). Python (bots.py

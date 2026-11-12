@@ -58,12 +58,6 @@ pub(crate) struct Lockstep {
 
 impl Lockstep {
     pub(crate) fn new(schemas: Arc<Schemas>) -> io::Result<Self> {
-        Self::with_send_every(schemas, orpheus_core::tick::SEND_EVERY)
-    }
-
-    /// A service that sends each client a datagram every `every` ticks (the
-    /// `ORPHEUS_SEND_EVERY` switch).
-    pub(crate) fn with_send_every(schemas: Arc<Schemas>, every: u32) -> io::Result<Self> {
         check_schemas(&schemas)?;
         let poll = Poll::new()?;
         let wake = Arc::new(Waker::new(poll.registry(), REQUESTS)?);
@@ -73,7 +67,6 @@ impl Lockstep {
         // The first tick runs at once, as the real loop's first pass does,
         // before any request.
         let mut game = GameLoop::new(schemas);
-        game.state.clock = super::GameClock::new(every);
         settle(&mut game, &wire, &receiver, Duration::ZERO)?;
         let stopping = Arc::new(AtomicBool::new(false));
         let worker = thread::Builder::new().name("orpheus-game".into()).spawn({

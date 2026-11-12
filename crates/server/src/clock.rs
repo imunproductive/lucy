@@ -10,11 +10,11 @@
 use std::time::Duration;
 
 use crate::connection::{HANDOFF_TIME, LEAVE_GRACE};
-use orpheus_core::tick::{FIRST_TICK, MAX_LEASE_FRAME, SEND_EVERY, TICK_PERIOD};
+use orpheus_core::tick::{FIRST_TICK, MAX_LEASE_FRAME, TICK_PERIOD};
 
 const CLOCK_DRAIN_TICKS: u32 = (HANDOFF_TIME.as_millis() + LEAVE_GRACE.as_millis())
     .div_ceil(TICK_PERIOD.as_millis()) as u32
-    + SEND_EVERY;
+    + 1;
 pub const MAX_SIMULATION_TICK: u32 = MAX_LEASE_FRAME - CLOCK_DRAIN_TICKS;
 
 /// Skip ticks strictly behind the monotonic clock after processing the current one.
@@ -32,15 +32,13 @@ pub fn next_tick_after(due: Duration, now: Duration) -> Option<(Duration, u64)> 
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Step {
-    Simulate {
-        frame: u32,
-        send_world: bool,
-    },
+    /// A simulated tick; its datagram goes to every client.
+    Simulate { frame: u32 },
+    /// A drain tick: no simulation; a datagram unless `force`d.
     Drain {
         frame: u32,
         entered: bool,
         force: bool,
-        send_reliable: bool,
     },
 }
 
@@ -48,51 +46,18 @@ pub enum Step {
 pub struct GameClock {
     frame: u32,
     drain_ticks_left: Option<u32>,
-    /// Ticks between the datagrams to each client ([`send_every`]).
-    send_every: u32,
 }
 
 impl Default for GameClock {
     fn default() -> Self {
-        Self::new(SEND_EVERY)
-    }
-}
-
-/// The debugging switch `ORPHEUS_SEND_EVERY` (1 to 3): ticks between the
-/// datagrams to each client. Unset: [`SEND_EVERY`], Python's cadence.
-/// Assumption to test in game: the 1.74 client takes a datagram every tick,
-/// as retail's "high bandwidth" (63 updates a second, PC default since
-/// August 2016) sent.
-pub fn send_every() -> u32 {
-    static EVERY: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
-        let Ok(value) = std::env::var("ORPHEUS_SEND_EVERY") else {
-            return SEND_EVERY;
-        };
-        match value.trim().parse() {
-            Ok(every @ 1..=3) => {
-                tracing::warn!("debugging: a datagram to each client every {every} tick(s)");
-                every
-            }
-            _ => {
-                tracing::warn!(
-                    "ORPHEUS_SEND_EVERY: {value:?} is not 1, 2 or 3; using {SEND_EVERY}"
-                );
-                SEND_EVERY
-            }
-        }
-    });
-    *EVERY
-}
-
-impl GameClock {
-    pub fn new(send_every: u32) -> Self {
         Self {
             frame: FIRST_TICK,
             drain_ticks_left: None,
-            send_every: send_every.max(1),
         }
     }
+}
 
+impl GameClock {
     pub fn frame(self) -> u32 {
         self.frame
     }
@@ -106,10 +71,8 @@ impl GameClock {
             .saturating_add(missed)
             .saturating_add(1);
         if self.drain_ticks_left.is_none() && candidate <= u64::from(MAX_SIMULATION_TICK) {
-            let frame = candidate as u32;
-            let send_world = frame / self.send_every > self.frame / self.send_every;
-            self.frame = frame;
-            return Step::Simulate { frame, send_world };
+            self.frame = candidate as u32;
+            return Step::Simulate { frame: self.frame };
         }
 
         let entered = self.drain_ticks_left.is_none();
@@ -125,7 +88,6 @@ impl GameClock {
             frame: self.frame,
             entered,
             force,
-            send_reliable: !force && self.frame % self.send_every == 0,
         }
     }
 
@@ -134,7 +96,7 @@ impl GameClock {
         if !self.draining() || connections_pending || reports_pending {
             return false;
         }
-        *self = Self::new(self.send_every);
+        *self = Self::default();
         true
     }
 }
@@ -165,35 +127,19 @@ mod tests {
     }
 
     #[test]
-    fn sends_once_for_every_update_that_crosses_a_world_boundary() {
-        let mut clock = GameClock {
-            frame: 1001,
-            ..GameClock::default()
-        };
-        let sent: Vec<_> = [0, 3, 2, 2, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0]
+    fn skips_the_missed_ticks_and_sends_once_a_step() {
+        // Each step runs frame + missed + 1, and each simulated step is one
+        // datagram: from 1000, missing 0, 3 and 0 ticks runs (and sends)
+        // 1001, 1001 + 3 + 1 = 1005 and 1006.
+        let mut clock = GameClock::default();
+        let frames: Vec<_> = [0, 3, 0]
             .into_iter()
-            .filter_map(|missed| match clock.step(missed, true) {
-                Step::Simulate {
-                    frame,
-                    send_world: true,
-                } => Some(frame),
-                _ => None,
+            .map(|missed| match clock.step(missed, true) {
+                Step::Simulate { frame } => frame,
+                step => panic!("{step:?}"),
             })
             .collect();
-        assert_eq!(sent, [1002, 1006, 1009, 1012, 1014, 1022, 1023, 1026, 1029]);
-        // ORPHEUS_SEND_EVERY=1: every tick sends, run or skipped to.
-        let mut clock = GameClock::new(1);
-        let sent: Vec<_> = [0, 3, 0]
-            .into_iter()
-            .filter_map(|missed| match clock.step(missed, true) {
-                Step::Simulate {
-                    frame,
-                    send_world: true,
-                } => Some(frame),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(sent, [FIRST_TICK + 1, FIRST_TICK + 5, FIRST_TICK + 6]);
+        assert_eq!(frames, [FIRST_TICK + 1, FIRST_TICK + 5, FIRST_TICK + 6]);
     }
 
     #[test]
@@ -208,7 +154,6 @@ mod tests {
                 frame: MAX_LEASE_FRAME - 1,
                 entered: true,
                 force: false,
-                send_reliable: (MAX_LEASE_FRAME - 1) % SEND_EVERY == 0,
             }
         );
         assert_eq!(
@@ -217,7 +162,6 @@ mod tests {
                 frame: MAX_LEASE_FRAME,
                 entered: false,
                 force: false,
-                send_reliable: MAX_LEASE_FRAME % SEND_EVERY == 0,
             }
         );
         assert_eq!(
@@ -226,7 +170,6 @@ mod tests {
                 frame: MAX_LEASE_FRAME,
                 entered: false,
                 force: true,
-                send_reliable: false,
             }
         );
         assert!(!clock.renew_if_idle(true, false));
