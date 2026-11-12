@@ -3757,11 +3757,12 @@ fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
                 .unwrap();
             if watcher.owner != healer.owner {
                 let lived = watcher.ticks[gone] - watcher.ticks[create];
-                // The cast arrives at tick T's time, after that tick: the
-                // create goes in the next tick's datagram, T + 1. The field
-                // ends FIELD_TICKS ticks after T, T + 313, and its destroy
-                // goes in that tick's datagram: 312 ticks after the create.
-                assert_eq!(lived, FIELD_TICKS - 1, "the field lived {lived} ticks");
+                // FieldSchedule::step: the field opens at its start tick S
+                // (the cast's first update + FIELD_DELAY) and expires at
+                // S + FIELD_TICKS. The create is queued at S and the destroy
+                // at S + FIELD_TICKS, and each goes in its own tick's
+                // datagram: FIELD_TICKS ticks apart.
+                assert_eq!(lived, FIELD_TICKS, "the field lived {lived} ticks");
             }
         }
     }
