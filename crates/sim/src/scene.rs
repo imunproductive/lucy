@@ -139,7 +139,7 @@ pub fn bot_controller_create(bot: &Bot, slot: usize) -> io::Result<EntityUpdate>
     use ComponentValue::*;
     let entity = bot_controller_entity(slot)?;
     let account = BOT_ACCOUNT + (entity - BOT_CONTROLLER_ENTITY);
-    let components = vec![
+    let mut components = vec![
         fields(26, vec![Some(Id(team_bit(bot.spawn.team)?))]),
         fields(
             29,
@@ -148,8 +148,10 @@ pub fn bot_controller_create(bot: &Bot, slot: usize) -> io::Result<EntityUpdate>
                 Some(Text(bot.spawn.name.clone())),
             ],
         ),
-        possession_link(bot.entity),
     ];
+    if bot_controllers_linked() {
+        components.push(possession_link(bot.entity));
+    }
     let mut definition = Create::new(PLAYER_DEFINITION, components);
     definition.flags = PLAYER_PATH | WITH_TRANSFORM | WITH_SCALE;
     Ok(create(entity, definition))
@@ -384,10 +386,54 @@ pub fn filter_component(bits: u64) -> Component {
 
 /// A training bot's filter bits component now: dead or alive.
 pub fn bot_filter(bot: &Bot) -> io::Result<Component> {
-    Ok(filter_component(body_filter(
-        team_bit(bot.spawn.team)?,
-        bot.dead,
-    )))
+    let mut bits = body_filter(team_bit(bot.spawn.team)?, bot.dead);
+    if BOT_LOOK.no_hero_bit {
+        bits &= !HERO;
+    }
+    Ok(filter_component(bits))
+}
+
+/// The hero kind bit of [`BODY_KINDS`].
+const HERO: u64 = 0x1;
+
+/// A debugging switch: `ORPHEUS_DEBUG_BOT_LOOK` lists changes to what the
+/// clients learn about the training bots, to find which one makes the
+/// client draw a bot's nameplate and health bar in a player's style (a bar
+/// before the name, black outlines on the bar; `docs/notes/behavior.md`):
+/// `no-hero-bit` leaves the hero bit (0x1) out of the bots' filter bits
+/// (component 26); `no-controller` leaves the stand-in controllers' link to
+/// their body (component 44) out, so no player possesses a bot body (and
+/// "ELIMINATED" names no bot).
+#[derive(Default)]
+struct BotLook {
+    no_hero_bit: bool,
+    no_controller: bool,
+}
+
+static BOT_LOOK: std::sync::LazyLock<BotLook> = std::sync::LazyLock::new(|| {
+    let Ok(list) = std::env::var("ORPHEUS_DEBUG_BOT_LOOK") else {
+        return BotLook::default();
+    };
+    let mut look = BotLook::default();
+    for item in list
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        match item {
+            "no-hero-bit" => look.no_hero_bit = true,
+            "no-controller" => look.no_controller = true,
+            other => tracing::warn!("ORPHEUS_DEBUG_BOT_LOOK: unknown change {other:?}"),
+        }
+    }
+    tracing::warn!("debugging: training bots changed by {list:?}");
+    look
+});
+
+/// Whether the stand-in controllers link to their bot's body (see
+/// [`BotLook`]).
+pub fn bot_controllers_linked() -> bool {
+    !BOT_LOOK.no_controller
 }
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {
