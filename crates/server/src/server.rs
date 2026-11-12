@@ -487,8 +487,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
-    fn native_server_logs_in_saved_profile_and_loads_practice_over_udp() {
+    #[ignore = "serial: asserts the server stops within 3 s, which other tests' load stretches; requires the game data derived from a 1.74 install (just test-game <install>)"]
+    fn serial_native_server_logs_in_saved_profile_and_loads_practice_over_udp() {
         use crate::server::{Server, ServerConfig};
         use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MAP};
         use orpheus_core::bits::BitReader;
@@ -512,6 +512,7 @@ mod tests {
         config.game_port = Some(0);
         config.stall_port = 0;
         config.rpc_port = 0;
+        config.dashboard_port = Some(0);
         // A game on this PC is sent to the address it reached, not the public one.
         config.game_host = "games.example".into();
         if !SceneAssets::load(&runtime)

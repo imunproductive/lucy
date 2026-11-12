@@ -762,8 +762,8 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
 }
 
 #[test]
-#[ignore = "requires a derived 104319 Practice Range scene"]
-fn prepared_world_waits_for_ownership_and_retries_baselines_before_scripts() {
+#[ignore = "serial: expects exact datagrams whose contents depend on how far the server's ticks have run when the test's packets arrive (no owner correction beside the reopened hero selection), which other tests' load shifts; requires a derived 104319 Practice Range scene"]
+fn serial_prepared_world_waits_for_ownership_and_retries_baselines_before_scripts() {
     exercise_prepared_world(PreparedFixture::Stock);
 }
 
@@ -3777,8 +3777,8 @@ fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
 /// open after a pick with the skin selector on, and closes when the 30 s are
 /// up. A third player then joins the running match and sees the others.
 #[test]
-#[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR); runs over 30 s"]
-fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
+#[ignore = "slow: builds Workshop Chamber's collision and plays the 30 s team assembly in real time; requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+fn slow_a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
     use orpheus_content::{heroes::SOLDIER, maps::MapCatalog, parameters::PICK_HERO};
     use orpheus_script::wire::{Value as ScriptValue, Variables};
     use orpheus_sim::{controller::Controller, scene_assets::SceneAssets};
@@ -4088,8 +4088,8 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
 /// attacker captures them standing where he spawns: walking 125 m to A
 /// needs the movement the test client doesn't play.
 #[test]
-#[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR); builds Anubis' collision once"]
-fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
+#[ignore = "slow: plays a whole Assault match in real time at 1/10 scale on Anubis' collision (built once); requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+fn slow_an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
     use orpheus_content::{
         heroes::SOLDIER,
         maps::{MapCatalog, ObjectiveKind},
@@ -4587,8 +4587,8 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
 /// test client plays no movement. Team 0 can only take A if the side swap
 /// moved him.
 #[test]
-#[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR); builds Anubis' collision once"]
-fn a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
+#[ignore = "slow: plays both sides of a whole Competitive Assault match in real time at 1/50 scale on Anubis' collision (built once); requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR)"]
+fn slow_a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms() {
     use orpheus_content::{
         heroes::SOLDIER,
         maps::{MapCatalog, ObjectiveKind, SpawnChoice},

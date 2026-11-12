@@ -47,8 +47,8 @@ Do not run the full game-install suites (`just test-game`, `just test-slow`) for
 | `just test` | `cargo test --workspace --locked` | The public tests |
 | `just dashboard-test` | `node --test web/tests/test_dashboard_client.mjs` | The dashboard JavaScript test |
 | `just build` | `cargo build --workspace --release --locked` | Release build of `orpheus.exe` and `owwfd_relay.dll` |
-| `just test-game <install>` | ignored tests with `ORPHEUS_GAME_DIR`, optimised, without the slow group | Tests that read the install; the integrator runs them after a batch of merges |
-| `just test-slow <install>` | ignored `slow_` tests, optimised | The game-install tests that run over a minute; the integrator runs them with `test-game` |
+| `just test-game <install>` | ignored tests with `ORPHEUS_GAME_DIR`, optimised, without the slow group, side by side; then the `serial_` tests one at a time | Tests that read the install; the integrator runs them after a batch of merges |
+| `just test-slow <install>` | ignored `slow_` tests, optimised | The game-install tests that play a whole match or run over a minute; the integrator runs them with `test-game` |
 | `just test-named <install> <crate> <filter> [gametest]` | ignored tests of one crate whose names contain the filter; debug build unless `gametest` is given | The game-install tests of the area you work on |
 | `just test-assets <install> <pack>` | ignored `matches_the_pack` tests of `orpheus-assets` | Derivations against a prepared pack |
 | `just test-datatool <install> <dump>` | ignored `datatool` tests of `orpheus-stu` | The asset reader against a DataTool export |
@@ -75,9 +75,11 @@ The recipe builds the relay, sets `ORPHEUS_GAME_DIR` and runs every ignored test
 
 `just test-game` and `just test-slow` build with the Cargo profile `gametest` (in `Cargo.toml`). It optimises every crate as the release profile does, but it keeps the debug assertions and overflow checks. So the VM still refuses statescript content it does not implement, as in `cargo test`. Each game-install test, run alone, takes about half the time of a debug build; the `sim` tests take a third. The build goes to `target/gametest`, apart from the debug build. The first `gametest` build compiles everything once (about 7 minutes); after a change in `sim` it takes about two minutes.
 
+The game-install recipes run the tests side by side, half as many at a time as the PC has CPU threads (`RUST_TEST_THREADS`). Each such test keeps a game server thread busy in real time beside its own, and holds about 0.7 GB; with one test per CPU thread, a PC with 16 threads and 16 GB ran out of memory, and the tests' waits for datagrams timed out. A loopback test binds `127.0.0.1:0`, so the system gives it a free port, and writes only to its own temporary folder (`tempfile::tempdir()`). So the tests don't take each other's ports or files, and they run while a server listens on the default ports. A new test must do the same. Only the derived game data in `target/orpheus-test-data` and its collision caches are shared; a map's collision is built once per process, whichever test asks first.
+
 #### Slow tests
 
-A game-install test that runs for more than about 60 seconds in the `gametest` build is in the slow group:
+A game-install test that plays a whole match in real time, or runs for more than about 60 seconds in the `gametest` build, is in the slow group:
 
 - Its name starts with `slow_`. `just test-game` skips the names that contain `slow_` (`--skip slow_`); `just test-slow` runs only them. Do not use `slow_` in the name of another ignored test.
 - Its `#[ignore]` reason starts with `slow:` and says why it is slow.
@@ -85,6 +87,15 @@ A game-install test that runs for more than about 60 seconds in the `gametest` b
 ```powershell
 just test-slow C:\Games\Overwatch
 ```
+
+#### Serial tests
+
+The load of other tests stretches real time: the game server skips the ticks it falls behind on. A game-install test whose assertion depends on that timing (a window of ticks or milliseconds, or the exact contents of a datagram) is in the serial group:
+
+- Its name starts with `serial_`. `just test-game` runs the other tests first, then the `serial_` tests one at a time (`--test-threads=1`). Do not use `serial_` in the name of another ignored test.
+- Its `#[ignore]` reason starts with `serial:` and says which timing it depends on.
+
+Do not lengthen such a window to make a test pass in parallel. A wait that only gives something time to happen, with no timing asserted, is not a window: make it longer instead. `just test-named` runs a `serial_` test together with the others its filter matches; give its full name to run it alone.
 
 ### 3. Assets oracle
 

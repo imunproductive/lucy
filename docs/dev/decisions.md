@@ -120,7 +120,7 @@ The last differing test, `TakeOutTests::test_a_player_taken_out_before_his_game_
 | `test_game_owner_delta_loss.py` | covered | script `stream/tests.rs::older_positive_ack_keeps_newer_lost_changes...`, `a_superseded_owner_report_still_resolves...` |
 | `test_game_packet_budget.py` | covered | wire `entity/tests.rs::budget_reuses_trimmed_space...`, `record_cap_keeps_fifo...`; sim `egress/tests.rs` (8), `replication/tests.rs::owner_correction_respects_create_budget...` |
 | `test_game_projectiles.py` | covered | sim `projectiles.rs` (9), `projectile_wire.rs` (4); server `another_client_sees_a_players_helix_rocket` (ignored) |
-| `test_game_repeated_lifecycles.py` | covered | sim `replication/tests.rs::ring_reuses_only_acknowledged_destroy...`; server `prepared_world_waits_for_ownership_and_retries_baselines_before_scripts` (ignored) |
+| `test_game_repeated_lifecycles.py` | covered | sim `replication/tests.rs::ring_reuses_only_acknowledged_destroy...`; server `serial_prepared_world_waits_for_ownership_and_retries_baselines_before_scripts` (ignored) |
 | `test_game_replay_manifest.py` | dropped | LOCAL_REPLAY_MANIFEST_V1 research format |
 | `test_game_script_faults.py` | ported | sim `body_script/fault_tests.rs::an_exhausted_weapon_stops_the_body_before_combat_consumes_its_shots` |
 | `test_game_script_replication.py` | dropped | Tests the `research_runtime` replication path (body.py diagnostic/experimental modes); the observer death is covered by server `a_player_kills_another...` |
@@ -141,7 +141,7 @@ The last differing test, `TakeOutTests::test_a_player_taken_out_before_his_game_
 | `test_lineup.py` | covered | lobby `lineup.rs::roster_slots_count_within_each_team`, `the_messages_encode_with_the_lobby_schemas`; sim `instance.rs::instance_preserves_ranked_type...` |
 | `test_lobby_matches.py` | covered | lobby `session/tests.rs::negotiates_pings_and_accepts_practice_messages_after_login`; server `practice.rs::practice_request_hands_off...` |
 | `test_lobby_purchase.py` | covered | lobby `collection.rs` (asserts the 24306 unlock); server `server.rs::lobby_services_answer_the_game...` (ignored); dashboard `a_purchase_charges_its_own_currency...` |
-| `test_lobby_smoke.py` | covered | lobby `session/tests.rs::prepared_subset_matches_the_python_login_in_wire_order` (ignored); server `native_server_logs_in_saved_profile...` (ignored) |
+| `test_lobby_smoke.py` | covered | lobby `session/tests.rs::prepared_subset_matches_the_python_login_in_wire_order` (ignored); server `serial_native_server_logs_in_saved_profile...` (ignored) |
 | `test_lootbox.py` | covered | lobby `lootbox/tests.rs` (6, e.g. `an_event_box_draws_its_first_slot_from_the_event...`, `the_box_messages_match_python`) |
 | `test_matchmaker.py` | covered | lobby `matchmaker.rs` (12, e.g. `a_party_stays_on_one_team...`, `flex_players_take_the_role_that_is_missing`); `handoff.rs::uses_the_reached_address...` |
 | `test_menu_npc.py` | covered | lobby `menu.rs::player_portrait_and_event_model_keep_their_separate_choices` |

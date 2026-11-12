@@ -94,8 +94,6 @@ pub struct SceneAssets {
     /// navigation (`orpheus_physics::nav::file`).
     runtime: PathBuf,
     build_collision: Option<Arc<CollisionBuild>>,
-    /// One cache build at a time (collision.py `_building`).
-    building: Mutex<()>,
     mode_props: BTreeMap<u64, BTreeSet<u64>>,
     graphs: Arc<GraphStore>,
     codecs: Option<Arc<CodecTable>>,
@@ -218,7 +216,6 @@ impl SceneAssets {
             collision: runtime.join("collision"),
             runtime: runtime.to_path_buf(),
             build_collision: None,
-            building: Mutex::new(()),
             mode_props: read_mode_props(&data.join("collision_props_174.json"))?,
             melee: melee_states(&graphs)?.into(),
             mode_graph_values: ModeGraphValues::read(&graphs)?,
@@ -443,8 +440,12 @@ impl SceneAssets {
         if cache_version(path) == Some(VERSION) {
             return Ok(());
         }
-        let _building = self
-            .building
+        // One cache build at a time in the process (collision.py
+        // `_building`, a module lock), whichever assets ask: two sets that
+        // share a cache folder, as tests side by side do, build a missing map
+        // once rather than both into the same file.
+        static BUILDING: Mutex<()> = Mutex::new(());
+        let _building = BUILDING
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cache_version(path) == Some(VERSION) {
