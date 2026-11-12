@@ -913,9 +913,10 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         assert!(client.now() < deadline, "waiting for baseline retransmit");
     }
     // The rest of the world follows, still without a script before the
-    // retransmitted creates are acknowledged: 4 placeables, the player, the
-    // mode, 15 bots and their 15 stand-in controllers.
-    while creates.len() < 36 {
+    // retransmitted creates are acknowledged: 4 placeables, the 6 spawn
+    // door barriers, the player, the mode, 15 bots and their 15 stand-in
+    // controllers.
+    while creates.len() < 42 {
         let frame = client.receive();
         assert!(client.window.accept(frame.seq));
         let records = world_records(&schemas, &frame);
@@ -925,7 +926,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         }
         assert!(client.now() < deadline, "waiting for the rest of the world");
     }
-    assert_eq!(creates.len(), 36);
+    assert_eq!(creates.len(), 42);
 
     // Even after the retransmission, the script stays behind its create ACK.
     let withheld = client.receive();

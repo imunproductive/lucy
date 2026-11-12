@@ -315,3 +315,25 @@ fn a_pick_while_dead_takes_the_respawn() {
     );
     assert_eq!(world.hero(), Some(tracer));
 }
+
+/// The spawn room's three doorways get their barriers: the six
+/// server-owned `00F6` placeables (two in each doorway: the frame model and
+/// the glowing effect) are created from the map with the four the loading
+/// screen waits for.
+#[test]
+#[ignore = "requires a derived 104319 Practice Range pack"]
+fn the_spawn_doorways_get_their_barriers() {
+    let scene = scene();
+    let card = PlayerCard::default();
+    let creates: Vec<u32> = scene
+        .initial_world(&viewer(&card))
+        .unwrap()
+        .iter()
+        .filter(|update| matches!(update.operation, Some(Operation::Placeable(_))))
+        .map(|update| update.entity & 0x7FFF_FFFF)
+        .collect();
+    assert_eq!(
+        creates,
+        [0x88, 0x22e, 0x234, 0x289, 204, 340, 398, 400, 424, 548]
+    );
+}

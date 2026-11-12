@@ -23,7 +23,7 @@ use crate::{
     combat::{BodyCombat, MeleeState, RespawnTimes, melee_states},
     controller::Controller,
     hitboxes::HitboxCatalog,
-    map_areas::{self, MapAreaData, SpawnRoom},
+    map_areas::{self, DamageArea, MapAreaData, SpawnRoom},
     match_flow::{MatchFlow, Mode, Timers},
     mode_graph_values::ModeGraphValues,
     mode_rules_data::{ModeRules, ModeRulesData},
@@ -134,7 +134,8 @@ pub struct SceneAssets {
     mode_rules: ModeRulesData,
     /// Each map's objective data (`game_objectives_174.json` `maps`).
     objectives: ObjectiveData,
-    /// Each map's spawn rooms (`game_map_areas_174.json`).
+    /// Each map's spawn rooms, damage areas and spawn door barriers
+    /// (`game_map_areas_174.json`).
     map_areas: MapAreaData,
 }
 
@@ -175,8 +176,14 @@ pub struct PreparedScene {
     objectives: Arc<MapObjectives>,
     /// The map's spawn rooms.
     spawn_rooms: Arc<[SpawnRoom]>,
-    /// Where a falling body dies (`map_areas::kill_height`).
+    /// The map's damage areas that kill, in this mode.
+    lethal_areas: Arc<[DamageArea]>,
+    /// Where a falling body dies on a map without damage areas
+    /// (`map_areas::kill_height`).
     kill_height: Option<f64>,
+    /// The height of the map's lowest collision triangle: feet below it are
+    /// below the whole map (`map_areas` module notes).
+    lowest: f64,
 }
 
 impl SceneAssets {
@@ -313,7 +320,7 @@ impl SceneAssets {
     /// collision is built from the install when its cache is missing or
     /// outdated, which can take a while: callers prepare off the game thread
     /// (match.py `_refresh_collision`).
-    pub fn prepare(&self, map: GameMap) -> io::Result<PreparedScene> {
+    pub fn prepare(&self, mut map: GameMap) -> io::Result<PreparedScene> {
         let path = self
             .collision
             .join(format!("{:04X}.col", map.map_guid as u32));
@@ -383,6 +390,14 @@ impl SceneAssets {
             .rules(self.graphs.rulesets(), map.mode_guid)?;
         let objectives = self.objectives.map(&map)?;
         let spawn_rooms = self.map_areas.spawn_rooms(&map);
+        let lethal_areas = self.map_areas.lethal_areas(&map, identifiers);
+        // The spawn door barriers are server-owned placeables: the client
+        // shows them only once the server creates them.
+        for barrier in self.map_areas.door_barriers(&map, identifiers) {
+            if !map.placeables.contains(&barrier) {
+                map.placeables.push(barrier);
+            }
+        }
         let lowest_spawn = map
             .spawns
             .iter()
@@ -390,7 +405,9 @@ impl SceneAssets {
             .map(|spawn| spawn.position[1])
             .min_by(f64::total_cmp);
         let kill_height = lowest_spawn
+            .filter(|_| lethal_areas.is_empty())
             .and_then(|below| map_areas::kill_height(ground.triangles().triangles(), below));
+        let lowest = ground.triangles().lowest();
         // A mode that plays for objectives needs their data, checked here
         // rather than when the match begins.
         if Mode::of(map.mode_guid).is_some_and(Mode::has_objectives)
@@ -437,7 +454,9 @@ impl SceneAssets {
             mode_graph_values: self.mode_graph_values,
             objectives,
             spawn_rooms,
+            lethal_areas,
             kill_height,
+            lowest,
         };
         let mut factories = self
             .owner_bodies
@@ -621,11 +640,16 @@ impl PreparedScene {
         map_areas::in_spawn_room(&self.spawn_rooms, &self.map, team, room, position)
     }
 
-    /// Whether feet at `position` have fallen out of the playable area onto
-    /// a catch floor (`map_areas::kill_height`).
+    /// Whether the environment kills a living body whose feet are at
+    /// `position` (`map_areas` module notes): in a lethal damage area of the
+    /// mode, on the catch floor of a map without damage areas, or below the
+    /// whole map.
     pub fn fell_out(&self, position: [f64; 3]) -> bool {
-        self.kill_height
-            .is_some_and(|height| map_areas::caught(height, position[1]))
+        self.lethal_areas.iter().any(|area| area.contains(position))
+            || self
+                .kill_height
+                .is_some_and(|height| map_areas::caught(height, position[1]))
+            || position[1] < self.lowest
     }
 
     /// The height of the map's catch floor, if it has one.
