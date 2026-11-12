@@ -1783,7 +1783,6 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
 
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
-    let spawns = [0, 1].map(|team| scene.map().spawn_point(team, 0).unwrap().0);
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let tags = ["shooter#1111", "target#2222"];
@@ -1890,9 +1889,15 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
         target.pump(&schemas);
     }
 
-    // The shooter holds fire at the target's head height, level.
-    let [dx, _, dz] = std::array::from_fn::<_, 3, _>(|axis| spawns[1][axis] - spawns[0][axis]);
-    let yaw = (dx.atan2(dz) * 32768.0 / std::f64::consts::PI).round() as i32 as i16;
+    // The shooter holds fire at the target's head height, level, from where
+    // he stands: the Practice Range spawn is both teams', and the enemies'
+    // capsules push them apart. Bodies: the shooter's, then the target's.
+    let yaw = |server: &Lockstep| {
+        let bodies = server.bodies(MATCH).unwrap();
+        let [from, to] = [0, 1].map(|slot| bodies[slot].position.unwrap());
+        let (dx, dz) = (to[0] - from[0], to[2] - from[2]);
+        (dx.atan2(dz) * 32768.0 / std::f64::consts::PI).round() as i32 as i16
+    };
     let messages_of = |watcher: &Watcher, id: u32| -> Vec<(usize, Fields)> {
         watcher
             .datagrams
@@ -1914,7 +1919,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
         if frame <= shooter.tick + 8 {
             shooter
                 .client
-                .send(ACK, command_batch(frame, 16, yaw, FIRE, false));
+                .send(ACK, command_batch(frame, 16, yaw(&server), FIRE, false));
             frame += 16;
         }
         shooter.pump(&schemas);
