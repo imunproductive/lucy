@@ -1,5 +1,5 @@
-//! Chat: channel messages (21700, 21701), whispers (27004), the `.hero` and
-//! `.leave` commands a player types in any chat while in a match, and the
+//! Chat: channel messages (21700, 21701), whispers (27004), the `.hero`,
+//! `.leave` and `.plate` commands a player types in any chat while in a match, and the
 //! match chat a player leaves when its game is back in the menu. Ports
 //! `ow174/lobby/handlers/chat.py` and the chat part of `server.py` game_left.
 
@@ -136,6 +136,22 @@ fn match_command(peer: &mut Peer<'_, '_>, channel: &Value, said: &str) -> io::Re
                 "Back to the menu.".to_owned()
             } else {
                 "You are not in a match.".to_owned()
+            }
+        }
+        // The live nameplate tool (`orpheus_sim::bot_plate`): `.plate`
+        // shows it, `.plate <change>` changes every match's training bots.
+        "plate" => {
+            let rest = rest.trim();
+            let change = if rest.is_empty() || rest.eq_ignore_ascii_case("show") {
+                Ok(None)
+            } else {
+                orpheus_sim::bot_plate::PlateChange::parse(rest).map(Some)
+            };
+            match change
+                .and_then(|change| game.bot_plate(change).map_err(|error| error.to_string())?)
+            {
+                Ok(view) => view.summary(),
+                Err(reason) => reason,
             }
         }
         _ => return Ok(false),

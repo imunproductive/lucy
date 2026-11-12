@@ -388,7 +388,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
 
     // The respawn: a new script under the new entity, sent after its create.
     let fresh = scene.bots()[slot].respawned(BOT_ENTITY + 15, tick + 8);
-    let created = bot_create(&fresh, None).unwrap();
+    let created = bot_create(&fresh, scene.bot_plate()).unwrap();
     scene.bots_mut()[slot] = fresh;
     scene.prepare_respawned_bots(tick);
     assert!(scene.bot_scripts().latest(BOT_ENTITY + 15).is_some());

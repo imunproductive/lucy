@@ -165,6 +165,7 @@ fn handle(
                 "/api/state" => api.state(account),
                 "/api/status" => api.state(account).map(|state| state["profile"].clone()),
                 "/api/collection" => api.collection(&query),
+                "/api/bot_plate" => api.bot_plate(None),
                 _ => Err(not_found()),
             })
         }
@@ -225,6 +226,7 @@ fn post(
         "/api/mode_settings" => api.mode_settings(data),
         "/api/set_map" => api.set_map(data),
         "/api/end_matches" => api.end_matches(),
+        "/api/bot_plate" => api.bot_plate(Some(data)),
         _ => Err(ApiError::new(404, "Action not found")),
     }
 }

@@ -77,6 +77,7 @@ use std::{collections::HashMap, io};
 
 use crate::{
     body::yaw_rotation,
+    bot_plate::BotPlate,
     bots::{BOT_CONTROLLER_ENTITY, BOT_ENTITY, Bot},
     instance::FREE_FOR_ALL_TEAM,
 };
@@ -87,7 +88,7 @@ use orpheus_content::{
 use orpheus_core::bits::BitWriter;
 use orpheus_script::{
     graph::GraphStore,
-    vitals::health,
+    vitals::Vitals,
     wire::{self, Instance, Layout, Variables},
 };
 use orpheus_wire::{
@@ -297,22 +298,10 @@ pub fn mode_create(mode: u64) -> EntityUpdate {
     )
 }
 
-/// The match freezes each bot's pose and pools when it queues the create.
-pub fn bot_create(
-    bot: &Bot,
-    vitals: Option<&orpheus_script::vitals::Vitals>,
-) -> io::Result<EntityUpdate> {
-    let pools = vitals.map_or_else(
-        || {
-            BOT_PLATE.pools(health(
-                bot.spawn.health as f32,
-                bot.spawn.health as f32,
-                0.0,
-                0.0,
-            ))
-        },
-        |vitals| BOT_PLATE.pools(vitals.component()),
-    );
+/// A bot's create: its body with its full pools, as the live nameplate tool
+/// has them ([`BotPlate::pools`]), and its filter bits.
+pub fn bot_create(bot: &Bot, plate: &BotPlate) -> io::Result<EntityUpdate> {
+    let pools = plate.pools(&Vitals::new(bot.spawn.health, 0.0, 0.0));
     let mut definition = Create::new(bot.spawn.body, vec![pools, bot_filter(bot)?]);
     definition.position = bot.position.map(|position| position as f32);
     definition.rotation = yaw_rotation(bot.yaw.round_ties_even());
@@ -326,6 +315,7 @@ pub fn initial_world(
     player: &PlayerAppearance<'_>,
     board: Component,
     bots: &[Bot],
+    plate: &BotPlate,
 ) -> io::Result<Vec<EntityUpdate>> {
     let mut updates = Vec::with_capacity(map.placeables.len() + 2 + 2 * bots.len());
     updates.extend(map.placeables.iter().map(|&index| EntityUpdate {
@@ -336,7 +326,7 @@ pub fn initial_world(
     updates.push(player_create(map, player, None, Some(board))?);
     updates.push(mode_create(map.mode_guid));
     for (slot, bot) in bots.iter().enumerate() {
-        updates.push(bot_create(bot, None)?);
+        updates.push(bot_create(bot, plate)?);
         updates.push(bot_controller_create(bot, slot)?);
     }
     Ok(updates)
@@ -413,131 +403,6 @@ pub fn bot_filter(bot: &Bot) -> io::Result<Component> {
     )))
 }
 
-/// A debugging switch: `ORPHEUS_DEBUG_BOT_PLATE` lists changes to what the
-/// clients learn about the training bots, one input of their nameplate or
-/// health bar each, to find which one makes the client draw the bar with
-/// black segment outlines and a mark before the name ("▌TRAINING BOT";
-/// retail has neither, `docs/notes/behavior.md`). Leaving out the hero bit
-/// and the stand-in controllers changed nothing (2026-11-12). The bar's
-/// presenter (`0D24` st51, layout `019C.116`) gets the body itself and
-/// fills most of its fields natively, from the body; the name's (st42,
-/// `012B.116`) gets its text, a meter and a status icon from what the
-/// server sends:
-/// - `no-name`: no text override #8812 ([`orpheus_script::bot::NAMEPLATE_TEXT`],
-///   a string, our assumption); the name then comes from the stand-in
-///   controller (`#17476 = #8812 || STU_CD7F3617(…)`).
-/// - `meter=<number>`: entity variable #6036, which `0D24` shares: the
-///   name's meter (`3523`) shows `1 - #6036e`; other than 0 it also takes
-///   `0D24` st4's first case, another status icon.
-/// - `status`: entity variable #2143 true: the status icon (`23D1`) `25E9`
-///   instead of `654A` (`0D24` st5).
-/// - `pool-id=<n>`, `pool-kind=<n>`, `pool-tail=<a>.<b>.<c>.<d>`: each pool's
-///   id, kind and last four bytes (`orpheus_wire::entity::pool`: 1, 0 and
-///   0.1.0.1, unverified).
-#[derive(Debug, Default, PartialEq)]
-pub struct BotPlate {
-    pub no_name: bool,
-    pub meter: Option<f64>,
-    pub status: bool,
-    pool_id: Option<u32>,
-    pool_kind: Option<u32>,
-    pool_tail: Option<[u8; 4]>,
-}
-
-pub static BOT_PLATE: std::sync::LazyLock<BotPlate> = std::sync::LazyLock::new(|| {
-    let Ok(list) = std::env::var("ORPHEUS_DEBUG_BOT_PLATE") else {
-        return BotPlate::default();
-    };
-    let plate = BotPlate::parse(&list);
-    tracing::warn!("debugging: training bots changed by {plate:?}");
-    plate
-});
-
-impl BotPlate {
-    fn parse(list: &str) -> Self {
-        let mut plate = Self::default();
-        for item in list
-            .split(',')
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-        {
-            let (name, value) = item.split_once('=').unwrap_or((item, ""));
-            let known = match name {
-                "no-name" => {
-                    plate.no_name = true;
-                    true
-                }
-                "status" => {
-                    plate.status = true;
-                    true
-                }
-                "meter" => value.parse().map(|meter| plate.meter = Some(meter)).is_ok(),
-                "pool-id" => value.parse().map(|id| plate.pool_id = Some(id)).is_ok(),
-                "pool-kind" => value
-                    .parse()
-                    .map(|kind| plate.pool_kind = Some(kind))
-                    .is_ok(),
-                "pool-tail" => value
-                    .split('.')
-                    .map(str::parse)
-                    .collect::<Result<Vec<u8>, _>>()
-                    .ok()
-                    .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
-                    .map(|tail| plate.pool_tail = Some(tail))
-                    .is_some(),
-                _ => false,
-            };
-            if !known {
-                tracing::warn!("ORPHEUS_DEBUG_BOT_PLATE: unknown change {item:?}");
-            }
-        }
-        plate
-    }
-
-    /// The bots' entity variables this switch sets when their script
-    /// starts.
-    pub fn entity_variables(&self) -> Vec<(u32, wire::Value)> {
-        let mut variables = Vec::new();
-        if let Some(meter) = self.meter {
-            variables.push((METER, wire::Value::Float(meter)));
-        }
-        if self.status {
-            variables.push((STATUS, wire::Value::Bool(true)));
-        }
-        variables
-    }
-
-    /// A bot's pools component (51) with this switch's changes; a cleared
-    /// slot (id 0) stays cleared.
-    pub fn pools(&self, mut pools: Component) -> Component {
-        for value in pools.fields.iter_mut().flatten() {
-            let ComponentValue::Blob20(bytes) = value else {
-                continue;
-            };
-            if bytes[..4] == [0; 4] {
-                continue;
-            }
-            if let Some(id) = self.pool_id {
-                bytes[..4].copy_from_slice(&id.to_le_bytes());
-            }
-            if let Some(kind) = self.pool_kind {
-                bytes[12..16].copy_from_slice(&kind.to_le_bytes());
-            }
-            if let Some(tail) = self.pool_tail {
-                bytes[16..].copy_from_slice(&tail);
-            }
-        }
-        pools
-    }
-}
-
-/// `0D24`'s shared entity variable #6036: the name's meter shows
-/// `1 - #6036e` (st17). `0E8F` writes it for a dead player's body.
-const METER: u32 = 6036;
-/// `0D24`'s shared entity variable #2143: its status icon is `25E9` when
-/// it is true, else `654A` (st5).
-const STATUS: u32 = 2143;
-
 fn invalid(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
@@ -591,7 +456,7 @@ mod tests {
         // bot's controller comes right after its body here. Its bots' filter
         // bits were their team bit alone; ours add the body's kind (module
         // notes). The other records match the Python frame byte for byte.
-        let updates = initial_world(&map, &player, board, &bots).unwrap();
+        let updates = initial_world(&map, &player, board, &bots, &BotPlate::default()).unwrap();
         let controllers = BOT_CONTROLLER_ENTITY..BOT_ENTITY;
         let python: Vec<_> = updates
             .iter()
@@ -743,7 +608,9 @@ mod tests {
     #[test]
     fn a_bot_body_is_a_hero_that_can_be_hit_until_it_dies() {
         let mut bots = fixture_bots();
-        let filter = |bot: &Bot| created(&bot_create(bot, None).unwrap()).components[1].clone();
+        let filter = |bot: &Bot| {
+            created(&bot_create(bot, &BotPlate::default()).unwrap()).components[1].clone()
+        };
         assert_eq!(
             filter(&bots[0]),
             fields(26, vec![Some(ComponentValue::Id(0x0100_0041))])
@@ -779,7 +646,7 @@ mod tests {
             index: GMP_STATS,
             fields: Vec::new(),
         };
-        let entities: Vec<u32> = initial_world(&map, &player, board, &bots)
+        let entities: Vec<u32> = initial_world(&map, &player, board, &bots, &BotPlate::default())
             .unwrap()
             .iter()
             .map(|update| update.entity)
@@ -828,25 +695,5 @@ mod tests {
                 .collect();
             assert_eq!((frame.bit_len(), actual.as_str()), (length, expected));
         }
-    }
-
-    /// `ORPHEUS_DEBUG_BOT_PLATE`: the pool changes go into every pool the
-    /// bots send and leave a cleared slot cleared; an unknown change is
-    /// skipped.
-    #[test]
-    fn the_bot_plate_switch_rewrites_the_bots_pools() {
-        use orpheus_wire::entity::{pool, pool_component};
-        let plate = BotPlate::parse("pool-id=3, pool-kind=2,pool-tail=1.0.1.0,meter=1,bogus");
-        assert_eq!(plate.meter, Some(1.0));
-        assert!(!plate.no_name && !plate.status);
-        let pools = plate.pools(pool_component([
-            (0, pool(1, 0, 200.0, 150.0)),
-            (1, [0; 20]),
-        ]));
-        let mut changed = pool(3, 2, 200.0, 150.0);
-        changed[16..].copy_from_slice(&[1, 0, 1, 0]);
-        assert_eq!(pools.fields[0], Some(ComponentValue::Blob20(changed)));
-        assert_eq!(pools.fields[1], Some(ComponentValue::Blob20([0; 20])));
-        assert_eq!(BotPlate::parse(""), BotPlate::default());
     }
 }
