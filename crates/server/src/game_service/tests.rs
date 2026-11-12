@@ -1303,6 +1303,18 @@ fn exercise_hero_selection(
         let packet = client.receive();
         assert!(client.window.accept(packet.seq));
         let records = world_records(schemas, &packet);
+        // The owner's body may move by a correction in any datagram, now
+        // that one goes every tick (see `await_input`); a movement-only
+        // record of it is no part of the reopen.
+        let records: Vec<_> = records
+            .into_iter()
+            .filter(|record| {
+                !(record.entity == FIRST
+                    && record.movement
+                    && record.operation.is_none()
+                    && record.script.is_none())
+            })
+            .collect();
         if !describe(&records).is_empty() {
             assert_eq!(describe(&records), [(OWNER, None, Some(3))]);
             break verify_controller(&records, SOLDIER, true);
@@ -4917,9 +4929,24 @@ fn practice_bots_run_their_scripts_for_a_client() {
         PICK_HERO,
         SOLDIER.to_le_bytes().to_vec(),
     );
-    pump_until(&mut [&mut watcher], &schemas, "the body", |watchers| {
+    // A shot meets only a bot the client was shown (`WorldDelivery::
+    // bot_shown`): a datagram with its first movement record arrived, and
+    // the shot's command came in a later datagram than the one whose ACK
+    // said so. The server reads that ACK with the commands of the datagram
+    // that carries it (an ACK with no payload carries no input), and those
+    // commands were made before the client could draw the bot. So: wait
+    // for the target's first movement record, then send one idle command;
+    // the shot goes in the next one.
+    pump_until(&mut [&mut watcher], &schemas, "the body and the target", |watchers| {
         watchers[0].created(owner | 1).is_some()
+            && watchers[0]
+                .find(0, |record| record.entity == target && record.movement)
+                .is_some()
     });
+    let idle = watcher.tick + 1;
+    watcher
+        .client
+        .send(ACK, aimed_batch(idle, 1, -16384, 0, 0, false));
     // The first hit's 25001, and with it or after it a frame of the bot's
     // script, which doesn't fire: its nameplate enabled (upstream
     // `show_damage_nameplate`); no elimination yet.
@@ -4930,7 +4957,7 @@ fn practice_bots_run_their_scripts_for_a_client() {
     let fired = watcher.datagrams.len();
     // The client sends each frame's command as its frame comes, the next
     // one after each datagram.
-    let shot_frame = watcher.tick + 1;
+    let shot_frame = idle + 1;
     let mut next = shot_frame;
     let mut command = |watcher: &mut Watcher, buttons: u32| {
         while next <= watcher.tick + 1 {
@@ -4952,7 +4979,6 @@ fn practice_bots_run_their_scripts_for_a_client() {
         watcher.pump(&schemas);
     }
     assert_eq!(hits_from(&watcher, fired, 25005), None);
-    eprintln!("DBG fired {fired} shot_frame {shot_frame} tick {} hits {:?}", watcher.tick, (fired..watcher.datagrams.len()).filter(|&i| watcher.datagrams[i].0.iter().any(|m| m.id == 25001)).map(|i| (i, watcher.ticks[i])).collect::<Vec<_>>());
 
     // The second shot kills the bot. The client leaves the datagram with
     // its hit notice out of its ACKs; the next ACK shows it lost, and the
