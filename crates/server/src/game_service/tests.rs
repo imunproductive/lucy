@@ -2336,6 +2336,51 @@ fn practice_world<const N: usize>(
     (server, schemas, watchers, spawns)
 }
 
+/// Team 0's first player (slot 0 of the room) runs out of his spawn room
+/// the way the first spawn point faces, as a player leaves it: retail
+/// spawn rooms keep him invulnerable (`orpheus_sim::map_areas`). He runs
+/// until the server's spawn room flag cleared and his feet are `there`,
+/// then `beyond` more frames, then stands still for a second. Returns his
+/// next command frame.
+fn run_out_of_the_spawn_room(
+    server: &Lockstep,
+    watcher: &mut Watcher,
+    schemas: &Schemas,
+    there: impl Fn([f64; 3]) -> bool,
+    beyond: u32,
+) -> u32 {
+    let facing = GameMap::practice_range().spawn_point(0, 0).unwrap().1;
+    let yaw = (facing * 65536.0 / 360.0).round() as i32 as i16;
+    let out = |server: &Lockstep| server.bodies(MATCH).unwrap()[0].spawn_room == Some(false);
+    let arrived = |server: &Lockstep| {
+        let body = server.bodies(MATCH).unwrap().remove(0);
+        body.spawn_room == Some(false) && body.position.is_some_and(&there)
+    };
+    assert_eq!(server.bodies(MATCH).unwrap()[0].spawn_room, Some(true));
+    let mut frame = watcher.tick + 1;
+    let deadline = server.now() + Duration::from_secs(30);
+    let mut stop = None;
+    loop {
+        assert!(server.now() < deadline, "running out of the spawn room");
+        if stop.is_none() && arrived(server) {
+            stop = Some(frame + beyond);
+        }
+        if stop.is_some_and(|stop| watcher.tick > stop + 64) {
+            break;
+        }
+        if frame <= watcher.tick + 8 {
+            let running = stop.is_none_or(|stop| frame < stop);
+            watcher
+                .client
+                .send(ACK, command_batch(frame, 16, yaw, 0, running));
+            frame += 16;
+        }
+        watcher.pump(schemas);
+    }
+    assert!(out(server), "stopped back in the spawn room");
+    frame
+}
+
 /// Pump the clients until `done` while `player` keeps sending idle commands:
 /// his body's script runs on his commands.
 fn pump_commanding(
@@ -2615,7 +2660,8 @@ fn another_client_sees_a_players_helix_rocket() {
 /// along the line from the burst to his centre (up and back) plus 6 m/s
 /// up. His server mover flies it as a jump: more than 2 m up, at most
 /// (4 + 6)² / 2g = 100/35 m, and he lands behind where he stood, away from
-/// the burst. He gets no hit notice (25001) for it.
+/// the burst. He gets no hit notice (25001) for it. He fires outside his
+/// spawn room, where he is not invulnerable.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn a_helix_at_soldiers_feet_hurts_him_and_lifts_him() {
@@ -2625,11 +2671,11 @@ fn a_helix_at_soldiers_feet_hurts_him_and_lifts_him() {
 
     let (mut server, schemas, [mut soldier], _) =
         practice_players([("soldier#1111", 0, "Soldier: 76")]);
+    let mut next = run_out_of_the_spawn_room(&server, &mut soldier, &schemas, |_| true, 32);
     let start = server.bodies(MATCH).unwrap().remove(0);
     assert_eq!(start.health, Some(1.0));
     let [_, floor, start_z] = start.position.unwrap();
     let fired = soldier.datagrams.len();
-    let mut next = soldier.tick + 1;
     // Yaw 0 faces +z.
     soldier
         .client
@@ -5031,7 +5077,8 @@ fn practice_bots_run_their_scripts_for_a_client() {
 }
 
 /// combat.py `_bot_weapons`: a firing training bot's script fires its
-/// rockets along its yaw, and they damage the player in front of it.
+/// rockets along its yaw, and they damage the player in front of it, once
+/// he ran out of his spawn room (where he is invulnerable).
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn a_firing_practice_bot_shoots_the_player() {
@@ -5045,9 +5092,22 @@ fn a_firing_practice_bot_shoots_the_player() {
     let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     assets.set_bot_unknowns(Unknowns::Tolerate);
     let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
-    let [x, y, z] = scene.map().spawn_point(0, 0).unwrap().0;
-    // An enemy firing bot 4 m beside the player's spawn, facing it (a
-    // quarter turn: along +x), where the other bots leave the line clear.
+    let ([x, y, z], facing) = scene.map().spawn_point(0, 0).unwrap();
+    // The way the spawn point faces (yaw 0 faces +z, a quarter turn +x),
+    // 3 m past where the spawn room ends.
+    let (sin, cos) = facing.to_radians().sin_cos();
+    let along = move |[px, _, pz]: [f64; 3]| (px - x) * sin + (pz - z) * cos;
+    let exit = (0..400)
+        .map(|step| f64::from(step) * 0.25)
+        .find(|&reach| {
+            let point = [x + reach * sin, y, z + reach * cos];
+            scene.in_spawn_room(0, orpheus_content::maps::SpawnChoice::First, point) == Some(false)
+        })
+        .unwrap();
+    let reach = exit + 3.0;
+    let [x, z] = [x + reach * sin, z + reach * cos];
+    // An enemy firing bot 4 m beside that spot, facing it (a quarter turn:
+    // along +x), where the other bots leave the line clear.
     let shooter = scene
         .bots_mut()
         .iter_mut()
@@ -5103,6 +5163,16 @@ fn a_firing_practice_bot_shoots_the_player() {
         SOLDIER.to_le_bytes().to_vec(),
     );
     let body = owner | 1;
+    pump_until(&mut [&mut watcher], &schemas, "the body", |watchers| {
+        watchers[0].created(body).is_some()
+    });
+    run_out_of_the_spawn_room(
+        &server,
+        &mut watcher,
+        &schemas,
+        |feet| along(feet) >= reach,
+        0,
+    );
     pump_until(
         &mut [&mut watcher],
         &schemas,

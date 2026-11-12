@@ -286,6 +286,7 @@ impl State {
                 scripted: false,
                 position: None,
                 health: None,
+                spawn_room: None,
                 support_tag_given: false,
                 support_tag_delivered: (false, orpheus_script::wire::Value::Null),
             })
@@ -300,6 +301,7 @@ impl State {
             body.scripted = peer.world.combat_body_active();
             body.position = peer.world.body_position();
             body.health = peer.world.health_share();
+            body.spawn_room = peer.world.in_spawn_room();
             body.support_tag_given = peer.world.body_state_active(0x01cf, 117);
             body.support_tag_delivered = peer.world.body_delivered(
                 0x01cf,
@@ -387,6 +389,9 @@ pub(crate) struct BodyState {
     /// His living body's feet.
     pub position: Option<[f64; 3]>,
     pub health: Option<f64>,
+    /// His living body stands in his team's spawn room (the server's
+    /// component 74 field 6 flag), if the map has one.
+    pub spawn_room: Option<bool>,
     /// His body's `01CF` st117 is active: ALLIED HEALTH BARS at ALWAYS gave
     /// it the support tag (`orpheus_content::hero_settings`).
     pub support_tag_given: bool,

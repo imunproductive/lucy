@@ -272,6 +272,7 @@ fn a_same_hero_pick_after_a_fault_replaces_the_body_and_waits_for_fresh_acks() {
     assert!(world.script_failed);
     assert!(world.take_shots().is_empty());
     assert_eq!(world.body.unwrap().id, old);
+    let stood = world.mover.as_ref().unwrap().pose();
 
     world.queue_game_message(FIRST_TICK + 2, Duration::ZERO, pick(SOLDIER));
     drain(&mut world, &scene, &viewer);
@@ -283,13 +284,15 @@ fn a_same_hero_pick_after_a_fault_replaces_the_body_and_waits_for_fresh_acks() {
     assert_eq!(script.frame, first.frame);
     assert_eq!(world.input.processed, Some(first.frame));
     assert!(!world.script_failed);
-    // A new mover at the spawn point, not the one the command moved.
+    // A new mover where the old body stood, facing the same way: a living
+    // body's pick never sends him back to the spawn point (`switch`), even
+    // after a script fault.
     let hero = scene.heroes().get(SOLDIER).unwrap();
-    let spawned = scene
-        .player_spawn_mover(hero.body, 0, 0, orpheus_content::maps::SpawnChoice::First)
+    let kept = scene
+        .player_mover_at(hero.body, 0, stood.position, stood.yaw)
         .unwrap()
         .pose();
-    assert_eq!(world.mover.as_ref().unwrap().pose(), spawned);
+    assert_eq!(world.mover.as_ref().unwrap().pose(), kept);
     assert!(
         world
             .queued

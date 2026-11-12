@@ -439,7 +439,8 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
             .step(scene.movement_index(), command, 0.016, |_, _| {})
             .unwrap();
     }
-    assert_eq!(world.mover.as_ref().unwrap().pose(), synchronous.pose());
+    let switched_from = world.mover.as_ref().unwrap().pose();
+    assert_eq!(switched_from, synchronous.pose());
     assert_ne!(synchronous.pose().position, initial.position);
 
     assert_eq!(
@@ -450,8 +451,15 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
     );
     assert_eq!(world.body.unwrap().id.entity, owner | 2);
     assert_eq!(world.command_ack(FIRST_TICK + 90), later.frame);
+    // The living body's pick changes the hero where he stands, facing the
+    // same way (`switch`): Tracer's mover starts at Soldier's last pose.
     let mut synchronous = scene
-        .player_spawn_mover(tracer.body, viewer.team, viewer.spawn, viewer.room)
+        .player_mover_at(
+            tracer.body,
+            viewer.team,
+            switched_from.position,
+            switched_from.yaw,
+        )
         .unwrap();
     synchronous
         .step(scene.movement_index(), later, 0.016, |_, _| {})
