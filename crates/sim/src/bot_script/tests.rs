@@ -320,6 +320,72 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     assert!(updates > 0);
     assert_eq!(dead(&world), Some(Value::Bool(true)));
 
+    // A firing bot dies while its rocket's copy still waits for its launch
+    // (the launch needs the shot's volley in the client's acknowledged
+    // frame). Its death frame goes out at once all the same, with the dead
+    // flag and the held volley, and the launch follows.
+    let shooter = scene
+        .bots()
+        .iter()
+        .position(|bot| bot.spawn.firing && bot.spawn.team != viewer.team)
+        .unwrap();
+    let source = scene.bots()[shooter].entity;
+    let mut ids = crate::projectiles::SeenIds::new();
+    loop {
+        tick += 1;
+        scene.step_bots(tick);
+        let rocket = scene
+            .bot_weapons(tick)
+            .iter()
+            .find(|shot| shot.source == source)
+            .and_then(|shot| SeenRocket::of(1, shot));
+        if let Some(rocket) = &rocket {
+            world.show_bot_rocket(rocket, tick, || ids.next());
+        }
+        let events = scene.take_bot_events();
+        world.update_bots(&scene, &events, tick, true);
+        deliver(&mut world);
+        if rocket.is_some() {
+            break;
+        }
+        assert!(tick < FIRST_TICK + 2000, "the firing bot never fired");
+    }
+    // The launch is the shot record in the bot body's channel 2.
+    let launch = |updates: &[EntityUpdate]| {
+        updates
+            .iter()
+            .any(|update| update.entity == source && update.ch2.is_some())
+    };
+    tick += 1;
+    scene.bots_mut()[shooter].died();
+    scene.bot_died(source, OWNER | 1, false, None, tick);
+    let events = scene.take_bot_events();
+    world.update_bots(&scene, &events, tick, true);
+    let died = deliver(&mut world);
+    assert_eq!(script_chunks(&died), [source]);
+    assert!(!launch(&died));
+    let dead_flag = |world: &WorldDelivery| {
+        world
+            .bot_stream(source)
+            .and_then(|stream| stream.base())
+            .unwrap()
+            .1
+            .entity_variable(DEAD_FLAG)
+            .cloned()
+    };
+    assert_eq!(dead_flag(&world), Some(Value::Bool(true)));
+    // The copy's launch, then the rest of the death.
+    world.advance_observed(tick);
+    let launched = deliver(&mut world);
+    assert!(launch(&launched), "the rocket's launch after its bot died");
+    for _ in 0..4 {
+        tick += 1;
+        world.advance_observed(tick);
+        world.update_bots(&scene, &[], tick, true);
+        deliver(&mut world);
+    }
+    assert_eq!(dead_flag(&world), Some(Value::Bool(true)));
+
     // The respawn: a new script under the new entity, sent after its create.
     let fresh = scene.bots()[slot].respawned(BOT_ENTITY + 15, tick + 8);
     let created = bot_create(&fresh, None).unwrap();

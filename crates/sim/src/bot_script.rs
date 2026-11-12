@@ -23,6 +23,7 @@ use crate::{
         spawned_definitions,
     },
     replication::kill_feed_fresh,
+    scene::BOT_PLATE,
     voice_lines::{VoiceLine, VoiceState},
 };
 use orpheus_content::{
@@ -283,7 +284,11 @@ impl BotScripts {
         let spawn = ScriptSpawn {
             body: bot.spawn.body,
             hero: bot.spawn.hero,
-            name: &bot.spawn.name,
+            name: if BOT_PLATE.no_name {
+                ""
+            } else {
+                &bot.spawn.name
+            },
             entity: bot.entity,
             frame: tick,
             mode: self.mode,
@@ -294,6 +299,10 @@ impl BotScripts {
         let started = BotBody::start(Arc::clone(graphs), spawn, self.unknowns)
             .map_err(|error| error.to_string())
             .and_then(|mut body| {
+                for (id, value) in BOT_PLATE.entity_variables() {
+                    body.set_entity_variable(id, value)
+                        .map_err(|error| error.to_string())?;
+                }
                 body.set_target_candidates(&self.targets);
                 let snapshot = body.snapshot().ok_or("the script halted")?;
                 let initial = body
@@ -1208,10 +1217,11 @@ impl Flush<'_, '_> {
     /// acknowledged frame, as the other clients' body frames are
     /// (`others.rs`), and the death's state holds every live change, so a
     /// live frame still waiting goes with it. A rocket copy whose launch
-    /// still needs its volley keeps the old order (`volley`).
+    /// still needs its volley keeps that volley in the death's frames until
+    /// the launch (`hold_volleys`); before, the death waited for the launch,
+    /// a round trip and more, with the bar up at 0 health.
     fn death_now(&mut self, entity: u32, view: &mut BotView) {
-        if view.stream.base().is_none() || !view.volleys.is_empty() {
-            self.frames(entity, view, false);
+        if view.stream.base().is_none() {
             return;
         }
         view.live = None;
@@ -1229,19 +1239,9 @@ impl Flush<'_, '_> {
     /// volley keeps its acknowledged state, and everything else comes from
     /// the latest frame (without taking the live one).
     fn volley(&mut self, entity: u32, view: &mut BotView) {
-        let seen = self.seen;
-        let Some(first) = view
-            .volleys
-            .front()
-            .and_then(|&serial| seen.iter().find(|copy| copy.serial == serial))
-        else {
+        let Some(first) = self.first_volley(view) else {
             return;
         };
-        let first = &first.projectile;
-        // Projectile cleanup cancels its launch before advancing the stream.
-        if view.destroy_wait || self.context.tick >= first.deadline() {
-            return;
-        }
         let Some((_, acknowledged)) = view.stream.base() else {
             return;
         };
@@ -1262,25 +1262,56 @@ impl Flush<'_, '_> {
                 .clone(),
             None => base.clone(),
         };
-        let (instance, state) = first.volley_key();
-        // The old activation expires without recreating a removed instance.
-        if !latest.has_instance(instance) {
-            return;
+        if self.hold_volleys(view, &mut latest) {
+            self.queue(entity, view, latest, false);
         }
+    }
+
+    /// The first rocket copy whose launch waits for its volley; none when
+    /// projectile cleanup cancelled it, which happens before the stream
+    /// advances.
+    fn first_volley(&self, view: &BotView) -> Option<&ObservedProjectile> {
+        let seen = self.seen;
+        let first = &view
+            .volleys
+            .front()
+            .and_then(|&serial| seen.iter().find(|copy| copy.serial == serial))?
+            .projectile;
+        (!view.destroy_wait && self.context.tick < first.deadline()).then_some(first)
+    }
+
+    /// Put the volleys of the rocket copies still waiting for their launch
+    /// into `frame` (server.py `_flush_bot_frames`): the first copy's
+    /// activation, which the launch needs in the acknowledged frame, each
+    /// later copy's volley as acknowledged. False, `frame` untouched, when
+    /// no copy waits or `frame` lost the first copy's instance (the old
+    /// activation expires without recreating a removed instance).
+    fn hold_volleys(&self, view: &BotView, frame: &mut ProjectedSnapshot) -> bool {
+        let Some(first) = self.first_volley(view) else {
+            return false;
+        };
+        let Some((_, acknowledged)) = view.stream.base() else {
+            return false;
+        };
+        let (instance, state) = first.volley_key();
+        if !frame.has_instance(instance) {
+            return false;
+        }
+        let seen = self.seen;
         for copy in view
             .volleys
             .iter()
             .filter_map(|&serial| seen.iter().find(|copy| copy.serial == serial))
         {
             let (instance, state) = copy.projectile.volley_key();
-            latest.replace_state(
+            frame.replace_state(
                 instance,
                 state,
                 acknowledged.state(instance, state).cloned(),
             );
         }
-        latest.replace_state(instance, state, first.held().cloned());
-        self.queue(entity, view, latest, false);
+        frame.replace_state(instance, state, first.held().cloned());
+        true
     }
 
     /// server.py `_queue_bot_death_snapshot`: a new kill feed pulse waits
@@ -1293,11 +1324,13 @@ impl Flush<'_, '_> {
         known: Option<&ProjectedSnapshot>,
     ) -> bool {
         let allowed = self.kill_feed_allowed(entity);
-        let projected = chosen
+        let mut projected = chosen
             .again(self.context.mode_ready, known)
             .projected()
             .clone()
             .gate_kill_feed(self.encoder.graphs(), &view.stream, allowed);
+        // A death while a rocket copy waits for its launch (`death_now`).
+        self.hold_volleys(view, &mut projected);
         self.queue(entity, view, projected, false)
     }
 
