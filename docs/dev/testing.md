@@ -73,7 +73,7 @@ The recipe builds the relay, sets `ORPHEUS_GAME_DIR` and runs every ignored test
 - `testkit::game_dir()` returns the install from `ORPHEUS_GAME_DIR`.
 - `testkit::runtime_dir()` derives the game data from that install once and keeps it in `target/orpheus-test-data`. Later runs reuse it.
 
-`just test-game` and `just test-slow` build with the Cargo profile `gametest` (in `Cargo.toml`). It is the debug profile with `opt-level = 3`. The debug assertions stay on, so the VM still refuses statescript content it does not implement, as in `cargo test`. Each game-install test, run alone, takes about half the time of a debug build; the `sim` tests take a third. The build goes to `target/gametest`, apart from the debug build. The first `gametest` build compiles everything once (about 7 minutes); after a change in `sim` it takes about two minutes.
+`just test-game` and `just test-slow` build with the Cargo profile `gametest` (in `Cargo.toml`). It optimises every crate as the release profile does, but it keeps the debug assertions and overflow checks. So the VM still refuses statescript content it does not implement, as in `cargo test`. Each game-install test, run alone, takes about half the time of a debug build; the `sim` tests take a third. The build goes to `target/gametest`, apart from the debug build. The first `gametest` build compiles everything once (about 7 minutes); after a change in `sim` it takes about two minutes.
 
 #### Slow tests
 

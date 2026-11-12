@@ -71,10 +71,16 @@ opt-level = 3
 
 # The game-install tests (`just test-game`, `just test-slow`, `just test-named … gametest`)
 # run whole matches and hero graphs, which a debug build runs two to three times
-# slower. This profile optimises them but keeps the debug assertions, so the
-# VM still refuses statescript content it does not implement, as in `cargo
-# test` (`vm::Unknowns::for_build`), and the overflow checks.
+# slower. This profile optimises every crate (opt-level 3, from release) but
+# keeps the debug assertions, so the VM still refuses statescript content it
+# does not implement, as in `cargo test` (`vm::Unknowns::for_build`), and the
+# overflow checks. It inherits release, not dev, so the `profile.dev.package`
+# levels above don't apply to it. Many codegen units and incremental builds
+# keep the rebuild after a change short.
 [profile.gametest]
-inherits = "dev"
-opt-level = 3
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
+codegen-units = 256
+incremental = true
 debug = "line-tables-only"
