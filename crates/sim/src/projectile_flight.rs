@@ -22,7 +22,7 @@
 use crate::hitscan::{Impact, TargetPose};
 use orpheus_core::tick::TICK_PERIOD;
 use orpheus_physics::{collision::index::IndexError, static_ray::Vec3};
-use orpheus_script::weapons::{HitDefinition, ProjectileBallistics};
+use orpheus_script::weapons::{DamageTags, HitDefinition, ProjectileBallistics};
 
 pub struct ProjectileFlight {
     ballistics: ProjectileBallistics,
@@ -78,6 +78,12 @@ pub struct OwnBlast {
     pub distance: f64,
     pub damage: f64,
     pub loadout: Option<u64>,
+    /// The explosion's damage tags, which the body's damage message
+    /// carries.
+    pub tags: DamageTags,
+    /// The way its damage travels: the line from the explosion to the
+    /// body's centre ([`ProjectileFlight::blast_push`]'s).
+    pub direction: Vec3,
     pub knockback: Option<Vec3>,
 }
 
@@ -346,6 +352,8 @@ impl ProjectileFlight {
             distance,
             damage,
             loadout: blast.hit.loadout,
+            tags: blast.hit.tags,
+            direction: self.blast_line(own),
             knockback,
         })
     }
@@ -358,16 +366,22 @@ impl ProjectileFlight {
         let blast = self.ballistics.blast.as_ref().filter(|_| self.exploded)?;
         let distance = pose.surface_distance(self.position);
         let (away, upward) = blast.knockback.as_ref()?.at(distance)?;
+        let [x, y, z] = self.blast_line(pose);
+        Some([away * x, away * y + upward, away * z])
+    }
+
+    /// The unit line from where it is to the centre of a body at `pose`
+    /// (half its height above the feet); along its flight when they meet.
+    fn blast_line(&self, pose: &TargetPose) -> Vec3 {
         let centre = [pose.feet[0], pose.feet[1] + pose.height / 2.0, pose.feet[2]];
         let line: [f64; 3] = std::array::from_fn(|axis| centre[axis] - self.position[axis]);
-        let [x, y, z] = [line, self.direction]
+        [line, self.direction]
             .into_iter()
             .find_map(|[x, y, z]| {
                 let length = x.hypot(y).hypot(z);
                 (length > 0.0).then(|| [x / length, y / length, z / length])
             })
-            .unwrap_or_default();
-        Some([away * x, away * y + upward, away * z])
+            .unwrap_or_default()
     }
 }
 

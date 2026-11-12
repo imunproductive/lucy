@@ -4183,6 +4183,7 @@ fn body(entity: u32, team: u8, feet: [f64; 3]) -> TargetCandidate {
         entity,
         team: Some(team),
         dead: false,
+        controller: None,
         feet,
         height: 1.8,
         radius: 0.4,

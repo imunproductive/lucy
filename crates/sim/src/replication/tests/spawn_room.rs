@@ -103,6 +103,8 @@ fn hit(body: u32, amount: f64) -> PlayerHit {
         frame: FIRST_TICK,
         world_tick: None,
         heal: false,
+        tags: orpheus_script::weapons::DamageTags::NONE,
+        direction: None,
     }
 }
 

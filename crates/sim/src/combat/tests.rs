@@ -229,6 +229,30 @@ fn the_died_message_names_the_killer_the_crit_and_the_loadout() {
     assert_eq!(death_message(1, false, None).1[&LOADOUT], Value::Null);
 }
 
+/// A hit the body survives: its damage message carries the hit's tags, the
+/// attacker, the damage dealt and the unit direction from the attacker to
+/// the body; none (null) when the two meet.
+#[test]
+fn the_damage_message_carries_the_tags_the_attacker_and_the_way() {
+    let splash: DamageTags = [0x0d80_0000_0000_078d].into_iter().collect();
+    let direction = damage_direction([1.0, 0.0, 1.0], [1.0, 0.0, 5.0]);
+    assert_eq!(direction, Some([0.0, 0.0, 1.0]));
+    let (message, parameters) = damage_message(0x8000_8800, 37.5, splash, direction);
+    assert_eq!(message, DAMAGED);
+    assert_eq!(parameters[&DAMAGE_TAGS], splash.to_value());
+    assert_eq!(parameters[&DAMAGE_SOURCE], Value::Entity(0x8000_8800));
+    assert_eq!(parameters[&DAMAGE_AMOUNT], Value::Float(37.5));
+    assert_eq!(
+        parameters[&DAMAGE_DIRECTION],
+        Value::Vector([0.0, 0.0, 1.0])
+    );
+    assert_eq!(damage_direction([2.0; 3], [2.0; 3]), None);
+    assert_eq!(
+        damage_message(1, 1.0, DamageTags::NONE, None).1[&DAMAGE_DIRECTION],
+        Value::Null
+    );
+}
+
 #[test]
 fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
     let target = |body, team, dead, hurt| PlayerSlot {
@@ -330,16 +354,21 @@ fn target_searches_see_the_players_then_the_bots() {
             entity: SHOOTER.source,
             team: Some(1),
             dead: true,
+            controller: Some(SHOOTER.source & !0xff),
             feet: pose.feet,
             height: pose.height,
             radius: pose.radius,
         }
     );
-    for (candidate, bot) in candidates[1..].iter().zip(scene.bots()) {
+    for (slot, (candidate, bot)) in candidates[1..].iter().zip(scene.bots()).enumerate() {
         let target = scene.bot_target(bot);
         assert_eq!(
             (candidate.entity, candidate.team, candidate.dead),
             (bot.entity, Some(bot.spawn.team), bot.dead)
+        );
+        assert_eq!(
+            candidate.controller,
+            Some(crate::scene::bot_controller_entity(slot).unwrap())
         );
         assert_eq!(
             (candidate.feet, candidate.height, candidate.radius),

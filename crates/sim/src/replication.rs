@@ -16,7 +16,7 @@ use crate::{
     bots::BOT_RECORD_DELAY,
     combat::{
         BotReplacement, DEAD, PlayerHit, PlayerTarget, PosedProjectile, PosedShot, RESPAWN_RETRY,
-        death_message,
+        damage_message, death_message,
     },
     controller::ControllerFrame,
     egress::{
@@ -2528,6 +2528,10 @@ impl WorldDelivery {
             return None;
         }
         self.body_health += 1;
+        let script = self
+            .body_script
+            .as_mut()
+            .filter(|script| script.id == body.id && failure.is_none());
         if result.killed {
             self.death = Some(BodyDeath {
                 body: body.id,
@@ -2537,15 +2541,15 @@ impl WorldDelivery {
                     .saturating_add(scene.respawn_time())
                     .saturating_add(self.respawn_extra),
             });
-            if let Some(script) = self
-                .body_script
-                .as_mut()
-                .filter(|script| script.id == body.id && failure.is_none())
-            {
+            if let Some(script) = script {
                 let (message, parameters) =
                     death_message(hit.shooter.source, hit.critical, hit.loadout);
                 failure = script.runtime.receive_message(message, parameters).err();
             }
+        } else if let Some(script) = script {
+            let (message, parameters) =
+                damage_message(hit.shooter.source, result.dealt, hit.tags, hit.direction);
+            failure = script.runtime.receive_message(message, parameters).err();
         }
         if let Some(error) = failure {
             self.drop_failed_script(&error.to_string());
@@ -2779,8 +2783,9 @@ impl WorldDelivery {
     }
 
     /// The voice lines the current body says for the criteria its graphs
-    /// raised since the last call (the communication wheel's lines), by its
-    /// hero's voice set ([`crate::voice_lines`]).
+    /// raised since the last call (the communication wheel's lines and the
+    /// pain lines after a hit), by its hero's voice set
+    /// ([`crate::voice_lines`]).
     pub fn take_voice_lines(&mut self, scene: &PreparedScene, tick: u32) -> Vec<VoiceLine> {
         if !self.world_started() {
             return Vec::new();

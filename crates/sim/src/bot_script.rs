@@ -18,7 +18,7 @@ use crate::{
     bot_plate::{BotPlate, INPUTS, PlateVariable},
     bots::BOT_EYE,
     bots::Bot,
-    combat::{BotDamage, PosedProjectile},
+    combat::{BotDamage, PosedProjectile, damage_direction, damage_message},
     projectiles::{
         DELIVERY_GRACE, ObservedOut, ObservedProjectile, predicted_sync, projectiles_per_shot,
         spawned_definitions,
@@ -31,10 +31,7 @@ use orpheus_content::{
     voice_sets::VoiceCatalog,
 };
 use orpheus_script::{
-    bot::{
-        BotBody, BotError, BotSpawn as ScriptSpawn, DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE,
-        DAMAGE_TAGS, practice_nameplate,
-    },
+    bot::{BotBody, BotError, BotSpawn as ScriptSpawn, practice_nameplate},
     codecs::CodecTable,
     graph::GraphStore,
     snapshot::{ProjectedSnapshot, SnapshotEncoder, SnapshotError, View},
@@ -697,8 +694,8 @@ impl BotScripts {
     }
 
     /// A hit the bot survived reaches its script: `0011.025` with the
-    /// damage's tags, source, amount and direction (see
-    /// [`orpheus_script::bot::DAMAGED`]); the changed frame (its flinch)
+    /// damage's tags, source, amount and direction
+    /// ([`crate::combat::damage_message`]); the changed frame (its flinch)
     /// goes to the clients as a live frame. The direction runs from the
     /// attacker's feet to the bot's, as the match last placed them
     /// (assumption; none when the attacker isn't found).
@@ -717,20 +714,9 @@ impl BotScripts {
                         .map(|bot| bot.position)
                 })
         };
-        let direction = feet(damage.source)
-            .zip(Some(bots[slot].position))
-            .map(|(from, to)| std::array::from_fn::<f64, 3, _>(|axis| to[axis] - from[axis]))
-            .and_then(|offset| {
-                let length = offset.iter().map(|part| part * part).sum::<f64>().sqrt();
-                (length > f64::EPSILON).then(|| offset.map(|part| part / length))
-            })
-            .map_or(Value::Null, Value::Vector);
-        let parameters = Variables::from([
-            (DAMAGE_TAGS, damage.tags.to_value()),
-            (DAMAGE_SOURCE, Value::Entity(damage.source)),
-            (DAMAGE_AMOUNT, Value::Float(damage.dealt)),
-            (DAMAGE_DIRECTION, direction),
-        ]);
+        let direction =
+            feet(damage.source).and_then(|from| damage_direction(from, bots[slot].position));
+        let (_, parameters) = damage_message(damage.source, damage.dealt, damage.tags, direction);
         let script = self.slots[slot].as_mut().expect("a running bot script");
         let result = script
             .body

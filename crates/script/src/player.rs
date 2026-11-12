@@ -28,6 +28,18 @@ use orpheus_content::maps::TUTORIAL_MODE;
 use orpheus_physics::mover::sample_movement_flags;
 use orpheus_wire::entity::{GAME_MODE_ENTITY, Movement};
 
+/// The hero body graphs that raise the body's voice reactions: `01CA` and
+/// `14B1`, the two subgraphs `004B` st27 chooses between by `06A3.025`
+/// (every hero body starts `004B`). Each takes the damage message
+/// `0011.025` and, 0.15 s later (`01CA` st16, `14B1` st2), raises a pain
+/// criteria on the body: minor `0608` while `004B`'s rating of the hurt
+/// (#10417e) is above 0.1 and below 0.3, severe `0609` from 0.3; none for
+/// a hit tagged `191F` or `0262`, or rated 0.1 or less. `004B` rid 58 rates
+/// it as #7404 / 200 + 0.3 × (maximum − health) / (maximum − 75), #7404
+/// the damage of the last moments (halved every 0.2 s). Every hero's
+/// voice set answers both (stimuli "PnMnr" and "PnSvr").
+pub const REACTION_GRAPHS: [u32; 2] = [0x01ca, 0x14b1];
+
 pub struct PlayerWorld {
     pub graphs: Arc<GraphStore>,
     pub controller: u32,
@@ -131,13 +143,17 @@ impl World for PlayerWorld {
         true
     }
 
-    /// A criteria on the body itself from the communication wheel's graphs:
-    /// `0686` raises the choice's voice criteria (Hello `0AEB`), which the
-    /// body's voice set answers with a line (ClientInVoice 27500). The
-    /// hero graphs' other criteria on the body (ability and pain lines,
-    /// `01CA`) are left out: nothing has checked them in the game yet.
+    /// A criteria on the body itself that its voice set answers with a line
+    /// (ClientInVoice 27500): the communication wheel's (`0686` raises the
+    /// choice's, Hello `0AEB`) and the hero's reactions ([`REACTION_GRAPHS`]:
+    /// the pain lines after a hit, `0608` / `0609`). The hero graphs' other
+    /// criteria (ability lines) are left out: nothing has checked them in
+    /// the game yet.
     fn criteria(&mut self, site: Site, identifier: u64) {
-        if site.entity == self.entity && crate::wheel::ACTION_GRAPHS.contains(&site.graph) {
+        if site.entity == self.entity
+            && (crate::wheel::ACTION_GRAPHS.contains(&site.graph)
+                || REACTION_GRAPHS.contains(&site.graph))
+        {
             self.criteria.push(identifier);
         }
     }
@@ -337,6 +353,11 @@ impl World for PlayerWorld {
             EntityRelation::PossessedBody if entity == self.controller => Some(self.entity),
             // The authenticated human body has no AI control entity in this world.
             EntityRelation::AiControlEntity if entity == self.entity => Some(0),
+            // Another body the match lists: the controller it gives (`01CF`
+            // rid 173 asks for the attacker's in the damage message).
+            EntityRelation::OwningController if entity != self.entity => {
+                self.listed(entity)?.controller
+            }
             _ => None,
         }
     }
@@ -446,6 +467,7 @@ mod tests {
             entity,
             team,
             dead: false,
+            controller: Some(entity & !0xff),
             feet,
             height: 1.8,
             radius: 0.4,
@@ -493,10 +515,156 @@ mod tests {
         assert_eq!(world.entity_team(site, 0xa000_0102), Some(0));
         // A free-for-all body lists no team.
         assert_eq!(world.entity_team(site, 0xa000_0103), None);
+        // A listed body's controller is the one the match gives it.
+        assert_eq!(
+            world.related_entity(site, EntityRelation::OwningController, 0xa000_0102),
+            Some(0xa000_0100)
+        );
+        assert_eq!(
+            world.related_entity(site, EntityRelation::OwningController, 0xa000_0104),
+            None
+        );
         let other_site = Site {
             entity: 0xa000_0102,
             ..site
         };
         assert_eq!(world.entity_exists(other_site, BODY), None);
+    }
+
+    /// A hit Soldier: 76 survives reaches his body as the damage message
+    /// `0011.025`, as the match sends it. `004B` rates the hurt (#10417e),
+    /// `02C5` starts the networked knockback anim st7 for a splash hit
+    /// (Helix Rocket explosion tags: `078D`, not `0302`) with the hit's
+    /// direction, `01CF` asks for the attacker's controller (#9737), and
+    /// 0.15 s later `01CA` raises the pain criteria on the body: severe
+    /// `0609` for a Training Bot's 120 (0.6 + 0.3 × 120 / 125 = 0.888), minor
+    /// `0608` for his own rocket's 40 at his feet (0.2 + 0.3 × 40 / 125 =
+    /// 0.296), each with `191D` (above 0.1). The wait ends in the 10th
+    /// frame after the hit (150 ms of 16 ms frames). Nothing in the path is
+    /// unsupported.
+    #[test]
+    #[ignore = "requires the derived 104319 statescript catalog"]
+    fn a_hit_the_hero_survives_raises_his_pain_line_and_knockback() {
+        use crate::bot::{DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE, DAMAGE_TAGS, DAMAGED};
+        use crate::vitals::Death;
+        use crate::vm::{Component, MAX_INIT_WORK};
+        use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
+
+        const FIRST: u32 = 1000;
+        const BOT: u32 = 0x8000_8800;
+        const BOT_CONTROLLER: u32 = 0x8000_8000;
+        const KNOCKBACK: u16 = 7;
+        const MINOR: u64 = 0x0d80_0000_0000_0608;
+        const SEVERE: u64 = 0x0d80_0000_0000_0609;
+        const ABOVE_A_TENTH: u64 = 0x0d80_0000_0000_191d;
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
+        let soldier = &graphs.bodies()[&0x0400_0000_0000_03cf];
+        let explosion: crate::weapons::DamageTags = [0x03bf, 0x04b1, 0x078d, 0x0980, 0x2d30]
+            .map(|tag| 0x0d80_0000_0000_0000 | tag)
+            .into_iter()
+            .collect();
+        let hurt = |source: u32, amount: f64, direction: [f64; 3]| {
+            let filter = 0x0004_0001 | (0x80_0000 << 1);
+            let mut world = PlayerWorld::new(
+                Arc::clone(&graphs),
+                CONTROLLER,
+                BODY,
+                filter,
+                PRACTICE_RANGE_MODE,
+                SOLDIER,
+            );
+            world.pool_types_known = true;
+            world.target_tags = soldier.target_tags.clone();
+            world.targets = Some(vec![
+                body(BODY, Some(0), [0.0; 3]),
+                TargetCandidate {
+                    controller: Some(BOT_CONTROLLER),
+                    ..body(BOT, Some(1), [0.0, 0.0, 10.0])
+                },
+            ]);
+            let mut component = Component::start(
+                Arc::clone(&graphs),
+                BODY,
+                crate::vm::player_entity_variables(soldier, 200.0, 200.0),
+                crate::vm::player_roots(soldier, &graphs).unwrap(),
+                FIRST,
+                &mut world,
+                MAX_INIT_WORK,
+            )
+            .unwrap();
+            component.advance_frame(FIRST, &mut world).unwrap();
+            let hit = Death {
+                time: 0.0,
+                frame: FIRST,
+                killer: source,
+            };
+            assert_eq!(world.vitals.damage(amount, hit).dealt, amount);
+            let health = Value::Float(world.vitals.total());
+            for id in [253, 1732] {
+                component
+                    .set_entity_variable(id, health.clone(), &mut world)
+                    .unwrap();
+            }
+            let parameters = Variables::from([
+                (DAMAGE_TAGS, explosion.to_value()),
+                (DAMAGE_SOURCE, Value::Entity(source)),
+                (DAMAGE_AMOUNT, Value::Float(amount)),
+                (DAMAGE_DIRECTION, Value::Vector(direction)),
+            ]);
+            assert_ne!(
+                component
+                    .receive_message(DAMAGED, parameters, &mut world)
+                    .unwrap(),
+                0
+            );
+            let snapshot = component.snapshot().unwrap();
+            let instance = |graph| {
+                snapshot
+                    .instances
+                    .values()
+                    .find(|instance| instance.graph == graph)
+                    .unwrap()
+            };
+            let flinch = instance(0x02c5);
+            assert!(flinch.states[&KNOCKBACK].active, "the knockback anim");
+            assert_eq!(flinch.variables[&1018], Value::Vector(direction));
+            assert_eq!(
+                instance(0x01cf).variables[&9737],
+                Value::Entity(if source == BODY {
+                    CONTROLLER
+                } else {
+                    BOT_CONTROLLER
+                })
+            );
+            let Value::Float(rating) = snapshot.variables[&10417] else {
+                panic!("004B rates the hurt");
+            };
+            assert!(world.take_criteria().is_empty(), "the pain waits 0.15 s");
+            let mut criteria = Vec::new();
+            for frame in FIRST + 1..FIRST + 20 {
+                component.advance_frame(frame, &mut world).unwrap();
+                criteria.extend(
+                    world
+                        .take_criteria()
+                        .into_iter()
+                        .map(|id| (frame - FIRST, id)),
+                );
+            }
+            let snapshot = component.snapshot().unwrap();
+            assert!(
+                snapshot.diagnostics.is_empty(),
+                "{:?}",
+                snapshot.diagnostics
+            );
+            (rating, criteria)
+        };
+
+        let (rating, criteria) = hurt(BOT, 120.0, [0.0, 0.0, -1.0]);
+        assert!((rating - 0.888).abs() < 1e-6, "{rating}");
+        assert_eq!(criteria, [(10, SEVERE), (10, ABOVE_A_TENTH)]);
+        let (rating, criteria) = hurt(BODY, 40.0, [0.0, 1.0, 0.0]);
+        assert!((rating - 0.296).abs() < 1e-6, "{rating}");
+        assert_eq!(criteria, [(10, MINOR), (10, ABOVE_A_TENTH)]);
     }
 }
