@@ -48,18 +48,55 @@ pub enum Step {
 pub struct GameClock {
     frame: u32,
     drain_ticks_left: Option<u32>,
+    /// Ticks between the datagrams to each client ([`send_every`]).
+    send_every: u32,
 }
 
 impl Default for GameClock {
     fn default() -> Self {
-        Self {
-            frame: FIRST_TICK,
-            drain_ticks_left: None,
-        }
+        Self::new(SEND_EVERY)
     }
 }
 
+/// The debugging switch `ORPHEUS_SEND_EVERY` (1 to 3): ticks between the
+/// datagrams to each client. Unset: [`SEND_EVERY`], Python's cadence.
+/// Assumption to test in game: the 1.74 client takes a datagram every tick,
+/// as retail's "high bandwidth" (63 updates a second, PC default since
+/// August 2016) sent.
+pub fn send_every() -> u32 {
+    static EVERY: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
+        let Ok(value) = std::env::var("ORPHEUS_SEND_EVERY") else {
+            return SEND_EVERY;
+        };
+        match value.trim().parse() {
+            Ok(every @ 1..=3) => {
+                tracing::warn!("debugging: a datagram to each client every {every} tick(s)");
+                every
+            }
+            _ => {
+                tracing::warn!(
+                    "ORPHEUS_SEND_EVERY: {value:?} is not 1, 2 or 3; using {SEND_EVERY}"
+                );
+                SEND_EVERY
+            }
+        }
+    });
+    *EVERY
+}
+
 impl GameClock {
+    pub fn new(send_every: u32) -> Self {
+        Self {
+            frame: FIRST_TICK,
+            drain_ticks_left: None,
+            send_every: send_every.max(1),
+        }
+    }
+
+    pub fn send_every(self) -> u32 {
+        self.send_every
+    }
+
     pub fn frame(self) -> u32 {
         self.frame
     }
@@ -74,7 +111,7 @@ impl GameClock {
             .saturating_add(1);
         if self.drain_ticks_left.is_none() && candidate <= u64::from(MAX_SIMULATION_TICK) {
             let frame = candidate as u32;
-            let send_world = frame / SEND_EVERY > self.frame / SEND_EVERY;
+            let send_world = frame / self.send_every > self.frame / self.send_every;
             self.frame = frame;
             return Step::Simulate { frame, send_world };
         }
@@ -92,7 +129,7 @@ impl GameClock {
             frame: self.frame,
             entered,
             force,
-            send_reliable: !force && self.frame % SEND_EVERY == 0,
+            send_reliable: !force && self.frame % self.send_every == 0,
         }
     }
 
@@ -101,7 +138,7 @@ impl GameClock {
         if !self.draining() || connections_pending || reports_pending {
             return false;
         }
-        *self = Self::default();
+        *self = Self::new(self.send_every);
         true
     }
 }
@@ -135,7 +172,7 @@ mod tests {
     fn sends_once_for_every_update_that_crosses_a_world_boundary() {
         let mut clock = GameClock {
             frame: 1001,
-            ..Default::default()
+            ..GameClock::default()
         };
         let sent: Vec<_> = [0, 3, 2, 2, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0]
             .into_iter()
@@ -148,6 +185,19 @@ mod tests {
             })
             .collect();
         assert_eq!(sent, [1002, 1006, 1009, 1012, 1014, 1022, 1023, 1026, 1029]);
+        // ORPHEUS_SEND_EVERY=1: every tick sends, run or skipped to.
+        let mut clock = GameClock::new(1);
+        let sent: Vec<_> = [0, 3, 0]
+            .into_iter()
+            .filter_map(|missed| match clock.step(missed, true) {
+                Step::Simulate {
+                    frame,
+                    send_world: true,
+                } => Some(frame),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent, [FIRST_TICK + 1, FIRST_TICK + 5, FIRST_TICK + 6]);
     }
 
     #[test]
