@@ -93,7 +93,7 @@ A test on the real clock and real UDP only proves the real loop and its sockets:
 
 #### Slow tests
 
-A game-install test that plays a whole match in real time, or runs for more than about 60 seconds in the `gametest` build, is in the slow group:
+A game-install test that runs for more than about 30 seconds in the `gametest` build is in the slow group (today only the Practice vs AI match, whose twelve bodies take about 40 s to simulate):
 
 - Its name starts with `slow_`. `just test-game` skips the names that contain `slow_` (`--skip slow_`); `just test-slow` runs only them. Do not use `slow_` in the name of another ignored test.
 - Its `#[ignore]` reason starts with `slow:` and says why it is slow.
