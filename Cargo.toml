@@ -66,5 +66,20 @@ opt-level = 3
 [profile.dev.package.orpheus-stu]
 opt-level = 3
 
+# A debug server runs every body's statescript, mover and replication each
+# tick: unoptimized, a Practice vs AI match's twelve bodies take about as
+# long as the ticks they simulate, and a server that falls behind leaves
+# the AI heroes standing (their commands come far apart, and a body holds
+# an input for 32 frames only). Some optimization keeps the debug server
+# and its game-tier tests at real time; debug assertions stay on.
+[profile.dev.package.orpheus-script]
+opt-level = 1
+
+[profile.dev.package.orpheus-physics]
+opt-level = 1
+
+[profile.dev.package.orpheus-sim]
+opt-level = 1
+
 [profile.dev.package."*"]
 opt-level = 3
