@@ -31,7 +31,7 @@ The Python start scripts passed `--bnet-port 1118`.
 - Commit queues, corrections and remote-body visibility only after a successful send. On a send error keep the queues. A remote body becomes visible only after its create was sent, so its first movement can't go out before the create.
 - Op, chunk and ch2 records go through ACK and resend. Pure movement and no-op records are consumed without reliable retransmission. Ch2-only projectile shot events must be consumed too.
 - One record bigger than the payload limit would need fragmentation. The fragment encoding is unverified, so such a record is rejected explicitly. It is never sent oversized or dropped silently.
-- Server tick 16 ms, frames sent every third tick, first tick 1000.
+- Server tick 16 ms, a datagram to each client every tick, first tick 1000.
 
 ## Input commands
 
