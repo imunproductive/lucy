@@ -61,12 +61,10 @@ impl Lockstep {
         let mut game = GameLoop::new(schemas);
         settle(&mut game, &wire, &receiver, Duration::ZERO)?;
         let stopping = Arc::new(AtomicBool::new(false));
-        let worker = thread::Builder::new()
-            .name("orpheus-game".into())
-            .spawn({
-                let (wire, stopping) = (wire.clone(), Arc::clone(&stopping));
-                move || run(game, &wire, poll, &receiver, &steps, &stopping)
-            })?;
+        let worker = thread::Builder::new().name("orpheus-game".into()).spawn({
+            let (wire, stopping) = (wire.clone(), Arc::clone(&stopping));
+            move || run(game, &wire, poll, &receiver, &steps, &stopping)
+        })?;
         Ok(Self {
             service: GameService {
                 address: SERVER,
@@ -189,12 +187,8 @@ pub(crate) fn ticks(time: Duration) -> u32 {
 }
 
 enum Control {
-    Step {
-        reply: mpsc::SyncSender<Duration>,
-    },
-    AwaitScenes {
-        reply: mpsc::SyncSender<()>,
-    },
+    Step { reply: mpsc::SyncSender<Duration> },
+    AwaitScenes { reply: mpsc::SyncSender<()> },
 }
 
 /// The datagrams in flight, each delivered in order.

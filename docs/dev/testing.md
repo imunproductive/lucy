@@ -75,7 +75,21 @@ The recipe builds the relay, sets `ORPHEUS_GAME_DIR` and runs every ignored test
 
 `just test-game` and `just test-slow` build with the Cargo profile `gametest` (in `Cargo.toml`). It optimises every crate as the release profile does, but it keeps the debug assertions and overflow checks. So the VM still refuses statescript content it does not implement, as in `cargo test`. Each game-install test, run alone, takes about half the time of a debug build; the `sim` tests take a third. The build goes to `target/gametest`, apart from the debug build. The first `gametest` build compiles everything once (about 7 minutes); after a change in `sim` it takes about two minutes.
 
-The game-install recipes run the tests side by side, half as many at a time as the PC has CPU threads (`RUST_TEST_THREADS`). Each such test keeps a game server thread busy in real time beside its own, and holds about 0.7 GB; with one test per CPU thread, a PC with 16 threads and 16 GB ran out of memory, and the tests' waits for datagrams timed out. A loopback test binds `127.0.0.1:0`, so the system gives it a free port, and writes only to its own temporary folder (`tempfile::tempdir()`). So the tests don't take each other's ports or files, and they run while a server listens on the default ports. A new test must do the same. Only the derived game data in `target/orpheus-test-data` and its collision caches are shared; a map's collision is built once per process, whichever test asks first.
+The game-install recipes run the tests side by side, half as many at a time as the PC has CPU threads (`RUST_TEST_THREADS`): each holds about 0.7 GB of game data, and with one test per CPU thread a PC with 16 threads and 16 GB ran out of memory. A test that opens a socket binds `127.0.0.1:0`, so the system gives it a free port, and writes only to its own temporary folder (`tempfile::tempdir()`). So the tests don't take each other's ports or files, and they run while a server listens on the default ports. A new test must do the same. Only the derived game data in `target/orpheus-test-data` and its collision caches are shared; a map's collision is built once per process, whichever test asks first.
+
+#### Game service tests
+
+The game service's tests (`crates/server/src/game_service/tests.rs`) run it on a virtual clock, with an in-memory network in place of its UDP socket (`game_service/lockstep.rs`). The loop is the real one (`GameLoop::pass`); only its clock and its socket are the test's. The clock moves in lockstep with the test's clients: they send, the service takes their datagrams and runs the next tick exactly when it is due, and they read what it sent. No tick is skipped, so a test's run does not depend on the PC's speed or on the other tests.
+
+To write one:
+
+- Start the service with `Lockstep::new(schemas)`, not `GameService::bind`. It derefs to the `GameService`, so open matches as usual.
+- Connect a `Client::new(&server, &ticket)` (or a `Watcher`). `send` queues a datagram that arrives before the next tick; `receive` runs ticks until a datagram comes, at most `RECEIVE_TICKS` (2 s).
+- Wait in game time, never in real time: no `Instant`, `thread::sleep` or socket timeout. `server.now()` (or `client.now()`) is the time of the last tick, so a deadline is `server.now() + Duration::from_secs(n)`. `server.step()` runs one tick and `server.run(time)` the ticks of `time`, for example between two polls of `server.snapshot()`.
+- `open_world` prepares the scene on a thread of its own, in real time: call `server.await_scenes()` after it. The clock waits until every match has its scene, so the scene comes at a known tick. A test that holds the preparation back itself (`collision_ready.rs`) calls it after it lets the scene go.
+- Timing is exact. A client sends right after each datagram, so its input arrives at a send frame's time (every `SEND_EVERY` = 3 ticks), after that tick, and what a tick queues goes with the next send frame. Derive the expected tick from the rule and write the derivation in a comment, as `a_player_kills_another_who_respawns_after_the_practice_range_delay` does for the respawn (186 ticks after the death notice) and `exercise_loading` for the loading steps. Never give a window for the PC's speed.
+
+A test on the real clock and real UDP only proves the real loop and its sockets: `server::tests::serial_native_server_logs_in_saved_profile_and_loads_practice_over_udp` runs the whole server so. Do not add another for behaviour. (The lobby's tests in `lobby/` still run a real game service until the lobby has a clock of its own.)
 
 #### Slow tests
 
@@ -90,7 +104,7 @@ just test-slow C:\Games\Overwatch
 
 #### Serial tests
 
-The load of other tests stretches real time: the game server skips the ticks it falls behind on. A game-install test whose assertion depends on that timing (a window of ticks or milliseconds, or the exact contents of a datagram) is in the serial group:
+The load of other tests stretches real time: a server on the real clock skips the ticks it falls behind on. A game-install test on the real clock whose assertion depends on that timing (a window of ticks or milliseconds, or the exact contents of a datagram) is in the serial group. A game service test on the virtual clock never is.
 
 - Its name starts with `serial_`. `just test-game` runs the other tests first, then the `serial_` tests one at a time (`--test-threads=1`). Do not use `serial_` in the name of another ignored test.
 - Its `#[ignore]` reason starts with `serial:` and says which timing it depends on.

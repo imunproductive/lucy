@@ -72,7 +72,7 @@ The last differing test, `TakeOutTests::test_a_player_taken_out_before_his_game_
 | `test_body_probe_cli.py` | dropped | Tests `tools/probe_body_script.py` (research probe over `research_runtime`); the tool is deleted in phase 8 |
 | `test_body_vm_aliases.py` | dropped | Python VM snapshot alias identity (format BODY_VM_SNAPSHOT_V1, deleted); no Rust reader |
 | `test_body_vm_snapshot.py` | dropped | Same Python-only body VM snapshot research format |
-| `test_bot_chat.py` | ported | server `lobby/social/tests/bot_chat.rs`: `the_bot_is_quiet_by_default`, `the_bot_answers_when_the_switch_is_on` |
+| `test_bot_chat.py` | ported | server `lobby/social/tests/bot_chat.rs`: `the_bot_answers_only_when_the_switch_is_on` |
 | `test_bots.py` | covered | sim `bots/tests.rs`: `backward_walk_brake_and_next_leg_match_python_wire_vectors`, `catalogs_only_unconditional_spawners...`, `fifteen_practice_bots_match_python_roster_and_patrol_frames` (ignored) |
 | `test_casc_bundle.py` | covered | casc `tests/storage.rs::reads_stored_and_bundled_assets_by_guid`, `damaged_bytes_fail_their_content_key`; `bundle.rs::reads_each_offset_width` |
 | `test_cli.py` | covered | app `ask.rs::the_mode_menu_takes_a_number_and_enter_is_retail`, `answers_are_remembered_and_enter_reuses_them`, `addresses_and_names_are_checked_like_the_reference`; `main.rs::bad_join_options_are_refused_before_anything_starts`; `settings.rs` tests |
@@ -120,7 +120,7 @@ The last differing test, `TakeOutTests::test_a_player_taken_out_before_his_game_
 | `test_game_owner_delta_loss.py` | covered | script `stream/tests.rs::older_positive_ack_keeps_newer_lost_changes...`, `a_superseded_owner_report_still_resolves...` |
 | `test_game_packet_budget.py` | covered | wire `entity/tests.rs::budget_reuses_trimmed_space...`, `record_cap_keeps_fifo...`; sim `egress/tests.rs` (8), `replication/tests.rs::owner_correction_respects_create_budget...` |
 | `test_game_projectiles.py` | covered | sim `projectiles.rs` (9), `projectile_wire.rs` (4); server `another_client_sees_a_players_helix_rocket` (ignored) |
-| `test_game_repeated_lifecycles.py` | covered | sim `replication/tests.rs::ring_reuses_only_acknowledged_destroy...`; server `serial_prepared_world_waits_for_ownership_and_retries_baselines_before_scripts` (ignored) |
+| `test_game_repeated_lifecycles.py` | covered | sim `replication/tests.rs::ring_reuses_only_acknowledged_destroy...`; server `prepared_world_waits_for_ownership_and_retries_baselines_before_scripts` (ignored) |
 | `test_game_replay_manifest.py` | dropped | LOCAL_REPLAY_MANIFEST_V1 research format |
 | `test_game_script_faults.py` | ported | sim `body_script/fault_tests.rs::an_exhausted_weapon_stops_the_body_before_combat_consumes_its_shots` |
 | `test_game_script_replication.py` | dropped | Tests the `research_runtime` replication path (body.py diagnostic/experimental modes); the observer death is covered by server `a_player_kills_another...` |
@@ -173,7 +173,7 @@ The last differing test, `TakeOutTests::test_a_player_taken_out_before_his_game_
 | `test_server_journal.py` | dropped | CONTROLLED_SERVER_JOURNAL_V1/V2 research format |
 | `test_server_snapshot.py` | dropped | SERVER_STORED_STATE_V1 research format |
 | `test_shop.py` | covered | lobby `shop/tests.rs` (4: currencies, team partner, refusals, missing partners) |
-| `test_ssq.py` | ported | app `script_query/tests.rs` (game tier, e.g. `presence_bits_in_order`, `who_starts_the_hero_select_graphs`, `soldier_abilities`, `var_699_is_written_by_sprint_and_read_by_its_icon`, `each_mode_names_its_controller`) |
+| `test_ssq.py` | ported | app `script_query/tests.rs` (game tier, e.g. `presence_bits_in_order`, `who_starts_the_hero_select_graphs`, `each_mode_names_its_controller`) |
 | `test_static_ray_round.py` | covered | physics `static_ray.rs` (5); `collision/scene.rs::expanded_scene_checks_provenance...` |
 | `test_statescript_codecs.py` | covered | script `codecs.rs` (4, `samples()` cites this file), including `actual_payloads_match_python_in_owner_and_both_observer_modes`; the coverage report belongs to `codec_coverage.py` |
 | `test_two_games.py` | covered | server `platform.rs` (2); `server.rs::battle_net_logs_a_second_game_in_as_its_account...`; lobby `login.rs::login_uses_tournament_name_or_retail_session_key` (gap: the `SECOND_GAME_ARGUMENTS` and bnet-port arguments are untested) |

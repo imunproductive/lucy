@@ -203,7 +203,11 @@ fn exercise_loading(schemas: Schemas) {
         let packet = client.receive();
         assert!(client.window.accept(packet.seq));
         let tick = tick_of(&packet);
-        received.extend(messages(&schemas, &packet).into_iter().map(|item| (tick, item)));
+        received.extend(
+            messages(&schemas, &packet)
+                .into_iter()
+                .map(|item| (tick, item)),
+        );
         client.send(ACK, Vec::new());
     }
     assert_eq!(
@@ -1001,10 +1005,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         for record in records.iter().filter(|record| record.is_create()) {
             assert!(creates.insert(record.entity));
         }
-        assert!(
-            client.now() < deadline,
-            "waiting for the rest of the world"
-        );
+        assert!(client.now() < deadline, "waiting for the rest of the world");
     }
     assert_eq!(creates.len(), 36);
 
@@ -2145,15 +2146,14 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     let created = target.created(respawned).unwrap();
     let respawn_tick = target.ticks[created];
     assert!(created > died);
-    // combat.py `PRACTICE_RESPAWN`: 3 s, 187.5 ticks, so the first tick
-    // 188 ticks after the death's. The death notice and the new body's
-    // create each go with the next send frame: their datagrams are 188
-    // ticks apart, give or take `SEND_EVERY` - 1.
+    // combat.py `PRACTICE_RESPAWN`: 3 s. The shooter sends his commands
+    // after a datagram, so the killing one arrives at a send frame's time,
+    // tick T, after its tick: the death notice goes with the next send
+    // frame, T + 3. The respawn is due at the first tick 3 s after the
+    // death, T + 188 (3000 / 16 = 187.5), and the new body goes with the
+    // next send frame, T + 189: 186 ticks after the death notice.
     let waited = respawn_tick - death_tick;
-    assert!(
-        (188 - (SEND_EVERY - 1)..=188 + (SEND_EVERY - 1)).contains(&waited),
-        "respawned after {waited} ticks"
-    );
+    assert_eq!(waited, 186, "respawned after {waited} ticks");
     assert!(
         target
             .find(died, |record| record.entity == target_body
@@ -2372,10 +2372,7 @@ fn a_clients_allied_health_bars_setting_reaches_his_body() {
             {
                 break;
             }
-            assert!(
-                server.now() < deadline,
-                "the tag is not {given}: {body:?}"
-            );
+            assert!(server.now() < deadline, "the tag is not {given}: {body:?}");
             if next <= watcher.tick + 8 {
                 watcher
                     .client
@@ -2786,9 +2783,10 @@ fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_
         ],
         "{hits:?}"
     );
-    // STICK_FUSE: 1 s, 62.5 ticks of 16 ms.
+    // STICK_FUSE: 1 s, 62.5 ticks of 16 ms: the bomb explodes at the
+    // first tick 1 s after it stuck, 63 ticks later.
     let fuse = hits[1].0 - hits[0].0;
-    assert!((62..=63).contains(&fuse), "fuse of {fuse} ticks");
+    assert_eq!(fuse, 63, "fuse of {fuse} ticks");
     let (_, notice) = messages_of(&tracer, 25005).remove(0);
     assert_eq!(notice[&0x84], Value::Struct(Fields::from([(0, target)])));
     let exploded = hits[1].0 as u32;
@@ -2855,15 +2853,18 @@ fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_
 /// three commands a datagram, as the server sends one every `SEND_EVERY`
 /// ticks.
 ///
-/// `WITHIN` = 4 ticks: the shot's own id is released at the impact tick,
-/// an alias K − f later (an owner frame that introduced the volley, at K
-/// after the shot's frame f; the server runs a datagram's three commands
-/// in one tick, so its owner frame reports the last of them: at most 2
-/// later), each with the next send frame (at most `SEND_EVERY` − 1 = 2
-/// ticks). The rocket flies 8 m (10 ticks at 50 m/s), long enough for
-/// its confirmation to arrive over loopback first. Before, the release
-/// waited for the shot's command frame plus the flight plus 6, compared
-/// with server ticks: `LEAD` + 6 ticks after the impact at least.
+/// The shot's own id is released at the impact tick, an alias K − f later
+/// (an owner frame that introduced the volley, at K after the shot's frame
+/// f; the server runs a datagram's three commands in one go, so its owner
+/// frame reports the last of them), each with the next send frame. After
+/// each datagram the client sends its frames up to the packet frame +
+/// `LEAD`, three at a time; the shot's frame comes 60 frames (a multiple of
+/// `SEND_EVERY`) after the first batch's last, so it is the last of its
+/// three: K = f, and the release goes with the first send frame from the
+/// impact's tick. The rocket flies 8 m (10 ticks at 50 m/s), long enough
+/// for its confirmation to arrive first. Before, the release waited for
+/// the shot's command frame plus the flight plus 6, compared with server
+/// ticks: `LEAD` + 6 ticks after the impact at least.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
@@ -2872,7 +2873,6 @@ fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
     const HELIX: u32 = 0x072c;
     const LEAD: u32 = 8;
     const AHEAD: f64 = 8.0;
-    const WITHIN: u32 = 4;
 
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     let mut aim = None;
@@ -2939,10 +2939,11 @@ fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
     let Value::Unsigned(impact) = impact else {
         panic!("impact frame")
     };
-    let released = soldier.ticks[release];
-    assert!(
-        u64::from(released) >= impact && u64::from(released) <= impact + u64::from(WITHIN),
-        "released at {released}, the impact at {impact}"
+    let impact = u32::try_from(impact).unwrap();
+    assert_eq!(
+        soldier.ticks[release],
+        send_frame_from(impact),
+        "the impact at {impact}"
     );
     server.stop().unwrap();
 }
@@ -3580,10 +3581,11 @@ fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
                 .unwrap();
             if watcher.owner != healer.owner {
                 let lived = watcher.ticks[gone] - watcher.ticks[create];
-                assert!(
-                    (FIELD_TICKS - 4..=FIELD_TICKS + 30).contains(&lived),
-                    "the field lived {lived} ticks"
-                );
+                // The cast arrives at a send frame's time, tick T, after
+                // its tick: the create goes with the next send frame,
+                // T + 3. The field ends FIELD_TICKS ticks later, T + 313,
+                // and its destroy goes with the next send frame, T + 315.
+                assert_eq!(lived, FIELD_TICKS - 1, "the field lived {lived} ticks");
             }
         }
     }
@@ -3828,12 +3830,12 @@ fn slow_a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player()
             .collect();
         let (_, last) = frames.last().unwrap();
         // One frame a second for 30 s, the mode entity's first ones; then
-        // the round's, whose clock Skirmish doesn't run.
-        assert!(
-            (25..=32).contains(&frames.len()),
-            "{} countdown frames",
-            frames.len()
-        );
+        // the round's, whose clock Skirmish doesn't run. The flow starts at
+        // the first spawn (the World step), before the clients take mode
+        // frames (the Controller step, 0.1 s later): the frame at 0 s goes
+        // to nobody, so each gets those at 1 to 29 s and the one at 30 s
+        // that ends the assembly.
+        assert_eq!(frames.len(), 30, "countdown frames");
         for (_, chunk) in &frames[..frames.len() - 1] {
             assert_eq!(chunk.width, counting.bit_len());
         }
@@ -4321,10 +4323,7 @@ fn slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end() {
             }
             next_sample += Duration::from_millis(250);
         }
-        assert!(
-            server.now() < deadline,
-            "waiting for the end of the match"
-        );
+        assert!(server.now() < deadline, "waiting for the end of the match");
     }
 
     // The AI heroes are other players to the player's game: a card with
@@ -4875,16 +4874,15 @@ fn practice_bots_run_their_scripts_for_a_client() {
         "the replacement",
         |watchers| watchers[0].created(replacement).is_some(),
     );
-    // combat.py `BOT_RESPAWN`: 3 s, 187.5 ticks, so the first tick 188
-    // ticks after the kill's. The kill's notices and the replacement's
-    // create each go with the next send frame: their datagrams are 188
-    // ticks apart, give or take `SEND_EVERY` - 1.
+    // combat.py `BOT_RESPAWN`: 3 s. The killing command arrives at a send
+    // frame's time, tick T, after its tick (the client sends after each
+    // datagram): the kill's notices go with the next send frame, T + 3.
+    // The replacement is due at the first tick 3 s after the kill, T + 188
+    // (3000 / 16 = 187.5), and goes with the next send frame, T + 189: 186
+    // ticks after the kill's notices.
     let created = watcher.created(replacement).unwrap();
     let respawned = watcher.ticks[created] - kill_sent;
-    assert!(
-        (188 - (SEND_EVERY - 1)..=188 + (SEND_EVERY - 1)).contains(&respawned),
-        "replaced after {respawned} ticks"
-    );
+    assert_eq!(respawned, 186, "replaced after {respawned} ticks");
     pump_until(
         &mut [&mut watcher],
         &schemas,

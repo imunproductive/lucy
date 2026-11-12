@@ -182,10 +182,7 @@ fn a_failed_collision_sends_connected_games_home_once_and_drops_the_others() {
     }
     let deadline = server.now() + Duration::from_secs(2);
     while !server.snapshot().unwrap().is_empty() {
-        assert!(
-            server.now() < deadline,
-            "waiting for the players to leave"
-        );
+        assert!(server.now() < deadline, "waiting for the players to leave");
         server.step();
     }
     assert!(!server.seat_exists(&tickets[0]).unwrap());
