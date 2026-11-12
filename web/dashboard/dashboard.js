@@ -5,7 +5,7 @@ import {api, selectAccount} from './dashboard-api.mjs';
   const $ = (selector, scope = document) => scope.querySelector(selector);
   const $$ = (selector, scope = document) => [...scope.querySelectorAll(selector)];
   const number = value => new Intl.NumberFormat('en-US').format(Number(value) || 0);
-  const titles = {overview: 'Profile', events: 'Events', boxes: 'Loot boxes', shop: 'Collection', sessions: 'Server'};
+  const titles = {overview: 'Profile', events: 'Events', boxes: 'Loot boxes', shop: 'Collection', sessions: 'Server', plate: 'Bot plate'};
   const currencies = {
     credits: {label: 'Credits', unit: 'credits', symbol: 'C', className: 'credits-icon'},
     comp_points: {label: 'Competitive points', unit: 'competitive points', symbol: '◆', className: 'comp-icon'},
@@ -603,6 +603,57 @@ import {api, selectAccount} from './dashboard-api.mjs';
     }
     setText('#view-context', titles[view]); document.title = `${titles[view]} · Overwatch 1.74`;
     if (view === 'shop') loadShop();
+    if (view === 'plate') plate();
+  }
+  // The live nameplate tool: one command (the chat command's text), or
+  // none to show what is in force.
+  async function plate(command) {
+    showError('#plate-error', '');
+    try {
+      const result = command === undefined ? await api('/api/bot_plate') : await api('/api/bot_plate', {command});
+      renderPlate(result);
+      if (command !== undefined) toast(`Applied: ${command}`);
+    } catch (error) { showError('#plate-error', error.message); }
+  }
+  function plateInput(value, command) {
+    const input = node('input');
+    input.type = 'text'; input.value = value ?? ''; input.spellcheck = false; input.setAttribute('aria-label', command);
+    input.addEventListener('keydown', event => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      plate(`${command} ${input.value.trim() || 'default'}`);
+    });
+    return input;
+  }
+  function renderPlate(result) {
+    setText('#plate-commands', result.commands.length ? `In force: ${result.commands.join('; ')}` : 'No changes: the bots send what they have.');
+    const bot = result.bot;
+    setText('#plate-bot', bot ? `${bot.name} (${bot.entity})` : 'No live training bot');
+    const parts = $('#plate-parts'); parts.replaceChildren();
+    for (const part of bot?.parts || []) {
+      const row = node('tr', part.tuned ? 'tuned' : '');
+      row.append(node('th', '', part.name));
+      const values = [['id', part.id], ['max', part.max], ['now', part.now], ['kind', part.kind], ...part.bytes.map((byte, index) => [`b${16 + index}`, byte])];
+      for (const [key, value] of values) {
+        const cell = node('td'); cell.append(plateInput(value, `${part.name}.${key}`)); row.append(cell);
+      }
+      parts.append(row);
+    }
+    const variables = $('#plate-variables'); variables.replaceChildren();
+    for (const variable of bot?.variables || []) {
+      const row = node('tr', variable.tuned ? 'tuned' : '');
+      row.append(node('th', '', variable.name));
+      const cell = node('td'); cell.append(plateInput(variable.value, variable.name)); row.append(cell);
+      row.append(node('td', 'muted', variable.what));
+      variables.append(row);
+    }
+    const messages = $('#plate-messages'); messages.replaceChildren();
+    for (const message of result.messages) {
+      const button = node('button', 'button secondary', message.id);
+      button.type = 'button'; button.title = message.what;
+      button.addEventListener('click', () => plate(`message ${message.id}`));
+      messages.append(button);
+    }
   }
   async function saveForm(event, form, dirty, errorSelector, successMessage) {
     event.preventDefault(); if (busyForms.has(form) || !dirty.size || !form.reportValidity()) return;
@@ -696,6 +747,13 @@ import {api, selectAccount} from './dashboard-api.mjs';
     try { toast((await api('/api/set_map', {map: $('#map-select').value})).message); }
     catch (error) { showError('#map-error', error.message); }
   });
+  $('#plate-form').addEventListener('submit', event => {
+    event.preventDefault();
+    const command = $('#plate-command').value.trim();
+    if (command) plate(command);
+  });
+  $('#plate-reset').addEventListener('click', () => plate('reset'));
+  $('#plate-refresh').addEventListener('click', () => plate());
   for (const button of $$('[data-bot-action]')) button.addEventListener('click', async () => {
     if (button.disabled) return;
     button.disabled = true; showError('#bot-error', '');
