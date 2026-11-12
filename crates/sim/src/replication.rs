@@ -84,12 +84,18 @@ const MAX_SCRIPT_TAIL: u32 = 256;
 /// Python had Soldier: 76 alone. Ana is beyond it (2026-11-12): no ability
 /// of hers moves her, and her scoped walk (`01C7` st49 takes the speed down
 /// by `#23184`, which `0B94` st77 sets to 0.65 while the zoom `#169` is
-/// full) runs at the reference's speeds on the reference's frames. Without
-/// corrections, any other difference between her client's body and the
-/// server's lasted until she died, and her shots left from the wrong place.
-/// Widowmaker stays out: the server can't run her Grappling Hook (`005A`
-/// st1, a `MoveTo` to an entity and bone), so a correction would pull her
-/// back.
+/// full) runs at the reference's speeds on the reference's frames, the same
+/// with and without her corrections. With corrections her scoped walk
+/// stopped in the game while her owner frames sent `#23184` as its stacked
+/// value with its binding to st77 (`#23184e + 0.65`), which her client
+/// (inferred, not traced) counts twice: 1.3, a speed scalar below 0. They
+/// send its own value now (`SnapshotEncoder` `project_variables`). Without corrections, any other difference between
+/// her client's body and the server's lasted until she died, and her shots
+/// left from the wrong place. Widowmaker stays out: the server can't run
+/// her Grappling Hook (`005A` st1, a `MoveTo` to an entity and bone), so a
+/// correction would pull her back. The other heroes stay out until the
+/// server runs all of their movement (`docs/notes/behavior.md`, "Owner
+/// corrections").
 const CORRECTED_HEROES: [u64; 2] = [SOLDIER, ANA];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

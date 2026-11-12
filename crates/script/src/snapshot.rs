@@ -634,7 +634,7 @@ impl<'a> SnapshotEncoder<'a> {
             }
             let key = (owner, variable);
             let bindings = snapshot.bindings.get(&key);
-            let value = match snapshot.resolved_bindings.get(&key) {
+            let mut value = match snapshot.resolved_bindings.get(&key) {
                 Some(resolved) => resolved,
                 None if bindings.is_some() => {
                     return Err(SnapshotError::MissingBoundValue { owner, variable });
@@ -643,6 +643,23 @@ impl<'a> SnapshotEncoder<'a> {
             };
             if let Some(bindings) = bindings.filter(|_| view == View::Owner) {
                 let links = self.project_bindings(snapshot, owner, variable, bindings)?;
+                // The owner's client keeps a variable as its own value plus
+                // its links and works the links out itself (a Stack's entry
+                // reads the value below it: client 0x7FF78AAA5FF0,
+                // `vm/links.rs`); the value it reads here is that own value
+                // (0x7FF78991D2C0, leafall903/ORPHEUS (MIT) `decode.py`
+                // `read_var`; inferred, not traced). So with every binding a
+                // Stack it has, it gets the variable's own value: the stacked
+                // one counts a stack that adds to its own variable twice.
+                // Ana's `0B94` st77 `#23184e + 0.65` comes to 1.3, and `01C7`
+                // st49 takes her speed scalar below 0: the suspected cause of
+                // her scoped walk stopping once she had owner corrections.
+                // Python sent the stacked value (driver.py `_add_var`:
+                // `var.value()`); it still goes where a binding stays on the
+                // server or is an Ability's stack (slot 1).
+                if links.len() == bindings.len() && links.iter().all(|link| link.slot == 0) {
+                    value = base;
+                }
                 if !links.is_empty() {
                     projected.bindings.insert(variable, links);
                 }

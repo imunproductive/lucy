@@ -722,21 +722,20 @@ impl Combat {
     ) -> io::Result<Option<FlightEnd>> {
         let free_for_all = scene.map().free_for_all;
         let allies = flight.direct().map_or(AllyHits::None, |hit| hit.allies);
-        let candidates: Vec<_> = self
+        let mut candidates: Vec<_> = self
             .player_candidates(shooter, free_for_all, allies, |slot| {
                 Some(slot.target.pose.clone())
             })
-            .chain(
-                scene
-                    .bots()
-                    .iter()
-                    .zip(&self.targets)
-                    .filter(|(bot, target)| {
-                        eligible_bot(bot, target, shooter, free_for_all, allies)
-                    })
-                    .map(|(bot, _)| (bot.entity, scene.bot_target(bot))),
-            )
             .collect();
+        let first_bot = candidates.len();
+        candidates.extend(
+            scene
+                .bots()
+                .iter()
+                .zip(&self.targets)
+                .filter(|(bot, target)| eligible_bot(bot, target, shooter, free_for_all, allies))
+                .map(|(bot, _)| (bot.entity, scene.bot_target(bot))),
+        );
         let step = flight
             .advance(context.tick, &candidates, |origin, direction, reach| {
                 scene.hitscan_wall(origin, direction, reach)
@@ -752,6 +751,17 @@ impl Combat {
                 impact,
             )
         }));
+        // Its explosion pushes the bots it can reach, as it pushes its
+        // shooter (`ProjectileFlight::blast_push`), the live ones after its
+        // damage ([`PreparedScene::knock_bot`]). Beyond Python, which moved
+        // no bot. Other players' bodies get no push yet.
+        if step.end.as_ref().is_some_and(|end| end.exploded) {
+            for (entity, pose) in &candidates[first_bot..] {
+                if let Some(push) = flight.blast_push(pose) {
+                    scene.knock_bot(*entity, push, context.tick);
+                }
+            }
+        }
         // A player's explosion also reaches his own body (beyond Python,
         // `ProjectileFlight::own_blast`): its damage, never a heal, comes
         // after the others' (no ultimate charge for it: `apply_player_hits`),

@@ -419,18 +419,27 @@ fn initial_owner_delta_matches_python_stack_bindings_and_payloads() {
     let encoder = SnapshotEncoder::new(&graphs, &codecs);
     let owner = encoder.project(&snapshot, View::Owner).unwrap();
     let observer = encoder.project(&snapshot, View::Observer).unwrap();
+    // The owner gets each bound variable's own value with its bindings (the
+    // client works the stacks out itself); the observer, no bindings, gets
+    // what the stacks make of it.
     assert_eq!(snapshot.variables[&7], Value::Integer(4));
-    assert_eq!(owner.variables.values[&7], Value::Integer(31));
+    assert_eq!(owner.variables.values[&7], Value::Integer(4));
     assert_eq!(
         owner.instances[&1].variables.values[&100],
-        Value::Integer(17)
+        Value::Integer(9)
     );
     assert_eq!(owner.variables.bindings[&7].len(), 2);
+    assert_eq!(observer.variables.values[&7], Value::Integer(31));
     assert!(observer.variables.bindings.is_empty());
     assert!(observer.instances[&1].variables.bindings.is_empty());
-    // Python body_full_frame, remote_full_frame, then owner_delta at CmFD 1001.
+    // Python sent the stacked values (31, 17) with the bindings; the frames
+    // are Python's bytes for those (body_full_frame, remote_full_frame, then
+    // owner_delta at CmFD 1001).
+    let mut python = owner.clone();
+    python.variables.values[&7] = Value::Integer(31);
+    python.instances.get_mut(&1).unwrap().variables.values[&100] = Value::Integer(17);
     check(
-        &encoder.full(&owner).unwrap(),
+        &encoder.full(&python).unwrap(),
         111,
         "081500102b00003a900f004a0400",
     );
@@ -440,7 +449,7 @@ fn initial_owner_delta_matches_python_stack_bindings_and_payloads() {
         "081500102b00003a900f004a047f000c",
     );
     let mut stream = BodyStream::new(ENTITY);
-    let full = encoder.queue_full(&mut stream, &owner).unwrap();
+    let full = encoder.queue_full(&mut stream, &python).unwrap();
     stream.create_arrived();
     assert!(stream.arrived(full.last).advanced);
     let (_, baseline) = stream.base().unwrap();
@@ -448,7 +457,7 @@ fn initial_owner_delta_matches_python_stack_bindings_and_payloads() {
     assert!(baseline.instances[&1].variables.bindings.is_empty());
     let kind = DeltaKind::InitialOwner(1001);
     let delta = encoder
-        .differences(baseline, &owner, &BTreeSet::new(), &BTreeSet::new())
+        .differences(baseline, &python, &BTreeSet::new(), &BTreeSet::new())
         .unwrap();
     assert_eq!(delta.variables.values[&7], Value::Integer(31));
     assert_eq!(
@@ -456,10 +465,13 @@ fn initial_owner_delta_matches_python_stack_bindings_and_payloads() {
         Value::Integer(17)
     );
     check(
-        &encoder.delta_frame(&owner, &delta, kind, 16, None).unwrap(),
+        &encoder
+            .delta_frame(&python, &delta, kind, 16, None)
+            .unwrap(),
         222,
         "2a7d40af40003a908f89004e0189008012116000f0db11009b981800",
     );
+    // The bindings going away resend the values.
     let mut unbound = owner.clone();
     unbound.variables.bindings.clear();
     unbound
@@ -472,13 +484,106 @@ fn initial_owner_delta_matches_python_stack_bindings_and_payloads() {
     let delta = encoder
         .differences(&owner, &unbound, &BTreeSet::new(), &BTreeSet::new())
         .unwrap();
-    assert_eq!(delta.variables.values[&7], Value::Integer(31));
+    assert_eq!(delta.variables.values[&7], Value::Integer(4));
     assert_eq!(
         delta.instances[&1].variables.values[&100],
-        Value::Integer(17)
+        Value::Integer(9)
     );
     assert!(delta.variables.bindings.is_empty());
     assert!(delta.instances[&1].variables.bindings.is_empty());
+}
+
+/// A Stack that adds to its own variable (Ana's `0B94` st77: `#23184e +
+/// 0.65`, read by `01C7` st49's MovementMod) with the owner's client
+/// modelled by this VM: it predicts the same stack and takes the value the
+/// owner frame carries as the variable's own, and the stack works its entry
+/// out again from the value below it (client 0x7FF78AAA5FF0). With the
+/// variable's own value it keeps the server's 0.65; with the stacked value
+/// (what Python sent) it would count the stack twice: 1.3.
+#[test]
+fn a_stack_adding_to_its_own_variable_counts_once_on_the_owners_client() {
+    use crate::{
+        expr::{Scope, Variable},
+        vm::Component,
+    };
+    use std::sync::Arc;
+    let adds = json!({"$":"STU_919FD47C","m_expression":{
+        "m_opcodes":[8,0,6,0,23,0],
+        "m_dynamicVars":[{"$":"STUConfigVarDynamic","m_identifier":100,"m_60DB8F99":true}],
+        "m_D99EF254":[0.65]
+    }});
+    let graphs = Arc::new(
+        GraphStore::from_json(
+            &serde_json::to_vec(&json!({
+                "version":1, "bodies":{}, "missing":[], "graphs":[graph(
+                    42,
+                    vec![
+                        node(
+                            0,
+                            "STUStatescriptEntry",
+                            None,
+                            json!({"m_outPlug":{"$":"Plug","links":[[1,"m_beginPlug"]]}}),
+                        ),
+                        node(
+                            1,
+                            "STUStatescriptStateStack",
+                            Some(0),
+                            json!({
+                                "m_out_Var":{"$":"STUConfigVarDynamic","m_identifier":100,"m_60DB8F99":true},
+                                "m_value":adds,
+                                "m_priority":{"m_priority":null},
+                            }),
+                        ),
+                    ],
+                    json!([1]),
+                    json!([0]),
+                    json!([1]),
+                    json!([]),
+                )]
+            }))
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    let start = || {
+        Component::start(
+            Arc::clone(&graphs),
+            ENTITY,
+            Variables::new(),
+            vec![Root::new(1, 42)],
+            0,
+            &mut EmptyWorld,
+            MAX_INIT_WORK,
+        )
+        .unwrap()
+    };
+    let variable = Variable {
+        scope: Scope::Entity,
+        id: 100,
+    };
+    let server = start();
+    let stacked = server.resolved_variable(1, variable).unwrap();
+    assert_eq!(stacked, Value::Float(f64::from(0.65f32)));
+    let codecs = CodecTable::from_json(CODECS).unwrap();
+    let owner = SnapshotEncoder::new(&graphs, &codecs)
+        .project(server.snapshot().unwrap(), View::Owner)
+        .unwrap();
+    assert_eq!(owner.variables.bindings[&100].len(), 1);
+    let sent = owner.variables.values[&100].clone();
+    assert_eq!(sent, Value::Null);
+    let client_after = |received: Value| {
+        let mut client = start();
+        client
+            .set_entity_variable(100, received, &mut EmptyWorld)
+            .unwrap();
+        client.run_now(&mut EmptyWorld).unwrap();
+        client.resolved_variable(1, variable).unwrap()
+    };
+    assert_eq!(client_after(sent), stacked);
+    let Value::Float(twice) = client_after(stacked.clone()) else {
+        panic!("a float")
+    };
+    assert!((twice - 1.3).abs() < 1e-6, "{twice}");
 }
 
 fn after_body_change(mut snapshot: ProjectedSnapshot) -> ProjectedSnapshot {

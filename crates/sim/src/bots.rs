@@ -36,7 +36,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     f64::consts,
-    fs, io,
+    fmt, fs, io,
     path::Path,
     sync::Arc,
 };
@@ -50,6 +50,12 @@ use orpheus_physics::contact::math::{add, sub};
 use orpheus_physics::contact::world::ContactWorld;
 use orpheus_physics::mover::ground::{pogo, standing_body, standing_origin};
 use orpheus_physics::mover::settings::MoverSettings;
+use orpheus_physics::{
+    collision::index::TriangleIndex,
+    mover::{Mover, sample_movement_flags},
+};
+use orpheus_script::bot::BOT_MOVEMENT_SAMPLE;
+use orpheus_wire::commands::Command;
 use orpheus_wire::entity::{Movement, NO_INPUT};
 
 use crate::{
@@ -368,6 +374,27 @@ pub struct Bot {
     records_from: Option<u32>,
     /// Its body's animation, when the data has a rig for it.
     animation: Option<BotAnimation>,
+    /// Its flight after a knockback ([`Bot::knock`]).
+    flight: Option<BotFlight>,
+}
+
+/// A knocked bot's body on a mover of its own (the body's
+/// `STUCharacterMoverComponent`, as a player's), until it stands still on
+/// the ground again.
+struct BotFlight {
+    mover: Mover,
+    /// The last tick it flew.
+    last_tick: u32,
+}
+
+impl fmt::Debug for BotFlight {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BotFlight")
+            .field("pose", &self.mover.pose())
+            .field("last_tick", &self.last_tick)
+            .finish()
+    }
 }
 
 impl Bot {
@@ -402,6 +429,7 @@ impl Bot {
             last_tick: None,
             records_from: None,
             animation: None,
+            flight: None,
             spawn,
         }
     }
@@ -528,10 +556,105 @@ impl Bot {
         }
     }
 
+    /// A knockback (`push`, metres a second) throws the body: it leaves its
+    /// patrol and flies on a mover of its own (`mover`, made at its feet
+    /// when it isn't flying yet) until it stands still on the ground
+    /// ([`Self::fly`]). Pushes before its next frame add up
+    /// ([`Mover::push`]).
+    pub(crate) fn knock(
+        &mut self,
+        push: [f64; 3],
+        tick: u32,
+        mover: impl FnOnce() -> Option<Mover>,
+    ) {
+        if self.dead {
+            return;
+        }
+        if self.flight.is_none() {
+            let Some(mover) = mover() else {
+                return;
+            };
+            self.flight = Some(BotFlight {
+                mover,
+                last_tick: tick,
+            });
+            // The point it was walking to stays its next one.
+            let count = self.spawn.route.len();
+            if self.target.is_some() && count != 0 {
+                self.index = (self.index + count - 1) % count;
+            }
+            self.keys = false;
+            self.held = [0; 2];
+            self.turning = 0.0;
+            self.wait = WALK_GAP;
+            self.stand();
+        }
+        if let Some(flight) = &mut self.flight {
+            flight.mover.push(push);
+        }
+    }
+
+    /// A knocked body's frames up to `tick` on its mover, with no input; it
+    /// lands once its mover has it on the ground and still. Then its patrol
+    /// goes on from there, after a walk's pause.
+    pub(crate) fn fly(&mut self, tick: u32, rays: &TriangleIndex) {
+        let Some(flight) = &mut self.flight else {
+            return;
+        };
+        let seconds = TICK_PERIOD.as_secs_f64();
+        let frames = tick.saturating_sub(flight.last_tick).min(CATCH_UP);
+        for frame in tick - frames + 1..=tick {
+            let command = Command {
+                frame,
+                ..Command::default()
+            };
+            if flight
+                .mover
+                .step_pose_to(rays, command, seconds, None)
+                .is_err()
+            {
+                break;
+            }
+        }
+        flight.last_tick = tick;
+        let pose = flight.mover.pose();
+        self.position = pose.position;
+        self.velocity = pose.velocity;
+        if frames != 0 {
+            self.moved_tick = Some(tick);
+        }
+        let [vx, _, vz] = pose.velocity;
+        if self.movement_sample() & 1 == 0 && vx == 0.0 && vz == 0.0 {
+            self.flight = None;
+            self.velocity = [0.0; 3];
+            if let Some(collision) = &mut self.collision {
+                collision.body = collision
+                    .body
+                    .fresh_at(standing_origin(self.position, collision.lift));
+            }
+        }
+    }
+
+    /// Its 13 movement bits for its script's movement sampler
+    /// (`STU_96F1DBCF`): its mover's while it flies, else on the ground
+    /// ([`BOT_MOVEMENT_SAMPLE`]).
+    pub fn movement_sample(&self) -> u16 {
+        self.flight
+            .as_ref()
+            .and_then(|flight| sample_movement_flags(&flight.mover.pose()))
+            .unwrap_or(BOT_MOVEMENT_SAMPLE)
+    }
+
     /// The floor provider can give a surface Y within the top and bottom
-    /// probe bounds. A missing surface uses the authored hint heights.
+    /// probe bounds. A missing surface uses the authored hint heights. A
+    /// knocked body flies instead ([`Self::fly`]); its patrol resumes once
+    /// it lands, with no catch-up for the flight.
     pub fn step(&mut self, tick: u32, mut ground: impl FnMut(f64, f64, f64, f64) -> Option<f64>) {
         if self.spawn.route.is_empty() || self.dead {
+            return;
+        }
+        if self.flight.is_some() {
+            self.last_tick = Some(tick);
             return;
         }
         let ticks = self
@@ -747,6 +870,7 @@ impl Bot {
 
     pub fn died(&mut self, tick: u32) {
         self.dead = true;
+        self.flight = None;
         self.keys = false;
         self.held = [0; 2];
         self.stand();
@@ -782,6 +906,8 @@ impl Bot {
         (tick / every) % period == self.entity % period
     }
 
+    /// Its movement record for `tick`; while it flies, its mover's pose
+    /// (flags, air time, fall) with its own facing and no input.
     pub fn movement(&self, tick: u32) -> Movement {
         let input_frame = if self.held != [0; 2] {
             None
@@ -792,6 +918,17 @@ impl Bot {
                 Some(_) => None,
             }
         };
+        if let Some(flight) = &self.flight {
+            return Movement {
+                yaw: s16(self.yaw.round_ties_even()) as i32,
+                throttles: self.held,
+                input_frame,
+                input_throttles: self.last_held,
+                frame: None,
+                crouch_frame: None,
+                ..flight.mover.pose()
+            };
+        }
         Movement {
             position: self.position,
             yaw: s16(self.yaw.round_ties_even()) as i32,

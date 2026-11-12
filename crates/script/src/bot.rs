@@ -89,9 +89,9 @@ pub const NAMEPLATE_ENABLED: u32 = 8807;
 pub const DEAD_FLAG: u32 = 478;
 const PRACTICE_BOT_HEROES: Range<u64> = 0x02e0_0000_0000_016b..0x02e0_0000_0000_016f;
 const OWNER_HEALTH: u32 = 253;
-/// A bot's movement sample: grounded (bit 1 of the 13 movement bits,
+/// A bot's movement sample on the ground (bit 1 of the 13 movement bits,
 /// `orpheus_physics::mover::sample_movement_flags`).
-const BOT_MOVEMENT_SAMPLE: u16 = 1 << 1;
+pub const BOT_MOVEMENT_SAMPLE: u16 = 1 << 1;
 
 /// The practice nameplate instance: graph `0D24` under state 3 of a `0C18`
 /// instance (`practice_nameplate` in bot.py).
@@ -132,6 +132,11 @@ pub struct BotWorld {
     /// The criteria the body raised on itself ([`World::criteria`]) since
     /// the match last took them, in order.
     pub criteria: Vec<u64>,
+    /// Its 13 movement bits as the match moves it: on the ground
+    /// ([`BOT_MOVEMENT_SAMPLE`]) unless a knockback threw it. Assumption:
+    /// on the ground the other bits stay off, moving (bit 4) too on a patrol
+    /// route, as the match keeps no velocity for a walking bot.
+    pub movement_sample: u16,
 }
 
 impl World for BotWorld {
@@ -181,14 +186,13 @@ impl World for BotWorld {
         self.criteria.push(identifier);
     }
 
-    /// The body's movement sampler (`STU_96F1DBCF`): a training bot is on
-    /// the ground (bit 1), as nothing pushes it off. `0E8C`'s knockback
-    /// anim (st7, which a splash hit starts) ends 0.25 s on once this bit is
-    /// set (st11 on #545); before, no answer left it for ever. Assumption:
-    /// the other bits stay off, moving (bit 4) too on a patrol route, as the
-    /// match keeps no velocity for a bot.
+    /// The body's movement sampler (`STU_96F1DBCF`): what the match gave
+    /// ([`BotBody::set_movement_sample`]). `0E8C`'s knockback anim (st7,
+    /// which a splash hit starts) ends once this says grounded (bit 1, st11
+    /// on #545), 0.25 s on at the soonest; before, no answer left it for
+    /// ever.
     fn movement_sample(&self, _site: Site) -> Option<u16> {
-        Some(BOT_MOVEMENT_SAMPLE)
+        Some(self.movement_sample)
     }
 
     /// From the body's compiled animation data
@@ -398,6 +402,7 @@ impl BotBody {
             health: spawn.health,
             max_health: spawn.health,
             criteria: Vec::new(),
+            movement_sample: BOT_MOVEMENT_SAMPLE,
         };
         let mut component = Component::start(
             graphs,
@@ -470,6 +475,12 @@ impl BotBody {
 
     pub fn world(&self) -> &BotWorld {
         &self.world
+    }
+
+    /// Its movement bits from now on (the body's sampler reads them as its
+    /// frames run); true when they changed, so a frame should run to see it.
+    pub fn set_movement_sample(&mut self, sample: u16) -> bool {
+        std::mem::replace(&mut self.world.movement_sample, sample) != sample
     }
 
     /// The firing behavior's instance while it runs.
@@ -1126,6 +1137,7 @@ mod tests {
             health: 200.0,
             max_health: 200.0,
             criteria: Vec::new(),
+            movement_sample: BOT_MOVEMENT_SAMPLE,
         };
         assert_eq!(
             world.native(site(PRACTICE_NAMEPLATE_PARENT), &gate),
@@ -1468,6 +1480,44 @@ mod tests {
             recovered.state(flinch, KNOCKBACK),
             knocked.state(flinch, KNOCKBACK)
         );
+
+        // A bot the knockback throws: the match gives it its mover's bits
+        // from its next frame on (in the air, rising, moving) until it lands
+        // 40 frames on, and runs its frame when they change, as when it is
+        // due. The 0.25 s wait is only the anim's minimum: it ends on the
+        // landing frame.
+        const THROWN: u16 = 1 | 1 << 2 | 1 << 4;
+        let throw = blast + 60;
+        let landing = throw + 40;
+        assert!(
+            bot.take_damage(
+                throw,
+                Variables::from([
+                    (DAMAGE_TAGS, explosion.to_value()),
+                    (DAMAGE_SOURCE, Value::Entity(0xa000_0101)),
+                    (DAMAGE_AMOUNT, Value::Float(40.0)),
+                    (DAMAGE_DIRECTION, Value::Vector([0.0, 0.0, 1.0])),
+                ]),
+            )
+            .unwrap()
+        );
+        assert!(knockback(&bot));
+        let mut ended = None;
+        for frame in throw..throw + 120 {
+            let sample = if (throw + 1..landing).contains(&frame) {
+                THROWN
+            } else {
+                BOT_MOVEMENT_SAMPLE
+            };
+            if bot.set_movement_sample(sample) || bot.due_by(frame) {
+                assert!(bot.advance_live(frame, None).unwrap());
+            }
+            if !knockback(&bot) {
+                ended = Some(frame);
+                break;
+            }
+        }
+        assert_eq!(ended, Some(landing));
         encoder_full(&graphs, &codecs, &bot);
     }
 
