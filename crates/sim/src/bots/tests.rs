@@ -359,7 +359,7 @@ fn a_knocked_bot_flies_on_its_mover_and_walks_on_once_it_lands() {
             down = Some(tick);
         }
         if down.is_none() {
-            assert!(bot.record_due(tick, SEND_EVERY));
+            assert!(bot.record_due(tick));
             assert_ne!(bot.movement(tick).flags, 0);
         }
         if bot.flight.is_none() {

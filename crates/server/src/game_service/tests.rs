@@ -3120,10 +3120,12 @@ fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
                 ),
                 "every {every}, lead {lead}: the command sent after tick {sent}"
             );
-            // On the bot's shapes: within 0.6 m of its axis, below its 2.6 m top.
+            // On the bot's shapes, as the rocket's centre meets them: its
+            // 0.2 m radius beyond them (within 0.6 m of the bot's axis, below
+            // its 2.6 m top).
             let [x, y, z] = position.map(f64::from);
             assert!(
-                (x - at[0]).hypot(z - at[2]) < 0.6 && (at[1]..at[1] + 2.6).contains(&y),
+                (x - at[0]).hypot(z - at[2]) < 0.6 + 0.2 && (at[1]..at[1] + 2.6 + 0.2).contains(&y),
                 "released at {position:?}, the bot at {at:?}"
             );
             // Helix Rockets' 6 s cooldown.

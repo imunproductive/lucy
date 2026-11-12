@@ -617,9 +617,6 @@ impl Bot {
         let pose = flight.mover.pose();
         self.position = pose.position;
         self.velocity = pose.velocity;
-        if frames != 0 {
-            self.moved_tick = Some(tick);
-        }
         let [vx, _, vz] = pose.velocity;
         if self.movement_sample() & 1 == 0 && vx == 0.0 && vz == 0.0 {
             self.flight = None;
