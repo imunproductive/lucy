@@ -196,6 +196,9 @@ pub struct TargetCandidate {
     /// Its team; none in a free-for-all, where a body is only its own ally.
     pub team: Option<u8>,
     pub dead: bool,
+    /// The entity that controls it: a player's controller, a training
+    /// bot's stand-in controller; none when the match has none.
+    pub controller: Option<u32>,
     /// Its capsule: from the feet up `height`, `radius` round (the match's
     /// `TargetPose`).
     pub feet: [f64; 3],

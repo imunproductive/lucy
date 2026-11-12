@@ -20,7 +20,11 @@
 //! - Players: the communication wheel's `0686` raises the choice's criteria
 //!   on the body (Hello `0AEB` 0.3 s after the choice, Thanks `106C`, the
 //!   configurable choices the identifier its map gives); each hero's voice
-//!   set answers them with its own lines.
+//!   set answers them with its own lines. A hit the body survives reaches
+//!   its script as `0011.025` too ([`crate::combat::damage_message`]), and
+//!   its graph `01CA` (or `14B1`) raises `0608` or `0609` 0.15 s later
+//!   ([`orpheus_script::player::REACTION_GRAPHS`]), which every hero's set
+//!   answers with its "PnMnr" or "PnSvr" lines.
 //!
 //! Assumptions: a stimulus waits its shorter cooldown (`m_A73F2EBE`) before
 //! it plays again for the same body (the wheel's stimuli have none; `05AD`

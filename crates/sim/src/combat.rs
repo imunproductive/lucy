@@ -38,14 +38,14 @@ use crate::{
         BioticField, FieldDeliver, FieldIds, FiredProjectile, ProjectileEvent, SeenIds, ShotKey,
     },
     replication::WorldDelivery,
-    scene::{BOT_PLATE, bot_controller_link, bot_create, bot_filter},
+    scene::{BOT_PLATE, bot_controller_entity, bot_controller_link, bot_create, bot_filter},
     scene_assets::PreparedScene,
 };
 use orpheus_content::{heroes::Eyes, stats::PlayerStats};
 use orpheus_core::guid::parse_guid;
 use orpheus_physics::static_ray::{Vec3, segment_distance};
 use orpheus_script::{
-    bot::DIED,
+    bot::{DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE, DAMAGE_TAGS, DAMAGED, DIED},
     expr::{Context, evaluate, to_float},
     graph::GraphStore,
     vitals::{Death, Vitals},
@@ -209,6 +209,46 @@ pub fn death_message(killer: u32, critical: bool, loadout: Option<u64>) -> (u64,
     )
 }
 
+/// The damage message (`0011.025`, [`DAMAGED`]) a body's script takes for a
+/// hit it survived: the damage's tags, who dealt it, how much and the way it
+/// travels ([`damage_direction`]). Neither Python nor upstream sends it; no
+/// graph does either, so the server does, as for the death message. The
+/// Training Bot's flinch and pain graphs take it (`0E8C`, `0C17`), and
+/// every hero body's: its pain line (`01CA` or `14B1`, after `004B` rid 63
+/// rates the hurt as #10417e), its hit flinch and knockback (`02C5`) and
+/// its "recently hurt" flag (`01CF` rid 171). Assumptions: the amount is
+/// the damage dealt; a killing hit sends none (the death message goes
+/// instead).
+pub fn damage_message(
+    source: u32,
+    dealt: f64,
+    tags: DamageTags,
+    direction: Option<Vec3>,
+) -> (u64, Variables) {
+    (
+        DAMAGED,
+        Variables::from([
+            (DAMAGE_TAGS, tags.to_value()),
+            (DAMAGE_SOURCE, Value::Entity(source)),
+            (DAMAGE_AMOUNT, Value::Float(dealt)),
+            (
+                DAMAGE_DIRECTION,
+                direction.map_or(Value::Null, Value::Vector),
+            ),
+        ]),
+    )
+}
+
+/// The way a hit from `from` to `to` travels, as a unit vector; none when
+/// the two points meet. Assumption: the damage message's direction runs
+/// from the attacker to the body (`0E8C` and `02C5` turn it against the
+/// body's facing for the flinch).
+pub fn damage_direction(from: Vec3, to: Vec3) -> Option<Vec3> {
+    let offset: Vec3 = std::array::from_fn(|axis| to[axis] - from[axis]);
+    let length = offset.iter().map(|part| part * part).sum::<f64>().sqrt();
+    (length > f64::EPSILON).then(|| offset.map(|part| part / length))
+}
+
 /// Who fired: a player's body or a bot entity, and his team (combat.py
 /// `_source_entity` and the shooter's `team`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -349,6 +389,13 @@ pub struct PlayerHit {
     pub world_tick: Option<u32>,
     /// An ally's heal of `amount` (combat.py `_heal`), not damage.
     pub heal: bool,
+    /// The health change's damage tags, for the body's damage message
+    /// ([`damage_message`]).
+    pub tags: DamageTags,
+    /// The way the damage travels, for the damage message: from the
+    /// shooter's feet to the body's, as the match last placed them, or from
+    /// his own explosion to his body; none when that isn't known.
+    pub direction: Option<Vec3>,
 }
 
 #[derive(Clone)]
@@ -484,13 +531,16 @@ impl Combat {
 
     /// The bodies the statescript's target searches can find this tick
     /// (`TrackTargets`): the players' bodies as recorded, then the bots, in
-    /// slot order; no teams in a free-for-all.
+    /// slot order; no teams in a free-for-all. A player's body is his
+    /// controller's (its id less the low byte), a bot's its stand-in
+    /// controller's (`scene::bot_controller_entity`).
     pub fn target_candidates(&self, scene: &PreparedScene) -> Vec<TargetCandidate> {
         let free_for_all = scene.map().free_for_all;
-        let candidate = |entity, team, dead, pose: &TargetPose| TargetCandidate {
+        let candidate = |entity, team, dead, controller, pose: &TargetPose| TargetCandidate {
             entity,
             team: (!free_for_all).then_some(team),
             dead,
+            controller,
             feet: pose.feet,
             height: pose.height,
             radius: pose.radius,
@@ -499,13 +549,20 @@ impl Combat {
             .iter()
             .map(|slot| {
                 let target = &slot.target;
-                candidate(target.body, target.team, target.dead, &target.pose)
+                let controller = Some(target.body & !0xff);
+                candidate(
+                    target.body,
+                    target.team,
+                    target.dead,
+                    controller,
+                    &target.pose,
+                )
             })
-            .chain(
-                scene.bots().iter().map(|bot| {
-                    candidate(bot.entity, bot.spawn.team, bot.dead, &scene.bot_target(bot))
-                }),
-            )
+            .chain(scene.bots().iter().enumerate().map(|(slot, bot)| {
+                let controller = bot_controller_entity(slot).ok();
+                let pose = scene.bot_target(bot);
+                candidate(bot.entity, bot.spawn.team, bot.dead, controller, &pose)
+            }))
             .collect()
     }
 
@@ -534,6 +591,8 @@ impl Combat {
             frame: tick,
             world_tick: Some(tick),
             heal: false,
+            tags: DamageTags::NONE,
+            direction: None,
         });
     }
 
@@ -786,6 +845,8 @@ impl Combat {
                 frame: context.tick,
                 world_tick: Some(context.tick),
                 heal: false,
+                tags: own.tags,
+                direction: Some(own.direction),
             });
         }
         Ok(step.end.map(|end| FlightEnd {
@@ -876,6 +937,9 @@ impl Combat {
         {
             let heal = !free_for_all && slot.target.team == shooter.team;
             let amount = if heal { impact.heal } else { impact.damage };
+            let direction = self
+                .feet(scene, shooter.source)
+                .and_then(|from| damage_direction(from, slot.target.pose.feet));
             if amount > 0.0 {
                 self.player_hits.push(PlayerHit {
                     body: impact.entity,
@@ -886,11 +950,29 @@ impl Combat {
                     frame: shot_frame,
                     world_tick,
                     heal,
+                    tags: impact.tags,
+                    direction,
                 });
             }
             return None;
         }
         self.apply_bot_impact(scene, shooter, shot_frame, world_tick, context, impact)
+    }
+
+    /// Where a shooter's feet were as the match last placed them: a
+    /// player's body as recorded this tick, else a bot.
+    fn feet(&self, scene: &PreparedScene, entity: u32) -> Option<Vec3> {
+        self.players
+            .iter()
+            .find(|slot| slot.target.body == entity)
+            .map(|slot| slot.target.pose.feet)
+            .or_else(|| {
+                scene
+                    .bots()
+                    .iter()
+                    .find(|bot| bot.entity == entity)
+                    .map(|bot| bot.position)
+            })
     }
 
     fn apply_bot_impact(

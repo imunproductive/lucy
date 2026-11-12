@@ -1275,6 +1275,7 @@ mod tests {
             entity,
             team: Some(team),
             dead: false,
+            controller: None,
             feet: [x + dx, y, z],
             height: 1.8,
             radius: 0.4,
