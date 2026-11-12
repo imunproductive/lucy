@@ -312,7 +312,8 @@ fn flat_floor() -> (TriangleIndex, Arc<ContactWorld>) {
 /// A knockback (a Helix Rocket's within its 0.5 m ring: 4 m/s away, 6 m/s
 /// up) throws a walking Training Bot on its body's mover: in the air and
 /// rising from its next frame, it leaves its patrol, its records carry the
-/// flight, it comes down after about 2 × 6 / (9.81 × 1.75) = 0.7 s, its
+/// flight, it comes down after 2 × 6 / (9.81 × 1.75) = 0.7 s (43 ticks;
+/// ground friction stops it 3 ticks later), its
 /// sample says grounded from then on, and once it stands still it walks on
 /// to the point it was walking to, after a walk's pause.
 #[test]
@@ -328,7 +329,7 @@ fn a_knocked_bot_flies_on_its_mover_and_walks_on_once_it_lands() {
     let goal = [0.0, 0.0, 10.0];
     let mut bot = walker(goal);
     bot.attach_collision(&settings, Arc::clone(&world), 0x10, |_, _, _, _| Some(0.0));
-    let mut run = |bot: &mut Bot, tick: u32| {
+    let run = |bot: &mut Bot, tick: u32| {
         bot.fly(tick, &rays);
         bot.step(tick, |_, _, _, _| Some(0.0));
     };
@@ -368,13 +369,12 @@ fn a_knocked_bot_flies_on_its_mover_and_walks_on_once_it_lands() {
         }
     }
     let (down, still) = (down.unwrap(), still.unwrap());
-    assert!(
-        (top - 36.0 / (2.0 * 9.81 * 1.75)).abs() < 0.05,
-        "{top} m up"
-    );
+    // At most 6² / 2g up, less up to a frame's rise for whole frames.
+    let apex = 36.0 / (2.0 * 9.81 * 1.75);
+    assert!(top <= apex && top > apex - 6.0 * 0.016, "{top} m up");
     assert_eq!(
         (down - knock, still - knock),
-        (0, 0),
+        (43, 46),
         "came down, stood still"
     );
     let landed = bot.position;
@@ -382,8 +382,9 @@ fn a_knocked_bot_flies_on_its_mover_and_walks_on_once_it_lands() {
     assert!(landed[2] - from[2] > 2.0, "from {from:?} to {landed:?}");
     assert_eq!(bot.movement(still).flags, 0);
     assert_eq!(bot.movement_sample(), BOT_MOVEMENT_SAMPLE);
-    // A walk's pause (1.2 s, 75 ticks) on the ground, then on to the goal.
-    let pause = still + 75;
+    // A walk's pause (1.2 s, 75 ticks, the landing tick the first) on the
+    // ground, then on to the goal.
+    let pause = still + 74;
     for tick in still + 1..pause {
         run(&mut bot, tick);
         assert!(!bot.walking(), "{tick}");

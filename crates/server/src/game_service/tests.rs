@@ -2993,13 +2993,19 @@ fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
             &assets,
             |scene| {
                 // Two hostile training bots that neither fire nor walk, ahead
-                // of his spawn: along its facing and 30° round from it.
+                // of his spawn: along its facing and 30° round from it, the
+                // second turned 30° from the first's facing too, so each
+                // shot meets its bot alike.
                 let ([x, y, z], facing) = scene.map().spawn_point(0, 0).unwrap();
                 let mut bots = scene.bots_mut().iter_mut().filter(|bot| {
                     bot.spawn.team == 1 && !bot.spawn.firing && bot.spawn.route.is_empty()
                 });
-                for yaw in [facing, facing + APART] {
+                let mut turned = None;
+                for (turn, yaw) in [(0.0, facing), (APART, facing + APART)] {
                     let bot = bots.next().unwrap();
+                    let first = *turned.get_or_insert(bot.yaw);
+                    bot.yaw =
+                        (first + turn * 65536.0 / 360.0 + 32768.0).rem_euclid(65536.0) - 32768.0;
                     let (sin, cos) = yaw.to_radians().sin_cos();
                     bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
                     aims.push((
