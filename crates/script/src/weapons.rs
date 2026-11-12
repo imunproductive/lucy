@@ -306,6 +306,74 @@ pub struct ProjectileBallistics {
 pub struct Blast {
     pub hit: HitDefinition,
     pub rings: Vec<(f64, f64)>,
+    /// The share of the explosion's damage its shooter takes where it
+    /// reaches him: `m_8A3E3883` (none: 0). Read as the self-damage scale
+    /// (assumption): 0.5 on Soldier: 76's Helix Rockets (`0254`), Pharah's
+    /// rockets (`0023`), Zarya's (`0241`), Echo's (`1C36`) and Junkrat's
+    /// `022A`, 0.25 on Bastion (`024F`) and Sigma (`187F`), and 0 on the
+    /// Junkrat volleys that, by the public rule, don't hurt him (`022B`
+    /// node 29, `096A`).
+    pub self_damage: f64,
+    /// The push of the explosion's ModifyHealth, if it has one.
+    pub knockback: Option<Knockback>,
+}
+
+/// The push an explosion's ModifyHealth gives a body (`m_modifyHealth`):
+/// `m_E33EFEE1` metres per second away from it, `m_10399AE7` upward, as
+/// leafall903/ORPHEUS (MIT) `heavy_assault.py` `_push` reads the pair, each
+/// scaled by the ModifyHealth's knockback rings (`m_knockbackRings`,
+/// `STUStatescriptModifyHealthKnockbackRing`) at the body's distance.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Knockback {
+    pub horizontal: f64,
+    pub upward: f64,
+    /// Each ring's radius and its horizontal scale, `m_579D7CFF`
+    /// (assumption: the ring's three scalars are unnamed; `m_9102DA3F` is
+    /// absent from Pharah's and Sigma's rings, which have the other two, so
+    /// it isn't read), by radius.
+    pub horizontal_rings: Vec<(f64, f64)>,
+    /// Each ring's radius and its upward scale, `m_10399AE7` (assumption:
+    /// the ring field shares its name with the upward speed), by radius.
+    pub upward_rings: Vec<(f64, f64)>,
+}
+
+impl Knockback {
+    /// The horizontal and upward speeds at `distance` from the explosion,
+    /// each between its rings as an explosion's damage is (assumption: no
+    /// asset says how they blend); none past the last ring.
+    pub fn at(&self, distance: f64) -> Option<(f64, f64)> {
+        let horizontal = self.horizontal * ring_scale(&self.horizontal_rings, distance);
+        let upward = self.upward * ring_scale(&self.upward_rings, distance);
+        (horizontal > 0.0 || upward > 0.0).then_some((horizontal, upward))
+    }
+
+    /// The push of an explosion's ModifyHealth (`modify`). None without
+    /// rings, or when either speed isn't a finite number of at least 0 or
+    /// both are 0 (`_push` pushes nothing then; Sigma's `187F` pull,
+    /// −0.75, is left out with it). A ring's absent scale is 1 (assumption).
+    fn from_authored(
+        modify: &Json,
+        evaluate: &mut impl FnMut(&Json) -> Result<Value, EvalError>,
+    ) -> Result<Option<Self>, EvalError> {
+        let horizontal = authored_number(modify.get("m_E33EFEE1"), 0.0, evaluate)?;
+        let upward = authored_number(modify.get("m_10399AE7"), 0.0, evaluate)?;
+        if ![horizontal, upward]
+            .iter()
+            .all(|speed| speed.is_finite() && *speed >= 0.0)
+            || (horizontal == 0.0 && upward == 0.0)
+        {
+            return Ok(None);
+        }
+        let rows = modify.get("m_knockbackRings");
+        let horizontal_rings = authored_rings(rows, "m_579D7CFF", 1.0, evaluate)?;
+        let upward_rings = authored_rings(rows, "m_10399AE7", 1.0, evaluate)?;
+        Ok((!horizontal_rings.is_empty()).then_some(Self {
+            horizontal,
+            upward,
+            horizontal_rings,
+            upward_rings,
+        }))
+    }
 }
 
 impl ProjectileBallistics {
@@ -345,18 +413,18 @@ impl ProjectileBallistics {
         )?;
         let config = node.field("m_D2D11CE9").unwrap_or(&Json::Null);
         let blast = if let Some(hit) = HitDefinition::from_authored(config, &mut evaluate)? {
-            let mut rings = Vec::new();
-            if let Some(rows) = config.get("m_0D30E40C").and_then(Json::as_array) {
-                for row in rows.iter().filter(|row| row.is_object()) {
-                    let radius = authored_number(row.get("m_radius"), 0.0, &mut evaluate)?;
-                    let scalar = authored_number(row.get("m_B399CACB"), 0.0, &mut evaluate)?;
-                    if radius.is_finite() && scalar.is_finite() {
-                        rings.push((radius, scalar));
-                    }
-                }
-            }
-            rings.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
-            Some(Blast { hit, rings })
+            let rings = authored_rings(config.get("m_0D30E40C"), "m_B399CACB", 0.0, &mut evaluate)?;
+            let self_damage = authored_number(config.get("m_8A3E3883"), 0.0, &mut evaluate)?;
+            Some(Blast {
+                hit,
+                rings,
+                self_damage: if self_damage.is_finite() {
+                    self_damage.max(0.0)
+                } else {
+                    0.0
+                },
+                knockback: Knockback::from_authored(&config["m_modifyHealth"], &mut evaluate)?,
+            })
         } else {
             None
         };
@@ -478,22 +546,53 @@ impl Tunables {
 
 impl Blast {
     pub fn multiplier(&self, distance: f64) -> f64 {
-        let Some(&(mut previous, mut scalar)) = self.rings.first() else {
-            return 0.0;
-        };
-        if distance <= previous {
-            return scalar;
-        }
-        for &(radius, next) in &self.rings[1..] {
-            if distance <= radius {
-                let share = (distance - previous) / (radius - previous).max(RING_EPSILON);
-                return scalar + (next - scalar) * share;
-            }
-            previous = radius;
-            scalar = next;
-        }
-        0.0
+        ring_scale(&self.rings, distance)
     }
+}
+
+/// A ring's scale at `distance`: the first ring's within its radius, then
+/// straight between each ring and the next, none past the last.
+fn ring_scale(rings: &[(f64, f64)], distance: f64) -> f64 {
+    let Some(&(mut previous, mut scalar)) = rings.first() else {
+        return 0.0;
+    };
+    if distance <= previous {
+        return scalar;
+    }
+    for &(radius, next) in &rings[1..] {
+        if distance <= radius {
+            let share = (distance - previous) / (radius - previous).max(RING_EPSILON);
+            return scalar + (next - scalar) * share;
+        }
+        previous = radius;
+        scalar = next;
+    }
+    0.0
+}
+
+/// Ring rows: each one's `m_radius` and its `scale` field (absent:
+/// `default`), the finite ones, by radius.
+fn authored_rings(
+    rows: Option<&Json>,
+    scale: &str,
+    default: f64,
+    evaluate: &mut impl FnMut(&Json) -> Result<Value, EvalError>,
+) -> Result<Vec<(f64, f64)>, EvalError> {
+    let mut rings = Vec::new();
+    for row in rows
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|row| row.is_object())
+    {
+        let radius = authored_number(row.get("m_radius"), 0.0, evaluate)?;
+        let scalar = authored_number(row.get(scale), default, evaluate)?;
+        if radius.is_finite() && scalar.is_finite() {
+            rings.push((radius, scalar));
+        }
+    }
+    rings.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
+    Ok(rings)
 }
 
 /// The launch class whose `m_0D30E40C` rows lay a shot's projectiles out
@@ -805,6 +904,55 @@ mod tests {
             "m_numProjectilesPerShot":{"$":"STUConfigVarInt","m_value":count},
             "m_5EC1EB38":{"$":"STU_613BDDB0","m_0D30E40C":rows,"m_spread":spread}
         }))
+    }
+
+    /// An explosion's self-damage scale and push, shaped like Pharah's
+    /// rockets' (`0023`: 5 and 8 m/s, no `m_9102DA3F` in the rings); a ring
+    /// scale left out is 1. A pull (Sigma's `187F`, −0.75) or a push
+    /// without rings is none, and an explosion without `m_8A3E3883` doesn't
+    /// hurt its shooter.
+    #[test]
+    fn an_explosion_reads_its_self_damage_and_push() {
+        let float = |value: f64| json!({"$":"STUConfigVarFloat","m_value":value});
+        let ring = |radius: f64, horizontal: Option<f64>, upward: f64| {
+            json!({"$":"STUStatescriptModifyHealthKnockbackRing","m_radius":float(radius),
+                "m_579D7CFF":horizontal.map(float),"m_10399AE7":float(upward)})
+        };
+        let rocket = |modify: Json, self_damage: Option<f64>| {
+            let node = volley(json!({"m_projectileSpeed":float(35.0),
+                "m_D2D11CE9":{"$":"STU_4AA6CA44","m_8A3E3883":self_damage.map(float),
+                    "m_0D30E40C":[{"m_radius":float(2.5),"m_B399CACB":float(1.0)}],
+                    "m_modifyHealth":modify}}));
+            ProjectileBallistics::from_authored(&node, |value| evaluate(value, &mut EmptyContext))
+                .unwrap()
+                .unwrap()
+                .blast
+                .unwrap()
+        };
+        let pharah = rocket(
+            json!({"m_amount":float(120.0),"m_E33EFEE1":float(5.0),"m_10399AE7":float(8.0),
+                "m_knockbackRings":[ring(2.5, Some(0.0), 0.0), ring(0.5, None, 0.8)]}),
+            Some(0.5),
+        );
+        assert_eq!(pharah.self_damage, 0.5);
+        let knockback = pharah.knockback.unwrap();
+        assert_eq!(knockback.horizontal_rings, [(0.5, 1.0), (2.5, 0.0)]);
+        // A float config var is a float32.
+        let scale = f64::from(0.8f32);
+        assert_eq!(knockback.upward_rings, [(0.5, scale), (2.5, 0.0)]);
+        assert_eq!(knockback.at(0.5), Some((5.0, 8.0 * scale)));
+        assert_eq!(knockback.at(2.5), None);
+        let pull = rocket(
+            json!({"m_amount":float(50.0),"m_E33EFEE1":float(-0.75),"m_10399AE7":float(1.0),
+                "m_knockbackRings":[ring(0.5, Some(0.8), 1.0)]}),
+            None,
+        );
+        assert_eq!((pull.self_damage, pull.knockback), (0.0, None));
+        let ringless = rocket(
+            json!({"m_amount":float(50.0),"m_E33EFEE1":float(5.0),"m_10399AE7":float(8.0)}),
+            None,
+        );
+        assert_eq!(ringless.knockback, None);
     }
 
     /// Graph `0D0A` state 2's rings (upstream 7cb4018): 1, 4 and 6 pellets

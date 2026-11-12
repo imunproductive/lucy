@@ -11,7 +11,8 @@
 //! is met by its shapes, as a shot meets it ([`TargetPose::entry`]): the
 //! sweep and an explosion's distance; others by the reference's capsule. A
 //! projectile is swept as a point (the ballistics have no radius to grow
-//! the shapes by, and the reference swept points too).
+//! the shapes by, and the reference swept points too). An explosion also
+//! hurts and pushes its own shooter ([`ProjectileFlight::own_blast`]).
 
 use crate::hitscan::{Impact, TargetPose};
 use orpheus_core::tick::TICK_PERIOD;
@@ -30,6 +31,8 @@ pub struct ProjectileFlight {
     last_tick: Option<u32>,
     stuck: Option<Stuck>,
     ended: bool,
+    /// It ended with its explosion.
+    exploded: bool,
 }
 
 /// A projectile that stuck: to a body (`entity`) at `offset` from its feet,
@@ -55,6 +58,19 @@ pub struct FlightEnd {
     pub point: Vec3,
     /// Seconds from the launch to the end, a fuse included.
     pub travelled: f64,
+    /// The velocity its explosion adds to its shooter's own body
+    /// ([`ProjectileFlight::own_blast`]); the match fills it in.
+    pub knockback: Option<Vec3>,
+}
+
+/// What an explosion does to its shooter's own body.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OwnBlast {
+    /// From the explosion to the body's surface.
+    pub distance: f64,
+    pub damage: f64,
+    pub loadout: Option<u64>,
+    pub knockback: Option<Vec3>,
 }
 
 impl ProjectileFlight {
@@ -88,6 +104,7 @@ impl ProjectileFlight {
             last_tick: fired_at,
             stuck: None,
             ended: false,
+            exploded: false,
         })
     }
 
@@ -248,6 +265,7 @@ impl ProjectileFlight {
     /// distance to the capsule, here to its shapes when it has them, scales
     /// the damage), and the end.
     fn explode(&mut self, targets: &[(u32, TargetPose)], step: &mut FlightStep) {
+        self.exploded = true;
         if let Some(blast) = self
             .ballistics
             .blast
@@ -279,7 +297,50 @@ impl ProjectileFlight {
         FlightEnd {
             point: self.position,
             travelled: self.travelled,
+            knockback: None,
         }
+    }
+
+    /// Its explosion on its shooter's own body at `own`, once it exploded:
+    /// the blast's damage at the body's distance times the explosion's
+    /// self-damage scale, and its push. The push is the one
+    /// leafall903/ORPHEUS (MIT) `heavy_assault.py` `_push` gives a melee
+    /// victim: the horizontal speed away from the explosion in the ground
+    /// plane (along the projectile's flight when the body's feet are right
+    /// under it; `_push` takes the attacker's aim there) and the upward
+    /// speed. None when it does neither. Beyond Python, which never hurt or
+    /// pushed the shooter: every explosion reaches its shooter (assumption;
+    /// which of its flags `m_43D015B3`, `m_7F5CC8D3`, `m_B15688ED`,
+    /// `m_21CEF653`, `m_EEB99E41` would spare him isn't known, and Helix
+    /// Rockets set all five).
+    pub fn own_blast(&self, own: &TargetPose) -> Option<OwnBlast> {
+        let blast = self.ballistics.blast.as_ref().filter(|_| self.exploded)?;
+        let distance = own.surface_distance(self.position);
+        let damage = blast.hit.amount.max(0.0) * blast.multiplier(distance) * blast.self_damage;
+        let knockback = blast
+            .knockback
+            .as_ref()
+            .and_then(|knockback| knockback.at(distance))
+            .map(|(horizontal, upward)| {
+                let away = [
+                    own.feet[0] - self.position[0],
+                    own.feet[2] - self.position[2],
+                ];
+                let [x, z] = [away, [self.direction[0], self.direction[2]]]
+                    .into_iter()
+                    .find_map(|[x, z]| {
+                        let length = x.hypot(z);
+                        (length > 0.0).then(|| [x / length, z / length])
+                    })
+                    .unwrap_or_default();
+                [horizontal * x, upward, horizontal * z]
+            });
+        (damage > 0.0 || knockback.is_some()).then_some(OwnBlast {
+            distance,
+            damage,
+            loadout: blast.hit.loadout,
+            knockback,
+        })
     }
 }
 
@@ -322,7 +383,7 @@ mod tests {
     use super::*;
     use orpheus_physics::collision::index::{SceneTriangle, TriangleIndex};
     use orpheus_script::weapons::{
-        AllyHits, Blast, DamageFalloff, DamageTags, HitDefinition, STICK_FUSE,
+        AllyHits, Blast, DamageFalloff, DamageTags, HitDefinition, Knockback, STICK_FUSE,
     };
 
     const LOADOUT: u64 = 0x0b90_0000_0000_008e;
@@ -339,6 +400,7 @@ mod tests {
         }
     }
 
+    /// Soldier: 76's Helix Rocket as graph `0254` node 35 has it.
     fn helix() -> ProjectileBallistics {
         ProjectileBallistics {
             speed: 50.0,
@@ -348,6 +410,13 @@ mod tests {
             blast: Some(Blast {
                 hit: hit(80.0),
                 rings: vec![(1.0, 1.0), (3.0, 0.5)],
+                self_damage: 0.5,
+                knockback: Some(Knockback {
+                    horizontal: 4.0,
+                    upward: 6.0,
+                    horizontal_rings: vec![(0.5, 1.0), (3.0, 0.75)],
+                    upward_rings: vec![(0.5, 1.0), (3.0, 0.25)],
+                }),
             }),
             gravity: 0.0,
             fuse: None,
@@ -367,6 +436,8 @@ mod tests {
             blast: Some(Blast {
                 hit: hit(350.0),
                 rings: vec![(2.0, 1.0), (4.0, 0.2)],
+                self_damage: 0.0,
+                knockback: None,
             }),
             gravity,
             fuse: Some(STICK_FUSE),
@@ -509,6 +580,54 @@ mod tests {
         let end = step.end.as_ref().unwrap();
         assert_eq!((end.point[2], end.travelled), (0.5, 0.01));
         assert!(step.impacts.is_empty());
+    }
+
+    /// A Helix Rocket fired straight down from the eye bursts on the floor
+    /// at its shooter's feet: he takes half its 80 and goes up at 6 m/s
+    /// (no way away from it in the ground plane, nor along its flight).
+    /// Fired level at a wall 1 m ahead, it pushes him back from the wall,
+    /// by the knockback rings at his distance. A rocket that runs out of
+    /// time doesn't explode and does nothing to him.
+    #[test]
+    fn a_helix_hurts_and_pushes_its_own_shooter() {
+        let own = target(0.0, 0.0);
+        let mut flight =
+            ProjectileFlight::new(helix(), [0.0, 1.55, 0.0], [0.0, -1.0, 0.0], Some(1000)).unwrap();
+        let step = flight.advance(1002, &[], cast(&floor())).unwrap();
+        assert!(step.end.unwrap().point[1].abs() < 1e-9);
+        let blast = flight.own_blast(&own).unwrap();
+        assert!(blast.distance < 1e-9);
+        assert_eq!(
+            (blast.damage, blast.loadout, blast.knockback),
+            (40.0, Some(LOADOUT), Some([0.0, 6.0, 0.0]))
+        );
+
+        let mut flight =
+            ProjectileFlight::new(helix(), [0.0, 1.55, 0.0], [0.0, 0.0, 1.0], Some(1000)).unwrap();
+        let step = flight.advance(1002, &[], cast(&wall_at(1.0))).unwrap();
+        assert_eq!(step.end.unwrap().point, [0.0, 1.55, 1.0]);
+        let blast = flight.own_blast(&own).unwrap();
+        // From the capsule's top end, 1.5 m up, less its radius.
+        assert!((blast.distance - (1.0f64.hypot(0.05) - 0.5)).abs() < 1e-12);
+        assert_eq!(blast.damage, 40.0);
+        let (back, up) = helix()
+            .blast
+            .unwrap()
+            .knockback
+            .unwrap()
+            .at(blast.distance)
+            .unwrap();
+        assert!(back < 4.0 && up < 6.0);
+        assert_eq!(blast.knockback, Some([0.0, up, -back]));
+
+        let short = ProjectileBallistics {
+            lifetime: 0.01,
+            ..helix()
+        };
+        let mut flight =
+            ProjectileFlight::new(short, [0.0, 1.55, 0.0], [0.0, 0.0, 1.0], None).unwrap();
+        assert!(flight.advance(1000, &[], no_wall).unwrap().end.is_some());
+        assert_eq!(flight.own_blast(&own), None);
     }
 
     /// Fired level from 1.5 m at 20 m/s under 9.8 m/s² (Junkrat's and

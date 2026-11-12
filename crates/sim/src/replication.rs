@@ -2566,7 +2566,9 @@ impl WorldDelivery {
     /// projectiles.py `Projectiles.update` for the player's shots: their
     /// flights, confirmations and releases at `tick`, whose retained combat
     /// frames start at `first_tick`. What they ask of the room waits for
-    /// [`crate::combat::deliver_projectiles`].
+    /// [`crate::combat::deliver_projectiles`]. An explosion's push on his
+    /// own body ([`FlightEnd::knockback`]) goes to his mover for its next
+    /// posed frame, and the owner corrections carry it to his client.
     pub fn advance_projectiles(
         &mut self,
         tick: u32,
@@ -2576,11 +2578,22 @@ impl WorldDelivery {
         let Some(script) = &mut self.body_script else {
             return Ok(());
         };
+        let mover = &mut self.mover;
         let id = script.id;
         let mut deliveries = Vec::new();
         let projectiles = &mut script.projectiles;
         script.flights.retain_mut(|(token, flight)| {
             let result = step(id.entity, flight);
+            if let (
+                Ok(Some(FlightEnd {
+                    knockback: Some(knockback),
+                    ..
+                })),
+                Some(mover),
+            ) = (&result, mover.as_mut())
+            {
+                mover.push(*knockback);
+            }
             let (Some(token), Some(projectiles)) = (*token, projectiles.as_mut()) else {
                 return matches!(result, Ok(None));
             };

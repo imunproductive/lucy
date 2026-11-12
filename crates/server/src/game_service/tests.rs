@@ -2678,6 +2678,65 @@ fn another_client_sees_a_players_helix_rocket() {
     server.stop().unwrap();
 }
 
+/// Beyond Python (which never hurt or pushed the shooter;
+/// `ProjectileFlight::own_blast`, `Mover::push`): a Helix Rocket fired at
+/// Soldier: 76's own feet (straight down at the client's 89° aim limit)
+/// hurts and lifts him as graph `0254` node 35 says: 80 × 1 (within 1 m) ×
+/// the self-damage scale 0.5 = 40 of his 200, and 6 m/s up (within the
+/// 0.5 m knockback ring), which his server mover flies as a jump, v² / 2g
+/// = 36/35 m high at most, before he lands. He gets no hit notice (25001)
+/// for it.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
+fn a_helix_at_soldiers_feet_hurts_him_and_lifts_him() {
+    use orpheus_wire::commands::SECONDARY;
+    /// The client's lowest aim, 89° down (1/65536 turns, positive down).
+    const DOWN: i16 = 16202;
+
+    let (mut server, schemas, [mut soldier], _) =
+        practice_players([("soldier#1111", 0, "Soldier: 76")]);
+    let start = server.bodies(MATCH).unwrap().remove(0);
+    assert_eq!(start.health, Some(1.0));
+    let floor = start.position.unwrap()[1];
+    let fired = soldier.datagrams.len();
+    let mut next = soldier.tick + 1;
+    soldier
+        .client
+        .send(ACK, aimed_batch(next, 1, 0, DOWN, SECONDARY, false));
+    next += 1;
+    let mut top = floor;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let landed = loop {
+        let body = server.bodies(MATCH).unwrap().remove(0);
+        let height = body.position.unwrap()[1];
+        top = top.max(height);
+        if top - floor > 0.5 && (height - floor).abs() < 0.05 {
+            break body;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "waiting for the rocket jump: {:.3} m up at most, health {:?}",
+            top - floor,
+            body.health
+        );
+        if next <= soldier.tick + 8 {
+            soldier
+                .client
+                .send(ACK, command_batch(next, 16, 0, 0, false));
+            next += 16;
+        }
+        soldier.pump(&schemas);
+    };
+    assert!(top - floor <= 36.0 / 35.0 + 0.05, "{}", top - floor);
+    assert_eq!(landed.health, Some(0.8));
+    assert!(
+        soldier.datagrams[fired..]
+            .iter()
+            .all(|(messages, _)| messages.iter().all(|message| message.id != 25001))
+    );
+    server.stop().unwrap();
+}
+
 /// Tracer's Pulse Bomb (graph `0034` state 0; no Python reference): thrown
 /// level at a training bot 3.3 m ahead, it falls on its arc onto the bot
 /// and sticks (5 damage), and a second later explodes and kills it. The
