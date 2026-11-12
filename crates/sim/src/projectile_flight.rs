@@ -303,16 +303,18 @@ impl ProjectileFlight {
 
     /// Its explosion on its shooter's own body at `own`, once it exploded:
     /// the blast's damage at the body's distance times the explosion's
-    /// self-damage scale, and its push. The push is the one
-    /// leafall903/ORPHEUS (MIT) `heavy_assault.py` `_push` gives a melee
-    /// victim: the horizontal speed away from the explosion in the ground
-    /// plane (along the projectile's flight when the body's feet are right
-    /// under it; `_push` takes the attacker's aim there) and the upward
-    /// speed. None when it does neither. Beyond Python, which never hurt or
-    /// pushed the shooter: every explosion reaches its shooter (assumption;
-    /// which of its flags `m_43D015B3`, `m_7F5CC8D3`, `m_B15688ED`,
-    /// `m_21CEF653`, `m_EEB99E41` would spare him isn't known, and Helix
-    /// Rockets set all five).
+    /// self-damage scale, and its push: `m_E33EFEE1` along the straight line
+    /// from the explosion to the body's centre (half its height above the
+    /// feet; along the projectile's flight when they meet), plus
+    /// `m_10399AE7` upward. The line is in 3D, not in the ground plane, as
+    /// the volleys' data says: Junkrat's Concussion Mine (`096A`) pushes
+    /// 15 m/s with no upward speed at all, yet throws him up when it bursts
+    /// under him; so a Helix Rocket at his feet sends him up at 4 + 6 m/s
+    /// (assumption: which point of the body the client aims the line at
+    /// isn't known). Beyond Python, which never hurt or pushed the shooter:
+    /// every explosion reaches its shooter (assumption; which of its flags
+    /// `m_43D015B3`, `m_7F5CC8D3`, `m_B15688ED`, `m_21CEF653`, `m_EEB99E41`
+    /// would spare him isn't known, and Helix Rockets set all five).
     pub fn own_blast(&self, own: &TargetPose) -> Option<OwnBlast> {
         let blast = self.ballistics.blast.as_ref().filter(|_| self.exploded)?;
         let distance = own.surface_distance(self.position);
@@ -321,19 +323,17 @@ impl ProjectileFlight {
             .knockback
             .as_ref()
             .and_then(|knockback| knockback.at(distance))
-            .map(|(horizontal, upward)| {
-                let away = [
-                    own.feet[0] - self.position[0],
-                    own.feet[2] - self.position[2],
-                ];
-                let [x, z] = [away, [self.direction[0], self.direction[2]]]
+            .map(|(away, upward)| {
+                let centre = [own.feet[0], own.feet[1] + own.height / 2.0, own.feet[2]];
+                let line: [f64; 3] = std::array::from_fn(|axis| centre[axis] - self.position[axis]);
+                let [x, y, z] = [line, self.direction]
                     .into_iter()
-                    .find_map(|[x, z]| {
-                        let length = x.hypot(z);
-                        (length > 0.0).then(|| [x / length, z / length])
+                    .find_map(|[x, y, z]| {
+                        let length = x.hypot(y).hypot(z);
+                        (length > 0.0).then(|| [x / length, y / length, z / length])
                     })
                     .unwrap_or_default();
-                [horizontal * x, upward, horizontal * z]
+                [away * x, away * y + upward, away * z]
             });
         (damage > 0.0 || knockback.is_some()).then_some(OwnBlast {
             distance,
@@ -412,9 +412,9 @@ mod tests {
                 rings: vec![(1.0, 1.0), (3.0, 0.5)],
                 self_damage: 0.5,
                 knockback: Some(Knockback {
-                    horizontal: 4.0,
+                    away: 4.0,
                     upward: 6.0,
-                    horizontal_rings: vec![(0.5, 1.0), (3.0, 0.75)],
+                    away_rings: vec![(0.5, 1.0), (3.0, 0.75)],
                     upward_rings: vec![(0.5, 1.0), (3.0, 0.25)],
                 }),
             }),
@@ -583,11 +583,12 @@ mod tests {
     }
 
     /// A Helix Rocket fired straight down from the eye bursts on the floor
-    /// at its shooter's feet: he takes half its 80 and goes up at 6 m/s
-    /// (no way away from it in the ground plane, nor along its flight).
-    /// Fired level at a wall 1 m ahead, it pushes him back from the wall,
-    /// by the knockback rings at his distance. A rocket that runs out of
-    /// time doesn't explode and does nothing to him.
+    /// at its shooter's feet: he takes half its 80 and goes up at 4 m/s
+    /// (along the line to his centre, straight up) plus 6 m/s. Fired level
+    /// at a wall 1 m ahead, it pushes him back from the wall and down along
+    /// the line from the burst to his centre, plus up, by the knockback
+    /// rings at his distance. A rocket that runs out of time doesn't explode
+    /// and does nothing to him.
     #[test]
     fn a_helix_hurts_and_pushes_its_own_shooter() {
         let own = target(0.0, 0.0);
@@ -599,7 +600,7 @@ mod tests {
         assert!(blast.distance < 1e-9);
         assert_eq!(
             (blast.damage, blast.loadout, blast.knockback),
-            (40.0, Some(LOADOUT), Some([0.0, 6.0, 0.0]))
+            (40.0, Some(LOADOUT), Some([0.0, 10.0, 0.0]))
         );
 
         let mut flight =
@@ -610,15 +611,20 @@ mod tests {
         // From the capsule's top end, 1.5 m up, less its radius.
         assert!((blast.distance - (1.0f64.hypot(0.05) - 0.5)).abs() < 1e-12);
         assert_eq!(blast.damage, 40.0);
-        let (back, up) = helix()
+        let (away, up) = helix()
             .blast
             .unwrap()
             .knockback
             .unwrap()
             .at(blast.distance)
             .unwrap();
-        assert!(back < 4.0 && up < 6.0);
-        assert_eq!(blast.knockback, Some([0.0, up, -back]));
+        assert!(away < 4.0 && up < 6.0);
+        // The line from the burst (1.55 m up, 1 m ahead) to his centre (1 m up).
+        let length = 0.55f64.hypot(1.0);
+        let [_, y, z] = blast.knockback.unwrap();
+        assert_eq!(blast.knockback.unwrap()[0], 0.0);
+        assert!((y - (up - away * 0.55 / length)).abs() < 1e-12);
+        assert!((z + away / length).abs() < 1e-12);
 
         let short = ProjectileBallistics {
             lifetime: 0.01,

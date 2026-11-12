@@ -2680,26 +2680,28 @@ fn another_client_sees_a_players_helix_rocket() {
 
 /// Beyond Python (which never hurt or pushed the shooter;
 /// `ProjectileFlight::own_blast`, `Mover::push`): a Helix Rocket fired at
-/// Soldier: 76's own feet (straight down at the client's 89° aim limit)
-/// hurts and lifts him as graph `0254` node 35 says: 80 × 1 (within 1 m) ×
-/// the self-damage scale 0.5 = 40 of his 200, and 6 m/s up (within the
-/// 0.5 m knockback ring), which his server mover flies as a jump, v² / 2g
-/// = 36/35 m high at most, before he lands. He gets no hit notice (25001)
-/// for it.
+/// the floor just ahead of Soldier: 76's feet (70° down) hurts and lifts
+/// him as graph `0254` node 35 says: 80 × 1 (within 1 m) × the self-damage
+/// scale 0.5 = 40 of his 200, and within the 0.5 m knockback ring 4 m/s
+/// along the line from the burst to his centre (up and back) plus 6 m/s
+/// up. His server mover flies it as a jump: more than 2 m up, at most
+/// (4 + 6)² / 2g = 100/35 m, and he lands behind where he stood, away from
+/// the burst. He gets no hit notice (25001) for it.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn a_helix_at_soldiers_feet_hurts_him_and_lifts_him() {
     use orpheus_wire::commands::SECONDARY;
-    /// The client's lowest aim, 89° down (1/65536 turns, positive down).
-    const DOWN: i16 = 16202;
+    /// 70° down (1/65536 turns, positive down).
+    const DOWN: i16 = 12743;
 
     let (mut server, schemas, [mut soldier], _) =
         practice_players([("soldier#1111", 0, "Soldier: 76")]);
     let start = server.bodies(MATCH).unwrap().remove(0);
     assert_eq!(start.health, Some(1.0));
-    let floor = start.position.unwrap()[1];
+    let [_, floor, start_z] = start.position.unwrap();
     let fired = soldier.datagrams.len();
     let mut next = soldier.tick + 1;
+    // Yaw 0 faces +z.
     soldier
         .client
         .send(ACK, aimed_batch(next, 1, 0, DOWN, SECONDARY, false));
@@ -2727,7 +2729,13 @@ fn a_helix_at_soldiers_feet_hurts_him_and_lifts_him() {
         }
         soldier.pump(&schemas);
     };
-    assert!(top - floor <= 36.0 / 35.0 + 0.05, "{}", top - floor);
+    assert!(
+        top - floor > 2.0 && top - floor <= 100.0 / 35.0 + 0.05,
+        "{} m up",
+        top - floor
+    );
+    let back = start_z - landed.position.unwrap()[2];
+    assert!(back > 0.3, "landed {back} m back");
     assert_eq!(landed.health, Some(0.8));
     assert!(
         soldier.datagrams[fired..]
@@ -2945,12 +2953,12 @@ fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_
 /// three commands a datagram, as the server sends one every `SEND_EVERY`
 /// ticks.
 ///
-/// `WITHIN` = 4 ticks: the release is due at the impact tick plus the
-/// alias offset K − f (the first owner frame that reported the shot, K,
+/// `WITHIN` = 4 ticks: the shot's own id is released at the impact tick,
+/// an alias K − f later (an owner frame that introduced the volley, at K
 /// after the shot's frame f; the server runs a datagram's three commands
 /// in one tick, so its owner frame reports the last of them: at most 2
-/// later), and goes with the next send frame (at most `SEND_EVERY` − 1 =
-/// 2 ticks). The rocket flies 8 m (10 ticks at 50 m/s), long enough for
+/// later), each with the next send frame (at most `SEND_EVERY` − 1 = 2
+/// ticks). The rocket flies 8 m (10 ticks at 50 m/s), long enough for
 /// its confirmation to arrive over loopback first. Before, the release
 /// waited for the shot's command frame plus the flight plus 6, compared
 /// with server ticks: `LEAD` + 6 ticks after the impact at least.

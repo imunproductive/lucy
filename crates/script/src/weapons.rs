@@ -319,32 +319,34 @@ pub struct Blast {
 }
 
 /// The push an explosion's ModifyHealth gives a body (`m_modifyHealth`):
-/// `m_E33EFEE1` metres per second away from it, `m_10399AE7` upward, as
-/// leafall903/ORPHEUS (MIT) `heavy_assault.py` `_push` reads the pair, each
-/// scaled by the ModifyHealth's knockback rings (`m_knockbackRings`,
+/// `m_E33EFEE1` metres per second away from it (along the line from the
+/// explosion to the body), and `m_10399AE7` more upward, each scaled by the
+/// ModifyHealth's knockback rings (`m_knockbackRings`,
 /// `STUStatescriptModifyHealthKnockbackRing`) at the body's distance.
+/// leafall903/ORPHEUS (MIT) `heavy_assault.py` `_push` reads the pair the
+/// same way for a melee hit.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Knockback {
-    pub horizontal: f64,
+    pub away: f64,
     pub upward: f64,
-    /// Each ring's radius and its horizontal scale, `m_579D7CFF`
+    /// Each ring's radius and its scale of the push away, `m_579D7CFF`
     /// (assumption: the ring's three scalars are unnamed; `m_9102DA3F` is
     /// absent from Pharah's and Sigma's rings, which have the other two, so
     /// it isn't read), by radius.
-    pub horizontal_rings: Vec<(f64, f64)>,
+    pub away_rings: Vec<(f64, f64)>,
     /// Each ring's radius and its upward scale, `m_10399AE7` (assumption:
     /// the ring field shares its name with the upward speed), by radius.
     pub upward_rings: Vec<(f64, f64)>,
 }
 
 impl Knockback {
-    /// The horizontal and upward speeds at `distance` from the explosion,
-    /// each between its rings as an explosion's damage is (assumption: no
-    /// asset says how they blend); none past the last ring.
+    /// The speeds away and upward at `distance` from the explosion, each
+    /// between its rings as an explosion's damage is (assumption: no asset
+    /// says how they blend); none past the last ring.
     pub fn at(&self, distance: f64) -> Option<(f64, f64)> {
-        let horizontal = self.horizontal * ring_scale(&self.horizontal_rings, distance);
+        let away = self.away * ring_scale(&self.away_rings, distance);
         let upward = self.upward * ring_scale(&self.upward_rings, distance);
-        (horizontal > 0.0 || upward > 0.0).then_some((horizontal, upward))
+        (away > 0.0 || upward > 0.0).then_some((away, upward))
     }
 
     /// The push of an explosion's ModifyHealth (`modify`). None without
@@ -355,22 +357,22 @@ impl Knockback {
         modify: &Json,
         evaluate: &mut impl FnMut(&Json) -> Result<Value, EvalError>,
     ) -> Result<Option<Self>, EvalError> {
-        let horizontal = authored_number(modify.get("m_E33EFEE1"), 0.0, evaluate)?;
+        let away = authored_number(modify.get("m_E33EFEE1"), 0.0, evaluate)?;
         let upward = authored_number(modify.get("m_10399AE7"), 0.0, evaluate)?;
-        if ![horizontal, upward]
+        if ![away, upward]
             .iter()
             .all(|speed| speed.is_finite() && *speed >= 0.0)
-            || (horizontal == 0.0 && upward == 0.0)
+            || (away == 0.0 && upward == 0.0)
         {
             return Ok(None);
         }
         let rows = modify.get("m_knockbackRings");
-        let horizontal_rings = authored_rings(rows, "m_579D7CFF", 1.0, evaluate)?;
+        let away_rings = authored_rings(rows, "m_579D7CFF", 1.0, evaluate)?;
         let upward_rings = authored_rings(rows, "m_10399AE7", 1.0, evaluate)?;
-        Ok((!horizontal_rings.is_empty()).then_some(Self {
-            horizontal,
+        Ok((!away_rings.is_empty()).then_some(Self {
+            away,
             upward,
-            horizontal_rings,
+            away_rings,
             upward_rings,
         }))
     }
@@ -936,7 +938,7 @@ mod tests {
         );
         assert_eq!(pharah.self_damage, 0.5);
         let knockback = pharah.knockback.unwrap();
-        assert_eq!(knockback.horizontal_rings, [(0.5, 1.0), (2.5, 0.0)]);
+        assert_eq!(knockback.away_rings, [(0.5, 1.0), (2.5, 0.0)]);
         // A float config var is a float32.
         let scale = f64::from(0.8f32);
         assert_eq!(knockback.upward_rings, [(0.5, scale), (2.5, 0.0)]);

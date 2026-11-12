@@ -2334,8 +2334,8 @@ fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
     // value 0x2982, 1.0), at full within 0.5 m, then ×0.75 and ×0.25 at 3 m.
     assert_eq!(blast.self_damage, 0.5);
     let knockback = blast.knockback.unwrap();
-    assert_eq!((knockback.horizontal, knockback.upward), (4.0, 6.0));
-    assert_eq!(knockback.horizontal_rings, [(0.5, 1.0), (3.0, 0.75)]);
+    assert_eq!((knockback.away, knockback.upward), (4.0, 6.0));
+    assert_eq!(knockback.away_rings, [(0.5, 1.0), (3.0, 0.75)]);
     assert_eq!(knockback.upward_rings, [(0.5, 1.0), (3.0, 0.25)]);
     assert_eq!(knockback.at(0.0), Some((4.0, 6.0)));
     assert_eq!(knockback.at(1.75), Some((3.5, 3.75)));

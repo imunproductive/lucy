@@ -245,15 +245,30 @@ struct OwnerReport {
     arrived: Option<bool>,
 }
 
+/// A leased id the owner's client may have shot the projectile under, and
+/// its create (the confirmation).
+#[derive(Clone, Copy, Debug)]
+struct LeasedCreate {
+    /// The command frame of its lease: the shot's frame f, or the frame K
+    /// of an owner frame that introduced the volley (`_confirm`).
+    frame: u32,
+    arrived: bool,
+    /// Its destroy went.
+    retired: bool,
+}
+
 struct PendingProjectile {
     token: ProjectileToken,
     shot: ShotEvent,
     definition: u64,
     bound: u32,
     reports: IndexMap<u32, OwnerReport>,
-    creates: IndexMap<u32, bool>,
+    creates: IndexMap<u32, LeasedCreate>,
     created_at: Option<u32>,
-    release_at: Option<u32>,
+    /// The server tick its flight ended ([`OwnerProjectiles::flight_ended`]).
+    flown: Option<u32>,
+    /// [`ProjectileEvent::Ended`] went.
+    ended: bool,
     /// The Biotic Field it leaves, and the shooter's feet when he fired
     /// (projectiles.py `Shot.spawn`, `Shot.where`).
     field: Option<(FieldSchedule, [f64; 3])>,
@@ -265,6 +280,36 @@ struct PendingProjectile {
     /// ids of a lease frame (`m_numProjectilesPerShot`): each is confirmed
     /// and released.
     projectiles: u8,
+}
+
+impl PendingProjectile {
+    /// When `create`'s destroy is due: a flown shot's at the server tick its
+    /// flight ended, later by the lease frame's offset from the shot's frame
+    /// (a rocket the client shot at K hits K − f later); any other's
+    /// `bound` + RELEASE_MARGIN after its first confirmation went
+    /// (projectiles.py `_step`).
+    fn due(&self, create: &LeasedCreate) -> Option<u32> {
+        self.flown
+            .map(|end| end.saturating_add(create.frame.saturating_sub(self.shot.frame)))
+            .or_else(|| {
+                self.created_at.map(|created| {
+                    created
+                        .saturating_add(self.bound)
+                        .saturating_add(RELEASE_MARGIN)
+                })
+            })
+    }
+
+    /// No owner frame that reported the shot can still bring an alias: one
+    /// arrived (its aliases are confirmed in the same update), or none is
+    /// in flight and UNREPORTED_TICKS passed.
+    fn reports_settled(&self, tick: u32) -> bool {
+        self.reports
+            .values()
+            .any(|report| report.arrived == Some(true))
+            || (self.reports.values().all(|report| report.arrived.is_some())
+                && tick >= self.shot.frame.saturating_add(UNREPORTED_TICKS))
+    }
 }
 
 /// What the match does about an owner's projectile besides its own
@@ -456,7 +501,8 @@ impl OwnerProjectiles {
             reports: IndexMap::new(),
             creates: IndexMap::new(),
             created_at: None,
-            release_at: None,
+            flown: None,
+            ended: false,
             field: None,
             spawning: false,
             projectiles: 1,
@@ -503,23 +549,29 @@ impl OwnerProjectiles {
             .iter_mut()
             .find(|pending| pending.token == token)
         {
-            if let Some(arrived) = pending.creates.get_mut(&entity) {
-                *arrived = true;
+            if let Some(create) = pending.creates.get_mut(&entity) {
+                create.arrived = true;
             }
         }
     }
 
+    /// The create of `entity` still waits for its delivery: its destroy
+    /// hasn't gone.
     pub fn confirmation_current(&self, token: ProjectileToken, entity: u32) -> bool {
-        self.pending
-            .iter()
-            .any(|pending| pending.token == token && pending.creates.contains_key(&entity))
+        self.pending.iter().any(|pending| {
+            pending.token == token
+                && pending
+                    .creates
+                    .get(&entity)
+                    .is_some_and(|create| !create.retired)
+        })
     }
 
     /// The server's flight of the shot ended at server tick `tick`
-    /// (projectiles.py `flown`): its release is due then, later by K − f
-    /// when the first owner frame that reported the shot and wasn't lost
-    /// came at command frame K after the shot's frame f, as the client may
-    /// have shot it at K (`_confirm`).
+    /// (projectiles.py `flown`): each confirmed id's release is due then,
+    /// later by its lease frame's offset from the shot's frame: K − f for
+    /// an alias of an owner frame that came at command frame K, as the
+    /// client may have shot it at K (`_confirm`).
     ///
     /// Python's due is `start + ceil(seconds * 1000 / 16) + RELEASE_MARGIN`
     /// with `start` = K or f, then at least the match tick. K and f are the
@@ -540,14 +592,8 @@ impl OwnerProjectiles {
         else {
             return;
         };
-        if pending.release_at.is_none() && pending.field.is_none() && !pending.spawning {
-            let start = pending
-                .reports
-                .values()
-                .find(|report| report.arrived != Some(false))
-                .map_or(pending.shot.frame, |report| report.frame);
-            pending.release_at =
-                Some(tick.saturating_add(start.saturating_sub(pending.shot.frame)));
+        if pending.flown.is_none() && pending.field.is_none() && !pending.spawning {
+            pending.flown = Some(tick);
         }
     }
 
@@ -580,7 +626,7 @@ impl OwnerProjectiles {
                 }
                 if step.expired {
                     // `_end(explode=False)`: its fields go with the shot.
-                    retire(pending, occupied, None, &mut out);
+                    retire(pending, occupied, &mut out);
                     return false;
                 }
                 if step.faded_now {
@@ -590,7 +636,7 @@ impl OwnerProjectiles {
                     let parents = pending
                         .creates
                         .iter()
-                        .filter(|&(_, &arrived)| arrived)
+                        .filter(|(_, create)| create.arrived)
                         .map(|(&entity, _)| entity)
                         .collect();
                     events.push(ProjectileEvent::FieldDeliver {
@@ -602,36 +648,53 @@ impl OwnerProjectiles {
                 }
                 return true;
             }
-            let due = pending.release_at.or_else(|| {
-                pending.created_at.map(|created| {
-                    created
-                        .saturating_add(pending.bound)
-                        .saturating_add(RELEASE_MARGIN)
-                })
-            });
-            // `_end(explode=True)`: the release needs `shot.spawn is None`.
-            let release = (!pending.spawning).then_some(tick);
-            if due.is_some_and(|due| tick >= due.saturating_add(DELIVERY_GRACE)) {
-                retire(pending, occupied, release, &mut out);
-                events.push(ProjectileEvent::Ended {
-                    token: pending.token,
-                    explode: true,
-                });
-                return false;
-            }
             confirm(leases, occupied, pending, tick, &mut out);
-            if due.is_some_and(|due| tick >= due)
-                && !pending.creates.is_empty()
-                && pending.creates.values().all(|&arrived| arrived)
-            {
-                retire(pending, occupied, release, &mut out);
+            // `_end(explode=True)`, for each id on its own: its destroy goes
+            // with the release once it is due and its create arrived, and
+            // without one DELIVERY_GRACE later (the release needs
+            // `shot.spawn is None`). Python ended the shot only once every
+            // create arrived, so the shot's own id waited for an alias's
+            // create (beyond Python).
+            let token = pending.token;
+            let mut retired = false;
+            for index in 0..pending.creates.len() {
+                let (&entity, &create) = pending.creates.get_index(index).expect("in range");
+                let Some(due) = pending.due(&create).filter(|_| !create.retired) else {
+                    continue;
+                };
+                let late = tick >= due.saturating_add(DELIVERY_GRACE);
+                if !late && !(tick >= due && create.arrived) {
+                    continue;
+                }
+                pending.creates[index].retired = true;
+                occupied.remove(&entity);
+                out.push(ProjectileDelivery::Destroy {
+                    token,
+                    entity,
+                    explosion_frame: (create.arrived && !pending.spawning)
+                        .then(|| tick.saturating_add(RELEASE_AHEAD)),
+                });
+                retired = true;
+            }
+            // A shot none of whose ids could be confirmed (another shot holds
+            // them) ends DELIVERY_GRACE after its flight, with nothing to
+            // destroy.
+            let unconfirmable = pending.creates.is_empty()
+                && pending
+                    .flown
+                    .is_some_and(|end| tick >= end.saturating_add(DELIVERY_GRACE));
+            if (retired || unconfirmable) && !pending.ended {
+                pending.ended = true;
                 events.push(ProjectileEvent::Ended {
-                    token: pending.token,
+                    token,
                     explode: true,
                 });
-                return false;
             }
-            true
+            // The shot stays while an owner frame may still bring an alias.
+            !(unconfirmable
+                || (pending.reports_settled(tick)
+                    && !pending.creates.is_empty()
+                    && pending.creates.values().all(|create| create.retired)))
         });
         out
     }
@@ -641,8 +704,8 @@ impl OwnerProjectiles {
     pub fn retire(&mut self) -> Vec<ProjectileDelivery> {
         let mut out = Vec::new();
         for pending in &self.pending {
-            retire(pending, &mut self.occupied, None, &mut out);
-            if pending.field.is_none() {
+            retire(pending, &mut self.occupied, &mut out);
+            if pending.field.is_none() && !pending.ended {
                 self.events.push(ProjectileEvent::Ended {
                     token: pending.token,
                     explode: false,
@@ -660,8 +723,8 @@ impl OwnerProjectiles {
             .position(|pending| pending.token == token)
         {
             let pending = self.pending.remove(index);
-            retire(&pending, &mut self.occupied, None, out);
-            if pending.field.is_none() {
+            retire(&pending, &mut self.occupied, out);
+            if pending.field.is_none() && !pending.ended {
                 self.events.push(ProjectileEvent::Ended {
                     token,
                     explode: false,
@@ -671,10 +734,20 @@ impl OwnerProjectiles {
     }
 }
 
-/// projectiles.py `_confirm`: once an owner frame that reported the shot
-/// arrived (or none did for UNREPORTED_TICKS), a create of each leased id
-/// the client may have shot it under: in each such frame, one per projectile
-/// of the shot.
+/// projectiles.py `_confirm`: a create of each leased id the client may
+/// have shot the projectile under, one per projectile of the shot in each
+/// such frame: the shot's own frame f at once, and the frame K of each
+/// owner frame that introduced the volley once it arrived.
+///
+/// Python confirmed f too only once an owner frame that reported the shot
+/// arrived (or none did for UNREPORTED_TICKS). That wait is for K: a
+/// create for an id the client doesn't have yet makes an unflown entity
+/// and refuses its own later shot of that id, and the client shoots at K
+/// only when that owner frame arrives. It shoots at f before it sends
+/// command f, so the server, which learns of the shot from command f,
+/// can't confirm f too early (beyond Python: one round trip sooner). A
+/// client that didn't shoot at f gets an unflown f, hidden at y −1000, as
+/// it did from Python.
 fn confirm(
     leases: &ProjectileLeases,
     occupied: &mut HashSet<u32>,
@@ -682,34 +755,32 @@ fn confirm(
     tick: u32,
     out: &mut Vec<ProjectileDelivery>,
 ) {
-    let reports = pending
-        .reports
-        .values()
-        .filter(|report| report.arrived == Some(true));
-    let has_report = reports.clone().next().is_some();
-    let fallback = pending.reports.is_empty()
-        && pending.creates.is_empty()
-        && tick >= pending.shot.frame.saturating_add(UNREPORTED_TICKS);
-    if !has_report && !fallback {
-        return;
-    }
     let frames: Vec<_> = std::iter::once(pending.shot.frame)
         .chain(
-            reports
-                .filter(|report| report.introduces)
+            pending
+                .reports
+                .values()
+                .filter(|report| report.arrived == Some(true) && report.introduces)
                 .map(|report| report.frame),
         )
         .collect();
     let (definition, projectiles) = (pending.definition, pending.projectiles);
-    let ids: Vec<_> = frames
-        .into_iter()
-        .flat_map(|frame| {
-            (0..projectiles).filter_map(move |index| leases.entity(definition, frame, index))
-        })
-        .collect();
-    for entity in ids {
-        if occupied.insert(entity) {
-            pending.creates.insert(entity, false);
+    for frame in frames {
+        for index in 0..projectiles {
+            let Some(entity) = leases.entity(definition, frame, index) else {
+                continue;
+            };
+            if pending.creates.contains_key(&entity) || !occupied.insert(entity) {
+                continue;
+            }
+            pending.creates.insert(
+                entity,
+                LeasedCreate {
+                    frame,
+                    arrived: false,
+                    retired: false,
+                },
+            );
             pending.created_at.get_or_insert(tick);
             out.push(ProjectileDelivery::Confirm {
                 token: pending.token,
@@ -720,20 +791,19 @@ fn confirm(
     }
 }
 
+/// The destroys of the shot's ids still in the client's world, without an
+/// explosion.
 fn retire(
     pending: &PendingProjectile,
     occupied: &mut HashSet<u32>,
-    tick: Option<u32>,
     out: &mut Vec<ProjectileDelivery>,
 ) {
-    for (&entity, &arrived) in &pending.creates {
+    for (&entity, _) in pending.creates.iter().filter(|(_, create)| !create.retired) {
         occupied.remove(&entity);
         out.push(ProjectileDelivery::Destroy {
             token: pending.token,
             entity,
-            explosion_frame: tick
-                .filter(|_| arrived)
-                .map(|tick| tick.saturating_add(RELEASE_AHEAD)),
+            explosion_frame: None,
         });
     }
 }
@@ -1658,8 +1728,11 @@ mod tests {
         assert_eq!(leases.entity(HELIX, 1234, 0), Some(0xa090_04d2));
     }
 
+    /// The shot's own id is confirmed at once; an alias only once the owner
+    /// frame that introduced the volley arrived; each id is released on its
+    /// own once due and its create arrived, the alias K − f later.
     #[test]
-    fn only_a_delivered_owner_introduction_confirms_an_alias_and_release_waits_for_creates() {
+    fn own_id_confirms_at_once_an_alias_after_its_introduction_and_each_releases_alone() {
         let frame = 1000;
         let shot = shot(frame);
         let leases =
@@ -1669,6 +1742,12 @@ mod tests {
         let mut tracker = OwnerProjectiles::new(BODY, leases);
         let token = tracker.admit(shot, HELIX, 80).unwrap();
         assert!(tracker.admit(shot, HELIX, 80).is_none());
+        let confirm = |entity| ProjectileDelivery::Confirm {
+            token,
+            entity,
+            definition: HELIX,
+        };
+        assert_eq!(tracker.advance(frame, frame), [confirm(original)]);
         let identity = |instance, state| {
             (instance == shot.instance && state == shot.raw_state)
                 .then_some((shot.activation, shot.activation_ms))
@@ -1680,50 +1759,43 @@ mod tests {
         tracker.owner_arrival(2, false);
         tracker.owner_arrival(3, true);
         tracker.owner_arrival(4, true);
-        assert_eq!(
-            tracker.advance(frame + 5, frame + 5),
-            [
-                ProjectileDelivery::Confirm {
-                    token,
-                    entity: original,
-                    definition: HELIX
-                },
-                ProjectileDelivery::Confirm {
-                    token,
-                    entity: alias,
-                    definition: HELIX
-                },
-            ]
-        );
+        assert_eq!(tracker.advance(frame + 5, frame + 5), [confirm(alias)]);
         tracker.flight_ended(token, frame + 5);
         tracker.create_arrived(token, original);
+        let destroy = |entity, tick: u32| ProjectileDelivery::Destroy {
+            token,
+            entity,
+            explosion_frame: Some(tick + RELEASE_AHEAD),
+        };
+        assert_eq!(
+            tracker.advance(frame + 6, frame + 6),
+            [destroy(original, frame + 6)]
+        );
+        assert_eq!(
+            tracker.take_events(),
+            [ProjectileEvent::Ended {
+                token,
+                explode: true
+            }]
+        );
+        assert!(!tracker.confirmation_current(token, original));
+        // The alias is due at frame + 9 but its create hasn't arrived.
         assert!(tracker.advance(frame + 12, frame + 12).is_empty());
         assert!(tracker.confirmation_current(token, alias));
         tracker.create_arrived(token, alias);
-        let explosion_frame = Some(frame + 13 + RELEASE_AHEAD);
         assert_eq!(
             tracker.advance(frame + 13, frame + 13),
-            [
-                ProjectileDelivery::Destroy {
-                    token,
-                    entity: original,
-                    explosion_frame
-                },
-                ProjectileDelivery::Destroy {
-                    token,
-                    entity: alias,
-                    explosion_frame
-                },
-            ]
+            [destroy(alias, frame + 13)]
         );
-        assert!(!tracker.confirmation_current(token, original));
+        assert!(tracker.take_events().is_empty(), "the shot ended once");
         assert!(tracker.advance(frame + 14, frame + 14).is_empty());
+        assert!(tracker.retire().is_empty());
+        assert!(tracker.take_events().is_empty());
     }
 
     /// Echo's Tri-Shot: the owner's client shot each projectile of the shot
-    /// under the frame's next id, so each is confirmed once an owner frame
-    /// that reported the shot arrived, and the release waits for every
-    /// create and then goes for each.
+    /// under the frame's next id, so each is confirmed at once, and each is
+    /// released when the flight ended and its own create arrived.
     #[test]
     fn each_projectile_of_a_volley_is_confirmed_and_released() {
         let frame = 1000;
@@ -1735,15 +1807,8 @@ mod tests {
         let mut tracker = OwnerProjectiles::new(BODY, leases);
         let token = tracker.admit_volley(shot, HELIX, 20, 3).unwrap();
         assert!(tracker.admit_volley(shot, HELIX, 20, 3).is_none());
-        tracker.owner_sent(
-            2,
-            frame + 1,
-            |_, _| Some((shot.activation, shot.activation_ms)),
-            |_, _| false,
-        );
-        tracker.owner_arrival(2, true);
         assert_eq!(
-            tracker.advance(frame + 3, frame + 3),
+            tracker.advance(frame, frame),
             ids.iter()
                 .map(|&entity| ProjectileDelivery::Confirm {
                     token,
@@ -1752,25 +1817,27 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         );
+        tracker.owner_sent(
+            2,
+            frame + 1,
+            |_, _| Some((shot.activation, shot.activation_ms)),
+            |_, _| false,
+        );
+        tracker.owner_arrival(2, true);
+        assert!(tracker.advance(frame + 3, frame + 3).is_empty());
         tracker.flight_ended(token, frame + 4);
         tracker.create_arrived(token, ids[0]);
         tracker.create_arrived(token, ids[1]);
-        // The flight's end plus the reporting frame's offset from the shot.
-        let due = frame + 4 + 1;
-        assert!(
-            tracker.advance(due, due).is_empty(),
-            "waits for every create"
-        );
-        tracker.create_arrived(token, ids[2]);
+        let destroy = |entity, tick: u32| ProjectileDelivery::Destroy {
+            token,
+            entity,
+            explosion_frame: Some(tick + RELEASE_AHEAD),
+        };
+        // Due when the flight ended: they were all leased at the shot's frame.
+        let due = frame + 4;
         assert_eq!(
-            tracker.advance(due + 1, due + 1),
-            ids.iter()
-                .map(|&entity| ProjectileDelivery::Destroy {
-                    token,
-                    entity,
-                    explosion_frame: Some(due + 1 + RELEASE_AHEAD)
-                })
-                .collect::<Vec<_>>()
+            tracker.advance(due, due),
+            [destroy(ids[0], due), destroy(ids[1], due)]
         );
         assert_eq!(
             tracker.take_events(),
@@ -1779,16 +1846,34 @@ mod tests {
                 explode: true
             }]
         );
+        tracker.create_arrived(token, ids[2]);
+        assert_eq!(
+            tracker.advance(due + 1, due + 1),
+            [destroy(ids[2], due + 1)]
+        );
+        assert!(tracker.take_events().is_empty());
+        assert!(tracker.retire().is_empty());
     }
 
+    /// No owner frame reported the shot (its one report was lost): its own
+    /// id was confirmed anyway; a create that never arrived is destroyed
+    /// without an explosion DELIVERY_GRACE after its due, and the shot ends.
     #[test]
-    fn lost_reports_fall_back_and_unacknowledged_confirmation_destroys_without_explosion() {
+    fn an_unacknowledged_confirmation_destroys_without_explosion() {
         let frame = 1000;
         let shot = shot(frame);
         let leases = ProjectileLeases::new(0, frame, [(HELIX, 1)]).unwrap();
         let entity = leases.entity(HELIX, frame, 0).unwrap();
         let mut tracker = OwnerProjectiles::new(BODY, leases);
         let token = tracker.admit(shot, HELIX, 20).unwrap();
+        assert_eq!(
+            tracker.advance(frame, frame),
+            [ProjectileDelivery::Confirm {
+                token,
+                entity,
+                definition: HELIX
+            }]
+        );
         tracker.owner_sent(
             2,
             frame + 1,
@@ -1797,16 +1882,6 @@ mod tests {
         );
         tracker.owner_arrival(2, false);
         tracker.flight_ended(token, frame + 2);
-        let late = frame + UNREPORTED_TICKS - 1;
-        assert!(tracker.advance(late, late).is_empty());
-        assert_eq!(
-            tracker.advance(frame + UNREPORTED_TICKS, frame + UNREPORTED_TICKS),
-            [ProjectileDelivery::Confirm {
-                token,
-                entity,
-                definition: HELIX
-            }]
-        );
         let grace = frame + 2 + DELIVERY_GRACE;
         assert!(tracker.advance(grace - 1, grace - 1).is_empty());
         assert_eq!(
@@ -1912,12 +1987,13 @@ mod tests {
         );
     }
 
-    /// The client may have shot the rocket at the frame K of the first owner
-    /// frame that reported it and wasn't lost (`_confirm`), K − f after the
-    /// shot's frame f: its rocket then hits that much later, and the release
-    /// waits as long after the server's flight ends.
+    /// The client may have shot the rocket at the frame K of an owner frame
+    /// that introduced the volley (`_confirm`), K − f after the shot's frame
+    /// f: that rocket then hits that much later, so the alias's release
+    /// waits as long after the server's flight ends; the shot's own id goes
+    /// when the flight ends.
     #[test]
-    fn a_flown_release_waits_for_the_reporting_frames_offset() {
+    fn an_aliased_release_waits_for_its_frames_offset() {
         let frame = 1000;
         let shot = shot(frame);
         let leases = ProjectileLeases::new(0, frame, [(HELIX, 1)]).unwrap();
@@ -1934,24 +2010,14 @@ mod tests {
         tracker.create_arrived(token, original);
         tracker.create_arrived(token, alias);
         tracker.flight_ended(token, 1000);
-        assert!(tracker.advance(1000, 1000).is_empty());
+        let destroy = |entity, tick: u32| ProjectileDelivery::Destroy {
+            token,
+            entity,
+            explosion_frame: Some(tick + RELEASE_AHEAD),
+        };
+        assert_eq!(tracker.advance(1000, 1000), [destroy(original, 1000)]);
         assert!(tracker.advance(1002, 1002).is_empty());
-        let explosion_frame = Some(1003 + RELEASE_AHEAD);
-        assert_eq!(
-            tracker.advance(1003, 1003),
-            [
-                ProjectileDelivery::Destroy {
-                    token,
-                    entity: original,
-                    explosion_frame
-                },
-                ProjectileDelivery::Destroy {
-                    token,
-                    entity: alias,
-                    explosion_frame
-                },
-            ]
-        );
+        assert_eq!(tracker.advance(1003, 1003), [destroy(alias, 1003)]);
     }
 
     /// projectiles.py's Biotic Field numbers.
@@ -2156,7 +2222,15 @@ mod tests {
             parents,
             faded,
         };
-        assert!(tracker.advance(frame, frame).is_empty());
+        // The canister's own id is confirmed at once.
+        assert_eq!(
+            tracker.advance(frame, frame),
+            [ProjectileDelivery::Confirm {
+                token,
+                entity: canister,
+                definition: CANISTER,
+            }]
+        );
         assert!(tracker.take_events().is_empty());
         let start = frame + FIELD_DELAY;
         tracker.advance(start, start);
@@ -2175,16 +2249,7 @@ mod tests {
                 deliver(Vec::new(), false)
             ]
         );
-        // No owner frame reported it: the canister's fallback confirmation.
-        let confirm = frame + UNREPORTED_TICKS;
-        assert_eq!(
-            tracker.advance(confirm, start + 6),
-            [ProjectileDelivery::Confirm {
-                token,
-                entity: canister,
-                definition: CANISTER,
-            }]
-        );
+        assert!(tracker.advance(start + 6, start + 6).is_empty());
         tracker.take_events();
         tracker.create_arrived(token, canister);
         // Only this update's own frame is retained.
