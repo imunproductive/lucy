@@ -97,6 +97,14 @@ impl TargetPose {
             .min_by(|left, right| left.0.total_cmp(&right.0))
     }
 
+    /// Whether a hit at height `impact_y` that entered the body as
+    /// [`TargetPose::entry`] says (`entered`) struck the head: the entered
+    /// shape's own flag, or on the capsule at or above the eye less 0.2 m
+    /// (combat.py `_hitscan`).
+    pub(crate) fn head(&self, entered: Option<bool>, impact_y: f64) -> bool {
+        entered.unwrap_or_else(|| impact_y >= self.feet[1] + self.eye - HEAD_BELOW_EYE)
+    }
+
     /// How far a point is from the body's surface, 0 inside it.
     pub(crate) fn surface_distance(&self, point: Vec3) -> f64 {
         if self.shapes.is_none() {
@@ -288,10 +296,7 @@ impl HitscanShot {
         {
             return Ok(None);
         }
-        let head = critical.unwrap_or_else(|| {
-            let impact_y = self.origin[1] + self.direction[1] * distance;
-            impact_y >= pose.feet[1] + pose.eye - HEAD_BELOW_EYE
-        });
+        let head = pose.head(critical, self.origin[1] + self.direction[1] * distance);
         Ok(Some(Impact {
             entity,
             distance,

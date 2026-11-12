@@ -22,19 +22,32 @@
 //!   finds for an enemy 0x1, so a hero carries both). Nearly every hit and
 //!   heal search leaves out 0x10, taken as the dead bit (as upstream's
 //!   `junkenstein_ai.py` `enemy_filter_bits`: team, 1, and 0x10 when dead).
+//! - The client's own ray tests (a shot, a projectile's sweep, a spray) ask
+//!   for the same flag word on each candidate entity: leafall903/ORPHEUS
+//!   (MIT) `docs/COMMUNICATION_WHEEL.txt` ran the spray query natively;
+//!   `1B60A50` requires a candidate's flags (entity `+270`) to overlap the
+//!   query's allow mask, `0x0001000000000040`, and miss its deny mask. The
+//!   weapons' ray profiles (`097`, `STU_8EFC337B`: `m_BC69BB40` allow,
+//!   `m_5CE47069` deny) allow only bit 48 on nearly every one (`0001`,
+//!   `0015`, `0019`, `002A`, …, the Helix Rocket's and Ana's darts'
+//!   included) and deny 0x10 (the dead bit above), 0x4 or 0x80; the Biotic
+//!   Field's throw (`011D`, deny 0x5) passes through heroes (0x1). So the
+//!   word is the one the graphs filter, and a body a weapon hits needs bit
+//!   48, which no graph filter can name (their masks stop at `0x3FFFFFFF`).
 //! - So every body, a player's or a training bot's (the bots are heroes,
 //!   `02E0…016B`-`016E`), gets its team bit and [`BODY_KINDS`]
 //!   ([`body_filter`]); a body that dies gets [`DEAD`] too, with the pools
-//!   of its death. Checked in the game before this: a body with only its
-//!   team bit was not hit by the client's own shots; Soldier: 76's bullets
-//!   and Ana's darts went through a Training Bot and left a hole and the
-//!   map's impact sound on the wall behind it, though the server hit it.
-//!   ow1-preservation's bots, with `0x11040001`, showed the impact sparks
-//!   on their body (its run 343) without any combat event (25000).
-//!   Assumptions: which bit the client's shot test asks for is not known
-//!   (no client code read; 0x1 is the one those bots and ours now share),
-//!   and that the retail server set 0x10 at a death (the Python reference
-//!   sent the team bit alone and never changed it).
+//!   of its death. Checked in the game: with its team bit alone, and then
+//!   with the team bit and 0x41, a Training Bot was not hit by the client's
+//!   own shots (Soldier: 76's bullets and Ana's darts left a hole and the
+//!   map's impact sound on the wall behind it, Helix Rockets flew through
+//!   it), though the server hit it. Assumptions: that the candidate's flags
+//!   are component 26's bits (no client code read; that the client's
+//!   `0xB8BDF0` ORs more bits into them is known, from what is not), and
+//!   that the retail server set 0x10 at a death (the Python reference sent
+//!   the team bit alone and never changed it). Not explained:
+//!   ow1-preservation's bots, with `0x11040001` and no bit 48, showed
+//!   impact sparks on their body (its run 343).
 //! - Component 29 (MPlayerComponentData): the player's 16-byte id, BattleTag
 //!   (the client names the entity by it), level, and on a competitive card
 //!   the rank (m_rankedLevel, m_heroicRank, m_rankedLevelTier), which the team
@@ -88,8 +101,8 @@ const GAME_MODE_DEFINITION: u64 = 0x0400_0000_0000_16b2;
 const PLAYER_FILTER: u64 = 0x0004_0001;
 const TEAM_BIT: u64 = 0x0080_0000;
 /// The kind bits of a living body (see the module notes): a hero (0x1) that
-/// can be hit (0x40).
-pub const BODY_KINDS: u64 = 0x41;
+/// can be hit (0x40), and that the weapons' ray tests take (bit 48).
+pub const BODY_KINDS: u64 = 0x0001_0000_0000_0041;
 /// The filter bit of a dead body (see the module notes).
 pub const DEAD: u64 = 0x10;
 const MODE_UI: u32 = 0x0cb6;
@@ -577,24 +590,25 @@ mod tests {
         frame(1234, 1234, &[], &[], &[&update, &other]).unwrap();
     }
 
-    /// A bot's body is a hero that can be hit, on its team (module notes):
-    /// its create's filter bits; a bot created dead also says so.
+    /// A bot's body is a hero that can be hit, that the weapons' ray tests
+    /// take (bit 48), on its team (module notes): its create's filter bits;
+    /// a bot created dead also says so.
     #[test]
     fn a_bot_body_is_a_hero_that_can_be_hit_until_it_dies() {
         let mut bots = fixture_bots();
         let filter = |bot: &Bot| created(&bot_create(bot, None).unwrap()).components[1].clone();
         assert_eq!(
             filter(&bots[0]),
-            fields(26, vec![Some(ComponentValue::Id(0x0100_0041))])
+            fields(26, vec![Some(ComponentValue::Id(0x0001_0000_0100_0041))])
         );
         assert_eq!(
             filter(&bots[1]),
-            fields(26, vec![Some(ComponentValue::Id(0x0080_0041))])
+            fields(26, vec![Some(ComponentValue::Id(0x0001_0000_0080_0041))])
         );
         bots[0].died(10);
         assert_eq!(
             filter(&bots[0]),
-            fields(26, vec![Some(ComponentValue::Id(0x0100_0051))])
+            fields(26, vec![Some(ComponentValue::Id(0x0001_0000_0100_0051))])
         );
     }
 
