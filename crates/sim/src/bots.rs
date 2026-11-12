@@ -28,10 +28,18 @@
 //! stopped 0.05-0.45 m short of the 1.74 points. The far runners (hero 016E,
 //! body 14ED) use 1.74's values: 6 m/s, up at 66 m/s^2, down at 39 m/s^2;
 //! OW2 put ordinary Training Bots on these routes (4.5 m/s) and changed three
-//! routes. Bot n's entity is `0xC0001000 + n` (type 2, like the game mode
-//! entity); its respawns take the next free ids up from there. The stand-in
-//! controller of the bot in slot n (`scene.rs` `bot_controller_create`) is
-//! `0xC0000800 + n`, below them, so the two never meet.
+//! routes. Bot n's entity is `0x80008800 + n`; its respawns take the next
+//! free ids up from there. The stand-in controller of the bot in slot n
+//! (`scene.rs` `bot_controller_create`) is `0x80008000 + n`, below them, so
+//! the two never meet. Both are in id class 0 (`0x8…`), which the client
+//! uses for entities the server creates (the map's placeables are
+//! `0x80000000 | index`, at most `0x1250` in 1.74's maps).
+//! ow1-preservation's Training Bots (`0x80000306`) took the client's own
+//! bullets on their body (its run 343); ours, in class 2 (`0xC…`, the map's
+//! own entities, such as the bots' spawn markers `0xC0000004…`), took the
+//! client's Helix Rockets but not its hitscan shots (checked in the game,
+//! 2026-11-12). Assumption: the client's hitscan ray leaves out class-2
+//! entities.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -63,8 +71,8 @@ use crate::{
     hitboxes::HitShape,
 };
 
-pub const BOT_ENTITY: u32 = 0xc000_1000;
-pub const BOT_CONTROLLER_ENTITY: u32 = 0xc000_0800;
+pub const BOT_ENTITY: u32 = 0x8000_8800;
+pub const BOT_CONTROLLER_ENTITY: u32 = 0x8000_8000;
 pub const DEAD_MOVEMENT_FLAG: u32 = 0x2000;
 pub const BOT_RECORD_DELAY: u32 = 8;
 
