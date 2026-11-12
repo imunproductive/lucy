@@ -4951,6 +4951,7 @@ fn practice_bots_run_their_scripts_for_a_client() {
         watcher.pump(&schemas);
     }
     assert_eq!(hits_from(&watcher, fired, 25005), None);
+    eprintln!("DBG fired {fired} shot_frame {shot_frame} tick {} hits {:?}", watcher.tick, (fired..watcher.datagrams.len()).filter(|&i| watcher.datagrams[i].0.iter().any(|m| m.id == 25001)).map(|i| (i, watcher.ticks[i])).collect::<Vec<_>>());
 
     // The second shot kills the bot. The client leaves the datagram with
     // its hit notice out of its ACKs; the next ACK shows it lost, and the
