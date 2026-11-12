@@ -242,6 +242,24 @@ fn ana_and_widowmaker_walk_at_35_percent_once_fully_zoomed() {
             if frame == 1150 {
                 assert_eq!(body.mover.pose().position, [0.0, 1.0, released_at]);
             }
+            // Fully zoomed, the owner frame carries `#23184`'s own value
+            // (none: kept only for its binding to the stack) for the client
+            // to add the stack's 0.65 itself, not the stacked 0.65.
+            if frame == 1100 {
+                let owner = body
+                    .runtime
+                    .encoder()
+                    .project(
+                        body.runtime.snapshot().unwrap(),
+                        orpheus_script::snapshot::View::Owner,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    owner.entity_variable(23184),
+                    Some(&orpheus_script::wire::Value::Null),
+                    "{hero:x}"
+                );
+            }
         }
         let from = |frame: u32| &speeds[(frame - 1030) as usize..];
         assert_eq!(

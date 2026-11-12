@@ -341,28 +341,33 @@ impl ProjectileFlight {
         let blast = self.ballistics.blast.as_ref().filter(|_| self.exploded)?;
         let distance = own.surface_distance(self.position);
         let damage = blast.hit.amount.max(0.0) * blast.multiplier(distance) * blast.self_damage;
-        let knockback = blast
-            .knockback
-            .as_ref()
-            .and_then(|knockback| knockback.at(distance))
-            .map(|(away, upward)| {
-                let centre = [own.feet[0], own.feet[1] + own.height / 2.0, own.feet[2]];
-                let line: [f64; 3] = std::array::from_fn(|axis| centre[axis] - self.position[axis]);
-                let [x, y, z] = [line, self.direction]
-                    .into_iter()
-                    .find_map(|[x, y, z]| {
-                        let length = x.hypot(y).hypot(z);
-                        (length > 0.0).then(|| [x / length, y / length, z / length])
-                    })
-                    .unwrap_or_default();
-                [away * x, away * y + upward, away * z]
-            });
+        let knockback = self.blast_push(own);
         (damage > 0.0 || knockback.is_some()).then_some(OwnBlast {
             distance,
             damage,
             loadout: blast.hit.loadout,
             knockback,
         })
+    }
+
+    /// Its explosion's push on a body at `pose`, once it exploded, as on its
+    /// shooter's ([`Self::own_blast`]): `m_E33EFEE1` along the line from the
+    /// explosion to the body's centre, plus `m_10399AE7` upward, each by
+    /// the knockback rings at the body's distance.
+    pub fn blast_push(&self, pose: &TargetPose) -> Option<Vec3> {
+        let blast = self.ballistics.blast.as_ref().filter(|_| self.exploded)?;
+        let distance = pose.surface_distance(self.position);
+        let (away, upward) = blast.knockback.as_ref()?.at(distance)?;
+        let centre = [pose.feet[0], pose.feet[1] + pose.height / 2.0, pose.feet[2]];
+        let line: [f64; 3] = std::array::from_fn(|axis| centre[axis] - self.position[axis]);
+        let [x, y, z] = [line, self.direction]
+            .into_iter()
+            .find_map(|[x, y, z]| {
+                let length = x.hypot(y).hypot(z);
+                (length > 0.0).then(|| [x / length, y / length, z / length])
+            })
+            .unwrap_or_default();
+        Some([away * x, away * y + upward, away * z])
     }
 }
 

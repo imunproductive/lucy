@@ -390,6 +390,7 @@ impl BotScripts {
         else {
             return Ok(());
         };
+        script.body.set_movement_sample(bot.movement_sample());
         if !script
             .body
             .advance_live(at, Some(bot.position))
@@ -670,7 +671,10 @@ impl BotScripts {
             let Some(script) = self.slots[slot].as_mut() else {
                 continue;
             };
-            if !bot.dead && script.body.frame() < tick && script.body.due_by(tick) {
+            // A changed movement sample runs the frame too: its sampler
+            // follows the body each frame (a knocked bot's landing).
+            let resampled = script.body.set_movement_sample(bot.movement_sample());
+            if !bot.dead && script.body.frame() < tick && (resampled || script.body.due_by(tick)) {
                 let result = script
                     .body
                     .advance_live(tick, Some(bot.position))

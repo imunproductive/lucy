@@ -2975,7 +2975,10 @@ fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_
 /// with the send frame after (T + 9) and arrives before the impact, so the
 /// release still goes at T + 12 with its explosion. Each release carries
 /// the server's impact point, on the bot, where an explosion the client's
-/// rocket hasn't had yet plays (before, out of sight at y −1000).
+/// rocket hasn't had yet plays (before, out of sight at y −1000). Each shot
+/// has a bot of its own, 8 m out, the second 30° round from the first
+/// (4 m from it, beyond the blast's 3 m): the first shot's explosion throws
+/// its bot back.
 ///
 /// With `ORPHEUS_SEND_EVERY=1` (a datagram every tick, as retail's 63 Hz)
 /// every tick is a send frame: the confirmation goes on the tick that
@@ -2991,39 +2994,44 @@ fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
     use orpheus_wire::commands::SECONDARY;
     const HELIX: u32 = 0x072c;
     const AHEAD: f64 = 8.0;
+    const APART: f64 = 30.0;
 
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     // (ticks between datagrams, confirmation, its resend, release) after
     // the shot's tick T; the derivations are in the notes above.
     for (every, confirm_at, resend_at, release_at) in [(SEND_EVERY, 3, 9, 12), (1, 1, 3, 10)] {
-        let mut aim = None;
+        let mut aims = Vec::new();
         let (mut server, schemas, [mut soldier], _) = practice_world_sending_every(
             every,
             [("soldier#1111", 0, "Soldier: 76")],
             &assets,
             |scene| {
-                // A hostile training bot that neither fires nor walks, ahead of
-                // his spawn along its facing.
-                let ([x, y, z], yaw) = scene.map().spawn_point(0, 0).unwrap();
-                let (sin, cos) = yaw.to_radians().sin_cos();
-                let bot = scene
-                    .bots_mut()
-                    .iter_mut()
-                    .find(|bot| {
-                        bot.spawn.team == 1 && !bot.spawn.firing && bot.spawn.route.is_empty()
-                    })
-                    .unwrap();
-                bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
-                aim = Some((
-                    bot.entity,
-                    bot.position,
-                    (yaw * 65536.0 / 360.0).round() as i32 as i16,
-                ));
+                // Two hostile training bots that neither fire nor walk, ahead
+                // of his spawn: along its facing and 30° round from it, the
+                // second turned 30° from the first's facing too, so each
+                // shot meets its bot alike.
+                let ([x, y, z], facing) = scene.map().spawn_point(0, 0).unwrap();
+                let mut bots = scene.bots_mut().iter_mut().filter(|bot| {
+                    bot.spawn.team == 1 && !bot.spawn.firing && bot.spawn.route.is_empty()
+                });
+                let mut turned = None;
+                for (turn, yaw) in [(0.0, facing), (APART, facing + APART)] {
+                    let bot = bots.next().unwrap();
+                    let first = *turned.get_or_insert(bot.yaw);
+                    bot.yaw =
+                        (first + turn * 65536.0 / 360.0 + 32768.0).rem_euclid(65536.0) - 32768.0;
+                    let (sin, cos) = yaw.to_radians().sin_cos();
+                    bot.position = [x + AHEAD * sin, y, z + AHEAD * cos];
+                    aims.push((
+                        bot.entity,
+                        bot.position,
+                        (yaw * 65536.0 / 360.0).round() as i32 as i16,
+                    ));
+                }
             },
         );
-        let (bot, at, yaw) = aim.unwrap();
         let leased = |entity: u32| (0xa010_0000..0xc000_0000).contains(&entity);
-        let hit_bot = |fields: &Fields| {
+        let hit = |bot: u32, fields: &Fields| {
             let Value::Struct(impact) = &fields[&0x78] else {
                 return false;
             };
@@ -3034,7 +3042,10 @@ fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
         // The client's command frames run `lead` ahead of the last packet frame.
         // The second shot comes after Helix's 6 s cooldown, and its client
         // misses the datagram with the confirmation.
-        for (lead, lose_confirmation) in [(8, false), (16, true)] {
+        for ((lead, lose_confirmation), (bot, at, yaw)) in
+            [(8, false), (16, true)].into_iter().zip(aims)
+        {
+            let hit_bot = |fields: &Fields| hit(bot, fields);
             let fire = soldier.tick + lead + 60;
             let from = soldier.datagrams.len();
             let mut sent = None;

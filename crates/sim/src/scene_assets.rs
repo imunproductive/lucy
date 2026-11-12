@@ -828,13 +828,15 @@ impl PreparedScene {
     }
 
     /// One more bot gets its script (match.py `update`: one per update,
-    /// within the loading window), then the bots walk and the live ones are
-    /// posed ([`crate::bot_animation`]), by what their scripts asked as of
-    /// their last run.
+    /// within the loading window), then the knocked bots fly
+    /// ([`Bot::fly`]), the others walk, and the live ones are posed
+    /// ([`crate::bot_animation`]), by what their scripts asked as of their
+    /// last run.
     pub fn step_bots(&mut self, tick: u32) {
         self.bot_scripts.prepare_next(&self.bots, tick);
         let floor = self.ground.triangles();
         for (slot, bot) in self.bots.iter_mut().enumerate() {
+            bot.fly(tick, floor);
             bot.step(
                 tick,
                 ground_height(floor, mover_category(&self.map, bot.spawn.team)),
@@ -849,6 +851,29 @@ impl PreparedScene {
                 bot.animate(tick, arms_forward, anim);
             }
         }
+    }
+
+    /// A knockback on a live bot (an explosion's push,
+    /// [`crate::projectile_flight::ProjectileFlight::blast_push`]): it flies
+    /// on its body's mover from its next frame on (`tick` is this one). The
+    /// training bots' bodies have a character mover as the heroes' have
+    /// (`STUCharacterMoverComponent`: gravity, air control, terminal speed),
+    /// and `0E8C`'s knockback anim waits for the ground (#545), so the
+    /// knockback moves them. Assumption: nothing in the data spares them.
+    /// Nothing happens without player collision.
+    pub(crate) fn knock_bot(&mut self, entity: u32, push: [f64; 3], tick: u32) {
+        let Some(contacts) = &self.contacts else {
+            return;
+        };
+        let Some(bot) = self.bots.iter_mut().find(|bot| bot.entity == entity) else {
+            return;
+        };
+        let settings = *self.movers.for_body(Some(bot.spawn.body));
+        let category = mover_category(&self.map, bot.spawn.team);
+        let (position, yaw) = (bot.position, bot.movement(tick).yaw);
+        bot.knock(push, tick, || {
+            Mover::new(settings, Arc::clone(contacts), position, yaw, category).ok()
+        });
     }
 
     pub fn bot_scripts(&self) -> &BotScripts {

@@ -256,6 +256,143 @@ fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
     assert!(fresh.walking());
 }
 
+/// An endless floor at y = 0 for bodies of categories 0x08 and 0x10, as the
+/// probe's triangles and the engine's mesh.
+fn flat_floor() -> (TriangleIndex, Arc<ContactWorld>) {
+    use orpheus_physics::{
+        collision::{
+            cache::{Mesh, Triangle},
+            index::SceneTriangle,
+        },
+        contact::{
+            mesh::ContactMesh,
+            world::{StaticGeometry, StaticShape},
+        },
+    };
+    const MASK: u16 = 0x18;
+    let (low, high) = (-5000.0, 5000.0);
+    let corners = [
+        [low, 0.0, low],
+        [low, 0.0, high],
+        [high, 0.0, high],
+        [high, 0.0, low],
+    ];
+    let faces = [[0, 1, 2], [0, 2, 3]];
+    let rays = TriangleIndex::new(faces.map(|face| SceneTriangle {
+        vertices: face.map(|corner| corners[corner]),
+        mask: MASK,
+        surface: 0,
+    }))
+    .unwrap();
+    let mesh = Mesh {
+        vertices: corners
+            .map(|corner| corner.map(|axis| axis as f32))
+            .to_vec(),
+        triangles: vec![
+            Triangle {
+                corners: [0, 1, 2],
+                wings: [-1, -1, 3],
+                mask: MASK,
+                surface: 0,
+            },
+            Triangle {
+                corners: [0, 2, 3],
+                wings: [1, -1, -1],
+                mask: MASK,
+                surface: 0,
+            },
+        ],
+    };
+    let mesh = ContactMesh::new(mesh, [1.0; 3], u16::MAX).unwrap();
+    let shape = StaticShape::new(StaticGeometry::Mesh(Arc::new(mesh)), None).unwrap();
+    (rays, Arc::new(ContactWorld::new(vec![shape]).unwrap()))
+}
+
+/// A knockback (a Helix Rocket's within its 0.5 m ring: 4 m/s away, 6 m/s
+/// up) throws a walking Training Bot on its body's mover: in the air and
+/// rising from its next frame, it leaves its patrol, its records carry the
+/// flight, it comes down after 2 × 6 / (9.81 × 1.75) = 0.7 s (43 ticks;
+/// ground friction stops it 3 ticks later), its
+/// sample says grounded from then on, and once it stands still it walks on
+/// to the point it was walking to, after a walk's pause.
+#[test]
+fn a_knocked_bot_flies_on_its_mover_and_walks_on_once_it_lands() {
+    let (rays, world) = flat_floor();
+    let settings = MoverSettings {
+        run_forward: 4.5,
+        run_backward: 4.5,
+        run_strafe: 4.5,
+        accel_ground: 1.0,
+        ..MoverSettings::default()
+    };
+    let goal = [0.0, 0.0, 10.0];
+    let mut bot = walker(goal);
+    bot.attach_collision(&settings, Arc::clone(&world), 0x10, |_, _, _, _| Some(0.0));
+    let run = |bot: &mut Bot, tick: u32| {
+        bot.fly(tick, &rays);
+        bot.step(tick, |_, _, _, _| Some(0.0));
+    };
+    for tick in 1..=250 {
+        run(&mut bot, tick);
+    }
+    assert!(bot.walking());
+    let knock = 250;
+    let (from, yaw) = (bot.position, bot.movement(knock).yaw);
+    bot.knock([0.0, 6.0, 4.0], knock, || {
+        Mover::new(settings, Arc::clone(&world), from, yaw, 0x10).ok()
+    });
+    assert!(!bot.walking());
+    assert_eq!(bot.movement_sample(), BOT_MOVEMENT_SAMPLE);
+    let mut top: f64 = 0.0;
+    let mut down = None;
+    let mut still = None;
+    for tick in knock + 1..knock + 300 {
+        run(&mut bot, tick);
+        let sample = bot.movement_sample();
+        if tick == knock + 1 {
+            // In the air (bit 0), rising (bit 2), moving (bit 4).
+            assert_eq!(sample & 0b10101, 0b10101, "{sample:#b}");
+        }
+        top = top.max(bot.position[1]);
+        if down.is_none() && sample & 1 == 0 {
+            assert_eq!(sample & 2, 2);
+            down = Some(tick);
+        }
+        if down.is_none() {
+            assert!(bot.record_due(tick, SEND_EVERY));
+            assert_ne!(bot.movement(tick).flags, 0);
+        }
+        if bot.flight.is_none() {
+            still = Some(tick);
+            break;
+        }
+    }
+    let (down, still) = (down.unwrap(), still.unwrap());
+    // At most 6² / 2g up, less up to a frame's rise for whole frames.
+    let apex = 36.0 / (2.0 * 9.81 * 1.75);
+    assert!(top <= apex && top > apex - 6.0 * 0.016, "{top} m up");
+    assert_eq!(
+        (down - knock, still - knock),
+        (43, 46),
+        "came down, stood still"
+    );
+    let landed = bot.position;
+    assert_eq!(landed[1], 0.0);
+    assert!(landed[2] - from[2] > 2.0, "from {from:?} to {landed:?}");
+    assert_eq!(bot.movement(still).flags, 0);
+    assert_eq!(bot.movement_sample(), BOT_MOVEMENT_SAMPLE);
+    // A walk's pause (1.2 s, 75 ticks, the landing tick the first) on the
+    // ground, then on to the goal.
+    let pause = still + 74;
+    for tick in still + 1..pause {
+        run(&mut bot, tick);
+        assert!(!bot.walking(), "{tick}");
+    }
+    run(&mut bot, pause);
+    assert!(bot.walking());
+    assert_eq!(bot.target, Some(goal));
+}
+
 #[test]
 #[ignore = "requires the derived 104319 AI spawner and mover tables"]
 fn fifteen_practice_bots_match_python_roster_and_patrol_frames() {
