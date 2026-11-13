@@ -153,7 +153,7 @@ pub struct SceneAssets {
     objectives: ObjectiveData,
     /// Each ray profile's map mask (`game_ray_profiles_174.json`).
     ray_profiles: Arc<RayProfiles>,
-    /// Each map's spawn rooms, damage areas and spawn door barriers
+    /// Each map's spawn rooms, damage areas and server placeables
     /// (`game_map_areas_174.json`).
     map_areas: MapAreaData,
 }
@@ -216,10 +216,10 @@ pub struct PreparedScene {
     lethal_areas: Arc<[DamageArea]>,
     /// The map's kill volumes (`map_areas` module notes).
     kill_volumes: Arc<[CaptureBox]>,
-    /// The map's spawn door barriers in this mode: server-owned placeables
+    /// The map's server placeables in this mode: server-owned placeables
     /// the loading screen doesn't wait for, created after the player and
     /// the mode.
-    door_barriers: Vec<u32>,
+    server_placeables: Vec<u32>,
     /// Where a falling body dies on a map with neither damage areas nor
     /// kill volumes (`map_areas::kill_height`).
     kill_height: Option<f64>,
@@ -454,14 +454,9 @@ impl SceneAssets {
         let spawn_rooms = self.map_areas.spawn_rooms(&map);
         let lethal_areas = self.map_areas.lethal_areas(&map, identifiers);
         let kill_volumes = self.map_areas.kill_volumes(&map);
-        // The spawn door barriers are server-owned placeables: the client
-        // shows them only once the server creates them.
-        let door_barriers: Vec<u32> = self
-            .map_areas
-            .door_barriers(&map, identifiers)
-            .into_iter()
-            .filter(|barrier| !map.placeables.contains(barrier))
-            .collect();
+        // The client shows a server-owned placeable only once the server
+        // creates it.
+        let server_placeables = self.map_areas.server_placeables(&map, identifiers);
         let lowest_spawn = map
             .spawns
             .iter()
@@ -525,7 +520,7 @@ impl SceneAssets {
             kill_volumes,
             kill_height,
             safety_net,
-            door_barriers,
+            server_placeables,
         };
         let mut factories = self
             .owner_bodies
@@ -1145,7 +1140,7 @@ impl PreparedScene {
         let at = self.map.placeables.len() + 2;
         updates.splice(
             at..at,
-            self.door_barriers.iter().map(|&index| EntityUpdate {
+            self.server_placeables.iter().map(|&index| EntityUpdate {
                 entity: 0x8000_0000 | index,
                 operation: Some(Operation::Placeable(index)),
                 ..EntityUpdate::default()

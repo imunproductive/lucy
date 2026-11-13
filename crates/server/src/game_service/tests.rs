@@ -1041,8 +1041,9 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     };
     // The rest of the world follows, with no script whose create the
     // client hasn't acknowledged: 4 placeables, the player, the mode, the
-    // 6 spawn door barriers, 15 bots and their 15 stand-in controllers.
-    while creates.len() < 42 {
+    // map's 26 server placeables (`game_map_areas` `server_placeables`),
+    // 15 bots and their 15 stand-in controllers: 4 + 2 + 26 + 15 + 15 = 62.
+    while creates.len() < 62 {
         let frame = client.receive();
         assert!(client.window.accept(frame.seq));
         let records = world_records(&schemas, &frame);
@@ -1059,7 +1060,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         }
         assert!(client.now() < deadline, "waiting for the rest of the world");
     }
-    assert_eq!(creates.len(), 42);
+    assert_eq!(creates.len(), 62);
 
     // Even after the retransmission, a script stays behind its create ACK.
     let withheld = client.receive();

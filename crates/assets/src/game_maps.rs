@@ -59,9 +59,9 @@ const IDENTIFIER: u16 = 0x01C;
 const TARGET_TAG: u16 = 0x06C;
 
 /// Component bit 58.
-const SPAWN: u32 = 0x737C_5C41;
+pub(crate) const SPAWN: u32 = 0x737C_5C41;
 /// Component bit 94.
-const REQUIRED: u32 = 0xCA1F_B0B8;
+pub(crate) const REQUIRED: u32 = 0xCA1F_B0B8;
 /// Team of each spawn room tag.
 const TEAM_TAGS: [(u64, i64); 6] = [
     (0x310, 0),
@@ -257,10 +257,10 @@ pub(crate) fn mode_identifiers(install: &Install) -> Vec<(u64, Vec<u64>)> {
 /// Entity definition (by its lower 32 bits) -> the component STU hashes of
 /// its own m_componentMap; empty when the install can't decode it.
 #[derive(Default)]
-struct Components(HashMap<u64, BTreeSet<u32>>);
+pub(crate) struct Components(HashMap<u64, BTreeSet<u32>>);
 
 impl Components {
-    fn load(&mut self, install: &Install, definitions: impl Iterator<Item = u64>) {
+    pub(crate) fn load(&mut self, install: &Install, definitions: impl Iterator<Item = u64>) {
         let missing: BTreeSet<u64> = definitions
             .filter(|guid| !self.0.contains_key(&(guid & 0xFFFF_FFFF)))
             .collect();
@@ -278,7 +278,7 @@ impl Components {
         }
     }
 
-    fn of(&self, definition: u64) -> Option<&BTreeSet<u32>> {
+    pub(crate) fn of(&self, definition: u64) -> Option<&BTreeSet<u32>> {
         self.0.get(&(definition & 0xFFFF_FFFF))
     }
 }
@@ -361,7 +361,6 @@ fn map_data(
     let mut placeables = Vec::new();
     let mut identifiers = Map::new();
     let mut identifier_of: BTreeMap<usize, u64> = BTreeMap::new();
-    let mut mirrored = Vec::new();
     let mut spawns: Vec<Map<String, Value>> = Vec::new();
     let mut objectives: Vec<Map<String, Value>> = Vec::new();
     let mut defense_tags: BTreeMap<u64, Vec<i64>> = BTreeMap::new();
@@ -441,9 +440,6 @@ fn map_data(
             objectives.push(objective);
         }
         if !found.contains(&SPAWN) && !found.contains(&REQUIRED) {
-            if entity.client_id == 0 {
-                mirrored.push(flat);
-            }
             continue;
         }
         placeables.push(flat);
@@ -567,7 +563,6 @@ fn map_data(
     out.insert("first_entity".into(), json!(base));
     out.insert("spawns".into(), json!(spawns));
     out.insert("objectives".into(), json!(objectives));
-    out.insert("mirrored".into(), json!(mirrored));
     Ok(out)
 }
 

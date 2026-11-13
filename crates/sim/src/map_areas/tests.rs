@@ -78,11 +78,11 @@ fn spawn_rooms_belong_to_their_team_or_hold_its_spawn_point() {
 
 /// The derived file: a map's rooms, damage areas, door barriers and kill
 /// volumes, and a map whose rooms' derivation failed has no rooms. Damage
-/// areas of 100 and more kill, an area of 0 doesn't; an area or barrier with
+/// areas of 100 and more kill, an area of 0 doesn't; an area or server placeable with
 /// an identifier exists only in the modes that list it; kill volumes exist
 /// in every mode.
 #[test]
-fn the_area_file_reads_rooms_damage_areas_barriers_kill_volumes_and_failures() {
+fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures() {
     let data = MapAreaData::read(
         br#"{"maps": {
             "0x0800000000000001": {"spawn_rooms": [{"placeable": 126, "team": 0,
@@ -94,8 +94,8 @@ fn the_area_file_reads_rooms_damage_areas_barriers_kill_volumes_and_failures() {
                      "boxes": [{"centre": [0, 0, 0], "half": [1, 1, 1], "rotation": [0, 0, 0, 1]}]},
                     {"placeable": 702, "identifier": "0x0D80000000002962", "damage": 9999.0,
                      "boxes": [{"centre": [0, -40, 0], "half": [1, 1, 1], "rotation": [0, 0, 0, 1]}]}],
-                "door_barriers": [{"placeable": 340},
-                    {"placeable": 341, "identifier": "0x0D80000000002962"}],
+                "server_placeables": [{"placeable": 340, "definition": "0x0400000000001307"},
+                    {"placeable": 341, "definition": "0x0400000000001307", "identifier": "0x0D80000000002962"}],
                 "kill_volumes": [{"centre": [10, -30, 0], "half": [20, 2, 5],
                     "rotation": [0, 0.7071068, 0, 0.7071068]}]},
             "0x0800000000000002": {"error": "a room's area is not a box"}
@@ -121,8 +121,8 @@ fn the_area_file_reads_rooms_damage_areas_barriers_kill_volumes_and_failures() {
         .map(|area| area.placeable)
         .collect();
     assert_eq!(placeables, [700, 702]);
-    assert_eq!(data.door_barriers(&map, &none), [340]);
-    assert_eq!(data.door_barriers(&map, &listed), [340, 341]);
+    assert_eq!(data.server_placeables(&map, &none), [340]);
+    assert_eq!(data.server_placeables(&map, &listed), [340, 341]);
     // Turned a quarter about y: its 20 m half length runs along z.
     let volumes = data.kill_volumes(&map);
     assert_eq!(volumes.len(), 1);

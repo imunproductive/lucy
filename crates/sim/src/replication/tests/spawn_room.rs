@@ -1,7 +1,8 @@
 //! The Practice Range's spawn room and its fall out of the map
 //! (`crate::map_areas`): invulnerable and healed inside, hero change only
 //! inside and where the hero stands, the client's spawn room flag, and the
-//! environment's kill; and Watchpoint: Gibraltar's kill volumes.
+//! environment's kill; Watchpoint: Gibraltar's kill volumes; and the server
+//! placeables of the Range, Rialto and Volskaya.
 
 use super::*;
 use crate::combat::{Combat, CombatPlayer, ENVIRONMENT_DAMAGE, Shooter, apply_player_hits};
@@ -368,24 +369,63 @@ fn a_pick_while_dead_takes_the_respawn() {
     assert_eq!(world.hero(), Some(tracer));
 }
 
-/// The spawn room's three doorways get their barriers: the six
-/// server-owned `00F6` placeables (two in each doorway: the frame model and
-/// the glowing effect) are created from the map after the player and the
-/// mode, before the bots.
+/// The map's server-owned placeables are created from the map after the
+/// loading list, the player and the mode, before the bots: on the Practice
+/// Range its 26 (the spawn room, the six barriers in the three doorways, the
+/// Training Partner console and pad, ...), none of them with an identifier.
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
-fn the_spawn_doorways_get_their_barriers() {
+fn the_server_placeables_follow_the_player_and_the_mode() {
     let scene = scene();
     let card = PlayerCard::default();
-    let creates: Vec<u32> = scene
-        .initial_world(&viewer(&card))
-        .unwrap()
+    let updates = scene.initial_world(&viewer(&card)).unwrap();
+    let creates: Vec<u32> = updates
         .iter()
         .filter(|update| matches!(update.operation, Some(Operation::Placeable(_))))
         .map(|update| update.entity & 0x7FFF_FFFF)
         .collect();
     assert_eq!(
         creates,
-        [0x88, 0x22e, 0x234, 0x289, 204, 340, 398, 400, 424, 548]
+        [
+            0x88, 0x22e, 0x234, 0x289, // the loading list
+            126, 129, 137, 150, 185, 188, 194, 199, 204, 243, 267, 271, 340, 358, 398, 400, 403,
+            415, 416, 424, 479, 480, 482, 548, 586, 590,
+        ]
     );
+    // The 4 loading placeables, the player and the mode come first.
+    assert_eq!(updates[6].entity, 0x8000_0000 | 126);
+}
+
+/// Each map and mode gets its own server placeables: Rialto's 224 in
+/// Escort, and in Assault Volskaya's 159 less the 8 whose identifier
+/// `2962` only modes `1D`, `1E`, `59` and `70` list (its four `00F6`
+/// barriers, 1100 among them, and four `0D73` frames).
+#[test]
+#[ignore = "requires a derived 104319 pack and the install (Rialto's and Volskaya's collision)"]
+fn rialto_and_volskaya_get_their_server_placeables() {
+    const RIALTO: u64 = 0x0800_0000_0000_0871;
+    const VOLSKAYA: u64 = 0x0800_0000_0000_01DB;
+    let runtime = orpheus_testkit::runtime_dir();
+    let assets = SceneAssets::load(&runtime)
+        .unwrap()
+        .with_collision_build(install_collision_build(orpheus_testkit::game_dir()));
+    let catalog = orpheus_content::maps::MapCatalog::load(runtime.join("data")).unwrap();
+    let card = PlayerCard::default();
+    for (map, mode, name, server) in [
+        (RIALTO, crate::match_flow::ESCORT, "Escort", 224),
+        (VOLSKAYA, crate::match_flow::ASSAULT, "Assault", 151),
+    ] {
+        let map = catalog.game_map(map, mode, name, false, &[6, 6]).unwrap();
+        let loading = map.placeables.len();
+        let scene = assets.prepare(map).unwrap();
+        let creates: Vec<u32> = scene
+            .initial_world(&viewer(&card))
+            .unwrap()
+            .iter()
+            .filter(|update| matches!(update.operation, Some(Operation::Placeable(_))))
+            .map(|update| update.entity & 0x7FFF_FFFF)
+            .collect();
+        assert_eq!(creates.len(), loading + server, "{name}");
+        assert!(!creates.contains(&1100), "{name}");
+    }
 }
