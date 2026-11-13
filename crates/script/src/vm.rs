@@ -309,6 +309,12 @@ pub trait World {
         None
     }
 
+    /// Whether `controller` may play `hero` (`STU_9AE5FC4C`); None: this
+    /// world can't tell.
+    fn hero_available(&self, _site: Site, _controller: u32, _hero: u64) -> Option<bool> {
+        None
+    }
+
     fn has_target_tag(&self, _site: Site, _entity: u32, _tag: u64) -> Option<bool> {
         None
     }

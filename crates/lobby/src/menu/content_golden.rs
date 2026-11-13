@@ -268,6 +268,15 @@ struct Content {
 }
 
 impl Content {
+    /// 20802 as Python sent it: without the Kill Feed Display default
+    /// (`player::settings`), block +0x120 the schema's empty one. The golden
+    /// hashes are Python's; the rest of the message must still match them.
+    fn settings_as_python_sent(&self, mut fields: Fields) -> Fields {
+        let mut empty = self.schemas.empty(LOBBY, 20802).unwrap();
+        fields.insert(0x120, empty.remove(&0x120).unwrap());
+        fields
+    }
+
     /// Every part the Python test builds (`build_all`); `login` and `live`
     /// in the order the session sends them.
     fn build_all(&self, profile: &Profile) -> Map<String, Json> {
@@ -308,7 +317,7 @@ impl Content {
             leaderboard_places: &places,
             party: std::slice::from_ref(&party),
         };
-        let login = prepared
+        let mut login = prepared
             .available_messages(
                 &self.schemas,
                 &self.templates,
@@ -318,6 +327,11 @@ impl Content {
                 content,
             )
             .unwrap();
+        for (_, id, fields) in &mut login {
+            if *id == 20802 {
+                *fields = self.settings_as_python_sent(fields.clone());
+            }
+        }
         let live = prepared
             .live_messages(&self.templates, collection, &self.ranked, content)
             .unwrap();
@@ -372,7 +386,9 @@ impl Content {
             ("party".into(), single(party.2.clone())),
             (
                 "settings".into(),
-                single(player::settings(&self.schemas, profile).unwrap()),
+                single(
+                    self.settings_as_python_sent(player::settings(&self.schemas, profile).unwrap()),
+                ),
             ),
             (
                 "summary".into(),

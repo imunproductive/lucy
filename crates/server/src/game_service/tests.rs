@@ -5422,6 +5422,16 @@ fn a_firing_practice_bot_shoots_the_player() {
             })
             .is_some()
     );
+    // The first rocket takes 8 of his 200: the Training Bot's AI damage,
+    // one direct hit, no splash and no critical (sim
+    // `a_firing_bots_rocket_hits_the_player_in_front_of_it`).
+    let first_hurt = hurt(&watcher).unwrap();
+    let health = watcher.datagrams[first_hurt]
+        .1
+        .iter()
+        .filter(|record| record.entity == body)
+        .find_map(|record| record.base_health.filter(|health| *health < 200.0));
+    assert_eq!(health, Some(192.0));
     // projectiles.py `_show_others` for the bot: the client gets a rocket
     // entity of the bot's projectile definition (1476), the bot's shot record
     // naming it once its create arrived (server.py `retain_bot_volley`

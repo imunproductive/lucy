@@ -24,17 +24,19 @@
 //! same way. From a player's first multikill on, his frames also carry the
 //! multikill graph `0215` ([`crate::announcer`]) under 0C90 st116/st117.
 
-use std::{collections::BTreeMap, io};
+use std::{collections::BTreeMap, io, sync::Arc};
 
 use crate::announcer::MultikillPulse;
 use orpheus_content::maps::PRACTICE_RANGE_MODE;
 use orpheus_core::bits::BitWriter;
 use orpheus_script::{
+    controller::{ControllerScript, ControllerWorld, PVP_CONTROLLER},
     graph::{Graph, GraphStore},
+    vm::{InitFault, Unknowns},
     wire::{Instance, Layout, Value, Variables, WireError, owner_full, remote_full, subscript},
 };
 
-const PVP: u32 = 0x0c90;
+const PVP: u32 = PVP_CONTROLLER;
 /// 0C90's state that runs hero select (288A).
 const START_HERO_SELECT: u16 = 119;
 /// The multikill graph (`crate::announcer`), 0C90 st116 → st117.
@@ -92,6 +94,10 @@ pub struct Controller {
     start_entry: StateSlot,
     assembling: usize,
     practice: bool,
+    mode: u64,
+    /// How the controller's script treats content the VM doesn't know
+    /// (the players' setting).
+    unknowns: Unknowns,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -137,13 +143,38 @@ impl Controller {
             start_entry: owner_slot(host, 1)?,
             assembling: presence_bit(screen, ASSEMBLING)?,
             practice: mode_guid == PRACTICE_RANGE_MODE,
+            mode: mode_guid,
+            unknowns: Unknowns::for_build(),
         })
+    }
+
+    /// The players' setting for content the VM doesn't know.
+    pub fn with_unknowns(self, unknowns: Unknowns) -> Self {
+        Self { unknowns, ..self }
     }
 
     /// Whether this is the Practice Range: no match flow, the skin selector
     /// whenever hero select is open, and no assemble title.
     pub fn practice(&self) -> bool {
         self.practice
+    }
+
+    /// Start `0C90` on the player's controller entity `entity` at world
+    /// tick `tick` ([`orpheus_script::controller`]): the player of team
+    /// `team` who may play `heroes`. Its frames are still built here; the
+    /// script runs the multikills (`crate::announcer`).
+    pub fn start_script(
+        &self,
+        graphs: Arc<GraphStore>,
+        entity: u32,
+        team: u8,
+        heroes: Vec<u64>,
+        tick: u32,
+    ) -> Result<ControllerScript, InitFault> {
+        let mut world = ControllerWorld::new(graphs, self.mode, entity, self.unknowns);
+        world.team = Some(i64::from(team));
+        world.heroes = heroes;
+        ControllerScript::start(world, PVP, tick)
     }
 
     /// Owner full frame: root controller, 288A, 288B and team entry.
@@ -192,9 +223,11 @@ impl Controller {
                 pulser.bits(u64::from(pulse.count), 8)?;
                 instance.states.insert(slots.pulser, pulser);
                 instance.states.insert(slots.shared_vars, BitWriter::new());
-                instance
-                    .presence
-                    .insert(slots.stimulus, Value::Asset(pulse.stimulus));
+                if let Some(stimulus) = pulse.stimulus {
+                    instance
+                        .presence
+                        .insert(slots.stimulus, Value::Asset(stimulus));
+                }
                 Ok::<_, WireError>(instance)
             })
             .transpose()?;
@@ -381,7 +414,7 @@ mod tests {
             multikills: Some(MultikillPulse {
                 count: 1,
                 fresh: true,
-                stimulus: 0x0ee0_0000_0000_058a,
+                stimulus: Some(0x0ee0_0000_0000_058a),
             }),
             ..ControllerFrame::default()
         };

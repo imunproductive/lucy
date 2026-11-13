@@ -174,7 +174,7 @@ fn in_the_practice_range_a_second_training_bot_kill_pulses_the_double_kill() {
     let first = FIRST_TICK + 100;
     let ticks = [first, first + MULTIKILL_WINDOW_TICKS - 1];
     for (index, tick) in ticks.into_iter().enumerate() {
-        shooter.eliminated(tick);
+        shooter.eliminated(tick, crate::bots::BOT_ENTITY);
         shooter.send_multikills(&scene, tick).unwrap();
         let last = controller_frames(&shooter).last().cloned();
         assert_eq!(
@@ -203,7 +203,7 @@ fn assert_double_kill_sent(scene: &PreparedScene, shooter: &WorldDelivery, tick:
                 multikills: Some(MultikillPulse {
                     count: 1,
                     fresh: true,
-                    stimulus: 0x0ee0_0000_0000_058a,
+                    stimulus: Some(0x0ee0_0000_0000_058a),
                 }),
             },
         )

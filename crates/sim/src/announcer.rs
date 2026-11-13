@@ -33,53 +33,38 @@
 //!
 //! So the server sends no voice line: it pulses st21 with #10122 set, and the
 //! killer's own client says the line. The mode entity is `16B2` in every
-//! mode, the Practice Range too. Assumptions: an elimination is the final
-//! blow (the server credits no assists; `0215` rid57 counts any elimination,
-//! or with `STU_A3DEF368().id(12421)` only `0091.026`, likely the final
-//! blow); every enemy player's body or bot passes rid15. The Range's Training
+//! mode, the Practice Range too.
+//!
+//! The server runs `0215` itself under the player's `0C90` in the VM
+//! (`orpheus_script::controller`, enabler 2 of `docs/dev/graphs-plan.md`):
+//! each elimination goes to the controller as `0093.025`, and the
+//! controller frames carry st21's count and #10122 as the script has them
+//! ([`pulse`]). Assumptions: an elimination is the final blow (the server
+//! credits no assists; `0215` rid57 counts any elimination, or with
+//! `STU_A3DEF368().id(12421)`, which no mode sets, only `0091.026`, likely
+//! the final blow); every enemy player's body or bot passes rid15 (the
+//! controller world answers its filter true). The Range's Training
 //! Bots (`1403`, `14ED`) carry only the target tag `02ED`; `031D` is on two
 //! other Training Bots only (`14A9`, `14D2`, placed on the Tutorial map
 //! `0661`), and `06AD` is on no hero body (only on B.O.B., `25C3`), so the
 //! game gives heroes `06AD` itself; since retail counts Training Bot kills,
 //! the bots must get it too, or pass rid15 some other way. #1954 (set on
 //! `069C.025`) and #21925 (a mode entity variable) stay off. The wait ends
-//! before a kill of the same tick is counted. Not done: the hero's own
-//! reaction 1.6 s after a third kill (`00C9.078` on the controller, rid85: no
-//! hero's voice set has a line for it), the multikill career stats (rid28,
+//! before a kill of the same tick is counted. The frames carry `0215` from
+//! st21's first pulse on (retail: from the start; the frames are still
+//! built by hand, `crate::controller`). Not done: the hero's own reaction
+//! 1.6 s after a third kill (`00C9.078` on the controller, rid85: no hero's
+//! voice set has a line for it), the multikill career stats (rid28,
 //! `0345`/`0346`/`0348.062`), the "N PLAYER KILL STREAK!" text and the team
 //! kill (see `docs/notes/behavior.md`).
 
 use orpheus_core::tick::TICK_PERIOD;
+use orpheus_script::controller::Multikill;
 
 use crate::replication::kill_feed_fresh;
 
 /// `0215` st4's wait, #2036 = 2 s, in world ticks (2000 / 16 = 125).
 pub const MULTIKILL_WINDOW_TICKS: u32 = 2000 / TICK_PERIOD.as_millis() as u32;
-
-/// `0215` rid30 to rid35: the voice stimulus (`078`) the announcer says for
-/// each count of kills.
-const STIMULI: [(u32, u64); 5] = [
-    (2, 0x0ee0_0000_0000_058a),
-    (3, 0x0ee0_0000_0000_058b),
-    (4, 0x0ee0_0000_0000_058c),
-    (5, 0x0ee0_0000_0000_058d),
-    (6, 0x0ee0_0000_0000_058e),
-];
-
-/// One player's multikills: `0215`'s count #2023, its pulser st21 and
-/// #10122.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Multikills {
-    /// Kills in the running streak.
-    count: u32,
-    /// The world tick of its last kill.
-    last: Option<u32>,
-    /// st21's pulses so far (its 8-bit count) and the tick of the last.
-    pulses: u8,
-    pulsed: Option<u32>,
-    /// #10122: the stimulus of the last pulse.
-    stimulus: u64,
-}
 
 /// What `0215`'s pulser and #10122 send.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,39 +75,17 @@ pub struct MultikillPulse {
     /// policy, [`kill_feed_fresh`]). A client that reads st21 for the first
     /// time pulses once with the bit set, else takes the count as seen.
     pub fresh: bool,
-    /// #10122.
-    pub stimulus: u64,
+    /// #10122; none once a kill without a line cleared it (`0215` rid72).
+    pub stimulus: Option<u64>,
 }
 
-impl Multikills {
-    /// The player eliminated an enemy at world tick `tick`. Returns whether
-    /// st21 pulsed: the count is one the announcer has a line for.
-    pub fn eliminated(&mut self, tick: u32) -> bool {
-        if self
-            .last
-            .is_none_or(|last| tick.saturating_sub(last) >= MULTIKILL_WINDOW_TICKS)
-        {
-            self.count = 0;
-        }
-        self.count += 1;
-        self.last = Some(tick);
-        let Some(&(_, stimulus)) = STIMULI.iter().find(|(count, _)| *count == self.count) else {
-            return false;
-        };
-        self.pulses = self.pulses.wrapping_add(1);
-        self.pulsed = Some(tick);
-        self.stimulus = stimulus;
-        true
-    }
-
-    /// st21 and #10122 at world tick `tick`, once st21 has pulsed.
-    pub fn pulse(&self, tick: u32) -> Option<MultikillPulse> {
-        let pulsed = self.pulsed?;
-        Some(MultikillPulse {
-            count: self.pulses,
-            fresh: kill_feed_fresh(tick, pulsed),
-            stimulus: self.stimulus,
-        })
+/// st21 and #10122 of the controller's `0215` at world tick `tick`.
+pub fn pulse(multikill: Multikill, tick: u32) -> MultikillPulse {
+    let pulsed = multikill.pulsed_ms / TICK_PERIOD.as_millis() as u64;
+    MultikillPulse {
+        count: multikill.pulses,
+        fresh: kill_feed_fresh(tick, u32::try_from(pulsed).unwrap_or(u32::MAX)),
+        stimulus: multikill.stimulus,
     }
 }
 
@@ -130,52 +93,22 @@ impl Multikills {
 mod tests {
     use super::*;
 
-    /// Kills each less than 2 s (125 ticks) after the one before make a
-    /// streak; the second to the sixth pulse with their stimulus, the first
-    /// and the seventh don't; a kill 125 ticks after the last starts over.
+    /// The pulse stays fresh for 500 ms: 31 ticks of 16 ms, not 32.
     #[test]
-    fn kills_within_two_seconds_of_each_other_pulse_the_announcer() {
-        let mut kills = Multikills::default();
-        assert!(!kills.eliminated(1000));
-        assert_eq!(kills.pulse(1000), None);
-        let mut tick = 1000;
-        for (pulses, stimulus) in [
-            (1, 0x0ee0_0000_0000_058a),
-            (2, 0x0ee0_0000_0000_058b),
-            (3, 0x0ee0_0000_0000_058c),
-            (4, 0x0ee0_0000_0000_058d),
-            (5, 0x0ee0_0000_0000_058e),
-        ] {
-            tick += MULTIKILL_WINDOW_TICKS - 1;
-            assert!(kills.eliminated(tick));
-            assert_eq!(
-                kills.pulse(tick),
-                Some(MultikillPulse {
-                    count: pulses,
-                    fresh: true,
-                    stimulus,
-                })
-            );
-        }
-        // A seventh kill has no line: st21 keeps its count and #10122.
-        tick += 1;
-        assert!(!kills.eliminated(tick));
-        assert_eq!(kills.pulse(tick).unwrap().count, 5);
-        // The pulse stays fresh for 500 ms: 31 ticks of 16 ms, not 32.
-        let pulsed = tick - 1;
-        assert!(kills.pulse(pulsed + 31).unwrap().fresh);
-        assert!(!kills.pulse(pulsed + 32).unwrap().fresh);
-        // The wait ended 2 s after the last kill: a new streak.
-        tick += MULTIKILL_WINDOW_TICKS;
-        assert!(!kills.eliminated(tick));
-        assert!(kills.eliminated(tick + 1));
+    fn a_multikill_pulse_is_fresh_for_500_ms() {
+        let multikill = Multikill {
+            pulses: 2,
+            pulsed_ms: 1000 * 16,
+            stimulus: Some(0x0ee0_0000_0000_058b),
+        };
         assert_eq!(
-            kills.pulse(tick + 1),
-            Some(MultikillPulse {
-                count: 6,
+            pulse(multikill, 1000 + 31),
+            MultikillPulse {
+                count: 2,
                 fresh: true,
-                stimulus: 0x0ee0_0000_0000_058a,
-            })
+                stimulus: Some(0x0ee0_0000_0000_058b),
+            }
         );
+        assert!(!pulse(multikill, 1000 + 32).fresh);
     }
 }

@@ -143,9 +143,9 @@
   "STU_CC623180": {"alias": "IsHUDEnabled", "from": "ow174/game/script/expr.py"},
   "STU_CD46AF93": {"alias": "ForCodeSynced", "from": "research catalog", "client": "ForCodeSynced"},
   "STU_CEBDAF17": {"alias": "ActionTrackStat", "from": "research catalog"},
-  "STU_D3EB8D87": {"alias": "AIIsPathFollowing", "from": "ow174/game/script/driver.py"},
+  "STU_D3EB8D87": {"alias": "HasComponent92", "from": "leafall903/ORPHEUS scene.py (CDB700)"},
   "STU_D74D4F47": {"alias": "WaitFrames", "from": "ow174/game/script/nodes.py"},
-  "STU_DB742151": {"alias": "IsEntityAIBot", "from": "ow174/game/script/driver.py"},
+  "STU_DB742151": {"alias": "GetPrimaryPossessorEntity", "from": "leafall903/ORPHEUS ENTITY_POSSESSION_QUERIES.txt (CD1940)"},
   "STU_DEBD057B": {"alias": "Switch(case subgraphs)", "from": "research catalog"},
   "STU_E3CEF6B9": {"alias": "WaitForServerFrames", "from": "research catalog", "client": "WaitForServerFrames"},
   "STU_E4A30BCF": {"alias": "StateDisableLogicalButton", "from": "research catalog", "client": "DisableLogicalButton"}
