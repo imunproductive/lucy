@@ -158,6 +158,17 @@ pub struct SceneAssets {
     map_areas: MapAreaData,
 }
 
+/// What the clients get when the live nameplate tool changes
+/// ([`PreparedScene::set_bot_plate`]).
+#[derive(Debug, Default)]
+pub struct PlateUpdates {
+    /// Each live bot's component 51 update.
+    pub pools: Vec<EntityUpdate>,
+    /// Each bot's controller's component 75 update, with the bot's body:
+    /// it goes once the body is created, as a respawn's link does.
+    pub controllers: Vec<(EntityUpdate, u32)>,
+}
+
 pub struct PreparedScene {
     map: GameMap,
     ground: CollisionScene,
@@ -1044,40 +1055,50 @@ impl PreparedScene {
 
     /// The live nameplate tool's changes from now on: the live bots'
     /// scripts take its variables at once (their changed frames come with
-    /// the next bot events), and each live bot's pools update comes back,
-    /// for every client of the room. `vitals` gives a bot's pools by slot
-    /// (the match's combat; none: it has its full health).
+    /// the next bot events), and each live bot's pools update and, when the
+    /// hero changed, its controller's hero update come back, for every
+    /// client of the room. `vitals` gives a bot's pools by slot (the
+    /// match's combat; none: it has its full health).
     pub fn set_bot_plate<'v>(
         &mut self,
         plate: Arc<BotPlate>,
         vitals: impl Fn(usize) -> Option<&'v Vitals>,
-    ) -> Vec<EntityUpdate> {
+    ) -> io::Result<PlateUpdates> {
         let previous = std::mem::replace(&mut self.bot_plate, plate);
+        let mut updates = PlateUpdates::default();
         if previous == self.bot_plate {
-            return Vec::new();
+            return Ok(updates);
         }
         self.bot_scripts.apply_plate(&self.bots, &self.bot_plate);
-        self.bots
-            .iter()
-            .enumerate()
-            .filter(|(_, bot)| !bot.dead)
-            .filter_map(|(slot, bot)| {
-                let whole;
-                let vitals = match vitals(slot) {
-                    Some(vitals) => vitals,
-                    None => {
-                        whole = Vitals::new(bot.spawn.health, 0.0, 0.0);
-                        &whole
-                    }
-                };
-                let pools = self.bot_plate.pool_update(&previous, vitals)?;
-                Some(EntityUpdate {
+        for (slot, bot) in self.bots.iter().enumerate() {
+            // A dead bot's controller too: its body still stands until the
+            // respawn, whose link then carries the hero again.
+            if self.bot_plate.hero_changed(&previous) {
+                let hero = self.bot_plate.controller_hero(bot.spawn.hero).unwrap_or(0);
+                updates
+                    .controllers
+                    .push((crate::scene::bot_controller_hero(slot, hero)?, bot.entity));
+            }
+            if bot.dead {
+                continue;
+            }
+            let whole;
+            let vitals = match vitals(slot) {
+                Some(vitals) => vitals,
+                None => {
+                    whole = Vitals::new(bot.spawn.health, 0.0, 0.0);
+                    &whole
+                }
+            };
+            if let Some(pools) = self.bot_plate.pool_update(&previous, vitals) {
+                updates.pools.push(EntityUpdate {
                     entity: bot.entity,
                     operation: Some(Operation::Update(vec![pools])),
                     ..EntityUpdate::default()
-                })
-            })
-            .collect()
+                });
+            }
+        }
+        Ok(updates)
     }
 
     /// The live nameplate tool's game message to every live bot's
