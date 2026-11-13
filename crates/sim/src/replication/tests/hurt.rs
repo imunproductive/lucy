@@ -29,7 +29,11 @@ fn viewer(card: &PlayerCard) -> PlayerAppearance<'_> {
 /// to a Soldier: 76 standing out on the range, hit after the commands of
 /// ticks `hits` (counted from his first command): the ticks his knockback
 /// anim starts and ends, and the ticks and stimuli of his voice lines.
-fn rockets(scene: &PreparedScene, hits: &[u32], ticks: u32) -> (Vec<(u32, bool)>, Vec<(u32, u64)>) {
+/// The ticks the knockback anim starts (true) and ends (false), and the
+/// ticks and stimuli of the voice lines.
+type Reactions = (Vec<(u32, bool)>, Vec<(u32, u64)>);
+
+fn rockets(scene: &PreparedScene, hits: &[u32], ticks: u32) -> Reactions {
     let card = PlayerCard::default();
     let mut world = WorldDelivery::new(OWNER);
     world.start(scene, &viewer(&card), FIRST_TICK).unwrap();
