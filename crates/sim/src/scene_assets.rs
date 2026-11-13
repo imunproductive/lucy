@@ -27,6 +27,7 @@ use crate::{
     controller::Controller,
     hitboxes::HitboxCatalog,
     hitscan::{RAY_PROFILES_FILE, RayProfiles},
+    hurt_feedback::HurtFeedback,
     map_areas::{self, DamageArea, MapAreaData, SpawnRoom},
     match_flow::{MatchFlow, Mode, Timers},
     mode_graph_values::ModeGraphValues,
@@ -185,6 +186,8 @@ pub struct PreparedScene {
     bot_scripts: BotScripts,
     /// The live nameplate tool's changes to the bots (`bot_plate`).
     bot_plate: Arc<BotPlate>,
+    /// The live hurt feedback switch (`hurt_feedback`).
+    hurt: HurtFeedback,
     script_anims: Arc<ScriptAnims>,
     movers: Arc<MoverCatalog>,
     eyes: Arc<EyeCatalog>,
@@ -504,6 +507,7 @@ impl SceneAssets {
             bots,
             bot_scripts,
             bot_plate: Arc::default(),
+            hurt: HurtFeedback::default(),
             script_anims: Arc::clone(&self.script_anims),
             movers: Arc::clone(&self.movers),
             eyes: Arc::clone(&self.eyes),
@@ -1067,6 +1071,15 @@ impl PreparedScene {
     /// The live nameplate tool's changes in force (`bot_plate`).
     pub fn bot_plate(&self) -> &Arc<BotPlate> {
         &self.bot_plate
+    }
+
+    /// The live hurt feedback switch in force (`hurt_feedback`).
+    pub fn hurt_feedback(&self) -> HurtFeedback {
+        self.hurt
+    }
+
+    pub fn set_hurt_feedback(&mut self, hurt: HurtFeedback) {
+        self.hurt = hurt;
     }
 
     /// The live nameplate tool's changes from now on: the live bots'

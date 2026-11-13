@@ -58,14 +58,14 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
     vm::{GameMessage, Motion, MoveRequest, RaisedCriteria, Snapshot, TargetCandidate},
-    weapons::ProjectileBallistics,
+    weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
 };
 use orpheus_wire::{
     commands::{Command, CommandQueue, FRAME_HALF, SUBFRAME, frame_distance},
     entity::{
-        Component as WorldComponent, EntityUpdate, GAME_MODE_ENTITY, MAX_PAYLOAD, Movement,
-        Operation, SkinTheme, frame,
+        Component as WorldComponent, EntityUpdate, GAME_MODE_ENTITY, MAX_PAYLOAD, Operation,
+        SkinTheme, frame,
     },
     link::delivery,
     messages::Message,
@@ -300,39 +300,6 @@ pub enum BodyStep {
     Posed,
     UnposedBoundary,
     UnposedTimer,
-}
-
-/// The discontinuity counter of a body's owner records once its spawn turn
-/// went out ([`SpawnTurn`]; the create starts the body at 0).
-const SPAWN_DISCONTINUITY: u32 = 1;
-
-/// The owner's first movement record of a body placed at a spawn point: its
-/// spawn pose (the spawn's facing, level aim) at the frame the body was made,
-/// with a new discontinuity counter, so his client takes that state as it
-/// is, without replaying the commands it made since
-/// (`orpheus_physics::mover::correction`). The create alone leaves the
-/// view where the player looked before: the client keeps its view angles
-/// on the player's own entity, not on the body (Prometheus, 0.8 beta,
-/// facts only: the local player component of the controller holds them,
-/// and its spawn set them there itself), so a respawn kept the facing of
-/// the death. Assumption, not checked in the client: a state taken without
-/// replay also sets the view to its angles (the Euler yaw and the aim pitch
-/// +66), as a teleport must; retail's way is not known. The record goes
-/// once the create arrived (its movement channel is read before the entity
-/// channel), again while its datagram is lost, and the body's corrections
-/// wait for it and then carry its counter.
-#[derive(Clone, Copy, Debug)]
-struct SpawnTurn {
-    body: BodyId,
-    pose: Movement,
-    sent: TurnSent,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TurnSent {
-    Not,
-    In(u32),
-    Arrived,
 }
 
 struct BodyScript {
@@ -1383,9 +1350,6 @@ pub struct WorldDelivery {
     spawn_flag: (bool, u64),
     /// A hero picked while the body was dead: the respawn plays it.
     respawn_hero: Option<(u64, SkinTheme)>,
-    /// The current body's spawn turn, while it is not known to have
-    /// arrived, and after ([`SpawnTurn`]).
-    spawn_turn: Option<SpawnTurn>,
     /// The player's multikills (`crate::announcer`), and whether a pulse
     /// waits for its controller frame.
     multikills: Multikills,
@@ -1493,7 +1457,6 @@ impl WorldDelivery {
             spawn_room: None,
             spawn_flag: (true, 0),
             respawn_hero: None,
-            spawn_turn: None,
             multikills: Multikills::default(),
             multikill_due: false,
         }
@@ -1592,7 +1555,6 @@ impl WorldDelivery {
         self.target_candidates.clear();
         self.notices = SwitchNotices::default();
         self.spawn_room = None;
-        self.spawn_turn = None;
         self.multikills = Multikills::default();
         self.multikill_due = false;
     }
@@ -1766,8 +1728,7 @@ impl WorldDelivery {
 
     /// The client's ACK window of a datagram (`ack`, `ack_bits`), for the
     /// bots' first movement records ([`WorldDelivery::bot_shown`]): their
-    /// datagram arrived, or was lost and the next record's counts; and for
-    /// the spawn turn ([`SpawnTurn`]), which goes again when lost.
+    /// datagram arrived, or was lost and the next record's counts.
     pub fn acknowledge_movement(&mut self, ack: u32, ack_bits: u64) {
         self.bot_sights.retain(|_, sight| match *sight {
             BotSight::Sent(sequence) => match delivery(sequence, ack, ack_bits) {
@@ -1780,28 +1741,6 @@ impl WorldDelivery {
             },
             _ => true,
         });
-        if let Some(turn) = &mut self.spawn_turn {
-            if let TurnSent::In(sequence) = turn.sent {
-                match delivery(sequence, ack, ack_bits) {
-                    Some(true) => turn.sent = TurnSent::Arrived,
-                    Some(false) => turn.sent = TurnSent::Not,
-                    None => {}
-                }
-            }
-        }
-    }
-
-    /// The spawn turn to send in this tick's datagram: not sent yet (or
-    /// lost), of the current body, whose create arrived, and not of a frame
-    /// after the packet's.
-    fn due_spawn_turn(&self, tick: u32, reliable_only: bool) -> Option<SpawnTurn> {
-        self.spawn_turn.filter(|turn| {
-            !reliable_only
-                && turn.sent == TurnSent::Not
-                && self.body.is_some_and(|body| body.id == turn.body)
-                && self.created.contains(&turn.body.entity)
-                && turn.pose.frame.is_some_and(|frame| frame <= tick)
-        })
     }
 
     pub fn mode_ready(&self) -> bool {
@@ -2226,14 +2165,7 @@ impl WorldDelivery {
         }
         let script = self.body_script.as_ref();
         let history = script.and_then(|script| script.corrections.as_ref());
-        let turn = self.due_spawn_turn(tick, reliable_only);
-        // The body's corrections wait for its spawn turn and then carry its
-        // discontinuity counter.
-        let held = self
-            .spawn_turn
-            .filter(|turn| self.body.is_some_and(|body| body.id == turn.body))
-            .map(|turn| (turn.sent != TurnSent::Arrived, turn.pose.discontinuity));
-        let correction = if reliable_only || held.is_some_and(|(waiting, _)| waiting) {
+        let correction = if reliable_only {
             None
         } else {
             script.and_then(|script| {
@@ -2242,20 +2174,8 @@ impl WorldDelivery {
         };
         let owner_index = correction.map(|correction| {
             let index = movements.len();
-            let mut update = correction.update();
-            if let (Some(movement), Some((_, discontinuity))) = (&mut update.movement, held) {
-                movement.discontinuity = discontinuity;
-            }
-            movements.push(update);
+            movements.push(correction.update());
             index
-        });
-        let turn_index = turn.map(|turn| {
-            movements.push(EntityUpdate {
-                entity: turn.body.entity,
-                movement: Some(turn.pose),
-                ..EntityUpdate::default()
-            });
-            movements.len() - 1
         });
         let queued = self.ready();
         let newest = self.command_ack(tick);
@@ -2264,7 +2184,7 @@ impl WorldDelivery {
                 tick,
                 queued: &queued,
                 movements: &movements,
-                owner_correction: owner_index.or(turn_index).is_some(),
+                owner_correction: owner_index.is_some(),
                 reliable_only,
             },
             |records| {
@@ -2296,11 +2216,6 @@ impl WorldDelivery {
             .and_then(|script| script.corrections.as_mut());
         if let (Some((_, correction)), Some(history)) = (selected, history) {
             history.sent(&correction);
-        }
-        if let (Some(index), Some(turn)) = (turn_index, &mut self.spawn_turn) {
-            if sent.records.contains(&RecordSource::Movement(index)) {
-                turn.sent = TurnSent::In(sent.sequence);
-            }
         }
         for source in &sent.records {
             let RecordSource::Movement(index) = *source else {
@@ -2985,9 +2900,16 @@ impl WorldDelivery {
                     death_message(hit.shooter.source, hit.critical, hit.loadout, hit.tags);
                 failure = script.runtime.receive_message(message, parameters).err();
             }
-        } else if let Some(script) = script {
+        } else if let Some(script) = script.filter(|_| scene.hurt_feedback().message) {
+            // The live hurt feedback switch (`crate::hurt_feedback`): with
+            // the flinch off the message goes without its tags.
+            let tags = if scene.hurt_feedback().flinch {
+                hit.tags
+            } else {
+                DamageTags::NONE
+            };
             let (message, parameters) =
-                damage_message(hit.shooter.source, result.dealt, hit.tags, hit.direction);
+                damage_message(hit.shooter.source, result.dealt, tags, hit.direction);
             failure = script.runtime.receive_message(message, parameters).err();
         }
         if let Some(error) = failure {
@@ -3253,8 +3175,10 @@ impl WorldDelivery {
             self.voice = Some((speaker, VoiceState::default()));
         }
         let (_, voice) = self.voice.as_mut().expect("the body's voice");
+        let hurt = scene.hurt_feedback();
         criteria
             .into_iter()
+            .filter(|criteria| hurt.speaks(criteria.identifier))
             .filter_map(|criteria| voice.answer(set, speaker, criteria, tick))
             .collect()
     }
@@ -3733,8 +3657,17 @@ impl WorldDelivery {
         self.retained_elsewhere.extend(bodies);
     }
 
-    /// A new body for the player (match.py `switch_hero`). A pick closes the
-    /// hero select with a controller frame; a respawn sends none.
+    /// A new body for the player (match.py `switch_hero`), then a full
+    /// controller frame: a pick closes hero select with it (unless the
+    /// heroes are still assembling), and a body placed at the spawn point
+    /// without a pick (a respawn, a new round) sends it with hero select as
+    /// it was. That frame after the new body's possession is what the first
+    /// spawn has and a respawn lacked in the game: the first spawn faced the
+    /// spawn's way, a respawn (also one with a hero picked while dead, whose
+    /// frame went at the pick, with the dead body) kept the view of the
+    /// death (user's check, 2026-11-13). Assumption: the client sets its
+    /// view to the possessed body's facing on that frame; it may need hero
+    /// select closing instead (`refs/reports/RespawnFacing.md`).
     #[allow(clippy::too_many_arguments)]
     fn switch(
         &mut self,
@@ -3827,8 +3760,13 @@ impl WorldDelivery {
             hero: hero.guid,
             skin: (skin.guid != 0).then_some(skin.guid),
         };
-        let open = self.assembling && self.select_open;
-        let close = pick
+        let placed = here.is_none() && !self.headless && self.can_handle_game_message();
+        let open = if pick {
+            self.assembling && self.select_open
+        } else {
+            self.select_open
+        };
+        let frame = (pick || placed)
             .then(|| self.controller_chunk(scene, tick, open, Some(hero.guid), None))
             .transpose()?;
 
@@ -3846,19 +3784,7 @@ impl WorldDelivery {
         self.plain_vitals = None;
         self.respawn_hero = None;
         self.spawn_room = None;
-        // A body placed at the spawn point turns the player's view to the
-        // spawn's facing; one that took the place of a living body keeps the
-        // view. An AI player has no client to turn.
-        self.spawn_turn = (here.is_none() && !self.headless).then_some(SpawnTurn {
-            body: id,
-            pose: Movement {
-                frame: Some(start_frame),
-                discontinuity: SPAWN_DISCONTINUITY,
-                ..pose
-            },
-            sent: TurnSent::Not,
-        });
-        if pick {
+        if frame.is_some() {
             self.select_open = open;
         }
         // notices.py `hero_switched`: a switch from one hero to another, not
@@ -3891,8 +3817,8 @@ impl WorldDelivery {
         if let Some(old) = old {
             self.retire_body(old.id);
         }
-        if let Some(close) = close {
-            self.push(close);
+        if let Some(frame) = frame {
+            self.push(frame);
         }
         self.remove_stale();
         Ok(())
