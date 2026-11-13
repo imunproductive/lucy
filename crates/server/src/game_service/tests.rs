@@ -1912,6 +1912,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
             .collect()
     };
     let fired = shooter.datagrams.len();
+    let heard_from = target.datagrams.len();
     let mut frame = shooter.tick + 1;
     let deadline = server.now() + Duration::from_secs(20);
     while messages_of(target, 25004).is_empty() {
@@ -1934,6 +1935,21 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
             0,
             Value::Unsigned(u64::from(shooter_body))
         )]))
+    );
+    // Each hit the target survives reaches his body's script as the damage
+    // message (`orpheus_sim::combat::damage_message`), and 0.15 s after
+    // the first his graph 01CA raises his pain criteria: before he dies,
+    // his client hears his body's pain line (ClientInVoice 27500), said to
+    // his body.
+    let body_id = |id: u32| Value::Struct(Fields::from([(0, Value::Unsigned(u64::from(id)))]));
+    let pain = messages_of(target, 27500)
+        .into_iter()
+        .find(|(_, voice)| voice[&0x78] == body_id(target_body));
+    assert!(
+        pain.as_ref()
+            .is_some_and(|(index, voice)| (heard_from..died).contains(index)
+                && voice[&0x7c] == body_id(target_body)),
+        "the target's pain line: {pain:?}"
     );
     // Stop firing, and wait for the shooter's notices and board.
     let elimination = |watcher: &[&mut Watcher]| !messages_of(watcher[0], 25005).is_empty();
