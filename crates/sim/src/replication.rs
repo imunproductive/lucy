@@ -1458,6 +1458,20 @@ impl WorldDelivery {
         });
     }
 
+    /// An update of the stand-in controller of the live bot `body` (the
+    /// live nameplate tool's hero, `scene::bot_controller_hero`): it goes
+    /// once the body is created and is resent until it arrives, as a
+    /// respawn's link does; a retired body drops it.
+    pub fn queue_bot_controller(&mut self, update: EntityUpdate, body: u32) {
+        if self.bots.get(&body) != Some(&BotLifetime::Live) {
+            return;
+        }
+        self.push(Record {
+            update,
+            delivery: Delivery::BotLink { body },
+        });
+    }
+
     /// The training bots' statescript on this client this tick: new bot
     /// lifetimes' first frames, the room's live and death frames, what this
     /// client's ACKs made due and the practice nameplates

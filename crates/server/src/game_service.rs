@@ -1667,7 +1667,7 @@ impl State {
             plate.change(change)?;
             if plate != *self.bot_plate {
                 self.bot_plate = Arc::new(plate);
-                self.sync_bot_plates();
+                self.sync_bot_plates()?;
             }
             for message in messages {
                 let taken: usize = self
@@ -1698,9 +1698,9 @@ impl State {
     }
 
     /// Every match that hasn't taken the live nameplate tool's plate yet
-    /// takes it: its bots' scripts at once, their pools as an update to
-    /// each of its clients.
-    fn sync_bot_plates(&mut self) {
+    /// takes it: its bots' scripts at once, their pools and their
+    /// controllers' hero as updates to each of its clients.
+    fn sync_bot_plates(&mut self) -> Result<(), String> {
         let Self {
             rooms,
             peers,
@@ -1716,18 +1716,24 @@ impl State {
                 continue;
             }
             let combat = combat.as_ref();
-            let updates = scene.set_bot_plate(Arc::clone(bot_plate), |slot| {
-                combat.and_then(|combat| combat.bot_vitals(slot))
-            });
+            let updates = scene
+                .set_bot_plate(Arc::clone(bot_plate), |slot| {
+                    combat.and_then(|combat| combat.bot_vitals(slot))
+                })
+                .map_err(|error| error.to_string())?;
             for (connection, peer) in peers.iter_mut() {
                 if peer.ai.is_some() || seats.get(connection).is_none_or(|seat| seat.0 != *id) {
                     continue;
                 }
-                for update in &updates {
+                for update in &updates.pools {
                     peer.world.queue_health(update.clone());
+                }
+                for (update, body) in &updates.controllers {
+                    peer.world.queue_bot_controller(update.clone(), *body);
                 }
             }
         }
+        Ok(())
     }
 
     /// A player whose game has not connected leaves the match now; if his
@@ -2755,7 +2761,9 @@ impl State {
         if !drain {
             // A match that started since takes the live nameplate tool's
             // plate before its bots' scripts start.
-            self.sync_bot_plates();
+            if let Err(error) = self.sync_bot_plates() {
+                tracing::warn!("[game] the live nameplate tool's change failed: {error}");
+            }
             for room in self.rooms.values_mut() {
                 if let Some(world) = &mut room.world {
                     world.scene.step_bots(tick);

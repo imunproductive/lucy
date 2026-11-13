@@ -1093,7 +1093,7 @@ impl Combat {
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("bot entity IDs exhausted"))?;
             let created = bot_create(&fresh, scene.bot_plate())?;
-            let link = Some(bot_controller_link(&fresh, slot)?);
+            let link = Some(bot_controller_link(&fresh, slot, scene.bot_plate())?);
             prepared.push((
                 slot,
                 fresh,
