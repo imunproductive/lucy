@@ -1392,9 +1392,11 @@ mod tests {
                 }
             }
         }
-        // Every shot of the session, Helix and the quick melee included; a
-        // change here means the weapons' timing changed.
-        assert_eq!(shots, 32);
+        // Every shot of the session, Helix included; a change here means
+        // the weapons' timing changed. Quick melee is no shot: its graph
+        // (`0043`) strikes only the bodies its search finds, and this world
+        // lists none.
+        assert_eq!(shots, 31);
         let snapshot = runtime.snapshot().unwrap();
         let assumed: Vec<_> = snapshot
             .assumptions
@@ -1425,15 +1427,39 @@ mod tests {
                 (
                     0x0043,
                     Some(11),
-                    "STUStatescriptStateTrackTargets m_D59188D5",
-                    "finds no targets"
+                    "STUStatescriptStateTrackTargets bodies",
+                    "finds no targets (the world lists none)"
                 ),
                 (0x0043, Some(9), "STU_23A00A53", "no effect"),
                 (
                     0x0043,
                     Some(10),
-                    "STUStatescriptStateModifyHealth",
-                    "no effect"
+                    "STUStatescriptStateModifyHealth m_B12BFE8B",
+                    "not read"
+                ),
+                (
+                    0x0043,
+                    Some(10),
+                    "STUStatescriptModifyHealth m_knockbackRings",
+                    "not read"
+                ),
+                (
+                    0x0043,
+                    Some(10),
+                    "STUStatescriptModifyHealth m_C0139FA6",
+                    "not read"
+                ),
+                (
+                    0x0043,
+                    Some(10),
+                    "STUStatescriptModifyHealth m_E33EFEE1",
+                    "not read"
+                ),
+                (
+                    0x0043,
+                    Some(10),
+                    "STUStatescriptModifyHealth m_10399AE7",
+                    "not read"
                 ),
                 (0x0043, Some(63), "STU_0A6BE10E", "no effect"),
                 (
