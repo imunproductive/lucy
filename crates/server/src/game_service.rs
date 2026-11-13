@@ -959,13 +959,7 @@ fn pick_message(entity: u32, hero: u64) -> Message {
 /// (its flinch and pain line).
 fn bot_hit_script(scene: &mut PreparedScene, hit: &BotHit) {
     match hit.death {
-        Some(death) => scene.bot_died(
-            death.bot,
-            death.killer,
-            death.critical,
-            death.loadout,
-            death.tick,
-        ),
+        Some(death) => scene.bot_died(&death),
         None => {
             scene.bot_health(hit.bot, hit.remaining);
             if let Some(damage) = &hit.damage {
@@ -2121,6 +2115,9 @@ impl State {
                 }
                 peer.world.queue_health(hit.health.clone());
                 if shooter == Some(connection) {
+                    if let Some(death) = hit.death {
+                        peer.world.eliminated(death.tick);
+                    }
                     for notice in hit.notices.into_iter().flatten() {
                         peer.notice(notice);
                     }

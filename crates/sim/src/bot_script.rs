@@ -18,7 +18,9 @@ use crate::{
     bot_plate::{BotPlate, INPUTS, PlateVariable},
     bots::BOT_EYE,
     bots::Bot,
-    combat::{BotDamage, PosedProjectile, damage_direction, damage_message},
+    combat::{
+        BotDamage, BotDeath, PosedProjectile, damage_direction, damage_message, death_message,
+    },
     projectiles::{
         DELIVERY_GRACE, ObservedOut, ObservedProjectile, predicted_sync, projectiles_per_shot,
         spawned_definitions,
@@ -39,7 +41,7 @@ use orpheus_script::{
     timeline::FRAME_MS,
     vm::{ShotEvent, Snapshot, TargetCandidate, Unknowns},
     weapons::{HitDefinition, ProjectileBallistics, authored_number, ray_profile},
-    wire::{Value, Variables},
+    wire::Value,
 };
 use orpheus_wire::entity::{EntityUpdate, MAX_PAYLOAD, frame};
 
@@ -52,12 +54,6 @@ const COMBAT_CATCH_UP: u32 = 64;
 /// The metres a hitscan volley reaches when it names none (combat.py `RANGE`,
 /// unverified).
 const RANGE: f64 = 200.0;
-/// 003E.025's parameters, by the low 16 bits of their 026 identifiers
-/// (combat.py `KILLER`, `CRIT`, `LOADOUT`, `ASSISTS`).
-const KILLER: u32 = 0x0012;
-const CRIT: u32 = 0x0095;
-const LOADOUT: u32 = 0x03e6;
-const ASSISTS: u32 = 0x03e7;
 
 /// A bot's observer projection at one frame. In the Practice Range it also
 /// carries the same frame without the practice nameplate, which a client
@@ -527,29 +523,23 @@ impl BotScripts {
         Ok(())
     }
 
-    /// combat.py `_bot_died`'s script part: the death message 003E.025 with
-    /// the killer, the critical flag and the loadout; every client registers
-    /// the death, with the script's immediate change if it made one. `tick`
-    /// is the world tick of the death.
-    pub(crate) fn died(
-        &mut self,
-        entity: u32,
-        killer: u32,
-        critical: bool,
-        loadout: Option<u64>,
-        tick: u32,
-    ) {
+    /// combat.py `_bot_died`'s script part: the death message 003E.025
+    /// ([`death_message`]); every client registers the death, with the
+    /// script's immediate change if it made one. `death.tick` is the world
+    /// tick of the death.
+    pub(crate) fn died(&mut self, death: &BotDeath) {
+        let BotDeath {
+            bot: entity,
+            killer,
+            tick,
+            ..
+        } = *death;
         let Some(slot) = self.slot(entity) else {
             return;
         };
         let script = self.slots[slot].as_mut().expect("a running bot script");
         script.death = Some((tick, killer));
-        let parameters = Variables::from([
-            (KILLER, Value::Entity(killer)),
-            (CRIT, Value::Bool(critical)),
-            (LOADOUT, loadout.map_or(Value::Null, Value::Asset)),
-            (ASSISTS, Value::Array(Vec::new())),
-        ]);
+        let (_, parameters) = death_message(killer, death.critical, death.loadout, death.tags);
         let frame = tick.max(script.body.frame());
         let result = script
             .body
