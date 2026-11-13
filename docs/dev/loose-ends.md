@@ -15,7 +15,7 @@ Small things left undone by finished work. Each entry says what is missing, wher
 - **Assists:** graph `1901` (attackers of the last 5 s) is a PlayScript the VM doesn't run, so no assists are credited.
 - **Damage direction arcs and the screen hit flash** aren't sent; likely combat event 25000 to the victim (IDA list, section 13).
 - **Enemy explosions don't push other players**, only the shooter himself and bots. `ProjectileFlight::blast_push`.
-- **No aura system.** Biotic Grenade's aura `0267.053` (graphs `0C71`, `0C72`, `0B99`) sets `#8202e` / `#8203e` on the hit body for the purple and yellow bar outlines; the server doesn't run it. `docs/notes/behavior.md` (Nameplate and bar look).
+- **No aura system.** Biotic Grenade's aura `0267.053` (graphs `0C71`, `0C72`, `0B99`) sets `#8202e` / `#8203e` on the hit body for the anti-heal and heal boost status icons over the bar (not the outline colour); the server doesn't run it. `docs/notes/behavior.md` (Nameplate and bar look).
 
 ## Movement and collision
 

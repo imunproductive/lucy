@@ -22,14 +22,10 @@
 //! - `0D24`'s shared variables and the body's variables `0D24` and its bar
 //!   read ([`INPUTS`]), and the one game message `0D24` takes from the
 //!   server ([`MESSAGES`]).
-//! - The hero of each bot's stand-in controller (component 75 of the
-//!   controller, `scene::bot_controller_create`): `0D24` takes the plate's
-//!   hero icon (`4447`) from the hero of the body's possessor. We send no
-//!   hero there; the bot's own hero (`016B` and so on) has a portrait.
 //!
 //! A change reaches every client at once as an update: the pools as a
-//! component 51 update of each live bot, the hero as a component 75 update
-//! of each bot's controller, the variables in the bots' next script frame.
+//! component 51 update of each live bot, the variables in the bots' next
+//! script frame.
 //! Nothing respawns; a bot that respawns gets the changes from its create
 //! on.
 
@@ -93,17 +89,17 @@ pub const INPUTS: [PlateInput; 20] = [
     PlateInput {
         name: "antiheal",
         variable: PlateVariable::Entity(8202),
-        what: "the bar's type 62B3 (st51): true 615C, else by #8203e; Biotic Grenade's enemy aura (0C72 st6) holds it true",
+        what: "the bar's status icon 62B3 (st51): true 615C, the anti-heal icon over the plate (not the outline; seen in the game); Biotic Grenade's enemy aura (0C72 st6) holds it true",
     },
     PlateInput {
         name: "healboost",
         variable: PlateVariable::Entity(8203),
-        what: "the bar's type 62B3 (st51): true (and #8202e not) 6084, neither 32F4; Biotic Grenade's ally aura (0B99 st5) holds it true",
+        what: "the bar's status icon 62B3 (st51): true (and #8202e not) 6084, the heal boost icon, neither 32F4 (none); Biotic Grenade's ally aura (0B99 st5) holds it true",
     },
     PlateInput {
         name: "entity.19452",
         variable: PlateVariable::Entity(19452),
-        what: "the bar's 6872 (st51), a number; only 1763 writes it",
+        what: "the bar's 6872 (st51), a number; only 1763 writes it; 100 changed nothing seen in the game",
     },
     PlateInput {
         name: "entity.7209",
@@ -361,9 +357,6 @@ pub enum PlateChange {
     },
     /// A game message to every bot's nameplate instances, once.
     Message(u64),
-    /// The hero each bot's stand-in controller has (component 75); none:
-    /// back to no hero.
-    Hero(Option<ControllerHero>),
     Many(Vec<PlateChange>),
 }
 
@@ -384,9 +377,7 @@ impl PlateChange {
     ///   when it would read as one of those);
     /// - `message <id>`: a game message, its `025` index (`0C3C`) or whole
     ///   GUID; the ones `0D24` waits for only on the client are refused;
-    /// - `hero <bot | GUID | index | default>`: the hero of each bot's
-    ///   stand-in controller: the bot's own (`bot`), any hero (`013B` or
-    ///   `0x02E000000000013B`), or none again (`default`).
+    /// - `hero ...` is refused ([`HERO_REFUSED`]).
     ///
     /// `default` as a value takes the change back.
     pub fn parse(text: &str) -> Result<Self, String> {
@@ -424,7 +415,7 @@ impl PlateChange {
             return parse_message(value).map(Self::Message);
         }
         if name == "hero" {
-            return parse_hero(value).map(Self::Hero);
+            return Err(HERO_REFUSED.to_owned());
         }
         if let Some(input) = INPUTS.iter().find(|input| input.name == name) {
             return Ok(Self::Variable {
@@ -576,38 +567,16 @@ fn parse_message(text: &str) -> Result<u64, String> {
     Ok(id)
 }
 
-/// The hero of a bot's stand-in controller as the `hero` command names it;
-/// none for `default`.
-fn parse_hero(text: &str) -> Result<Option<ControllerHero>, String> {
-    match text.to_ascii_lowercase().as_str() {
-        "" => Err("Give a hero: bot, a hero GUID or index, or default.".to_owned()),
-        "default" => Ok(None),
-        "bot" => Ok(Some(ControllerHero::Own)),
-        text => {
-            let digits = text.trim_start_matches("0x");
-            let id = u64::from_str_radix(digits, 16)
-                .ok()
-                .filter(|&id| id != 0)
-                .ok_or_else(|| format!("'{text}' is not a hero."))?;
-            Ok(Some(ControllerHero::Hero(if id <= 0xFFFF {
-                HERO_TYPE | id
-            } else {
-                id
-            })))
-        }
-    }
-}
-
-/// The GUID type bits of a hero (`075`).
-const HERO_TYPE: u64 = 0x02E0_0000_0000_0000;
-
-/// The hero the tool gives each bot's stand-in controller.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ControllerHero {
-    /// The bot's own hero (Training Bot `016B`, …).
-    Own,
-    Hero(u64),
-}
+/// Why the tool has no `hero` command. It put component 75 (the hero, as
+/// a player's: hero, no skin, none, hero) on each bot's stand-in
+/// controller so `0D24` would draw the plate's hero icon (`4447`); in the
+/// game (2026-11-13) `hero bot` and `hero 013B` crashed the client. A
+/// stand-in controller is a player entity without component 74 that
+/// possesses a training bot body: assumption, the client sets up the
+/// hero for that controller (its loadout and abilities on the possessed
+/// body, as at a real player's hero pick) and fails on the bot body, which
+/// is no body of that hero. Not checked: no IDA.
+const HERO_REFUSED: &str = "The hero command is gone: component 75 on a bot's stand-in controller crashed the game.";
 
 /// A variable's value as the commands write it; none for `default`.
 fn parse_value(text: &str) -> Result<Option<Value>, String> {
@@ -652,7 +621,6 @@ pub struct BotPlate {
     parts: BTreeMap<usize, PartTuning>,
     trailer: [Option<u32>; TRAILER],
     variables: BTreeMap<PlateVariable, Value>,
-    hero: Option<ControllerHero>,
 }
 
 /// One pool part as a bot sends it.
@@ -714,7 +682,6 @@ impl BotPlate {
                 }
             },
             PlateChange::Message(_) => {}
-            PlateChange::Hero(hero) => self.hero = hero,
             PlateChange::Many(changes) => {
                 for change in changes {
                     self.change(change)?;
@@ -735,20 +702,6 @@ impl BotPlate {
             .map(|(&variable, value)| (variable, value))
     }
 
-    /// The hero each bot's stand-in controller gets (`own` is the bot's
-    /// own hero); none without a change.
-    pub fn controller_hero(&self, own: u64) -> Option<u64> {
-        self.hero.map(|hero| match hero {
-            ControllerHero::Own => own,
-            ControllerHero::Hero(hero) => hero,
-        })
-    }
-
-    /// Whether `previous` gave the controllers another hero.
-    pub fn hero_changed(&self, previous: &Self) -> bool {
-        self.hero != previous.hero
-    }
-
     /// The changes in force, as commands.
     pub fn commands(&self) -> Vec<String> {
         let mut commands = Vec::new();
@@ -767,11 +720,6 @@ impl BotPlate {
         }
         for (variable, value) in self.variables() {
             commands.push(format!("{} {}", variable.name(), value_text(value)));
-        }
-        match self.hero {
-            None => {}
-            Some(ControllerHero::Own) => commands.push("hero bot".to_owned()),
-            Some(ControllerHero::Hero(hero)) => commands.push(format!("hero 0x{hero:016X}")),
         }
         commands
     }
@@ -1081,20 +1029,6 @@ mod tests {
             Ok(PlateChange::Message(0x0240_0000_0000_0C3C))
         );
         assert_eq!(
-            PlateChange::parse("hero bot"),
-            Ok(PlateChange::Hero(Some(ControllerHero::Own)))
-        );
-        assert_eq!(
-            PlateChange::parse("hero 013B"),
-            Ok(PlateChange::Hero(Some(ControllerHero::Hero(
-                0x02E0_0000_0000_013B
-            ))))
-        );
-        assert_eq!(
-            PlateChange::parse("hero default"),
-            Ok(PlateChange::Hero(None))
-        );
-        assert_eq!(
             variable("antiheal true"),
             (PlateVariable::Entity(8202), Some(Value::Bool(true)))
         );
@@ -1106,20 +1040,13 @@ mod tests {
         assert_eq!(PlateChange::parse("reset"), Ok(PlateChange::Reset));
 
         let mut plate = BotPlate::default();
-        change(
-            &mut plate,
-            "status true; entity.9824 1; name \"Bot\"; hero 016B",
-        );
+        change(&mut plate, "status true; entity.9824 1; name \"Bot\"");
         assert_eq!(
             plate.commands(),
-            [
-                "status true",
-                "entity.9824 1",
-                "name \"Bot\"",
-                "hero 0x02E000000000016B"
-            ]
+            ["status true", "entity.9824 1", "name \"Bot\""]
         );
-        assert_eq!(plate.controller_hero(1), Some(0x02E0_0000_0000_016B));
+        let refused = PlateChange::parse("hero bot").unwrap_err();
+        assert!(refused.contains("crashed the game"), "{refused}");
         for bad in [
             "",
             "health.16.id 1",
@@ -1134,9 +1061,8 @@ mod tests {
             "bogus 1",
             "message zz",
             "message 13EA",
-            "hero",
-            "hero zz",
-            "hero 0",
+            "hero bot",
+            "hero 013B",
         ] {
             let mut tried = plate.clone();
             let result = PlateChange::parse(bad).and_then(|change| tried.change(change));
