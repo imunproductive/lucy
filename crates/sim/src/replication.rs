@@ -10,6 +10,7 @@ use std::{
 };
 
 use crate::{
+    announcer::Multikills,
     body::{BodyCreate, BodyView, body_create, owner_pose},
     body_script::OwnerBodySpawn,
     bot_script::{BotEvent, BotViewContext, BotViews, SeenDelivery, SeenRocket},
@@ -1015,6 +1016,9 @@ pub fn show_players(
                     world.owner
                 );
             }
+            if let Err(error) = world.send_multikills(scene, tick) {
+                eprintln!("multikill pulse for {:08X} failed ({error})", world.owner);
+            }
             cards
         })
         .collect()
@@ -1104,6 +1108,10 @@ pub struct WorldDelivery {
     /// The current body's spawn turn, while it is not known to have
     /// arrived, and after ([`SpawnTurn`]).
     spawn_turn: Option<SpawnTurn>,
+    /// The player's multikills (`crate::announcer`), and whether a pulse
+    /// waits for its controller frame.
+    multikills: Multikills,
+    multikill_due: bool,
 }
 
 /// The entity variables of the hero settings the client sends
@@ -1208,6 +1216,8 @@ impl WorldDelivery {
             spawn_flag: (true, 0),
             respawn_hero: None,
             spawn_turn: None,
+            multikills: Multikills::default(),
+            multikill_due: false,
         }
     }
 
@@ -1303,6 +1313,8 @@ impl WorldDelivery {
         self.notices = SwitchNotices::default();
         self.spawn_room = None;
         self.spawn_turn = None;
+        self.multikills = Multikills::default();
+        self.multikill_due = false;
     }
 
     /// This player as the other clients of the room see him this tick. His
@@ -1419,6 +1431,28 @@ impl WorldDelivery {
         Ok(())
     }
 
+    /// The player eliminated an enemy at world tick `tick` (`0215`'s
+    /// `0093.025`, [`crate::announcer`]).
+    pub fn eliminated(&mut self, tick: u32) {
+        if self.multikills.eliminated(tick) {
+            self.multikill_due = true;
+        }
+    }
+
+    /// A multikill pulse goes out at once in a controller frame of the PvP
+    /// controller, which carries `0215` from then on ([`crate::announcer`]).
+    fn send_multikills(&mut self, scene: &PreparedScene, tick: u32) -> io::Result<()> {
+        if !std::mem::take(&mut self.multikill_due)
+            || self.headless
+            || !scene.controller().announces_multikills()
+            || self.controller.latest_data() == 0
+        {
+            return Ok(());
+        }
+        let (open, hero) = (self.select_open, self.body.map(|body| body.hero));
+        self.queue_controller(scene, tick, open, hero, None)
+    }
+
     fn push(&mut self, record: Record) {
         self.queued.push(Arc::new(record));
     }
@@ -1516,6 +1550,20 @@ impl WorldDelivery {
         self.push(Record {
             update,
             delivery: Delivery::Health { revision },
+        });
+    }
+
+    /// An update of the stand-in controller of the live bot `body` (the
+    /// live nameplate tool's hero, `scene::bot_controller_hero`): it goes
+    /// once the body is created and is resent until it arrives, as a
+    /// respawn's link does; a retired body drops it.
+    pub fn queue_bot_controller(&mut self, update: EntityUpdate, body: u32) {
+        if self.bots.get(&body) != Some(&BotLifetime::Live) {
+            return;
+        }
+        self.push(Record {
+            update,
+            delivery: Delivery::BotLink { body },
         });
     }
 
@@ -2639,7 +2687,7 @@ impl WorldDelivery {
             });
             if let Some(script) = script {
                 let (message, parameters) =
-                    death_message(hit.shooter.source, hit.critical, hit.loadout);
+                    death_message(hit.shooter.source, hit.critical, hit.loadout, hit.tags);
                 failure = script.runtime.receive_message(message, parameters).err();
             }
         } else if let Some(script) = script {
@@ -3595,6 +3643,7 @@ impl WorldDelivery {
                         hide_assemble: practice,
                         presence,
                         hero,
+                        multikills: self.multikills.pulse(tick),
                     },
                 )
             })

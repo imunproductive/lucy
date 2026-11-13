@@ -1873,6 +1873,7 @@ fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
 }
 
 mod hero_moves;
+mod multikills;
 mod recovery;
 
 mod spawn_room;

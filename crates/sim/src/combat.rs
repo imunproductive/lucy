@@ -79,8 +79,12 @@ pub const DEAD: u32 = 0x2000;
 /// Quick melee's graph, which every hero body starts (combat.py `MELEE`).
 pub const MELEE_GRAPH: u32 = 0x0043;
 /// 003E.025's parameters, by the low 16 bits of their 026 identifiers
-/// (01CF rid4; combat.py `KILLER`, `CRIT`, `LOADOUT`, `ASSISTS`).
+/// (01CF rid4, 0C18 rid6; combat.py `KILLER`, `CRIT`, `LOADOUT`, `ASSISTS`).
+/// The tags go under 003D, [`DAMAGE_TAGS`], as in the damage message.
 const KILLER: u32 = 0x0012;
+/// 00BD, the body credited with the kill (01CF #40): its client lights the
+/// kill feed line up (rid55 `03EE`: the local view is #392 or #40).
+const CREDITED: u32 = 0x00bd;
 const CRIT: u32 = 0x0095;
 const LOADOUT: u32 = 0x03e6;
 const ASSISTS: u32 = 0x03e7;
@@ -196,13 +200,27 @@ fn invalid(error: impl std::fmt::Display) -> io::Error {
 }
 
 /// The "died" message a dead body's script takes (combat.py
-/// `_death_parameters`): the killer, whether the blow was critical, its
-/// loadout and the assists (none).
-pub fn death_message(killer: u32, critical: bool, loadout: Option<u64>) -> (u64, Variables) {
+/// `_death_parameters`): the killer, the body credited with the kill,
+/// whether the blow was critical, its loadout, its damage tags and the
+/// assists (none). The dead body's `01CF` (a bot's `0C18`) shares #392,
+/// #40, #510, #1821, #9300 and #9296 with every client, whose client-only
+/// plug posts the kill feed line (`0765.025`) from them: killer `03E9`, icon
+/// `03EB` (the loadout), headshot `03EF` (crit) and `08AF` (the tags hold
+/// `4FFB`). Python and upstream sent neither 00BD nor 003D. Assumption: the
+/// credited body is the killer itself (no turret or pet kills anyone
+/// here). Unsent and unknown: 006B, 0142 and 03E8 (`03ED`, 0DEA #9297).
+pub fn death_message(
+    killer: u32,
+    critical: bool,
+    loadout: Option<u64>,
+    tags: DamageTags,
+) -> (u64, Variables) {
     (
         DIED,
         Variables::from([
             (KILLER, Value::Entity(killer)),
+            (CREDITED, Value::Entity(killer)),
+            (DAMAGE_TAGS, tags.to_value()),
             (CRIT, Value::Bool(critical)),
             (LOADOUT, loadout.map_or(Value::Null, Value::Asset)),
             (ASSISTS, Value::Array(Vec::new())),
@@ -341,6 +359,8 @@ pub struct BotDeath {
     pub killer: u32,
     pub critical: bool,
     pub loadout: Option<u64>,
+    /// The killing hit's damage tags.
+    pub tags: DamageTags,
     pub tick: u32,
 }
 
@@ -1065,6 +1085,7 @@ impl Combat {
                 killer: shooter.source,
                 critical: impact.critical,
                 loadout: impact.loadout,
+                tags: impact.tags,
                 tick: death_tick,
             }),
             damage: (!result.killed).then_some(BotDamage {
@@ -1093,7 +1114,7 @@ impl Combat {
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("bot entity IDs exhausted"))?;
             let created = bot_create(&fresh, scene.bot_plate())?;
-            let link = Some(bot_controller_link(&fresh, slot)?);
+            let link = Some(bot_controller_link(&fresh, slot, scene.bot_plate())?);
             prepared.push((
                 slot,
                 fresh,
@@ -1205,7 +1226,8 @@ fn player_of(players: &[CombatPlayer<'_>], body: u32) -> Option<usize> {
 /// and isn't damage done or a hit to show, assumption); a kill counts
 /// Deaths for the victim, Eliminations and 25005 for another player who
 /// killed him (the scene's board stats), and gives the victim 25004 ("YOU
-/// WERE KILLED BY", or "YOU DIED" for his own blow). A heal of an ally
+/// WERE KILLED BY", or "YOU DIED" for his own blow), and the killer's
+/// multikills count it ([`crate::announcer`]). A heal of an ally
 /// (combat.py `_heal`, leafall903/ORPHEUS (MIT) commit c239a84) tells no
 /// one: a player healer's Healing Done and ultimate count what the pools
 /// took.
@@ -1268,6 +1290,9 @@ pub fn apply_player_hits(
         let own_blow = shooter == Some(victim);
         if let Some(killer) = shooter.filter(|_| !own_blow) {
             players[killer].stats.add(board.eliminations, 1.0);
+            if let Some(world) = players[killer].world.as_deref_mut() {
+                world.eliminated(tick);
+            }
             notices[killer].push(CombatNotice::Elimination {
                 killer: hit.shooter.source,
                 victim: hit.body,

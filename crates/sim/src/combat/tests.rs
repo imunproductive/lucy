@@ -111,6 +111,7 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
                 killer: SHOOTER.source,
                 critical: true,
                 loadout: None,
+                tags: shot.hit.tags,
                 tick: context.tick,
             })
         );
@@ -219,15 +220,26 @@ fn quick_melee_reads_the_python_sphere_from_its_graph() {
     );
 }
 
+/// The kill feed line reads the killer, the credited body (00BD), the
+/// tags (003D), the crit and the loadout from the "died" message.
 #[test]
-fn the_died_message_names_the_killer_the_crit_and_the_loadout() {
-    let (message, parameters) = death_message(0xa000_0201, true, Some(0x0b90_0000_0000_008d));
+fn the_died_message_names_the_killer_the_crit_the_loadout_and_the_tags() {
+    let melee: DamageTags = [0x0d80_0000_0000_0302].into_iter().collect();
+    let (message, parameters) =
+        death_message(0xa000_0201, true, Some(0x0b90_0000_0000_008d), melee);
     assert_eq!(message, DIED);
     assert_eq!(parameters[&KILLER], Value::Entity(0xa000_0201));
+    assert_eq!(parameters[&CREDITED], Value::Entity(0xa000_0201));
+    assert_eq!(
+        parameters[&DAMAGE_TAGS],
+        Value::Array(vec![Value::Asset(0x0d80_0000_0000_0302)])
+    );
     assert_eq!(parameters[&CRIT], Value::Bool(true));
     assert_eq!(parameters[&LOADOUT], Value::Asset(0x0b90_0000_0000_008d));
     assert_eq!(parameters[&ASSISTS], Value::Array(Vec::new()));
-    assert_eq!(death_message(1, false, None).1[&LOADOUT], Value::Null);
+    let plain = death_message(1, false, None, DamageTags::NONE).1;
+    assert_eq!(plain[&LOADOUT], Value::Null);
+    assert_eq!(plain[&DAMAGE_TAGS], Value::Array(Vec::new()));
 }
 
 /// A hit the body survives: its damage message carries the hit's tags, the
