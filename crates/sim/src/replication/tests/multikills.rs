@@ -102,7 +102,8 @@ fn a_second_kill_within_two_seconds_pulses_the_announcers_double_kill() {
         spawned(&scene, &card, second_victim, 2, 1),
     ];
     let mut stats = [(); 3].map(|_| PlayerStats::default());
-    let before = controller_frames(&shooter).len();
+    // A new controller frame replaces the earlier one still waiting.
+    let before = controller_frames(&shooter).last().cloned();
     let first = FIRST_TICK + 100;
     let ticks = [first, first + MULTIKILL_WINDOW_TICKS - 1];
     for (index, tick) in ticks.into_iter().enumerate() {
@@ -154,9 +155,14 @@ fn a_second_kill_within_two_seconds_pulses_the_announcers_double_kill() {
             "kill {index}"
         );
         shooter.send_multikills(&scene, tick).unwrap();
+        let last = controller_frames(&shooter).last().cloned();
+        assert_eq!(
+            last == before,
+            index == 0,
+            "a frame for the second kill only"
+        );
     }
     let frames = controller_frames(&shooter);
-    assert_eq!(frames.len(), before + 1, "one frame, for the second kill");
     let tick = ticks[1];
     let expected = scene
         .controller()
