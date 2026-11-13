@@ -38,9 +38,10 @@ fn the_catch_floor_is_the_highest_large_level_clip_floor_below_the_spawns() {
     ];
     assert_eq!(kill_height(&triangles, 0.0), Some(-11.0));
     assert_eq!(kill_height(&triangles[2..], 0.0), None);
-    assert!(caught(-11.0, -10.95));
-    assert!(caught(-11.0, -12.0));
-    assert!(!caught(-11.0, -10.85));
+    // The centre of a standing 2.0 m hero with a 0.5 m pogo: 1.25 m up.
+    assert!(caught(-11.0, -9.70, 1.25));
+    assert!(caught(-11.0, -10.75, 1.25));
+    assert!(!caught(-11.0, -9.60, 1.25));
 }
 
 /// A room the map gives the team counts for it alone; a room without a
