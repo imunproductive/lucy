@@ -730,6 +730,6 @@ mod tests {
             ]
         );
         assert!(!knockback);
-        println!("untagged strength {strength:?}");
+        assert_eq!(strength, None, "no flinch");
     }
 }
