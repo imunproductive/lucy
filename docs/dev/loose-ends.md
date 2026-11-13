@@ -8,6 +8,7 @@ Small things left undone by finished work. Each entry says what is missing, wher
 - **The "died" message `003E.025` still leaves out `006B`, `0142` and `03E8`.** Meaning unknown. `combat::death_message`.
 - **Team kill, kill streaks, the hero's own multikill line.** In graph `0215` but not built: "TEAM KILL!" (`01A3`, 3+ enemies all down, `0646.025`), the kill-streak text every 5 kills, the hero's line 1.6 s after a third kill (`00C9`), and the multikill career stats. `crates/sim/src/announcer.rs`.
 - **Death lines.** Bots: `0C17` raises `05FB`/`1C92` on `003E` with tags the server doesn't pass. Players: `01CA` raises death cries, but the match drops voice lines from a dead body. `crates/sim/src/voice_lines.rs`.
+- **No loopback test of an AI hero hurting the player.** The path is the human attacker's (tested); only the slow vs-AI match test covers AI heroes, and it checks no pain line. Easy AI hits (a quarter of the damage, `ai::scale_damage`) rate under 0.1 alone, so they raise no pain line until the player has lost about 40 health (VM test `a_hit_the_hero_survives_raises_his_pain_line_and_knockback`). `docs/notes/behavior.md` (Player hurt feedback).
 - **Quick melee carries no damage tags**, so it gives no flinch. `combat.rs` (melee hits).
 - **A killing hit sends no `0011.025`** (only the death message). `WorldDelivery::damage_body`.
 - **Assists:** graph `1901` (attackers of the last 5 s) is a PlayScript the VM doesn't run, so no assists are credited.

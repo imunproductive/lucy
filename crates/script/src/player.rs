@@ -703,5 +703,12 @@ mod tests {
         );
         assert!(!knockback);
         assert_eq!(strength, Some(Value::Float(f64::from(0.4_f32))));
+        // The same bullet from an Easy AI hero deals a quarter of it (4.75,
+        // `ai::scale_damage`): 0.02375 + 0.3 × 4.75 / 125 = 0.0352, at most
+        // 0.1, so it flinches but raises no pain line.
+        let (rating, criteria, _, strength) = hurt(ENEMY, 4.75, bullet, [0.0, 0.0, -1.0]);
+        assert!((rating - 0.035_15).abs() < 1e-6, "{rating}");
+        assert!(criteria.is_empty(), "{criteria:?}");
+        assert_eq!(strength, Some(Value::Float(f64::from(0.4_f32))));
     }
 }
