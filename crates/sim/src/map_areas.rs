@@ -27,7 +27,11 @@
 //! a room belongs to the teams whose current spawn point (the match flow's
 //! choice) stands in it.
 //!
-//! Environmental death, in this order of evidence:
+//! Environmental death, in this order of evidence. Every rule tests the
+//! centre of the body's collision capsule (its middle between the lowest and
+//! highest points, from the body's mover data and stance: 1.25 m above the
+//! feet of a standing 2.0 m hero with a 0.5 m pogo), not its feet: the user
+//! saw retail test the body's centre.
 //! - Damage areas (`game_map_areas` `damage_areas`: entities with
 //!   `STUECDamageAreaInstanceData`, definition `0109`) on the maps that have
 //!   them (Ilios, Nepal, Lijiang Tower, Oasis, Eichenwalde, Volskaya, Busan,
@@ -38,7 +42,7 @@
 //!   those areas have 100, so 100 can't be 100 health a second (a 600 HP
 //!   hero would live 6 s): strong guess, the damage is a share of the body's
 //!   health in percent, so 100 and more kill at once ([`LETHAL_DAMAGE`]), as
-//!   the 9000 and 9999 do whatever it means. A living body whose feet are in
+//!   the 9000 and 9999 do whatever it means. A living body whose centre is in
 //!   a lethal area of the mode dies. The areas of damage 0 are left out
 //!   (assumption: off unless a graph turns them on; no graph does here).
 //! - Kill volumes (`game_map_areas` `kill_volumes`): the boxes of the map's
@@ -51,7 +55,7 @@
 //!   lowest floor (`docs/notes/behavior.md` has the table), and retail
 //!   kills there well before the map's lowest triangle (seen in the game).
 //!   Not read in the client: which query category 0x02 is. A living body
-//!   whose feet are in one dies.
+//!   whose centre is in one dies.
 //! - The catch floor, on a map with neither damage areas nor kill volumes.
 //!   The Practice Range has none, and its collision has no other volume of
 //!   its own. What it has under the playable area are invisible floors of
@@ -59,16 +63,21 @@
 //!   the team proxies 0x08 and 0x10 and category 0x02 meet): a pit floor at
 //!   -11 m and the world's bottom at -19.8 m, while the lowest floor a
 //!   player walks on is about -5.25 m. Strong guess: such a catch floor is
-//!   where retail's environment kills, so a living body whose feet reach the
-//!   highest catch floor dies ([`kill_height`]). A catch floor is a level,
-//!   walkable clip triangle of at least [`CATCH_AREA`] below every spawn
-//!   point.
-//! - Below the whole map: feet under the map's lowest collision triangle.
-//!   The mover stops a falling body 100 m lower (`ABYSS`, `Mover._place` in
-//!   upstream leafall903/ORPHEUS `mover.py`, whose note says the mode's kill
-//!   volumes are separate), so without this a body that falls off a map
-//!   with none of the above (Ecopoint: Antarctica) would stand alive on
-//!   nothing. Assumption: nothing playable is under the lowest triangle.
+//!   where retail's environment kills, so a living body that lands on the
+//!   highest catch floor dies ([`kill_height`]). The movers stand on the
+//!   clip, so the centre never goes below the floor: the body dies when its
+//!   centre is no higher above the floor than its centre is above its feet
+//!   ([`caught`]). A catch floor is a level, walkable clip triangle of at
+//!   least [`CATCH_AREA`] below every spawn point.
+//!
+//! Not a rule of the game: a safety net. A living body whose centre is
+//! [`FALL_LIMIT`] below the map's lowest collision triangle dies, and the
+//! server logs a warning with the map and the position, as the map's data
+//! then lacks the volume that kills there. The mover stops a falling body
+//! 100 m below that triangle (`ABYSS`, `Mover._place` in upstream
+//! leafall903/ORPHEUS `mover.py`), so without the net it would stand alive
+//! on nothing. The maps the rules above miss (Hollywood, Temple of Anubis,
+//! Ecopoint: Antarctica, the menu maps) are closed or never played.
 //!
 //! Spawn door barriers (`game_map_areas` `door_barriers`): the server-owned
 //! placeables running graph `00F6` in the spawn room doorways. The client
@@ -99,6 +108,9 @@ pub const WORLD_CLIP: u16 = 0x1a;
 pub const CATCH_AREA: f64 = 100.0;
 /// How close above a catch floor the feet count as on it, m.
 const CATCH_MARGIN: f64 = 0.1;
+/// How far below the map's lowest collision triangle the safety net kills
+/// a body's centre, m (module notes). Not from the game.
+pub const FALL_LIMIT: f64 = 20.0;
 /// The least damage of a damage area that kills: 100 % of the body's
 /// health (see the module notes).
 pub const LETHAL_DAMAGE: f64 = 100.0;
@@ -417,9 +429,10 @@ pub fn kill_height<'a>(
         .max_by(f64::total_cmp)
 }
 
-/// Whether feet at `y` are on or below the catch floor at `height`.
-pub fn caught(height: f64, y: f64) -> bool {
-    y < height + CATCH_MARGIN
+/// Whether a body whose centre is at `y`, `above_feet` over its feet, is
+/// on or below the catch floor at `height`.
+pub fn caught(height: f64, y: f64, above_feet: f64) -> bool {
+    y < height + above_feet + CATCH_MARGIN
 }
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {
