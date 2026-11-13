@@ -159,6 +159,12 @@ pub trait Context {
         None
     }
 
+    /// The entities that carry target tag `tag`, each once, in the world's
+    /// order (`STU_EB216A0B`); None: the world can't list them.
+    fn entities_with_tag(&mut self, _tag: u64) -> Option<Vec<u32>> {
+        None
+    }
+
     /// None leaves candidate flags unknown. A known absence can report zero.
     fn entity_filter_flags(&mut self, _entity: u32) -> Option<u64> {
         None
@@ -599,6 +605,19 @@ fn native_fields(config: &Json, operands: &[&str]) -> bool {
             key => operands.contains(&key),
         })
     })
+}
+
+/// A target tag query (`STU_EB216A0B`) that names only its tag
+/// `m_9C7BD8B8`: its required and excluded tags and its filter are unset.
+fn tag_query_shape(config: &Json) -> bool {
+    !child(config, "m_9C7BD8B8").is_null()
+        && config.as_object().is_some_and(|fields| {
+            fields.iter().all(|(key, value)| match key.as_str() {
+                "$" | "m_9C7BD8B8" => true,
+                "m_EE729DCB" => value.as_u64() == Some(0),
+                _ => value.is_null(),
+            })
+        })
 }
 
 fn is_expression(class: Option<&str>) -> bool {
@@ -1316,6 +1335,78 @@ impl Evaluator {
                     .random_u64()
                     .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
                 Value::Float(rounded(low + (high - low) * unit_interval(sample)))
+            }
+            // A random number in [0, 1) from the component's random stream.
+            // It has no fields; its three uses read it so: `0F4A` uid 1299
+            // keeps one per match as #29093, `1225` uid 363 scales the
+            // payload's speed by `1 - v + 2v·x` (v = 0.1) and `0C8E` uid 136
+            // takes `(x - 0.5)·2`. Inferred from those uses
+            // (refs/reports/Payloads.md), not read in the client.
+            "STU_B182C5C9" if native_shape(config, class, None) => {
+                let sample = context
+                    .random_u64()
+                    .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
+                Value::Float(rounded(unit_interval(sample)))
+            }
+            // The least of the values of `m_814F8EC3` (arrays opened), each as
+            // an f32, a value that is no number counting as the default
+            // `m_A53100D5` (itself 0 when it is no number); no value gives the
+            // default. Client evaluator 1B76C90 (leafall903/ORPHEUS (MIT),
+            // `play.minimum_value`). `0CBB` st40/st41 read the lowest of
+            // #12114/#12115 with the default 9999.
+            "STU_17330930" if native_fields(config, &["m_814F8EC3", "m_A53100D5"]) => {
+                let default = match self.config(child(config, "m_A53100D5"), context, nested)? {
+                    value @ (Value::Integer(_) | Value::Float(_) | Value::Bool(_)) => {
+                        rounded(to_float(&value))
+                    }
+                    _ => 0.0,
+                };
+                let mut rows = Vec::new();
+                value_rows(
+                    self.value(child(config, "m_814F8EC3"), context, nested)?,
+                    &mut rows,
+                )?;
+                let least = rows
+                    .iter()
+                    .map(|row| match row {
+                        Value::Integer(_) | Value::Float(_) | Value::Bool(_) => {
+                            rounded(to_float(row))
+                        }
+                        _ => default,
+                    })
+                    .reduce(f64::min);
+                Value::Float(least.unwrap_or(default))
+            }
+            // The entities that carry a target tag (`STU_EB216A0B`, a
+            // `STU_1361E674` scene query with the fields of `STU_160F2578`),
+            // in the form with only the tag `m_9C7BD8B8`: each tag its value
+            // gives (a config list gives several), the entities of each in
+            // turn, each once; a null tag gives none. `0F4A` gathers the
+            // spawn rooms of the objective's two tags so (node 162, #11023)
+            // and the spawn doors by tag `04B3` (node 310, #12750). Inferred
+            // from its fields and uses, not read in the client.
+            "STU_EB216A0B" if tag_query_shape(config) => {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let mut tags = Vec::new();
+                value_rows(
+                    self.value(child(config, "m_9C7BD8B8"), context, nested)?,
+                    &mut tags,
+                )?;
+                let mut entities = Vec::new();
+                for tag in tags {
+                    let tag = match tag {
+                        Value::Null => continue,
+                        Value::Asset(tag) if tag >> 48 == crate::graph::TARGET_TAG_TYPE => tag,
+                        _ => return Err(unsupported()),
+                    };
+                    for entity in context.entities_with_tag(tag).ok_or_else(unsupported)? {
+                        let entity = Value::Entity(entity);
+                        if !entities.contains(&entity) {
+                            entities.push(entity);
+                        }
+                    }
+                }
+                Value::Array(entities)
             }
             "STU_7197C080" => {
                 let base = to_float(&self.config(child(config, "m_01AFADB6"), context, nested)?);

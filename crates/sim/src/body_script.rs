@@ -90,9 +90,10 @@ pub struct OwnerBodySpawn {
 /// (ChaseVar st1) with the HUD stacks #6034 (seconds) and #6036 (share
 /// left). See `D:/Work/Coding/refs/reports/DeathCam.md`.
 ///
-/// The server's mode graph can't send to player bodies
-/// (`orpheus_script::mode`: its targets `STU_1D719351` are a gap), so the
-/// body takes `06FD` from the mode as it starts. Assumptions: the mode body
+/// The server's mode graph doesn't drive the match yet (its gaps,
+/// `orpheus_script::mode`), so nothing delivers its messages to every
+/// entity (`STU_1D719351`), and the body takes `06FD` from the mode as it
+/// starts. Assumptions: the mode body
 /// script is the body's last root instance, after the hero's weapons (the
 /// instance order retail uses is not known); `06FD` comes on the body's
 /// first frame, with `00B7` alone (`13C0` sends only that; `0F4A`'s other

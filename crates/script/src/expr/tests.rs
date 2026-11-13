@@ -477,6 +477,82 @@ fn random_float_lies_between_the_asset_bounds() {
         evaluate(&config, &mut EmptyContext),
         Err(EvalError::UnsupportedConfig("STU_BE0BD267".into())),
     );
+    // The fieldless random number (`STU_B182C5C9`) lies in [0, 1).
+    let unit = json!({"$": "STU_B182C5C9"});
+    let mut context = Samples(vec![1 << 63, 0]);
+    for expected in [0.0, 0.5] {
+        assert_eq!(evaluate(&unit, &mut context), Ok(Value::Float(expected)));
+    }
+}
+
+#[test]
+fn least_value_reads_numbers_as_f32_and_others_as_the_default() {
+    // `0CBB` st40: the lowest of #12114 with the default 9999.
+    let least = |values: Value| {
+        let mut context = Vars::default();
+        context.instance.insert(12114, values);
+        evaluate(
+            &json!({
+                "$": "STU_17330930",
+                "m_814F8EC3": variable(12114, Scope::Instance),
+                "m_A53100D5": {"$": "STUConfigVarInt", "m_value": 9999},
+            }),
+            &mut context,
+        )
+    };
+    assert_eq!(least(Value::Array(Vec::new())), Ok(Value::Float(9999.0)));
+    assert_eq!(least(Value::Null), Ok(Value::Float(9999.0)));
+    assert_eq!(
+        least(Value::Array(vec![
+            Value::Float(12.5),
+            Value::Array(vec![Value::Integer(3)]),
+            Value::Float(0.1),
+        ])),
+        Ok(Value::Float(f64::from(0.1_f32)))
+    );
+    // A value that is no number counts as the default.
+    assert_eq!(
+        least(Value::Array(vec![Value::Entity(5), Value::Integer(10_000)])),
+        Ok(Value::Float(9999.0))
+    );
+}
+
+#[test]
+fn tag_query_lists_the_entities_of_each_tag_once() {
+    const FIRST: u64 = 0x0d60_0000_0000_04b3;
+    const SECOND: u64 = 0x0d60_0000_0000_0310;
+    struct Tagged;
+    impl Context for Tagged {
+        fn entities_with_tag(&mut self, tag: u64) -> Option<Vec<u32>> {
+            match tag {
+                FIRST => Some(vec![7, 8]),
+                SECOND => Some(vec![8, 9]),
+                _ => Some(Vec::new()),
+            }
+        }
+    }
+    let query = |tag: Json| json!({"$": "STU_EB216A0B", "m_9C7BD8B8": tag, "m_B486603E": null});
+    assert_eq!(
+        evaluate(&query(tag_list(&[FIRST, SECOND])), &mut Tagged),
+        Ok(Value::Array(vec![
+            Value::Entity(7),
+            Value::Entity(8),
+            Value::Entity(9)
+        ]))
+    );
+    assert_eq!(
+        evaluate(&query(tag_config(SECOND)), &mut Tagged),
+        Ok(Value::Array(vec![Value::Entity(8), Value::Entity(9)]))
+    );
+    // A world that can't list tagged entities can't answer; nor is a query
+    // with required tags known.
+    assert_eq!(
+        evaluate(&query(tag_config(FIRST)), &mut EmptyContext),
+        Err(EvalError::UnsupportedConfig("STU_EB216A0B".into())),
+    );
+    let mut required = query(tag_config(FIRST));
+    required["m_B486603E"] = tag_config(SECOND);
+    assert!(evaluate(&required, &mut Tagged).is_err());
 }
 
 #[test]

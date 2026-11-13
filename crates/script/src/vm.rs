@@ -11,6 +11,7 @@ mod actions;
 mod arrays;
 mod buttons;
 mod context;
+mod filter_array;
 mod flow;
 mod lifecycle;
 mod links;
@@ -312,6 +313,12 @@ pub trait World {
         None
     }
 
+    /// The entities that carry target tag `tag`, each once, in this world's
+    /// order (`STU_EB216A0B`); None: this world can't list them.
+    fn entities_with_tag(&self, _site: Site, _tag: u64) -> Option<Vec<u32>> {
+        None
+    }
+
     fn set_target_tag_effect(
         &mut self,
         _site: Site,
@@ -432,6 +439,14 @@ pub trait World {
         false
     }
 
+    /// Deliver a game message to every entity of the world but the sender
+    /// (a `STU_38EE1100` target `STU_1D719351` with `m_6A8DB059` set; the
+    /// sender's own instances get it from the VM). False: this world can't
+    /// deliver it.
+    fn broadcast_message(&mut self, _source: Site, _message: u64, _parameters: &Variables) -> bool {
+        false
+    }
+
     /// A `STUStatescriptActionCriteria` on the body itself (its `m_targets`
     /// the owner) raised a criteria: the event the body's voice set
     /// answers with a voice stimulus whose criteria names it (the Training
@@ -545,6 +560,9 @@ pub enum StateKind {
     CosmeticEntity,
     ChaseVar,
     Watch,
+    /// FilterArray (`STU_0A6BE10E`, `vm/filter_array.rs`): it keeps its
+    /// output the filtered copy of its source while it runs.
+    FilterArray,
     /// A target search (`vm/targets.rs`): the bodies it finds while active
     /// are [`State::tracked`]. Forms the server can't run find nothing
     /// (an assumption, as in the Python reference).
@@ -1776,6 +1794,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             let Some(state) = self.state(key).filter(|state| state.active) else {
                 return Ok(());
             };
+            if state.kind == StateKind::SendMessage {
+                // A persistent sender (`STU_38EE1100`) names the message it
+                // sends; its own message to every entity is no entry of it.
+                // Its notification (`m_67FD6A60`, a timer in the client:
+                // D4CDE0 in leafall903/ORPHEUS `docs/MESSAGE_SENDER.txt`) is
+                // not modelled.
+                return Ok(());
+            }
             if state.kind != StateKind::MessageIdle {
                 self.report(
                     self.site(id, node),
@@ -1832,12 +1858,28 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         // `STU_9B213168` is the entities of its `m_targets`, its only field
         // in all 134 uses in 104319 (all in `STU_38EE1100`; `0C8E` st41
         // sends `08BB` to the mode entity so). Inferred from its shape, not
-        // read in the client. The other kinds (`STU_1D719351`, players by
-        // filter) stay unsupported.
+        // read in the client.
+        //
+        // `STU_1D719351` names no entity: its three bytes pick the message
+        // manager's global channels (leafall903/ORPHEUS (MIT),
+        // `docs/MESSAGE_SENDER.txt`: `m_6A8DB059` the primary channel,
+        // `m_1199BFE0` and `m_111E4A0E` two more in a mode). Read from who
+        // takes its 289 messages in 104319: with `m_6A8DB059` set they reach
+        // every entity, the sender's own instances among them (the mode
+        // graphs' `0692`/`0694`/`0695`/`0700`/`0701` reach the controllers
+        // `0C90`, the bodies' `01CA`, the payload `1225` and the mode's own
+        // `0CBB`; `0702` the doors `0D32`; `06FD` the bodies' `0C8E`).
+        // Messages with only the other two bytes set are all sent by client
+        // graphs and taken by none of the server's, so those channels are
+        // the clients' [assumption] and the server delivers nothing on them.
+        let broadcast = target.get("$").and_then(Json::as_str) == Some("STU_1D719351");
+        if broadcast && field(target, "m_6A8DB059").as_u64() == Some(0) {
+            return Ok(true);
+        }
         if target.get("$").and_then(Json::as_str) == Some("STU_9B213168") {
             target = field(target, "m_targets");
         }
-        let value = if target.is_null() {
+        let value = if target.is_null() || broadcast {
             Value::Entity(site.entity)
         } else {
             let Some(value) = self.evaluate(id, node, target, None) else {
@@ -1885,6 +1927,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 );
                 return Ok(false);
             }
+        }
+        if broadcast && !self.world.broadcast_message(site, message, &parameters) {
+            self.report(
+                site,
+                Issue::UnsupportedField("broadcast game message delivery"),
+            );
+            return Ok(false);
         }
         Ok(true)
     }

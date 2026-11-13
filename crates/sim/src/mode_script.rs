@@ -17,7 +17,7 @@ use orpheus_core::bits::BitWriter;
 use orpheus_script::{
     codecs::CodecTable,
     graph::GraphStore,
-    mode::ModeScript,
+    mode::{ModeScript, ModeWorld},
     snapshot::{SnapshotEncoder, View},
     vm::{GameMessage, Unknowns},
     wire::Variables,
@@ -62,13 +62,11 @@ impl ModeRunner {
             return Self::HandBuilt { gaps: Gaps::new() };
         };
         let graphs = scene.shared_graphs();
-        match ModeScript::start(
-            Arc::clone(&graphs),
-            mode,
-            graph,
-            Unknowns::for_build(),
-            frame,
-        ) {
+        // The room gives no players or start condition yet: with the
+        // graph's gaps the flow drives the match, so the graph only lists
+        // them here.
+        let world = ModeWorld::new(Arc::clone(&graphs), mode, Unknowns::for_build());
+        match ModeScript::start(world, graph, frame) {
             Ok(script) if script.complete() => Self::Graph {
                 script: Box::new(script),
                 graphs,

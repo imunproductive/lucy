@@ -3931,6 +3931,171 @@ fn messages_to_other_entities_go_through_the_world_and_reach_every_instance() {
 }
 
 #[test]
+fn a_message_to_every_entity_reaches_the_sender_and_goes_through_the_world() {
+    #[derive(Default)]
+    struct Broadcaster(Vec<(u32, u64, Variables)>);
+    impl World for Broadcaster {
+        fn broadcast_message(
+            &mut self,
+            source: Site,
+            message: u64,
+            parameters: &Variables,
+        ) -> bool {
+            self.0.push((source.entity, message, parameters.clone()));
+            true
+        }
+    }
+    let channels = |primary, mode| json!({"$":"STU_1D719351","m_6A8DB059":primary,"m_1199BFE0":mode,"m_111E4A0E":0});
+    // `0F4A` st5 sends `0700` so; st2's channels are the clients' only.
+    let fixture = graph(
+        42,
+        vec![
+            entry(&[(1, "m_beginPlug"), (2, "m_beginPlug")]),
+            node(
+                1,
+                "STU_38EE1100",
+                Some(0),
+                json!({
+                    "m_gameMessage":{"m_gameMessage":"0x0240000000000006"},
+                    "m_target":channels(1, 1),
+                    "m_params":[{"m_B5051BCE":"0x0D80000000000007","m_value":{"$":"STUConfigVarInt","m_value":9}}],
+                }),
+            ),
+            node(
+                2,
+                "STU_38EE1100",
+                Some(1),
+                json!({
+                    "m_gameMessage":{"m_gameMessage":"0x0240000000000008"},
+                    "m_target":channels(0, 1),
+                }),
+            ),
+            node(
+                3,
+                "STUStatescriptEntryGameMessage",
+                None,
+                json!({
+                    "m_gameMessage":{"m_gameMessage":"0x0240000000000006"},
+                    "m_params":[{"m_B5051BCE":"0x0D80000000000007","m_out_Var":var(100,false)}],
+                }),
+            ),
+        ],
+        json!([1, 2]),
+        json!([0, 3]),
+    );
+    let graphs = Arc::new(store(vec![fixture]));
+    let mut world = Broadcaster::default();
+    let mut component = start(Arc::clone(&graphs), 100, &mut world);
+    component.advance_frame(101, &mut world).unwrap();
+    let parameters = Variables::from([(7, Value::Integer(9))]);
+    assert_eq!(
+        world.0,
+        [(0xa000_0101, 0x0240_0000_0000_0006, parameters.clone())]
+    );
+    let snapshot = component.snapshot().unwrap();
+    assert_eq!(snapshot.instances[&1].variables[&100], Value::Integer(9));
+    assert!(snapshot.initialization_complete());
+    // A world that can't reach every entity refuses it.
+    let component = start(graphs, 100, &mut EmptyWorld);
+    assert_eq!(
+        component.snapshot().unwrap().diagnostics[0].issue,
+        Issue::UnsupportedField("broadcast game message delivery")
+    );
+}
+
+#[test]
+fn filter_array_keeps_its_output_the_candidates_that_pass() {
+    const TAG: u64 = 0x0d60_0000_0000_0310;
+    const ROOM: u64 = 0x0d60_0000_0000_04b3;
+    const ENTITIES: [u32; 3] = [0xa000_0201, 0xa000_0202, 0xa000_0203];
+    struct Rooms;
+    impl World for Rooms {
+        fn entities_with_tag(&self, _site: Site, tag: u64) -> Option<Vec<u32>> {
+            (tag == ROOM).then(|| ENTITIES.to_vec())
+        }
+        fn has_target_tag(&self, _site: Site, entity: u32, tag: u64) -> Option<bool> {
+            Some(tag == TAG && entity == ENTITIES[1])
+        }
+    }
+    let tag = |tag: u64| json!({"$":"STU_357DABBB","m_7D7C86A1":format!("0x{tag:016X}"),"m_resourceKey":null});
+    let filter = |flags: u64, extra: Json| {
+        let mut filter = json!({
+            "$":"STUConfigVarFilter","m_84065FD1":flags,"m_1E14CCA8":0,"m_4EA686DB":0,
+            "m_27CF71D5":0,"m_66747E7D":0,"m_89831602":0,
+        });
+        for (key, value) in extra.as_object().unwrap() {
+            filter[key] = value.clone();
+        }
+        filter
+    };
+    // The candidate is every parameter: keep those above 1.
+    let above_one = json!({"m_condition":{"$":"STU_919FD47C","m_expression":{
+        "m_opcodes":[13,0,6,0,36,0], "m_dynamicVars":[var(8, false)], "m_D99EF254":[1.0]
+    }}});
+    let filter_array = |position, state, source: Json, filter: Json, output| {
+        node(
+            position,
+            "STU_0A6BE10E",
+            Some(state),
+            json!({
+                "m_814F8EC3":source, "m_filter":filter, "m_F2805C84":var(output, true),
+                "m_C485751C":0, "m_A70DB860":{"$":"STUStatescriptOutputPlug","links":[]},
+            }),
+        )
+    };
+    let fixture = graph(
+        42,
+        vec![
+            entry(&[(1, "m_beginPlug"), (2, "m_beginPlug"), (3, "m_beginPlug")]),
+            filter_array(1, 0, var(90, true), filter(0, above_one), 91),
+            // `0F4A` st88: the rooms of a tag (`STU_EB216A0B`) that carry
+            // another.
+            filter_array(
+                2,
+                1,
+                json!({"$":"STU_EB216A0B","m_9C7BD8B8":tag(ROOM)}),
+                filter(0, json!({"m_9C7BD8B8":tag(TAG)})),
+                92,
+            ),
+            // A filter on entity flags (melee `0043` st63) stays inert.
+            filter_array(3, 2, var(90, true), filter(128, json!({})), 93),
+        ],
+        json!([1, 2, 3]),
+        json!([0]),
+    );
+    let graphs = Arc::new(store(vec![fixture]));
+    let numbers =
+        |values: &[i64]| Value::Array(values.iter().copied().map(Value::Integer).collect());
+    let mut component = start_with(
+        graphs,
+        Variables::from([(90, numbers(&[1, 2, 3]))]),
+        100,
+        &mut Rooms,
+    );
+    let snapshot = component.snapshot().unwrap();
+    assert_eq!(snapshot.variables[&91], numbers(&[2, 3]));
+    assert_eq!(
+        snapshot.variables[&92],
+        Value::Array(vec![Value::Entity(ENTITIES[1])])
+    );
+    assert!(!snapshot.variables.contains_key(&93));
+    assert_eq!(
+        snapshot
+            .assumptions
+            .iter()
+            .map(|assumption| (assumption.site.node, assumption.class.as_str()))
+            .collect::<Vec<_>>(),
+        [(Some(3), "STU_0A6BE10E")]
+    );
+    // A change of the source filters again.
+    component
+        .set_entity_variable(90, numbers(&[5, 0]), &mut Rooms)
+        .unwrap();
+    component.advance_frame(101, &mut Rooms).unwrap();
+    assert_eq!(component.snapshot().unwrap().variables[&91], numbers(&[5]));
+}
+
+#[test]
 fn ultimate_charges_by_itself_and_for_damage_and_waits_while_it_runs() {
     use crate::ultimate::{ChargeRates, ULT_CHARGE, ULT_COST, UltimateCharge, set_ult_charge};
     const RATES: ChargeRates = ChargeRates {

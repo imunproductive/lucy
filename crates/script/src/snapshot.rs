@@ -1464,6 +1464,7 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
             | StateKind::MovementMod
             | StateKind::CosmeticEntity
             | StateKind::Watch
+            | StateKind::FilterArray
             | StateKind::Switch { .. }
             | StateKind::ActiveQuery
             | StateKind::GamePadVibration

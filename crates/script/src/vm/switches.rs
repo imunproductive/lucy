@@ -26,6 +26,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.update_stack(key)?;
             } else if state.active && state.kind == StateKind::Watch {
                 self.check_watch(key)?;
+            } else if state.active && state.kind == StateKind::FilterArray {
+                self.refresh_filter_array(key)?;
             } else if state.active && matches!(state.kind, StateKind::HealthPool { pool: Some(_) })
             {
                 let node = self

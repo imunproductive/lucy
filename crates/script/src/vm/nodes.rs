@@ -649,6 +649,24 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptStateChaseVar" => StateKind::ChaseVar,
             "STU_2F4E2E3F" => StateKind::Watch,
             "STUStatescriptStateTrackTargets" => StateKind::TrackTargets,
+            "STU_0A6BE10E" if filter_array::is_runnable_filter_array(node) => {
+                StateKind::FilterArray
+            }
+            // ForCode (the strict form of ForCodeSynced `STU_CD46AF93`): it
+            // registers its rows (identifier, value) for native game code to
+            // read and has no payload (codec "none"); its plugs and
+            // lifecycle are the base state's (leafall903/ORPHEUS (MIT),
+            // `docs/FOR_CODE_BINDINGS.txt`: D44CA0 registers, D0D8B0 reads
+            // the first match, D44CD0 removes). On the server the native
+            // readers are the match's Rust code, which reads the graph's
+            // variables itself; so it runs as a plain state. The forms with
+            // transport sync (`m_598E32D5`, `m_0582B0E4`) are not known.
+            "STU_6A926B21"
+                if field(&node.fields, "m_598E32D5").as_u64().unwrap_or(0) == 0
+                    && field(&node.fields, "m_0582B0E4").as_u64().unwrap_or(0) == 0 =>
+            {
+                StateKind::Plain
+            }
             class if ASSUMED_INERT_STATES.contains(&class) => StateKind::Plain,
             "STU_77E13026" => StateKind::HitList,
             "STUStatescriptStateWeaponVolley" => StateKind::WeaponVolley {
@@ -762,6 +780,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 let seen = self.evaluate(id, node, field(&node.fields, "m_B7A3CF78"), Some(key));
                 self.state_mut(key).expect("active Watch").watch_seen = seen;
             }
+            StateKind::FilterArray => self.refresh_filter_array(key)?,
             StateKind::WeaponVolley { .. } => self.begin_volley(key, node, depth)?,
             StateKind::TrackTargets => self.begin_track_targets(key, node)?,
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
