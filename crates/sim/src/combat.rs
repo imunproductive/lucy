@@ -1296,7 +1296,7 @@ pub fn apply_player_hits(
         if let Some(killer) = shooter.filter(|_| !own_blow) {
             players[killer].stats.add(board.eliminations, 1.0);
             if let Some(world) = players[killer].world.as_deref_mut() {
-                world.eliminated(tick);
+                world.eliminated(tick, hit.body);
             }
             notices[killer].push(CombatNotice::Elimination {
                 killer: hit.shooter.source,

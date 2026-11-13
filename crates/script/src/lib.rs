@@ -5,6 +5,7 @@
 pub mod anim_lengths;
 pub mod bot;
 pub mod codecs;
+pub mod controller;
 pub mod expr;
 pub mod graph;
 pub mod mode;

@@ -173,6 +173,12 @@ pub trait Context {
         None
     }
 
+    /// Whether `controller` may play `hero` (`STU_9AE5FC4C`); None: the
+    /// world can't tell.
+    fn hero_available(&mut self, _controller: u32, _hero: u64) -> Option<bool> {
+        None
+    }
+
     /// Where a bound entity stands; None: the world doesn't know it.
     fn entity_position(&mut self, _entity: u32) -> Option<[f64; 3]> {
         None
@@ -823,6 +829,9 @@ fn resource_field(class: &str) -> Option<&'static str> {
         "STU_8A491388" => Some("m_priority"),
         // An unset texture is the zero asset (0686 node 28 clears 3793).
         "STUConfigVarTexture" => Some("m_texture"),
+        // `0215` rid31 to rid35 store the announcer's stimulus (`078`) in
+        // #10122.
+        "STUConfigVarVoiceStimulus" => Some("m_voiceStimulus"),
         _ => None,
     }
 }
@@ -1102,6 +1111,25 @@ impl Evaluator {
                         context
                             .entity_exists(entity)
                             .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    ),
+                    _ => Value::Bool(false),
+                }
+            }
+            // May a controller play a hero (`0C90` rid3/rid43, `288B` rid28):
+            // the world's answer for a bound controller and a hero asset; no
+            // hero is never available. Inferred from its uses, not read in
+            // the client.
+            "STU_9AE5FC4C" if native_fields(config, &["m_controller", "m_hero"]) => {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let controller =
+                    to_entity(&self.config(child(config, "m_controller"), context, nested)?)
+                        .filter(|&entity| valid_entity(entity))
+                        .ok_or_else(unsupported)?;
+                match self.config(child(config, "m_hero"), context, nested)? {
+                    Value::Asset(hero) if hero != 0 => Value::Bool(
+                        context
+                            .hero_available(controller, hero)
+                            .ok_or_else(unsupported)?,
                     ),
                     _ => Value::Bool(false),
                 }

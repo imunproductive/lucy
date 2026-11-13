@@ -2157,7 +2157,7 @@ impl State {
                 peer.world.queue_health(hit.health.clone());
                 if shooter == Some(connection) {
                     if let Some(death) = hit.death {
-                        peer.world.eliminated(death.tick);
+                        peer.world.eliminated(death.tick, death.bot);
                     }
                     for notice in hit.notices.into_iter().flatten() {
                         peer.notice(notice);
