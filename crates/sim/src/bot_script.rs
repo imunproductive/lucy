@@ -745,7 +745,8 @@ impl BotScripts {
             .map_err(|error| error.to_string())
             .and_then(|took| {
                 let script = self.slots[slot].as_mut().expect("a running bot script");
-                self.health_changes.extend(script.body.take_health_changes());
+                self.health_changes
+                    .extend(script.body.take_health_changes());
                 if took {
                     self.publish_live(slot)
                 } else {
@@ -796,7 +797,8 @@ impl BotScripts {
                 }
             }
             let script = self.slots[slot].as_mut().expect("a running bot script");
-            self.health_changes.extend(script.body.take_health_changes());
+            self.health_changes
+                .extend(script.body.take_health_changes());
             for criteria in script.body.take_criteria() {
                 if bot.dead {
                     continue;

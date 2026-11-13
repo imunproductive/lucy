@@ -36,11 +36,9 @@ use std::{
 
 pub use auras::{AURA_APPLIED, asks_ai_of_unset_creator};
 pub use health::HealthChange;
-pub use statuses::{
-    BodyEffects, CombatMod, DAMAGE_TAKEN, HEALING_TAKEN, INVULNERABLE, PHASED_OUT,
-};
 use indexmap::IndexMap;
 use serde_json::Value as Json;
+pub use statuses::{BodyEffects, CombatMod, DAMAGE_TAKEN, HEALING_TAKEN, INVULNERABLE, PHASED_OUT};
 
 use crate::{
     expr::{

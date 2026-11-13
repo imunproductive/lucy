@@ -2865,7 +2865,8 @@ impl WorldDelivery {
         }
         // Invulnerable in his team's spawn room (`map_areas`: 0C8E `03D4`),
         // or while his graphs hold a status (`STU_9028E035`).
-        if self.spawn_room == Some(true) || self.body_effects().is_some_and(BodyEffects::invulnerable)
+        if self.spawn_room == Some(true)
+            || self.body_effects().is_some_and(BodyEffects::invulnerable)
         {
             return None;
         }
@@ -2953,7 +2954,10 @@ impl WorldDelivery {
         if self.death.is_some() {
             return 0.0;
         }
-        let amount = amount * self.body_effects().map_or(1.0, |effects| effects.healing_scale(tags));
+        let amount = amount
+            * self
+                .body_effects()
+                .map_or(1.0, |effects| effects.healing_scale(tags));
         let mut failure = None;
         let given = match self
             .body_script

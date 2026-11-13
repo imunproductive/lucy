@@ -2314,10 +2314,9 @@ impl State {
                 .iter()
                 .find(|(connection, (match_id, _))| {
                     *match_id == id
-                        && self
-                            .peers
-                            .get(*connection)
-                            .is_some_and(|peer| peer.world.current_body() == Some(change.instigator))
+                        && self.peers.get(*connection).is_some_and(|peer| {
+                            peer.world.current_body() == Some(change.instigator)
+                        })
                 })
                 .map(|(&connection, _)| connection);
             if let Some(hit) = combat.modify_health(&mut world.scene, &change, context, |_| true) {

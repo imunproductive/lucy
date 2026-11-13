@@ -720,7 +720,11 @@ impl Combat {
         {
             let own = target == shooter.source;
             let teammate = !own && !free_for_all && slot.target.team == shooter.team;
-            let takes = if change.heal { own || teammate } else { !teammate };
+            let takes = if change.heal {
+                own || teammate
+            } else {
+                !teammate
+            };
             if !takes {
                 return None;
             }
@@ -1267,12 +1271,9 @@ pub fn apply_player_hits(
             continue;
         };
         if hit.heal {
-            let given = players[victim]
-                .world
-                .as_deref_mut()
-                .map_or(0.0, |world| {
-                    world.heal_body(scene, hit.body, hit.amount, &hit.tags)
-                });
+            let given = players[victim].world.as_deref_mut().map_or(0.0, |world| {
+                world.heal_body(scene, hit.body, hit.amount, &hit.tags)
+            });
             if !hit.shooter.bot {
                 credit_healing(scene, players, hit.shooter.source, given);
             }

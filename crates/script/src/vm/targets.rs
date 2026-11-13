@@ -379,11 +379,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     .ok_or(Gap::Field("m_05BE62DD"))?;
                 let aim = expr::aim(facing);
                 let ahead = offset[2];
-                offset = [
-                    aim[0] * ahead,
-                    offset[1] + aim[1] * ahead,
-                    aim[2] * ahead,
-                ];
+                offset = [aim[0] * ahead, offset[1] + aim[1] * ahead, aim[2] * ahead];
             }
         }
         let radius = self

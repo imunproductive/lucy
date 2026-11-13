@@ -1195,7 +1195,8 @@ impl Evaluator {
                 // An entity, or the first of an array (as `to_entity` reads
                 // it): a PlayScript's parameters are arrays (`0C72`'s
                 // instigator `#40`).
-                let Some(entity) = to_entity(&self.config(child(config, operand), context, nested)?)
+                let Some(entity) =
+                    to_entity(&self.config(child(config, operand), context, nested)?)
                 else {
                     return Err(EvalError::UnsupportedConfig(class.into()));
                 };
@@ -1217,7 +1218,9 @@ impl Evaluator {
                 let target = to_entity(&self.config(child(config, "m_target"), context, nested)?);
                 let source = to_entity(&self.config(child(config, "m_source"), context, nested)?);
                 match (target, source) {
-                    (Some(target), Some(source)) if valid_entity(target) && valid_entity(source) => {
+                    (Some(target), Some(source))
+                        if valid_entity(target) && valid_entity(source) =>
+                    {
                         if target == source {
                             Value::Bool(true)
                         } else {

@@ -83,7 +83,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let change = field(&node.fields, "m_modifyHealth");
         for name in UNREAD_CHANGE {
             if is_set(field(change, name)) {
-                self.assume(site, &format!("STUStatescriptModifyHealth {name}"), "not read");
+                self.assume(
+                    site,
+                    &format!("STUStatescriptModifyHealth {name}"),
+                    "not read",
+                );
             }
         }
         if over_time(node) {
@@ -137,10 +141,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             .into_iter()
             .filter(|&entity| !state.tracked.iter().any(|seen| seen.entity == entity))
             .collect();
-        state.tracked.extend(new.iter().map(|&entity| TrackedTarget {
-            entity,
-            since_ms: now,
-        }));
+        state
+            .tracked
+            .extend(new.iter().map(|&entity| TrackedTarget {
+                entity,
+                since_ms: now,
+            }));
         self.apply_health(key, node, &new, 1.0);
         Ok(())
     }
@@ -152,10 +158,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let mut add = |value: &Value| {
             if let Value::Entity(entity) = *value
                 && expr::valid_entity(entity)
+                && !targets.contains(&entity)
             {
-                if !targets.contains(&entity) {
-                    targets.push(entity);
-                }
+                targets.push(entity);
             }
         };
         match self.evaluate(key.instance, node, config, None) {
@@ -219,7 +224,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             });
         }
         if !taken {
-            self.assume(site, &node.class, "no effect (the world applies no health change)");
+            self.assume(
+                site,
+                &node.class,
+                "no effect (the world applies no health change)",
+            );
         }
     }
 

@@ -17,9 +17,8 @@ use crate::{
     snapshot::SnapshotEncoder,
     vitals::PoolKind,
     vm::{
-        BodyEffects, CombatMod, Component, HealthChange, InitFault, MAX_INIT_WORK,
-        RaisedCriteria, ShotEvent, Site, Snapshot, TargetCandidate, TargetTagEffect, Unknowns,
-        World, body_roots,
+        BodyEffects, CombatMod, Component, HealthChange, InitFault, MAX_INIT_WORK, RaisedCriteria,
+        ShotEvent, Site, Snapshot, TargetCandidate, TargetTagEffect, Unknowns, World, body_roots,
     },
     wire::{Value, Variables},
 };
@@ -221,7 +220,12 @@ impl World for BotWorld {
     /// A target tag a state grants or removes (Biotic Grenade's enemy aura
     /// `0C72` st4 grants `02FB`): accepted; the bot keeps no tags, so its
     /// filters never see it (assumption).
-    fn set_target_tag_effect(&mut self, _site: Site, _effect: TargetTagEffect, _active: bool) -> bool {
+    fn set_target_tag_effect(
+        &mut self,
+        _site: Site,
+        _effect: TargetTagEffect,
+        _active: bool,
+    ) -> bool {
         true
     }
 

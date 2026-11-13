@@ -4615,7 +4615,12 @@ fn a_modify_health_blow_strikes_each_found_body_once() {
     assert_eq!(changes.len(), 1);
     let change = &changes[0];
     assert_eq!(
-        (change.target, change.instigator, change.frame, change.loadout),
+        (
+            change.target,
+            change.instigator,
+            change.frame,
+            change.loadout
+        ),
         (ALLY, SEARCHER, 2, Some(0x0b90_0000_0000_02f5))
     );
     assert_eq!(
@@ -4669,7 +4674,7 @@ fn a_modify_health_rate_applies_a_share_each_tick() {
         .collect();
     // The state began at 0 ms; frame 1's tick comes at its last
     // millisecond (2 × 16 − 1 = 31 ms), frame 2's a frame later.
-    let share = |ms: f64| 30.0 * ms / 1000.0 / 0.5;
+    let share = |ms: f64| 30.0 * (ms / 1000.0 / 0.5);
     assert_eq!(
         shares,
         [
@@ -4751,7 +4756,12 @@ fn an_aura_runs_its_graph_on_the_body_until_its_instance_ends() {
     );
     let idle = graph(
         42,
-        vec![node(0, "STUStatescriptEntry", None, json!({"m_outPlug":plug(&[], &[])}))],
+        vec![node(
+            0,
+            "STUStatescriptEntry",
+            None,
+            json!({"m_outPlug":plug(&[], &[])}),
+        )],
         json!([]),
         json!([0]),
     );

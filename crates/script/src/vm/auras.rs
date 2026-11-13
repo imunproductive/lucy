@@ -40,7 +40,10 @@ impl Component {
         let Some(found) = self.graphs.aura(aura).copied() else {
             return Ok(None);
         };
-        let Some(graph) = found.graph.filter(|&graph| self.graphs.graph(graph).is_some()) else {
+        let Some(graph) = found
+            .graph
+            .filter(|&graph| self.graphs.graph(graph).is_some())
+        else {
             return Ok(None);
         };
         let id = u16::try_from(self.machine.next_id).map_err(|_| InitFault::InstanceIdExhausted)?;
@@ -74,7 +77,9 @@ impl<W: World> Vm<'_, '_, '_, W> {
         for node in graph.nodes.iter().filter(|node| {
             !node.client_only
                 && node.class == "STUStatescriptEntryGameMessage"
-                && node.field("m_gameMessage.m_gameMessage").and_then(asset_guid)
+                && node
+                    .field("m_gameMessage.m_gameMessage")
+                    .and_then(asset_guid)
                     == Some(AURA_APPLIED)
         }) {
             for row in array_field(&node.fields, "m_params") {
