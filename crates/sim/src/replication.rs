@@ -64,8 +64,8 @@ use orpheus_script::{
 use orpheus_wire::{
     commands::{Command, CommandQueue},
     entity::{
-        Component as WorldComponent, EntityUpdate, GAME_MODE_ENTITY, MAX_PAYLOAD, Operation,
-        SkinTheme, frame,
+        Component as WorldComponent, EntityUpdate, GAME_MODE_ENTITY, MAX_PAYLOAD, Movement,
+        Operation, SkinTheme, frame,
     },
     link::delivery,
     messages::Message,
@@ -276,6 +276,39 @@ pub enum BodyStep {
     Posed,
     UnposedBoundary,
     UnposedTimer,
+}
+
+/// The discontinuity counter of a body's owner records once its spawn turn
+/// went out ([`SpawnTurn`]; the create starts the body at 0).
+const SPAWN_DISCONTINUITY: u32 = 1;
+
+/// The owner's first movement record of a body placed at a spawn point: its
+/// spawn pose (the spawn's facing, level aim) at the frame the body was made,
+/// with a new discontinuity counter, so his client takes that state as it
+/// is, without replaying the commands it made since
+/// (`orpheus_physics::mover::correction`). The create alone leaves the
+/// view where the player looked before: the client keeps its view angles
+/// on the player's own entity, not on the body (Prometheus, 0.8 beta,
+/// facts only: the local player component of the controller holds them,
+/// and its spawn set them there itself), so a respawn kept the facing of
+/// the death. Assumption, not checked in the client: a state taken without
+/// replay also sets the view to its angles (the Euler yaw and the aim pitch
+/// +66), as a teleport must; retail's way is not known. The record goes
+/// once the create arrived (its movement channel is read before the entity
+/// channel), again while its datagram is lost, and the body's corrections
+/// wait for it and then carry its counter.
+#[derive(Clone, Copy, Debug)]
+struct SpawnTurn {
+    body: BodyId,
+    pose: Movement,
+    sent: TurnSent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TurnSent {
+    Not,
+    In(u32),
+    Arrived,
 }
 
 struct BodyScript {
@@ -1072,6 +1105,9 @@ pub struct WorldDelivery {
     spawn_flag: (bool, u64),
     /// A hero picked while the body was dead: the respawn plays it.
     respawn_hero: Option<(u64, SkinTheme)>,
+    /// The current body's spawn turn, while it is not known to have
+    /// arrived, and after ([`SpawnTurn`]).
+    spawn_turn: Option<SpawnTurn>,
     /// The player's multikills (`crate::announcer`), and whether a pulse
     /// waits for its controller frame.
     multikills: Multikills,
@@ -1179,6 +1215,7 @@ impl WorldDelivery {
             spawn_room: None,
             spawn_flag: (true, 0),
             respawn_hero: None,
+            spawn_turn: None,
             multikills: Multikills::default(),
             multikill_due: false,
         }
@@ -1275,6 +1312,7 @@ impl WorldDelivery {
         self.target_candidates.clear();
         self.notices = SwitchNotices::default();
         self.spawn_room = None;
+        self.spawn_turn = None;
         self.multikills = Multikills::default();
         self.multikill_due = false;
     }
@@ -1449,7 +1487,8 @@ impl WorldDelivery {
 
     /// The client's ACK window of a datagram (`ack`, `ack_bits`), for the
     /// bots' first movement records ([`WorldDelivery::bot_shown`]): their
-    /// datagram arrived, or was lost and the next record's counts.
+    /// datagram arrived, or was lost and the next record's counts; and for
+    /// the spawn turn ([`SpawnTurn`]), which goes again when lost.
     pub fn acknowledge_movement(&mut self, ack: u32, ack_bits: u64) {
         self.bot_sights.retain(|_, sight| match *sight {
             BotSight::Sent(sequence) => match delivery(sequence, ack, ack_bits) {
@@ -1462,6 +1501,28 @@ impl WorldDelivery {
             },
             _ => true,
         });
+        if let Some(turn) = &mut self.spawn_turn {
+            if let TurnSent::In(sequence) = turn.sent {
+                match delivery(sequence, ack, ack_bits) {
+                    Some(true) => turn.sent = TurnSent::Arrived,
+                    Some(false) => turn.sent = TurnSent::Not,
+                    None => {}
+                }
+            }
+        }
+    }
+
+    /// The spawn turn to send in this tick's datagram: not sent yet (or
+    /// lost), of the current body, whose create arrived, and not of a frame
+    /// after the packet's.
+    fn due_spawn_turn(&self, tick: u32, reliable_only: bool) -> Option<SpawnTurn> {
+        self.spawn_turn.filter(|turn| {
+            !reliable_only
+                && turn.sent == TurnSent::Not
+                && self.body.is_some_and(|body| body.id == turn.body)
+                && self.created.contains(&turn.body.entity)
+                && turn.pose.frame.is_some_and(|frame| frame <= tick)
+        })
     }
 
     pub fn mode_ready(&self) -> bool {
@@ -1900,7 +1961,14 @@ impl WorldDelivery {
         }
         let script = self.body_script.as_ref();
         let history = script.and_then(|script| script.corrections.as_ref());
-        let correction = if reliable_only {
+        let turn = self.due_spawn_turn(tick, reliable_only);
+        // The body's corrections wait for its spawn turn and then carry its
+        // discontinuity counter.
+        let held = self
+            .spawn_turn
+            .filter(|turn| self.body.is_some_and(|body| body.id == turn.body))
+            .map(|turn| (turn.sent != TurnSent::Arrived, turn.pose.discontinuity));
+        let correction = if reliable_only || held.is_some_and(|(waiting, _)| waiting) {
             None
         } else {
             script.and_then(|script| {
@@ -1909,8 +1977,20 @@ impl WorldDelivery {
         };
         let owner_index = correction.map(|correction| {
             let index = movements.len();
-            movements.push(correction.update());
+            let mut update = correction.update();
+            if let (Some(movement), Some((_, discontinuity))) = (&mut update.movement, held) {
+                movement.discontinuity = discontinuity;
+            }
+            movements.push(update);
             index
+        });
+        let turn_index = turn.map(|turn| {
+            movements.push(EntityUpdate {
+                entity: turn.body.entity,
+                movement: Some(turn.pose),
+                ..EntityUpdate::default()
+            });
+            movements.len() - 1
         });
         let queued = self.ready();
         let newest = self.command_ack(tick);
@@ -1919,7 +1999,7 @@ impl WorldDelivery {
                 tick,
                 queued: &queued,
                 movements: &movements,
-                owner_correction: owner_index.is_some(),
+                owner_correction: owner_index.or(turn_index).is_some(),
                 reliable_only,
             },
             |records| {
@@ -1951,6 +2031,11 @@ impl WorldDelivery {
             .and_then(|script| script.corrections.as_mut());
         if let (Some((_, correction)), Some(history)) = (selected, history) {
             history.sent(&correction);
+        }
+        if let (Some(index), Some(turn)) = (turn_index, &mut self.spawn_turn) {
+            if sent.records.contains(&RecordSource::Movement(index)) {
+                turn.sent = TurnSent::In(sent.sequence);
+            }
         }
         for source in &sent.records {
             let RecordSource::Movement(index) = *source else {
@@ -3463,6 +3548,18 @@ impl WorldDelivery {
         self.plain_vitals = None;
         self.respawn_hero = None;
         self.spawn_room = None;
+        // A body placed at the spawn point turns the player's view to the
+        // spawn's facing; one that took the place of a living body keeps the
+        // view. An AI player has no client to turn.
+        self.spawn_turn = (here.is_none() && !self.headless).then_some(SpawnTurn {
+            body: id,
+            pose: Movement {
+                frame: Some(start_frame),
+                discontinuity: SPAWN_DISCONTINUITY,
+                ..pose
+            },
+            sent: TurnSent::Not,
+        });
         if pick {
             self.select_open = open;
         }

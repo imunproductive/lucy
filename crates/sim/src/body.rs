@@ -196,6 +196,8 @@ mod tests {
             spring: [125, 73],
             spring_speed: 2.0,
             fall: 0.25,
+            // A create starts the body's counter at 0.
+            discontinuity: 3,
         };
         let pose = owner_pose(source);
         assert_eq!(

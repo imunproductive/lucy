@@ -428,6 +428,13 @@ pub struct Movement {
     pub spring: [i32; 2],
     pub spring_speed: f64,
     pub fall: f32,
+    /// The body's discontinuity counter (+12; ow1-preservation's movement
+    /// "field 3", a teleport generation). The owner's client compares it
+    /// with its own body's: equal, a different state is a correction it
+    /// replays its later commands on; different, it takes the state as it
+    /// is, without replay (`orpheus_physics::mover::correction`). A create
+    /// starts the body at 0.
+    pub discontinuity: u32,
 }
 
 fn quantize(value: f64) -> Result<i64, WorldError> {
@@ -549,7 +556,14 @@ pub fn write_movement(
         };
         out.bits(u64::from(frame_back), width)?;
     }
-    out.bit(false); // +12
+    // +12: present, then one width bit (0: none, raw 32 bits follow), as
+    // ow1-preservation decoded it in the 104319 client (field 3: "changed
+    // bit, raw bit 0, u32"; 0xc61b60). Its short width is not known.
+    out.bit(state.discontinuity != 0);
+    if state.discontinuity != 0 {
+        out.bit(false);
+        out.bits(u64::from(state.discontinuity), 32)?;
+    }
     let pitch = state.pitch as u16;
     if pitch != 0 {
         selector(out, i64::from(pitch), 2, 16)?;
