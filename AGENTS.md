@@ -31,6 +31,8 @@ Research is expensive; never let it get lost, and never do it twice.
   - Add or update the report's line in the index `D:/Work/Coding/refs/reports/README.md`: the file, one sentence on what it covers, and the ids someone would search for.
   - What our own server does (behaviour, assumptions) still goes in `docs/notes/behavior.md`; the report holds the research behind it.
   - If your tools can't write files, put the full report in your final answer, and the integrator saves it.
+  - After you write a report or the index, read the file back to check the write landed: appends from a copied shell have failed silently before.
+- **Never run an `orpheus` binary with the user's state folder** (the default, `C:/Users/imunp/AppData/Roaming/orpheus`): give `--state <a temp folder of yours>` to `script query` and other commands. Two agents' queries once broke the user's game data cache there.
 
 ## Leftovers
 
