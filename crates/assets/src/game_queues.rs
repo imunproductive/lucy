@@ -103,6 +103,11 @@ impl<'a> Node<'a> {
         Ok(Self { asset, object })
     }
 
+    /// An instance of `asset`.
+    pub(crate) fn of(asset: &'a Asset, object: &'a Object) -> Self {
+        Self { asset, object }
+    }
+
     /// Whether the class has the field at all.
     fn has(self, name: &str) -> bool {
         Types::get().field_named(self.object.class, name).is_some()
