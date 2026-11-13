@@ -23,7 +23,7 @@ use crate::{
     bot_plate::{BotPlate, PlateSample},
     bot_script::{BotEvent, BotScripts, BotShot},
     bots::{Bot, BotCatalog, BotWalk},
-    combat::{BodyCombat, BotDeath, MeleeState, RespawnTimes, melee_states},
+    combat::{BodyCombat, BotDeath, RespawnTimes},
     controller::Controller,
     hitboxes::HitboxCatalog,
     hitscan::{RAY_PROFILES_FILE, RayProfiles},
@@ -137,7 +137,6 @@ pub struct SceneAssets {
     /// The bots' graphs' states that animate them.
     script_anims: Arc<ScriptAnims>,
     respawns: RespawnTimes,
-    melee: Arc<[MeleeState]>,
     /// The mode graphs' values the match flow uses.
     mode_graph_values: ModeGraphValues,
     /// The Biotic Field, when its graph reads; without it no field opens.
@@ -280,7 +279,6 @@ impl SceneAssets {
             runtime: runtime.to_path_buf(),
             build_collision: None,
             mode_props: read_mode_props(&data.join("collision_props_174.json"))?,
-            melee: melee_states(&graphs)?.into(),
             mode_graph_values: ModeGraphValues::read(&graphs)?,
             field,
             graphs,
@@ -603,7 +601,7 @@ impl SceneAssets {
         let graphs = Arc::clone(&self.graphs);
         let pools = Arc::clone(&self.pools);
         let eyes = Arc::clone(&self.eyes);
-        let (melee, field) = (Arc::clone(&self.melee), self.field);
+        let field = self.field;
         let player_unknowns = self.player_unknowns;
         let ult_rates = self.ult_rates;
         let mode = scene.map.mode_guid;
@@ -650,7 +648,6 @@ impl SceneAssets {
                         on_fire,
                         BodyCombat {
                             eyes: eyes.for_body(hero.body),
-                            melee: Arc::clone(&melee),
                             field,
                         },
                         player_unknowns,
@@ -1071,6 +1068,17 @@ impl PreparedScene {
         self.bot_scripts.hurt(entity, damage, &self.bots);
     }
 
+    /// An aura comes on the live bot at world tick `tick`, dealt by
+    /// `instigator` (Biotic Grenade's explosion).
+    pub fn apply_bot_aura(&mut self, entity: u32, aura: u64, instigator: u32, tick: u32) {
+        self.bot_scripts.apply_aura(entity, aura, instigator, tick);
+    }
+
+    /// The health changes the bots' graphs made since the last call.
+    pub fn take_bot_health_changes(&mut self) -> Vec<orpheus_script::vm::HealthChange> {
+        self.bot_scripts.take_health_changes()
+    }
+
     /// The dead bots' death scripts (combat.py `_advance_bot_death`).
     pub fn advance_bot_deaths(&mut self, tick: u32) {
         self.bot_scripts.advance_deaths(&self.bots, tick);
@@ -1416,9 +1424,11 @@ mod tests {
                 }
             }
         }
-        // Every shot of the session, Helix and the quick melee included; a
-        // change here means the weapons' timing changed.
-        assert_eq!(shots, 32);
+        // Every shot of the session, Helix included; a change here means
+        // the weapons' timing changed. Quick melee is no shot: its graph
+        // (`0043`) strikes only the bodies its search finds, and this world
+        // lists none.
+        assert_eq!(shots, 31);
         let snapshot = runtime.snapshot().unwrap();
         let assumed: Vec<_> = snapshot
             .assumptions
@@ -1449,15 +1459,39 @@ mod tests {
                 (
                     0x0043,
                     Some(11),
-                    "STUStatescriptStateTrackTargets m_D59188D5",
-                    "finds no targets"
+                    "STUStatescriptStateTrackTargets bodies",
+                    "finds no targets (the world lists none)"
                 ),
                 (0x0043, Some(9), "STU_23A00A53", "no effect"),
                 (
                     0x0043,
                     Some(10),
-                    "STUStatescriptStateModifyHealth",
-                    "no effect"
+                    "STUStatescriptStateModifyHealth m_B12BFE8B",
+                    "not read"
+                ),
+                (
+                    0x0043,
+                    Some(10),
+                    "STUStatescriptModifyHealth m_knockbackRings",
+                    "not read"
+                ),
+                (
+                    0x0043,
+                    Some(10),
+                    "STUStatescriptModifyHealth m_C0139FA6",
+                    "not read"
+                ),
+                (
+                    0x0043,
+                    Some(10),
+                    "STUStatescriptModifyHealth m_E33EFEE1",
+                    "not read"
+                ),
+                (
+                    0x0043,
+                    Some(10),
+                    "STUStatescriptModifyHealth m_10399AE7",
+                    "not read"
                 ),
                 (0x0043, Some(63), "STU_0A6BE10E", "no effect"),
                 (

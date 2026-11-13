@@ -302,7 +302,7 @@ impl ProjectileFlight {
             .ballistics
             .blast
             .as_ref()
-            .filter(|blast| blast.hit.amount > 0.0)
+            .filter(|blast| blast.hit.amount > 0.0 && blast.aura.is_none())
         {
             for (entity, pose) in targets {
                 let entity = *entity;
@@ -351,7 +351,12 @@ impl ProjectileFlight {
     pub fn own_blast(&self, own: &TargetPose) -> Option<OwnBlast> {
         let blast = self.ballistics.blast.as_ref().filter(|_| self.exploded)?;
         let distance = own.surface_distance(self.position);
-        let damage = blast.hit.amount.max(0.0) * blast.multiplier(distance) * blast.self_damage;
+        let amount = if blast.aura.is_some() {
+            0.0
+        } else {
+            blast.hit.amount.max(0.0)
+        };
+        let damage = amount * blast.multiplier(distance) * blast.self_damage;
         let knockback = self.blast_push(own);
         (damage > 0.0 || knockback.is_some()).then_some(OwnBlast {
             distance,
@@ -361,6 +366,15 @@ impl ProjectileFlight {
             direction: self.blast_line(own),
             knockback,
         })
+    }
+
+    /// The aura its explosion puts on a body at `pose` (Biotic Grenade's
+    /// [`orpheus_script::weapons::Blast::aura`]), once it exploded: when the
+    /// body is within its rings.
+    pub fn blast_aura(&self, pose: &TargetPose) -> Option<u64> {
+        let blast = self.ballistics.blast.as_ref().filter(|_| self.exploded)?;
+        let aura = blast.aura?;
+        (blast.multiplier(pose.surface_distance(self.position)) > 0.0).then_some(aura)
     }
 
     /// Its explosion's push on a body at `pose`, once it exploded, as on its
@@ -462,6 +476,7 @@ mod tests {
                 hit: hit(80.0),
                 rings: vec![(1.0, 1.0), (3.0, 0.5)],
                 self_damage: 0.5,
+                aura: None,
                 knockback: Some(Knockback {
                     away: 4.0,
                     upward: 6.0,
@@ -490,6 +505,7 @@ mod tests {
                 hit: hit(350.0),
                 rings: vec![(2.0, 1.0), (4.0, 0.2)],
                 self_damage: 0.0,
+                aura: None,
                 knockback: None,
             }),
             radius: 0.0,

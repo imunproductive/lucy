@@ -10,8 +10,8 @@
 //!   owner). `m_05BE62DD` is then an offset from that entity's feet: the
 //!   Biotic Field (`0258` st0) and Soldier: 76's ally count (`0257` st6)
 //!   use (0, 1, 0), a metre up, and quick melee (`0043` st5) adds
-//!   (0, 0, 1.5) to the eye's height above the feet, 1.5 m ahead
-//!   (`combat::melee_states` in `orpheus_sim` reads that reach). Without
+//!   (0, 0, 1.5) to the eye's height above the feet (`STU_21A13145`, the
+//!   eye, less `STU_71A87E92`, the feet), 1.5 m ahead. Without
 //!   the entity, `m_05BE62DD` is a world point (an entity's position
 //!   config). Fairly sure.
 //! - `m_radius`: the sphere's radius in metres (Biotic Field `#422` = 5,
@@ -47,15 +47,17 @@
 //!     and the tag lists (as `STU_AC829876` has them) are not modelled.
 //!
 //! The server runs the forms whose set fields are only these (an entity
-//! sphere with a vertical offset, or a world point; a whole sphere; a
-//! filter of kinds 1 or 64 or all, exclusion bit 16, a team relation and
-//! bit 4): `0257` st6 and Reinhardt's `0095` st18, both counting allies
-//! within 10 m for a criteria. Any other set field (line of sight or
-//! sweep origins, a second filter `m_3D667CE3` with collision assets,
-//! scoring `m_84E5DE4E`, limits, the outputs `m_24A4AB8A` and `m_CEE20F6F`
-//! that ModifyHealth's `m_B12BFE8B` and SetVars read) or an offset the
-//! server can't evaluate (quick melee's needs the eye and the aim) leaves
-//! the search finding nothing, recorded as an assumption naming the field.
+//! sphere with a vertical or forward offset, or a world point; a whole
+//! sphere; a filter of kinds 1 or 64 or all, exclusion bit 16 (and the
+//! open bit 4), a team relation and bit 4 (and the open bit 1)): `0257`
+//! st6 and Reinhardt's `0095` st18, both counting allies within 10 m for a
+//! criteria, and quick melee's `0043` st5, whose line of sight
+//! (`m_D59188D5`, `m_3D667CE3`) isn't tested and whose output `m_24A4AB8A`
+//! isn't written (assumptions, as the Python reference). A forward offset
+//! goes along the entity's aim. Any other set field (sweep origins,
+//! scoring `m_84E5DE4E`, limits, the output `m_CEE20F6F` that SetVars
+//! read) or an offset the server can't evaluate leaves the search finding
+//! nothing, recorded as an assumption naming the field.
 //! The ten byte and enum fields after `m_2A0FB8BB` are in every use with
 //! values whose meaning is open; they are not read.
 //!
@@ -86,10 +88,8 @@ const UNMODELLED: &[&str] = &[
     "m_16BDE607",
     "m_8862A75D",
     "m_E474FFD6",
-    "m_D59188D5",
     "m_48837057",
     "m_294660A6",
-    "m_3D667CE3",
     "m_229DD034",
     "m_BA6C9F75",
     "m_9E1426F6",
@@ -98,7 +98,6 @@ const UNMODELLED: &[&str] = &[
     "m_93AB8C13",
     "m_C39691D9",
     "m_CEE20F6F",
-    "m_24A4AB8A",
     "m_84E5DE4E",
     "m_4A6E0895",
     "m_8CBE558B",
@@ -125,8 +124,26 @@ const ALL_KINDS: u64 = 0x3fff_ffff;
 const BODY_KINDS: u64 = 1 | 64;
 /// `m_4EA686DB`: the dead are left out.
 const EXCLUDE_DEAD: u64 = 16;
+/// `m_4EA686DB` bit 4, in the hits' searches (quick melee `0043`): open,
+/// not read.
+const EXCLUDE_OPEN: u64 = 4;
 /// `m_89831602`: the searching body is left out.
 const EXCLUDE_SELF: u64 = 4;
+/// `m_89831602` bit 1, in the hits' searches (quick melee, Reinhardt's
+/// charge): open, not read.
+const FLAG_OPEN: u64 = 1;
+
+/// Fields set in quick melee's search (`0043` st5) that the server runs
+/// without: the line of sight from `m_D59188D5` (the eye, `STU_21A13145`)
+/// with the collision filter `m_3D667CE3` (`0690.002B`), which the Python
+/// reference didn't test either, and the output `m_24A4AB8A` (`#23530`,
+/// which only the ModifyHealth's unread `m_B12BFE8B` reads). Each set one
+/// is an assumption.
+const UNREAD: &[(&str, &str)] = &[
+    ("m_D59188D5", "no line-of-sight test"),
+    ("m_3D667CE3", "no line-of-sight test"),
+    ("m_24A4AB8A", "not written"),
+];
 
 /// Why a search finds nothing.
 enum Gap {
@@ -199,6 +216,18 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
         };
         self.assume(site, CLASS, "a sphere search (flag fields unread)");
+        for (name, answer) in UNREAD {
+            if is_set(field(&node.fields, name)) {
+                self.assume(site, &format!("{CLASS} {name}"), answer);
+            }
+        }
+        let filter = field(&node.fields, "m_filter");
+        if number(filter, "m_4EA686DB") & EXCLUDE_OPEN != 0 {
+            self.assume(site, &format!("{CLASS} m_filter.m_4EA686DB 4"), "not read");
+        }
+        if number(filter, "m_89831602") & FLAG_OPEN != 0 {
+            self.assume(site, &format!("{CLASS} m_filter.m_89831602 1"), "not read");
+        }
         let now = self.machine.now_ms;
         let state = self.state_mut(key).expect("active TrackTargets");
         let before: Vec<u32> = state.tracked.iter().map(|target| target.entity).collect();
@@ -303,17 +332,17 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         {
             return Err(Gap::Filter(name));
         }
-        let number = |name: &str| field(filter, name).as_u64().unwrap_or(0);
+        let number = |name: &str| number(filter, name);
         let kinds = number("m_84065FD1");
         if kinds != ALL_KINDS && kinds & BODY_KINDS == 0 {
             return Err(Gap::Filter("m_84065FD1"));
         }
         let excluded = number("m_4EA686DB");
-        if excluded & !EXCLUDE_DEAD != 0 {
+        if excluded & !(EXCLUDE_DEAD | EXCLUDE_OPEN) != 0 {
             return Err(Gap::Filter("m_4EA686DB"));
         }
         let flags = number("m_89831602");
-        if flags & !EXCLUDE_SELF != 0 {
+        if flags & !(EXCLUDE_SELF | FLAG_OPEN) != 0 {
             return Err(Gap::Filter("m_89831602"));
         }
         let relation = match number("m_66747E7D") {
@@ -329,15 +358,29 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 _ => return Err(Gap::Field("m_8DCA77B6")),
             },
         };
-        let Some(Value::Vector(offset)) =
+        let Some(Value::Vector(mut offset)) =
             self.evaluate_quietly(id, node, field(fields, "m_05BE62DD"))
         else {
             return Err(Gap::Field("m_05BE62DD"));
         };
-        // An offset across the entity's frame turns with it, by a rule
-        // nothing in the data shows.
-        if entity.is_some() && (offset[0] != 0.0 || offset[2] != 0.0) {
-            return Err(Gap::Field("m_05BE62DD"));
+        if let Some(entity) = entity {
+            // A sideways offset turns with the entity by a rule nothing in
+            // the data shows. A forward one (quick melee's 1.5 m) goes along
+            // where the entity looks, its pitch included, as the Python
+            // reference aimed quick melee (`combat.py` `_melee`: the eye
+            // plus the aim times the reach); assumption.
+            if offset[0] != 0.0 {
+                return Err(Gap::Field("m_05BE62DD"));
+            }
+            if offset[2] != 0.0 {
+                let facing = self
+                    .world
+                    .entity_facing(self.site(id, node), entity)
+                    .ok_or(Gap::Field("m_05BE62DD"))?;
+                let aim = expr::aim(facing);
+                let ahead = offset[2];
+                offset = [aim[0] * ahead, offset[1] + aim[1] * ahead, aim[2] * ahead];
+            }
         }
         let radius = self
             .evaluate_quietly(id, node, field(fields, "m_radius"))
@@ -382,8 +425,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     }
 }
 
+/// A filter's number field; 0 when unset.
+fn number(filter: &Json, name: &str) -> u64 {
+    field(filter, name).as_u64().unwrap_or(0)
+}
+
 /// A config that says something: not null, and not a literal zero or false.
-fn is_set(value: &Json) -> bool {
+pub(super) fn is_set(value: &Json) -> bool {
     match value {
         Json::Null => false,
         Json::Bool(value) => *value,

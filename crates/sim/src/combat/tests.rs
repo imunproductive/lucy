@@ -202,24 +202,6 @@ fn heroes_respawn_after_the_mode_time() {
     assert_eq!(RESPAWN_RETRY, Duration::from_millis(250));
 }
 
-/// combat.py `MELEE = {0x0043: (4, 1.5, 1.0)}`, read from graph 0043.
-#[test]
-#[ignore = "requires the derived 104319 statescript catalog"]
-fn quick_melee_reads_the_python_sphere_from_its_graph() {
-    let graphs = orpheus_script::graph::GraphStore::load(
-        orpheus_testkit::runtime_dir().join("data/game_graphs_174.json.gz"),
-    )
-    .unwrap();
-    assert_eq!(
-        melee_states(&graphs).unwrap(),
-        [MeleeState {
-            state: 4,
-            reach: 1.5,
-            radius: 1.0
-        }]
-    );
-}
-
 /// The kill feed line reads the killer, the credited body (00BD), the
 /// tags (003D), the crit and the loadout from the "died" message.
 #[test]
@@ -303,6 +285,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
         field_ids: FieldIds::default(),
         next_rocket: 0,
         landed: Vec::new(),
+        auras: Vec::new(),
     };
     let bodies = |free_for_all, allies| -> Vec<u32> {
         combat
