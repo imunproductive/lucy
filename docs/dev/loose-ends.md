@@ -36,3 +36,4 @@ Small things left undone by finished work. Each entry says what is missing, wher
 ## Tools and tests
 
 - **`ORPHEUS_DEBUG_BOT_BODY`** crashes the game: it changes only the bot's create while the server runs the old body's graphs. Fix: choose the body when the bot list loads. `D:/Work/Coding/refs/reports/HitPredict.md`.
+- **Data cache hardening.** `cache::ensure` now derives each run into `104319.new.<pid>`, so runs at the same time can't mix their files (fixed after a stamped half pack stopped the user's server, 2026-11-13). Still open: a killed run leaves its `104319.new.<pid>` folder behind (about 1.7 GB; nothing deletes stale ones), and a pack is trusted on its stamp alone. Checking that every file the server requires exists before trusting the stamp would make any future partial pack re-derive. `crates/assets/src/cache.rs`, `apps/orpheus/src/serve.rs`.
