@@ -182,7 +182,14 @@ mod tests {
 
         let schemas = Schemas::game();
         let members = members();
-        let practice_range = GameMap::practice_range();
+        // Python's Range was mode 0018 with one player; ours is 005A for a
+        // party (`maps.rs` `PYTHON_PRACTICE_RANGE_MODE`), so the comparison
+        // takes Python's mode and team size.
+        let practice_range = GameMap {
+            mode_guid: orpheus_content::maps::PYTHON_PRACTICE_RANGE_MODE,
+            team_sizes: vec![1, 0],
+            ..GameMap::practice_range()
+        };
         let free_for_all = GameMap {
             map_guid: 12,
             mode_guid: 34,
