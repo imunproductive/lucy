@@ -56,7 +56,7 @@ use orpheus_script::{
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
-    vm::{GameMessage, Motion, MoveRequest, Snapshot, TargetCandidate},
+    vm::{GameMessage, Motion, MoveRequest, RaisedCriteria, Snapshot, TargetCandidate},
     weapons::ProjectileBallistics,
     wire::{Value as ScriptValue, Variables},
 };
@@ -246,7 +246,7 @@ pub trait OwnerBodyRuntime: Send {
 
     /// The criteria the body's graphs raised on it since the last call
     /// ([`crate::voice_lines`]).
-    fn take_criteria(&mut self) -> Vec<u64> {
+    fn take_criteria(&mut self) -> Vec<RaisedCriteria> {
         Vec::new()
     }
 

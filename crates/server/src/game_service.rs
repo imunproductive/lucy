@@ -2827,10 +2827,16 @@ impl State {
                     peer.world.update_bots(&world.scene, events, tick);
                 }
                 // ClientInVoice 27500: each bot line to every client of the
-                // room with a body (voice_lines.rs).
-                if let Some(body) = peer.world.current_body() {
-                    for voice in bot_voices.get(&id).into_iter().flatten() {
-                        peer.notice(voice.notice(body));
+                // room whose body hears it: its audience lists the body
+                // (a pain line's: the bot and its attacker), within the
+                // stimulus's radius of the bot (voice_lines.rs).
+                if let (Some(body), Some(position)) =
+                    (peer.world.current_body(), peer.world.hearing_position())
+                {
+                    for (voice, speaker) in bot_voices.get(&id).into_iter().flatten() {
+                        if voice.heard(body, *speaker, position) {
+                            peer.notice(voice.notice(body));
+                        }
                     }
                 }
             }
@@ -2889,11 +2895,13 @@ impl State {
     }
 
     /// ClientInVoice 27500 for the lines the players' bodies said this tick
-    /// (the communication wheel's, `orpheus_sim::voice_lines`): each goes to
-    /// every client of the room whose body is within the stimulus's radius
-    /// of the speaker's (35 m for the wheel's), the speaker's own client
-    /// too. Assumption: the client doesn't apply the radius itself (the
-    /// bots' lines go to every client, which leaves it to the client).
+    /// (the communication wheel's and the pain lines,
+    /// `orpheus_sim::voice_lines`): each goes to every client of the room
+    /// whose body its audience lists (all for the wheel's; the hurt body
+    /// and its attacker for a pain line) and is within the stimulus's
+    /// radius of the speaker's (35 m for both), the speaker's own client
+    /// too. Assumption: the client doesn't apply the radius itself; the
+    /// bots' lines go out the same way.
     fn say_player_lines(&mut self, tick: u32) {
         let mut said: HashMap<MatchId, Vec<(VoiceLine, [f64; 3])>> = HashMap::new();
         for (connection, peer) in &mut self.peers {
@@ -2926,7 +2934,7 @@ impl State {
                 continue;
             };
             for (line, speaker) in lines {
-                if line.heard(*speaker, position) {
+                if line.heard(body, *speaker, position) {
                     peer.notice(line.notice(body));
                 }
             }
