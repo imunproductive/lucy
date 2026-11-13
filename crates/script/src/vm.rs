@@ -433,14 +433,29 @@ pub trait World {
     }
 
     /// A `STUStatescriptActionCriteria` on the body itself (its `m_targets`
-    /// the owner) raised `identifier`: the event the body's voice set
+    /// the owner) raised a criteria: the event the body's voice set
     /// answers with a voice stimulus whose criteria names it (the Training
     /// Bot's server-only `0C17` nodes raise `0608` / `0609` after a hit,
     /// which its voice set `011D.05F` answers with its pain lines; a
     /// player's `0686` raises the wheel choice's line, Hello `0AEB`). The
     /// server plays the line (ClientInVoice 27500). By default nothing
     /// listens.
-    fn criteria(&mut self, _site: Site, _identifier: u64) {}
+    fn criteria(&mut self, _site: Site, _raised: RaisedCriteria) {}
+}
+
+/// A criteria a body raised on itself ([`World::criteria`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RaisedCriteria {
+    pub identifier: u64,
+    /// Who hears the line the voice set answers with: the entities the
+    /// action's `m_297E0B63` lists when it lists some, in order; none when
+    /// it names no list or all players (`STU_BD2D717B`, the wheel's `0686`).
+    /// The pain criteria list the hurt body and its attacker (`0C17` rid 21
+    /// to 23, `01CA` rid 89 to 91 and `14B1` rid 30 to 32 fill #1839 with
+    /// them after the `STU_ED45C5E8` query), the kill criteria `071B` the
+    /// victim and its killer. Assumption: the list is the line's audience;
+    /// no other field of the action or the stimulus limits who hears it.
+    pub audience: Option<Vec<u32>>,
 }
 
 /// A game message one body sends another, for the world to route
