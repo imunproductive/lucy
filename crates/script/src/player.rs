@@ -554,6 +554,9 @@ mod tests {
         const FIRST: u32 = 1000;
         const BOT: u32 = 0x8000_8800;
         const BOT_CONTROLLER: u32 = 0x8000_8000;
+        // Another player's body, whose controller is its id less the low
+        // byte (`orpheus_sim::combat` `target_candidates`).
+        const ENEMY: u32 = 0xa000_0201;
         const KNOCKBACK: u16 = 7;
         const MINOR: u64 = 0x0d80_0000_0000_0608;
         const SEVERE: u64 = 0x0d80_0000_0000_0609;
@@ -561,11 +564,14 @@ mod tests {
         let data = orpheus_testkit::runtime_dir().join("data");
         let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
         let soldier = &graphs.bodies()[&0x0400_0000_0000_03cf];
-        let explosion: crate::weapons::DamageTags = [0x03bf, 0x04b1, 0x078d, 0x0980, 0x2d30]
-            .map(|tag| 0x0d80_0000_0000_0000 | tag)
-            .into_iter()
-            .collect();
-        let hurt = |source: u32, amount: f64, direction: [f64; 3]| {
+        let tags = |ids: &[u64]| -> crate::weapons::DamageTags {
+            ids.iter().map(|tag| 0x0d80_0000_0000_0000 | tag).collect()
+        };
+        let explosion = tags(&[0x03bf, 0x04b1, 0x078d, 0x0980, 0x2d30]);
+        // The Heavy Pulse Rifle's bullet (`0254` rid 23), less its one tag
+        // read from a variable.
+        let bullet = tags(&[0x03bf, 0x09a2, 0x1e1e, 0x2d2f, 0x4d29]);
+        let hurt = |source: u32, amount: f64, tags: crate::weapons::DamageTags, direction| {
             let filter = 0x0004_0001 | (0x80_0000 << 1);
             let mut world = PlayerWorld::new(
                 Arc::clone(&graphs),
@@ -579,6 +585,7 @@ mod tests {
             world.target_tags = soldier.target_tags.clone();
             world.targets = Some(vec![
                 body(BODY, Some(0), [0.0; 3]),
+                body(ENEMY, Some(1), [0.0, 0.0, 10.0]),
                 TargetCandidate {
                     controller: Some(BOT_CONTROLLER),
                     ..body(BOT, Some(1), [0.0, 0.0, 10.0])
@@ -608,7 +615,7 @@ mod tests {
                     .unwrap();
             }
             let parameters = Variables::from([
-                (DAMAGE_TAGS, explosion.to_value()),
+                (DAMAGE_TAGS, tags.to_value()),
                 (DAMAGE_SOURCE, Value::Entity(source)),
                 (DAMAGE_AMOUNT, Value::Float(amount)),
                 (DAMAGE_DIRECTION, Value::Vector(direction)),
@@ -628,16 +635,18 @@ mod tests {
                     .unwrap()
             };
             let flinch = instance(0x02c5);
-            assert!(flinch.states[&KNOCKBACK].active, "the knockback anim");
+            let knockback = flinch
+                .states
+                .get(&KNOCKBACK)
+                .is_some_and(|state| state.active);
+            let strength = flinch.variables.get(&1024).cloned();
             assert_eq!(flinch.variables[&1018], Value::Vector(direction));
-            assert_eq!(
-                instance(0x01cf).variables[&9737],
-                Value::Entity(if source == BODY {
-                    CONTROLLER
-                } else {
-                    BOT_CONTROLLER
-                })
-            );
+            let controller = match source {
+                BODY => CONTROLLER,
+                BOT => BOT_CONTROLLER,
+                other => other & !0xff,
+            };
+            assert_eq!(instance(0x01cf).variables[&9737], Value::Entity(controller));
             let Value::Float(rating) = snapshot.variables[&10417] else {
                 panic!("004B rates the hurt");
             };
@@ -658,10 +667,10 @@ mod tests {
                 "{:?}",
                 snapshot.diagnostics
             );
-            (rating, criteria)
+            (rating, criteria, knockback, strength)
         };
 
-        let (rating, criteria) = hurt(BOT, 120.0, [0.0, 0.0, -1.0]);
+        let (rating, criteria, knockback, _) = hurt(BOT, 120.0, explosion, [0.0, 0.0, -1.0]);
         assert!((rating - 0.888).abs() < 1e-6, "{rating}");
         // The pain's audience (`01CA` #1839) is the hurt body and its
         // attacker, once each; `191D` names none.
@@ -672,11 +681,34 @@ mod tests {
                 (10, ABOVE_A_TENTH, None)
             ]
         );
-        let (rating, criteria) = hurt(BODY, 40.0, [0.0, 1.0, 0.0]);
+        assert!(knockback, "the knockback anim");
+        let (rating, criteria, knockback, _) = hurt(BODY, 40.0, explosion, [0.0, 1.0, 0.0]);
         assert!((rating - 0.296).abs() < 1e-6, "{rating}");
         assert_eq!(
             criteria,
             [(10, MINOR, Some(vec![BODY])), (10, ABOVE_A_TENTH, None)]
         );
+        assert!(knockback, "the knockback anim");
+        // An enemy Soldier: 76's bullet of 19: the gun tag `09A2` flinches
+        // (0.4), no knockback; 0.095 + 0.3 × 19 / 125 = 0.1406. The pain's
+        // audience is the hurt body and the enemy player's body.
+        let (rating, criteria, knockback, strength) = hurt(ENEMY, 19.0, bullet, [0.0, 0.0, -1.0]);
+        assert!((rating - 0.1406).abs() < 1e-6, "{rating}");
+        assert_eq!(
+            criteria,
+            [
+                (10, MINOR, Some(vec![BODY, ENEMY])),
+                (10, ABOVE_A_TENTH, None)
+            ]
+        );
+        assert!(!knockback);
+        assert_eq!(strength, Some(Value::Float(f64::from(0.4_f32))));
+        // The same bullet from an Easy AI hero deals a quarter of it (4.75,
+        // `ai::scale_damage`): 0.02375 + 0.3 × 4.75 / 125 = 0.0352, at most
+        // 0.1, so it flinches but raises no pain line.
+        let (rating, criteria, _, strength) = hurt(ENEMY, 4.75, bullet, [0.0, 0.0, -1.0]);
+        assert!((rating - 0.035_15).abs() < 1e-6, "{rating}");
+        assert!(criteria.is_empty(), "{criteria:?}");
+        assert_eq!(strength, Some(Value::Float(f64::from(0.4_f32))));
     }
 }

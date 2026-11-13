@@ -390,6 +390,88 @@ fn target_searches_see_the_players_then_the_bots() {
     }
 }
 
+/// A player's shot on another player's body: the hit waits for the match
+/// with what the victim's damage message carries (`damage_message`): the
+/// shooter's body as the attacker, the weapon's damage tags and the way
+/// from the shooter's feet to the victim's, as this tick placed them.
+#[test]
+#[ignore = "requires a derived 104319 Practice Range scene"]
+fn a_players_shot_on_another_player_carries_its_tags_and_way() {
+    const ENEMY: u32 = 0xa000_0201;
+    let mut scene = SceneAssets::load(orpheus_testkit::runtime_dir())
+        .unwrap()
+        .prepare(GameMap::practice_range())
+        .unwrap();
+    // Open ground beside a bot, which stands behind the enemy.
+    let [x, y, z] = scene.bots()[0].position;
+    let mut combat = Combat::new(&scene);
+    let context = ShotContext {
+        quanta: RETAIL_QUANTA,
+        tick: 1000,
+        now: Duration::from_secs(4),
+    };
+    let player = |body, team, feet| PlayerTarget {
+        body,
+        team,
+        pose: TargetPose {
+            feet,
+            height: 1.8,
+            radius: 0.4,
+            eye: 1.55,
+            yaw: 0.0,
+            shapes: None,
+        },
+        dead: false,
+        hurt: false,
+    };
+    combat.record_poses(
+        &scene,
+        &[
+            player(SHOOTER.source, 0, [x - 8.0, y, z]),
+            player(ENEMY, 1, [x - 4.0, y, z]),
+        ],
+        context.tick,
+    );
+    let tags: DamageTags = [0x0d80_0000_0000_03bf, 0x0d80_0000_0000_09a2]
+        .into_iter()
+        .collect();
+    let shot = PosedHitscan {
+        source: SHOOTER.source,
+        origin: [x - 8.0, y + 1.2, z],
+        command: Command {
+            frame: context.tick,
+            yaw: 16384,
+            ..Command::default()
+        },
+        direction: [1.0, 0.0, 0.0],
+        shot_frame: 999,
+        reach: 100.0,
+        hit: HitDefinition {
+            amount: 19.0,
+            loadout: None,
+            critical: 2.0,
+            falloff: None,
+            tags,
+            allies: AllyHits::None,
+        },
+        ray_profile: None,
+    };
+    assert!(
+        combat
+            .hitscan(&mut scene, shot, SHOOTER, context, |_| true)
+            .unwrap()
+            .is_none(),
+        "the enemy player stands in front of the bot"
+    );
+    let [hit] = combat.take_player_hits().try_into().unwrap();
+    assert_eq!(
+        (hit.body, hit.shooter, hit.amount, hit.heal, hit.critical),
+        (ENEMY, SHOOTER, 19.0, false, false)
+    );
+    assert_eq!(hit.tags, tags);
+    assert_eq!(hit.direction, Some([1.0, 0.0, 0.0]));
+}
+
 /// The Biotic Rifle's hit (`0B94` st44: 70, strikes hurt allies) on the
 /// Practice Range, after leafall903/ORPHEUS (MIT) `test_game_ana.py`
 /// (c239a84): a hurt Friendly Bot heals 70 and then the rest to full, with
