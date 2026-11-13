@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::combat::{Combat, CombatPlayer, ENVIRONMENT_DAMAGE, Shooter, apply_player_hits};
-use crate::scene_assets::install_collision_build;
+use crate::scene_assets::{FellOut, install_collision_build};
 use orpheus_content::{maps::SpawnChoice, stats::PlayerStats};
 use orpheus_wire::combat_messages::CombatNotice;
 
@@ -212,7 +212,9 @@ fn a_hero_change_in_the_room_keeps_position_and_yaw() {
     assert_eq!(after.yaw, 12345);
 }
 
-/// A fall onto the Range's pit floor (-11 m) kills: the body is its own
+/// A fall onto the Range's pit floor (-11 m) kills: the rules test the
+/// capsule centre, 1.25 m above the feet of a standing Soldier: 76 (2.0 m,
+/// pogo 0.5), so landing there puts it at -9.75 m. The body is its own
 /// killer ("YOU DIED", a death on the board) and it comes back at the spawn
 /// point after the Range's 3 s, not a moment before.
 #[test]
@@ -220,15 +222,17 @@ fn a_hero_change_in_the_room_keeps_position_and_yaw() {
 fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
     let scene = scene();
     assert_eq!(scene.kill_height(), Some(-11.0));
-    assert!(!scene.fell_out([95.0, -5.25, 10.0]));
+    // A centre over the lowest floor a player walks on (-5.25 m).
+    assert_eq!(scene.fell_out([95.0, -4.0, 10.0], 1.25), None);
     let card = PlayerCard::default();
     let viewer = viewer(&card);
     let mut world = spawned(&scene, &viewer);
     let body = world.current_body().unwrap();
     // Feet on the pit floor, where a fall out of the range ends.
     place(&mut world, &scene, [95.0, -11.0, 10.0], 0);
-    let position = world.body_position().unwrap();
-    assert!(scene.fell_out(position));
+    let (centre, above_feet) = world.body_centre().unwrap();
+    assert!((above_feet - 1.25).abs() < 1e-6, "{above_feet}");
+    assert_eq!(scene.fell_out(centre, above_feet), Some(FellOut::Environment));
 
     let mut combat = Combat::new(&scene);
     combat.environment_kill(body, 0, FIRST_TICK + 20);
@@ -284,8 +288,9 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
 }
 
 /// Watchpoint: Gibraltar has no damage areas and no catch floor: a body that
-/// falls off it dies in one of its kill volumes, 4 m slabs a few metres below
-/// its lowest floor, not 50 m lower under the map's lowest triangle.
+/// falls off it dies when its capsule centre enters one of its kill volumes,
+/// 4 m slabs a few metres below its lowest floor. The safety net, 20 m under
+/// the map's lowest triangle (about -63.5 m), catches only what they miss.
 #[test]
 #[ignore = "requires a derived 104319 pack and the install (Gibraltar's collision)"]
 fn a_fall_off_gibraltar_dies_in_its_kill_volume() {
@@ -306,11 +311,22 @@ fn a_fall_off_gibraltar_dies_in_its_kill_volume() {
         .unwrap();
     let scene = assets.prepare(map).unwrap();
     assert_eq!(scene.kill_height(), None);
-    // The lowest floor the AI walks on (-10.84 m) is safe.
-    assert!(!scene.fell_out([33.375, -10.85, -104.625]));
-    // The slab under the drop by the first checkpoint: top -11.72 m.
-    assert!(!scene.fell_out([100.7, -11.6, 58.4]));
-    assert!(scene.fell_out([100.7, -11.8, 58.4]));
+    // A standing centre (1.25 m up) over the lowest floor the AI walks on
+    // (-10.84 m) is safe.
+    assert_eq!(scene.fell_out([33.375, -9.59, -104.625], 1.25), None);
+    // The slab under the drop by the first checkpoint: top -11.72 m, so the
+    // feet are at -12.97 m when the centre enters it.
+    assert_eq!(scene.fell_out([100.7, -11.6, 58.4], 1.25), None);
+    assert_eq!(
+        scene.fell_out([100.7, -11.8, 58.4], 1.25),
+        Some(FellOut::Environment)
+    );
+    // Under the slab, above the net: alive; below the net: dead.
+    assert_eq!(scene.fell_out([100.7, -70.0, 58.4], 1.25), None);
+    assert_eq!(
+        scene.fell_out([100.7, -90.0, 58.4], 1.25),
+        Some(FellOut::BelowMap)
+    );
 }
 
 /// A pick while dead waits for the respawn, which plays the new hero.

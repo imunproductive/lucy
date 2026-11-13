@@ -137,6 +137,18 @@ With the Rust server: the client entered the Practice Range, but weapons were mi
   | Kanezaka | `0DBC` | 0 | 0.43 | — | 0 |
   | Malevento | `0E49` | 1 | -5.84 | — | 0 |
 
+- **2026-11-13, death zones test the body's centre (Rust server, tests only, not checked with the client).** This replaces "feet" in the three entries above. The user saw retail test the centre of the body, not the feet. Damage areas, kill volumes and the catch floor now test the centre of the body's collision capsule, from its mover data and stance: 1.25 m above the feet for a standing hero of 2.0 m with a 0.5 m pogo (most heroes), 1.0 m for Torbjörn (1.5 m), 1.4 m for the 2.3 m tanks, 1.5 m for Winston, Sigma and Wrecking Ball. A body dies when its centre enters a lethal area or a kill volume, so it falls 1.25 m further than before. The movers stand on the Practice Range's catch floor, so there the body dies when its centre is no higher above the floor than above its feet: landing on the -11 m pit still kills. The "lowest collision triangle" rule is gone. In its place is a safety net that is not a game rule: a living body whose centre is 20 m below the map's lowest collision triangle dies, and the server logs a warning with the map and the position, because the map's data then lacks the volume that kills there. Only Hollywood, Temple of Anubis and Ecopoint: Antarctica (closed) and the menu maps (never played) have neither damage areas nor kill volumes nor a catch floor.
+
+  Oasis with the centre rule (`game_map_areas_174.json`; lowest AI floor as in the table; the feet height is where a standing 1.25 m centre enters the zone):
+
+  | Part | Kill volume top | Lethal damage area top | Lowest AI floor | Feet at death | Below the floor |
+  |---|---|---|---|---|---|
+  | City Center `074A` | -4.65 | -8.48 (placeable 1927, damage 100) | 0.7 | -5.90 | 6.6 m |
+  | Gardens `074C` | 0.77 | 0.00 (placeable 610) | 2.45 | -0.48 | 2.93 m |
+  | University `074D` | 3.49 | 2.59 (placeable 1213) | 9.1 | 2.24 | 6.86 m |
+
+  The kill volume is always higher than the damage area, so it decides. Gardens is still the closest: with feet it killed 1.68 m under the lowest AI floor, now 2.93 m. No floor the AI walks on is inside the box, and a crouched body's centre (0.75 m up) on the 2.45 m floor stays 1.7 m above it, so the data alone doesn't show a box that is too close; if retail still dies lower, the AI floor may not be the lowest floor of Gardens' drops, which needs a check in the game. City Center's placeable 1927 also has two small lethal boxes from 0.34 to 8.77 m (centres (57.8, 4.6, 298.0) and (193.8, 4.6, 161.9)); where they stand on the map is not checked; its two areas of damage 0 do nothing.
+
 ## Upstream author's claims (not independently verified)
 
 The imported game-server branch (LizRollin `9f8f3bcb`) claimed these work in the game:
