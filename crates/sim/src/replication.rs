@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{
-    announcer::Multikills,
+    announcer,
     body::{BodyCreate, BodyView, body_create, owner_pose},
     body_script::OwnerBodySpawn,
     bot_script::{BotEvent, BotViewContext, BotViews, SeenDelivery, SeenRocket},
@@ -53,6 +53,7 @@ use orpheus_physics::{
     mover::kinematics::{Poses, poses as kinematics_poses, repeated},
     mover::modifiers::{Modifier, ModifierKey},
 };
+use orpheus_script::controller::ControllerScript;
 use orpheus_script::{
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
@@ -1350,9 +1351,10 @@ pub struct WorldDelivery {
     spawn_flag: (bool, u64),
     /// A hero picked while the body was dead: the respawn plays it.
     respawn_hero: Option<(u64, SkinTheme)>,
-    /// The player's multikills (`crate::announcer`), and whether a pulse
-    /// waits for its controller frame.
-    multikills: Multikills,
+    /// The player's controller graph (`0C90`) in the VM, from the world's
+    /// start; it counts his multikills (`crate::announcer`). Whether a
+    /// pulse waits for its controller frame.
+    controller_script: Option<ControllerScript>,
     multikill_due: bool,
 }
 
@@ -1457,7 +1459,7 @@ impl WorldDelivery {
             spawn_room: None,
             spawn_flag: (true, 0),
             respawn_hero: None,
-            multikills: Multikills::default(),
+            controller_script: None,
             multikill_due: false,
         }
     }
@@ -1555,7 +1557,7 @@ impl WorldDelivery {
         self.target_candidates.clear();
         self.notices = SwitchNotices::default();
         self.spawn_room = None;
-        self.multikills = Multikills::default();
+        self.controller_script = None;
         self.multikill_due = false;
     }
 
@@ -1673,11 +1675,22 @@ impl WorldDelivery {
         Ok(())
     }
 
-    /// The player eliminated an enemy at world tick `tick` (`0215`'s
-    /// `0093.025`, [`crate::announcer`]).
-    pub fn eliminated(&mut self, tick: u32) {
-        if self.multikills.eliminated(tick) {
-            self.multikill_due = true;
+    /// The player eliminated `victim` at world tick `tick`: `0093.025` to
+    /// his controller's `0215` ([`crate::announcer`]). A pulse of its st21
+    /// sends a controller frame. A script fault stops the controller
+    /// script; its multikills stop with it.
+    pub fn eliminated(&mut self, tick: u32, victim: u32) {
+        let Some(script) = &mut self.controller_script else {
+            return;
+        };
+        let killer = self.body.map_or(self.owner, |body| body.id.entity);
+        let before = script.multikill();
+        match script.eliminated(tick, victim, killer) {
+            Ok(()) => self.multikill_due |= script.multikill() != before,
+            Err(error) => {
+                eprintln!("controller script of {:08X} stopped ({error})", self.owner);
+                self.controller_script = None;
+            }
         }
     }
 
@@ -2370,6 +2383,19 @@ impl WorldDelivery {
             }
         }
         self.started = Some(tick);
+        // The player's controller graph runs from the world's start; one
+        // that can't start leaves the frames without multikills.
+        let heroes = scene.heroes().heroes().map(|hero| hero.guid).collect();
+        self.controller_script = scene
+            .controller()
+            .start_script(scene.shared_graphs(), self.owner, viewer.team, heroes, tick)
+            .map_err(|error| {
+                eprintln!(
+                    "controller script of {:08X} can't start ({error})",
+                    self.owner
+                );
+            })
+            .ok();
         // The player's create sends the spawn room flag set.
         self.spawn_flag = (true, self.spawn_flag.1 + 1);
         Ok(())
@@ -3856,6 +3882,11 @@ impl WorldDelivery {
         // `send_controller`).
         let practice = scene.controller().practice();
         let skins = open && (practice || self.assembling);
+        let multikills = self
+            .controller_script
+            .as_ref()
+            .and_then(ControllerScript::multikill)
+            .map(|multikill| announcer::pulse(multikill, tick));
         let chunk = self
             .controller
             .full_owner(command_frame, |cmfd| {
@@ -3867,7 +3898,7 @@ impl WorldDelivery {
                         hide_assemble: practice,
                         presence,
                         hero,
-                        multikills: self.multikills.pulse(tick),
+                        multikills,
                     },
                 )
             })
