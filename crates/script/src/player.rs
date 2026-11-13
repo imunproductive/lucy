@@ -20,7 +20,7 @@ use crate::{
     expr::{EntityRelation, native_shape, team_from_filter, valid_entity},
     graph::GraphStore,
     vitals::{PoolKind, Vitals},
-    vm::{GameMessage, Site, TargetCandidate, TargetTagEffect, Unknowns, World},
+    vm::{GameMessage, RaisedCriteria, Site, TargetCandidate, TargetTagEffect, Unknowns, World},
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
 };
@@ -71,7 +71,7 @@ pub struct PlayerWorld {
     outbox: Vec<GameMessage>,
     /// The criteria the body's graphs raised on it, for the match to answer
     /// with the body's voice lines.
-    criteria: Vec<u64>,
+    criteria: Vec<RaisedCriteria>,
 }
 
 #[derive(Default)]
@@ -149,12 +149,12 @@ impl World for PlayerWorld {
     /// the pain lines after a hit, `0608` / `0609`). The hero graphs' other
     /// criteria (ability lines) are left out: nothing has checked them in
     /// the game yet.
-    fn criteria(&mut self, site: Site, identifier: u64) {
+    fn criteria(&mut self, site: Site, raised: RaisedCriteria) {
         if site.entity == self.entity
             && (crate::wheel::ACTION_GRAPHS.contains(&site.graph)
                 || REACTION_GRAPHS.contains(&site.graph))
         {
-            self.criteria.push(identifier);
+            self.criteria.push(raised);
         }
     }
 
@@ -438,7 +438,7 @@ impl PlayerWorld {
     }
 
     /// The criteria the body's graphs raised on it since the last call.
-    pub fn take_criteria(&mut self) -> Vec<u64> {
+    pub fn take_criteria(&mut self) -> Vec<RaisedCriteria> {
         std::mem::take(&mut self.criteria)
     }
 
@@ -539,9 +539,10 @@ mod tests {
     /// 0.15 s later `01CA` raises the pain criteria on the body: severe
     /// `0609` for a Training Bot's 120 (0.6 + 0.3 × 120 / 125 = 0.888), minor
     /// `0608` for his own rocket's 40 at his feet (0.2 + 0.3 × 40 / 125 =
-    /// 0.296), each with `191D` (above 0.1). The wait ends in the 10th
-    /// frame after the hit (150 ms of 16 ms frames). Nothing in the path is
-    /// unsupported.
+    /// 0.296), each with `191D` (above 0.1). The pain criteria's audience
+    /// is the body and its attacker (once: his own rocket's lists him
+    /// alone). The wait ends in the 10th frame after the hit (150 ms of
+    /// 16 ms frames). Nothing in the path is unsupported.
     #[test]
     #[ignore = "requires the derived 104319 statescript catalog"]
     fn a_hit_the_hero_survives_raises_his_pain_line_and_knockback() {
@@ -648,7 +649,7 @@ mod tests {
                     world
                         .take_criteria()
                         .into_iter()
-                        .map(|id| (frame - FIRST, id)),
+                        .map(|raised| (frame - FIRST, raised.identifier, raised.audience)),
                 );
             }
             let snapshot = component.snapshot().unwrap();
@@ -662,9 +663,20 @@ mod tests {
 
         let (rating, criteria) = hurt(BOT, 120.0, [0.0, 0.0, -1.0]);
         assert!((rating - 0.888).abs() < 1e-6, "{rating}");
-        assert_eq!(criteria, [(10, SEVERE), (10, ABOVE_A_TENTH)]);
+        // The pain's audience (`01CA` #1839) is the hurt body and its
+        // attacker, once each; `191D` names none.
+        assert_eq!(
+            criteria,
+            [
+                (10, SEVERE, Some(vec![BODY, BOT])),
+                (10, ABOVE_A_TENTH, None)
+            ]
+        );
         let (rating, criteria) = hurt(BODY, 40.0, [0.0, 1.0, 0.0]);
         assert!((rating - 0.296).abs() < 1e-6, "{rating}");
-        assert_eq!(criteria, [(10, MINOR), (10, ABOVE_A_TENTH)]);
+        assert_eq!(
+            criteria,
+            [(10, MINOR, Some(vec![BODY])), (10, ABOVE_A_TENTH, None)]
+        );
     }
 }
