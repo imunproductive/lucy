@@ -459,9 +459,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     let plated = |scene: &mut PreparedScene, command: &str| {
         let mut plate = BotPlate::clone(scene.bot_plate());
         plate.change(PlateChange::parse(command).unwrap()).unwrap();
-        scene
-            .set_bot_plate(std::sync::Arc::new(plate), |_| None)
-            .unwrap()
+        scene.set_bot_plate(std::sync::Arc::new(plate), |_| None)
     };
     let variable = |world: &WorldDelivery, entity: u32, id: u32| {
         world
@@ -488,32 +486,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
             .cloned()
     };
     tick += 1;
-    let updates = plated(&mut scene, "meter 1; name null; health.b19 0; hero bot");
-    // Every bot's controller, the dead one's too, gets its own hero (Training
-    // Bot 016B, ...) as component 75; the clients get it once the body is
-    // there.
-    let hero_of = |update: &EntityUpdate| match &update.operation {
-        Some(Operation::Update(components)) => match components.as_slice() {
-            [hero] if hero.index == 75 => match hero.fields[0] {
-                Some(ComponentValue::Id(hero)) => Some(hero),
-                _ => None,
-            },
-            _ => None,
-        },
-        _ => None,
-    };
-    assert_eq!(updates.controllers.len(), scene.bots().len());
-    for (slot, (update, body)) in updates.controllers.iter().enumerate() {
-        let bot = &scene.bots()[slot];
-        assert_eq!(*body, bot.entity);
-        assert_eq!(
-            update.entity,
-            crate::scene::bot_controller_entity(slot).unwrap()
-        );
-        assert_eq!(hero_of(update), Some(bot.spawn.hero));
-        world.queue_bot_controller(update.clone(), *body);
-    }
-    let pools = updates.pools;
+    let pools = plated(&mut scene, "meter 1; name null; health.b19 0");
     assert_eq!(
         pools
             .iter()
@@ -535,14 +508,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
             .all(|event| matches!(event, BotEvent::Live { entity, .. } if live.contains(entity)))
     );
     world.update_bots(&scene, &events, tick);
-    let delivered = deliver(&mut world);
-    let heroes: Vec<u32> = delivered
-        .iter()
-        .filter(|update| hero_of(update).is_some())
-        .map(|update| update.entity)
-        .collect();
-    assert!(!heroes.is_empty());
-    let changed = script_chunks(&delivered);
+    let changed = script_chunks(&deliver(&mut world));
     assert_eq!(changed.iter().copied().collect::<BTreeSet<_>>(), live);
     for &entity in &live {
         assert_eq!(
@@ -592,14 +558,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
 
     // `reset`: the bots' own pools, meter and name again.
     tick += 1;
-    let updates = plated(&mut scene, "reset");
-    assert!(
-        updates
-            .controllers
-            .iter()
-            .all(|(update, _)| hero_of(update) == Some(0))
-    );
-    let pools = updates.pools;
+    let pools = plated(&mut scene, "reset");
     assert_eq!(pools.len(), live.len() + 1);
     assert!(
         pools

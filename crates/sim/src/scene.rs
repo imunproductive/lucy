@@ -142,11 +142,10 @@ fn possession_link(body: u32) -> Component {
 /// the kill feed (see the module notes; the Python reference sent none). A
 /// player entity (definition `000E`, as players have): component 26 the
 /// bot's team bit only, 29 a stand-in account and the bot's name, 44 the
-/// body; 75 only when the live nameplate tool gives it a hero
-/// ([`BotPlate::controller_hero`]). A player's create flags without the
-/// participant one, and no 74, so it stays out of the team list. Checked
-/// in game: the bots are named in "ELIMINATED" and the kill feed.
-pub fn bot_controller_create(bot: &Bot, slot: usize, plate: &BotPlate) -> io::Result<EntityUpdate> {
+/// body. A player's create flags without the participant one, and no 74, so
+/// it stays out of the team list. Checked in game: the bots are named in
+/// "ELIMINATED" and the kill feed.
+pub fn bot_controller_create(bot: &Bot, slot: usize) -> io::Result<EntityUpdate> {
     use ComponentValue::*;
     let entity = bot_controller_entity(slot)?;
     let account = BOT_ACCOUNT + (entity - BOT_CONTROLLER_ENTITY);
@@ -161,41 +160,19 @@ pub fn bot_controller_create(bot: &Bot, slot: usize, plate: &BotPlate) -> io::Re
         ),
     ];
     components.push(possession_link(bot.entity));
-    components.extend(plate.controller_hero(bot.spawn.hero).map(controller_hero));
     let mut definition = Create::new(PLAYER_DEFINITION, components);
     definition.flags = PLAYER_PATH | WITH_TRANSFORM | WITH_SCALE;
     Ok(create(entity, definition))
 }
 
 /// The respawned bot's controller in `slot` now controls its new body: its
-/// component 44 again (and 75 when the live nameplate tool gives it a hero,
-/// in case the tool's last update didn't arrive before the old body went).
-pub fn bot_controller_link(bot: &Bot, slot: usize, plate: &BotPlate) -> io::Result<EntityUpdate> {
-    let mut components = vec![possession_link(bot.entity)];
-    components.extend(plate.controller_hero(bot.spawn.hero).map(controller_hero));
+/// component 44 again.
+pub fn bot_controller_link(bot: &Bot, slot: usize) -> io::Result<EntityUpdate> {
     Ok(EntityUpdate {
         entity: bot_controller_entity(slot)?,
-        operation: Some(Operation::Update(components)),
+        operation: Some(Operation::Update(vec![possession_link(bot.entity)])),
         ..EntityUpdate::default()
     })
-}
-
-/// The live nameplate tool's change to the hero of the bot's controller in
-/// `slot`: component 75 with `hero` (0 takes it back).
-pub fn bot_controller_hero(slot: usize, hero: u64) -> io::Result<EntityUpdate> {
-    Ok(EntityUpdate {
-        entity: bot_controller_entity(slot)?,
-        operation: Some(Operation::Update(vec![controller_hero(hero)])),
-        ..EntityUpdate::default()
-    })
-}
-
-/// Component 75 of a bot's stand-in controller with `hero`, as a player's
-/// ([`Possession::components`], with no skin). `0D24` reads the hero of
-/// the body's possessor for the plate's hero icon (`#17479`, `4447`).
-fn controller_hero(hero: u64) -> Component {
-    let hero = Some(ComponentValue::Id(hero));
-    fields(75, vec![hero.clone(), None, None, hero])
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -358,7 +335,7 @@ pub fn initial_world(
     updates.push(mode_create(map.mode_guid));
     for (slot, bot) in bots.iter().enumerate() {
         updates.push(bot_create(bot, plate)?);
-        updates.push(bot_controller_create(bot, slot, plate)?);
+        updates.push(bot_controller_create(bot, slot)?);
     }
     Ok(updates)
 }
@@ -635,7 +612,7 @@ mod tests {
     fn a_player_stand_in_names_the_bot_and_controls_its_body() {
         use ComponentValue::*;
         let bots = fixture_bots();
-        let update = bot_controller_create(&bots[0], 0, &BotPlate::default()).unwrap();
+        let update = bot_controller_create(&bots[0], 0).unwrap();
         assert_eq!(update.entity, BOT_CONTROLLER_ENTITY);
         let create = created(&update);
         assert_eq!(create.definition, PLAYER_DEFINITION);
@@ -655,47 +632,14 @@ mod tests {
                 link(BOT_ENTITY),
             ]
         );
-        let other = bot_controller_create(&bots[1], 1, &BotPlate::default()).unwrap();
+        let other = bot_controller_create(&bots[1], 1).unwrap();
         assert_eq!(other.entity, BOT_CONTROLLER_ENTITY + 1);
         let Some(Some(DbId(account, _))) = created(&other).components[1].fields.first() else {
             panic!("no account");
         };
         assert_eq!(*account, u64::from(BOT_ACCOUNT) + 1);
-
-        // The live nameplate tool's hero: the bot's own (Training Bot 016B)
-        // or any other, as a player's component 75 with no skin; the
-        // respawn's link carries it too, and taking it back sends hero 0.
-        let hero = |hero: u64| fields(75, vec![Some(Id(hero)), None, None, Some(Id(hero))]);
-        let mut plate = BotPlate::default();
-        plate
-            .change(crate::bot_plate::PlateChange::parse("hero bot").unwrap())
-            .unwrap();
-        let own = bot_controller_create(&bots[0], 0, &plate).unwrap();
-        assert_eq!(
-            created(&own).components.last(),
-            Some(&hero(0x02E0_0000_0000_016B))
-        );
-        plate
-            .change(crate::bot_plate::PlateChange::parse("hero 013B").unwrap())
-            .unwrap();
-        let fresh = bots[0].respawned(BOT_ENTITY + 2, 0);
-        assert_eq!(
-            bot_controller_link(&fresh, 0, &plate).unwrap().operation,
-            Some(Operation::Update(vec![
-                link(BOT_ENTITY + 2),
-                hero(0x02E0_0000_0000_013B)
-            ]))
-        );
-        assert_eq!(
-            bot_controller_hero(1, 0).unwrap(),
-            EntityUpdate {
-                entity: BOT_CONTROLLER_ENTITY + 1,
-                operation: Some(Operation::Update(vec![hero(0)])),
-                ..EntityUpdate::default()
-            }
-        );
         // The wire takes every component.
-        frame(1234, 1234, &[], &[], &[&update, &other, &own]).unwrap();
+        frame(1234, 1234, &[], &[], &[&update, &other]).unwrap();
     }
 
     /// A bot's body is a hero that can be hit, on its team (module notes):
@@ -759,7 +703,7 @@ mod tests {
 
         let fresh = bots[0].respawned(BOT_ENTITY + 2, 0);
         assert_eq!(
-            bot_controller_link(&fresh, 0, &BotPlate::default()).unwrap(),
+            bot_controller_link(&fresh, 0).unwrap(),
             EntityUpdate {
                 entity: BOT_CONTROLLER_ENTITY,
                 operation: Some(Operation::Update(vec![link(BOT_ENTITY + 2)])),
