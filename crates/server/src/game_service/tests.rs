@@ -1914,6 +1914,9 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     let fired = shooter.datagrams.len();
     let heard_from = target.datagrams.len();
     let mut frame = shooter.tick + 1;
+    // The target's client goes on sending its commands, which run his
+    // body's script (its frames, and with them the waits after a hit).
+    let mut idle = target.tick + 1;
     let deadline = server.now() + Duration::from_secs(20);
     while messages_of(target, 25004).is_empty() {
         assert!(server.now() < deadline, "waiting for the kill");
@@ -1922,6 +1925,12 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
                 .client
                 .send(ACK, command_batch(frame, 16, yaw(&server), FIRE, false));
             frame += 16;
+        }
+        if idle <= target.tick + 8 {
+            target
+                .client
+                .send(ACK, command_batch(idle, 16, 0, 0, false));
+            idle += 16;
         }
         shooter.pump(&schemas);
         target.pump(&schemas);
@@ -2041,7 +2050,6 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
             })
             .is_some()
     };
-    let mut idle = target.tick + 1;
     let deadline = server.now() + Duration::from_secs(10);
     while tolerant && !(owner_frames(target) && observer_frames(shooter)) {
         assert!(
