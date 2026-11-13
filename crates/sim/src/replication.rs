@@ -10,6 +10,7 @@ use std::{
 };
 
 use crate::{
+    announcer::Multikills,
     body::{BodyCreate, BodyView, body_create, owner_pose},
     body_script::OwnerBodySpawn,
     bot_script::{BotEvent, BotViewContext, BotViews, SeenDelivery, SeenRocket},
@@ -982,6 +983,9 @@ pub fn show_players(
                     world.owner
                 );
             }
+            if let Err(error) = world.send_multikills(scene, tick) {
+                eprintln!("multikill pulse for {:08X} failed ({error})", world.owner);
+            }
             cards
         })
         .collect()
@@ -1068,6 +1072,10 @@ pub struct WorldDelivery {
     spawn_flag: (bool, u64),
     /// A hero picked while the body was dead: the respawn plays it.
     respawn_hero: Option<(u64, SkinTheme)>,
+    /// The player's multikills (`crate::announcer`), and whether a pulse
+    /// waits for its controller frame.
+    multikills: Multikills,
+    multikill_due: bool,
 }
 
 /// The entity variables of the hero settings the client sends
@@ -1171,6 +1179,8 @@ impl WorldDelivery {
             spawn_room: None,
             spawn_flag: (true, 0),
             respawn_hero: None,
+            multikills: Multikills::default(),
+            multikill_due: false,
         }
     }
 
@@ -1265,6 +1275,8 @@ impl WorldDelivery {
         self.target_candidates.clear();
         self.notices = SwitchNotices::default();
         self.spawn_room = None;
+        self.multikills = Multikills::default();
+        self.multikill_due = false;
     }
 
     /// This player as the other clients of the room see him this tick. His
@@ -1379,6 +1391,28 @@ impl WorldDelivery {
         }
         self.notices.sent_at = Some(now);
         Ok(())
+    }
+
+    /// The player eliminated an enemy at world tick `tick` (`0215`'s
+    /// `0093.025`, [`crate::announcer`]).
+    pub fn eliminated(&mut self, tick: u32) {
+        if self.multikills.eliminated(tick) {
+            self.multikill_due = true;
+        }
+    }
+
+    /// A multikill pulse goes out at once in a controller frame of the PvP
+    /// controller, which carries `0215` from then on ([`crate::announcer`]).
+    fn send_multikills(&mut self, scene: &PreparedScene, tick: u32) -> io::Result<()> {
+        if !std::mem::take(&mut self.multikill_due)
+            || self.headless
+            || !scene.controller().announces_multikills()
+            || self.controller.latest_data() == 0
+        {
+            return Ok(());
+        }
+        let (open, hero) = (self.select_open, self.body.map(|body| body.hero));
+        self.queue_controller(scene, tick, open, hero, None)
     }
 
     fn push(&mut self, record: Record) {
@@ -2568,7 +2602,7 @@ impl WorldDelivery {
             });
             if let Some(script) = script {
                 let (message, parameters) =
-                    death_message(hit.shooter.source, hit.critical, hit.loadout);
+                    death_message(hit.shooter.source, hit.critical, hit.loadout, hit.tags);
                 failure = script.runtime.receive_message(message, parameters).err();
             }
         } else if let Some(script) = script {
@@ -3512,6 +3546,7 @@ impl WorldDelivery {
                         hide_assemble: practice,
                         presence,
                         hero,
+                        multikills: self.multikills.pulse(tick),
                     },
                 )
             })

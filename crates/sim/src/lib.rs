@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod ai;
+pub mod announcer;
 pub mod body;
 pub mod body_script;
 pub mod bot_animation;
