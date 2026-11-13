@@ -1769,7 +1769,8 @@ fn two_players_in_one_practice_range_see_each_other() {
 /// Two players on different teams in one Practice Range (combat.py): the
 /// first shoots the second to death. The shooter gets his hits (25001) and
 /// the elimination (25005); the victim gets "YOU WERE KILLED BY" (25004)
-/// naming the shooter's body; both clients get frames of the dead body's
+/// naming the shooter's body, and before it his pain line, which the
+/// shooter hears too; both clients get frames of the dead body's
 /// statescript, which carry its "died" kill feed line (003E); the shooter's
 /// Tab board changes; and the victim gets a new body after the Practice
 /// Range's 3 s, which the shooter's client gets too. The target's body is
@@ -1947,9 +1948,10 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     );
     // Each hit the target survives reaches his body's script as the damage
     // message (`orpheus_sim::combat::damage_message`), and 0.15 s after
-    // the first his graph 01CA raises his pain criteria: before he dies,
-    // his client hears his body's pain line (ClientInVoice 27500), said to
-    // his body.
+    // the first his graph 01CA raises his pain criteria, whose audience
+    // (#1839) is his body and the shooter's: before he dies, his client
+    // hears his body's pain line (ClientInVoice 27500), said to his body,
+    // and the shooter's client hears it said to the shooter's.
     let body_id = |id: u32| Value::Struct(Fields::from([(0, Value::Unsigned(u64::from(id)))]));
     let pain = messages_of(target, 27500)
         .into_iter()
@@ -1959,6 +1961,21 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
             .is_some_and(|(index, voice)| (heard_from..died).contains(index)
                 && voice[&0x7c] == body_id(target_body)),
         "the target's pain line: {pain:?}"
+    );
+    let line = pain.unwrap().1[&0x90].clone();
+    let heard_by_shooter = |watchers: &[&mut Watcher]| {
+        messages_of(watchers[0], 27500).iter().any(|(index, voice)| {
+            *index >= fired
+                && voice[&0x78] == body_id(target_body)
+                && voice[&0x7c] == body_id(shooter_body)
+                && voice[&0x90] == line
+        })
+    };
+    pump_until(
+        &mut [shooter, target],
+        &schemas,
+        "the shooter hears the target's pain line",
+        heard_by_shooter,
     );
     // Stop firing, and wait for the shooter's notices and board.
     let elimination = |watcher: &[&mut Watcher]| !messages_of(watcher[0], 25005).is_empty();
@@ -5179,7 +5196,8 @@ fn practice_bots_run_their_scripts_for_a_client() {
 
 /// combat.py `_bot_weapons`: a firing training bot's script fires its
 /// rockets along its yaw, and they damage the player in front of it, once
-/// he ran out of his spawn room (where he is invulnerable).
+/// he ran out of his spawn room (where he is invulnerable); the hit he
+/// survives gives him his pain line.
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn a_firing_practice_bot_shoots_the_player() {
@@ -5267,24 +5285,40 @@ fn a_firing_practice_bot_shoots_the_player() {
     pump_until(&mut [&mut watcher], &schemas, "the body", |watchers| {
         watchers[0].created(body).is_some()
     });
-    run_out_of_the_spawn_room(
+    let mut next = run_out_of_the_spawn_room(
         &server,
         &mut watcher,
         &schemas,
         |feet| along(feet) >= reach,
         0,
     );
-    pump_until(
+    // The rocket's hit, then his pain line: 0.15 s after the hit his body's
+    // `01CA` raises it (his script runs on his commands, which go on). Its
+    // audience is his body and the bot that hit him, so his client gets the
+    // line (ClientInVoice 27500), his body speaking to his body.
+    let hurt = |watcher: &Watcher| {
+        watcher.find(0, |record| {
+            record.entity == body && record.base_health.is_some_and(|health| health < 200.0)
+        })
+    };
+    let body_id = |id: u32| Value::Struct(Fields::from([(0, Value::Unsigned(u64::from(id)))]));
+    let pain = |watcher: &Watcher| {
+        let hit = hurt(watcher)?;
+        (hit..watcher.datagrams.len()).find(|&index| {
+            watcher.datagrams[index].0.iter().any(|message| {
+                message.id == 27500
+                    && message.fields[&0x78] == body_id(body)
+                    && message.fields[&0x7c] == body_id(body)
+            })
+        })
+    };
+    pump_commanding(
         &mut [&mut watcher],
         &schemas,
-        "the bot's rocket",
-        |watchers| {
-            watchers[0]
-                .find(0, |record| {
-                    record.entity == body && record.base_health.is_some_and(|health| health < 200.0)
-                })
-                .is_some()
-        },
+        "the bot's rocket and the player's pain line",
+        0,
+        &mut next,
+        |watchers| pain(watchers[0]).is_some(),
     );
     // The bot's script is what fires: its live frames went to the client.
     assert!(
