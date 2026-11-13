@@ -20,7 +20,10 @@ use crate::{
     expr::{EntityRelation, native_shape, team_from_filter, valid_entity},
     graph::GraphStore,
     vitals::{PoolKind, Vitals},
-    vm::{GameMessage, RaisedCriteria, Site, TargetCandidate, TargetTagEffect, Unknowns, World},
+    vm::{
+        BodyEffects, CombatMod, GameMessage, HealthChange, RaisedCriteria, Site, TargetCandidate,
+        TargetTagEffect, Unknowns, World,
+    },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
 };
@@ -46,6 +49,9 @@ pub struct PlayerWorld {
     pub entity: u32,
     pub body_filter: u64,
     pub position: [f64; 3],
+    /// How far above its feet the body's eye is now (crouched or not); none
+    /// when the match doesn't say.
+    pub eye_height: Option<f64>,
     pub movement: Movement,
     pub throttles: [i8; 2],
     pub mode: u64,
@@ -72,6 +78,10 @@ pub struct PlayerWorld {
     /// The criteria the body's graphs raised on it, for the match to answer
     /// with the body's voice lines.
     criteria: Vec<RaisedCriteria>,
+    /// The health changes the body's graphs made, for the match to apply.
+    health_changes: Vec<HealthChange>,
+    /// The statuses and combat modifiers its states hold.
+    pub effects: BodyEffects,
 }
 
 #[derive(Default)]
@@ -97,6 +107,8 @@ impl World for PlayerWorld {
             // A tunable value for an entity (`native`): the authored value,
             // not scaled for the entity.
             "STU_082FA44E" => Some("the tunable's authored value"),
+            // `vm::asks_ai_of_unset_creator`: Biotic Grenade's auras.
+            "STU_D3EB8D87" => Some("false (no AI controls the unwritten #27)"),
             _ => None,
         }
     }
@@ -156,6 +168,24 @@ impl World for PlayerWorld {
         {
             self.criteria.push(raised);
         }
+    }
+
+    /// The body's own health changes wait for the match, which applies
+    /// them as it applies a shot (`orpheus_sim` `Combat::modify_health`).
+    fn modify_health(&mut self, change: HealthChange) -> bool {
+        if change.site.entity != self.entity {
+            return false;
+        }
+        self.health_changes.push(change);
+        true
+    }
+
+    fn set_status(&mut self, site: Site, status: Option<i64>) -> bool {
+        self.is_player_site(site) && self.effects.set_status(site, status)
+    }
+
+    fn combat_mod(&mut self, site: Site, modifier: Option<CombatMod>) -> bool {
+        self.is_player_site(site) && self.effects.combat_mod(site, modifier)
     }
 
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
@@ -365,6 +395,18 @@ impl World for PlayerWorld {
     fn native(&mut self, site: Site, config: &Json) -> Option<Value> {
         match config.get("$")?.as_str()? {
             "STU_1FF67CA6" => Some(Value::Entity(self.entity)),
+            // See `assumption`.
+            "STU_D3EB8D87" if crate::vm::asks_ai_of_unset_creator(config) => {
+                Some(Value::Bool(false))
+            }
+            // Where the body's eye is (quick melee `0043` st5 measures the
+            // eye's height above the feet with it, and looks from it,
+            // `m_D59188D5`): its feet and the eye's height as the match
+            // gives it. Fairly sure, from that use.
+            "STU_21A13145" if self.is_player_site(site) && is_owner(config.get("m_entity")) => {
+                let [x, y, z] = self.position;
+                self.eye_height.map(|eye| Value::Vector([x, y + eye, z]))
+            }
             "STU_310D6529" => {
                 const THROTTLE_UNIT: f32 = 1.0 / 127.0;
                 let [right, forward] = self
@@ -413,6 +455,7 @@ impl PlayerWorld {
             entity,
             body_filter,
             position: [0.0; 3],
+            eye_height: None,
             movement: Movement::default(),
             throttles: [0; 2],
             mode,
@@ -427,7 +470,15 @@ impl PlayerWorld {
             cosmetics: Cosmetics::default(),
             outbox: Vec::new(),
             criteria: Vec::new(),
+            health_changes: Vec::new(),
+            effects: BodyEffects::default(),
         }
+    }
+
+    /// The health changes the body's graphs made since the last call, in
+    /// order.
+    pub fn take_health_changes(&mut self) -> Vec<HealthChange> {
+        std::mem::take(&mut self.health_changes)
     }
 
     /// The game messages the body sent other entities since the last call,
@@ -453,6 +504,19 @@ impl PlayerWorld {
             .flatten()
             .find(|body| body.entity == entity)
     }
+}
+
+/// `{"$": "STU_B5A0CAF0"}` (the owner), optionally with a zero
+/// `m_EE729DCB`.
+fn is_owner(config: Option<&Json>) -> bool {
+    config.and_then(Json::as_object).is_some_and(|fields| {
+        fields.get("$").and_then(Json::as_str) == Some("STU_B5A0CAF0")
+            && fields.iter().all(|(key, value)| match key.as_str() {
+                "$" => true,
+                "m_EE729DCB" => value.as_u64() == Some(0),
+                _ => false,
+            })
+    })
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! Prepared owner statescript for a live body in build 104319.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::Arc,
     time::Duration,
@@ -10,7 +10,7 @@ use std::{
 use serde_json::Value as Json;
 
 use crate::{
-    combat::{BodyCombat, MELEE_GRAPH, PosedHitscan, PosedMelee, PosedProjectile, PosedShot},
+    combat::{BodyCombat, PosedHitscan, PosedProjectile, PosedShot},
     hitscan::aim_direction,
     instance::RETAIL_QUANTA,
     others::ObserverActivity,
@@ -41,8 +41,8 @@ use orpheus_script::{
     ultimate::{ChargeRates, UltimateCharge},
     vitals::Vitals,
     vm::{
-        Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest, RaisedCriteria, Root, Snapshot,
-        StateKind, TargetCandidate, Unknowns, World,
+        BodyEffects, Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest, RaisedCriteria,
+        Root, Snapshot, StateKind, TargetCandidate, Unknowns, World,
     },
     weapons::{HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
@@ -278,7 +278,6 @@ impl PlayerBodyFactory {
             leases,
             frame: spawn.frame,
             ultimate,
-            melee_seen: HashMap::new(),
             combat: self.combat.clone(),
             bark: None,
         };
@@ -314,10 +313,7 @@ pub struct PlayerBodyRuntime {
     leases: ProjectileLeases,
     frame: u32,
     ultimate: UltimateCharge,
-    /// The activation of each quick melee state seen last (combat.py
-    /// `melee_seen`).
-    melee_seen: HashMap<(u16, u16), u16>,
-    /// The body's eyes, quick melee's states and the Biotic Field.
+    /// The body's eyes and the Biotic Field.
     combat: BodyCombat,
     /// The spawn voice line while it plays (voicelines.py).
     bark: Option<SpawnBark>,
@@ -333,76 +329,6 @@ impl PlayerBodyRuntime {
         {
             log_assumption(item.site.graph, item.site.node, &item.class, item.answer);
         }
-    }
-
-    /// combat.py `_melee`: quick melee's ModifyHealth state (0043 st4) hits
-    /// what its TrackTargets would find, once per activation: a sphere ahead
-    /// of the eye along the aim. The VM can't track targets, so the match
-    /// finds them. Each activation is seen whether or not a pose came with
-    /// it.
-    fn melee(&mut self, command: Option<Command>, mover: &Mover) -> Vec<PosedShot> {
-        let Some(snapshot) = self.component.snapshot() else {
-            return Vec::new();
-        };
-        let mut started = Vec::new();
-        for (&id, instance) in &snapshot.instances {
-            for melee in self.combat.melee.iter() {
-                let (graph, raw, reach, radius) =
-                    (MELEE_GRAPH, melee.state, melee.reach, melee.radius);
-                if instance.graph != graph {
-                    continue;
-                }
-                let Some(state) = instance.states.get(&raw) else {
-                    continue;
-                };
-                let seen = self
-                    .melee_seen
-                    .insert((id, raw), state.activation)
-                    .unwrap_or(0);
-                if state.activation != seen && state.active {
-                    started.push((id, raw, graph, reach, radius));
-                }
-            }
-        }
-        let Some(command) = command else {
-            return Vec::new();
-        };
-        let [x, y, z] = mover.pose().position;
-        let eye = [x, y + self.combat.eyes.height(mover.crouched()), z];
-        let aim = aim_direction(&command);
-        let graphs = Arc::clone(&self.world.graphs);
-        started
-            .into_iter()
-            .filter_map(|(id, raw, graph, reach, radius)| {
-                let node = graphs.graph(graph)?.state(usize::from(raw))?;
-                let modify = node
-                    .field("m_modifyHealth")
-                    .filter(|value| !value.is_null())?;
-                let mut evaluate = |field: &str| {
-                    modify
-                        .get(field)
-                        .filter(|value| !value.is_null())
-                        .and_then(|config| {
-                            self.component
-                                .evaluate_state_config(id, raw, config, &mut self.world)
-                                .ok()
-                        })
-                };
-                let amount = evaluate("m_amount").map_or(0.0, |value| to_float(&value));
-                let loadout = match evaluate("m_loadout") {
-                    Some(Value::Asset(guid)) => Some(guid),
-                    _ => None,
-                };
-                Some(PosedShot::Melee(PosedMelee {
-                    source: self.world.entity,
-                    centre: std::array::from_fn(|axis| eye[axis] + aim[axis] * reach),
-                    radius,
-                    amount,
-                    loadout,
-                    command,
-                }))
-            })
-            .collect()
     }
 }
 
@@ -438,6 +364,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         }
         let pose = mover.pose();
         self.world.position = pose.position;
+        self.world.eye_height = Some(self.combat.eyes.height(mover.crouched()));
         // Its own body, as the target searches see it, stands where it moved.
         let entity = self.world.entity;
         if let Some(own) = self
@@ -527,6 +454,18 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         }
         self.component.set_owner_dead(dead);
         Ok(())
+    }
+
+    fn apply_aura(&mut self, aura: u64, instigator: u32) -> io::Result<()> {
+        self.component
+            .apply_aura(aura, instigator, &[], &mut self.world)
+            .map_err(unsupported)?;
+        self.log_assumptions();
+        Ok(())
+    }
+
+    fn effects(&self) -> Option<&BodyEffects> {
+        Some(&self.world.effects)
     }
 
     fn gain_ult(&mut self, points: f64) -> io::Result<()> {
@@ -621,10 +560,19 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
     }
 
     fn take_shots(&mut self, command: Option<Command>, mover: &Mover) -> Vec<PosedShot> {
-        let shots = self.component.take_shots().unwrap_or_default();
-        let melee = self.melee(command, mover);
-        let Some(command) = command else {
+        // Its graphs' health changes (quick melee `0043` st4), as its shots
+        // only once its script is complete.
+        let health: Vec<_> = self
+            .world
+            .take_health_changes()
+            .into_iter()
+            .map(PosedShot::Health)
+            .collect();
+        let Some(shots) = self.component.take_shots() else {
             return Vec::new();
+        };
+        let Some(command) = command else {
+            return health;
         };
         let [x, y, z] = mover.pose().position;
         let origin = [x, y + self.combat.eyes.height(mover.crouched()), z];
@@ -756,7 +704,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 }))
             })
             .collect();
-        posed.extend(melee);
+        posed.extend(health);
         posed
     }
 }
@@ -813,7 +761,6 @@ pub fn fixture_body_factory() -> (PlayerBodyFactory, OwnerBodySpawn) {
                 standing: 1.55,
                 crouched: 1.085,
             },
-            melee: Arc::new([]),
             field: None,
         },
         Unknowns::for_build(),

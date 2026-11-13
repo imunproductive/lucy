@@ -5,8 +5,9 @@
 //! `play_queue.Queue` and `Instance.start_entries` (906E49..9070D0,
 //! 64D2C0/64CD10, 1B95950), `BodyWorld.play_script` and
 //! `BodyWorld.replicate_wheel_event` in `driver.py`. Only the wheel's own
-//! self-targeted PlayScript nodes ([`wheel::PLAY_SCRIPTS`]) run; every other
-//! PlayScript stays a no-op, as in the Python reference.
+//! self-targeted PlayScript nodes ([`wheel::PLAY_SCRIPTS`]) and the aura
+//! graphs' (`vm/auras.rs`) run; every other PlayScript stays a no-op, as in
+//! the Python reference.
 //!
 //! A request needs a target that is the body itself. Its parameters are
 //! always arrays (1BA7C60). Policy (`m_AA4DE426`) 0 keeps a running instance
@@ -17,7 +18,7 @@
 use super::*;
 
 impl<W: World> Vm<'_, '_, '_, W> {
-    pub(super) fn play_wheel_script(
+    pub(super) fn play_script(
         &mut self,
         id: u16,
         node: &Node,
@@ -27,7 +28,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
         if resource != Some(0x0580 << 48 | u64::from(graph)) {
             self.report(
                 self.site(id, node),
-                Issue::UnsupportedField("wheel PlayScript resource"),
+                Issue::UnsupportedField("PlayScript resource"),
             );
             return Ok(());
         }
@@ -130,7 +131,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
         Ok(())
     }
 
-    fn bind_start_value(
+    pub(super) fn bind_start_value(
         &mut self,
         id: u16,
         entry: &Node,

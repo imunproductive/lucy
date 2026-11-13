@@ -69,12 +69,11 @@ const ASSUMED_NO_OPS: &[&str] = &[
     "STU_57692020",
 ];
 
-/// Melee's states (graph 0043): health change, knockback and four unnamed
-/// ones. The client reads them as on/off only ("none" codec); the server
-/// doesn't run their effect yet, like the Python VM, so melee hits nothing.
+/// Melee's states (graph 0043): knockback and four unnamed ones. The client
+/// reads them as on/off only ("none" codec); the server doesn't run their
+/// effect yet, like the Python VM.
 const ASSUMED_INERT_STATES: &[&str] = &[
     "STU_23A00A53",
-    "STUStatescriptStateModifyHealth",
     "STU_0A6BE10E",
     "STUStatescriptStatePhysicsExplosion",
     "STU_B5C87F3D",
@@ -203,12 +202,23 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptActionPlayScript" => {
                 let graph = self.graph(id).index;
                 if let Some(played) = wheel::played_graph(graph, node.pos) {
-                    self.play_wheel_script(id, node, played)?;
+                    self.play_script(id, node, played)?;
+                } else if self.graphs.is_aura_graph(graph) {
+                    // An aura's graph plays its effect on the body
+                    // (`vm/auras.rs`: `0C71` plays `0B99` or `0C72`).
+                    let played = node
+                        .field("m_script.m_graph")
+                        .and_then(asset_guid)
+                        .filter(|&played| played >> 48 == 0x0580)
+                        .and_then(|played| u32::try_from(played & 0xFFFF_FFFF_FFFF).ok());
+                    if let Some(played) = played {
+                        self.play_script(id, node, played)?;
+                    }
                 }
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
-            // A PlayScript start entry: [`Self::play_wheel_script`] binds its
+            // A PlayScript start entry: [`Self::play_script`] binds its
             // parameters before it runs.
             "STU_BB4AC733" => self.follow(id, node, "m_outPlug", None, depth),
             // The emote's end (069A nodes 7 and 8, category 5): retire the
@@ -659,6 +669,20 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptStateChaseVar" => StateKind::ChaseVar,
             "STU_2F4E2E3F" => StateKind::Watch,
             "STUStatescriptStateTrackTargets" => StateKind::TrackTargets,
+            "STUStatescriptStateModifyHealth" => StateKind::ModifyHealth { last_ms: 0 },
+            "STU_9028E035" => StateKind::Status,
+            "STUStatescriptStateCombatModFilter" => StateKind::CombatMod,
+            // Biotic Grenade's auras (`0C72` st9 and st7, `0B99` the same):
+            // one takes the aura's source (`m_source`, `STU_DFAB9029` of
+            // #18763 and the instigator) into #18779, which only the aura's
+            // health change reads (`m_A3A0BDD6`, unread); the other names
+            // the instigator (`m_CABF569E`) with a time (3 s, 0 s) and a kind
+            // (`m_86DFF239` 1, 2), perhaps the assist credit. Neither changes
+            // what the server tracks; assumed plain.
+            class @ ("STU_85124386" | "STU_0DB9E66B") => {
+                self.assume(self.site(id, node), class, "plain state");
+                StateKind::Plain
+            }
             class if ASSUMED_PLAIN_STATES.contains(&class) => StateKind::Plain,
             class if ASSUMED_INERT_STATES.contains(&class) => StateKind::Plain,
             "STU_77E13026" => StateKind::HitList,
@@ -775,6 +799,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             StateKind::WeaponVolley { .. } => self.begin_volley(key, node, depth)?,
             StateKind::TrackTargets => self.begin_track_targets(key, node)?,
+            StateKind::ModifyHealth { .. } => self.begin_modify_health(key, node)?,
+            StateKind::Status => self.begin_status(key, node),
+            StateKind::CombatMod => self.begin_combat_mod(key, node),
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
             StateKind::Plain if node.class == "STU_54FEB21C" && is_server_ended(node) => {
                 self.end_wind_up(key, node)?;
