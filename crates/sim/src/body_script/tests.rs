@@ -1456,7 +1456,7 @@ fn a_body_that_dies_raises_its_dead_flag() {
 /// state the clients get. Hello and a configurable choice raise their voice
 /// criteria on the body, which its voice set answers with a line
 /// ([`crate::voice_lines`]): Hello `0AEB` 0.3 s later, `01EC` the `0721` its
-/// map gives. Need Healing raises none: its line hangs on the `0307` that
+/// map gives, both for every player to hear. Need Healing raises none: its line hangs on the `0307` that
 /// `0686`'s engine-routed `STU_57692020` sends, which goes nowhere. Nothing
 /// in the path is unsupported.
 #[test]
@@ -1529,9 +1529,14 @@ fn wheel_choices_run_the_callout_graph() {
                 .advance_frame(FIRST_TICK + frame, &mut world)
                 .unwrap();
         }
+        // Every player hears the wheel's lines (`0686` names all players,
+        // `STU_BD2D717B`, as their audience).
         assert_eq!(
             world.take_criteria(),
-            Vec::from_iter(criteria),
+            Vec::from_iter(criteria.map(|identifier| RaisedCriteria {
+                identifier,
+                audience: None,
+            })),
             "{action:X}'s voice criteria"
         );
         let snapshot = component.snapshot().unwrap();
@@ -1629,7 +1634,11 @@ fn the_wheel_refuses_a_fourth_choice_until_a_count_expires() {
             frame += 1;
             component.advance_frame(frame, world).unwrap();
         }
-        world.take_criteria()
+        world
+            .take_criteria()
+            .into_iter()
+            .map(|raised| raised.identifier)
+            .collect::<Vec<_>>()
     };
     for _ in 0..3 {
         assert_eq!(hello(&mut component, &mut world, 40), [HELLO]);

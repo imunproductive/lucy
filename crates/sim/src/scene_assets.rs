@@ -1043,8 +1043,10 @@ impl PreparedScene {
         self.bot_scripts.advance_live(&self.bots, tick);
     }
 
-    /// The voice lines the bots said since the last call, for every client.
-    pub fn take_bot_voices(&mut self) -> Vec<crate::voice_lines::VoiceLine> {
+    /// The voice lines the bots said since the last call, each with where
+    /// its bot stood, for the clients that hear it
+    /// ([`crate::voice_lines::VoiceLine::heard`]).
+    pub fn take_bot_voices(&mut self) -> Vec<(crate::voice_lines::VoiceLine, [f64; 3])> {
         self.bot_scripts.take_voices()
     }
 

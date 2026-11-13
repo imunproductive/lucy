@@ -344,9 +344,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     /// the owner tells the world its identifier ([`World::criteria`]): a
     /// literal, or an expression that gives one (`0686` node 56, the
     /// configurable wheel choices' `#29862.id(1384)`, the identifier its map
-    /// gives the action). Others stay no-ops, as in the Python reference
-    /// (`no_op` in `ow174/game/script/nodes.py`), and an identifier that
-    /// can't be evaluated raises nothing: nothing here can fail.
+    /// gives the action), with its audience ([`RaisedCriteria::audience`]),
+    /// read now: the graphs clear the list right after. Others stay no-ops,
+    /// as in the Python reference (`no_op` in `ow174/game/script/nodes.py`),
+    /// and an identifier that can't be evaluated raises nothing: nothing
+    /// here can fail.
     fn raise_criteria(&mut self, id: u16, node: &Node) {
         let owner = field(&node.fields, "m_targets")
             .get("$")
@@ -366,9 +368,40 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             },
         };
         if let Some(identifier) = identifier {
+            let audience = self.criteria_audience(id, node);
             let site = self.site(id, node);
-            self.world.criteria(site, identifier);
+            self.world.criteria(
+                site,
+                RaisedCriteria {
+                    identifier,
+                    audience,
+                },
+            );
         }
+    }
+
+    /// The entities a criteria action's `m_297E0B63` lists, in order, each
+    /// once: none for no list, all players (`STU_BD2D717B`) or a list that
+    /// can't be evaluated.
+    fn criteria_audience(&mut self, id: u16, node: &Node) -> Option<Vec<u32>> {
+        let config = field(&node.fields, "m_297E0B63");
+        if config.is_null() || config.get("$").and_then(Json::as_str) == Some("STU_BD2D717B") {
+            return None;
+        }
+        let entities = match self.evaluate_quietly(id, node, config)? {
+            Value::Array(items) => items,
+            Value::Entity(entity) => vec![Value::Entity(entity)],
+            _ => return None,
+        };
+        let mut audience = Vec::new();
+        for item in entities {
+            if let Value::Entity(entity) = item {
+                if expr::valid_entity(entity) && !audience.contains(&entity) {
+                    audience.push(entity);
+                }
+            }
+        }
+        Some(audience)
     }
 
     /// SetVar (`indexed`) and one pair of SetVars. SetVar stores nothing when
