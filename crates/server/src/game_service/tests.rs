@@ -288,8 +288,9 @@ enum DecodedField {
 
 /// The components of a create or update (`orpheus_wire::entity`
 /// `write_components`) when each is a 26, 29 (id and BattleTag), 44, 51
-/// (the pools), 75 or 123, the components of a player's or a bot's stand-in
-/// controller and of an observed or a bot's body; `None` for any other.
+/// (the pools), 75 or 123, the components of an observed or a bot's body;
+/// `None` for any other (a player's or a bot's stand-in controller, with
+/// its 74).
 fn decode_components(mut reader: BitReader<'_>) -> Option<Vec<DecodedComponent>> {
     #[derive(Clone, Copy)]
     enum Kind {

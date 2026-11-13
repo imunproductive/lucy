@@ -729,7 +729,28 @@ impl Room {
             ai: None,
         };
         room.add(players);
+        room.attach_bots();
         room
+    }
+
+    /// The training bots take the roster slots after every player slot the
+    /// match can have (its players now, or the mode's team sizes if more),
+    /// so a player who joins later never shares a slot with a bot (kjs
+    /// `match.py`: later players take unused slots). Its world's scene
+    /// gives them to their stand-in controllers' creates
+    /// (`orpheus_sim::scene::bot_roster_slot`).
+    fn attach_bots(&mut self) {
+        let players = self.players.len();
+        if let Some(world) = &mut self.world {
+            let seats = world
+                .scene
+                .map()
+                .team_sizes
+                .iter()
+                .map(|&size| usize::from(size))
+                .sum::<usize>();
+            world.scene.set_bot_roster(players.max(seats));
+        }
     }
 
     /// The players after those already in the match, each in the next slot
@@ -834,9 +855,16 @@ impl Room {
                 ranked: player.info.ranked,
             })
             .collect();
+        let bots = self
+            .world
+            .as_ref()
+            .map(|world| world.scene.roster_bots())
+            .unwrap_or_default();
         let instance = Instance {
             map: &self.map,
             members: &members,
+            bots: &bots,
+            list_bots: *orpheus_sim::instance::BOTS_IN_ROSTER,
         };
         let player = &self.players[slot];
         if initial {
@@ -1483,6 +1511,7 @@ impl State {
                     scene,
                     combat: None,
                 });
+                room.attach_bots();
                 return;
             }
             Err(error) => error,
