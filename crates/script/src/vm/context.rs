@@ -148,6 +148,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.world.body_on_fire(self.site, entity)
     }
 
+    fn hero_available(&mut self, controller: u32, hero: u64) -> Option<bool> {
+        self.read_native = true;
+        self.world.hero_available(self.site, controller, hero)
+    }
+
     fn entity_exists(&mut self, entity: u32) -> Option<bool> {
         self.read_native = true;
         // The script's own entity exists.

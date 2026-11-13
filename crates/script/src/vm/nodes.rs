@@ -80,6 +80,16 @@ const ASSUMED_INERT_STATES: &[&str] = &[
     "STU_54FEB21C",
 ];
 
+/// The player controller's native states (`0C90`): their client codec has
+/// no payload (reader 0x7ff78abf5640), and what they do on the server is
+/// unknown, so they run as plain states with an assumption. HeroSelect
+/// (`0C90` st1: a hero select timer `m_BB844B42` and allow flag #8419,
+/// read by native code), ForProbe (`0C90` st75/st76, server-only: values
+/// for native game code) and Reloader (`0C90` st106: on a native event it
+/// stores the possessed body's place and heading for StateHero and sends
+/// `0687` to itself; it never fires here).
+const ASSUMED_PLAIN_STATES: &[&str] = &["STU_0E913A0B", "STU_0C3A5D53", "STU_AB09B113"];
+
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn follow(
         &mut self,
@@ -673,6 +683,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.assume(self.site(id, node), class, "plain state");
                 StateKind::Plain
             }
+            class if ASSUMED_PLAIN_STATES.contains(&class) => StateKind::Plain,
             class if ASSUMED_INERT_STATES.contains(&class) => StateKind::Plain,
             "STU_77E13026" => StateKind::HitList,
             "STUStatescriptStateWeaponVolley" => StateKind::WeaponVolley {
@@ -794,6 +805,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
             StateKind::Plain if node.class == "STU_54FEB21C" && is_server_ended(node) => {
                 self.end_wind_up(key, node)?;
+            }
+            StateKind::Plain if ASSUMED_PLAIN_STATES.contains(&node.class.as_str()) => {
+                self.assume(self.site(id, node), &node.class, "plain state");
             }
             StateKind::Plain if ASSUMED_INERT_STATES.contains(&node.class.as_str()) => {
                 self.assume(self.site(id, node), &node.class, "no effect");

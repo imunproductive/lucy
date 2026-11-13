@@ -943,7 +943,13 @@ fn project_frame(
 
 /// combat.py `_shoot` for an NPC: from the bot's eye along its yaw, level
 /// (the server body pose until an animated muzzle is available). A volley
-/// with a projectile speed flies; one without is hitscan.
+/// with a projectile speed flies; one without is hitscan. Its direct hit
+/// scores no critical: bots never headshot (rule 123, as `ai.rs` aims at
+/// the chest). Assumption: whether the game's damage path leaves the
+/// critical out for an AI instigator, or the AI only never aims at the
+/// head, isn't known. The Training Bot's rocket (`0BA3` node 178) names no
+/// critical multiplier, which would read as 2, and flown level from the
+/// eye it meets a player's head.
 fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShotKind, bool)> {
     let [x, y, z] = bot.position;
     let origin = [x, y + BOT_EYE, z];
@@ -953,7 +959,11 @@ fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShot
     body.with_shot(shot, |node, mut evaluate| {
         let speed = authored_number(node.field("m_projectileSpeed"), 0.0, &mut evaluate).ok()?;
         if speed != 0.0 {
-            let ballistics = ProjectileBallistics::from_authored(node, &mut evaluate).ok()??;
+            let mut ballistics =
+                ProjectileBallistics::from_authored(node, &mut evaluate).ok()??;
+            if let Some(direct) = &mut ballistics.direct {
+                direct.critical = 1.0;
+            }
             // projectiles.py `fired`: the clients see a predicted volley's
             // ballistic projectile; the NPC path has no spawned ones.
             let observed = ballistics.definition.is_some()
@@ -978,7 +988,9 @@ fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShot
                 observed,
             ));
         }
-        let hit = HitDefinition::from_authored(node.field("m_6396149F")?, &mut evaluate).ok()??;
+        let mut hit =
+            HitDefinition::from_authored(node.field("m_6396149F")?, &mut evaluate).ok()??;
+        hit.critical = 1.0;
         if hit.amount <= 0.0 {
             return None;
         }

@@ -434,7 +434,8 @@ impl SceneAssets {
             &map,
             &bots,
         );
-        let controller = Controller::load(&self.graphs, map.mode_guid)?;
+        let controller =
+            Controller::load(&self.graphs, map.mode_guid)?.with_unknowns(self.player_unknowns);
         let mode_ui = mode_ui(&self.graphs, &Variables::new())?;
         let initial_board =
             self.stats
