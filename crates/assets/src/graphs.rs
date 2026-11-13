@@ -50,6 +50,8 @@ const ENTITY: u16 = 0x003;
 const MODE: u16 = 0x0C5;
 const IDENTIFIER: u16 = 0x01C;
 const TARGET_TAG: u16 = 0x06C;
+/// Auras (`STU_76F2C784`): the graph an aura runs on the body it is on.
+const AURA: u16 = 0x053;
 const INDEX: u64 = 0xFFFF_FFFF_FFFF;
 
 /// The graphs every bundle starts from besides the bodies'.
@@ -191,6 +193,7 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
     let mut graphs = BTreeMap::new();
     let mut missing = BTreeSet::new();
     let mut spawned = BTreeSet::new();
+    let mut auras = Map::new();
     while let Some(index) = queue.pop_front() {
         if graphs.contains_key(&index) || missing.contains(&index) {
             continue;
@@ -205,6 +208,7 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
         let graph = GraphView::new(&asset);
         let record = graph.record(index)?;
         queue.extend(graph.graph_refs());
+        queue.extend(aura_graphs(&assets, &record, &mut auras)?);
         if !bots {
             queue.extend(spawned_graphs(&assets, &record, &mut spawned)?);
         }
@@ -223,6 +227,7 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
     );
     data.insert("bodies".into(), Json::Object(bodies.clone()));
     data.insert("missing".into(), json!(missing));
+    data.insert("auras".into(), Json::Object(auras));
     data.insert("graphs".into(), Json::Array(graphs.into_values().collect()));
     if !entities.is_empty() {
         data.insert("entities".into(), Json::Object(entities));
@@ -243,6 +248,7 @@ struct Assets<'a> {
     install: &'a Install,
     graphs: HashMap<u64, u64>,
     entities: HashMap<u64, u64>,
+    auras: HashMap<u64, u64>,
 }
 
 impl<'a> Assets<'a> {
@@ -258,7 +264,14 @@ impl<'a> Assets<'a> {
             install,
             graphs: by_index(GRAPH),
             entities: by_index(ENTITY),
+            auras: by_index(AURA),
         }
+    }
+
+    /// An aura, or `None` when the install has no such aura.
+    fn aura(&self, index: u64) -> Option<Result<Asset>> {
+        let guid = *self.auras.get(&index)?;
+        Some(self.install.stu(guid))
     }
 
     /// A graph, or `None` when the install has or can read no such graph.
@@ -1022,6 +1035,68 @@ fn spawned_graphs(assets: &Assets, record: &Json, seen: &mut BTreeSet<u64>) -> R
         }
     }
     Ok(out)
+}
+
+/// The auras a graph applies (each `STU_0E766B33` in its nodes: an
+/// ApplyAura state's `m_A76A8CF6`, a health change's `m_277A4ECA`, as the
+/// Biotic Grenade's explosion in `0B97` names `0267`), each recorded once
+/// in `auras` with its fields in the generic form, by GUID; returns the
+/// graphs the new ones run (`m_5A4051BC`, and `m_14AA219A`, which the
+/// auras without the first name). An aura the install lacks adds nothing.
+fn aura_graphs(assets: &Assets, record: &Json, auras: &mut Map<String, Json>) -> Result<Vec<u64>> {
+    let mut named = BTreeSet::new();
+    aura_refs(&record["nodes"], &mut named);
+    let mut out = Vec::new();
+    for guid in named {
+        let key = format!("0x{guid:016X}");
+        if auras.contains_key(&key) {
+            continue;
+        }
+        let Some(asset) = assets.aura(guid & INDEX) else {
+            continue;
+        };
+        let asset = asset?;
+        let root = asset
+            .root()
+            .ok_or_else(|| asset_error(format!("aura {key} has no root")))?;
+        let mut fields = View::plain(&asset).fields(root, &[])?;
+        fields.insert("$".into(), class_name(root).into());
+        for name in ["m_5A4051BC", "m_14AA219A"] {
+            if let Some(Value::Guid(graph)) = field(root, name) {
+                if *graph != 0 && guid_type(*graph) == GRAPH {
+                    out.push(graph & INDEX);
+                }
+            }
+        }
+        auras.insert(key, Json::Object(fields));
+    }
+    Ok(out)
+}
+
+/// Every aura GUID an `STU_0E766B33` in a bundle field names.
+fn aura_refs(config: &Json, found: &mut BTreeSet<u64>) {
+    match config {
+        Json::Object(fields) => {
+            if fields.get("$").and_then(Json::as_str) == Some("STU_0E766B33") {
+                let guid = fields
+                    .get("m_A76A8CF6")
+                    .and_then(Json::as_str)
+                    .and_then(|text| u64::from_str_radix(text.trim_start_matches("0x"), 16).ok());
+                if let Some(guid) = guid.filter(|&guid| guid_type(guid) == AURA) {
+                    found.insert(guid);
+                }
+            }
+            for value in fields.values() {
+                aura_refs(value, found);
+            }
+        }
+        Json::Array(values) => {
+            for value in values {
+                aura_refs(value, found);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Every entity (`003`) index an `STU_8556841E` in a bundle field names, on

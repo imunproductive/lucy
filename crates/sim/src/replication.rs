@@ -57,7 +57,9 @@ use orpheus_script::{
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
-    vm::{GameMessage, Motion, MoveRequest, RaisedCriteria, Snapshot, TargetCandidate},
+    vm::{
+        BodyEffects, GameMessage, Motion, MoveRequest, RaisedCriteria, Snapshot, TargetCandidate,
+    },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
 };
@@ -231,6 +233,17 @@ pub trait OwnerBodyRuntime: Send {
     /// for it.
     fn gain_ult(&mut self, _points: f64) -> io::Result<()> {
         Ok(())
+    }
+
+    /// An aura comes on the body (`vm/auras.rs` in `orpheus_script`),
+    /// dealt by `instigator`.
+    fn apply_aura(&mut self, _aura: u64, _instigator: u32) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// The statuses and combat modifiers the body's states hold.
+    fn effects(&self) -> Option<&BodyEffects> {
+        None
     }
 
     /// A game message from another entity, run now (match.py
@@ -2850,8 +2863,10 @@ impl WorldDelivery {
         if self.death.is_some() || hit.amount.is_nan() || hit.amount <= 0.0 {
             return None;
         }
-        // Invulnerable in his team's spawn room (`map_areas`: 0C8E `03D4`).
-        if self.spawn_room == Some(true) {
+        // Invulnerable in his team's spawn room (`map_areas`: 0C8E `03D4`),
+        // or while his graphs hold a status (`STU_9028E035`).
+        if self.spawn_room == Some(true) || self.body_effects().is_some_and(BodyEffects::invulnerable)
+        {
             return None;
         }
         let death_tick = hit.world_tick.unwrap_or(tick);
@@ -2921,15 +2936,24 @@ impl WorldDelivery {
         })
     }
 
-    /// combat.py `heal_area` for the player's living body. Returns what the
-    /// pools took.
-    pub fn heal_body(&mut self, scene: &PreparedScene, body: u32, amount: f64) -> f64 {
+    /// combat.py `heal_area` for the player's living body, scaled by the
+    /// healing modifiers his graphs hold for a heal with `tags` (Biotic
+    /// Grenade's anti-heal and heal boost, `vm/statuses.rs`). Returns what
+    /// the pools took.
+    pub fn heal_body(
+        &mut self,
+        scene: &PreparedScene,
+        body: u32,
+        amount: f64,
+        tags: &DamageTags,
+    ) -> f64 {
         let Some(current) = self.body.filter(|current| current.id.entity == body) else {
             return 0.0;
         };
         if self.death.is_some() {
             return 0.0;
         }
+        let amount = amount * self.body_effects().map_or(1.0, |effects| effects.healing_scale(tags));
         let mut failure = None;
         let given = match self
             .body_script
@@ -2991,7 +3015,7 @@ impl WorldDelivery {
         };
         if let (Some(true), Some(body)) = (self.spawn_room, self.body) {
             let amount = SPAWN_HEALING * TICK_PERIOD.as_secs_f64();
-            self.heal_body(scene, body.id.entity, amount);
+            self.heal_body(scene, body.id.entity, amount, &DamageTags::NONE);
         }
         let inside = self.may_change_hero();
         if inside != self.spawn_flag.0 {
@@ -3002,6 +3026,34 @@ impl WorldDelivery {
                 delivery: Delivery::SpawnFlag { revision },
             });
             self.remove_stale();
+        }
+    }
+
+    /// The statuses and combat modifiers the current body's states hold.
+    fn body_effects(&self) -> Option<&BodyEffects> {
+        let body = self.body?;
+        self.body_script
+            .as_ref()
+            .filter(|script| script.id == body.id)
+            .and_then(|script| script.runtime.effects())
+    }
+
+    /// An aura comes on the player's living body, dealt by `instigator`
+    /// (Biotic Grenade's explosion).
+    pub fn apply_aura(&mut self, aura: u64, instigator: u32) {
+        if self.death.is_some() {
+            return;
+        }
+        let Some(body) = self.body else {
+            return;
+        };
+        let failure = self
+            .body_script
+            .as_mut()
+            .filter(|script| script.id == body.id)
+            .and_then(|script| script.runtime.apply_aura(aura, instigator).err());
+        if let Some(error) = failure {
+            self.drop_failed_script(&error.to_string());
         }
     }
 

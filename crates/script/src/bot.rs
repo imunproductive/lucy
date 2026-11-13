@@ -17,8 +17,9 @@ use crate::{
     snapshot::SnapshotEncoder,
     vitals::PoolKind,
     vm::{
-        Component, InitFault, MAX_INIT_WORK, RaisedCriteria, ShotEvent, Site, Snapshot,
-        TargetCandidate, Unknowns, World, body_roots,
+        BodyEffects, CombatMod, Component, HealthChange, InitFault, MAX_INIT_WORK,
+        RaisedCriteria, ShotEvent, Site, Snapshot, TargetCandidate, TargetTagEffect, Unknowns,
+        World, body_roots,
     },
     wire::{Value, Variables},
 };
@@ -148,6 +149,11 @@ pub struct BotWorld {
     /// on the ground the other bits stay off, moving (bit 4) too on a patrol
     /// route, as the match keeps no velocity for a walking bot.
     pub movement_sample: u16,
+    /// The health changes the body's graphs made (an aura's heal or
+    /// damage), for the match to apply.
+    pub health_changes: Vec<HealthChange>,
+    /// The statuses and combat modifiers its states hold.
+    pub effects: BodyEffects,
 }
 
 impl World for BotWorld {
@@ -160,6 +166,9 @@ impl World for BotWorld {
             // As `PlayerWorld`: the tunable's authored value, not scaled for
             // the entity.
             "STU_082FA44E" => Some("the tunable's authored value"),
+            // `vm::asks_ai_of_unset_creator`: Biotic Grenade's auras.
+            "STU_D3EB8D87" => Some("false (no AI controls the unwritten #27)"),
+            "STU_AC829876" => Some("true (a bot is of entity kind 1)"),
             // As `PlayerWorld`: a server-only entity query whose meaning is
             // open. `0C17` rid 23 starts its pain lines' audience (#1839)
             // with it, and rid 22 and 21 add the bot and its attacker.
@@ -202,6 +211,26 @@ impl World for BotWorld {
 
     fn criteria(&mut self, _site: Site, raised: RaisedCriteria) {
         self.criteria.push(raised);
+    }
+
+    fn modify_health(&mut self, change: HealthChange) -> bool {
+        self.health_changes.push(change);
+        true
+    }
+
+    /// A target tag a state grants or removes (Biotic Grenade's enemy aura
+    /// `0C72` st4 grants `02FB`): accepted; the bot keeps no tags, so its
+    /// filters never see it (assumption).
+    fn set_target_tag_effect(&mut self, _site: Site, _effect: TargetTagEffect, _active: bool) -> bool {
+        true
+    }
+
+    fn set_status(&mut self, site: Site, status: Option<i64>) -> bool {
+        self.effects.set_status(site, status)
+    }
+
+    fn combat_mod(&mut self, site: Site, modifier: Option<CombatMod>) -> bool {
+        self.effects.combat_mod(site, modifier)
     }
 
     /// The body's movement sampler (`STU_96F1DBCF`): what the match gave
@@ -275,6 +304,20 @@ impl World for BotWorld {
             "STU_082FA44E" => self.graphs.tunables().value(config).map(Value::Float),
             // See `assumption`.
             "STU_ED45C5E8" => Some(Value::Array(Vec::new())),
+            // See `assumption`.
+            "STU_D3EB8D87" if crate::vm::asks_ai_of_unset_creator(config) => {
+                Some(Value::Bool(false))
+            }
+            // Is the bot itself of entity kind 1 (Biotic Grenade's auras
+            // `0C72` node 16 and `0B99` node 4 ask before their effect):
+            // yes, as the target searches take bots (`vm/targets.rs`).
+            // Assumption.
+            "STU_AC829876"
+                if is_owner(config.get("m_entity"))
+                    && config.get("m_filter").is_some_and(is_kind_filter) =>
+            {
+                Some(Value::Bool(true))
+            }
             // IsTutorial (CE8580), as `PlayerWorld` answers it.
             "STU_A77AC2AC" if native_shape(config, class, None) => {
                 Some(Value::Bool(self.mode == TUTORIAL_MODE))
@@ -293,6 +336,17 @@ fn is_owner(config: Option<&Json>) -> bool {
                 "m_EE729DCB" => value.as_u64() == Some(0),
                 _ => false,
             })
+    })
+}
+
+/// A filter whose only set field is the entity kind 1.
+fn is_kind_filter(filter: &Json) -> bool {
+    filter.as_object().is_some_and(|fields| {
+        fields.iter().all(|(key, value)| match key.as_str() {
+            "$" => value.as_str() == Some("STUConfigVarFilter"),
+            "m_84065FD1" => value.as_u64() == Some(1),
+            _ => matches!(value, Json::Null) || value.as_u64() == Some(0),
+        })
     })
 }
 
@@ -423,6 +477,8 @@ impl BotBody {
             max_health: spawn.health,
             criteria: Vec::new(),
             movement_sample: BOT_MOVEMENT_SAMPLE,
+            health_changes: Vec::new(),
+            effects: BodyEffects::default(),
         };
         let mut component = Component::start(
             graphs,
@@ -635,6 +691,35 @@ impl BotBody {
             .component
             .receive_message(DAMAGED, parameters, &mut self.world)?
             != 0)
+    }
+
+    /// Put an aura on the live body at `frame` ([`Component::apply_aura`]),
+    /// dealt by `instigator`. False: it is dead, or the bundle lacks the
+    /// aura.
+    pub fn apply_aura(
+        &mut self,
+        frame: u32,
+        aura: u64,
+        instigator: u32,
+        parameters: &[(u64, Value)],
+    ) -> Result<bool, BotError> {
+        if self.component.owner_dead() {
+            return Ok(false);
+        }
+        let before = frame.saturating_sub(1);
+        if before > self.frame {
+            self.frame = before;
+            self.component.advance_frame(before, &mut self.world)?;
+        }
+        Ok(self
+            .component
+            .apply_aura(aura, instigator, parameters, &mut self.world)?
+            .is_some())
+    }
+
+    /// The health changes the body's graphs made since the last call.
+    pub fn take_health_changes(&mut self) -> Vec<HealthChange> {
+        std::mem::take(&mut self.world.health_changes)
     }
 
     /// Whether a graph event of the live body is due by the end of `frame`
@@ -1208,6 +1293,8 @@ mod tests {
             max_health: 200.0,
             criteria: Vec::new(),
             movement_sample: BOT_MOVEMENT_SAMPLE,
+            health_changes: Vec::new(),
+            effects: BodyEffects::default(),
         };
         assert_eq!(
             world.native(site(PRACTICE_NAMEPLATE_PARENT), &gate),

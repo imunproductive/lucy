@@ -47,10 +47,8 @@ use orpheus_core::guid::parse_guid;
 use orpheus_physics::static_ray::{Vec3, segment_distance};
 use orpheus_script::{
     bot::{DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE, DAMAGE_TAGS, DAMAGED, DIED},
-    expr::{Context, evaluate, to_float},
-    graph::GraphStore,
     vitals::{Death, Vitals},
-    vm::{ShotEvent, TargetCandidate},
+    vm::{HealthChange, ShotEvent, TargetCandidate},
     weapons::{AllyHits, DamageTags, HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
 };
@@ -76,8 +74,6 @@ pub const COMBAT_CATCH_UP: u32 = 64;
 /// The movement-state flag of a dead body: the 3P animation's dead pose
 /// (combat.py `DEAD`).
 pub const DEAD: u32 = 0x2000;
-/// Quick melee's graph, which every hero body starts (combat.py `MELEE`).
-pub const MELEE_GRAPH: u32 = 0x0043;
 /// 003E.025's parameters, by the low 16 bits of their 026 identifiers
 /// (01CF rid4, 0C18 rid6; combat.py `KILLER`, `CRIT`, `LOADOUT`, `ASSISTS`).
 /// The tags go under 003D, [`DAMAGE_TAGS`], as in the damage message.
@@ -124,79 +120,11 @@ impl RespawnTimes {
     }
 }
 
-/// A quick melee ModifyHealth state of [`MELEE_GRAPH`] (combat.py `MELEE`):
-/// the state, how far ahead of the eye its sphere sits and its radius.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct MeleeState {
-    pub state: u16,
-    pub reach: f64,
-    pub radius: f64,
-}
-
-/// combat.py `MELEE`, read from quick melee's graph: each ModifyHealth
-/// state a TrackTargets state's subgraph starts (0043 st5 starts st4). The
-/// sphere is the TrackTargets' `m_radius` around its offset `m_05BE62DD`,
-/// both read for a body of scale 1 whose eye and feet are at the origin: the
-/// offset is then how far ahead of the eye the sphere sits (1.5 and 1).
-pub fn melee_states(graphs: &GraphStore) -> io::Result<Vec<MeleeState>> {
-    let Some(graph) = graphs.graph(MELEE_GRAPH) else {
-        return Ok(Vec::new());
-    };
-    let read = |config: Option<&serde_json::Value>| {
-        let config = config.ok_or_else(|| invalid("quick melee's targets have no sphere"))?;
-        evaluate(config, &mut AtTheOrigin).map_err(invalid)
-    };
-    let mut found = Vec::new();
-    for track in graph
-        .nodes
-        .iter()
-        .filter(|node| node.class == "STUStatescriptStateTrackTargets")
-    {
-        let Value::Vector([_, _, reach]) = read(track.field("m_05BE62DD"))? else {
-            return Err(invalid("quick melee's targets have no offset"));
-        };
-        let radius = to_float(&read(track.field("m_radius"))?);
-        for (position, _) in track.links("m_subgraphPlug") {
-            let Some(state) = position
-                .and_then(|position| graph.node(position))
-                .filter(|node| node.class == "STUStatescriptStateModifyHealth")
-                .and_then(|node| node.state)
-            else {
-                continue;
-            };
-            found.push(MeleeState {
-                state,
-                reach,
-                radius,
-            });
-        }
-    }
-    Ok(found)
-}
-
-/// The owner's body of scale 1 with its eye and feet at the origin.
-struct AtTheOrigin;
-
-impl Context for AtTheOrigin {
-    fn owner(&mut self) -> Value {
-        Value::Entity(1)
-    }
-
-    fn body_scale(&mut self, _entity: u32) -> Option<f64> {
-        Some(1.0)
-    }
-
-    fn native(&mut self, _config: &serde_json::Value) -> Option<Value> {
-        Some(Value::Vector([0.0; 3]))
-    }
-}
-
 /// What a player's body script needs of the scene besides its graphs: its
-/// eyes, quick melee's states and the Biotic Field.
+/// eyes and the Biotic Field.
 #[derive(Clone, Debug)]
 pub struct BodyCombat {
     pub eyes: Eyes,
-    pub melee: Arc<[MeleeState]>,
     pub field: Option<BioticField>,
 }
 
@@ -297,23 +225,13 @@ pub struct PosedHitscan {
     pub ray_profile: Option<u64>,
 }
 
-/// A quick melee hit (combat.py `_melee`): a sphere ahead of the eye along
-/// the command's aim, once per activation of graph 0043's st4.
-#[derive(Clone, Copy, Debug)]
-pub struct PosedMelee {
-    pub source: u32,
-    pub centre: [f64; 3],
-    pub radius: f64,
-    pub amount: f64,
-    pub loadout: Option<u64>,
-    pub command: Command,
-}
-
 pub enum PosedShot {
     Hitscan(PosedHitscan),
     /// Boxed: by far the largest.
     Projectile(Box<PosedProjectile>),
-    Melee(PosedMelee),
+    /// A health change the body's graphs made (a ModifyHealth state, as
+    /// quick melee's `0043` st4): [`Combat::modify_health`].
+    Health(HealthChange),
 }
 
 pub struct PosedProjectile {
@@ -494,6 +412,18 @@ pub struct Combat {
     /// the match last looked.
     next_rocket: u64,
     landed: Vec<u64>,
+    /// The auras the hits put on bodies since the match last looked.
+    auras: Vec<AuraHit>,
+}
+
+/// An aura a hit put on a body ([`Combat::take_auras`]): the match puts it
+/// on the body's script (`vm/auras.rs` in `orpheus_script`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AuraHit {
+    pub body: u32,
+    /// The aura (`053` GUID).
+    pub aura: u64,
+    pub instigator: u32,
 }
 
 impl Combat {
@@ -513,6 +443,7 @@ impl Combat {
             field_ids: FieldIds::default(),
             next_rocket: 0,
             landed: Vec::new(),
+            auras: Vec::new(),
         }
     }
 
@@ -748,66 +679,113 @@ impl Combat {
         Ok(self.apply_impact(scene, shooter, shot_frame, world_tick, context, &impact))
     }
 
-    /// combat.py `_melee`: every enemy whose capsule, as the shooter's client
-    /// showed it, comes within the sphere takes the hit. Bots keep the
-    /// capsule here, as for heals: only shots and projectiles meet the hit
-    /// shapes.
-    pub fn melee(
+    /// A health change a body's graph made ([`HealthChange`]: quick melee
+    /// `0043` st4 strikes what its search found, Biotic Grenade's auras
+    /// heal or damage the body they are on), applied as a shot's impact
+    /// is: the damage message, the stats, a death and its respawn follow.
+    /// Its instigator is the shooter, a player's body or a bot as the match
+    /// last placed them; another instigator changes nothing. The server's
+    /// native rule decides who takes it (assumption, as for the shots:
+    /// combat.py `_enemies`): damage strikes an enemy of the instigator
+    /// (anyone in a free-for-all) and the instigator's own body (the enemy
+    /// spawn room `0C8E` st45), a heal an ally or itself. A bot takes it
+    /// only once its create reached the instigator's client (`visible`, as
+    /// for a shot); the dead take nothing. Unlike the shots (and Python's
+    /// `_melee`), quick melee's search saw the bodies where the match placed
+    /// them this tick, not as the shooter's client showed them. A change
+    /// that carries an aura puts it on the body it struck
+    /// ([`Self::take_auras`]).
+    pub fn modify_health(
         &mut self,
         scene: &mut PreparedScene,
-        melee: PosedMelee,
-        shooter: Shooter,
+        change: &HealthChange,
         context: ShotContext,
         visible: impl Fn(u32) -> bool,
-    ) -> Vec<BotHit> {
-        if melee.amount <= 0.0 {
-            return Vec::new();
+    ) -> Option<BotHit> {
+        if !(change.amount.is_finite() && change.amount > 0.0) {
+            return None;
         }
-        let view = ViewFrame::from_command(&melee.command, context.quanta);
+        let shooter = self.shooter(scene, change.instigator)?;
         let free_for_all = scene.map().free_for_all;
-        let reaches = |pose: &TargetPose| {
-            let [a, b] = pose.segment();
-            segment_distance(melee.centre, a, b) - pose.radius <= melee.radius
+        let target = change.target;
+        let aura = change.aura.map(|aura| AuraHit {
+            body: target,
+            aura,
+            instigator: change.instigator,
+        });
+        if let Some(slot) = self
+            .players
+            .iter()
+            .find(|slot| slot.target.body == target && !slot.target.dead)
+        {
+            let own = target == shooter.source;
+            let teammate = !own && !free_for_all && slot.target.team == shooter.team;
+            let takes = if change.heal { own || teammate } else { !teammate };
+            if !takes {
+                return None;
+            }
+            let direction = (!own)
+                .then(|| self.feet(scene, shooter.source))
+                .flatten()
+                .and_then(|from| damage_direction(from, slot.target.pose.feet));
+            self.player_hits.push(PlayerHit {
+                body: target,
+                shooter,
+                amount: change.amount,
+                critical: false,
+                loadout: change.loadout,
+                frame: change.frame,
+                world_tick: None,
+                heal: change.heal,
+                tags: change.tags,
+                direction,
+            });
+            self.auras.extend(aura);
+            return None;
+        }
+        if !visible(target) {
+            return None;
+        }
+        let impact = Impact {
+            entity: target,
+            distance: 0.0,
+            damage: if change.heal { 0.0 } else { change.amount },
+            critical: false,
+            loadout: change.loadout,
+            tags: change.tags,
+            heal: if change.heal { change.amount } else { 0.0 },
         };
-        let players: Vec<_> = self
-            .player_candidates(shooter, free_for_all, AllyHits::None, |slot| {
-                slot.history.at(view, slot.target.pose.clone())
-            })
-            .filter(|(_, pose)| reaches(pose))
-            .collect();
-        let bots: Vec<_> = scene
+        let hit = self.apply_bot_impact(scene, shooter, change.frame, None, context, &impact);
+        if hit.is_some() {
+            self.auras.extend(aura);
+        }
+        hit
+    }
+
+    /// The shooter `entity` is: a player's body as the match last placed
+    /// it, or a living bot.
+    fn shooter(&self, scene: &PreparedScene, entity: u32) -> Option<Shooter> {
+        if let Some(slot) = self.players.iter().find(|slot| slot.target.body == entity) {
+            return Some(Shooter {
+                source: entity,
+                team: slot.target.team,
+                bot: false,
+            });
+        }
+        scene
             .bots()
             .iter()
-            .zip(&self.targets)
-            .filter(|(bot, target)| {
-                eligible_bot(bot, target, shooter, free_for_all, AllyHits::None)
-                    && visible(bot.entity)
+            .find(|bot| bot.entity == entity && !bot.dead)
+            .map(|bot| Shooter {
+                source: entity,
+                team: bot.spawn.team,
+                bot: true,
             })
-            .filter_map(|(bot, target)| {
-                let pose = target.history.at(view, scene.bot_target(bot))?;
-                reaches(&pose).then_some(bot.entity)
-            })
-            .collect();
-        let frame = melee.command.frame;
-        players
-            .into_iter()
-            .map(|(entity, _)| entity)
-            .chain(bots)
-            .filter_map(|entity| {
-                let impact = Impact {
-                    entity,
-                    distance: 0.0,
-                    damage: melee.amount,
-                    critical: false,
-                    loadout: melee.loadout,
-                    // Quick melee's tags are on graph 0043's health change,
-                    // which the body runtime doesn't read yet.
-                    tags: DamageTags::NONE,
-                    heal: 0.0,
-                };
-                self.apply_impact(scene, shooter, frame, None, context, &impact)
-            })
-            .collect()
+    }
+
+    /// The auras the hits put on bodies since the last call, in order.
+    pub fn take_auras(&mut self) -> Vec<AuraHit> {
+        std::mem::take(&mut self.auras)
     }
 
     pub fn step_projectile(
@@ -860,6 +838,30 @@ impl Combat {
                     scene.knock_bot(*entity, push, context.tick);
                 }
             }
+            // Its aura (Biotic Grenade's `0267`) comes on every living body
+            // its rings reach, the shooter's allies and himself included;
+            // the aura's graph tells ally from enemy.
+            let living_players = self
+                .players
+                .iter()
+                .filter(|slot| !slot.target.dead)
+                .map(|slot| (slot.target.body, slot.target.pose.clone()));
+            let living_bots = scene
+                .bots()
+                .iter()
+                .filter(|bot| !bot.dead)
+                .map(|bot| (bot.entity, scene.bot_target(bot)));
+            let reached: Vec<_> = living_players
+                .chain(living_bots)
+                .filter_map(|(body, pose)| {
+                    flight.blast_aura(&pose).map(|aura| AuraHit {
+                        body,
+                        aura,
+                        instigator: shooter.source,
+                    })
+                })
+                .collect();
+            self.auras.extend(reached);
         }
         // A player's explosion also reaches his own body (beyond Python,
         // `ProjectileFlight::own_blast`): its damage, never a heal, comes
@@ -1028,6 +1030,12 @@ impl Combat {
         // (`game_respawns`: 3 s in the practice modes).
         let respawn = scene.respawn_time();
         let free_for_all = scene.map().free_for_all;
+        // Its statuses and modifiers (`vm/statuses.rs`): an invulnerable
+        // bot takes no damage, and its healing modifiers scale a heal
+        // (Biotic Grenade's anti-heal and heal boost).
+        let effects = scene.bot_scripts().effects(impact.entity);
+        let invulnerable = effects.is_some_and(|effects| effects.invulnerable());
+        let healing = effects.map_or(1.0, |effects| effects.healing_scale(&impact.tags));
         let plate = Arc::clone(scene.bot_plate());
         let (bot, target) = scene
             .bots_mut()
@@ -1035,8 +1043,11 @@ impl Combat {
             .zip(&mut self.targets)
             .find(|(bot, _)| !bot.dead && bot.entity == impact.entity)?;
         if !free_for_all && bot.spawn.team == shooter.team {
-            let given = target.vitals.heal(impact.heal);
+            let given = target.vitals.heal(impact.heal * healing);
             return (given > 0.0).then(|| healed_bot(bot, target, given, &plate));
+        }
+        if invulnerable {
+            return None;
         }
         let death_tick = world_tick.unwrap_or(context.tick);
         let result = target.vitals.damage(
@@ -1259,7 +1270,9 @@ pub fn apply_player_hits(
             let given = players[victim]
                 .world
                 .as_deref_mut()
-                .map_or(0.0, |world| world.heal_body(scene, hit.body, hit.amount));
+                .map_or(0.0, |world| {
+                    world.heal_body(scene, hit.body, hit.amount, &hit.tags)
+                });
             if !hit.shooter.bot {
                 credit_healing(scene, players, hit.shooter.source, given);
             }
@@ -1327,7 +1340,7 @@ pub fn heal_players(
         for player in players.iter_mut() {
             if let Some(world) = player.world.as_deref_mut() {
                 if world.current_body() == Some(body) {
-                    healed += world.heal_body(scene, body, amount);
+                    healed += world.heal_body(scene, body, amount, &DamageTags::NONE);
                 }
             }
         }

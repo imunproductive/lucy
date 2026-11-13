@@ -9,6 +9,7 @@
 mod abilities;
 mod actions;
 mod arrays;
+mod auras;
 mod buttons;
 mod context;
 mod flow;
@@ -19,6 +20,7 @@ mod machine;
 mod nodes;
 mod play;
 mod state_kinds;
+mod statuses;
 mod switches;
 mod targets;
 mod timers;
@@ -32,7 +34,11 @@ use std::{
     sync::Arc,
 };
 
+pub use auras::{AURA_APPLIED, asks_ai_of_unset_creator};
 pub use health::HealthChange;
+pub use statuses::{
+    BodyEffects, CombatMod, DAMAGE_TAKEN, HEALING_TAKEN, INVULNERABLE, PHASED_OUT,
+};
 use indexmap::IndexMap;
 use serde_json::Value as Json;
 
@@ -450,6 +456,18 @@ pub trait World {
     fn modify_health(&mut self, _change: HealthChange) -> bool {
         false
     }
+
+    /// A status state (`STU_9028E035`, `vm/statuses.rs`) began with its
+    /// `m_type` (Some) or ended (None). False: this world keeps none.
+    fn set_status(&mut self, _site: Site, _status: Option<i64>) -> bool {
+        false
+    }
+
+    /// A `CombatModFilter` state began with its modifier (Some) or ended
+    /// (None). False: this world keeps none.
+    fn combat_mod(&mut self, _site: Site, _modifier: Option<CombatMod>) -> bool {
+        false
+    }
 }
 
 /// A criteria a body raised on itself ([`World::criteria`]).
@@ -563,6 +581,10 @@ pub enum StateKind {
     ModifyHealth {
         last_ms: u64,
     },
+    /// A status on the body while active (`STU_9028E035`, `vm/statuses.rs`).
+    Status,
+    /// A combat modifier on the body while active (`CombatModFilter`).
+    CombatMod,
     /// Melee's hit list (`STU_77E13026`). The hits melee's ModifyHealth
     /// makes go to the match, not to this list, so it records none.
     /// Unverified.

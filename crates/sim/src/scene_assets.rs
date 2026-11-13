@@ -23,7 +23,7 @@ use crate::{
     bot_plate::{BotPlate, PlateSample},
     bot_script::{BotEvent, BotScripts, BotShot},
     bots::{Bot, BotCatalog, BotWalk},
-    combat::{BodyCombat, BotDeath, MeleeState, RespawnTimes, melee_states},
+    combat::{BodyCombat, BotDeath, RespawnTimes},
     controller::Controller,
     hitboxes::HitboxCatalog,
     hitscan::{RAY_PROFILES_FILE, RayProfiles},
@@ -136,7 +136,6 @@ pub struct SceneAssets {
     /// The bots' graphs' states that animate them.
     script_anims: Arc<ScriptAnims>,
     respawns: RespawnTimes,
-    melee: Arc<[MeleeState]>,
     /// The mode graphs' values the match flow uses.
     mode_graph_values: ModeGraphValues,
     /// The Biotic Field, when its graph reads; without it no field opens.
@@ -277,7 +276,6 @@ impl SceneAssets {
             runtime: runtime.to_path_buf(),
             build_collision: None,
             mode_props: read_mode_props(&data.join("collision_props_174.json"))?,
-            melee: melee_states(&graphs)?.into(),
             mode_graph_values: ModeGraphValues::read(&graphs)?,
             field,
             graphs,
@@ -594,7 +592,7 @@ impl SceneAssets {
         let graphs = Arc::clone(&self.graphs);
         let pools = Arc::clone(&self.pools);
         let eyes = Arc::clone(&self.eyes);
-        let (melee, field) = (Arc::clone(&self.melee), self.field);
+        let field = self.field;
         let player_unknowns = self.player_unknowns;
         let ult_rates = self.ult_rates;
         let mode = scene.map.mode_guid;
@@ -641,7 +639,6 @@ impl SceneAssets {
                         on_fire,
                         BodyCombat {
                             eyes: eyes.for_body(hero.body),
-                            melee: Arc::clone(&melee),
                             field,
                         },
                         player_unknowns,
@@ -1037,6 +1034,17 @@ impl PreparedScene {
     /// then its pain line), after [`Self::bot_health`].
     pub fn bot_hurt(&mut self, entity: u32, damage: &crate::combat::BotDamage) {
         self.bot_scripts.hurt(entity, damage, &self.bots);
+    }
+
+    /// An aura comes on the live bot at world tick `tick`, dealt by
+    /// `instigator` (Biotic Grenade's explosion).
+    pub fn apply_bot_aura(&mut self, entity: u32, aura: u64, instigator: u32, tick: u32) {
+        self.bot_scripts.apply_aura(entity, aura, instigator, tick);
+    }
+
+    /// The health changes the bots' graphs made since the last call.
+    pub fn take_bot_health_changes(&mut self) -> Vec<orpheus_script::vm::HealthChange> {
+        self.bot_scripts.take_health_changes()
     }
 
     /// The dead bots' death scripts (combat.py `_advance_bot_death`).

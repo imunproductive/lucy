@@ -379,6 +379,13 @@ pub struct Blast {
     pub self_damage: f64,
     /// The push of the explosion's ModifyHealth, if it has one.
     pub knockback: Option<Knockback>,
+    /// The aura its ModifyHealth puts on each body it reaches
+    /// (`m_277A4ECA`): Biotic Grenade's (`0B97` st0) names `0267`, whose
+    /// graphs deal its damage (60, `0C72`) and its heal (100, `0B99`).
+    /// Assumption: an explosion with an aura deals none of its own amount
+    /// (the grenade's 50), as those are the public numbers; it reaches
+    /// every living body in its rings, allies, enemies and its shooter.
+    pub aura: Option<u64>,
 }
 
 /// The push an explosion's ModifyHealth gives a body (`m_modifyHealth`):
@@ -495,6 +502,13 @@ impl ProjectileBallistics {
                     0.0
                 },
                 knockback: Knockback::from_authored(&config["m_modifyHealth"], &mut evaluate)?,
+                aura: match config["m_modifyHealth"].get("m_277A4ECA") {
+                    Some(aura) if !aura.is_null() => match evaluate(aura)? {
+                        Value::Asset(aura) if aura != 0 => Some(aura),
+                        _ => None,
+                    },
+                    _ => None,
+                },
             })
         } else {
             None

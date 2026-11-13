@@ -1471,7 +1471,9 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
             | StateKind::AiFire { .. }
             | StateKind::ServerFrames
             | StateKind::MoveTo
-            | StateKind::ModifyHealth { .. },
+            | StateKind::ModifyHealth { .. }
+            | StateKind::Status
+            | StateKind::CombatMod,
             Some("none"),
         ) if codec.empty() => StatePayload::new(),
         // The block's link field is the reference's absent link: Python
@@ -1479,7 +1481,13 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
         // no link (`ow174/game/script/driver.py` `_add_state`). The field of
         // view (`STU_75D1C308`) and the aim speed (`STU_3716E1D4`) are such
         // plain states: left out, the owner's client never runs them.
-        (StateKind::Plain | StateKind::DisableButton { .. }, Some("link")) => StatePayload::new(),
+        (
+            StateKind::Plain
+            | StateKind::DisableButton { .. }
+            | StateKind::Status
+            | StateKind::CombatMod,
+            Some("link"),
+        ) => StatePayload::new(),
         (StateKind::Pulser { pulses, pulsed_ms }, Some("pulser")) => StatePayload::from([
             (
                 "fresh".into(),

@@ -39,7 +39,7 @@ use orpheus_script::{
     snapshot::{ProjectedSnapshot, SnapshotEncoder, SnapshotError, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk},
     timeline::FRAME_MS,
-    vm::{ShotEvent, Snapshot, TargetCandidate, Unknowns},
+    vm::{BodyEffects, HealthChange, ShotEvent, Snapshot, TargetCandidate, Unknowns},
     weapons::{HitDefinition, ProjectileBallistics, authored_number, ray_profile},
     wire::Value,
 };
@@ -162,6 +162,9 @@ pub struct BotScripts {
     voice_sets: Arc<VoiceCatalog>,
     /// The lines the bots said since the match last looked.
     voices: Vec<(VoiceLine, [f64; 3])>,
+    /// The health changes the bots' graphs made (their auras' heals and
+    /// damage) since the match last looked.
+    health_changes: Vec<HealthChange>,
 }
 
 impl BotScripts {
@@ -207,6 +210,7 @@ impl BotScripts {
             targets: Vec::new(),
             voice_sets,
             voices: Vec::new(),
+            health_changes: Vec::new(),
         }
     }
 
@@ -727,6 +731,45 @@ impl BotScripts {
         }
     }
 
+    /// An aura comes on the live bot (`vm/auras.rs` in `orpheus_script`:
+    /// Biotic Grenade's `0267`) at world tick `tick`, dealt by
+    /// `instigator`; its changed frame goes to the clients as a live frame.
+    pub(crate) fn apply_aura(&mut self, entity: u32, aura: u64, instigator: u32, tick: u32) {
+        let Some(slot) = self.slot(entity) else {
+            return;
+        };
+        let script = self.slots[slot].as_mut().expect("a running bot script");
+        let result = script
+            .body
+            .apply_aura(tick, aura, instigator, &[])
+            .map_err(|error| error.to_string())
+            .and_then(|took| {
+                let script = self.slots[slot].as_mut().expect("a running bot script");
+                self.health_changes.extend(script.body.take_health_changes());
+                if took {
+                    self.publish_live(slot)
+                } else {
+                    Ok(())
+                }
+            });
+        if let Err(reason) = result {
+            eprintln!("bot {entity:08X}'s body script failed on an aura ({reason})");
+            self.slots[slot] = None;
+        }
+    }
+
+    /// The health changes the bots' graphs made since the last call, in
+    /// order.
+    pub fn take_health_changes(&mut self) -> Vec<HealthChange> {
+        std::mem::take(&mut self.health_changes)
+    }
+
+    /// The statuses and combat modifiers the live bot's states hold.
+    pub fn effects(&self, entity: u32) -> Option<&BodyEffects> {
+        let script = self.slots.get(self.slot(entity)?)?.as_ref()?;
+        Some(&script.body.world().effects)
+    }
+
     /// The live bots' graph events due by world tick `tick` (a hit's flinch
     /// and pain waits): a bot the weapons didn't run this tick runs the
     /// tick when something is due, and its changed frame goes out. Then the
@@ -753,6 +796,7 @@ impl BotScripts {
                 }
             }
             let script = self.slots[slot].as_mut().expect("a running bot script");
+            self.health_changes.extend(script.body.take_health_changes());
             for criteria in script.body.take_criteria() {
                 if bot.dead {
                     continue;

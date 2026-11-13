@@ -101,6 +101,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.machine.movements.remove(&key);
             }
             StateKind::Rewind => self.machine.motions.push(Motion::EndRewind { finished }),
+            StateKind::Status => {
+                self.world.set_status(self.site(id, node), None);
+            }
+            StateKind::CombatMod => {
+                self.world.combat_mod(self.site(id, node), None);
+            }
             _ => (),
         }
         let state = self.state_mut(key).expect("ending state");
