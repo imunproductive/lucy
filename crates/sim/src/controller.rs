@@ -1,10 +1,11 @@
 //! Owner controller and remote team-entry frames for the 104319 hero select.
 //!
 //! Research (graphs and client): each team of a game mode names its
-//! controller graph. The Practice Range's is 13C1: its SubScript states start
-//! the HUD (state 42 -> 20E4) and hero select (state 43 -> 288A, whose state 0
-//! -> 288B). The PvP modes use 0C90, whose state 119 starts 288A; its HUD
-//! graph is client-only. 288B presents the screen 008C.05A ("CHOOSE YOUR
+//! controller graph. The modes the server runs, the Practice Range (`005A`)
+//! included, use 0C90, whose state 119 starts hero select (288A, whose state
+//! 0 -> 288B); its HUD graph is client-only. (The solo Range mode `0018`,
+//! which Python ran, had 13C1, which started the HUD 20E4 in its state 42
+//! and 288A in state 43.) 288B presents the screen 008C.05A ("CHOOSE YOUR
 //! HERO") while v2438 (hero select open, the server's) and v31435 (what 288B's
 //! client-only nodes read) are on. The skin selector shows while 288B's v25377
 //! ("assembling heroes") is on; with it on the client leaves the screen open
@@ -16,13 +17,12 @@
 //! local player's 288B unless it is an enemy; every other player's controller
 //! entity gets 288D as its only root instance, and the list reads his name
 //! from his card (20308). The list shows v940 (the hero he plays, set by
-//! 0C90/13C1 once spawned), else the pick v13161 while v2114 is on, else
+//! 0C90 once spawned), else the pick v13161 while v2114 is on, else
 //! "still choosing". The F1 hero info (288A's client-only 2931) shows v940's
 //! hero while hero select is closed (2931 st3: `v14152 = v31435 ? browsed
 //! hero : v940`). v8419 is m_allowHeroSelect. Retail OW2 traffic works the
 //! same way. From a player's first multikill on, his frames also carry the
-//! multikill graph `0215` ([`crate::announcer`]): under 0C90 st116/st117 in
-//! the PvP modes, as a root instance of its own on the Practice Range's 13C1.
+//! multikill graph `0215` ([`crate::announcer`]) under 0C90 st116/st117.
 
 use std::{collections::BTreeMap, io};
 
@@ -34,17 +34,18 @@ use orpheus_script::{
     wire::{Instance, Layout, Value, Variables, WireError, owner_full, remote_full, subscript},
 };
 
-const PRACTICE: u32 = 0x13c1;
 const PVP: u32 = 0x0c90;
-/// The multikill graph (`crate::announcer`), 0C90 st116 → st117; on 13C1 a
-/// root instance of its own.
+/// 0C90's state that runs hero select (288A).
+const START_HERO_SELECT: u16 = 119;
+/// The multikill graph (`crate::announcer`), 0C90 st116 → st117.
 const MULTIKILLS: u32 = 0x0215;
 const MULTIKILL_SWITCH: u16 = 116;
 const MULTIKILL_HOST: u16 = 117;
 const MULTIKILL_PULSER: u16 = 21;
 const MULTIKILL_SHARED: u16 = 31;
 const MULTIKILL_STIMULUS: u32 = 10122;
-const HUD: u32 = 0x20e4;
+/// 0C90's hero select state (owner state 1).
+const HERO_SELECT_STATE: u16 = 1;
 const HERO_SELECT_HOST: u32 = 0x288a;
 const HERO_SELECT: u32 = 0x288b;
 const TEAM_ENTRY: u32 = 0x288d;
@@ -64,30 +65,16 @@ struct StateSlot {
     wire: usize,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Hud {
-    layout: Layout,
-    root_state: StateSlot,
-    shared_vars: usize,
-}
-
-/// The `0215` instance (`crate::announcer`): where it runs, and its pulser,
-/// shared variables and #10122.
+/// The `0215` instance (`crate::announcer`) under 0C90's BooleanSwitch st116
+/// and SubScript st117, and its pulser, shared variables and #10122.
 #[derive(Clone, Copy, Debug)]
 struct MultikillSlots {
     layout: Layout,
-    host: Option<MultikillHost>,
+    switch: usize,
+    host: StateSlot,
     pulser: usize,
     shared_vars: usize,
     stimulus: usize,
-}
-
-/// 0C90's BooleanSwitch st116 and the SubScript st117 that runs `0215`.
-/// 13C1 has no state that runs it: there `0215` is a root instance.
-#[derive(Clone, Copy, Debug)]
-struct MultikillHost {
-    switch: usize,
-    state: StateSlot,
 }
 
 /// Loaded layouts keep filtered owner positions separate from raw parent state IDs.
@@ -97,7 +84,6 @@ pub struct Controller {
     host: Layout,
     screen: Layout,
     entry: Layout,
-    hud: Option<Hud>,
     multikills: MultikillSlots,
     allow: usize,
     hero_select: usize,
@@ -123,39 +109,16 @@ pub struct ControllerFrame<'a> {
 
 impl Controller {
     pub fn load(graphs: &GraphStore, mode_guid: u64) -> io::Result<Self> {
-        let (root_id, hero_select, start_host, start_hud) = if mode_guid == PRACTICE_RANGE_MODE {
-            (PRACTICE, 29, 43, Some(42))
-        } else {
-            (PVP, 1, 119, None)
-        };
-        let root = graph(graphs, root_id)?;
+        let root = graph(graphs, PVP)?;
         let host = graph(graphs, HERO_SELECT_HOST)?;
         let screen = graph(graphs, HERO_SELECT)?;
         let entry = graph(graphs, TEAM_ENTRY)?;
-        let hud = start_hud
-            .map(|index| {
-                let hud = graph(graphs, HUD)?;
-                Ok::<_, io::Error>(Hud {
-                    layout: layout(hud)?,
-                    root_state: owner_slot(root, index)?,
-                    // 20E4's EntryClientOnlySharedVars initializes raw state 25.
-                    shared_vars: owner_slot(hud, 25)?.wire,
-                })
-            })
-            .transpose()?;
         let multikills = {
             let graph = graph(graphs, MULTIKILLS)?;
-            let host = (root_id == PVP)
-                .then(|| {
-                    Ok::<_, io::Error>(MultikillHost {
-                        switch: owner_slot(root, MULTIKILL_SWITCH)?.wire,
-                        state: owner_slot(root, MULTIKILL_HOST)?,
-                    })
-                })
-                .transpose()?;
             MultikillSlots {
                 layout: layout(graph)?,
-                host,
+                switch: owner_slot(root, MULTIKILL_SWITCH)?.wire,
+                host: owner_slot(root, MULTIKILL_HOST)?,
                 pulser: owner_slot(graph, MULTIKILL_PULSER)?.wire,
                 shared_vars: owner_slot(graph, MULTIKILL_SHARED)?.wire,
                 stimulus: presence_bit(graph, MULTIKILL_STIMULUS)?,
@@ -166,11 +129,10 @@ impl Controller {
             host: layout(host)?,
             screen: layout(screen)?,
             entry: layout(entry)?,
-            hud,
             multikills,
             allow: presence_bit(root, ALLOW_SELECT)?,
-            hero_select: owner_slot(root, hero_select)?.wire,
-            start_host: owner_slot(root, start_host)?,
+            hero_select: owner_slot(root, HERO_SELECT_STATE)?.wire,
+            start_host: owner_slot(root, START_HERO_SELECT)?,
             start_screen: owner_slot(host, 0)?,
             start_entry: owner_slot(host, 1)?,
             assembling: presence_bit(screen, ASSEMBLING)?,
@@ -178,13 +140,13 @@ impl Controller {
         })
     }
 
-    /// The Practice Range's controller 13C1, else the PvP modes' 0C90
-    /// (ow174/game/heroselect.py `controller_of`).
+    /// Whether this is the Practice Range: no match flow, the skin selector
+    /// whenever hero select is open, and no assemble title.
     pub fn practice(&self) -> bool {
         self.practice
     }
 
-    /// Owner full frame: root controller, 288A, 288B, optional HUD, and team entry.
+    /// Owner full frame: root controller, 288A, 288B and team entry.
     pub fn controller_frame(
         &self,
         command_frame: u32,
@@ -199,7 +161,7 @@ impl Controller {
         root.states.insert(self.hero_select, BitWriter::new());
         root.states.insert(self.start_host.wire, subscript(2));
 
-        let entry_id = if self.hud.is_some() { 5 } else { 4 };
+        let entry_id = 4;
         let mut host = Instance::new(2, self.host, Some((1, self.start_host.index)));
         host.states.insert(self.start_screen.wire, subscript(3));
         host.states
@@ -213,28 +175,18 @@ impl Controller {
         }
         let entry = Instance::new(entry_id, self.entry, Some((2, self.start_entry.index)));
 
-        let mut instances = Vec::with_capacity(usize::from(entry_id));
-        let hud = self.hud.map(|hud| {
-            root.states.insert(hud.root_state.wire, subscript(4));
-            let mut instance = Instance::new(4, hud.layout, Some((1, hud.root_state.index)));
-            instance.states.insert(hud.shared_vars, BitWriter::new());
-            instance
-        });
-        // 0215 under 0C90 st117, or a root instance on 13C1; the next
-        // instance (`crate::announcer`).
+        let mut instances = Vec::with_capacity(5);
+        // 0215 under 0C90 st117, the next instance (`crate::announcer`).
         let multikills = input
             .multikills
             .map(|pulse| {
                 let slots = self.multikills;
                 let id = entry_id + 1;
-                let parent = slots.host.map(|host| {
-                    let mut on = BitWriter::new();
-                    on.bit(true);
-                    root.states.insert(host.switch, on);
-                    root.states.insert(host.state.wire, subscript(id));
-                    (1, host.state.index)
-                });
-                let mut instance = Instance::new(id, slots.layout, parent);
+                let mut on = BitWriter::new();
+                on.bit(true);
+                root.states.insert(slots.switch, on);
+                root.states.insert(slots.host.wire, subscript(id));
+                let mut instance = Instance::new(id, slots.layout, Some((1, slots.host.index)));
                 let mut pulser = BitWriter::new();
                 pulser.bit(pulse.fresh);
                 pulser.bits(u64::from(pulse.count), 8)?;
@@ -246,9 +198,7 @@ impl Controller {
                 Ok::<_, WireError>(instance)
             })
             .transpose()?;
-        instances.extend([root, host, screen]);
-        instances.extend(hud);
-        instances.push(entry);
+        instances.extend([root, host, screen, entry]);
         instances.extend(multikills);
 
         let mut variables = Variables::from([
@@ -325,7 +275,6 @@ mod tests {
     use super::*;
 
     const SOLDIER: u64 = 0x02e0_0000_0000_006e;
-    const REAPER: u64 = 0x02e0_0000_0000_0002;
 
     fn assert_frame(frame: &BitWriter, bits: usize, hex: &str) {
         assert_eq!(frame.bit_len(), bits);
@@ -383,47 +332,26 @@ mod tests {
 
     #[test]
     #[ignore = "requires the game data derived from a 1.74 install (just test-game <install>)"]
-    fn practice_and_pvp_controller_frames_match_reference_graphs_and_bytes() {
+    fn the_controller_frames_match_reference_graphs_and_bytes() {
         let runtime = orpheus_testkit::runtime_dir();
         let graphs =
             GraphStore::load(runtime.join("data").join("game_graphs_174.json.gz")).unwrap();
         let practice = Controller::load(&graphs, PRACTICE_RANGE_MODE).unwrap();
         let pvp = Controller::load(&graphs, 0).unwrap();
+        assert!(practice.practice() && !pvp.practice());
         let open = ControllerFrame {
             select_open: true,
             skins: true,
             ..ControllerFrame::default()
         };
+        // The Practice Range (005A) has the PvP controller 0C90: the same
+        // frames. (Python's Range, mode 0018, had 13C1.)
+        assert_eq!(
+            practice.controller_frame(123456, open),
+            pvp.controller_frame(123456, open)
+        );
         let extra = BTreeMap::from([(19, Value::Bool(false)), (0, Value::Bool(true))]);
         for (controller, command_frame, input, bits, expected) in [
-            (
-                practice,
-                123456,
-                open,
-                446,
-                "1a483c0040044f805044a1002bc4220a090020c84128800ad188420202801926402deb410040080000002000910458a3028700000000d80d",
-            ),
-            (
-                practice,
-                123456,
-                ControllerFrame {
-                    hide_assemble: true,
-                    hero: Some(SOLDIER),
-                    ..open
-                },
-                528,
-                "1a483c0040044f805044a1002bc4220a090020c84128800ad188420202801926402deb41b10e6470016e00801000000040002209b046050e61572110000000006037",
-            ),
-            (
-                practice,
-                123457,
-                ControllerFrame {
-                    hero: Some(REAPER),
-                    ..ControllerFrame::default()
-                },
-                489,
-                "3a483c0040044f805044a1002bc4220a090020c84128800ad188420202801926002deb01b10e6470010200801000000040002209b0460506000000c06e00",
-            ),
             (
                 pvp,
                 123456,
@@ -446,9 +374,8 @@ mod tests {
             let frame = controller.controller_frame(command_frame, input).unwrap();
             assert_frame(&frame, bits, expected);
         }
-        // A multikill pulse adds `0215` after the team entry: under 0C90
-        // st117, and on 13C1, which has no state that runs it, as a root
-        // instance of its own.
+        // A multikill pulse adds `0215` after the team entry, under 0C90
+        // st117.
         let pulse = ControllerFrame {
             hero: Some(SOLDIER),
             multikills: Some(MultikillPulse {
@@ -462,10 +389,8 @@ mod tests {
             multikills: None,
             ..pulse
         };
-        for (controller, parent) in [
-            (practice, None),
-            (pvp, Some((1, u32::from(MULTIKILL_HOST)))),
-        ] {
+        for controller in [practice, pvp] {
+            let parent = Some((1, u32::from(MULTIKILL_HOST)));
             let without = instances(&controller.controller_frame(123459, quiet).unwrap());
             let with = instances(&controller.controller_frame(123459, pulse).unwrap());
             let entry = without.last().unwrap();

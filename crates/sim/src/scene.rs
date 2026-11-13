@@ -482,7 +482,13 @@ mod tests {
             MoverCatalog::load(data.join("game_movers_174.json"), 0x0400_0000_0000_03cf).unwrap();
         let bots = BotCatalog::load(data.join("ai_spawners_174.json")).unwrap();
         let stats = StatsCatalog::load(data.join("game_stats_174.json")).unwrap();
-        let map = GameMap::practice_range();
+        // Python's Range was mode 0018, ours is 005A (`PRACTICE_RANGE_MODE`):
+        // the mode entity's create and the Tab board name the mode, so the
+        // frame is built with Python's mode to compare with its bytes.
+        let map = GameMap {
+            mode_guid: orpheus_content::maps::PYTHON_PRACTICE_RANGE_MODE,
+            ..GameMap::practice_range()
+        };
         let bots = bots.make(map.map_guid, |body| {
             BotWalk::from_mover(movers.for_body(Some(body)))
         });

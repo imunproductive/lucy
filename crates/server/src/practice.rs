@@ -70,7 +70,10 @@ pub fn dispatch(
         tournament: login.tournament,
         ranked: false,
     }];
-    let tickets = open_match(game, input.match_id, input.map, players)?;
+    // A solo Range: its blue team is the one player (the mode takes six).
+    let mut map = input.map;
+    map.team_sizes = vec![1, 0];
+    let tickets = open_match(game, input.match_id, map, players)?;
     let [handoff] = match <[Handoff; 1]>::try_from(tickets) {
         Ok(tickets) => tickets,
         Err(tickets) => {

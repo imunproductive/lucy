@@ -10,7 +10,15 @@ use serde::Deserialize;
 use orpheus_core::guid::parse_guid;
 
 pub const PRACTICE_RANGE_MAP: u64 = 0x0800_0000_0000_0688;
-pub const PRACTICE_RANGE_MODE: u64 = 0x0230_0000_0000_0018;
+/// The group Practice Range (`005A`): both teams have the PvP controller
+/// `0C90` and the blue team takes up to six players. Mode `0018` (the solo
+/// Range, controller `13C1` for one player) has the same map, rulesets,
+/// placeables and bots; Python ran `0018`, retail's Training > Practice
+/// Range is open to the whole party (docs/notes/behavior.md).
+pub const PRACTICE_RANGE_MODE: u64 = 0x0230_0000_0000_005a;
+/// Python's Practice Range mode (`0018`), for the tests that compare our
+/// output with the Python reference's.
+pub const PYTHON_PRACTICE_RANGE_MODE: u64 = 0x0230_0000_0000_0018;
 /// The Tutorial game mode (`TUTORIAL_MODE` in `content.py` of
 /// leafall903/ORPHEUS, commit c239a84).
 pub const TUTORIAL_MODE: u64 = 0x0230_0000_0000_0019;
@@ -120,7 +128,7 @@ impl GameMap {
     /// the game-tier test `the_practice_range_is_the_derived_record` checks
     /// that this copy is that record (its spawn as Python rounded it). The
     /// map has four server-owned placeables (the ones the running client
-    /// has), and its mode has one player on the blue team and none on the
+    /// has), and its mode has six players on the blue team and none on the
     /// red one.
     pub fn practice_range() -> Self {
         Self {
@@ -134,7 +142,7 @@ impl GameMap {
                 yaw: -170.3434,
             }],
             mode_name: PRACTICE_RANGE_NAME.into(),
-            team_sizes: vec![1, 0],
+            team_sizes: vec![6, 0],
             free_for_all: false,
             objectives: Vec::new(),
             rooms: Vec::new(),
@@ -312,7 +320,7 @@ impl MapCatalog {
 
     /// The Practice Range as the install has it (the record of
     /// `ow174/game/content.py` `PRACTICE_RANGE`): map 0688's name and its
-    /// placeables in mode 0018, its team 0 spawn point (for every team), and
+    /// placeables in mode 005A, its team 0 spawn point (for every team), and
     /// the mode's team sizes. Python's record rounded the spawn point: its
     /// position to 5 decimals, its yaw (from the rotation) to 4; so does
     /// this one. An error when the data no longer has them.
@@ -320,7 +328,7 @@ impl MapCatalog {
         let invalid = |what: &str| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("the Practice Range (map 0688, mode 0018) {what}"),
+                format!("the Practice Range (map 0688, mode 005A) {what}"),
             )
         };
         let entry = self
@@ -719,17 +727,17 @@ mod tests {
 
     /// A Practice Range entry and its mode as the derivations write them.
     const PRACTICE: &str = r#"{
-        "0x0800000000000688": {"name": "Practice Range", "modes": ["0x0230000000000018"],
+        "0x0800000000000688": {"name": "Practice Range", "modes": ["0x0230000000000018", "0x023000000000005A"],
             "placeables": [1, 2, 3, 4, 5],
-            "placeables_by_mode": {"0x0230000000000018": [136, 558, 564, 649]},
+            "placeables_by_mode": {"0x023000000000005A": [136, 558, 564, 649]},
             "spawns": [
                 {"team": 1, "position": [1, 2, 3], "yaw": 10, "rotation": [0, 1, 0, 0]},
                 {"team": 0, "position": [54.56507, 0.99999833, 42.147877], "yaw": -170.343,
                     "rotation": [0.0, -0.99645156, 7.1054274e-15, 0.08417019]}
             ]}
     }"#;
-    const PRACTICE_MODES: &str = r#"{"modes": {"0x0230000000000018": {"teams": [
-        {"team": 0, "controller": null, "players": 1},
+    const PRACTICE_MODES: &str = r#"{"modes": {"0x023000000000005A": {"teams": [
+        {"team": 0, "controller": null, "players": 6},
         {"team": 1, "controller": null, "players": 0}
     ], "scripted_loading": false}}}"#;
 
@@ -761,8 +769,8 @@ mod tests {
             io::ErrorKind::InvalidData
         );
         let other_mode = PRACTICE.replace(
-            r#""placeables_by_mode": {"0x0230000000000018""#,
             r#""placeables_by_mode": {"0x023000000000005A""#,
+            r#""placeables_by_mode": {"0x0230000000000018""#,
         );
         assert_eq!(
             error(
@@ -1051,8 +1059,11 @@ mod tests {
             if let Some(name) = name {
                 text(&mut digest, name);
             }
+            // Python's Range is mode 0018 with one player; ours is 005A,
+            // with the same map record otherwise: hash Python's mode and
+            // team sizes in their place.
             let modes = if entry.guid == PRACTICE_RANGE_MAP {
-                &[PRACTICE_RANGE_MODE]
+                &[PYTHON_PRACTICE_RANGE_MODE]
             } else {
                 catalog.entries[&entry.guid].modes.as_slice()
             };
@@ -1067,12 +1078,17 @@ mod tests {
                     let Some(game) = game else { continue };
                     accepted += 1;
                     digest.update(game.map_guid.to_le_bytes());
-                    digest.update(game.mode_guid.to_le_bytes());
+                    let (mode_guid, team_sizes) = if game.mode_guid == PRACTICE_RANGE_MODE {
+                        (PYTHON_PRACTICE_RANGE_MODE, vec![1, 0])
+                    } else {
+                        (game.mode_guid, game.team_sizes.clone())
+                    };
+                    digest.update(mode_guid.to_le_bytes());
                     text(&mut digest, &game.name);
                     text(&mut digest, &game.mode_name);
                     digest.update([u8::from(game.free_for_all)]);
-                    count(&mut digest, game.team_sizes.len());
-                    digest.update(&game.team_sizes);
+                    count(&mut digest, team_sizes.len());
+                    digest.update(&team_sizes);
                     count(&mut digest, game.placeables.len());
                     for placeable in game.placeables {
                         digest.update(placeable.to_le_bytes());
@@ -1125,7 +1141,7 @@ mod tests {
 
     /// The test fixture `GameMap::practice_range` is the install's record
     /// (`MapCatalog::practice_range`: map 0688's name and placeables in mode
-    /// 0018, the mode's team sizes, the team 0 spawn point as Python rounded
+    /// 005A, the mode's team sizes, the team 0 spawn point as Python rounded
     /// it), and that spawn is the install's within the rounding.
     #[test]
     #[ignore = "requires the derived 104319 map catalog"]
@@ -1133,7 +1149,7 @@ mod tests {
         let data = orpheus_testkit::runtime_dir().join("data");
         let derived = MapCatalog::load(&data).unwrap().practice_range().unwrap();
         assert_eq!(derived, GameMap::practice_range());
-        assert_eq!(derived.team_sizes, [1, 0]);
+        assert_eq!(derived.team_sizes, [6, 0]);
 
         let maps: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(data.join(MAPS_FILE)).unwrap()).unwrap();

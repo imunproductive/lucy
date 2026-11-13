@@ -229,10 +229,6 @@ pub fn collision_build(install: PathBuf) -> Arc<CollisionBuild> {
     })
 }
 
-/// Retail puts a whole group in the Practice Range together, up to six on
-/// one team (ow174/lobby/matchmaker.py `practice`).
-pub const MAX_PRACTICE_PARTY: usize = 6;
-
 pub struct GameService {
     address: SocketAddr,
     requests: mpsc::SyncSender<Request>,
@@ -402,16 +398,19 @@ impl GameService {
     }
 
     /// A group in the Practice Range: everyone on the first team, whose
-    /// size is the group's (ow174/lobby/matchmaker.py `_practice`). Seats in
-    /// member order.
+    /// size is the group's (ow174/lobby/matchmaker.py `_practice`), up to
+    /// the mode's blue team (six in `005A`). Seats in member order.
     pub fn open_practice_party(
         &self,
         id: [u64; 2],
         scene: PreparedScene,
         mut members: Vec<WorldPlayer>,
     ) -> io::Result<Vec<Handoff>> {
-        if !(1..=MAX_PRACTICE_PARTY).contains(&members.len()) {
-            return Err(invalid("a Practice Range group has one to six players"));
+        let seats = usize::from(scene.map().team_sizes.first().copied().unwrap_or(0));
+        if !(1..=seats).contains(&members.len()) {
+            return Err(invalid(format!(
+                "a Practice Range group has one to {seats} players"
+            )));
         }
         for member in &mut members {
             member.player.team = 0;

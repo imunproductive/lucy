@@ -3996,7 +3996,7 @@ fn player_world_answers_the_ruleset_defaults_of_its_hero_and_mode() {
             "0x0A30000000000060": {"29450": true}
         },
         "heroes": {"0x02E0000000000003": ["0x0A3000000000001B"]},
-        "modes": {"0x0230000000000018": ["0x0A30000000000060"]}}"#,
+        "modes": {"0x023000000000005A": ["0x0A30000000000060"]}}"#,
     )
     .unwrap();
     let mut world = PlayerWorld::new(

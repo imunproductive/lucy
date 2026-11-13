@@ -60,7 +60,9 @@ pub(crate) const NOTICE_GAP: Duration = Duration::from_millis(100);
 /// (`m_teams[].m_controllerScript` of the mode's `0C5`; notices.py
 /// `SWITCH_MODES`). Free for all (0F74), capture the flag (0CA2),
 /// elimination (0D2A) and the rest have other controllers without it, and
-/// the Practice Range's blue team has 13C1.
+/// the solo Practice Range (0018) has 13C1 for its blue team. The group
+/// Practice Range the server runs (005A) has 0C90 for both teams, so it
+/// shows them (Python ran 0018, without them).
 pub fn switch_notices(mode: Option<&GameMode>) -> bool {
     mode.is_some_and(|mode| {
         !mode.teams.is_empty()
@@ -195,7 +197,7 @@ mod tests {
         };
         let pvp = Some(SWITCH_CONTROLLER);
         assert!(switch_notices(Some(&mode(&[pvp, pvp]))));
-        // The Practice Range: 13C1 for the player's team.
+        // The solo Practice Range (0018): 13C1 for the player's team.
         assert!(!switch_notices(Some(&mode(&[
             Some(0x0580_0000_0000_13c1),
             pvp

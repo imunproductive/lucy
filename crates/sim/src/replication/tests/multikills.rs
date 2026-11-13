@@ -157,7 +157,7 @@ fn a_second_kill_within_two_seconds_pulses_the_announcers_double_kill() {
     assert_double_kill_sent(&scene, &shooter, ticks[1]);
 }
 
-/// In the Practice Range (controller 13C1, mode 0018), a player kills one
+/// In the Practice Range (mode 005A, controller 0C90), a player kills one
 /// Training Bot, then a second 124 ticks later: as in PvP, the second kill
 /// sends him at once the controller frame with `0215` pulsed for "Double
 /// kill" (retail says it there, for Training Bots too). The game service

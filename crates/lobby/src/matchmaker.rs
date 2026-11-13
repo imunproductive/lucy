@@ -992,15 +992,15 @@ mod tests {
         // The catalog has only the Practice Range.
         let catalog = MapCatalog::from_json(
             r#"{"0x0800000000000688": {"name": "Practice Range",
-                "modes": ["0x0230000000000018"],
-                "placeables_by_mode": {"0x0230000000000018": [136]},
+                "modes": ["0x023000000000005A"],
+                "placeables_by_mode": {"0x023000000000005A": [136]},
                 "spawns": [{"team": 0, "position": [0, 0, 0], "rotation": [0, 0, 0, 1]}]}}"#,
         )
         .unwrap()
         .with_modes(
             GameModes::from_json(
-                r#"{"modes": {"0x0230000000000018": {"teams": [
-                    {"team": 0, "controller": null, "players": 1}
+                r#"{"modes": {"0x023000000000005A": {"teams": [
+                    {"team": 0, "controller": null, "players": 6}
                 ], "scripted_loading": false}}}"#,
             )
             .unwrap(),

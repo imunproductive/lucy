@@ -7,16 +7,13 @@
 //!   names `0215`, and no other graph names its five voice stimuli.
 //! - The Practice Range: in retail the announcer says these lines there,
 //!   for kills of Training Bots too (seen in the game). The map (`0688`) has
-//!   two modes. In `0018`, the one the server runs, the player's controller
-//!   is `13C1`, and nothing in that mode runs `0215`: not 13C1 or the graphs
-//!   it starts (`20E4`, `288A`), not the mode script `13C0`, the team body
-//!   script `0C8E`, the hero's body graphs or the bot graphs. In `005A`
-//!   (the Custom Games "Practice Range", ruleset `0034.0C0`, six players)
-//!   both teams have 0C90, so there the player's 0C90 runs `0215`. So the
-//!   server puts `0215` on the Range player's controller as a root
-//!   instance of its own, with the same states (assumption: the client runs
-//!   a root instance there as it runs one under 0C90; HandoffA saw it take a
-//!   server-made root instance of `20E4` on 13C1 without error).
+//!   two modes. In `0018` (the solo Range, which Python ran) the player's
+//!   controller is `13C1`, and nothing in that mode runs `0215`: not 13C1 or
+//!   the graphs it starts (`20E4`, `288A`), not the mode script `13C0`, the
+//!   team body script `0C8E`, the hero's body graphs or the bot graphs. In
+//!   `005A` (the group Range, six players, ruleset `0034.0C0`) both teams
+//!   have 0C90, so there the player's 0C90 runs `0215`. The server runs the
+//!   Range as `005A`, so the lines come as in the PvP modes.
 //! - `0215` (server-only part): every elimination the controller gets
 //!   (`0093.025`: killer `0012`, victim `0015`) of an enemy hero
 //!   (rid15: filter with target tags `06AD` or `031D`) adds 1 to its count

@@ -567,7 +567,7 @@ mod tests {
     #[test]
     #[ignore = "requires the derived 104319 stat catalog"]
     fn actual_scoreboard_components_match_the_python_wire_corpus() {
-        use crate::maps::PRACTICE_RANGE_MODE;
+        use crate::maps::PYTHON_PRACTICE_RANGE_MODE;
         use std::collections::BTreeSet;
 
         let root = orpheus_testkit::runtime_dir();
@@ -575,7 +575,8 @@ mod tests {
         let modes: BTreeSet<_> = std::iter::once(&catalog.player)
             .chain(catalog.heroes.values())
             .flat_map(|group| group.modes.keys().copied())
-            .chain([0, PRACTICE_RANGE_MODE, 0x0230_0000_0000_0017])
+            // Python's corpus has its Range mode 0018 (ours is 005A).
+            .chain([0, PYTHON_PRACTICE_RANGE_MODE, 0x0230_0000_0000_0017])
             .collect();
         let mut heroes = catalog.heroes.keys().copied().collect::<Vec<_>>();
         heroes.sort_unstable();

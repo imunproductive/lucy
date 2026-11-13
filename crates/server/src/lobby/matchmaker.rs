@@ -1534,11 +1534,14 @@ impl Ctx<'_> {
     }
 
     /// Training > Practice Range for the player and the members of his party
-    /// who are not in a match, on one team.
+    /// who are not in a match, on one team, as many as the Range mode's blue
+    /// team takes (six in `005A`).
     fn practice(&mut self, account: &Arc<Account>, party: &Party) -> bool {
+        let seats = usize::from(self.mm.practice.team_sizes.first().copied().unwrap_or(1)).max(1);
         let mut members = vec![Arc::clone(account)];
         for member in self.players(party) {
-            if member.account_lo != account.account_lo
+            if members.len() < seats
+                && member.account_lo != account.account_lo
                 && self.state.player_of(member.account_lo).is_none()
             {
                 members.push(member);
