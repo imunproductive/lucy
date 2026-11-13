@@ -893,6 +893,7 @@ fn initial_controller(
                 select_open: true,
                 skins: true,
                 hide_assemble: true,
+                multikills: Some(orpheus_sim::announcer::MultikillPulse::PRIMER),
                 ..ControllerFrame::default()
             },
         )

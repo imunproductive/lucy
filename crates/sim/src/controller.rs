@@ -21,8 +21,8 @@
 //! "still choosing". The F1 hero info (288A's client-only 2931) shows v940's
 //! hero while hero select is closed (2931 st3: `v14152 = v31435 ? browsed
 //! hero : v940`). v8419 is m_allowHeroSelect. Retail OW2 traffic works the
-//! same way. From a player's first multikill on, his frames also carry the
-//! multikill graph `0215` ([`crate::announcer`]) under 0C90 st116/st117.
+//! same way. His frames also carry the multikill graph `0215`
+//! ([`crate::announcer`]) under 0C90 st116/st117, its pulser primed.
 
 use std::{collections::BTreeMap, io};
 
@@ -102,8 +102,8 @@ pub struct ControllerFrame<'a> {
     /// Extra presence bits of the root controller, such as notice switches.
     pub presence: Option<&'a BTreeMap<usize, Value>>,
     pub hero: Option<u64>,
-    /// `0215`'s pulser and #10122 once the player's multikills pulsed it;
-    /// the controller's frames carry its instance from then on.
+    /// `0215`'s pulser and #10122 ([`MultikillPulse::PRIMER`] before the
+    /// first multikill); None leaves `0215` out.
     pub multikills: Option<MultikillPulse>,
 }
 
@@ -192,9 +192,11 @@ impl Controller {
                 pulser.bits(u64::from(pulse.count), 8)?;
                 instance.states.insert(slots.pulser, pulser);
                 instance.states.insert(slots.shared_vars, BitWriter::new());
-                instance
-                    .presence
-                    .insert(slots.stimulus, Value::Asset(pulse.stimulus));
+                if let Some(stimulus) = pulse.stimulus {
+                    instance
+                        .presence
+                        .insert(slots.stimulus, Value::Asset(stimulus));
+                }
                 Ok::<_, WireError>(instance)
             })
             .transpose()?;
@@ -381,7 +383,7 @@ mod tests {
             multikills: Some(MultikillPulse {
                 count: 1,
                 fresh: true,
-                stimulus: 0x0ee0_0000_0000_058a,
+                stimulus: Some(0x0ee0_0000_0000_058a),
             }),
             ..ControllerFrame::default()
         };

@@ -1517,7 +1517,7 @@ fn actual_shared_ui_graph_baselines_match_python() {
 }
 
 #[test]
-fn kill_feed_pulse_waits_for_the_world_then_stays_fresh_until_acknowledged() {
+fn kill_feed_pulse_follows_a_primer_once_the_world_allows_it() {
     use crate::vm::Component;
     use std::sync::Arc;
 
@@ -1603,46 +1603,67 @@ fn kill_feed_pulse_waits_for_the_world_then_stays_fresh_until_acknowledged() {
             .get(&108)
             .map(|state| (state.active, state.payload.clone()))
     };
-    let payload = |fresh| {
+    let payload = |count, fresh| {
         StatePayload::from([
-            ("count".into(), Value::Integer(1)),
+            ("count".into(), Value::Integer(count)),
             ("fresh".into(), Value::Bool(fresh)),
         ])
     };
     let live = encoder
         .project(component.snapshot().unwrap(), View::Owner)
         .unwrap();
-    assert_eq!(pulse(&live), Some((true, payload(true))));
+    assert_eq!(pulse(&live), Some((true, payload(1, true))));
     assert_eq!(graphs.graph(0x01cf).unwrap().kill_feed_pulser(), Some(108));
-    // Not allowed yet: the client keeps what it acknowledged.
+    // The client has no pulser on yet: allowed or not, it first gets the
+    // primer, on at one pulse less and not fresh.
+    let primer = Some((true, payload(0, false)));
     assert_eq!(
         pulse(&live.clone().gate_kill_feed(&graphs, &stream, false)),
-        None
+        primer
+    );
+    let primed = live.clone().gate_kill_feed(&graphs, &stream, true);
+    assert_eq!(pulse(&primed), primer);
+    let sent = encoder
+        .queue_delta(&mut stream, &primed, DeltaKind::InitialOwner(101), 16)
+        .unwrap()
+        .unwrap();
+    // Until the client acknowledges it, the primer stays.
+    assert_eq!(
+        pulse(&live.clone().gate_kill_feed(&graphs, &stream, true)),
+        primer
+    );
+    stream.sent(sent.last);
+    stream.arrived(sent.last);
+    // Then the count moves on once the world allows it.
+    assert_eq!(
+        pulse(&live.clone().gate_kill_feed(&graphs, &stream, false)),
+        primer
     );
     let allowed = live.gate_kill_feed(&graphs, &stream, true);
-    assert_eq!(pulse(&allowed), Some((true, payload(true))));
+    assert_eq!(pulse(&allowed), Some((true, payload(1, true))));
+    let kind = DeltaKind::InitialOwner(102);
     let sent = encoder
-        .queue_delta(&mut stream, &allowed, DeltaKind::InitialOwner(101), 16)
+        .queue_delta(&mut stream, &allowed, kind, 16)
         .unwrap()
         .unwrap();
 
     // Later the pulse is stale, but the unacknowledged one keeps its value.
-    for frame in 102..=140 {
+    for frame in 103..=140 {
         component.advance_frame(frame, &mut EmptyWorld).unwrap();
     }
     let stale = encoder
         .project(component.snapshot().unwrap(), View::Owner)
         .unwrap();
-    assert_eq!(pulse(&stale), Some((true, payload(false))));
+    assert_eq!(pulse(&stale), Some((true, payload(1, false))));
     assert_eq!(
         pulse(&stale.clone().gate_kill_feed(&graphs, &stream, false)),
-        Some((true, payload(true)))
+        Some((true, payload(1, true)))
     );
     stream.sent(sent.last);
     stream.arrived(sent.last);
     assert_eq!(
         pulse(&stale.gate_kill_feed(&graphs, &stream, false)),
-        Some((true, payload(false)))
+        Some((true, payload(1, false)))
     );
 }
 

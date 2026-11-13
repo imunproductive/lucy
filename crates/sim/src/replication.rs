@@ -3867,7 +3867,7 @@ impl WorldDelivery {
                         hide_assemble: practice,
                         presence,
                         hero,
-                        multikills: self.multikills.pulse(tick),
+                        multikills: Some(self.multikills.pulse(tick)),
                     },
                 )
             })

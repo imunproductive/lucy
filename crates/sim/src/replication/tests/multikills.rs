@@ -203,7 +203,7 @@ fn assert_double_kill_sent(scene: &PreparedScene, shooter: &WorldDelivery, tick:
                 multikills: Some(MultikillPulse {
                     count: 1,
                     fresh: true,
-                    stimulus: 0x0ee0_0000_0000_058a,
+                    stimulus: Some(0x0ee0_0000_0000_058a),
                 }),
             },
         )

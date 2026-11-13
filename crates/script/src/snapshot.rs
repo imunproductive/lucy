@@ -135,10 +135,23 @@ impl ProjectedSnapshot {
 impl ProjectedSnapshot {
     /// Gate a new kill feed pulse (`BodyStream.kill_feed_snapshot` in
     /// driver.py) of each instance whose graph has a kill feed pulser
-    /// ([`Graph::kill_feed_pulser`]): until the world allows it the client
-    /// keeps what it has; once allowed the pulse goes out as a fresh first
-    /// one; and a pulse already sent keeps its wire value until it is
-    /// acknowledged.
+    /// ([`Graph::kill_feed_pulser`]). The client first gets the pulser on
+    /// at one pulse less than the server's count, not fresh (the primer,
+    /// which pulses nothing); once it acknowledged that, the count moves on
+    /// to the server's when the world allows it, and the client pulses
+    /// once. Until then the client keeps what it has. A value already sent
+    /// keeps its wire value until it is acknowledged.
+    ///
+    /// Python (and this server until 2026-11-13) sent the pulser on with
+    /// the server's count and the fresh bit at once, relying on the rule
+    /// that a state the client reads for the first time pulses once with
+    /// that bit (reader 0x7FF78990D760). In the game that showed no kill
+    /// feed line at all, for players and bots, while everything else the
+    /// line needs reached the client (loopback). A count that moves on
+    /// while the state is on pulses the client as often: the primer relies
+    /// on that alone. Assumption: the first read does not pulse in our
+    /// frames (`D:/Work/Coding/refs/reports/KillFeed.md`). The line comes a
+    /// round trip later.
     pub fn gate_kill_feed(
         mut self,
         graphs: &GraphStore,
@@ -174,17 +187,12 @@ impl ProjectedSnapshot {
             } else if let Some(pulses) =
                 current_count.filter(|pulses| Some(pulses) != acknowledged.as_ref())
             {
-                if allowed {
-                    Some(ProjectedState {
-                        active: true,
-                        payload: StatePayload::from([
-                            ("count".into(), pulses),
-                            ("fresh".into(), Value::Bool(true)),
-                        ]),
-                        volley: None,
-                    })
-                } else {
-                    before
+                match (&acknowledged, pulses) {
+                    (None, Value::Integer(pulses)) => {
+                        Some(pulser_on((pulses - 1).rem_euclid(256), false))
+                    }
+                    (Some(_), Value::Integer(pulses)) if allowed => Some(pulser_on(pulses, true)),
+                    _ => before,
                 }
             } else {
                 continue;
@@ -198,6 +206,18 @@ impl ProjectedSnapshot {
             };
         }
         self
+    }
+}
+
+/// A pulser that is on, with its 8-bit count and fresh bit.
+fn pulser_on(count: i64, fresh: bool) -> ProjectedState {
+    ProjectedState {
+        active: true,
+        payload: StatePayload::from([
+            ("count".into(), Value::Integer(count)),
+            ("fresh".into(), Value::Bool(fresh)),
+        ]),
+        volley: None,
     }
 }
 

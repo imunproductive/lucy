@@ -33,7 +33,19 @@
 //!
 //! So the server sends no voice line: it pulses st21 with #10122 set, and the
 //! killer's own client says the line. The mode entity is `16B2` in every
-//! mode, the Practice Range too. Assumptions: an elimination is the final
+//! mode, the Practice Range too.
+//!
+//! The primer (2026-11-13): st21 is on, at count 0 and not fresh, from the
+//! controller's first frame on, so every multikill moves an on pulser's
+//! count, which pulses the client as often (reader 0x7FF78990D760). Before,
+//! `0215` came with the first multikill, its pulser on at count 1 and
+//! fresh, relying on the client pulsing a state it reads for the first time
+//! with the fresh bit set; in the game no line played, in the Practice
+//! Range or a real match (as for the kill feed,
+//! `ProjectedSnapshot::gate_kill_feed`). In retail `0215` runs from the
+//! start too (0C90 st116 is on for a human owner), but st21 comes on only
+//! with the first multikill: the primer is an assumption, as is the rule
+//! it avoids. Assumptions: an elimination is the final
 //! blow (the server credits no assists; `0215` rid57 counts any elimination,
 //! or with `STU_A3DEF368().id(12421)` only `0091.026`, likely the final
 //! blow); every enemy player's body or bot passes rid15. The Range's Training
@@ -90,8 +102,18 @@ pub struct MultikillPulse {
     /// policy, [`kill_feed_fresh`]). A client that reads st21 for the first
     /// time pulses once with the bit set, else takes the count as seen.
     pub fresh: bool,
-    /// #10122.
-    pub stimulus: u64,
+    /// #10122, once st21 pulsed.
+    pub stimulus: Option<u64>,
+}
+
+impl MultikillPulse {
+    /// st21 before its first pulse: on, at count 0, not fresh, with no
+    /// #10122 (the primer, see the module notes).
+    pub const PRIMER: Self = Self {
+        count: 0,
+        fresh: false,
+        stimulus: None,
+    };
 }
 
 impl Multikills {
@@ -115,14 +137,16 @@ impl Multikills {
         true
     }
 
-    /// st21 and #10122 at world tick `tick`, once st21 has pulsed.
-    pub fn pulse(&self, tick: u32) -> Option<MultikillPulse> {
-        let pulsed = self.pulsed?;
-        Some(MultikillPulse {
+    /// st21 and #10122 at world tick `tick`: the primer until st21 pulsed.
+    pub fn pulse(&self, tick: u32) -> MultikillPulse {
+        let Some(pulsed) = self.pulsed else {
+            return MultikillPulse::PRIMER;
+        };
+        MultikillPulse {
             count: self.pulses,
             fresh: kill_feed_fresh(tick, pulsed),
-            stimulus: self.stimulus,
-        })
+            stimulus: Some(self.stimulus),
+        }
     }
 }
 
@@ -137,7 +161,7 @@ mod tests {
     fn kills_within_two_seconds_of_each_other_pulse_the_announcer() {
         let mut kills = Multikills::default();
         assert!(!kills.eliminated(1000));
-        assert_eq!(kills.pulse(1000), None);
+        assert_eq!(kills.pulse(1000), MultikillPulse::PRIMER);
         let mut tick = 1000;
         for (pulses, stimulus) in [
             (1, 0x0ee0_0000_0000_058a),
@@ -150,32 +174,32 @@ mod tests {
             assert!(kills.eliminated(tick));
             assert_eq!(
                 kills.pulse(tick),
-                Some(MultikillPulse {
+                MultikillPulse {
                     count: pulses,
                     fresh: true,
-                    stimulus,
-                })
+                    stimulus: Some(stimulus),
+                }
             );
         }
         // A seventh kill has no line: st21 keeps its count and #10122.
         tick += 1;
         assert!(!kills.eliminated(tick));
-        assert_eq!(kills.pulse(tick).unwrap().count, 5);
+        assert_eq!(kills.pulse(tick).count, 5);
         // The pulse stays fresh for 500 ms: 31 ticks of 16 ms, not 32.
         let pulsed = tick - 1;
-        assert!(kills.pulse(pulsed + 31).unwrap().fresh);
-        assert!(!kills.pulse(pulsed + 32).unwrap().fresh);
+        assert!(kills.pulse(pulsed + 31).fresh);
+        assert!(!kills.pulse(pulsed + 32).fresh);
         // The wait ended 2 s after the last kill: a new streak.
         tick += MULTIKILL_WINDOW_TICKS;
         assert!(!kills.eliminated(tick));
         assert!(kills.eliminated(tick + 1));
         assert_eq!(
             kills.pulse(tick + 1),
-            Some(MultikillPulse {
+            MultikillPulse {
                 count: 6,
                 fresh: true,
-                stimulus: 0x0ee0_0000_0000_058a,
-            })
+                stimulus: Some(0x0ee0_0000_0000_058a),
+            }
         );
     }
 }

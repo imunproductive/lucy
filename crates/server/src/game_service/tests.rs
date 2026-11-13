@@ -1239,6 +1239,7 @@ fn exercise_hero_selection(
                     skins: open,
                     hide_assemble: true,
                     hero: Some(hero),
+                    multikills: Some(orpheus_sim::announcer::MultikillPulse::PRIMER),
                     ..ControllerFrame::default()
                 },
             )
@@ -4072,6 +4073,7 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
                     skins,
                     hide_assemble: false,
                     hero,
+                    multikills: Some(orpheus_sim::announcer::MultikillPulse::PRIMER),
                     ..ControllerFrame::default()
                 },
             )
