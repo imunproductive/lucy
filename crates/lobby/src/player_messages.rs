@@ -243,6 +243,17 @@ pub fn settings(schemas: &Schemas, profile: &Profile) -> io::Result<Fields> {
     if !saved.contains_key("+0x108") {
         settings_block(&mut fields, 0x108)?.insert(4, Bool(true));
     }
+    // Options > Gameplay "Kill Feed Display" (`+0x4`; `+0x5` Always Skip
+    // Kill Cam, `+0x7` Tips Display). The client copies it into account
+    // settings system 9 `+700`, and the kill feed panel of graph `0DEA`
+    // shows only while it is on (#1962 = `STU_016D65A8` = system 9 `+700`).
+    // The client's own Options default is on, but system 9 holds only what
+    // 20802 sends, so without it no kill feed line draws. Python sent no
+    // default here; upstream kjs notes `research/lizrollin-runtime.md:446-461`,
+    // `research/lizrollin-lobby.md:84`.
+    if !saved.contains_key("+0x120") {
+        settings_block(&mut fields, 0x120)?.insert(4, Bool(true));
+    }
     Ok(fields)
 }
 
@@ -314,6 +325,12 @@ mod tests {
                 {"type":14,"off":269,"count":0,"array":false,"fields":[
                     {"type":0,"off":0,"count":0,"array":false},
                     {"type":2,"off":5,"count":0,"array":false}
+                ]},
+                {"type":14,"off":288,"count":0,"array":false,"fields":[
+                    {"type":6,"off":0,"count":0,"array":false},
+                    {"type":0,"off":4,"count":0,"array":false},
+                    {"type":0,"off":5,"count":0,"array":false},
+                    {"type":0,"off":7,"count":0,"array":false}
                 ]}
             ]}}"#,
         )
@@ -329,10 +346,21 @@ mod tests {
             panic!("missing flags")
         };
         assert_eq!(flags[&4], Bool(true));
+        let Value::Struct(gameplay) = &defaults[&0x120] else {
+            panic!("missing gameplay options")
+        };
+        // Kill Feed Display on; Always Skip Kill Cam and Tips Display stay
+        // the schema's off.
+        assert_eq!(gameplay[&4], Bool(true));
+        assert_eq!(gameplay[&5], Bool(false));
+        assert_eq!(gameplay[&7], Bool(false));
 
         profile
             .settings
             .insert("+0x10D".into(), json!({"+0x0": false, "+0x5": 2}));
+        profile
+            .settings
+            .insert("+0x120".into(), json!({"+0x4": false, "+0x5": true}));
         profile
             .settings
             .insert("ignore_me".into(), json!("not a protocol field"));
@@ -342,6 +370,11 @@ mod tests {
             Struct(Fields::from([(0, Bool(false)), (5, Unsigned(2))]))
         );
         assert_eq!(loaded[&0x108], defaults[&0x108]);
+        let Value::Struct(gameplay) = &loaded[&0x120] else {
+            panic!("missing gameplay options")
+        };
+        assert_eq!(gameplay[&4], Bool(false));
+        assert_eq!(gameplay[&5], Bool(true));
     }
 
     #[test]
@@ -379,6 +412,15 @@ mod tests {
             }
             format!("{:x}", hash.finalize())
         };
+        // Python sent 20802 without a Kill Feed Display default (block
+        // +0x120 stayed the schema's empty one); we turn it on so the kill
+        // feed draws (`settings`). Everything else matches Python's bytes.
+        let python_settings = |profile: &Profile| {
+            let mut fields = settings(&schemas, profile).unwrap();
+            let empty = schemas.empty(LOBBY, 20802).unwrap().remove(&0x120).unwrap();
+            fields.insert(0x120, empty);
+            fields
+        };
         let mut profile = Profile {
             player_name: "Parity".into(),
             region: "GB".into(),
@@ -400,7 +442,7 @@ mod tests {
                 20502,
                 Fields::from([(0x78, Struct(record(&profile, identity, frame, now)))]),
             ),
-            (LOBBY, 20802, settings(&schemas, &profile).unwrap()),
+            (LOBBY, 20802, python_settings(&profile)),
             (LOBBY, 20812, ux_states(&profile).unwrap()),
             (PERMISSIONS, 55500, features()),
         ];
@@ -419,7 +461,7 @@ mod tests {
         profile.ux_states = serde_json::from_value(json!({"7": -4, "0": 9})).unwrap();
         assert_eq!(
             digest(&[
-                (LOBBY, 20802, settings(&schemas, &profile).unwrap()),
+                (LOBBY, 20802, python_settings(&profile)),
                 (LOBBY, 20812, ux_states(&profile).unwrap()),
             ]),
             "c22c0478c94df785719930c95019a75754b75e82418d8e9a65a2fd2d1c9657a7"
