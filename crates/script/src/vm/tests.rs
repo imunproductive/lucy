@@ -3808,10 +3808,12 @@ fn messages_to_other_entities_go_through_the_world_and_reach_every_instance() {
             true
         }
     }
+    // An action, and a SendGameMessage state whose target kind
+    // `STU_9B213168` names the entities of its `m_targets` (`0C8E` st41).
     let sender = graph(
         42,
         vec![
-            entry(&[(1, "m_inPlug")]),
+            entry(&[(1, "m_inPlug"), (2, "m_beginPlug")]),
             node(
                 1,
                 "STUStatescriptActionSendGameMessage",
@@ -3822,8 +3824,17 @@ fn messages_to_other_entities_go_through_the_world_and_reach_every_instance() {
                     "m_params":[{"m_B5051BCE":"0x0D80000000000007","m_value":{"$":"STUConfigVarInt","m_value":9}}],
                 }),
             ),
+            node(
+                2,
+                "STU_38EE1100",
+                Some(0),
+                json!({
+                    "m_gameMessage":{"m_gameMessage":"0x0240000000000006"},
+                    "m_target":{"$":"STU_9B213168","m_targets":var(90,true)},
+                }),
+            ),
         ],
-        json!([]),
+        json!([2]),
         json!([0]),
     );
     let receiver = graph(
@@ -3851,12 +3862,15 @@ fn messages_to_other_entities_go_through_the_world_and_reach_every_instance() {
     let parameters = Variables::from([(7, Value::Integer(9))]);
     assert_eq!(
         router.0,
-        [(
-            0xa000_0101,
-            OTHER,
-            0x0240_0000_0000_0005,
-            parameters.clone()
-        )]
+        [
+            (
+                0xa000_0101,
+                OTHER,
+                0x0240_0000_0000_0005,
+                parameters.clone()
+            ),
+            (0xa000_0101, OTHER, 0x0240_0000_0000_0006, Variables::new())
+        ]
     );
     let mut other = Component::start(
         graphs,

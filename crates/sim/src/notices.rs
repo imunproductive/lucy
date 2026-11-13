@@ -190,6 +190,7 @@ mod tests {
                 .map(|(team, &controller)| ModeTeam {
                     team: team as i64,
                     controller,
+                    body: None,
                     players: 6,
                 })
                 .collect(),

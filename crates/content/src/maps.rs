@@ -522,6 +522,9 @@ pub struct ModeTeam {
     pub team: i64,
     /// The team's controller graph (`01B`), when it has one.
     pub controller: Option<u64>,
+    /// `m_bodyScript`: the graph (`01B`) every body of the team runs besides
+    /// its hero's, when the team has one.
+    pub body: Option<u64>,
     /// `m_170AA4B8`: the team's players.
     pub players: u8,
 }
@@ -549,6 +552,7 @@ impl GameModes {
                         Ok(ModeTeam {
                             team: team.team,
                             controller: team.controller.as_deref().map(hex_guid).transpose()?,
+                            body: team.body.as_deref().map(hex_guid).transpose()?,
                             players: team.players,
                         })
                     })
@@ -593,6 +597,8 @@ struct RawMode {
 struct RawTeam {
     team: i64,
     controller: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
     players: u8,
 }
 
@@ -685,7 +691,7 @@ mod tests {
 
     const MODES: &str = r#"{"modes": {
         "0x0230000000000025": {"teams": [
-            {"team": 0, "controller": "0x0580000000000F44", "players": 4},
+            {"team": 0, "controller": "0x0580000000000F44", "body": "0x0580000000000F45", "players": 4},
             {"team": 1, "controller": null, "players": 0}
         ], "scripted_loading": true},
         "0x20": {"teams": [], "scripted_loading": false}
@@ -844,11 +850,13 @@ mod tests {
                 ModeTeam {
                     team: 0,
                     controller: Some(0x0580_0000_0000_0f44),
+                    body: Some(0x0580_0000_0000_0f45),
                     players: 4
                 },
                 ModeTeam {
                     team: 1,
                     controller: None,
+                    body: None,
                     players: 0
                 }
             ]
