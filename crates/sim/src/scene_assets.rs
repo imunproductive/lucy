@@ -169,6 +169,16 @@ pub struct PlateUpdates {
     pub controllers: Vec<(EntityUpdate, u32)>,
 }
 
+/// Why the environment kills a body ([`PreparedScene::fell_out`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FellOut {
+    /// A damage area, kill volume or catch floor of the map.
+    Environment,
+    /// The safety net below the whole map: the map's data lacks the volume
+    /// that kills there.
+    BelowMap,
+}
+
 pub struct PreparedScene {
     map: GameMap,
     ground: CollisionScene,
@@ -224,9 +234,9 @@ pub struct PreparedScene {
     /// Where a falling body dies on a map with neither damage areas nor
     /// kill volumes (`map_areas::kill_height`).
     kill_height: Option<f64>,
-    /// The height of the map's lowest collision triangle: feet below it are
-    /// below the whole map (`map_areas` module notes).
-    lowest: f64,
+    /// [`map_areas::FALL_LIMIT`] below the map's lowest collision triangle:
+    /// the safety net under the whole map (`map_areas` module notes).
+    safety_net: f64,
 }
 
 impl SceneAssets {
@@ -472,7 +482,7 @@ impl SceneAssets {
         let kill_height = lowest_spawn
             .filter(|_| lethal_areas.is_empty() && kill_volumes.is_empty())
             .and_then(|below| map_areas::kill_height(ground.triangles().triangles(), below));
-        let lowest = ground.triangles().lowest();
+        let safety_net = ground.triangles().lowest() - map_areas::FALL_LIMIT;
         // A mode that plays for objectives needs their data, checked here
         // rather than when the match begins.
         if Mode::of(map.mode_guid).is_some_and(Mode::has_objectives)
@@ -525,7 +535,7 @@ impl SceneAssets {
             lethal_areas,
             kill_volumes,
             kill_height,
-            lowest,
+            safety_net,
             door_barriers,
         };
         let mut factories = self
@@ -718,20 +728,27 @@ impl PreparedScene {
         map_areas::in_spawn_room(&self.spawn_rooms, &self.map, team, room, position)
     }
 
-    /// Whether the environment kills a living body whose feet are at
-    /// `position` (`map_areas` module notes): in a lethal damage area of the
-    /// mode or a kill volume of the map, on the catch floor of a map with
-    /// neither, or below the whole map.
-    pub fn fell_out(&self, position: [f64; 3]) -> bool {
-        self.lethal_areas.iter().any(|area| area.contains(position))
+    /// Whether the environment kills a living body whose capsule centre is
+    /// at `centre`, `above_feet` over its feet (`map_areas` module notes):
+    /// in a lethal damage area of the mode or a kill volume of the map, on
+    /// the catch floor of a map with neither, or in the safety net far
+    /// below the whole map.
+    pub fn fell_out(&self, centre: [f64; 3], above_feet: f64) -> Option<FellOut> {
+        if self.lethal_areas.iter().any(|area| area.contains(centre))
             || self
                 .kill_volumes
                 .iter()
-                .any(|volume| volume.contains(position))
+                .any(|volume| volume.contains(centre))
             || self
                 .kill_height
-                .is_some_and(|height| map_areas::caught(height, position[1]))
-            || position[1] < self.lowest
+                .is_some_and(|height| map_areas::caught(height, centre[1], above_feet))
+        {
+            Some(FellOut::Environment)
+        } else if centre[1] < self.safety_net {
+            Some(FellOut::BelowMap)
+        } else {
+            None
+        }
     }
 
     /// The height of the map's catch floor, if it has one.
