@@ -281,7 +281,14 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     world.update_bots(&scene, &events, tick);
     tick += 1;
     scene.bots_mut()[slot].died();
-    scene.bot_died(victim, OWNER | 1, false, None, tick);
+    scene.bot_died(&BotDeath {
+        bot: victim,
+        killer: OWNER | 1,
+        critical: false,
+        loadout: None,
+        tags: orpheus_script::weapons::DamageTags::NONE,
+        tick,
+    });
     let events = scene.take_bot_events();
     assert!(matches!(
         events.as_slice(),
@@ -360,7 +367,14 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     };
     tick += 1;
     scene.bots_mut()[shooter].died();
-    scene.bot_died(source, OWNER | 1, false, None, tick);
+    scene.bot_died(&BotDeath {
+        bot: source,
+        killer: OWNER | 1,
+        critical: false,
+        loadout: None,
+        tags: orpheus_script::weapons::DamageTags::NONE,
+        tick,
+    });
     let events = scene.take_bot_events();
     world.update_bots(&scene, &events, tick);
     let died = deliver(&mut world);

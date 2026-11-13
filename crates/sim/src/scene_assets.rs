@@ -23,7 +23,7 @@ use crate::{
     bot_plate::{BotPlate, PlateSample},
     bot_script::{BotEvent, BotScripts, BotShot},
     bots::{Bot, BotCatalog, BotWalk},
-    combat::{BodyCombat, MeleeState, RespawnTimes, melee_states},
+    combat::{BodyCombat, BotDeath, MeleeState, RespawnTimes, melee_states},
     controller::Controller,
     hitboxes::HitboxCatalog,
     hitscan::{RAY_PROFILES_FILE, RayProfiles},
@@ -1017,16 +1017,8 @@ impl PreparedScene {
     }
 
     /// A bot was killed: its script's death message (combat.py `_bot_died`).
-    pub fn bot_died(
-        &mut self,
-        entity: u32,
-        killer: u32,
-        critical: bool,
-        loadout: Option<u64>,
-        tick: u32,
-    ) {
-        self.bot_scripts
-            .died(entity, killer, critical, loadout, tick);
+    pub fn bot_died(&mut self, death: &BotDeath) {
+        self.bot_scripts.died(death);
     }
 
     /// A bot's pools after a hit it survived (combat.py `_sync_body_health`),
