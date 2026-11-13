@@ -17,16 +17,18 @@
 //! keeps a card unless it has one with a newer +0x30 for the same id
 //! (0x7FF789529C90). A card is about 90 bytes.
 //!
-//! The training bots' stand-in controllers are participants too (see
-//! `scene.rs`, from leafall903/ORPHEUS (MIT) `kjs` 2f85cee `match.py`
-//! `game_struct`, the one setup seen naming a bot in the kill feed): each
-//! bot's name is the record at its roster slot (its component 74's). kjs
-//! also put each bot's controller in its team's list, and its Tab board
-//! then had a tile per bot; retail's Practice Range shows no bots there
-//! (the user, 2026-11-13), so the team lists name the players alone unless
-//! [`BOTS_IN_TEAM_LISTS`] is on. Whether the kill feed needs the team list
-//! entry is not known (the IDA list, kill feed bots). The Python reference
-//! had no bots in the roster at all.
+//! The training bots' stand-in controllers are participants (see
+//! `scene.rs`). leafall903/ORPHEUS (MIT) `kjs` 2f85cee `match.py`
+//! `game_struct`, the one setup seen naming a bot in the kill feed, also
+//! put each bot in the roster: its name as the record at its roster slot
+//! (its component 74's) and its controller in its team's list; its Tab
+//! board then had a tile per bot. Retail's Practice Range shows no bots
+//! there (the user, 2026-11-13), and fifteen bot records push the Range's
+//! 20300 past a datagram, so the roster names the players alone unless
+//! [`BOTS_IN_ROSTER`] is on. Our stand-in names the bot in its own
+//! component 29, which kjs's had not; whether the kill feed needs the
+//! roster too is not known (the IDA list, kill feed bots). The Python
+//! reference had no bots in the roster at all.
 
 use orpheus_content::maps::GameMap;
 use orpheus_wire::jam::codec::{
@@ -38,14 +40,15 @@ use orpheus_wire::messages::Message;
 pub const RETAIL_QUANTA: u32 = 16_000;
 pub const TOURNAMENT_QUANTA: u32 = 7_000;
 pub(crate) const FREE_FOR_ALL_TEAM: u8 = 4;
-/// A debugging switch: `ORPHEUS_DEBUG_BOTS_IN_TEAM_LISTS=1` lists each
-/// training bot's stand-in controller in its team's list as kjs did (see
-/// the module notes), for an in-game check of whether the kill feed needs
-/// it. Off by default: retail's Tab board shows no bots.
-pub static BOTS_IN_TEAM_LISTS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-    let on = std::env::var("ORPHEUS_DEBUG_BOTS_IN_TEAM_LISTS").is_ok_and(|text| text.trim() == "1");
+/// A debugging switch: `ORPHEUS_DEBUG_BOTS_IN_ROSTER=1` names the training
+/// bots in the 20300/20301 roster as kjs did (see the module notes), for an
+/// in-game check of whether the kill feed needs it. Off by default:
+/// retail's Tab board shows no bots. With it on, a roster too big for one
+/// datagram refuses the match.
+pub static BOTS_IN_ROSTER: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    let on = std::env::var("ORPHEUS_DEBUG_BOTS_IN_ROSTER").is_ok_and(|text| text.trim() == "1");
     if on {
-        tracing::warn!("debugging: the team lists name the training bots");
+        tracing::warn!("debugging: the roster names the training bots");
     }
     on
 });
@@ -72,7 +75,7 @@ pub struct Instance<'a> {
     pub members: &'a [Member<'a>],
     /// The training bots, by roster slot.
     pub bots: &'a [RosterBot<'a>],
-    /// Whether the team lists name the bots too ([`BOTS_IN_TEAM_LISTS`]).
+    /// Whether the roster names the bots ([`BOTS_IN_ROSTER`]).
     pub list_bots: bool,
 }
 
@@ -81,15 +84,15 @@ impl Instance<'_> {
         let playing = || self.members.iter().filter(|member| !member.gone);
         let record = |name: &str| Struct(Fields::from([(0x50, String(name.into()))]));
         let mut records: Vec<_> = playing().map(|member| record(member.name)).collect();
-        // A player who joined after the bots took their slots keeps his
-        // record (`scene::bot_roster_slot`); a slot nobody has is empty.
-        for bot in self.bots {
+        let listed: &[RosterBot<'_>] = if self.list_bots { self.bots } else { &[] };
+        // A slot a player holds keeps his record; a slot nobody has is
+        // empty.
+        for bot in listed {
             if bot.slot >= records.len() {
                 records.resize(bot.slot, Struct(Fields::new()));
                 records.push(record(bot.name));
             }
         }
-        let listed: &[RosterBot<'_>] = if self.list_bots { self.bots } else { &[] };
         let team = |number, size| {
             let in_team = |team| self.map.free_for_all || team == number;
             let slots = playing()
@@ -200,13 +203,12 @@ mod tests {
         ]
     }
 
-    /// The training bots' stand-in controllers are participants (module
-    /// notes): each bot's name is the record at its roster slot, a slot a
-    /// later player took keeps his record, a slot nobody has is empty. The
-    /// team lists name the players alone, and the bots after them only with
-    /// the debugging switch.
+    /// The roster names the players alone by default (module notes); with
+    /// the debugging switch each bot's name is the record at its roster
+    /// slot (a slot a player holds keeps his record, a slot nobody has is
+    /// empty) and each team's list names its bots after its players.
     #[test]
-    fn the_roster_names_each_bot_at_its_slot_and_lists_it_only_when_asked() {
+    fn the_roster_names_the_bots_at_their_slots_only_when_asked() {
         let members = members();
         let map = GameMap::practice_range();
         let bot = |controller, name, team, slot| RosterBot {
@@ -265,7 +267,7 @@ mod tests {
         assert_eq!(
             roster(false),
             (
-                records.clone(),
+                Array(vec![record("Blue"), record("Red")]),
                 vec![Array(vec![entity(0x1000)]), Array(vec![entity(0x3000)])]
             )
         );

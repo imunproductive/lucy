@@ -864,7 +864,7 @@ impl Room {
             map: &self.map,
             members: &members,
             bots: &bots,
-            list_bots: *orpheus_sim::instance::BOTS_IN_TEAM_LISTS,
+            list_bots: *orpheus_sim::instance::BOTS_IN_ROSTER,
         };
         let player = &self.players[slot];
         if initial {
