@@ -39,7 +39,10 @@ pub struct Placement<'a> {
 /// The roots a placement starts with, in the client's order (see the
 /// module notes). The definition's graphs keep their list position as
 /// instance id, as a body's do; the extra graphs follow.
-pub fn placed_roots(graphs: &GraphStore, placement: &Placement<'_>) -> Result<Vec<Root>, InitFault> {
+pub fn placed_roots(
+    graphs: &GraphStore,
+    placement: &Placement<'_>,
+) -> Result<Vec<Root>, InitFault> {
     let mut roots = match graphs.entity_body(placement.definition) {
         Some(body) => crate::vm::body_roots(body)?,
         None => Vec::new(),
@@ -125,7 +128,10 @@ impl World for EntityWorld<'_, '_> {
     }
 
     fn ruleset(&mut self, id: u32) -> Option<Value> {
-        self.shared.graphs.rulesets().default(id, 0, self.shared.mode)
+        self.shared
+            .graphs
+            .rulesets()
+            .default(id, 0, self.shared.mode)
     }
 
     fn position(&mut self, entity: u32) -> [f64; 3] {

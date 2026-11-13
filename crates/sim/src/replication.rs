@@ -14,7 +14,6 @@ use crate::{
     body::{BodyCreate, BodyView, body_create, owner_pose},
     body_script::OwnerBodySpawn,
     bot_script::{BotEvent, BotViewContext, BotViews, SeenDelivery, SeenRocket},
-    placed_script::PlacedViews,
     bots::BOT_RECORD_DELAY,
     combat::{
         BotReplacement, DEAD, PlayerHit, PlayerTarget, PosedProjectile, PosedShot, RESPAWN_RETRY,
@@ -31,6 +30,7 @@ use crate::{
         ObservedScript, ObserverActivity, OtherDelivery, Others, PlayerView, RemoteBody,
         RemoteDeath, ShowContext, ShowOutput, ViewerReadiness,
     },
+    placed_script::PlacedViews,
     pools::FALLBACK_POOLS,
     projectile_flight::{FlightEnd, ProjectileFlight},
     projectiles::{

@@ -618,9 +618,11 @@ impl<'a> View<'a> {
             Value::Map(_) => json!({"$": "map"}),
             // A map placeable's UUID (`STUConfigVarEntityReference`, in the
             // map entity graphs): its bytes in hex.
-            Value::Bytes(bytes) if field.type_name == "teUUID" => {
-                bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>().into()
-            }
+            Value::Bytes(bytes) if field.type_name == "teUUID" => bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+                .into(),
             Value::Bytes(_) => {
                 return Err(asset_error(format!(
                     "unsupported {} value in {}",

@@ -255,7 +255,9 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let sent = views.update([(DOOR, &first)].into_iter(), |_| true).unwrap();
+        let sent = views
+            .update([(DOOR, &first)].into_iter(), |_| true)
+            .unwrap();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].last, 1);
         assert!(views.current(DOOR, 1));
@@ -266,7 +268,9 @@ mod tests {
                 .is_empty()
         );
         let second = frame(2);
-        let sent = views.update([(DOOR, &second)].into_iter(), |_| true).unwrap();
+        let sent = views
+            .update([(DOOR, &second)].into_iter(), |_| true)
+            .unwrap();
         assert_eq!(sent[0].last, 2);
         assert!(!views.current(DOOR, 1));
         assert!(views.current(DOOR, 2));
@@ -298,7 +302,9 @@ mod tests {
             .collect();
         assert_eq!(
             framed,
-            [126, 185, 188, 199, 204, 340, 358, 398, 400, 416, 424, 479, 480, 548]
+            [
+                126, 185, 188, 199, 204, 340, 358, 398, 400, 416, 424, 479, 480, 548
+            ]
         );
         for door in [358, 479, 480] {
             let (_, frame) = scene

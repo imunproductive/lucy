@@ -973,7 +973,11 @@ fn stu_v1_json(stu: &StuV1<'_>, at: usize, depth: usize) -> Value {
             Kind::Int { bytes, signed } => {
                 let raw = stu.u64(at + offset).unwrap_or(0);
                 let bits = u32::from(bytes) * 8;
-                let raw = if bits == 64 { raw } else { raw & ((1 << bits) - 1) };
+                let raw = if bits == 64 {
+                    raw
+                } else {
+                    raw & ((1 << bits) - 1)
+                };
                 if signed && bits < 64 && raw >> (bits - 1) & 1 == 1 {
                     json!((raw | !((1u64 << bits) - 1)) as i64)
                 } else if signed {
@@ -982,7 +986,9 @@ fn stu_v1_json(stu: &StuV1<'_>, at: usize, depth: usize) -> Value {
                     json!(raw)
                 }
             }
-            Kind::F32 => stu.f32(at + offset).map_or(Value::Null, |value| json!(short(value))),
+            Kind::F32 => stu
+                .f32(at + offset)
+                .map_or(Value::Null, |value| json!(short(value))),
             Kind::F64 => stu
                 .u64(at + offset)
                 .map_or(Value::Null, |bits| json!(f64::from_bits(bits))),
