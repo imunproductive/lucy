@@ -113,7 +113,7 @@ The page shows:
 - **Command**: a box for one or more commands, separated by `;`. **Reset** takes back every change.
 - **Pool parts**: component 51 (the health pools) as the first live bot sends it now. Change a value and press Enter. An empty box takes that change back. Changed parts are in bold.
 - **Nameplate variables**: the inputs of the nameplate graph `0D24`, what each reads now on that bot, and what the graph does with it. Change one the same way.
-- **Messages**: buttons that send one game message to every live bot's nameplate.
+- **Messages**: a button that sends `0C3C` (the plate on) to every live bot's nameplate. It is the only message the server can send to `0D24`: the graph waits for its other messages only on the client.
 
 The commands:
 
@@ -125,22 +125,20 @@ The commands:
 | `c51.<48 to 52> <value>` | Component 51's five fields after the pools (`u32`, `u32`, an entity, `u8`, `u8`). We don't send them; once set, a field goes back as 0 |
 | `name`, `enabled`, `nameonly`, `offset` `<value>` | The nameplate's own variables: the name text (`#8812`; we send the bot's name), the plate on (`#8807`), the name alone instead of the full plate (`#14680`), the root layout's offset (`#8813`) |
 | `meter`, `status`, `dead` `<value>` | The body's variables that `0D24` reads: the name's meter (`#6036`; it shows 1 minus this), the status icon (`#2143`), the dead flag (`#478`; true hides the bar) |
+| `antiheal`, `healboost` `<value>` | The body's statuses that every health bar reads (`#8202`, `#8203`): Biotic Grenade sets the first on an enemy (purple outline) and the second on an ally (yellow outline). Neither set is "no status" |
 | `entity.<id> <value>`, `plate.<id> <value>` | Any variable of the bot body, or of its nameplate instances |
-| `message <id>` | A game message to every live bot's nameplate, by its `025` index (`0744`) or whole GUID |
+| `hero <bot, a hero, or default>` | The hero of each bot's stand-in controller (component 75), where the plate takes its hero icon: `bot` (the bot's own, a Training Bot portrait), a hero's index or GUID (`013B` is Ana), `default` (none, as we send) |
+| `message <id>` | A game message to every live bot's nameplate, by its `025` index (`0C3C`) or whole GUID. The messages `0D24` waits for only on the client (`0744` and the others) are refused |
 | `reset` | Takes back every change |
 
 A variable's value is `null`, `true`, `false`, a whole number, a number with a point, `0x` with 16 hex digits (an asset), or text. Put text in quotes when it reads as one of the others (`name "null"`). `default` as a value takes a change back. When you take a variable back, the bot gets its old value; a variable it never had becomes `null`.
 
 Our bots send one pool part: `health.0`, id `1`, kind `0`, maximum and current health, and flag bytes `0.1.0.1`. Byte 17 set and byte 18 clear draws the part as health; any other pair draws it as over-health, in another colour (your tests with `0.0.0.0` and `1.1.1.1` turned the segments turquoise). Nobody has tested bytes 16 and 19 one at a time. They are the first things to try for the outlines. To find the input, change one thing at a time in the Practice Range and compare the bar with retail's:
 
-1. `.plate health.b16 1`, then `.plate health.b16 0`.
-2. `.plate health.b19 0`, then `.plate health.b19 default`.
-3. `.plate health.tail 1.1.0.0`, then `.plate reset`.
-4. `.plate c51.51 1`, then `.plate c51.52 1`, then `.plate reset`.
-5. `.plate nameonly true` (the name alone, without the full plate), then `.plate nameonly default`.
-6. `.plate entity.9824 true`, `.plate entity.8838 true`, `.plate meter 1` and `.plate status true`, one at a time, each followed by `.plate reset`.
-7. `.plate name null`: the name then comes from the bot's controller. Then `.plate reset`.
-8. Last, `.plate message 0744` (hides the name). `reset` does not take back a message: its effect stays until the bot respawns (kill it).
+1. `.plate hero bot`, then `.plate hero 013B`, then `.plate hero default`: if the `▌` turns into a portrait (the Training Bot's head, then Ana's), it is the hero icon slot, empty because our bots' controllers have no hero.
+2. `.plate antiheal true` (the outline should turn purple), then `.plate antiheal default`; `.plate healboost true` (yellow), then `.plate healboost default`. If the outline changes colour, the status slot works and the black is the "no status" outline (bar type `32F4`), coloured by the bot's team.
+3. `.plate entity.19452 100`, then `.plate entity.19452 default`.
+4. Compare with an enemy player's bar in a PvP match: if it has black outlines too, the cause is in what every body sends, not in the bots.
 
 After each step, look at the segment outlines and at the `▌` before the name.
 
