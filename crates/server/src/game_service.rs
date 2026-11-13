@@ -1902,6 +1902,19 @@ impl State {
         }
     }
 
+    /// The commands of the tick that is due, `ticks` of them with the ones
+    /// the clock skipped: one a player, from his input buffer
+    /// (`WorldDelivery::release_input`). An AI player's run as he gives
+    /// them.
+    fn release_input(&mut self, ticks: u32) {
+        if self.clock.draining() {
+            return;
+        }
+        for peer in self.peers.values_mut() {
+            peer.world.release_input(ticks);
+        }
+    }
+
     /// Bounded round-robin input work between receive batches and tick checks.
     /// A busy peer cannot consume the next peer's whole turn.
     fn advance_input(&mut self, now: Duration) -> bool {
@@ -3040,12 +3053,21 @@ impl GameLoop {
                 }
             }
         }
-        let input_ready = self.state.advance_input(clock());
         let now = clock();
-        if now >= self.due {
+        // The tick that is due runs each player's command of its own
+        // (`State::release_input`) before it simulates and sends.
+        let due = if now >= self.due {
             let (next, missed) = next_tick_after(self.due, now)
                 .ok_or_else(|| io::Error::other("game tick clock exhausted"))?;
             self.due = next;
+            let ticks = u32::try_from(missed).unwrap_or(u32::MAX).saturating_add(1);
+            self.state.release_input(ticks);
+            Some(missed)
+        } else {
+            None
+        };
+        let input_ready = self.state.advance_input(now);
+        if let Some(missed) = due {
             self.state.tick(socket, now, missed);
         }
         Ok(Pass {

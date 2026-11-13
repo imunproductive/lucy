@@ -229,7 +229,7 @@ impl Player {
     /// select message.
     fn join(scene: &PreparedScene, owner: u32, slot: i8, team: u8, tick: u32) -> Self {
         let mut player = Self {
-            world: WorldDelivery::new(owner),
+            world: WorldDelivery::new(owner).unbuffered(),
             owner,
             slot,
             team,

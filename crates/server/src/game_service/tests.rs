@@ -665,7 +665,9 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
         .rooms
         .insert(MATCH, Room::new(map, players, Some(world)));
     let first = FIRST_TICK + 1;
-    let commands: Vec<_> = (first..first + 32)
+    // A tick runs all but the last MAX_BUFFERED (4) of a long input buffer
+    // at once (`InputQueue::release`): 36 commands give each peer 32 to run.
+    let commands: Vec<_> = (first..first + 36)
         .map(|frame| Command {
             frame,
             ..Command::default()
@@ -680,6 +682,7 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
             .start(&room.world.as_ref().unwrap().scene, &viewer, FIRST_TICK)
             .unwrap();
         peer.world.queue_commands(FIRST_TICK, &commands);
+        peer.world.release_input(1);
         state.seats.insert(connection, (MATCH, slot));
         state.peers.insert(connection, peer);
     }

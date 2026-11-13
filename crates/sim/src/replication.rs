@@ -49,7 +49,7 @@ use orpheus_physics::{
     contact::cache::CapsulePose,
     mover::Mover,
     mover::correction::CorrectionHistory,
-    mover::kinematics::{Poses, poses as kinematics_poses},
+    mover::kinematics::{Poses, poses as kinematics_poses, repeated},
     mover::modifiers::{Modifier, ModifierKey},
 };
 use orpheus_script::{
@@ -61,7 +61,7 @@ use orpheus_script::{
     wire::{Value as ScriptValue, Variables},
 };
 use orpheus_wire::{
-    commands::{Command, CommandQueue},
+    commands::{Command, CommandQueue, FRAME_HALF, SUBFRAME, frame_distance},
     entity::{
         Component as WorldComponent, EntityUpdate, GAME_MODE_ENTITY, MAX_PAYLOAD, Operation,
         SkinTheme, frame,
@@ -78,8 +78,32 @@ const MAX_INPUT_LEAD: u32 = 96;
 // leave marker may follow the accepted prefix when the cap is reached.
 const MAX_PENDING_INPUT: usize = 256;
 // BodyScript.command retains this many intermediate VM frames before its
-// requested frame. The first neutral release runs even across a larger gap.
+// requested frame. The first held frame runs even across a larger gap.
 const MAX_SCRIPT_TAIL: u32 = 256;
+
+// The server's input buffer (GDC 2017, Ford, "Overwatch Gameplay
+// Architecture and Netcode" 30:50; Developer Update "Let's Talk Netcode"
+// 2016, 11:47): each tick runs one command of a player, the next in frame
+// order, from a small buffer that the client keeps fed. Retail's target
+// for a steady stream was one command buffered: the client led by half the
+// round trip plus one frame, so the command of the next tick is in hand
+// when a tick runs its own, and a datagram up to a tick late runs on time.
+const BUFFER_TARGET: usize = 1;
+// Before mid-2016 retail let up to 4 commands wait (~48 ms). Beyond that a
+// tick runs the oldest at once (assumption: retail's client slowed down
+// instead, and we have no signal that tells ours to).
+const MAX_BUFFERED: usize = 4;
+// Retail's client shrank and grew the buffer by dilating its 16 ms frame
+// (15.2 ms, Ford): one command in 20 frames. We have no field that asks it
+// to (`docs/notes/behavior.md`, "Input timing"), so the server does it
+// from its side: a buffer above the target for this many ticks in a row
+// runs one command more, and one below it while the client sends waits a
+// tick (assumption).
+const DRAIN_TICKS: u32 = 20;
+// A dry buffer repeats the client's last input for at most this many ticks
+// in a row (assumption: a longer silence is not a late datagram, so the
+// body waits for the client's next command as it did before the buffer).
+const MAX_REPEATS: u32 = MAX_BUFFERED as u32;
 
 /// correction.py `HEROES`: the heroes whose owner gets his body's state
 /// (owner corrections): the ones whose movement the server's mover follows.
@@ -293,6 +317,9 @@ struct BodyScript {
     fired: Vec<FiredProjectile>,
     /// The buttons of the last command traced (`orpheus::owner` at debug).
     traced_buttons: u32,
+    /// The last command the body ran with a pose: the frames of a gap
+    /// repeat it ([`ScriptGap`]).
+    input: Option<Command>,
 }
 
 impl BodyScript {
@@ -325,6 +352,7 @@ impl BodyScript {
             flights: Vec::new(),
             fired: Vec::new(),
             traced_buttons: 0,
+            input: None,
         })
     }
 
@@ -340,6 +368,9 @@ impl BodyScript {
         if command.frame > self.frame {
             self.runtime.advance(command, mover, step)?;
             self.frame = command.frame;
+            if step == BodyStep::Posed {
+                self.input = Some(command);
+            }
             if command.buttons != self.traced_buttons {
                 self.traced_buttons = command.buttons;
                 tracing::debug!(
@@ -769,9 +800,15 @@ enum InputWork {
     Leave,
 }
 
+/// The frames of the body's script before a command that its mover can't
+/// pose: the first missing frame and the one before the command run the
+/// body's last input held ([`repeated`]), the frames between only its
+/// timers. A held button stays held across the gap: a neutral frame there
+/// released and pressed it again, which the client never did (HitPredict,
+/// item 1: a second shot, the ammo counter going up and down).
 #[derive(Default)]
 struct ScriptGap {
-    release: Option<u32>,
+    first: Option<u32>,
     tail: Range<u32>,
 }
 
@@ -783,7 +820,7 @@ impl ScriptGap {
         }
         let last_missing = first_pose - 1;
         Self {
-            release: Some(first_missing),
+            first: Some(first_missing),
             tail: (first_missing + 1).max(last_missing.saturating_sub(MAX_SCRIPT_TAIL))..first_pose,
         }
     }
@@ -793,7 +830,7 @@ impl Iterator for ScriptGap {
     type Item = (u32, BodyStep);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(frame) = self.release.take() {
+        if let Some(frame) = self.first.take() {
             return Some((frame, BodyStep::UnposedBoundary));
         }
         let frame = self.tail.next()?;
@@ -822,25 +859,84 @@ impl PendingCommand {
     }
 }
 
+/// What a late command showed that the commands run in its place lacked
+/// ([`InputQueue::reconcile`]); the next command run takes it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct LateInput {
+    /// Buttons pressed in the late commands.
+    pressed: u32,
+    /// Buttons released in the late commands.
+    released: u32,
+    /// The sub-frame click of the last late press.
+    click: Option<orpheus_wire::commands::Click>,
+    /// The last one-shot action of the late commands.
+    action: u8,
+}
+
+/// A player's input, in command-frame order (GDC 2017, Ford 30:50; Reed
+/// s.42). Commands wait in `buffer` until a tick runs them
+/// ([`InputQueue::release`]): one a tick, the next of the client's frames.
+/// Frames already run or admitted are dropped (the client's redundant
+/// window resends them); later ones wait. A tick that finds no command
+/// runs the client's last input again for the next frame (retail
+/// duplicates the last input); when the real command of that frame comes,
+/// the presses it had and the repeat lacked go with the next command run,
+/// so no press is lost. A game message keeps its place among the commands:
+/// it runs at the boundary before the first command released after it,
+/// the frame the next owner frame names.
 #[derive(Default)]
 struct InputQueue {
     work: VecDeque<InputWork>,
+    /// Commands and messages not yet released, in arrival order.
+    buffer: VecDeque<InputWork>,
+    /// Input that runs as it comes, with no buffer: an AI player's, made on
+    /// the server a tick at a time.
+    immediate: bool,
     first_admitted: Option<u32>,
+    /// The newest frame admitted: a client's command or a repeat.
     admitted: Option<u32>,
     processed: Option<u32>,
+    /// The client's newest command (late ones included): a dry tick
+    /// repeats it.
+    last: Option<Command>,
+    /// The buttons of the last command released.
+    ran: u32,
+    /// Dry ticks in a row.
+    repeats: u32,
+    /// Ticks in a row with more than [`BUFFER_TARGET`] commands left waiting.
+    surplus: u32,
+    /// A command of the client came since the last tick.
+    arrived: bool,
+    late: LateInput,
     closing: bool,
 }
 
 impl InputQueue {
+    fn pending(&self) -> usize {
+        self.work.len() + self.buffer.len()
+    }
+
+    /// The commands in hand for the coming ticks.
+    fn depth(&self) -> usize {
+        self.buffer
+            .iter()
+            .filter(|work| matches!(work, InputWork::Command { .. }))
+            .count()
+    }
+
     fn push(&mut self, work: InputWork) -> bool {
         if self.closing {
             return false;
         }
-        if self.work.len() == MAX_PENDING_INPUT {
+        if self.pending() == MAX_PENDING_INPUT {
             self.close_after_prefix();
             return false;
         }
-        self.work.push_back(work);
+        if self.immediate {
+            self.work.push_back(work);
+        } else {
+            self.buffer.push_back(work);
+        }
         true
     }
 
@@ -848,6 +944,7 @@ impl InputQueue {
         if self.closing || commands.is_empty() {
             return;
         }
+        self.reconcile(commands);
         let (fresh, boundary) = command_prefix(self.admitted, tick, commands);
         for command in fresh {
             if !self.push(InputWork::Command {
@@ -858,20 +955,201 @@ impl InputQueue {
             }
             self.first_admitted.get_or_insert(command.frame);
             self.admitted = Some(command.frame);
+            self.last = Some(command);
+            self.arrived = true;
         }
         if boundary.is_some() {
             self.close_after_prefix();
         }
     }
 
+    /// The client's commands of frames a dry tick ran with its last input
+    /// repeated. Each press and release they had (a button down that was
+    /// up in the command before, or the reverse) is kept for the next
+    /// command run; the newest becomes the input a dry tick repeats.
+    fn reconcile(&mut self, commands: &[Command]) {
+        let (Some(mut last), Some(admitted)) = (self.last, self.admitted) else {
+            return;
+        };
+        for &late in commands {
+            // Only frames past the client's newest command and up to the
+            // newest admitted, the repeats: older ones ran or are duplicates.
+            let after = frame_distance(late.frame, last.frame);
+            if after == 0
+                || after >= FRAME_HALF
+                || frame_distance(admitted, late.frame) >= FRAME_HALF
+            {
+                continue;
+            }
+            let pressed = late.buttons & !last.buttons & !SUBFRAME;
+            self.late.pressed |= pressed;
+            self.late.released |= last.buttons & !late.buttons & !SUBFRAME;
+            if pressed != 0 && late.click.is_some() {
+                self.late.click = late.click;
+            }
+            if late.action != 0 {
+                self.late.action = late.action;
+            }
+            tracing::debug!(
+                target: "orpheus::input",
+                frame = late.frame,
+                buttons = format_args!("{:#x}", late.buttons),
+                pressed = format_args!("{pressed:#x}"),
+                "late command of a repeated frame"
+            );
+            last = late;
+        }
+        self.last = Some(last);
+    }
+
+    /// The input of `ticks` server ticks (one, more after ticks the clock
+    /// skipped): the next command in frame order each, with the messages
+    /// before it. More when more than [`MAX_BUFFERED`] would wait, or when
+    /// more than [`BUFFER_TARGET`] waited for [`DRAIN_TICKS`] ticks. None
+    /// when no more than the target is in hand while the client sends (the
+    /// buffer grows by one). With no command in hand, the messages, then
+    /// the client's last input repeated for the next frame while his body
+    /// is in the world (`body`).
+    fn release(&mut self, ticks: u32, body: bool) {
+        if self.immediate || self.closing {
+            return;
+        }
+        let arrived = std::mem::take(&mut self.arrived);
+        let depth = self.depth();
+        if depth == 0 {
+            self.surplus = 0;
+            self.work.extend(self.buffer.drain(..));
+            self.repeat(ticks, body);
+            return;
+        }
+        self.repeats = 0;
+        if depth <= BUFFER_TARGET && arrived && ticks == 1 {
+            tracing::debug!(
+                target: "orpheus::input",
+                depth,
+                "input buffer grows: the command waits a tick"
+            );
+            return;
+        }
+        let mut count = (ticks as usize).max(depth.saturating_sub(MAX_BUFFERED));
+        self.surplus = if depth.saturating_sub(count) > BUFFER_TARGET {
+            self.surplus + 1
+        } else {
+            0
+        };
+        if self.surplus >= DRAIN_TICKS {
+            self.surplus = 0;
+            count += 1;
+        }
+        let count = count.min(depth);
+        if count > 1 {
+            tracing::debug!(
+                target: "orpheus::input",
+                depth,
+                count,
+                "input buffer catches up"
+            );
+        }
+        let mut released = 0;
+        while released < count {
+            let work = match self.buffer.pop_front().expect("buffered command") {
+                InputWork::Command { command, pending } => {
+                    released += 1;
+                    InputWork::Command {
+                        command: self.take_late(command),
+                        pending,
+                    }
+                }
+                work => work,
+            };
+            self.work.push_back(work);
+        }
+    }
+
+    /// A dry buffer: the client's last input again, for the next frames.
+    fn repeat(&mut self, ticks: u32, body: bool) {
+        let Some(last) = self.last.filter(|_| body) else {
+            return;
+        };
+        for _ in 0..ticks.min(MAX_REPEATS.saturating_sub(self.repeats)) {
+            let Some(frame) = self
+                .admitted
+                .map(|frame| frame.wrapping_add(1))
+                .filter(|&frame| frame <= MAX_LEASE_FRAME)
+            else {
+                return;
+            };
+            let command = self.take_late(repeated(last, frame));
+            tracing::debug!(
+                target: "orpheus::input",
+                frame,
+                buttons = format_args!("{:#x}", command.buttons),
+                "input buffer dry: the last input repeated"
+            );
+            self.repeats += 1;
+            self.admitted = Some(frame);
+            self.work.push_back(InputWork::Command {
+                command,
+                pending: None,
+            });
+        }
+    }
+
+    /// `command` with the late presses and releases
+    /// ([`InputQueue::reconcile`]): a button the repeats held through a
+    /// late release is up for this frame if this command holds it (the
+    /// next presses it again); one they never pressed is down for this
+    /// frame if this command doesn't hold it. The click and the action go
+    /// with it. A press or release can come a few frames late, never twice
+    /// or not at all.
+    fn take_late(&mut self, mut command: Command) -> Command {
+        let late = std::mem::take(&mut self.late);
+        let release = late.released & self.ran & command.buttons;
+        let press = late.pressed & !self.ran & !command.buttons;
+        command.buttons = (command.buttons & !release) | press;
+        if press != 0 && command.click.is_none() {
+            if let Some(click) = late.click {
+                command.click = Some(click);
+                command.buttons |= SUBFRAME;
+            }
+        }
+        if command.action == 0 {
+            command.action = late.action;
+        }
+        self.ran = command.buttons;
+        command
+    }
+
+    /// The client's newest command frame.
+    fn newest_real(&self) -> Option<u32> {
+        self.last.map(|last| last.frame)
+    }
+
     fn close_after_prefix(&mut self) {
+        while let Some(work) = self.buffer.pop_front() {
+            let work = match work {
+                InputWork::Command { command, pending } => InputWork::Command {
+                    command: self.take_late(command),
+                    pending,
+                },
+                work => work,
+            };
+            self.work.push_back(work);
+        }
         self.work.push_back(InputWork::Leave);
         self.closing = true;
     }
 
     fn clear(&mut self) {
         self.work.clear();
+        self.buffer.clear();
         self.admitted = self.processed;
+        self.last = None;
+        self.ran = 0;
+        self.repeats = 0;
+        self.surplus = 0;
+        self.arrived = false;
+        self.late = LateInput::default();
         self.closing = false;
     }
 }
@@ -1177,10 +1455,12 @@ impl WorldDelivery {
     /// The world of an AI player, whose body the server plays without a
     /// client (`crate::ai`).
     pub fn headless(owner: u32) -> Self {
-        Self {
+        let mut world = Self {
             headless: true,
             ..Self::new(owner)
-        }
+        };
+        world.input.immediate = true;
+        world
     }
 
     /// Whether this is an AI player's world.
@@ -2228,12 +2508,27 @@ impl WorldDelivery {
         }
     }
 
+    /// The ch3 ack: the last of the client's own command frames run. A
+    /// dry buffer's repeats run past them (`InputQueue::release`); the ack
+    /// stays at his newest, so the client, which keeps its commands from
+    /// ack − 1 on (`orpheus_physics::mover::correction` notes), still sends
+    /// the ones the repeats stood in for (`InputQueue::reconcile`). It is
+    /// never past the frame an owner frame names.
     pub fn command_ack(&self, tick: u32) -> u32 {
-        self.input.processed.unwrap_or_else(|| {
+        let processed = self.input.processed.unwrap_or_else(|| {
             self.input
                 .first_admitted
                 .map_or(tick, |frame| tick.min(frame.saturating_sub(1)))
-        })
+        });
+        match self.input.newest_real() {
+            Some(newest)
+                if frame_distance(processed, newest) != 0
+                    && frame_distance(processed, newest) < FRAME_HALF =>
+            {
+                newest
+            }
+            _ => processed,
+        }
     }
 
     pub fn queue_game_message(&mut self, tick: u32, received: Duration, message: Message) {
@@ -2288,12 +2583,27 @@ impl WorldDelivery {
             self.input.commands(tick, commands);
         }
         // The datagram that said a bot's first record arrived ends here.
-        let admitted = self.input.admitted;
+        let newest = self.input.newest_real();
         for sight in self.bot_sights.values_mut() {
             if *sight == BotSight::Arrived {
-                *sight = BotSight::Shown(admitted);
+                *sight = BotSight::Shown(newest);
             }
         }
+    }
+
+    /// Tests of what a command does, not of when: input runs as it comes,
+    /// as an AI player's does.
+    #[cfg(test)]
+    pub(crate) fn unbuffered(mut self) -> Self {
+        self.input.immediate = true;
+        self
+    }
+
+    /// The input of `ticks` server ticks goes to work ([`InputQueue::release`]):
+    /// one command a tick, a repeat of the last input when none came.
+    pub fn release_input(&mut self, ticks: u32) {
+        let body = self.mover.is_some();
+        self.input.release(ticks, body);
     }
 
     pub fn has_input_work(&self) -> bool {
@@ -3204,11 +3514,14 @@ impl WorldDelivery {
         if let Some(script) = script {
             for (frame, step) in pending.gap.by_ref().take(budget) {
                 used += 1;
-                let neutral = Command {
-                    frame,
-                    ..Command::default()
-                };
-                if let Err(error) = script.advance(mover, neutral, step, dead) {
+                let held = script.input.map_or(
+                    Command {
+                        frame,
+                        ..Command::default()
+                    },
+                    |input| repeated(input, frame),
+                );
+                if let Err(error) = script.advance(mover, held, step, dead) {
                     mover.track_modifiers(frame, &BTreeMap::new());
                     pending.gap = ScriptGap::default();
                     failed = Some(error.to_string());
