@@ -2095,7 +2095,9 @@ impl State {
     /// client gets the notices, every client of the room the bot's pools.
     /// The shooter's ultimate charges for the damage (assumption: training
     /// bots charge it as heroes do) and for the healing of allied bots
-    /// (combat.py `_heal`), which his Healing Done counts too.
+    /// (combat.py `_heal`), which his Healing Done counts too. A bot he
+    /// kills counts for his multikills, in the Practice Range too
+    /// (`orpheus_sim::announcer`).
     fn deliver_bot_hits(&mut self, id: MatchId, shooter: Option<u32>, hits: Vec<BotHit>) {
         let healed: f64 = hits.iter().map(|hit| hit.healed).sum();
         if let Some(room) = self.rooms.get_mut(&id) {
