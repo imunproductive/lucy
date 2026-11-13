@@ -899,9 +899,56 @@ mod tests {
             0x0E84, 0x10FF, 0x1100, 0x1502, 0x150F, 0x151A, 0x157F, 0x1590, 0x1688, 0x1689, 0x18EB,
             0x1C26, 0x1EB9, 0x22B8,
         ];
+        // The graphs the derivation reaches without the auras: from the
+        // bundle's root graphs, the bodies' graphs and the spawned graphs,
+        // through the graphs each references. Since the aura system
+        // (2026-11-13) the derivation also adds every aura a graph names and
+        // what its graphs reference (`aura_graphs` in
+        // `crates/assets/src/graphs.rs`); the reference vectors don't cover
+        // those, so leaving them out must give the bundle the vectors were
+        // taken from, digest for digest: 56 graphs in 104319, the 41 aura
+        // graphs (`m_5A4051BC`, `GraphStore::is_aura_graph`) and the 15 the
+        // auras without one name in `m_14AA219A` (`0037`, `006A`, `010E`,
+        // `0118`, `011A`, `0206`, `025A`, `09BC`, `0B9F`, `0BCC`, `0BE1`,
+        // `0BE4`, `0C05`, `0D3C`, `16DE`).
+        let raw: Value = {
+            let mut text = Vec::new();
+            MultiGzDecoder::new(BufReader::new(
+                File::open(root.join("data/game_graphs_174.json.gz")).unwrap(),
+            ))
+            .read_to_end(&mut text)
+            .unwrap();
+            serde_json::from_slice(&text).unwrap()
+        };
+        let mut queue: Vec<u32> = raw["roots"]["graphs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|graph| u32::try_from(graph.as_u64().unwrap()).unwrap())
+            .chain(SPAWNED)
+            .chain(store.bodies().values().flat_map(|body| {
+                body.graphs
+                    .iter()
+                    .filter_map(|binding| binding.graph)
+                    .chain(body.manager)
+                    .chain(body.weapons.iter().flatten().copied())
+            }))
+            .collect();
+        let mut reached = BTreeSet::new();
+        while let Some(index) = queue.pop() {
+            let Some(graph) = store.graph(index).filter(|_| reached.insert(index)) else {
+                continue;
+            };
+            queue.extend(
+                graph
+                    .graph_refs()
+                    .into_iter()
+                    .filter_map(|graph| u32::try_from(graph).ok()),
+            );
+        }
         let mut hashed = 0;
         for index in store.graph_indexes() {
-            if SPAWNED.contains(&index) {
+            if SPAWNED.contains(&index) || !reached.contains(&index) {
                 continue;
             }
             hashed += 1;
