@@ -41,6 +41,7 @@ fn moving() -> Movement {
         spring: [-130, -3000],
         spring_speed: 1.625,
         fall: -3.5,
+        discontinuity: 0,
     }
 }
 
@@ -112,6 +113,36 @@ fn movement_timing_sentinels_and_signed_fields_match_python() {
             tick: 3975
         })
     ));
+}
+
+/// The discontinuity counter (+12) follows the frame: a 0 bit when it is 0,
+/// else 1, 0 (no short width) and its 32 bits (ow1-preservation's field 3).
+#[test]
+fn discontinuity_counter_follows_the_frame_as_raw_32_bits() {
+    let still = Movement {
+        position: [1.0, 2.0, 3.0],
+        ..Movement::default()
+    };
+    let turned = Movement {
+        discontinuity: 7,
+        ..still
+    };
+    let plain = movement_record(&still, None).unwrap();
+    let record = movement_record(&turned, None).unwrap();
+    assert_eq!(record.bit_len(), plain.bit_len() + 33);
+    let mut bits = BitReader::new(record.as_bytes());
+    assert_eq!(bits.bits(12).unwrap() as usize, record.bit_len());
+    // The reference bit, no flags, the 1/1024 grid, the base frame.
+    assert_eq!(bits.bits(4).unwrap(), 0);
+    assert!(bits.bit().unwrap());
+    assert!(!bits.bit().unwrap());
+    assert_eq!(bits.bits(32).unwrap(), 7);
+    // The rest is the record without the counter.
+    let mut rest = BitReader::new(plain.as_bytes());
+    rest.advance(17).unwrap();
+    for _ in 17..plain.bit_len() {
+        assert_eq!(bits.bit().unwrap(), rest.bit().unwrap());
+    }
 }
 
 #[test]

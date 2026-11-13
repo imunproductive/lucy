@@ -17,7 +17,7 @@ use orpheus_script::{
 };
 use orpheus_wire::{
     commands::FIRE,
-    entity::{MAX_ENTITY_RECORDS, Movement},
+    entity::{MAX_ENTITY_RECORDS, Movement, movement_record},
     jam::codec::{Fields, Value},
 };
 use std::sync::{
@@ -1251,6 +1251,96 @@ fn owner_correction_respects_create_budget_and_failed_transport() {
     assert!(world.queued.is_empty());
 }
 
+/// A body placed at the spawn point first sends its owner the spawn turn
+/// (`SpawnTurn`): once its create arrived, and again while its datagram is
+/// lost; the body's corrections wait for it to arrive and then carry its
+/// discontinuity counter.
+#[test]
+fn spawn_turn_goes_after_the_create_again_when_lost_and_corrections_carry_its_counter() {
+    let mut world = WorldDelivery::new(OWNER);
+    let id = avatar(1, 1);
+    world.started = Some(100);
+    activate_script(&mut world, id, SOLDIER, Arc::default());
+    let turn = Movement {
+        position: [1.0, 2.0, 3.0],
+        yaw: 16384,
+        frame: Some(100),
+        discontinuity: SPAWN_DISCONTINUITY,
+        ..Movement::default()
+    };
+    world.spawn_turn = Some(SpawnTurn {
+        body: id,
+        pose: turn,
+        sent: TurnSent::Not,
+    });
+    let corrected = |world: &WorldDelivery| {
+        world
+            .body_script
+            .as_ref()
+            .unwrap()
+            .corrections
+            .as_ref()
+            .unwrap()
+            .corrected()
+    };
+    world
+        .body_script
+        .as_mut()
+        .unwrap()
+        .corrections
+        .as_mut()
+        .unwrap()
+        .record(Movement {
+            frame: Some(101),
+            ..Movement::default()
+        });
+    let has = |payload: &[u8], state: &Movement, tick| {
+        let record = movement_record(state, Some(tick)).unwrap();
+        orpheus_testkit::contains_bits(
+            payload,
+            payload.len() * 8,
+            record.as_bytes(),
+            record.bit_len(),
+        )
+    };
+    let mut egress = GameEgress::default();
+    // Not before the create arrived.
+    let (_, sent) = transmit(&mut world, &mut egress, 101, 0);
+    assert!(!sent.records.contains(&RecordSource::Movement(0)));
+    world.acknowledge(
+        outcome(Arc::new(record(id.entity, Delivery::CreateBody(id))), true),
+        Duration::ZERO,
+    );
+    let (payload, sent) = transmit(&mut world, &mut egress, 101, 1);
+    assert!(sent.records.contains(&RecordSource::Movement(0)));
+    assert!(has(&payload, &turn, 101));
+    assert_eq!(corrected(&world), None);
+    // Its datagram was lost: it goes again, and the correction still waits.
+    world.acknowledge_movement(2, 0);
+    let (payload, sent) = transmit(&mut world, &mut egress, 102, 2);
+    assert!(sent.records.contains(&RecordSource::Movement(0)));
+    assert!(has(&payload, &turn, 102));
+    assert_eq!(corrected(&world), None);
+    // While its datagram is on its way, nothing.
+    assert!(
+        !transmit(&mut world, &mut egress, 102, 3)
+            .1
+            .records
+            .contains(&RecordSource::Movement(0))
+    );
+    // It arrived: the correction goes, with the turn's counter.
+    world.acknowledge_movement(3, 1);
+    let (payload, sent) = transmit(&mut world, &mut egress, 102, 4);
+    assert!(sent.records.contains(&RecordSource::Movement(0)));
+    let correction = Movement {
+        frame: Some(101),
+        discontinuity: SPAWN_DISCONTINUITY,
+        ..Movement::default()
+    };
+    assert!(has(&payload, &correction, 102));
+    assert_eq!(corrected(&world), Some(101));
+}
+
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
 fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
@@ -1300,11 +1390,22 @@ fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
             .contains(&RecordSource::Movement(0))
     );
     transport_outcome(&mut world, &mut egress, 0, true);
+    // The body's first owner record is its spawn turn; the corrections
+    // follow once it arrived.
     assert_eq!(
         transmit(&mut world, &mut egress, tick, 1).1.records,
         [RecordSource::Queued(0), RecordSource::Movement(0)]
     );
     transport_outcome(&mut world, &mut egress, 1, true);
+    assert_eq!(world.spawn_turn.unwrap().sent, TurnSent::In(1));
+    world.acknowledge_movement(2, 1);
+    // The correction of the first command's frame, held for the turn, with
+    // the next owner frame.
+    assert_eq!(
+        transmit(&mut world, &mut egress, tick, 2).1.records,
+        [RecordSource::Queued(0), RecordSource::Movement(0)]
+    );
+    transport_outcome(&mut world, &mut egress, 2, true);
 
     let after_unposed_gap = tick + 400;
     world.queue_commands(after_unposed_gap, &[forward(after_unposed_gap)]);
@@ -1322,7 +1423,7 @@ fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
         assert_eq!(world.mover.as_ref().unwrap().pose().frame, Some(tick));
         assert_eq!(world.command_ack(after_unposed_gap), tick);
         assert!(
-            transmit(&mut world, &mut egress, after_unposed_gap, turn + 1)
+            transmit(&mut world, &mut egress, after_unposed_gap, turn + 2)
                 .1
                 .records
                 .is_empty()
@@ -1343,7 +1444,7 @@ fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
         Some(after_unposed_gap)
     );
     assert_eq!(
-        transmit(&mut world, &mut egress, after_unposed_gap, 18)
+        transmit(&mut world, &mut egress, after_unposed_gap, 19)
             .1
             .records,
         [RecordSource::Queued(0), RecordSource::Movement(0)]
