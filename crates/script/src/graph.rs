@@ -899,18 +899,26 @@ mod tests {
             0x0E84, 0x10FF, 0x1100, 0x1502, 0x150F, 0x151A, 0x157F, 0x1590, 0x1688, 0x1689, 0x18EB,
             0x1C26, 0x1EB9, 0x22B8,
         ];
-        // The graphs the derivation reaches without the auras: from the
-        // bundle's root graphs, the bodies' graphs and the spawned graphs,
-        // through the graphs each references. Since the aura system
-        // (2026-11-13) the derivation also adds every aura a graph names and
-        // what its graphs reference (`aura_graphs` in
-        // `crates/assets/src/graphs.rs`); the reference vectors don't cover
-        // those, so leaving them out must give the bundle the vectors were
-        // taken from, digest for digest: 56 graphs in 104319, the 41 aura
-        // graphs (`m_5A4051BC`, `GraphStore::is_aura_graph`) and the 15 the
-        // auras without one name in `m_14AA219A` (`0037`, `006A`, `010E`,
-        // `0118`, `011A`, `0206`, `025A`, `09BC`, `0B9F`, `0BCC`, `0BE1`,
-        // `0BE4`, `0C05`, `0D3C`, `16DE`).
+        // The graphs the reference vectors cover: those the derivation
+        // reaches from its own root graphs (`ROOT_GRAPHS` and
+        // `MODE_FLOW_GRAPHS` in `crates/assets/src/graphs.rs`) and the hero
+        // bodies' graphs, through the graphs each references. The
+        // derivation has since added more, which the vectors don't cover;
+        // each is left out by its reason, counted, so a wrong walk can't
+        // hide a graph:
+        // - the spawned graphs above;
+        // - the aura graphs (2026-11-13, `aura_graphs`): an aura's
+        //   `m_5A4051BC` (`GraphStore::is_aura_graph`), or its
+        //   `m_14AA219A` (the 24 auras without the first), and what they
+        //   reference;
+        // - the map placeables' graphs (2026-11-14, `placed_entities`):
+        //   their definitions' graphs and the graphs their instance data
+        //   name (in the bundle's root graphs), and what they reference.
+        const ROOTS: [u32; 25] = [
+            0x13C1, 0x0C90, 0x288A, 0x288B, 0x288D, 0x20E4, 0x13C0, 0x0F4A, 0x0EC2, 0x0C8E, 0x0258,
+            0x0D76, 0x0D0B, 0x0D6F, 0x0D38, 0x0F60, 0x0F62, 0x1066, 0x0F73, 0x0F74, 0x1058, 0x0F4C,
+            0x0E8E, 0x1225, 0x0D32,
+        ];
         let raw: Value = {
             let mut text = Vec::new();
             MultiGzDecoder::new(BufReader::new(
@@ -920,35 +928,89 @@ mod tests {
             .unwrap();
             serde_json::from_slice(&text).unwrap()
         };
-        let mut queue: Vec<u32> = raw["roots"]["graphs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|graph| u32::try_from(graph.as_u64().unwrap()).unwrap())
-            .chain(SPAWNED)
-            .chain(store.bodies().values().flat_map(|body| {
-                body.graphs
-                    .iter()
-                    .filter_map(|binding| binding.graph)
-                    .chain(body.manager)
-                    .chain(body.weapons.iter().flatten().copied())
-            }))
-            .collect();
+        let body_graphs = |body: &Body| -> Vec<u32> {
+            body.graphs
+                .iter()
+                .filter_map(|binding| binding.graph)
+                .chain(body.manager)
+                .chain(body.weapons.iter().flatten().copied())
+                .collect()
+        };
+        // The graphs `starts` reach that `reached` doesn't hold yet; they
+        // join it.
+        let walk = |reached: &mut BTreeSet<u32>, starts: Vec<u32>| -> BTreeSet<u32> {
+            let mut queue = starts;
+            let mut new = BTreeSet::new();
+            while let Some(index) = queue.pop() {
+                let Some(graph) = store.graph(index).filter(|_| reached.insert(index)) else {
+                    continue;
+                };
+                new.insert(index);
+                queue.extend(
+                    graph
+                        .graph_refs()
+                        .into_iter()
+                        .filter_map(|graph| u32::try_from(graph).ok()),
+                );
+            }
+            new
+        };
+        let aura_graphs = |field: &str| -> Vec<u32> {
+            raw["auras"]
+                .as_object()
+                .into_iter()
+                .flat_map(|auras| auras.values())
+                .filter_map(|aura| asset_guid(&aura[field]))
+                .filter_map(|graph| u32::try_from(graph & 0xFFFF_FFFF_FFFF).ok())
+                .collect()
+        };
         let mut reached = BTreeSet::new();
-        while let Some(index) = queue.pop() {
-            let Some(graph) = store.graph(index).filter(|_| reached.insert(index)) else {
-                continue;
-            };
-            queue.extend(
-                graph
-                    .graph_refs()
-                    .into_iter()
-                    .filter_map(|graph| u32::try_from(graph).ok()),
-            );
-        }
+        let covered = walk(
+            &mut reached,
+            ROOTS
+                .into_iter()
+                .chain(store.bodies().values().flat_map(body_graphs))
+                .collect(),
+        );
+        let spawned = walk(&mut reached, SPAWNED.to_vec());
+        let auras = walk(&mut reached, aura_graphs("m_5A4051BC"));
+        let second_auras = walk(&mut reached, aura_graphs("m_14AA219A"));
+        let placeables = walk(
+            &mut reached,
+            raw["roots"]["graphs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|graph| u32::try_from(graph.as_u64().unwrap()).unwrap())
+                .chain(store.entities.values().flat_map(body_graphs))
+                .collect(),
+        );
+        let unreached: Vec<u32> = store
+            .graph_indexes()
+            .filter(|index| !reached.contains(index))
+            .collect();
+        eprintln!(
+            "left out: spawned {}, aura m_5A4051BC {}, aura m_14AA219A {}, placeables {}; \
+             unreached {unreached:04X?}",
+            spawned.len(),
+            auras.len(),
+            second_auras.len(),
+            placeables.len()
+        );
+        assert!(
+            unreached.is_empty(),
+            "graphs no walk reaches: {unreached:04X?}"
+        );
+        assert!(spawned.iter().all(|index| SPAWNED.contains(index)));
+        let left_out = (
+            spawned.len(),
+            auras.len(),
+            second_auras.len(),
+            placeables.len(),
+        );
         let mut hashed = 0;
         for index in store.graph_indexes() {
-            if SPAWNED.contains(&index) || !reached.contains(&index) {
+            if !covered.contains(&index) {
                 continue;
             }
             hashed += 1;
@@ -1003,6 +1065,9 @@ mod tests {
             // controller and team body, and the map entity graphs.
             412 => {
                 assert_eq!(store.mode_variables.len(), 25);
+                // Data version 25: the auras counted include those only the
+                // placeables' graphs name, as their walk comes first.
+                assert_eq!(left_out, (25, 44, 21, 159));
                 "1c4229042f26d5ec0168a49e7f82d55167543ae849baa86f9bfdba7ece355691"
             }
             count => panic!("no reference vector for the {count}-graph bundle (digest {digest})"),
