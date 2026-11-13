@@ -383,7 +383,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
 }
 
 /// A config that says something: not null, and not a literal zero or false.
-fn is_set(value: &Json) -> bool {
+pub(super) fn is_set(value: &Json) -> bool {
     match value {
         Json::Null => false,
         Json::Bool(value) => *value,

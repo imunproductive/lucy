@@ -69,12 +69,11 @@ const ASSUMED_NO_OPS: &[&str] = &[
     "STU_57692020",
 ];
 
-/// Melee's states (graph 0043): health change, knockback and four unnamed
-/// ones. The client reads them as on/off only ("none" codec); the server
-/// doesn't run their effect yet, like the Python VM, so melee hits nothing.
+/// Melee's states (graph 0043): knockback and four unnamed ones. The client
+/// reads them as on/off only ("none" codec); the server doesn't run their
+/// effect yet, like the Python VM.
 const ASSUMED_INERT_STATES: &[&str] = &[
     "STU_23A00A53",
-    "STUStatescriptStateModifyHealth",
     "STU_0A6BE10E",
     "STUStatescriptStatePhysicsExplosion",
     "STU_B5C87F3D",
@@ -649,6 +648,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptStateChaseVar" => StateKind::ChaseVar,
             "STU_2F4E2E3F" => StateKind::Watch,
             "STUStatescriptStateTrackTargets" => StateKind::TrackTargets,
+            "STUStatescriptStateModifyHealth" => StateKind::ModifyHealth { last_ms: 0 },
             class if ASSUMED_INERT_STATES.contains(&class) => StateKind::Plain,
             "STU_77E13026" => StateKind::HitList,
             "STUStatescriptStateWeaponVolley" => StateKind::WeaponVolley {
@@ -764,6 +764,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             StateKind::WeaponVolley { .. } => self.begin_volley(key, node, depth)?,
             StateKind::TrackTargets => self.begin_track_targets(key, node)?,
+            StateKind::ModifyHealth { .. } => self.begin_modify_health(key, node)?,
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
             StateKind::Plain if node.class == "STU_54FEB21C" && is_server_ended(node) => {
                 self.end_wind_up(key, node)?;

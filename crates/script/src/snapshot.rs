@@ -1470,7 +1470,8 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
             | StateKind::Defer
             | StateKind::AiFire { .. }
             | StateKind::ServerFrames
-            | StateKind::MoveTo,
+            | StateKind::MoveTo
+            | StateKind::ModifyHealth { .. },
             Some("none"),
         ) if codec.empty() => StatePayload::new(),
         // The block's link field is the reference's absent link: Python
