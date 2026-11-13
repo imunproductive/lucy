@@ -89,11 +89,13 @@
 //! on nothing. The maps the rules above miss (Hollywood, Temple of Anubis,
 //! Ecopoint: Antarctica, the menu maps) are closed or never played.
 //!
-//! Spawn door barriers (`game_map_areas` `door_barriers`): the server-owned
-//! placeables running graph `00F6` in the spawn room doorways. The client
-//! makes a server-owned placeable only when the server creates it, so the
-//! scene creates them from the map after the player and the mode (see
-//! `orpheus_assets`' `map_areas` notes).
+//! Server placeables (`game_map_areas` `server_placeables`): the map's
+//! server-owned placeables that are not on the loading list (spawn door
+//! barriers, doorway frames, team walls, spawn doors, objective models and
+//! other scenery). The client makes a server-owned placeable only when the
+//! server creates it, so the scene creates them from the map after the
+//! player and the mode, in their default state: their scripts don't run
+//! (see `orpheus_assets`' `map_areas` notes).
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -189,11 +191,11 @@ impl MapPlaceable {
 struct MapAreas {
     rooms: Result<Arc<[SpawnRoom]>, String>,
     damage_areas: Vec<DamageArea>,
-    door_barriers: Vec<MapPlaceable>,
+    server_placeables: Vec<MapPlaceable>,
     kill_volumes: Arc<[CaptureBox]>,
 }
 
-/// Every map's spawn rooms, damage areas, door barriers and kill volumes, by
+/// Every map's spawn rooms, damage areas, server placeables and kill volumes, by
 /// map GUID.
 #[derive(Debug, Default)]
 pub struct MapAreaData {
@@ -213,7 +215,7 @@ struct RawMap {
     #[serde(default)]
     damage_areas: Vec<RawDamageArea>,
     #[serde(default)]
-    door_barriers: Vec<RawPlaceable>,
+    server_placeables: Vec<RawPlaceable>,
     #[serde(default)]
     kill_volumes: Vec<CaptureBox>,
 }
@@ -312,10 +314,10 @@ impl MapAreaData {
                     })
                 })
                 .collect::<io::Result<_>>()?;
-            let door_barriers = raw
-                .door_barriers
+            let server_placeables = raw
+                .server_placeables
                 .into_iter()
-                .map(|barrier| barrier.read(&key))
+                .map(|placeable| placeable.read(&key))
                 .collect::<io::Result<_>>()?;
             for (number, volume) in (0u32..).zip(&raw.kill_volumes) {
                 check_boxes(std::slice::from_ref(volume), &key, "kill volume", number)?;
@@ -325,7 +327,7 @@ impl MapAreaData {
                 MapAreas {
                     rooms,
                     damage_areas,
-                    door_barriers,
+                    server_placeables,
                     kill_volumes: raw.kill_volumes.into(),
                 },
             );
@@ -369,17 +371,17 @@ impl MapAreaData {
             .unwrap_or_default()
     }
 
-    /// The flat indexes of the map's spawn door barriers that exist in a
-    /// mode that lists `identifiers`.
-    pub fn door_barriers(&self, map: &GameMap, identifiers: &BTreeSet<u64>) -> Vec<u32> {
+    /// The flat indexes of the map's server placeables that exist in a mode
+    /// that lists `identifiers`.
+    pub fn server_placeables(&self, map: &GameMap, identifiers: &BTreeSet<u64>) -> Vec<u32> {
         self.maps
             .get(&map.map_guid)
             .map(|areas| {
                 areas
-                    .door_barriers
+                    .server_placeables
                     .iter()
-                    .filter(|barrier| barrier.in_mode(identifiers))
-                    .map(|barrier| barrier.placeable)
+                    .filter(|placeable| placeable.in_mode(identifiers))
+                    .map(|placeable| placeable.placeable)
                     .collect()
             })
             .unwrap_or_default()
