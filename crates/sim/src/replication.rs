@@ -1719,12 +1719,11 @@ impl WorldDelivery {
         }
     }
 
-    /// A multikill pulse goes out at once in a controller frame of the PvP
-    /// controller, which carries `0215` from then on ([`crate::announcer`]).
+    /// A multikill pulse goes out at once in a controller frame, which
+    /// carries `0215` from then on ([`crate::announcer`]).
     fn send_multikills(&mut self, scene: &PreparedScene, tick: u32) -> io::Result<()> {
         if !std::mem::take(&mut self.multikill_due)
             || self.headless
-            || !scene.controller().announces_multikills()
             || self.controller.latest_data() == 0
         {
             return Ok(());

@@ -20,8 +20,9 @@
 //! "still choosing". The F1 hero info (288A's client-only 2931) shows v940's
 //! hero while hero select is closed (2931 st3: `v14152 = v31435 ? browsed
 //! hero : v940`). v8419 is m_allowHeroSelect. Retail OW2 traffic works the
-//! same way. From a player's first multikill on, the PvP frames also carry
-//! 0C90 st116/st117 and its child `0215` ([`crate::announcer`]).
+//! same way. From a player's first multikill on, his frames also carry the
+//! multikill graph `0215` ([`crate::announcer`]): under 0C90 st116/st117 in
+//! the PvP modes, as a root instance of its own on the Practice Range's 13C1.
 
 use std::{collections::BTreeMap, io};
 
@@ -35,7 +36,8 @@ use orpheus_script::{
 
 const PRACTICE: u32 = 0x13c1;
 const PVP: u32 = 0x0c90;
-/// The multikill graph (`crate::announcer`), 0C90 st116 → st117.
+/// The multikill graph (`crate::announcer`), 0C90 st116 → st117; on 13C1 a
+/// root instance of its own.
 const MULTIKILLS: u32 = 0x0215;
 const MULTIKILL_SWITCH: u16 = 116;
 const MULTIKILL_HOST: u16 = 117;
@@ -69,16 +71,23 @@ struct Hud {
     shared_vars: usize,
 }
 
-/// 0C90's `0215` instance (`crate::announcer`): its BooleanSwitch and
-/// SubScript in 0C90, and its pulser, shared variables and #10122.
+/// The `0215` instance (`crate::announcer`): where it runs, and its pulser,
+/// shared variables and #10122.
 #[derive(Clone, Copy, Debug)]
 struct MultikillSlots {
     layout: Layout,
-    switch: usize,
-    host: StateSlot,
+    host: Option<MultikillHost>,
     pulser: usize,
     shared_vars: usize,
     stimulus: usize,
+}
+
+/// 0C90's BooleanSwitch st116 and the SubScript st117 that runs `0215`.
+/// 13C1 has no state that runs it: there `0215` is a root instance.
+#[derive(Clone, Copy, Debug)]
+struct MultikillHost {
+    switch: usize,
+    state: StateSlot,
 }
 
 /// Loaded layouts keep filtered owner positions separate from raw parent state IDs.
@@ -89,7 +98,7 @@ pub struct Controller {
     screen: Layout,
     entry: Layout,
     hud: Option<Hud>,
-    multikills: Option<MultikillSlots>,
+    multikills: MultikillSlots,
     allow: usize,
     hero_select: usize,
     start_host: StateSlot,
@@ -108,7 +117,7 @@ pub struct ControllerFrame<'a> {
     pub presence: Option<&'a BTreeMap<usize, Value>>,
     pub hero: Option<u64>,
     /// `0215`'s pulser and #10122 once the player's multikills pulsed it;
-    /// the PvP controller's frames carry its instance from then on.
+    /// the controller's frames carry its instance from then on.
     pub multikills: Option<MultikillPulse>,
 }
 
@@ -134,19 +143,24 @@ impl Controller {
                 })
             })
             .transpose()?;
-        let multikills = (root_id == PVP)
-            .then(|| {
-                let graph = graph(graphs, MULTIKILLS)?;
-                Ok::<_, io::Error>(MultikillSlots {
-                    layout: layout(graph)?,
-                    switch: owner_slot(root, MULTIKILL_SWITCH)?.wire,
-                    host: owner_slot(root, MULTIKILL_HOST)?,
-                    pulser: owner_slot(graph, MULTIKILL_PULSER)?.wire,
-                    shared_vars: owner_slot(graph, MULTIKILL_SHARED)?.wire,
-                    stimulus: presence_bit(graph, MULTIKILL_STIMULUS)?,
+        let multikills = {
+            let graph = graph(graphs, MULTIKILLS)?;
+            let host = (root_id == PVP)
+                .then(|| {
+                    Ok::<_, io::Error>(MultikillHost {
+                        switch: owner_slot(root, MULTIKILL_SWITCH)?.wire,
+                        state: owner_slot(root, MULTIKILL_HOST)?,
+                    })
                 })
-            })
-            .transpose()?;
+                .transpose()?;
+            MultikillSlots {
+                layout: layout(graph)?,
+                host,
+                pulser: owner_slot(graph, MULTIKILL_PULSER)?.wire,
+                shared_vars: owner_slot(graph, MULTIKILL_SHARED)?.wire,
+                stimulus: presence_bit(graph, MULTIKILL_STIMULUS)?,
+            }
+        };
         Ok(Self {
             root: layout(root)?,
             host: layout(host)?,
@@ -168,12 +182,6 @@ impl Controller {
     /// (ow174/game/heroselect.py `controller_of`).
     pub fn practice(&self) -> bool {
         self.practice
-    }
-
-    /// Whether the controller runs `0215`, the announcer's multikill lines
-    /// (the PvP controller 0C90; [`crate::announcer`]).
-    pub fn announces_multikills(&self) -> bool {
-        self.multikills.is_some()
     }
 
     /// Owner full frame: root controller, 288A, 288B, optional HUD, and team entry.
@@ -212,17 +220,21 @@ impl Controller {
             instance.states.insert(hud.shared_vars, BitWriter::new());
             instance
         });
-        // 0215 under 0C90 st117, the next instance (`crate::announcer`).
-        let multikills = self
+        // 0215 under 0C90 st117, or a root instance on 13C1; the next
+        // instance (`crate::announcer`).
+        let multikills = input
             .multikills
-            .zip(input.multikills)
-            .map(|(slots, pulse)| {
+            .map(|pulse| {
+                let slots = self.multikills;
                 let id = entry_id + 1;
-                let mut on = BitWriter::new();
-                on.bit(true);
-                root.states.insert(slots.switch, on);
-                root.states.insert(slots.host.wire, subscript(id));
-                let mut instance = Instance::new(id, slots.layout, Some((1, slots.host.index)));
+                let parent = slots.host.map(|host| {
+                    let mut on = BitWriter::new();
+                    on.bit(true);
+                    root.states.insert(host.switch, on);
+                    root.states.insert(host.state.wire, subscript(id));
+                    (1, host.state.index)
+                });
+                let mut instance = Instance::new(id, slots.layout, parent);
                 let mut pulser = BitWriter::new();
                 pulser.bit(pulse.fresh);
                 pulser.bits(u64::from(pulse.count), 8)?;
@@ -325,6 +337,35 @@ mod tests {
         assert_eq!(actual, hex);
     }
 
+    /// An instance an owner frame lists: id, graph and parent (instance,
+    /// raw state), as the client reads it.
+    type Listed = (u16, u16, Option<(u32, u32)>);
+
+    fn instances(frame: &BitWriter) -> Vec<Listed> {
+        let mut bits = orpheus_core::bits::BitReader::new(frame.as_bytes());
+        assert!(!bits.bit().unwrap());
+        assert!(bits.bit().unwrap(), "an owner frame");
+        assert!(!bits.bit().unwrap());
+        bits.w_var().unwrap();
+        let mut listed = Vec::new();
+        let mut id = 0;
+        loop {
+            let step = bits.w_u16().unwrap();
+            if step == 0 {
+                return listed;
+            }
+            id += step;
+            let graph = bits.bits(16).unwrap() as u16;
+            assert_eq!(bits.bits(2).unwrap(), 0);
+            let parent = bits
+                .bit()
+                .unwrap()
+                .then(|| (bits.w_var().unwrap(), bits.w_var().unwrap()));
+            assert!(!bits.bit().unwrap());
+            listed.push((id, graph, parent));
+        }
+    }
+
     #[test]
     fn team_entry_exact_wire_bytes_with_and_without_pick() {
         let layout = Layout {
@@ -404,6 +445,36 @@ mod tests {
         ] {
             let frame = controller.controller_frame(command_frame, input).unwrap();
             assert_frame(&frame, bits, expected);
+        }
+        // A multikill pulse adds `0215` after the team entry: under 0C90
+        // st117, and on 13C1, which has no state that runs it, as a root
+        // instance of its own.
+        let pulse = ControllerFrame {
+            hero: Some(SOLDIER),
+            multikills: Some(MultikillPulse {
+                count: 1,
+                fresh: true,
+                stimulus: 0x0ee0_0000_0000_058a,
+            }),
+            ..ControllerFrame::default()
+        };
+        let quiet = ControllerFrame {
+            multikills: None,
+            ..pulse
+        };
+        for (controller, parent) in [
+            (practice, None),
+            (pvp, Some((1, u32::from(MULTIKILL_HOST)))),
+        ] {
+            let without = instances(&controller.controller_frame(123459, quiet).unwrap());
+            let with = instances(&controller.controller_frame(123459, pulse).unwrap());
+            let entry = without.last().unwrap();
+            assert_eq!(entry.1, TEAM_ENTRY as u16);
+            assert_eq!(with[..without.len()], without[..]);
+            assert_eq!(
+                with[without.len()..],
+                [(entry.0 + 1, MULTIKILLS as u16, parent)]
+            );
         }
         assert_frame(
             &practice.team_entry_frame(Some(SOLDIER)).unwrap(),
