@@ -75,6 +75,7 @@ use orpheus_sim::{
     },
     controller::ControllerFrame,
     egress::GameEgress,
+    hurt_feedback::HurtFeedback,
     instance::{Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
     match_flow::{FlowEvent, MatchFlow, Mode, Phase, Standing, Timers},
     mode_script::ModeRunner,
@@ -273,6 +274,12 @@ enum Request {
     BotPlate {
         change: Option<PlateChange>,
         reply: mpsc::SyncSender<Result<PlateView, String>>,
+    },
+    /// The live hurt feedback switch: a change, if any, then what is in
+    /// force.
+    Hurt {
+        change: String,
+        reply: mpsc::SyncSender<Result<HurtFeedback, String>>,
     },
     /// More players for a match that is on (server.py `join_match`).
     Join {
@@ -589,6 +596,15 @@ impl GameService {
     /// refuses comes back as its reason.
     pub fn bot_plate(&self, change: Option<PlateChange>) -> io::Result<Result<PlateView, String>> {
         self.request(|reply| Request::BotPlate { change, reply })
+    }
+
+    /// The live hurt feedback switch (`orpheus_sim::hurt_feedback`): apply
+    /// a change given as the chat command's text, if any, to every match's
+    /// players at once, and show what is in force. A change it refuses
+    /// comes back as its reason.
+    pub fn hurt_feedback(&self, change: &str) -> io::Result<Result<HurtFeedback, String>> {
+        let change = change.to_owned();
+        self.request(|reply| Request::Hurt { change, reply })
     }
 
     fn seat(&self, handoff: &Handoff, release: bool) -> io::Result<bool> {
@@ -1311,6 +1327,8 @@ struct State {
     timers: Timers,
     /// The live nameplate tool's changes, which every match takes.
     bot_plate: Arc<BotPlate>,
+    /// The live hurt feedback switch, which every match takes.
+    hurt: HurtFeedback,
 }
 
 impl State {
@@ -1329,6 +1347,7 @@ impl State {
             results: Vec::new(),
             timers: Timers::default(),
             bot_plate: Arc::default(),
+            hurt: HurtFeedback::default(),
         }
     }
 
@@ -1627,6 +1646,14 @@ impl State {
             }
             Request::BotPlate { change, reply } => {
                 let _ = reply.send(self.tune_bot_plate(change));
+            }
+            Request::Hurt { change, reply } => {
+                let mut hurt = self.hurt;
+                let changed = hurt.change(&change).map(|()| {
+                    self.hurt = hurt;
+                    hurt
+                });
+                let _ = reply.send(changed);
             }
         }
     }
@@ -2777,6 +2804,7 @@ impl State {
             }
             for room in self.rooms.values_mut() {
                 if let Some(world) = &mut room.world {
+                    world.scene.set_hurt_feedback(self.hurt);
                     world.scene.step_bots(tick);
                 }
             }

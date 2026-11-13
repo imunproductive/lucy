@@ -58,7 +58,7 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
     vm::{GameMessage, Motion, MoveRequest, RaisedCriteria, Snapshot, TargetCandidate},
-    weapons::ProjectileBallistics,
+    weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
 };
 use orpheus_wire::{
