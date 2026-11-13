@@ -21,6 +21,7 @@ Small things left undone by finished work. Each entry says what is missing, wher
 
 - **Character collision gaps:** standing on an enemy's head, slowly pushing an enemy, bots being blocked by players, and placing a moving enemy where the client sees it (a view delay late). `crates/physics/src/mover`, `replication::blockers`.
 - **Widowmaker's Grappling Hook** isn't run on the server (`005A` st1), so she gets no corrections. Hero by hero: `docs/notes/behavior.md` ("Owner corrections, hero by hero").
+- **A respawn makes a new body; retail revives the same one.** 0C90 node 4 / 13C1 node 73 run `STU_621AF478` on the possessed body at the chosen spawn point #8370 with its heading; only a hero change makes a new body (StateHero). We (and Python) create a new body every time. Also, whether the respawn's controller frame turns the view is not checked in the game. `WorldDelivery::switch`; `D:/Work/Coding/refs/reports/RespawnFacing.md`; IDA list, section 17.
 
 ## Maps
 
