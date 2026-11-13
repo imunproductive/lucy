@@ -164,6 +164,8 @@ impl World for BotWorld {
             // open. `0C17` rid 23 starts its pain lines' audience (#1839)
             // with it, and rid 22 and 21 add the bot and its attacker.
             "STU_ED45C5E8" => Some("no entities"),
+            // See `native`: no difficulty profile, so the authored fallback.
+            "STU_4049CF77" => Some("the authored fallback (no difficulty profile)"),
             _ => None,
         }
     }
@@ -275,6 +277,29 @@ impl World for BotWorld {
             "STU_082FA44E" => self.graphs.tunables().value(config).map(Value::Float),
             // See `assumption`.
             "STU_ED45C5E8" => Some(Value::Array(Vec::new())),
+            // Whether the body's primary possessor (`STU_DB742151` of the
+            // owner) has component 92 (`STU_76AF64F0`): the 104319 reader
+            // `CDB700` tests that component (leafall903/ORPHEUS (MIT)
+            // `scene.py` `native`, `driver.py` `TRUSTED_NATIVES`; false for
+            // a player's controller). An NPC body is possessed by its AI
+            // definition (`m_8B9A461F`: `1404` for the Range bodies `1403`,
+            // `143E`, `146E`, `14ED`; `14AF` for `14A9`, `14D2`), and both
+            // declare component 92. So true: the Training Bot's rocket
+            // (`0BA3` node 178) takes its AI damage, not the 19 a player's
+            // copy of the volley would deal.
+            "STU_D3EB8D87" if is_own_possessor(config.get("m_00903303")) => Some(Value::Bool(true)),
+            // An AI weapon parameter (`m_F00C2F3D`, such as the damage
+            // `1961`) of the possessing AI definition's difficulty profile
+            // (`STUAIBehaviorComponent.m_difficultyProfiles`; upstream
+            // reads Junkenstein's per difficulty). `1404` and `14AF` have no
+            // profiles, so the parameter is its authored fallback
+            // `m_A53100D5` (assumption: the field's meaning; where a profile
+            // exists, the fallback is one of its tiers' values, as Reaper's
+            // `0019` 3.5 is). Only a literal fallback is read; and only for
+            // the body itself (`m_C5D0FA56` none).
+            "STU_4049CF77" if config.get("m_C5D0FA56").is_none_or(Json::is_null) => {
+                literal_number(config.get("m_A53100D5")?)
+            }
             // IsTutorial (CE8580), as `PlayerWorld` answers it.
             "STU_A77AC2AC" if native_shape(config, class, None) => {
                 Some(Value::Bool(self.mode == TUTORIAL_MODE))
@@ -294,6 +319,23 @@ fn is_owner(config: Option<&Json>) -> bool {
                 _ => false,
             })
     })
+}
+
+/// `STU_DB742151` (the primary possessor) of the owner.
+fn is_own_possessor(config: Option<&Json>) -> bool {
+    config.is_some_and(|config| {
+        native_shape(config, "STU_DB742151", Some("m_entity")) && is_owner(config.get("m_entity"))
+    })
+}
+
+/// A literal `STUConfigVarInt` or `STUConfigVarFloat`.
+fn literal_number(config: &Json) -> Option<Value> {
+    let value = config.get("m_value")?;
+    match config.get("$")?.as_str()? {
+        "STUConfigVarInt" => value.as_i64().map(Value::Integer),
+        "STUConfigVarFloat" => value.as_f64().map(Value::Float),
+        _ => None,
+    }
 }
 
 /// The stock filter: its set fields (not null, not zero) are exactly the
