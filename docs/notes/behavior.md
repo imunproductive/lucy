@@ -137,6 +137,8 @@ With the Rust server: the client entered the Practice Range, but weapons were mi
   | Kanezaka | `0DBC` | 0 | 0.43 | — | 0 |
   | Malevento | `0E49` | 1 | -5.84 | — | 0 |
 
+- **2026-11-13, the view turns to the spawn's facing at a respawn (Rust server, tests only, not checked with the client).** After a respawn the camera kept the direction of the death; retail turns it to the spawn's. The new body's create already carried the spawn's yaw (transform and movement state), but the client keeps its view angles on the player's own entity, not on the body (Prometheus, 0.8 beta, facts only: the controller's local player component holds them and its own spawn code set them), and the commands it then sent turned the body back. Now every body placed at a spawn point (first pick, respawn, a hero picked while dead) sends its owner one movement record once its create arrived: the spawn pose (the spawn point, its yaw, a level aim) at the frame the body was made, with the discontinuity counter (+12) at 1, which makes the client take that state without replaying its commands (`orpheus_physics::mover::correction`). It goes again while its datagram is lost; the body's owner corrections wait for it and then carry the counter (`SpawnTurn` in `crates/sim/src/replication.rs`). Assumption: a state taken without replay also turns the view; the +12 encoding (1, 0, 32 bits) is ow1-preservation's (field 3, decoded in emulation and used live for teleports). A pick in the spawn room keeps the view. Retail's own way is not known: IDA questions in the report.
+
 ## Upstream author's claims (not independently verified)
 
 The imported game-server branch (LizRollin `9f8f3bcb`) claimed these work in the game:

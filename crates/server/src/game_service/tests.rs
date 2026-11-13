@@ -256,6 +256,8 @@ struct WorldRecord {
     operation: Option<u8>,
     definition: Option<u32>,
     movement: bool,
+    /// The movement record's head, when it has one.
+    moved: Option<MovementHead>,
     skin: Option<(u32, bool)>,
     script: Option<ReceivedChunk>,
     projectile_release: Option<u32>,
@@ -412,6 +414,85 @@ impl WorldRecord {
     }
 }
 
+/// What a movement record says of the body's place and facing
+/// (`orpheus_wire::entity::write_movement`): its frame (frames before the
+/// packet's), discontinuity counter, aim pitch, Euler yaw (s16 angle units)
+/// and position (1/1024 m).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MovementHead {
+    frame_back: u32,
+    discontinuity: u32,
+    pitch: u16,
+    yaw: u16,
+    position: [i32; 3],
+}
+
+/// Reads a movement record after its 12-bit length.
+fn movement_head(mut reader: BitReader<'_>) -> MovementHead {
+    // A present value: the first of `widths` its bit picks, else 32 bits.
+    fn sized(reader: &mut BitReader<'_>, widths: &[usize]) -> u64 {
+        for &width in widths {
+            if reader.bit().unwrap() {
+                return reader.bits(width).unwrap();
+            }
+        }
+        reader.bits(32).unwrap()
+    }
+    fn optional(reader: &mut BitReader<'_>, widths: &[usize]) -> u64 {
+        if reader.bit().unwrap() {
+            sized(reader, widths)
+        } else {
+            0
+        }
+    }
+    assert!(!reader.bit().unwrap(), "against the reference state");
+    if reader.bit().unwrap() {
+        for _ in 0..4 {
+            if reader.bit().unwrap() {
+                reader.bits(8).unwrap();
+            }
+        }
+    }
+    assert!(!reader.bit().unwrap(), "the 1/1024 grid");
+    let frame_back = optional(&mut reader, &[4, 10]) as u32;
+    let discontinuity = optional(&mut reader, &[]) as u32;
+    let pitch = optional(&mut reader, &[8, 10, 16]) as u16;
+    optional(&mut reader, &[4, 10]); // ticks in the air
+    assert!(!reader.bit().unwrap()); // no timed movement event
+    optional(&mut reader, &[8, 10, 24]); // gravity scale
+    assert!(!reader.bit().unwrap()); // move-speed scale 1
+    let input_frame = reader.bit().unwrap();
+    if input_frame && reader.bit().unwrap() {
+        assert!(!reader.bit().unwrap());
+        reader.bits(32).unwrap();
+    }
+    if reader.bit().unwrap() {
+        assert!(!reader.bit().unwrap());
+        reader.bits(32).unwrap(); // the last stand-up
+    }
+    for _ in 0..if input_frame { 4 } else { 2 } {
+        if reader.bit().unwrap() {
+            reader.bits(8).unwrap(); // throttles
+        }
+    }
+    let yaw = optional(&mut reader, &[8, 10, 16]) as u16;
+    optional(&mut reader, &[8, 10, 16]); // Euler pitch
+    optional(&mut reader, &[8, 10, 16]); // and roll
+    let position = std::array::from_fn(|_| {
+        assert!(reader.bit().unwrap());
+        // Every axis goes at the 24-bit width, signed.
+        let value = sized(&mut reader, &[8, 10, 24]);
+        ((value << 40) as i64 >> 40) as i32
+    });
+    MovementHead {
+        frame_back,
+        discontinuity,
+        pitch,
+        yaw,
+        position,
+    }
+}
+
 fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
     let mut reader = BitReader::new(&packet.payload);
     reader.var_a().unwrap();
@@ -426,6 +507,7 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
                 operation: None,
                 definition: None,
                 movement: false,
+                moved: None,
                 skin: None,
                 script: None,
                 projectile_release: None,
@@ -473,6 +555,7 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
             record.movement = reader.bit().unwrap();
             if record.movement {
                 let length = reader.bits(12).unwrap() as usize;
+                record.moved = Some(movement_head(reader));
                 reader.advance(length - 12).unwrap();
             }
             if reader.bit().unwrap() {
@@ -1772,17 +1855,26 @@ fn two_players_in_one_practice_range_see_each_other() {
 /// naming the shooter's body; both clients get frames of the dead body's
 /// statescript, which carry its "died" kill feed line (003E); the shooter's
 /// Tab board changes; and the victim gets a new body after the Practice
-/// Range's 3 s, which the shooter's client gets too. The target's body is
-/// a hero that can be hit, and its pools of 0 come with its dead bit.
+/// Range's 3 s, which the shooter's client gets too, of the hero he picked
+/// while dead. Each of his bodies turns his view to the spawn's facing. The
+/// target's body is a hero that can be hit, and its pools of 0 come with
+/// its dead bit.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
-    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO, stats::GMP_STATS};
+    use orpheus_content::{
+        heroes::{ANA, SOLDIER},
+        parameters::PICK_HERO,
+        stats::GMP_STATS,
+    };
     use orpheus_sim::scene_assets::SceneAssets;
     use orpheus_wire::commands::FIRE;
 
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    // The target's spawn: team 1's first point.
+    let ([spawn_x, _, spawn_z], facing) = scene.map().spawn_point(1, 0).unwrap();
+    let spawn_yaw = (facing * 65536.0 / 360.0).round_ties_even() as i32 as u16;
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let tags = ["shooter#1111", "target#2222"];
@@ -1989,6 +2081,15 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
         "the dead body's filter bits",
         |watchers| watchers.iter().all(|watcher| dead(watcher)),
     );
+    // While dead, the target picks Ana: she takes his respawn.
+    send_player_message(
+        &mut target.client,
+        &schemas,
+        target_owner,
+        2,
+        PICK_HERO,
+        ANA.to_le_bytes().to_vec(),
+    );
     pump_until(&mut [shooter, target], &schemas, "the board", |watchers| {
         watchers[0]
             .find(fired, |record| {
@@ -2098,6 +2199,85 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
             .find(died, |record| record.entity == target_body
                 && record.operation == Some(3))
             .is_some()
+    );
+    // Each body placed at the spawn point turns its player's view to the
+    // spawn's facing (`SpawnTurn` in `orpheus_sim::replication`): its first
+    // owner movement record comes once its create arrived, with the pose
+    // it was made with (the spawn point, the spawn's yaw, a level aim) at
+    // the frame it was made, and a new discontinuity counter, the first
+    // body's as the respawned one's; the hero picked while dead (Ana) is
+    // the respawned body's.
+    let turn = |watcher: &Watcher, body: u32| {
+        let index = watcher
+            .find(0, |record| record.entity == body && record.moved.is_some())
+            .unwrap();
+        let head = watcher.datagrams[index]
+            .1
+            .iter()
+            .find_map(|record| record.moved.filter(|_| record.entity == body))
+            .unwrap();
+        (index, head)
+    };
+    pump_until(
+        &mut [shooter, target],
+        &schemas,
+        "the spawn turn",
+        |watchers| {
+            watchers[1]
+                .find(created, |record| {
+                    record.entity == respawned && record.moved.is_some()
+                })
+                .is_some()
+        },
+    );
+    for (body, made_at) in [(target_body, None), (respawned, Some(created))] {
+        let (index, head) = turn(target, body);
+        let create = target.created(body).unwrap();
+        assert!(index > create, "after the create's datagram");
+        assert_eq!(head.discontinuity, 1);
+        assert_eq!((head.yaw, head.pitch), (spawn_yaw, 0));
+        let [x, _, z] = head.position.map(|axis| f64::from(axis) / 1024.0);
+        assert!((x - spawn_x).abs() < 0.002 && (z - spawn_z).abs() < 0.002);
+        if let Some(created) = made_at {
+            let frame = target.ticks[index] - head.frame_back;
+            assert!(frame <= target.ticks[created], "made at {frame}");
+        }
+    }
+    let definition = |body: u32| {
+        target.datagrams[target.created(body).unwrap()]
+            .1
+            .iter()
+            .find(|record| record.entity == body && record.is_create())
+            .unwrap()
+            .definition
+    };
+    assert_ne!(definition(respawned), definition(target_body), "Ana's body");
+    // Ana's corrections follow her turn, with its counter.
+    let (turned, _) = turn(target, respawned);
+    let mut frame = target.tick + 1;
+    let corrections = |watcher: &Watcher| {
+        watcher.datagrams[turned + 1..]
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter_map(|record| record.moved.filter(|_| record.entity == respawned))
+            .collect::<Vec<_>>()
+    };
+    let deadline = server.now() + Duration::from_secs(5);
+    while corrections(target).len() < 3 {
+        assert!(server.now() < deadline, "waiting for Ana's corrections");
+        if frame <= target.tick + 8 {
+            target
+                .client
+                .send(ACK, command_batch(frame, 16, 0, 0, false));
+            frame += 16;
+        }
+        shooter.pump(&schemas);
+        target.pump(&schemas);
+    }
+    assert!(
+        corrections(target)
+            .iter()
+            .all(|head| head.discontinuity == 1)
     );
     server.stop().unwrap();
 }
