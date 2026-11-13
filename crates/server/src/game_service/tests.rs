@@ -2218,6 +2218,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
                             ControllerFrame {
                                 hide_assemble: true,
                                 hero: Some(ANA),
+                                multikills: Some(orpheus_sim::announcer::MultikillPulse::PRIMER),
                                 ..ControllerFrame::default()
                             },
                         )
