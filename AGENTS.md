@@ -4,13 +4,13 @@ ORPHEUS is a Rust server for the Overwatch 1.74 client (build 104319). Read [REA
 
 ## CPU use
 
-This PC has 16 logical CPUs, and cargo by default uses all 16 to build and runs 16 tests at once. Use half: before any cargo or `just` command, set
+This PC has 16 logical CPUs, and cargo by default uses all 16 to build and runs 16 tests at once. Use a quarter: 4 build jobs and 4 tests at once. The `just` recipes set both themselves (`CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` in the `justfile`). Before any plain `cargo` command, set them yourself:
 
 ```powershell
-$env:CARGO_BUILD_JOBS = 8; $env:RUST_TEST_THREADS = 8
+$env:CARGO_BUILD_JOBS = 4; $env:RUST_TEST_THREADS = 4
 ```
 
-(in bash: `export CARGO_BUILD_JOBS=8 RUST_TEST_THREADS=8`). The `just` test recipes already cap their tests at half the CPUs. Other agents and the user share the machine.
+(in bash: `export CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4`). Other agents and the user share the machine.
 
 ## Before you report
 
