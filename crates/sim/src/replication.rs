@@ -58,7 +58,7 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
     vm::{GameMessage, Motion, MoveRequest, RaisedCriteria, Snapshot, TargetCandidate},
-    weapons::ProjectileBallistics,
+    weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
 };
 use orpheus_wire::{
@@ -2900,9 +2900,16 @@ impl WorldDelivery {
                     death_message(hit.shooter.source, hit.critical, hit.loadout, hit.tags);
                 failure = script.runtime.receive_message(message, parameters).err();
             }
-        } else if let Some(script) = script {
+        } else if let Some(script) = script.filter(|_| scene.hurt_feedback().message) {
+            // The live hurt feedback switch (`crate::hurt_feedback`): with
+            // the flinch off the message goes without its tags.
+            let tags = if scene.hurt_feedback().flinch {
+                hit.tags
+            } else {
+                DamageTags::NONE
+            };
             let (message, parameters) =
-                damage_message(hit.shooter.source, result.dealt, hit.tags, hit.direction);
+                damage_message(hit.shooter.source, result.dealt, tags, hit.direction);
             failure = script.runtime.receive_message(message, parameters).err();
         }
         if let Some(error) = failure {
@@ -3168,8 +3175,10 @@ impl WorldDelivery {
             self.voice = Some((speaker, VoiceState::default()));
         }
         let (_, voice) = self.voice.as_mut().expect("the body's voice");
+        let hurt = scene.hurt_feedback();
         criteria
             .into_iter()
+            .filter(|criteria| hurt.speaks(criteria.identifier))
             .filter_map(|criteria| voice.answer(set, speaker, criteria, tick))
             .collect()
     }
