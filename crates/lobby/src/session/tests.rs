@@ -358,7 +358,14 @@ fn prepared_subset_matches_the_python_login_in_wire_order() {
             assert_eq!(progression[&0x58], card[&0x28]);
             assert_eq!(messages.len(), count);
             let mut digest = Sha256::new();
-            for (crc, id, fields) in messages {
+            for (crc, id, mut fields) in messages {
+                // 20802 as Python sent it: without the Kill Feed Display
+                // default (`player_messages::settings`), block +0x120 the
+                // schema's empty one; the rest must still match Python's.
+                if (crc, id) == (LOBBY, 20802) {
+                    let mut empty = schemas.empty(LOBBY, 20802).unwrap();
+                    fields.insert(0x120, empty.remove(&0x120).unwrap());
+                }
                 let mut wire = schemas.header(crc, 1, id).unwrap();
                 wire.extend(schemas.encode(crc, id, &fields).unwrap());
                 digest.update(crc.to_le_bytes());
