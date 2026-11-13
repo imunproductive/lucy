@@ -74,11 +74,31 @@
 //!   "Failed to deserialize component update ... 143E ... /123"; 143E has 1,
 //!   3, 4, 22, 24, 25, 26, 28, 31, 35, 39, 43, 47, 49, 51, 69, 76, 78, 83, 86,
 //!   90, 97, 115, 119, 122, 127).
-//! - The elimination label and the kill feed name the victim by
-//!   `STU_CD7F3617`, which finds the body's controller (its component 44,
-//!   or the reverse table component 44 builds) and reads the controller's
+//! - The elimination label (`1FC0`) names the victim by `STU_CD7F3617`
+//!   of its body, which finds the body's controller (its component 44, or
+//!   the reverse table component 44 builds) and reads the controller's
 //!   name; a bot body has no name component of its own. So each training
 //!   bot gets a stand-in controller entity ([`bot_controller_create`]).
+//! - The kill feed (`0DEA`) instead resolves each side's controller first
+//!   (`STU_F76C486C`, else `STU_DB742151`) and takes the name
+//!   (`STU_CD7F3617`) and the hero icon (`STU_DC20DD7E` of `STU_93DCDDFD`)
+//!   of that controller itself. With a stand-in that had only 26 (the team
+//!   bit), 29 and 44, the game drew the bot's side of the line as an empty
+//!   box, as killer and as victim (2026-11-13, screenshots
+//!   `killfeed-player-kills-bot.png`, `killfeed-bot-kills-player.png`),
+//!   though "ELIMINATED TRAINING BOT" showed. The one setup seen drawing a
+//!   bot's name and icon there is leafall903/ORPHEUS (MIT) `kjs` 2f85cee
+//!   (`offline/research/lizrollin-runtime.md` section 16, runs 22-23;
+//!   `offline/tools/lobby/vendor/ow174/game/match.py` `_target_updates`,
+//!   `game_struct`): each bot's controller a full participant, definition
+//!   `000E` created with the participant flag and without the player path
+//!   one, 26 = a player's filter bits, 74 with a roster slot of its own,
+//!   44 the body, 75 the bot's hero, and the bot named in the 20300/20301
+//!   roster at that slot (`instance.rs`). Assumption: the client names and
+//!   draws a controller in the feed only as a participant. Component 75 on
+//!   a stand-in without 74 crashed the game (2026-11-13, the removed
+//!   `.plate hero`); kjs sent 75 with 74 and did not crash, nor did our
+//!   earlier AI-definition stand-in (`1404` with 26/44/75).
 
 use std::{collections::HashMap, io};
 
@@ -133,24 +153,35 @@ pub fn bot_controller_entity(slot: usize) -> io::Result<u32> {
         .ok_or_else(|| invalid("too many training bots for their controller ids"))
 }
 
-fn possession_link(body: u32) -> Component {
-    fields(44, vec![Some(ComponentValue::Entity(body)); 3])
+/// The roster slot of the bot in `slot` when the first `players` slots are
+/// the players' (the room passes every slot its match can seat): the bots
+/// take the next ones, in their order (kjs `match.py` `_ensure_bots`, see
+/// the module notes).
+pub fn bot_roster_slot(players: usize, slot: usize) -> io::Result<i8> {
+    i8::try_from(players + slot).map_err(|_| invalid("too many roster slots for the bots"))
 }
 
-/// The create of the bot's stand-in controller in `slot`, linked to its
-/// current body, so the client can name the bot in "ELIMINATED <name>" and
-/// the kill feed (see the module notes; the Python reference sent none). A
-/// player entity (definition `000E`, as players have): component 26 the
-/// bot's team bit only, 29 a stand-in account and the bot's name, 44 the
-/// body. A player's create flags without the participant one, and no 74, so
-/// it stays out of the team list. Checked in game: the bots are named in
-/// "ELIMINATED" and the kill feed.
-pub fn bot_controller_create(bot: &Bot, slot: usize) -> io::Result<EntityUpdate> {
+/// The create of the bot's stand-in controller in `slot`, with roster slot
+/// `roster` ([`bot_roster_slot`]), linked to its current body, so the
+/// client names the bot in "ELIMINATED <name>" and names it and draws its
+/// hero icon in the kill feed (see the module notes; the Python reference
+/// sent none). A participant as a player's entity is, from kjs: definition
+/// `000E`, created with the participant flag and without the player path
+/// one (that is the local player's own entity); 26 a player's filter bits
+/// with the bot's team bit, 29 a stand-in account and the bot's name, 74
+/// the roster slot (fields 6 and 7 on, as a player's and kjs's), 44 the
+/// body, 75 the bot's hero (no skin) as a player's [`Possession`] has them.
+/// "ELIMINATED <name>" checked in the game with 26/29/44 alone (2026-11-11);
+/// the kill feed with this create not yet.
+pub fn bot_controller_create(bot: &Bot, slot: usize, roster: i8) -> io::Result<EntityUpdate> {
     use ComponentValue::*;
     let entity = bot_controller_entity(slot)?;
     let account = BOT_ACCOUNT + (entity - BOT_CONTROLLER_ENTITY);
     let mut components = vec![
-        fields(26, vec![Some(Id(team_bit(bot.spawn.team)?))]),
+        fields(
+            26,
+            vec![Some(Id(PLAYER_FILTER | team_bit(bot.spawn.team)?))],
+        ),
         fields(
             29,
             vec![
@@ -158,10 +189,30 @@ pub fn bot_controller_create(bot: &Bot, slot: usize) -> io::Result<EntityUpdate>
                 Some(Text(bot.spawn.name.clone())),
             ],
         ),
+        fields(
+            74,
+            vec![
+                None,
+                None,
+                Some(I8(roster)),
+                None,
+                None,
+                None,
+                Some(U8(1)),
+                Some(U8(1)),
+            ],
+        ),
     ];
-    components.push(possession_link(bot.entity));
+    components.extend(
+        Possession {
+            body: bot.entity,
+            hero: bot.spawn.hero,
+            skin: None,
+        }
+        .components(),
+    );
     let mut definition = Create::new(PLAYER_DEFINITION, components);
-    definition.flags = PLAYER_PATH | WITH_TRANSFORM | WITH_SCALE;
+    definition.flags = WITH_PARTICIPANT | WITH_TRANSFORM | WITH_SCALE;
     Ok(create(entity, definition))
 }
 
@@ -173,6 +224,10 @@ pub fn bot_controller_link(bot: &Bot, slot: usize) -> io::Result<EntityUpdate> {
         operation: Some(Operation::Update(vec![possession_link(bot.entity)])),
         ..EntityUpdate::default()
     })
+}
+
+fn possession_link(body: u32) -> Component {
+    fields(44, vec![Some(ComponentValue::Entity(body)); 3])
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -317,12 +372,14 @@ pub fn bot_create(bot: &Bot, plate: &BotPlate) -> io::Result<EntityUpdate> {
 }
 
 /// Build the initial world before the local player picks a hero; each bot's
-/// stand-in controller right after its body.
+/// stand-in controller right after its body, in the roster slots after the
+/// first `players` ([`bot_roster_slot`]).
 pub fn initial_world(
     map: &GameMap,
     player: &PlayerAppearance<'_>,
     board: Component,
     bots: &[Bot],
+    players: usize,
     plate: &BotPlate,
 ) -> io::Result<Vec<EntityUpdate>> {
     let mut updates = Vec::with_capacity(map.placeables.len() + 2 + 2 * bots.len());
@@ -335,7 +392,11 @@ pub fn initial_world(
     updates.push(mode_create(map.mode_guid));
     for (slot, bot) in bots.iter().enumerate() {
         updates.push(bot_create(bot, plate)?);
-        updates.push(bot_controller_create(bot, slot)?);
+        updates.push(bot_controller_create(
+            bot,
+            slot,
+            bot_roster_slot(players, slot)?,
+        )?);
     }
     Ok(updates)
 }
@@ -493,7 +554,7 @@ mod tests {
         // notes). Its bots were `0xC0001000 + n`; ours are in id class 0
         // (`bots.rs` module notes). The other records match the Python frame
         // byte for byte.
-        let updates = initial_world(&map, &player, board, &bots, &BotPlate::default()).unwrap();
+        let updates = initial_world(&map, &player, board, &bots, 1, &BotPlate::default()).unwrap();
         const PYTHON_BOT_ENTITY: u32 = 0xc000_1000;
         let controllers = BOT_CONTROLLER_ENTITY..BOT_ENTITY;
         let python: Vec<_> = updates
@@ -605,23 +666,24 @@ mod tests {
         fields(44, vec![Some(ComponentValue::Entity(body)); 3])
     }
 
-    /// The player stand-in: definition 000E with the bot's team bit, a
-    /// stand-in account with the bot's name, and its body; a player's flags
-    /// without the participant one, and no 74 (the team list's).
+    /// The player stand-in (module notes): a participant without the player
+    /// path, a player's filter bits with the bot's team bit, a stand-in
+    /// account with the bot's name, the roster slot after the room's
+    /// players, its body and its hero.
     #[test]
-    fn a_player_stand_in_names_the_bot_and_controls_its_body() {
+    fn a_player_stand_in_names_the_bot_and_controls_its_body_as_its_hero() {
         use ComponentValue::*;
         let bots = fixture_bots();
-        let update = bot_controller_create(&bots[0], 0).unwrap();
+        let update = bot_controller_create(&bots[0], 0, bot_roster_slot(1, 0).unwrap()).unwrap();
         assert_eq!(update.entity, BOT_CONTROLLER_ENTITY);
         let create = created(&update);
         assert_eq!(create.definition, PLAYER_DEFINITION);
-        assert_eq!(create.flags, PLAYER_PATH | WITH_TRANSFORM | WITH_SCALE);
-        assert_eq!(create.flags & WITH_PARTICIPANT, 0);
+        assert_eq!(create.flags, WITH_PARTICIPANT | WITH_TRANSFORM | WITH_SCALE);
+        let training_bot = 0x02e0_0000_0000_016b;
         assert_eq!(
             create.components,
             [
-                fields(26, vec![Some(Id(TEAM_BIT << 1))]),
+                fields(26, vec![Some(Id(0x0004_0001 | TEAM_BIT << 1))]),
                 fields(
                     29,
                     vec![
@@ -629,15 +691,35 @@ mod tests {
                         Some(Text("Training Bot".into())),
                     ],
                 ),
+                fields(
+                    74,
+                    vec![
+                        None,
+                        None,
+                        Some(I8(1)),
+                        None,
+                        None,
+                        None,
+                        Some(U8(1)),
+                        Some(U8(1)),
+                    ],
+                ),
                 link(BOT_ENTITY),
+                fields(
+                    75,
+                    vec![Some(Id(training_bot)), None, None, Some(Id(training_bot))],
+                ),
             ]
         );
-        let other = bot_controller_create(&bots[1], 1).unwrap();
+        let other = bot_controller_create(&bots[1], 1, bot_roster_slot(1, 1).unwrap()).unwrap();
         assert_eq!(other.entity, BOT_CONTROLLER_ENTITY + 1);
-        let Some(Some(DbId(account, _))) = created(&other).components[1].fields.first() else {
+        let components = &created(&other).components;
+        let Some(Some(DbId(account, _))) = components[1].fields.first() else {
             panic!("no account");
         };
         assert_eq!(*account, u64::from(BOT_ACCOUNT) + 1);
+        assert_eq!(components[2].fields[2], Some(I8(2)));
+        assert!(bot_roster_slot(127, 1).is_err());
         // The wire takes every component.
         frame(1234, 1234, &[], &[], &[&update, &other]).unwrap();
     }
@@ -685,12 +767,13 @@ mod tests {
             index: GMP_STATS,
             fields: Vec::new(),
         };
-        let entities: Vec<u32> = initial_world(&map, &player, board, &bots, &BotPlate::default())
-            .unwrap()
-            .iter()
-            .map(|update| update.entity)
-            .skip(map.placeables.len() + 2)
-            .collect();
+        let entities: Vec<u32> =
+            initial_world(&map, &player, board, &bots, 1, &BotPlate::default())
+                .unwrap()
+                .iter()
+                .map(|update| update.entity)
+                .skip(map.placeables.len() + 2)
+                .collect();
         assert_eq!(
             entities,
             [

@@ -570,14 +570,13 @@ fn parse_message(text: &str) -> Result<u64, String> {
 /// Why the tool has no `hero` command. It put component 75 (the hero, as
 /// a player's: hero, no skin, none, hero) on each bot's stand-in
 /// controller so `0D24` would draw the plate's hero icon (`4447`); in the
-/// game (2026-11-13) `hero bot` and `hero 013B` crashed the client. A
-/// stand-in controller is a player entity without component 74 that
-/// possesses a training bot body: assumption, the client sets up the
-/// hero for that controller (its loadout and abilities on the possessed
-/// body, as at a real player's hero pick) and fails on the bot body, which
-/// is no body of that hero. Not checked: no IDA.
-const HERO_REFUSED: &str =
-    "The hero command is gone: component 75 on a bot's stand-in controller crashed the game.";
+/// game (2026-11-13) `hero bot` and `hero 013B` crashed the client. That
+/// stand-in was a player entity without component 74 that possesses a
+/// training bot body: assumption, the client sets up the hero of a
+/// non-participant for that body and fails. Not checked: no IDA. The
+/// stand-in is a participant now and carries the bot's own hero from its
+/// create (`scene.rs` `bot_controller_create`), so another hero has no use.
+const HERO_REFUSED: &str = "The hero command is gone: component 75 on a bot's stand-in controller crashed the game; the stand-in now has the bot's own hero.";
 
 /// A variable's value as the commands write it; none for `default`.
 fn parse_value(text: &str) -> Result<Option<Value>, String> {
