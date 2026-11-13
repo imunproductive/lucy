@@ -16,6 +16,8 @@ Small things left undone by finished work. Each entry says what is missing, wher
 - **Damage direction arcs and the screen hit flash** aren't sent; likely combat event 25000 to the victim (IDA list, section 13).
 - **Enemy explosions don't push other players**, only the shooter himself and bots. `ProjectileFlight::blast_push`.
 - **No aura system.** Biotic Grenade's aura `0267.053` (graphs `0C71`, `0C72`, `0B99`) sets `#8202e` / `#8203e` on the hit body for the anti-heal and heal boost status icons over the bar (not the outline colour); the server doesn't run it. `docs/notes/behavior.md` (Nameplate and bar look).
+- **AI heroes deal their player damage, scaled.** Hero volleys pick an AI damage when their body is AI-possessed (`STU_D3EB8D87` → `STU_4049CF77` parameters such as `1961`, read from the hero's AI definition `m_04A8896C` difficulty profiles); our Practice vs AI heroes run `PlayerWorld`, which answers "not AI", and `ai::scale_damage` scales the player damage instead. `D:/Work/Coding/refs/reports/BotDamage.md` (side findings).
+- **Bot rockets fly level from the eye**, not from the launcher muzzle (`0BA3` `#6973`) toward the target, so they meet a player's head; bot shots score no critical for now (rule 123). `bot_script.rs` `shot_kind`; IDA list, section 18.
 
 ## Movement and collision
 

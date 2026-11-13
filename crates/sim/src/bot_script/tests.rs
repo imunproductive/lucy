@@ -576,7 +576,12 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
 }
 
 /// combat.py `_bot_weapons` and `_fly`: a firing bot's rockets leave its eye
-/// along its yaw and hit the enemy player standing in front of it.
+/// along its yaw and hit the enemy player standing in front of it. A rocket
+/// (`0BA3` node 178) is one direct hit, no explosion: its amount is
+/// `AI-possessed ? param 1961 (fallback 8) : 19`, and the bot is AI-possessed
+/// with no difficulty profile, so 8 (4 m is short of its 25 m falloff).
+/// Flown level from the eye it meets the player's head, but bots never
+/// headshot (rule 123): 8, not 16.
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
@@ -654,5 +659,8 @@ fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
     assert_eq!(hit.body, body);
     assert_eq!(hit.shooter.source, source);
     assert_eq!(hit.shooter.team, team);
-    assert!(hit.amount > 0.0);
+    eprintln!("bot rocket hits: {hits:?}");
+    assert_eq!(hits.len(), 1, "one direct hit, no splash");
+    assert_eq!(hit.amount, 8.0);
+    assert!(!hit.critical);
 }
