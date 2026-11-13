@@ -2311,6 +2311,7 @@ impl State {
                 // find until the next update, as placed this tick.
                 let candidates = combat.target_candidates(&world.scene);
                 world.scene.set_bot_target_candidates(&candidates);
+                world.scene.set_placed_target_candidates(&candidates);
                 for peer in room_peers(&mut self.peers, &self.seats, id, players.len())
                     .into_iter()
                     .flatten()
@@ -2809,6 +2810,8 @@ impl State {
                     // The live bots' reactions to their hits, and the voice
                     // lines they call for.
                     world.scene.advance_live_bots(tick);
+                    // The server placeables' scripts (placed_script.rs).
+                    world.scene.advance_placed(tick);
                     bot_voices.insert(id, world.scene.take_bot_voices());
                     if let Some(combat) = &mut world.combat {
                         if let Ok(replacements) = combat.respawn_due(&mut world.scene, tick, now) {
@@ -2851,6 +2854,7 @@ impl State {
                 if let Some(world) = &room.world {
                     let events = bot_events.get(&id).map_or(&[][..], Vec::as_slice);
                     peer.world.update_bots(&world.scene, events, tick);
+                    peer.world.update_placed(&world.scene);
                 }
                 // ClientInVoice 27500: each bot line to every client of the
                 // room whose body hears it: its audience lists the body

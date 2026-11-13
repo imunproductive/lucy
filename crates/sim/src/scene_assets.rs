@@ -22,13 +22,14 @@ use crate::{
     bot_animation::{BotRigCatalog, ScriptAnims},
     bot_plate::{BotPlate, PlateSample},
     bot_script::{BotEvent, BotScripts, BotShot},
+    placed_script::PlacedScripts,
     bots::{Bot, BotCatalog, BotWalk},
     combat::{BodyCombat, BotDeath, MeleeState, RespawnTimes, melee_states},
     controller::Controller,
     hitboxes::HitboxCatalog,
     hitscan::{RAY_PROFILES_FILE, RayProfiles},
     hurt_feedback::HurtFeedback,
-    map_areas::{self, DamageArea, MapAreaData, SpawnRoom},
+    map_areas::{self, DamageArea, MapAreaData, PlacedScript, SpawnRoom},
     match_flow::{MatchFlow, Mode, Timers},
     mode_graph_values::ModeGraphValues,
     mode_rules_data::{ModeRules, ModeRulesData},
@@ -221,8 +222,10 @@ pub struct PreparedScene {
     kill_volumes: Arc<[CaptureBox]>,
     /// The map's server placeables in this mode: server-owned placeables
     /// the loading screen doesn't wait for, created after the player and
-    /// the mode.
-    server_placeables: Vec<u32>,
+    /// the mode, with their script data.
+    server_placeables: Vec<Arc<PlacedScript>>,
+    /// Their scripts (`placed_script`).
+    placed_scripts: PlacedScripts,
     /// Where a falling body dies on a map with neither damage areas nor
     /// kill volumes (`map_areas::kill_height`).
     kill_height: Option<f64>,
@@ -459,7 +462,7 @@ impl SceneAssets {
         let kill_volumes = self.map_areas.kill_volumes(&map);
         // The client shows a server-owned placeable only once the server
         // creates it.
-        let server_placeables = self.map_areas.server_placeables(&map, identifiers);
+        let server_placeables = self.map_areas.placed_scripts(&map, identifiers);
         let lowest_spawn = map
             .spawns
             .iter()
@@ -524,6 +527,11 @@ impl SceneAssets {
             kill_volumes,
             kill_height,
             safety_net,
+            placed_scripts: PlacedScripts::new(
+                Arc::clone(&self.graphs),
+                map_mode,
+                server_placeables.clone(),
+            ),
             server_placeables,
         };
         let mut factories = self
@@ -800,6 +808,29 @@ impl PreparedScene {
     /// `_send_countdown`, combat.py `mode_frame`).
     pub fn mode_frame(&self, variables: &Variables) -> io::Result<BitWriter> {
         mode_ui(&self.graphs, variables)
+    }
+
+    /// The map's server placeables in this mode with their script data, in
+    /// create order.
+    pub fn server_placeables(&self) -> &[Arc<PlacedScript>] {
+        &self.server_placeables
+    }
+
+    /// The server placeables' scripts.
+    pub fn placed_scripts(&self) -> &PlacedScripts {
+        &self.placed_scripts
+    }
+
+    /// Start the server placeables' scripts at the first call, then advance
+    /// them to `tick`.
+    pub fn advance_placed(&mut self, tick: u32) {
+        self.placed_scripts.advance(tick);
+    }
+
+    /// The bodies the placeables' target searches can find from now on
+    /// (`Combat::target_candidates`).
+    pub fn set_placed_target_candidates(&mut self, candidates: &[TargetCandidate]) {
+        self.placed_scripts.set_target_candidates(candidates);
     }
 
     /// The statescript graphs, for runs outside the scene (the mode graph).
@@ -1153,9 +1184,9 @@ impl PreparedScene {
         let at = self.map.placeables.len() + 2;
         updates.splice(
             at..at,
-            self.server_placeables.iter().map(|&index| EntityUpdate {
-                entity: 0x8000_0000 | index,
-                operation: Some(Operation::Placeable(index)),
+            self.server_placeables.iter().map(|placed| EntityUpdate {
+                entity: placed.entity(),
+                operation: Some(Operation::Placeable(placed.placeable)),
                 ..EntityUpdate::default()
             }),
         );

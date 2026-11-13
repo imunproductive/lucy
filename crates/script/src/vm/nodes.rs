@@ -586,6 +586,18 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             {
                 StateKind::Plain
             }
+            // The map entity states (`orpheus_script::placed`). Animation
+            // alias request (`0D32`'s doors): while it is active the client
+            // pushes the alias `m_11E0A658` on the entity's animation
+            // component (leafall903/ORPHEUS `ANIMATION_ALIAS_STATE.txt`); the
+            // server keeps the base lifecycle and sends the remote state. Its
+            // true mode (`m_9507488A`) aborts at once and is not modelled.
+            "STU_B1FA9C2A" if field(&node.fields, "m_9507488A").is_null() => StateKind::Plain,
+            // Entity control (`00F6`'s barriers): its rules set flags on the
+            // client's model of the entity (`ENTITY_CONTROL_STATE.txt`, the
+            // same source); the server keeps the base lifecycle and sends the
+            // remote state. Its payload is the link list (codec `link`).
+            "STU_33A46033" => StateKind::Plain,
             "STU_7B9E8909" => StateKind::Plain,
             // A voice stimulus only plays a bark on the client that runs it;
             // the server keeps it as a plain state (`ow174/game/voicelines.py`).

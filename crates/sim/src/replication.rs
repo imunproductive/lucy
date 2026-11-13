@@ -14,6 +14,7 @@ use crate::{
     body::{BodyCreate, BodyView, body_create, owner_pose},
     body_script::OwnerBodySpawn,
     bot_script::{BotEvent, BotViewContext, BotViews, SeenDelivery, SeenRocket},
+    placed_script::PlacedViews,
     bots::BOT_RECORD_DELAY,
     combat::{
         BotReplacement, DEAD, PlayerHit, PlayerTarget, PosedProjectile, PosedShot, RESPAWN_RETRY,
@@ -710,6 +711,11 @@ enum Delivery {
     },
     /// A firing bot's rocket on this client (bot_script.rs `SeenDelivery`).
     BotSeen(SeenDelivery),
+    /// A server placeable's full frame (placed_script.rs); a newer one
+    /// supersedes it.
+    Placed {
+        last: u32,
+    },
     /// A respawned bot's stand-in controller now controls `body`, its new
     /// body (`scene.rs` `bot_controller_link`): it goes with or after the
     /// body's create, and a newer respawn's link supersedes it.
@@ -1314,6 +1320,8 @@ pub struct WorldDelivery {
     retained_elsewhere: HashSet<u32>,
     /// The training bots' statescript on this client.
     bot_views: BotViews,
+    /// The server placeables' statescript on this client.
+    placed_views: PlacedViews,
     /// The bodies the target searches can find, as the match last placed
     /// them; a new body starts with them.
     target_candidates: Vec<TargetCandidate>,
@@ -1444,6 +1452,7 @@ impl WorldDelivery {
             notices: SwitchNotices::default(),
             retained_elsewhere: HashSet::new(),
             bot_views: BotViews::default(),
+            placed_views: PlacedViews::default(),
             target_candidates: Vec::new(),
             death: None,
             plain_vitals: None,
@@ -1552,6 +1561,7 @@ impl WorldDelivery {
         self.board = BoardDelivery::default();
         self.others.clear();
         self.bot_views.clear();
+        self.placed_views.clear();
         self.target_candidates.clear();
         self.notices = SwitchNotices::default();
         self.spawn_room = None;
@@ -1771,6 +1781,31 @@ impl WorldDelivery {
         });
     }
 
+    /// The server placeables' frames this client doesn't have yet, for the
+    /// placeables whose create arrived (placed_script.rs).
+    pub fn update_placed(&mut self, scene: &PreparedScene) {
+        if self.started.is_none() {
+            return;
+        }
+        let created = |entity| self.created.contains(&entity);
+        let chunks = match self
+            .placed_views
+            .update(scene.placed_scripts().frames(), created)
+        {
+            Ok(chunks) => chunks,
+            Err(error) => {
+                eprintln!("a placed entity's frame failed ({error})");
+                return;
+            }
+        };
+        for chunk in chunks {
+            self.push(Record {
+                update: chunk.update,
+                delivery: Delivery::Placed { last: chunk.last },
+            });
+        }
+    }
+
     /// The training bots' statescript on this client this tick: new bot
     /// lifetimes' first frames, the room's live and death frames, what this
     /// client's ACKs made due and the practice nameplates
@@ -1899,6 +1934,7 @@ impl WorldDelivery {
             Delivery::Field(field) => self.fields.current(field, entity),
             Delivery::BotFrames { last } => self.bot_views.current(entity, last),
             Delivery::BotSeen(seen) => self.bot_views.seen_current(seen, entity),
+            Delivery::Placed { last } => self.placed_views.current(entity, last),
         }
     }
 
@@ -2023,6 +2059,9 @@ impl WorldDelivery {
                     }
                     (true, Delivery::Field(FieldDelivery::Destroy)) => {
                         self.fields.destroy_arrived(record.update.entity);
+                    }
+                    (true, Delivery::Placed { last }) => {
+                        self.placed_views.arrived(record.update.entity, last);
                     }
                     (true, Delivery::Script { last, .. }) if record.update.entity == self.owner => {
                         self.controller.arrived(last);

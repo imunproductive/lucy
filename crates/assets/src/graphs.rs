@@ -185,8 +185,26 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
             queue.extend(used);
         }
     }
+    // The server-owned map placeables: their definitions' initial graphs and
+    // the graphs their instance data name (`game_map_areas_174.json`).
+    let (definitions, placed_roots) = placed_entities(&out.join(crate::map_areas::PATH))?;
+    for index in definitions {
+        let key = format!("0x{:016X}", 0x0400_0000_0000_0000 | index);
+        if entities.contains_key(&key) || !assets.entities.contains_key(&index) {
+            continue;
+        }
+        let asset = assets.entity(index)?;
+        let name = format!("entity {index:04X}");
+        let (record, used) = body_record(&asset, Json::Null, name.into())?;
+        if used.is_empty() {
+            continue;
+        }
+        entities.insert(key, Json::Object(record));
+        queue.extend(used);
+    }
     queue.extend(bundle_roots());
     queue.extend(ai_roots.iter().copied());
+    queue.extend(placed_roots.iter().copied());
 
     let mut graphs = BTreeMap::new();
     let mut missing = BTreeSet::new();
@@ -213,6 +231,7 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
 
     let mut root_graphs: BTreeSet<u64> = bundle_roots().collect();
     root_graphs.extend(ai_roots);
+    root_graphs.extend(placed_roots);
     let mut body_keys: Vec<&String> = bodies.keys().collect();
     body_keys.sort();
     let mut data = Map::new();
@@ -229,6 +248,34 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
     }
     data.insert("mode_variables".into(), Json::Object(variables));
     Ok(Bundle(Json::Object(data)))
+}
+
+/// The definitions (`003` indexes) of every map's server placeables, and
+/// the graphs their statescript instance data name (overrides and extra
+/// graphs).
+fn placed_entities(path: &Path) -> Result<(BTreeSet<u64>, BTreeSet<u64>)> {
+    let table = read_json(path)?;
+    let mut definitions = BTreeSet::new();
+    let mut graphs = BTreeSet::new();
+    let placeables = table["maps"]
+        .as_object()
+        .into_iter()
+        .flat_map(|maps| maps.values())
+        .flat_map(|map| map["server_placeables"].as_array().into_iter().flatten());
+    for placeable in placeables {
+        if let Some(definition) = placeable["definition"]
+            .as_str()
+            .and_then(|text| u64::from_str_radix(text.trim_start_matches("0x"), 16).ok())
+        {
+            definitions.insert(definition & INDEX);
+        }
+        for list in ["overrides", "extra"] {
+            for binding in placeable["script"][list].as_array().into_iter().flatten() {
+                graphs.extend(binding["graph"].as_u64());
+            }
+        }
+    }
+    Ok((definitions, graphs))
 }
 
 fn read_json(path: &Path) -> Result<Json> {
@@ -569,6 +616,11 @@ impl<'a> View<'a> {
             ),
             Value::Floats(values) => vector(field, values)?,
             Value::Map(_) => json!({"$": "map"}),
+            // A map placeable's UUID (`STUConfigVarEntityReference`, in the
+            // map entity graphs): its bytes in hex.
+            Value::Bytes(bytes) if field.type_name == "teUUID" => {
+                bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>().into()
+            }
             Value::Bytes(_) => {
                 return Err(asset_error(format!(
                     "unsupported {} value in {}",

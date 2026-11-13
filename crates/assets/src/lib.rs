@@ -138,6 +138,11 @@ pub const DERIVATIONS: &[Derivation] = &[
         derive: heroes::stats::derive,
     },
     Derivation {
+        name: "game_map_areas",
+        derive: map_areas::derive,
+    },
+    // The graph bundle reads the map areas' server placeables.
+    Derivation {
         name: "graphs",
         derive: graphs::derive,
     },
@@ -192,10 +197,6 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "game_objectives",
         derive: objectives::derive,
-    },
-    Derivation {
-        name: "game_map_areas",
-        derive: map_areas::derive,
     },
     Derivation {
         name: "game_progression",

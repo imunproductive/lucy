@@ -8,6 +8,7 @@ pub mod codecs;
 pub mod expr;
 pub mod graph;
 pub mod mode;
+pub mod placed;
 pub mod player;
 pub mod rulesets;
 pub mod snapshot;

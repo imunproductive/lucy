@@ -108,21 +108,36 @@ pub fn body_roots(body: &Body) -> Result<Vec<Root>, InitFault> {
         };
         let id = u16::try_from(offset + 1).map_err(|_| InitFault::InstanceIdExhausted)?;
         let mut root = Root::new(id, graph);
-        for field in binding.sync.iter().flatten() {
-            let key = field
-                .get("m_0D09D2D9")
-                .and_then(asset_guid)
-                .map_or(0, |guid| guid as u16);
-            let value = expr::evaluate(
-                field.get("m_value").unwrap_or(&Json::Null),
-                &mut EmptyContext,
-            )
-            .map_err(|error| InitFault::RootBinding { id, graph, error })?;
-            root.variables.insert(u32::from(key), value);
-        }
+        bind_values(&mut root, binding.sync.iter().flatten())?;
         roots.push(root);
     }
     Ok(roots)
+}
+
+/// Write a binding's schema entries (`STUStatescriptSchemaEntry`: the
+/// variable `m_0D09D2D9`, the config `m_value`) into the root, a later
+/// entry of a variable replacing an earlier one.
+pub fn bind_values<'a>(
+    root: &mut Root,
+    entries: impl IntoIterator<Item = &'a Json>,
+) -> Result<(), InitFault> {
+    for field in entries {
+        let key = field
+            .get("m_0D09D2D9")
+            .and_then(asset_guid)
+            .map_or(0, |guid| guid as u16);
+        let value = expr::evaluate(
+            field.get("m_value").unwrap_or(&Json::Null),
+            &mut EmptyContext,
+        )
+        .map_err(|error| InitFault::RootBinding {
+            id: root.id,
+            graph: root.graph,
+            error,
+        })?;
+        root.variables.insert(u32::from(key), value);
+    }
+    Ok(())
 }
 
 /// Initial body bindings, then the manager and equipped weapon slots in asset order.

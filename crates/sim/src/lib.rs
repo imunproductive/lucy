@@ -26,6 +26,7 @@ pub mod notices;
 pub mod objective_data;
 pub mod objectives;
 pub mod others;
+pub mod placed_script;
 pub mod pools;
 pub mod projectile_flight;
 pub mod projectile_wire;

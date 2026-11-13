@@ -94,7 +94,9 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
                      "boxes": [{"centre": [0, 0, 0], "half": [1, 1, 1], "rotation": [0, 0, 0, 1]}]},
                     {"placeable": 702, "identifier": "0x0D80000000002962", "damage": 9999.0,
                      "boxes": [{"centre": [0, -40, 0], "half": [1, 1, 1], "rotation": [0, 0, 0, 1]}]}],
-                "server_placeables": [{"placeable": 340, "definition": "0x0400000000001307"},
+                "server_placeables": [{"placeable": 340, "definition": "0x0400000000001307",
+                    "position": [1.5, 2, -3], "script": {"overrides": [{"graph": 246,
+                    "m_1EB5A024": [], "m_75408640": 0}], "extra": []}},
                     {"placeable": 341, "definition": "0x0400000000001307", "identifier": "0x0D80000000002962"}],
                 "kill_volumes": [{"centre": [10, -30, 0], "half": [20, 2, 5],
                     "rotation": [0, 0.7071068, 0, 0.7071068]}]},
@@ -121,8 +123,19 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
         .map(|area| area.placeable)
         .collect();
     assert_eq!(placeables, [700, 702]);
-    assert_eq!(data.server_placeables(&map, &none), [340]);
-    assert_eq!(data.server_placeables(&map, &listed), [340, 341]);
+    let placed = |identifiers| -> Vec<u32> {
+        data.placed_scripts(&map, identifiers)
+            .iter()
+            .map(|placed| placed.placeable)
+            .collect()
+    };
+    assert_eq!(placed(&none), [340]);
+    assert_eq!(placed(&listed), [340, 341]);
+    let door = &data.placed_scripts(&map, &none)[0];
+    assert_eq!(door.entity(), 0x8000_0154);
+    assert_eq!(door.definition, 0x0400_0000_0000_1307);
+    assert_eq!(door.position, [1.5, 2.0, -3.0]);
+    assert_eq!(door.overrides[0].graph, Some(246));
     // Turned a quarter about y: its 20 m half length runs along z.
     let volumes = data.kill_volumes(&map);
     assert_eq!(volumes.len(), 1);
