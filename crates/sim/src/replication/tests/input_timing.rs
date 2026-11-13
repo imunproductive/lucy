@@ -157,7 +157,9 @@ fn the_server_runs_each_frame_as_the_client_predicted_it_while_nothing_is_lost()
     let mut in_flight: Vec<(u32, Vec<Command>)> = Vec::new();
     let mut sent: Vec<Command> = Vec::new();
     let mut compared = 0;
-    for index in 0..frames + 8 {
+    // The server runs a frame the tick after it came, the next in hand:
+    // the last, a tick after the client's last.
+    for index in 0..=frames {
         let tick = FIRST_TICK + 1 + index;
         if index < frames {
             // The client predicts its frame and sends its window.
@@ -254,7 +256,9 @@ fn a_tap_the_dry_buffer_missed_still_fires_once_its_command_comes() {
     let mut late = Vec::new();
     let mut repeated = None;
     let mut sent = Vec::new();
-    for index in 0..88 {
+    // The tick after a command came runs it, the tick after the tap's
+    // repeat waits for the next in hand: 79 runs at the tick of 80.
+    for index in 0..=80 {
         let tick = FIRST_TICK + 1 + index;
         if index < 80 {
             let buttons = if index == 40 { FIRE | SUBFRAME } else { 0 };

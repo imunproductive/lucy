@@ -232,7 +232,10 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
     place(&mut world, &scene, [95.0, -11.0, 10.0], 0);
     let (centre, above_feet) = world.body_centre().unwrap();
     assert!((above_feet - 1.25).abs() < 1e-6, "{above_feet}");
-    assert_eq!(scene.fell_out(centre, above_feet), Some(FellOut::Environment));
+    assert_eq!(
+        scene.fell_out(centre, above_feet),
+        Some(FellOut::Environment)
+    );
 
     let mut combat = Combat::new(&scene);
     combat.environment_kill(body, 0, FIRST_TICK + 20);
