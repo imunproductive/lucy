@@ -1657,3 +1657,158 @@ fn the_wheel_refuses_a_fourth_choice_until_a_count_expires() {
         snapshot.diagnostics
     );
 }
+
+/// The mode body script `0C8E` (the Practice Range's and PvP teams'
+/// `m_bodyScript`, [`ModeBody`]) on Soldier: 76: it is the body's last root
+/// instance, takes the mode's `06FD` (3 s in the Range) and, once the body
+/// dies, counts the respawn down in #384 (ChaseVar st1) with the HUD stacks
+/// #6034 (st32) and #6036 (st33), all in the owner frames; the observers get
+/// the countdown's remote state. On death it tells the mode its time (`08BB`,
+/// st41) and, when the count ends, that it can respawn (`0685`). Soldier's
+/// own death path has two gaps a debug build refuses (`01C7` node 68
+/// `STU_3716E1D4`, `01D8` node 98 `STU_309B0570`), so the body tolerates
+/// unknown content, as release builds do.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
+    use orpheus_content::{heroes::HeroCatalog, maps::GameMap};
+    use orpheus_core::tick::FIRST_TICK;
+    use orpheus_script::vitals::Death;
+    use orpheus_wire::entity::GAME_MODE_ENTITY;
+
+    const MODE_BODY: u32 = 0x0c8e;
+    let root = orpheus_testkit::runtime_dir();
+    let graphs =
+        Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap());
+    let pools = crate::pools::PoolCatalog::from_graphs(&graphs)
+        .unwrap()
+        .hero_pools(SOLDIER)
+        .unwrap();
+    let heroes = HeroCatalog::load(root.join("data/game_heroes_174.json")).unwrap();
+    let spawn = OwnerBodySpawn {
+        controller: 0xa000_0100,
+        entity: 0xa000_0101,
+        body_filter: crate::scene::team_bit(0).unwrap(),
+        slot: 0,
+        frame: FIRST_TICK,
+        pose: Movement {
+            position: GameMap::practice_range().spawn_point(0, 0).unwrap().0,
+            ..Movement::default()
+        },
+        quanta: RETAIL_QUANTA,
+    };
+    let factory = PlayerBodyFactory::prepare(
+        Arc::clone(&graphs),
+        Arc::new(CodecTable::client()),
+        PRACTICE_RANGE_MODE,
+        heroes.get(SOLDIER).unwrap(),
+        Some(pools),
+        false,
+        BodyCombat {
+            eyes: orpheus_content::heroes::Eyes {
+                standing: 1.55,
+                crouched: 1.085,
+            },
+            melee: Arc::new([]),
+            field: None,
+        },
+        Unknowns::Tolerate,
+        None,
+        ModeBody {
+            scripts: BTreeMap::from([(0, MODE_BODY)]),
+            respawn_seconds: Some(3),
+        },
+        spawn,
+    )
+    .unwrap();
+    let mut runtime = factory.start(spawn).unwrap();
+    let snapshot = runtime.snapshot().unwrap();
+    let last_root = factory.roots.last().unwrap().id;
+    let id = last_root + 1;
+    assert_eq!(
+        (
+            snapshot.instances[&id].graph,
+            snapshot.instances[&id].parent
+        ),
+        (MODE_BODY, None)
+    );
+    let projected = |runtime: &PlayerBodyRuntime, view| {
+        let encoder = runtime.encoder();
+        let projected = encoder.project(runtime.snapshot().unwrap(), view).unwrap();
+        encoder.full(&projected).unwrap();
+        projected
+    };
+    // `06FD` arrived (#2153 = 3 s): st2 runs st0, the switch on #478.
+    let alive = projected(&runtime, View::Owner);
+    assert_eq!(alive.instance_variable(id, 2153), Some(&Value::Integer(3)));
+    assert!(alive.state(id, 2).is_some() && alive.state(id, 0).is_some());
+    assert!(alive.state(id, 1).is_none());
+
+    let killer = 0xa000_0201;
+    let total = runtime.vitals().unwrap().total();
+    runtime.vitals_mut().unwrap().damage(
+        total,
+        Death {
+            time: 1.0,
+            frame: FIRST_TICK,
+            killer,
+        },
+    );
+    runtime.health_changed().unwrap();
+    let (message, parameters) =
+        crate::combat::death_message(killer, false, None, Default::default());
+    runtime.receive_message(message, parameters).unwrap();
+    let to_mode = |runtime: &mut PlayerBodyRuntime| -> Vec<(u64, Variables)> {
+        runtime
+            .take_messages()
+            .into_iter()
+            .filter(|message| message.target == GAME_MODE_ENTITY)
+            .map(|message| (message.message, message.parameters))
+            .collect()
+    };
+    // Its time to the mode (08BB, st41 on team 0).
+    assert_eq!(
+        to_mode(&mut runtime),
+        [(
+            0x0240_0000_0000_08bb,
+            Variables::from([(0xb7, Value::Float(3.0))])
+        )]
+    );
+    let dead = projected(&runtime, View::Owner);
+    assert_eq!(dead.entity_variable(DEAD_FLAG), Some(&Value::Bool(true)));
+    // #384 starts at the 3 s (#9575 = 06FD's seconds, no overtime, scale 1).
+    assert_eq!(dead.instance_variable(id, 384), Some(&Value::Float(3.0)));
+    for state in [0, 3, 1, 32, 33] {
+        assert!(dead.state(id, state).is_some(), "owner st{state}");
+    }
+    // The countdown is remote state 0: the others see it too.
+    assert!(projected(&runtime, View::Observer).state(id, 1).is_some());
+
+    // The count runs at 1 a second from the death's frame: 3000 ms is past
+    // after 188 frames of 16 ms (187 make 2992 ms), when it sends `0685`
+    // (`0221` the body's AI control entity, none for a player; `03D9`
+    // #22241 = 0, no respawn camera).
+    for frame in 1..188 {
+        runtime
+            .component
+            .advance_frame(FIRST_TICK + frame, &mut runtime.world)
+            .unwrap();
+        assert!(to_mode(&mut runtime).is_empty(), "frame {frame}");
+    }
+    let counting = projected(&runtime, View::Owner);
+    assert!(counting.state(id, 1).is_some());
+    runtime
+        .component
+        .advance_frame(FIRST_TICK + 188, &mut runtime.world)
+        .unwrap();
+    assert_eq!(
+        to_mode(&mut runtime),
+        [(
+            0x0240_0000_0000_0685,
+            Variables::from([(0x221, Value::Entity(0)), (0x3d9, Value::Float(0.0))])
+        )]
+    );
+    let done = projected(&runtime, View::Owner);
+    assert!(done.state(id, 1).is_none() && done.state(id, 32).is_none());
+    assert_eq!(done.instance_variable(id, 384), Some(&Value::Float(0.0)));
+}

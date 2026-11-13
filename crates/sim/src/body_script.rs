@@ -33,7 +33,7 @@ use orpheus_physics::{
 };
 use orpheus_script::{
     codecs::CodecTable,
-    expr::to_float,
+    expr::{team_from_filter, to_float},
     graph::GraphStore,
     player::PlayerWorld,
     snapshot::{SnapshotEncoder, View},
@@ -61,6 +61,11 @@ const DEAD_FLAG: u32 = orpheus_script::bot::DEAD_FLAG;
 const HUD_HEALTH: u32 = 1732;
 const HUD_MAX_HEALTH: u32 = 1737;
 
+/// The mode graph's message that tells a body its respawn time (`06FD.025`),
+/// and its seconds parameter (`00B7`).
+const RESPAWN_MESSAGE: u64 = 0x0240_0000_0000_06fd;
+const RESPAWN_SECONDS: u32 = 0x00b7;
+
 #[derive(Clone, Copy)]
 pub struct OwnerBodySpawn {
     pub controller: u32,
@@ -70,6 +75,35 @@ pub struct OwnerBodySpawn {
     pub frame: u32,
     pub pose: Movement,
     pub quanta: u32,
+}
+
+/// What the game mode adds to each player body: its team's body script
+/// and the respawn time the mode graph tells it.
+///
+/// Retail: each team of a mode (`0C5` `m_teams`) names a graph every body
+/// of the team runs, `m_bodyScript` (`0C8E` for the PvP modes and the
+/// Practice Range `005A`). The mode graph (`13C0`, `0F4A`, `0EC2`) sends
+/// every player body `06FD.025` with the respawn seconds (`00B7`) from a
+/// SendGameMessage state (`STU_38EE1100`, `13C0` st15) that runs the whole
+/// match. `0C8E` waits for that message (st2) before it watches the dead
+/// flag #478 (st0), and on death counts the respawn time down in #384
+/// (ChaseVar st1) with the HUD stacks #6034 (seconds) and #6036 (share
+/// left). See `D:/Work/Coding/refs/reports/DeathCam.md`.
+///
+/// The server's mode graph can't send to player bodies
+/// (`orpheus_script::mode`: its targets `STU_1D719351` are a gap), so the
+/// body takes `06FD` from the mode as it starts. Assumptions: the mode body
+/// script is the body's last root instance, after the hero's weapons (the
+/// instance order retail uses is not known); `06FD` comes on the body's
+/// first frame, with `00B7` alone (`13C0` sends only that; `0F4A`'s other
+/// parameters are left out).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModeBody {
+    /// `m_bodyScript` by team (`TeamIndex`, as the body's filter bits give
+    /// it).
+    pub scripts: BTreeMap<i64, u32>,
+    /// The seconds of the mode graph's `06FD.025`, when it sends one.
+    pub respawn_seconds: Option<i64>,
 }
 
 pub struct PlayerBodyFactory {
@@ -86,6 +120,7 @@ pub struct PlayerBodyFactory {
     unknowns: Unknowns,
     /// How fast the hero's ultimate charges.
     ult_rates: ChargeRates,
+    mode_body: ModeBody,
 }
 
 impl PlayerBodyFactory {
@@ -100,6 +135,7 @@ impl PlayerBodyFactory {
         combat: BodyCombat,
         unknowns: Unknowns,
         ult_rates: Option<ChargeRates>,
+        mode_body: ModeBody,
         probe: OwnerBodySpawn,
     ) -> io::Result<Self> {
         let body = graphs
@@ -115,7 +151,7 @@ impl PlayerBodyFactory {
         let target_tags = body.target_tags.clone();
         let ult_rates =
             ult_rates.unwrap_or_else(|| ChargeRates::of(graphs.rulesets(), hero.guid, mode));
-        let factory = Self {
+        let mut factory = Self {
             graphs,
             codecs,
             mode,
@@ -128,8 +164,30 @@ impl PlayerBodyFactory {
             combat,
             unknowns,
             ult_rates,
+            mode_body,
         };
-        let runtime = factory.start(probe)?;
+        // A mode body script the server can't run (refused content in a
+        // debug build) leaves the body without it, as a mode graph that
+        // doesn't run whole leaves the mode entity to the match flow
+        // (`crate::mode_script`).
+        if let Err(error) = factory.probe(probe) {
+            if factory.mode_body.scripts.is_empty() {
+                return Err(error);
+            }
+            eprintln!(
+                "mode {mode:016X}: {} runs without the mode body scripts {:04X?} ({error})",
+                hero.name,
+                factory.mode_body.scripts.values().collect::<Vec<_>>()
+            );
+            factory.mode_body = ModeBody::default();
+            factory.probe(probe)?;
+        }
+        Ok(factory)
+    }
+
+    /// Start a body and project its first owner frame, as the server would.
+    fn probe(&self, spawn: OwnerBodySpawn) -> io::Result<()> {
+        let runtime = self.start(spawn)?;
         let encoder = runtime.encoder();
         let snapshot = runtime
             .snapshot()
@@ -138,7 +196,7 @@ impl PlayerBodyFactory {
             .project(snapshot, View::Owner)
             .map_err(unsupported)?;
         encoder.full(&projected).map_err(unsupported)?;
-        Ok(factory)
+        Ok(())
     }
 
     pub fn start(&self, spawn: OwnerBodySpawn) -> io::Result<PlayerBodyRuntime> {
@@ -163,11 +221,22 @@ impl PlayerBodyFactory {
         world.target_tags = self.target_tags.clone();
         world.controller_on_fire = self.controller_on_fire;
         world.unknowns = self.unknowns;
+        let mut roots = self.roots.clone();
+        let mode_script = self
+            .mode_body
+            .scripts
+            .get(&team_from_filter(spawn.body_filter))
+            .copied();
+        if let Some(graph) = mode_script {
+            let id = roots.last().map_or(Some(1), |root| root.id.checked_add(1));
+            let id = id.ok_or_else(|| unsupported("no instance id left for the mode body"))?;
+            roots.push(Root::new(id, graph));
+        }
         let mut component = Component::start(
             Arc::clone(&self.graphs),
             spawn.entity,
             self.variables.clone(),
-            self.roots.clone(),
+            roots,
             spawn.frame,
             &mut world,
             MAX_INIT_WORK,
@@ -176,6 +245,15 @@ impl PlayerBodyFactory {
         component
             .advance_frame(spawn.frame, &mut world)
             .map_err(unsupported)?;
+        if let (Some(_), Some(seconds)) = (mode_script, self.mode_body.respawn_seconds) {
+            component
+                .receive_message(
+                    RESPAWN_MESSAGE,
+                    Variables::from([(RESPAWN_SECONDS, Value::Integer(seconds))]),
+                    &mut world,
+                )
+                .map_err(unsupported)?;
+        }
         world.vitals.clear_changed();
         let modifiers = component
             .movement_modifiers(&mut world)
@@ -740,6 +818,7 @@ pub fn fixture_body_factory() -> (PlayerBodyFactory, OwnerBodySpawn) {
         },
         Unknowns::for_build(),
         None,
+        ModeBody::default(),
         spawn,
     )
     .unwrap();

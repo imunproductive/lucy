@@ -229,7 +229,7 @@ mod tests {
         }
         assert!(!script.complete());
         let gaps = script.gaps();
-        for class in ["STU_6A926B21", "STU_1D719351", "STU_9B213168"] {
+        for class in ["STU_6A926B21", "STU_1D719351"] {
             assert!(
                 gaps.keys()
                     .any(|(graph, gap)| *graph == 0x0f4a && gap == class),
