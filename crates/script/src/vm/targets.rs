@@ -28,13 +28,25 @@
 //!     (the heals: the Biotic Field `0258`, Lúcio `0266`, Brigitte `12D8`,
 //!     Baptiste `19A5`), 2 = enemies (Pharah `002B`, Reaper `0044`, Hanzo
 //!     `0101`, Cassidy `022F`, Widowmaker `0067`), 0 = either. Fairly sure.
-//!   - `m_89831602` bit 4: leaves the searching body out. Every search for
-//!     an ally other than oneself has it (Mercy's beam `006E`, Zarya's
+//!   - `m_89831602`, bits that leave out bodies by their relation to the
+//!     searching body. Bit 4 leaves the searching body out: every search
+//!     for an ally other than oneself has it (Mercy's beam `006E`, Zarya's
 //!     barrier `025C`, Zenyatta's orb `02F3`, Ana `0B9E`, Brigitte's pack
 //!     `0EDD`), the heals that also heal their caster don't (`0258`,
 //!     `0266`, `19A5`, `12D8`). So `0257` st6 counts the allies near the
-//!     caster, not the caster. Fairly sure. Bits 1 (quick melee, Reinhardt's
-//!     charge) and 2 (Brigitte `12BE`, Moira `1007`) are open.
+//!     caster, not the caster. Fairly sure. Bit 1 leaves out the searching
+//!     body and its allies, so only its enemies are found (anyone else in
+//!     a free-for-all): it is in the hits that relation 0 leaves to it
+//!     (quick melee `0043` st5, Reinhardt's charge, Death Blossom `0044`,
+//!     Cassidy's Deadeye `022F` st17), and quick melee shows it must leave
+//!     the swinger out: its search's sphere, 1.5 m ahead of the eye, reaches
+//!     his own capsule (more so as he looks down), yet its graph takes a
+//!     non-empty `#375` for a hit (the search's end counts a stat when
+//!     `#375` is set, node 56 to 55; `STU_2F4E2E3F` st16 on `#375` rumbles
+//!     the pad), which a swing at nothing isn't. Strong guess; the bit's
+//!     name isn't known. Bit 2
+//!     (Brigitte `12BE` and `0D00`, with 4 in Moira's `1007` st17: allies
+//!     only, guess) is open.
 //!   - `m_84065FD1`: which kinds of entity: 1 in the heals and the ally
 //!     counts, 64 in the melee and charge hits, `0x3FFFFFFF` all. Players'
 //!     bodies and bots are taken to be of kinds 1 and 64. Fairly sure.
@@ -49,7 +61,7 @@
 //! The server runs the forms whose set fields are only these (an entity
 //! sphere with a vertical or forward offset, or a world point; a whole
 //! sphere; a filter of kinds 1 or 64 or all, exclusion bit 16 (and the
-//! open bit 4), a team relation and bit 4 (and the open bit 1)): `0257`
+//! open bit 4), a team relation and bits 4 and 1): `0257`
 //! st6 and Reinhardt's `0095` st18, both counting allies within 10 m for a
 //! criteria, and quick melee's `0043` st5, whose line of sight
 //! (`m_D59188D5`, `m_3D667CE3`) isn't tested and whose output `m_24A4AB8A`
@@ -129,9 +141,9 @@ const EXCLUDE_DEAD: u64 = 16;
 const EXCLUDE_OPEN: u64 = 4;
 /// `m_89831602`: the searching body is left out.
 const EXCLUDE_SELF: u64 = 4;
-/// `m_89831602` bit 1, in the hits' searches (quick melee, Reinhardt's
-/// charge): open, not read.
-const FLAG_OPEN: u64 = 1;
+/// `m_89831602`: the searching body and its allies are left out, so only
+/// its enemies are found (quick melee `0043` st5).
+const EXCLUDE_ALLIES: u64 = 1;
 
 /// Fields set in quick melee's search (`0043` st5) that the server runs
 /// without: the line of sight from `m_D59188D5` (the eye, `STU_21A13145`)
@@ -224,9 +236,6 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let filter = field(&node.fields, "m_filter");
         if number(filter, "m_4EA686DB") & EXCLUDE_OPEN != 0 {
             self.assume(site, &format!("{CLASS} m_filter.m_4EA686DB 4"), "not read");
-        }
-        if number(filter, "m_89831602") & FLAG_OPEN != 0 {
-            self.assume(site, &format!("{CLASS} m_filter.m_89831602 1"), "not read");
         }
         let now = self.machine.now_ms;
         let state = self.state_mut(key).expect("active TrackTargets");
@@ -342,13 +351,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             return Err(Gap::Filter("m_4EA686DB"));
         }
         let flags = number("m_89831602");
-        if flags & !(EXCLUDE_SELF | FLAG_OPEN) != 0 {
+        if flags & !(EXCLUDE_SELF | EXCLUDE_ALLIES) != 0 {
             return Err(Gap::Filter("m_89831602"));
         }
-        let relation = match number("m_66747E7D") {
-            0 => Relation::Any,
-            1 => Relation::Allies,
-            2 => Relation::Enemies,
+        let relation = match (number("m_66747E7D"), flags & EXCLUDE_ALLIES != 0) {
+            (0, false) => Relation::Any,
+            (1, false) => Relation::Allies,
+            (0 | 2, _) => Relation::Enemies,
             _ => return Err(Gap::Filter("m_66747E7D")),
         };
         let entity = match field(fields, "m_8DCA77B6") {

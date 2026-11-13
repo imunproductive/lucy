@@ -629,6 +629,17 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                     // Biotic Field canister leaves its field at the
                     // shooter's feet whatever its arc does.
                     let spawn = spawned_definitions(node).first().copied();
+                    // A networked volley the client doesn't shoot itself,
+                    // which flies for its damage: the server shows its one
+                    // projectile to every client, its shooter's included
+                    // (`projectiles::ServerCopies`; beyond Python).
+                    let server_shown = !leased
+                        && node.is_networked()
+                        && !local_prediction(node)
+                        && ballistics.definition.is_some()
+                        && spawn.is_none()
+                        && rings.is_none()
+                        && projectiles == 1;
                     let field = self
                         .combat
                         .field
@@ -643,9 +654,9 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                             StateKind::WeaponVolley { volleys, .. } => volleys,
                             _ => 0,
                         });
-                    // A leased volley leaves along the aim, as the other
-                    // clients see it; another along the spread.
-                    let direction = if leased {
+                    // A leased or server-shown volley leaves along the aim,
+                    // as the clients see it; another along the spread.
+                    let direction = if leased || server_shown {
                         aim
                     } else {
                         log_spread();
@@ -673,6 +684,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                         origin,
                         direction,
                         leased,
+                        server_shown,
                         spawn,
                         field,
                         feet: [x, y, z],

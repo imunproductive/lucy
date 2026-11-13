@@ -1731,6 +1731,68 @@ mod tests {
         encoder_full(&graphs, &codecs, &bot);
     }
 
+    /// Biotic Grenade's aura (`053:0267`) on the pack's Training Bot: its
+    /// graph `0C71` plays the enemy aura `0C72` on a bot of the other team
+    /// than the thrower, whose ModifyHealth (st0) deals 60 from the thrower
+    /// at once, and the ally aura `0B99` on a bot of his team, which heals
+    /// 100.
+    #[test]
+    #[ignore = "requires the derived game data's bot graph bundle"]
+    fn the_biotic_grenade_aura_damages_an_enemy_bot_and_heals_an_ally() {
+        const BIOTIC_GRENADE: u64 = 0x04a0_0000_0000_0267;
+        const ANA: u32 = 0xa000_0101;
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let graphs =
+            Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
+        let changes = |thrower_team: u8| {
+            let mut bot =
+                BotBody::start(Arc::clone(&graphs), spawn(None), Unknowns::Tolerate).unwrap();
+            let body = |entity, team| TargetCandidate {
+                entity,
+                team: Some(team),
+                dead: false,
+                controller: None,
+                feet: [0.0; 3],
+                height: 1.8,
+                radius: 0.4,
+            };
+            bot.set_target_candidates(&[body(ENTITY, 1), body(ANA, thrower_team)]);
+            let landed = 130;
+            assert!(bot.apply_aura(landed, BIOTIC_GRENADE, ANA, &[]).unwrap());
+            let mut changes: Vec<_> = bot
+                .take_health_changes()
+                .into_iter()
+                .map(|change| (landed, change))
+                .collect();
+            for frame in landed..landed + 300 {
+                if bot.due_by(frame) {
+                    bot.advance_live(frame, None).unwrap();
+                }
+                changes.extend(
+                    bot.take_health_changes()
+                        .into_iter()
+                        .map(|change| (frame, change)),
+                );
+            }
+            let snapshot = bot.snapshot().unwrap();
+            assert!(snapshot.initialization_complete());
+            changes
+                .into_iter()
+                .map(|(frame, change)| {
+                    (
+                        frame,
+                        change.target,
+                        change.instigator,
+                        change.amount,
+                        change.heal,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(changes(0), [(130, ENTITY, ANA, 60.0, false)]);
+        assert_eq!(changes(1), [(130, ENTITY, ANA, 100.0, true)]);
+    }
+
     fn encoder_full(graphs: &GraphStore, codecs: &CodecTable, bot: &BotBody) {
         let encoder = bot.encoder(graphs, codecs);
         let projected = encoder

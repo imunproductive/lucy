@@ -186,14 +186,17 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         if !(amount.is_finite() && amount > 0.0) {
             return;
         }
+        // An entity, or the first of an array: an aura's graph takes its
+        // instigator as a PlayScript parameter, an array (Biotic Grenade's
+        // `0C72` and `0B99` st0 read `#40`, which `0C71` passes). Read as
+        // anything else it fell back to the body, so the enemy aura's 60
+        // came from the bot itself, which then took it as an ally's heal
+        // of nothing.
         let instigator = match field(change, "m_instigator") {
-            Json::Null => Some(self.machine.snapshot.entity),
+            Json::Null => None,
             config => self
                 .evaluate(id, node, config, None)
-                .and_then(|value| match value {
-                    Value::Entity(entity) => Some(entity),
-                    _ => None,
-                }),
+                .and_then(|value| expr::to_entity(&value)),
         }
         .unwrap_or(self.machine.snapshot.entity);
         let loadout = match self.evaluate_set(id, node, field(change, "m_loadout")) {

@@ -977,6 +977,7 @@ fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShot
                     direction,
                     spawn: None,
                     leased: false,
+                    server_shown: false,
                     field: None,
                     feet: bot.position,
                     volleys,

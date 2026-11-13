@@ -513,7 +513,7 @@ pub(crate) fn contains(container: &Value, value: &Value) -> bool {
 
 /// The entity in a value: an entity, or the first member of an array
 /// (F64C20, `to_entity` in `ow174/game/script/expr.py`); none otherwise.
-fn to_entity(value: &Value) -> Option<u32> {
+pub(crate) fn to_entity(value: &Value) -> Option<u32> {
     match first_scalar(value) {
         Some(Value::Entity(id)) => Some(*id),
         _ => None,

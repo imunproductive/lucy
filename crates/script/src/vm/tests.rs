@@ -4356,6 +4356,7 @@ const ALLY: u32 = 0xa000_0201;
 const FAR_ALLY: u32 = 0xa000_0202;
 const DEAD_ALLY: u32 = 0xa000_0203;
 const ENEMY: u32 = 0xa000_0301;
+const SECOND_ENEMY: u32 = 0xa000_0302;
 
 fn body(entity: u32, team: u8, feet: [f64; 3]) -> TargetCandidate {
     TargetCandidate {
@@ -4550,10 +4551,10 @@ fn a_target_search_follows_bodies_in_and_out_of_its_sphere() {
     );
 }
 
-/// The team relation and the searcher bit as authored: enemies only
-/// (`m_66747E7D` 2), or anyone (0) with the searcher himself when bit 4
-/// of `m_89831602` is clear. Without teams (a free-for-all) only the
-/// searcher is his own ally.
+/// The team relation and the searcher bits as authored: enemies only
+/// (`m_66747E7D` 2, or bit 1 of `m_89831602`), or anyone (0) with the
+/// searcher himself when bit 4 of `m_89831602` is clear. Without teams (a
+/// free-for-all) only the searcher is his own ally.
 #[test]
 fn a_target_search_filters_by_team_and_the_searcher_as_authored() {
     let run = |relation: u64, flags: u64, teams: bool| {
@@ -4591,8 +4592,11 @@ fn a_target_search_filters_by_team_and_the_searcher_as_authored() {
     assert_eq!(run(1, 0, true), [SEARCHER, ALLY]);
     assert_eq!(run(0, 0, true), [SEARCHER, ALLY, ENEMY]);
     assert_eq!(run(0, 4, true), [ALLY, ENEMY]);
+    assert_eq!(run(0, 1, true), [ENEMY]);
+    assert_eq!(run(0, 5, true), [ENEMY]);
     assert_eq!(run(1, 0, false), [SEARCHER]);
     assert_eq!(run(2, 0, false), [ALLY, ENEMY]);
+    assert_eq!(run(0, 1, false), [ALLY, ENEMY]);
 }
 
 /// A form with a part the server doesn't model (here the scoring
@@ -4689,14 +4693,15 @@ impl World for Healer {
 }
 
 /// Quick melee's form (`0043` st5 starting st4): a 1 m search 1.5 m ahead
-/// of the owner, anyone (`m_66747E7D` 0) of kind 64 but the owner's own
-/// body and the dead, the found to #375; a ModifyHealth of 30 to #375 with
-/// a tag and a loadout, a blow (`m_7B2B3F5C` 0) of damage (`m_93CDFD2F`
-/// 1). The search's line of sight and its open filter bits aren't read.
+/// of the owner's eye (1.6 m over his feet), his enemies (`m_89831602` 1)
+/// of kind 64 but the dead, the found to #375; a ModifyHealth of 30 to
+/// #375 with a tag and a loadout, a blow (`m_7B2B3F5C` 0) of damage
+/// (`m_93CDFD2F` 1). The search's line of sight and its open exclusion bit
+/// aren't read.
 fn melee_fixture(rate: bool) -> GraphStore {
     let search = json!({
         "m_8DCA77B6":{"$":"STU_B5A0CAF0"},
-        "m_05BE62DD":{"$":"STUConfigVarVec3","m_value":{"X":0.0,"Y":0.0,"Z":1.5}},
+        "m_05BE62DD":{"$":"STUConfigVarVec3","m_value":{"X":0.0,"Y":1.6,"Z":1.5}},
         "m_radius":{"$":"STUConfigVarInt","m_value":1},
         "m_D59188D5":{"$":"STU_21A13145","m_entity":{"$":"STU_B5A0CAF0"}},
         "m_filter":{"$":"STUConfigVarFilter","m_84065FD1":64,"m_4EA686DB":20,
@@ -4750,7 +4755,7 @@ fn a_modify_health_blow_strikes_each_found_body_once() {
             // 1.5 m ahead: within the sphere.
             body(ENEMY, 1, [1.5, 0.0, 0.0]),
             // 1.5 m behind: out of it.
-            body(ALLY, 0, [-1.5, 0.0, 0.0]),
+            body(SECOND_ENEMY, 1, [-1.5, 0.0, 0.0]),
         ],
         changes: Vec::new(),
     };
@@ -4773,7 +4778,7 @@ fn a_modify_health_blow_strikes_each_found_body_once() {
     assert_eq!(struck(&mut world), [(ENEMY, 30.0, false, 0)]);
     component.advance_frame(1, &mut world).unwrap();
     assert_eq!(struck(&mut world), []);
-    // The ally comes round in front: struck once, at frame 2.
+    // The second enemy comes round in front: struck once, at frame 2.
     world.bodies[2].feet = [1.2, 0.0, 0.4];
     component.advance_frame(2, &mut world).unwrap();
     let changes = std::mem::take(&mut world.changes);
@@ -4786,7 +4791,7 @@ fn a_modify_health_blow_strikes_each_found_body_once() {
             change.frame,
             change.loadout
         ),
-        (ALLY, SEARCHER, 2, Some(0x0b90_0000_0000_02f5))
+        (SECOND_ENEMY, SEARCHER, 2, Some(0x0b90_0000_0000_02f5))
     );
     assert_eq!(
         change.tags.iter().collect::<Vec<_>>(),
@@ -4805,6 +4810,53 @@ fn a_modify_health_blow_strikes_each_found_body_once() {
         "STUStatescriptStateTrackTargets m_D59188D5",
         "no line-of-sight test"
     )));
+}
+
+/// Quick melee strikes neither the swinger nor his allies: looking down,
+/// its sphere (1.5 m along the aim from his eye) reaches his own capsule
+/// and an ally's beside him, yet a swing at nothing changes no health,
+/// and a swing at an enemy who walks in strikes the enemy alone.
+#[test]
+fn quick_melee_strikes_neither_the_swinger_nor_his_allies() {
+    let graphs = Arc::new(melee_fixture(false));
+    let mut world = Healer {
+        // Facing +x, an eighth of a turn down: the sphere's centre is
+        // 1.06 m ahead of his feet and 0.54 m up, 0.66 m from his capsule.
+        facing: Some([16384, 8192]),
+        bodies: vec![
+            body(SEARCHER, 0, [0.0; 3]),
+            body(ALLY, 0, [1.2, 0.0, 0.6]),
+            body(ENEMY, 1, [-3.0, 0.0, 0.0]),
+        ],
+        changes: Vec::new(),
+    };
+    let mut component = Component::start(
+        graphs,
+        SEARCHER,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        0,
+        &mut world,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    component.advance_frame(1, &mut world).unwrap();
+    assert!(world.changes.is_empty());
+    let snapshot = component.snapshot().unwrap();
+    assert!(snapshot.initialization_complete());
+    assert_eq!(
+        snapshot.instances[&1].variables.get(&375),
+        Some(&Value::Array(Vec::new()))
+    );
+
+    world.bodies[2].feet = [1.5, 0.0, 0.0];
+    component.advance_frame(2, &mut world).unwrap();
+    let struck: Vec<_> = world
+        .changes
+        .iter()
+        .map(|change| (change.target, change.instigator, change.heal))
+        .collect();
+    assert_eq!(struck, [(ENEMY, SEARCHER, false)]);
 }
 
 /// A rate (`m_7B2B3F5C` 1) gives every body in its targets its amount each

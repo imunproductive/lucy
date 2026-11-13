@@ -27,7 +27,7 @@ use std::{collections::HashSet, io, sync::Arc};
 use indexmap::IndexMap;
 use serde_json::Value as Json;
 
-use crate::{projectile_wire, replication::BodyId};
+use crate::{bot_script::SeenDelivery, projectile_wire, replication::BodyId};
 use orpheus_core::{bits::BitWriter, tick::MAX_LEASE_FRAME};
 use orpheus_physics::static_ray::Vec3;
 use orpheus_script::{
@@ -238,6 +238,22 @@ fn projectile_definitions(value: &Json, out: &mut Vec<u64>) {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ProjectileToken(u64);
 
+/// The bit of a server projectile's token ([`ProjectileToken::server`]):
+/// an owner's leased shots count up from 1 and never reach it.
+const SERVER_TOKEN: u64 = 1 << 63;
+
+impl ProjectileToken {
+    /// The token of the body's `serial`th server projectile (a volley its
+    /// owner's client doesn't shoot itself, [`ServerCopies`]).
+    pub(crate) fn server(serial: u64) -> Self {
+        Self(SERVER_TOKEN | serial)
+    }
+
+    pub(crate) fn is_server(self) -> bool {
+        self.0 & SERVER_TOKEN != 0
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct OwnerReport {
     frame: u32,
@@ -341,6 +357,14 @@ pub enum ProjectileEvent {
     Ended {
         token: ProjectileToken,
         explode: bool,
+    },
+    /// A server projectile's flight ended ([`ServerCopies`]): the copies
+    /// on every client, its shooter's included, finish, and a copy that
+    /// launched plays the explosion where the server's flight exploded
+    /// (none: it ran out in the air or failed).
+    ServerEnded {
+        token: ProjectileToken,
+        exploded: Option<[f32; 3]>,
     },
     /// The field heals this tick (`heal_area`): the sphere and the amount.
     FieldHeal {
@@ -1309,7 +1333,8 @@ impl FieldCopies {
 }
 
 /// A player's projectile the other clients see (projectiles.py `fired`
-/// without a spawn, for `_show_others`).
+/// without a spawn, for `_show_others`); a server projectile
+/// ([`ServerCopies`]) his own client sees too.
 #[derive(Clone, Debug)]
 pub struct FiredProjectile {
     pub(crate) body: BodyId,
@@ -1385,6 +1410,10 @@ pub struct ObservedProjectile {
     launch_arrived: bool,
     finished: bool,
     explode: bool,
+    /// Where the release plays an explosion the client's copy hasn't had
+    /// yet: out of sight, or where a server projectile's flight exploded
+    /// ([`Self::finish_at`]).
+    release_at: [f32; 3],
     /// A bot shot's volley state as its firing frame held it, kept in the
     /// bot's frames until the launch arrives (`activation`, server.py
     /// `retain_bot_volley`).
@@ -1444,6 +1473,7 @@ impl ObservedProjectile {
             launch_arrived: false,
             finished: false,
             explode: false,
+            release_at: projectile_wire::HIDDEN_POSITION,
             held: None,
         })
     }
@@ -1539,6 +1569,19 @@ impl ObservedProjectile {
         self.deadline = self.deadline.min(tick.saturating_add(grace));
     }
 
+    /// A server projectile's flight ended ([`ServerCopies`]): it exploded
+    /// at `exploded`, or ran out. Its copy launched along the server's
+    /// flight, so a release whose explosion the copy hasn't had yet (it
+    /// launched a round trip after the server's flight began) plays it
+    /// there, not out of sight. Assumption: the client's own impact, when
+    /// it had one, plays at its own point as for the other copies.
+    pub fn finish_at(&mut self, tick: u32, exploded: Option<[f32; 3]>) {
+        self.finish(tick, exploded.is_some(), false);
+        if let Some(point) = exploded {
+            self.release_at = point;
+        }
+    }
+
     /// `_ObservedProjectile.advance`. Ending (the source stream changed, the
     /// deadline, or finished after the launch arrived) yields
     /// [CancelLaunch if launched but unacknowledged], [Destroy unless the
@@ -1560,12 +1603,8 @@ impl ObservedProjectile {
             }
             if !self.pending_create {
                 let ch2 = (source_live && self.explode && launched).then(|| {
-                    projectile_wire::release(
-                        tick.wrapping_add(RELEASE_AHEAD),
-                        1,
-                        projectile_wire::HIDDEN_POSITION,
-                    )
-                    .expect("a one-impact release fits its fields")
+                    projectile_wire::release(tick.wrapping_add(RELEASE_AHEAD), 1, self.release_at)
+                        .expect("a one-impact release fits its fields")
                 });
                 out.push(ObservedOut::Destroy(EntityUpdate {
                     entity: self.entity,
@@ -1611,6 +1650,174 @@ pub fn volley_matches(
         _ => return false,
     };
     counter == i64::from(activation) && seen & 0xff == i64::from(volleys)
+}
+
+// --- server projectiles ------------------------------------------------------
+
+/// A player's server projectiles on his own client. A networked projectile
+/// volley his client doesn't shoot itself (`m_45271E8C` 0: Biotic Grenade
+/// `0B97` st0, entity `1426.003`) has no lease id, so nothing shows it to
+/// him unless the server does; it does so as it shows the other clients'
+/// projectiles (`_show_others`): an entity of the projectile's definition
+/// under the map, numbered from the room's `next_seen`, then the shot
+/// record in his body's channel 2 naming it once the create arrived and his
+/// acknowledged owner frame holds the volley, then its destroy with the
+/// release where the server's flight exploded. Beyond Python, which flew
+/// such a volley for its damage alone. Assumption: the owner's client
+/// starts a server-made projectile from a shot record on its own body as
+/// the other clients do (the release reader and the shot record reader are
+/// the same; IDA-questions.md, HealthFix).
+#[derive(Debug, Default)]
+pub(crate) struct ServerCopies {
+    serial: u64,
+    copies: Vec<ServerCopy>,
+    /// The destroys not yet acknowledged, by entity, with their copy's
+    /// serial.
+    destroys: std::collections::HashMap<u32, u64>,
+}
+
+#[derive(Debug)]
+struct ServerCopy {
+    serial: u64,
+    body: BodyId,
+    token: ProjectileToken,
+    projectile: ObservedProjectile,
+}
+
+impl ServerCopies {
+    /// The shooter's own copy of his server projectile `fired`; its create
+    /// goes at once when his body's stream has a baseline.
+    pub(crate) fn show(
+        &mut self,
+        fired: &FiredProjectile,
+        has_base: bool,
+        tick: u32,
+        next_id: impl FnOnce() -> u32,
+    ) -> Vec<(EntityUpdate, SeenDelivery)> {
+        let deadline = tick
+            .saturating_add(fired.bound)
+            .saturating_add(DELIVERY_GRACE);
+        let Ok(mut projectile) = ObservedProjectile::new(
+            fired.body.entity,
+            next_id(),
+            fired.definition,
+            &fired.shot,
+            fired.volleys,
+            fired.origin.map(|value| value as f32),
+            fired.direction,
+            deadline,
+        ) else {
+            return Vec::new();
+        };
+        self.serial += 1;
+        let serial = self.serial;
+        let create = projectile.open(has_base);
+        self.copies.push(ServerCopy {
+            serial,
+            body: fired.body,
+            token: fired.token,
+            projectile,
+        });
+        create
+            .into_iter()
+            .filter_map(|out| match out {
+                ObservedOut::Create(update) => Some((update, SeenDelivery::Create { serial })),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The server's flight of `body`'s shot `token` ended at `tick`.
+    pub(crate) fn finish(
+        &mut self,
+        body: BodyId,
+        token: ProjectileToken,
+        tick: u32,
+        exploded: Option<[f32; 3]>,
+    ) {
+        for copy in self
+            .copies
+            .iter_mut()
+            .filter(|copy| copy.body == body && copy.token == token)
+        {
+            copy.projectile.finish_at(tick, exploded);
+        }
+    }
+
+    /// `_ObservedProjectile.advance` for each copy, its source the body
+    /// whose script runs now with its acknowledged owner frame: a copy of
+    /// another (an earlier life's) body ends.
+    pub(crate) fn advance(
+        &mut self,
+        tick: u32,
+        source: Option<(BodyId, Option<&ProjectedSnapshot>)>,
+    ) -> Vec<(EntityUpdate, SeenDelivery)> {
+        let mut records = Vec::new();
+        let destroys = &mut self.destroys;
+        self.copies.retain_mut(|copy| {
+            let base = source
+                .filter(|(body, _)| *body == copy.body)
+                .map(|(_, base)| base);
+            let volley = base
+                .flatten()
+                .is_some_and(|base| copy.projectile.volley_arrived(base));
+            let serial = copy.serial;
+            let mut keep = true;
+            for out in
+                copy.projectile
+                    .advance(tick, base.is_some(), base.flatten().is_some(), volley)
+            {
+                match out {
+                    ObservedOut::Create(update) => {
+                        records.push((update, SeenDelivery::Create { serial }));
+                    }
+                    ObservedOut::Launch(update) => {
+                        records.push((update, SeenDelivery::Launch { serial }));
+                    }
+                    // Dropping the copy withdraws its queued launch.
+                    ObservedOut::CancelLaunch => {}
+                    ObservedOut::Destroy(update) => {
+                        destroys.insert(update.entity, serial);
+                        records.push((update, SeenDelivery::Destroy { serial }));
+                    }
+                    ObservedOut::Done => keep = false,
+                }
+            }
+            keep
+        });
+        records
+    }
+
+    pub(crate) fn current(&self, delivery: SeenDelivery, entity: u32) -> bool {
+        match delivery {
+            SeenDelivery::Create { serial } | SeenDelivery::Launch { serial } => {
+                self.copies.iter().any(|copy| copy.serial == serial)
+            }
+            SeenDelivery::Destroy { serial } => self.destroys.get(&entity) == Some(&serial),
+        }
+    }
+
+    /// The record's datagram arrived or was lost; true: send it again.
+    pub(crate) fn delivered(&mut self, delivery: SeenDelivery, entity: u32, arrived: bool) -> bool {
+        if !arrived {
+            return self.current(delivery, entity);
+        }
+        match delivery {
+            SeenDelivery::Create { serial } | SeenDelivery::Launch { serial } => {
+                if let Some(copy) = self.copies.iter_mut().find(|copy| copy.serial == serial) {
+                    if matches!(delivery, SeenDelivery::Create { .. }) {
+                        copy.projectile.creation_arrived();
+                    } else {
+                        copy.projectile.launch_arrived();
+                    }
+                }
+            }
+            SeenDelivery::Destroy { .. } => {
+                self.destroys.remove(&entity);
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -2217,6 +2424,40 @@ mod tests {
                 .as_bytes()
         );
         assert_eq!(out[1], ObservedOut::Done);
+    }
+
+    /// A server projectile's copy (Biotic Grenade, `ServerCopies`) plays
+    /// the explosion its client hasn't had yet where the server's flight
+    /// exploded, not out of sight; one that ran out releases nothing.
+    #[test]
+    fn a_server_projectile_copy_explodes_where_the_servers_flight_did() {
+        let landed = [4.0, 0.5, -2.25];
+        let mut seen = observed(2000);
+        assert!(seen.open(true).is_some());
+        seen.creation_arrived();
+        assert!(matches!(
+            seen.advance(1001, true, true, true).as_slice(),
+            [ObservedOut::Launch(_)]
+        ));
+        seen.launch_arrived();
+        seen.finish_at(1010, Some(landed));
+        let out = seen.advance(1010, true, true, true);
+        assert_eq!(
+            destroy(&out[0]).ch2.as_ref().unwrap().as_bytes(),
+            projectile_wire::release(1010 + RELEASE_AHEAD, 1, landed)
+                .unwrap()
+                .as_bytes()
+        );
+        assert_eq!(out[1], ObservedOut::Done);
+
+        let mut seen = observed(2000);
+        assert!(seen.open(true).is_some());
+        seen.creation_arrived();
+        seen.advance(1001, true, true, true);
+        seen.launch_arrived();
+        seen.finish_at(1010, None);
+        let out = seen.advance(1010, true, true, true);
+        assert_eq!(destroy(&out[0]).ch2, None);
     }
 
     #[test]

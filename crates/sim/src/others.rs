@@ -641,6 +641,25 @@ impl Others {
         }
     }
 
+    /// Another player's server projectile ended (projectiles.rs
+    /// `ServerCopies`): its copy plays the explosion where the server's
+    /// flight exploded (`ObservedProjectile::finish_at`).
+    pub(crate) fn finish_server_projectile(
+        &mut self,
+        body: BodyId,
+        token: ProjectileToken,
+        tick: u32,
+        exploded: Option<[f32; 3]>,
+    ) {
+        for observed in self
+            .observed
+            .iter_mut()
+            .filter(|observed| observed.body == body && observed.token == token)
+        {
+            observed.projectile.finish_at(tick, exploded);
+        }
+    }
+
     /// `_ObservedProjectile.advance` for this client's projectiles, in the
     /// order they were fired: the create once the shooter's stream has a
     /// baseline, the launch once the create arrived and the acknowledged

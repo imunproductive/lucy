@@ -1634,6 +1634,107 @@ mod tests {
         assert_eq!(count(&[caster, enemy, far, ally]), Some(Value::Integer(1)));
     }
 
+    /// Soldier: 76's quick melee (`0043`) as the server runs it, looking
+    /// down an eighth of a turn: its search's sphere, 1.5 m along the aim
+    /// from his eye, reaches his own capsule and an ally's beside him, yet
+    /// a swing at nothing changes no health; a swing with an enemy bot in
+    /// front strikes the bot alone, once, for 30 from the swinger.
+    #[test]
+    #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
+    fn quick_melee_strikes_the_enemy_in_front_never_the_swinger() {
+        use crate::{combat::PosedShot, replication::BodyStep};
+        use orpheus_script::vm::TargetCandidate;
+        use orpheus_wire::commands::Command;
+
+        const MELEE: u32 = 0x800;
+        /// An eighth of a turn down.
+        const PITCH: i32 = 8192;
+        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let scene = assets.prepare(GameMap::practice_range()).unwrap();
+        let hero = scene.heroes().get(SOLDIER).unwrap();
+        let mover = scene
+            .player_spawn_mover(hero.body, 0, 0, SpawnChoice::First)
+            .unwrap();
+        let spawn = OwnerBodySpawn {
+            slot: 0,
+            controller: 0xa000_0100,
+            entity: 0xa000_0101,
+            body_filter: team_bit(0).unwrap(),
+            frame: FIRST_TICK,
+            pose: mover.pose(),
+            quanta: RETAIL_QUANTA,
+        };
+        let [x, y, z] = spawn.pose.position;
+        // Yaw 0 looks along +z.
+        let body = |entity, team, [dx, dz]: [f64; 2]| TargetCandidate {
+            entity,
+            team: Some(team),
+            dead: false,
+            controller: None,
+            feet: [x + dx, y, z + dz],
+            height: 1.8,
+            radius: 0.4,
+        };
+        let swing = |candidates: &[TargetCandidate]| {
+            let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
+            runtime.set_target_candidates(candidates);
+            let buttons = std::iter::repeat_n(0, 30)
+                .chain(std::iter::repeat_n(MELEE, 2))
+                .chain(std::iter::repeat_n(0, 90));
+            let mut struck = Vec::new();
+            for (frame, buttons) in (spawn.frame + 1..).zip(buttons) {
+                let command = Command {
+                    frame,
+                    buttons,
+                    pitch: PITCH,
+                    ..Command::default()
+                };
+                runtime.advance(command, &mover, BodyStep::Posed).unwrap();
+                for shot in runtime.take_shots(Some(command), &mover) {
+                    if let PosedShot::Health(change) = shot {
+                        struck.push((change.target, change.instigator, change.amount, change.heal));
+                    }
+                }
+                let snapshot = runtime.snapshot().unwrap();
+                assert!(
+                    snapshot.diagnostics.is_empty(),
+                    "{:?}",
+                    snapshot.diagnostics
+                );
+            }
+            let snapshot = runtime.snapshot().unwrap();
+            let melee = snapshot
+                .instances
+                .values()
+                .find(|instance| instance.graph == 0x0043)
+                .unwrap();
+            assert_eq!(melee.states[&5].activation, 1, "the swing searched once");
+            struck
+        };
+        // Bodies on all four sides, so one stands where he looks whichever
+        // way the spawn turns him.
+        let around = |first: u32, team, reach: f64| {
+            [[0.0, reach], [0.0, -reach], [reach, 0.0], [-reach, 0.0]]
+                .into_iter()
+                .zip(first..)
+                .map(move |(offset, entity)| body(entity, team, offset))
+        };
+        let swinger = body(spawn.entity, 0, [0.0, 0.0]);
+        let mut bodies: Vec<_> = std::iter::once(swinger)
+            .chain(around(BOT_ENTITY, 0, 1.2))
+            .collect();
+        assert!(
+            swing(&bodies).is_empty(),
+            "a swing at nothing strikes no one"
+        );
+        bodies.extend(around(BOT_ENTITY + 4, 1, 1.5));
+        let struck = swing(&bodies);
+        assert_eq!(struck.len(), 1, "{struck:x?}");
+        let (target, instigator, amount, heal) = struck[0];
+        assert!((BOT_ENTITY + 4..BOT_ENTITY + 8).contains(&target));
+        assert_eq!((instigator, amount, heal), (spawn.entity, 30.0, false));
+    }
+
     #[test]
     #[ignore = "requires a derived 104319 Practice Range pack"]
     fn elevated_practice_patrols_reach_their_hints_without_crossing_walls() {

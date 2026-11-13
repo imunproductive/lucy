@@ -244,6 +244,12 @@ pub struct PosedProjectile {
     /// volley with a lease id); else only its damage flies (combat.py
     /// `_shoot`: a `Rocket` without a shot).
     pub leased: bool,
+    /// A networked volley the owner's client doesn't shoot itself
+    /// (`m_45271E8C` 0: Biotic Grenade `0B97` st0), of one projectile that
+    /// leaves nothing: the server flies it and shows it to every client,
+    /// its shooter's included (`projectiles::ServerCopies`). A bot's never
+    /// is; its rockets go to the clients on their own path.
+    pub server_shown: bool,
     /// The entity it leaves where it lands (projectiles.py `fired`: the
     /// Biotic Field 03DC, Torbjörn's turret), if any.
     pub spawn: Option<u64>,
@@ -1494,6 +1500,11 @@ pub fn deliver_projectiles(
             ProjectileEvent::Ended { token, explode } => {
                 for world in worlds.iter_mut().flatten() {
                     world.finish_projectile(body, token, tick, explode);
+                }
+            }
+            ProjectileEvent::ServerEnded { token, exploded } => {
+                for world in worlds.iter_mut().flatten() {
+                    world.finish_server_projectile(body, token, tick, exploded);
                 }
             }
             ProjectileEvent::FieldHeal {

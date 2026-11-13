@@ -35,7 +35,8 @@ use crate::{
     projectile_flight::{FlightEnd, ProjectileFlight},
     projectiles::{
         FieldCopies, FieldDeliver, FieldDelivery, FiredProjectile, OwnerProjectiles,
-        ProjectileDelivery, ProjectileEvent, ProjectileLeases, ProjectileToken, ShotKey,
+        ProjectileDelivery, ProjectileEvent, ProjectileLeases, ProjectileToken, ServerCopies,
+        ShotKey,
     },
     scene::{PlayerAppearance, Possession, body_filter, filter_component, player_team_bit},
     scene_assets::PreparedScene,
@@ -328,6 +329,8 @@ struct BodyScript {
     /// Each projectile in flight, with its lease token when the owner's
     /// client shot it too (combat.py `Combat.rockets`).
     flights: Vec<(Option<ProjectileToken>, ProjectileFlight)>,
+    /// The server projectiles fired so far ([`ProjectileToken::server`]).
+    server_shots: u64,
     /// The projectiles fired since the match last took them, for the other
     /// clients (projectiles.py `fired`: `_show_others`).
     fired: Vec<FiredProjectile>,
@@ -366,6 +369,7 @@ impl BodyScript {
             corrections,
             projectiles,
             flights: Vec::new(),
+            server_shots: 0,
             fired: Vec::new(),
             traced_buttons: 0,
             input: None,
@@ -446,11 +450,14 @@ impl BodyScript {
     /// (Torbjörn's turret, Zarya's Graviton Surge) its entity; any other
     /// flies, and the other clients see it (one copy, as Python, whatever
     /// the volley's count of projectiles a shot), while each of the owner's
-    /// projectiles of the shot is confirmed. combat.py `_shoot`: an
-    /// unleased one flies for its damage alone. A shot of pellet rings
-    /// flies each pellet for its damage (upstream 7cb4018); a leased one's
-    /// confirmation and release still follow one projectile along the aim,
-    /// which then does no damage, so the wire is as without rings.
+    /// projectiles of the shot is confirmed. A server projectile (Biotic
+    /// Grenade, [`PosedProjectile::server_shown`]) flies and every client
+    /// sees it, its shooter's included ([`ServerCopies`]). combat.py
+    /// `_shoot`: another unleased one flies for its damage alone. A shot of
+    /// pellet rings flies each pellet for its damage (upstream 7cb4018); a
+    /// leased one's confirmation and release still follow one projectile
+    /// along the aim, which then does no damage, so the wire is as without
+    /// rings.
     fn launch_projectile(&mut self, projectile: PosedProjectile) {
         let bound = (projectile.ballistics.bound() / TICK_PERIOD.as_secs_f64()).ceil() as u32;
         let definition = projectile.ballistics.definition;
@@ -507,6 +514,10 @@ impl BodyScript {
                     ),
                 }
                 .map(|token| (token, definition))
+            }
+            (_, Some(definition)) if projectile.server_shown => {
+                self.server_shots += 1;
+                Some((ProjectileToken::server(self.server_shots), definition))
             }
             _ => None,
         };
@@ -725,6 +736,9 @@ enum Delivery {
     },
     /// A firing bot's rocket on this client (bot_script.rs `SeenDelivery`).
     BotSeen(SeenDelivery),
+    /// The player's own copy of his server projectile (projectiles.rs
+    /// `ServerCopies`).
+    ServerSeen(SeenDelivery),
     /// A server placeable's full frame (placed_script.rs); a newer one
     /// supersedes it.
     Placed {
@@ -1323,6 +1337,8 @@ pub struct WorldDelivery {
     /// The Biotic Field entities this client has (projectiles.py
     /// `Shot.field_ids`).
     fields: FieldCopies,
+    /// The player's own copies of his server projectiles (Biotic Grenade).
+    server_copies: ServerCopies,
     /// The hits and melees of the processed input, for the match.
     shots: Vec<PosedShot>,
     others: Others,
@@ -1460,6 +1476,7 @@ impl WorldDelivery {
             projectile_destroys: HashMap::new(),
             projectile_events: Vec::new(),
             fields: FieldCopies::default(),
+            server_copies: ServerCopies::default(),
             shots: Vec::new(),
             others: Others::default(),
             switch: None,
@@ -1569,6 +1586,7 @@ impl WorldDelivery {
         self.projectile_destroys.clear();
         self.projectile_events.clear();
         self.fields = FieldCopies::default();
+        self.server_copies = ServerCopies::default();
         self.input.clear();
         self.shots.clear();
         self.death = None;
@@ -1960,6 +1978,7 @@ impl WorldDelivery {
             Delivery::Field(field) => self.fields.current(field, entity),
             Delivery::BotFrames { last } => self.bot_views.current(entity, last),
             Delivery::BotSeen(seen) => self.bot_views.seen_current(seen, entity),
+            Delivery::ServerSeen(seen) => self.server_copies.current(seen, entity),
             Delivery::Placed { last } => self.placed_views.current(entity, last),
         }
     }
@@ -2000,6 +2019,12 @@ impl WorldDelivery {
                     (arrived, Delivery::Other(other)) => {
                         let entity = record.update.entity;
                         if self.others.delivered(other, entity, arrived, now) {
+                            retry.push(record);
+                        }
+                    }
+                    (arrived, Delivery::ServerSeen(seen)) => {
+                        let entity = record.update.entity;
+                        if self.server_copies.delivered(seen, entity, arrived) {
                             retry.push(record);
                         }
                     }
@@ -3382,6 +3407,7 @@ impl WorldDelivery {
         let id = script.id;
         let mut deliveries = Vec::new();
         let projectiles = &mut script.projectiles;
+        let events = &mut self.projectile_events;
         script.flights.retain_mut(|(token, flight)| {
             let result = step(id.entity, flight);
             if let (
@@ -3393,6 +3419,15 @@ impl WorldDelivery {
             ) = (&result, mover.as_mut())
             {
                 mover.push(*knockback);
+            }
+            if let Some(token) = token.filter(|token| token.is_server()) {
+                let exploded = match &result {
+                    Ok(None) => return true,
+                    Ok(Some(end)) => end.exploded.then(|| end.point.map(|value| value as f32)),
+                    Err(_) => None,
+                };
+                events.push((id, ProjectileEvent::ServerEnded { token, exploded }));
+                return false;
             }
             let (Some(token), Some(projectiles)) = (*token, projectiles.as_mut()) else {
                 return matches!(result, Ok(None));
@@ -3431,7 +3466,9 @@ impl WorldDelivery {
     }
 
     /// projectiles.py `_show_others` for this client: another player's
-    /// projectile, when this client has his body's statescript.
+    /// projectile, when this client has his body's statescript; and this
+    /// player's own server projectile ([`ServerCopies`]), when his body's
+    /// script fired it.
     pub(crate) fn show_projectile(
         &mut self,
         fired: &FiredProjectile,
@@ -3439,6 +3476,20 @@ impl WorldDelivery {
         next_id: impl FnOnce() -> u32,
     ) {
         if !self.world_started() {
+            return;
+        }
+        let own = self
+            .body_script
+            .as_ref()
+            .filter(|script| fired.token.is_server() && script.id == fired.body);
+        if let Some(script) = own {
+            let has_base = script.stream.base().is_some();
+            for (update, delivery) in self.server_copies.show(fired, has_base, tick, next_id) {
+                self.push(Record {
+                    update,
+                    delivery: Delivery::ServerSeen(delivery),
+                });
+            }
             return;
         }
         for (update, delivery) in self.others.show_projectile(fired, tick, next_id) {
@@ -3484,6 +3535,20 @@ impl WorldDelivery {
         self.others.finish_projectile(body, token, tick, explode);
     }
 
+    /// A server projectile's flight ended (`ProjectileEvent::ServerEnded`):
+    /// this client's copy of it, another player's or its own, finishes.
+    pub(crate) fn finish_server_projectile(
+        &mut self,
+        body: BodyId,
+        token: ProjectileToken,
+        tick: u32,
+        exploded: Option<[f32; 3]>,
+    ) {
+        self.others
+            .finish_server_projectile(body, token, tick, exploded);
+        self.server_copies.finish(body, token, tick, exploded);
+    }
+
     /// `_ObservedProjectile.advance` for this client's copies.
     pub(crate) fn advance_observed(&mut self, tick: u32) {
         let records = self.others.advance_projectiles(tick);
@@ -3497,6 +3562,16 @@ impl WorldDelivery {
             self.push(Record {
                 update,
                 delivery: Delivery::BotSeen(delivery),
+            });
+        }
+        let source = self
+            .body_script
+            .as_ref()
+            .map(|script| (script.id, script.stream.base().map(|(_, base)| base)));
+        for (update, delivery) in self.server_copies.advance(tick, source) {
+            self.push(Record {
+                update,
+                delivery: Delivery::ServerSeen(delivery),
             });
         }
         self.remove_stale();
