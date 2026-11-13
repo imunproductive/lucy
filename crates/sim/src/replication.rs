@@ -2719,6 +2719,17 @@ impl WorldDelivery {
         Some(self.mover.as_ref()?.pose().position)
     }
 
+    /// The centre of the player's body's capsule while it is alive in the
+    /// world (its mover data and stance), and how far it is above the feet:
+    /// what the environment's death rules test (`map_areas` module notes).
+    pub fn body_centre(&self) -> Option<([f64; 3], f64)> {
+        let feet = self.body_position()?;
+        let capsule = self.body_capsule()?;
+        let [x, y, z] = capsule.position.map(f64::from);
+        let centre = y + f64::from(capsule.top + capsule.radius) / 2.0;
+        Some(([x, centre, z], centre - feet[1]))
+    }
+
     /// The capsule of the player's body while it is alive in the world, as
     /// it blocks other bodies' moves ([`blocks`]).
     pub fn body_capsule(&self) -> Option<CapsulePose> {
