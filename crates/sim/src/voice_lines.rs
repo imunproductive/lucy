@@ -26,32 +26,46 @@
 //!   ([`orpheus_script::player::REACTION_GRAPHS`]), which every hero's set
 //!   answers with its "PnMnr" or "PnSvr" lines.
 //!
+//! Who hears a line: the clients whose bodies the criteria action's
+//! audience lists ([`RaisedCriteria::audience`]; everyone when it lists
+//! none), within the stimulus's `m_radius` of the speaker. The pain
+//! criteria list the hurt body and its attacker, so a bot's pain line after
+//! another bot's hit (the Practice Range's firing bots shoot the other
+//! team's bots) reaches no client, and after a player's hit only that
+//! player, when he stands within 35 m. The wheel's lines name all players.
+//!
 //! Assumptions: a stimulus waits its shorter cooldown (`m_A73F2EBE`) before
 //! it plays again for the same body (the wheel's stimuli have none; `05AD`
 //! limits the wheel itself); the eligible lines of a stimulus take turns in
 //! the set's order (most weigh 1.0); a line's criteria are judged with
 //! nothing raised on the body, so "not `191E`" holds and a map, team or hero
-//! criteria never does.
+//! criteria never does. The pain stimuli's other fields don't limit who
+//! hears them: their play chance (`m_1CC5EF25`) is 1.0 and their priority
+//! (`m_priority` 40) and category (`01E` `0002`) only matter against other
+//! lines the same body says.
 
 use std::collections::HashMap;
 
 use orpheus_content::voice_sets::VoiceSet;
 use orpheus_core::tick::TICK_PERIOD;
+use orpheus_script::vm::RaisedCriteria;
 use orpheus_wire::combat_messages::CombatNotice;
 
 /// A line a body says.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct VoiceLine {
     pub speaker: u32,
     pub stimulus: u64,
     pub line: u64,
     /// The stimulus's `m_radius`, in metres.
     pub radius: f64,
+    /// The bodies that may hear it; none: every body.
+    pub audience: Option<Vec<u32>>,
 }
 
 impl VoiceLine {
     /// The notice for the client whose body is `listener`.
-    pub fn notice(self, listener: u32) -> CombatNotice {
+    pub fn notice(&self, listener: u32) -> CombatNotice {
         CombatNotice::Voice {
             speaker: self.speaker,
             listener,
@@ -60,12 +74,20 @@ impl VoiceLine {
         }
     }
 
-    /// Whether a listener standing at `listener` hears the line said at
-    /// `speaker`: within the stimulus's radius.
-    pub fn heard(&self, speaker: [f64; 3], listener: [f64; 3]) -> bool {
+    /// Whether the body `listener` standing at `at` hears the line said at
+    /// `speaker`: the audience lists it and it stands within the stimulus's
+    /// radius.
+    pub fn heard(&self, listener: u32, speaker: [f64; 3], at: [f64; 3]) -> bool {
+        if self
+            .audience
+            .as_ref()
+            .is_some_and(|audience| !audience.contains(&listener))
+        {
+            return false;
+        }
         let distance = speaker
             .iter()
-            .zip(listener)
+            .zip(at)
             .map(|(a, b)| (a - b) * (a - b))
             .sum::<f64>();
         distance <= self.radius * self.radius
@@ -82,16 +104,17 @@ pub(crate) struct VoiceState {
 
 impl VoiceState {
     /// The line the body with entity `speaker` and voice set `set` says at
-    /// world tick `tick` for `criteria`, if the set answers it, the
-    /// stimulus is not cooling down and it has a line that may play.
+    /// world tick `tick` for the criteria it raised, if the set answers it,
+    /// the stimulus is not cooling down and it has a line that may play.
+    /// A line no client can hear still plays (its stimulus cools down).
     pub(crate) fn answer(
         &mut self,
         set: Option<&VoiceSet>,
         speaker: u32,
-        criteria: u64,
+        criteria: RaisedCriteria,
         tick: u32,
     ) -> Option<VoiceLine> {
-        let (index, stimulus) = set?.answer(criteria)?;
+        let (index, stimulus) = set?.answer(criteria.identifier)?;
         if self
             .last
             .get(&index)
@@ -117,6 +140,7 @@ impl VoiceState {
             stimulus: stimulus.guid,
             line,
             radius: stimulus.radius,
+            audience: criteria.audience,
         })
     }
 }
@@ -135,6 +159,14 @@ mod tests {
     const BODY: u64 = 0x0400_0000_0000_1403;
     const MINOR: u64 = 0x0d80_0000_0000_0608;
     const SEVERE: u64 = 0x0d80_0000_0000_0609;
+
+    /// A criteria the graphs raised with no audience.
+    fn raised(identifier: u64) -> RaisedCriteria {
+        RaisedCriteria {
+            identifier,
+            audience: None,
+        }
+    }
 
     /// The bots' pain lines as the install has them (the first three lines
     /// of each stimulus; "not `191E`" on each).
@@ -170,7 +202,7 @@ mod tests {
         let mut voice = VoiceState::default();
         let mut said = |criteria, tick| {
             voice
-                .answer(set, BOT, criteria, tick)
+                .answer(set, BOT, raised(criteria), tick)
                 .map(|said| (said.stimulus, said.line))
         };
         assert_eq!(
@@ -193,22 +225,54 @@ mod tests {
         );
         assert_eq!(said(0x0d80_0000_0000_191d, 500), None);
         assert_eq!(
-            VoiceState::default().answer(catalog.for_body(0x0400_0000_0000_0022), BOT, MINOR, 500),
+            VoiceState::default().answer(
+                catalog.for_body(0x0400_0000_0000_0022),
+                BOT,
+                raised(MINOR),
+                500
+            ),
             None,
             "Reaper's body isn't in this catalog"
         );
     }
 
-    /// A line is heard within its stimulus's radius of the speaker.
+    /// A line is heard within its stimulus's radius of the speaker, by the
+    /// bodies its audience lists: the bot's pain line after a player's hit
+    /// by that player alone, after another bot's hit by no player.
     #[test]
-    fn a_line_is_heard_within_its_radius() {
-        let line = VoiceLine {
-            speaker: BOT,
-            stimulus: 0x0ee0_0000_0000_0004,
-            line: 0x0760_0000_0000_000b,
-            radius: 35.0,
+    fn a_line_is_heard_by_its_audience_within_its_radius() {
+        const PLAYER: u32 = 0xa000_0101;
+        const OTHER: u32 = 0xa000_0102;
+        const SHOOTER: u32 = 0xc000_1001;
+        let catalog = VoiceCatalog::from_json(SET).unwrap();
+        let set = catalog.for_body(BODY);
+        let near = [21.0, 0.0, 28.0];
+        let far = [21.0, 1.0, 28.0];
+        let everyone = VoiceState::default()
+            .answer(set, BOT, raised(SEVERE), 100)
+            .unwrap();
+        assert_eq!(everyone.radius, 35.0);
+        assert!(everyone.heard(PLAYER, [0.0; 3], near));
+        assert!(!everyone.heard(PLAYER, [0.0; 3], far));
+        let pain = |attacker| {
+            VoiceState::default()
+                .answer(
+                    set,
+                    BOT,
+                    RaisedCriteria {
+                        identifier: SEVERE,
+                        audience: Some(vec![BOT, attacker]),
+                    },
+                    100,
+                )
+                .unwrap()
         };
-        assert!(line.heard([0.0, 0.0, 0.0], [21.0, 0.0, 28.0]));
-        assert!(!line.heard([0.0, 0.0, 0.0], [21.0, 1.0, 28.0]));
+        let hurt_by_player = pain(PLAYER);
+        assert!(hurt_by_player.heard(PLAYER, [0.0; 3], near));
+        assert!(!hurt_by_player.heard(PLAYER, [0.0; 3], far));
+        assert!(!hurt_by_player.heard(OTHER, [0.0; 3], near));
+        let hurt_by_bot = pain(SHOOTER);
+        assert!(!hurt_by_bot.heard(PLAYER, [0.0; 3], near));
+        assert!(!hurt_by_bot.heard(OTHER, [0.0; 3], [0.0; 3]));
     }
 }

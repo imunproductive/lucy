@@ -17,8 +17,8 @@ use crate::{
     snapshot::SnapshotEncoder,
     vitals::PoolKind,
     vm::{
-        Component, InitFault, MAX_INIT_WORK, ShotEvent, Site, Snapshot, TargetCandidate, Unknowns,
-        World, body_roots,
+        Component, InitFault, MAX_INIT_WORK, RaisedCriteria, ShotEvent, Site, Snapshot,
+        TargetCandidate, Unknowns, World, body_roots,
     },
     wire::{Value, Variables},
 };
@@ -142,7 +142,7 @@ pub struct BotWorld {
     pub max_health: f64,
     /// The criteria the body raised on itself ([`World::criteria`]) since
     /// the match last took them, in order.
-    pub criteria: Vec<u64>,
+    pub criteria: Vec<RaisedCriteria>,
     /// Its 13 movement bits as the match moves it: on the ground
     /// ([`BOT_MOVEMENT_SAMPLE`]) unless a knockback threw it. Assumption:
     /// on the ground the other bits stay off, moving (bit 4) too on a patrol
@@ -156,9 +156,16 @@ impl World for BotWorld {
     }
 
     fn assumption(&self, class: &str) -> Option<&'static str> {
-        // As `PlayerWorld`: the tunable's authored value, not scaled for the
-        // entity.
-        (class == "STU_082FA44E").then_some("the tunable's authored value")
+        match class {
+            // As `PlayerWorld`: the tunable's authored value, not scaled for
+            // the entity.
+            "STU_082FA44E" => Some("the tunable's authored value"),
+            // As `PlayerWorld`: a server-only entity query whose meaning is
+            // open. `0C17` rid 23 starts its pain lines' audience (#1839)
+            // with it, and rid 22 and 21 add the bot and its attacker.
+            "STU_ED45C5E8" => Some("no entities"),
+            _ => None,
+        }
     }
 
     fn ruleset(&mut self, id: u32) -> Option<Value> {
@@ -193,8 +200,8 @@ impl World for BotWorld {
         })
     }
 
-    fn criteria(&mut self, _site: Site, identifier: u64) {
-        self.criteria.push(identifier);
+    fn criteria(&mut self, _site: Site, raised: RaisedCriteria) {
+        self.criteria.push(raised);
     }
 
     /// The body's movement sampler (`STU_96F1DBCF`): what the match gave
@@ -266,6 +273,8 @@ impl World for BotWorld {
             }
             // See `assumption`.
             "STU_082FA44E" => self.graphs.tunables().value(config).map(Value::Float),
+            // See `assumption`.
+            "STU_ED45C5E8" => Some(Value::Array(Vec::new())),
             // IsTutorial (CE8580), as `PlayerWorld` answers it.
             "STU_A77AC2AC" if native_shape(config, class, None) => {
                 Some(Value::Bool(self.mode == TUTORIAL_MODE))
@@ -640,7 +649,7 @@ impl BotBody {
 
     /// The criteria the body raised on itself since the last call, in order
     /// ([`World::criteria`]).
-    pub fn take_criteria(&mut self) -> Vec<u64> {
+    pub fn take_criteria(&mut self) -> Vec<RaisedCriteria> {
         std::mem::take(&mut self.world.criteria)
     }
 
@@ -1389,8 +1398,8 @@ mod tests {
     /// graph `0E8C` sets the strength #1024 to 0.2 for tag `09A2`, with the
     /// direction #1018, and the observers' frame carries both (st17 syncs
     /// them for the clients' own flinch anim); 0.1 s later `0C17` raises one
-    /// pain criteria (`0608` or `0609`) on the bot, and the flinch ends
-    /// (#1024 back to 0) after its 0.1 s.
+    /// pain criteria (`0608` or `0609`) on the bot, heard by the bot and its
+    /// attacker, and the flinch ends (#1024 back to 0) after its 0.1 s.
     #[test]
     #[ignore = "requires the derived game data's bot graph bundle"]
     fn the_practice_training_bot_flinches_and_raises_its_pain_criteria() {
@@ -1456,19 +1465,26 @@ mod tests {
             if bot.due_by(frame) {
                 assert!(bot.advance_live(frame, None).unwrap());
             }
-            criteria.extend(bot.take_criteria().into_iter().map(|id| (frame, id)));
+            criteria.extend(
+                bot.take_criteria()
+                    .into_iter()
+                    .map(|raised| (frame, raised.identifier, raised.audience)),
+            );
         }
         // 19 of the 181 left is a tenth or more (#7404 / #520, rid 3): the
         // severe pain `0609` (voice set `011D`'s "PnSvr" stimulus `0004`),
         // with `0C17`'s `191D` (more than 5 %, rid 38), which the voice set
         // doesn't answer. The message ran at the start of frame 129 (the one
         // before the hit); its 0.1 s wait (rid 20), in whole frames, is over
-        // in frame 136.
+        // in frame 136. The pain's audience (#1839, `m_297E0B63`) is the
+        // `STU_ED45C5E8` query (no entities, an assumption), then the bot
+        // (rid 22) and its attacker (rid 21); `191D` names none.
+        let attacker = 0xa000_0101;
         assert_eq!(
             criteria,
             [
-                (hit + 6, 0x0d80_0000_0000_0609),
-                (hit + 6, 0x0d80_0000_0000_191d)
+                (hit + 6, 0x0d80_0000_0000_0609, Some(vec![ENTITY, attacker])),
+                (hit + 6, 0x0d80_0000_0000_191d, None)
             ],
             "{criteria:x?}"
         );

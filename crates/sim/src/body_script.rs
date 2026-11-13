@@ -41,8 +41,8 @@ use orpheus_script::{
     ultimate::{ChargeRates, UltimateCharge},
     vitals::Vitals,
     vm::{
-        Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest, Root, Snapshot, StateKind,
-        TargetCandidate, Unknowns, World,
+        Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest, RaisedCriteria, Root, Snapshot,
+        StateKind, TargetCandidate, Unknowns, World,
     },
     weapons::{HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
@@ -470,7 +470,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         self.world.take_messages()
     }
 
-    fn take_criteria(&mut self) -> Vec<u64> {
+    fn take_criteria(&mut self) -> Vec<RaisedCriteria> {
         self.world.take_criteria()
     }
 

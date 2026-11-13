@@ -161,7 +161,7 @@ pub struct BotScripts {
     /// The bodies' voice sets.
     voice_sets: Arc<VoiceCatalog>,
     /// The lines the bots said since the match last looked.
-    voices: Vec<VoiceLine>,
+    voices: Vec<(VoiceLine, [f64; 3])>,
 }
 
 impl BotScripts {
@@ -759,7 +759,7 @@ impl BotScripts {
                 }
                 let set = self.voice_sets.for_body(bot.spawn.body);
                 if let Some(voice) = script.voice.answer(set, script.entity, criteria, tick) {
-                    self.voices.push(voice);
+                    self.voices.push((voice, bot.position));
                 }
             }
         }
@@ -785,7 +785,9 @@ impl BotScripts {
         Ok(())
     }
 
-    pub fn take_voices(&mut self) -> Vec<VoiceLine> {
+    /// The lines the bots said since the last call, each with where its
+    /// bot stood.
+    pub fn take_voices(&mut self) -> Vec<(VoiceLine, [f64; 3])> {
         std::mem::take(&mut self.voices)
     }
 
