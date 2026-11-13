@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+mod ai_definitions;
 mod ai_spawners;
 mod anim_lengths;
 mod animation;
@@ -112,6 +113,10 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "game_heroes",
         derive: heroes::derive,
+    },
+    Derivation {
+        name: "game_ai_definitions",
+        derive: ai_definitions::derive,
     },
     Derivation {
         name: "game_maps",
