@@ -23,18 +23,19 @@ use crate::{
     bot_plate::{BotPlate, PlateSample},
     bot_script::{BotEvent, BotScripts, BotShot},
     bots::{Bot, BotCatalog, BotWalk},
-    combat::{BodyCombat, BotDeath, MeleeState, RespawnTimes, melee_states},
+    combat::{BodyCombat, BotDeath, RespawnTimes},
     controller::Controller,
     hitboxes::HitboxCatalog,
     hitscan::{RAY_PROFILES_FILE, RayProfiles},
     hurt_feedback::HurtFeedback,
-    map_areas::{self, DamageArea, MapAreaData, SpawnRoom},
+    map_areas::{self, DamageArea, MapAreaData, PlacedScript, SpawnRoom},
     match_flow::{MatchFlow, Mode, Timers},
     mode_graph_values::ModeGraphValues,
     mode_rules_data::{ModeRules, ModeRulesData},
     notices::switch_notices,
     objective_data::{MapObjectives, ObjectiveData},
     objectives::CaptureBox,
+    placed_script::PlacedScripts,
     pools::PoolCatalog,
     projectiles::{BioticField, FIELD_ENTITY, FieldFrames},
     replication::OwnerBodyRuntime,
@@ -136,7 +137,6 @@ pub struct SceneAssets {
     /// The bots' graphs' states that animate them.
     script_anims: Arc<ScriptAnims>,
     respawns: RespawnTimes,
-    melee: Arc<[MeleeState]>,
     /// The mode graphs' values the match flow uses.
     mode_graph_values: ModeGraphValues,
     /// The Biotic Field, when its graph reads; without it no field opens.
@@ -221,8 +221,10 @@ pub struct PreparedScene {
     kill_volumes: Arc<[CaptureBox]>,
     /// The map's server placeables in this mode: server-owned placeables
     /// the loading screen doesn't wait for, created after the player and
-    /// the mode.
-    server_placeables: Vec<u32>,
+    /// the mode, with their script data.
+    server_placeables: Vec<Arc<PlacedScript>>,
+    /// Their scripts (`placed_script`).
+    placed_scripts: PlacedScripts,
     /// Where a falling body dies on a map with neither damage areas nor
     /// kill volumes (`map_areas::kill_height`).
     kill_height: Option<f64>,
@@ -277,7 +279,6 @@ impl SceneAssets {
             runtime: runtime.to_path_buf(),
             build_collision: None,
             mode_props: read_mode_props(&data.join("collision_props_174.json"))?,
-            melee: melee_states(&graphs)?.into(),
             mode_graph_values: ModeGraphValues::read(&graphs)?,
             field,
             graphs,
@@ -460,7 +461,7 @@ impl SceneAssets {
         let kill_volumes = self.map_areas.kill_volumes(&map);
         // The client shows a server-owned placeable only once the server
         // creates it.
-        let server_placeables = self.map_areas.server_placeables(&map, identifiers);
+        let server_placeables = self.map_areas.placed_scripts(&map, identifiers);
         let lowest_spawn = map
             .spawns
             .iter()
@@ -525,6 +526,11 @@ impl SceneAssets {
             kill_volumes,
             kill_height,
             safety_net,
+            placed_scripts: PlacedScripts::new(
+                Arc::clone(&self.graphs),
+                map_mode,
+                server_placeables.clone(),
+            ),
             server_placeables,
         };
         let mut factories = self
@@ -595,7 +601,7 @@ impl SceneAssets {
         let graphs = Arc::clone(&self.graphs);
         let pools = Arc::clone(&self.pools);
         let eyes = Arc::clone(&self.eyes);
-        let (melee, field) = (Arc::clone(&self.melee), self.field);
+        let field = self.field;
         let player_unknowns = self.player_unknowns;
         let ult_rates = self.ult_rates;
         let mode = scene.map.mode_guid;
@@ -642,7 +648,6 @@ impl SceneAssets {
                         on_fire,
                         BodyCombat {
                             eyes: eyes.for_body(hero.body),
-                            melee: Arc::clone(&melee),
                             field,
                         },
                         player_unknowns,
@@ -817,6 +822,29 @@ impl PreparedScene {
     /// `_send_countdown`, combat.py `mode_frame`).
     pub fn mode_frame(&self, variables: &Variables) -> io::Result<BitWriter> {
         mode_ui(&self.graphs, variables)
+    }
+
+    /// The map's server placeables in this mode with their script data, in
+    /// create order.
+    pub fn server_placeables(&self) -> &[Arc<PlacedScript>] {
+        &self.server_placeables
+    }
+
+    /// The server placeables' scripts.
+    pub fn placed_scripts(&self) -> &PlacedScripts {
+        &self.placed_scripts
+    }
+
+    /// Start the server placeables' scripts at the first call, then advance
+    /// them to `tick`.
+    pub fn advance_placed(&mut self, tick: u32) {
+        self.placed_scripts.advance(tick);
+    }
+
+    /// The bodies the placeables' target searches can find from now on
+    /// (`Combat::target_candidates`).
+    pub fn set_placed_target_candidates(&mut self, candidates: &[TargetCandidate]) {
+        self.placed_scripts.set_target_candidates(candidates);
     }
 
     /// The statescript graphs, for runs outside the scene (the mode graph).
@@ -1040,6 +1068,17 @@ impl PreparedScene {
         self.bot_scripts.hurt(entity, damage, &self.bots);
     }
 
+    /// An aura comes on the live bot at world tick `tick`, dealt by
+    /// `instigator` (Biotic Grenade's explosion).
+    pub fn apply_bot_aura(&mut self, entity: u32, aura: u64, instigator: u32, tick: u32) {
+        self.bot_scripts.apply_aura(entity, aura, instigator, tick);
+    }
+
+    /// The health changes the bots' graphs made since the last call.
+    pub fn take_bot_health_changes(&mut self) -> Vec<orpheus_script::vm::HealthChange> {
+        self.bot_scripts.take_health_changes()
+    }
+
     /// The dead bots' death scripts (combat.py `_advance_bot_death`).
     pub fn advance_bot_deaths(&mut self, tick: u32) {
         self.bot_scripts.advance_deaths(&self.bots, tick);
@@ -1170,9 +1209,9 @@ impl PreparedScene {
         let at = self.map.placeables.len() + 2;
         updates.splice(
             at..at,
-            self.server_placeables.iter().map(|&index| EntityUpdate {
-                entity: 0x8000_0000 | index,
-                operation: Some(Operation::Placeable(index)),
+            self.server_placeables.iter().map(|placed| EntityUpdate {
+                entity: placed.entity(),
+                operation: Some(Operation::Placeable(placed.placeable)),
                 ..EntityUpdate::default()
             }),
         );
@@ -1385,9 +1424,11 @@ mod tests {
                 }
             }
         }
-        // Every shot of the session, Helix and the quick melee included; a
-        // change here means the weapons' timing changed.
-        assert_eq!(shots, 32);
+        // Every shot of the session, Helix included; a change here means
+        // the weapons' timing changed. Quick melee is no shot: its graph
+        // (`0043`) strikes only the bodies its search finds, and this world
+        // lists none.
+        assert_eq!(shots, 31);
         let snapshot = runtime.snapshot().unwrap();
         let assumed: Vec<_> = snapshot
             .assumptions
@@ -1418,15 +1459,39 @@ mod tests {
                 (
                     0x0043,
                     Some(11),
-                    "STUStatescriptStateTrackTargets m_D59188D5",
-                    "finds no targets"
+                    "STUStatescriptStateTrackTargets bodies",
+                    "finds no targets (the world lists none)"
                 ),
                 (0x0043, Some(9), "STU_23A00A53", "no effect"),
                 (
                     0x0043,
                     Some(10),
-                    "STUStatescriptStateModifyHealth",
-                    "no effect"
+                    "STUStatescriptStateModifyHealth m_B12BFE8B",
+                    "not read"
+                ),
+                (
+                    0x0043,
+                    Some(10),
+                    "STUStatescriptModifyHealth m_knockbackRings",
+                    "not read"
+                ),
+                (
+                    0x0043,
+                    Some(10),
+                    "STUStatescriptModifyHealth m_C0139FA6",
+                    "not read"
+                ),
+                (
+                    0x0043,
+                    Some(10),
+                    "STUStatescriptModifyHealth m_E33EFEE1",
+                    "not read"
+                ),
+                (
+                    0x0043,
+                    Some(10),
+                    "STUStatescriptModifyHealth m_10399AE7",
+                    "not read"
                 ),
                 (0x0043, Some(63), "STU_0A6BE10E", "no effect"),
                 (

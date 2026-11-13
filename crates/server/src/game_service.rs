@@ -1996,7 +1996,8 @@ impl State {
                 let combat = world
                     .combat
                     .get_or_insert_with(|| Combat::new(&world.scene));
-                // combat.py `Combat.command`: the shots, then quick melee.
+                // combat.py `Combat.command`: the shots, then the graphs'
+                // health changes (quick melee).
                 let mut hits = Vec::new();
                 for shot in shots {
                     match shot {
@@ -2014,18 +2015,12 @@ impl State {
                                 hits.push(hit);
                             }
                         }
-                        PosedShot::Melee(melee) => {
-                            let frame = melee.command.frame;
+                        PosedShot::Health(change) => {
+                            let frame = change.frame;
                             let visible = |entity| peer.world.bot_shown(entity, frame);
-                            let shooter = Shooter {
-                                source: melee.source,
-                                team,
-                                bot: false,
-                            };
-                            hits.extend(combat.melee(
+                            hits.extend(combat.modify_health(
                                 &mut world.scene,
-                                melee,
-                                shooter,
+                                &change,
                                 context,
                                 visible,
                             ));
@@ -2277,6 +2272,62 @@ impl State {
         }
     }
 
+    /// The auras the tick's hits put on bodies (Biotic Grenade's explosion,
+    /// `orpheus_script::vm` `auras`): each on its body's script, a bot's or
+    /// a player's. Then the health changes the bots' graphs made (their
+    /// auras' heals and damage), applied as hits by their instigators.
+    fn apply_auras(&mut self, id: MatchId, tick: u32, now: Duration) {
+        let Some(room) = self.rooms.get_mut(&id) else {
+            return;
+        };
+        let players = room.players.len();
+        let Some(world) = room.world.as_mut() else {
+            return;
+        };
+        let combat = world
+            .combat
+            .get_or_insert_with(|| Combat::new(&world.scene));
+        let auras = combat.take_auras();
+        let mut peers = room_peers(&mut self.peers, &self.seats, id, players);
+        for aura in auras {
+            if world.scene.bots().iter().any(|bot| bot.entity == aura.body) {
+                world
+                    .scene
+                    .apply_bot_aura(aura.body, aura.aura, aura.instigator, tick);
+            } else if let Some(peer) = peers
+                .iter_mut()
+                .flatten()
+                .find(|peer| peer.world.current_body() == Some(aura.body))
+            {
+                peer.world.apply_aura(aura.aura, aura.instigator);
+            }
+        }
+        let context = ShotContext {
+            quanta: RETAIL_QUANTA,
+            tick,
+            now,
+        };
+        let mut struck: Vec<(Option<u32>, BotHit)> = Vec::new();
+        for change in world.scene.take_bot_health_changes() {
+            let shooter = self
+                .seats
+                .iter()
+                .find(|(connection, (match_id, _))| {
+                    *match_id == id
+                        && self.peers.get(*connection).is_some_and(|peer| {
+                            peer.world.current_body() == Some(change.instigator)
+                        })
+                })
+                .map(|(&connection, _)| connection);
+            if let Some(hit) = combat.modify_health(&mut world.scene, &change, context, |_| true) {
+                struck.push((shooter, hit));
+            }
+        }
+        for (shooter, hit) in struck {
+            self.deliver_bot_hits(id, shooter, vec![hit]);
+        }
+    }
+
     /// combat.py `Combat.update` for every room with a world: where the
     /// bodies are, the bots' rockets, the players' projectiles and what they
     /// ask of the room (projectiles.py `Projectiles.update`), the hits on
@@ -2311,6 +2362,7 @@ impl State {
                 // find until the next update, as placed this tick.
                 let candidates = combat.target_candidates(&world.scene);
                 world.scene.set_bot_target_candidates(&candidates);
+                world.scene.set_placed_target_candidates(&candidates);
                 for peer in room_peers(&mut self.peers, &self.seats, id, players.len())
                     .into_iter()
                     .flatten()
@@ -2433,6 +2485,7 @@ impl State {
             for (connection, hits) in struck {
                 self.deliver_bot_hits(id, Some(connection), hits);
             }
+            self.apply_auras(id, tick, now);
             // The environment kills a living body whose capsule centre is in
             // a death zone (`orpheus_sim::map_areas`), with the tick's hits.
             {
@@ -2809,6 +2862,8 @@ impl State {
                     // The live bots' reactions to their hits, and the voice
                     // lines they call for.
                     world.scene.advance_live_bots(tick);
+                    // The server placeables' scripts (placed_script.rs).
+                    world.scene.advance_placed(tick);
                     bot_voices.insert(id, world.scene.take_bot_voices());
                     if let Some(combat) = &mut world.combat {
                         if let Ok(replacements) = combat.respawn_due(&mut world.scene, tick, now) {
@@ -2851,6 +2906,7 @@ impl State {
                 if let Some(world) = &room.world {
                     let events = bot_events.get(&id).map_or(&[][..], Vec::as_slice);
                     peer.world.update_bots(&world.scene, events, tick);
+                    peer.world.update_placed(&world.scene);
                 }
                 // ClientInVoice 27500: each bot line to every client of the
                 // room whose body hears it: its audience lists the body

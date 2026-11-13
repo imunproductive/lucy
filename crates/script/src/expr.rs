@@ -536,7 +536,7 @@ pub fn team_from_filter(bits: u64) -> i64 {
 /// The unit vector a body looks along, each axis rounded to f32: forward is
 /// `(sin yaw, 0, cos yaw)` and a positive pitch looks down (`combat.aim` and
 /// `Match.script_body_facing` in leafall903/ORPHEUS, commit c239a84).
-fn aim([yaw, pitch]: [i32; 2]) -> [f64; 3] {
+pub(crate) fn aim([yaw, pitch]: [i32; 2]) -> [f64; 3] {
     const TURN: f64 = std::f64::consts::TAU / 65536.0;
     let (yaw_sin, yaw_cos) = (f64::from(yaw) * TURN).sin_cos();
     let (pitch_sin, pitch_cos) = (f64::from(pitch) * TURN).sin_cos();
@@ -678,6 +678,10 @@ fn authored_pairs(
         pairs.push((key, value));
     }
     Ok(Value::Pairs(pairs))
+}
+
+pub(crate) fn json_flag(value: &Json) -> bool {
+    json_truthy(value)
 }
 
 fn json_truthy(value: &Json) -> bool {
@@ -1235,7 +1239,11 @@ impl Evaluator {
                 if !native_shape(config, class, Some(operand)) {
                     return Err(EvalError::UnsupportedConfig(class.into()));
                 }
-                let Value::Entity(entity) = self.config(child(config, operand), context, nested)?
+                // An entity, or the first of an array (as `to_entity` reads
+                // it): a PlayScript's parameters are arrays (`0C72`'s
+                // instigator `#40`).
+                let Some(entity) =
+                    to_entity(&self.config(child(config, operand), context, nested)?)
                 else {
                     return Err(EvalError::UnsupportedConfig(class.into()));
                 };
@@ -1243,6 +1251,33 @@ impl Evaluator {
                     .related_entity(relation, entity)
                     .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
                 Value::Entity(related)
+            }
+            // Whether `m_target` is an ally of `m_source`: of its team, or
+            // itself (`0C71` plays Biotic Grenade's ally aura `0B99` when
+            // true, its enemy aura `0C72` when false). Assumption: read from
+            // that use; `m_AFBBE9C3` (false or unset in every use) is not
+            // modelled.
+            "STU_53F4CA65"
+                if native_fields(config, &["m_target", "m_source", "m_AFBBE9C3"])
+                    && !json_truthy(child(child(config, "m_AFBBE9C3"), "m_value")) =>
+            {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let target = to_entity(&self.config(child(config, "m_target"), context, nested)?);
+                let source = to_entity(&self.config(child(config, "m_source"), context, nested)?);
+                match (target, source) {
+                    (Some(target), Some(source))
+                        if valid_entity(target) && valid_entity(source) =>
+                    {
+                        if target == source {
+                            Value::Bool(true)
+                        } else {
+                            let target = context.entity_team(target).ok_or_else(unsupported)?;
+                            let source = context.entity_team(source).ok_or_else(unsupported)?;
+                            Value::Bool(target == source)
+                        }
+                    }
+                    _ => Value::Bool(false),
+                }
             }
             "STU_D3EB8D87" if native_shape(config, class, Some("m_00903303")) => {
                 if let Some(value) = context.native(config) {

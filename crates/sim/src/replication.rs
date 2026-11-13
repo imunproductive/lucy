@@ -30,6 +30,7 @@ use crate::{
         ObservedScript, ObserverActivity, OtherDelivery, Others, PlayerView, RemoteBody,
         RemoteDeath, ShowContext, ShowOutput, ViewerReadiness,
     },
+    placed_script::PlacedViews,
     pools::FALLBACK_POOLS,
     projectile_flight::{FlightEnd, ProjectileFlight},
     projectiles::{
@@ -58,7 +59,9 @@ use orpheus_script::{
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
-    vm::{GameMessage, Motion, MoveRequest, RaisedCriteria, Snapshot, TargetCandidate},
+    vm::{
+        BodyEffects, GameMessage, Motion, MoveRequest, RaisedCriteria, Snapshot, TargetCandidate,
+    },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
 };
@@ -232,6 +235,17 @@ pub trait OwnerBodyRuntime: Send {
     /// for it.
     fn gain_ult(&mut self, _points: f64) -> io::Result<()> {
         Ok(())
+    }
+
+    /// An aura comes on the body (`vm/auras.rs` in `orpheus_script`),
+    /// dealt by `instigator`.
+    fn apply_aura(&mut self, _aura: u64, _instigator: u32) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// The statuses and combat modifiers the body's states hold.
+    fn effects(&self) -> Option<&BodyEffects> {
+        None
     }
 
     /// A game message from another entity, run now (match.py
@@ -711,6 +725,11 @@ enum Delivery {
     },
     /// A firing bot's rocket on this client (bot_script.rs `SeenDelivery`).
     BotSeen(SeenDelivery),
+    /// A server placeable's full frame (placed_script.rs); a newer one
+    /// supersedes it.
+    Placed {
+        last: u32,
+    },
     /// A respawned bot's stand-in controller now controls `body`, its new
     /// body (`scene.rs` `bot_controller_link`): it goes with or after the
     /// body's create, and a newer respawn's link supersedes it.
@@ -1315,6 +1334,8 @@ pub struct WorldDelivery {
     retained_elsewhere: HashSet<u32>,
     /// The training bots' statescript on this client.
     bot_views: BotViews,
+    /// The server placeables' statescript on this client.
+    placed_views: PlacedViews,
     /// The bodies the target searches can find, as the match last placed
     /// them; a new body starts with them.
     target_candidates: Vec<TargetCandidate>,
@@ -1446,6 +1467,7 @@ impl WorldDelivery {
             notices: SwitchNotices::default(),
             retained_elsewhere: HashSet::new(),
             bot_views: BotViews::default(),
+            placed_views: PlacedViews::default(),
             target_candidates: Vec::new(),
             death: None,
             plain_vitals: None,
@@ -1554,6 +1576,7 @@ impl WorldDelivery {
         self.board = BoardDelivery::default();
         self.others.clear();
         self.bot_views.clear();
+        self.placed_views.clear();
         self.target_candidates.clear();
         self.notices = SwitchNotices::default();
         self.spawn_room = None;
@@ -1784,6 +1807,31 @@ impl WorldDelivery {
         });
     }
 
+    /// The server placeables' frames this client doesn't have yet, for the
+    /// placeables whose create arrived (placed_script.rs).
+    pub fn update_placed(&mut self, scene: &PreparedScene) {
+        if self.started.is_none() {
+            return;
+        }
+        let created = |entity| self.created.contains(&entity);
+        let chunks = match self
+            .placed_views
+            .update(scene.placed_scripts().frames(), created)
+        {
+            Ok(chunks) => chunks,
+            Err(error) => {
+                eprintln!("a placed entity's frame failed ({error})");
+                return;
+            }
+        };
+        for chunk in chunks {
+            self.push(Record {
+                update: chunk.update,
+                delivery: Delivery::Placed { last: chunk.last },
+            });
+        }
+    }
+
     /// The training bots' statescript on this client this tick: new bot
     /// lifetimes' first frames, the room's live and death frames, what this
     /// client's ACKs made due and the practice nameplates
@@ -1912,6 +1960,7 @@ impl WorldDelivery {
             Delivery::Field(field) => self.fields.current(field, entity),
             Delivery::BotFrames { last } => self.bot_views.current(entity, last),
             Delivery::BotSeen(seen) => self.bot_views.seen_current(seen, entity),
+            Delivery::Placed { last } => self.placed_views.current(entity, last),
         }
     }
 
@@ -2036,6 +2085,9 @@ impl WorldDelivery {
                     }
                     (true, Delivery::Field(FieldDelivery::Destroy)) => {
                         self.fields.destroy_arrived(record.update.entity);
+                    }
+                    (true, Delivery::Placed { last }) => {
+                        self.placed_views.arrived(record.update.entity, last);
                     }
                     (true, Delivery::Script { last, .. }) if record.update.entity == self.owner => {
                         self.controller.arrived(last);
@@ -2876,8 +2928,11 @@ impl WorldDelivery {
         if self.death.is_some() || hit.amount.is_nan() || hit.amount <= 0.0 {
             return None;
         }
-        // Invulnerable in his team's spawn room (`map_areas`: 0C8E `03D4`).
-        if self.spawn_room == Some(true) {
+        // Invulnerable in his team's spawn room (`map_areas`: 0C8E `03D4`),
+        // or while his graphs hold a status (`STU_9028E035`).
+        if self.spawn_room == Some(true)
+            || self.body_effects().is_some_and(BodyEffects::invulnerable)
+        {
             return None;
         }
         let death_tick = hit.world_tick.unwrap_or(tick);
@@ -2947,15 +3002,27 @@ impl WorldDelivery {
         })
     }
 
-    /// combat.py `heal_area` for the player's living body. Returns what the
-    /// pools took.
-    pub fn heal_body(&mut self, scene: &PreparedScene, body: u32, amount: f64) -> f64 {
+    /// combat.py `heal_area` for the player's living body, scaled by the
+    /// healing modifiers his graphs hold for a heal with `tags` (Biotic
+    /// Grenade's anti-heal and heal boost, `vm/statuses.rs`). Returns what
+    /// the pools took.
+    pub fn heal_body(
+        &mut self,
+        scene: &PreparedScene,
+        body: u32,
+        amount: f64,
+        tags: &DamageTags,
+    ) -> f64 {
         let Some(current) = self.body.filter(|current| current.id.entity == body) else {
             return 0.0;
         };
         if self.death.is_some() {
             return 0.0;
         }
+        let amount = amount
+            * self
+                .body_effects()
+                .map_or(1.0, |effects| effects.healing_scale(tags));
         let mut failure = None;
         let given = match self
             .body_script
@@ -3017,7 +3084,7 @@ impl WorldDelivery {
         };
         if let (Some(true), Some(body)) = (self.spawn_room, self.body) {
             let amount = SPAWN_HEALING * TICK_PERIOD.as_secs_f64();
-            self.heal_body(scene, body.id.entity, amount);
+            self.heal_body(scene, body.id.entity, amount, &DamageTags::NONE);
         }
         let inside = self.may_change_hero();
         if inside != self.spawn_flag.0 {
@@ -3028,6 +3095,34 @@ impl WorldDelivery {
                 delivery: Delivery::SpawnFlag { revision },
             });
             self.remove_stale();
+        }
+    }
+
+    /// The statuses and combat modifiers the current body's states hold.
+    fn body_effects(&self) -> Option<&BodyEffects> {
+        let body = self.body?;
+        self.body_script
+            .as_ref()
+            .filter(|script| script.id == body.id)
+            .and_then(|script| script.runtime.effects())
+    }
+
+    /// An aura comes on the player's living body, dealt by `instigator`
+    /// (Biotic Grenade's explosion).
+    pub fn apply_aura(&mut self, aura: u64, instigator: u32) {
+        if self.death.is_some() {
+            return;
+        }
+        let Some(body) = self.body else {
+            return;
+        };
+        let failure = self
+            .body_script
+            .as_mut()
+            .filter(|script| script.id == body.id)
+            .and_then(|script| script.runtime.apply_aura(aura, instigator).err());
+        if let Some(error) = failure {
+            self.drop_failed_script(&error.to_string());
         }
     }
 

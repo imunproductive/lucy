@@ -104,7 +104,7 @@
   "STU_12F5D52D": {"alias": "ActionSetVars", "from": "research catalog"},
   "STU_187D5125": {"alias": "ActionStopAbility", "from": "ow174/game/script/nodes.py"},
   "STU_1FF67CA6": {"alias": "GetLocalPlayerPossessedView", "from": "ow174/game/script/driver.py"},
-  "STU_295D117D": {"alias": "GetPrimaryPossessorEntity", "from": "ow174/game/script/driver.py"},
+  "STU_295D117D": {"alias": "PossessorIsAI", "from": "leafall903/ORPHEUS driver.py (the AI predicate applied to the primary possessor); the Python name GetPrimaryPossessorEntity belongs to STU_DB742151"},
   "STU_2F07848F": {"alias": "ScaleTime(StEC)", "from": "research catalog", "client": "ScaleTime"},
   "STU_2F4E2E3F": {"alias": "StateWatch", "from": "research catalog", "client": "Watch"},
   "STU_310D6529": {"alias": "GetThrottle", "from": "ow174/game/script/driver.py"},

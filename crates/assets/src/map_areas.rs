@@ -73,7 +73,7 @@ use crate::{
     collision::mask_triangles,
     game_maps::{
         Components, Placed, REQUIRED, SPAWN, TARGET_AREA, TARGET_TAG_DATA, chunk_index, graph_vars,
-        instance, map_chunks, read_map, target_tags,
+        instance, map_chunks, placed_script, read_map, target_tags,
     },
     guid_hex,
     map_chunk::{COLLISION, area_boxes, chunk_kind, guid_of, name_index, short},
@@ -374,6 +374,13 @@ fn server_placeables(
                 "definition".into(),
                 json!(guid_hex(placed.entity.definition)),
             );
+            entry.insert(
+                "position".into(),
+                json!(placed.entity.translation.map(short)),
+            );
+            if let Some(script) = placed_script(&placed.instances) {
+                entry.insert("script".into(), script);
+            }
             Json::Object(entry)
         })
         .collect()

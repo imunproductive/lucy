@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::player::PlayerWorld;
+use crate::{player::PlayerWorld, weapons::DamageTags};
 use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
 use serde_json::json;
 
@@ -4595,8 +4595,8 @@ fn a_target_search_filters_by_team_and_the_searcher_as_authored() {
     assert_eq!(run(2, 0, false), [ALLY, ENEMY]);
 }
 
-/// A form with a part the server doesn't model (here quick melee's
-/// `m_D59188D5`, or an exclusion bit other than 16) finds nothing and
+/// A form with a part the server doesn't model (here the scoring
+/// `m_84E5DE4E`, or an exclusion bit other than 16 and 4) finds nothing and
 /// says which part, without stopping the body; so does a world that lists
 /// no bodies. The outputs keep their values.
 #[test]
@@ -4641,14 +4641,14 @@ fn a_target_search_the_server_cant_run_finds_nothing_and_names_the_gap() {
     };
     let owner = json!({"$":"STU_21A13145","m_entity":{"$":"STU_B5A0CAF0"}});
     assert_eq!(
-        run(allies_filter(), json!({"m_D59188D5":owner}), true),
+        run(allies_filter(), json!({"m_84E5DE4E":owner}), true),
         [(
-            "STUStatescriptStateTrackTargets m_D59188D5".to_owned(),
+            "STUStatescriptStateTrackTargets m_84E5DE4E".to_owned(),
             "finds no targets"
         )]
     );
     let mut filter = allies_filter();
-    filter["m_4EA686DB"] = json!(20);
+    filter["m_4EA686DB"] = json!(16 | 128);
     assert_eq!(
         run(filter, json!({}), true),
         [(
@@ -4663,6 +4663,317 @@ fn a_target_search_the_server_cant_run_finds_nothing_and_names_the_gap() {
             "finds no targets (the world lists none)"
         )]
     );
+}
+
+/// Bodies to search, and the health changes a world applies.
+#[derive(Default)]
+struct Healer {
+    bodies: Vec<TargetCandidate>,
+    changes: Vec<HealthChange>,
+    facing: Option<[i32; 2]>,
+}
+
+impl World for Healer {
+    fn target_candidates(&self, _site: Site) -> Option<&[TargetCandidate]> {
+        Some(&self.bodies)
+    }
+
+    fn entity_facing(&self, _site: Site, _entity: u32) -> Option<[i32; 2]> {
+        self.facing
+    }
+
+    fn modify_health(&mut self, change: HealthChange) -> bool {
+        self.changes.push(change);
+        true
+    }
+}
+
+/// Quick melee's form (`0043` st5 starting st4): a 1 m search 1.5 m ahead
+/// of the owner, anyone (`m_66747E7D` 0) of kind 64 but the owner's own
+/// body and the dead, the found to #375; a ModifyHealth of 30 to #375 with
+/// a tag and a loadout, a blow (`m_7B2B3F5C` 0) of damage (`m_93CDFD2F`
+/// 1). The search's line of sight and its open filter bits aren't read.
+fn melee_fixture(rate: bool) -> GraphStore {
+    let search = json!({
+        "m_8DCA77B6":{"$":"STU_B5A0CAF0"},
+        "m_05BE62DD":{"$":"STUConfigVarVec3","m_value":{"X":0.0,"Y":0.0,"Z":1.5}},
+        "m_radius":{"$":"STUConfigVarInt","m_value":1},
+        "m_D59188D5":{"$":"STU_21A13145","m_entity":{"$":"STU_B5A0CAF0"}},
+        "m_filter":{"$":"STUConfigVarFilter","m_84065FD1":64,"m_4EA686DB":20,
+            "m_66747E7D":0,"m_89831602":1},
+        "m_8A2905A0":var(375, false),
+        "m_subgraphPlug":plug(&[(2, "m_beginPlug")], &[1]),
+    });
+    let modify = json!({
+        "m_FA3ECC43":var(375, false),
+        "m_7B2B3F5C":i32::from(rate),
+        "m_95F1FB0B":if rate { json!({"$":"STUConfigVarFloat","m_value":0.5}) } else { Json::Null },
+        "m_modifyHealth":{
+            "$":"STUStatescriptModifyHealth",
+            "m_amount":{"$":"STUConfigVarInt","m_value":30},
+            "m_148F3152":[{"$":"STUStatescriptModifyHealthTag",
+                "m_EE3055BD":{"$":"STUConfigVarIdentifier","m_identifier":"0x0D80000000000302"}}],
+            "m_instigator":{"$":"STU_B5A0CAF0"},
+            "m_loadout":{"$":"STUConfigVarLoadout","m_loadout":"0x0B900000000002F5"},
+            "m_93CDFD2F":1,
+        },
+    });
+    store(vec![graph(
+        42,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntry",
+                None,
+                json!({"m_outPlug":plug(&[(1, "m_beginPlug")], &[])}),
+            ),
+            node(1, "STUStatescriptStateTrackTargets", Some(0), search),
+            node(2, "STUStatescriptStateModifyHealth", Some(1), modify),
+        ],
+        json!([1, 2]),
+        json!([0]),
+    )])
+}
+
+/// A blow strikes each body the search finds once per activation: the one
+/// ahead at once, one that walks in at the tick it is found, none again
+/// while it stays, as damage from the owner with the authored tag and
+/// loadout. The sphere goes 1.5 m along where the owner looks.
+#[test]
+fn a_modify_health_blow_strikes_each_found_body_once() {
+    let graphs = Arc::new(melee_fixture(false));
+    let mut world = Healer {
+        // Facing +x (yaw a quarter turn), level.
+        facing: Some([16384, 0]),
+        bodies: vec![
+            body(SEARCHER, 0, [0.0; 3]),
+            // 1.5 m ahead: within the sphere.
+            body(ENEMY, 1, [1.5, 0.0, 0.0]),
+            // 1.5 m behind: out of it.
+            body(ALLY, 0, [-1.5, 0.0, 0.0]),
+        ],
+        changes: Vec::new(),
+    };
+    let mut component = Component::start(
+        graphs,
+        SEARCHER,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        0,
+        &mut world,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let struck = |world: &mut Healer| {
+        std::mem::take(&mut world.changes)
+            .into_iter()
+            .map(|change| (change.target, change.amount, change.heal, change.frame))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(struck(&mut world), [(ENEMY, 30.0, false, 0)]);
+    component.advance_frame(1, &mut world).unwrap();
+    assert_eq!(struck(&mut world), []);
+    // The ally comes round in front: struck once, at frame 2.
+    world.bodies[2].feet = [1.2, 0.0, 0.4];
+    component.advance_frame(2, &mut world).unwrap();
+    let changes = std::mem::take(&mut world.changes);
+    assert_eq!(changes.len(), 1);
+    let change = &changes[0];
+    assert_eq!(
+        (
+            change.target,
+            change.instigator,
+            change.frame,
+            change.loadout
+        ),
+        (ALLY, SEARCHER, 2, Some(0x0b90_0000_0000_02f5))
+    );
+    assert_eq!(
+        change.tags.iter().collect::<Vec<_>>(),
+        [0x0d80_0000_0000_0302]
+    );
+    component.advance_frame(3, &mut world).unwrap();
+    assert_eq!(struck(&mut world), []);
+    let snapshot = component.snapshot().unwrap();
+    assert!(snapshot.initialization_complete());
+    let assumed: Vec<_> = snapshot
+        .assumptions
+        .iter()
+        .map(|item| (item.class.as_str(), item.answer))
+        .collect();
+    assert!(assumed.contains(&(
+        "STUStatescriptStateTrackTargets m_D59188D5",
+        "no line-of-sight test"
+    )));
+}
+
+/// A rate (`m_7B2B3F5C` 1) gives every body in its targets its amount each
+/// `m_95F1FB0B` seconds, at each tick the share of the time since the last
+/// (or its begin): 30 every 0.5 s is 0.96 a 16 ms frame.
+#[test]
+fn a_modify_health_rate_applies_a_share_each_tick() {
+    let graphs = Arc::new(melee_fixture(true));
+    let mut world = Healer {
+        facing: Some([16384, 0]),
+        bodies: vec![body(SEARCHER, 0, [0.0; 3]), body(ENEMY, 1, [1.5, 0.0, 0.0])],
+        changes: Vec::new(),
+    };
+    let mut component = Component::start(
+        graphs,
+        SEARCHER,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        0,
+        &mut world,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    assert!(world.changes.is_empty());
+    for frame in 1..=2 {
+        component.advance_frame(frame, &mut world).unwrap();
+    }
+    let shares: Vec<_> = world
+        .changes
+        .iter()
+        .map(|change| (change.target, change.amount))
+        .collect();
+    // The state began at 0 ms; frame 1's tick comes at its last
+    // millisecond (2 × 16 − 1 = 31 ms), frame 2's a frame later.
+    let share = |ms: f64| 30.0 * (ms / 1000.0 / 0.5);
+    assert_eq!(
+        shares,
+        [
+            (ENEMY, share((2 * FRAME_MS - 1) as f64)),
+            (ENEMY, share(FRAME_MS as f64))
+        ]
+    );
+}
+
+/// A body's world that keeps its statuses and modifiers.
+#[derive(Default)]
+struct Aurad {
+    changes: Vec<HealthChange>,
+    effects: BodyEffects,
+}
+
+impl World for Aurad {
+    fn modify_health(&mut self, change: HealthChange) -> bool {
+        self.changes.push(change);
+        true
+    }
+
+    fn set_status(&mut self, site: Site, status: Option<i64>) -> bool {
+        self.effects.set_status(site, status)
+    }
+
+    fn combat_mod(&mut self, site: Site, modifier: Option<CombatMod>) -> bool {
+        self.effects.combat_mod(site, modifier)
+    }
+}
+
+/// An aura (`053:0001`, 0.1 s) whose graph 50 takes the instigator into
+/// #40 at its "aura applied" entry, then holds a status of type 0 and a
+/// healing modifier ×0 (Biotic Grenade's `0C72` st8) and deals 60 to its
+/// body from #40, until a 4 s wait ends the instance.
+#[test]
+fn an_aura_runs_its_graph_on_the_body_until_its_instance_ends() {
+    const AURA: u64 = 0x0530_0000_0000_0001;
+    let applied = json!({"$":"STUConfigVarGameMessage","m_gameMessage":"0x024000000000000F"});
+    let aura_graph = graph(
+        50,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntryGameMessage",
+                None,
+                json!({"m_gameMessage":applied, "m_B60ABDA4":var(40, false),
+                    "m_outPlug":plug(&[(1, "m_beginPlug")], &[])}),
+            ),
+            node(
+                1,
+                "STUStatescriptStateWait",
+                Some(0),
+                json!({"m_timeout":{"$":"STUConfigVarInt","m_value":4},
+                    "m_subgraphPlug":plug(&[(2, "m_beginPlug"), (3, "m_beginPlug"), (4, "m_beginPlug")], &[1, 2, 3]),
+                    "m_onEndPlug":plug(&[(5, "m_inPlug")], &[])}),
+            ),
+            node(2, "STU_9028E035", Some(1), json!({"m_type":0})),
+            node(
+                3,
+                "STUStatescriptStateCombatModFilter",
+                Some(2),
+                json!({"m_60703B1E":"0x0D8000000000031A",
+                    "m_50530EAB":{"$":"STUConfigVarInt","m_value":0}, "m_41B10FF2":1}),
+            ),
+            node(
+                4,
+                "STUStatescriptStateModifyHealth",
+                Some(3),
+                json!({"m_FA3ECC43":{"$":"STU_B5A0CAF0"}, "m_7B2B3F5C":0,
+                    "m_modifyHealth":{"$":"STUStatescriptModifyHealth",
+                        "m_amount":{"$":"STUConfigVarInt","m_value":60},
+                        "m_instigator":var(40, false), "m_93CDFD2F":1}}),
+            ),
+            node(5, "STU_22926252", None, json!({})),
+        ],
+        json!([1, 2, 3, 4]),
+        json!([0]),
+    );
+    let idle = graph(
+        42,
+        vec![node(
+            0,
+            "STUStatescriptEntry",
+            None,
+            json!({"m_outPlug":plug(&[], &[])}),
+        )],
+        json!([]),
+        json!([0]),
+    );
+    let graphs = Arc::new(
+        GraphStore::from_json(
+            &serde_json::to_vec(&json!({
+                "version":1, "graphs":[idle, aura_graph], "bodies":{}, "missing":[],
+                "auras":{"0x0530000000000001":{"m_5A4051BC":"0x0580000000000032","m_7DAE8F10":4.5}}
+            }))
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    let mut world = Aurad::default();
+    let mut component = Component::start(
+        graphs,
+        SEARCHER,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        0,
+        &mut world,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let id = component
+        .apply_aura(AURA, ENEMY, &[], &mut world)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        world
+            .changes
+            .iter()
+            .map(|change| (change.target, change.instigator, change.amount, change.heal))
+            .collect::<Vec<_>>(),
+        [(SEARCHER, ENEMY, 60.0, false)]
+    );
+    assert!(world.effects.invulnerable());
+    assert_eq!(world.effects.healing_scale(&DamageTags::NONE), 0.0);
+    // 4 s (250 frames of 16 ms) later the wait ends, the instance exits
+    // and its states let go.
+    for frame in 1..=251 {
+        component.advance_frame(frame, &mut world).unwrap();
+    }
+    assert!(!component.snapshot().unwrap().instances.contains_key(&id));
+    assert!(!world.effects.invulnerable());
+    assert_eq!(world.effects.healing_scale(&DamageTags::NONE), 1.0);
+    assert!(component.snapshot().unwrap().initialization_complete());
 }
 
 /// Alias `0C8:0001` of [`Animations`].

@@ -94,8 +94,9 @@
 //! barriers, doorway frames, team walls, spawn doors, objective models and
 //! other scenery). The client makes a server-owned placeable only when the
 //! server creates it, so the scene creates them from the map after the
-//! player and the mode, in their default state: their scripts don't run
-//! (see `orpheus_assets`' `map_areas` notes).
+//! player and the mode. Their scripts (each one's definition, position and
+//! statescript instance data, [`PlacedScript`]) run on the server in
+//! `crate::placed_script`.
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -106,6 +107,7 @@ use std::{
 
 use orpheus_content::maps::{GameMap, SpawnChoice};
 use orpheus_physics::collision::index::SceneTriangle;
+use orpheus_script::{graph::GraphBinding, placed::Placement};
 use serde::Deserialize;
 
 use crate::objectives::CaptureBox;
@@ -186,12 +188,43 @@ impl MapPlaceable {
     }
 }
 
+/// A server placeable's script data: its definition, where the map puts it
+/// and its statescript instance data (`orpheus_script::placed`).
+#[derive(Debug)]
+pub struct PlacedScript {
+    pub placeable: u32,
+    /// The entity definition (`003`).
+    pub definition: u64,
+    pub position: [f64; 3],
+    pub overrides: Vec<GraphBinding>,
+    pub extra: Vec<GraphBinding>,
+}
+
+impl PlacedScript {
+    /// The entity the client makes of it: `0x80000000 | flat index`.
+    pub fn entity(&self) -> u32 {
+        0x8000_0000 | self.placeable
+    }
+
+    pub fn placement(&self) -> Placement<'_> {
+        Placement {
+            entity: self.entity(),
+            definition: self.definition,
+            position: self.position,
+            overrides: &self.overrides,
+            extra: &self.extra,
+        }
+    }
+}
+
 /// One map's areas.
 #[derive(Debug)]
 struct MapAreas {
     rooms: Result<Arc<[SpawnRoom]>, String>,
     damage_areas: Vec<DamageArea>,
     server_placeables: Vec<MapPlaceable>,
+    /// The server placeables' script data, in the same order.
+    scripts: Vec<Arc<PlacedScript>>,
     kill_volumes: Arc<[CaptureBox]>,
 }
 
@@ -215,7 +248,7 @@ struct RawMap {
     #[serde(default)]
     damage_areas: Vec<RawDamageArea>,
     #[serde(default)]
-    server_placeables: Vec<RawPlaceable>,
+    server_placeables: Vec<RawServerPlaceable>,
     #[serde(default)]
     kill_volumes: Vec<CaptureBox>,
 }
@@ -239,6 +272,26 @@ struct RawDamageArea {
 struct RawPlaceable {
     placeable: u32,
     identifier: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawServerPlaceable {
+    #[serde(flatten)]
+    placeable: RawPlaceable,
+    #[serde(default)]
+    definition: Option<String>,
+    #[serde(default)]
+    position: [f64; 3],
+    #[serde(default)]
+    script: RawScript,
+}
+
+#[derive(Default, Deserialize)]
+struct RawScript {
+    #[serde(default)]
+    overrides: Vec<GraphBinding>,
+    #[serde(default)]
+    extra: Vec<GraphBinding>,
 }
 
 impl RawPlaceable {
@@ -314,11 +367,31 @@ impl MapAreaData {
                     })
                 })
                 .collect::<io::Result<_>>()?;
-            let server_placeables = raw
-                .server_placeables
-                .into_iter()
-                .map(|placeable| placeable.read(&key))
-                .collect::<io::Result<_>>()?;
+            let mut server_placeables = Vec::new();
+            let mut scripts = Vec::new();
+            for raw in raw.server_placeables {
+                let placeable = raw.placeable.read(&key)?;
+                let definition = raw
+                    .definition
+                    .map(|text| {
+                        u64::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|_| {
+                            invalid(format!(
+                                "{FILE}: map {key}: placeable {}: definition {text}",
+                                placeable.placeable
+                            ))
+                        })
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                scripts.push(Arc::new(PlacedScript {
+                    placeable: placeable.placeable,
+                    definition,
+                    position: raw.position,
+                    overrides: raw.script.overrides,
+                    extra: raw.script.extra,
+                }));
+                server_placeables.push(placeable);
+            }
             for (number, volume) in (0u32..).zip(&raw.kill_volumes) {
                 check_boxes(std::slice::from_ref(volume), &key, "kill volume", number)?;
             }
@@ -328,6 +401,7 @@ impl MapAreaData {
                     rooms,
                     damage_areas,
                     server_placeables,
+                    scripts,
                     kill_volumes: raw.kill_volumes.into(),
                 },
             );
@@ -371,17 +445,22 @@ impl MapAreaData {
             .unwrap_or_default()
     }
 
-    /// The flat indexes of the map's server placeables that exist in a mode
-    /// that lists `identifiers`.
-    pub fn server_placeables(&self, map: &GameMap, identifiers: &BTreeSet<u64>) -> Vec<u32> {
+    /// The script data of the map's server placeables that exist in a mode
+    /// that lists `identifiers`, in placeable order.
+    pub fn placed_scripts(
+        &self,
+        map: &GameMap,
+        identifiers: &BTreeSet<u64>,
+    ) -> Vec<Arc<PlacedScript>> {
         self.maps
             .get(&map.map_guid)
             .map(|areas| {
                 areas
                     .server_placeables
                     .iter()
-                    .filter(|placeable| placeable.in_mode(identifiers))
-                    .map(|placeable| placeable.placeable)
+                    .zip(&areas.scripts)
+                    .filter(|(placeable, _)| placeable.in_mode(identifiers))
+                    .map(|(_, script)| Arc::clone(script))
                     .collect()
             })
             .unwrap_or_default()

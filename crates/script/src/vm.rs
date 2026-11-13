@@ -9,16 +9,19 @@
 mod abilities;
 mod actions;
 mod arrays;
+mod auras;
 mod buttons;
 mod context;
 mod filter_array;
 mod flow;
+mod health;
 mod lifecycle;
 mod links;
 mod machine;
 mod nodes;
 mod play;
 mod state_kinds;
+mod statuses;
 mod switches;
 mod targets;
 mod timers;
@@ -32,8 +35,11 @@ use std::{
     sync::Arc,
 };
 
+pub use auras::{AURA_APPLIED, asks_ai_of_unset_creator};
+pub use health::HealthChange;
 use indexmap::IndexMap;
 use serde_json::Value as Json;
+pub use statuses::{BodyEffects, CombatMod, DAMAGE_TAKEN, HEALING_TAKEN, INVULNERABLE, PHASED_OUT};
 
 use crate::{
     expr::{
@@ -109,21 +115,36 @@ pub fn body_roots(body: &Body) -> Result<Vec<Root>, InitFault> {
         };
         let id = u16::try_from(offset + 1).map_err(|_| InitFault::InstanceIdExhausted)?;
         let mut root = Root::new(id, graph);
-        for field in binding.sync.iter().flatten() {
-            let key = field
-                .get("m_0D09D2D9")
-                .and_then(asset_guid)
-                .map_or(0, |guid| guid as u16);
-            let value = expr::evaluate(
-                field.get("m_value").unwrap_or(&Json::Null),
-                &mut EmptyContext,
-            )
-            .map_err(|error| InitFault::RootBinding { id, graph, error })?;
-            root.variables.insert(u32::from(key), value);
-        }
+        bind_values(&mut root, binding.sync.iter().flatten())?;
         roots.push(root);
     }
     Ok(roots)
+}
+
+/// Write a binding's schema entries (`STUStatescriptSchemaEntry`: the
+/// variable `m_0D09D2D9`, the config `m_value`) into the root, a later
+/// entry of a variable replacing an earlier one.
+pub fn bind_values<'a>(
+    root: &mut Root,
+    entries: impl IntoIterator<Item = &'a Json>,
+) -> Result<(), InitFault> {
+    for field in entries {
+        let key = field
+            .get("m_0D09D2D9")
+            .and_then(asset_guid)
+            .map_or(0, |guid| guid as u16);
+        let value = expr::evaluate(
+            field.get("m_value").unwrap_or(&Json::Null),
+            &mut EmptyContext,
+        )
+        .map_err(|error| InitFault::RootBinding {
+            id: root.id,
+            graph: root.graph,
+            error,
+        })?;
+        root.variables.insert(u32::from(key), value);
+    }
+    Ok(())
 }
 
 /// Initial body bindings, then the manager and equipped weapon slots in asset order.
@@ -462,6 +483,25 @@ pub trait World {
     /// server plays the line (ClientInVoice 27500). By default nothing
     /// listens.
     fn criteria(&mut self, _site: Site, _raised: RaisedCriteria) {}
+
+    /// A ModifyHealth state damaged or healed a body (`vm/health.rs`): the
+    /// match applies it through its own health code. False: this world
+    /// applies none, and the state has no effect.
+    fn modify_health(&mut self, _change: HealthChange) -> bool {
+        false
+    }
+
+    /// A status state (`STU_9028E035`, `vm/statuses.rs`) began with its
+    /// `m_type` (Some) or ended (None). False: this world keeps none.
+    fn set_status(&mut self, _site: Site, _status: Option<i64>) -> bool {
+        false
+    }
+
+    /// A `CombatModFilter` state began with its modifier (Some) or ended
+    /// (None). False: this world keeps none.
+    fn combat_mod(&mut self, _site: Site, _modifier: Option<CombatMod>) -> bool {
+        false
+    }
 }
 
 /// A criteria a body raised on itself ([`World::criteria`]).
@@ -573,9 +613,18 @@ pub enum StateKind {
     /// are [`State::tracked`]. Forms the server can't run find nothing
     /// (an assumption, as in the Python reference).
     TrackTargets,
-    /// Melee's hit list (`STU_77E13026`). Its hits come from melee's own
-    /// states, which the server doesn't run (the match applies quick melee's
-    /// damage itself), so it records none. Unverified.
+    /// A health change (`vm/health.rs`): a rate keeps when it last applied
+    /// its share.
+    ModifyHealth {
+        last_ms: u64,
+    },
+    /// A status on the body while active (`STU_9028E035`, `vm/statuses.rs`).
+    Status,
+    /// A combat modifier on the body while active (`CombatModFilter`).
+    CombatMod,
+    /// Melee's hit list (`STU_77E13026`). The hits melee's ModifyHealth
+    /// makes go to the match, not to this list, so it records none.
+    /// Unverified.
     HitList,
     WeaponVolley {
         volleys: u8,

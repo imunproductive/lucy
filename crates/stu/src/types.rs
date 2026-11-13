@@ -187,6 +187,10 @@ impl Class {
     pub fn own_fields(&self) -> &[Field] {
         &self.fields
     }
+
+    pub fn parent(&self) -> Option<u32> {
+        self.parent
+    }
 }
 
 /// A field's value when absent, as C# initializes it.

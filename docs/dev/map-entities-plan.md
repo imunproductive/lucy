@@ -36,6 +36,8 @@ Risks: a scripted placeable shows whatever its default is (for example what `0D7
 
 A `MapEntityWorld` beside the body and bot worlds: one script component per placed entity, started in the client's order (definition graphs, then the instance's overrides on the first matching graph, then the instance's extra graphs), streamed to each client after its create arrived, with target searches over the players. Bundle every graph the map's placeables name. Fill the VM's missing classes one at a time (`STU_33A46033`, `STU_B1FA9C2A`, `STU_7D71FDF3`, `STU_0F647E55`, `STU_49FE0019`, `STU_550D0C5C`, the console natives), keeping unknown classes refused in debug builds.
 
+First slice done: the world, the derivation, the bundle and the delivery exist, and `STU_33A46033` and `STU_B1FA9C2A` run (the Range's barriers and doors send frames). Left: the other classes, Rialto's gaps, spawned entities (see `MapEntities.md`, Stage B).
+
 ### Stage C and D
 
 See the table. Stage C needs the mode graph's `072F` parameters (from `0F4A` / `0EC2`) sent by `match_flow.rs`, since the mode graph itself doesn't run.

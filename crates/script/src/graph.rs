@@ -325,6 +325,21 @@ struct Bundle {
     #[serde(default)]
     mode_variables: BTreeMap<String, BTreeMap<u32, Value>>,
     missing: Vec<u32>,
+    #[serde(default)]
+    auras: BTreeMap<String, Value>,
+}
+
+/// An aura (`053`, `STU_76F2C784`): a status a body carries, its effect
+/// authored as a graph that runs on the body (Biotic Grenade's `0267`
+/// runs `0C71`, which plays `0C72` on an enemy and `0B99` on an ally).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Aura {
+    /// The graph an aura runs on the body it is on (`m_5A4051BC`).
+    pub graph: Option<u32>,
+    /// `m_7DAE8F10`: how long the aura's own instance stays on the body,
+    /// in seconds; 0 until its graph exits (`0267` 0.1, the Biotic Field's
+    /// `025F` 0). Assumption: read from these two uses.
+    pub seconds: f64,
 }
 
 #[derive(Debug)]
@@ -344,6 +359,10 @@ pub struct GraphStore {
     /// [`GraphStore::with_anim_lengths`].
     anim_lengths: Arc<AnimLengths>,
     missing: Vec<u32>,
+    auras: BTreeMap<u64, Aura>,
+    /// The aura graphs and the graphs they play (`PlayScript`), whose
+    /// PlayScript actions the server runs.
+    aura_graphs: BTreeSet<u32>,
 }
 
 impl GraphStore {
@@ -373,6 +392,22 @@ impl GraphStore {
             graph.compile()?;
             graphs.insert(graph.index, graph);
         }
+        let auras: BTreeMap<u64, Aura> = keyed_by_guid(bundle.auras)?
+            .into_iter()
+            .map(|(guid, fields)| {
+                let graph = fields
+                    .get("m_5A4051BC")
+                    .and_then(asset_guid)
+                    .filter(|&graph| graph >> 48 == GRAPH_TYPE)
+                    .and_then(|graph| u32::try_from(graph & 0xFFFF_FFFF_FFFF).ok());
+                let seconds = fields
+                    .get("m_7DAE8F10")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
+                (guid, Aura { graph, seconds })
+            })
+            .collect();
+        let aura_graphs = played_closure(&graphs, auras.values().filter_map(|aura| aura.graph));
         Ok(Self {
             graphs,
             bodies: keyed_by_guid(bundle.bodies)?,
@@ -391,7 +426,19 @@ impl GraphStore {
             tunables: Arc::default(),
             anim_lengths: Arc::default(),
             missing: bundle.missing,
+            auras,
+            aura_graphs,
         })
+    }
+
+    /// The aura `guid` (a `053` GUID).
+    pub fn aura(&self, guid: u64) -> Option<&Aura> {
+        self.auras.get(&guid)
+    }
+
+    /// Whether `graph` runs as an aura or is played by one.
+    pub fn is_aura_graph(&self, graph: u32) -> bool {
+        self.aura_graphs.contains(&graph)
     }
 
     /// A bundle of the runtime `data` folder with the folder's ruleset
@@ -598,6 +645,33 @@ fn collect_graphs(value: &Value, out: &mut BTreeSet<u64>) {
             }
         }
     }
+}
+
+/// `roots` and every graph their `PlayScript` actions play, in turn.
+fn played_closure(
+    graphs: &BTreeMap<u32, Graph>,
+    roots: impl Iterator<Item = u32>,
+) -> BTreeSet<u32> {
+    let mut found = BTreeSet::new();
+    let mut queue: Vec<u32> = roots.collect();
+    while let Some(index) = queue.pop() {
+        if !found.insert(index) {
+            continue;
+        }
+        let Some(graph) = graphs.get(&index) else {
+            continue;
+        };
+        queue.extend(
+            graph
+                .nodes
+                .iter()
+                .filter(|node| node.class == "STUStatescriptActionPlayScript")
+                .filter_map(|node| node.field("m_script.m_graph").and_then(asset_guid))
+                .filter(|&played| played >> 48 == GRAPH_TYPE)
+                .filter_map(|played| u32::try_from(played & 0xFFFF_FFFF_FFFF).ok()),
+        );
+    }
+    found
 }
 
 fn keyed_by_guid<T>(records: BTreeMap<String, T>) -> io::Result<BTreeMap<u64, T>> {

@@ -870,6 +870,140 @@ fn config_value(stu: &StuV1<'_>, value: usize) -> Result<Option<String>> {
     })
 }
 
+/// A placeable's statescript instance data
+/// (`STUStatescriptComponentInstanceData`) as the graph bundle writes an
+/// entity's initial graphs: `overrides` (`m_6D10093E`, values the client
+/// writes into the first of the definition's graphs with the same index)
+/// and `extra` (`m_84D0983B`, graphs it starts after the definition's), each
+/// `{graph, m_1EB5A024, m_75408640}`. `None` without instance data. A
+/// component schema (`m_2D9815BA`) is kept as `schema: true`: no 1.74 map
+/// placeable has been seen with one, and the server doesn't apply it.
+pub(crate) fn placed_script(instances: &[(StuV1<'_>, usize)]) -> Option<Value> {
+    let (stu, root) = instances
+        .iter()
+        .find(|(stu, root)| stu.class(*root) == Some(STATESCRIPT_DATA))?;
+    let lists = GRAPH_ARRAYS.map(|field| {
+        let Some((count, first)) = stu.array(root + field) else {
+            return Vec::new();
+        };
+        (0..count)
+            .filter_map(|n| {
+                let at = first + GRAPH_SIZE * n;
+                let graph = stu.asset_ref(at).filter(|guid| *guid != 0)?;
+                let entries: Vec<Value> = stu
+                    .embedded_array(at + 16)
+                    .into_iter()
+                    .filter(|entry| stu.class(*entry) == Some(SCHEMA_ENTRY))
+                    .map(|entry| {
+                        json!({
+                            "$": "STUStatescriptSchemaEntry",
+                            "m_0D09D2D9": stu.asset_ref(entry + 8).map_or(Value::Null, bundle_guid),
+                            "m_value": stu.embedded(entry + 24)
+                                .map_or(Value::Null, |config| stu_v1_json(stu, config, 0)),
+                        })
+                    })
+                    .collect();
+                Some(json!({
+                    "graph": name_index(graph),
+                    "m_1EB5A024": entries,
+                    "m_75408640": stu.u32(at + 32).unwrap_or(0),
+                }))
+            })
+            .collect()
+    });
+    let [overrides, extra] = lists;
+    let mut script = Map::new();
+    script.insert("overrides".into(), json!(overrides));
+    script.insert("extra".into(), json!(extra));
+    if stu.embedded(root + 40).is_some() {
+        script.insert("schema".into(), json!(true));
+    }
+    Some(Value::Object(script))
+}
+
+/// An asset reference as the graph bundle writes it: type and index only,
+/// null for none.
+fn bundle_guid(guid: u64) -> Value {
+    if guid == 0 || name_index(guid) == 0 {
+        return Value::Null;
+    }
+    json!(format!("0x{:016X}", guid & 0x0FFF_FFFF_FFFF_FFFF))
+}
+
+const MAX_CONFIG_DEPTH: usize = 16;
+
+/// An STUv1 instance as the graph bundle writes an object: `$` the class,
+/// then its fields. The layout is TankLib's: after the instance's 8-byte
+/// header the
+/// fields of the root ancestor first, each at its size's alignment
+/// (asset references 16 bytes, embedded instances 8). A field kind the
+/// layout can't place (arrays, strings, inline instances) ends the object:
+/// it and the fields after it are left out, so the evaluator refuses the
+/// config instead of reading a wrong value.
+fn stu_v1_json(stu: &StuV1<'_>, at: usize, depth: usize) -> Value {
+    use orpheus_stu::{Kind, Types};
+    let types = Types::get();
+    let hash = stu.class(at).unwrap_or(0);
+    let Some(class) = types.class(hash) else {
+        return json!({"$": format!("STU_{hash:08X}")});
+    };
+    let mut chain = vec![class];
+    while let Some(parent) = chain.last().and_then(|class| class.parent()) {
+        match types.class(parent) {
+            Some(parent) => chain.push(parent),
+            None => break,
+        }
+    }
+    let mut out = Map::from_iter([("$".into(), json!(class.name))]);
+    let mut offset: usize = 8;
+    for field in chain.iter().rev().flat_map(|class| class.own_fields()) {
+        if field.ty.array {
+            break;
+        }
+        let (size, align) = match field.ty.kind {
+            Kind::Int { bytes, .. } => (usize::from(bytes), usize::from(bytes)),
+            Kind::F32 => (4, 4),
+            Kind::F64 => (8, 8),
+            Kind::Guid => (16, 8),
+            Kind::Embed => (8, 8),
+            _ => break,
+        };
+        offset = offset.next_multiple_of(align);
+        let value = match field.ty.kind {
+            Kind::Int { bytes, signed } => {
+                let raw = stu.u64(at + offset).unwrap_or(0);
+                let bits = u32::from(bytes) * 8;
+                let raw = if bits == 64 {
+                    raw
+                } else {
+                    raw & ((1 << bits) - 1)
+                };
+                if signed && bits < 64 && raw >> (bits - 1) & 1 == 1 {
+                    json!((raw | !((1u64 << bits) - 1)) as i64)
+                } else if signed {
+                    json!(raw as i64)
+                } else {
+                    json!(raw)
+                }
+            }
+            Kind::F32 => stu
+                .f32(at + offset)
+                .map_or(Value::Null, |value| json!(short(value))),
+            Kind::F64 => stu
+                .u64(at + offset)
+                .map_or(Value::Null, |bits| json!(f64::from_bits(bits))),
+            Kind::Guid => stu.asset_ref(at + offset).map_or(Value::Null, bundle_guid),
+            Kind::Embed if depth < MAX_CONFIG_DEPTH => stu
+                .embedded(at + offset)
+                .map_or(Value::Null, |inner| stu_v1_json(stu, inner, depth + 1)),
+            _ => Value::Null,
+        };
+        out.insert(field.name.into(), value);
+        offset += size;
+    }
+    Value::Object(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

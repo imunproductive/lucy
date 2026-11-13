@@ -1709,7 +1709,6 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
                 standing: 1.55,
                 crouched: 1.085,
             },
-            melee: Arc::new([]),
             field: None,
         },
         Unknowns::Tolerate,
