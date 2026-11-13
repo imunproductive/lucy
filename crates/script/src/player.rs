@@ -565,9 +565,7 @@ mod tests {
         let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
         let soldier = &graphs.bodies()[&0x0400_0000_0000_03cf];
         let tags = |ids: &[u64]| -> crate::weapons::DamageTags {
-            ids.iter()
-                .map(|tag| 0x0d80_0000_0000_0000 | tag)
-                .collect()
+            ids.iter().map(|tag| 0x0d80_0000_0000_0000 | tag).collect()
         };
         let explosion = tags(&[0x03bf, 0x04b1, 0x078d, 0x0980, 0x2d30]);
         // The Heavy Pulse Rifle's bullet (`0254` rid 23), less its one tag
@@ -648,10 +646,7 @@ mod tests {
                 BOT => BOT_CONTROLLER,
                 other => other & !0xff,
             };
-            assert_eq!(
-                instance(0x01cf).variables[&9737],
-                Value::Entity(controller)
-            );
+            assert_eq!(instance(0x01cf).variables[&9737], Value::Entity(controller));
             let Value::Float(rating) = snapshot.variables[&10417] else {
                 panic!("004B rates the hurt");
             };
@@ -697,8 +692,7 @@ mod tests {
         // An enemy Soldier: 76's bullet of 19: the gun tag `09A2` flinches
         // (0.4), no knockback; 0.095 + 0.3 × 19 / 125 = 0.1406. The pain's
         // audience is the hurt body and the enemy player's body.
-        let (rating, criteria, knockback, strength) =
-            hurt(ENEMY, 19.0, bullet, [0.0, 0.0, -1.0]);
+        let (rating, criteria, knockback, strength) = hurt(ENEMY, 19.0, bullet, [0.0, 0.0, -1.0]);
         assert!((rating - 0.1406).abs() < 1e-6, "{rating}");
         assert_eq!(
             criteria,

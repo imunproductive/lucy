@@ -1964,12 +1964,14 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     );
     let line = pain.unwrap().1[&0x90].clone();
     let heard_by_shooter = |watchers: &[&mut Watcher]| {
-        messages_of(watchers[0], 27500).iter().any(|(index, voice)| {
-            *index >= fired
-                && voice[&0x78] == body_id(target_body)
-                && voice[&0x7c] == body_id(shooter_body)
-                && voice[&0x90] == line
-        })
+        messages_of(watchers[0], 27500)
+            .iter()
+            .any(|(index, voice)| {
+                *index >= fired
+                    && voice[&0x78] == body_id(target_body)
+                    && voice[&0x7c] == body_id(shooter_body)
+                    && voice[&0x90] == line
+            })
     };
     pump_until(
         &mut [shooter, target],
