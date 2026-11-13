@@ -1370,12 +1370,14 @@ impl Evaluator {
             // payload's speed by `1 - v + 2v·x` (v = 0.1) and `0C8E` uid 136
             // takes `(x - 0.5)·2`. Inferred from those uses
             // (refs/reports/Payloads.md), not read in the client.
-            "STU_B182C5C9" if native_shape(config, class, None) => {
-                let sample = context
-                    .random_u64()
-                    .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
-                Value::Float(rounded(unit_interval(sample)))
-            }
+            // A context without a random stream may answer it as a native
+            // (the static rule reader takes the middle, 0.5).
+            "STU_B182C5C9" if native_shape(config, class, None) => match context.random_u64() {
+                Some(sample) => Value::Float(rounded(unit_interval(sample))),
+                None => context
+                    .native(config)
+                    .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+            },
             // The least of the values of `m_814F8EC3` (arrays opened), each as
             // an f32, a value that is no number counting as the default
             // `m_A53100D5` (itself 0 when it is no number); no value gives the

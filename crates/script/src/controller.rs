@@ -235,6 +235,19 @@ impl World for ControllerWorld {
         });
         true
     }
+
+    /// A message to every entity (`STU_1D719351`, `0C90` st5/st21/st70):
+    /// queued with the target [`crate::mode::EVERY_ENTITY`], as the mode
+    /// graph's.
+    fn broadcast_message(&mut self, _source: Site, message: u64, parameters: &Variables) -> bool {
+        self.outbox.push(GameMessage {
+            sender: self.entity,
+            target: crate::mode::EVERY_ENTITY,
+            message,
+            parameters: parameters.clone(),
+        });
+        true
+    }
 }
 
 /// The controller graph running on the player's controller entity.
