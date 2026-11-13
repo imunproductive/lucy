@@ -710,5 +710,26 @@ mod tests {
         assert!((rating - 0.035_15).abs() < 1e-6, "{rating}");
         assert!(criteria.is_empty(), "{criteria:?}");
         assert_eq!(strength, Some(Value::Float(f64::from(0.4_f32))));
+        // The rocket's message without its tags (`.hurt flinch off`,
+        // `orpheus_sim::hurt_feedback`): `004B` rates the amount and `01CA`
+        // leaves out only `191F`/`0262`, so the rating and the pain line
+        // stay; `02C5` finds no gun tag and no `078D`: no flinch, no
+        // knockback.
+        let (rating, criteria, knockback, strength) = hurt(
+            BOT,
+            120.0,
+            crate::weapons::DamageTags::NONE,
+            [0.0, 0.0, -1.0],
+        );
+        assert!((rating - 0.888).abs() < 1e-6, "{rating}");
+        assert_eq!(
+            criteria,
+            [
+                (10, SEVERE, Some(vec![BODY, BOT])),
+                (10, ABOVE_A_TENTH, None)
+            ]
+        );
+        assert!(!knockback);
+        println!("untagged strength {strength:?}");
     }
 }

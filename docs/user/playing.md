@@ -142,6 +142,20 @@ Our bots send one pool part: `health.0`, id `1`, kind `0`, maximum and current h
 
 After each step, look at the segment outlines and at the `▌` before the name.
 
+## Hurt feedback switch
+
+When a hit leaves you alive, the server sends your hero a damage message. Your hero then flinches (a small camera kick), an explosion knocks your view back, and about 0.15 s later you hear a pain line. Before 12 November 2026 the server sent no such message. To compare the two, type in any chat during a match:
+
+| Command | Effect |
+|---|---|
+| `.hurt` | Shows what is on |
+| `.hurt off` | No damage message: no flinch, no knockback, no pain line (the old behaviour) |
+| `.hurt on` | Everything on again (the default) |
+| `.hurt flinch off` / `.hurt flinch on` | The message goes without the hit's damage tags: no flinch and no knockback, but the pain line stays |
+| `.hurt pain off` / `.hurt pain on` | No pain line; the flinch and the knockback stay |
+
+The switch is for every player of every running match, at once. It does not change how the training bots and the AI heroes react to their own hits. It goes back on when the server restarts.
+
 ## Matches with fewer players
 
 By default a match starts only with full teams. `--test-players <n>` starts a match once `n` players search. This helps when you test alone or with few friends.

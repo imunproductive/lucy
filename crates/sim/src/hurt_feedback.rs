@@ -57,8 +57,7 @@ impl HurtFeedback {
             ["pain", value] => self.pain = switch(value)?,
             _ => {
                 return Err(
-                    "Use .hurt, .hurt on|off, .hurt flinch on|off or .hurt pain on|off."
-                        .to_owned(),
+                    "Use .hurt, .hurt on|off, .hurt flinch on|off or .hurt pain on|off.".to_owned(),
                 );
             }
         }
