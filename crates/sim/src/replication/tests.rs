@@ -16,6 +16,7 @@ use orpheus_script::{
     vm::{Component, EmptyWorld, MAX_INIT_WORK, Root},
 };
 use orpheus_wire::{
+    commands::FIRE,
     entity::{MAX_ENTITY_RECORDS, Movement, movement_record},
     jam::codec::{Fields, Value},
 };
@@ -376,7 +377,7 @@ fn overlapping_bursts_enqueue_each_frame_once_and_do_not_ack_pending_work() {
     world.queue_commands(1000, &first);
     let frames: Vec<_> = world
         .input
-        .work
+        .buffer
         .iter()
         .map(|work| {
             let InputWork::Command {
@@ -421,6 +422,142 @@ fn pending_queue_closes_after_the_prefix_at_a_boundary_or_capacity() {
     assert_eq!(input.processed, None);
 }
 
+/// The frames and buttons the last ticks released (`InputQueue::release`).
+fn released(input: &mut InputQueue) -> Vec<(u32, u32)> {
+    input
+        .work
+        .drain(..)
+        .filter_map(|work| match work {
+            InputWork::Command { command, .. } => Some((command.frame, command.buttons)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn released_frames(input: &mut InputQueue) -> Vec<u32> {
+    released(input)
+        .into_iter()
+        .map(|(frame, _)| frame)
+        .collect()
+}
+
+/// One command a tick, in frame order, with one more in hand
+/// (`BUFFER_TARGET`): a datagram a tick late still runs on time. A burst
+/// runs all but `MAX_BUFFERED` at once; more than the target waiting for
+/// `DRAIN_TICKS` ticks runs one more.
+#[test]
+fn the_input_buffer_runs_a_command_a_tick_with_the_next_in_hand() {
+    let mut input = InputQueue::default();
+    // The first command waits a tick, so the next is in hand when it runs.
+    input.commands(100, &[forward(100)]);
+    input.release(1, true);
+    assert!(released_frames(&mut input).is_empty());
+    // Each datagram resends the window: the oldest runs, one waits.
+    for frame in 101..110 {
+        input.commands(frame, &[forward(frame - 1), forward(frame)]);
+        input.release(1, true);
+        assert_eq!(released_frames(&mut input), [frame - 1]);
+    }
+    // 110 comes a tick late: 109, in hand, runs on time; then 110 runs
+    // and 111 waits.
+    input.release(1, true);
+    assert_eq!(released_frames(&mut input), [109]);
+    input.commands(111, &[forward(109), forward(110), forward(111)]);
+    input.release(1, true);
+    assert_eq!(released_frames(&mut input), [110]);
+    // A burst to 121: 11 in hand, all but 4 run.
+    input.commands(112, &(111..=121).map(forward).collect::<Vec<_>>());
+    input.release(1, true);
+    assert_eq!(released_frames(&mut input), (111..=117).collect::<Vec<_>>());
+    // Four wait; the burst's tick was the first of 20 with more than one
+    // waiting, the 20th (frame 140 comes) runs two.
+    for frame in 122..=140 {
+        input.commands(frame, &[forward(frame)]);
+        input.release(1, true);
+        let expected: Vec<_> = if frame == 140 {
+            vec![frame - 4, frame - 3]
+        } else {
+            vec![frame - 4]
+        };
+        assert_eq!(released_frames(&mut input), expected, "frame {frame}");
+    }
+    // Ticks the clock skipped run a command each.
+    input.commands(141, &[forward(141)]);
+    input.release(2, true);
+    assert_eq!(released_frames(&mut input), [138, 139]);
+}
+
+/// A dry tick repeats the client's last input for the next frame; the
+/// press or release the repeat missed runs with the next command, the ack
+/// staying at the client's newest command meanwhile.
+#[test]
+fn a_dry_tick_repeats_the_last_input_and_the_late_command_keeps_its_press() {
+    let fire = |frame| Command {
+        buttons: FIRE,
+        ..forward(frame)
+    };
+    let mut world = WorldDelivery::new(OWNER);
+    world.started = Some(100);
+    world.queue_commands(100, &[forward(100)]);
+    world.release_input(1);
+    world.queue_commands(101, &[forward(100), forward(101)]);
+    world.release_input(1);
+    assert_eq!(released(&mut world.input), [(100, 0)]);
+    world.input.processed = Some(100);
+    // Nothing comes for two ticks: 101, in hand, runs; then 101's input
+    // again for 102. No body: nothing repeats.
+    world.release_input(1);
+    assert_eq!(released(&mut world.input), [(101, 0)]);
+    world.input.processed = Some(101);
+    world.release_input(1);
+    assert!(released(&mut world.input).is_empty());
+    world.input.release(1, true);
+    assert_eq!(released(&mut world.input), [(102, 0)]);
+    world.input.processed = Some(102);
+    assert_eq!(world.command_ack(103), 101);
+    // 102 was a one-frame tap with its click: it comes with 103 and 104,
+    // and the press goes with 103.
+    let tap = Command {
+        buttons: FIRE | SUBFRAME,
+        click: Some(orpheus_wire::commands::Click {
+            subframe: 7,
+            yaw: 1,
+            pitch: 2,
+        }),
+        ..forward(102)
+    };
+    world.queue_commands(104, &[forward(101), tap, forward(103), forward(104)]);
+    assert_eq!(world.command_ack(104), 102);
+    world.input.release(1, true);
+    let [InputWork::Command { command, .. }] = world.input.work.make_contiguous() else {
+        panic!("one command");
+    };
+    assert_eq!(
+        (command.frame, command.buttons, command.click),
+        (103, FIRE | SUBFRAME, tap.click)
+    );
+    world.input.work.clear();
+    world.input.release(1, true);
+    assert_eq!(released(&mut world.input), [(104, 0)]);
+
+    // Fire held, the repeat holds it; the late 107 released it and 108
+    // presses it again: 108 runs released, 109 presses.
+    world.queue_commands(105, &[fire(105)]);
+    world.input.release(1, true);
+    world.queue_commands(106, &[fire(105), fire(106)]);
+    world.input.release(1, true);
+    world.input.release(1, true);
+    world.input.release(1, true);
+    assert_eq!(
+        released(&mut world.input),
+        [(105, FIRE), (106, FIRE), (107, FIRE)]
+    );
+    world.queue_commands(109, &[fire(106), forward(107), fire(108), fire(109)]);
+    world.input.release(1, true);
+    world.input.release(1, true);
+    assert_eq!(released(&mut world.input), [(108, 0), (109, FIRE)]);
+}
+
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
 fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input() {
@@ -436,7 +573,7 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
         room: orpheus_content::maps::SpawnChoice::First,
         card: &PlayerCard::default(),
     };
-    let mut world = WorldDelivery::new(owner);
+    let mut world = WorldDelivery::new(owner).unbuffered();
     let first = FIRST_TICK + 1;
     world.queue_commands(FIRST_TICK, &[forward(first)]);
     assert!(!world.has_input_work());
@@ -1222,7 +1359,7 @@ fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
         room: orpheus_content::maps::SpawnChoice::First,
         card: &PlayerCard::default(),
     };
-    let mut world = WorldDelivery::new(OWNER);
+    let mut world = WorldDelivery::new(OWNER).unbuffered();
     world.started = Some(FIRST_TICK);
     let hero = scene.heroes().get(SOLDIER).unwrap();
     world
@@ -1873,6 +2010,7 @@ fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
 }
 
 mod hero_moves;
+mod input_timing;
 mod multikills;
 mod recovery;
 

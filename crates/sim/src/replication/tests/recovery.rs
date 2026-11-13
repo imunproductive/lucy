@@ -147,7 +147,7 @@ fn drain(world: &mut WorldDelivery, scene: &PreparedScene, viewer: &PlayerAppear
 
 /// A player in the world who picked Soldier: 76.
 fn soldier(scene: &PreparedScene, viewer: &PlayerAppearance<'_>) -> WorldDelivery {
-    let mut world = WorldDelivery::new(OWNER);
+    let mut world = WorldDelivery::new(OWNER).unbuffered();
     world.start(scene, viewer, FIRST_TICK).unwrap();
     world.created.insert(OWNER);
     world.present(scene, FIRST_TICK).unwrap();

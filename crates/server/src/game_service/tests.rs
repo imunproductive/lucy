@@ -719,6 +719,30 @@ fn aimed_batch(
     payload.into_bytes()
 }
 
+/// What a client sends after a datagram, as the game does: its commands up
+/// to the frame of the next tick (its command clock a frame ahead of the
+/// packet frame), from `*next` on (more than one after frames it missed),
+/// with this input. The server runs one a tick (`InputQueue`).
+fn send_input(
+    watcher: &mut Watcher,
+    next: &mut u32,
+    yaw: i16,
+    pitch: i16,
+    buttons: u32,
+    forward: bool,
+) {
+    let newest = watcher.tick + 1;
+    if *next > newest {
+        return;
+    }
+    let count = (newest - *next + 1).min(u32::from(orpheus_wire::commands::MAX_COMMANDS));
+    watcher.client.send(
+        ACK,
+        aimed_batch(*next, count as u8, yaw, pitch, buttons, forward),
+    );
+    *next += count;
+}
+
 fn input_ack(schemas: &Schemas, packet: &Packet) -> u32 {
     let mut reader = BitReader::new(&packet.payload);
     reader.var_a().unwrap();
@@ -753,7 +777,9 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
         .rooms
         .insert(MATCH, Room::new(map, players, Some(world)));
     let first = FIRST_TICK + 1;
-    let commands: Vec<_> = (first..first + 32)
+    // A tick runs all but the last MAX_BUFFERED (4) of a long input buffer
+    // at once (`InputQueue::release`): 36 commands give each peer 32 to run.
+    let commands: Vec<_> = (first..first + 36)
         .map(|frame| Command {
             frame,
             ..Command::default()
@@ -768,6 +794,7 @@ fn busy_peers_resume_in_round_robin_order_after_the_global_input_budget() {
             .start(&room.world.as_ref().unwrap().scene, &viewer, FIRST_TICK)
             .unwrap();
         peer.world.queue_commands(FIRST_TICK, &commands);
+        peer.world.release_input(1);
         state.seats.insert(connection, (MATCH, slot));
         state.peers.insert(connection, peer);
     }
@@ -2234,14 +2261,15 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     let created = target.created(respawned).unwrap();
     let respawn_tick = target.ticks[created];
     assert!(created > died);
-    // combat.py `PRACTICE_RESPAWN`: 3 s. The shooter sends his commands
-    // after a datagram, so the killing one arrives at tick T's time, after
-    // that tick: the death notice goes in the next tick's datagram, T + 1.
-    // The respawn is due at the first tick 3 s after the death, T + 188
+    // combat.py `PRACTICE_RESPAWN`: 3 s. The killing command runs from the
+    // shooter's input buffer as tick T is due, at T's time, before the tick
+    // (`InputQueue`): the death notice goes in that tick's datagram, T. The
+    // respawn is due at the first tick 3 s after the death, T + 188
     // (3000 / 16 = 187.5), and the new body goes in that tick's datagram,
-    // T + 188: 187 ticks after the death notice.
+    // T + 188: 188 ticks after the death notice. (Before the input buffer
+    // the command ran on arrival, at the time of the tick before: 187.)
     let waited = respawn_tick - death_tick;
-    assert_eq!(waited, 187, "respawned after {waited} ticks");
+    assert_eq!(waited, 188, "respawned after {waited} ticks");
     assert!(
         target
             .find(died, |record| record.entity == target_body
@@ -2618,13 +2646,8 @@ fn run_out_of_the_spawn_room(
         if stop.is_some_and(|stop| watcher.tick > stop + 64) {
             break;
         }
-        if frame <= watcher.tick + 8 {
-            let running = stop.is_none_or(|stop| frame < stop);
-            watcher
-                .client
-                .send(ACK, command_batch(frame, 16, yaw, 0, running));
-            frame += 16;
-        }
+        let running = stop.is_none_or(|stop| frame < stop);
+        send_input(watcher, &mut frame, yaw, 0, 0, running);
         watcher.pump(schemas);
     }
     assert!(out(server), "stopped back in the spawn room");
@@ -2946,12 +2969,7 @@ fn a_helix_at_soldiers_feet_hurts_him_and_lifts_him() {
             top - floor,
             body.health
         );
-        if next <= soldier.tick + 8 {
-            soldier
-                .client
-                .send(ACK, command_batch(next, 16, 0, 0, false));
-            next += 16;
-        }
+        send_input(&mut soldier, &mut next, 0, 0, 0, false);
         soldier.pump(&schemas);
     };
     assert!(
@@ -3180,21 +3198,28 @@ fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_
 ///
 /// The timeline of a shot, from the server tick T of the datagram after
 /// which the client sent the shot's command (the client simulates that
-/// frame then): the server runs the command before tick T + 1, its first
-/// flight step flies a whole tick, so its rocket leaves at T as the
-/// client's does; the confirmation goes in the datagram of the tick that
-/// queued it, T + 1; the rocket hits the bot 8 m ahead (7.6 m to its
-/// shapes, 9.1 ticks at 50 m/s) in tick T + 10, whatever the lead, and the
-/// release goes in that tick's own datagram, T + 10, as the confirmation's
-/// ACK came back before T + 2. So the server adds less than a tick to the
-/// client's own flight, and the rest is the trip to the client. Before,
-/// the release waited for the shot's command frame plus the flight plus 6,
-/// compared with server ticks: `lead` + 6 ticks after the impact at least.
+/// frame then): the server's input buffer holds the client's next command
+/// in hand (`InputQueue`, one tick), so the command runs as tick T + 2 is
+/// due, before it; its first flight step flies a whole tick, so its rocket
+/// leaves at T + 1, a tick after the client's; the confirmation goes in the
+/// datagram of the tick that queued it, T + 2; the rocket hits the bot 8 m
+/// ahead (7.6 m to its shapes, 9.1 ticks at 50 m/s) in tick T + 11, whatever
+/// the lead, and the release goes in that tick's own datagram, T + 11, as
+/// the confirmation's ACK came back before T + 3. So the server adds a tick
+/// and less than another to the client's own flight (the buffer's tick, as
+/// retail's one buffered command), and the rest is the trip to the client.
+/// Before the buffer the command ran on arrival, before T + 1, and each of
+/// these came a tick sooner. Before that, the release waited for the
+/// shot's command frame plus the flight plus 6, compared with server
+/// ticks: `lead` + 6 ticks after the impact at least.
 ///
 /// The second shot, 16 frames ahead, loses the datagram with its
-/// confirmation (T + 1): the ACK sent after T + 2's datagram shows it lost,
-/// so the create goes again at T + 3, arrives before the impact, and the
-/// release still goes at T + 10 with its explosion. Each release carries
+/// confirmation (T + 2): the ACK sent after T + 3's datagram shows it lost,
+/// so the create goes again at T + 4, arrives before the impact, and the
+/// release still goes at T + 11 with its explosion. The client's lead
+/// grows from 8 to 16 frames in one burst of 8 commands: the buffer runs
+/// all but 4 at once and drains back to one waiting command in 3 × 20
+/// ticks, long before the shot. Each release carries
 /// the server's impact point, on the bot, where an explosion the client's
 /// rocket hasn't had yet plays (before, out of sight at y −1000). Each shot
 /// has a bot of its own, 8 m out, the second 30° round from the first
@@ -3212,7 +3237,7 @@ fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     // Confirmation, its resend and release after the shot's tick T; the
     // derivations are in the notes above.
-    let (confirm_at, resend_at, release_at) = (1, 3, 10);
+    let (confirm_at, resend_at, release_at) = (2, 4, 11);
     let mut aims = Vec::new();
     let (mut server, schemas, [mut soldier], _) =
         practice_world([("soldier#1111", 0, "Soldier: 76")], &assets, |scene| {
@@ -3322,7 +3347,7 @@ fn the_owners_helix_release_follows_its_impact_with_a_leading_client() {
             (
                 (!lose_confirmation).then_some(sent + confirm_at),
                 lose_confirmation.then_some((sent + confirm_at, sent + resend_at)),
-                sent + 10,
+                sent + release_at,
                 sent + release_at
             ),
             "lead {lead}: the command sent after tick {sent}"
@@ -5338,15 +5363,16 @@ fn practice_bots_run_their_scripts_for_a_client() {
         "the replacement",
         |watchers| watchers[0].created(replacement).is_some(),
     );
-    // combat.py `BOT_RESPAWN`: 3 s. The killing command arrives at tick
-    // T's time, after that tick (the client sends after each datagram): the
-    // kill's notices go in the next tick's datagram, T + 1. The replacement
-    // is due at the first tick 3 s after the kill, T + 188 (3000 / 16 =
-    // 187.5), and goes in that tick's datagram, T + 188: 187 ticks after
-    // the kill's notices.
+    // combat.py `BOT_RESPAWN`: 3 s. The killing command runs from the
+    // input buffer as tick T is due, at T's time, before the tick
+    // (`InputQueue`): the kill's notices go in that tick's datagram, T. The
+    // replacement is due at the first tick 3 s after the kill, T + 188
+    // (3000 / 16 = 187.5), and goes in that tick's datagram, T + 188: 188
+    // ticks after the kill's notices. (Before the input buffer the command
+    // ran on arrival, at the time of the tick before: 187.)
     let created = watcher.created(replacement).unwrap();
     let respawned = watcher.ticks[created] - kill_sent;
-    assert_eq!(respawned, 187, "replaced after {respawned} ticks");
+    assert_eq!(respawned, 188, "replaced after {respawned} ticks");
     pump_until(
         &mut [&mut watcher],
         &schemas,

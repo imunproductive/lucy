@@ -25,7 +25,31 @@ const PITCH_RADIANS: f32 = 0.000_095_873_8;
 const PITCH_LIMIT: f32 = 1.553_343;
 const PITCH_UNITS: f32 = 10_430.378;
 const THROTTLE_UNIT: f32 = 1.0 / 127.0;
-const HOLD_INPUT_FRAMES: u32 = 32;
+/// A held input repeats this many frames past its command; later frames
+/// keep only the aim (`ow174/game/mover.py`, the reconstructed poses).
+pub const HOLD_INPUT_FRAMES: u32 = 32;
+
+/// The input of `frame` when its command is missing: `previous` held, as a
+/// reconstructed pose has it. One-shot actions and the sub-frame click never
+/// repeat; past [`HOLD_INPUT_FRAMES`] only the aim does.
+pub fn repeated(previous: Command, frame: u32) -> Command {
+    let source = if frame_distance(frame, previous.frame) <= HOLD_INPUT_FRAMES {
+        previous
+    } else {
+        Command {
+            yaw: previous.yaw,
+            pitch: previous.pitch,
+            ..Command::default()
+        }
+    };
+    Command {
+        frame,
+        buttons: source.buttons & !SUBFRAME,
+        action: 0,
+        click: None,
+        ..source
+    }
+}
 
 /// Reconstruct short gaps before the newest command. Long gaps start at
 /// the newest command. One-shot actions and subframe aim never repeat.
@@ -67,23 +91,10 @@ impl Iterator for Poses {
         if self.offsets.is_empty() {
             return Some(self.newest);
         }
-        let previous = self.previous;
-        let source = if offset <= HOLD_INPUT_FRAMES {
-            previous
-        } else {
-            Command {
-                yaw: previous.yaw,
-                pitch: previous.pitch,
-                ..Command::default()
-            }
-        };
-        Some(Command {
-            frame: previous.frame.wrapping_add(offset),
-            buttons: source.buttons & !SUBFRAME,
-            action: 0,
-            click: None,
-            ..source
-        })
+        Some(repeated(
+            self.previous,
+            self.previous.frame.wrapping_add(offset),
+        ))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

@@ -21,6 +21,13 @@ Run these, and nothing more:
 
 Do not run `just test-game` or `just test-slow` while you work on a feature. They take many minutes and check areas you did not touch. The integrator (whoever merges) runs them once after a batch of merges.
 
+## Leftovers
+
+When you finish a task, write down what you left undone so nobody has to find it again.
+
+- **Small related work** goes in [docs/dev/loose-ends.md](docs/dev/loose-ends.md): anything your task touched but didn't finish because it was out of scope, too small to do now, or blocked on an unknown (for example "a fall death isn't credited to the last attacker"). One entry each: what is missing, where (file, graph, message), and the evidence or report. Remove an entry when you finish it. Don't write in `TODO.md`: it is the user's.
+- **Questions only the client's code can answer** go in `D:/Work/Coding/refs/reports/IDA-questions.md` (outside the repo), under a heading for your task. Ask exactly: the function or address, the field, and what each answer would change.
+
 ## Tests
 
 - Before you add a test, think. Add it only if you are sure it is useful.

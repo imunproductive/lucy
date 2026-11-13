@@ -29,7 +29,7 @@ impl Tracer {
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let mut tracer = Self {
             scene,
-            world: WorldDelivery::new(OWNER),
+            world: WorldDelivery::new(OWNER).unbuffered(),
             frame: FIRST_TICK,
             card: PlayerCard::default(),
         };
