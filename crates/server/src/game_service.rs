@@ -82,7 +82,7 @@ use orpheus_sim::{
     projectiles::FiredProjectile,
     replication::{Record, RoomPlayer, WorldDelivery, blockers, show_players},
     scene::{PlayerAppearance, PlayerCard},
-    scene_assets::{CollisionBuild, CollisionFiles, PreparedScene},
+    scene_assets::{CollisionBuild, CollisionFiles, FellOut, PreparedScene},
     voice_lines::VoiceLine,
 };
 use orpheus_wire::entity::Component as WorldComponent;
@@ -2395,8 +2395,8 @@ impl State {
             for (connection, hits) in struck {
                 self.deliver_bot_hits(id, Some(connection), hits);
             }
-            // The environment kills a living body that fell onto the map's
-            // catch floor (`orpheus_sim::map_areas`), with the tick's hits.
+            // The environment kills a living body whose capsule centre is in
+            // a death zone (`orpheus_sim::map_areas`), with the tick's hits.
             {
                 let Room { players, world, .. } = self.rooms.get_mut(&id).expect("room");
                 let world = world.as_mut().expect("room with a world");
@@ -2411,11 +2411,20 @@ impl State {
                     if peer.world.body_dead() {
                         continue;
                     }
-                    let fell = peer
-                        .world
-                        .body_position()
-                        .is_some_and(|position| world.scene.fell_out(position));
-                    if let Some(body) = peer.world.current_body().filter(|_| fell) {
+                    let fell = peer.world.body_centre().and_then(|(centre, above_feet)| {
+                        let fell = world.scene.fell_out(centre, above_feet)?;
+                        if fell == FellOut::BelowMap {
+                            tracing::warn!(
+                                "[game] a body fell {} m below {} ({:#x}) at {centre:?}: \
+                                 the map's data has no volume that kills there",
+                                orpheus_sim::map_areas::FALL_LIMIT,
+                                world.scene.map().name,
+                                world.scene.map().map_guid,
+                            );
+                        }
+                        Some(fell)
+                    });
+                    if let Some(body) = peer.world.current_body().filter(|_| fell.is_some()) {
                         combat.environment_kill(body, players[slot].info.team, tick);
                     }
                 }
