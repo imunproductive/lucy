@@ -287,9 +287,7 @@ impl World for BotWorld {
             // declare component 92. So true: the Training Bot's rocket
             // (`0BA3` node 178) takes its AI damage, not the 19 a player's
             // copy of the volley would deal.
-            "STU_D3EB8D87" if is_own_possessor(config.get("m_00903303")) => {
-                Some(Value::Bool(true))
-            }
+            "STU_D3EB8D87" if is_own_possessor(config.get("m_00903303")) => Some(Value::Bool(true)),
             // An AI weapon parameter (`m_F00C2F3D`, such as the damage
             // `1961`) of the possessing AI definition's difficulty profile
             // (`STUAIBehaviorComponent.m_difficultyProfiles`; upstream

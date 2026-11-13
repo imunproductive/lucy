@@ -913,7 +913,8 @@ fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShot
     body.with_shot(shot, |node, mut evaluate| {
         let speed = authored_number(node.field("m_projectileSpeed"), 0.0, &mut evaluate).ok()?;
         if speed != 0.0 {
-            let mut ballistics = ProjectileBallistics::from_authored(node, &mut evaluate).ok()??;
+            let mut ballistics =
+                ProjectileBallistics::from_authored(node, &mut evaluate).ok()??;
             if let Some(direct) = &mut ballistics.direct {
                 direct.critical = 1.0;
             }
@@ -941,7 +942,8 @@ fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShot
                 observed,
             ));
         }
-        let mut hit = HitDefinition::from_authored(node.field("m_6396149F")?, &mut evaluate).ok()??;
+        let mut hit =
+            HitDefinition::from_authored(node.field("m_6396149F")?, &mut evaluate).ok()??;
         hit.critical = 1.0;
         if hit.amount <= 0.0 {
             return None;

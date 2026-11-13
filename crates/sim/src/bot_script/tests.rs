@@ -659,7 +659,6 @@ fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
     assert_eq!(hit.body, body);
     assert_eq!(hit.shooter.source, source);
     assert_eq!(hit.shooter.team, team);
-    eprintln!("bot rocket hits: {hits:?}");
     assert_eq!(hits.len(), 1, "one direct hit, no splash");
     assert_eq!(hit.amount, 8.0);
     assert!(!hit.critical);
