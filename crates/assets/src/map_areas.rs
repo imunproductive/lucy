@@ -72,8 +72,8 @@ use crate::{
     Install, Output, Result, asset_error,
     collision::mask_triangles,
     game_maps::{
-        Components, Placed, REQUIRED, SPAWN, TARGET_AREA, TARGET_TAG_DATA, chunk_index,
-        graph_vars, instance, map_chunks, read_map, target_tags,
+        Components, Placed, REQUIRED, SPAWN, TARGET_AREA, TARGET_TAG_DATA, chunk_index, graph_vars,
+        instance, map_chunks, read_map, target_tags,
     },
     guid_hex,
     map_chunk::{COLLISION, area_boxes, chunk_kind, guid_of, name_index, short},
