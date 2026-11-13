@@ -455,7 +455,12 @@ fn movement_head(mut reader: BitReader<'_>) -> MovementHead {
     }
     assert!(!reader.bit().unwrap(), "the 1/1024 grid");
     let frame_back = optional(&mut reader, &[4, 10]) as u32;
-    let discontinuity = optional(&mut reader, &[]) as u32;
+    let discontinuity = if reader.bit().unwrap() {
+        assert!(!reader.bit().unwrap(), "no short width");
+        reader.bits(32).unwrap() as u32
+    } else {
+        0
+    };
     let pitch = optional(&mut reader, &[8, 10, 16]) as u16;
     optional(&mut reader, &[4, 10]); // ticks in the air
     assert!(!reader.bit().unwrap()); // no timed movement event
@@ -2201,22 +2206,28 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
             .is_some()
     );
     // Each body placed at the spawn point turns its player's view to the
-    // spawn's facing (`SpawnTurn` in `orpheus_sim::replication`): its first
-    // owner movement record comes once its create arrived, with the pose
-    // it was made with (the spawn point, the spawn's yaw, a level aim) at
-    // the frame it was made, and a new discontinuity counter, the first
-    // body's as the respawned one's; the hero picked while dead (Ana) is
-    // the respawned body's.
-    let turn = |watcher: &Watcher, body: u32| {
-        let index = watcher
-            .find(0, |record| record.entity == body && record.moved.is_some())
-            .unwrap();
-        let head = watcher.datagrams[index]
+    // spawn's facing (`SpawnTurn` in `orpheus_sim::replication`): the create
+    // and its own movement record start the body's discontinuity counter at
+    // 0; the next owner movement record, once the create arrived, is the
+    // pose it was made with (the spawn point, the spawn's yaw, a level aim)
+    // at the frame it was made, with a new counter; the first body's as the
+    // respawned one's. The hero picked while dead (Ana) is the respawned
+    // body's.
+    let head = |watcher: &Watcher, index: usize, body: u32| {
+        watcher.datagrams[index]
             .1
             .iter()
             .find_map(|record| record.moved.filter(|_| record.entity == body))
+    };
+    let turn = |watcher: &Watcher, body: u32| {
+        let create = watcher.created(body).unwrap();
+        assert_eq!(head(watcher, create, body).unwrap().discontinuity, 0);
+        let index = watcher
+            .find(create + 1, |record| {
+                record.entity == body && record.moved.is_some()
+            })
             .unwrap();
-        (index, head)
+        (index, head(watcher, index, body).unwrap())
     };
     pump_until(
         &mut [shooter, target],
@@ -2224,7 +2235,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
         "the spawn turn",
         |watchers| {
             watchers[1]
-                .find(created, |record| {
+                .find(created + 1, |record| {
                     record.entity == respawned && record.moved.is_some()
                 })
                 .is_some()
@@ -2232,8 +2243,6 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     );
     for (body, made_at) in [(target_body, None), (respawned, Some(created))] {
         let (index, head) = turn(target, body);
-        let create = target.created(body).unwrap();
-        assert!(index > create, "after the create's datagram");
         assert_eq!(head.discontinuity, 1);
         assert_eq!((head.yaw, head.pitch), (spawn_yaw, 0));
         let [x, _, z] = head.position.map(|axis| f64::from(axis) / 1024.0);
@@ -2252,19 +2261,14 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
             .definition
     };
     assert_ne!(definition(respawned), definition(target_body), "Ana's body");
-    // Ana's corrections follow her turn, with its counter.
+    // Whatever owner records of Ana's body follow her turn (her
+    // corrections) carry its counter; the wait and resumption of the
+    // corrections themselves is `spawn_turn_goes_after_the_create_again_
+    // when_lost_and_corrections_carry_its_counter` in `orpheus_sim`.
     let (turned, _) = turn(target, respawned);
     let mut frame = target.tick + 1;
-    let corrections = |watcher: &Watcher| {
-        watcher.datagrams[turned + 1..]
-            .iter()
-            .flat_map(|(_, records)| records)
-            .filter_map(|record| record.moved.filter(|_| record.entity == respawned))
-            .collect::<Vec<_>>()
-    };
-    let deadline = server.now() + Duration::from_secs(5);
-    while corrections(target).len() < 3 {
-        assert!(server.now() < deadline, "waiting for Ana's corrections");
+    let end = server.now() + Duration::from_secs(2);
+    while server.now() < end {
         if frame <= target.tick + 8 {
             target
                 .client
@@ -2275,8 +2279,10 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
         target.pump(&schemas);
     }
     assert!(
-        corrections(target)
+        target.datagrams[turned + 1..]
             .iter()
+            .flat_map(|(_, records)| records)
+            .filter_map(|record| record.moved.filter(|_| record.entity == respawned))
             .all(|head| head.discontinuity == 1)
     );
     server.stop().unwrap();

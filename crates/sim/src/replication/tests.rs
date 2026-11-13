@@ -1262,6 +1262,13 @@ fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
     transport_outcome(&mut world, &mut egress, 1, true);
     assert_eq!(world.spawn_turn.unwrap().sent, TurnSent::In(1));
     world.acknowledge_movement(2, 1);
+    // The correction of the first command's frame, held for the turn, with
+    // the next owner frame.
+    assert_eq!(
+        transmit(&mut world, &mut egress, tick, 2).1.records,
+        [RecordSource::Queued(0), RecordSource::Movement(0)]
+    );
+    transport_outcome(&mut world, &mut egress, 2, true);
 
     let after_unposed_gap = tick + 400;
     world.queue_commands(after_unposed_gap, &[forward(after_unposed_gap)]);
@@ -1279,7 +1286,7 @@ fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
         assert_eq!(world.mover.as_ref().unwrap().pose().frame, Some(tick));
         assert_eq!(world.command_ack(after_unposed_gap), tick);
         assert!(
-            transmit(&mut world, &mut egress, after_unposed_gap, turn + 1)
+            transmit(&mut world, &mut egress, after_unposed_gap, turn + 2)
                 .1
                 .records
                 .is_empty()
@@ -1300,7 +1307,7 @@ fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
         Some(after_unposed_gap)
     );
     assert_eq!(
-        transmit(&mut world, &mut egress, after_unposed_gap, 18)
+        transmit(&mut world, &mut egress, after_unposed_gap, 19)
             .1
             .records,
         [RecordSource::Queued(0), RecordSource::Movement(0)]
