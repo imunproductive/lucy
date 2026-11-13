@@ -22,6 +22,16 @@
 //! The rooms of the other team hurt intruders (`0B7B`, 0C8E st45: 400 a
 //! second); not done here, as the Practice Range has one team.
 //!
+//! The bodies run `0C8E` (`crate::body_script::ModeBody`), but these
+//! states of it stay idle: they wait for `0723`, which only the rooms'
+//! entities (`0D62`) send, and the server runs none. The server keeps the
+//! rules above in their place: the graph's own forms don't work on the
+//! server (st11's status `STU_9028E035` is native and unknown, st13's
+//! `ModifyHealth` is an inert state in the VM, and `068A`'s handler is in
+//! the client), and sending `0723` as well would heal twice once the VM
+//! runs `ModifyHealth`. The one networked part, st12's stack #8271e, is
+//! not sent.
+//!
 //! A room the placeable gives a team belongs to it; a room without one gets
 //! its team from the mode (`0724` parameter `0473`). Assumption for those:
 //! a room belongs to the teams whose current spawn point (the match flow's

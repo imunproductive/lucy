@@ -18,7 +18,7 @@ use std::{
 use serde::Deserialize;
 
 use crate::{
-    body_script::{OwnerBodySpawn, PlayerBodyFactory},
+    body_script::{ModeBody, OwnerBodySpawn, PlayerBodyFactory},
     bot_animation::{BotRigCatalog, ScriptAnims},
     bot_plate::{BotPlate, PlateSample},
     bot_script::{BotEvent, BotScripts, BotShot},
@@ -599,6 +599,21 @@ impl SceneAssets {
         let player_unknowns = self.player_unknowns;
         let ult_rates = self.ult_rates;
         let mode = scene.map.mode_guid;
+        let mode_body = ModeBody {
+            scripts: self
+                .modes
+                .get(mode)
+                .into_iter()
+                .flat_map(|mode| &mode.teams)
+                .filter_map(|team| {
+                    Some((
+                        team.team,
+                        u32::try_from(team.body? & 0xFFFF_FFFF_FFFF).ok()?,
+                    ))
+                })
+                .collect(),
+            respawn_seconds: self.respawns.sent(mode).map(|time| time.as_secs() as i64),
+        };
         let ready = self
             .codecs
             .clone()
@@ -632,6 +647,7 @@ impl SceneAssets {
                         },
                         player_unknowns,
                         ult_rates,
+                        mode_body.clone(),
                         spawn,
                     )
                     .map(Arc::new)

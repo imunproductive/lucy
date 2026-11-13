@@ -576,7 +576,8 @@ fn parse_message(text: &str) -> Result<u64, String> {
 /// hero for that controller (its loadout and abilities on the possessed
 /// body, as at a real player's hero pick) and fails on the bot body, which
 /// is no body of that hero. Not checked: no IDA.
-const HERO_REFUSED: &str = "The hero command is gone: component 75 on a bot's stand-in controller crashed the game.";
+const HERO_REFUSED: &str =
+    "The hero command is gone: component 75 on a bot's stand-in controller crashed the game.";
 
 /// A variable's value as the commands write it; none for `default`.
 fn parse_value(text: &str) -> Result<Option<Value>, String> {

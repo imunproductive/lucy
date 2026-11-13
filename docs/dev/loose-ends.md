@@ -16,6 +16,11 @@ Small things left undone by finished work. Each entry says what is missing, wher
 - **Damage direction arcs and the screen hit flash** aren't sent; likely combat event 25000 to the victim (IDA list, section 13).
 - **Enemy explosions don't push other players**, only the shooter himself and bots. `ProjectileFlight::blast_push`.
 - **No aura system.** Biotic Grenade's aura `0267.053` (graphs `0C71`, `0C72`, `0B99`) sets `#8202e` / `#8203e` on the hit body for the anti-heal and heal boost status icons over the bar (not the outline colour); the server doesn't run it. `docs/notes/behavior.md` (Nameplate and bar look).
+- **The mode body script's `0685` goes nowhere.** `0C8E` sends it to the mode entity when a dead body's countdown ends; retail's `0C8F` (a child of the mode graph) answers with `0687` to the controller, whose `0C90` spawns the new body (and plays its st99 camera when #22241 > 0, which needs `0DFE` from `0F4A`). The server still respawns on its own timer (`WorldDelivery::respawn_due`), which is the same 3 s in the Range. `crates/sim/src/body_script.rs` (`ModeBody`); `refs/reports/DeathCam.md`.
+- **Soldier: 76's death path has two VM gaps** that a debug or `gametest` build refuses, so there the dead body's script stops at death and its owner frames (with `0C8E`'s countdown) stop too: `01C7` node 68 `STU_3716E1D4` and `01D8` node 98 `STU_309B0570` (a velocity). Release builds tolerate both. `STU_3716E1D4` is also in `0C8E` st7/st25 (on `0713`/`072A`). `body_script` test `a_dead_body_counts_its_respawn_down_in_the_mode_body_script`.
+- **`06FD` carries only the seconds.** The server sends each body `06FD.025` with `00B7` as it starts; `0F4A` also sends `04F0` (#12392, the random respawn scale of `0C8E` st44) and `055D` (#13159). If the mode graph ever sends to bodies itself (its `STU_1D719351` targets), drop the server's copy. `PlayerBodyFactory::start`.
+- **`STU_DB742151` of a player's body is 0 in the VM** (read as the AI control entity), but `0C8E` uses it as the player's controller (`0669` goes to it, `0685`'s `0221`; ElimName.md: the client finds the controller). `crates/script/src/player.rs` `related_entity`.
+- **Training Bots and AI heroes don't run the team body script** (`m_bodyScript`); only player bodies do. `crates/sim/src/body_script.rs`.
 
 ## Movement and collision
 

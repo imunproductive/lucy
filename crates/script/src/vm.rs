@@ -1823,11 +1823,20 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             return Ok(true);
         };
         let site = self.site(id, node);
-        let target = node
+        let mut target = node
             .fields
             .get("m_targets")
             .or_else(|| node.fields.get("m_target"))
             .unwrap_or(&Json::Null);
+        // A SendGameMessage state's target (`m_target`) is a target kind:
+        // `STU_9B213168` is the entities of its `m_targets`, its only field
+        // in all 134 uses in 104319 (all in `STU_38EE1100`; `0C8E` st41
+        // sends `08BB` to the mode entity so). Inferred from its shape, not
+        // read in the client. The other kinds (`STU_1D719351`, players by
+        // filter) stay unsupported.
+        if target.get("$").and_then(Json::as_str) == Some("STU_9B213168") {
+            target = field(target, "m_targets");
+        }
         let value = if target.is_null() {
             Value::Entity(site.entity)
         } else {
