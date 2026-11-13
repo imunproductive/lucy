@@ -21,6 +21,8 @@ Small things left undone by finished work. Each entry says what is missing, wher
 - **`06FD` carries only the seconds.** The server sends each body `06FD.025` with `00B7` as it starts; `0F4A` also sends `04F0` (#12392, the random respawn scale of `0C8E` st44) and `055D` (#13159). If the mode graph ever sends to bodies itself (its `STU_1D719351` targets), drop the server's copy. `PlayerBodyFactory::start`.
 - **`STU_DB742151` of a player's body is 0 in the VM** (read as the AI control entity), but `0C8E` uses it as the player's controller (`0669` goes to it, `0685`'s `0221`; ElimName.md: the client finds the controller). `crates/script/src/player.rs` `related_entity`.
 - **Training Bots and AI heroes don't run the team body script** (`m_bodyScript`); only player bodies do. `crates/sim/src/body_script.rs`.
+- **AI heroes deal player damage times a share** (`ai::scale_damage`, 25/50/100 %); retail's weapon graphs give an AI its own damage per difficulty (`STU_D3EB8D87(STU_DB742151(self)) ? STU_4049CF77(param) : player damage`, the profiles in `game_ai_definitions_174.json`). Needs the AI body's possessor to be an AI entity with component 92 (see the `STU_DB742151` entry above). Plan step 1 in `D:/Work/Coding/refs/reports/AiDefinitions.md`.
+- **AI heroes run no AI graphs.** Each hero's AI definition (`0456`, the per-mode behaviour lists) is derived but not run; `ai.rs` stands in. Plan steps 3-6 in `D:/Work/Coding/refs/reports/AiDefinitions.md`; IDA list, section 19.
 
 ## Movement and collision
 
