@@ -9,9 +9,10 @@
 //! `m_default`), and each hero's and mode's `m_gameRulesetSchemas` in order.
 //!
 //! The modes file holds, per mode, its teams (`m_teams`: the team, its
-//! controller graph `m_controllerScript` and its players `m_170AA4B8`) and
-//! whether its loading screen waits for the mode's own script
-//! (`m_0FC17230`; `SCRIPTED_LOADING_MODES` in `ow174/game/content.py`).
+//! controller graph `m_controllerScript`, the graph every body of the team
+//! runs `m_bodyScript`, and its players `m_170AA4B8`) and whether its
+//! loading screen waits for the mode's own script (`m_0FC17230`;
+//! `SCRIPTED_LOADING_MODES` in `ow174/game/content.py`).
 
 use std::path::Path;
 
@@ -35,8 +36,8 @@ m_entries: identifier m_3E783677 -> m_value.m_default; bools, ints, floats, enum
 the heroes (075) and game modes (0C5) list in m_gameRulesetSchemas, in order. Entry keys are 01C indexes.";
 
 const MODES_SOURCE: &str = "Build 1.74.0.0.104319: each game mode (0C5): its teams (m_teams: m_team as \
-TeamIndex, m_controllerScript graph, m_170AA4B8 players) and m_0FC17230 (the loading screen waits for the \
-mode's own script).";
+TeamIndex, m_controllerScript graph, m_bodyScript graph, m_170AA4B8 players) and m_0FC17230 (the loading \
+screen waits for the mode's own script).";
 
 pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
     let heroes = load(install, HERO)?;
@@ -96,6 +97,7 @@ pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
                 json!({
                     "team": team.int("m_team"),
                     "controller": optional_key(team.guid("m_controllerScript")),
+                    "body": optional_key(team.guid("m_bodyScript")),
                     "players": team.int("m_170AA4B8"),
                 })
             })

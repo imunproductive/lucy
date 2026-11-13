@@ -115,7 +115,12 @@ impl RespawnTimes {
 
     /// The mode's time, or [`RESPAWN`] when its graph sends none.
     pub fn for_mode(&self, mode: u64) -> Duration {
-        self.0.get(&mode).copied().unwrap_or(RESPAWN)
+        self.sent(mode).unwrap_or(RESPAWN)
+    }
+
+    /// The time the mode's graph sends in 06FD.025, if it sends one.
+    pub fn sent(&self, mode: u64) -> Option<Duration> {
+        self.0.get(&mode).copied()
     }
 }
 
