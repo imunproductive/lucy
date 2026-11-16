@@ -79,6 +79,9 @@ pub(crate) struct Lobby {
     /// The install's match experience and level curve.
     pub xp: XpTable,
     pub extra_preload: Vec<u64>,
+    /// Turn on the client's engine console in the login config
+    /// (`--dev-console`).
+    pub dev_console: bool,
     /// Shared with the threads that prepare match scenes.
     pub assets: Arc<SceneAssets>,
     pub first_scene: Mutex<Option<PreparedScene>>,
@@ -222,6 +225,7 @@ impl Lobby {
             &self.ranked,
             LoginContent {
                 menu_hero: menu.menu_guid,
+                dev_console: self.dev_console,
                 extra_preload: &self.extra_preload,
                 wall_time,
                 arcade: &self.arcade,

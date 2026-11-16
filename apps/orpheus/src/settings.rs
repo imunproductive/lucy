@@ -49,6 +49,7 @@ struct ConfigFile {
     locale: Option<String>,
     #[serde(default)]
     ports: PortsFile,
+    dev_console: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -102,6 +103,10 @@ pub struct ServerArgs {
     /// state folder].
     #[arg(long, value_name = "FILE")]
     pub save: Option<PathBuf>,
+    /// Open the game's own engine console with Alt+backtick (developer
+    /// features on). Commands run on the client only.
+    #[arg(long, env = "ORPHEUS_DEV_CONSOLE", value_parser = clap::builder::FalseyValueParser::new())]
+    pub dev_console: bool,
 }
 
 /// What `orpheus` starts: the modes of `ow174/cli.py`, in its menu order.
@@ -210,6 +215,8 @@ pub struct Settings {
     pub test_ai: Option<Difficulty>,
     /// The template profile for new accounts (`--save`).
     pub template: Option<PathBuf>,
+    /// The client's engine console and developer features (`--dev-console`).
+    pub dev_console: bool,
     /// Extra arguments for Overwatch.exe (after `--`), for the modes that
     /// start the game.
     pub game_args: Vec<String>,
@@ -247,6 +254,7 @@ impl Settings {
             test_players: args.test_players.unwrap_or(0),
             test_ai: args.test_ai,
             template: args.save.clone(),
+            dev_console: args.dev_console || file.dev_console.unwrap_or(false),
             game_args: Vec::new(),
         })
     }

@@ -310,6 +310,7 @@ impl Content {
         };
         let content = LoginContent {
             menu_hero: selection.menu_guid,
+            dev_console: false,
             extra_preload: &self.extra_preload,
             wall_time: NOW,
             arcade: &self.arcade,
@@ -376,7 +377,7 @@ impl Content {
                 "menu_config".into(),
                 single(
                     self.templates
-                        .menu_config(profile, IDENTITY, selection.menu_guid)
+                        .menu_config(profile, IDENTITY, selection.menu_guid, false)
                         .unwrap(),
                 ),
             ),

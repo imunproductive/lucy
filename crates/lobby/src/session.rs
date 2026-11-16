@@ -63,6 +63,9 @@ pub struct PreparedLogin {
 #[derive(Clone, Copy)]
 pub struct LoginContent<'a> {
     pub menu_hero: Option<u64>,
+    /// Turn on the client's engine console and developer features in the
+    /// 36600 config (`--dev-console`).
+    pub dev_console: bool,
     pub extra_preload: &'a [u64],
     pub wall_time: u64,
     pub arcade: &'a Arcade,
@@ -327,7 +330,14 @@ impl PreparedLogin {
         {
             built.insert((crc, id), fields);
         }
-        messages.extend(templates.at_login(&profile, identity, content.menu_hero, now, &built)?);
+        messages.extend(templates.at_login(
+            &profile,
+            identity,
+            content.menu_hero,
+            content.dev_console,
+            now,
+            &built,
+        )?);
         messages.extend(ranked.login_messages(
             &profile,
             &arcade.competitive_cards,
@@ -376,7 +386,12 @@ impl PreparedLogin {
             (
                 CONFIG,
                 36600,
-                templates.menu_config(&profile, identity, content.menu_hero)?,
+                templates.menu_config(
+                    &profile,
+                    identity,
+                    content.menu_hero,
+                    content.dev_console,
+                )?,
             ),
             (
                 IN_CONNECT,

@@ -139,6 +139,7 @@ impl Fixture {
             services: Arc::new(Services::new(&collection, economy)),
             collection,
             extra_preload: Vec::new(),
+            dev_console: false,
             assets,
             first_scene: Mutex::new(None),
             accounts: Arc::new(accounts),

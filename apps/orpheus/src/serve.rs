@@ -69,6 +69,7 @@ pub fn start(settings: &Settings, hosting: Hosting) -> io::Result<Server> {
     config.test_players = settings.test_players;
     config.test_ai = settings.test_ai;
     config.template = settings.template.clone();
+    config.dev_console = settings.dev_console;
     Server::start(config)
 }
 

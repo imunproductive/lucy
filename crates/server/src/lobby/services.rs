@@ -197,6 +197,7 @@ fn push_state(peer: &mut Peer<'_, '_>, granted: &[u64]) -> io::Result<()> {
         &lobby.ranked,
         LoginContent {
             menu_hero,
+            dev_console: lobby.dev_console,
             extra_preload: &lobby.extra_preload,
             wall_time,
             arcade: &lobby.arcade,

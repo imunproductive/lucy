@@ -12,6 +12,7 @@
 ```toml
 game = 'C:\Games\Overwatch'   # the install, Overwatch.exe or the official launcher
 account = "Player"            # the saved account the game logs in as
+dev_console = false           # the game's own engine console (Alt+backtick)
 locale = "auto"               # auto, none, or a code such as enUS
 
 [ports]
@@ -27,6 +28,7 @@ dashboard = 3725              # TCP; 0 turns the dashboard off
 | `game` | `--game` | `ORPHEUS_GAME` | the last picked or given game, then `game\` in the current folder, then a file dialog (only the modes that start the game) | The Overwatch 1.74 install. The server also reads its game data from it. |
 | `account` | `--account` | | `default_account.txt` | The saved account the game on this PC logs in as |
 | `locale` | `--locale` | | `auto` | The game language: `auto`, `none` or a code such as `enUS` (see [playing](playing.md#game-language)) |
+| `dev_console` | `--dev-console` | `ORPHEUS_DEV_CONSOLE` | off | Turns on the game's developer features and its own engine console: in the game, Alt+backtick opens it (a `>:` prompt). The console is the client's: its commands run in the game on your PC, and nothing goes to the server. Don't use the `--tank_Console` or `--tank_ShowMode` game options for this: one of them opens a full-screen window that can't be hidden or closed. The flag or `ORPHEUS_DEV_CONSOLE=1` turns it on even when `config.toml` says `false`. |
 | `ports.lobby` | `--lobby-port` | | 3724 | Lobby, TCP |
 | `ports.stall` | `--stall-port` | | 1119 | Battle.net, TCP |
 | `ports.rpc` | `--rpc-port` | | 21119 | Battle.net RPC, TCP |

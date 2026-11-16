@@ -53,6 +53,7 @@ With a command, the options go after the command: `orpheus play --game ...`. Onl
 | `--test-players <PLAYERS>` | Start a match once this many players search (default 0: full teams only) |
 | `--test-ai <LEVEL>` | Fill the missing players of a match `--test-players` starts with AI heroes of this level (`easy`, `medium`, `hard`) |
 | `--save <FILE>` | Template profile for new accounts (default `profile.json` in the state folder) |
+| `--dev-console` | Turn on the game's developer features and its own engine console: Alt+backtick opens it in the game. Its commands run on the client; nothing goes to the server. Use this, never `--tank_Console` or `--tank_ShowMode`. Environment: `ORPHEUS_DEV_CONSOLE`. |
 
 ### Mode options
 

@@ -32,6 +32,14 @@ pub const SUPPORTED_BUILDS_KEY: u64 = 0x0422_7e56;
 /// The client re-reads 36600 while connected, so a change shows at once. PvE
 /// characters have no lobby idle animation and stand in a bind pose.
 pub const MENU_HERO_KEY: u64 = 0x8705_3c32;
+/// The 36600 console variable that turns on the client's developer features
+/// (cvar #79, DevFeatures). With [`ENGINE_CONSOLE_KEY`] set too, Alt+backtick
+/// opens the client's own engine console (`refs/reports/AdminMode.md`,
+/// "Client tools pass" and "Game checks", 2026-11-16).
+pub const DEV_FEATURES_KEY: u64 = 0x0fe1_e03e;
+/// The 36600 console variable that allows the client's engine console
+/// (cvar #82; `refs/reports/AdminMode.md`, 2026-11-16).
+pub const ENGINE_CONSOLE_KEY: u64 = 0x146e_5727;
 
 const TEMPLATE_FORMAT: u32 = 1;
 pub const CONFIG: u32 = 0x1732_ebf2;
@@ -155,6 +163,7 @@ impl RetailTemplates {
         profile: &Profile,
         identity: Identity,
         menu_hero: Option<u64>,
+        dev_console: bool,
         now: u64,
         built: &BTreeMap<(u32, u32), Fields>,
     ) -> io::Result<Vec<LobbyMessage>> {
@@ -168,7 +177,7 @@ impl RetailTemplates {
             for (_, mut fields) in self.all(crc, Some(id)) {
                 personalize_fields(&mut fields, &tag, identity.account_lo);
                 let mut fields = localize_fields(&fields, &profile.region);
-                refresh(crc, id, &mut fields, now, menu_hero)?;
+                refresh(crc, id, &mut fields, now, menu_hero, dev_console)?;
                 messages.push((crc, id, fields));
             }
         }
@@ -180,6 +189,7 @@ impl RetailTemplates {
         profile: &Profile,
         identity: Identity,
         menu_hero: Option<u64>,
+        dev_console: bool,
     ) -> io::Result<Fields> {
         let mut fields = self
             .first(CONFIG, 36600)
@@ -187,7 +197,7 @@ impl RetailTemplates {
         let tag = battle_tag(&profile.player_name, identity.account_lo);
         personalize_fields(&mut fields, &tag, identity.account_lo);
         let mut fields = localize_fields(&fields, &profile.region);
-        refresh_config(&mut fields, menu_hero)?;
+        refresh_config(&mut fields, menu_hero, dev_console)?;
         Ok(fields)
     }
 
@@ -334,18 +344,25 @@ fn refresh(
     fields: &mut Fields,
     now: u64,
     menu_hero: Option<u64>,
+    dev_console: bool,
 ) -> io::Result<()> {
     match (crc, id) {
         (CONFIG, 36602) => {
             fields.insert(0x78, Value::Unsigned(now));
         }
-        (CONFIG, 36600) => refresh_config(fields, menu_hero)?,
+        (CONFIG, 36600) => refresh_config(fields, menu_hero, dev_console)?,
         _ => (),
     }
     Ok(())
 }
 
-fn refresh_config(fields: &mut Fields, menu_hero: Option<u64>) -> io::Result<()> {
+/// Add this build to the supported list, and the menu hero and the developer
+/// console entries when asked for.
+fn refresh_config(
+    fields: &mut Fields,
+    menu_hero: Option<u64>,
+    dev_console: bool,
+) -> io::Result<()> {
     let Some(Value::Array(entries)) = fields.get_mut(&0x78) else {
         return Err(invalid("menu config template lacks its config entries"));
     };
@@ -373,6 +390,14 @@ fn refresh_config(fields: &mut Fields, menu_hero: Option<u64>) -> io::Result<()>
             (0x8, Value::String(format!("0x{menu_hero:016x}"))),
         ])));
     }
+    if dev_console {
+        for key in [DEV_FEATURES_KEY, ENGINE_CONSOLE_KEY] {
+            entries.push(Value::Struct(Fields::from([
+                (0x0, Value::Unsigned(key)),
+                (0x8, Value::String("true".into())),
+            ])));
+        }
+    }
     Ok(())
 }
 
@@ -395,6 +420,30 @@ mod tests {
             .as_slice(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn dev_console_adds_exactly_the_two_console_variables() {
+        let config = || fixtures().first(CONFIG, 36600).unwrap();
+        let mut plain = config();
+        refresh_config(&mut plain, None, false).unwrap();
+        let mut console = config();
+        refresh_config(&mut console, None, true).unwrap();
+        let (Value::Array(plain), Value::Array(console)) = (&plain[&0x78], &console[&0x78]) else {
+            panic!("expected config entries")
+        };
+        assert_eq!(plain.len(), 1);
+        assert_eq!(console[..1], plain[..]);
+        let entry = |key| {
+            Value::Struct(Fields::from([
+                (0x0, Value::Unsigned(key)),
+                (0x8, Value::String("true".into())),
+            ]))
+        };
+        assert_eq!(
+            console[1..],
+            [entry(DEV_FEATURES_KEY), entry(ENGINE_CONSOLE_KEY)]
+        );
     }
 
     #[test]
@@ -427,6 +476,7 @@ mod tests {
                 &profile,
                 identity,
                 Some(0x02e0_0000_0000_0002),
+                false,
                 2,
                 &BTreeMap::from([((LOBBY, 20812), replacement.clone())]),
             )
@@ -446,7 +496,7 @@ mod tests {
         assert_eq!(messages[4].2[&0x78], Value::Unsigned(2));
         assert_eq!(
             templates
-                .menu_config(&profile, identity, Some(0x02e0_0000_0000_0002))
+                .menu_config(&profile, identity, Some(0x02e0_0000_0000_0002), false)
                 .unwrap(),
             messages[3].2
         );
@@ -525,6 +575,7 @@ mod tests {
                 &profile,
                 Identity::for_account(0x1234_5678),
                 Some(0x02e0_0000_0000_0002),
+                false,
                 1_800_000_000,
                 &BTreeMap::new(),
             )

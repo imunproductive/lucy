@@ -78,6 +78,9 @@ pub struct ServerConfig {
     /// The template profile for new accounts (`--save`); `profile.json` in
     /// the state folder when unset.
     pub template: Option<PathBuf>,
+    /// Turn on the client's own engine console (Alt+backtick) and developer
+    /// features in the login config (`--dev-console`).
+    pub dev_console: bool,
 }
 
 impl ServerConfig {
@@ -99,6 +102,7 @@ impl ServerConfig {
             test_players: 0,
             test_ai: None,
             template: None,
+            dev_console: false,
         }
     }
 }
@@ -259,6 +263,7 @@ impl Server {
             celebrations,
             xp,
             extra_preload,
+            dev_console: config.dev_console,
             assets: Arc::new(assets),
             first_scene: Mutex::new(scene),
             accounts,
