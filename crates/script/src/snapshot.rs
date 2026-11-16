@@ -2,8 +2,18 @@
 //!
 //! The owner receives an H0 tree with all networked states off. An observer
 //! receives the same tree and the initialized remote-synced states.
+//!
+//! A delta lists every state that changed since the acknowledged frame, and
+//! an ended state as off: the owner's client ends a networked state only
+//! when a frame lists it off, and begins one only when a frame lists it on
+//! (owner-delta state reader 0x7FF78991C620: a listed plain class reads one
+//! bit, 1 begins it unless it runs, 0 ends it if it runs; a listed StEC class
+//! reads a present bit, then the active bit and its payload, and a present
+//! bit of 0 changes nothing; a state the frame leaves out stays as it is;
+//! `refs/reports/OwnerPrediction.md` §11, "Night (2026-11-17)").
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt,
@@ -177,6 +187,7 @@ impl ProjectedSnapshot {
                 if allowed {
                     Some(ProjectedState {
                         active: true,
+                        activation: current.map_or(0, |state| state.activation),
                         payload: StatePayload::from([
                             ("count".into(), pulses),
                             ("fresh".into(), Value::Bool(true)),
@@ -210,10 +221,15 @@ struct ProjectedInstance {
     events: Vec<ProjectedEvent>,
 }
 
-/// One projected state: whether it runs, its payload and volley.
+/// One projected state: whether it runs, its payload and volley, and its
+/// activation counter. The counter makes a state that ended and began again
+/// between two frames a change, so a delta lists it: a client that ended its
+/// copy (its timer ran out first) begins it again, one whose copy runs keeps
+/// it (the plain reader begins only a state that is off).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectedState {
     active: bool,
+    activation: u16,
     payload: StatePayload,
     volley: Option<VolleyActivation>,
 }
@@ -532,6 +548,7 @@ impl<'a> SnapshotEncoder<'a> {
                     raw,
                     ProjectedState {
                         active: state.active,
+                        activation: state.activation,
                         payload,
                         volley: match state.kind {
                             StateKind::WeaponVolley {
@@ -896,10 +913,23 @@ impl<'a> SnapshotEncoder<'a> {
                 let node = graph
                     .state(usize::from(raw))
                     .ok_or(SnapshotError::MissingState(site))?;
-                if now.is_none() && self.codecs.codec(&node.class).is_some_and(Codec::stec) {
-                    continue;
-                }
-                states.insert(raw, now);
+                let entry = match now {
+                    Some(state) => Some(Cow::Borrowed(state)),
+                    // An StEC entry can't say "off" without a payload (its
+                    // present bit of 0 changes nothing). One the client has
+                    // running goes out off with the payload it had.
+                    None if self.codecs.codec(&node.class).is_some_and(Codec::stec) => {
+                        let Some(was) = was.filter(|was| was.active) else {
+                            continue;
+                        };
+                        Some(Cow::Owned(ProjectedState {
+                            active: false,
+                            ..was.clone()
+                        }))
+                    }
+                    None => None,
+                };
+                states.insert(raw, entry);
                 delta.keys.insert(key);
                 let Some((now, volley)) = now
                     .filter(|_| current.view == View::Owner)
@@ -1128,13 +1158,13 @@ impl<'a> SnapshotEncoder<'a> {
         out: &mut BitWriter,
         id: u16,
         graph: &Graph,
-        changed: &BTreeMap<u16, Option<&ProjectedState>>,
+        changed: &BTreeMap<u16, Option<Cow<'_, ProjectedState>>>,
         mode: PayloadMode,
     ) -> Result<(), SnapshotError> {
         let owner = matches!(mode, PayloadMode::Owner { .. });
         let mut slots = BTreeMap::new();
         if owner {
-            for (&raw, &state) in changed {
+            for (&raw, state) in changed {
                 let site = StateSite {
                     instance: id,
                     graph: graph.index,
@@ -1144,7 +1174,7 @@ impl<'a> SnapshotEncoder<'a> {
                     .state(usize::from(raw))
                     .filter(|node| node.is_networked())
                     .ok_or(SnapshotError::MissingState(site))?;
-                slots.insert(usize::from(raw), (site, node, state));
+                slots.insert(usize::from(raw), (site, node, state.as_deref()));
             }
         } else {
             for index in 0..graph.remote_nodes.len() {
@@ -1159,13 +1189,13 @@ impl<'a> SnapshotEncoder<'a> {
                     graph: graph.index,
                     node: node.pos,
                 })?;
-                if let Some(&state) = changed.get(&raw) {
+                if let Some(state) = changed.get(&raw) {
                     let site = StateSite {
                         instance: id,
                         graph: graph.index,
                         state: raw,
                     };
-                    slots.insert(index, (site, node, state));
+                    slots.insert(index, (site, node, state.as_deref()));
                 }
             }
         }
@@ -1336,7 +1366,7 @@ struct InstanceDelta<'a> {
     current: Option<&'a ProjectedInstance>,
     descriptor: bool,
     variables: ProjectedVariables,
-    states: BTreeMap<u16, Option<&'a ProjectedState>>,
+    states: BTreeMap<u16, Option<Cow<'a, ProjectedState>>>,
 }
 
 fn delta_variables(

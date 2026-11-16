@@ -1252,6 +1252,134 @@ fn a_new_volley_reseeds_ammo_after_an_unacknowledged_stop() {
     );
 }
 
+/// The owner's client begins a networked state only when a frame lists it on
+/// (0x7FF78991C620). A state that ended and began again since the
+/// acknowledged frame is listed, so a client whose copy ended (its own timer
+/// ran out first) begins it again.
+#[test]
+fn an_owner_delta_lists_a_state_that_ended_and_began_again() {
+    let (graphs, mut snapshot) = fixture();
+    let codecs = CodecTable::from_json(CODECS).unwrap();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    let owner = encoder.project(&snapshot, View::Owner).unwrap();
+    let mut stream = BodyStream::new(ENTITY);
+    let baseline = encoder.queue_full(&mut stream, &owner).unwrap();
+    stream.create_arrived();
+    stream.arrived(baseline.last);
+    let mut send = |owner: &ProjectedSnapshot, kind| {
+        let chunk = encoder
+            .queue_delta(&mut stream, owner, kind, 16)
+            .unwrap()
+            .unwrap();
+        let listed = stream.sent(chunk.last).unwrap().changes.clone();
+        assert!(stream.arrived(chunk.last).advanced);
+        listed
+    };
+    let plain = ChangeKey::State(1, 2);
+    assert!(send(&owner, DeltaKind::InitialOwner(1000)).contains(&plain));
+    assert!(!send(&owner, DeltaKind::Correction(1016)).contains(&plain));
+
+    let state = snapshot.instances[&1].states.get_mut(&2).unwrap();
+    assert!(state.active && state.kind == StateKind::Plain);
+    state.activation += 1;
+    state.start_ms += 16;
+    let again = encoder.project(&snapshot, View::Owner).unwrap();
+    assert!(send(&again, DeltaKind::Correction(1017)).contains(&plain));
+    assert!(!send(&again, DeltaKind::Correction(1018)).contains(&plain));
+}
+
+/// A listed StEC state with a present bit of 0 changes nothing on the owner's
+/// client (0x7FF78991C620), so a running one that leaves the projection goes
+/// out as an explicit off with the payload it had: the same entry as its
+/// ordinary end.
+#[test]
+fn a_running_stec_state_that_leaves_the_projection_goes_out_off() {
+    const RIFLE: u16 = 11;
+    const VOLLEY: u16 = 10;
+    let definition = graph(
+        0x0254,
+        vec![node(
+            0,
+            "STUStatescriptStateWeaponVolley",
+            Some(VOLLEY),
+            json!({}),
+        )],
+        json!([
+            null, null, null, null, null, null, null, null, null, null, 0
+        ]),
+        json!([]),
+        json!([0]),
+        json!([]),
+    );
+    let graphs = GraphStore::from_json(
+        &serde_json::to_vec(&json!({
+            "version":1, "graphs":[definition], "bodies":{}, "missing":[]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let codecs = CodecTable::from_json(CODECS).unwrap();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    let mut snapshot = initialize(
+        &graphs,
+        ENTITY,
+        Variables::new(),
+        vec![Root::new(RIFLE, 0x0254)],
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let idle = encoder.project(&snapshot, View::Owner).unwrap();
+    let (_, fixture) = fixture();
+    let mut volley = fixture.instances[&1].states[&0].clone();
+    volley.activation = 1;
+    volley.start_ms = 1031 * 16;
+    volley.kind = StateKind::WeaponVolley {
+        volleys: 1,
+        offset_ms: 0,
+        ammo0: 0,
+        ammo_var: None,
+    };
+    let mut project = |active| {
+        volley.active = active;
+        snapshot.instances[&RIFLE]
+            .states
+            .insert(VOLLEY, volley.clone());
+        encoder.project(&snapshot, View::Owner).unwrap()
+    };
+    let running = project(true);
+    let stopped = project(false);
+    let mut vanished = running.clone();
+    vanished.replace_state(RIFLE, VOLLEY, None);
+
+    // The same acknowledged history (the volley running) for both cases.
+    let next = |owner: &ProjectedSnapshot| {
+        let mut stream = BodyStream::new(ENTITY);
+        stream.create_arrived();
+        let baseline = encoder.queue_full(&mut stream, &idle).unwrap();
+        stream.arrived(baseline.last);
+        for (kind, base) in [
+            (DeltaKind::InitialOwner(1001), &idle),
+            (DeltaKind::Correction(1031), &running),
+        ] {
+            let chunk = encoder
+                .queue_delta(&mut stream, base, kind, 16)
+                .unwrap()
+                .unwrap();
+            stream.sent(chunk.last);
+            assert!(stream.arrived(chunk.last).advanced);
+        }
+        encoder
+            .queue_delta(&mut stream, owner, DeltaKind::Correction(1032), 16)
+            .unwrap()
+            .unwrap()
+            .update
+            .chunk
+    };
+    assert_eq!(next(&vanished), next(&stopped));
+    assert_ne!(next(&vanished), next(&running));
+}
+
 #[test]
 fn observer_delta_removes_an_instance_introduced_by_an_unacknowledged_chunk() {
     let (graphs, snapshot) = fixture();
