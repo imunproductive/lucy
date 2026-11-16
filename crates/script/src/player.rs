@@ -200,6 +200,23 @@ impl World for PlayerWorld {
         }
     }
 
+    /// A server-only voice stimulus of the hero's reactions
+    /// ([`REACTION_GRAPHS`]: `01CA`'s elimination lines) aimed at the body or
+    /// its controller: the body says it.
+    fn voice_stimulus(&mut self, site: Site, request: VoiceRequest) -> bool {
+        if site.entity != self.entity
+            || !REACTION_GRAPHS.contains(&site.graph)
+            || !request
+                .targets
+                .iter()
+                .any(|&target| self.speaks_for(target))
+        {
+            return false;
+        }
+        self.voices.push(request);
+        true
+    }
+
     /// The body's own health changes wait for the match, which applies
     /// them as it applies a shot (`orpheus_sim` `Combat::modify_health`).
     fn modify_health(&mut self, change: HealthChange) -> bool {
