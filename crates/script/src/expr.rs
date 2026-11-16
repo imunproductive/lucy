@@ -709,6 +709,34 @@ fn authored_pairs(
     Ok(Value::Pairs(pairs))
 }
 
+/// Insert into a native identifier map's buckets (104319 F66E90/F683E0/
+/// F68480, nonnegative keys; leafall903/ORPHEUS (MIT) `_insert` in
+/// `play.py`): eight buckets at first, linear probing from `key % len`; an
+/// equal key is replaced; a full table doubles and takes the old entries
+/// in their bucket order. Key 0 marks an empty bucket, so it clears one.
+fn identifier_map_insert(buckets: &mut Vec<Option<(u32, Value)>>, key: u32, value: Value) {
+    if buckets.is_empty() {
+        buckets.resize(8, None);
+    }
+    let len = buckets.len();
+    for offset in 0..len {
+        let position = (key as usize + offset) % len;
+        if buckets[position]
+            .as_ref()
+            .is_none_or(|(existing, _)| *existing == key)
+        {
+            buckets[position] = (key != 0).then_some((key, value));
+            return;
+        }
+    }
+    let mut grown = vec![None; len * 2];
+    for (old_key, old_value) in std::mem::take(buckets).into_iter().flatten() {
+        identifier_map_insert(&mut grown, old_key, old_value);
+    }
+    identifier_map_insert(&mut grown, key, value);
+    *buckets = grown;
+}
+
 fn json_truthy(value: &Json) -> bool {
     match value {
         Json::Null => false,
@@ -877,6 +905,9 @@ fn resource_field(class: &str) -> Option<&'static str> {
         "STUConfigVarGameMode" => Some("m_gamemode"),
         "STU_BCD1C634" => Some("m_id"),
         "STU_8A491388" => Some("m_priority"),
+        // A graph resource (`180A`'s phase script lists; upstream keeps an
+        // empty one as the zero asset).
+        "STU_105E1BCC" => Some("m_graph"),
         // An unset texture is the zero asset (0686 node 28 clears 3793).
         "STUConfigVarTexture" => Some("m_texture"),
         // `0215` rid31 to rid35 store the announcer's stimulus (`078`) in
@@ -914,6 +945,17 @@ impl Evaluator {
         context: &mut impl Context,
         depth: usize,
     ) -> Result<Value, EvalError> {
+        if class(config) == Some("STU_45B0D2B2") {
+            let mut items = Vec::new();
+            for member in array_field(config, "m_configVars")? {
+                items.push(if member.is_null() {
+                    Value::Integer(0)
+                } else {
+                    self.value(member, context, depth + 1)?
+                });
+            }
+            return Ok(Value::Array(items));
+        }
         if class(config) != Some(CONFIG_LIST) {
             return self.config(config, context, depth);
         }
@@ -1076,6 +1118,44 @@ impl Evaluator {
                 Value::Asset(0)
             }
             "STU_7757D403" => authored_pairs(self, config, context, nested)?,
+            // An authored identifier map (`STU_7042F028`, 104319 1B78C00;
+            // leafall903/ORPHEUS (MIT) `authored_map` in `play.py`): each
+            // row's `m_value` (read as an assignment; unset: 0) under its
+            // identifier's low 32 bits, in the native map's bucket order
+            // ([`identifier_map_insert`]). `180A` keeps its phase scripts
+            // so (#31759-#31766: identifier `416C` → a `STU_45B0D2B2`
+            // graph list).
+            "STU_7042F028" => {
+                let mut buckets = Vec::new();
+                for row in array_field(config, "m_92829780")? {
+                    let value = match row.get("m_value") {
+                        None | Some(Json::Null) => Value::Integer(0),
+                        Some(member) => self.value(member, context, nested)?,
+                    };
+                    let key = resource(child(row, "m_identifier"))
+                        .ok_or(EvalError::MalformedConfig("authored map identifier"))?
+                        as u32;
+                    if key & 0x8000_0000 != 0 {
+                        return Err(EvalError::UnsupportedConfig(class.into()));
+                    }
+                    identifier_map_insert(&mut buckets, key, value);
+                }
+                Value::Map(
+                    buckets
+                        .into_iter()
+                        .flatten()
+                        .map(|(key, value)| (Value::Integer(i64::from(key)), value))
+                        .collect(),
+                )
+            }
+            // An authored array (`STU_45B0D2B2`; upstream `AUTHORED_ARRAY`)
+            // as a scalar: its first config (unset: 0; none: null). As a
+            // value ([`Evaluator::value`]) every one in order.
+            "STU_45B0D2B2" => match array_field(config, "m_configVars")?.first() {
+                None => Value::Null,
+                Some(Json::Null) => Value::Integer(0),
+                Some(first) => self.value(first, context, nested)?,
+            },
             // The communication wheel (`crate::wheel`; leafall903/ORPHEUS
             // (MIT) `BodyWorld.native` in `driver.py`). An action category
             // test (STU_4460419A) and the three slot queries (44A7D0,

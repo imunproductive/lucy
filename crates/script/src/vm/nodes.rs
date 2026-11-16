@@ -653,6 +653,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // death (`01C7` node 68), `0C8E` st7/st25, the scopes of Ana,
             // Ashe and Widowmaker.
             "STU_3716E1D4" => StateKind::Plain,
+            // The mission state (`STU_25CBEFB0`, `1B4A` st0, empty
+            // `m_108E51DD`): it shares `STU_9028E035`'s registered-state
+            // hooks (begin/end 1B72530/1B725C0 add it to and remove it from
+            // its class's list) and link codec (leafall903/ORPHEUS (MIT)
+            // `RegisteredState` in `nodes.py`), without a status effect: a
+            // plain state, sent like a status without a link.
+            "STU_25CBEFB0" => StateKind::Plain,
             "STUStatescriptStateHealthPool" if is_base_health_pool(node) => {
                 StateKind::HealthPool { pool: None }
             }

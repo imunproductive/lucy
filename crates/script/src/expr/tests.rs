@@ -283,6 +283,33 @@ fn entity_filter_applies_any_all_and_excluded_tag_lists() {
     assert_eq!(evaluate(&config, &mut world), unsupported,);
 }
 
+/// `STU_7042F028` (`180A`): the identifier map lists its rows in the
+/// native buckets' order (`0x416C % 8` = 4 after `0x4170 % 8` = 0), a
+/// `STU_45B0D2B2` row as the array of its graph resources.
+#[test]
+fn authored_identifier_map_keeps_bucket_order() {
+    let graph = |index: u64| json!({"$":"STU_105E1BCC", "m_graph":format!("0x{:016X}", 0x0580_0000_0000_0000 | index)});
+    let config = json!({"$":"STU_7042F028", "m_92829780":[
+        {"$":"STU_D8196947", "m_identifier":"0x01C000000000416C",
+         "m_value":{"$":"STU_45B0D2B2", "m_configVars":[graph(0x027f), graph(0x17df)]}},
+        {"$":"STU_D8196947", "m_identifier":"0x01C0000000004170",
+         "m_value":{"$":"STUConfigVarInt", "m_value":3}},
+    ]});
+    assert_eq!(
+        evaluate(&config, &mut EmptyContext),
+        Ok(Value::Map(vec![
+            (Value::Integer(0x4170), Value::Integer(3)),
+            (
+                Value::Integer(0x416c),
+                Value::Array(vec![
+                    Value::Asset(0x0580_0000_0000_027f),
+                    Value::Asset(0x0580_0000_0000_17df)
+                ])
+            ),
+        ]))
+    );
+}
+
 #[test]
 fn direct_target_tag_query_reads_membership_on_the_typed_entity() {
     let query = json!({
