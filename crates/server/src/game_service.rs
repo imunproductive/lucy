@@ -2337,7 +2337,8 @@ impl State {
                             .iter()
                             .find(|bot| bot.entity == death.bot)
                             .map(|bot| bot.spawn.body);
-                        peer.world.eliminated(graphs, death.tick, death.bot, body);
+                        peer.world
+                            .eliminated(graphs, death.tick, death.bot, body, &death.tags);
                     }
                     for notice in hit.notices.into_iter().flatten() {
                         peer.notice(notice);
@@ -2517,7 +2518,7 @@ impl State {
     /// bodies are, the bots' rockets, the players' projectiles and what they
     /// ask of the room (projectiles.py `Projectiles.update`), the hits on
     /// players, the Biotic Fields' heals and the messages between bodies,
-    /// then the players' respawns and their spawn voice lines.
+    /// then the players' respawns.
     fn update_combat(&mut self, tick: u32, now: Duration) {
         let ids: Vec<MatchId> = self
             .rooms
@@ -2738,7 +2739,6 @@ impl State {
                 {
                     eprintln!("{:08X} could not respawn ({error})", viewer.entity);
                 }
-                peer.world.expire_bark(now);
                 peer.world.area_step(&world.scene, &viewer);
             }
         }

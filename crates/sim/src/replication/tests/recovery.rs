@@ -89,14 +89,6 @@ impl OwnerBodyRuntime for Faulting {
     fn take_motions(&mut self) -> Vec<Motion> {
         self.inner.take_motions()
     }
-
-    fn begin_spawn_bark(&mut self, now: Duration) -> io::Result<()> {
-        self.inner.begin_spawn_bark(now)
-    }
-
-    fn expire_bark(&mut self, now: Duration) -> io::Result<()> {
-        self.inner.expire_bark(now)
-    }
 }
 
 fn practice_range() -> PreparedScene {

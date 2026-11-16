@@ -131,7 +131,7 @@ The last differing test, `TakeOutTests::test_a_player_taken_out_before_his_game_
 | `test_game_team_list.py` | covered | sim `controller.rs::team_entry_exact_wire_bytes_with_and_without_pick`, `others.rs::new_players_wait_for_a_card_slot_and_cards_go_again`, `instance.rs` tests |
 | `test_game_tick.py` | covered | server `clock.rs::preserves_tick_alignment_across_a_stall`, `sends_once_for_every_update_that_crosses_a_world_boundary` |
 | `test_game_to_game.py` | covered | server `connection.rs::authenticated_syn_opens_on_ack_and_fin_retires_after_reply`, `only_fresh_authenticated_packets_rebind...`; `matchmaker/tests.rs::one_player_to_start_pops_the_queue...` (ignored) |
-| `test_game_voicelines.py` | covered | sim `voice.rs::candidates_are_the_networked_voice_stimuli...`, `spawn_bark_turns_the_stimulus_on_until_it_is_due` |
+| `test_game_voicelines.py` | dropped | The spawn bark (the body's first networked VoiceStimulus on for 4 s) is not in the data; removed 2026-11-17 for `01CA`'s respawn line (script `player.rs::the_hero_says_his_elimination_and_respawn_lines`) |
 | `test_game_world.py` | covered | wire `entity/tests.rs::placeable_create_and_pose_match_python` (cites this file), `movement_timing_sentinels_and_signed_fields_match_python` |
 | `test_group_finder.py` | covered | lobby `social/tests.rs::a_listed_group_is_found_until_it_is_full`, `search_filters_pick_the_groups`, `group_limits_hide...`, `the_bot_group_takes_the_first_slot...`, `watchers_hear_a_group_until_it_closes` |
 | `test_launcher.py` | covered | launcher `game.rs::resolves_the_game_from_its_folder_or_the_official_launcher`, `finds_the_given_game_then_the_remembered_one...`, `prefers_the_system_language...` (gap: `close_running_copy` is untested) |

@@ -22,7 +22,7 @@ use crate::{
     vitals::{PoolKind, Vitals},
     vm::{
         BodyEffects, CombatMod, GameMessage, HealthChange, RaisedCriteria, Site, TargetCandidate,
-        TargetTagEffect, Unknowns, World,
+        TargetTagEffect, Unknowns, VoiceRequest, World,
     },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
@@ -66,6 +66,9 @@ pub struct PlayerWorld {
     pub pool_types_known: bool,
     pub target_tags: Option<BTreeSet<u64>>,
     target_tag_effects: BTreeMap<u64, TargetTagCounts>,
+    /// The body the hero last eliminated and its authored target tags (the
+    /// match gives them with `0093.025`, whose `01CA` rid210 tests them).
+    pub victim_tags: Option<(u32, BTreeSet<u64>)>,
     pub controller_on_fire: bool,
     /// The bodies a target search can find, as the match placed them this
     /// tick (its own body among them); none: the world lists no bodies.
@@ -79,9 +82,11 @@ pub struct PlayerWorld {
     pub cosmetics: Cosmetics,
     /// Game messages to other entities, for the match to route.
     outbox: Vec<GameMessage>,
-    /// The criteria the body's graphs raised on it, for the match to answer
-    /// with the body's voice lines.
+    /// The criteria the body's graphs raised on it or its controller, for
+    /// the match to answer with the body's voice lines.
     criteria: Vec<RaisedCriteria>,
+    /// The voice stimuli the body's server-only states asked to say.
+    voices: Vec<VoiceRequest>,
     /// The health changes the body's graphs made, for the match to apply.
     health_changes: Vec<HealthChange>,
     /// The statuses and combat modifiers its states hold.
@@ -177,14 +182,17 @@ impl World for PlayerWorld {
         true
     }
 
-    /// A criteria on the body itself that its voice set answers with a line
-    /// (ClientInVoice 27500): the communication wheel's (`0686` raises the
-    /// choice's, Hello `0AEB`) and the hero's reactions ([`REACTION_GRAPHS`]:
-    /// the pain lines after a hit, `0608` / `0609`). The hero graphs' other
+    /// A criteria on the body itself or its controller that the body's
+    /// voice set answers with a line (ClientInVoice 27500): the
+    /// communication wheel's (`0686` raises the choice's, Hello `0AEB`) and
+    /// the hero's reactions ([`REACTION_GRAPHS`]: the pain lines after a
+    /// hit, `0608` / `0609`; the respawn line `05D8` and the revenge kill
+    /// `0A22`, on the controller or the body). The hero graphs' other
     /// criteria (ability lines) are left out: nothing has checked them in
     /// the game yet.
     fn criteria(&mut self, site: Site, raised: RaisedCriteria) {
         if site.entity == self.entity
+            && self.speaks_for(raised.target)
             && (crate::wheel::ACTION_GRAPHS.contains(&site.graph)
                 || REACTION_GRAPHS.contains(&site.graph))
         {
@@ -283,8 +291,12 @@ impl World for PlayerWorld {
     }
 
     fn has_target_tag(&self, site: Site, entity: u32, tag: u64) -> Option<bool> {
-        if !self.is_player_site(site) || entity != self.entity {
+        if !self.is_player_site(site) {
             return None;
+        }
+        if entity != self.entity {
+            let (victim, tags) = self.victim_tags.as_ref()?;
+            return (*victim == entity).then(|| tags.contains(&tag));
         }
         if let Some(counts) = self.target_tag_effects.get(&tag) {
             return Some(counts.suppressions == 0);
@@ -508,10 +520,12 @@ impl PlayerWorld {
             target_tag_effects: BTreeMap::new(),
             controller_on_fire: false,
             targets: None,
+            victim_tags: None,
             unknowns: Unknowns::for_build(),
             cosmetics: Cosmetics::default(),
             outbox: Vec::new(),
             criteria: Vec::new(),
+            voices: Vec::new(),
             health_changes: Vec::new(),
             effects: BodyEffects::default(),
         }
@@ -530,9 +544,22 @@ impl PlayerWorld {
         std::mem::take(&mut self.outbox)
     }
 
-    /// The criteria the body's graphs raised on it since the last call.
+    /// The criteria the body's graphs raised on it or its controller since
+    /// the last call.
     pub fn take_criteria(&mut self) -> Vec<RaisedCriteria> {
         std::mem::take(&mut self.criteria)
+    }
+
+    /// The voice stimuli the body's graphs asked to say since the last call.
+    pub fn take_voices(&mut self) -> Vec<VoiceRequest> {
+        std::mem::take(&mut self.voices)
+    }
+
+    /// Whether a line aimed at `target` is the body's to say: the body
+    /// itself, or its controller (which has no voice set; the voice is its
+    /// possessed body's).
+    fn speaks_for(&self, target: u32) -> bool {
+        target == self.entity || (valid_entity(self.controller) && target == self.controller)
     }
 
     fn is_player_site(&self, site: Site) -> bool {
@@ -850,5 +877,141 @@ mod tests {
         );
         assert!(!knockback);
         assert_eq!(strength, None, "no flinch");
+    }
+
+    /// The hero's own lines from `01CA`. An elimination (`0093.025` with
+    /// the final blow) of a Training Bot waits 0.7 s (the 44th 16 ms frame),
+    /// then begins the server-only `VoiceStimulus` st46: his elimination
+    /// line `0008.078`, said 0.5 s later; a melee kill (tag `0302` in
+    /// `0355`) begins st45 instead: `0032.078`. The revive message
+    /// (`0013.025`, `00C6` on) raises the respawn line `05D8` on his
+    /// controller 1.5 s later (the 94th frame). Nothing in the paths is
+    /// unsupported.
+    #[test]
+    #[ignore = "requires the derived 104319 statescript catalog"]
+    fn the_hero_says_his_elimination_and_respawn_lines() {
+        use crate::bot::RESET;
+        use crate::controller::ELIMINATION;
+        use crate::vm::{Component, MAX_INIT_WORK, RaisedCriteria, VoiceRequest};
+        use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
+
+        const FIRST: u32 = 1000;
+        const BOT: u32 = 0x8000_8800;
+        const TRAINING_BOT_TAG: u64 = 0x0d60_0000_0000_02ed;
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
+        let soldier = &graphs.bodies()[&0x0400_0000_0000_03cf];
+        let tags = |ids: &[u64]| -> crate::weapons::DamageTags {
+            ids.iter().map(|tag| 0x0d80_0000_0000_0000 | tag).collect()
+        };
+        let start = || {
+            let filter = 0x0004_0001 | (0x80_0000 << 1);
+            let mut world = PlayerWorld::new(
+                Arc::clone(&graphs),
+                CONTROLLER,
+                BODY,
+                filter,
+                PRACTICE_RANGE_MODE,
+                SOLDIER,
+            );
+            world.pool_types_known = true;
+            world.target_tags = soldier.target_tags.clone();
+            world.targets = Some(vec![
+                body(BODY, Some(0), [0.0; 3]),
+                TargetCandidate {
+                    controller: Some(0x8000_8000),
+                    ..body(BOT, Some(1), [0.0, 0.0, 10.0])
+                },
+            ]);
+            let mut component = Component::start(
+                Arc::clone(&graphs),
+                BODY,
+                crate::vm::player_entity_variables(soldier, 200.0, 200.0),
+                crate::vm::player_roots(soldier, &graphs).unwrap(),
+                FIRST,
+                &mut world,
+                MAX_INIT_WORK,
+            )
+            .unwrap();
+            component.advance_frame(FIRST, &mut world).unwrap();
+            // The game identifier the match sends every body as it starts
+            // (`002D.025`, `0029`): `01C7` rid33 sets #1928e from it.
+            let identifier = Variables::from([(0x29, Value::Asset(0))]);
+            component
+                .receive_message(0, 0x0240_0000_0000_002d, identifier, &mut world)
+                .unwrap();
+            (world, component)
+        };
+        // The frames after `message` at which the body asked for a voice
+        // stimulus or raised a criteria.
+        type Said = (Vec<(u32, VoiceRequest)>, Vec<(u32, RaisedCriteria)>);
+        let said = |message: u64, parameters: Variables| -> Said {
+            let (mut world, mut component) = start();
+            world.victim_tags = Some((BOT, BTreeSet::from([TRAINING_BOT_TAG])));
+            assert_ne!(
+                component
+                    .receive_message(0, message, parameters, &mut world)
+                    .unwrap(),
+                0
+            );
+            let (mut voices, mut criteria) = (Vec::new(), Vec::new());
+            for frame in FIRST + 1..FIRST + 120 {
+                component.advance_frame(frame, &mut world).unwrap();
+                voices.extend(world.take_voices().into_iter().map(|v| (frame - FIRST, v)));
+                criteria.extend(
+                    world
+                        .take_criteria()
+                        .into_iter()
+                        .map(|c| (frame - FIRST, c)),
+                );
+            }
+            let snapshot = component.snapshot().unwrap();
+            assert!(
+                snapshot.diagnostics.is_empty(),
+                "{:?}",
+                snapshot.diagnostics
+            );
+            (voices, criteria)
+        };
+        let kill = |tags: crate::weapons::DamageTags| {
+            Variables::from([
+                (0x15, Value::Entity(BOT)),
+                (0x12, Value::Entity(BODY)),
+                (0x91, Value::Bool(true)),
+                (0x3d, tags.to_value()),
+                (0x355, tags.to_value()),
+            ])
+        };
+        let line = |stimulus: u64| VoiceRequest {
+            stimulus,
+            targets: vec![BODY],
+            delay: 0.5,
+            audience: None,
+        };
+        let bullet = tags(&[0x03bf, 0x09a2, 0x1e1e, 0x2d2f, 0x4d29]);
+        assert_eq!(
+            said(ELIMINATION, kill(bullet)),
+            (vec![(44, line(0x0ee0_0000_0000_0008))], Vec::new())
+        );
+        let melee = tags(&[0x0302]);
+        assert_eq!(
+            said(ELIMINATION, kill(melee)),
+            (vec![(44, line(0x0ee0_0000_0000_0032))], Vec::new())
+        );
+        let respawn = Variables::from([(0xc6, Value::Bool(true))]);
+        assert_eq!(
+            said(RESET, respawn),
+            (
+                Vec::new(),
+                vec![(
+                    94,
+                    RaisedCriteria {
+                        identifier: 0x0d80_0000_0000_05d8,
+                        target: CONTROLLER,
+                        audience: None,
+                    }
+                )]
+            )
+        );
     }
 }

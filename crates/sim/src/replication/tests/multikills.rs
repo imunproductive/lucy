@@ -176,7 +176,13 @@ fn in_the_practice_range_a_second_training_bot_kill_pulses_the_double_kill() {
     let first = FIRST_TICK + 100;
     let ticks = [first, first + MULTIKILL_WINDOW_TICKS - 1];
     for (index, tick) in ticks.into_iter().enumerate() {
-        shooter.eliminated(&graphs, tick, crate::bots::BOT_ENTITY, training_bot);
+        shooter.eliminated(
+            &graphs,
+            tick,
+            crate::bots::BOT_ENTITY,
+            training_bot,
+            &DamageTags::NONE,
+        );
         shooter.send_multikills(&scene, tick).unwrap();
         let last = controller_frames(&shooter).last().cloned();
         assert_eq!(

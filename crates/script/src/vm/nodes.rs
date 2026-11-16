@@ -72,6 +72,11 @@ const ASSUMED_INERT_STATES: &[&str] = &[
     "STUStatescriptStatePhysicsExplosion",
     "STU_B5C87F3D",
     "STU_54FEB21C",
+    // TrackStatTime (`0B8B` node 66, reached once `01C7` sets #1928e from
+    // `002D.025`): a time stat while it runs; the server keeps its stats in
+    // Rust and runs no TrackStat (`refs/reports/RustInsteadOfGraphs.md`,
+    // "Stats"), so it has no effect here.
+    "STU_441B50E4",
 ];
 
 /// The player controller's native states (`0C90`): their client codec has
@@ -356,21 +361,18 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
     }
 
-    /// A criteria action changes nothing the VM tracks; one whose target is
-    /// the owner tells the world its identifier ([`World::criteria`]): a
-    /// literal, or an expression that gives one (`0686` node 56, the
-    /// configurable wheel choices' `#29862.id(1384)`, the identifier its map
-    /// gives the action), with its audience ([`RaisedCriteria::audience`]),
-    /// read now: the graphs clear the list right after. Others stay no-ops,
-    /// as in the Python reference (`no_op` in `ow174/game/script/nodes.py`),
-    /// and an identifier that can't be evaluated raises nothing: nothing
-    /// here can fail.
+    /// A criteria action changes nothing the VM tracks; it tells the world
+    /// its identifier ([`World::criteria`]) for each entity it targets (the
+    /// owner, or the entities `m_targets` evaluates to: the hero's `01CA`
+    /// names his controller for its respawn and spawn lines): a literal, or
+    /// an expression that gives one (`0686` node 56, the configurable wheel
+    /// choices' `#29862.id(1384)`, the identifier its map gives the action),
+    /// with its audience ([`RaisedCriteria::audience`]), read now: the
+    /// graphs clear the list right after. An identifier or a target that
+    /// can't be evaluated raises nothing: nothing here can fail.
     fn raise_criteria(&mut self, id: u16, node: &Node) {
-        let owner = field(&node.fields, "m_targets")
-            .get("$")
-            .and_then(Json::as_str)
-            == Some("STU_B5A0CAF0");
-        if !owner {
+        let targets = self.voice_targets(id, node);
+        if targets.is_empty() {
             return;
         }
         let identifier = match node
@@ -386,13 +388,79 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         if let Some(identifier) = identifier {
             let audience = self.criteria_audience(id, node);
             let site = self.site(id, node);
-            self.world.criteria(
-                site,
-                RaisedCriteria {
-                    identifier,
-                    audience,
-                },
-            );
+            for target in targets {
+                self.world.criteria(
+                    site,
+                    RaisedCriteria {
+                        identifier,
+                        target,
+                        audience: audience.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    /// The entities a criteria action or a voice stimulus state names in
+    /// `m_targets`, each once: the owner without evaluating it, else what
+    /// the expression gives (an entity or a list), none when it can't be
+    /// evaluated.
+    pub(super) fn voice_targets(&mut self, id: u16, node: &Node) -> Vec<u32> {
+        let config = field(&node.fields, "m_targets");
+        if config.get("$").and_then(Json::as_str) == Some("STU_B5A0CAF0") {
+            return vec![self.site(id, node).entity];
+        }
+        if config.is_null() {
+            return Vec::new();
+        }
+        let items = match self.evaluate_quietly(id, node, config) {
+            Some(Value::Array(items)) => items,
+            Some(entity @ Value::Entity(_)) => vec![entity],
+            _ => return Vec::new(),
+        };
+        let mut targets = Vec::new();
+        for item in items {
+            if let Value::Entity(entity) = item {
+                if expr::valid_entity(entity) && !targets.contains(&entity) {
+                    targets.push(entity);
+                }
+            }
+        }
+        targets
+    }
+
+    /// A server-only `VoiceStimulus` state began: ask the world to say its
+    /// stimulus ([`World::voice_stimulus`]). A stimulus, target or delay
+    /// that can't be evaluated says nothing; the state stays on as a plain
+    /// state either way, as the client's networked ones do.
+    pub(super) fn begin_voice_stimulus(&mut self, key: StateKey, node: &Node) {
+        let id = key.instance;
+        let site = self.site(id, node);
+        let stimulus = match self.evaluate_quietly(id, node, field(&node.fields, "m_stimulus")) {
+            Some(Value::Asset(stimulus)) if stimulus != 0 => stimulus,
+            _ => return,
+        };
+        let delay = match field(&node.fields, "m_B0263D2D") {
+            Json::Null => 0.0,
+            config => match self.evaluate_quietly(id, node, config) {
+                Some(Value::Float(seconds)) => seconds,
+                Some(Value::Integer(seconds)) => seconds as f64,
+                _ => return,
+            },
+        };
+        let targets = self.voice_targets(id, node);
+        if targets.is_empty() {
+            return;
+        }
+        let audience = self.criteria_audience(id, node);
+        let request = VoiceRequest {
+            stimulus,
+            targets,
+            delay,
+            audience,
+        };
+        if !self.world.voice_stimulus(site, request) {
+            self.assume(site, &node.class, "no line (the world plays none)");
         }
     }
 
@@ -615,8 +683,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // remote state. Its payload is the link list (codec `link`).
             "STU_33A46033" => StateKind::Plain,
             "STU_7B9E8909" => StateKind::Plain,
-            // A voice stimulus only plays a bark on the client that runs it;
-            // the server keeps it as a plain state (`ow174/game/voicelines.py`).
+            // A voice stimulus plays a line on the client that runs it (a
+            // networked or client-only state: the server keeps it plain and
+            // its frames carry it); a server-only one is the server's to say
+            // ([`World::voice_stimulus`], on begin).
             "STU_40E05F6B" => StateKind::Plain,
             // The field of view (Ana's and Widowmaker's zoom, `0B94` st23,
             // `001B` st7) acts on the owner's camera, which the server
@@ -832,6 +902,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::Status => self.begin_status(key, node),
             StateKind::CombatMod => self.begin_combat_mod(key, node),
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
+            StateKind::Plain if node.class == "STU_40E05F6B" && node.server_only => {
+                self.begin_voice_stimulus(key, node);
+            }
             StateKind::Plain if node.class == "STU_54FEB21C" && is_server_ended(node) => {
                 self.end_wind_up(key, node)?;
             }

@@ -2,7 +2,7 @@
 
 use std::{
     borrow::Borrow,
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     io,
     ops::Range,
     sync::Arc,
@@ -40,7 +40,7 @@ use crate::{
     },
     scene::{PlayerAppearance, Possession, body_filter, filter_component, player_team_bit},
     scene_assets::PreparedScene,
-    voice_lines::{VoiceLine, VoiceState},
+    voice_lines::{VoiceLine, VoiceState, delay_ticks, is_death_cry},
 };
 use orpheus_content::{
     hero_settings::{HeroSetting, HeroSettings, SCRIPT_SETTINGS},
@@ -63,6 +63,7 @@ use orpheus_script::{
     vitals::{Death, Vitals},
     vm::{
         BodyEffects, GameMessage, Motion, MoveRequest, RaisedCriteria, Snapshot, TargetCandidate,
+        VoiceRequest,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
@@ -131,6 +132,14 @@ const MAX_REPEATS: u32 = MAX_BUFFERED as u32;
 /// server runs all of their movement (`docs/notes/behavior.md`, "Owner
 /// corrections").
 const CORRECTED_HEROES: [u64; 2] = [SOLDIER, ANA];
+
+/// `0013.025`: the entity is revived (the bots' reset, [`orpheus_script::bot::RESET`]).
+const REVIVED: u64 = orpheus_script::bot::RESET;
+/// `0013.025`'s `00C6` (`01CA`'s #2227): on for a new life.
+const REVIVED_RESPAWN: u32 = 0x00c6;
+/// `002D.025` {`0029` an identifier}: the game's identifier, which `01C7`
+/// rid32 keeps in #59 and tests for #1928e.
+const GAME_IDENTIFIER: u64 = 0x0240_0000_0000_002d;
 
 /// Whether a living body of team `other` blocks the moves of a body of
 /// `team` (the server's mover then takes its capsule,
@@ -270,9 +279,19 @@ pub trait OwnerBodyRuntime: Send {
         Vec::new()
     }
 
-    /// The criteria the body's graphs raised on it since the last call
-    /// ([`crate::voice_lines`]).
+    /// The authored target tags of the body the player just eliminated,
+    /// which the body's graphs test when they take `0093.025`.
+    fn set_victim_tags(&mut self, _victim: u32, _tags: BTreeSet<u64>) {}
+
+    /// The criteria the body's graphs raised on it or its controller since
+    /// the last call ([`crate::voice_lines`]).
     fn take_criteria(&mut self) -> Vec<RaisedCriteria> {
+        Vec::new()
+    }
+
+    /// The voice stimuli the body's server-only states asked it to say
+    /// since the last call ([`crate::voice_lines`]).
+    fn take_voices(&mut self) -> Vec<VoiceRequest> {
         Vec::new()
     }
 
@@ -296,17 +315,6 @@ pub trait OwnerBodyRuntime: Send {
     /// last call, for the mover (Tracer's Blink and Recall).
     fn take_motions(&mut self) -> Vec<Motion> {
         Vec::new()
-    }
-
-    /// Begin the hero's spawn voice line (voicelines.py `VoiceLines.spawned`).
-    fn begin_spawn_bark(&mut self, _now: Duration) -> io::Result<()> {
-        Ok(())
-    }
-
-    /// End the spawn voice line once its time is up (voicelines.py
-    /// `VoiceLines.expire`).
-    fn expire_bark(&mut self, _now: Duration) -> io::Result<()> {
-        Ok(())
     }
 
     /// The bodies the body's target searches can find from now on
@@ -1388,6 +1396,9 @@ pub struct WorldDelivery {
     /// The voice of the current body (its entity): its stimuli's cooldowns
     /// and lines' turns ([`crate::voice_lines`]).
     voice: Option<(u32, VoiceState)>,
+    /// Voice stimuli the body or the controller asked to say, waiting for
+    /// their delay: the world tick each is due, and the body that says it.
+    pending_voices: Vec<(u32, u32, VoiceRequest)>,
     /// Whether the living body stood in one of its team's spawn rooms when
     /// last measured ([`Self::area_step`]); `None` when it is dead or gone,
     /// or its team has no room on the map.
@@ -1508,6 +1519,7 @@ impl WorldDelivery {
             respawn_extra: Duration::ZERO,
             hero_settings: HeroSettings::default(),
             voice: None,
+            pending_voices: Vec::new(),
             spawn_room: None,
             spawn_flag: (true, 0),
             respawn_hero: None,
@@ -1731,22 +1743,61 @@ impl WorldDelivery {
         Ok(())
     }
 
-    /// The player eliminated `victim` (of body definition `victim_body`) at
-    /// world tick `tick`: `0093.025` to his controller's `0215`
+    /// The player eliminated `victim` (of body definition `victim_body`)
+    /// with a hit tagged `tags` at world tick `tick`: `0093.025` to his
+    /// body, whose `01CA` (rid221) says his elimination line 1.2 s later
+    /// ([`Self::take_voice_lines`]), and to his controller's `0215`
     /// ([`crate::announcer`]), unless `0215` rid15 leaves the victim out
     /// (his own body, or one tagged `06AD`/`031D`:
     /// [`crate::announcer::counted_victim`]). A pulse of its st21 sends a
-    /// controller frame. A script fault stops the controller script; its
+    /// controller frame. A script fault stops the script; the controller's
     /// multikills stop with it.
+    ///
+    /// The body's copy carries `0015` the victim, `0012` the killer (his
+    /// body), `0091` on (the final blow: the server credits no assists),
+    /// and the killing hit's tags as `003D` and `0355` (`01CA` tests `0355`
+    /// for the melee tag `0302`; assumption: both name the killing hit's
+    /// tags). The body learns the victim's authored target tags first:
+    /// `01CA` rid210 skips victims tagged `047F`, `003A` or `02CB` (on no
+    /// hero or Training Bot body).
     pub fn eliminated(
         &mut self,
         graphs: &GraphStore,
         tick: u32,
         victim: u32,
         victim_body: Option<u64>,
+        tags: &DamageTags,
     ) {
         let killer = self.body.map_or(self.owner, |body| body.id.entity);
-        if victim == killer || !crate::announcer::counted_victim(graphs, victim_body) {
+        if victim == killer {
+            return;
+        }
+        let failure = self
+            .body_script
+            .as_mut()
+            .filter(|script| script.id.entity == killer)
+            .and_then(|script| {
+                let victim_tags = victim_body
+                    .and_then(|body| graphs.bodies().get(&body))
+                    .and_then(|body| body.target_tags.clone())
+                    .unwrap_or_default();
+                script.runtime.set_victim_tags(victim, victim_tags);
+                let parameters = Variables::from([
+                    (0x15, ScriptValue::Entity(victim)),
+                    (0x12, ScriptValue::Entity(killer)),
+                    (0x91, ScriptValue::Bool(true)),
+                    (0x3d, tags.to_value()),
+                    (0x355, tags.to_value()),
+                ]);
+                script
+                    .runtime
+                    .receive_message(0, orpheus_script::controller::ELIMINATION, parameters)
+                    .err()
+            });
+        if let Some(error) = failure {
+            self.drop_failed_script(&error.to_string());
+        }
+        if !crate::announcer::counted_victim(graphs, victim_body) {
             return;
         }
         let Some(script) = &mut self.controller_script else {
@@ -3226,9 +3277,9 @@ impl WorldDelivery {
 
     /// combat.py `_respawn`: once the mode's time is up, a dead player gets
     /// a new body of the same hero at his spawn point, as a hero switch does
-    /// (match.py `switch_hero`), and his spawn voice line. While every id of
-    /// his body ring is still reserved, he tries again RESPAWN_RETRY later.
-    /// True when he respawned.
+    /// (match.py `switch_hero`), revived ([`Self::revived`]). While every id
+    /// of his body ring is still reserved, he tries again RESPAWN_RETRY
+    /// later. True when he respawned.
     pub fn respawn_due(
         &mut self,
         scene: &PreparedScene,
@@ -3267,7 +3318,7 @@ impl WorldDelivery {
             .get(guid)
             .ok_or_else(|| invalid("the dead body's hero is unknown"))?;
         self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
-        self.begin_spawn_bark(now);
+        self.revived();
         Ok(true)
     }
 
@@ -3301,34 +3352,32 @@ impl WorldDelivery {
             .get(guid)
             .ok_or_else(|| invalid("the body's hero is unknown"))?;
         self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
-        self.begin_spawn_bark(now);
+        self.revived();
         if select && self.can_handle_game_message() {
             self.queue_controller(scene, tick, true, Some(hero.guid), None)?;
         }
         Ok(true)
     }
 
-    /// voicelines.py `VoiceLines.spawned` on the current body.
-    fn begin_spawn_bark(&mut self, now: Duration) {
-        if let Some(script) = &mut self.body_script {
-            if let Err(error) = script.runtime.begin_spawn_bark(now) {
-                eprintln!(
-                    "{:08X}'s spawn voice line failed ({error})",
-                    script.id.entity
-                );
-            }
-        }
-    }
-
-    /// voicelines.py `VoiceLines.expire` on the current body.
-    pub fn expire_bark(&mut self, now: Duration) {
-        if let Some(script) = &mut self.body_script {
-            if let Err(error) = script.runtime.expire_bark(now) {
-                eprintln!(
-                    "ending {:08X}'s spawn voice line failed ({error})",
-                    script.id.entity
-                );
-            }
+    /// The new body of a respawn or a new round stands for retail's revived
+    /// one (loose ends, "A respawn makes a new body"): it gets the revive
+    /// message `0013.025` with `00C6` on. On it the hero's `01CA` (rid56)
+    /// raises his respawn line `05D8` on his controller 1.5 s later (none
+    /// in Elimination, `0020` or `0029`), which every hero's voice set
+    /// answers with stimulus `002C` (once per 20 s). Assumptions: retail
+    /// sends `0013` (no graph does; its 44 listeners reset ability state
+    /// with `00C6` on, as for a new life) when it revives the body, with
+    /// `00C6` on; the first spawn of a hero gets none.
+    fn revived(&mut self) {
+        let Some(script) = &mut self.body_script else {
+            return;
+        };
+        if let Err(error) = script.runtime.receive_message(
+            0,
+            REVIVED,
+            Variables::from([(REVIVED_RESPAWN, ScriptValue::Bool(true))]),
+        ) {
+            self.drop_failed_script(&error.to_string());
         }
     }
 
@@ -3343,10 +3392,13 @@ impl WorldDelivery {
             .map_or_else(Vec::new, |script| script.runtime.take_messages())
     }
 
-    /// The voice lines the current body says for the criteria its graphs
-    /// raised since the last call (the communication wheel's lines and the
-    /// pain lines after a hit), by its hero's voice set
-    /// ([`crate::voice_lines`]).
+    /// The voice lines the current body says since the last call, by its
+    /// hero's voice set ([`crate::voice_lines`]): for the criteria its
+    /// graphs raised on it or its controller (the communication wheel's
+    /// lines, the pain lines after a hit, the respawn line), and the voice
+    /// stimuli its server-only states and its controller's named (the
+    /// elimination lines, the line after a third kill), each once its delay
+    /// is up. A dead body says only its death cries.
     pub fn take_voice_lines(&mut self, scene: &PreparedScene, tick: u32) -> Vec<VoiceLine> {
         if !self.world_started() {
             return Vec::new();
@@ -3355,14 +3407,47 @@ impl WorldDelivery {
             return Vec::new();
         };
         let criteria = script.runtime.take_criteria();
+        let mut requests = script.runtime.take_voices();
         let id = script.id;
+        // The controller's `0215` waits 1.6 s after a third kill before its
+        // line (st3 → st28): its clock runs on with the match's.
+        let stopped =
+            self.controller_script
+                .as_mut()
+                .and_then(|controller| match controller.advance(tick) {
+                    Ok(_) => {
+                        requests.extend(controller.take_voices());
+                        None
+                    }
+                    Err(error) => Some(error),
+                });
+        if let Some(error) = stopped {
+            eprintln!("controller script of {:08X} stopped ({error})", self.owner);
+            self.controller_script = None;
+        }
         let Some(body) = self.body.filter(|body| body.id == id) else {
             return Vec::new();
         };
-        if criteria.is_empty() || self.death.is_some() {
+        let speaker = body.id.entity;
+        for request in requests {
+            let due = tick.saturating_add(delay_ticks(request.delay));
+            self.pending_voices.push((due, speaker, request));
+        }
+        // A line waits for its body; another body's never comes.
+        self.pending_voices
+            .retain(|&(_, waiting, _)| waiting == speaker);
+        let mut due = Vec::new();
+        self.pending_voices.retain(|(at, _, request)| {
+            let now = *at <= tick;
+            if now {
+                due.push(request.clone());
+            }
+            !now
+        });
+        if criteria.is_empty() && due.is_empty() {
             return Vec::new();
         }
-        let speaker = body.id.entity;
+        let dead = self.death.is_some();
         let set = scene
             .heroes()
             .get(body.hero)
@@ -3376,11 +3461,18 @@ impl WorldDelivery {
         }
         let (_, voice) = self.voice.as_mut().expect("the body's voice");
         let hurt = scene.hurt_feedback();
-        criteria
+        let mut lines: Vec<VoiceLine> = criteria
             .into_iter()
+            .filter(|criteria| !dead || is_death_cry(criteria.identifier))
             .filter(|criteria| hurt.speaks(criteria.identifier))
             .filter_map(|criteria| voice.answer(set, speaker, criteria, tick))
-            .collect()
+            .collect();
+        if !dead {
+            lines.extend(due.into_iter().filter_map(|request| {
+                voice.say(set, speaker, request.stimulus, request.audience, tick)
+            }));
+        }
+        lines
     }
 
     /// Where the player's body stands, alive or dead, while it is in the
@@ -4019,6 +4111,25 @@ impl WorldDelivery {
         let old = self.body.replace(body);
         self.cancel_body_script();
         self.body_script = script;
+        // `01C7` rid32 sets #1928e on `002D.025` {`0029`}: unless that
+        // identifier is `018D`, `0016` or `0018`, the body's `01CA` says
+        // elimination lines and `0215` may count kill streaks. Retail's
+        // server sends it (no graph does but `1225`); the identifier is its
+        // `STU_ABB6C23E`, whose client evaluator writes 0, and 0 here
+        // (assumption: the server's game identifier is none of the three).
+        let failure = self.body_script.as_mut().and_then(|script| {
+            script
+                .runtime
+                .receive_message(
+                    0,
+                    GAME_IDENTIFIER,
+                    Variables::from([(0x29, ScriptValue::Asset(0))]),
+                )
+                .err()
+        });
+        if let Some(error) = failure {
+            self.drop_failed_script(&error.to_string());
+        }
         self.mover = Some(mover);
         self.bound = None;
         // combat.py `retire_player_body`: the old body's death and pools go

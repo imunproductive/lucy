@@ -1563,6 +1563,7 @@ fn wheel_choices_run_the_callout_graph() {
             world.take_criteria(),
             Vec::from_iter(criteria.map(|identifier| RaisedCriteria {
                 identifier,
+                target: world.entity,
                 audience: None,
             })),
             "{action:X}'s voice criteria"
