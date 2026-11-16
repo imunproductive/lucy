@@ -1099,7 +1099,10 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
         snapshot.diagnostics
     );
     // The frozen BodyScript replay allocates the same IDs with the team
-    // mask. The exit retires 08B6 (9) and its unstarted child 0BF8 (25).
+    // mask, plus 01CB (18) under 004B st2: 004B st14 holds for a body
+    // without tag 0069 (the filter's none-of list, client 0x7FF789CC2FD0;
+    // the Python replay read it as required). The exit retires 08B6 (9)
+    // and its unstarted child 0BF8 (26).
     let expected = [
         (1, 0x0033, None),
         (2, 0x004b, None),
@@ -1117,14 +1120,15 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
         (15, 0x0b8b, Some((2, 10))),
         (16, 0x0c7d, Some((2, 18))),
         (17, 0x01ca, Some((2, 1))),
-        (18, 0x0ba4, Some((2, 11))),
-        (19, 0x05ac, Some((2, 8))),
-        (20, 0x02cf, Some((2, 6))),
-        (21, 0x0b3b, Some((2, 9))),
-        (22, 0x01d8, Some((2, 4))),
-        (23, 0x0f82, Some((2, 21))),
-        (24, 0x05ad, Some((2, 7))),
-        (26, 0x0e8f, Some((13, 32))),
+        (18, 0x01cb, Some((2, 2))),
+        (19, 0x0ba4, Some((2, 11))),
+        (20, 0x05ac, Some((2, 8))),
+        (21, 0x02cf, Some((2, 6))),
+        (22, 0x0b3b, Some((2, 9))),
+        (23, 0x01d8, Some((2, 4))),
+        (24, 0x0f82, Some((2, 21))),
+        (25, 0x05ad, Some((2, 7))),
+        (27, 0x0e8f, Some((13, 32))),
     ];
     let instances: Vec<_> = snapshot
         .instances
@@ -1174,7 +1178,7 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
             .iter()
             .any(|diagnostic| diagnostic.site == site)
     );
-    let Value::Pairs(messages) = &snapshot.instances[&24].variables[&29859] else {
+    let Value::Pairs(messages) = &snapshot.instances[&25].variables[&29859] else {
         panic!("the authored message table must be typed pairs");
     };
     assert_eq!(messages.len(), 20);
@@ -1250,10 +1254,10 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
         assert!(child.active);
         assert_eq!(child.kind, StateKind::BooleanSwitch(false));
     }
-    let selection = &snapshot.instances[&18].states[&0];
+    let selection = &snapshot.instances[&19].states[&0];
     assert!(selection.active);
     assert_eq!(selection.kind, StateKind::BooleanSwitch(false));
-    assert!(!snapshot.instances[&18].states.contains_key(&1));
+    assert!(!snapshot.instances[&19].states.contains_key(&1));
     let on_fire = &snapshot.instances[&13].states[&17];
     assert!(on_fire.active);
     assert_eq!(on_fire.kind, StateKind::BooleanSwitch(false));
@@ -1286,9 +1290,10 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
         assert_eq!(filter.kind, StateKind::BooleanSwitch(true));
     }
     if world.target_tags.is_some() {
+        // st14 starts 01CB (the death layer) on a body without tag 0069.
         let filter = &snapshot.instances[&2].states[&14];
         assert!(filter.active);
-        assert_eq!(filter.kind, StateKind::BooleanSwitch(false));
+        assert_eq!(filter.kind, StateKind::BooleanSwitch(true));
     }
 
     let authored_graphs = Arc::clone(&world.graphs);
@@ -1331,7 +1336,7 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
     message["m_configVars"] = serde_json::json!([entries["m_configVars"][0]["m_key"].clone()]);
     message["m_expression"]["m_opcodes"] = serde_json::json!([8, 0, 14, 0, 17, 0]);
     assert_eq!(
-        component.evaluate_state_config(24, 0, &message, &mut world),
+        component.evaluate_state_config(25, 0, &message, &mut world),
         Ok(Value::Asset(0x0240_0000_0000_05ad))
     );
     if let Some(original_tags) = world.target_tags.clone() {
@@ -1343,9 +1348,11 @@ fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
             if present {
                 world.target_tags.as_mut().unwrap().insert(required);
             }
+            // 004B st14 lists tag 0069 under none-of (m_8B2A4DF3): it holds
+            // only while the body lacks the tag (client 0x7FF789CC2FD0).
             assert_eq!(
                 component.evaluate_state_config(2, 14, &filter, &mut world),
-                Ok(Value::Bool(present))
+                Ok(Value::Bool(!present))
             );
             assert_eq!(
                 component.evaluate_state_config(3, 0, &tag_query, &mut world),
