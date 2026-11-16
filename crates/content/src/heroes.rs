@@ -11,6 +11,11 @@ use orpheus_core::guid::parse_guid;
 
 pub const SOLDIER: u64 = 0x02e0_0000_0000_006e;
 pub const ANA: u64 = 0x02e0_0000_0000_013b;
+/// The role identifiers (`084E.01C`, `0850.01C`, `0851.01C`): the hero's
+/// role (hero `+0x58`) and the competitive role queue's.
+pub const DAMAGE_ROLE: u64 = 0x0d80_0000_0000_084e;
+pub const TANK_ROLE: u64 = 0x0d80_0000_0000_0850;
+pub const SUPPORT_ROLE: u64 = 0x0d80_0000_0000_0851;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Hero {
@@ -27,6 +32,16 @@ impl Hero {
             "Damage" => Some(1),
             "Tank" => Some(2),
             "Support" => Some(3),
+            _ => None,
+        }
+    }
+
+    /// The role identifier of the hero's role.
+    pub fn role_guid(&self) -> Option<u64> {
+        match self.role.as_str() {
+            "Damage" => Some(DAMAGE_ROLE),
+            "Tank" => Some(TANK_ROLE),
+            "Support" => Some(SUPPORT_ROLE),
             _ => None,
         }
     }

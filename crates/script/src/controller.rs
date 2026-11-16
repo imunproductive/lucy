@@ -68,8 +68,9 @@ const ASSUMED: &[(&str, &str)] = &[
     ("STU_082FA44E", "the tunable's authored value"),
     // `0C90` st116 asks it of the owner (the multikill switch: a human
     // controller, retail runs `0215` for him); `0215` rid15/rid26 of the
-    // victim #393 (an enemy hero or bot, target tags `06AD`/`031D` that no
-    // graph sets: native). The Rust announcer counted every kill too.
+    // victim #393. rid15 wants a hostile victim, not the killer, with
+    // neither tag `06AD` nor `031D` (its none-of list): the match applies
+    // that before it sends `0093` (`orpheus_sim::announcer::counted_victim`).
     ("STU_AC829876", "passes: a human owner, a counted victim"),
     // `288B` rid255/rid256 on a pick: #34707e and #32791 (`288B`'s
     // presence variable) for ForCodeSynced st120. Meaning unknown; left
@@ -87,8 +88,9 @@ pub struct ControllerWorld {
     /// The controller's team index (0 to 4).
     pub team: Option<i64>,
     /// The heroes this controller may play (`STU_1AAB4B4F`, sent to the
-    /// mode in `06FF`; `STU_9AE5FC4C` tests a hero against it).
-    pub heroes: Vec<u64>,
+    /// mode in `06FF`; `STU_9AE5FC4C` tests a hero against it, then the
+    /// HeroSelect limits), each with its role identifier.
+    pub heroes: Vec<(u64, Option<u64>)>,
     /// The body the controller possesses; none before the first spawn.
     pub body: Option<u32>,
     /// The hero in the controller's own component 75 (the last
@@ -166,7 +168,10 @@ impl World for ControllerWorld {
             // GetGameMode.
             "STU_37F20D24" => Some(Value::Asset(self.mode)),
             "STU_1AAB4B4F" if self.owner(config, "m_controller") => Some(Value::Array(
-                self.heroes.iter().map(|&hero| Value::Asset(hero)).collect(),
+                self.heroes
+                    .iter()
+                    .map(|&(hero, _)| Value::Asset(hero))
+                    .collect(),
             )),
             "STU_E4C6AAB4" if self.owner(config, "m_F3E612FD") => Some(Value::Bool(self.may_pick)),
             // AIIsPathFollowing: a human controller follows no AI path.
@@ -197,7 +202,14 @@ impl World for ControllerWorld {
     }
 
     fn hero_available(&self, _site: Site, controller: u32, hero: u64) -> Option<bool> {
-        (controller == self.entity).then(|| self.heroes.contains(&hero))
+        (controller == self.entity).then(|| self.heroes.iter().any(|&(listed, _)| listed == hero))
+    }
+
+    fn hero_role(&self, _site: Site, hero: u64) -> Option<u64> {
+        self.heroes
+            .iter()
+            .find(|&&(listed, _)| listed == hero)
+            .and_then(|&(_, role)| role)
     }
 
     /// The one tag the server knows the controller lacks: `04CE`, which
@@ -309,7 +321,7 @@ impl ControllerScript {
     /// for it take it now. Returns how many did.
     pub fn receive(&mut self, message: u64, parameters: Variables) -> Result<usize, InitFault> {
         self.component
-            .receive_message(message, parameters, &mut self.world)
+            .receive_message(0, message, parameters, &mut self.world)
     }
 
     /// The controller's player eliminated `victim` with `killer` (his body)
@@ -408,7 +420,7 @@ mod tests {
         let graphs = Arc::new(GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap());
         let mut world = ControllerWorld::new(graphs, mode, CONTROLLER, Unknowns::Refuse);
         world.team = Some(0);
-        world.heroes = vec![SOLDIER];
+        world.heroes = vec![(SOLDIER, Some(orpheus_content::heroes::DAMAGE_ROLE))];
         ControllerScript::start(world, PVP_CONTROLLER, 1).unwrap()
     }
 

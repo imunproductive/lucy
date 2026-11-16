@@ -55,6 +55,7 @@ impl Machine {
             deferred: BTreeMap::new(),
             disabled: BTreeMap::new(),
             movements: BTreeMap::new(),
+            hero_selects: BTreeMap::new(),
             motions: Vec::new(),
         })
     }
@@ -114,6 +115,7 @@ impl Machine {
         &mut self,
         graphs: &GraphStore,
         recipient: Option<u16>,
+        sender: u32,
         message: u64,
         parameters: Variables,
     ) -> Result<usize, InitFault> {
@@ -150,6 +152,7 @@ impl Machine {
                 self.now_ms,
                 Event::Message {
                     position,
+                    sender,
                     parameters: Arc::clone(&parameters),
                 },
             )?;

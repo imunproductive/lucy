@@ -57,6 +57,7 @@ use orpheus_physics::{
 };
 use orpheus_script::controller::ControllerScript;
 use orpheus_script::{
+    graph::GraphStore,
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
@@ -138,11 +139,13 @@ const CORRECTED_HEROES: [u64; 2] = [SOLDIER, ANA];
 /// through enemies" (Furious Paul's Overwatch mechanics guide, 2017);
 /// upstream's server leaves allies out the same way (leafall903/ORPHEUS
 /// (MIT) `mccree.py` `_npc_peer_contacts`). A dead body blocks nobody. The
-/// client's own masks admit both team categories before its callers'
-/// overrides (0x1499 and 0x1498, upstream `docs/MCCREE_ROLL.txt`), and a
-/// state turns a mover's same-team contact off (`STU_6CC90892`, in
-/// Junkenstein's graphs `0CBC` and `0F68` only): which override leaves a
-/// player's allies out is not known.
+/// client does the same: its mover's {category, mask} (`0x7FF789B463F0`)
+/// takes mask 0x1499 (both team categories 8 and 16) and clears its own
+/// team's bit when component 31's byte `+0x14DF` is 0 (which
+/// `STU_6CC90892` clears while active) or its protected byte `+0x14DA`
+/// says so; team index 4 (free-for-all) keeps both bits (PlayerHurt.md,
+/// "Client tools pass 2 (2026-11-16)"). Which of the two bytes is set for
+/// a player's mover in a match is not read.
 pub fn blocks(free_for_all: bool, team: u8, other: u8) -> bool {
     free_for_all || team != other
 }
@@ -249,10 +252,15 @@ pub trait OwnerBodyRuntime: Send {
         None
     }
 
-    /// A game message from another entity, run now (match.py
-    /// `deliver_body_messages`, combat.py `_died`). Returns how many entries
-    /// took it.
-    fn receive_message(&mut self, _message: u64, _parameters: Variables) -> io::Result<usize> {
+    /// A game message from another entity (`sender`; 0: none known), run
+    /// now (match.py `deliver_body_messages`, combat.py `_died`). Returns
+    /// how many entries took it.
+    fn receive_message(
+        &mut self,
+        _sender: u32,
+        _message: u64,
+        _parameters: Variables,
+    ) -> io::Result<usize> {
         Ok(0)
     }
 
@@ -1716,15 +1724,27 @@ impl WorldDelivery {
         Ok(())
     }
 
-    /// The player eliminated `victim` at world tick `tick`: `0093.025` to
-    /// his controller's `0215` ([`crate::announcer`]). A pulse of its st21
-    /// sends a controller frame. A script fault stops the controller
-    /// script; its multikills stop with it.
-    pub fn eliminated(&mut self, tick: u32, victim: u32) {
+    /// The player eliminated `victim` (of body definition `victim_body`) at
+    /// world tick `tick`: `0093.025` to his controller's `0215`
+    /// ([`crate::announcer`]), unless `0215` rid15 leaves the victim out
+    /// (his own body, or one tagged `06AD`/`031D`:
+    /// [`crate::announcer::counted_victim`]). A pulse of its st21 sends a
+    /// controller frame. A script fault stops the controller script; its
+    /// multikills stop with it.
+    pub fn eliminated(
+        &mut self,
+        graphs: &GraphStore,
+        tick: u32,
+        victim: u32,
+        victim_body: Option<u64>,
+    ) {
+        let killer = self.body.map_or(self.owner, |body| body.id.entity);
+        if victim == killer || !crate::announcer::counted_victim(graphs, victim_body) {
+            return;
+        }
         let Some(script) = &mut self.controller_script else {
             return;
         };
-        let killer = self.body.map_or(self.owner, |body| body.id.entity);
         let before = script.multikill();
         match script.eliminated(tick, victim, killer) {
             Ok(()) => self.multikill_due |= script.multikill() != before,
@@ -2462,7 +2482,11 @@ impl WorldDelivery {
         self.started = Some(tick);
         // The player's controller graph runs from the world's start; one
         // that can't start leaves the frames without multikills.
-        let heroes = scene.heroes().heroes().map(|hero| hero.guid).collect();
+        let heroes = scene
+            .heroes()
+            .heroes()
+            .map(|hero| (hero.guid, hero.role_guid()))
+            .collect();
         self.controller_script = scene
             .controller()
             .start_script(scene.shared_graphs(), self.owner, viewer.team, heroes, tick)
@@ -2639,7 +2663,7 @@ impl WorldDelivery {
         let Some(script) = &mut self.body_script else {
             return;
         };
-        if let Err(error) = script.runtime.receive_message(selection, parameters) {
+        if let Err(error) = script.runtime.receive_message(0, selection, parameters) {
             self.drop_failed_script(&error.to_string());
         }
     }
@@ -3004,7 +3028,7 @@ impl WorldDelivery {
             if let Some(script) = script {
                 let (message, parameters) =
                     death_message(hit.shooter.source, hit.critical, hit.loadout, hit.tags);
-                failure = script.runtime.receive_message(message, parameters).err();
+                failure = script.runtime.receive_message(0, message, parameters).err();
             }
         } else if let Some(script) = script.filter(|_| scene.hurt_feedback().message) {
             // The live hurt feedback switch (`crate::hurt_feedback`): with
@@ -3016,7 +3040,7 @@ impl WorldDelivery {
             };
             let (message, parameters) =
                 damage_message(hit.shooter.source, result.dealt, tags, hit.direction);
-            failure = script.runtime.receive_message(message, parameters).err();
+            failure = script.runtime.receive_message(0, message, parameters).err();
         }
         if let Some(error) = failure {
             self.drop_failed_script(&error.to_string());
@@ -3357,10 +3381,11 @@ impl WorldDelivery {
         let Some(script) = &mut self.body_script else {
             return false;
         };
-        if let Err(error) = script
-            .runtime
-            .receive_message(message.message, message.parameters.clone())
-        {
+        if let Err(error) = script.runtime.receive_message(
+            message.sender,
+            message.message,
+            message.parameters.clone(),
+        ) {
             self.drop_failed_script(&error.to_string());
         }
         true

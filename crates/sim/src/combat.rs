@@ -47,8 +47,9 @@ use orpheus_core::guid::parse_guid;
 use orpheus_physics::static_ray::{Vec3, segment_distance};
 use orpheus_script::{
     bot::{DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE, DAMAGE_TAGS, DAMAGED, DIED},
+    mode::EVERY_ENTITY,
     vitals::{Death, Vitals},
-    vm::{HealthChange, ShotEvent, TargetCandidate},
+    vm::{GameMessage, HealthChange, ShotEvent, TargetCandidate},
     weapons::{AllyHits, DamageTags, HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
 };
@@ -1325,8 +1326,14 @@ pub fn apply_player_hits(
         let own_blow = shooter == Some(victim);
         if let Some(killer) = shooter.filter(|_| !own_blow) {
             players[killer].stats.add(board.eliminations, 1.0);
+            let victim_body = players[victim]
+                .world
+                .as_deref()
+                .and_then(|world| world.current_hero())
+                .and_then(|hero| scene.heroes().get(hero))
+                .map(|hero| hero.body);
             if let Some(world) = players[killer].world.as_deref_mut() {
-                world.eliminated(tick, hit.body);
+                world.eliminated(&scene.shared_graphs(), tick, hit.body, victim_body);
             }
             notices[killer].push(CombatNotice::Elimination {
                 killer: hit.shooter.source,
@@ -1386,17 +1393,20 @@ fn credit_healing(
 /// match.py `queue_body_message` and `deliver_body_messages`: the messages
 /// the players' bodies sent go to the bodies they name in the room, at most
 /// MAX_BODY_MESSAGES a tick; a message to a body nobody plays takes no place
-/// in the queue. A message a body sends while it takes one goes in the next
-/// batch.
+/// in the queue. A message to every entity ([`EVERY_ENTITY`]: `0686`'s
+/// `0307` after Need Healing) goes to every other player's body; the
+/// sender's own instances took it when it was sent. A message a body sends
+/// while it takes one goes in the next batch.
 pub fn deliver_body_messages(worlds: &mut [&mut WorldDelivery]) {
     let mut messages: Vec<_> = worlds
         .iter_mut()
         .flat_map(|world| world.take_body_messages())
         .collect();
     messages.retain(|message| {
-        worlds
-            .iter()
-            .any(|world| world.takes_body_message(message.target))
+        message.target == EVERY_ENTITY
+            || worlds
+                .iter()
+                .any(|world| world.takes_body_message(message.target))
     });
     if messages.len() > MAX_BODY_MESSAGES {
         eprintln!(
@@ -1405,6 +1415,17 @@ pub fn deliver_body_messages(worlds: &mut [&mut WorldDelivery]) {
         );
     }
     for message in messages.into_iter().take(MAX_BODY_MESSAGES) {
+        if message.target == EVERY_ENTITY {
+            for world in worlds.iter_mut() {
+                if let Some(body) = world.current_body().filter(|&body| body != message.sender) {
+                    world.receive_body_message(&GameMessage {
+                        target: body,
+                        ..message.clone()
+                    });
+                }
+            }
+            continue;
+        }
         for world in worlds.iter_mut() {
             if world.receive_body_message(&message) {
                 break;

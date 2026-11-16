@@ -1568,7 +1568,12 @@ impl OwnerBodyRuntime for Mailbox {
         self.owner.frame_ms()
     }
 
-    fn receive_message(&mut self, message: u64, _parameters: Variables) -> io::Result<usize> {
+    fn receive_message(
+        &mut self,
+        _sender: u32,
+        message: u64,
+        _parameters: Variables,
+    ) -> io::Result<usize> {
         self.inbox.lock().unwrap().push(message);
         Ok(1)
     }
@@ -1580,7 +1585,8 @@ impl OwnerBodyRuntime for Mailbox {
 
 /// match.py `queue_body_message`: a message to an entity no player's body
 /// is goes nowhere and takes no place in the match's queue, which holds
-/// MAX_BODY_MESSAGES a tick; the first ones go, in order.
+/// MAX_BODY_MESSAGES a tick; the first ones go, in order. A message to every
+/// entity takes one place and reaches every body but the sender's.
 #[test]
 fn body_messages_to_unknown_entities_go_nowhere_and_the_rest_are_capped() {
     use crate::combat::{MAX_BODY_MESSAGES, deliver_body_messages};
@@ -1600,7 +1606,7 @@ fn body_messages_to_unknown_entities_go_nowhere_and_the_rest_are_capped() {
         message,
         parameters: Variables::new(),
     };
-    let mut outbox = Vec::new();
+    let mut outbox = vec![mail(orpheus_script::mode::EVERY_ENTITY, 7777)];
     for message in 0..300 {
         outbox.push(mail(NOBODY, 1000 + message));
         outbox.push(mail(receiving.entity, message));
@@ -1628,7 +1634,9 @@ fn body_messages_to_unknown_entities_go_nowhere_and_the_rest_are_capped() {
     deliver_body_messages(&mut [&mut a, &mut b]);
     assert_eq!(
         *received.lock().unwrap(),
-        (0..MAX_BODY_MESSAGES as u64).collect::<Vec<_>>()
+        std::iter::once(7777)
+            .chain(0..MAX_BODY_MESSAGES as u64 - 1)
+            .collect::<Vec<_>>()
     );
     assert!(sent.lock().unwrap().is_empty());
     deliver_body_messages(&mut [&mut a, &mut b]);

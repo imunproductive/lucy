@@ -161,14 +161,15 @@ impl Controller {
 
     /// Start `0C90` on the player's controller entity `entity` at world
     /// tick `tick` ([`orpheus_script::controller`]): the player of team
-    /// `team` who may play `heroes`. Its frames are still built here; the
-    /// script runs the multikills (`crate::announcer`).
+    /// `team` who may play `heroes` (each with its role identifier). Its
+    /// frames are still built here; the script runs the multikills
+    /// (`crate::announcer`).
     pub fn start_script(
         &self,
         graphs: Arc<GraphStore>,
         entity: u32,
         team: u8,
-        heroes: Vec<u64>,
+        heroes: Vec<(u64, Option<u64>)>,
         tick: u32,
     ) -> Result<ControllerScript, InitFault> {
         let mut world = ControllerWorld::new(graphs, self.mode, entity, self.unknowns);

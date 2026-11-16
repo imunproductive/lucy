@@ -2249,6 +2249,12 @@ impl State {
         {
             peer.world.gain_ult(points);
         }
+        let scene = self
+            .rooms
+            .get(&id)
+            .and_then(|room| room.world.as_ref())
+            .map(|world| &world.scene);
+        let graphs = scene.map(|scene| scene.shared_graphs());
         for hit in hits {
             for (&connection, peer) in &mut self.peers {
                 if self.seats[&connection].0 != id || peer.ai.is_some() {
@@ -2256,8 +2262,13 @@ impl State {
                 }
                 peer.world.queue_health(hit.health.clone());
                 if shooter == Some(connection) {
-                    if let Some(death) = hit.death {
-                        peer.world.eliminated(death.tick, death.bot);
+                    if let (Some(death), Some(scene), Some(graphs)) = (hit.death, scene, &graphs) {
+                        let body = scene
+                            .bots()
+                            .iter()
+                            .find(|bot| bot.entity == death.bot)
+                            .map(|bot| bot.spawn.body);
+                        peer.world.eliminated(graphs, death.tick, death.bot, body);
                     }
                     for notice in hit.notices.into_iter().flatten() {
                         peer.notice(notice);

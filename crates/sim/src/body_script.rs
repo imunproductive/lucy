@@ -254,6 +254,7 @@ impl PlayerBodyFactory {
         if let (Some(_), Some(seconds)) = (mode_script, self.mode_body.respawn_seconds) {
             component
                 .receive_message(
+                    0,
                     RESPAWN_MESSAGE,
                     Variables::from([(RESPAWN_SECONDS, Value::Integer(seconds))]),
                     &mut world,
@@ -480,10 +481,15 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
             .map_err(unsupported)
     }
 
-    fn receive_message(&mut self, message: u64, parameters: Variables) -> io::Result<usize> {
+    fn receive_message(
+        &mut self,
+        sender: u32,
+        message: u64,
+        parameters: Variables,
+    ) -> io::Result<usize> {
         let entries = self
             .component
-            .receive_message(message, parameters, &mut self.world)
+            .receive_message(sender, message, parameters, &mut self.world)
             .map_err(unsupported)?;
         self.log_assumptions();
         Ok(entries)

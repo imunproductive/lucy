@@ -17,11 +17,14 @@
 //! 0x7FF789CDC7F0). Move toward a target 0x7FF789D102D0.
 //!
 //! Other characters ([`CharacterBody::set_peers`]): the client registers a
-//! remote body's capsule as a proxy of its team's category (0x08, 0x10)
-//! that the local mover's filter admits (leafall903/ORPHEUS (MIT)
-//! `docs/MCCREE_ROLL.txt`: masks 0x1499 and 0x1498 before the callers'
-//! overrides). The server has no such proxies in its static world: a move
-//! takes the capsules it is given as round obstacles, as upstream's
+//! remote body's capsule as a proxy of its team's category (0x08, 0x10).
+//! The local mover's mask (`0x7FF789B463F0`) is 0x1499, both team
+//! categories, with its own team's bit cleared when component 31's byte
+//! `+0x14DF` is 0 (`STU_6CC90892` clears it while active) or its protected
+//! byte `+0x14DA` says so: that is how allies drop out (refs report
+//! PlayerHurt.md, "Client tools pass 2 (2026-11-16)"). The server has no
+//! such proxies in its static world: a move takes the capsules it is given
+//! as round obstacles (the caller passes enemies only), as upstream's
 //! `mccree.py` `step_rialto_pose` does with `contacts.py` `PeerShape`.
 
 use std::{collections::HashSet, fmt, sync::Arc};

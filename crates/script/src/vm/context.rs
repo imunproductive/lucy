@@ -166,9 +166,21 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.world.body_on_fire(self.site, entity)
     }
 
+    /// The world's answer, then, for this entity's own controller, every
+    /// running HeroSelect's limits (`vm/hero_select.rs`): a refusal by
+    /// any refuses.
     fn hero_available(&mut self, controller: u32, hero: u64) -> Option<bool> {
         self.read_native = true;
-        self.world.hero_available(self.site, controller, hero)
+        let allowed = self.world.hero_available(self.site, controller, hero)?;
+        if !allowed || controller != self.site.entity {
+            return Some(allowed);
+        }
+        for limits in self.machine.hero_selects.values() {
+            if limits.refuses(hero, || self.world.hero_role(self.site, hero))? {
+                return Some(false);
+            }
+        }
+        Some(true)
     }
 
     fn entity_exists(&mut self, entity: u32) -> Option<bool> {

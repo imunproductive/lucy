@@ -100,6 +100,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::MoveTo => {
                 self.machine.movements.remove(&key);
             }
+            StateKind::HeroSelect => {
+                self.machine.hero_selects.remove(&key);
+            }
             StateKind::Rewind => self.machine.motions.push(Motion::EndRewind { finished }),
             StateKind::Status => {
                 self.world.set_status(self.site(id, node), None);
@@ -286,6 +289,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             self.machine.deferred.remove(&id);
             self.machine.joins.remove(&id);
             self.machine.movements.retain(|key, _| key.instance != id);
+            self.machine
+                .hero_selects
+                .retain(|key, _| key.instance != id);
             self.machine
                 .ability_presses
                 .retain(|key, _| key.instance != id);

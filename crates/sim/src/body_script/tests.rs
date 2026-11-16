@@ -1482,9 +1482,11 @@ fn a_body_that_dies_raises_its_dead_flag() {
 /// state the clients get. Hello and a configurable choice raise their voice
 /// criteria on the body, which its voice set answers with a line
 /// ([`crate::voice_lines`]): Hello `0AEB` 0.3 s later, `01EC` the `0721` its
-/// map gives, both for every player to hear. Need Healing raises none: its line hangs on the `0307` that
-/// `0686`'s engine-routed `STU_57692020` sends, which goes nowhere. Nothing
-/// in the path is unsupported.
+/// map gives, both for every player to hear. Need Healing raises none here:
+/// its line hangs on the `0307` that `0686`'s `STU_57692020` sends to every
+/// entity, which `05AD` rid15 takes with the sender in #40 (the body's own
+/// here; the match gives it to every other body). Nothing in the path is
+/// unsupported.
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn wheel_choices_run_the_callout_graph() {
@@ -1546,7 +1548,7 @@ fn wheel_choices_run_the_callout_graph() {
         .unwrap();
         assert_ne!(
             component
-                .receive_message(message, parameters, &mut world)
+                .receive_message(0, message, parameters, &mut world)
                 .unwrap(),
             0
         );
@@ -1566,6 +1568,27 @@ fn wheel_choices_run_the_callout_graph() {
             "{action:X}'s voice criteria"
         );
         let snapshot = component.snapshot().unwrap();
+        if action == 0x16c {
+            const NEED_HEALING: u64 = 0x0240_0000_0000_0307;
+            assert!(
+                world
+                    .take_messages()
+                    .iter()
+                    .any(|message| message.message == NEED_HEALING
+                        && message.target == orpheus_script::mode::EVERY_ENTITY),
+                "0307 to every entity"
+            );
+            let wheel = snapshot
+                .instances
+                .values()
+                .find(|instance| instance.graph == 0x05ad)
+                .expect("05AD runs");
+            assert_eq!(
+                wheel.variables.get(&40),
+                Some(&orpheus_script::wire::Value::Entity(world.entity)),
+                "05AD rid15's sender"
+            );
+        }
         assert!(
             snapshot.diagnostics.is_empty(),
             "{:?}",
@@ -1654,7 +1677,7 @@ fn the_wheel_refuses_a_fourth_choice_until_a_count_expires() {
         })
         .unwrap();
         component
-            .receive_message(message, parameters, world)
+            .receive_message(0, message, parameters, world)
             .unwrap();
         for _ in 0..frames {
             frame += 1;
@@ -1783,7 +1806,7 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
     runtime.health_changed().unwrap();
     let (message, parameters) =
         crate::combat::death_message(killer, false, None, Default::default());
-    runtime.receive_message(message, parameters).unwrap();
+    runtime.receive_message(0, message, parameters).unwrap();
     let to_mode = |runtime: &mut PlayerBodyRuntime| -> Vec<(u64, Variables)> {
         runtime
             .take_messages()

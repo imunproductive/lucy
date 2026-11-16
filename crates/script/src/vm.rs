@@ -15,6 +15,7 @@ mod context;
 mod filter_array;
 mod flow;
 mod health;
+mod hero_select;
 mod lifecycle;
 mod links;
 mod machine;
@@ -342,9 +343,16 @@ pub trait World {
         None
     }
 
-    /// Whether `controller` may play `hero` (`STU_9AE5FC4C`); None: this
-    /// world can't tell.
+    /// Whether `controller` may play `hero` (`STU_9AE5FC4C`) by the heroes
+    /// it may play at all; None: this world can't tell. The controller's own
+    /// HeroSelect limits apply on top ([`Context::hero_available`]).
     fn hero_available(&self, _site: Site, _controller: u32, _hero: u64) -> Option<bool> {
+        None
+    }
+
+    /// The role identifier (`084E.01C` damage, `0850.01C` tank, `0851.01C`
+    /// support; the hero's `+0x58`) of `hero`; None: unknown.
+    fn hero_role(&self, _site: Site, _hero: u64) -> Option<u64> {
         None
     }
 
@@ -636,6 +644,9 @@ pub enum StateKind {
     /// FilterArray (`STU_0A6BE10E`, `vm/filter_array.rs`): it keeps its
     /// output the filtered copy of its source while it runs.
     FilterArray,
+    /// HeroSelect (`STU_0E913A0B`, `vm/hero_select.rs`): it keeps the
+    /// controller's hero limits while it runs.
+    HeroSelect,
     /// A target search (`vm/targets.rs`): the bodies it finds while active
     /// are [`State::tracked`]. Forms the server can't run find nothing
     /// (an assumption, as in the Python reference).
@@ -1165,7 +1176,7 @@ impl Component {
             return Err(InitFault::Halted);
         }
         self.machine
-            .queue_entries(&self.graphs, Some(instance), message, parameters)
+            .queue_entries(&self.graphs, Some(instance), 0, message, parameters)
     }
 
     pub fn run_now(&mut self, world: &mut impl World) -> Result<(), InitFault> {
@@ -1192,12 +1203,14 @@ impl Component {
         self.machine.owner_dead
     }
 
-    /// A game message from another body: every instance's entries for it
-    /// queue at the current clock and run now (`send_message` in
-    /// `ow174/game/script/runtime.py`, as `Match.deliver_body_messages` calls
-    /// it). Returns how many entries took it.
+    /// A game message from another entity (`sender`; none: 0): every
+    /// instance's entries for it queue at the current clock and run now
+    /// (`send_message` in `ow174/game/script/runtime.py`, as
+    /// `Match.deliver_body_messages` calls it). Returns how many entries
+    /// took it.
     pub fn receive_message(
         &mut self,
+        sender: u32,
         message: u64,
         parameters: Variables,
         world: &mut impl World,
@@ -1205,9 +1218,9 @@ impl Component {
         if self.halted {
             return Err(InitFault::Halted);
         }
-        let entries = self
-            .machine
-            .queue_entries(&self.graphs, None, message, parameters)?;
+        let entries =
+            self.machine
+                .queue_entries(&self.graphs, None, sender, message, parameters)?;
         if entries != 0 {
             self.run_now(world)?;
         }
@@ -1558,6 +1571,8 @@ enum Event {
     WatchChanged(u16),
     Message {
         position: u16,
+        /// The sending entity; 0 when unknown.
+        sender: u32,
         parameters: Arc<Variables>,
     },
 }
@@ -1607,6 +1622,8 @@ struct Machine {
     disabled: BTreeMap<i64, Vec<StateKey>>,
     /// `MoveTo` targets and speeds of the activations that resolved one.
     movements: BTreeMap<StateKey, ([f64; 3], f64)>,
+    /// The running HeroSelect states' hero limits (`vm/hero_select.rs`).
+    hero_selects: BTreeMap<StateKey, hero_select::HeroLimits>,
     /// Motions started or ended since the mover took them.
     motions: Vec<Motion>,
 }
@@ -1820,9 +1837,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 Event::WatchChanged(raw) => self.deliver_watch(key(raw))?,
                 Event::Message {
                     position,
+                    sender,
                     parameters,
                 } => {
-                    self.deliver(id, position, parameters)?;
+                    self.deliver(id, position, sender, parameters)?;
                 }
             }
         }
@@ -1893,18 +1911,23 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         &mut self,
         id: u16,
         position: u16,
+        sender: u32,
         parameters: Arc<Variables>,
     ) -> Result<(), InitFault> {
         let Some(node) = self.graph(id).node(position) else {
             return Ok(());
         };
         self.parameters = Some(parameters);
-        let result = self.deliver_entry(id, node);
+        let result = self.deliver_entry(id, node, sender);
         self.parameters = None;
         result
     }
 
-    fn deliver_entry(&mut self, id: u16, node: &Node) -> Result<(), InitFault> {
+    /// A game message entry takes its parameters and its sender: the
+    /// entity in `m_B60ABDA4` (`#40` in `05AD` rid15, which rates the
+    /// sender's health by it), as an applied aura's and a played script's
+    /// entry take theirs.
+    fn deliver_entry(&mut self, id: u16, node: &Node, sender: u32) -> Result<(), InitFault> {
         let path = if node.is_state() {
             let Some(raw) = node.state else { return Ok(()) };
             let key = StateKey { instance: id, raw };
@@ -1953,6 +1976,16 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 .unwrap_or(Value::Null);
             self.write(target, value)?;
         }
+        if expr::valid_entity(sender) {
+            match expr::lvalue(field(&node.fields, "m_B60ABDA4")) {
+                Ok(Some(target)) => self.write(source_key(id, target), Value::Entity(sender))?,
+                Ok(None) => {}
+                Err(error) => {
+                    self.report(site, Issue::Expression(error));
+                    return Ok(());
+                }
+            }
+        }
         self.follow(id, node, path.0, path.1, 0)?;
         Ok(())
     }
@@ -1989,10 +2022,17 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         // Messages with only the other two bytes set are all sent by client
         // graphs and taken by none of the server's, so those channels are
         // the clients' [assumption] and the server delivers nothing on them.
-        let broadcast = target.get("$").and_then(Json::as_str) == Some("STU_1D719351");
-        if broadcast && field(target, "m_6A8DB059").as_u64() == Some(0) {
+        let channels = target.get("$").and_then(Json::as_str) == Some("STU_1D719351");
+        if channels && field(target, "m_6A8DB059").as_u64() == Some(0) {
             return Ok(true);
         }
+        // `STU_57692020` names no receivers and the client has no code for
+        // it: the server picks them. Its message reaches every entity, the
+        // sender's own instances among them, as the primary channel's: the
+        // only listener of `0686`'s `0307` is `05AD` rid15 on every hero
+        // body, the sender's own included (BotVoice.md, "Client tools pass
+        // (2026-11-16)"; the routing itself is an inference from the data).
+        let broadcast = channels || node.class == "STU_57692020";
         if target.get("$").and_then(Json::as_str) == Some("STU_9B213168") {
             target = field(target, "m_targets");
         }
@@ -2035,8 +2075,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         for entity in entities {
             self.spend("game message routing")?;
             if entity == site.entity {
-                self.machine
-                    .queue_entries(self.graphs, None, message, parameters.clone())?;
+                self.machine.queue_entries(
+                    self.graphs,
+                    None,
+                    site.entity,
+                    message,
+                    parameters.clone(),
+                )?;
             } else if !self.world.send_message(site, entity, message, &parameters) {
                 self.report(
                     site,

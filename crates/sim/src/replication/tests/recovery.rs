@@ -65,8 +65,13 @@ impl OwnerBodyRuntime for Faulting {
         self.inner.health_changed()
     }
 
-    fn receive_message(&mut self, message: u64, parameters: Variables) -> io::Result<usize> {
-        self.inner.receive_message(message, parameters)
+    fn receive_message(
+        &mut self,
+        sender: u32,
+        message: u64,
+        parameters: Variables,
+    ) -> io::Result<usize> {
+        self.inner.receive_message(sender, message, parameters)
     }
 
     fn take_messages(&mut self) -> Vec<GameMessage> {

@@ -61,13 +61,6 @@ const ASSUMED_NO_OPS: &[&str] = &[
     // (05AD nodes 154 and 155, 02CF node 32): an entity and an integer, no
     // out link.
     "STU_71FE9852",
-    // A game message without `m_targets` (0686 node 21 sends 0307 after
-    // Need Healing): the client has no code for it, so the server picks
-    // the receivers; its only listener is `05AD` rid15 on every hero body
-    // (BotVoice.md, "Client tools pass (2026-11-16)"). Not routed yet: that
-    // entry reads the sender from `m_B60ABDA4` (#40), which the VM doesn't
-    // fill for game message entries (`docs/dev/loose-ends.md`).
-    "STU_57692020",
 ];
 
 /// Melee's states (graph 0043): knockback and four unnamed ones. The client
@@ -83,13 +76,12 @@ const ASSUMED_INERT_STATES: &[&str] = &[
 
 /// The player controller's native states (`0C90`): their client codec has
 /// no payload (reader 0x7ff78abf5640), and what they do on the server is
-/// unknown, so they run as plain states with an assumption. HeroSelect
-/// (`0C90` st1: a hero select timer `m_BB844B42` and allow flag #8419,
-/// read by native code), ForProbe (`0C90` st75/st76, server-only: values
-/// for native game code) and Reloader (`0C90` st106: on a native event it
-/// stores the possessed body's place and heading for StateHero and sends
-/// `0687` to itself; it never fires here).
-const ASSUMED_PLAIN_STATES: &[&str] = &["STU_0E913A0B", "STU_0C3A5D53", "STU_AB09B113"];
+/// unknown, so they run as plain states with an assumption. ForProbe
+/// (`0C90` st75/st76, server-only: values for native game code) and
+/// Reloader (`0C90` st106: on a native event it stores the possessed body's
+/// place and heading for StateHero and sends `0687` to itself; it never
+/// fires here). HeroSelect runs (`vm/hero_select.rs`).
+const ASSUMED_PLAIN_STATES: &[&str] = &["STU_0C3A5D53", "STU_AB09B113"];
 
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn follow(
@@ -193,7 +185,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
-            "STUStatescriptActionSendGameMessage" => {
+            // `STU_57692020` sends without `m_targets` (`0686` rid19 sends
+            // `0307` after Need Healing): the engine picks the receivers
+            // (`send_game_message`).
+            "STUStatescriptActionSendGameMessage" | "STU_57692020" => {
                 if !self.send_game_message(id, node)? {
                     return Ok(false);
                 }
@@ -685,6 +680,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_0A6BE10E" if filter_array::is_runnable_filter_array(node) => {
                 StateKind::FilterArray
             }
+            "STU_0E913A0B" => StateKind::HeroSelect,
             // ForCode (the strict form of ForCodeSynced `STU_CD46AF93`): it
             // registers its rows (identifier, value) for native game code to
             // read and has no payload (codec "none"); its plugs and
@@ -829,6 +825,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.state_mut(key).expect("active Watch").watch_seen = seen;
             }
             StateKind::FilterArray => self.refresh_filter_array(key)?,
+            StateKind::HeroSelect => self.refresh_hero_select(key),
             StateKind::WeaponVolley { .. } => self.begin_volley(key, node, depth)?,
             StateKind::TrackTargets => self.begin_track_targets(key, node)?,
             StateKind::ModifyHealth { .. } => self.begin_modify_health(key, node)?,

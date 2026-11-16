@@ -11,8 +11,10 @@ mod flow;
 
 fn node(position: u16, class: &str, state: Option<u16>, mut fields: Json) -> Json {
     fields["m_2BBEEAB8"] = json!(state.is_some());
-    fields["m_ADEB6E05"] =
-        json!(class.contains("Action") || matches!(class, "STU_12F5D52D" | "STU_22926252"));
+    fields["m_ADEB6E05"] = json!(
+        class.contains("Action")
+            || matches!(class, "STU_12F5D52D" | "STU_22926252" | "STU_57692020")
+    );
     json!({
         "pos":position, "class":class, "uid":position, "rid":position, "remote":-1,
         "state":state, "client_only":false, "server_only":false, "fields":fields,
@@ -3846,6 +3848,7 @@ fn messages_to_other_entities_go_through_the_world_and_reach_every_instance() {
             json!({
                 "m_gameMessage":{"m_gameMessage":"0x0240000000000005"},
                 "m_params":[{"m_B5051BCE":"0x0D80000000000007","m_out_Var":var(100,false)}],
+                "m_B60ABDA4":var(40,false),
             }),
         )],
         json!([]),
@@ -3884,13 +3887,23 @@ fn messages_to_other_entities_go_through_the_world_and_reach_every_instance() {
     .unwrap();
     assert_eq!(
         other
-            .receive_message(0x0240_0000_0000_0005, parameters, &mut EmptyWorld)
+            .receive_message(
+                0xa000_0101,
+                0x0240_0000_0000_0005,
+                parameters,
+                &mut EmptyWorld
+            )
             .unwrap(),
         2
     );
     let snapshot = other.snapshot().unwrap();
+    // Each entry takes the parameters and the sender (`m_B60ABDA4`).
     for id in [1, 2] {
         assert_eq!(snapshot.instances[&id].variables[&100], Value::Integer(9));
+        assert_eq!(
+            snapshot.instances[&id].variables[&40],
+            Value::Entity(0xa000_0101)
+        );
     }
 
     // The player's own world queues them for the match.
@@ -3947,10 +3960,12 @@ fn a_message_to_every_entity_reaches_the_sender_and_goes_through_the_world() {
     }
     let channels = |primary, mode| json!({"$":"STU_1D719351","m_6A8DB059":primary,"m_1199BFE0":mode,"m_111E4A0E":0});
     // `0F4A` st5 sends `0700` so; st2's channels are the clients' only.
+    // `STU_57692020` names no receivers: every entity (`0686` rid19's
+    // `0307`), the sender among them, which takes itself as the sender.
     let fixture = graph(
         42,
         vec![
-            entry(&[(1, "m_beginPlug"), (2, "m_beginPlug")]),
+            entry(&[(1, "m_beginPlug"), (2, "m_beginPlug"), (4, "m_inPlug")]),
             node(
                 1,
                 "STU_38EE1100",
@@ -3979,21 +3994,44 @@ fn a_message_to_every_entity_reaches_the_sender_and_goes_through_the_world() {
                     "m_params":[{"m_B5051BCE":"0x0D80000000000007","m_out_Var":var(100,false)}],
                 }),
             ),
+            node(
+                4,
+                "STU_57692020",
+                None,
+                json!({"m_gameMessage":{"m_gameMessage":"0x024000000000000A"}}),
+            ),
+            node(
+                5,
+                "STUStatescriptEntryGameMessage",
+                None,
+                json!({
+                    "m_gameMessage":{"m_gameMessage":"0x024000000000000A"},
+                    "m_B60ABDA4":var(41,false),
+                }),
+            ),
         ],
         json!([1, 2]),
-        json!([0, 3]),
+        json!([0, 3, 5]),
     );
     let graphs = Arc::new(store(vec![fixture]));
     let mut world = Broadcaster::default();
     let mut component = start(Arc::clone(&graphs), 100, &mut world);
     component.advance_frame(101, &mut world).unwrap();
     let parameters = Variables::from([(7, Value::Integer(9))]);
+    // In the VM's order: the in-plug action's message, then the begun state's.
     assert_eq!(
         world.0,
-        [(0xa000_0101, 0x0240_0000_0000_0006, parameters.clone())]
+        [
+            (0xa000_0101, 0x0240_0000_0000_000a, Variables::new()),
+            (0xa000_0101, 0x0240_0000_0000_0006, parameters.clone())
+        ]
     );
     let snapshot = component.snapshot().unwrap();
     assert_eq!(snapshot.instances[&1].variables[&100], Value::Integer(9));
+    assert_eq!(
+        snapshot.instances[&1].variables[&41],
+        Value::Entity(0xa000_0101)
+    );
     assert!(snapshot.initialization_complete());
     // A world that can't reach every entity refuses it.
     let component = start(graphs, 100, &mut EmptyWorld);

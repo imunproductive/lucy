@@ -37,9 +37,13 @@
 //!   48 or above can reach it: our bots with bit 48 in component 26 were
 //!   still shot through (checked in the game, 2026-11-12), and
 //!   ow1-preservation's bots, whose component 26 was `0x11040001`, showed
-//!   impact sparks on their body (its run 343). Where bit 48 comes from is
-//!   not found (HitPredict.md, "Client tools pass (2026-11-16)"); no graph
-//!   filter names it (their masks stop at `0x3FFFFFFF`).
+//!   impact sparks on their body (its run 343). Bit 48 is the client's
+//!   own: it sets it in component 1's word when the entity's model
+//!   component (component 4, `STUModelComponent`) attaches (`0x7FF78A9FE8C0`
+//!   @`0x7FF78A9FEB89`; the other attachments set bits 49 and 51-54, bit 55
+//!   is the default), so the server can't set or clear it, and a bot with
+//!   a model has it (HitPredict.md, "Client tools pass 2 (2026-11-16)"). No
+//!   graph filter names it (their masks stop at `0x3FFFFFFF`).
 //! - So every body, a player's or a training bot's (the bots are heroes,
 //!   `02E0…016B`-`016E`), gets its team bit and [`BODY_KINDS`]
 //!   ([`body_filter`]); a body that dies gets [`DEAD`] too, with the pools

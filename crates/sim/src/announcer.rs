@@ -15,8 +15,10 @@
 //!   have 0C90, so there the player's 0C90 runs `0215`. The server runs the
 //!   Range as `005A`, so the lines come as in the PvP modes.
 //! - `0215` (server-only part): every elimination the controller gets
-//!   (`0093.025`: killer `0012`, victim `0015`) of an enemy hero
-//!   (rid15: filter with target tags `06AD` or `031D`) adds 1 to its count
+//!   (`0093.025`: killer `0012`, victim `0015`) of a hostile victim that is
+//!   not the killer and carries neither target tag `06AD` nor `031D` (rid15:
+//!   the filter's none-of list; Athena.md, "Client tools pass 2") adds 1 to
+//!   its count
 //!   #2023 (rid17) and re-arms the wait st4 of #2036 = 2 s (`m_0DBAFD7F`:
 //!   re-armed on a re-entry). When that wait ends, 2 s after the last kill,
 //!   the count goes back to 0 (rid44). On each kill, unless #1954 or #21925
@@ -42,13 +44,13 @@
 //! ([`pulse`]). Assumptions: an elimination is the final blow (the server
 //! credits no assists; `0215` rid57 counts any elimination, or with
 //! `STU_A3DEF368().id(12421)`, which no mode sets, only `0091.026`, likely
-//! the final blow); every enemy player's body or bot passes rid15 (the
-//! controller world answers its filter true). The Range's Training
-//! Bots (`1403`, `14ED`) carry only the target tag `02ED`; `031D` is on two
-//! other Training Bots only (`14A9`, `14D2`, placed on the Tutorial map
-//! `0661`), and `06AD` is on no hero body (only on B.O.B., `25C3`), so the
-//! game gives heroes `06AD` itself; since retail counts Training Bot kills,
-//! the bots must get it too, or pass rid15 some other way. #1954 (set on
+//! the final blow). The server applies rid15 before it sends `0093`
+//! ([`counted_victim`]; the controller world answers the filter true): the
+//! victim's body's authored target tags, not tags its states add. The
+//! Range's Training Bots (`1403`, `14ED`) carry only the target tag `02ED`
+//! and pass, as retail counts them; `031D` is on two other Training Bots
+//! (`14A9`, `14D2`, placed on the Tutorial map `0661`) and `06AD` on B.O.B.
+//! (`25C3`). #1954 (set on
 //! `069C.025`) and #21925 (a mode entity variable) stay off. The wait ends
 //! before a kill of the same tick is counted. The frames carry `0215` from
 //! st21's first pulse on (retail: from the start; the frames are still
@@ -59,12 +61,25 @@
 //! kill (see `docs/notes/behavior.md`).
 
 use orpheus_core::tick::TICK_PERIOD;
-use orpheus_script::controller::Multikill;
+use orpheus_script::{controller::Multikill, graph::GraphStore};
 
 use crate::replication::kill_feed_fresh;
 
 /// `0215` st4's wait, #2036 = 2 s, in world ticks (2000 / 16 = 125).
 pub const MULTIKILL_WINDOW_TICKS: u32 = 2000 / TICK_PERIOD.as_millis() as u32;
+
+/// rid15's none-of target tags: B.O.B. (`06AD`) and the Tutorial's
+/// Training Bots (`031D`).
+const UNCOUNTED_VICTIM_TAGS: [u64; 2] = [0x0d60_0000_0000_06ad, 0x0d60_0000_0000_031d];
+
+/// Whether a kill of a victim of body definition `body` counts for the
+/// multikills (`0215` rid15): its body carries none of
+/// [`UNCOUNTED_VICTIM_TAGS`]. An unknown body counts.
+pub fn counted_victim(graphs: &GraphStore, body: Option<u64>) -> bool {
+    body.and_then(|body| graphs.bodies().get(&body))
+        .and_then(|body| body.target_tags.as_ref())
+        .is_none_or(|tags| !UNCOUNTED_VICTIM_TAGS.iter().any(|tag| tags.contains(tag)))
+}
 
 /// What `0215`'s pulser and #10122 send.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

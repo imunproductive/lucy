@@ -729,7 +729,7 @@ impl BotBody {
         }
         Ok(self
             .component
-            .receive_message(DAMAGED, parameters, &mut self.world)?
+            .receive_message(0, DAMAGED, parameters, &mut self.world)?
             != 0)
     }
 
@@ -884,7 +884,7 @@ impl BotBody {
             .set_entity_variable(OWNER_HEALTH, Value::Float(0.0), &mut self.world)?;
         if self
             .component
-            .receive_message(DIED, parameters, &mut self.world)?
+            .receive_message(0, DIED, parameters, &mut self.world)?
             == 0
         {
             return Ok(false);

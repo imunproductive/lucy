@@ -170,11 +170,13 @@ fn in_the_practice_range_a_second_training_bot_kill_pulses_the_double_kill() {
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
     let card = PlayerCard::default();
     let mut shooter = spawned(&scene, &card, SHOOTER, 0, 0);
+    let graphs = scene.shared_graphs();
+    let training_bot = scene.bots().first().map(|bot| bot.spawn.body);
     let before = controller_frames(&shooter).last().cloned();
     let first = FIRST_TICK + 100;
     let ticks = [first, first + MULTIKILL_WINDOW_TICKS - 1];
     for (index, tick) in ticks.into_iter().enumerate() {
-        shooter.eliminated(tick, crate::bots::BOT_ENTITY);
+        shooter.eliminated(&graphs, tick, crate::bots::BOT_ENTITY, training_bot);
         shooter.send_multikills(&scene, tick).unwrap();
         let last = controller_frames(&shooter).last().cloned();
         assert_eq!(

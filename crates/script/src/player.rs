@@ -161,6 +161,22 @@ impl World for PlayerWorld {
         true
     }
 
+    /// A message to every entity (`STU_57692020`, a primary channel's
+    /// `STU_1D719351`): queued with the target [`crate::mode::EVERY_ENTITY`]
+    /// for the match, which gives it to every other body.
+    fn broadcast_message(&mut self, source: Site, message: u64, parameters: &Variables) -> bool {
+        if source.entity != self.entity {
+            return false;
+        }
+        self.outbox.push(GameMessage {
+            sender: self.entity,
+            target: crate::mode::EVERY_ENTITY,
+            message,
+            parameters: parameters.clone(),
+        });
+        true
+    }
+
     /// A criteria on the body itself that its voice set answers with a line
     /// (ClientInVoice 27500): the communication wheel's (`0686` raises the
     /// choice's, Hello `0AEB`) and the hero's reactions ([`REACTION_GRAPHS`]:
@@ -725,7 +741,7 @@ mod tests {
             ]);
             assert_ne!(
                 component
-                    .receive_message(DAMAGED, parameters, &mut world)
+                    .receive_message(0, DAMAGED, parameters, &mut world)
                     .unwrap(),
                 0
             );
