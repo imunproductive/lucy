@@ -50,6 +50,16 @@ const SERVER_NO_OPS: &[&str] = &[
     // 05AD node 165 and 023A/02CF/0686's server-only unlock-use reports.
     "STU_631D36C3",
     "STU_94771561",
+    // A voice category action (`Action_STU_3D419B63` 0x7FF789BC9C70): for
+    // each `m_targets` entity it calls the client's voice system (the one
+    // `VoiceStimulus` plays through) at vtable +128 with `m_category`, a
+    // `079` voice category, or none. Assumption: it stops the target's
+    // lines of that category (sound only; `069A` rid7/rid8 run it with
+    // category `0005` as an emote begins and ends, `03F2` rid32 for the
+    // announcer, `1BEE` rid12). All four uses are networked with a remote
+    // index; the server has no voice playing, and its frames don't pulse
+    // remote actions outside the wheel's graphs yet.
+    "STU_3D419B63",
 ];
 
 /// Unnamed actions the server runs as no-ops without knowing what they do,
