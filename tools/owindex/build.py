@@ -31,7 +31,7 @@ DEFAULT_DUMP = paths.DUMP
 DEFAULT_OUT = paths.INDEX
 DEFAULT_OWLIB = paths.OWLIB_TYPES
 IDA_BASE = 0x140000000
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # function roles (role, kind or None for any kind) -> name prefix; Index._describe has the matching what-texts
 FUNC_PREFIX = {
@@ -195,6 +195,8 @@ CREATE TABLE func(begin INTEGER PRIMARY KEY, end INTEGER, root INTEGER);
 CREATE TABLE obf(begin INTEGER PRIMARY KEY, end INTEGER, confidence TEXT, area TEXT);
 CREATE TABLE net(kind TEXT, idx INTEGER, data TEXT);
 CREATE TABLE netrole(rva INTEGER, text TEXT);
+CREATE TABLE comp_access(rva INTEGER, component INTEGER, kind TEXT, func_rva INTEGER, accessor_rva INTEGER);
+CREATE TABLE fntable(rva INTEGER PRIMARY KEY, source TEXT);
 """
 INDEXES = """
 CREATE INDEX field_hash ON field(hash);
@@ -207,6 +209,8 @@ CREATE INDEX symbol_name ON symbol(name);
 CREATE INDEX stu_name ON stu(name);
 CREATE INDEX stu_desc ON stu(descriptor_rva);
 CREATE INDEX netrole_rva ON netrole(rva);
+CREATE INDEX comp_access_component ON comp_access(component);
+CREATE INDEX comp_access_func ON comp_access(func_rva);
 """
 
 
@@ -354,6 +358,10 @@ def build(dump, out, owlib, analysis=paths.ANALYSIS_DIR, log=print):
         "net_protocols": len((net_result or {}).get("protocols") or []),
         "net_roles": len(net_roles),
         "net_names": len(net_symbols),
+        "component_getters": sum(1 for a in (net_result or {}).get("component_accessors") or [] if a["kind"] == "getter"),
+        "component_accessor_calls": sum(1 for a in (net_result or {}).get("component_accessors") or []
+                                        if a["kind"].endswith(" call")),
+        "function_tables": len((net_result or {}).get("table_starts") or {}),
     }
     meta = {
         "schema": SCHEMA_VERSION,
@@ -370,6 +378,7 @@ def build(dump, out, owlib, analysis=paths.ANALYSIS_DIR, log=print):
         "problems": problems,
         "net_status": net_status,
         "net_method": (net_result or {}).get("method"),
+        "sections": img.sections,
     }
 
     out = Path(out)
@@ -391,6 +400,10 @@ def build(dump, out, owlib, analysis=paths.ANALYSIS_DIR, log=print):
         rows = (net_result or {}).get(kind) or []
         db.executemany("INSERT INTO net VALUES (?,?,?)", [(kind, i, json.dumps(x)) for i, x in enumerate(rows)])
     db.executemany("INSERT INTO netrole VALUES (?,?)", net_roles)
+    db.executemany("INSERT INTO comp_access VALUES (?,?,?,?,?)", [
+        (a["rva"], a["component"], a["kind"], a["func_rva"], a["accessor_rva"])
+        for a in (net_result or {}).get("component_accessors") or []])
+    db.executemany("INSERT INTO fntable VALUES (?,?)", sorted(((net_result or {}).get("table_starts") or {}).items()))
     db.executescript(INDEXES)
     meta["seconds"] = round(time.time() - t0, 1)
     db.execute("INSERT OR REPLACE INTO meta VALUES ('seconds', ?)", (json.dumps(meta["seconds"]),))

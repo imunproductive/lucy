@@ -3,6 +3,7 @@
     from tools.owindex import Index
     idx = Index.open()            # research/out/index/ow_index.sqlite
     idx.stu("CD7F3617"); idx.field("m_B350E4FD"); idx.addr(0x7FF789BE27C0); idx.name(rva); idx.lookup(name)
+    idx.component(74); idx.component_of_stu("8FE674F9"); idx.component_accessors(); idx.component_uses(74)
 
 Addresses: RVAs are ints; addr() accepts VAs at 0x140000000 (IDB), 0x7FF788F10000 (ORPHEUS/questions),
 0x7FF6D1220000 (kjs notes) or a bare RVA. Hashes in returned dicts are 8-digit upper-case hex strings.
@@ -327,3 +328,113 @@ class Index:
 
     def protocols(self):
         return self._net("protocols")
+
+    # --- entity components (tools/owindex/comp.py) ---
+    def _comp_access(self, sql, args=()):
+        if not self.db.execute("SELECT 1 FROM sqlite_master WHERE name = 'comp_access'").fetchone():
+            return []  # index built before the accessor scan: rebuild it
+        return self.db.execute(sql, args).fetchall()
+
+    def component_accessors(self, component=None):
+        """Getters (`kind` "getter": writes (mask, low mask, shift, word) of `component`), type id stubs ("id stub":
+        `mov byte [rcx], component`, used by the factory and the pool of all instances) and the has-component bit
+        test ("has", component None): [{"rva", "component", "kind", "name", "calls"}]."""
+        sql = ("SELECT a.rva, a.component, a.kind, (SELECT COUNT(*) FROM comp_access c WHERE c.accessor_rva = a.rva "
+               "AND c.kind LIKE '% call') FROM comp_access a WHERE a.kind IN ('getter', 'id stub', 'has')")
+        args = ()
+        if component is not None:
+            sql, args = sql + " AND a.component = ?", (component,)
+        return [{"rva": r, "component": c, "kind": k, "name": self.name(r), "calls": n}
+                for r, c, k, n in self._comp_access(sql + " ORDER BY a.component, a.kind, a.rva", args)]
+
+    def component_uses(self, component):
+        """Call sites of component N's getters ("getter call"), its type id stub ("id stub call": factories, pool
+        functions) and has-component tests of N ("has call"): [{"site", "func_rva", "kind", "accessor_rva"}]."""
+        return [{"site": s, "func_rva": f, "kind": k, "accessor_rva": a} for s, f, k, a in self._comp_access(
+            "SELECT rva, func_rva, kind, accessor_rva FROM comp_access WHERE component = ? AND kind LIKE '% call' "
+            "ORDER BY rva", (component,))]
+
+    # --- function tables ---
+    def _qwords(self):
+        if getattr(self, "_q64", None) is None:
+            import numpy as np
+
+            self._q64 = np.fromfile(self.meta["dump"], dtype="<u8")
+        return self._q64
+
+    def holders(self, x, base=None):
+        """Every function table slot in .rdata/.data holding the function at x: [{"table_rva", "slot", "slot_rva",
+        "table_name", "table_source", "whats", "slot_roles"}]. The table is the nearest start at or before the slot
+        within its run of code pointers: an STU runtime vtable, an address code references ("code") or a data
+        pointer points at ("data"), else the run's start ("run"); `whats` is what the index knows of it (STU runtime
+        vtable, component vtable, message class, docs/analysis name, ...)."""
+        import numpy as np
+
+        secs = self.meta.get("sections")
+        if not secs or not self.db.execute("SELECT 1 FROM sqlite_master WHERE name = 'fntable'").fetchone():
+            raise RuntimeError("index built before the function table scan: python -m tools.owindex.build")
+        rva = self.to_rva(x, base)
+        q = self._qwords()
+        t0, t1 = (self.base + v for v in secs[".text"])
+        lo, hi = secs[".rdata"][0], secs[".data"][1]
+        out = []
+        for loc in (int(i) * 8 for i in np.nonzero(q == np.uint64(self.base + rva))[0]):
+            if not lo <= loc < hi:
+                continue
+            run = loc
+            while run - 8 >= lo and t0 <= int(q[(run - 8) // 8]) < t1 and loc - run < 0x8000:
+                run -= 8
+            rows = self.db.execute(
+                "SELECT rva, source FROM fntable WHERE rva BETWEEN ? AND ? UNION SELECT runtime_vtable_rva, "
+                "'stu runtime vtable' FROM registration WHERE runtime_vtable_rva BETWEEN ? AND ? ORDER BY 1 DESC",
+                (run, loc, run, loc)).fetchall()
+            start, source = rows[0] if rows else (run, "run")
+            roles = sorted({role for (slots,) in self.db.execute(
+                "SELECT slots FROM registration WHERE runtime_vtable_rva = ?", (start,))
+                for role, v in json.loads(slots).items() if v == rva})
+            whats = self._whats_at(start) + [f"{n} ({s})" for n, s in self.db.execute(
+                "SELECT name, source FROM symbol WHERE rva = ? AND prio = 0", (start,))]
+            out.append({"table_rva": start, "slot": (loc - start) // 8, "slot_rva": loc, "table_name": self.name(start),
+                        "table_source": source, "whats": whats, "slot_roles": roles})
+        return out
+
+    def component(self, n):
+        """Component N: the net.py row plus `data_class` (STU entity component class the definitions map to N),
+        `mirror_class` / `mirror_offset` (the networked STU instance inside the component) and `fields` (each
+        mirror field with its offset in the mirror and in the component), `accessors`, `uses` (call sites)."""
+        row = next((c for c in self.components() if c["id"] == n), None)
+        acc = self.component_accessors(n)
+        if row is None and not acc:
+            return None
+        out = dict(row or {"id": n})
+        hs = out.get("class_hashes") or []
+        out["data_class"] = _hx(hs[0]) if len(hs) == 1 else None
+        out["data_classes"] = [_hx(h) for h in hs]
+        out["data_class_label"] = self.label(hs[0]) if len(hs) == 1 else None
+        mh, mo = out.get("mirror_hash"), out.get("mirror_offset")
+        out["mirror_class"], out["mirror_label"] = _hx(mh), self.label(mh) if mh in self._names else None
+        fields, i = [], 0
+        for a in reversed(self.ancestors(mh) if mh in self._names else []):
+            for f in self.stu(a)["fields"]:
+                fields.append({"index": i, "hash": f["hash"], "name": f["name"], "name_source": f["name_source"],
+                               "class_hash": _hx(a), "mirror_offset": f["offset"],
+                               "offset": None if mo is None else mo + f["offset"], "type": f["type"],
+                               "flags": f["flags"]})
+                i += 1
+        out["fields"] = sorted(fields, key=lambda f: f["mirror_offset"])
+        out["accessors"] = acc
+        out["uses"] = self.component_uses(n)
+        return out
+
+    def component_of_stu(self, key):
+        """Component id whose data class (the definition mapper's STU class) is the class, else whose mirror
+        class is; None when neither."""
+        h = self._resolve_stu(key)
+        if h is None:
+            return None
+        comps = self.components()
+        for test in (lambda c: h in (c.get("class_hashes") or []), lambda c: c.get("mirror_hash") == h):
+            hit = next((c["id"] for c in comps if test(c)), None)
+            if hit is not None:
+                return hit
+        return None

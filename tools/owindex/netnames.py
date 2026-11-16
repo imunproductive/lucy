@@ -11,6 +11,8 @@ Names (only when unambiguous; addr() always lists every role):
 - Msg<id>_Info / Msg<id>_Vtbl: message info record / message class vtable used by one id.
 - Proto_<protocol>_Vtbl: protocol class vtable.
 - Comp<id>_Ctor / _Create / _Vtbl / _FactoryVtbl / _FactoryCtor: component addresses used by one component.
+- GetComp<id>: the component's getter (mask, low mask, shift, word); HasComp: the "has component n" bit test;
+  CompId<id>: the component's type id stub (`mov byte [rcx], id; mov rax, rcx; ret`).
 <protocol> = the protocol name, else P<crc 8 hex>. A name that would land on several rvas gets _<rva hex>.
 STU-derived names win over these at the same rva; docs/analysis names win over both.
 """
@@ -140,6 +142,30 @@ def net_names(net):
                 roles.append((rva, text))
             if len(cs) == 1:
                 symbols.append((rva, f"Comp{cs[0]['id']}_{suffix}", kind))
+    # --- component accessors (tools/owindex/comp.py) ---
+    by_id = {c["id"]: c for c in components}
+    acc = (net or {}).get("component_accessors") or []
+    ncalls = defaultdict(int)
+    for a in acc:
+        if a["kind"].endswith(" call"):
+            ncalls[a["accessor_rva"]] += 1
+    for a in acc:
+        if a["kind"] == "getter":
+            n, d, c = a["component"], a["detail"], by_id.get(a["component"]) or {}
+            extra = "; ".join(x for x in (c.get("name"), c.get("label")) if x)
+            roles.append((a["rva"], f"component {n} getter{' (' + extra + ')' if extra else ''}: writes mask "
+                                    f"{d['mask']:#x}, low mask {d['low_mask']:#x}, shift {d['shift']}, word {d['word']} "
+                                    f"(component = 64*word + shift); {ncalls[a['rva']]} call sites"))
+            symbols.append((a["rva"], f"GetComp{n}", "func"))
+        elif a["kind"] == "has":
+            roles.append((a["rva"], f"has component (entity, n in edx): bit n of the component bitset at entity "
+                                    f"+0x88; {ncalls[a['rva']]} call sites"))
+            symbols.append((a["rva"], "HasComp", "func"))
+        elif a["kind"] == "id stub":
+            roles.append((a["rva"], f"component {a['component']} type id stub (`mov byte [rcx], {a['component']}`: "
+                                    f"the id for its factory and its pool of all instances); "
+                                    f"{ncalls[a['rva']]} call sites"))
+            symbols.append((a["rva"], f"CompId{a['component']}", "func"))
     # the same name on several rvas (e.g. one id with a handler under each of two dispatchers): add the rva
     count = defaultdict(int)
     for _, name, _ in symbols:

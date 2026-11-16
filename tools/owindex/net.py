@@ -33,7 +33,9 @@ Components
   functions), calls the C++ constructor with rcx = the new object, and stores the most derived
   vtable at [object] (in create or in the constructor): `vtable_rva`, `construct_rva`.
 - Component data (`mirror_*`): the first STU descriptor the constructor (BFS, depth 3) passes in
-  rcx to the STU instance initialiser (the most common callee after `lea rcx, [descriptor]`).
+  rcx to the STU instance initialiser (the most common callee after `lea rcx, [descriptor]`);
+  `mirror_offset` = where the instance lives in the component (tools/owindex/comp.py).
+- Component accessors (getters, "has component" calls): tools/owindex/comp.py.
 - `class_hash`: the STU entity component class (asset side) the client maps to the id: the
   function with the most `cmp ecx, <STU hash>` (the definition mapper, a compare tree ending in
   `mov byte [out], id`) run for every hash it compares.
@@ -49,6 +51,8 @@ from collections import Counter
 import capstone
 import numpy as np
 import pefile
+
+from . import comp
 
 # Labels from the ORPHEUS server (this repo, read only) and kjs notes. Names, never
 # addresses: everything else comes from the image.
@@ -991,6 +995,7 @@ def _components(img, empty):
             "mirror_descriptor_rva": md,
             "mirror_hash": img.d(md + 0xB0) if md is not None else None,
             "mirror_field_count": img.d(md + 0x90) if md is not None else None,
+            "mirror_offset": comp.mirror_offset(img, rt.get("ctor") or rt.get("alloc_fn"), md) if rt else None,
             "notes": "; ".join(notes) if notes else None,
         })
     stats = {"factory_vtable_shape": [s0 - img.base, s3 - img.base], "factory_vtables": len(fvts),
@@ -1019,4 +1024,9 @@ def build(image: bytes, base: int) -> dict:
         "class_hash = STU entity component class mapped to the id by the definition mapper (compare tree). "
         f"stats: {mstats} {cstats}"
     )
-    return {"messages": messages, "components": components, "protocols": protocols, "method": method}
+    accessors = comp.accessors(img)
+    method += (" component accessors: getters = `mov [rcx], mask; mov [rdx], mask-1; mov [r8], shift; "
+               "mov [r9], word; ret` (component = 64*word + shift), has = bit test of the bitset at entity +0x88 "
+               "with the component in edx (constant before each call site).")
+    return {"messages": messages, "components": components, "protocols": protocols, "method": method,
+            "component_accessors": accessors, "table_starts": comp.table_starts(img)}
