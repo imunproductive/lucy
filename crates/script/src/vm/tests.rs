@@ -9,6 +9,7 @@ const SOLDIER_BODY: u64 = 0x0400_0000_0000_03cf;
 
 mod entities;
 mod flow;
+mod motions;
 
 fn node(position: u16, class: &str, state: Option<u16>, mut fields: Json) -> Json {
     fields["m_2BBEEAB8"] = json!(state.is_some());

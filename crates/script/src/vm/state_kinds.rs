@@ -522,6 +522,116 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(true)
     }
 
+    /// A velocity action (`STU_FF3471E9`, run 0x7FF789C3B350): each element
+    /// of `m_BC5E91CF`, in order, for the body's next pose
+    /// ([`Motion::Velocity`], `orpheus_physics::mover::Mover::act_on_velocity`).
+    /// A scalar element (`STU_D71F17E2`: add `7104FC1F`, multiply
+    /// `1308AA6A`, set `9AF0FA80`, min `748FC65A`, max `EC4841E7`; the clamp
+    /// `20E18047` with `m_8AD739CE` lower, default the smallest normal
+    /// float, and `m_8213EB22` upper, default the largest) is movement mod
+    /// 32 + its channel `m_A9561CA0`; a channel above 3 does nothing
+    /// (0x7FF789B42860). A vector element (`STU_9C74F0E2`: add `4635C5E2`,
+    /// multiply `D93B3F5E` (unset value 1, 1, 1), set `95A10547`) acts on
+    /// channel `m_CFEC5F76` 1..=4; channel 0 starts a mover behaviour that
+    /// isn't modelled (no data uses it): refused. Unset values and
+    /// priorities (`m_priority`) are 0. False when a value can't be read.
+    pub(super) fn velocity_action(&mut self, id: u16, node: &Node) -> Result<bool, InitFault> {
+        let mut elements = Vec::new();
+        for config in array_field(&node.fields, "m_BC5E91CF") {
+            self.spend("velocity element")?;
+            let shape = config.get("$").and_then(Json::as_str).unwrap_or("");
+            let Some(priority) = self.movement_number(id, node, field(config, "m_priority"), 0.0)
+            else {
+                return Ok(false);
+            };
+            let scalar = match shape {
+                "STU_7104FC1F" => Some(Operation::Add),
+                "STU_1308AA6A" => Some(Operation::Multiply),
+                "STU_9AF0FA80" => Some(Operation::Set),
+                "STU_748FC65A" => Some(Operation::Minimum),
+                "STU_EC4841E7" => Some(Operation::Maximum),
+                "STU_20E18047" => Some(Operation::Clamp { upper: 0.0 }),
+                _ => None,
+            };
+            if let Some(mut operation) = scalar {
+                let (name, default) = match operation {
+                    Operation::Clamp { .. } => ("m_8AD739CE", f64::from(f32::MIN_POSITIVE)),
+                    _ => ("m_9B7A63EA", 0.0),
+                };
+                let Some(value) = self.movement_number(id, node, field(config, name), default)
+                else {
+                    return Ok(false);
+                };
+                if let Operation::Clamp { upper } = &mut operation {
+                    let config = field(config, "m_8213EB22");
+                    let Some(bound) = self.movement_number(id, node, config, f64::from(f32::MAX))
+                    else {
+                        return Ok(false);
+                    };
+                    *upper = bound;
+                }
+                let channel = config.get("m_A9561CA0").and_then(Json::as_u64).unwrap_or(0);
+                if channel <= 3 {
+                    elements.push(VelocityElement::Modifier(Modifier {
+                        index: 32 + channel as u8,
+                        operation,
+                        value,
+                        priority,
+                    }));
+                }
+                continue;
+            }
+            let (operation, default) = match shape {
+                "STU_4635C5E2" => (VectorOperation::Add, [0.0; 3]),
+                "STU_D93B3F5E" => (VectorOperation::Multiply, [1.0; 3]),
+                "STU_95A10547" => (VectorOperation::Set, [0.0; 3]),
+                _ => {
+                    self.report(
+                        self.site(id, node),
+                        Issue::UnsupportedField("velocity element"),
+                    );
+                    return Ok(false);
+                }
+            };
+            let channel = config.get("m_CFEC5F76").and_then(Json::as_u64).unwrap_or(0);
+            if channel == 0 {
+                self.report(
+                    self.site(id, node),
+                    Issue::UnsupportedField("velocity channel 0 (mover behaviour)"),
+                );
+                return Ok(false);
+            }
+            let value = field(config, "m_9B7A63EA");
+            let value = if value.is_null() {
+                default
+            } else {
+                match self.evaluate(id, node, value, None) {
+                    Some(Value::Vector(value)) => value.map(|part| f64::from(part as f32)),
+                    Some(_) => {
+                        self.report(
+                            self.site(id, node),
+                            Issue::UnsupportedField("velocity vector"),
+                        );
+                        return Ok(false);
+                    }
+                    None => return Ok(false),
+                }
+            };
+            if channel <= 4 {
+                elements.push(VelocityElement::Vector {
+                    channel: channel as u8,
+                    operation,
+                    value,
+                    priority,
+                });
+            }
+        }
+        self.machine
+            .motions
+            .extend(elements.into_iter().map(Motion::Velocity));
+        Ok(true)
+    }
+
     /// Recall's rewind (`STU_41B3FC2B`, graph `001A` state 0): the mover goes
     /// back `m_6B5DA460` seconds of path (variable `1BD5`, 3) in
     /// `m_FAF3B2D3` seconds (variable `00D7`, 0.9), and the state finishes

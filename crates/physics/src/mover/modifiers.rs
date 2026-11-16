@@ -120,7 +120,131 @@ impl Operation {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+/// How a velocity action's vector element meets a vector (the op of
+/// 0x7FF789B429C0 and of the mover's velocity list: 0 add, 1 multiply, 2
+/// set).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VectorOperation {
+    Add,
+    Multiply,
+    Set,
+}
+
+impl VectorOperation {
+    fn apply(self, vector: [f64; 3], operand: [f64; 3]) -> [f64; 3] {
+        std::array::from_fn(|axis| match self {
+            Self::Add => narrow(vector[axis] + operand[axis]),
+            Self::Multiply => narrow(vector[axis] * operand[axis]),
+            Self::Set => operand[axis],
+        })
+    }
+}
+
+/// One element of a statescript velocity action (`STU_FF3471E9`, run
+/// 0x7FF789C3B350), for the body's next pose only: the client's entries
+/// start at the statescript's frame + 1 and end one frame later.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VelocityElement {
+    /// A scalar element: movement mod 32 + its channel (0x7FF789B42860).
+    Modifier(Modifier),
+    /// A vector element on a channel 1..=4 (0x7FF789B429C0), with its
+    /// priority (the list's order).
+    Vector {
+        channel: u8,
+        operation: VectorOperation,
+        value: [f64; 3],
+        priority: f64,
+    },
+}
+
+/// An entry of the mover's velocity list (mover +0x7D0, 64-byte entries;
+/// type at +0x28, op +0x2C, vector +0x30), applied after mods 32..35 by
+/// 0x7FF789B41870.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VelocityChange {
+    /// Type 0 op add: the velocity plus the vector.
+    Add([f64; 3]),
+    /// Type 0 op set: the velocity becomes the vector.
+    Set([f64; 3]),
+    /// Type 3: at least the vector's vertical part along it, then at least
+    /// its horizontal part along that.
+    AtLeastSplit([f64; 3]),
+    /// Type 4: at least the vector's length along it.
+    AtLeast([f64; 3]),
+}
+
+impl VelocityChange {
+    /// The entry a vector element on `channel` makes when the body moves at
+    /// `velocity` (0x7FF789B429C0): channel 1 adds what the operation
+    /// changes now, 4 sets its result, 2 and 3 keep `0 op value` as a
+    /// least velocity. Channel 0 (a mover behaviour of kind 5, not
+    /// modelled) and channels above 4 make none.
+    pub fn of(
+        channel: u8,
+        operation: VectorOperation,
+        value: [f64; 3],
+        velocity: [f64; 3],
+    ) -> Option<Self> {
+        match channel {
+            1 => {
+                let changed = operation.apply(velocity, value);
+                Some(Self::Add(std::array::from_fn(|axis| {
+                    narrow(changed[axis] - velocity[axis])
+                })))
+            }
+            2 => Some(Self::AtLeastSplit(operation.apply([0.0; 3], value))),
+            3 => Some(Self::AtLeast(operation.apply([0.0; 3], value))),
+            4 => Some(Self::Set(operation.apply(velocity, value))),
+            _ => None,
+        }
+    }
+}
+
+/// The pose's velocity changes in their list order (0x7FF789B41870): every
+/// add and set first, then the least velocities. The caller sorts them by
+/// priority.
+pub fn change_velocity(mut velocity: [f64; 3], changes: &[VelocityChange]) -> [f64; 3] {
+    for change in changes {
+        match *change {
+            VelocityChange::Add(value) => velocity = VectorOperation::Add.apply(velocity, value),
+            VelocityChange::Set(value) => velocity = value,
+            _ => {}
+        }
+    }
+    for change in changes {
+        match *change {
+            VelocityChange::AtLeastSplit([x, y, z]) => {
+                velocity = at_least(velocity, [0.0, y, 0.0]);
+                velocity = at_least(velocity, [x, 0.0, z]);
+            }
+            VelocityChange::AtLeast(value) => velocity = at_least(velocity, value),
+            _ => {}
+        }
+    }
+    velocity
+}
+
+/// Raise the velocity's part along `least` to `least`'s length.
+fn at_least(velocity: [f64; 3], least: [f64; 3]) -> [f64; 3] {
+    let squared = narrow(least.iter().map(|part| part * part).sum());
+    if squared < EPSILON {
+        return velocity;
+    }
+    let length = narrow(squared.sqrt());
+    let direction = least.map(|part| narrow(part / length));
+    let along = narrow((0..3).map(|axis| direction[axis] * velocity[axis]).sum());
+    let missing = narrow(length - along);
+    if missing <= 0.0 {
+        return velocity;
+    }
+    std::array::from_fn(|axis| narrow(velocity[axis] + narrow(missing * direction[axis])))
+}
+
+/// The rise in vertical speed over a pose's velocity changes that takes a
+/// body off the ground (0x7FF789B420E2 → 0x7FF789AD0370).
+pub const TAKE_OFF: f64 = 0.0040000002;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Modifier {
     pub index: u8,
     pub operation: Operation,
@@ -195,20 +319,25 @@ impl ModifierTimeline {
             .collect();
         // Stable sort keeps the iteration order of equal start and priority
         // values. The timeline already iterates by instance, state and slot.
-        active.sort_by(|(left_age, left), (right_age, right)| {
-            let priority = if left.priority == right.priority {
-                Ordering::Equal
-            } else {
-                left.priority.total_cmp(&right.priority)
-            };
-            priority.then_with(|| right_age.cmp(left_age))
-        });
+        active.sort_by(application_order);
         ActiveModifiers(active)
     }
 }
 
 fn reached(frame: u32, boundary: u32) -> bool {
     frame_distance(frame, boundary) < FRAME_HALF
+}
+
+fn application_order(
+    (left_age, left): &(u32, Modifier),
+    (right_age, right): &(u32, Modifier),
+) -> Ordering {
+    let priority = if left.priority == right.priority {
+        Ordering::Equal
+    } else {
+        left.priority.total_cmp(&right.priority)
+    };
+    priority.then_with(|| right_age.cmp(left_age))
 }
 
 #[derive(Default)]
@@ -220,6 +349,17 @@ pub type AimLimits = [f64; 4];
 impl ActiveModifiers {
     fn applies(&self, index: u8) -> bool {
         self.0.iter().any(|(_, modifier)| modifier.index == index)
+    }
+
+    /// Add the mods of velocity actions that act on this pose alone: they
+    /// start now, so they go after the others of their priority.
+    pub fn with_once(mut self, once: &[Modifier]) -> Self {
+        if once.is_empty() {
+            return self;
+        }
+        self.0.extend(once.iter().map(|&modifier| (0, modifier)));
+        self.0.sort_by(application_order);
+        self
     }
 
     /// Mods 28..31 on +-10000 degrees, in radians (0x7FF789B4CBA0).
@@ -525,5 +665,66 @@ mod tests {
         // Mod 35 does nothing without a jump speed.
         let jump = on(JUMP_VELOCITY, Operation::Maximum, 2.0).limit_velocity(velocity, 0.0);
         assert_eq!(jump, velocity);
+    }
+
+    #[test]
+    fn velocity_actions_add_and_set_first_then_raise_least_velocities() {
+        let velocity = [3.0, -2.0, 0.0];
+        // Channel 1 keeps what the operation changes now, channel 4 the
+        // result; 2 and 3 keep `0 op value`.
+        let of =
+            |channel, operation, value| VelocityChange::of(channel, operation, value, velocity);
+        assert_eq!(
+            of(1, VectorOperation::Multiply, [2.0, 1.0, 1.0]),
+            Some(VelocityChange::Add([3.0, 0.0, 0.0]))
+        );
+        assert_eq!(
+            of(4, VectorOperation::Add, [1.0; 3]),
+            Some(VelocityChange::Set([4.0, -1.0, 1.0]))
+        );
+        assert_eq!(
+            of(2, VectorOperation::Multiply, [5.0; 3]),
+            Some(VelocityChange::AtLeastSplit([0.0; 3]))
+        );
+        assert_eq!(
+            of(3, VectorOperation::Set, [0.0, 0.0, 2.0]),
+            Some(VelocityChange::AtLeast([0.0, 0.0, 2.0]))
+        );
+        assert_eq!(of(0, VectorOperation::Add, [1.0; 3]), None);
+        assert_eq!(of(5, VectorOperation::Add, [1.0; 3]), None);
+
+        // The add goes first though it is listed after; then the vertical
+        // part is raised to 4 up and the horizontal one to 1 along +z.
+        let changed = change_velocity(
+            velocity,
+            &[
+                VelocityChange::AtLeastSplit([0.0, 4.0, 1.0]),
+                VelocityChange::Add([1.0, 0.0, 0.0]),
+            ],
+        );
+        assert_eq!(changed, [4.0, 4.0, 1.0]);
+        // Already as fast along it: nothing changes.
+        let fast = [0.0, 0.0, 5.0];
+        assert_eq!(
+            change_velocity(fast, &[VelocityChange::AtLeast([0.0, 0.0, 3.0])]),
+            fast
+        );
+        assert_eq!(
+            change_velocity(fast, &[VelocityChange::Set([1.0, 2.0, 3.0])]),
+            [1.0, 2.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn once_mods_go_after_the_states_of_their_priority() {
+        let state = on(VERTICAL_VELOCITY, Operation::Add, 1.0);
+        let once = Modifier {
+            index: VERTICAL_VELOCITY,
+            operation: Operation::Set,
+            value: 0.0,
+            priority: 0.0,
+        };
+        let active = state.with_once(&[once]);
+        assert_eq!(active.limit_velocity([0.0, 5.0, 0.0], 6.0), [0.0, 0.0, 0.0]);
     }
 }

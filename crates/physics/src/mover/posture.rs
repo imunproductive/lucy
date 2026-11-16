@@ -228,6 +228,16 @@ impl Posture {
         self.flags = flags;
     }
 
+    /// The velocity's vertical speed rose over the pose's velocity changes
+    /// (0x7FF789AD0370): the body falls, its air ticks from 0 unless it was
+    /// already in the air.
+    pub fn take_off(&mut self) {
+        if self.flags & (JUMPED | FELL) == 0 {
+            self.air_ticks = 0;
+        }
+        self.flags = (self.flags & !(JUMPED | FELL)) | FELL;
+    }
+
     pub fn apply_fall(&mut self, gravity_scale: f64, dt: f64) {
         self.fall += (-WORLD_GRAVITY * gravity_scale) as f32 * dt as f32;
     }

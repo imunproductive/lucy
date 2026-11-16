@@ -1451,3 +1451,57 @@ fn a_body_slides_along_another_characters_capsule() {
     assert!(path[119][2] > bot[2] + 1.0, "{:?}", path[119]);
     assert!(path[119][0] < 0.0, "{:?}", path[119]);
 }
+
+/// Not ported: the client's velocity action (`STU_FF3471E9`, 0x7FF789C3B350)
+/// as Pharah's `0027` node 1 gives it, the vertical velocity set to 0 (mod
+/// 34) and 6 m/s up added (channel 1), acts on the next pose alone; the
+/// rise takes the body off the ground (0x7FF789AD0370) and it flies about
+/// as high as a jump at 6 m/s (the take-off pose has no gravity yet).
+#[test]
+fn a_velocity_action_acts_on_the_next_pose_and_takes_the_body_off() {
+    use super::modifiers::{VectorOperation, VelocityElement};
+    let mut lifted = Body::soldier([0.0, 1.0, 0.0], None);
+    lifted.walk(5, stand(0));
+    lifted
+        .mover
+        .act_on_velocity(VelocityElement::Modifier(Modifier {
+            index: 34,
+            operation: Operation::Set,
+            value: 0.0,
+            priority: 0.0,
+        }));
+    lifted.mover.act_on_velocity(VelocityElement::Vector {
+        channel: 1,
+        operation: VectorOperation::Add,
+        value: [0.0, 6.0, 0.0],
+        priority: 0.0,
+    });
+    assert!(!lifted.airborne());
+    lifted.walk(1, stand(5));
+    assert_eq!(lifted.flags() & (FELL | JUMPED), FELL);
+    assert!(lifted.position()[1] > 1.0);
+    let mut top: f64 = 0.0;
+    for tick in 6..80 {
+        lifted.walk(1, stand(tick));
+        top = top.max(lifted.position()[1]);
+    }
+    assert!(close(top - 1.0, 36.0 / 35.0, 0.15), "{top}");
+    assert_eq!(lifted.position()[1], 1.0);
+    assert!(!lifted.airborne());
+
+    // A mod of the action holds the horizontal speed to 0 for one pose.
+    let mut held = Body::soldier([0.0, 1.0, 0.0], None);
+    held.walk(20, run(0));
+    held.mover
+        .act_on_velocity(VelocityElement::Modifier(Modifier {
+            index: 33,
+            operation: Operation::Minimum,
+            value: 0.0,
+            priority: 0.0,
+        }));
+    let x = held.position();
+    held.walk(1, run(20));
+    assert_eq!(held.position(), x);
+    held.walk(1, run(21));
+    assert!(held.position()[2] > x[2] || held.position()[0] > x[0]);
+}

@@ -4193,14 +4193,16 @@ fn hero_vitals(scene: &PreparedScene, hero: u64) -> Vitals {
         .vitals()
 }
 
-/// Hand the body's new dashes and rewinds to its mover; they run from the
-/// next pose on (`orpheus_physics::mover::motion`).
+/// Hand the body's new dashes, rewinds and velocity actions to its mover;
+/// they run from the next pose on (`orpheus_physics::mover::motion`,
+/// [`Mover::act_on_velocity`]).
 fn start_motions(mover: &mut Mover, motions: Vec<Motion>, dt: f64) {
     for motion in motions {
         match motion {
             Motion::Dash { distance, seconds } => mover.dash(distance, seconds),
             Motion::Rewind { seconds, duration } => mover.rewind(seconds, duration, dt),
             Motion::EndRewind { finished } => mover.end_rewind(finished),
+            Motion::Velocity(element) => mover.act_on_velocity(element),
         }
     }
 }

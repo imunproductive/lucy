@@ -50,6 +50,13 @@ const SERVER_NO_OPS: &[&str] = &[
     // 05AD node 165 and 023A/02CF/0686's server-only unlock-use reports.
     "STU_631D36C3",
     "STU_94771561",
+    // Execute 0x7FF789C3B040: the statescript's frame (+1 when its enum
+    // m_93CDFD2F is 1) as seconds (0x7FF789AC7100) raises a time on the
+    // entity's component 28 (+0x3A8) and its component 24 (+0x2B0)
+    // (0x7FF789B778D0); neither component is networked (no mirror), so the
+    // wire never carries it. Ability graphs of
+    // Cassidy, Doomfist, Genji, Pharah, Reinhardt, Tracer (16 nodes).
+    "STU_6FEE499E",
 ];
 
 /// Unnamed actions the server runs as no-ops without knowing what they do,
@@ -61,6 +68,13 @@ const ASSUMED_NO_OPS: &[&str] = &[
     // (05AD nodes 154 and 155, 02CF node 32): an entity and an integer, no
     // out link.
     "STU_71FE9852",
+    // Server-only (no registration of its own: the base action's run):
+    // m_D7DDEEAD points for m_target (always the owner), m_instigator
+    // optional. 23 sites: 120 or 60 on an ability's use, 40 a second
+    // during an ultimate, Genji's deflect (03A3) and Sigma's grasp (1D02)
+    // the damage they took from #41 beside its ult charge. Likely the On
+    // Fire score, a server rule the server has no model of.
+    "STU_D087B558",
 ];
 
 /// Melee's states (graph 0043): knockback and four unnamed ones. The client
@@ -319,6 +333,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             "STU_A807207A" => {
                 if !self.dash(id, node)? {
+                    return Ok(false);
+                }
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
+            "STU_FF3471E9" => {
+                if !self.velocity_action(id, node)? {
                     return Ok(false);
                 }
                 self.follow(id, node, "m_outPlug", None, depth)?;

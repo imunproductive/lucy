@@ -54,7 +54,9 @@ use crate::{
     wheel,
     wire::{Value, Variables},
 };
-use orpheus_physics::mover::modifiers::{Modifier, ModifierKey, Operation};
+use orpheus_physics::mover::modifiers::{
+    Modifier, ModifierKey, Operation, VectorOperation, VelocityElement,
+};
 use orpheus_wire::{commands::Command, entity::MAX_MOVEMENT_AXIS};
 
 pub const MAX_INIT_WORK: usize = 100_000;
@@ -599,6 +601,8 @@ pub enum Motion {
     Rewind { seconds: f64, duration: f64 },
     /// The rewind state ended: finished (the path is done) or aborted.
     EndRewind { finished: bool },
+    /// An element of a velocity action (`STU_FF3471E9`) for the next pose.
+    Velocity(VelocityElement),
 }
 
 #[derive(Default)]

@@ -1,52 +1,54 @@
-//! Tracer's Blink and Recall through the player's tick: her body script on
-//! the derived Practice Range scene, with its collision. Her graphs still
-//! reach a config class the VM doesn't compute (`STU_038C32E8`) and
-//! `StateBlinkEffect`, neither of which decides the moves tested here, so
-//! the body tolerates them as release builds do.
+//! Heroes' moves through the player's tick: the body script on the derived
+//! Practice Range scene, with its collision. Tracer's Blink and Recall;
+//! Pharah's Jump Jet. Tracer's graphs still reach a config class the VM
+//! doesn't compute (`STU_038C32E8`) and `StateBlinkEffect`, neither of
+//! which decides the moves tested here, so the body tolerates unknowns as
+//! release builds do.
 
 use super::*;
 use orpheus_script::{vm::Unknowns, wire::Value as ScriptValue};
 use orpheus_wire::commands::Command;
 
 const TRACER: u64 = 0x02e0_0000_0000_0003;
+const PHARAH: u64 = 0x02e0_0000_0000_0008;
 /// Shift and E on the command (logical buttons 35 and 36).
 const BLINK: u32 = 0x08;
 const RECALL: u32 = 0x10;
 const DT: f64 = FRAME_MS as f64 / 1000.0;
 
-struct Tracer {
+struct Player {
     scene: PreparedScene,
     world: WorldDelivery,
     frame: u32,
     card: PlayerCard,
 }
 
-impl Tracer {
-    /// Tracer picked at the Practice Range spawn, standing for a second.
-    fn spawn() -> Self {
+impl Player {
+    /// `hero` picked at the Practice Range spawn, standing for a second.
+    fn spawn(hero: u64) -> Self {
         let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
         assets.set_player_unknowns(Unknowns::Tolerate);
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
-        let mut tracer = Self {
+        let mut player = Self {
             scene,
             world: WorldDelivery::new(OWNER).unbuffered(),
             frame: FIRST_TICK,
             card: PlayerCard::default(),
         };
-        tracer.world.started = Some(FIRST_TICK);
-        let hero = tracer.scene.heroes().get(TRACER).unwrap();
+        player.world.started = Some(FIRST_TICK);
+        let hero = player.scene.heroes().get(hero).unwrap();
         let viewer = PlayerAppearance {
             entity: OWNER,
             slot: 0,
             team: 0,
             spawn: 0,
             room: orpheus_content::maps::SpawnChoice::First,
-            card: &tracer.card,
+            card: &player.card,
         };
-        tracer
+        player
             .world
             .switch(
-                &tracer.scene,
+                &player.scene,
                 &viewer,
                 FIRST_TICK,
                 RETAIL_QUANTA,
@@ -55,9 +57,9 @@ impl Tracer {
                 true,
             )
             .unwrap();
-        assert!(tracer.world.body_script.is_some(), "Tracer's body script");
-        tracer.idle(60, 0);
-        tracer
+        assert!(player.world.body_script.is_some(), "the hero's body script");
+        player.idle(60, 0);
+        player
     }
 
     fn step(&mut self, command: Command) {
@@ -202,7 +204,7 @@ fn open_and_walled(scene: &PreparedScene) -> (i32, i32) {
 #[test]
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
 fn tracer_blinks_spends_charges_and_recalls() {
-    let mut tracer = Tracer::spawn();
+    let mut tracer = Player::spawn(TRACER);
     let (open, _) = open_and_walled(&tracer.scene);
     assert_eq!(tracer.charges(), 3);
 
@@ -231,7 +233,7 @@ fn tracer_blinks_spends_charges_and_recalls() {
 
     // One charge back every 3 s from the first spend (graph 0024's ChaseVar
     // toward variable 01D8, 3 s): 187.5 frames of 16 ms.
-    let until = |tracer: &mut Tracer, frame: u32| {
+    let until = |tracer: &mut Player, frame: u32| {
         let frames = frame - tracer.frame;
         tracer.idle(frames, open);
     };
@@ -287,7 +289,7 @@ fn tracer_blinks_spends_charges_and_recalls() {
 #[test]
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
 fn tracer_blink_stops_at_a_wall() {
-    let mut tracer = Tracer::spawn();
+    let mut tracer = Player::spawn(TRACER);
     let (_, walled) = open_and_walled(&tracer.scene);
     let expected = mover_dash(&tracer.scene, walled);
     let start = tracer.position();
@@ -297,4 +299,31 @@ fn tracer_blink_stops_at_a_wall() {
     assert!(moved < 6.0, "{moved}");
     assert!((moved - expected).abs() < 0.05, "{moved} vs {expected}");
     assert_eq!(tracer.charges(), 2);
+}
+
+/// Pharah's Jump Jet (graph `0027` node 1, `STU_FF3471E9`): the vertical
+/// velocity set to 0 and `(sin yaw, 2, cos yaw) * 10` added for one pose
+/// lift her off the ground well above a jump's 1 m, forward along her yaw;
+/// she comes down and rests (from the spawn facing +z she lands on a ledge
+/// 6 m higher).
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn pharahs_jump_jet_lifts_her_off_the_ground() {
+    let mut pharah = Player::spawn(PHARAH);
+    let start = pharah.position();
+    pharah.press(BLINK, 0);
+    let mut top = start[1];
+    for _ in 0..60 {
+        pharah.idle(1, 0);
+        top = top.max(pharah.position()[1]);
+    }
+    assert!(top - start[1] > 2.0, "{start:?} rose to {top}");
+    pharah.idle(300, 0);
+    let end = pharah.position();
+    assert!(
+        end[1] < top && end[2] > start[2],
+        "{start:?} -> top {top} -> {end:?}"
+    );
+    pharah.idle(30, 0);
+    assert_eq!(pharah.position(), end);
 }
