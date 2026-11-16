@@ -11,9 +11,13 @@
 //! part goes with the tick's run speed, the per-speed part with the body's
 //! own: the PC path, cvar at 0x7FF78BD3EE20); air drag 0x7FF789B416A0.
 
+use std::f32::consts::{PI, TAU as TAU_F32};
 use std::f64::consts::TAU;
 
-use crate::{mover::modifiers::CAP_TINY, mover::settings::MoverSettings};
+use crate::mover::{
+    modifiers::{ActiveModifiers, CAP_TINY},
+    settings::MoverSettings,
+};
 use orpheus_wire::commands::{Command, SUBFRAME, frame_distance};
 
 const EPSILON: f64 = 1.1754943508222875e-36;
@@ -108,7 +112,9 @@ impl ExactSizeIterator for Poses {}
 pub struct MotionInput {
     pub yaw: i32,
     pub pitch: i16,
-    pub pitch_held: bool,
+    /// The aim was held: the pitch to +-89 degrees, or either angle to a
+    /// limit of mods 28..31.
+    pub aim_held: bool,
     pub throttles: [i8; 2],
     right: f64,
     forward: f64,
@@ -116,25 +122,61 @@ pub struct MotionInput {
 
 impl From<&Command> for MotionInput {
     fn from(command: &Command) -> Self {
+        Self::new(command, &ActiveModifiers::default())
+    }
+}
+
+impl MotionInput {
+    /// The command's input under the frame's mods: the aim held to mods
+    /// 28..31's limits (0x7FF789B4C6A0: the yaw limits move by a turn to lie
+    /// within half a turn of the yaw, the pitch also keeps to +-89 degrees)
+    /// and the move's throttles through mods 17..19. The throttle bytes stay
+    /// the command's. [ASSUMPTION] a held yaw is rounded back to turn units
+    /// half away from zero, as the pitch is.
+    pub fn new(command: &Command, mods: &ActiveModifiers) -> Self {
         let (right, right_byte) = throttle(command.right);
         let (forward, forward_byte) = throttle(command.forward);
-        let pitch = command.pitch as f32 * PITCH_RADIANS;
-        let held = pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
-        let scaled = held * PITCH_UNITS;
-        let rounded = if scaled < 0.0 {
-            scaled - 0.5
+        let [yaw_min, yaw_max, pitch_min, pitch_max] = mods.aim_limits().map(|limit| limit as f32);
+        let yaw = command.yaw as i16 as f32 * PITCH_RADIANS;
+        let middle = (yaw_min + yaw_max) * 0.5;
+        let shift = if middle + PI < yaw {
+            TAU_F32
+        } else if middle - PI > yaw {
+            -TAU_F32
         } else {
-            scaled + 0.5
+            0.0
         };
+        let yaw_held = yaw.min(yaw_max + shift).max(yaw_min + shift);
+        let pitch = command.pitch as f32 * PITCH_RADIANS;
+        let held = pitch
+            .min(pitch_max)
+            .max(pitch_min)
+            .clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        let (right, forward) = mods.throttles(right, forward);
         Self {
-            yaw: command.yaw,
-            pitch: rounded as i16,
-            pitch_held: pitch != held,
+            yaw: if yaw_held == yaw {
+                command.yaw
+            } else {
+                units(yaw_held)
+            },
+            pitch: units(held) as i16,
+            aim_held: pitch != held || yaw != yaw_held,
             throttles: [right_byte, forward_byte],
             right,
             forward,
         }
     }
+}
+
+/// Radians back to s16 turn units, rounded half away from zero.
+fn units(radians: f32) -> i32 {
+    let scaled = radians * PITCH_UNITS;
+    let rounded = if scaled < 0.0 {
+        scaled - 0.5
+    } else {
+        scaled + 0.5
+    };
+    rounded as i32
 }
 
 fn throttle(byte: i8) -> (f64, i8) {
@@ -399,7 +441,7 @@ mod tests {
             ..Command::default()
         });
         assert_eq!((positive.pitch, negative.pitch), (16202, -16202));
-        assert!(positive.pitch_held && negative.pitch_held);
+        assert!(positive.aim_held && negative.aim_held);
         assert_eq!(positive.throttles, [8, -127]);
         assert_eq!(negative.throttles, [-8, 127]);
         assert_eq!(
@@ -410,6 +452,52 @@ mod tests {
             .pitch,
             89
         );
+    }
+
+    #[test]
+    fn aim_mods_hold_yaw_and_pitch_to_their_limits() {
+        let key = |slot| ModifierKey {
+            instance: 1,
+            state: 1,
+            slot,
+        };
+        let set = |index, value| Modifier {
+            index,
+            operation: Operation::Set,
+            value,
+            priority: 0.0,
+        };
+        let mut timeline = ModifierTimeline::default();
+        timeline.track(
+            0,
+            &BTreeMap::from([
+                (key(0), set(28, 170.0)),
+                (key(1), set(29, 190.0)),
+                (key(2), set(31, 10.0)),
+            ]),
+        );
+        let mods = timeline.at(1);
+        let input = |yaw, pitch| {
+            MotionInput::new(
+                &Command {
+                    yaw,
+                    pitch,
+                    ..Command::default()
+                },
+                &mods,
+            )
+        };
+        // -175.8 degrees lies within 170..190 once the limits move a turn.
+        let inside = input(-32000, -3000);
+        assert_eq!(
+            (inside.yaw, inside.pitch, inside.aim_held),
+            (-32000, -3000, false)
+        );
+        // Yaw 11 degrees goes to 170, pitch 16.5 to 10 degrees.
+        let held = input(2000, 3000);
+        assert!(held.aim_held);
+        assert!((30940..=30950).contains(&held.yaw), "{}", held.yaw);
+        assert_eq!(held.pitch, 1820);
     }
 
     #[test]
@@ -523,7 +611,7 @@ mod tests {
                 });
                 digest.update(input.pitch.to_le_bytes());
                 digest.update([
-                    u8::from(input.pitch_held),
+                    u8::from(input.aim_held),
                     input.throttles[0] as u8,
                     input.throttles[1] as u8,
                 ]);

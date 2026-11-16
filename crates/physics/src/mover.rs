@@ -9,7 +9,8 @@
 //!    to +-89 degrees (0x7FF789B763B0; s16 to radians by the float at
 //!    0x7FF78B524F6C, limit at 0x7FF78B523F94, back to s16 at 0x7FF78B524F70,
 //!    rounded half away from zero), which sets flag 0x200000 for good
-//!    (0x7FF789B4C8C0).
+//!    (0x7FF789B4C8C0). Mods 28..31 hold the yaw and the pitch to their
+//!    limits first and also set the flag.
 //! 2. A held crouch button does not crouch again within 0.15 s of standing up
 //!    (0x7FF789B73CA0, constant 0x7FF78B567978).
 //! 3. The ground probe (0x7FF789B48990) at the feet before anything moves.
@@ -20,13 +21,15 @@
 //!    0x7FF789AD03B0), flags 0x4 | 0x400 | 0x1. Crouch 0x7FF789B4C3D0 if the
 //!    crouched capsule fits.
 //! 5. The move context (0x7FF789B49FA0): ground normal (or up), horizontal
-//!    velocity, yaw axes, throttles s8 / 127.
+//!    velocity, yaw axes, throttles s8 / 127, then mods 17..19 on the
+//!    throttles (0x7FF789B43960).
 //! 6. The pogo spring (0x7FF789B4F110).
 //! 7. Velocity: friction (0x7FF789B43090; air 0x7FF789B416A0 plus quadratic
 //!    drag toward terminal_velocity while falling), acceleration
 //!    (0x7FF789B434A0), the direction's speed cap (0x7FF789B44090), gravity
 //!    `-10 * gravity_scale` in the air (0x7FF789B42100; world gravity 10 m/s^2
-//!    at 0x7FF78AA63BD0; every hero's scale is 1.75 and jump speed 6 m/s).
+//!    at 0x7FF78AA63BD0; every hero's scale is 1.75 and jump speed 6 m/s),
+//!    then mods 32..35 (0x7FF789B41870).
 //! 8. The move (0x7FF789B4D9C0, 0x7FF789ACF640; outer rounds 0x7FF789B4B683):
 //!    on the ground the velocity follows the ground plane (0x7FF789B4DD81);
 //!    the engine moves the capsule by (velocity + spring speed) * dt; the
@@ -315,7 +318,7 @@ impl Mover {
         self.driven = move_to.is_some();
         let active = self.modifiers.at(command.frame);
         let settings = active.settings(&self.base);
-        let input = MotionInput::from(&command);
+        let input = MotionInput::new(&command, &active);
         let probe = self.probe.probe(
             rays,
             self.body.world(),
@@ -338,7 +341,7 @@ impl Mover {
                 mods: &active,
                 probe,
                 dt,
-                pitch_held: input.pitch_held,
+                aim_held: input.aim_held,
                 driven: move_to.is_some() || rewinding,
             },
             &mut self.pose.position,
@@ -361,6 +364,7 @@ impl Mover {
                         dt,
                     }
                     .advance(self.pose.velocity);
+                    let velocity = active.limit_velocity(velocity, settings.jump_speed);
                     if ground != Ground::Standing {
                         self.posture.apply_fall(settings.gravity_scale, dt);
                     }

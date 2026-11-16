@@ -65,7 +65,7 @@ pub struct PostureStep<'a> {
     pub mods: &'a ActiveModifiers,
     pub probe: ProbeResult,
     pub dt: f64,
-    pub pitch_held: bool,
+    pub aim_held: bool,
     /// A world-target move drives this pose (`move_to` in `Mover.step_pose`,
     /// `ow174/game/mover.py`): no jump, and the feet keep their height instead
     /// of standing on the probed ground before the spring settles.
@@ -213,7 +213,7 @@ impl Posture {
         }
         flags = (flags & !NOT_GROUND_UNDER)
             | (u32::from(step.probe.non_ground_under) * NOT_GROUND_UNDER)
-            | (u32::from(step.pitch_held) * TURN_HELD);
+            | (u32::from(step.aim_held) * TURN_HELD);
         let button = step.command.buttons & JUMP != 0;
         let jump = !step.driven && step.mods.intent(JUMP_INTENT, f64::from(u8::from(button))) > 0.5;
         if jump {

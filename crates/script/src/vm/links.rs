@@ -214,12 +214,20 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             for (slot, config) in array_field(&node.fields, "m_BC5E91CF").iter().enumerate() {
                 self.spend("movement modifier")?;
                 let shape = config.get("$").and_then(Json::as_str);
-                let (operation, default) = match shape {
-                    Some("STU_4CB0950F") => (Operation::Add, 0.0),
-                    Some("STU_D8CC6B10") => (Operation::Multiply, 1.0),
-                    Some("STU_56DEE1BB") => (Operation::Set, 0.0),
-                    Some("STU_C61711C8") => (Operation::Minimum, f64::from(f32::MAX)),
-                    Some("STU_F197CFBF") => (Operation::Maximum, f64::from(f32::MIN_POSITIVE)),
+                // The clamp (STU_0A019882, client kind 5) keeps its bounds in
+                // m_8AD739CE (lower) and m_8213EB22 (upper); [ASSUMPTION] an
+                // unset bound is 0.
+                let (mut operation, value_field, default) = match shape {
+                    Some("STU_4CB0950F") => (Operation::Add, "m_9B7A63EA", 0.0),
+                    Some("STU_D8CC6B10") => (Operation::Multiply, "m_9B7A63EA", 1.0),
+                    Some("STU_56DEE1BB") => (Operation::Set, "m_9B7A63EA", 0.0),
+                    Some("STU_C61711C8") => (Operation::Minimum, "m_9B7A63EA", f64::from(f32::MAX)),
+                    Some("STU_F197CFBF") => (
+                        Operation::Maximum,
+                        "m_9B7A63EA",
+                        f64::from(f32::MIN_POSITIVE),
+                    ),
+                    Some("STU_0A019882") => (Operation::Clamp { upper: 0.0 }, "m_8AD739CE", 0.0),
                     _ => {
                         self.report(
                             self.site(id, node),
@@ -240,10 +248,18 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     continue;
                 };
                 let Some(value) =
-                    self.movement_number(id, node, field(config, "m_9B7A63EA"), default)
+                    self.movement_number(id, node, field(config, value_field), default)
                 else {
                     continue;
                 };
+                if let Operation::Clamp { upper } = &mut operation {
+                    let Some(bound) =
+                        self.movement_number(id, node, field(config, "m_8213EB22"), 0.0)
+                    else {
+                        continue;
+                    };
+                    *upper = bound;
+                }
                 let Some(priority) =
                     self.movement_number(id, node, field(config, "m_priority"), 0.0)
                 else {
