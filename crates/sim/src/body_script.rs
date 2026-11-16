@@ -4,7 +4,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     sync::Arc,
-    time::Duration,
 };
 
 use serde_json::Value as Json;
@@ -21,7 +20,6 @@ use crate::{
     },
     replication::{BodyStep, OwnerBodyRuntime},
     scene::target_tags_component,
-    voice::{SpawnBark, begin_spawn_bark},
     weapon_spread::{ring_directions, shot_direction},
 };
 use orpheus_content::heroes::Hero;
@@ -43,7 +41,7 @@ use orpheus_script::{
     vitals::Vitals,
     vm::{
         BodyEffects, Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest, RaisedCriteria,
-        Root, Snapshot, StateKind, TargetCandidate, Unknowns, World,
+        Root, Snapshot, StateKind, TargetCandidate, Unknowns, VoiceRequest, World,
     },
     weapons::{HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
@@ -287,7 +285,6 @@ impl PlayerBodyFactory {
             frame: spawn.frame,
             ultimate,
             combat: self.combat.clone(),
-            bark: None,
         };
         runtime.log_assumptions();
         Ok(runtime)
@@ -323,8 +320,6 @@ pub struct PlayerBodyRuntime {
     ultimate: UltimateCharge,
     /// The body's eyes and the Biotic Field.
     combat: BodyCombat,
-    /// The spawn voice line while it plays (voicelines.py).
-    bark: Option<SpawnBark>,
 }
 
 impl PlayerBodyRuntime {
@@ -506,8 +501,16 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         self.world.take_messages()
     }
 
+    fn set_victim_tags(&mut self, victim: u32, tags: BTreeSet<u64>) {
+        self.world.victim_tags = Some((victim, tags));
+    }
+
     fn take_criteria(&mut self) -> Vec<RaisedCriteria> {
         self.world.take_criteria()
+    }
+
+    fn take_voices(&mut self) -> Vec<VoiceRequest> {
+        self.world.take_voices()
     }
 
     fn move_requests(&self) -> Vec<MoveRequest> {
@@ -549,33 +552,6 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 .map_err(unsupported)?;
         }
         self.component.run_now(&mut self.world).map_err(unsupported)
-    }
-
-    fn begin_spawn_bark(&mut self, now: Duration) -> io::Result<()> {
-        if let Some(bark) = begin_spawn_bark(
-            &mut self.component,
-            &Arc::clone(&self.world.graphs),
-            self.world.hero,
-            now,
-            &mut self.world,
-        )
-        .map_err(unsupported)?
-        {
-            self.bark = Some(bark);
-        }
-        Ok(())
-    }
-
-    fn expire_bark(&mut self, now: Duration) -> io::Result<()> {
-        if let Some(bark) = &self.bark {
-            if bark
-                .expire(now, &mut self.component, &mut self.world)
-                .map_err(unsupported)?
-            {
-                self.bark = None;
-            }
-        }
-        Ok(())
     }
 
     fn take_shots(&mut self, command: Option<Command>, mover: &Mover) -> Vec<PosedShot> {

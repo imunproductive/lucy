@@ -96,6 +96,15 @@ impl VoiceSet {
             .enumerate()
             .find(|(_, stimulus)| stimulus.answers(identifier))
     }
+
+    /// The stimulus `guid` (`078`) of the set, with its index: what a
+    /// voice stimulus state names directly, whatever its criteria.
+    pub fn stimulus(&self, guid: u64) -> Option<(usize, &Stimulus)> {
+        self.stimuli
+            .iter()
+            .enumerate()
+            .find(|(_, stimulus)| stimulus.guid == guid)
+    }
 }
 
 /// Every body's voice set.

@@ -289,6 +289,36 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
         .unwrap();
     let back = world.body_position().unwrap();
     assert!((back[0] - spawn[0]).abs() < 0.01 && (back[2] - spawn[2]).abs() < 0.01);
+    // The new body takes the revive message (`0013.025`, `00C6` on): its
+    // `01CA` raises the respawn line `05D8` on the controller 1.5 s later,
+    // which Soldier: 76's set answers with stimulus `002C`, once.
+    let mut said = Vec::new();
+    for index in 1..=120 {
+        let tick = tick + index;
+        world.queue_commands(
+            tick,
+            &[Command {
+                frame: tick,
+                ..Command::default()
+            }],
+        );
+        world.release_input(1);
+        while world.has_input_work() {
+            world
+                .advance_input(&scene, &viewer, RETAIL_QUANTA, 64)
+                .unwrap();
+        }
+        said.extend(
+            world
+                .take_voice_lines(&scene, tick)
+                .into_iter()
+                .map(|line| (line.speaker, line.stimulus, line.audience)),
+        );
+    }
+    assert_eq!(
+        said,
+        [(world.current_body().unwrap(), 0x0ee0_0000_0000_002c, None)]
+    );
 }
 
 /// Watchpoint: Gibraltar has no damage areas and no catch floor: a body that

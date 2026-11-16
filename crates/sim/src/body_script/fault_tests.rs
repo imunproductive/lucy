@@ -1,7 +1,7 @@
 //! A failed weapon simulation cannot keep dealing damage through the live
 //! command route: the port of `tests/test_game_script_faults.py`.
 
-use std::sync::Mutex;
+use std::{sync::Mutex, time::Duration};
 
 use super::*;
 use crate::{
@@ -146,14 +146,6 @@ impl OwnerBodyRuntime for ProbedBody {
 
     fn take_motions(&mut self) -> Vec<Motion> {
         self.body.take_motions()
-    }
-
-    fn begin_spawn_bark(&mut self, now: Duration) -> io::Result<()> {
-        self.body.begin_spawn_bark(now)
-    }
-
-    fn expire_bark(&mut self, now: Duration) -> io::Result<()> {
-        self.body.expire_bark(now)
     }
 }
 

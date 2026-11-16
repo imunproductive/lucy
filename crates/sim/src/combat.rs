@@ -1333,7 +1333,13 @@ pub fn apply_player_hits(
                 .and_then(|hero| scene.heroes().get(hero))
                 .map(|hero| hero.body);
             if let Some(world) = players[killer].world.as_deref_mut() {
-                world.eliminated(&scene.shared_graphs(), tick, hit.body, victim_body);
+                world.eliminated(
+                    &scene.shared_graphs(),
+                    tick,
+                    hit.body,
+                    victim_body,
+                    &hit.tags,
+                );
             }
             notices[killer].push(CombatNotice::Elimination {
                 killer: hit.shooter.source,

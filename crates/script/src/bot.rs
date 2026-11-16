@@ -208,8 +208,13 @@ impl World for BotWorld {
         })
     }
 
-    fn criteria(&mut self, _site: Site, raised: RaisedCriteria) {
-        self.criteria.push(raised);
+    /// The criteria a bot raises on itself (its pain lines); one aimed at
+    /// another entity (`0C17` rid16's kill criteria `05E9` on its
+    /// controller) has no voice set to answer it here.
+    fn criteria(&mut self, site: Site, raised: RaisedCriteria) {
+        if raised.target == site.entity {
+            self.criteria.push(raised);
+        }
     }
 
     fn modify_health(&mut self, change: HealthChange) -> bool {

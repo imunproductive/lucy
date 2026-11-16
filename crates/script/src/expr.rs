@@ -1117,6 +1117,24 @@ impl Evaluator {
                 // The native evaluator writes zero with the identifier's asset type.
                 Value::Asset(0)
             }
+            // `Eval_STU_F4C77F4A` (0x7FF78AA8AB10) sets the evaluation
+            // context's `+0x4C0` to `m_4BA4C058` while it evaluates
+            // `m_value`, and gives that value. `01CA` rid153/rid158 ask it
+            // of `GetGameMode()` at level 1 (and compare with Elimination
+            // `0009`, `0020`, `0029`): answered with the mode itself.
+            // Assumption: the level picks a base mode, and each mode the
+            // server runs is its own base.
+            "STU_F4C77F4A" => return self.config(child(config, "m_value"), context, nested),
+            // A pick from the list `m_814F8EC3` (between `m_8054375D` and
+            // `m_418D9D9D` of them, `m_C239F989` a count; `01CA` rid23 sends
+            // `00BC.025` to the hero's allies near his victim). Only its
+            // empty form is known: an empty or unset list picks none (as
+            // when the server's `STU_ED45C5E8` query finds nobody).
+            "STU_A6B80C63" => match self.config(child(config, "m_814F8EC3"), context, nested)? {
+                Value::Null => Value::Array(Vec::new()),
+                Value::Array(items) if items.is_empty() => Value::Array(Vec::new()),
+                _ => return Err(EvalError::UnsupportedConfig(class.into())),
+            },
             "STU_7757D403" => authored_pairs(self, config, context, nested)?,
             // An authored identifier map (`STU_7042F028`, 104319 1B78C00;
             // leafall903/ORPHEUS (MIT) `authored_map` in `play.py`): each

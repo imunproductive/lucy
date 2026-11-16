@@ -34,7 +34,6 @@ pub mod projectiles;
 pub mod replication;
 pub mod scene;
 pub mod scene_assets;
-pub mod voice;
 pub mod voice_lines;
 pub mod weapon_spread;
 pub mod wheel;

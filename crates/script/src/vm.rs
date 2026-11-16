@@ -524,15 +524,27 @@ pub trait World {
         false
     }
 
-    /// A `STUStatescriptActionCriteria` on the body itself (its `m_targets`
-    /// the owner) raised a criteria: the event the body's voice set
-    /// answers with a voice stimulus whose criteria names it (the Training
-    /// Bot's server-only `0C17` nodes raise `0608` / `0609` after a hit,
-    /// which its voice set `011D.05F` answers with its pain lines; a
-    /// player's `0686` raises the wheel choice's line, Hello `0AEB`). The
-    /// server plays the line (ClientInVoice 27500). By default nothing
-    /// listens.
+    /// A `STUStatescriptActionCriteria` raised a criteria on an entity
+    /// ([`RaisedCriteria::target`]: its `m_targets`, the body itself or
+    /// another entity it names, such as its controller): the event the
+    /// target's voice set answers with a voice stimulus whose criteria names
+    /// it (the Training Bot's server-only `0C17` nodes raise `0608` / `0609`
+    /// after a hit, which its voice set `011D.05F` answers with its pain
+    /// lines; a player's `0686` raises the wheel choice's line, Hello
+    /// `0AEB`; the hero's `01CA` raises its respawn line `05D8` on its
+    /// controller). The server plays the line (ClientInVoice 27500). By
+    /// default nothing listens.
     fn criteria(&mut self, _site: Site, _raised: RaisedCriteria) {}
+
+    /// A server-only `VoiceStimulus` state (`STU_40E05F6B`) began: the
+    /// server's voice system says the stimulus it names for its target
+    /// (`01CA` st46, the hero's elimination line `0008.078`; `0215` st28,
+    /// his line after a third kill `00C9.078`). The client never runs such
+    /// a state; it hears the line as ClientInVoice 27500. False: this world
+    /// plays none.
+    fn voice_stimulus(&mut self, _site: Site, _request: VoiceRequest) -> bool {
+        false
+    }
 
     /// A ModifyHealth state damaged or healed a body (`vm/health.rs`): the
     /// match applies it through its own health code. False: this world
@@ -554,10 +566,15 @@ pub trait World {
     }
 }
 
-/// A criteria a body raised on itself ([`World::criteria`]).
+/// A criteria a graph raised ([`World::criteria`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RaisedCriteria {
     pub identifier: u64,
+    /// The entity the action names (`m_targets`): the owner itself for most
+    /// (an owner target is never evaluated), its controller for some of the
+    /// hero's `01CA` lines (`STU_F7262B36(owner())`,
+    /// `GetPrimaryPossessorEntity(owner())`).
+    pub target: u32,
     /// Who hears the line the voice set answers with: the entities the
     /// action's `m_297E0B63` lists when it lists some, in order; none when
     /// it names no list or all players (`STU_BD2D717B`, the wheel's `0686`).
@@ -566,6 +583,23 @@ pub struct RaisedCriteria {
     /// them after the `STU_ED45C5E8` query), the kill criteria `071B` the
     /// victim and its killer. Assumption: the list is the line's audience;
     /// no other field of the action or the stimulus limits who hears it.
+    pub audience: Option<Vec<u32>>,
+}
+
+/// What a server-only `VoiceStimulus` state asks the voice system to say
+/// ([`World::voice_stimulus`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct VoiceRequest {
+    /// `m_stimulus`: the voice stimulus (`078`).
+    pub stimulus: u64,
+    /// `m_targets`: whose voice set says it (the owner itself unevaluated).
+    pub targets: Vec<u32>,
+    /// `m_B0263D2D`: how long after the state begins the line starts, in
+    /// seconds (the client's own run of the state waits this long:
+    /// `0x7FF789C53F70` keeps it at `+472`, the update at `0x7FF789C54090`
+    /// returns until it passed).
+    pub delay: f64,
+    /// `m_297E0B63`, read as for a criteria ([`RaisedCriteria::audience`]).
     pub audience: Option<Vec<u32>>,
 }
 

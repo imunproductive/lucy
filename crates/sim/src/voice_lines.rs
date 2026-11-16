@@ -46,7 +46,7 @@
 
 use std::collections::HashMap;
 
-use orpheus_content::voice_sets::VoiceSet;
+use orpheus_content::voice_sets::{Stimulus, VoiceSet};
 use orpheus_core::tick::TICK_PERIOD;
 use orpheus_script::vm::RaisedCriteria;
 use orpheus_wire::combat_messages::CombatNotice;
@@ -115,6 +115,34 @@ impl VoiceState {
         tick: u32,
     ) -> Option<VoiceLine> {
         let (index, stimulus) = set?.answer(criteria.identifier)?;
+        self.play(index, stimulus, speaker, criteria.audience, tick)
+    }
+
+    /// The line the body says at world tick `tick` for the voice stimulus
+    /// `stimulus` a server-only `VoiceStimulus` state named
+    /// ([`orpheus_script::vm::VoiceRequest`]), if its set has it, it is not
+    /// cooling down and it has a line that may play. The stimulus's own
+    /// criteria (what raises it from a criteria action) don't apply.
+    pub(crate) fn say(
+        &mut self,
+        set: Option<&VoiceSet>,
+        speaker: u32,
+        stimulus: u64,
+        audience: Option<Vec<u32>>,
+        tick: u32,
+    ) -> Option<VoiceLine> {
+        let (index, stimulus) = set?.stimulus(stimulus)?;
+        self.play(index, stimulus, speaker, audience, tick)
+    }
+
+    fn play(
+        &mut self,
+        index: usize,
+        stimulus: &Stimulus,
+        speaker: u32,
+        audience: Option<Vec<u32>>,
+        tick: u32,
+    ) -> Option<VoiceLine> {
         if self
             .last
             .get(&index)
@@ -140,7 +168,7 @@ impl VoiceState {
             stimulus: stimulus.guid,
             line,
             radius: stimulus.radius,
-            audience: criteria.audience,
+            audience,
         })
     }
 }
@@ -148,6 +176,29 @@ impl VoiceState {
 /// A cooldown in whole ticks, rounded up (1 s is 63, 0.5 s 32).
 fn cooldown_ticks(seconds: f64) -> u32 {
     (seconds / TICK_PERIOD.as_secs_f64()).ceil() as u32
+}
+
+/// A voice stimulus state's delay (`m_B0263D2D`) in whole ticks, rounded
+/// up as a cooldown is; none for a negative one.
+pub(crate) fn delay_ticks(seconds: f64) -> u32 {
+    cooldown_ticks(seconds.max(0.0))
+}
+
+/// The death cries the hero's `01CA` raises on the body 0.2 s after it
+/// died (rid62 → st19): `23E5` (mode `0008`), `05FC` (the killing hit
+/// tagged `04B1`), `05FB` (`0644`), `1C92` (`074E`), else `05FA`. They are
+/// the only lines a dead body says.
+const DEATH_CRIES: [u64; 5] = [
+    0x0d80_0000_0000_23e5,
+    0x0d80_0000_0000_05fc,
+    0x0d80_0000_0000_05fb,
+    0x0d80_0000_0000_1c92,
+    0x0d80_0000_0000_05fa,
+];
+
+/// Whether a dead body may say the line of the criteria `identifier`.
+pub(crate) fn is_death_cry(identifier: u64) -> bool {
+    DEATH_CRIES.contains(&identifier)
 }
 
 #[cfg(test)]
@@ -164,6 +215,7 @@ mod tests {
     fn raised(identifier: u64) -> RaisedCriteria {
         RaisedCriteria {
             identifier,
+            target: BOT,
             audience: None,
         }
     }
@@ -261,6 +313,7 @@ mod tests {
                     BOT,
                     RaisedCriteria {
                         identifier: SEVERE,
+                        target: BOT,
                         audience: Some(vec![BOT, attacker]),
                     },
                     100,

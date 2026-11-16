@@ -33,7 +33,7 @@ use crate::{
     graph::GraphStore,
     vm::{
         Component, GameMessage, InitFault, MAX_INIT_WORK, Root, Site, Snapshot, StateKind,
-        Unknowns, World,
+        Unknowns, VoiceRequest, World,
     },
     wire::{Value, Variables},
 };
@@ -104,6 +104,8 @@ pub struct ControllerWorld {
     pub may_pick: bool,
     pub unknowns: Unknowns,
     outbox: Vec<GameMessage>,
+    /// The voice stimuli the graphs asked the controller to say.
+    voices: Vec<VoiceRequest>,
 }
 
 impl ControllerWorld {
@@ -119,6 +121,7 @@ impl ControllerWorld {
             may_pick: true,
             unknowns,
             outbox: Vec::new(),
+            voices: Vec::new(),
         }
     }
 
@@ -274,6 +277,17 @@ impl World for ControllerWorld {
         });
         true
     }
+
+    /// A server-only voice stimulus aimed at the controller (`0215` st28,
+    /// the hero's own line 1.6 s after a third kill, `00C9.078`): the
+    /// controller has no voice set, so its possessed body says it.
+    fn voice_stimulus(&mut self, _site: Site, request: VoiceRequest) -> bool {
+        if !request.targets.contains(&self.entity) {
+            return false;
+        }
+        self.voices.push(request);
+        true
+    }
 }
 
 /// The controller graph running on the player's controller entity.
@@ -374,6 +388,12 @@ impl ControllerScript {
     /// route.
     pub fn take_messages(&mut self) -> Vec<GameMessage> {
         std::mem::take(&mut self.world.outbox)
+    }
+
+    /// The voice stimuli the graphs asked the controller to say since the
+    /// last call; its possessed body says them.
+    pub fn take_voices(&mut self) -> Vec<VoiceRequest> {
+        std::mem::take(&mut self.world.voices)
     }
 
     /// The controller now possesses `body` playing `hero`: its components
