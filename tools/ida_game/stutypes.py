@@ -307,7 +307,7 @@ def _set_arg(ea, argi, tname, argname):
 
 
 def apply(log, codecs_path):
-    from .names import ensure_function
+    from .funcs import ensure_function
     import ida_hexrays
     import ida_typeinf
     from tools.owindex import Index
@@ -324,6 +324,7 @@ def apply(log, codecs_path):
     log("types: %d StateRt_ structs (codec data %s), parse errors %d"
         % (stats["state_structs"], codecs_path, stats["state_parse_errors"]))
     targets = slot_targets(idx, blocks)
+    idx.close()  # the index can be rebuilt (replaced) while the phase runs
     log("types: %d slot functions to type" % len(targets))
     typed, failed, by_slot = 0, {}, {}
     for n, (rva, (tname, argi, argname, slot, nclasses)) in enumerate(sorted(targets.items())):

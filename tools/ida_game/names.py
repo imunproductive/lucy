@@ -11,6 +11,7 @@ import json
 import os
 
 from . import paths
+from .funcs import ensure_function
 
 BASE = 0x7FF788F10000
 IDB_BASE = 0x140000000
@@ -20,15 +21,30 @@ BADADDR = 0xFFFFFFFFFFFFFFFF
 def _index_names():
     from tools.owindex import Index
     idx = Index.open()
+    try:
+        return _names_of(idx)
+    finally:
+        idx.close()  # the index can be rebuilt (replaced) while the phase runs
+
+
+def _names_of(idx):
     if hasattr(idx, "names"):
-        return [(int(rva), name, kind) for rva, name, kind in idx.names()]
-    # Older index without names(): name every function IDA knows.
-    import idautils
-    out = []
-    for ea in idautils.Functions():
-        n = idx.name(ea - BASE)
-        if n:
-            out.append((ea - BASE, n, "func"))
+        out = [(int(rva), name, kind) for rva, name, kind in idx.names()]
+    else:
+        # Older index without names(): name every function IDA knows.
+        import idautils
+        out = []
+        for ea in idautils.Functions():
+            n = idx.name(ea - BASE)
+            if n:
+                out.append((ea - BASE, n, "func"))
+    # Component getters the index found (tools.owindex component_accessors) but did not name.
+    if hasattr(idx, "component_accessors"):
+        named = {rva for rva, _, _ in out}
+        for a in idx.component_accessors():
+            if a.get("kind") == "getter" and a["rva"] not in named:
+                out.append((int(a["rva"]), "GetComp%d" % a["component"], "func"))
+                named.add(a["rva"])
     return out
 
 
@@ -47,41 +63,6 @@ def _docs():
             for ea, text in sect.items():
                 comments.append((int(ea, 16) - IDB_BASE, text))
     return names, comments
-
-
-def ensure_function(ea):
-    """Make ea a function entry. Stubs reached only through vtables (TypeTag_ `lea rax; ret`,
-    small constructors) sit between random filler bytes, and auto-analysis often turns them
-    into part of a `dq` array, or decodes the filler as code that runs across the stub (with a
-    function built on it): undefine the item covering ea (and such a function), create code and
-    the function. A real instruction head inside another function is left alone."""
-    import ida_auto
-    import ida_bytes
-    import ida_funcs
-    import idc
-    f = ida_funcs.get_func(ea)
-    is_head = ida_bytes.is_code(ida_bytes.get_flags(ea)) and ida_bytes.get_item_head(ea) == ea
-    if f is not None:
-        if f.start_ea == ea:
-            return True
-        if is_head:
-            return False
-        # A decode across ea (filler bytes run into the stub): cut it off the function holding it.
-        head = ida_bytes.get_item_head(ea)
-        chunk = ida_funcs.get_fchunk(ea)
-        if chunk.start_ea != f.start_ea:
-            ida_funcs.remove_func_tail(f, chunk.start_ea)
-        elif head > f.start_ea:
-            ida_funcs.set_func_end(f.start_ea, head)
-        else:
-            ida_funcs.del_func(f.start_ea)
-    if not is_head:
-        ida_bytes.del_items(ida_bytes.get_item_head(ea), ida_bytes.DELIT_SIMPLE, 1)
-        if not idc.create_insn(ea):
-            return False
-    ok = ida_funcs.add_func(ea)
-    ida_auto.auto_wait()
-    return ok
 
 
 def _set(ea, name, kind, st):

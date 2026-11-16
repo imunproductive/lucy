@@ -1,13 +1,24 @@
 """Headless access to the game IDB research/out/ida_game/ow_game.i64 (built by `python -m tools.ida_game.build`).
 
     from tools.ida_game import open_game_idb
-    with open_game_idb() as idb:
+    with open_game_idb(timeout=1800) as idb:
         print(idb.decompile(0x7FF789BE27C0))      # RVA, ORPHEUS VA (0x7FF788F10000) or IDB VA (0x140000000)
         idb.func(0xCD27C0); idb.xrefs_to(...); idb.callees(...); idb.disasm(..., 20)
+        idb.decompile(0x7FF7893EC2A1, define=True)  # no function there yet: define one (in memory)
+        idb.define(x)                              # the same without decompiling: start VA or None
+        idb.find_imm(0x1C6EC712)                   # VAs of instructions with this immediate
+        idb.read(x, 16); idb.qword(x)              # bytes of the database (vtables, globals)
+
+Batch from the shell: `python -m tools.ida_game.decompile <addr> [<addr> ...] [--define] [--out F]`.
 
 Addresses: every method accepts an RVA (< 0x140000000), a VA at the database base 0x7FF788F10000
 (= ORPHEUS / IDA-questions.md addresses) or a VA of the user's IDB at 0x140000000. Results give `rva`
 and `va` (database base) for each address.
+
+define(): the code holding x becomes a function: from its .pdata entry, else from the nearest
+earlier address something references (vtable slot, call) that decodes straight to x, else from x
+(funcs.py). find_imm(value, width=None): 4-byte encoding for values below 2**32, 8-byte imm64
+otherwise, width=1/2 for short forms; bytes IDA has not made code are decoded in place.
 
 Locking and processes: idalib holds one database per process and runs on the importing thread.
 The database is opened in place under an exclusive OS lock (ow_game.i64.lock), so one process at a time:
@@ -92,9 +103,17 @@ class GameIdb:
         return {"start": f.start_ea - BASE, "end": f.end_ea - BASE, "start_va": f.start_ea,
                 "end_va": f.end_ea, "name": ida_funcs.get_func_name(f.start_ea)}
 
-    def decompile(self, x):
+    def define(self, x):
+        """Make the code holding x a function when none holds it (in memory; saved only with
+        save=True): its .pdata entry, else the nearest referenced start that decodes to x, else x
+        (tools/ida_game/funcs.py). Returns the function's start VA or None."""
+        from . import funcs
+        return funcs.define_at(self.ea(x))
+
+    def decompile(self, x, define=False):
         """Hex-Rays pseudocode of the function containing x, each line suffixed with `// @<VA>`
-        (statement address, as the research repo's tools/ida_dump_pc.py). Raises DecompileError."""
+        (statement address, as the research repo's tools/ida_dump_pc.py). `define`: when no function
+        holds x, define one first (see define()). Raises DecompileError."""
         import ida_funcs
         import ida_hexrays
         import ida_lines
@@ -102,8 +121,10 @@ class GameIdb:
             raise DecompileError("Hex-Rays decompiler not available")
         ea = self.ea(x)
         f = ida_funcs.get_func(ea)
+        if f is None and define and self.define(ea) is not None:
+            f = ida_funcs.get_func(ea)
         if f is None:
-            raise DecompileError("%#x: no function" % ea)
+            raise DecompileError("%#x: no function%s" % (ea, "" if define else " (define=True makes one)"))
         ida_hexrays.mark_cfunc_dirty(f.start_ea)
         failure = ida_hexrays.hexrays_failure_t()
         try:
@@ -175,6 +196,80 @@ class GameIdb:
                 break
             ea = nxt
         return "\n".join(lines)
+
+    def read(self, x, n):
+        """n bytes of the database at x (the Rose-patched dump image)."""
+        import ida_bytes
+        return ida_bytes.get_bytes(self.ea(x), n) or b""
+
+    def qword(self, x):
+        import ida_bytes
+        return ida_bytes.get_qword(self.ea(x))
+
+    def _code_segments(self):
+        """[(start VA, bytes)] of the executable segments, read once."""
+        if getattr(self, "_code", None) is None:
+            import ida_bytes
+            import ida_segment
+            self._code = []
+            for i in range(ida_segment.get_segm_qty()):
+                seg = ida_segment.getnseg(i)
+                if seg.perm & ida_segment.SEGPERM_EXEC:
+                    self._code.append((seg.start_ea,
+                                       ida_bytes.get_bytes(seg.start_ea, seg.end_ea - seg.start_ea) or b""))
+        return self._code
+
+    def find_imm(self, value, width=None):
+        """VAs of the instructions in code that have `value` as an immediate operand, sorted.
+        width (bytes) None: a value below 2**32 (or a sign-extended negative one) as its 4-byte
+        encoding, else the 8-byte `mov r64, imm64`; imm8 forms (`cmp eax, 19h`) need width=1
+        (slow: every matching byte is decoded). Code IDA has not defined (Rose-hidden, vtable
+        stubs) is decoded in place: such a hit has no function until define()."""
+        import ida_bytes
+        import ida_funcs
+        import ida_ua
+        v = int(value) & 0xFFFFFFFFFFFFFFFF
+        if width is not None:
+            pats = [(width, v & ((1 << 8 * width) - 1))]
+        elif v <= 0xFFFFFFFF:
+            pats = [(4, v)]
+        elif v >= 0xFFFFFFFF80000000:
+            pats = [(4, v & 0xFFFFFFFF), (8, v)]
+        else:
+            pats = [(8, v)]
+        out = set()
+        insn = ida_ua.insn_t()
+
+        def matches(start, p, w, want):
+            if ida_ua.decode_insn(insn, start) <= 0 or start + insn.size <= p:
+                return False
+            for op in insn.ops:
+                if op.type == ida_ua.o_void:
+                    break
+                if (op.type == ida_ua.o_imm and start + op.offb == p
+                        and op.value & ((1 << 8 * w) - 1) == want):
+                    return True
+            return False
+
+        for seg_start, data in self._code_segments():
+            for w, want in pats:
+                needle = want.to_bytes(w, "little")
+                i = data.find(needle)
+                while i >= 0:
+                    p = seg_start + i
+                    head = ida_bytes.get_item_head(p)
+                    code = ida_bytes.is_code(ida_bytes.get_flags(head))
+                    if code and matches(head, p, w, want):
+                        out.add(head)
+                    elif not code or ida_funcs.get_func(p) is None:
+                        # undefined bytes, or a decode IDA left outside any function (filler
+                        # decoded across hidden code): decode the candidate starts in place
+                        for start in range(p - 1, p - 15, -1):
+                            if matches(start, p, w, want):
+                                out.add(start)
+                                break
+                    i = data.find(needle, i + 1)
+        return sorted(out)
 
     def save(self):
         import ida_loader

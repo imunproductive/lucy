@@ -19,12 +19,15 @@ Phases (state in research/out/ida_game/build_state.json, log in research/out/ida
   rose    apply Rose's results headless (the research repo's tools/ida_apply_rose.py
           patch/code/funcs/spd, plus own xrefs/clean/tails variants for a fully analyzed database)
           and re-analyze.
-  names   names from tools.owindex (research/out/index/ow_index.sqlite) and the research repo's
-          docs/analysis/*.json.
+  vslots  define a function at every target of the index's runtime vtables (registrations),
+          component and message vtables, factories, constructors and message handlers that is
+          not one yet (Rose-hidden stubs between filler; funcs.py).
+  names   names from tools.owindex (research/out/index/ow_index.sqlite; component getters as
+          GetComp<N>) and the research repo's docs/analysis/*.json.
   types   one struct STU_<HASH> per STU class of the index; `STU_<H> *stu` on config evaluators
           and action runs, `StateRt_<H> *this` (property block typed) on state readers/writers.
 Only one process can have the database open (lock file ow_game.i64.lock); open_game_idb() waits
-or fails while a build runs.
+or fails while a build runs, and a build fails while another process has it open (`--wait S`).
 """
 import bisect
 import argparse
@@ -37,7 +40,7 @@ import time
 from . import paths
 from . import _idalib
 
-PHASES = ["image", "create", "rose", "names", "types"]
+PHASES = ["image", "create", "rose", "vslots", "names", "types"]
 CHUNK = 0x100000
 
 
@@ -374,6 +377,18 @@ def phase_rose(state):
     return r
 
 
+def phase_vslots(state):
+    from . import funcs
+    _idalib.open_db(paths.IDB)
+    try:
+        r = funcs.apply_vslots(log)
+    except BaseException:
+        _idalib.close_db(save=False)
+        raise
+    _idalib.close_db(save=True)
+    return r
+
+
 def phase_names(state):
     from . import names
     _idalib.open_db(paths.IDB)
@@ -398,18 +413,18 @@ def phase_types(state):
     return r
 
 
-RUN = {"image": phase_image, "create": phase_create, "rose": phase_rose,
+RUN = {"image": phase_image, "create": phase_create, "rose": phase_rose, "vslots": phase_vslots,
        "names": phase_names, "types": phase_types}
 
 
-def run_phase(name, state):
+def run_phase(name, state, wait=0.0):
     log("=== phase %s" % name)
     t = time.time()
     if name == "image":
         result = RUN[name](state)
     else:
         _idalib.ensure()
-        with _idalib.DbLock():
+        with _idalib.DbLock(timeout=wait):
             result = RUN[name](state)
     state.setdefault("phases", {})[name] = {"done": True, "seconds": round(time.time() - t),
                                             "finished": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -426,6 +441,8 @@ def main():
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--rebuild", action="store_true",
                     help="delete the database and the phase state first, then run every phase")
+    ap.add_argument("--wait", type=float, default=0.0, metavar="S",
+                    help="wait up to S seconds for the database lock (another process has it open)")
     args = ap.parse_args()
     if args.rebuild and not args.detach:
         with _idalib.DbLock(timeout=1800):
@@ -450,6 +467,8 @@ def main():
         cmd = [sys.executable, "-m", "tools.ida_game.build"]
         for p in args.phase or []:
             cmd += ["--phase", p]
+        if args.wait:
+            cmd += ["--wait", str(args.wait)]
         if args.rebuild:
             cmd.append("--rebuild")
         flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
@@ -461,7 +480,7 @@ def main():
         return
     todo = args.phase or [p for p in PHASES if p not in state.get("phases", {})]
     for name in todo:
-        run_phase(name, state)
+        run_phase(name, state, args.wait)
 
 
 if __name__ == "__main__":
