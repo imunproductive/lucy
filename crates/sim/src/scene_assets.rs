@@ -235,6 +235,9 @@ pub struct PreparedScene {
     /// [`map_areas::FALL_LIMIT`] below the map's lowest collision triangle:
     /// the safety net under the whole map (`map_areas` module notes).
     safety_net: f64,
+    /// The match's value of the mode entity's component 114 field 9
+    /// ([`crate::scene::mode_create`]), drawn once per match.
+    mode_random: f32,
 }
 
 impl SceneAssets {
@@ -456,9 +459,10 @@ impl SceneAssets {
         };
         let map_mode = map.mode_guid;
         let navigation = self.navigation(&map);
-        let mode_rules = self
-            .mode_rules
-            .rules(self.graphs.rulesets(), map.mode_guid)?;
+        let mode_random = crate::scene::draw_mode_random();
+        let mode_rules =
+            self.mode_rules
+                .rules(self.graphs.rulesets(), map.mode_guid, mode_random)?;
         let objectives = self.objectives.map(&map)?;
         let spawn_rooms = self.map_areas.spawn_rooms(&map);
         let lethal_areas = self.map_areas.lethal_areas(&map, identifiers);
@@ -531,9 +535,11 @@ impl SceneAssets {
             kill_volumes,
             kill_height,
             safety_net,
+            mode_random,
             placed_scripts: PlacedScripts::new(
                 Arc::clone(&self.graphs),
                 map_mode,
+                mode_random,
                 server_placeables.clone(),
             ),
             server_placeables,
@@ -793,6 +799,12 @@ impl PreparedScene {
     /// The mode's respawn time for heroes (combat.py `respawn_seconds`).
     pub fn respawn_time(&self) -> Duration {
         self.respawn
+    }
+
+    /// The match's value of the mode entity's component 114 field 9, which
+    /// `STU_B182C5C9` reads ([`crate::scene::mode_create`]).
+    pub fn mode_random(&self) -> f32 {
+        self.mode_random
     }
 
     /// The rules of the mode's match flow (`mode_rules_data`).
@@ -1233,6 +1245,7 @@ impl PreparedScene {
             &self.bots,
             self.bot_roster,
             &self.bot_plate,
+            self.mode_random,
         )?;
         // After the placeables, the player and the mode, before the bots.
         let at = self.map.placeables.len() + 2;
@@ -1351,6 +1364,7 @@ mod tests {
                 .unwrap()
                 .pose(),
             quanta: RETAIL_QUANTA,
+            mode_random: scene.mode_random(),
         };
         assert!(
             scene.owner_body_runtime(pharah, spawn).unwrap().is_some(),
@@ -1412,6 +1426,7 @@ mod tests {
             frame: FIRST_TICK,
             pose: mover.pose(),
             quanta: RETAIL_QUANTA,
+            mode_random: scene.mode_random(),
         };
         let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
         // (frames, forward throttle, buttons held)
@@ -1593,6 +1608,7 @@ mod tests {
             frame: FIRST_TICK,
             pose: mover.pose(),
             quanta: RETAIL_QUANTA,
+            mode_random: scene.mode_random(),
         };
         let [x, y, z] = spawn.pose.position;
         let body = |entity, team, dx: f64| TargetCandidate {
@@ -1600,6 +1616,7 @@ mod tests {
             team: Some(team),
             dead: false,
             controller: None,
+            ai: false,
             feet: [x + dx, y, z],
             height: 1.8,
             radius: 0.4,
@@ -1692,6 +1709,7 @@ mod tests {
             frame: FIRST_TICK,
             pose: mover.pose(),
             quanta: RETAIL_QUANTA,
+            mode_random: scene.mode_random(),
         };
         let [x, y, z] = spawn.pose.position;
         // Yaw 0 looks along +z.
@@ -1700,6 +1718,7 @@ mod tests {
             team: Some(team),
             dead: false,
             controller: None,
+            ai: false,
             feet: [x + dx, y, z + dz],
             height: 1.8,
             radius: 0.4,

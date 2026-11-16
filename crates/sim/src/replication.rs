@@ -3112,6 +3112,10 @@ impl WorldDelivery {
             self.heal_body(scene, body.id.entity, amount, &DamageTags::NONE);
         }
         let inside = self.may_change_hero();
+        // The controller graph's `STU_E4C6AAB4` reads the same field 6.
+        if let Some(script) = &mut self.controller_script {
+            script.set_may_pick(inside);
+        }
         if inside != self.spawn_flag.0 {
             let revision = self.spawn_flag.1 + 1;
             self.spawn_flag = (inside, revision);
@@ -3916,6 +3920,7 @@ impl WorldDelivery {
                     frame: start_frame,
                     pose: movement,
                     quanta,
+                    mode_random: scene.mode_random(),
                 },
             )
             .ok()
@@ -3980,6 +3985,9 @@ impl WorldDelivery {
         self.plain_vitals = None;
         self.respawn_hero = None;
         self.spawn_room = None;
+        if let Some(controller) = &mut self.controller_script {
+            controller.possessed(entity, hero.guid);
+        }
         if frame.is_some() {
             self.select_open = open;
         }

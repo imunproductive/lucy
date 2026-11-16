@@ -53,6 +53,19 @@ pub static BOTS_IN_ROSTER: std::sync::LazyLock<bool> = std::sync::LazyLock::new(
     on
 });
 
+/// The game struct's teams (`#0.#0.#0.#4`): each team's number (`+0x60`)
+/// and size (`+0x61`), the map's team sizes; a free-for-all game has one
+/// team, [`FREE_FOR_ALL_TEAM`], of the first size. The mode graph's "team
+/// is full" (`STU_A5B9EAAD`) reads the same sizes.
+pub fn team_entries(map: &GameMap) -> Vec<(u8, u8)> {
+    let capacity = |team: usize| map.team_sizes.get(team).copied().unwrap_or(0);
+    if map.free_for_all {
+        vec![(FREE_FOR_ALL_TEAM, capacity(0))]
+    } else {
+        vec![(0, capacity(0)), (1, capacity(1))]
+    }
+}
+
 pub struct Member<'a> {
     pub entity: u32,
     pub name: &'a str,
@@ -111,12 +124,10 @@ impl Instance<'_> {
                 (0x61, Unsigned(u64::from(size))),
             ]))
         };
-        let capacity = |team| self.map.team_sizes.get(team).copied().unwrap_or(0);
-        let teams = if self.map.free_for_all {
-            vec![team(FREE_FOR_ALL_TEAM, capacity(0))]
-        } else {
-            vec![team(0, capacity(0)), team(1, capacity(1))]
-        };
+        let teams = team_entries(self.map)
+            .into_iter()
+            .map(|(number, size)| team(number, size))
+            .collect();
         let roster = Fields::from([
             (0, Struct(Fields::from([(0, Array(records))]))),
             (0xb0, Unsigned(self.map.mode_guid)),

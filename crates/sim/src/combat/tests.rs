@@ -351,6 +351,7 @@ fn target_searches_see_the_players_then_the_bots() {
             team: Some(1),
             dead: true,
             controller: Some(SHOOTER.source & !0xff),
+            ai: false,
             feet: pose.feet,
             height: pose.height,
             radius: pose.radius,
@@ -363,8 +364,11 @@ fn target_searches_see_the_players_then_the_bots() {
             (bot.entity, Some(bot.spawn.team), bot.dead)
         );
         assert_eq!(
-            candidate.controller,
-            Some(crate::scene::bot_controller_entity(slot).unwrap())
+            (candidate.controller, candidate.ai),
+            (
+                Some(crate::scene::bot_controller_entity(slot).unwrap()),
+                true
+            )
         );
         assert_eq!(
             (candidate.feet, candidate.height, candidate.radius),

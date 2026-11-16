@@ -230,7 +230,7 @@ fn nodes() -> Vec<FixtureGraph> {
                         ],
                         &[MAP_SPEED, PUSHERS, SPREAD.1, ROLLBACK_FACTOR],
                         &[2.0, 1.25, 0.375, 1.0],
-                        json!([{"$": RANDOM, "m_EE729DCB": 0}]),
+                        json!([{"$": "STU_B182C5C9", "m_EE729DCB": 0}]),
                     )}),
                 ),
                 node(
@@ -288,12 +288,13 @@ fn rulesets() -> Rulesets {
 }
 
 /// Every value comes from its node, the capture marks from the derived
-/// file, and each mode's settings from its ruleset defaults.
+/// file, and each mode's settings from its ruleset defaults; the push
+/// speeds at the match's value of `STU_B182C5C9`.
 #[test]
 fn the_rules_are_read_from_the_graphs_the_objectives_and_the_rulesets() {
     let data = ModeRulesData::read(&store(nodes()), OBJECTIVES).unwrap();
     let rulesets = rulesets();
-    let assault = data.rules(&rulesets, ASSAULT).unwrap();
+    let assault = data.rules(&rulesets, ASSAULT, 0.5).unwrap();
     let rate = f64::from((100.0_f64 / 60.0) as f32);
     assert_eq!(
         assault,
@@ -316,10 +317,10 @@ fn the_rules_are_read_from_the_graphs_the_objectives_and_the_rulesets() {
             tiebreak: 0.0,
         }
     );
-    let control = data.rules(&rulesets, CONTROL).unwrap();
+    let control = data.rules(&rulesets, CONTROL, 0.5).unwrap();
     assert_eq!(control.score_to_win, 3);
     assert_eq!(control.control.percent_per_second, rate * 2.0);
-    let elimination = data.rules(&rulesets, ELIMINATION).unwrap();
+    let elimination = data.rules(&rulesets, ELIMINATION, 0.5).unwrap();
     assert_eq!(
         (
             elimination.score_to_win,
@@ -329,18 +330,21 @@ fn the_rules_are_read_from_the_graphs_the_objectives_and_the_rulesets() {
         ),
         (4, 100.0, 15.0, 80.0)
     );
-    let deathmatch = data.rules(&rulesets, DEATHMATCH).unwrap();
+    let deathmatch = data.rules(&rulesets, DEATHMATCH, 0.5).unwrap();
     assert_eq!(
         (deathmatch.score_to_win, deathmatch.round_time),
         (25, 300.0)
     );
-    let team = data.rules(&rulesets, TEAM_DEATHMATCH).unwrap();
+    let team = data.rules(&rulesets, TEAM_DEATHMATCH, 0.5).unwrap();
     assert_eq!((team.score_to_win, team.round_time), (35, 900.0));
-    let escort = data.rules(&rulesets, ESCORT).unwrap();
+    // The spread (uid 363) is 0.25 here: a value of 0.75 pushes 1.125
+    // times as fast as the middle (2.5, 3.25, 4).
+    let escort = data.rules(&rulesets, ESCORT, 0.75).unwrap();
     assert_eq!(
         escort.payload,
         Some(PayloadRules {
-            push_speeds: [2.5, 3.25, 4.0],
+            push_speeds: [2.8125, 3.65625, 4.5],
+            push_spread: 0.25,
             auto_speed: 5.0,
             rollback_speed: 1.0,
             rollback_after: 12.0,
@@ -357,11 +361,11 @@ fn a_mode_without_its_settings_has_no_rules() {
     let data = ModeRulesData::read(&store(nodes()), OBJECTIVES).unwrap();
     let rulesets = rulesets();
     for mode in [HYBRID, BOUNTY_HUNTER] {
-        let error = data.rules(&rulesets, mode).unwrap_err();
+        let error = data.rules(&rulesets, mode, 0.5).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
     }
-    assert!(data.rules(&rulesets, SKIRMISH).is_ok());
-    assert!(data.rules(&rulesets, 0x0230_0000_0000_0018).is_ok());
+    assert!(data.rules(&rulesets, SKIRMISH, 0.5).is_ok());
+    assert!(data.rules(&rulesets, 0x0230_0000_0000_0018, 0.5).is_ok());
 }
 
 /// A node that is gone, changed or reads something unknown fails the
@@ -442,7 +446,7 @@ fn the_install_gives_the_fixture_rules() {
     let rules = ModeRulesData::load(&graphs, &data).unwrap();
     for mode in FLOW_MODES {
         assert_eq!(
-            rules.rules(graphs.rulesets(), mode).unwrap(),
+            rules.rules(graphs.rulesets(), mode, 0.5).unwrap(),
             fixture(mode),
             "mode {mode:016X}"
         );

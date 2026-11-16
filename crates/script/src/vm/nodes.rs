@@ -61,11 +61,12 @@ const ASSUMED_NO_OPS: &[&str] = &[
     // (05AD nodes 154 and 155, 02CF node 32): an entity and an integer, no
     // out link.
     "STU_71FE9852",
-    // A game message whose targets the engine picks (0686 node 21 sends
-    // 0307 after Need Healing). Who receives it is unknown; it goes nowhere,
-    // as in upstream's release mode. (If the sender took it, `05AD`'s `0307`
-    // entry would need the pool natives `STU_F1C45C59`/`STU_005D99E6`
-    // before raising Need Healing's voice criteria `0724`.)
+    // A game message without `m_targets` (0686 node 21 sends 0307 after
+    // Need Healing): the client has no code for it, so the server picks
+    // the receivers; its only listener is `05AD` rid15 on every hero body
+    // (BotVoice.md, "Client tools pass (2026-11-16)"). Not routed yet: that
+    // entry reads the sender from `m_B60ABDA4` (#40), which the VM doesn't
+    // fill for game message entries (`docs/dev/loose-ends.md`).
     "STU_57692020",
 ];
 

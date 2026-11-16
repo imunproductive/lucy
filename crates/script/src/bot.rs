@@ -165,8 +165,6 @@ impl World for BotWorld {
             // As `PlayerWorld`: the tunable's authored value, not scaled for
             // the entity.
             "STU_082FA44E" => Some("the tunable's authored value"),
-            // `vm::asks_ai_of_unset_creator`: Biotic Grenade's auras.
-            "STU_D3EB8D87" => Some("false (no AI controls the unwritten #27)"),
             "STU_AC829876" => Some("true (a bot is of entity kind 1)"),
             // As `PlayerWorld`: a server-only entity query whose meaning is
             // open. `0C17` rid 23 starts its pain lines' audience (#1839)
@@ -310,10 +308,6 @@ impl World for BotWorld {
             "STU_082FA44E" => self.graphs.tunables().value(config).map(Value::Float),
             // See `assumption`.
             "STU_ED45C5E8" => Some(Value::Array(Vec::new())),
-            // See `assumption`.
-            "STU_D3EB8D87" if crate::vm::asks_ai_of_unset_creator(config) => {
-                Some(Value::Bool(false))
-            }
             // Is the bot itself of entity kind 1 (Biotic Grenade's auras
             // `0C72` node 16 and `0B99` node 4 ask before their effect):
             // yes, as the target searches take bots (`vm/targets.rs`).
@@ -1751,7 +1745,8 @@ mod tests {
                 entity,
                 team: Some(team),
                 dead: false,
-                controller: None,
+                controller: Some(entity & !0xff),
+                ai: false,
                 feet: [0.0; 3],
                 height: 1.8,
                 radius: 0.4,

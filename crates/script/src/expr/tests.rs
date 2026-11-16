@@ -465,6 +465,10 @@ fn random_float_lies_between_the_asset_bounds() {
         fn random_u64(&mut self) -> Option<u64> {
             self.0.pop()
         }
+
+        fn mode_random(&mut self) -> Option<f64> {
+            Some(0.25)
+        }
     }
 
     let config = json!({"$": "STU_BE0BD267", "m_min": 2, "m_max": 4.5});
@@ -477,12 +481,18 @@ fn random_float_lies_between_the_asset_bounds() {
         evaluate(&config, &mut EmptyContext),
         Err(EvalError::UnsupportedConfig("STU_BE0BD267".into())),
     );
-    // The fieldless random number (`STU_B182C5C9`) lies in [0, 1).
+    // The fieldless "random" number (`STU_B182C5C9`) is the mode entity's
+    // value for the match: the same every evaluation, whatever the random
+    // stream holds; a world that doesn't know it can't answer.
     let unit = json!({"$": "STU_B182C5C9"});
     let mut context = Samples(vec![1 << 63, 0]);
-    for expected in [0.0, 0.5] {
-        assert_eq!(evaluate(&unit, &mut context), Ok(Value::Float(expected)));
+    for _ in 0..2 {
+        assert_eq!(evaluate(&unit, &mut context), Ok(Value::Float(0.25)));
     }
+    assert_eq!(
+        evaluate(&unit, &mut EmptyContext),
+        Err(EvalError::UnsupportedConfig("STU_B182C5C9".into())),
+    );
 }
 
 #[test]
@@ -675,6 +685,65 @@ fn authored_controller_hud_and_soldier_config_values_match_python() {
             evaluate(node.field(field).unwrap(), &mut context).unwrap(),
             expected,
             "{graph:04x} st {state} {field}"
+        );
+    }
+}
+
+/// `STU_53F4CA65`, "the target is not an enemy of the source", as the
+/// client's evaluator reads it (HealthAuras.md, "Client tools pass
+/// (2026-11-16)"): the same entity is an ally, each side counts as its owner,
+/// teams -1 and 4 make everyone else an enemy, and `m_AFBBE9C3` asks only
+/// whether the target's team is not 1.
+#[test]
+fn not_an_enemy_follows_owners_free_for_all_teams_and_the_target_only_flag() {
+    /// Variable n holds entity n; entity 0x99 is a projectile of 0x21.
+    struct Teams;
+    impl Context for Teams {
+        fn variable(&mut self, variable: Variable) -> Value {
+            Value::Entity(variable.id)
+        }
+
+        fn entity_team(&mut self, entity: u32) -> Option<i64> {
+            match entity {
+                0x11 | 0x12 => Some(0),
+                0x21 => Some(1),
+                0x41 | 0x42 => Some(4),
+                0x51 => Some(-1),
+                _ => None,
+            }
+        }
+
+        fn related_entity(&mut self, relation: EntityRelation, entity: u32) -> Option<u32> {
+            assert_eq!(relation, EntityRelation::Owner);
+            Some(if entity == 0x99 { 0x21 } else { 0 })
+        }
+    }
+    let ally = |target: u32, source: u32, target_only: bool| {
+        let config = json!({
+            "$": "STU_53F4CA65",
+            "m_target": variable(target, Scope::Instance),
+            "m_source": variable(source, Scope::Instance),
+            "m_AFBBE9C3": {"$": "STUConfigVarBool", "m_value": target_only},
+        });
+        evaluate(&config, &mut Teams)
+    };
+    for (target, source, target_only, expected) in [
+        (0x11, 0x12, false, true),
+        (0x11, 0x21, false, false),
+        (0x11, 0x11, false, true),
+        (0x41, 0x42, false, false),
+        (0x41, 0x41, false, true),
+        (0x51, 0x11, false, false),
+        (0x99, 0x21, false, true),
+        (0x99, 0x11, false, false),
+        (0x00, 0x11, false, false),
+        (0x21, 0x11, true, false),
+        (0x11, 0x21, true, true),
+    ] {
+        assert_eq!(
+            ally(target, source, target_only),
+            Ok(Value::Bool(expected)),
+            "{target:x} {source:x} {target_only}"
         );
     }
 }

@@ -23,45 +23,51 @@
 //!   counts it (opcode 18) and watches it grow. Sure.
 //! - `m_1B89EA79`: their count (17 uses): `0257` and Reinhardt's `0095`
 //!   test `#1192 > 0` before a criteria. Sure.
-//! - `m_filter` (`STUConfigVarFilter`):
-//!   - `m_66747E7D`, the team relation to the searching body: 1 = allies
-//!     (the heals: the Biotic Field `0258`, Lúcio `0266`, Brigitte `12D8`,
-//!     Baptiste `19A5`), 2 = enemies (Pharah `002B`, Reaper `0044`, Hanzo
-//!     `0101`, Cassidy `022F`, Widowmaker `0067`), 0 = either. Fairly sure.
-//!   - `m_89831602`, bits that leave out bodies by their relation to the
-//!     searching body. Bit 4 leaves the searching body out: every search
-//!     for an ally other than oneself has it (Mercy's beam `006E`, Zarya's
-//!     barrier `025C`, Zenyatta's orb `02F3`, Ana `0B9E`, Brigitte's pack
-//!     `0EDD`), the heals that also heal their caster don't (`0258`,
-//!     `0266`, `19A5`, `12D8`). So `0257` st6 counts the allies near the
-//!     caster, not the caster. Fairly sure. Bit 1 leaves out the searching
-//!     body and its allies, so only its enemies are found (anyone else in
-//!     a free-for-all): it is in the hits that relation 0 leaves to it
-//!     (quick melee `0043` st5, Reinhardt's charge, Death Blossom `0044`,
-//!     Cassidy's Deadeye `022F` st17), and quick melee shows it must leave
-//!     the swinger out: its search's sphere, 1.5 m ahead of the eye, reaches
-//!     his own capsule (more so as he looks down), yet its graph takes a
-//!     non-empty `#375` for a hit (the search's end counts a stat when
-//!     `#375` is set, node 56 to 55; `STU_2F4E2E3F` st16 on `#375` rumbles
-//!     the pad), which a swing at nothing isn't. Strong guess; the bit's
-//!     name isn't known. Bit 2
-//!     (Brigitte `12BE` and `0D00`, with 4 in Moira's `1007` st17: allies
-//!     only, guess) is open.
-//!   - `m_84065FD1`: which kinds of entity: 1 in the heals and the ally
-//!     counts, 64 in the melee and charge hits, `0x3FFFFFFF` all. Players'
-//!     bodies and bots are taken to be of kinds 1 and 64. Fairly sure.
-//!   - `m_4EA686DB`: exclusions; bit 16 is in nearly every search for
-//!     heroes, heals and hits alike, and is taken to leave the dead out (as
-//!     the match's heals and hits do). Other bits (4 in hits, `0x200000`
-//!     in heals, 128, 256) are open.
-//!   - `m_1E14CCA8` (team filter bits `0x800000 << team` in the objective
-//!     graph `1225`, small values elsewhere), `m_27CF71D5`, the condition
-//!     and the tag lists (as `STU_AC829876` has them) are not modelled.
+//! - `m_filter` (`STUConfigVarFilter`), tested as the client's
+//!   `Filter_TestTeamMasks` 0x7FF789ADAAE0 (called by
+//!   `ScriptHost_EntityPassesFilter` 0x7FF789C1DA20; HealthAuras.md,
+//!   "Client tools pass 2 (2026-11-16)"): three masks against the
+//!   candidate's filter word, and three relation words. A candidate passes
+//!   when the any-of test passes, the all-of test passes and the none-of
+//!   test doesn't hit:
+//!   - `m_84065FD1` any-of: the word shares a bit with it, or it is
+//!     `0x3FFFFFFF` (every kind); `m_1E14CCA8` all-of: the word has all its
+//!     bits (0: no test); `m_4EA686DB` none-of: a bit in common fails the
+//!     candidate.
+//!   - The relation words, read only when one is set: bit 1 = friendly
+//!     (not hostile, or the searcher itself), 2 = hostile, 4 = the searcher.
+//!     `m_27CF71D5` include: a relation in it passes the any-of test;
+//!     `m_66747E7D` require: bit 1 fails a hostile candidate, 2 a friendly
+//!     one, 4 any but the searcher; `m_89831602` exclude: a relation in it
+//!     fails the candidate. So quick melee (`0043` st5, exclude 1) finds
+//!     enemies only, Brigitte (`12BE` st19, `0D00` st1, exclude 2) allies
+//!     with herself, Moira (`1007` st17, exclude 6) allies without
+//!     herself, and the ally counts (`0257` st6: require 1, exclude 4)
+//!     allies without the caster.
+//!   - Hostile is the enemy test of `STU_53F4CA65` (`sub_7FF789B2CF60`):
+//!     the searcher counts as its owner when it has one (a projectile as
+//!     its thrower), that owner is never hostile, and teams -1 and 4 (a
+//!     free-for-all body, which lists no team) are hostile to everyone
+//!     else. The client uses another test for candidates with word bit
+//!     `0x10000000`; no body carries it.
+//!   - The candidate's word is the client's component 25 `+0x58`; the
+//!     server takes it to be the body's filter bits as it sends them
+//!     (component 26, `orpheus_sim::scene::body_filter`): its team's bit
+//!     `0x800000 << team` (team 4 in a free-for-all), the kinds `0x41` (1 a
+//!     hero, 64 a body that can be hit) and 16 once dead. So `m_84065FD1` 1
+//!     or 64 finds bodies, `m_4EA686DB` 16 leaves the dead out, the
+//!     objective graph `1225`'s `m_1E14CCA8` `0x800000 << team` finds a
+//!     team's bodies, and bits no body carries (none-of 4 in the hits,
+//!     `0x200000` in heals) change nothing. Assumption: the two words are
+//!     the same (`orpheus_sim::scene` module notes).
+//!   - The client also requires component 97 when a mask is set and the
+//!     any-of mask isn't every kind (bodies have it), and then tests the
+//!     condition and the tag lists (component 76); the condition and the
+//!     tag lists are not modelled.
 //!
 //! The server runs the forms whose set fields are only these (an entity
 //! sphere with a vertical or forward offset, or a world point; a whole
-//! sphere; a filter of kinds 1 or 64 or all, exclusion bit 16 (and the
-//! open bit 4), a team relation and bits 4 and 1): `0257`
+//! sphere; the masks and relation words): `0257`
 //! st6 and Reinhardt's `0095` st18, both counting allies within 10 m for a
 //! criteria, and quick melee's `0043` st5, whose line of sight
 //! (`m_D59188D5`, `m_3D667CE3`) isn't tested and whose output `m_24A4AB8A`
@@ -119,8 +125,6 @@ const UNMODELLED: &[&str] = &[
 /// The filter's fields the server doesn't model.
 const UNMODELLED_FILTER: &[&str] = &[
     "m_93FA1642",
-    "m_1E14CCA8",
-    "m_27CF71D5",
     "m_condition",
     "m_9C7BD8B8",
     "m_B486603E",
@@ -132,18 +136,17 @@ const UNMODELLED_FILTER: &[&str] = &[
 
 /// `m_84065FD1`: every kind.
 const ALL_KINDS: u64 = 0x3fff_ffff;
-/// `m_84065FD1` bits that take players' bodies and bots.
-const BODY_KINDS: u64 = 1 | 64;
-/// `m_4EA686DB`: the dead are left out.
-const EXCLUDE_DEAD: u64 = 16;
-/// `m_4EA686DB` bit 4, in the hits' searches (quick melee `0043`): open,
-/// not read.
-const EXCLUDE_OPEN: u64 = 4;
-/// `m_89831602`: the searching body is left out.
-const EXCLUDE_SELF: u64 = 4;
-/// `m_89831602`: the searching body and its allies are left out, so only
-/// its enemies are found (quick melee `0043` st5).
-const EXCLUDE_ALLIES: u64 = 1;
+/// A body's filter word (see the module notes): its team's bit
+/// `TEAM_BIT << team`, team 4 in a free-for-all, the kinds of a living body
+/// and [`DEAD`] once it died.
+const TEAM_BIT: u64 = 0x0080_0000;
+const FREE_FOR_ALL_TEAM: u8 = 4;
+const BODY_KINDS: u64 = 0x41;
+const DEAD: u64 = 0x10;
+/// The relation words' bits.
+const FRIENDLY: u64 = 1;
+const HOSTILE: u64 = 2;
+const SEARCHER: u64 = 4;
 
 /// Fields set in quick melee's search (`0043` st5) that the server runs
 /// without: the line of sight from `m_D59188D5` (the eye, `STU_21A13145`)
@@ -167,21 +170,50 @@ enum Gap {
     NoBodies,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Relation {
-    Any,
-    Allies,
-    Enemies,
-}
-
 /// A search's sphere and filter, as evaluated now.
 struct Search {
     entity: Option<u32>,
     offset: [f64; 3],
     radius: f64,
-    relation: Relation,
-    exclude_dead: bool,
-    exclude_self: bool,
+    any: u64,
+    all: u64,
+    none: u64,
+    include: u64,
+    require: u64,
+    exclude: u64,
+}
+
+impl Search {
+    /// Whether `candidate` passes the masks and relation words, as
+    /// `Filter_TestTeamMasks`; `hostile` and `searcher` are its relation to
+    /// the searching entity (relations matter only when a word is set).
+    fn passes(&self, candidate: &TargetCandidate, hostile: bool, searcher: bool) -> bool {
+        let word = filter_word(candidate);
+        let friendly = !hostile || searcher;
+        let relation = |bits: u64| {
+            (bits & FRIENDLY != 0 && friendly)
+                || (bits & HOSTILE != 0 && !friendly)
+                || (bits & SEARCHER != 0 && searcher)
+        };
+        let any = word & self.any != 0 || self.any == ALL_KINDS || relation(self.include);
+        let all = word & self.all == self.all
+            && !(self.require & FRIENDLY != 0 && !friendly
+                || self.require & HOSTILE != 0 && friendly
+                || self.require & SEARCHER != 0 && !searcher);
+        let none = word & self.none != 0 || relation(self.exclude);
+        any && all && !none
+    }
+
+    fn relations(&self) -> bool {
+        self.include | self.require | self.exclude != 0
+    }
+}
+
+/// A body's filter word, as the match sends it (see the module notes).
+fn filter_word(candidate: &TargetCandidate) -> u64 {
+    let team = candidate.team.unwrap_or(FREE_FOR_ALL_TEAM);
+    let dead = if candidate.dead { DEAD } else { 0 };
+    TEAM_BIT << team | BODY_KINDS | dead
 }
 
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
@@ -233,10 +265,6 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.assume(site, &format!("{CLASS} {name}"), answer);
             }
         }
-        let filter = field(&node.fields, "m_filter");
-        if number(filter, "m_4EA686DB") & EXCLUDE_OPEN != 0 {
-            self.assume(site, &format!("{CLASS} m_filter.m_4EA686DB 4"), "not read");
-        }
         let now = self.machine.now_ms;
         let state = self.state_mut(key).expect("active TrackTargets");
         let before: Vec<u32> = state.tracked.iter().map(|target| target.entity).collect();
@@ -285,6 +313,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     fn search_targets(&mut self, id: u16, node: &Node) -> Result<Vec<u32>, Gap> {
         let search = self.target_search(id, node)?;
         let site = self.site(id, node);
+        // The searcher counts as its owner in the enemy test, as in
+        // `STU_53F4CA65`.
+        let owner = self
+            .world
+            .related_entity(site, EntityRelation::Owner, site.entity)
+            .filter(|&owner| expr::valid_entity(owner))
+            .unwrap_or(site.entity);
         let candidates = self.world.target_candidates(site).ok_or(Gap::NoBodies)?;
         let centre = match search.entity {
             Some(entity) => {
@@ -298,22 +333,24 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         };
         let owner = candidates
             .iter()
-            .find(|candidate| candidate.entity == site.entity);
-        let ally = |candidate: &TargetCandidate| {
-            candidate.entity == site.entity
-                || owner.is_some_and(|owner| owner.team.is_some() && owner.team == candidate.team)
-        };
-        if search.relation != Relation::Any && owner.is_none() {
+            .find(|candidate| candidate.entity == owner);
+        if search.relations() && owner.is_none() {
             return Err(Gap::Filter("m_66747E7D"));
         }
+        let hostile = |candidate: &TargetCandidate| {
+            owner.is_some_and(|owner| {
+                candidate.entity != owner.entity
+                    && (owner.team.is_none() || owner.team != candidate.team)
+            })
+        };
         Ok(candidates
             .iter()
-            .filter(|candidate| !(search.exclude_dead && candidate.dead))
-            .filter(|candidate| !(search.exclude_self && candidate.entity == site.entity))
-            .filter(|candidate| match search.relation {
-                Relation::Any => true,
-                Relation::Allies => ally(candidate),
-                Relation::Enemies => !ally(candidate),
+            .filter(|candidate| {
+                search.passes(
+                    candidate,
+                    hostile(candidate),
+                    candidate.entity == site.entity,
+                )
             })
             .filter(|candidate| candidate.distance(centre) <= search.radius)
             .map(|candidate| candidate.entity)
@@ -342,24 +379,6 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             return Err(Gap::Filter(name));
         }
         let number = |name: &str| number(filter, name);
-        let kinds = number("m_84065FD1");
-        if kinds != ALL_KINDS && kinds & BODY_KINDS == 0 {
-            return Err(Gap::Filter("m_84065FD1"));
-        }
-        let excluded = number("m_4EA686DB");
-        if excluded & !(EXCLUDE_DEAD | EXCLUDE_OPEN) != 0 {
-            return Err(Gap::Filter("m_4EA686DB"));
-        }
-        let flags = number("m_89831602");
-        if flags & !(EXCLUDE_SELF | EXCLUDE_ALLIES) != 0 {
-            return Err(Gap::Filter("m_89831602"));
-        }
-        let relation = match (number("m_66747E7D"), flags & EXCLUDE_ALLIES != 0) {
-            (0, false) => Relation::Any,
-            (1, false) => Relation::Allies,
-            (0 | 2, _) => Relation::Enemies,
-            _ => return Err(Gap::Filter("m_66747E7D")),
-        };
         let entity = match field(fields, "m_8DCA77B6") {
             Json::Null => None,
             config => match self.evaluate_quietly(id, node, config) {
@@ -400,9 +419,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             entity,
             offset,
             radius,
-            relation,
-            exclude_dead: excluded & EXCLUDE_DEAD != 0,
-            exclude_self: flags & EXCLUDE_SELF != 0,
+            any: number("m_84065FD1"),
+            all: number("m_1E14CCA8"),
+            none: number("m_4EA686DB"),
+            include: number("m_27CF71D5"),
+            require: number("m_66747E7D"),
+            exclude: number("m_89831602"),
         })
     }
 

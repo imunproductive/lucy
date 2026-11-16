@@ -62,10 +62,13 @@ impl ModeRunner {
             return Self::HandBuilt { gaps: Gaps::new() };
         };
         let graphs = scene.shared_graphs();
-        // The room gives no players or start condition yet: with the
-        // graph's gaps the flow drives the match, so the graph only lists
-        // them here.
-        let world = ModeWorld::new(Arc::clone(&graphs), mode, Unknowns::for_build());
+        // The team sizes are the game's, as the 20300/20301 game struct
+        // sends them. The room gives no players or start condition yet:
+        // with the graph's gaps the flow drives the match, so the graph only
+        // lists them here.
+        let mut world = ModeWorld::new(Arc::clone(&graphs), mode, Unknowns::for_build());
+        world.team_sizes = crate::instance::team_entries(scene.map());
+        world.mode_random = Some(scene.mode_random());
         match ModeScript::start(world, graph, frame) {
             Ok(script) if script.complete() => Self::Graph {
                 script: Box::new(script),

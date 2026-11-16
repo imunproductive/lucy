@@ -56,16 +56,19 @@ fn player_natives_follow_the_verified_owner_and_override_shapes() {
         );
     }
 
-    let ai = json!({"$":"STU_DB742151","m_entity":owner,"m_EE729DCB":0});
-    assert_eq!(evaluate(&mut runtime, &ai), Ok(Value::Entity(0)));
-    let path = json!({"$":"STU_D3EB8D87","m_00903303":ai,"m_EE729DCB":0});
+    // The body's controller (`STU_DB742151`) is the player's, which is no AI
+    // (no component 92): the volleys deal the player's damage.
+    let controller = json!({"$":"STU_DB742151","m_entity":owner,"m_EE729DCB":0});
+    assert_eq!(
+        evaluate(&mut runtime, &controller),
+        Ok(Value::Entity(spawn.controller))
+    );
+    let path = json!({"$":"STU_D3EB8D87","m_00903303":controller,"m_EE729DCB":0});
     assert_eq!(evaluate(&mut runtime, &path), Ok(Value::Bool(false)));
+    // Variable 400 holds no entity now: it has no controller, so no AI.
     let other_path =
         json!({"$":"STU_D3EB8D87","m_00903303":{"$":"STU_DB742151","m_entity":dynamic}});
-    assert_eq!(
-        evaluate(&mut runtime, &other_path),
-        Err(EvalError::UnsupportedConfig("STU_DB742151".into()))
-    );
+    assert_eq!(evaluate(&mut runtime, &other_path), Ok(Value::Bool(false)));
     // IsTutorial (CE8580): whether the mode is the Tutorial
     // (leafall903/ORPHEUS, commit c239a84; Python answered null).
     let branch = json!({"$":"STU_A77AC2AC","m_EE729DCB":0});
@@ -267,7 +270,8 @@ fn typed_health_queries_read_the_live_distribution_after_damage() {
     }
     let mut body = factory.start(spawn).unwrap();
     for (kind, amount) in [(0, 200.0), (1, 50.0), (2, 25.0)] {
-        for class in [current, maximum] {
+        // `STU_F1C45C59`/`STU_005D99E6` read the same pools.
+        for class in [current, maximum, "STU_F1C45C59", "STU_005D99E6"] {
             assert_eq!(
                 evaluate(&mut body, &query(class, kind)),
                 Ok(Value::Float(amount))
@@ -322,7 +326,12 @@ fn entity_relations_resolve_only_the_active_player_pair() {
     let mut first = factory.start(spawn).unwrap();
     let mut second = factory.start(replacement).unwrap();
     let target = json!({"$":"STUConfigVarDynamic","m_identifier":400,"m_60DB8F99":true});
+    // The client's `STU_F76C486C` is component 72's owner (a projectile's),
+    // none for a body or a controller; `STU_DB742151` is the entity itself
+    // if it has component 44 (the controller), else its possessor
+    // (KillFeed.md, "Client tools pass (2026-11-16)").
     let owner = json!({"$":"STU_F76C486C","m_D63CBEC2":target,"m_EE729DCB":0});
+    let controller = json!({"$":"STU_DB742151","m_entity":target,"m_EE729DCB":0});
     let possessor = json!({"$":"STU_F7262B36","m_801B298F":target});
     let body = json!({"$":"STU_0AC15F78","m_entity":target});
     let invalid_owner = json!({"$":"STU_F76C486C","m_D63CBEC2":target,"m_EE729DCB":1});
@@ -336,9 +345,10 @@ fn entity_relations_resolve_only_the_active_player_pair() {
             .evaluate_state_config(1, 0, config, &mut runtime.world)
     };
     let unsupported_owner = || Err(EvalError::UnsupportedConfig("STU_F76C486C".into()));
+    let unsupported_controller = || Err(EvalError::UnsupportedConfig("STU_DB742151".into()));
     let unsupported_body = || Err(EvalError::UnsupportedConfig("STU_0AC15F78".into()));
     assert_eq!(
-        evaluate(&mut first, &owner, Value::Entity(spawn.entity)),
+        evaluate(&mut first, &controller, Value::Entity(spawn.entity)),
         Ok(Value::Entity(spawn.controller))
     );
     assert_eq!(
@@ -353,18 +363,34 @@ fn entity_relations_resolve_only_the_active_player_pair() {
         evaluate(&mut second, &body, Value::Entity(spawn.controller)),
         Ok(Value::Entity(replacement.entity))
     );
-    assert_eq!(
-        evaluate(&mut second, &owner, Value::Entity(replacement.entity)),
-        Ok(Value::Entity(spawn.controller))
-    );
+    for entity in [replacement.entity, spawn.controller] {
+        assert_eq!(
+            evaluate(&mut second, &controller, Value::Entity(entity)),
+            Ok(Value::Entity(spawn.controller))
+        );
+        assert_eq!(
+            evaluate(&mut second, &owner, Value::Entity(entity)),
+            Ok(Value::Entity(0))
+        );
+    }
     assert_eq!(
         evaluate(&mut second, &possessor, Value::Entity(replacement.entity)),
         Ok(Value::Entity(spawn.controller))
     );
-    for entity in [spawn.entity, spawn.controller, 0] {
+    // An entity this world doesn't know is refused; no entity relates to
+    // none.
+    assert_eq!(
+        evaluate(&mut second, &owner, Value::Entity(spawn.entity)),
+        unsupported_owner()
+    );
+    assert_eq!(
+        evaluate(&mut second, &controller, Value::Entity(spawn.entity)),
+        unsupported_controller()
+    );
+    for config in [&owner, &controller] {
         assert_eq!(
-            evaluate(&mut second, &owner, Value::Entity(entity)),
-            unsupported_owner()
+            evaluate(&mut second, config, Value::Entity(0)),
+            Ok(Value::Entity(0))
         );
     }
     assert_eq!(
@@ -1665,9 +1691,9 @@ fn the_wheel_refuses_a_fourth_choice_until_a_count_expires() {
 /// #6034 (st32) and #6036 (st33), all in the owner frames; the observers get
 /// the countdown's remote state. On death it tells the mode its time (`08BB`,
 /// st41) and, when the count ends, that it can respawn (`0685`). Soldier's
-/// own death path has two gaps a debug build refuses (`01C7` node 68
-/// `STU_3716E1D4`, `01D8` node 98 `STU_309B0570`), so the body tolerates
-/// unknown content, as release builds do.
+/// own death path has a gap a debug build refuses (`01C7` node 68, the aim
+/// speed `STU_3716E1D4`), so the body tolerates unknown content, as release
+/// builds do.
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
@@ -1696,6 +1722,7 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
             ..Movement::default()
         },
         quanta: RETAIL_QUANTA,
+        mode_random: 0.5,
     };
     let factory = PlayerBodyFactory::prepare(
         Arc::clone(&graphs),
@@ -1785,7 +1812,8 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
 
     // The count runs at 1 a second from the death's frame: 3000 ms is past
     // after 188 frames of 16 ms (187 make 2992 ms), when it sends `0685`
-    // (`0221` the body's AI control entity, none for a player; `03D9`
+    // (`0221` the body's controller, `STU_DB742151`: the client's possessor
+    // of the body, KillFeed.md "Client tools pass (2026-11-16)"; `03D9`
     // #22241 = 0, no respawn camera).
     for frame in 1..188 {
         runtime
@@ -1804,7 +1832,10 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
         to_mode(&mut runtime),
         [(
             0x0240_0000_0000_0685,
-            Variables::from([(0x221, Value::Entity(0)), (0x3d9, Value::Float(0.0))])
+            Variables::from([
+                (0x221, Value::Entity(spawn.controller)),
+                (0x3d9, Value::Float(0.0))
+            ])
         )]
     );
     let done = projected(&runtime, View::Owner);

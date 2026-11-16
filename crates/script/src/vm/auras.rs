@@ -13,6 +13,12 @@
 //! body takes (`CombatModFilter`), heal or damage it and end after their
 //! `Wait` (4 s) with the instance (`STU_22926252`).
 //!
+//! The aura's instance is created with its applier, so its `#27` (the
+//! creator, [`CREATOR`]) is the instigator, as are its children's: `0C72`
+//! and `0B99` pick their amount by whether an AI controls `#27` (`0C72`
+//! node 6: 60 damage, else an AI-scaled value; `0B99` node 7: 100
+//! healing; `STU_D3EB8D87` of `STU_DB742151` of `#27`).
+//!
 //! Assumed, as nothing in the data says: the aura's own instance leaves the
 //! body after the aura's `m_7DAE8F10` seconds when that is above 0 (0.1 s
 //! for `0267`, enough to play its children), else when its graph exits; a
@@ -49,7 +55,7 @@ impl Component {
         let id = u16::try_from(self.machine.next_id).map_err(|_| InitFault::InstanceIdExhausted)?;
         let mut created = false;
         self.run(world, |vm| {
-            created = vm.create(id, graph, None, Variables::new())?;
+            created = vm.create(id, graph, None, Variables::new(), instigator)?;
             if !created {
                 return Ok(());
             }
@@ -106,24 +112,3 @@ impl<W: World> Vm<'_, '_, '_, W> {
         Ok(())
     }
 }
-
-/// Whether `config` asks if an AI controls the entity in the instance's
-/// `#27` (`STU_D3EB8D87` of `STU_DB742151` of `#27`): Biotic Grenade's
-/// auras pick their amount by it (`0C72` node 6: 60 damage, else an
-/// AI-scaled value; `0B99` node 7: 100 healing). No graph writes `#27`
-/// (35 graphs read it; `0096` sends a message to it), so the engine sets
-/// it, perhaps to the instance's creator. The worlds answer false, so the
-/// public amounts apply: an assumption.
-pub fn asks_ai_of_unset_creator(config: &Json) -> bool {
-    let inner = field(config, "m_00903303");
-    let entity = field(inner, "m_entity");
-    field(config, "$").as_str() == Some("STU_D3EB8D87")
-        && field(inner, "$").as_str() == Some("STU_DB742151")
-        && field(entity, "$").as_str() == Some("STUConfigVarDynamic")
-        && field(entity, "m_identifier").as_u64() == Some(CREATOR)
-        && !expr::json_flag(field(entity, "m_60DB8F99"))
-}
-
-/// The instance variable no graph writes (see
-/// [`asks_ai_of_unset_creator`]).
-const CREATOR: u64 = 27;

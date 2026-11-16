@@ -42,11 +42,27 @@ pub struct Variable {
     pub id: u32,
 }
 
+/// How one entity relates to another, as the client's natives resolve it
+/// (ElimName.md and KillFeed.md, "Client tools pass (2026-11-16)").
+/// An entity the relation doesn't reach answers entity 0 (none).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EntityRelation {
-    OwningController,
+    /// `STU_F76C486C`: the owner of an entity the game created for another
+    /// (component 72 `+0xD8`: a projectile's or a deployable's owner); none
+    /// for an entity without component 72, a body or a controller
+    /// (`0x7FF789C2BEE0`). The graphs read it as "the owner, else the entity
+    /// itself" (`01CF` rid115).
+    Owner,
+    /// `STU_F7262B36`: the entity that currently possesses the body.
     CurrentPossessor,
+    /// `STU_0AC15F78`: the body the entity possesses.
     PossessedBody,
+    /// `STU_DB742151`: the entity itself if it has component 44 (it
+    /// possesses a body: a controller), else its possessor from the
+    /// client's reverse table of component 44 (`0x7FF789CB7F10`).
+    Controller,
+    /// The AI entity that drives the body (`STU_066B4605`'s target): none for
+    /// a human player's body. Not a native of its own; the server's.
     AiControlEntity,
 }
 
@@ -134,6 +150,19 @@ pub trait Context {
     }
 
     fn random_u64(&mut self) -> Option<u64> {
+        None
+    }
+
+    /// The match's value of the mode entity's component 114 field 9
+    /// (`m_CFF0C4E3`, in [0, 1)), which `STU_B182C5C9` reads; None: the
+    /// world doesn't know it.
+    fn mode_random(&mut self) -> Option<f64> {
+        None
+    }
+
+    /// Whether `entity` is an AI controller (has component 92); None:
+    /// unknown.
+    fn controller_is_ai(&mut self, _entity: u32) -> Option<bool> {
         None
     }
 
@@ -680,10 +709,6 @@ fn authored_pairs(
     Ok(Value::Pairs(pairs))
 }
 
-pub(crate) fn json_flag(value: &Json) -> bool {
-    json_truthy(value)
-}
-
 fn json_truthy(value: &Json) -> bool {
     match value {
         Json::Null => false,
@@ -1191,6 +1216,31 @@ impl Evaluator {
                     _ => Value::Null,
                 }
             }
+            // An entity's position (`Eval_STU_309B0570` 0x7FF789C028B0 →
+            // `sub_7FF789C2FD80`; ModeGraphGaps.md, "Client tools pass 2
+            // (2026-11-16)"): with `m_5B94EDB8` true, the point of its
+            // component 33 (`STU_AF1D443B`), which the server doesn't
+            // model (a world's own answer or unsupported); else its world
+            // position (component 28, the node's local vector placed in its
+            // parent's frame). No entity or an invalid one fails, null here.
+            // Soldier: 76's death path (`01D8` rid92) takes the attacker's
+            // (#392) away from #681.
+            "STU_309B0570" if native_fields(config, &["m_entity", "m_5B94EDB8"]) => {
+                let anchored = child(config, "m_5B94EDB8");
+                if !anchored.is_null() && truthy(&self.config(anchored, context, nested)?) {
+                    return context
+                        .native(config)
+                        .ok_or_else(|| EvalError::UnsupportedConfig(class.into()));
+                }
+                match to_entity(&self.config(child(config, "m_entity"), context, nested)?) {
+                    Some(entity) if valid_entity(entity) => Value::Vector(
+                        context
+                            .entity_position(entity)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    ),
+                    _ => Value::Null,
+                }
+            }
             // Where a body looks: 2200A66D along its aim, 021D01CD along the
             // ground, C8C4C20D its heading in degrees, atan2(x, z) of the
             // ground direction (`BodyWorld.native` in leafall903/ORPHEUS,
@@ -1231,9 +1281,9 @@ impl Evaluator {
             }
             "STU_F76C486C" | "STU_F7262B36" | "STU_0AC15F78" | "STU_DB742151" => {
                 let (relation, operand) = match class {
-                    "STU_F76C486C" => (EntityRelation::OwningController, "m_D63CBEC2"),
+                    "STU_F76C486C" => (EntityRelation::Owner, "m_D63CBEC2"),
                     "STU_F7262B36" => (EntityRelation::CurrentPossessor, "m_801B298F"),
-                    "STU_DB742151" => (EntityRelation::AiControlEntity, "m_entity"),
+                    "STU_DB742151" => (EntityRelation::Controller, "m_entity"),
                     _ => (EntityRelation::PossessedBody, "m_entity"),
                 };
                 if !native_shape(config, class, Some(operand)) {
@@ -1247,44 +1297,79 @@ impl Evaluator {
                 else {
                     return Err(EvalError::UnsupportedConfig(class.into()));
                 };
+                // No entity relates to none (the client's lookups fail):
+                // `0033` rid40 asks which body the owner's owner possesses,
+                // and a body has no owner.
+                if !valid_entity(entity) {
+                    return Ok(Value::Entity(0));
+                }
                 let related = context
                     .related_entity(relation, entity)
                     .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
                 Value::Entity(related)
             }
-            // Whether `m_target` is an ally of `m_source`: of its team, or
-            // itself (`0C71` plays Biotic Grenade's ally aura `0B99` when
-            // true, its enemy aura `0C72` when false). Assumption: read from
-            // that use; `m_AFBBE9C3` (false or unset in every use) is not
-            // modelled.
-            "STU_53F4CA65"
-                if native_fields(config, &["m_target", "m_source", "m_AFBBE9C3"])
-                    && !json_truthy(child(child(config, "m_AFBBE9C3"), "m_value")) =>
-            {
+            // "`m_target` is not an enemy of `m_source`", as the client's
+            // `Eval_STU_53F4CA65` (0x7FF789BFAD90 → 0x7FF789B2C0E0, the negated
+            // enemy test 0x7FF789B2CF60; HealthAuras.md, "Client tools pass
+            // (2026-11-16)"): with `m_AFBBE9C3` the source is ignored and the
+            // answer is "the target's team is not 1"; otherwise a missing
+            // entity is an ally only of itself, each side counts as its owner
+            // when it has one (a projectile as its thrower), the same entity
+            // is an ally, and teams -1 and 4 (free-for-all) make everyone else
+            // an enemy. `0C71` plays Biotic Grenade's ally aura `0B99` when
+            // true, its enemy aura `0C72` when false. Not modelled: the
+            // client's spectator test (0x7FF789B2F000) on both sides. An
+            // entity whose owner the world doesn't know counts as ownerless
+            // (assumption).
+            "STU_53F4CA65" if native_fields(config, &["m_target", "m_source", "m_AFBBE9C3"]) => {
                 let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let flag = child(config, "m_AFBBE9C3");
+                let target_only = !flag.is_null() && truthy(&self.config(flag, context, nested)?);
                 let target = to_entity(&self.config(child(config, "m_target"), context, nested)?);
+                if target_only {
+                    let team = match target.filter(|&entity| valid_entity(entity)) {
+                        Some(target) => context.entity_team(target).ok_or_else(unsupported)?,
+                        None => -1,
+                    };
+                    return Ok(Value::Bool(team != 1));
+                }
                 let source = to_entity(&self.config(child(config, "m_source"), context, nested)?);
-                match (target, source) {
-                    (Some(target), Some(source))
-                        if valid_entity(target) && valid_entity(source) =>
-                    {
-                        if target == source {
-                            Value::Bool(true)
-                        } else {
-                            let target = context.entity_team(target).ok_or_else(unsupported)?;
-                            let source = context.entity_team(source).ok_or_else(unsupported)?;
-                            Value::Bool(target == source)
-                        }
-                    }
-                    _ => Value::Bool(false),
+                // A value that is no entity at all is no ally.
+                let (Some(target), Some(source)) = (target, source) else {
+                    return Ok(Value::Bool(false));
+                };
+                if !valid_entity(target) || !valid_entity(source) {
+                    return Ok(Value::Bool(target == source));
+                }
+                let mut owner = |entity: u32| {
+                    context
+                        .related_entity(EntityRelation::Owner, entity)
+                        .filter(|&owner| valid_entity(owner))
+                        .unwrap_or(entity)
+                };
+                let (target, source) = (owner(target), owner(source));
+                if target == source {
+                    Value::Bool(true)
+                } else {
+                    let target = context.entity_team(target).ok_or_else(unsupported)?;
+                    let source = context.entity_team(source).ok_or_else(unsupported)?;
+                    let free_for_all = |team| team == -1 || team == 4;
+                    Value::Bool(!free_for_all(target) && !free_for_all(source) && target == source)
                 }
             }
+            // Whether the entity has component 92 (an AI controller). A
+            // world's own answer comes first; no entity has none.
             "STU_D3EB8D87" if native_shape(config, class, Some("m_00903303")) => {
                 if let Some(value) = context.native(config) {
                     value
                 } else {
                     match self.config(child(config, "m_00903303"), context, nested)? {
                         Value::Entity(entity) if !valid_entity(entity) => Value::Bool(false),
+                        Value::Entity(entity) => Value::Bool(
+                            context
+                                .controller_is_ai(entity)
+                                .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                        ),
                         _ => return Err(EvalError::UnsupportedConfig(class.into())),
                     }
                 }
@@ -1305,7 +1390,15 @@ impl Evaluator {
                     _ => Value::Float(0.0),
                 }
             }
-            "STU_783B4CF0" | "STU_68883EAC" => {
+            // A pool kind's current (783B4CF0, F1C45C59) or maximum
+            // (68883EAC, 005D99E6) health: kind 0 the health pools, 1 armour,
+            // 2 shields. F1C45C59 and 005D99E6 are the client's sums over
+            // component 51's pools of the kind (`Eval_STU_F1C45C59`
+            // 0x7FF789C055D0 → 0x7FF7894CFBA0, `Eval_STU_005D99E6`
+            // 0x7FF789BDBD10 → 0x7FF7894D01F0; no entity reads 0; BotVoice.md,
+            // "Client tools pass (2026-11-16)"). `05AD` rid147 rates the
+            // sender of Need Healing's `0307` by them.
+            "STU_783B4CF0" | "STU_68883EAC" | "STU_F1C45C59" | "STU_005D99E6" => {
                 let unsupported = || EvalError::UnsupportedConfig(class.into());
                 if !native_fields(config, &["m_entity", "m_7E8B666C", "m_7BE02F89"])
                     || !child(config, "m_7BE02F89").is_null()
@@ -1326,13 +1419,18 @@ impl Evaluator {
                         _ => return Err(unsupported()),
                     }
                 };
-                let Value::Entity(entity) =
-                    self.config(child(config, "m_entity"), context, nested)?
-                else {
-                    return Err(unsupported());
+                let entity = to_entity(&self.config(child(config, "m_entity"), context, nested)?);
+                let summed = matches!(class, "STU_F1C45C59" | "STU_005D99E6");
+                let entity = match entity {
+                    Some(entity) if summed && !valid_entity(entity) => {
+                        return Ok(Value::Float(0.0));
+                    }
+                    Some(entity) => entity,
+                    None => return Err(unsupported()),
                 };
+                let maximum = matches!(class, "STU_68883EAC" | "STU_005D99E6");
                 let health = context
-                    .body_health(entity, Some(kind), class == "STU_68883EAC")
+                    .body_health(entity, Some(kind), maximum)
                     .ok_or_else(unsupported)?;
                 Value::Float(rounded(health))
             }
@@ -1399,20 +1497,23 @@ impl Evaluator {
                     .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
                 Value::Float(rounded(low + (high - low) * unit_interval(sample)))
             }
-            // A random number in [0, 1) from the component's random stream.
-            // It has no fields; its three uses read it so: `0F4A` uid 1299
-            // keeps one per match as #29093, `1225` uid 363 scales the
-            // payload's speed by `1 - v + 2v·x` (v = 0.1) and `0C8E` uid 136
-            // takes `(x - 0.5)·2`. Inferred from those uses
-            // (refs/reports/Payloads.md), not read in the client.
-            // A context without a random stream may answer it as a native
-            // (the static rule reader takes the middle, 0.5).
-            "STU_B182C5C9" if native_shape(config, class, None) => match context.random_u64() {
-                Some(sample) => Value::Float(rounded(unit_interval(sample))),
-                None => context
-                    .native(config)
+            // Not a fresh random number: the client returns the mode
+            // entity's component 114 mirror field 9 `m_CFF0C4E3` (an f32 at
+            // component `+0x170`, read from the first entry of the
+            // component-114 pool `sub_7FF789C1A0A0`), the same every
+            // evaluation, and 0.5 when there is no mode entity
+            // (`Eval_STU_B182C5C9` 0x7FF789BDDF50; ModeGraphGaps.md and
+            // Payloads.md, "Client tools pass 2 (2026-11-16)"). The server
+            // draws one per match in [0, 1) and sends it in the mode
+            // entity's create (`orpheus_sim::scene::mode_create`); every
+            // world answers that value. Its uses: `0F4A` uid 1299 keeps it
+            // as #29093, `1225` uid 363 scales the payload's speed by
+            // `1 - v + 2v·x` (v = 0.1), `0C8E` uid 136 takes `(x - 0.5)·2`.
+            "STU_B182C5C9" if native_shape(config, class, None) => Value::Float(
+                context
+                    .mode_random()
                     .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
-            },
+            ),
             // The least of the values of `m_814F8EC3` (arrays opened), each as
             // an f32, a value that is no number counting as the default
             // `m_A53100D5` (itself 0 when it is no number); no value gives the
@@ -1503,10 +1604,27 @@ impl Evaluator {
                     return Ok(value);
                 }
                 match class {
-                    "STU_CC623180" => Value::Bool(true),  // IsHUDEnabled
-                    "STU_98E9109B" => Value::Bool(false), // CustomGameLogicEnabled
-                    "STU_5E75FF05" => Value::Integer(0),  // ReticleType
-                    "STU_C76C63AF" => Value::Float(0.0),  // ReticleNumericSetting
+                    "STU_CC623180" => Value::Bool(true), // IsHUDEnabled
+                    // CustomGameLogicEnabled: the client's console variable
+                    // 0x027006C2 (object 0x7FF78BD46728), 1 by default and in
+                    // the in-game dump (GameSettings.md, "Client tools pass
+                    // (2026-11-16)"). Its 28 uses, each a `Condition_Bool`
+                    // right after a graph's entry, push #31254e by a networked
+                    // StateStack that no graph reads.
+                    "STU_98E9109B" => Value::Bool(true),
+                    "STU_5E75FF05" => Value::Integer(0), // ReticleType
+                    "STU_C76C63AF" => Value::Float(0.0), // ReticleNumericSetting
+                    // An engine console variable by its hash `m_74A2248F`
+                    // (getter table 0x7FF789C04A60), as the in-game dump has
+                    // them (ModeGraphGaps.md, "Client tools pass
+                    // (2026-11-16)"): 0xE1C1E402 an int, 128 (`0CBB` rid104),
+                    // 0x0FE1E03E a bool, false (`0CBB` rid122). The others'
+                    // values are not known.
+                    "STU_A753DC79" => match child(config, "m_74A2248F").as_i64() {
+                        Some(hash) if hash as u32 == 0xE1C1_E402 => Value::Integer(128),
+                        Some(hash) if hash as u32 == 0x0FE1_E03E => Value::Bool(false),
+                        _ => return Err(EvalError::UnsupportedConfig(class.into())),
+                    },
                     _ => return Err(EvalError::UnsupportedConfig(class.into())),
                 }
             }

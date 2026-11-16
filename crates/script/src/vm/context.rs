@@ -24,7 +24,15 @@ impl<W: World> InstanceContext<'_, W> {
 
 impl<W: World> Context for InstanceContext<'_, W> {
     fn variable(&mut self, variable: Variable) -> Value {
-        self.read(source_key(self.site.instance, variable))
+        let value = self.read(source_key(self.site.instance, variable));
+        // `#27` unwritten is the entity the instance was created with,
+        // which the engine holds (not a variable the frames carry).
+        if value == Value::Null && variable.scope == Scope::Instance && variable.id == CREATOR {
+            if let Some(source) = self.machine.snapshot.instances[&self.site.instance].source {
+                return Value::Entity(source);
+            }
+        }
+        value
     }
 
     fn parent_variable(&mut self, levels: u8, variable: Variable) -> Value {
@@ -73,6 +81,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
 
     fn position(&mut self, entity: u32) -> [f64; 3] {
         self.world.position(entity)
+    }
+
+    fn mode_random(&mut self) -> Option<f64> {
+        self.read_native = true;
+        self.world.mode_random()
     }
 
     fn random_u64(&mut self) -> Option<u64> {
@@ -185,6 +198,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
     fn related_entity(&mut self, relation: EntityRelation, entity: u32) -> Option<u32> {
         self.read_native = true;
         self.world.related_entity(self.site, relation, entity)
+    }
+
+    fn controller_is_ai(&mut self, entity: u32) -> Option<bool> {
+        self.read_native = true;
+        self.world.controller_is_ai(self.site, entity)
     }
 
     fn would_stack_to_top(&mut self, variable: Variable, priority: StackPriority) -> Option<bool> {

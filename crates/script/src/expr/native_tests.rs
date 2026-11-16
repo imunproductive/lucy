@@ -281,6 +281,35 @@ fn entity_position_reads_bound_entities_and_passes_vectors() {
     }
 }
 
+/// `Eval_STU_309B0570`: an entity's world position (component 28); no
+/// entity fails (null); with `m_5B94EDB8` it is component 33's point, which
+/// only a world's own answer gives.
+#[test]
+fn entity_world_position_reads_the_entity_or_its_anchor() {
+    let mut world = World::default();
+    world.positions.insert(OTHER, [1.0, 2.0, 3.0]);
+    let position = query("STU_309B0570", "m_entity", var(1));
+    for (value, expected) in [
+        (Value::Entity(OTHER), Ok(Value::Vector([1.0, 2.0, 3.0]))),
+        (Value::Entity(0), Ok(Value::Null)),
+        (Value::Null, Ok(Value::Null)),
+        (
+            Value::Entity(UNKNOWN),
+            Err(EvalError::UnsupportedConfig("STU_309B0570".into())),
+        ),
+    ] {
+        world.variables.insert(1, value.clone());
+        assert_eq!(evaluate(&position, &mut world), expected, "{value:?}");
+    }
+    let mut anchored = position;
+    anchored["m_5B94EDB8"] = json!({"$":"STUConfigVarBool","m_value":true});
+    world.variables.insert(1, Value::Entity(OTHER));
+    assert_eq!(
+        evaluate(&anchored, &mut world),
+        Err(EvalError::UnsupportedConfig("STU_309B0570".into()))
+    );
+}
+
 /// `driver.py` (2200A66D, 021D01CD, C8C4C20D): the aim, the direction
 /// along the ground and the heading in degrees, atan2(x, z).
 #[test]

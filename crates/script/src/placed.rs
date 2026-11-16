@@ -103,6 +103,7 @@ impl PlacedEntity {
 struct Shared<'a> {
     graphs: &'a GraphStore,
     mode: u64,
+    mode_random: f32,
     unknowns: Unknowns,
     players: &'a [TargetCandidate],
     outbox: &'a mut Vec<GameMessage>,
@@ -132,6 +133,10 @@ impl World for EntityWorld<'_, '_> {
             .graphs
             .rulesets()
             .default(id, 0, self.shared.mode)
+    }
+
+    fn mode_random(&self) -> Option<f64> {
+        Some(f64::from(self.shared.mode_random))
     }
 
     fn position(&mut self, entity: u32) -> [f64; 3] {
@@ -203,6 +208,8 @@ impl World for EntityWorld<'_, '_> {
 pub struct MapEntityWorld {
     graphs: Arc<GraphStore>,
     mode: u64,
+    /// The match's mode entity value (`World::mode_random`).
+    mode_random: f32,
     unknowns: Unknowns,
     players: Vec<TargetCandidate>,
     outbox: Vec<GameMessage>,
@@ -216,6 +223,7 @@ impl MapEntityWorld {
     pub fn start<'p>(
         graphs: Arc<GraphStore>,
         mode: u64,
+        mode_random: f32,
         unknowns: Unknowns,
         placements: impl IntoIterator<Item = Placement<'p>>,
         frame: u32,
@@ -223,6 +231,7 @@ impl MapEntityWorld {
         let mut world = Self {
             graphs,
             mode,
+            mode_random,
             unknowns,
             players: Vec::new(),
             outbox: Vec::new(),
@@ -246,6 +255,7 @@ impl MapEntityWorld {
             let mut shared = Shared {
                 graphs: &world.graphs,
                 mode,
+                mode_random,
                 unknowns,
                 players: &world.players,
                 outbox: &mut world.outbox,
@@ -309,6 +319,7 @@ impl MapEntityWorld {
         let mut shared = Shared {
             graphs: &self.graphs,
             mode: self.mode,
+            mode_random: self.mode_random,
             unknowns: self.unknowns,
             players: &self.players,
             outbox: &mut self.outbox,

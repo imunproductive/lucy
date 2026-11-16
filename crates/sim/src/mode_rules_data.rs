@@ -88,16 +88,15 @@ const PHASE: u32 = 59;
 const ROLLBACK_FACTOR: u32 = 9671;
 /// 1225 uid 34: the push speed, `v7779 * min(2, 1.5 + 0.25 * (len(v573) -
 /// 1)) * (1 - v9083 + 2 * v9083 * random) * v9671`: the map's speed factor
-/// v7779, the pushers v573, the random spread v9083 (uid 363: 0.1).
+/// v7779, the pushers v573, the random spread v9083 (uid 363: 0.1). The
+/// "random" (`STU_B182C5C9`) is the match's value of the mode entity's
+/// component 114 field 9, which the server sends (`scene::mode_create`;
+/// refs `Payloads.md`, "Client tools pass 2 (2026-11-16)").
 const PUSH_MOVE: u32 = 34;
 const MAP_SPEED: u32 = 7779;
 const PUSHERS: u32 = 573;
 const SPREAD: (u32, u32) = (363, 9083);
-/// The random number in [0, 1] of the push speed (refs `Payloads.md` §2:
-/// a field-less config var that the other graphs use as one). The server
-/// reads the speed at its middle, 0.5, which leaves the factor out: when it
-/// is drawn and whether the client draws it at all is unknown.
-const RANDOM: &str = "STU_B182C5C9";
+
 /// 1225 uid 75: the run of its own, `2.0 * v9671`.
 const AUTO_MOVE: u32 = 75;
 /// 1225 uid 44: the rollback.
@@ -213,8 +212,14 @@ pub struct ModeRulesData {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PayloadRules {
     /// With 1, 2 and 3 or more pushers at a map speed factor (v7779) of 1
-    /// (uid 34: 1.5, 1.75, 2; the speed is proportional to the factor).
+    /// (uid 34: 1.5, 1.75, 2; the speed is proportional to the factor),
+    /// once [`PayloadRules::at_random`] applied the match's value; before,
+    /// at the value's middle, 0.5.
     pub push_speeds: [f64; 3],
+    /// How far the match's value moves the push speeds from the middle:
+    /// at a value `x` they are `1 + push_spread * (2x - 1)` times those at
+    /// 0.5 (uid 363: 0.1).
+    pub push_spread: f64,
     /// Its runs of its own (uid 75: 2).
     pub auto_speed: f64,
     /// Rolling back (uid 44: 0.3).
@@ -236,6 +241,14 @@ impl PayloadRules {
         self.push_speeds = self.push_speeds.map(|speed| speed * factor);
         self.auto_speed *= factor;
         self.rollback_speed *= factor;
+        self
+    }
+
+    /// The push speeds at the match's value `random` of
+    /// `STU_B182C5C9`.
+    fn at_random(mut self, random: f64) -> Self {
+        let scale = 1.0 + self.push_spread * (2.0 * random - 1.0);
+        self.push_speeds = self.push_speeds.map(|speed| speed * scale);
         self
     }
 }
@@ -261,7 +274,7 @@ impl ModeRulesData {
         })?;
         let rules = Self::read(graphs, &objectives)?;
         for mode in FLOW_MODES {
-            rules.rules(graphs.rulesets(), mode)?;
+            rules.rules(graphs.rulesets(), mode, 0.5)?;
         }
         Ok(rules)
     }
@@ -308,9 +321,10 @@ impl ModeRulesData {
     }
 
     /// The rules of a mode's flow: these values and the mode's ruleset
-    /// defaults. Fails when the mode's schemas lack an entry its flow plays
-    /// by.
-    pub fn rules(&self, rulesets: &Rulesets, mode: u64) -> io::Result<ModeRules> {
+    /// defaults, the payload's push speeds at the match's value of
+    /// `STU_B182C5C9` (`mode_random`, in [0, 1)). Fails when the mode's
+    /// schemas lack an entry its flow plays by.
+    pub fn rules(&self, rulesets: &Rulesets, mode: u64, mode_random: f32) -> io::Result<ModeRules> {
         let number = |key: u32| -> io::Result<f64> {
             match rulesets.default(key, 0, mode) {
                 Some(Value::Integer(value)) => Ok(value as f64),
@@ -366,7 +380,11 @@ impl ModeRulesData {
                 rules.round_time = number(TEAM_DEATHMATCH_TIME)? * 60.0;
             }
             Some(Mode::Escort | Mode::Hybrid) => {
-                rules.payload = Some(self.payload.at_speed(number(PAYLOAD_SPEED)?));
+                rules.payload = Some(
+                    self.payload
+                        .at_speed(number(PAYLOAD_SPEED)?)
+                        .at_random(f64::from(mode_random)),
+                );
             }
             Some(Mode::Assault | Mode::Skirmish) | None => {}
         }
@@ -557,7 +575,7 @@ impl Reader<'_> {
         };
         let spread = self.set(PAYLOAD_GRAPH, SPREAD)?;
         let push = self.node(PAYLOAD_GRAPH, PUSH_MOVE, PATH_MOVE)?;
-        let push_at = |map: f64, pushers: usize| -> io::Result<f64> {
+        let push_at = |map: f64, pushers: usize, random: f64| -> io::Result<f64> {
             let variables = [
                 (MAP_SPEED, Value::Float(map)),
                 (PUSHERS, Value::Array(vec![Value::Null; pushers])),
@@ -566,7 +584,7 @@ impl Reader<'_> {
             ];
             let mut inputs = Inputs {
                 variables: &variables,
-                natives: &[(RANDOM, Value::Float(0.5))],
+                mode_random: Some(random),
                 ..Inputs::default()
             };
             let at = || format!("{PAYLOAD_GRAPH:04X} uid {PUSH_MOVE}");
@@ -576,14 +594,30 @@ impl Reader<'_> {
             let speed = to_float(&inputs.evaluate(at, config)?);
             positive(PAYLOAD_GRAPH, PUSH_MOVE, speed)
         };
-        let push_speeds = [push_at(1.0, 1)?, push_at(1.0, 2)?, push_at(1.0, 3)?];
+        let push_speeds = [
+            push_at(1.0, 1, 0.5)?,
+            push_at(1.0, 2, 0.5)?,
+            push_at(1.0, 3, 0.5)?,
+        ];
         // More than three push as three; the map factor scales the speed.
-        if !close(push_at(1.0, 4)?, push_speeds[2])
-            || !close(push_at(2.0, 1)?, 2.0 * push_speeds[0])
+        if !close(push_at(1.0, 4, 0.5)?, push_speeds[2])
+            || !close(push_at(2.0, 1, 0.5)?, 2.0 * push_speeds[0])
         {
             return Err(invalid(format!(
                 "{PAYLOAD_GRAPH:04X} uid {PUSH_MOVE}: the push speed is no longer capped at three \
                  pushers and proportional to v{MAP_SPEED}"
+            )));
+        }
+        // The match's value moves every push speed by the same share, in
+        // proportion to its distance from the middle.
+        let (low, high) = (push_at(1.0, 1, 0.0)?, push_at(1.0, 1, 1.0)?);
+        let push_spread = (high - low) / (2.0 * push_speeds[0]);
+        if !close(low + high, 2.0 * push_speeds[0])
+            || !close(push_at(1.0, 3, 1.0)?, push_speeds[2] * (1.0 + push_spread))
+        {
+            return Err(invalid(format!(
+                "{PAYLOAD_GRAPH:04X} uid {PUSH_MOVE}: the push speed no longer scales with \
+                 STU_B182C5C9 in proportion"
             )));
         }
         let near = to_float(&self.set(PAYLOAD_GRAPH, RANGES[0])?);
@@ -596,6 +630,7 @@ impl Reader<'_> {
         let centre = self.trackers_centre(RANGES.map(|(_, variable)| variable))?;
         Ok(PayloadRules {
             push_speeds: push_speeds.map(|speed| speed * factor),
+            push_spread,
             auto_speed: speed(AUTO_MOVE, 1.0)? * factor,
             rollback_speed: speed(ROLLBACK_MOVE, -1.0)? * factor,
             rollback_after: positive(
@@ -724,12 +759,13 @@ fn evaluate_with(
 }
 
 /// An expression's inputs: variables, ruleset entries, native configs (by
-/// class) and the entity that runs it (at the origin); the first other
-/// thing it reads is kept.
+/// class), the match's mode entity value (`STU_B182C5C9`) and the entity
+/// that runs it (at the origin); the first other thing it reads is kept.
 struct Inputs<'a> {
     variables: &'a [(u32, Value)],
     rulesets: &'a [(u32, Value)],
     natives: &'a [(&'a str, Value)],
+    mode_random: Option<f64>,
     owner: Value,
     unknown: Option<String>,
 }
@@ -740,6 +776,7 @@ impl Default for Inputs<'_> {
             variables: &[],
             rulesets: &[],
             natives: &[],
+            mode_random: None,
             owner: Value::Null,
             unknown: None,
         }
@@ -775,6 +812,10 @@ impl Context for Inputs<'_> {
 
     fn ruleset(&mut self, id: u32) -> Value {
         self.input(self.rulesets, id, "ruleset entry")
+    }
+
+    fn mode_random(&mut self) -> Option<f64> {
+        self.mode_random
     }
 
     fn owner(&mut self) -> Value {
@@ -864,6 +905,8 @@ pub(crate) fn fixture_payload() -> PayloadRules {
     let single = |value: f64| f64::from(value as f32);
     PayloadRules {
         push_speeds: [1.5, 1.75, 2.0],
+        // 0.1 (uid 363) through the push expression's f32 arithmetic.
+        push_spread: 0.100_000_063_578_287_77,
         auto_speed: 2.0,
         rollback_speed: single(0.3),
         rollback_after: 10.0,

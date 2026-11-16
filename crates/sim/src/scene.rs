@@ -30,19 +30,25 @@
 //!   ray profiles (`097`, `STU_8EFC337B`: `m_BC69BB40` allow, `m_5CE47069`
 //!   deny) allow only bit 48 on nearly every one (`0001`, `0015`, `0019`,
 //!   `002A`, …, the Helix Rocket's and Ana's darts' included) and deny
-//!   0x10 (the dead bit above), 0x4 or 0x80. That `+270` word is not
-//!   component 26's: ow1-preservation's bots, whose component 26 was
-//!   `0x11040001` with no bit 48, showed impact sparks on their body (its
-//!   run 343), and our bots with bit 48 in component 26 were still shot
-//!   through (checked in the game, 2026-11-12). So bit 48 comes from
-//!   elsewhere (the client's `0xB8BDF0` ORs more bits into the word, from
-//!   what is not known), and no graph filter names it (their masks stop at
-//!   `0x3FFFFFFF`); component 26 carries no bit 48.
+//!   0x10 (the dead bit above), 0x4 or 0x80. That `+270` word is component
+//!   1's, and every sync of the filter word into it (`0x7FF78AA1A940`)
+//!   copies only its low 48 bits (mask `0xFFFFFFFFFFFF`; the high bits
+//!   come from component 1's constructor), so no bit of component 26 at
+//!   48 or above can reach it: our bots with bit 48 in component 26 were
+//!   still shot through (checked in the game, 2026-11-12), and
+//!   ow1-preservation's bots, whose component 26 was `0x11040001`, showed
+//!   impact sparks on their body (its run 343). Where bit 48 comes from is
+//!   not found (HitPredict.md, "Client tools pass (2026-11-16)"); no graph
+//!   filter names it (their masks stop at `0x3FFFFFFF`).
 //! - So every body, a player's or a training bot's (the bots are heroes,
 //!   `02E0…016B`-`016E`), gets its team bit and [`BODY_KINDS`]
 //!   ([`body_filter`]); a body that dies gets [`DEAD`] too, with the pools
-//!   of its death. Assumption: that the retail server set 0x10 at a death
-//!   (the Python reference sent the team bit alone and never changed it).
+//!   of its death. The client doesn't need it: it clears 0x10 from the
+//!   word and sets it itself when the entity's component 51 has a maximum
+//!   and no current health (`0x7FF789A9B020`, `0x7FF789A9BEB0`), which our
+//!   death pools give; the bit is redundant for the client, and the
+//!   server's VM reads it (`PlayerWorld::entity_filter_flags`; the Python
+//!   reference sent the team bit alone).
 //!   Checked in the game: with its team bit alone, then with 0x41, then
 //!   with bit 48 too, a Training Bot was not hit by the client's own shots
 //!   (Soldier: 76's bullets and Ana's darts left a hole and the map's
@@ -350,14 +356,31 @@ pub fn spawn_room_flag(player: u32, inside: bool) -> EntityUpdate {
     }
 }
 
-pub fn mode_create(mode: u64) -> EntityUpdate {
+/// The mode entity's create: its component 114 with the mode (field 1)
+/// and the match's value of field 9 `m_CFF0C4E3`, the float the client's
+/// `STU_B182C5C9` reads (`Eval_STU_B182C5C9` reads component `+0x170` of
+/// the first component 114; ModeGraphGaps.md, "Client tools pass 2
+/// (2026-11-16)"), which the server's worlds answer too.
+pub fn mode_create(mode: u64, mode_random: f32) -> EntityUpdate {
+    let mut values = vec![None; 10];
+    values[1] = Some(ComponentValue::Id(mode));
+    values[9] = Some(ComponentValue::F32(mode_random));
     create(
         GAME_MODE_ENTITY,
-        Create::new(
-            GAME_MODE_DEFINITION,
-            vec![fields(114, vec![None, Some(ComponentValue::Id(mode))])],
-        ),
+        Create::new(GAME_MODE_DEFINITION, vec![fields(114, values)]),
     )
+}
+
+/// One match's value of the mode entity's component 114 field 9: uniform
+/// in [0, 1), from 24 random bits so that each value is an exact `f32`.
+/// Retail's draw is server-side and not known; `0F4A` uid 1299 keeps it
+/// as the payload's random speed factor #29093 for the whole match.
+pub fn draw_mode_random() -> f32 {
+    use std::hash::{BuildHasher, Hasher};
+    let bits = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
+    (bits >> 40) as f32 / (1u32 << 24) as f32
 }
 
 /// A bot's create: its body with its full pools, as the live nameplate tool
@@ -381,6 +404,7 @@ pub fn initial_world(
     bots: &[Bot],
     players: usize,
     plate: &BotPlate,
+    mode_random: f32,
 ) -> io::Result<Vec<EntityUpdate>> {
     let mut updates = Vec::with_capacity(map.placeables.len() + 2 + 2 * bots.len());
     updates.extend(map.placeables.iter().map(|&index| EntityUpdate {
@@ -389,7 +413,7 @@ pub fn initial_world(
         ..EntityUpdate::default()
     }));
     updates.push(player_create(map, player, None, Some(board))?);
-    updates.push(mode_create(map.mode_guid));
+    updates.push(mode_create(map.mode_guid, mode_random));
     for (slot, bot) in bots.iter().enumerate() {
         updates.push(bot_create(bot, plate)?);
         updates.push(bot_controller_create(
@@ -552,9 +576,11 @@ mod tests {
         // bot's controller comes right after its body here. Its bots' filter
         // bits were their team bit alone; ours add the body's kind (module
         // notes). Its bots were `0xC0001000 + n`; ours are in id class 0
-        // (`bots.rs` module notes). The other records match the Python frame
-        // byte for byte.
-        let updates = initial_world(&map, &player, board, &bots, 1, &BotPlate::default()).unwrap();
+        // (`bots.rs` module notes). Its mode entity had component 114 field
+        // 1 alone; ours adds field 9 ([`mode_create`]). The other records
+        // match the Python frame byte for byte.
+        let updates =
+            initial_world(&map, &player, board, &bots, 1, &BotPlate::default(), 0.25).unwrap();
         const PYTHON_BOT_ENTITY: u32 = 0xc000_1000;
         let controllers = BOT_CONTROLLER_ENTITY..BOT_ENTITY;
         let python: Vec<_> = updates
@@ -562,6 +588,14 @@ mod tests {
             .filter(|update| !controllers.contains(&update.entity))
             .cloned()
             .map(|mut update| {
+                if update.entity == GAME_MODE_ENTITY {
+                    assert_eq!(update, mode_create(map.mode_guid, 0.25));
+                    let Some(Operation::Create(create)) = &mut update.operation else {
+                        unreachable!("a create");
+                    };
+                    create.components[0].fields =
+                        vec![None, Some(ComponentValue::Id(map.mode_guid))];
+                }
                 let bot = bots.iter().find(|bot| bot.entity == update.entity);
                 if let (Some(bot), Some(Operation::Create(create))) = (bot, &mut update.operation) {
                     let team = team_bit(bot.spawn.team).unwrap();
@@ -768,7 +802,7 @@ mod tests {
             fields: Vec::new(),
         };
         let entities: Vec<u32> =
-            initial_world(&map, &player, board, &bots, 1, &BotPlate::default())
+            initial_world(&map, &player, board, &bots, 1, &BotPlate::default(), 0.5)
                 .unwrap()
                 .iter()
                 .map(|update| update.entity)

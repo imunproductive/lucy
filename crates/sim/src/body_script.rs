@@ -75,6 +75,10 @@ pub struct OwnerBodySpawn {
     pub frame: u32,
     pub pose: Movement,
     pub quanta: u32,
+    /// The match's value of the mode entity's component 114 field 9
+    /// ([`crate::scene::mode_create`]), which the mode body script `0C8E`
+    /// reads (`STU_B182C5C9`).
+    pub mode_random: f32,
 }
 
 /// What the game mode adds to each player body: its team's body script
@@ -214,6 +218,7 @@ impl PlayerBodyFactory {
             self.hero,
         );
         world.position = spawn.pose.position;
+        world.mode_random = Some(spawn.mode_random);
         world.movement = spawn.pose;
         if !has_authored_pools {
             world.vitals = self.pools.unwrap_or(FALLBACK_POOLS).vitals();
@@ -760,6 +765,7 @@ pub fn fixture_body_factory() -> (PlayerBodyFactory, OwnerBodySpawn) {
             ..Movement::default()
         },
         quanta: RETAIL_QUANTA,
+        mode_random: 0.5,
     };
     let factory = PlayerBodyFactory::prepare(
         graphs,

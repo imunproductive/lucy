@@ -84,7 +84,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
                 }
                 let created = u16::try_from(self.machine.next_id)
                     .map_err(|_| InitFault::InstanceIdExhausted)?;
-                if !self.create(created, graph, None, Variables::new())? {
+                if !self.create(created, graph, None, Variables::new(), self.source_of(id))? {
                     return Ok(());
                 }
                 created

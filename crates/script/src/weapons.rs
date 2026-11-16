@@ -70,7 +70,8 @@ impl DamageTags {
         tags
     }
 
-    fn push(&mut self, id: u64) {
+    /// Add a tag; one past the eighth is dropped.
+    pub(crate) fn push(&mut self, id: u64) {
         if let Some(slot) = self.ids.get_mut(usize::from(self.len)) {
             *slot = id;
             self.len += 1;

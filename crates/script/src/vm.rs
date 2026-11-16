@@ -35,7 +35,7 @@ use std::{
     sync::Arc,
 };
 
-pub use auras::{AURA_APPLIED, asks_ai_of_unset_creator};
+pub use auras::AURA_APPLIED;
 pub use health::HealthChange;
 use indexmap::IndexMap;
 use serde_json::Value as Json;
@@ -221,6 +221,12 @@ pub struct TargetCandidate {
     /// The entity that controls it: a player's controller, a training
     /// bot's stand-in controller; none when the match has none.
     pub controller: Option<u32>,
+    /// Whether that controller is an AI (has component 92, which
+    /// `STU_D3EB8D87` tests): a training bot's, whose body its AI
+    /// definition possesses. Players' controllers are not, AI heroes'
+    /// included: the server gives them the player's damage times a share
+    /// (`orpheus_sim::ai::scale_damage`).
+    pub ai: bool,
     /// Its capsule: from the feet up `height`, `radius` round (the match's
     /// `TargetPose`).
     pub feet: [f64; 3],
@@ -283,6 +289,12 @@ pub trait World {
     }
 
     fn ruleset(&mut self, _id: u32) -> Option<Value> {
+        None
+    }
+
+    /// The match's mode entity value `STU_B182C5C9` reads (component 114
+    /// field 9, [`expr::Context::mode_random`]); None: unknown here.
+    fn mode_random(&self) -> Option<f64> {
         None
     }
 
@@ -403,13 +415,28 @@ pub trait World {
     }
 
     /// None means this relationship is unsupported for the supplied entity.
-    fn related_entity(
-        &mut self,
-        _site: Site,
-        _relation: EntityRelation,
-        _entity: u32,
-    ) -> Option<u32> {
-        None
+    /// By default a listed body's controller (none when the match gives
+    /// none).
+    fn related_entity(&mut self, site: Site, relation: EntityRelation, entity: u32) -> Option<u32> {
+        match relation {
+            EntityRelation::Controller => {
+                self.target_candidates(site)?
+                    .iter()
+                    .find(|body| body.entity == entity)?
+                    .controller
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `entity` is an AI controller (component 92, `STU_D3EB8D87`);
+    /// None: unknown. By default a listed body's controller is
+    /// ([`TargetCandidate::ai`]).
+    fn controller_is_ai(&self, site: Site, entity: u32) -> Option<bool> {
+        self.target_candidates(site)?
+            .iter()
+            .find(|body| body.controller == Some(entity))
+            .map(|body| body.ai)
     }
 
     /// None leaves an encountered AI candidate explicitly unsupported.
@@ -742,11 +769,20 @@ pub struct ChasePayload {
     pub last_ms: u64,
 }
 
+/// The instance variable the engine sets to the entity an instance was
+/// created with, its creator (the client's instance creation
+/// `sub_7FF789887F20`/`sub_7FF78988AA20` → setter `sub_7FF78AAA4B10`;
+/// HealthAuras.md, "Client tools pass 2 (2026-11-16)").
+pub(crate) const CREATOR: u32 = 27;
+
 #[derive(Clone, Debug)]
 pub struct Instance {
     pub graph: u32,
     /// Parent instance and raw state index, as carried on the wire.
     pub parent: Option<(u16, u16)>,
+    /// The entity it was created with ([`CREATOR`]); none when that was no
+    /// entity.
+    pub source: Option<u32>,
     /// When the instance was created.
     pub start_ms: u64,
     pub variables: Variables,
@@ -1189,7 +1225,13 @@ impl Component {
         let id = u16::try_from(self.machine.next_id).map_err(|_| InitFault::InstanceIdExhausted)?;
         let mut created = false;
         self.run(world, |vm| {
-            created = vm.create(id, graph, None, Variables::new())?;
+            created = vm.create(
+                id,
+                graph,
+                None,
+                Variables::new(),
+                vm.machine.snapshot.entity,
+            )?;
             Ok(())
         })?;
         Ok(created.then_some(id))
@@ -1602,8 +1644,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 return Err(InitFault::InvalidRoot(root.id));
             }
         }
+        let entity = self.machine.snapshot.entity;
         for root in roots {
-            self.create(root.id, root.graph, None, root.variables)?;
+            self.create(root.id, root.graph, None, root.variables, entity)?;
         }
         self.run()
     }
@@ -1620,12 +1663,19 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(())
     }
 
+    /// A new instance of `graph`, created with `source` (its [`CREATOR`],
+    /// set when it is an entity): the component's own entity for its roots,
+    /// the applier for an aura, the creating instance's own source for a
+    /// child or a played script (assumption: the client's PlayScript and
+    /// SubScript pass it on; that makes `0C71`'s children `0B99`/`0C72`
+    /// see the grenade's thrower, as their AI damage test expects).
     fn create(
         &mut self,
         id: u16,
         graph: u32,
         parent: Option<(u16, u16)>,
         variables: Variables,
+        source: u32,
     ) -> Result<bool, InitFault> {
         self.spend("instance creation")?;
         let Some(definition) = self.graphs.graph(graph) else {
@@ -1640,12 +1690,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             );
             return Ok(false);
         };
+        let source = expr::valid_entity(source).then_some(source);
         self.machine.next_id = self.machine.next_id.max(u32::from(id) + 1);
         self.machine.snapshot.instances.insert(
             id,
             Instance {
                 graph,
                 parent,
+                source,
                 start_ms: self.machine.now_ms,
                 variables,
                 states: IndexMap::new(),
@@ -1660,6 +1712,16 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
         }
         Ok(true)
+    }
+
+    /// The entity an instance was created with; 0 for none.
+    fn source_of(&self, id: u16) -> u32 {
+        self.machine
+            .snapshot
+            .instances
+            .get(&id)
+            .and_then(|instance| instance.source)
+            .unwrap_or(0)
     }
 
     fn run(&mut self) -> Result<(), InitFault> {

@@ -393,7 +393,7 @@ mod tests {
         let flow = |map, mode, competitive| {
             let game = data.game_map(map, mode);
             let objectives = data.objectives.map(&game).unwrap();
-            let rules = rules.rules(graphs.rulesets(), mode).unwrap();
+            let rules = rules.rules(graphs.rulesets(), mode, 0.5).unwrap();
             let mut flow = MatchFlow::new(
                 &game,
                 competitive,

@@ -55,6 +55,10 @@ pub struct PlayerWorld {
     pub movement: Movement,
     pub throttles: [i8; 2],
     pub mode: u64,
+    /// The match's value of the mode entity's component 114 field 9
+    /// (`STU_B182C5C9`, which the mode body script `0C8E` reads); none:
+    /// unknown.
+    pub mode_random: Option<f32>,
     pub hero: u64,
     /// The hero's body definition (`003`), which names its animation data.
     pub body: Option<u64>,
@@ -107,14 +111,16 @@ impl World for PlayerWorld {
             // A tunable value for an entity (`native`): the authored value,
             // not scaled for the entity.
             "STU_082FA44E" => Some("the tunable's authored value"),
-            // `vm::asks_ai_of_unset_creator`: Biotic Grenade's auras.
-            "STU_D3EB8D87" => Some("false (no AI controls the unwritten #27)"),
             _ => None,
         }
     }
 
     fn ruleset(&mut self, id: u32) -> Option<Value> {
         self.graphs.rulesets().default(id, self.hero, self.mode)
+    }
+
+    fn mode_random(&self) -> Option<f64> {
+        self.mode_random.map(f64::from)
     }
 
     /// From the body's compiled animation data
@@ -373,30 +379,49 @@ impl World for PlayerWorld {
         {
             return None;
         }
-        // Both relations point to the same controller for this human body.
+        // The client's readings (`EntityRelation`): this body and its
+        // controller, and the other bodies the match lists.
+        let known = entity == self.entity || entity == self.controller;
         match relation {
-            EntityRelation::OwningController | EntityRelation::CurrentPossessor
-                if entity == self.entity =>
-            {
-                Some(self.controller)
-            }
+            EntityRelation::CurrentPossessor if entity == self.entity => Some(self.controller),
+            // The controller possesses the body (it has component 44); the
+            // body's possessor is the controller.
+            EntityRelation::Controller if known => Some(self.controller),
             EntityRelation::PossessedBody if entity == self.controller => Some(self.entity),
+            // Neither a body nor a controller has component 72.
+            EntityRelation::Owner if known => Some(0),
             // The authenticated human body has no AI control entity in this world.
             EntityRelation::AiControlEntity if entity == self.entity => Some(0),
-            // Another body the match lists: the controller it gives (`01CF`
-            // rid 173 asks for the attacker's in the damage message).
-            EntityRelation::OwningController if entity != self.entity => {
-                self.listed(entity)?.controller
-            }
+            // Another body the match lists: the controller it gives, and no
+            // owner.
+            EntityRelation::Controller => self.listed(entity)?.controller,
+            EntityRelation::Owner => self.listed(entity).map(|_| 0),
             _ => None,
         }
+    }
+
+    /// Its own controller is a human player's; another listed body's as
+    /// the match marks it ([`TargetCandidate::ai`]).
+    fn controller_is_ai(&self, site: Site, entity: u32) -> Option<bool> {
+        if !self.is_player_site(site) {
+            return None;
+        }
+        if valid_entity(self.controller) && entity == self.controller {
+            return Some(false);
+        }
+        self.targets
+            .as_deref()?
+            .iter()
+            .find(|body| body.controller == Some(entity))
+            .map(|body| body.ai)
     }
 
     fn native(&mut self, site: Site, config: &Json) -> Option<Value> {
         match config.get("$")?.as_str()? {
             "STU_1FF67CA6" => Some(Value::Entity(self.entity)),
-            // See `assumption`.
-            "STU_D3EB8D87" if crate::vm::asks_ai_of_unset_creator(config) => {
+            // Whether the body's controller (`STU_DB742151` of the owner)
+            // has component 92: a human player's controller has not.
+            "STU_D3EB8D87" if is_own_controller(config.get("m_00903303")) => {
                 Some(Value::Bool(false))
             }
             // Where the body's eye is (quick melee `0043` st5 measures the
@@ -459,6 +484,7 @@ impl PlayerWorld {
             movement: Movement::default(),
             throttles: [0; 2],
             mode,
+            mode_random: None,
             hero,
             vitals: Vitals::empty(),
             pool_types_known: false,
@@ -519,6 +545,13 @@ fn is_owner(config: Option<&Json>) -> bool {
     })
 }
 
+/// `STU_DB742151` (the controller) of the owner.
+fn is_own_controller(config: Option<&Json>) -> bool {
+    config.is_some_and(|config| {
+        native_shape(config, "STU_DB742151", Some("m_entity")) && is_owner(config.get("m_entity"))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -532,6 +565,7 @@ mod tests {
             team,
             dead: false,
             controller: Some(entity & !0xff),
+            ai: false,
             feet,
             height: 1.8,
             radius: 0.4,
@@ -579,13 +613,18 @@ mod tests {
         assert_eq!(world.entity_team(site, 0xa000_0102), Some(0));
         // A free-for-all body lists no team.
         assert_eq!(world.entity_team(site, 0xa000_0103), None);
-        // A listed body's controller is the one the match gives it.
+        // A listed body's controller is the one the match gives it; a body
+        // has no owner (component 72).
         assert_eq!(
-            world.related_entity(site, EntityRelation::OwningController, 0xa000_0102),
+            world.related_entity(site, EntityRelation::Controller, 0xa000_0102),
             Some(0xa000_0100)
         );
         assert_eq!(
-            world.related_entity(site, EntityRelation::OwningController, 0xa000_0104),
+            world.related_entity(site, EntityRelation::Owner, 0xa000_0102),
+            Some(0)
+        );
+        assert_eq!(
+            world.related_entity(site, EntityRelation::Controller, 0xa000_0104),
             None
         );
         let other_site = Site {

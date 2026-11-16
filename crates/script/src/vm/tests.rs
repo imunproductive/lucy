@@ -4364,6 +4364,7 @@ fn body(entity: u32, team: u8, feet: [f64; 3]) -> TargetCandidate {
         team: Some(team),
         dead: false,
         controller: None,
+        ai: false,
         feet,
         height: 1.8,
         radius: 0.4,
@@ -4551,16 +4552,19 @@ fn a_target_search_follows_bodies_in_and_out_of_its_sphere() {
     );
 }
 
-/// The team relation and the searcher bits as authored: enemies only
-/// (`m_66747E7D` 2, or bit 1 of `m_89831602`), or anyone (0) with the
-/// searcher himself when bit 4 of `m_89831602` is clear. Without teams (a
-/// free-for-all) only the searcher is his own ally.
+/// The filter as the client's `Filter_TestTeamMasks`: required relation
+/// (`m_66747E7D` 1 friendly, 2 hostile), excluded relation (`m_89831602` 1
+/// friendly with the searcher, 2 hostile, 4 the searcher) and the all-of
+/// mask (`m_1E14CCA8`, a team's bit `0x800000 << team`) on the body's
+/// filter word. Without teams (a free-for-all) only the searcher is his own
+/// ally.
 #[test]
 fn a_target_search_filters_by_team_and_the_searcher_as_authored() {
-    let run = |relation: u64, flags: u64, teams: bool| {
+    let run = |relation: u64, flags: u64, all: u64, teams: bool| {
         let mut filter = allies_filter();
         filter["m_66747E7D"] = json!(relation);
         filter["m_89831602"] = json!(flags);
+        filter["m_1E14CCA8"] = json!(all);
         let mut world = Bodies(
             [
                 body(SEARCHER, 0, [0.0; 3]),
@@ -4588,21 +4592,28 @@ fn a_target_search_filters_by_team_and_the_searcher_as_authored() {
         .unwrap();
         found(&component).0
     };
-    assert_eq!(run(2, 0, true), [ENEMY]);
-    assert_eq!(run(1, 0, true), [SEARCHER, ALLY]);
-    assert_eq!(run(0, 0, true), [SEARCHER, ALLY, ENEMY]);
-    assert_eq!(run(0, 4, true), [ALLY, ENEMY]);
-    assert_eq!(run(0, 1, true), [ENEMY]);
-    assert_eq!(run(0, 5, true), [ENEMY]);
-    assert_eq!(run(1, 0, false), [SEARCHER]);
-    assert_eq!(run(2, 0, false), [ALLY, ENEMY]);
-    assert_eq!(run(0, 1, false), [ALLY, ENEMY]);
+    assert_eq!(run(2, 0, 0, true), [ENEMY]);
+    assert_eq!(run(1, 0, 0, true), [SEARCHER, ALLY]);
+    assert_eq!(run(0, 0, 0, true), [SEARCHER, ALLY, ENEMY]);
+    assert_eq!(run(0, 4, 0, true), [ALLY, ENEMY]);
+    // Quick melee: enemies only.
+    assert_eq!(run(0, 1, 0, true), [ENEMY]);
+    assert_eq!(run(0, 5, 0, true), [ENEMY]);
+    // Brigitte: allies with herself; Moira: allies without herself.
+    assert_eq!(run(0, 2, 0, true), [SEARCHER, ALLY]);
+    assert_eq!(run(0, 6, 0, true), [ALLY]);
+    // Team 1's bit: its bodies whatever the relation.
+    assert_eq!(run(0, 0, 0x80_0000 << 1, true), [ENEMY]);
+    assert_eq!(run(1, 0, 0, false), [SEARCHER]);
+    assert_eq!(run(2, 0, 0, false), [ALLY, ENEMY]);
+    assert_eq!(run(0, 1, 0, false), [ALLY, ENEMY]);
+    assert_eq!(run(0, 2, 0, false), [SEARCHER]);
 }
 
 /// A form with a part the server doesn't model (here the scoring
-/// `m_84E5DE4E`, or an exclusion bit other than 16 and 4) finds nothing and
-/// says which part, without stopping the body; so does a world that lists
-/// no bodies. The outputs keep their values.
+/// `m_84E5DE4E`) finds nothing and says which part, without stopping the
+/// body; so does a world that lists no bodies. The outputs keep their
+/// values.
 #[test]
 fn a_target_search_the_server_cant_run_finds_nothing_and_names_the_gap() {
     let run = |filter: Json, extra: Json, lists: bool| {
@@ -4648,15 +4659,6 @@ fn a_target_search_the_server_cant_run_finds_nothing_and_names_the_gap() {
         run(allies_filter(), json!({"m_84E5DE4E":owner}), true),
         [(
             "STUStatescriptStateTrackTargets m_84E5DE4E".to_owned(),
-            "finds no targets"
-        )]
-    );
-    let mut filter = allies_filter();
-    filter["m_4EA686DB"] = json!(16 | 128);
-    assert_eq!(
-        run(filter, json!({}), true),
-        [(
-            "STUStatescriptStateTrackTargets m_filter.m_4EA686DB".to_owned(),
             "finds no targets"
         )]
     );
@@ -5186,4 +5188,40 @@ fn an_anim_outputs_its_scalar_while_it_runs() {
     component.advance_frame(102, &mut Animations).unwrap();
     assert_eq!(active(component.snapshot().unwrap(), 1), Vec::<u16>::new());
     assert_eq!(component.resolved_variable(1, output), Some(Value::Null));
+}
+
+/// A healing modifier applies only to a heal with one of its required tags
+/// (`m_F60AA143`), and the tags it adds (`m_029060AC`) count for the
+/// modifiers after it (the client's CombatModFilter query, HealthAuras.md
+/// "Client tools pass (2026-11-16)").
+#[test]
+fn healing_modifiers_honour_required_and_added_tags() {
+    const REQUIRED: u64 = 0x0d80_0000_0000_06f9;
+    const ADDED: u64 = 0x0d80_0000_0000_7139;
+    let site = |node| Site {
+        entity: 0xa000_0101,
+        instance: 1,
+        graph: 0x42,
+        node: Some(node),
+    };
+    let modifier = |value, required: &[u64], added: &[u64]| CombatMod {
+        kind: HEALING_TAKEN,
+        value,
+        multiplies: true,
+        required: required.to_vec(),
+        exempt: Vec::new(),
+        added: added.to_vec(),
+    };
+    let mut effects = BodyEffects::default();
+    assert!(effects.combat_mod(site(1), Some(modifier(0.5, &[REQUIRED], &[]))));
+    assert_eq!(effects.healing_scale(&DamageTags::NONE), 1.0);
+    assert_eq!(
+        effects.healing_scale(&DamageTags::from_iter([REQUIRED])),
+        0.5
+    );
+    // A modifier before it that adds the required tag lets it apply.
+    let mut effects = BodyEffects::default();
+    assert!(effects.combat_mod(site(1), Some(modifier(2.0, &[], &[REQUIRED]))));
+    assert!(effects.combat_mod(site(2), Some(modifier(0.25, &[REQUIRED], &[ADDED]))));
+    assert_eq!(effects.healing_scale(&DamageTags::NONE), 0.5);
 }

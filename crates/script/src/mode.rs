@@ -22,6 +22,10 @@ use orpheus_wire::entity::GAME_MODE_ENTITY;
 /// to every entity ([`World::broadcast_message`]); entity 0 is never one.
 pub const EVERY_ENTITY: u32 = 0;
 
+/// The game struct's team byte that stands for any team (`STU_A5B9EAAD`'s
+/// fallback entry).
+const ANY_TEAM: i64 = 5;
+
 /// What the mode graph asks outside its own entity. The mode entity's
 /// variables are its own (the server writes them into the component);
 /// the bundle's mode variables (`0C5.m_3CE93B76`) answer the rest.
@@ -29,11 +33,19 @@ pub struct ModeWorld {
     pub graphs: Arc<GraphStore>,
     pub mode: u64,
     pub unknowns: Unknowns,
-    /// The players on teams 0 and 1 (`STU_A5B9EAAD`).
-    pub team_sizes: [i64; 2],
+    /// The players on teams 0 and 1: the client counts the team's entities
+    /// but those of definition `003:25CB` (`STU_A5B9EAAD`).
+    pub players: [i64; 2],
+    /// Each team's size as the server sends it in the 20300/20301 game
+    /// struct (`#0.#0.#0.#4`: byte `+0x60` the team, 5 any team, `+0x61`
+    /// its size; `orpheus_sim::instance`).
+    pub team_sizes: Vec<(u8, u8)>,
     /// The server's answer to `STU_81A9AB10`, which lets the match leave
     /// its waiting phase.
     pub ready: bool,
+    /// The match's value of the mode entity's component 114 field 9, as
+    /// the server sends it (`STU_B182C5C9`); none: unknown.
+    pub mode_random: Option<f32>,
     outbox: Vec<GameMessage>,
 }
 
@@ -43,8 +55,10 @@ impl ModeWorld {
             graphs,
             mode,
             unknowns,
-            team_sizes: [0; 2],
+            players: [0; 2],
+            team_sizes: Vec::new(),
             ready: false,
+            mode_random: None,
             outbox: Vec::new(),
         }
     }
@@ -67,14 +81,18 @@ impl World for ModeWorld {
             // As `PlayerWorld`: the tunable's authored value, not scaled
             // for the entity.
             "STU_082FA44E" => Some("the tunable's authored value"),
-            "STU_81A9AB10" => Some("the server's own start condition"),
-            "STU_21A5BB52" => Some("false"),
+            "STU_81A9AB10" => Some("the server's own start condition (server-only)"),
+            "STU_21A5BB52" => Some("false (server-only)"),
             _ => None,
         }
     }
 
     fn ruleset(&mut self, id: u32) -> Option<Value> {
         self.graphs.rulesets().default(id, 0, self.mode)
+    }
+
+    fn mode_random(&self) -> Option<f64> {
+        self.mode_random.map(f64::from)
     }
 
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
@@ -92,24 +110,31 @@ impl World for ModeWorld {
     /// entity itself (ow1-preservation: getter 0xcdd340). `STU_082FA44E`
     /// reads a tunable's authored value, as `PlayerWorld` does.
     ///
-    /// `STU_A5B9EAAD` (an int with only `m_team`) is the number of players
-    /// on the team: all seven uses ask that teams 0 and 1 both have one
-    /// before the match leaves its waiting phase (`0F4A` nodes 14 and 419,
-    /// `0EC2` 15 and 380, `0D0B` 237, `0F60` 27, `0F73` 16). Inferred from
-    /// those uses, not read in the client.
+    /// `STU_A5B9EAAD` (`m_team`) is "the team is full", a bool: the count
+    /// of the team's entities but those of definition `003:25CB`, at least
+    /// the team's size in the game struct (that team's entry, else team
+    /// 5's; the client's last fallback, a table of its own, is not known,
+    /// so no entry leaves it unanswered). `Eval_STU_A5B9EAAD` 0x7FF789BF9E10,
+    /// size `sub_7FF789CADB40` (ModeGraphGaps.md, "Client tools pass
+    /// (2026-11-16)"). All seven uses ask both teams 0 and 1 before the
+    /// match leaves its waiting phase (`0F4A` nodes 14 and 419, `0EC2` 15
+    /// and 380, `0D0B` 237, `0F60` 27, `0F73` 16), so the start rule `25CA`
+    /// waits for full teams: a game with fewer players than its team sizes
+    /// waits there (the start rule `25CB` waits for message `0789`
+    /// instead).
     ///
     /// `STU_81A9AB10` (a bool with no fields) gates the same start in the
     /// default start rule (ruleset `#9672` = `25CA`; `0F4A` node 7: true
     /// waits for both teams, false waits for message `0789`), and Tutorial
-    /// graph `091B` waits on it to send `01DB` to the mode entity. Its
-    /// native meaning is open (refs/reports/IDA-questions.md); the server
-    /// answers [`ModeWorld::ready`], an assumption.
+    /// graph `091B` waits on it to send `01DB` to the mode entity. It is
+    /// server-only (no client code: the base config's evaluate, `xor al,
+    /// al`); the server answers [`ModeWorld::ready`], its own rule.
     ///
     /// `STU_21A5BB52` (a bool with no fields) picks, outside Competitive
     /// play, whether the payload's random speed factor #29093 comes from
     /// message `11BA` (`0F4A` uid 1299); `0F60` and `0F73` read it in
-    /// `STU_F7216D4F`. Its meaning is open; the server answers false, an
-    /// assumption.
+    /// `STU_F7216D4F`. It is server-only (no client code); the server
+    /// answers false, its own rule.
     fn native(&mut self, _site: Site, config: &Json) -> Option<Value> {
         match config.get("$")?.as_str()? {
             "STU_A3DEF368" => Some(Value::Entity(GAME_MODE_ENTITY)),
@@ -119,8 +144,16 @@ impl World for ModeWorld {
                 if team.get("$")?.as_str()? != "STU_BD6CC023" {
                     return None;
                 }
-                let team = usize::try_from(team.get("m_6CE7A900")?.as_i64()?).ok()?;
-                self.team_sizes.get(team).copied().map(Value::Integer)
+                let team = team.get("m_6CE7A900")?.as_i64()?;
+                let players = *self.players.get(usize::try_from(team).ok()?)?;
+                let entry = |wanted: i64| {
+                    self.team_sizes
+                        .iter()
+                        .find(|&&(entry, _)| i64::from(entry) == wanted)
+                        .map(|&(_, size)| i64::from(size))
+                };
+                let size = entry(team).or_else(|| entry(ANY_TEAM))?;
+                Some(Value::Bool(players >= size))
             }
             "STU_81A9AB10" => Some(Value::Bool(self.ready)),
             "STU_21A5BB52" => Some(Value::Bool(false)),
@@ -276,7 +309,8 @@ mod tests {
     /// start condition true, tolerating gaps, for `frames` frames.
     fn play(graphs: &Arc<GraphStore>, mode: u64, graph: u32, frames: u32) -> Run {
         let mut world = ModeWorld::new(Arc::clone(graphs), mode, Unknowns::Tolerate);
-        world.team_sizes = [1, 1];
+        world.players = [1, 1];
+        world.team_sizes = vec![(0, 1), (1, 1)];
         world.ready = true;
         let mut run = Run {
             script: ModeScript::start(world, graph, 1).unwrap(),

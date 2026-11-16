@@ -512,7 +512,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
         let child =
             u16::try_from(self.machine.next_id).map_err(|_| InitFault::InstanceIdExhausted)?;
-        if self.create(child, graph, Some((id, key.raw)), vars)? {
+        if self.create(child, graph, Some((id, key.raw)), vars, self.source_of(id))? {
             // The reference sets child binding bases directly before Entry.
             self.machine.snapshot.variables.extend(entity_vars);
             return Ok(Some(child));

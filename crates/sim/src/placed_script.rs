@@ -43,6 +43,8 @@ pub struct PlacedScripts {
     graphs: Arc<GraphStore>,
     codecs: CodecTable,
     mode: u64,
+    /// The match's mode entity value ([`crate::scene::mode_create`]).
+    mode_random: f32,
     placed: Vec<Arc<PlacedScript>>,
     world: Option<MapEntityWorld>,
     /// The last projection and frame of each complete script.
@@ -51,11 +53,17 @@ pub struct PlacedScripts {
 }
 
 impl PlacedScripts {
-    pub fn new(graphs: Arc<GraphStore>, mode: u64, placed: Vec<Arc<PlacedScript>>) -> Self {
+    pub fn new(
+        graphs: Arc<GraphStore>,
+        mode: u64,
+        mode_random: f32,
+        placed: Vec<Arc<PlacedScript>>,
+    ) -> Self {
         Self {
             graphs,
             codecs: CodecTable::client(),
             mode,
+            mode_random,
             placed,
             world: None,
             frames: BTreeMap::new(),
@@ -85,6 +93,7 @@ impl PlacedScripts {
                 self.world = Some(MapEntityWorld::start(
                     Arc::clone(&self.graphs),
                     self.mode,
+                    self.mode_random,
                     Unknowns::for_build(),
                     self.placed.iter().map(|placed| placed.placement()),
                     tick,

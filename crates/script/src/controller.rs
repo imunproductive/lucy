@@ -76,9 +76,6 @@ const ASSUMED: &[(&str, &str)] = &[
     // unset, as the hand-built frames had them.
     ("STU_9AD08FCC", "unset"),
     ("STU_F80D09DB", "unset"),
-    // The controller's current hero (`288B` rid207 makes it the pick):
-    // the hero of the body it possesses, unset without one.
-    ("STU_93DCDDFD", "the possessed body's hero"),
 ];
 
 /// What the controller graph asks outside its own entity.
@@ -92,11 +89,16 @@ pub struct ControllerWorld {
     /// The heroes this controller may play (`STU_1AAB4B4F`, sent to the
     /// mode in `06FF`; `STU_9AE5FC4C` tests a hero against it).
     pub heroes: Vec<u64>,
-    /// The body the controller possesses and its hero; none before the
-    /// first spawn.
-    pub body: Option<(u32, u64)>,
-    /// Whether the player may pick a hero now (`STU_E4C6AAB4`): no body,
-    /// dead, or in his spawn room (`replication.rs` `may_change_hero`).
+    /// The body the controller possesses; none before the first spawn.
+    pub body: Option<u32>,
+    /// The hero in the controller's own component 75 (the last
+    /// possession's: `scene::Possession`); none before the first.
+    /// `STU_93DCDDFD` of the controller reads it, never the body's.
+    pub hero: Option<u64>,
+    /// Whether the player may pick a hero now (`STU_E4C6AAB4`): the
+    /// client reads only component 74 field 6 (ControllerWorld.md, "Client
+    /// tools pass (2026-11-16)"), which the server writes from
+    /// `replication.rs` `may_change_hero`; that rule feeds this.
     pub may_pick: bool,
     pub unknowns: Unknowns,
     outbox: Vec<GameMessage>,
@@ -111,6 +113,7 @@ impl ControllerWorld {
             team: None,
             heroes: Vec::new(),
             body: None,
+            hero: None,
             may_pick: true,
             unknowns,
             outbox: Vec::new(),
@@ -170,23 +173,25 @@ impl World for ControllerWorld {
             "STU_D3EB8D87" if self.owner(config, "m_00903303") => Some(Value::Bool(false)),
             "STU_AC829876" => Some(Value::Bool(true)),
             "STU_9AD08FCC" | "STU_F80D09DB" => Some(Value::Null),
-            "STU_93DCDDFD" if self.owner(config, "m_entity") => Some(
-                self.body
-                    .map_or(Value::Null, |(_, hero)| Value::Asset(hero)),
-            ),
+            // The hero of the given entity's own component 75, else of its
+            // component 123, else none: no step through the possessed body
+            // (`Eval_STU_93DCDDFD` 0x7FF789BEF220; ControllerWorld.md,
+            // "Client tools pass (2026-11-16)").
+            "STU_93DCDDFD" if self.owner(config, "m_entity") => {
+                Some(self.hero.map_or(Value::Null, Value::Asset))
+            }
             _ => None,
         }
     }
 
     fn entity_exists(&self, _site: Site, entity: u32) -> Option<bool> {
-        let known = entity == self.entity
-            || entity == GAME_MODE_ENTITY
-            || self.body.is_some_and(|(body, _)| body == entity);
+        let known =
+            entity == self.entity || entity == GAME_MODE_ENTITY || self.body == Some(entity);
         known.then_some(true)
     }
 
     fn entity_team(&self, _site: Site, entity: u32) -> Option<i64> {
-        (entity == self.entity || self.body.is_some_and(|(body, _)| body == entity))
+        (entity == self.entity || self.body == Some(entity))
             .then_some(self.team)
             .flatten()
     }
@@ -204,17 +209,26 @@ impl World for ControllerWorld {
     }
 
     /// The controller possesses its body, or nothing (entity 0) before the
-    /// first spawn; a human controller has no AI control entity.
+    /// first spawn. `STU_DB742151` is the controller itself once it
+    /// possesses a body (component 44), else none; its body's is the
+    /// controller. A controller has no owner (component 72); a human
+    /// controller has no AI control entity.
     fn related_entity(
         &mut self,
         _site: Site,
         relation: EntityRelation,
         entity: u32,
     ) -> Option<u32> {
+        let possessing = self.body.map(|_| self.entity);
         match relation {
-            EntityRelation::PossessedBody if entity == self.entity => {
-                Some(self.body.map_or(0, |(body, _)| body))
+            EntityRelation::PossessedBody if entity == self.entity => Some(self.body.unwrap_or(0)),
+            EntityRelation::Controller if entity == self.entity => Some(possessing.unwrap_or(0)),
+            EntityRelation::Controller | EntityRelation::CurrentPossessor
+                if self.body == Some(entity) =>
+            {
+                possessing
             }
+            EntityRelation::Owner if entity == self.entity => Some(0),
             EntityRelation::AiControlEntity if entity == self.entity => Some(0),
             _ => None,
         }
@@ -348,6 +362,19 @@ impl ControllerScript {
     /// route.
     pub fn take_messages(&mut self) -> Vec<GameMessage> {
         std::mem::take(&mut self.world.outbox)
+    }
+
+    /// The controller now possesses `body` playing `hero`: its components
+    /// 44 and 75 (`scene::Possession`).
+    pub fn possessed(&mut self, body: u32, hero: u64) {
+        self.world.body = Some(body);
+        self.world.hero = Some(hero);
+    }
+
+    /// Component 74 field 6, which the server writes from its own rule:
+    /// what `STU_E4C6AAB4` answers.
+    pub fn set_may_pick(&mut self, may_pick: bool) {
+        self.world.may_pick = may_pick;
     }
 }
 

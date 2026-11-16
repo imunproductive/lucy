@@ -498,14 +498,16 @@ impl Combat {
     /// (`TrackTargets`): the players' bodies as recorded, then the bots, in
     /// slot order; no teams in a free-for-all. A player's body is his
     /// controller's (its id less the low byte), a bot's its stand-in
-    /// controller's (`scene::bot_controller_entity`).
+    /// controller's (`scene::bot_controller_entity`), an AI's (component
+    /// 92: the bot's AI definition possesses it).
     pub fn target_candidates(&self, scene: &PreparedScene) -> Vec<TargetCandidate> {
         let free_for_all = scene.map().free_for_all;
-        let candidate = |entity, team, dead, controller, pose: &TargetPose| TargetCandidate {
+        let candidate = |entity, team, dead, controller, ai, pose: &TargetPose| TargetCandidate {
             entity,
             team: (!free_for_all).then_some(team),
             dead,
             controller,
+            ai,
             feet: pose.feet,
             height: pose.height,
             radius: pose.radius,
@@ -520,13 +522,21 @@ impl Combat {
                     target.team,
                     target.dead,
                     controller,
+                    false,
                     &target.pose,
                 )
             })
             .chain(scene.bots().iter().enumerate().map(|(slot, bot)| {
                 let controller = bot_controller_entity(slot).ok();
                 let pose = scene.bot_target(bot);
-                candidate(bot.entity, bot.spawn.team, bot.dead, controller, &pose)
+                candidate(
+                    bot.entity,
+                    bot.spawn.team,
+                    bot.dead,
+                    controller,
+                    true,
+                    &pose,
+                )
             }))
             .collect()
     }
