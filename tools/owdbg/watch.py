@@ -1,7 +1,8 @@
 """Hardware read/write watch: which instructions (and functions) access an address or a field.
 
 usage: python -m tools.owdbg.watch --addr SPEC --size N --access r|w|rw [options]
-       python -m tools.owdbg.watch --arm-at SITE --field EXPR:SIZE --access r|w|rw [--arm-count N] [options]
+       python -m tools.owdbg.watch --arm-at SITE --field EXPR:SIZE --access r|w|rw [--arm-count N]
+           [--this-vtable X] [--arm-if EXPR=VALUE ...] [options]
        python -m tools.owdbg.watch --msg ID --field FIELD [--send JSON [--send-every S]] [options]
 options: [--duration 60] [--out FILE.jsonl] [--max-hits 5000] [--arm-delay S] [--stack N] [session options]
 
@@ -9,6 +10,11 @@ options: [--duration 60] [--out FILE.jsonl] [--max-hits 5000] [--arm-delay S] [-
 --arm-at/--field: when SITE (a breakpoint, as in probe) hits, the watch moves to EXPR evaluated in
 that thread's registers, e.g. --arm-at Eval_STU_76F2C784 --field rcx+0x48:8 (EXPR: registers,
 numbers, + -, [deref]). The first N hits arm (default 1), then the breakpoint is removed.
+--this-vtable X / --arm-if EXPR=VALUE (or EXPR!=VALUE; repeatable, all must hold): only hits that
+meet the condition arm (and count for --arm-count), e.g. --this-vtable 0x7FF78B531228 arms a
+shared begin only for that state class: [rcx] == X. EXPR as in --field (no size: its value, ':N'
+reads N bytes); VALUE a number (an ORPHEUS or IDB VA in the game image is moved to this run's
+base) or a game name. Hits that don't match are counted in the summary ("handler hits not armed").
 --msg ID --field FIELD: the same at the message's client handler (tools.owindex), with FIELD a
 message field (#index, +0xOFF, dotted for struct members, optional :SIZE; see tools/owdbg/msg.py)
 of the message object (found per hit by its class vtable: r8 for every dispatcher so far).
@@ -32,13 +38,14 @@ summary per instruction (last line).
 import argparse
 import json
 import os
+import re
 from collections import Counter, defaultdict
 
 from .disasm import access_insn
 from . import actions
 from .game import Session, add_session_args, out_path
 from .msg import Message, Sender, add_msg_args, message_reg
-from .names import field_spec, hx, split_ranges
+from .names import IDA_BASE, ORPHEUS_BASE, Expr, field_spec, hx, split_ranges
 
 
 class Watch:
@@ -77,6 +84,10 @@ class Watch:
             self.arm_site = self.names.parse(args.arm_at)
         else:
             self.addr = self.names.parse(args.addr)
+        self.conditions = []  # (Expr, op, value text, value)
+        for text in args.arm_if + [f"[rcx]={x}" for x in args.this_vtable]:
+            expr, op, value = parse_condition(text)
+            self.conditions.append([expr, op, value, None])
 
     def start(self):
         if self.msg is not None:
@@ -94,9 +105,31 @@ class Watch:
 
     def arm(self):
         if self.arm_token is None:
+            for cond in self.conditions:
+                cond[3] = self.condition_value(cond[2])
+                self.s.log(f"[watch] arms only when {cond[0].text} {cond[1]} 0x{cond[3]:X}")
             va = self.names.resolve(self.arm_site)
             self.arm_token = self.dbg.add_bp(va, self.on_arm)
             self.s.log(f"[watch] arm breakpoint at {self.names.text(va)} (0x{va:X})")
+
+    def condition_value(self, text):
+        """A number (an ORPHEUS/IDB VA in the game image -> this run's VA) or a game name."""
+        try:
+            v = int(text, 0)
+        except ValueError:
+            return self.names.resolve(self.names.parse(text))
+        main = self.dbg.main
+        for base in (ORPHEUS_BASE, IDA_BASE):
+            if base <= v < base + main.size:
+                return main.base + v - base
+        return v
+
+    def conditions_hold(self, hit):
+        for expr, op, _, value in self.conditions:
+            got = expr.number(hit)
+            if (got == value) != (op == "="):
+                return False
+        return True
 
     def set_watch(self, va, size):
         self.clear_watch()
@@ -115,6 +148,9 @@ class Watch:
         self.slots = []
 
     def on_arm(self, hit):
+        if self.conditions and not self.conditions_hold(hit):
+            self.skipped["arm condition false"] += 1
+            return
         if self.msg is not None:
             reg = message_reg(self.dbg, hit, self.dbg.main.base, self.msg)
             if reg is None:
@@ -244,6 +280,14 @@ class Watch:
         return summary
 
 
+def parse_condition(text):
+    """'EXPR=VALUE' / 'EXPR==VALUE' / 'EXPR!=VALUE' -> (Expr, '=' or '!=', value text)."""
+    m = re.fullmatch(r"\s*(.+?)\s*(==|!=|=)\s*(\S+)\s*", text)
+    if not m:
+        raise ValueError(f"--arm-if {text!r}: give EXPR=VALUE or EXPR!=VALUE")
+    return Expr(m.group(1)), "!=" if m.group(2) == "!=" else "=", m.group(3)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--addr", help="address to watch (game name/RVA/VA, or va:0x...)")
@@ -259,6 +303,10 @@ def main(argv=None):
     p.add_argument("--arm-delay", type=float, default=0, help="set up N seconds after start instead of at once")
     p.add_argument("--stack", type=int, default=0, help="record N unwound frames per hit")
     p.add_argument("--max-hits", type=int, default=5000, help="remove the watch after N hits")
+    p.add_argument("--arm-if", action="append", default=[], metavar="EXPR=VALUE",
+                   help="arm only when EXPR equals VALUE (EXPR!=VALUE: differs); repeatable, all must hold")
+    p.add_argument("--this-vtable", action="append", default=[], metavar="X",
+                   help="arm only when [rcx] == X (the hit object's vtable), as --arm-if '[rcx]=X'")
     p.add_argument("--out", help="JSONL output (default research/out/owdbg/watch-<time>.jsonl)")
     add_msg_args(p)
     actions.add_action_args(p)
@@ -271,6 +319,11 @@ def main(argv=None):
         p.error("give --addr, or --arm-at with --field, or --msg with --field")
     if args.send and args.msg is None:
         p.error("--send needs --msg")
+    try:
+        for text in args.arm_if + [f"[rcx]={x}" for x in args.this_vtable]:
+            parse_condition(text)
+    except ValueError as e:
+        p.error(str(e))
     if args.send:
         args.server_env = dict(os.environ, ORPHEUS_DEBUG_SEND="1")
     args.out = args.out or str(out_path("watch", ".jsonl"))

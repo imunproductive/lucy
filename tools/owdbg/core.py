@@ -186,6 +186,9 @@ class Debugger:
         self.hw_hold = 0.0
         self._hw_deferred = False
         self.exe = None
+        # Return addresses of calls owdbg itself makes in the game (a handler that points a
+        # thread at a game function, e.g. --actions' set-view): probes skip such calls.
+        self.injected_returns = set()
 
     # ---------------------------------------------------------------- hooks / timers
     def on(self, event, fn):
@@ -794,7 +797,13 @@ class Debugger:
                 bp.handlers.pop(token, None)
             self._call(fn, hit)
         flags = w.CONTEXT_CONTROL | (w.CONTEXT_INTEGER if hit.dirty else 0)
-        if self.bps.get(va) is bp and bp.handlers:
+        if self.bps.get(va) is bp and bp.handlers and ctx.Rip != va:
+            # A handler sent the thread elsewhere (an injected call): the original instruction
+            # does not run now, so the breakpoint stays armed and nothing is stepped over. A
+            # single step here would run the new target's first instruction instead and, if a
+            # breakpoint sits there, leave this one disarmed for good.
+            pass
+        elif self.bps.get(va) is bp and bp.handlers:
             # Persistent: execute the original instruction with TF, re-arm on the single step.
             if bp.armed:
                 self.write(va, bytes([bp.orig]))

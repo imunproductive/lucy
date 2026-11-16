@@ -14,6 +14,10 @@
 //!   its match, queued as the server's own reliable messages; a lobby
 //!   message through the account's lobby session, at its next wake. The
 //!   answer lists every field's value as sent.
+//! - `POST /api/debug/kill` `{"account"?}`: the environment kills the
+//!   account's hero body, as the map's catch floor does: the hit goes the
+//!   normal way (death message, board, respawn after the mode's time). A
+//!   body in its spawn room is refused (nothing hurts it there).
 //!
 //! A field is named `+0x<off>` (the schemas have no other names) or
 //! `#<index>`, its place in the schema's list; a dotted path names a struct
@@ -29,8 +33,11 @@ use std::{collections::BTreeMap, sync::LazyLock};
 use serde_json::{Map, Value as Json, json};
 
 use super::api::{Api, ApiError, ApiResult};
-use crate::{game_service::DebugSeat, lobby::Lobby};
-use orpheus_lobby::accounts::account_id_for;
+use crate::{
+    game_service::{DebugKill, DebugSeat, GameService},
+    lobby::Lobby,
+};
+use orpheus_lobby::{accounts::account_id_for, handoff::Handoff};
 use orpheus_wire::{
     jam::codec::{Field, Fields, Schemas, Value},
     messages,
@@ -38,6 +45,7 @@ use orpheus_wire::{
 
 pub(super) const MESSAGES: &str = "/api/debug/messages";
 pub(super) const SEND: &str = "/api/debug/send";
+pub(super) const KILL: &str = "/api/debug/kill";
 /// The most repeats of one send.
 const MAX_COUNT: i128 = 64;
 const SEND_KEYS: [&str; 4] = ["id", "account", "fields", "count"];
@@ -224,39 +232,18 @@ pub(super) fn send(api: &Api, lobby: Option<&Lobby>, data: &Map<String, Json>) -
     } else {
         Some(build(layout.fields, given, None, "")?)
     };
-    let account = match data.get("account") {
-        None => None,
-        Some(Json::String(name)) => Some(name.as_str()),
-        Some(_) => return Err(bad("\"account\" is an account name")),
-    };
-    let name = connected_account(account, &connected(api)?)?;
-    let account_lo = account_id_for(&name);
-
-    let in_match = || -> Result<_, ApiError> {
-        let game = lobby
-            .game
-            .as_deref()
-            .ok_or_else(|| ApiError::new(409, "The game server is off (--game-port 0)."))?;
-        let handoff = lobby
-            .matchmaker
-            .seat_of(account_lo)
-            .ok_or_else(|| ApiError::new(409, format!("{name} is not in a match.")))?;
+    let name = account_name(api, data)?;
+    let seated = if layout.link == Link::Game || entities {
+        let (game, handoff) = in_match(lobby, &name)?;
         let seat = game
             .debug_seat(&handoff)
             .map_err(game_error)?
-            .ok_or_else(|| {
-                ApiError::new(
-                    409,
-                    format!("{name}'s game has not connected to its match yet."),
-                )
-            })?;
-        Ok((game, handoff, seat))
-    };
-    let seated = if layout.link == Link::Game || entities {
-        Some(in_match()?)
+            .ok_or_else(|| not_connected(&name))?;
+        Some((game, handoff, seat))
     } else {
         None
     };
+    let account_lo = account_id_for(&name);
     let fields = match checked {
         Some(fields) => fields,
         None => build(
@@ -301,6 +288,59 @@ pub(super) fn send(api: &Api, lobby: Option<&Lobby>, data: &Map<String, Json>) -
         "account": name,
         "fields": sent,
     }))
+}
+
+/// `POST /api/debug/kill`.
+pub(super) fn kill(api: &Api, lobby: Option<&Lobby>, data: &Map<String, Json>) -> ApiResult {
+    if let Some(key) = data.keys().find(|key| key.as_str() != "account") {
+        return Err(bad(format!("Unknown key \"{key}\": use account")));
+    }
+    let lobby = lobby.ok_or_else(|| ApiError::new(503, "The lobby is not running."))?;
+    let name = account_name(api, data)?;
+    let (game, handoff) = in_match(lobby, &name)?;
+    match game.debug_kill(&handoff).map_err(game_error)? {
+        DebugKill::Killed(body) => Ok(json!({"killed": body, "account": name})),
+        DebugKill::NotConnected => Err(not_connected(&name)),
+        DebugKill::NoBody => Err(ApiError::new(
+            409,
+            format!("{name} has not picked a hero yet."),
+        )),
+        DebugKill::Dead => Err(ApiError::new(409, format!("{name}'s hero is dead."))),
+        DebugKill::InSpawnRoom => Err(ApiError::new(
+            409,
+            format!("{name}'s hero is in its spawn room, where nothing hurts it."),
+        )),
+    }
+}
+
+/// The request's `"account"`, else the only connected account.
+fn account_name(api: &Api, data: &Map<String, Json>) -> Result<String, ApiError> {
+    let account = match data.get("account") {
+        None => None,
+        Some(Json::String(name)) => Some(name.as_str()),
+        Some(_) => return Err(bad("\"account\" is an account name")),
+    };
+    connected_account(account, &connected(api)?)
+}
+
+/// The game server and the account's seat in its match.
+fn in_match<'a>(lobby: &'a Lobby, name: &str) -> Result<(&'a GameService, Handoff), ApiError> {
+    let game = lobby
+        .game
+        .as_deref()
+        .ok_or_else(|| ApiError::new(409, "The game server is off (--game-port 0)."))?;
+    let handoff = lobby
+        .matchmaker
+        .seat_of(account_id_for(name))
+        .ok_or_else(|| ApiError::new(409, format!("{name} is not in a match.")))?;
+    Ok((game, handoff))
+}
+
+fn not_connected(name: &str) -> ApiError {
+    ApiError::new(
+        409,
+        format!("{name}'s game has not connected to its match yet."),
+    )
 }
 
 /// The saved accounts that are logged in.

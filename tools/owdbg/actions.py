@@ -39,6 +39,16 @@ at the first input sample after the server's '[MM] Match found', then after a fi
                                session use --hero NAME (picked at the first hero select).
     key N                      put logical button N's action code into one input sample (N one of
                                the action table's buttons: 15-19, 21, 22, 56, 71, 81, 90-109, ...)
+    key CHORD                  press a key with modifiers and release it: alt+`, ctrl+shift+f,
+                               enter, escape, f1, a, ... (KEY_NAMES); posted to the game window's
+                               message queue (WM_KEYDOWN/WM_SYSKEYDOWN with the Alt context bit),
+                               with --foreground-input sent with SendInput
+    type TEXT                  type TEXT (the rest of the step, spaces kept; no ';'): WM_CHAR per
+                               character (SendInput Unicode events with --foreground-input)
+    die                        ORPHEUS kills our hero (POST /api/debug/kill: the server runs
+                               with ORPHEUS_DEBUG_SEND=1); the respawn follows after the mode's
+                               time. Refused in the spawn room (invulnerable there): in the
+                               Practice Range walk out first (`move forward 4`)
     screenshot [NAME]          PNG of the window into research/out/owdbg/
     position                   log our position and the bots'
     poke ADDRESS TYPE VALUE    write memory: TYPE u8/i8/u16/i16/u32/i32/u64/i64/f32/f64; an address
@@ -127,6 +137,97 @@ HERO_NAMES = {"mccree": "cassidy", "soldier": "soldier76", "76": "soldier76", "h
 POKE_TYPES = {"u8": "B", "i8": "b", "u16": "H", "i16": "h", "u32": "I", "i32": "i", "u64": "Q", "i64": "q",
               "f32": "f", "f64": "d"}
 
+# key CHORD: virtual-key codes. Letters and digits are their ASCII codes, f1-f24 0x70+.
+MODIFIER_VK = {"ctrl": 0x11, "control": 0x11, "alt": 0x12, "shift": 0x10}
+KEY_NAMES = {"backspace": 0x08, "tab": 0x09, "enter": 0x0D, "return": 0x0D, "escape": 0x1B, "esc": 0x1B,
+             "space": 0x20, "pageup": 0x21, "pagedown": 0x22, "end": 0x23, "home": 0x24, "left": 0x25,
+             "up": 0x26, "right": 0x27, "down": 0x28, "insert": 0x2D, "delete": 0x2E, "`": 0xC0,
+             "backtick": 0xC0, "grave": 0xC0, "tilde": 0xC0, "-": 0xBD, "minus": 0xBD, "=": 0xBB,
+             "equals": 0xBB, "[": 0xDB, "]": 0xDD, "\\": 0xDC, "semicolon": 0xBA, "'": 0xDE, ",": 0xBC,
+             ".": 0xBE, "/": 0xBF}
+EXTENDED_VK = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E}
+WM_KEYDOWN, WM_KEYUP, WM_CHAR, WM_SYSKEYDOWN, WM_SYSKEYUP = 0x100, 0x101, 0x102, 0x104, 0x105
+KEYEVENTF_UNICODE = 0x4
+
+
+def _chord(text):
+    """'alt+`' -> ((VK_MENU,), VK_OEM_3); SystemExit on unknown names."""
+    parts = text.lower().split("+") if text not in ("+",) else [text]
+    *mods, key = parts
+    for m in mods:
+        if m not in MODIFIER_VK:
+            raise SystemExit(f"--actions: key {text!r}: unknown modifier {m!r} (ctrl, alt, shift)")
+    if key in KEY_NAMES:
+        vk = KEY_NAMES[key]
+    elif len(key) == 1 and key.isalnum():
+        vk = ord(key.upper())
+    elif re.fullmatch(r"f([1-9]|1[0-9]|2[0-4])", key):
+        vk = 0x6F + int(key[1:])
+    else:
+        raise SystemExit(f"--actions: key {text!r}: unknown key {key!r} (a letter, digit, f1-f24 or "
+                         f"{', '.join(KEY_NAMES)})")
+    return tuple(dict.fromkeys(MODIFIER_VK[m] for m in mods)), vk
+
+
+def _key_lparam(vk, up, alt):
+    scan = w.MapVirtualKeyW(vk, 0)
+    lp = 1 | (scan << 16) | ((1 << 24) if vk in EXTENDED_VK else 0)
+    if alt:
+        lp |= 1 << 29  # context code: Alt is down
+    if up:
+        lp |= 3 << 30  # previous state down, transition up
+    return lp
+
+
+def _key_char(mods, vk):
+    """The character TranslateMessage makes of the key, None for none (or a Ctrl/Alt chord)."""
+    if any(m != MODIFIER_VK["shift"] for m in mods):
+        return None
+    shift = bool(mods)
+    special = {0x0D: "\r", 0x09: "\t", 0x08: "\b", 0x1B: "\x1b", 0x20: " "}
+    if vk in special:
+        return special[vk]
+    if 0x41 <= vk <= 0x5A:
+        return chr(vk) if shift else chr(vk).lower()
+    if shift:
+        return None  # shifted digits and punctuation depend on the layout
+    ch = w.MapVirtualKeyW(vk, 2) & 0x7FFF  # MAPVK_VK_TO_CHAR: the unshifted character
+    return chr(ch) if ch else None
+
+
+def post_chord(hwnd, mods, vk, gap=0.03):
+    """Modifiers down, the key down (and its WM_CHAR, as TranslateMessage would post it) and up,
+    modifiers up, posted to the window as Windows sends them: with Alt down WM_SYSKEY* and the
+    context bit, Alt's own release a WM_KEYUP (blocks about gap per message). The client's text
+    fields (the console) read the WM_CHAR: Enter submits with it."""
+    alt_vk = MODIFIER_VK["alt"]
+    alt = False
+    events = []
+    for m in mods:
+        alt = alt or m == alt_vk
+        events.append((WM_SYSKEYDOWN if alt else WM_KEYDOWN, m, False, alt))
+    events.append((WM_SYSKEYDOWN if alt else WM_KEYDOWN, vk, False, alt))
+    ch = _key_char(mods, vk)
+    if ch is not None:
+        events.append((WM_CHAR, ord(ch), None, False))
+    events.append((WM_SYSKEYUP if alt else WM_KEYUP, vk, True, alt))
+    for m in reversed(mods):
+        if m == alt_vk:
+            alt = False
+            events.append((WM_KEYUP, m, True, False))
+        else:
+            events.append((WM_SYSKEYUP if alt else WM_KEYUP, m, True, alt))
+    for msg, code, up, ctx in events:
+        lp = 1 if msg == WM_CHAR else _key_lparam(code, up, ctx)
+        w.PostMessageW(hwnd, msg, code, lp)
+        time.sleep(gap)
+
+
+def post_text(hwnd, text, gap=0.03):
+    for ch in text:
+        w.PostMessageW(hwnd, WM_CHAR, ord(ch), 1)
+        time.sleep(gap)
+
 
 def add_action_args(p):
     g = p.add_argument_group("in-match actions")
@@ -150,11 +251,13 @@ def prepare(args):
         _hero(args.hero)
     if not getattr(args, "actions", None):
         return
-    parse(args.actions)
+    steps = parse(args.actions)
     env = dict(getattr(args, "server_env", None) or os.environ)
     level = env.get("RUST_LOG", "info")
     if "orpheus::owner" not in level:
         env["RUST_LOG"] = level + ",orpheus::owner=debug"
+    if any(step[0] == "die" for step in steps):
+        env["ORPHEUS_DEBUG_SEND"] = "1"  # /api/debug/kill
     args.server_env = env
 
 
@@ -267,9 +370,21 @@ def parse(text):
         elif verb == "position":
             steps.append(("position",))
         elif verb == "key":
-            if int(num(0)) not in ACTION_BUTTONS:
-                raise SystemExit(f"--actions: key {rest[0]}: not in the action table ({ACTION_BUTTONS})")
-            steps.append(("key", int(num(0))))
+            if not rest:
+                raise SystemExit("--actions: key N (a logical button) or key CHORD (alt+`, enter, ...)")
+            if rest[0].isdigit():
+                if int(rest[0]) not in ACTION_BUTTONS:
+                    raise SystemExit(f"--actions: key {rest[0]}: not in the action table ({ACTION_BUTTONS})")
+                steps.append(("key", int(rest[0])))
+            else:
+                steps.append(("chord", rest[0]) + _chord(rest[0]))
+        elif verb == "type":
+            text = raw.strip()[len(words[0]):].strip()
+            if not text:
+                raise SystemExit("--actions: type TEXT")
+            steps.append(("type", text))
+        elif verb == "die":
+            steps.append(("die",))
         elif verb == "poke":
             if len(rest) != 3 or rest[1].lower() not in POKE_TYPES:
                 raise SystemExit(f"--actions: poke ADDRESS TYPE VALUE, TYPE one of {', '.join(POKE_TYPES)}")
@@ -361,6 +476,31 @@ class Foreground:
         _send([_key_input(scan, False, False)])
         time.sleep(0.05)
         _send([_key_input(scan, False, True)])
+
+    def _focus(self):
+        hwnd = self.s.window()
+        if hwnd and w.GetForegroundWindow() != hwnd:
+            w.SetForegroundWindow(hwnd)
+            time.sleep(0.2)
+
+    def chord(self, mods, vk, gap=0.03):
+        self._focus()
+        keys = [(w.MapVirtualKeyW(k, 0), k in EXTENDED_VK) for k in mods + (vk,)]
+        for scan, ext in keys:
+            _send([_key_input(scan, ext, False)])
+            time.sleep(gap)
+        for scan, ext in reversed(keys):
+            _send([_key_input(scan, ext, True)])
+            time.sleep(gap)
+
+    def type(self, text, gap=0.03):
+        self._focus()
+        for ch in text:
+            for up in (False, True):
+                i = w.INPUT(type=w.INPUT_KEYBOARD)
+                i.u.ki = w.KEYBDINPUT(0, ord(ch), KEYEVENTF_UNICODE | (w.KEYEVENTF_KEYUP if up else 0), 0, 0)
+                _send([i])
+            time.sleep(gap)
 
 
 # ---------------------------------------------------------------- positions
@@ -525,6 +665,7 @@ class Actions:
         self.done = False
         self._scan_wait = None
         self._next_track = 0.0
+        self.worker = None  # the thread of a key/type/die step; the next step waits for it
 
     def log(self, msg):
         self.s.log(f"[actions] t={self.dbg.elapsed:.2f} {msg}")
@@ -641,6 +782,7 @@ class Actions:
                 self.want_view = None
                 return
             dbg.write(self.scratch, b"\x90" * 16)
+            dbg.injected_returns.add(self.scratch)  # probes on set-view skip our calls
         target = self.want_view
         if self.calib is None:
             # Calibrate the quaternion -> (yaw, pitch) mapping: inputs (0, 0) and (45, 10) degrees.
@@ -696,7 +838,7 @@ class Actions:
         return struct.unpack("<hh", self.dbg.read(self.comp59 + VIEW_YAW, 4))
 
     def turn_to(self, yaw16, pitch16):
-        pitch16 = max(-16000, min(16000, pitch16))
+        pitch16 = int(round(max(-16000, min(16000, pitch16))))
         self.want_view = (wrap16(yaw16), pitch16)
         self.lock_view = self.want_view
 
@@ -723,7 +865,7 @@ class Actions:
                 self.i += 1
                 continue
             if self.until is not None:
-                if now < self.until:
+                if now < self.until or self.worker is not None and self.worker.is_alive():
                     return
                 self.until = None
                 self.i += 1
@@ -784,6 +926,22 @@ class Actions:
         elif verb == "key":
             self.press(step[1])
             self.until = now
+        elif verb in ("chord", "type"):
+            hwnd = self.s.window()
+            if not hwnd:
+                self.log(f"{verb}: no game window")
+                self.until = now
+                return
+            if verb == "chord":
+                _, _, mods, vk = step
+                send = (lambda: self.foreground.chord(mods, vk)) if self.foreground else \
+                    (lambda: post_chord(hwnd, mods, vk))
+            else:
+                send = (lambda: self.foreground.type(step[1])) if self.foreground else \
+                    (lambda: post_text(hwnd, step[1]))
+            self._work(send)
+        elif verb == "die":
+            self._work(self._die)
         elif verb == "poke":
             _, addr, kind, data = step
             va = self.game_va(addr)
@@ -932,6 +1090,29 @@ class Actions:
                 return True
             return False
         return True
+
+    def _work(self, fn):
+        """Run fn on a worker thread (it sleeps between messages or waits for HTTP); the step
+        machine moves on when it is done."""
+        self.worker = threading.Thread(target=fn, daemon=True)
+        self.worker.start()
+        self.until = self.dbg.elapsed
+
+    def _die(self):
+        """POST /api/debug/kill (a worker thread: the debugger loop keeps running)."""
+        import urllib.error
+        import urllib.request
+        from .msg import DASHBOARD
+        req = urllib.request.Request(f"{DASHBOARD}/api/debug/kill", data=b"{}",
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                res = r.read().decode(errors="replace")
+        except urllib.error.HTTPError as e:
+            res = f"HTTP {e.code}: {e.read().decode(errors='replace')[:300]}"
+        except Exception as e:
+            res = f"failed: {e}"
+        self.log(f"die: {res}")
 
     def screenshot(self, name):
         from .game import out_path, screenshot

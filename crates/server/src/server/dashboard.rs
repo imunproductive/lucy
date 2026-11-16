@@ -187,6 +187,7 @@ fn handle(
         Method::Post => {
             let result = read_body(&mut request).and_then(|data| match path {
                 debug::SEND if debug_send => debug::send(api, lobby, &data),
+                debug::KILL if debug_send => debug::kill(api, lobby, &data),
                 _ => post(api, lobby, path, &data),
             });
             json_reply(result)
@@ -447,6 +448,7 @@ mod tests {
             404
         );
         assert_eq!(request(addr, "POST", "/api/debug/send", send).0, 404);
+        assert_eq!(request(addr, "POST", "/api/debug/kill", "{}").0, 404);
         off.stop();
 
         let mut on = Dashboard::start(0, parts(state.path(), true)).unwrap();
@@ -457,6 +459,10 @@ mod tests {
         assert_eq!(layout["link"], "game");
         assert_eq!(
             request(addr, "POST", "/api/debug/send", send),
+            (503, r#"{"error":"The lobby is not running."}"#.into())
+        );
+        assert_eq!(
+            request(addr, "POST", "/api/debug/kill", "{}"),
             (503, r#"{"error":"The lobby is not running."}"#.into())
         );
         on.stop();

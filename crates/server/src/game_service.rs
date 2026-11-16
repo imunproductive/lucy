@@ -295,6 +295,12 @@ enum Request {
         messages: Vec<Vec<u8>>,
         reply: mpsc::SyncSender<bool>,
     },
+    /// The marker messages: the environment kills the seat's body.
+    DebugKill {
+        connection: u32,
+        id: MatchId,
+        reply: mpsc::SyncSender<DebugKill>,
+    },
     /// More players for a match that is on (server.py `join_match`).
     Join {
         id: MatchId,
@@ -349,6 +355,21 @@ pub struct DebugSeat {
     pub controller: u32,
     /// The hero body it possesses; none before the first pick.
     pub body: Option<u32>,
+}
+
+/// What `/api/debug/kill` did to a seat's body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DebugKill {
+    /// The body dies at the next tick.
+    Killed(u32),
+    /// The seat's game is not connected to the match.
+    NotConnected,
+    /// No hero picked yet.
+    NoBody,
+    /// The body is dead already (waiting to respawn).
+    Dead,
+    /// The body is in its team's spawn room, where nothing hurts it.
+    InSpawnRoom,
 }
 
 impl GameService {
@@ -648,6 +669,17 @@ impl GameService {
             connection: handoff.conn,
             id: handoff.match_id,
             messages,
+            reply,
+        })
+    }
+
+    /// The marker messages: the environment kills the seat's living body,
+    /// as the map's catch floor does ([`Combat::environment_kill`]): the
+    /// hit goes the normal way (death message, board, respawn).
+    pub(crate) fn debug_kill(&self, handoff: &Handoff) -> io::Result<DebugKill> {
+        self.request(|reply| Request::DebugKill {
+            connection: handoff.conn,
+            id: handoff.match_id,
             reply,
         })
     }
@@ -1750,6 +1782,13 @@ impl State {
                 });
                 let _ = reply.send(sent);
             }
+            Request::DebugKill {
+                connection,
+                id,
+                reply,
+            } => {
+                let _ = reply.send(self.debug_kill(connection, id));
+            }
         }
     }
 
@@ -1761,6 +1800,36 @@ impl State {
             controller: self.rooms.get(&match_id)?.players[slot].entity,
             body: peer.world.current_body(),
         })
+    }
+
+    /// The environment's kill of a seat's living body ([`DebugKill`]),
+    /// resolved with the next tick's hits.
+    fn debug_kill(&mut self, connection: u32, id: MatchId) -> DebugKill {
+        let Some(seat) = self.debug_seat(connection, id) else {
+            return DebugKill::NotConnected;
+        };
+        let Some(body) = seat.body else {
+            return DebugKill::NoBody;
+        };
+        let world = &self.peers[&connection].world;
+        if world.body_dead() {
+            return DebugKill::Dead;
+        }
+        if world.in_spawn_room() == Some(true) {
+            return DebugKill::InSpawnRoom;
+        }
+        let tick = self.clock.frame();
+        let slot = self.seats[&connection].1;
+        let room = self.rooms.get_mut(&id).expect("seated match");
+        let team = room.players[slot].info.team;
+        let Some(world) = room.world.as_mut() else {
+            return DebugKill::NotConnected;
+        };
+        world
+            .combat
+            .get_or_insert_with(|| Combat::new(&world.scene))
+            .environment_kill(body, team, tick);
+        DebugKill::Killed(body)
     }
 
     /// A pick of the hero, as the client's own pick message (21616) carries

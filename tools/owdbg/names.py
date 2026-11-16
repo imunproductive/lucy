@@ -290,6 +290,18 @@ class Expr:
             tree = tree[1]
         return self._eval(tree, hit)
 
+    def number(self, hit):
+        """The expression as an integer: its value, or the 1/2/4/8 bytes read for ':N'. None when
+        unreadable or not an integer size."""
+        try:
+            if not self.size:
+                return self._eval(self.tree, hit)
+            if self.size not in ("1", "2", "4", "8"):
+                return None
+            return int.from_bytes(hit.dbg.read(self.address(hit), int(self.size)), "little")
+        except Exception:
+            return None
+
     def value(self, hit):
         """Formatted value: hex int, hex bytes, or text. Unreadable -> None."""
         try:
