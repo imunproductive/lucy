@@ -1,0 +1,316 @@
+//! Ray casts (`vm/rays.rs`): the action `STU_08D6BA6E`, RayCast and
+//! TrackRay against a map wall and the listed bodies.
+
+use std::sync::Mutex;
+
+use super::*;
+
+const PROFILE: u64 = 0x0690_0000_0000_0065;
+
+/// A wall facing −x at `wall` (none: no wall), and the bodies.
+struct Range {
+    bodies: Vec<TargetCandidate>,
+    wall: Option<f64>,
+    profiles: Mutex<Vec<Option<u64>>>,
+}
+
+impl Range {
+    fn new(wall: Option<f64>) -> Self {
+        Self {
+            bodies: vec![
+                body(SEARCHER, 0, [0.0; 3]),
+                body(ALLY, 0, [2.0, 0.0, 0.0]),
+                body(ENEMY, 1, [5.0, 0.0, 0.0]),
+            ],
+            wall,
+            profiles: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl World for Range {
+    fn target_candidates(&self, _site: Site) -> Option<&[TargetCandidate]> {
+        Some(&self.bodies)
+    }
+
+    fn map_ray(
+        &self,
+        _site: Site,
+        origin: [f64; 3],
+        direction: [f64; 3],
+        reach: f64,
+        profile: Option<u64>,
+    ) -> Option<Option<MapHit>> {
+        self.profiles.lock().unwrap().push(profile);
+        let hit = self.wall.and_then(|wall| {
+            let distance = (wall - origin[0]) / direction[0];
+            (direction[0] > 0.0 && distance <= reach).then(|| MapHit {
+                distance,
+                point: std::array::from_fn(|axis| origin[axis] + direction[axis] * distance),
+                normal: [-1.0, 0.0, 0.0],
+            })
+        });
+        Some(hit)
+    }
+}
+
+fn vec3(x: f64, y: f64, z: f64) -> Json {
+    json!({"$":"STUConfigVarVec3","m_value":{"X":x,"Y":y,"Z":z}})
+}
+
+/// Enemies only (`m_89831602` 1: no friendly body), and the ray profile.
+fn enemies() -> Json {
+    json!({"$":"STUConfigVarFilter","m_84065FD1":1,"m_1E14CCA8":0,"m_4EA686DB":16,
+        "m_27CF71D5":0,"m_66747E7D":0,"m_89831602":1,"m_condition":null,
+        "m_C1903771":{"$":"STU_20DB8AB5","m_C1903771":format!("0x{PROFILE:016X}"),
+            "m_resourceKey":null}})
+}
+
+/// No body passes masks of zero: the map only.
+fn map_only() -> Json {
+    json!({"$":"STUConfigVarFilter","m_84065FD1":0,"m_1E14CCA8":0,"m_4EA686DB":0,
+        "m_27CF71D5":0,"m_66747E7D":0,"m_89831602":0})
+}
+
+/// The action's and RayCast's fields: from a metre over the origin along
+/// +x for 10 m; hit to #10, entity #11, point #12, normal #13.
+fn cast_fields(filter: Json) -> Json {
+    json!({
+        "m_startPosWS":vec3(0.0, 1.0, 0.0),
+        "m_dirWS":vec3(2.0, 0.0, 0.0),
+        "m_castLength":{"$":"STUConfigVarFloat","m_value":10.0},
+        "m_castFilter":filter,
+        "m_out_HitSomething":var(10, false),
+        "m_out_HitEntity":var(11, false),
+        "m_out_HitPointWS":var(12, false),
+        "m_out_HitNormal":var(13, false),
+        "m_type":0,
+    })
+}
+
+fn one_node(class: &str, state: bool, fields: Json) -> GraphStore {
+    let plug_name = if state { "m_beginPlug" } else { "m_inPlug" };
+    let mut fields = fields;
+    if !state {
+        fields["m_outPlug"] = plug(&[], &[]);
+    }
+    store(vec![graph(
+        42,
+        vec![
+            entry(&[(1, plug_name)]),
+            node(1, class, state.then_some(0), fields),
+        ],
+        if state { json!([1]) } else { json!([]) },
+        json!([0]),
+    )])
+}
+
+fn start(graphs: GraphStore, world: &mut Range) -> Component {
+    Component::start(
+        Arc::new(graphs),
+        SEARCHER,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        0,
+        world,
+        MAX_INIT_WORK,
+    )
+    .unwrap()
+}
+
+fn outputs(component: &Component, ids: &[u32]) -> Vec<Value> {
+    let variables = &component.snapshot().unwrap().instances[&1].variables;
+    ids.iter()
+        .map(|id| variables.get(id).cloned().unwrap_or(Value::Null))
+        .collect()
+}
+
+fn close(value: &Value, expected: [f64; 3]) -> bool {
+    matches!(value, Value::Vector(vector)
+        if (0..3).all(|axis| (vector[axis] - expected[axis]).abs() < 1e-9))
+}
+
+/// The action meets the enemy's capsule before the wall, passing the
+/// caster and the ally its filter leaves out; with masks of zero it meets
+/// the wall, which has no entity. The filter's ray profile reaches the map.
+#[test]
+fn the_cast_action_meets_the_nearest_body_its_filter_passes_or_the_map() {
+    let mut world = Range::new(Some(8.0));
+    let component = start(
+        one_node("STU_08D6BA6E", false, cast_fields(enemies())),
+        &mut world,
+    );
+    let values = outputs(&component, &[10, 11, 12, 13]);
+    assert_eq!(values[..2], [Value::Bool(true), Value::Entity(ENEMY)]);
+    assert!(close(&values[2], [4.6, 1.0, 0.0]), "{values:?}");
+    assert!(close(&values[3], [-1.0, 0.0, 0.0]), "{values:?}");
+    assert_eq!(*world.profiles.lock().unwrap(), [Some(PROFILE)]);
+
+    let mut world = Range::new(Some(8.0));
+    let component = start(
+        one_node("STU_08D6BA6E", false, cast_fields(map_only())),
+        &mut world,
+    );
+    let values = outputs(&component, &[10, 11, 12, 13]);
+    assert_eq!(values[..2], [Value::Bool(true), Value::Entity(0)]);
+    assert!(close(&values[2], [8.0, 1.0, 0.0]), "{values:?}");
+    assert_eq!(*world.profiles.lock().unwrap(), [None]);
+
+    // A miss writes the hit and the entity, not the point and normal.
+    let mut world = Range::new(None);
+    let component = start(
+        one_node("STU_08D6BA6E", false, cast_fields(map_only())),
+        &mut world,
+    );
+    assert_eq!(
+        outputs(&component, &[10, 11, 12, 13]),
+        [
+            Value::Bool(false),
+            Value::Entity(0),
+            Value::Null,
+            Value::Null
+        ]
+    );
+}
+
+/// RayCast casts at its begin and again each tick: the enemy walking off
+/// leaves the wall; the wall gone, it misses and keeps the last point.
+#[test]
+fn a_ray_cast_state_follows_what_its_ray_meets() {
+    let mut world = Range::new(Some(8.0));
+    let mut component = start(
+        one_node("STUStatescriptStateRayCast", true, cast_fields(enemies())),
+        &mut world,
+    );
+    assert_eq!(
+        outputs(&component, &[10, 11]),
+        [Value::Bool(true), Value::Entity(ENEMY)]
+    );
+    world.bodies[2].feet = [5.0, 0.0, 9.0];
+    component.advance_frame(1, &mut world).unwrap();
+    let values = outputs(&component, &[10, 11, 12]);
+    assert_eq!(values[..2], [Value::Bool(true), Value::Entity(0)]);
+    assert!(close(&values[2], [8.0, 1.0, 0.0]), "{values:?}");
+    world.wall = None;
+    component.advance_frame(2, &mut world).unwrap();
+    let values = outputs(&component, &[10, 11, 12]);
+    assert_eq!(values[..2], [Value::Bool(false), Value::Entity(0)]);
+    assert!(close(&values[2], [8.0, 1.0, 0.0]), "{values:?}");
+}
+
+/// TrackRay from a world point to its end: a hit fills its target's
+/// fields; a miss's point is the end and its normal points back.
+#[test]
+fn a_track_ray_writes_its_targets_fields() {
+    let target = json!({"$":"STU_404DE6D3",
+        "m_7BA44A69":var(20, false), "m_692DFF72":var(21, false),
+        "m_750377AA":var(22, false), "m_5ED803CF":var(23, false),
+        "m_F2F8606D":var(24, false), "m_A7C2505B":var(25, false)});
+    let fields = |filter: Json| {
+        json!({
+            "m_3BC31C57":vec3(0.0, 1.0, 0.0),
+            "m_F5732403":{"$":"STU_9E9028E6","m_direction":vec3(1.0, 0.0, 0.0),
+                "m_6A79BD98":{"$":"STUConfigVarFloat","m_value":6.0}},
+            "m_filter":filter,
+            "m_target":target.clone(),
+            "m_1DA04609":1, "m_E4A295CE":1, "m_1C2A9945":1,
+        })
+    };
+    let mut world = Range::new(None);
+    let component = start(
+        one_node("STUStatescriptStateTrackRay", true, fields(enemies())),
+        &mut world,
+    );
+    let values = outputs(&component, &[20, 21, 22, 23, 24, 25]);
+    assert_eq!(
+        values[..3],
+        [
+            Value::Bool(true),
+            Value::Entity(ENEMY),
+            Value::Array(vec![Value::Entity(ENEMY)])
+        ]
+    );
+    assert!(close(&values[3], [4.6, 1.0, 0.0]), "{values:?}");
+    assert!(close(&values[4], [4.6, 1.0, 0.0]), "{values:?}");
+    assert!(close(&values[5], [-1.0, 0.0, 0.0]), "{values:?}");
+
+    let mut world = Range::new(None);
+    let component = start(
+        one_node("STUStatescriptStateTrackRay", true, fields(map_only())),
+        &mut world,
+    );
+    let values = outputs(&component, &[20, 21, 22, 23, 24, 25]);
+    assert_eq!(
+        values[..4],
+        [
+            Value::Bool(false),
+            Value::Entity(0),
+            Value::Array(Vec::new()),
+            Value::Null
+        ]
+    );
+    assert!(close(&values[4], [6.0, 1.0, 0.0]), "{values:?}");
+    assert!(close(&values[5], [-1.0, 0.0, 0.0]), "{values:?}");
+}
+
+/// Type 1 is not modelled: the state casts nothing and says so; a
+/// world without a map does the same.
+#[test]
+fn a_ray_the_server_cant_cast_writes_nothing() {
+    let mut fields = cast_fields(enemies());
+    fields["m_type"] = json!(1);
+    let mut world = Range::new(Some(8.0));
+    let component = start(
+        one_node("STUStatescriptStateRayCast", true, fields),
+        &mut world,
+    );
+    let snapshot = component.snapshot().unwrap();
+    assert!(!snapshot.instances[&1].variables.contains_key(&10));
+    assert!(
+        snapshot
+            .assumptions
+            .iter()
+            .any(|item| item.class == "STUStatescriptStateRayCast m_type"
+                && item.answer == "casts nothing")
+    );
+
+    let snapshot = initialize(
+        &one_node("STU_08D6BA6E", false, cast_fields(map_only())),
+        42,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        &mut Bodies(Vec::new()),
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    assert!(!snapshot.variables.contains_key(&10));
+    assert!(
+        snapshot
+            .assumptions
+            .iter()
+            .any(|item| item.class == "STU_08D6BA6E map")
+    );
+}
+
+/// The capsule test: entering the side, a cap, and starting inside.
+#[test]
+fn a_ray_enters_a_capsule_at_its_surface() {
+    let capsule = body(ENEMY, 1, [0.0; 3]);
+    let (distance, normal) = capsule
+        .ray_hit([-5.0, 1.0, 0.0], [1.0, 0.0, 0.0], 10.0, 0.0)
+        .unwrap();
+    assert!((distance - 4.6).abs() < 1e-9 && (normal[0] + 1.0).abs() < 1e-9);
+    let (distance, normal) = capsule
+        .ray_hit([0.0, 5.0, 0.0], [0.0, -1.0, 0.0], 10.0, 0.1)
+        .unwrap();
+    assert!((distance - 3.1).abs() < 1e-9, "{distance}");
+    assert!((normal[1] - 1.0).abs() < 1e-9);
+    assert_eq!(
+        capsule.ray_hit([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], 10.0, 0.0),
+        None
+    );
+    assert_eq!(
+        capsule.ray_hit([-5.0, 1.0, 0.0], [1.0, 0.0, 0.0], 4.0, 0.0),
+        None
+    );
+}

@@ -334,7 +334,10 @@ struct Bundle {
 /// runs `0C71`, which plays `0C72` on an enemy and `0B99` on an ally).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Aura {
-    /// The graph an aura runs on the body it is on (`m_5A4051BC`).
+    /// The graph an aura runs on the body it is on: `m_5A4051BC` (41 of the
+    /// 65 auras), else `m_14AA219A` (the other 24; Nano Boost's `0269` runs
+    /// `0B9F`, with its damage modifiers). Assumption: the two run alike;
+    /// no client code reads either (the aura is server-only data).
     pub graph: Option<u32>,
     /// `m_7DAE8F10`: how long the aura's own instance stays on the body,
     /// in seconds; 0 until its graph exits (`0267` 0.1, the Biotic Field's
@@ -395,9 +398,9 @@ impl GraphStore {
         let auras: BTreeMap<u64, Aura> = keyed_by_guid(bundle.auras)?
             .into_iter()
             .map(|(guid, fields)| {
-                let graph = fields
-                    .get("m_5A4051BC")
-                    .and_then(asset_guid)
+                let graph = ["m_5A4051BC", "m_14AA219A"]
+                    .into_iter()
+                    .find_map(|name| fields.get(name).and_then(asset_guid))
                     .filter(|&graph| graph >> 48 == GRAPH_TYPE)
                     .and_then(|graph| u32::try_from(graph & 0xFFFF_FFFF_FFFF).ok());
                 let seconds = fields

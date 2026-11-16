@@ -167,7 +167,7 @@ The last differing test, `TakeOutTests::test_a_player_taken_out_before_his_game_
 | `test_script_mode_variables.py` | covered | script `graph.rs::reads_gzip_and_rejects...` (asserts typed `mode_variables`) (gap: the Assault 0BA4 gate is untested) |
 | `test_script_pulser.py` | covered | script vm `pulser_counts_every_begin_and_marks_pulses_after_the_first_frame_fresh`; snapshot `kill_feed_pulse_waits_for_the_world...` |
 | `test_script_raw_payloads.py` | dropped | `ow174/game/script/raw_payloads.py` is unused by the server (the test asserts it registers no writer); Rust never sends 9935FBC8/861D9015 |
-| `test_script_raycast.py` | covered | script vm `keyed_set_var_replaces_equal_keys_and_raycast_only_follows_its_plug` (the no-provider path only) |
+| `test_script_raycast.py` | covered | script vm `keyed_set_var_replaces_equal_keys_and_an_uncastable_ray_only_follows_its_plug` (the no-provider path only) |
 | `test_script_runtime.py` | covered | script vm `authored_soldier_rifle_holds_releases_and_reloads_on_the_reference_clock` (ignored); `timeline.rs::command_edges_preserve_aliases...`; sim `prepared_soldier_starts_the_reference_body...` (ignored) |
 | `test_script_runtime_budget.py` | covered | script vm `unsupported_branches_are_reported_and_cyclic_actions_are_bounded`, `startup_queues_states_rechecks_scoped_writes...` |
 | `test_server_journal.py` | dropped | CONTROLLED_SERVER_JOURNAL_V1/V2 research format |

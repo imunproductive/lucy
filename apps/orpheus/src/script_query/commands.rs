@@ -978,7 +978,7 @@ fn vm_text(cls: &str, is_state: bool) -> String {
         "STU_4E2BCAAB" => action("condition: the calling state is m_AA6E611E seconds old"),
         "STU_BC5E4622" => action("CycleIndex"),
         "STU_187D5125" => action("stops the instance's abilities"),
-        "STU_08D6BA6E" => action("raycast, assumed to hit nothing"),
+        "STU_08D6BA6E" => action("ray cast against the map and the listed bodies (vm/rays.rs)"),
         "STUStatescriptActionSwitch" => {
             action("switch on m_262AE982, by case number when m_F0F0720B is 1")
         }
@@ -1040,7 +1040,8 @@ fn vm_text(cls: &str, is_state: bool) -> String {
         "STUStatescriptStateCosmeticEntity" => state("CosmeticEntity"),
         "STUStatescriptStateChaseVar" => state("ChaseVar"),
         "STU_2F4E2E3F" => state("Watch"),
-        "STUStatescriptStateTrackTargets" => state("TrackTargets, finding nothing"),
+        "STUStatescriptStateTrackTargets" => state("TrackTargets"),
+        "STUStatescriptStateRayCast" | "STUStatescriptStateTrackRay" => state("Ray"),
         "STU_23A00A53"
         | "STUStatescriptStateModifyHealth"
         | "STU_0A6BE10E"

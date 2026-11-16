@@ -21,8 +21,8 @@ use crate::{
     graph::GraphStore,
     vitals::{PoolKind, Vitals},
     vm::{
-        BodyEffects, CombatMod, GameMessage, HealthChange, RaisedCriteria, Site, TargetCandidate,
-        TargetTagEffect, Unknowns, VoiceRequest, World,
+        AuraChange, BodyEffects, CombatMod, GameMessage, HealthChange, MapHit, MapRays,
+        RaisedCriteria, Site, TargetCandidate, TargetTagEffect, Unknowns, VoiceRequest, World,
     },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
@@ -75,6 +75,8 @@ pub struct PlayerWorld {
     /// The bodies a target search can find, as the match placed them this
     /// tick (its own body among them); none: the world lists no bodies.
     pub targets: Option<Vec<TargetCandidate>>,
+    /// The map's collision the body's ray casts meet; none: no map.
+    pub map_rays: Option<Arc<dyn MapRays>>,
     /// How the body treats graph content the VM doesn't implement; by
     /// default as every script does ([`Unknowns::for_build`]).
     pub unknowns: Unknowns,
@@ -91,6 +93,9 @@ pub struct PlayerWorld {
     voices: Vec<VoiceRequest>,
     /// The health changes the body's graphs made, for the match to apply.
     health_changes: Vec<HealthChange>,
+    /// The auras the body's ApplyAura states put on bodies or took off,
+    /// for the match to apply.
+    aura_changes: Vec<AuraChange>,
     /// The statuses and combat modifiers its states hold.
     pub effects: BodyEffects,
 }
@@ -234,6 +239,16 @@ impl World for PlayerWorld {
             return false;
         }
         self.health_changes.push(change);
+        true
+    }
+
+    /// The body's ApplyAura changes wait for the match, which hands each to
+    /// its target's component (the body itself included).
+    fn change_aura(&mut self, site: Site, change: AuraChange) -> bool {
+        if site.entity != self.entity {
+            return false;
+        }
+        self.aura_changes.push(change);
         true
     }
 
@@ -425,6 +440,21 @@ impl World for PlayerWorld {
             .flatten()
     }
 
+    fn map_ray(
+        &self,
+        site: Site,
+        origin: [f64; 3],
+        direction: [f64; 3],
+        reach: f64,
+        profile: Option<u64>,
+    ) -> Option<Option<MapHit>> {
+        let rays = self
+            .map_rays
+            .as_ref()
+            .filter(|_| self.is_player_site(site))?;
+        rays.cast(origin, direction, reach, profile)
+    }
+
     fn body_on_fire(&mut self, site: Site, entity: u32) -> Option<bool> {
         self.related_entity(site, EntityRelation::CurrentPossessor, entity)
             .map(|_| self.controller_on_fire)
@@ -549,6 +579,7 @@ impl PlayerWorld {
             target_tags: None,
             target_tag_effects: BTreeMap::new(),
             target_tags_changed: false,
+            map_rays: None,
             controller_on_fire: false,
             targets: None,
             victim_tags: None,
@@ -558,6 +589,7 @@ impl PlayerWorld {
             criteria: Vec::new(),
             voices: Vec::new(),
             health_changes: Vec::new(),
+            aura_changes: Vec::new(),
             effects: BodyEffects::default(),
         }
     }
@@ -586,6 +618,12 @@ impl PlayerWorld {
             }
         }
         Some(lists)
+    }
+
+    /// The aura changes the body's graphs made since the last call, in
+    /// order.
+    pub fn take_aura_changes(&mut self) -> Vec<AuraChange> {
+        std::mem::take(&mut self.aura_changes)
     }
 
     /// The game messages the body sent other entities since the last call,

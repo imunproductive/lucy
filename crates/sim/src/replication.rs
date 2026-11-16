@@ -62,8 +62,8 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
     vm::{
-        BodyEffects, GameMessage, Motion, MoveRequest, RaisedCriteria, Snapshot, TargetCandidate,
-        VoiceRequest,
+        AuraChange, BodyEffects, GameMessage, Motion, MoveRequest, RaisedCriteria, Snapshot,
+        TargetCandidate, VoiceRequest,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
@@ -257,10 +257,16 @@ pub trait OwnerBodyRuntime: Send {
         Ok(())
     }
 
-    /// An aura comes on the body (`vm/auras.rs` in `orpheus_script`),
-    /// dealt by `instigator`.
-    fn apply_aura(&mut self, _aura: u64, _instigator: u32) -> io::Result<()> {
+    /// An aura comes on the body or goes off it (`vm/auras.rs` in
+    /// `orpheus_script`): a hit's, or an ApplyAura's.
+    fn change_aura(&mut self, _change: &AuraChange) -> io::Result<()> {
         Ok(())
+    }
+
+    /// The aura changes the body's ApplyAura states made since the last
+    /// call, for the match to hand to their targets.
+    fn take_aura_changes(&mut self) -> Vec<AuraChange> {
+        Vec::new()
     }
 
     /// The statuses and combat modifiers the body's states hold.
@@ -3304,10 +3310,10 @@ impl WorldDelivery {
             .and_then(|script| script.runtime.effects())
     }
 
-    /// An aura comes on the player's living body, dealt by `instigator`
-    /// (Biotic Grenade's explosion).
-    pub fn apply_aura(&mut self, aura: u64, instigator: u32) {
-        if self.death.is_some() {
+    /// An aura comes on the player's living body (Biotic Grenade's
+    /// explosion, an ApplyAura) or goes off it.
+    pub fn change_aura(&mut self, change: &AuraChange) {
+        if self.death.is_some() && matches!(change, AuraChange::Apply { .. }) {
             return;
         }
         let Some(body) = self.body else {
@@ -3317,10 +3323,21 @@ impl WorldDelivery {
             .body_script
             .as_mut()
             .filter(|script| script.id == body.id)
-            .and_then(|script| script.runtime.apply_aura(aura, instigator).err());
+            .and_then(|script| script.runtime.change_aura(change).err());
         if let Some(error) = failure {
             self.drop_failed_script(&error.to_string());
         }
+    }
+
+    /// The aura changes the current body's ApplyAura states made, for the
+    /// match to hand to their targets.
+    pub fn take_body_aura_changes(&mut self) -> Vec<AuraChange> {
+        if !self.world_started() {
+            return Vec::new();
+        }
+        self.body_script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.runtime.take_aura_changes())
     }
 
     /// The player's living body dealt `points` of damage or healing: its

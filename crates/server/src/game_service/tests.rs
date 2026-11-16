@@ -845,7 +845,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
                 bots[1].position = [x - 5.0, y, z];
                 bots[2].position = [x - 5.0, y, z + 0.8];
                 let factory = fixture_projectile_factory(40.0);
-                scene.owner_body_factory = Some(Arc::new(move |hero, spawn| {
+                scene.owner_body_factory = Some(Arc::new(move |hero, spawn, _| {
                     if hero.guid != orpheus_content::heroes::SOLDIER {
                         return Ok(None);
                     }
@@ -5056,7 +5056,7 @@ fn practice_bots_run_their_scripts_for_a_client() {
     target.position = [x - 4.0, y, z];
     let target = target.entity;
     let factory = fixture_hitscan_factory(100.0);
-    scene.owner_body_factory = Some(Arc::new(move |hero, spawn| {
+    scene.owner_body_factory = Some(Arc::new(move |hero, spawn, _| {
         if hero.guid != SOLDIER {
             return Ok(None);
         }

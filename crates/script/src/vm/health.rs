@@ -127,7 +127,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             return Ok(());
         }
         let share = now.saturating_sub(last_ms) as f64 / 1000.0 / period;
-        let targets = self.health_targets(key, node);
+        let targets = self.listed_entities(key, node, "m_FA3ECC43");
         self.apply_health(key, node, &targets, share);
         Ok(())
     }
@@ -135,7 +135,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     /// A blow on each target not struck yet in this activation.
     fn strike_new_targets(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
         let now = self.machine.now_ms;
-        let targets = self.health_targets(key, node);
+        let targets = self.listed_entities(key, node, "m_FA3ECC43");
         let state = self.state_mut(key).expect("active ModifyHealth");
         let new: Vec<u32> = targets
             .into_iter()
@@ -151,9 +151,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(())
     }
 
-    /// The bodies `m_FA3ECC43` names now, each once.
-    fn health_targets(&mut self, key: StateKey, node: &Node) -> Vec<u32> {
-        let config = field(&node.fields, "m_FA3ECC43");
+    /// The bodies the node's field `name` names now (an entity or an
+    /// array), each once.
+    pub(super) fn listed_entities(&mut self, key: StateKey, node: &Node, name: &str) -> Vec<u32> {
+        let config = field(&node.fields, name);
         let mut targets = Vec::new();
         let mut add = |value: &Value| {
             if let Value::Entity(entity) = *value

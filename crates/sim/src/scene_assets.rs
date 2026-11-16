@@ -26,7 +26,7 @@ use crate::{
     combat::{BodyCombat, BotDeath, RespawnTimes},
     controller::Controller,
     hitboxes::HitboxCatalog,
-    hitscan::{RAY_PROFILES_FILE, RayProfiles},
+    hitscan::{RAY_PROFILES_FILE, RayProfiles, SceneRays},
     hurt_feedback::HurtFeedback,
     instance::RosterBot,
     map_areas::{self, DamageArea, MapAreaData, PlacedScript, SpawnRoom},
@@ -67,7 +67,7 @@ use orpheus_script::{
     graph::GraphStore,
     ultimate::ChargeRates,
     vitals::Vitals,
-    vm::{TargetCandidate, Unknowns},
+    vm::{MapRays, TargetCandidate, Unknowns},
     wire::Variables,
 };
 use orpheus_wire::entity::{Component, EntityUpdate, Operation};
@@ -94,8 +94,11 @@ fn ground_height(
     }
 }
 
-type OwnerBodyFactory =
-    dyn Fn(&Hero, OwnerBodySpawn) -> io::Result<Option<Box<dyn OwnerBodyRuntime>>> + Send + Sync;
+/// Starts a player body: its hero, its spawn and the map's collision its
+/// ray casts meet ([`PreparedScene::map_rays`]).
+type OwnerBodyFactory = dyn Fn(&Hero, OwnerBodySpawn, Arc<dyn MapRays>) -> io::Result<Option<Box<dyn OwnerBodyRuntime>>>
+    + Send
+    + Sync;
 
 /// A map's two collision cache files: the movement cache
 /// (`orpheus_assets::collision_cache`) and the ray cache the shots meet
@@ -176,7 +179,7 @@ pub struct PreparedScene {
     /// The map's collision as the shots and projectiles meet it: every
     /// category (the ray cache), queried with the volley's ray profile's map
     /// mask ([`PreparedScene::hitscan_wall`]).
-    rays: CollisionScene,
+    rays: Arc<CollisionScene>,
     ray_profiles: Arc<RayProfiles>,
     contacts: Option<Arc<ContactWorld>>,
     controller: Controller,
@@ -407,7 +410,7 @@ impl SceneAssets {
         let rays = {
             let cache = read_ray_cache(BufReader::new(File::open(rays_path)?), identity)
                 .map_err(invalid)?;
-            CollisionScene::expanded_rays(&cache, identifiers, identity).map_err(invalid)?
+            Arc::new(CollisionScene::expanded_rays(&cache, identifiers, identity).map_err(invalid)?)
         };
         let mut bots = self.bots.make(map.map_guid, |body| {
             BotWalk::from_mover(self.movers.for_body(Some(body)))
@@ -643,7 +646,7 @@ impl SceneAssets {
             });
         let prepared: Mutex<HashMap<u64, Result<Arc<PlayerBodyFactory>, String>>> =
             Mutex::default();
-        Some(Arc::new(move |hero, spawn| {
+        Some(Arc::new(move |hero, spawn, map_rays| {
             let factory = prepared
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -675,7 +678,8 @@ impl SceneAssets {
                 })
                 .clone()
                 .map_err(|reason| io::Error::new(io::ErrorKind::Unsupported, reason))?;
-            let runtime: Box<dyn OwnerBodyRuntime> = Box::new(factory.start(spawn)?);
+            let runtime: Box<dyn OwnerBodyRuntime> =
+                Box::new(factory.start_on(spawn, Some(map_rays))?);
             Ok(Some(runtime))
         }))
     }
@@ -777,6 +781,8 @@ impl PreparedScene {
         self.kill_height
     }
 
+    /// The player body for `hero`, its ray casts meeting this map
+    /// ([`Self::map_rays`]).
     pub(crate) fn owner_body_runtime(
         &self,
         hero: &Hero,
@@ -784,7 +790,15 @@ impl PreparedScene {
     ) -> io::Result<Option<Box<dyn OwnerBodyRuntime>>> {
         self.owner_body_factory
             .as_ref()
-            .map_or(Ok(None), |factory| factory(hero, spawn))
+            .map_or(Ok(None), |factory| factory(hero, spawn, self.map_rays()))
+    }
+
+    /// The map's collision as the scripts' ray casts meet it.
+    pub fn map_rays(&self) -> Arc<dyn MapRays> {
+        Arc::new(SceneRays {
+            scene: Arc::clone(&self.rays),
+            profiles: Arc::clone(&self.ray_profiles),
+        })
     }
 
     pub fn heroes(&self) -> &HeroCatalog {
@@ -1108,10 +1122,15 @@ impl PreparedScene {
         self.bot_scripts.hurt(entity, damage, &self.bots);
     }
 
-    /// An aura comes on the live bot at world tick `tick`, dealt by
-    /// `instigator` (Biotic Grenade's explosion).
-    pub fn apply_bot_aura(&mut self, entity: u32, aura: u64, instigator: u32, tick: u32) {
-        self.bot_scripts.apply_aura(entity, aura, instigator, tick);
+    /// An aura comes on the live bot at world tick `tick` or goes off it
+    /// (Biotic Grenade's explosion, an ApplyAura).
+    pub fn change_bot_aura(&mut self, change: &orpheus_script::vm::AuraChange, tick: u32) {
+        self.bot_scripts.change_aura(change, tick);
+    }
+
+    /// The aura changes the bots' graphs made since the last call.
+    pub fn take_bot_aura_changes(&mut self) -> Vec<orpheus_script::vm::AuraChange> {
+        self.bot_scripts.take_aura_changes()
     }
 
     /// The health changes the bots' graphs made since the last call.

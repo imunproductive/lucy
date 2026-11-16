@@ -40,8 +40,9 @@ use orpheus_script::{
     ultimate::{ChargeRates, UltimateCharge},
     vitals::Vitals,
     vm::{
-        BodyEffects, Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest, RaisedCriteria,
-        Root, Snapshot, StateKind, TargetCandidate, Unknowns, VoiceRequest, World,
+        AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays, Motion,
+        MoveRequest, RaisedCriteria, Root, Snapshot, StateKind, TargetCandidate, Unknowns,
+        VoiceRequest, World,
     },
     weapons::{HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
@@ -204,6 +205,16 @@ impl PlayerBodyFactory {
     }
 
     pub fn start(&self, spawn: OwnerBodySpawn) -> io::Result<PlayerBodyRuntime> {
+        self.start_on(spawn, None)
+    }
+
+    /// [`Self::start`] on a map whose collision the body's ray casts meet
+    /// (none: no map).
+    pub fn start_on(
+        &self,
+        spawn: OwnerBodySpawn,
+        map_rays: Option<Arc<dyn MapRays>>,
+    ) -> io::Result<PlayerBodyRuntime> {
         if spawn.quanta != RETAIL_QUANTA {
             return Err(unsupported("the owner VM requires the 16 ms retail clock"));
         }
@@ -218,6 +229,7 @@ impl PlayerBodyFactory {
         );
         world.position = spawn.pose.position;
         world.mode_random = Some(spawn.mode_random);
+        world.map_rays = map_rays;
         world.movement = spawn.pose;
         if !has_authored_pools {
             world.vitals = self.pools.unwrap_or(FALLBACK_POOLS).vitals();
@@ -465,12 +477,16 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         Ok(())
     }
 
-    fn apply_aura(&mut self, aura: u64, instigator: u32) -> io::Result<()> {
+    fn change_aura(&mut self, change: &AuraChange) -> io::Result<()> {
         self.component
-            .apply_aura(aura, instigator, &[], &mut self.world)
+            .change_aura(change, &mut self.world)
             .map_err(unsupported)?;
         self.log_assumptions();
         Ok(())
+    }
+
+    fn take_aura_changes(&mut self) -> Vec<AuraChange> {
+        self.world.take_aura_changes()
     }
 
     fn effects(&self) -> Option<&BodyEffects> {

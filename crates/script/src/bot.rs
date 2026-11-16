@@ -17,8 +17,9 @@ use crate::{
     snapshot::SnapshotEncoder,
     vitals::PoolKind,
     vm::{
-        BodyEffects, CombatMod, Component, HealthChange, InitFault, MAX_INIT_WORK, RaisedCriteria,
-        ShotEvent, Site, Snapshot, TargetCandidate, TargetTagEffect, Unknowns, World, body_roots,
+        AuraChange, BodyEffects, CombatMod, Component, HealthChange, InitFault, MAX_INIT_WORK,
+        RaisedCriteria, ShotEvent, Site, Snapshot, TargetCandidate, TargetTagEffect, Unknowns,
+        World, body_roots,
     },
     wire::{Value, Variables},
 };
@@ -151,6 +152,9 @@ pub struct BotWorld {
     /// The health changes the body's graphs made (an aura's heal or
     /// damage), for the match to apply.
     pub health_changes: Vec<HealthChange>,
+    /// The auras the body's ApplyAura states put on bodies or took off,
+    /// for the match to apply.
+    pub aura_changes: Vec<AuraChange>,
     /// The statuses and combat modifiers its states hold.
     pub effects: BodyEffects,
 }
@@ -219,6 +223,11 @@ impl World for BotWorld {
 
     fn modify_health(&mut self, change: HealthChange) -> bool {
         self.health_changes.push(change);
+        true
+    }
+
+    fn change_aura(&mut self, _site: Site, change: AuraChange) -> bool {
+        self.aura_changes.push(change);
         true
     }
 
@@ -523,6 +532,7 @@ impl BotBody {
             criteria: Vec::new(),
             movement_sample: BOT_MOVEMENT_SAMPLE,
             health_changes: Vec::new(),
+            aura_changes: Vec::new(),
             effects: BodyEffects::default(),
         };
         let mut component = Component::start(
@@ -738,17 +748,12 @@ impl BotBody {
             != 0)
     }
 
-    /// Put an aura on the live body at `frame` ([`Component::apply_aura`]),
-    /// dealt by `instigator`. False: it is dead, or the bundle lacks the
-    /// aura.
-    pub fn apply_aura(
-        &mut self,
-        frame: u32,
-        aura: u64,
-        instigator: u32,
-        parameters: &[(u64, Value)],
-    ) -> Result<bool, BotError> {
-        if self.component.owner_dead() {
+    /// Apply an aura change to the live body at `frame`
+    /// ([`Component::change_aura`]): an aura put on it (by a hit or an
+    /// ApplyAura elsewhere) or taken off. False: nothing changed (a dead
+    /// body takes no aura; the bundle lacks the aura; it already left).
+    pub fn change_aura(&mut self, frame: u32, change: &AuraChange) -> Result<bool, BotError> {
+        if matches!(change, AuraChange::Apply { .. }) && self.component.owner_dead() {
             return Ok(false);
         }
         let before = frame.saturating_sub(1);
@@ -756,15 +761,17 @@ impl BotBody {
             self.frame = before;
             self.component.advance_frame(before, &mut self.world)?;
         }
-        Ok(self
-            .component
-            .apply_aura(aura, instigator, parameters, &mut self.world)?
-            .is_some())
+        Ok(self.component.change_aura(change, &mut self.world)?)
     }
 
     /// The health changes the body's graphs made since the last call.
     pub fn take_health_changes(&mut self) -> Vec<HealthChange> {
         std::mem::take(&mut self.world.health_changes)
+    }
+
+    /// The aura changes the body's graphs made since the last call.
+    pub fn take_aura_changes(&mut self) -> Vec<AuraChange> {
+        std::mem::take(&mut self.world.aura_changes)
     }
 
     /// Whether a graph event of the live body is due by the end of `frame`
@@ -1339,6 +1346,7 @@ mod tests {
             criteria: Vec::new(),
             movement_sample: BOT_MOVEMENT_SAMPLE,
             health_changes: Vec::new(),
+            aura_changes: Vec::new(),
             effects: BodyEffects::default(),
         };
         assert_eq!(
@@ -1758,7 +1766,14 @@ mod tests {
             };
             bot.set_target_candidates(&[body(ENTITY, 1), body(ANA, thrower_team)]);
             let landed = 130;
-            assert!(bot.apply_aura(landed, BIOTIC_GRENADE, ANA, &[]).unwrap());
+            let aura = AuraChange::Apply {
+                source: None,
+                target: ENTITY,
+                aura: BIOTIC_GRENADE,
+                instigator: ANA,
+                parameters: Vec::new(),
+            };
+            assert!(bot.change_aura(landed, &aura).unwrap());
             let mut changes: Vec<_> = bot
                 .take_health_changes()
                 .into_iter()

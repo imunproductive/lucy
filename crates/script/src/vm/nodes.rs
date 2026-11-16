@@ -384,10 +384,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_523EE38D" => self.destroy_entity(id, node, depth),
             "STU_A1DF3B2D" => self.related_entities(id, node, depth),
             "STU_08D6BA6E" => {
-                // The live Python server has no raycast provider: the action
-                // leaves its outputs and follows its out plug
-                // (`raycast_action` in nodes.py).
-                self.assume(self.site(id, node), &node.class, "no cast");
+                self.cast_action(id, node)?;
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
@@ -838,6 +835,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptStateChaseVar" => StateKind::ChaseVar,
             "STU_2F4E2E3F" => StateKind::Watch,
             "STUStatescriptStateTrackTargets" => StateKind::TrackTargets,
+            "STUStatescriptStateRayCast" | "STUStatescriptStateTrackRay" => StateKind::Ray,
             "STU_0A6BE10E" if filter_array::is_runnable_filter_array(node) => {
                 StateKind::FilterArray
             }
@@ -860,6 +858,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptStateModifyHealth" => StateKind::ModifyHealth { last_ms: 0 },
             "STU_9028E035" => StateKind::Status,
             "STUStatescriptStateCombatModFilter" => StateKind::CombatMod,
+            "STU_431F3FCC" => StateKind::ApplyAura,
             // Biotic Grenade's auras (`0C72` st9 and st7, `0B99` the same):
             // one takes the aura's source (`m_source`, `STU_DFAB9029` of
             // #18763 and the instigator) into #18779, which only the aura's
@@ -1015,9 +1014,19 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::HeroSelect => self.refresh_hero_select(key),
             StateKind::WeaponVolley { .. } => self.begin_volley(key, node, depth)?,
             StateKind::TrackTargets => self.begin_track_targets(key, node)?,
+            StateKind::Ray => self.begin_ray(key, node)?,
             StateKind::ModifyHealth { .. } => self.begin_modify_health(key, node)?,
             StateKind::Status => self.begin_status(key, node),
             StateKind::CombatMod => self.begin_combat_mod(key, node),
+            StateKind::ApplyAura => {
+                self.assume(
+                    self.site(id, node),
+                    "STU_431F3FCC lifetime",
+                    "on each listed body while listed (server-only rule)",
+                );
+                self.refresh_auras(key, node)?;
+                self.register_tick(key, self.machine.now_ms);
+            }
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
             StateKind::Plain if node.class == "STU_160F2578" => {
                 if !self.write_tag_query(id, node)? {

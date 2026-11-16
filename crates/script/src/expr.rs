@@ -1108,6 +1108,10 @@ impl Evaluator {
             }
             "STU_B70476F3" => literal_asset(config, class, "m_548E5344", 0x0a90)
                 .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+            // An aura (`053`): ApplyAura's `m_A76A8CF6`, ModifyHealth's
+            // `m_277A4ECA` (`vm/auras.rs`).
+            "STU_0E766B33" => literal_asset(config, class, "m_A76A8CF6", 0x04a0)
+                .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
             "STU_ABB6C23E" => {
                 if !native_shape(config, class, Some("m_resourceKey"))
                     || fields.get("m_resourceKey") != Some(&Json::Null)
@@ -1166,6 +1170,10 @@ impl Evaluator {
                         .collect(),
                 )
             }
+            // An enum as an integer: its evaluate is the integer config's
+            // (0x7FF78AA960F0: `SetInt` of the dword at +0x10, here
+            // `m_3CE40E49`, enum 1A77DFEC; unset: 0).
+            "STU_038C32E8" => Value::Integer(child(config, "m_3CE40E49").as_i64().unwrap_or(0)),
             // An authored array (`STU_45B0D2B2`; upstream `AUTHORED_ARRAY`)
             // as a scalar: its first config (unset: 0; none: null). As a
             // value ([`Evaluator::value`]) every one in order.

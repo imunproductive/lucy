@@ -104,9 +104,17 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                         let node = self.graph(id).state(usize::from(raw)).expect("search");
                         self.track_targets(key, node, false)?;
                     }
+                    Some(StateKind::Ray) => {
+                        let node = self.graph(id).state(usize::from(raw)).expect("ray");
+                        self.update_ray(key, node)?;
+                    }
                     Some(StateKind::ModifyHealth { last_ms }) => {
                         let node = self.graph(id).state(usize::from(raw)).expect("health");
                         self.tick_modify_health(key, node, last_ms)?;
+                    }
+                    Some(StateKind::ApplyAura) => {
+                        let node = self.graph(id).state(usize::from(raw)).expect("aura");
+                        self.refresh_auras(key, node)?;
                     }
                     Some(StateKind::WeaponVolley { .. }) => self.tick_volley(key)?,
                     _ => (),
