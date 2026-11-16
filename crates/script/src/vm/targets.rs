@@ -141,7 +141,7 @@ const ALL_KINDS: u64 = 0x3fff_ffff;
 /// and [`DEAD`] once it died.
 const TEAM_BIT: u64 = 0x0080_0000;
 const FREE_FOR_ALL_TEAM: u8 = 4;
-const BODY_KINDS: u64 = 0x41;
+const BODY_KINDS: u64 = 0x1_0041;
 const DEAD: u64 = 0x10;
 /// The relation words' bits.
 const FRIENDLY: u64 = 1;

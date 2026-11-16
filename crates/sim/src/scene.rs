@@ -61,12 +61,20 @@
 //!   the record cadence (`bots.rs` `Bot::record_due`: every frame now;
 //!   Helix Rockets then exploded on the bot, perhaps only at the server's
 //!   release point, but bullets still went through), nor the bots' entity
-//!   id class (`bots.rs` module notes). The lead now (2026-11-12, not yet
-//!   checked in the game): every bot record left the spring steps at 0,
-//!   which puts the bot's collision capsule (its physics proxy, of its
-//!   team's category) 2.5 m too low, under the floor (`Bot::movement`), and
-//!   players also walked through the bots. Assumption: the client's own
-//!   shots find a body through that capsule.
+//!   id class (`bots.rs` module notes), nor the spring steps (the bot's
+//!   collision capsule had sat 2.5 m too low, `Bot::movement`).
+//! - The client's own hitscan finds a body only through its filter word's
+//!   bit 0x10000 (checked in the game, 2026-11-17, HitPredict.md "Night"):
+//!   the client files an entity under spatial groups by the word's bits
+//!   0x10000, 0x1, 0x40, 0x40000 and 0x100000 (`0x7FF789B862F0`, table
+//!   `0x7FF78B56B290`), and the volley's ray builder (`0x7FF789AFEEB0`)
+//!   walks group 0x10000 alone (`0x7FF789B83720(0x10000, …)`), then tests
+//!   each body's model hit shapes (`0x7FF789B00C50`). The physics-world
+//!   rays of a shot meet only the map, props and ragdolls (categories 0x1,
+//!   0x80, 0x100); a living body there is one 0x2000 capsule no shot asks
+//!   for. With 0x41 alone the bots were in groups 0x1 and 0x40 and every
+//!   client shot went through them; with 0x10000 the client's hit-shape
+//!   test hits them. So every body gets it ([`BODY_KINDS`]).
 //! - Component 29 (MPlayerComponentData): the player's 16-byte id, BattleTag
 //!   (the client names the entity by it), level, and on a competitive card
 //!   the rank (m_rankedLevel, m_heroicRank, m_rankedLevelTier), which the team
@@ -141,8 +149,8 @@ const GAME_MODE_DEFINITION: u64 = 0x0400_0000_0000_16b2;
 const PLAYER_FILTER: u64 = 0x0004_0001;
 const TEAM_BIT: u64 = 0x0080_0000;
 /// The kind bits of a living body (see the module notes): a hero (0x1) that
-/// can be hit (0x40).
-pub const BODY_KINDS: u64 = 0x41;
+/// can be hit (0x40), in the client's hitscan group (0x10000).
+pub const BODY_KINDS: u64 = 0x1_0041;
 /// The filter bit of a dead body (see the module notes).
 pub const DEAD: u64 = 0x10;
 const MODE_UI: u32 = 0x0cb6;
@@ -772,16 +780,16 @@ mod tests {
         };
         assert_eq!(
             filter(&bots[0]),
-            fields(26, vec![Some(ComponentValue::Id(0x0100_0041))])
+            fields(26, vec![Some(ComponentValue::Id(0x0101_0041))])
         );
         assert_eq!(
             filter(&bots[1]),
-            fields(26, vec![Some(ComponentValue::Id(0x0080_0041))])
+            fields(26, vec![Some(ComponentValue::Id(0x0081_0041))])
         );
         bots[0].died();
         assert_eq!(
             filter(&bots[0]),
-            fields(26, vec![Some(ComponentValue::Id(0x0100_0051))])
+            fields(26, vec![Some(ComponentValue::Id(0x0101_0051))])
         );
     }
 
