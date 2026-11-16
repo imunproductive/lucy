@@ -40,7 +40,8 @@
 //! client's Helix Rockets but not its hitscan shots (checked in the game,
 //! 2026-11-12). The guess that the client's hitscan ray leaves out class-2
 //! entities did not hold: in class 0 they were still shot through. The
-//! lead now is their records' spring steps (`Bot::movement`).
+//! cause was the body filter word's missing bit 0x10000 (`scene.rs`
+//! module notes).
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -926,9 +927,9 @@ impl Bot {
     /// sent the spring steps as 0, the bottom of their range, -(stance 2.0 +
     /// pogo 0.5): the client put the bot's collision capsule 2.5 m too low,
     /// its top 0.5 m under the bot's feet (`Posture::spring_steps` in
-    /// `orpheus-physics`), so players walked through the bots; inferred, not
-    /// yet checked: the client's own shots passed through them for the same
-    /// reason (module notes of `scene.rs`).
+    /// `orpheus-physics`), so players walked through the bots. (The client's
+    /// own shots passing through them had another cause: `scene.rs` module
+    /// notes.)
     /// Upstream measured that capsule on its NPCs and sent them their rest
     /// steps (leafall903/ORPHEUS (MIT) `bots.py` `Bot.movement`, "Wire step
     /// zero decodes to the bottom of the spring range").
