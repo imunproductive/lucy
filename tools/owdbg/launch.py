@@ -1,6 +1,7 @@
 """Start ORPHEUS serve + the debug build under the owdbg debugger with the relay, and keep it running.
 
 usage: python -m tools.owdbg.launch [--duration S] [--screenshot PNG [--screenshot-at S]]
+                                    [--enter-range] [--actions SCRIPT [--foreground-input]]
                                     [--no-server] [--no-login] [--account NAME] [--game-arg ARG] [--keep-state]
 
 The game (the research repo's game/_retail_/Overwatch.debug.exe, locations in tools/paths.py) runs
@@ -11,21 +12,26 @@ session then clicks LOGIN (PostMessage) until the relay log shows `relay CONNECT
 turns this off). Reports when the relay loaded, its `BYTE-STREAM ... host='127.0.0.1' port=1119`
 line, the login, the game window and the exceptions passed to the game. Runs until --duration,
 the game exits or Ctrl+C; then terminates the game and the server.
+--enter-range goes into the Practice Range; --actions runs an in-match script (tools/owdbg/actions.py).
 """
 import argparse
 
+from . import actions
 from .game import Session, add_session_args, find_window, screenshot, window_title
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    actions.add_action_args(p)
     add_session_args(p)
     p.add_argument("--screenshot", help="save a PNG of the game window")
     p.add_argument("--screenshot-at", type=float, default=60.0, help="seconds after start (default 60)")
     args = p.parse_args(argv)
+    actions.prepare(args)
 
     with Session(args) as s:
         dbg = s.dbg
+        act = actions.start(s, args)
         state = {"hooked": None, "window": None}
 
         def poll():
@@ -56,6 +62,8 @@ def main(argv=None):
         poll()
         if s.is_game and not args.no_relay and state["hooked"] is None:
             s.log("[owdbg] relay log shows no BYTE-STREAM to 127.0.0.1 yet")
+        if act is not None:
+            s.log(f"[actions] {act.summary()}")
         s.log(f"[owdbg] alive={alive} t={dbg.elapsed:.0f}s")
         s.log_exceptions()
 

@@ -52,8 +52,6 @@ def add_msg_args(p):
                    help="seconds after the login (or the match) before the first send (default 15)")
     g.add_argument("--send-after-match", action="store_true",
                    help="wait for the server's '[MM] Match found' line before sending (game-link messages)")
-    g.add_argument("--enter-range", action="store_true",
-                   help="after the login click TRAINING > PRACTICE RANGE > SELECT (game-link messages)")
 
 
 # ---------------------------------------------------------------- index layout
@@ -220,15 +218,15 @@ _LOG_OFFSETS = {}  # (state dir, log name) -> bytes read; ("found", state dir) -
 
 
 def match_found(s):
-    """The server's first `[MM] Match found` line in <state>/logs/*.log, or None (read
-    incrementally: the log grows by megabytes in a match)."""
+    """The server's first `[MM] Match found` line in <state>/serve.log (its whole output; logs/
+    rotates every 2 MB), or None (read incrementally: the log grows by megabytes in a match)."""
     server = s.server
     if server is None or server.state is None:
         return None
     hit = _LOG_OFFSETS.get(("found", server.state))
     if hit:
         return hit
-    for path in sorted(server.state.glob("logs/*.log")):
+    for path in (server.state / "serve.log",):
         key = (server.state, path.name)
         try:
             with open(path, "rb") as f:
@@ -398,15 +396,17 @@ class RangeEntry:
     25 s after the login (the main menu needs that long), PRACTICE RANGE 8 s later; the server's
     `[MM] Match found: Practice Range` line confirms; without it after 60 s the sequence is
     retried once (Escape first). In hero select the yellow SELECT button is clicked until it
-    disappears."""
+    disappears; with `hero` ((x, y) client fractions of a portrait) that portrait is clicked first."""
 
     TRAINING = (0.0789, 0.2974)
     PRACTICE_RANGE = (0.5, 0.5)
     SELECT = (0.5, 0.935)
     SELECT_PIXEL = (0.47, 0.935)  # inside the button, left of its text
 
-    def __init__(self, s):
+    def __init__(self, s, hero=None):
         self.s = s
+        self.hero = hero
+        self.hero_clicked = False
         self.state = "wait"
         self.at = None
         self.tries = 0
@@ -467,7 +467,10 @@ class RangeEntry:
                 self.at, self.state = t + 5, "training"
         elif self.state == "select":
             if self.select_visible():
-                if self.select_clicks < 6:
+                if self.hero and not self.hero_clicked:
+                    self.click(self.hero, "the hero's portrait")
+                    self.hero_clicked = True
+                elif self.select_clicks < 6:
                     self.click(self.SELECT, "SELECT (hero select)")
                     self.select_clicks += 1
             elif self.select_clicks:

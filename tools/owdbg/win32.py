@@ -276,6 +276,32 @@ PrintWindow = _decl(user32, "PrintWindow", wt.BOOL, wt.HWND, wt.HDC, wt.UINT)
 GetDC = _decl(user32, "GetDC", wt.HDC, wt.HWND)
 ReleaseDC = _decl(user32, "ReleaseDC", ctypes.c_int, wt.HWND, wt.HDC)
 MapVirtualKeyW = _decl(user32, "MapVirtualKeyW", wt.UINT, wt.UINT, wt.UINT)
+SetForegroundWindow = _decl(user32, "SetForegroundWindow", wt.BOOL, wt.HWND)
+GetForegroundWindow = _decl(user32, "GetForegroundWindow", wt.HWND)
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [("dx", wt.LONG), ("dy", wt.LONG), ("mouseData", wt.DWORD), ("dwFlags", wt.DWORD),
+                ("time", wt.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [("wVk", wt.WORD), ("wScan", wt.WORD), ("dwFlags", wt.DWORD), ("time", wt.DWORD),
+                ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class _INPUT_UNION(ctypes.Union):
+    _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT), ("pad", ctypes.c_byte * 32)]
+
+
+class INPUT(ctypes.Structure):
+    _fields_ = [("type", wt.DWORD), ("u", _INPUT_UNION)]
+
+
+INPUT_MOUSE, INPUT_KEYBOARD = 0, 1
+KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_EXTENDEDKEY = 0x2, 0x8, 0x1
+MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP = 0x2, 0x4, 0x8, 0x10
+SendInput = _decl(user32, "SendInput", wt.UINT, wt.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
 CreateCompatibleDC = _decl(gdi32, "CreateCompatibleDC", wt.HDC, wt.HDC)
 CreateCompatibleBitmap = _decl(gdi32, "CreateCompatibleBitmap", wt.HBITMAP, wt.HDC, ctypes.c_int, ctypes.c_int)
 SelectObject = _decl(gdi32, "SelectObject", wt.HGDIOBJ, wt.HDC, wt.HGDIOBJ)

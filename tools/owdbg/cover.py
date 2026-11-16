@@ -18,6 +18,8 @@ console ends the current phase early. After the last phase the game is terminate
 phases with the functions first hit in each ({rva, orpheus, name, t, tid, thread}), counts,
 functions never hit.
 --range accepts RVAs or VAs (A-B), --list a file of RVAs/VAs/names (one per line).
+--enter-range and --actions (tools/owdbg/actions.py) play in the Practice Range meanwhile; time the
+phases (e.g. --after-login --arm-delay) to the script.
 
 diff: functions hit in A's phases (default all) but not in B's (default all), and the reverse. With
 one file, compares two of its phases (each function appears only in its first phase).
@@ -30,6 +32,7 @@ import time
 
 from tools import paths
 
+from .actions import add_action_args, prepare as prepare_actions, start as start_actions
 from .game import Session, add_session_args, out_path, post_click, post_key, post_move, screenshot
 from .names import Names, hx
 from .pe import open_pe
@@ -120,6 +123,7 @@ def run(args):
         actions = [parse_action(p["action"]) for p in phases]
         state = {"phase": -1, "armed": 0, "arm_t": None, "phase_end": None, "ticks": 0}
         hits = {}
+        act = start_actions(s, args)
 
         def on_hit(hit):
             rva = hit.va - dbg.main.base
@@ -208,6 +212,8 @@ def run(args):
         with open(args.out, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=1)
         s.log(f"[cover] alive={alive} armed={state['armed']} hit={len(hits)} -> {args.out}")
+        if act is not None:
+            s.log(f"[actions] {act.summary()}")
         for p in result["phases"]:
             s.log(f"  phase {p['name']}: {p['count']} functions first hit")
             for fn in p["functions"][:8]:
@@ -288,6 +294,7 @@ def main(argv=None):
     r.add_argument("--phase", type=parse_phase, action="append", required=True, help="NAME:SECONDS[:ACTION]")
     r.add_argument("--out", help="JSON output (default research/out/owdbg/cover-<time>.json)")
     r.add_argument("--screenshots", help="directory for a PNG of the game window at the end of each phase")
+    add_action_args(r)
     add_session_args(r)
     d = sub.add_parser("diff", help="compare phases of two runs (or of one run)")
     d.add_argument("a")
@@ -300,6 +307,7 @@ def main(argv=None):
     args = p.parse_args(argv)
     if args.cmd == "run":
         args.out = args.out or str(out_path("cover", ".json"))
+        prepare_actions(args)
         run(args)
     else:
         diff(args)

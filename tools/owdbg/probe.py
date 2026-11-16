@@ -28,8 +28,9 @@ import os
 import time
 from collections import Counter, defaultdict
 
+from . import actions
 from .game import Session, add_session_args, out_path
-from .msg import Message, RangeEntry, Sender, add_msg_args, decode, message_reg
+from .msg import Message, Sender, add_msg_args, decode, message_reg
 from .names import Expr, hx
 
 ARG_REGS = ("rcx", "rdx", "r8", "r9")
@@ -231,6 +232,7 @@ def main(argv=None):
     p.add_argument("--arm-delay", type=float, default=0, help="arm N seconds after start instead of at once")
     p.add_argument("--out", help="JSONL output (default research/out/owdbg/probe-<time>.jsonl)")
     add_msg_args(p)
+    actions.add_action_args(p)
     add_session_args(p, duration=30)
     args = p.parse_args(argv)
     if not args.at and args.msg is None:
@@ -240,11 +242,11 @@ def main(argv=None):
     if args.send:
         args.server_env = dict(os.environ, ORPHEUS_DEBUG_SEND="1")
     args.out = args.out or str(out_path("probe", ".jsonl"))
+    actions.prepare(args)
 
     with Session(args) as s:
         probe = Probe(s, args)
-        if args.enter_range:
-            RangeEntry(s).start()
+        act = actions.start(s, args)
         if args.arm_delay:
             s.dbg.after(args.arm_delay, probe.arm)
         else:
@@ -262,6 +264,8 @@ def main(argv=None):
                 s.log(f"      ret {val}: {n}")
             for th, n in d["threads"][:3]:
                 s.log(f"      thread {th}: {n}")
+        if act is not None:
+            s.log(f"[actions] {act.summary()}")
         if probe.msg is not None:
             s.log(f"[probe] {probe.msg.describe()}; hits with the marker: {len(probe.marker_hits)}"
                   + (f", sends {probe.sender.sent} (errors {probe.sender.errors})" if probe.sender else ""))

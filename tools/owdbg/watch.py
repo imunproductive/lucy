@@ -35,8 +35,9 @@ import os
 from collections import Counter, defaultdict
 
 from .disasm import access_insn
+from . import actions
 from .game import Session, add_session_args, out_path
-from .msg import Message, RangeEntry, Sender, add_msg_args, message_reg
+from .msg import Message, Sender, add_msg_args, message_reg
 from .names import field_spec, hx, split_ranges
 
 
@@ -260,6 +261,7 @@ def main(argv=None):
     p.add_argument("--max-hits", type=int, default=5000, help="remove the watch after N hits")
     p.add_argument("--out", help="JSONL output (default research/out/owdbg/watch-<time>.jsonl)")
     add_msg_args(p)
+    actions.add_action_args(p)
     add_session_args(p, duration=60)
     args = p.parse_args(argv)
     if args.msg is not None:
@@ -272,11 +274,11 @@ def main(argv=None):
     if args.send:
         args.server_env = dict(os.environ, ORPHEUS_DEBUG_SEND="1")
     args.out = args.out or str(out_path("watch", ".jsonl"))
+    actions.prepare(args)
 
     with Session(args) as s:
         wt = Watch(s, args)
-        if args.enter_range:
-            RangeEntry(s).start()
+        act = actions.start(s, args)
         if args.arm_delay:
             s.dbg.after(args.arm_delay, wt.start)
         else:
@@ -287,6 +289,8 @@ def main(argv=None):
         s.log(f"[watch] alive={s.dbg.alive} t={s.dbg.elapsed:.0f}s hits={summary['hits']} "
               f"(filtered writes {summary['filtered_writes']}, debug registers rewritten "
               f"{summary['hw_rewrites']}x, arms {summary['arms']}) -> {args.out}")
+        if act is not None:
+            s.log(f"[actions] {act.summary()}")
         if wt.skipped:
             s.log(f"[watch] handler hits not armed: {dict(wt.skipped)}")
         for r in summary["instructions"][:30]:
