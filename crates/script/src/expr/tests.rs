@@ -310,6 +310,15 @@ fn authored_identifier_map_keeps_bucket_order() {
     );
 }
 
+/// `STU_038C32E8` evaluates as the integer config does: its enum.
+#[test]
+fn an_enum_config_evaluates_to_its_value() {
+    let config = json!({"$":"STU_038C32E8", "m_3CE40E49":2});
+    assert_eq!(evaluate(&config, &mut EmptyContext), Ok(Value::Integer(2)));
+    let unset = json!({"$":"STU_038C32E8"});
+    assert_eq!(evaluate(&unset, &mut EmptyContext), Ok(Value::Integer(0)));
+}
+
 #[test]
 fn direct_target_tag_query_reads_membership_on_the_typed_entity() {
     let query = json!({

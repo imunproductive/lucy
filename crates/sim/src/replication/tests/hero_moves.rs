@@ -1,6 +1,6 @@
 //! Heroes' moves through the player's tick: the body script on the derived
 //! Practice Range scene, with its collision. Tracer's Blink and Recall;
-//! Pharah's Jump Jet. Tracer's graphs still reach a config class the VM
+//! Pharah's Jump Jet; Echo's ground ray. Tracer's graphs still reach a config class the VM
 //! doesn't compute (`STU_038C32E8`) and `StateBlinkEffect`, neither of
 //! which decides the moves tested here, so the body tolerates unknowns as
 //! release builds do.
@@ -11,6 +11,7 @@ use orpheus_wire::commands::Command;
 
 const TRACER: u64 = 0x02e0_0000_0000_0003;
 const PHARAH: u64 = 0x02e0_0000_0000_0008;
+const ECHO: u64 = 0x02e0_0000_0000_0206;
 /// Shift and E on the command (logical buttons 35 and 36).
 const BLINK: u32 = 0x08;
 const RECALL: u32 = 0x10;
@@ -326,4 +327,29 @@ fn pharahs_jump_jet_lifts_her_off_the_ground() {
     );
     pharah.idle(30, 0);
     assert_eq!(pharah.position(), end);
+}
+
+/// Echo's body graph `1DFC` keeps a RayCast (st10) 2.5 m down from a
+/// quarter metre over her feet against the map (ray profile `002C.097`),
+/// its hit into #2413, which her glide waits to be false: standing at the
+/// spawn, it meets the ground.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn echos_ground_ray_meets_the_floor_she_stands_on() {
+    let echo = Player::spawn(ECHO);
+    let snapshot = echo.snapshot();
+    let (_, body) = snapshot
+        .instances
+        .iter()
+        .find(|(_, instance)| instance.graph == 0x1dfc)
+        .unwrap();
+    assert_eq!(body.variables.get(&2413), Some(&ScriptValue::Bool(true)));
+    assert!(
+        !snapshot
+            .assumptions
+            .iter()
+            .any(|item| item.answer.starts_with("casts nothing")),
+        "{:?}",
+        snapshot.assumptions
+    );
 }

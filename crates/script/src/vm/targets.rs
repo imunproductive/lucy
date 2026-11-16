@@ -161,7 +161,7 @@ const UNREAD: &[(&str, &str)] = &[
 ];
 
 /// Why a search finds nothing.
-enum Gap {
+pub(super) enum Gap {
     /// A field the server doesn't model is set, or doesn't evaluate.
     Field(&'static str),
     /// A filter field the server doesn't model.
@@ -175,6 +175,13 @@ struct Search {
     entity: Option<u32>,
     offset: [f64; 3],
     radius: f64,
+    filter: BodyFilter,
+}
+
+/// A `STUConfigVarFilter`'s masks and relation words, the part of it a
+/// body search tests (see the module notes); the ray casts
+/// (`vm/rays.rs`) test bodies with it too.
+pub(super) struct BodyFilter {
     any: u64,
     all: u64,
     none: u64,
@@ -183,7 +190,28 @@ struct Search {
     exclude: u64,
 }
 
-impl Search {
+impl BodyFilter {
+    /// The filter's masks and words, or the first filter field the server
+    /// doesn't model ([`UNMODELLED_FILTER`] less `allowed`, which the
+    /// caller reads itself). A missing filter passes no body.
+    pub(super) fn read(filter: &Json, allowed: &[&str]) -> Result<Self, &'static str> {
+        if let Some(name) = UNMODELLED_FILTER
+            .iter()
+            .find(|name| !allowed.contains(name) && is_set(field(filter, name)))
+        {
+            return Err(name);
+        }
+        let number = |name: &str| number(filter, name);
+        Ok(Self {
+            any: number("m_84065FD1"),
+            all: number("m_1E14CCA8"),
+            none: number("m_4EA686DB"),
+            include: number("m_27CF71D5"),
+            require: number("m_66747E7D"),
+            exclude: number("m_89831602"),
+        })
+    }
+
     /// Whether `candidate` passes the masks and relation words, as
     /// `Filter_TestTeamMasks`; `hostile` and `searcher` are its relation to
     /// the searching entity (relations matter only when a word is set).
@@ -206,6 +234,12 @@ impl Search {
 
     fn relations(&self) -> bool {
         self.include | self.require | self.exclude != 0
+    }
+
+    /// Whether no body can pass: no any-of mask and no include word (the
+    /// map-only filters of most ray casts).
+    fn passes_none(&self) -> bool {
+        self.any == 0 && self.include == 0
     }
 }
 
@@ -313,16 +347,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     fn search_targets(&mut self, id: u16, node: &Node) -> Result<Vec<u32>, Gap> {
         let search = self.target_search(id, node)?;
         let site = self.site(id, node);
-        // The searcher counts as its owner in the enemy test, as in
-        // `STU_53F4CA65`.
-        let owner = self
-            .world
-            .related_entity(site, EntityRelation::Owner, site.entity)
-            .filter(|&owner| expr::valid_entity(owner))
-            .unwrap_or(site.entity);
-        let candidates = self.world.target_candidates(site).ok_or(Gap::NoBodies)?;
+        let bodies = self.passing_bodies(site, &search.filter)?;
         let centre = match search.entity {
             Some(entity) => {
+                let candidates = self.world.target_candidates(site).ok_or(Gap::NoBodies)?;
                 let body = candidates
                     .iter()
                     .find(|candidate| candidate.entity == entity)
@@ -331,10 +359,35 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             None => search.offset,
         };
+        Ok(bodies
+            .iter()
+            .filter(|candidate| candidate.distance(centre) <= search.radius)
+            .map(|candidate| candidate.entity)
+            .collect())
+    }
+
+    /// The bodies the world lists that pass `filter` for a search on
+    /// `site`, in the world's order.
+    pub(super) fn passing_bodies(
+        &mut self,
+        site: Site,
+        filter: &BodyFilter,
+    ) -> Result<Vec<TargetCandidate>, Gap> {
+        if filter.passes_none() {
+            return Ok(Vec::new());
+        }
+        // The searcher counts as its owner in the enemy test, as in
+        // `STU_53F4CA65`.
+        let owner = self
+            .world
+            .related_entity(site, EntityRelation::Owner, site.entity)
+            .filter(|&owner| expr::valid_entity(owner))
+            .unwrap_or(site.entity);
+        let candidates = self.world.target_candidates(site).ok_or(Gap::NoBodies)?;
         let owner = candidates
             .iter()
             .find(|candidate| candidate.entity == owner);
-        if search.relations() && owner.is_none() {
+        if filter.relations() && owner.is_none() {
             return Err(Gap::Filter("m_66747E7D"));
         }
         let hostile = |candidate: &TargetCandidate| {
@@ -346,14 +399,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(candidates
             .iter()
             .filter(|candidate| {
-                search.passes(
+                filter.passes(
                     candidate,
                     hostile(candidate),
                     candidate.entity == site.entity,
                 )
             })
-            .filter(|candidate| candidate.distance(centre) <= search.radius)
-            .map(|candidate| candidate.entity)
+            .copied()
             .collect())
     }
 
@@ -371,14 +423,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         {
             return Err(Gap::Field("m_A30B383E"));
         }
-        let filter = field(fields, "m_filter");
-        if let Some(name) = UNMODELLED_FILTER
-            .iter()
-            .find(|name| is_set(field(filter, name)))
-        {
-            return Err(Gap::Filter(name));
-        }
-        let number = |name: &str| number(filter, name);
+        let filter = BodyFilter::read(field(fields, "m_filter"), &[]).map_err(Gap::Filter)?;
         let entity = match field(fields, "m_8DCA77B6") {
             Json::Null => None,
             config => match self.evaluate_quietly(id, node, config) {
@@ -419,12 +464,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             entity,
             offset,
             radius,
-            any: number("m_84065FD1"),
-            all: number("m_1E14CCA8"),
-            none: number("m_4EA686DB"),
-            include: number("m_27CF71D5"),
-            require: number("m_66747E7D"),
-            exclude: number("m_89831602"),
+            filter,
         })
     }
 

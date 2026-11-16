@@ -291,7 +291,7 @@ fn an_exhausted_weapon_stops_the_body_before_combat_consumes_its_shots() {
     let probes: Probes = Arc::default();
     let factory = rifle();
     let started = Arc::clone(&probes);
-    scene.owner_body_factory = Some(Arc::new(move |_, spawn| {
+    scene.owner_body_factory = Some(Arc::new(move |_, spawn, _| {
         let probe = Arc::new(Mutex::new(Probe::default()));
         started
             .lock()

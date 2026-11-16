@@ -12,6 +12,7 @@ mod death_cam;
 mod entities;
 mod flow;
 mod motions;
+mod rays;
 
 fn node(position: u16, class: &str, state: Option<u16>, mut fields: Json) -> Json {
     fields["m_2BBEEAB8"] = json!(state.is_some());
@@ -3687,7 +3688,7 @@ fn conditions_branch_on_containers_held_buttons_and_a_state_age_without_a_state(
 }
 
 #[test]
-fn keyed_set_var_replaces_equal_keys_and_raycast_only_follows_its_plug() {
+fn keyed_set_var_replaces_equal_keys_and_an_uncastable_ray_only_follows_its_plug() {
     let keyed = |position, key: i64, value: i64, next: u16| {
         node(
             position,
@@ -3751,7 +3752,7 @@ fn keyed_set_var_replaces_equal_keys_and_raycast_only_follows_its_plug() {
             .iter()
             .map(|item| (item.class.as_str(), item.answer))
             .collect::<Vec<_>>(),
-        [("STU_08D6BA6E", "no cast")]
+        [("STU_08D6BA6E m_startPosWS", "casts nothing")]
     );
 }
 

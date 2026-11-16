@@ -41,8 +41,8 @@ use orpheus_script::{
     ultimate::{ChargeRates, UltimateCharge},
     vitals::Vitals,
     vm::{
-        AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest,
-        RaisedCriteria, Root, Snapshot, StateKind, TargetCandidate, Unknowns, World,
+        AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays, Motion,
+        MoveRequest, RaisedCriteria, Root, Snapshot, StateKind, TargetCandidate, Unknowns, World,
     },
     weapons::{HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
@@ -205,6 +205,16 @@ impl PlayerBodyFactory {
     }
 
     pub fn start(&self, spawn: OwnerBodySpawn) -> io::Result<PlayerBodyRuntime> {
+        self.start_on(spawn, None)
+    }
+
+    /// [`Self::start`] on a map whose collision the body's ray casts meet
+    /// (none: no map).
+    pub fn start_on(
+        &self,
+        spawn: OwnerBodySpawn,
+        map_rays: Option<Arc<dyn MapRays>>,
+    ) -> io::Result<PlayerBodyRuntime> {
         if spawn.quanta != RETAIL_QUANTA {
             return Err(unsupported("the owner VM requires the 16 ms retail clock"));
         }
@@ -219,6 +229,7 @@ impl PlayerBodyFactory {
         );
         world.position = spawn.pose.position;
         world.mode_random = Some(spawn.mode_random);
+        world.map_rays = map_rays;
         world.movement = spawn.pose;
         if !has_authored_pools {
             world.vitals = self.pools.unwrap_or(FALLBACK_POOLS).vitals();

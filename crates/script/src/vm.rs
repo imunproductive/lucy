@@ -22,6 +22,7 @@ mod links;
 mod machine;
 mod nodes;
 mod play;
+mod rays;
 mod state_kinds;
 mod statuses;
 mod switches;
@@ -250,6 +251,87 @@ impl TargetCandidate {
             .sum();
         (offset.sqrt() - self.radius).max(0.0)
     }
+
+    /// Where a ray from `origin` along unit `direction` first enters the
+    /// capsule grown by `inflate` (a cast's radius), within `reach`: its
+    /// distance and the surface normal there. None when it misses, or
+    /// starts inside.
+    pub fn ray_hit(
+        &self,
+        origin: [f64; 3],
+        direction: [f64; 3],
+        reach: f64,
+        inflate: f64,
+    ) -> Option<(f64, [f64; 3])> {
+        let radius = self.radius + inflate;
+        if self.distance(origin) <= inflate {
+            return None;
+        }
+        let [x, y, z] = self.feet;
+        let low = y + self.radius;
+        let high = y + self.radius.max(self.height - self.radius);
+        let mut best: Option<(f64, [f64; 3])> = None;
+        let mut keep = |t: f64, normal: [f64; 3]| {
+            if (0.0..=reach).contains(&t) && best.is_none_or(|(best, _)| t < best) {
+                best = Some((t, normal));
+            }
+        };
+        // The side: the vertical cylinder between the caps' centres.
+        let (ox, oz) = (origin[0] - x, origin[2] - z);
+        let (dx, dz) = (direction[0], direction[2]);
+        let a = dx * dx + dz * dz;
+        if a > 1e-12 {
+            let b = 2.0 * (ox * dx + oz * dz);
+            let c = ox * ox + oz * oz - radius * radius;
+            let disc = b * b - 4.0 * a * c;
+            if disc >= 0.0 {
+                let t = (-b - disc.sqrt()) / (2.0 * a);
+                let height = origin[1] + t * direction[1];
+                if (low..=high).contains(&height) {
+                    let (px, pz) = (ox + t * dx, oz + t * dz);
+                    keep(t, [px / radius, 0.0, pz / radius]);
+                }
+            }
+        }
+        // The caps: spheres at both ends.
+        for centre in [[x, low, z], [x, high, z]] {
+            let m: [f64; 3] = std::array::from_fn(|axis| origin[axis] - centre[axis]);
+            let b: f64 = (0..3).map(|axis| m[axis] * direction[axis]).sum();
+            let c: f64 = (0..3).map(|axis| m[axis] * m[axis]).sum::<f64>() - radius * radius;
+            let disc = b * b - c;
+            if disc >= 0.0 {
+                let t = -b - disc.sqrt();
+                keep(
+                    t,
+                    std::array::from_fn(|axis| (m[axis] + t * direction[axis]) / radius),
+                );
+            }
+        }
+        best
+    }
+}
+
+/// Where a ray meets the map's collision.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapHit {
+    pub distance: f64,
+    pub point: [f64; 3],
+    pub normal: [f64; 3],
+}
+
+/// The map's collision as a script's ray casts meet it (`vm/rays.rs`).
+pub trait MapRays: Send + Sync {
+    /// The first map shape a ray from `origin` along unit `direction` meets
+    /// within `reach`: the shapes that stop a ray of ray profile `profile`
+    /// (`097`; none: the default profile's map mask). None: the map's
+    /// collision can't answer (a bad shape).
+    fn cast(
+        &self,
+        origin: [f64; 3],
+        direction: [f64; 3],
+        reach: f64,
+        profile: Option<u64>,
+    ) -> Option<Option<MapHit>>;
 }
 
 /// External authored queries for this initialization. The caller owns mode,
@@ -386,6 +468,20 @@ pub trait World {
     /// order, the searching body among them. None: this world can't list
     /// them, and a search finds nothing.
     fn target_candidates(&self, _site: Site) -> Option<&[TargetCandidate]> {
+        None
+    }
+
+    /// The first map shape a ray cast on `site` meets (see
+    /// [`MapRays::cast`]): Some(None) when it meets none. None: this world
+    /// has no map, and the cast is a gap.
+    fn map_ray(
+        &self,
+        _site: Site,
+        _origin: [f64; 3],
+        _direction: [f64; 3],
+        _reach: f64,
+        _profile: Option<u64>,
+    ) -> Option<Option<MapHit>> {
         None
     }
 
@@ -676,6 +772,10 @@ pub enum StateKind {
     /// are [`State::tracked`]. Forms the server can't run find nothing
     /// (an assumption, as in the Python reference).
     TrackTargets,
+    /// A ray cast kept up to date (RayCast, TrackRay; `vm/rays.rs`): it
+    /// casts at its begin and each tick and writes its outputs. Forms the
+    /// server can't run write nothing.
+    Ray,
     /// A health change (`vm/health.rs`): a rate keeps when it last applied
     /// its share.
     ModifyHealth {

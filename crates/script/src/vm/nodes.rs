@@ -369,10 +369,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_523EE38D" => self.destroy_entity(id, node, depth),
             "STU_A1DF3B2D" => self.related_entities(id, node, depth),
             "STU_08D6BA6E" => {
-                // The live Python server has no raycast provider: the action
-                // leaves its outputs and follows its out plug
-                // (`raycast_action` in nodes.py).
-                self.assume(self.site(id, node), &node.class, "no cast");
+                self.cast_action(id, node)?;
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
@@ -758,6 +755,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptStateChaseVar" => StateKind::ChaseVar,
             "STU_2F4E2E3F" => StateKind::Watch,
             "STUStatescriptStateTrackTargets" => StateKind::TrackTargets,
+            "STUStatescriptStateRayCast" | "STUStatescriptStateTrackRay" => StateKind::Ray,
             "STU_0A6BE10E" if filter_array::is_runnable_filter_array(node) => {
                 StateKind::FilterArray
             }
@@ -936,6 +934,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::HeroSelect => self.refresh_hero_select(key),
             StateKind::WeaponVolley { .. } => self.begin_volley(key, node, depth)?,
             StateKind::TrackTargets => self.begin_track_targets(key, node)?,
+            StateKind::Ray => self.begin_ray(key, node)?,
             StateKind::ModifyHealth { .. } => self.begin_modify_health(key, node)?,
             StateKind::Status => self.begin_status(key, node),
             StateKind::CombatMod => self.begin_combat_mod(key, node),

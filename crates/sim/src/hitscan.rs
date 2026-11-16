@@ -23,10 +23,13 @@ use std::{
 
 use orpheus_core::guid::parse_guid;
 use orpheus_physics::{
-    collision::index::IndexError,
+    collision::{index::IndexError, scene::CollisionScene},
     static_ray::{Vec3, capsule_entry_distance, segment_distance},
 };
-use orpheus_script::weapons::{DamageTags, HitDefinition};
+use orpheus_script::{
+    vm::{MapHit, MapRays},
+    weapons::{DamageTags, HitDefinition},
+};
 use orpheus_wire::commands::Command;
 use serde::Deserialize;
 
@@ -93,6 +96,34 @@ impl RayProfiles {
         profile
             .and_then(|profile| self.masks.get(&profile).copied())
             .unwrap_or(DEFAULT_MAP_MASK)
+    }
+}
+
+/// The map's collision as a script's ray casts meet it
+/// (`orpheus_script::vm` ray casts): the ray cache, masked by the cast's
+/// ray profile's map mask as a shot of that profile is.
+pub struct SceneRays {
+    pub(crate) scene: Arc<CollisionScene>,
+    pub(crate) profiles: Arc<RayProfiles>,
+}
+
+impl MapRays for SceneRays {
+    fn cast(
+        &self,
+        origin: [f64; 3],
+        direction: [f64; 3],
+        reach: f64,
+        profile: Option<u64>,
+    ) -> Option<Option<MapHit>> {
+        let hit = self
+            .scene
+            .cast_ray(origin, direction, reach, self.profiles.map_mask(profile))
+            .ok()?;
+        Some(hit.map(|hit| MapHit {
+            distance: hit.distance,
+            point: hit.point,
+            normal: hit.normal,
+        }))
     }
 }
 
