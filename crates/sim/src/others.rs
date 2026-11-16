@@ -63,7 +63,7 @@ use orpheus_script::{
     wire::WireError,
 };
 use orpheus_wire::{
-    entity::{EntityUpdate, MAX_PAYLOAD, Movement, Operation, SkinTheme, frame},
+    entity::{Component, EntityUpdate, MAX_PAYLOAD, Movement, Operation, SkinTheme, frame},
     jam::codec::Fields,
     messages::Message,
 };
@@ -176,6 +176,9 @@ pub(crate) struct RemoteBody<'a> {
     /// Counts the changes of its pools: a client that has another count
     /// gets them (combat.py `_send_health`).
     pub health: u64,
+    /// Its target tags (component 76) and their revision, once its states
+    /// changed them: a client that has another revision gets them.
+    pub tags: Option<(u64, &'a Component)>,
     /// Its death, while it is dead.
     pub death: Option<RemoteDeath>,
     /// Its statescript, each tick, when another client takes its frames.
@@ -281,6 +284,11 @@ pub(crate) enum OtherDelivery {
         body: BodyId,
         revision: u64,
     },
+    /// The body's target tags, current while no newer change went out.
+    Tags {
+        body: BodyId,
+        revision: u64,
+    },
     /// Another player's projectile on this client (projectiles.py
     /// `_ObservedProjectile`): its create and the shooter's shot record,
     /// current while the delivery lives; its destroy until it arrived.
@@ -324,6 +332,8 @@ struct Seen {
     watch: Option<Watch>,
     /// The pool changes this client got (the create's, then updates).
     health: u64,
+    /// The target tag revision this client got (0: none).
+    tags: u64,
 }
 
 /// The body's statescript on this client (observers.py Watch).
@@ -411,6 +421,9 @@ impl Others {
             }
             OtherDelivery::Health { body, revision } => {
                 seen(body, Lifetime::Live) && self.seen[&body.entity].health == revision
+            }
+            OtherDelivery::Tags { body, revision } => {
+                seen(body, Lifetime::Live) && self.seen[&body.entity].tags == revision
             }
             OtherDelivery::SeenCreate { serial } => self.observed(serial).is_some(),
             OtherDelivery::SeenLaunch { serial } => self
@@ -507,7 +520,9 @@ impl Others {
                     shown.confirmed = Some(held.body);
                 }
             }
-            OtherDelivery::Script { .. } | OtherDelivery::Health { .. } => {}
+            OtherDelivery::Script { .. }
+            | OtherDelivery::Health { .. }
+            | OtherDelivery::Tags { .. } => {}
             OtherDelivery::SeenCreate { serial } => {
                 if let Some(observed) = self.observed_mut(serial) {
                     observed.projectile.creation_arrived();
@@ -772,6 +787,7 @@ impl Others {
         }
         for other in others() {
             self.send_health(context.map, other, &mut output)?;
+            self.send_tags(other, &mut output);
         }
         self.movements = others()
             .filter_map(|other| {
@@ -1145,6 +1161,7 @@ impl Others {
                 sent: false,
                 arrived: false,
                 health: body.health,
+                tags: 0,
                 watch: Some(Watch {
                     stream: BodyStream::new(body.id.entity),
                     sent: None,
@@ -1199,6 +1216,42 @@ impl Others {
             },
         ));
         Ok(())
+    }
+
+    /// The body's target tags when they changed since what this client has,
+    /// once its create arrived (an ally's `0D24` reads them, and the body's
+    /// own client its own: ALLIED HEALTH BARS).
+    fn send_tags(&mut self, other: &PlayerView<'_>, output: &mut ShowOutput) {
+        let Some((body, (revision, tags))) = other
+            .body
+            .as_ref()
+            .filter(|_| other.entered.is_some())
+            .and_then(|body| Some((body, body.tags?)))
+        else {
+            return;
+        };
+        let Some(seen) = self
+            .seen
+            .get_mut(&body.id.entity)
+            .filter(|seen| seen.id == body.id && seen.lifetime == Lifetime::Live && seen.arrived)
+        else {
+            return;
+        };
+        if seen.tags == revision {
+            return;
+        }
+        seen.tags = revision;
+        output.records.push((
+            EntityUpdate {
+                entity: body.id.entity,
+                operation: Some(Operation::Update(vec![tags.clone()])),
+                ..EntityUpdate::default()
+            },
+            OtherDelivery::Tags {
+                body: body.id,
+                revision,
+            },
+        ));
     }
 
     /// Everything this client had of the others is gone with its world.
@@ -1275,6 +1328,7 @@ mod tests {
             pose: Movement::default(),
             vitals: None,
             health: 0,
+            tags: None,
             death: None,
             script: None,
         }
@@ -1294,6 +1348,7 @@ mod tests {
                     OtherDelivery::BodyDestroy(_) => "body destroy",
                     OtherDelivery::Script { .. } => "script",
                     OtherDelivery::Health { .. } => "health",
+                    OtherDelivery::Tags { .. } => "tags",
                     OtherDelivery::SeenCreate { .. } => "projectile",
                     OtherDelivery::SeenLaunch { .. } => "launch",
                     OtherDelivery::SeenDestroy { .. } => "projectile destroy",

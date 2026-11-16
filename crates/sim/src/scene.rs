@@ -125,6 +125,7 @@ use orpheus_content::{
 use orpheus_core::bits::BitWriter;
 use orpheus_script::{
     graph::GraphStore,
+    player::TargetTagLists,
     vitals::Vitals,
     wire::{self, Instance, Layout, Variables},
 };
@@ -490,6 +491,18 @@ pub fn body_filter(team_bit: u64, dead: bool) -> u64 {
 /// The filter bits component of a body.
 pub fn filter_component(bits: u64) -> Component {
     fields(26, vec![Some(ComponentValue::Id(bits))])
+}
+
+/// A body's target tags component (76): the tags its states add, then the
+/// ones they suppress. The client keeps a tag as the low 32 bits of its
+/// `06C` GUID, the index (`0042.06C` is 0x42).
+pub fn target_tags_component(lists: &TargetTagLists) -> Component {
+    let ids = |tags: &[u64]| {
+        Some(ComponentValue::U32Array(
+            tags.iter().map(|&tag| tag as u32).collect(),
+        ))
+    };
+    fields(76, vec![ids(&lists.added), ids(&lists.suppressed)])
 }
 
 /// A training bot's filter bits component now: dead or alive.

@@ -263,6 +263,11 @@ fn layout(index: u8) -> Result<&'static [Field], WorldError> {
         64 => &STATS,
         74 => &[Id, I16, I8, U8, U8, I8, U8, U8, U8],
         75 => &[Id; 6],
+        // STUTargetTagComponent's mirror `STU_DFCEF231`: the tags added
+        // (`m_15252ECF`, component +0x100) and the tags suppressed
+        // (`m_090FD631`, +0x110); the client's tags are the authored ones
+        // and the added ones, less the suppressed ones (0x7FF789AF2980).
+        76 => &[U32Array, U32Array],
         90 => &[Leases],
         114 => &[
             U32Array, Id, Id, U64, U64, U64, U64, I32, F32, F32, U32, U8, U8, U8, U8, U8, U8, U8,

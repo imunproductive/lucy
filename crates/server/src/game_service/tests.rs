@@ -284,13 +284,15 @@ enum DecodedField {
     Text(String),
     /// A field of plain bytes (a health pool's 20).
     Bytes(Vec<u8>),
+    /// A list of u32 (a target tag list of 76).
+    U32s(Vec<u32>),
 }
 
 /// The components of a create or update (`orpheus_wire::entity`
 /// `write_components`) when each is a 26, 29 (id and BattleTag), 44, 51
-/// (the pools), 75 or 123, the components of an observed or a bot's body;
-/// `None` for any other (a player's or a bot's stand-in controller, with
-/// its 74).
+/// (the pools), 75, 76 or 123, the components of an observed or a bot's
+/// body; `None` for any other (a player's or a bot's stand-in controller,
+/// with its 74).
 fn decode_components(mut reader: BitReader<'_>) -> Option<Vec<DecodedComponent>> {
     #[derive(Clone, Copy)]
     enum Kind {
@@ -299,6 +301,7 @@ fn decode_components(mut reader: BitReader<'_>) -> Option<Vec<DecodedComponent>>
         Entity,
         Text,
         Bytes(usize),
+        U32s,
     }
     /// `orpheus_wire::entity` HEALTH: 48 pools, then two u32, the killer
     /// and two u8.
@@ -331,6 +334,7 @@ fn decode_components(mut reader: BitReader<'_>) -> Option<Vec<DecodedComponent>>
             44 => &[Kind::Entity; 3],
             51 => &HEALTH,
             75 => &[Kind::Id; 6],
+            76 => &[Kind::U32s; 2],
             _ => return None,
         };
         reader.align();
@@ -370,6 +374,16 @@ fn decode_components(mut reader: BitReader<'_>) -> Option<Vec<DecodedComponent>>
                         .collect::<Result<_, _>>()
                         .ok()?,
                 ),
+                Kind::U32s => {
+                    reader.align();
+                    let count = reader.bits(32).ok()? as usize;
+                    DecodedField::U32s(
+                        (0..count)
+                            .map(|_| reader.bits(32).map(|value| value as u32))
+                            .collect::<Result<_, _>>()
+                            .ok()?,
+                    )
+                }
             };
             fields.push(Some(value));
         }
@@ -2558,8 +2572,11 @@ fn pump_commanding(
 /// owner frames: with ALLIED HEALTH BARS at ALWAYS, Soldier: 76's body graph
 /// `01CF` gives him the support tag (st117) that `0D24` asks of the viewer
 /// for an ally's health bar, and the client acknowledges a frame with st117
-/// and `#8336e`; back at DEFAULT the client sends an empty list (seen in the
-/// game) and the tag and the variable go, in his frames too.
+/// and `#8336e`, and its body's target tags (component 76) with `0042`
+/// added, which the client takes its tags from (the tag state has no
+/// client code); back at DEFAULT the client sends an empty list (seen in
+/// the game) and the tag and the variable go, in his frames and his
+/// component 76 too.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn a_clients_allied_health_bars_setting_reaches_his_body() {
@@ -2584,17 +2601,37 @@ fn a_clients_allied_health_bars_setting_reaches_his_body() {
         watcher.client.send(ACK, payload.into_bytes());
     };
     // His body's script runs, and its owner frames go out, on his commands.
+    let body = soldier.owner | 1;
     let mut next = soldier.tick + 1;
     let mut wait_for = |watcher: &mut Watcher, given: bool, variable: ScriptValue| {
         let deadline = server.now() + Duration::from_secs(15);
+        let from = watcher.datagrams.len();
+        // His body's own tag states add other tags too (0x422 from the
+        // start): `0042` is in the added list exactly while ALWAYS holds,
+        // and nothing is suppressed.
+        let tags = |components: &[DecodedComponent]| match components {
+            [(76, fields)] => match fields.as_slice() {
+                [
+                    Some(DecodedField::U32s(added)),
+                    Some(DecodedField::U32s(suppressed)),
+                ] => added.contains(&0x42) == given && suppressed.is_empty(),
+                _ => false,
+            },
+            _ => false,
+        };
         loop {
-            let body = server.bodies(MATCH).unwrap().remove(0);
-            if body.support_tag_given == given
-                && body.support_tag_delivered == (given, variable.clone())
+            let state = server.bodies(MATCH).unwrap().remove(0);
+            if state.support_tag_given == given
+                && state.support_tag_delivered == (given, variable.clone())
+                && watcher
+                    .find(from, |record| {
+                        record.entity == body && record.components.as_deref().is_some_and(tags)
+                    })
+                    .is_some()
             {
                 break;
             }
-            assert!(server.now() < deadline, "the tag is not {given}: {body:?}");
+            assert!(server.now() < deadline, "the tag is not {given}: {state:?}");
             if next <= watcher.tick + 8 {
                 watcher
                     .client

@@ -66,6 +66,8 @@ pub struct PlayerWorld {
     pub pool_types_known: bool,
     pub target_tags: Option<BTreeSet<u64>>,
     target_tag_effects: BTreeMap<u64, TargetTagCounts>,
+    /// A tag's effect began or ended since [`PlayerWorld::take_target_tag_change`].
+    target_tags_changed: bool,
     pub controller_on_fire: bool,
     /// The bodies a target search can find, as the match placed them this
     /// tick (its own body among them); none: the world lists no bodies.
@@ -92,6 +94,14 @@ pub struct PlayerWorld {
 struct TargetTagCounts {
     grants: u32,
     suppressions: u32,
+}
+
+/// The tags a body's states add and suppress (target tag state
+/// `STU_E56BA8D8`), as tag GUIDs in order: what component 76 carries.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TargetTagLists {
+    pub added: Vec<u64>,
+    pub suppressed: Vec<u64>,
 }
 
 impl World for PlayerWorld {
@@ -322,6 +332,9 @@ impl World for PlayerWorld {
         let Some(next) = next else {
             return false;
         };
+        // A tag joins or leaves a list only when its count leaves or
+        // reaches zero.
+        self.target_tags_changed |= (*count == 0) != (next == 0);
         *count = next;
         if counts.grants == 0 && counts.suppressions == 0 {
             self.target_tag_effects.remove(&effect.tag);
@@ -506,6 +519,7 @@ impl PlayerWorld {
             pool_types_known: false,
             target_tags: None,
             target_tag_effects: BTreeMap::new(),
+            target_tags_changed: false,
             controller_on_fire: false,
             targets: None,
             unknowns: Unknowns::for_build(),
@@ -521,6 +535,26 @@ impl PlayerWorld {
     /// order.
     pub fn take_health_changes(&mut self) -> Vec<HealthChange> {
         std::mem::take(&mut self.health_changes)
+    }
+
+    /// The tags the body's states add and suppress now, when a tag came or
+    /// went since the last call. The client's tags are the authored ones
+    /// and the added ones, less the suppressed ones (`0x7FF789AF2980`), so
+    /// a suppression wins as it does in [`World::has_target_tag`].
+    pub fn take_target_tag_change(&mut self) -> Option<TargetTagLists> {
+        if !std::mem::take(&mut self.target_tags_changed) {
+            return None;
+        }
+        let mut lists = TargetTagLists::default();
+        for (&tag, counts) in &self.target_tag_effects {
+            if counts.grants != 0 {
+                lists.added.push(tag);
+            }
+            if counts.suppressions != 0 {
+                lists.suppressed.push(tag);
+            }
+        }
+        Some(lists)
     }
 
     /// The game messages the body sent other entities since the last call,

@@ -5,9 +5,11 @@ use orpheus_physics::{
     collision::index::TriangleIndex, contact::world::ContactWorld, mover::settings::MoverSettings,
 };
 use orpheus_script::{
+    player::TargetTagLists,
     vm::{Site, TargetTagEffect, World},
     wire::Value,
 };
+use orpheus_wire::entity::ComponentValue::U32Array;
 
 #[test]
 fn player_natives_follow_the_verified_owner_and_override_shapes() {
@@ -105,30 +107,53 @@ fn target_tag_effects_restore_authored_tags_and_remaining_grants() {
         ..suppress
     };
 
+    // What component 76 carries after each change: the tags added, then
+    // the tags suppressed (the client drops a suppressed tag); none while
+    // no tag came or went.
+    let lists = |added: &[u64], suppressed: &[u64]| {
+        Some(TargetTagLists {
+            added: added.to_vec(),
+            suppressed: suppressed.to_vec(),
+        })
+    };
+
     assert_eq!(read(world, authored), Some(true));
+    assert_eq!(world.take_target_tag_change(), None);
     assert!(world.set_target_tag_effect(site, mask_authored, true));
     assert_eq!(read(world, authored), Some(false));
+    assert_eq!(world.take_target_tag_change(), lists(&[], &[authored]));
     assert!(world.set_target_tag_effect(site, mask_authored, false));
     assert_eq!(read(world, authored), Some(true));
+    assert_eq!(world.take_target_tag_change(), lists(&[], &[]));
 
     assert_eq!(read(world, tag), Some(false));
     for _ in 0..2 {
         assert!(world.set_target_tag_effect(site, grant, true));
     }
     assert_eq!(read(world, tag), Some(true));
+    assert_eq!(world.take_target_tag_change(), lists(&[tag], &[]));
     for _ in 0..2 {
         assert!(world.set_target_tag_effect(site, suppress, true));
     }
     assert_eq!(read(world, tag), Some(false));
+    let both = world.take_target_tag_change();
+    assert_eq!(both, lists(&[tag], &[tag]));
+    assert_eq!(
+        target_tags_component(&both.unwrap()).fields,
+        [Some(U32Array(vec![0x422])), Some(U32Array(vec![0x422]))]
+    );
     assert!(!world.set_target_tag_effect(site, grant, true));
     assert!(world.set_target_tag_effect(site, grant, false));
     assert!(world.set_target_tag_effect(site, suppress, false));
     assert_eq!(read(world, tag), Some(false));
+    assert_eq!(world.take_target_tag_change(), None);
     assert!(world.set_target_tag_effect(site, suppress, false));
     assert_eq!(read(world, tag), Some(true));
+    assert_eq!(world.take_target_tag_change(), lists(&[tag], &[]));
     assert!(world.set_target_tag_effect(site, grant, false));
     assert_eq!(read(world, tag), Some(false));
     assert!(!world.set_target_tag_effect(site, grant, false));
+    assert_eq!(world.take_target_tag_change(), lists(&[], &[]));
 }
 
 #[test]

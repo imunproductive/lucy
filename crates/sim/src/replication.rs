@@ -206,6 +206,12 @@ pub trait OwnerBodyRuntime: Send {
         None
     }
 
+    /// The body's target tags component (76), when its states added or
+    /// suppressed a tag or stopped doing so since the last call.
+    fn take_target_tags_update(&mut self) -> Option<WorldComponent> {
+        None
+    }
+
     fn projectile_leases(&self) -> Option<&ProjectileLeases> {
         None
     }
@@ -705,6 +711,10 @@ enum Delivery {
         after: Option<u32>,
     },
     Health {
+        revision: u64,
+    },
+    /// The body's target tags (component 76); a newer one supersedes it.
+    Tags {
         revision: u64,
     },
     /// The player's Tab board numbers (match.py `_send_board`); a newer one
@@ -1321,6 +1331,9 @@ pub struct WorldDelivery {
     bot_sights: HashMap<u32, BotSight>,
     health_updates: HashMap<u32, u64>,
     health_revision: u64,
+    /// The target tag updates of the current body this client doesn't have
+    /// yet, by entity: the revision of the newest.
+    tag_updates: HashMap<u32, u64>,
     started: Option<u32>,
     pub presentation_due: bool,
     controller: Stream,
@@ -1371,6 +1384,11 @@ pub struct WorldDelivery {
     plain_vitals: Option<Vitals>,
     /// Changes of the current body's pools, for the other clients.
     body_health: u64,
+    /// The current body's target tags (component 76) with their revision,
+    /// once its states changed them: its own client and the others get
+    /// them (`ALLIED HEALTH BARS`: `0D24` reads the viewer's tags).
+    body_tags: Option<(BodyId, u64, WorldComponent)>,
+    tag_revision: u64,
     board: BoardDelivery,
     /// The PvP "assemble your team" countdown runs (match.py `assembling`):
     /// a pick keeps hero select open, which shows the skin selector.
@@ -1472,6 +1490,7 @@ impl WorldDelivery {
             bot_sights: HashMap::new(),
             health_updates: HashMap::new(),
             health_revision: 0,
+            tag_updates: HashMap::new(),
             started: None,
             presentation_due: false,
             controller: Stream::new(owner),
@@ -1502,6 +1521,8 @@ impl WorldDelivery {
             death: None,
             plain_vitals: None,
             body_health: 0,
+            body_tags: None,
+            tag_revision: 0,
             board: BoardDelivery::default(),
             assembling: false,
             headless: false,
@@ -1592,6 +1613,7 @@ impl WorldDelivery {
         self.bots.clear();
         self.bot_sights.clear();
         self.health_updates.clear();
+        self.tag_updates.clear();
         self.started = None;
         self.presentation_due = false;
         self.mover = None;
@@ -1665,6 +1687,11 @@ impl WorldDelivery {
                         .and_then(|runtime| runtime.vitals())
                         .or(self.plain_vitals.as_ref()),
                     health: self.body_health,
+                    tags: self
+                        .body_tags
+                        .as_ref()
+                        .filter(|(id, ..)| *id == body.id)
+                        .map(|(_, revision, tags)| (*revision, tags)),
                     death,
                     script: runtime.filter(|_| observed(body.id)).and_then(|runtime| {
                         let encoder = runtime.encoder();
@@ -1852,6 +1879,28 @@ impl WorldDelivery {
         });
     }
 
+    /// The current body's target tags at `revision` for its own client,
+    /// superseding the ones not yet delivered.
+    fn queue_tags(&mut self, entity: u32, revision: u64, tags: WorldComponent) {
+        let live_body = self.body.is_some_and(|body| {
+            body.id.entity == entity
+                && self.bodies.get(&entity) == Some(&(body.id.generation, Lifetime::Live))
+        });
+        if !live_body {
+            return;
+        }
+        self.tag_updates.insert(entity, revision);
+        self.remove_stale();
+        self.push(Record {
+            update: EntityUpdate {
+                entity,
+                operation: Some(Operation::Update(vec![tags])),
+                ..EntityUpdate::default()
+            },
+            delivery: Delivery::Tags { revision },
+        });
+    }
+
     /// The server placeables' frames this client doesn't have yet, for the
     /// placeables whose create arrived (placed_script.rs).
     pub fn update_placed(&mut self, scene: &PreparedScene) {
@@ -1976,6 +2025,7 @@ impl WorldDelivery {
             Delivery::BotLink { body } => self.bots.get(&body) == Some(&BotLifetime::Live),
             Delivery::BotDestroy => self.bots.get(&entity) == Some(&BotLifetime::Retiring),
             Delivery::Health { revision } => self.health_updates.get(&entity) == Some(&revision),
+            Delivery::Tags { revision } => self.tag_updates.get(&entity) == Some(&revision),
             Delivery::Board { revision } => self.board.revision == revision,
             Delivery::SpawnFlag { revision } => self.spawn_flag.1 == revision,
             Delivery::Script {
@@ -2090,6 +2140,9 @@ impl WorldDelivery {
                     (true, Delivery::Health { .. }) => {
                         self.health_updates.remove(&record.update.entity);
                     }
+                    (true, Delivery::Tags { .. }) => {
+                        self.tag_updates.remove(&record.update.entity);
+                    }
                     (true, Delivery::CreateBody(id)) => {
                         self.created.insert(id.entity);
                         if let Some(script) =
@@ -2190,7 +2243,9 @@ impl WorldDelivery {
                     {
                         return None;
                     }
-                    Delivery::Health { .. } if !self.identity_ready(record.update.entity) => {
+                    Delivery::Health { .. } | Delivery::Tags { .. }
+                        if !self.identity_ready(record.update.entity) =>
+                    {
                         return None;
                     }
                     Delivery::SpawnFlag { .. } if !self.created.contains(&self.owner) => {
@@ -2387,6 +2442,18 @@ impl WorldDelivery {
                 operation: Some(Operation::Update(components)),
                 ..EntityUpdate::default()
             });
+        }
+        let tags = self.body_script.as_mut().and_then(|script| {
+            let id = script.id;
+            script
+                .runtime
+                .take_target_tags_update()
+                .map(|tags| (id, tags))
+        });
+        if let Some((id, tags)) = tags {
+            self.tag_revision += 1;
+            self.queue_tags(id.entity, self.tag_revision, tags.clone());
+            self.body_tags = Some((id, self.tag_revision, tags));
         }
         let kill_feed = self
             .body_script
@@ -4074,6 +4141,7 @@ impl WorldDelivery {
     fn retire_body(&mut self, id: BodyId) {
         self.created.remove(&id.entity);
         self.health_updates.remove(&id.entity);
+        self.tag_updates.remove(&id.entity);
         self.bodies
             .insert(id.entity, (id.generation, Lifetime::Retiring));
         self.push(Record {

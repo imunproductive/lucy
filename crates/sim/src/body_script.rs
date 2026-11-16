@@ -20,6 +20,7 @@ use crate::{
         spawned_definitions,
     },
     replication::{BodyStep, OwnerBodyRuntime},
+    scene::target_tags_component,
     voice::{SpawnBark, begin_spawn_bark},
     weapon_spread::{ring_directions, shot_direction},
 };
@@ -351,6 +352,12 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         }
         vitals.clear_changed();
         Some(vitals.cumulative_component())
+    }
+
+    fn take_target_tags_update(&mut self) -> Option<EntityComponent> {
+        self.world
+            .take_target_tag_change()
+            .map(|lists| target_tags_component(&lists))
     }
 
     fn snapshot(&self) -> Option<&Snapshot> {
