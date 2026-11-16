@@ -447,6 +447,7 @@ mod tests {
                 "elsewhere",
                 "--depth",
                 "-1",
+                "--full",
             ],
         ] {
             let cli = parse(arguments);
@@ -457,6 +458,7 @@ mod tests {
                 graph,
                 state_index,
                 depth,
+                full,
             } = query.command
             else {
                 panic!("show: {arguments:?}")
@@ -465,6 +467,7 @@ mod tests {
                 (graph.as_str(), state_index, depth),
                 ("0255", Some(1), Some(-1))
             );
+            assert_eq!(full, arguments.contains(&"--full"), "{arguments:?}");
             let folder = (arguments.len() > 8).then(|| PathBuf::from("elsewhere"));
             assert_eq!(cli.state, folder, "{arguments:?}");
         }

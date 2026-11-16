@@ -33,6 +33,7 @@ fn show(graph: &str, state: i64) -> Vec<String> {
         graph: graph.into(),
         state_index: Some(state),
         depth: Some(0),
+        full: false,
     })
 }
 

@@ -211,7 +211,13 @@ impl Query {
         out
     }
 
-    pub fn show(&self, text: &str, state: Option<i64>, depth: Option<i64>) -> Vec<String> {
+    pub fn show(
+        &self,
+        text: &str,
+        state: Option<i64>,
+        depth: Option<i64>,
+        full: bool,
+    ) -> Vec<String> {
         let Some(graph) = parse_graph(text).and_then(|gi| self.bundle.graph(gi)) else {
             return vec![format!("graph {} is not in the data", str_repr(text))];
         };
@@ -219,6 +225,7 @@ impl Query {
             query: self,
             graph,
             depth,
+            full,
             walker: Walker::new(&self.names),
             done: HashSet::new(),
             out: Vec::new(),
@@ -289,6 +296,8 @@ struct Shower<'a> {
     query: &'a Query,
     graph: &'a Graph,
     depth: Option<i64>,
+    /// Field values whole instead of cut at `CUT` characters.
+    full: bool,
     walker: Walker<'a>,
     done: HashSet<Int>,
     out: Vec<String>,
@@ -432,7 +441,9 @@ impl Shower<'_> {
                     .as_arr()
                     .is_some_and(|items| !items.is_empty() && items.iter().all(is_plug));
                 if !plugs && !(QUIET_ZERO.contains(&key) && !value.truthy()) {
-                    fields.push(format!("{key}={}", cut(&render(names, value, 0), CUT)));
+                    let value = render(names, value, 0);
+                    let value = if self.full { value } else { cut(&value, CUT) };
+                    fields.push(format!("{key}={value}"));
                 }
             }
         }

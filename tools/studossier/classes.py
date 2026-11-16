@@ -1,5 +1,9 @@
 """Class resolution and per-class facts on top of tools.owindex.Index."""
 import json
+from pathlib import Path
+
+# ORPHEUS's statescript names (aliases such as "HeroSelect" for STU_0E913A0B), accepted as class keys.
+NAMES_JSON = Path(__file__).resolve().parents[2] / "crates" / "fixed" / "data" / "statescript_names.json"
 
 FUNC_ROLES = ("evaluate", "execute", "reader", "block", "writer", "run", "construct", "factory", "destroy", "type_tag")
 DATA_ROLES = ("descriptor", "typeinfo", "node_vtable", "record", "runtime_vtable", "field")
@@ -41,6 +45,33 @@ class Classes:
         self.idx = idx
         self._sizes = dict(idx.db.execute("SELECT hash, size FROM stu"))
         self._fields = {}
+        self._names_json = None
+
+    # ---------------------------------------------------------------- ORPHEUS names
+    def _names(self):
+        if self._names_json is None:
+            try:
+                self._names_json = json.loads(NAMES_JSON.read_text(encoding="utf-8")).get("classes", {})
+            except (OSError, ValueError):
+                self._names_json = {}
+        return self._names_json
+
+    def alias(self, h):
+        """ORPHEUS alias of class h (statescript_names.json "STU_<H>": {"alias": ...}) or None."""
+        v = self._names().get("STU_" + hx(h))
+        return v.get("alias") if isinstance(v, dict) else None
+
+    def alias_hash(self, name):
+        """Class hash of an ORPHEUS name (an alias, or a name keyed with {"hash": H}), case-insensitive."""
+        low = name.lower()
+        for k, v in self._names().items():
+            if not isinstance(v, dict):
+                continue
+            if k.startswith("STU_") and str(v.get("alias", "")).lower() == low:
+                return int(k[4:], 16)
+            if k.lower() == low and v.get("hash"):
+                return int(v["hash"], 16)
+        return None
 
     # ---------------------------------------------------------------- naming
     def label(self, h):
@@ -61,7 +92,10 @@ class Classes:
                 return int(st["hash"], 16), {"via": "class"}
             rva = self.idx.lookup(s)
             if rva is None:
-                return None, "%s: no class, address or index name" % key
+                ah = self.alias_hash(s)
+                if ah is not None and self.idx.stu(hx(ah)):
+                    return ah, {"via": "alias"}
+                return None, "%s: no class, ORPHEUS alias, address or index name" % key
         else:
             try:
                 rva = self.idx.to_rva(s)

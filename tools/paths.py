@@ -43,6 +43,11 @@ INDEX = OUT / "index" / "ow_index.sqlite"
 IDA_GAME = OUT / "ida_game"  # game IDB, its input image, Rose results, build state and log
 OWDBG_OUT = OUT / "owdbg"  # owdbg reports, minidumps, JSONL logs
 OWSEARCH = OUT / "owsearch"  # owsearch.sqlite: code constants, branches, console variables
+# Shared ORPHEUS state folder for `orpheus script query` (--state): its cache/ holds the derived game data, so only
+# the first query pays the ~240 s derivation. Never the user's own state folder (%APPDATA%/orpheus).
+ORPHEUS_STATE = OUT / "orpheus_state"
+# The game install for `orpheus ... --game` (env ORPHEUS_GAME).
+ORPHEUS_GAME = Path(os.environ.get("ORPHEUS_GAME", RESEARCH / "game"))
 
 
 def research_tool(name):

@@ -1,11 +1,18 @@
 """One-shot dossier of a statescript/STU class of the Overwatch 1.74 client (build 104319).
 
     python tools/stu.py <class key | address | name> [--depth N] [--json] [--no-code] [--no-idb]
-                        [--shared] [--no-where-used] [--max-lines N]
+                        [--shared] [--no-where-used] [--max-lines N] [--slots differ|all]
 
-key: CD7F3617, STU_CD7F3617, an OWLib class name; an address (0x7FF789B983D0 ORPHEUS VA, 0x140C883D0 IDB VA,
+key: CD7F3617, STU_CD7F3617, an OWLib class name, an ORPHEUS alias (crates/fixed/data/statescript_names.json,
+e.g. HeroSelect); an address (0x7FF789B983D0 ORPHEUS VA, 0x140C883D0 IDB VA,
 0xC883D0 RVA) of a slot function or class object (descriptor, typeinfo, vtable, record); or an index name
 (Eval_STU_CD7F3617, Read_STU_9935FBC8). An address resolves to the class owning the function.
+
+Runtime vtable: every slot of the registration the class uses, with its role (reader/writer/block/evaluate/
+execute/run from tools/owindex/registry.py; begin/end/update/event/after_begin inferred from how
+STUStatescriptState's own code calls them) and whether it differs from the closest ancestor's registration of
+the same kind (STUStatescriptState, STUConfigVar, STUStatescriptAction, ...). Code is shown for differing slots
+(--slots all: every slot). Also the component the class belongs to (Index.component_of_stu), when known.
 
 Prints: class (hash, OWLib label, size, parents, children), fields (offset, type, flags/flags2 with their
 statescript network meaning), registrations (kind, winner, priority, runtime vtable, named slots; the
@@ -33,6 +40,56 @@ from tools.studossier.image import Image  # noqa: E402
 
 SLOT_ORDER = ["evaluate", "execute", "run", "reader", "block", "writer", "construct", "factory", "type_tag"]
 CODE_SLOTS = {"evaluate", "execute", "run", "reader", "block", "writer", "construct"}
+
+# Runtime vtable slot roles: slot index -> (role, evidence). Registry slots (tools/owindex/registry.py SLOTS) are
+# established; the others are read from how STUStatescriptState's own code (0x7FF78AA8xxxx) calls them on `this`.
+STATE_SLOT_ROLES = {
+    1: ("type_tag", "`lea rax, [tag]; ret` in every vtable"),
+    3: ("is_type", "compares [rdx] with the class's type tag"),
+    18: ("event", "inference: +0x90 is called with event codes from component code (QAi: component 88 -> "
+                  "0x7FF789B89D30)"),
+    23: ("begin", "inference: 0x7FF78AA80FA0 sets the active flag (+0x40 |= 1), then calls +0xB8 (edx=2)"),
+    24: ("end", "inference: 0x7FF78AA80E20, the deactivation, calls +0xC0 (edx=7), then clears +0x40 flags"),
+    25: ("update", "inference: 0x7FF78AA854D0, run from the state's update list at +0xE0, calls +0xC8"),
+    28: ("after_begin", "inference: 0x7FF78AA80FA0 calls +0xE0 once right after begin (flag 0x8000)"),
+    42: ("writer", "ORPHEUS (+0x150)"),
+    43: ("reader", "ORPHEUS (+0x158; read in 0x7FF78AA82060)"),
+    45: ("block", "ORPHEUS (+0x168)"),
+}
+HANDLER_SLOT_ROLES = {  # tools/owindex/registry.py SLOTS (established)
+    "config": {1: "type_tag", 4: "evaluate"},
+    "action": {1: "type_tag", 9: "run", 10: "execute"},
+    "condition": {1: "type_tag", 8: "evaluate", 9: "run"},
+    "entry": {1: "type_tag", 9: "run"},
+    "statescript": {1: "type_tag"},
+}
+# Per-class boilerplate (slot 0 destructor/shared, 1 type tag, 2, 3 type test against the tag): differs in every
+# class of every kind, says nothing; code only with --slots all.
+BOILERPLATE = {0, 1, 2, 3}
+
+
+def slot_role(kind, n):
+    """(role or None, evidence or None) of runtime vtable slot n of a registration kind."""
+    if kind == "state":
+        return STATE_SLOT_ROLES.get(n, (None, None))
+    r = HANDLER_SLOT_ROLES.get(kind, {}).get(n)
+    if r is None and n == 3:
+        return STATE_SLOT_ROLES[3]
+    return (r, "tools/owindex/registry.py") if r else (None, None)
+
+
+def slot_label(n, role):
+    return "slot %d %s" % (n, role) if role else "slot %d" % n
+
+
+def role_order(s):
+    if s in SLOT_ORDER:
+        return SLOT_ORDER.index(s)
+    if s.startswith("slot "):
+        return 100 + int(s.split(" ")[1])
+    if s.startswith("helper"):
+        return 1000
+    return 99
 
 
 class Dossier:
@@ -68,15 +125,101 @@ class Dossier:
         d["effective_registration"] = (
             {"inherited_from": eff["via_hash"], "label": idx.label(int(eff["via_hash"], 16)), **eff}
             if eff and inherited else None)  # fmt: skip
-        d["functions"] = self.functions(h, regs, eff if inherited else None, info)
+        d["vtables"] = [self.vtable(r) for r in (regs or ([eff] if eff else []))]
+        d["component"] = self.component(st["hash"])
+        d["class"]["alias"] = cls.alias(h)
+        d["functions"] = self.functions(h, regs, eff if inherited else None, info, d["vtables"])
         from tools.studossier import orpheus
         d["net_codec"] = orpheus.codec(st["hash"]) if is_state else None
         if not self.args.no_where_used:
             d["where_used"] = orpheus.where_used(st["hash"])
         return d
 
-    def functions(self, h, regs, eff, info):
-        """Slot functions (own registrations, else the inherited one) with attribution and code."""
+    # ------------------------------------------------------------------ runtime vtables
+    def vtable_qwords(self, r):
+        vt = r.get("runtime_vtable_rva")
+        if not vt:
+            return []
+        return [self.img.q(vt + 8 * n) - self.idx.base for n in range(r.get("vtable_slots") or 0)]
+
+    def base_registration(self, r):
+        """The registration r's slots are compared with: the closest ancestor of r's class with a winning
+        registration of the same kind (up to STUStatescriptState / STUConfigVar / STUStatescriptAction ...)."""
+        for a in self.idx.ancestors(int(r["class_hash"], 16))[1:]:
+            for b in self.idx.stu(hx(a))["registrations"]:
+                if b["winner"] and b["kind"] == r["kind"] and b.get("runtime_vtable_rva"):
+                    return b
+        return None
+
+    def kind_others(self, r):
+        """Per slot, the targets of the other winning registrations of r's kind (the comparison when no
+        ancestor registers, e.g. conditions): a slot differs when no other registration uses its target."""
+        out = {}
+        for o in self.idx.records(r["kind"]):
+            if o["winner"] and o["index"] != r["index"]:
+                for n, t in enumerate(self.vtable_qwords(o)):
+                    out.setdefault(n, set()).add(t)
+        return out
+
+    def vtable(self, r):
+        """Every slot of r's runtime vtable with its role, and whether it differs from the base's."""
+        own = self.vtable_qwords(r)
+        b = self.base_registration(r)
+        if b is not None:
+            base = dict(enumerate(self.vtable_qwords(b)))
+            base_desc = "%s record #%d" % (self.idx.label(int(b["class_hash"], 16)), b["index"])
+            same = lambda n, t: base.get(n) == t  # noqa: E731
+        else:
+            others = self.kind_others(r)
+            base = {n: None for n in others}
+            base_desc = "no ancestor registers: compared with the other %s registrations" % r["kind"]
+            same = lambda n, t: t in others.get(n, ())  # noqa: E731
+        boiler = BOILERPLATE
+        slots = []
+        for n, t in enumerate(own):
+            role, ev = slot_role(r["kind"], n)
+            bt = base.get(n)
+            root = self.img.func_start(t)
+            insns = self.img.decode(root) if root is not None and self.img.func_size(root) <= 16 else None
+            slots.append({
+                "slot": n, "offset": 8 * n, "rva": t, "va": self.va(t), "name": self.img.fname(t), "role": role,
+                "evidence": ev, "base_rva": bt, "differs": not same(n, t), "new": n not in base,
+                "boilerplate": n in boiler,
+                "tiny": "; ".join(C.insn_text(self.img, i) for i in insns) if insns else None,
+            })  # fmt: skip
+        return {"record_index": r["index"], "kind": r["kind"], "class_hash": r["class_hash"], "winner": r["winner"],
+                "runtime_vtable_rva": r.get("runtime_vtable_rva"), "base": base_desc, "slots": slots}
+
+    def component(self, hash_str):
+        """Component link from the index (ToolComp's Index.component_of_stu); None when absent/unknown."""
+        f = getattr(self.idx, "component_of_stu", None)
+        if f is None:
+            return None
+        try:
+            n = f(int(hash_str, 16))
+        except Exception:  # noqa: BLE001  (index without component tables)
+            return None
+        if n is None:
+            return None
+        out = {"id": n}
+        try:
+            c = self.idx.component(n) if hasattr(self.idx, "component") else None
+        except Exception:  # noqa: BLE001
+            c = None
+        if c:
+            out["data_classes"] = c.get("data_classes") or ([c["data_class"]] if c.get("data_class") else [])
+            out["mirror_class"] = c.get("mirror_class")
+            out["mirror_offset"] = c.get("mirror_offset")
+            out["getters"] = [a["name"] or "%#x" % self.va(a["rva"]) for a in c.get("accessors", [])
+                              if a.get("kind") == "getter"]
+            out["role"] = ("data class" if hash_str in out["data_classes"] else
+                           "mirror class" if out["mirror_class"] == hash_str else None)
+        return out
+
+    def functions(self, h, regs, eff, info, vtables=()):
+        """Slot functions (own registrations, else the inherited one) with attribution and code: the named
+        slots, construct/factory, and the runtime vtable slots that differ from the base registration's
+        (every slot with --slots all)."""
         roles = {}  # rva -> [(role, kind, record index, winner)]
         srcs = list(regs) or ([eff] if eff else [])
         for r in sorted(srcs, key=lambda r: not r["winner"]):
@@ -84,18 +227,73 @@ class Dossier:
             for slot, rva in items:
                 if rva:
                     roles.setdefault(rva, []).append((slot, r["kind"], r["index"], r["winner"]))
+        all_slots = self.args.slots == "all"
+        for v in sorted(vtables, key=lambda v: not v["winner"]):
+            for s in v["slots"]:
+                if not (all_slots or (s["differs"] and not s["boilerplate"])):
+                    continue
+                named = {x for x, *_ in roles.get(s["rva"], [])}
+                if s["role"] in named:
+                    continue
+                roles.setdefault(s["rva"], []).append((slot_label(s["slot"], s["role"]), v["kind"],
+                                                       v["record_index"], v["winner"]))
         focus = info.get("rva") if info.get("via") == "address" else None
         if focus is not None and focus not in roles and any(r.split(" ")[0] in FUNC_ROLES for r in info.get("roles", [])):
             roles[focus] = [(r.split(" ")[0], None, None, None) for r in info.get("roles", ["?"])]
-        order = sorted(roles, key=lambda rva: (rva != focus, min(SLOT_ORDER.index(s) if s in SLOT_ORDER else 99
-                                                                 for s, *_ in roles[rva])))
+        self.add_helpers(roles, vtables)
+        order = sorted(roles, key=lambda rva: (rva != focus, min(role_order(s) for s, *_ in roles[rva])))
         via = eff["via_hash"] if eff and not regs else None
         return [self.function(h, rva, roles[rva], inherited=via, focus=rva == focus)
                 for rva in order]
 
+    def add_helpers(self, roles, vtables):
+        """Class-local helpers: direct callees of the shown vtable slot functions that only this class's vtable
+        slots call (e.g. STU_9935FBC8's begin/end/update all calling 0x7FF789BBC810(phase), where the work is).
+        They are added as `helper of slot N, ...` so their code is shown too."""
+        own = {s["rva"] for v in vtables for s in v["slots"]}
+        own_roots = {self.img.func_start(t) for t in own}
+        callers = {}  # callee -> [slot label]
+        for rva, rs in roles.items():
+            labels = [s for s, *_ in rs if s.startswith("slot ")]
+            if not labels:
+                continue
+            root = self.img.func_start(rva)
+            for c in C.callees(self.img, root):
+                if c["rva"] not in roles and c["rva"] not in own:
+                    callers.setdefault(c["rva"], []).extend(x.split(" ")[1] for x in labels)
+        # a real function start (.pdata root) called from at least two slots: a class-local shared routine
+        callers = {t: s for t, s in callers.items() if len(set(s)) >= 2 and self.img.func_root(t) == t}
+        if not callers:
+            return
+        for t, slots in callers.items():
+            if self.only_called_from(t, own_roots):
+                roles[t] = [("helper of slot %s" % ", ".join(sorted(set(slots), key=int)), None, None, None)]
+
+    def only_called_from(self, target, roots, limit=64):
+        """True when every direct `call/jmp rel32` to target in .text lies in one of `roots` (raw byte scan;
+        stops at the first foreign site or after `limit` sites)."""
+        import numpy as np
+        img = self.img
+        tb, te = img.text
+        n = te - tb - 8
+        found = 0
+        for a in range(4):
+            cnt = (n - a) // 4
+            v = np.frombuffer(img.mem, dtype="<i4", count=cnt, offset=tb + a).astype(np.int64)
+            pos = np.arange(cnt, dtype=np.int64) * 4 + (tb + a)
+            for p in np.nonzero(pos + 4 + v == target)[0]:
+                site = int(pos[p]) - 1
+                if img.mem[site] not in (0xE8, 0xE9):
+                    continue
+                found += 1
+                if found > limit or (img.func_root(site) or img.func_at(site)) not in roots:
+                    return False
+        return found > 0
+
     def function(self, h, rva, roles, inherited, focus):
         img, cls, args = self.img, self.cls, self.args
-        slots = sorted({s for s, *_ in roles}, key=lambda s: SLOT_ORDER.index(s) if s in SLOT_ORDER else 99)
+        slots = sorted({s for s, *_ in roles}, key=role_order)
+        vt_slot = any(s.startswith(("slot ", "helper")) for s in slots)
         kind = next((k for _, k, *_ in roles if k), None)
         root = img.func_start(rva)
         size = img.func_size(root) if root is not None else 0
@@ -117,8 +315,8 @@ class Dossier:
             fn["code"] = "; ".join(C.insn_text(img, i) for i in insns)
             fn["source"] = "capstone"
             return fn
-        show = (fn.get("note") is None or args.shared or focus) and not args.no_code
-        show = show and (any(s in CODE_SLOTS for s in slots) or focus)
+        show = (fn.get("note") is None or args.shared or focus or vt_slot) and not args.no_code
+        show = show and (any(s in CODE_SLOTS for s in slots) or focus or vt_slot)
         if not show:
             return fn
         argi = next((STU_ARG[(k, s)] for s, k, *_ in roles if (k, s) in STU_ARG), None)
@@ -126,7 +324,10 @@ class Dossier:
         idb = self.idb.get()
         if idb is not None:
             try:
-                text = idb.decompile(rva)
+                try:
+                    text = idb.decompile(rva, define=True)  # defines a function where the IDB has none
+                except TypeError:  # tools.ida_game without define=
+                    text = idb.decompile(rva)
                 names, typed = C.pseudocode_params(text)
                 tracked = dict(typed)
                 if argi is not None and argi < len(names) and names[argi]:
@@ -180,7 +381,15 @@ def render(d, out):
         p("%s -> %s of %s%s" % (d["query"], ", ".join(r["roles"]), c["label"],
                                 ("  [%s]" % r["note"]) if r.get("note") else ""))
     p("STU_%s%s  size %#x" % (c["hash"], "  (OWLib label: %s)" % c["owlib_label"] if c["owlib_label"] else "",
-                              c["size"] or 0))
+                              c["size"] or 0) + ("  ORPHEUS alias: %s" % c["alias"] if c.get("alias") else ""))
+    comp = d.get("component")
+    if comp:
+        p("  entity component %d%s%s%s%s" % (
+            comp["id"], " (this class is its %s)" % comp["role"] if comp.get("role") else "",
+            "  data class %s" % ", ".join("STU_" + x for x in comp["data_classes"]) if comp.get("data_classes") else "",
+            "  mirror STU_%s at component +%#x" % (comp["mirror_class"], comp["mirror_offset"])
+            if comp.get("mirror_class") and comp.get("mirror_offset") is not None else "",
+            "  getters %s" % ", ".join(comp["getters"]) if comp.get("getters") else ""))
     p("  descriptor %s  node typeinfo %s  node vtable %s" % (va(c["descriptor_rva"]), va(c["node_typeinfo_rva"]),
                                                              va(c["node_vtable_rva"])))
     p("  parents: %s" % (" -> ".join(x["label"] for x in c["parents"]) or "none"))
@@ -222,6 +431,20 @@ def render(d, out):
         p("    " + "  ".join("%s %s" % (k, va(v)) for k, v in e["slots"].items()))
     elif not d["registrations"]:
         p("  no registration on the class chain (not a statescript node class; data only)")
+    for v in d.get("vtables", []):
+        nd = sum(1 for s in v["slots"] if s["differs"])
+        p("  runtime vtable %s (%s record #%d): %d slots, %d differ from the base (%s); * = role inferred "
+          "(evidence below)" % (va(v["runtime_vtable_rva"]), v["kind"], v["record_index"], len(v["slots"]), nd,
+                                v["base"]))
+        for s in v["slots"]:
+            role = (s["role"] or "") + ("*" if (s["evidence"] or "").startswith("inference") else "")
+            mark = ("NEW" if s["new"] else "DIFFERS" + (" (boilerplate)" if s["boilerplate"] else "")) \
+                if s["differs"] else "= base"
+            p("    %3d +%#05x %-13s %#x %-28s %s%s" % (s["slot"], s["offset"], role, BASE + s["rva"], s["name"], mark,
+                                                  ("  " + s["tiny"]) if s["tiny"] else ""))
+        for s in v["slots"]:
+            if (s["evidence"] or "").startswith("inference"):
+                p("    * %s: %s" % (s["role"], s["evidence"]))
     nc = d.get("net_codec")
     if nc:
         p("  network codec (ORPHEUS statescript_codecs.json): %s, %s; layout %s" % (
@@ -305,6 +528,9 @@ def main(argv=None):
     ap.add_argument("--shared", action="store_true", help="also show code of shared/inherited functions")
     ap.add_argument("--no-where-used", action="store_true", help="skip the ORPHEUS game-data query")
     ap.add_argument("--max-lines", type=int, default=400, help="disassembly lines per function")
+    ap.add_argument("--slots", choices=("differ", "all"), default="differ",
+                    help="runtime vtable slots whose code is shown: those differing from the base registration's "
+                         "(default) or all")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(errors="replace")
     global BASE

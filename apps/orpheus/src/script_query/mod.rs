@@ -91,6 +91,9 @@ pub enum QueryCommand {
         /// Follow links this deep.
         #[arg(long, allow_negative_numbers = true)]
         depth: Option<i64>,
+        /// Print field values whole (default: cut at 160 characters).
+        #[arg(long)]
+        full: bool,
     },
     /// Every use of a variable.
     Var {
@@ -153,7 +156,8 @@ impl Query {
                 graph,
                 state_index,
                 depth,
-            } => self.show(graph, *state_index, *depth),
+                full,
+            } => self.show(graph, *state_index, *depth, *full),
             QueryCommand::Var { var, graph } => self.var(var, graph.as_deref()),
             QueryCommand::Class { name } => self.class(name),
             QueryCommand::Find { text, limit } => self.find(text, *limit),
