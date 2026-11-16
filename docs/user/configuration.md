@@ -28,7 +28,7 @@ dashboard = 3725              # TCP; 0 turns the dashboard off
 | `game` | `--game` | `ORPHEUS_GAME` | the last picked or given game, then `game\` in the current folder, then a file dialog (only the modes that start the game) | The Overwatch 1.74 install. The server also reads its game data from it. |
 | `account` | `--account` | | `default_account.txt` | The saved account the game on this PC logs in as |
 | `locale` | `--locale` | | `auto` | The game language: `auto`, `none` or a code such as `enUS` (see [playing](playing.md#game-language)) |
-| `dev_console` | `--dev-console` | `ORPHEUS_DEV_CONSOLE` | off | Turns on the game's developer features and its own engine console: in the game, Alt+backtick opens it (a `>:` prompt). The console is the client's: its commands run in the game on your PC, and nothing goes to the server. Don't use the `--tank_Console` or `--tank_ShowMode` game options for this: one of them opens a full-screen window that can't be hidden or closed. The flag or `ORPHEUS_DEV_CONSOLE=1` turns it on even when `config.toml` says `false`. |
+| `dev_console` | `--dev-console` | `ORPHEUS_DEV_CONSOLE` | off | Turns on the game's developer features and its own engine console: in the game, Alt+backtick opens it (a `>:` prompt; what works there: [the engine console](#the-engine-console)). The console is the client's: nothing you type there goes to the server. Don't use the `--tank_Console` or `--tank_ShowMode` game options for this: one of them opens a full-screen window that can't be hidden or closed. The flag or `ORPHEUS_DEV_CONSOLE=1` turns it on even when `config.toml` says `false`. |
 | `ports.lobby` | `--lobby-port` | | 3724 | Lobby, TCP |
 | `ports.stall` | `--stall-port` | | 1119 | Battle.net, TCP |
 | `ports.rpc` | `--rpc-port` | | 21119 | Battle.net RPC, TCP |
@@ -38,6 +38,18 @@ dashboard = 3725              # TCP; 0 turns the dashboard off
 Use single quotes for Windows paths in TOML, so the backslashes stay as they are.
 
 An unknown key is an error. `orpheus doctor` shows it.
+
+## The engine console
+
+With `dev_console` on, the console in the game is open but has **no commands**. The 1.74 retail client keeps only one command, `runCommand`, and that one is set up while the game starts, before the server turns the console on. So every line you type is only echoed (`>: text`), and `help` prints nothing. These things work:
+
+| Key | Effect |
+| --- | --- |
+| Alt+backtick | Opens and closes the console. Its pane also shows the game's log lines (map loads, "Currency: …", "You should connect to …"). |
+| Tab | Completes a command name. With no commands it does nothing. |
+| Alt+C | Runs the last console line again. |
+
+Alt+Shift+F and Alt+Shift+R are developer keys too, but in the Practice Range they change nothing you can see. The research report `AdminMode.md` (section "Console commands", in the research reports folder) has the rest.
 
 ## Settings that are not in config.toml
 

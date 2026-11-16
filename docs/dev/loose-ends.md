@@ -58,6 +58,7 @@ Small things left undone by finished work. Each entry says what is missing, wher
 - **Communication wheel:** sprays, emotes and loadout plumbing aren't done; sprays are refused at the server (their placement state isn't run).
 - **Live bot plate tool:** `message` can't reach the nameplate for any message but `0C3C` (the others are taken by client-only states). `crates/sim/src/bot_plate.rs`.
 - **ALLIED HEALTH BARS and SHOW FRIENDLY OUTLINES** have no visible effect in game, though the server applies them. `D:/Work/Coding/refs/reports/AllyBars.md`.
+- **The engine console has no commands with `--dev-console`** (2026-11-16): the retail client registers only `runCommand`, and only when the console cvar #82 is set at start-up (t ≈ 12 s, `sub_7FF78968B070`). 36600 sets it at login, too late. `runCommand ARGS` would send lobby message 38200 (protocol `0xC64B397E`), which `crates/server/src/lobby/mod.rs` `TELEMETRY` drops unlogged. A server console would need #82 written before start-up, plus a 38200 handler and a reply the client prints. `D:/Work/Coding/refs/reports/AdminMode.md` "Console commands".
 
 ## Tools and tests
 
