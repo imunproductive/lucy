@@ -21,8 +21,8 @@ use crate::{
     graph::GraphStore,
     vitals::{PoolKind, Vitals},
     vm::{
-        BodyEffects, CombatMod, GameMessage, HealthChange, RaisedCriteria, Site, TargetCandidate,
-        TargetTagEffect, Unknowns, World,
+        AuraChange, BodyEffects, CombatMod, GameMessage, HealthChange, RaisedCriteria, Site,
+        TargetCandidate, TargetTagEffect, Unknowns, World,
     },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
@@ -84,6 +84,9 @@ pub struct PlayerWorld {
     criteria: Vec<RaisedCriteria>,
     /// The health changes the body's graphs made, for the match to apply.
     health_changes: Vec<HealthChange>,
+    /// The auras the body's ApplyAura states put on bodies or took off,
+    /// for the match to apply.
+    aura_changes: Vec<AuraChange>,
     /// The statuses and combat modifiers its states hold.
     pub effects: BodyEffects,
 }
@@ -199,6 +202,16 @@ impl World for PlayerWorld {
             return false;
         }
         self.health_changes.push(change);
+        true
+    }
+
+    /// The body's ApplyAura changes wait for the match, which hands each to
+    /// its target's component (the body itself included).
+    fn change_aura(&mut self, site: Site, change: AuraChange) -> bool {
+        if site.entity != self.entity {
+            return false;
+        }
+        self.aura_changes.push(change);
         true
     }
 
@@ -513,6 +526,7 @@ impl PlayerWorld {
             outbox: Vec::new(),
             criteria: Vec::new(),
             health_changes: Vec::new(),
+            aura_changes: Vec::new(),
             effects: BodyEffects::default(),
         }
     }
@@ -521,6 +535,12 @@ impl PlayerWorld {
     /// order.
     pub fn take_health_changes(&mut self) -> Vec<HealthChange> {
         std::mem::take(&mut self.health_changes)
+    }
+
+    /// The aura changes the body's graphs made since the last call, in
+    /// order.
+    pub fn take_aura_changes(&mut self) -> Vec<AuraChange> {
+        std::mem::take(&mut self.aura_changes)
     }
 
     /// The game messages the body sent other entities since the last call,

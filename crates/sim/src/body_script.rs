@@ -41,8 +41,8 @@ use orpheus_script::{
     ultimate::{ChargeRates, UltimateCharge},
     vitals::Vitals,
     vm::{
-        BodyEffects, Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest, RaisedCriteria,
-        Root, Snapshot, StateKind, TargetCandidate, Unknowns, World,
+        AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, Motion, MoveRequest,
+        RaisedCriteria, Root, Snapshot, StateKind, TargetCandidate, Unknowns, World,
     },
     weapons::{HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
@@ -463,12 +463,16 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         Ok(())
     }
 
-    fn apply_aura(&mut self, aura: u64, instigator: u32) -> io::Result<()> {
+    fn change_aura(&mut self, change: &AuraChange) -> io::Result<()> {
         self.component
-            .apply_aura(aura, instigator, &[], &mut self.world)
+            .change_aura(change, &mut self.world)
             .map_err(unsupported)?;
         self.log_assumptions();
         Ok(())
+    }
+
+    fn take_aura_changes(&mut self) -> Vec<AuraChange> {
+        self.world.take_aura_changes()
     }
 
     fn effects(&self) -> Option<&BodyEffects> {

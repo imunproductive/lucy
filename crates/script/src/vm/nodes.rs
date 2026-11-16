@@ -780,6 +780,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptStateModifyHealth" => StateKind::ModifyHealth { last_ms: 0 },
             "STU_9028E035" => StateKind::Status,
             "STUStatescriptStateCombatModFilter" => StateKind::CombatMod,
+            "STU_431F3FCC" => StateKind::ApplyAura,
             // Biotic Grenade's auras (`0C72` st9 and st7, `0B99` the same):
             // one takes the aura's source (`m_source`, `STU_DFAB9029` of
             // #18763 and the instigator) into #18779, which only the aura's
@@ -938,6 +939,15 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::ModifyHealth { .. } => self.begin_modify_health(key, node)?,
             StateKind::Status => self.begin_status(key, node),
             StateKind::CombatMod => self.begin_combat_mod(key, node),
+            StateKind::ApplyAura => {
+                self.assume(
+                    self.site(id, node),
+                    "STU_431F3FCC lifetime",
+                    "on each listed body while listed (server-only rule)",
+                );
+                self.refresh_auras(key, node)?;
+                self.register_tick(key, self.machine.now_ms);
+            }
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
             StateKind::Plain if node.class == "STU_160F2578" => {
                 if !self.write_tag_query(id, node)? {

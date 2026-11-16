@@ -110,6 +110,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::CombatMod => {
                 self.world.combat_mod(self.site(id, node), None);
             }
+            StateKind::ApplyAura => self.end_auras(key),
             _ => (),
         }
         let state = self.state_mut(key).expect("ending state");
@@ -232,7 +233,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                             StateKind::WeaponVolley { .. }
                                 | StateKind::HealthPool { pool: Some(_) }
                                 | StateKind::TargetTag { effect: Some(_) }
-                        ))
+                        )
+                        || (state.kind == StateKind::ApplyAura && !state.tracked.is_empty()))
                     .then_some((raw, state.kind))
                 })
                 .collect();
@@ -254,6 +256,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     self.finish_volley(key, 0)?;
                 } else if kind == StateKind::ChaseVar {
                     self.finish_chase(key, 0)?;
+                } else if kind == StateKind::ApplyAura {
+                    self.end_auras(key);
                 } else if matches!(kind, StateKind::Ability { .. }) {
                     self.unlink_ability_stack(key, 0)?;
                     self.finish_cooldown(key)?;

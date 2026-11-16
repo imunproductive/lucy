@@ -39,7 +39,7 @@ use orpheus_script::{
     snapshot::{ProjectedSnapshot, SnapshotEncoder, SnapshotError, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk},
     timeline::FRAME_MS,
-    vm::{BodyEffects, HealthChange, ShotEvent, Snapshot, TargetCandidate, Unknowns},
+    vm::{AuraChange, BodyEffects, HealthChange, ShotEvent, Snapshot, TargetCandidate, Unknowns},
     weapons::{HitDefinition, ProjectileBallistics, authored_number, ray_profile},
     wire::Value,
 };
@@ -731,17 +731,18 @@ impl BotScripts {
         }
     }
 
-    /// An aura comes on the live bot (`vm/auras.rs` in `orpheus_script`:
-    /// Biotic Grenade's `0267`) at world tick `tick`, dealt by
-    /// `instigator`; its changed frame goes to the clients as a live frame.
-    pub(crate) fn apply_aura(&mut self, entity: u32, aura: u64, instigator: u32, tick: u32) {
+    /// An aura comes on the live bot or goes off it (`vm/auras.rs` in
+    /// `orpheus_script`: Biotic Grenade's `0267`, an ApplyAura's) at world
+    /// tick `tick`; its changed frame goes to the clients as a live frame.
+    pub(crate) fn change_aura(&mut self, change: &AuraChange, tick: u32) {
+        let entity = change.target();
         let Some(slot) = self.slot(entity) else {
             return;
         };
         let script = self.slots[slot].as_mut().expect("a running bot script");
         let result = script
             .body
-            .apply_aura(tick, aura, instigator, &[])
+            .change_aura(tick, change)
             .map_err(|error| error.to_string())
             .and_then(|took| {
                 let script = self.slots[slot].as_mut().expect("a running bot script");
@@ -763,6 +764,16 @@ impl BotScripts {
     /// order.
     pub fn take_health_changes(&mut self) -> Vec<HealthChange> {
         std::mem::take(&mut self.health_changes)
+    }
+
+    /// The aura changes the bots' ApplyAura states made since the last
+    /// call, in order.
+    pub fn take_aura_changes(&mut self) -> Vec<AuraChange> {
+        self.slots
+            .iter_mut()
+            .flatten()
+            .flat_map(|script| script.body.take_aura_changes())
+            .collect()
     }
 
     /// The statuses and combat modifiers the live bot's states hold.

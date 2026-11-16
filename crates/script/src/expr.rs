@@ -1108,6 +1108,10 @@ impl Evaluator {
             }
             "STU_B70476F3" => literal_asset(config, class, "m_548E5344", 0x0a90)
                 .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+            // An aura (`053`): ApplyAura's `m_A76A8CF6`, ModifyHealth's
+            // `m_277A4ECA` (`vm/auras.rs`).
+            "STU_0E766B33" => literal_asset(config, class, "m_A76A8CF6", 0x04a0)
+                .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
             "STU_ABB6C23E" => {
                 if !native_shape(config, class, Some("m_resourceKey"))
                     || fields.get("m_resourceKey") != Some(&Json::Null)

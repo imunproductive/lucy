@@ -37,7 +37,7 @@ use std::{
     sync::Arc,
 };
 
-pub use auras::AURA_APPLIED;
+pub use auras::{AURA_APPLIED, AuraChange, AuraSource};
 pub use health::HealthChange;
 use indexmap::IndexMap;
 use serde_json::Value as Json;
@@ -552,6 +552,14 @@ pub trait World {
     fn combat_mod(&mut self, _site: Site, _modifier: Option<CombatMod>) -> bool {
         false
     }
+
+    /// An ApplyAura state (`STU_431F3FCC`, `vm/auras.rs`) put an aura on a
+    /// body or took it off: the match hands it to the target's component
+    /// ([`Component::change_aura`]). False: this world applies none, and
+    /// the state has no effect.
+    fn change_aura(&mut self, _site: Site, _change: AuraChange) -> bool {
+        false
+    }
 }
 
 /// A criteria a body raised on itself ([`World::criteria`]).
@@ -677,6 +685,9 @@ pub enum StateKind {
     Status,
     /// A combat modifier on the body while active (`CombatModFilter`).
     CombatMod,
+    /// Auras on the bodies its targets list while active (ApplyAura
+    /// `STU_431F3FCC`, `vm/auras.rs`); the bodies are [`State::tracked`].
+    ApplyAura,
     /// Melee's hit list (`STU_77E13026`). The hits melee's ModifyHealth
     /// makes go to the match, not to this list, so it records none.
     /// Unverified.
@@ -1643,6 +1654,9 @@ struct Machine {
     hero_selects: BTreeMap<StateKey, hero_select::HeroLimits>,
     /// Motions started or ended since the mover took them.
     motions: Vec<Motion>,
+    /// The auras ApplyAura states elsewhere put on this body, by who put
+    /// them there: their instances (`vm/auras.rs`).
+    applied_auras: BTreeMap<AuraSource, u16>,
 }
 
 struct Vm<'graph, 'world, 'machine, W> {

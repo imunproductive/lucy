@@ -7,6 +7,7 @@ use serde_json::json;
 /// Soldier: 76's body (`006E.075` `m_gameplayEntity`).
 const SOLDIER_BODY: u64 = 0x0400_0000_0000_03cf;
 
+mod auras;
 mod death_cam;
 mod entities;
 mod flow;

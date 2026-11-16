@@ -108,6 +108,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                         let node = self.graph(id).state(usize::from(raw)).expect("health");
                         self.tick_modify_health(key, node, last_ms)?;
                     }
+                    Some(StateKind::ApplyAura) => {
+                        let node = self.graph(id).state(usize::from(raw)).expect("aura");
+                        self.refresh_auras(key, node)?;
+                    }
                     Some(StateKind::WeaponVolley { .. }) => self.tick_volley(key)?,
                     _ => (),
                 }

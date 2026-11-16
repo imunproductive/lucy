@@ -57,6 +57,7 @@ impl Machine {
             movements: BTreeMap::new(),
             hero_selects: BTreeMap::new(),
             motions: Vec::new(),
+            applied_auras: BTreeMap::new(),
         })
     }
 

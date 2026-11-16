@@ -1108,10 +1108,15 @@ impl PreparedScene {
         self.bot_scripts.hurt(entity, damage, &self.bots);
     }
 
-    /// An aura comes on the live bot at world tick `tick`, dealt by
-    /// `instigator` (Biotic Grenade's explosion).
-    pub fn apply_bot_aura(&mut self, entity: u32, aura: u64, instigator: u32, tick: u32) {
-        self.bot_scripts.apply_aura(entity, aura, instigator, tick);
+    /// An aura comes on the live bot at world tick `tick` or goes off it
+    /// (Biotic Grenade's explosion, an ApplyAura).
+    pub fn change_bot_aura(&mut self, change: &orpheus_script::vm::AuraChange, tick: u32) {
+        self.bot_scripts.change_aura(change, tick);
+    }
+
+    /// The aura changes the bots' graphs made since the last call.
+    pub fn take_bot_aura_changes(&mut self) -> Vec<orpheus_script::vm::AuraChange> {
+        self.bot_scripts.take_aura_changes()
     }
 
     /// The health changes the bots' graphs made since the last call.

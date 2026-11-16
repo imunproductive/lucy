@@ -63,7 +63,10 @@ use orpheus_content::{
 };
 use orpheus_core::tick::FIRST_TICK;
 use orpheus_lobby::handoff::Handoff;
-use orpheus_script::{vm::GameMessage, wire::chunk};
+use orpheus_script::{
+    vm::{AuraChange, GameMessage},
+    wire::chunk,
+};
 use orpheus_sim::{
     ai::{Difficulty, Random},
     bot_plate::{BotPlate, PlateChange, PlateView},
@@ -2458,9 +2461,11 @@ impl State {
     }
 
     /// The auras the tick's hits put on bodies (Biotic Grenade's explosion,
-    /// `orpheus_script::vm` `auras`): each on its body's script, a bot's or
-    /// a player's. Then the health changes the bots' graphs made (their
-    /// auras' heals and damage), applied as hits by their instigators.
+    /// `orpheus_script::vm` `auras`) and the auras the bodies' ApplyAura
+    /// states put on bodies or took off: each to its body's script, a
+    /// bot's or a player's. Then the health changes the bots' graphs made
+    /// (their auras' heals and damage), applied as hits by their
+    /// instigators.
     fn apply_auras(&mut self, id: MatchId, tick: u32, now: Duration) {
         let Some(room) = self.rooms.get_mut(&id) else {
             return;
@@ -2472,19 +2477,32 @@ impl State {
         let combat = world
             .combat
             .get_or_insert_with(|| Combat::new(&world.scene));
-        let auras = combat.take_auras();
         let mut peers = room_peers(&mut self.peers, &self.seats, id, players);
-        for aura in auras {
-            if world.scene.bots().iter().any(|bot| bot.entity == aura.body) {
-                world
-                    .scene
-                    .apply_bot_aura(aura.body, aura.aura, aura.instigator, tick);
+        let mut changes: Vec<AuraChange> = combat
+            .take_auras()
+            .into_iter()
+            .map(|aura| AuraChange::Apply {
+                source: None,
+                target: aura.body,
+                aura: aura.aura,
+                instigator: aura.instigator,
+                parameters: Vec::new(),
+            })
+            .collect();
+        for peer in peers.iter_mut().flatten() {
+            changes.extend(peer.world.take_body_aura_changes());
+        }
+        changes.extend(world.scene.take_bot_aura_changes());
+        for change in &changes {
+            let target = change.target();
+            if world.scene.bots().iter().any(|bot| bot.entity == target) {
+                world.scene.change_bot_aura(change, tick);
             } else if let Some(peer) = peers
                 .iter_mut()
                 .flatten()
-                .find(|peer| peer.world.current_body() == Some(aura.body))
+                .find(|peer| peer.world.current_body() == Some(target))
             {
-                peer.world.apply_aura(aura.aura, aura.instigator);
+                peer.world.change_aura(change);
             }
         }
         let context = ShotContext {
