@@ -74,6 +74,34 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(true)
     }
 
+    /// `STU_A1DF3B2D` (server-only: no registration of its own; the death
+    /// layer `01CB` rid14 and rid58, Echo's `19EB`): from the entity
+    /// `m_4F64C1D3` (the body's controller) it writes an entity list to
+    /// `m_9E580984` (#769), which `01CB` sends `0077` to, filters and
+    /// removes (`STU_523EE38D`). What the list holds is not known (a guess:
+    /// the entities that entity made); no world tracks it, so the list is
+    /// empty, as an assumption.
+    pub(super) fn related_entities(
+        &mut self,
+        id: u16,
+        node: &Node,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        let target = match expr::lvalue(field(&node.fields, "m_9E580984")) {
+            Ok(target) => target.map(|target| source_key(id, target)),
+            Err(error) => {
+                self.report(self.site(id, node), Issue::Expression(error));
+                return Ok(false);
+            }
+        };
+        self.assume(self.site(id, node), &node.class, "an empty entity list");
+        if let Some(target) = target {
+            self.write(target, Value::Array(Vec::new()))?;
+        }
+        self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
+    }
+
     /// The entities of the scene tag query that a state (`STU_160F2578`,
     /// once after its begin, 0x7FF789C4FE60) or an action
     /// (`STU_42578342`, 0x7FF789CB8EC0; both through 0x7FF789CC3850) makes

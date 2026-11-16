@@ -57,6 +57,10 @@ const SERVER_NO_OPS: &[&str] = &[
     // wire never carries it. Ability graphs of
     // Cassidy, Doomfist, Genji, Pharah, Reinhardt, Tracer (16 nodes).
     "STU_6FEE499E",
+    // Its own run (0x7FF7898195A0) jumps straight to the base run: the
+    // string m_5328E4F8 and value m_07DD813E are never read (69 nodes, the
+    // death layer `01CB` rid54/rid55 among them).
+    "STU_9F3FE778",
 ];
 
 /// Unnamed actions the server runs as no-ops without knowing what they do,
@@ -75,6 +79,15 @@ const ASSUMED_NO_OPS: &[&str] = &[
     // the damage they took from #41 beside its ult charge. Likely the On
     // Fire score, a server rule the server has no model of.
     "STU_D087B558",
+    // The death layer `01CB`'s kill cam (rid38 st21's path, only with a
+    // respawn time): server-only actions (no registration of their own).
+    // Strong guess from their fields and place: STU_3218BAEB records a reel
+    // of m_8796592F (#2441) seconds of m_0FD68554's view into m_D1F6024E
+    // (#1374, -1 before); STU_5EAA04BB plays script m_script (#9694) with
+    // message 0673 and that reel. The server records no reel: #1374 stays
+    // -1, which the camera state STU_D75CDECC then reads.
+    "STU_3218BAEB",
+    "STU_5EAA04BB",
 ];
 
 /// Melee's states (graph 0043): knockback and four unnamed ones. The client
@@ -354,6 +367,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 Ok(true)
             }
             "STU_523EE38D" => self.destroy_entity(id, node, depth),
+            "STU_A1DF3B2D" => self.related_entities(id, node, depth),
             "STU_08D6BA6E" => {
                 // The live Python server has no raycast provider: the action
                 // leaves its outputs and follows its out plug
@@ -681,6 +695,15 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // `RegisteredState` in `nodes.py`), without a status effect: a
             // plain state, sent like a status without a link.
             "STU_25CBEFB0" => StateKind::Plain,
+            // The death layer `01CB`'s cameras (codec `none`, no update of
+            // their own). STU_D75CDECC's own begin (0x7FF7898CF220) and end
+            // (0x7FF7898CF840) post 014B/014C to the viewing client's HUD
+            // graph `0250` when the local view is this body. CameraLookAt
+            // (`STU_96333BBE`) and `STU_A103C85E` keep the base lifecycle
+            // and act through extra slots on the entity's model (component
+            // 43, 0x7FF789821920, 0x7FF78988F1C0). None ends by itself; the
+            // server has no camera or HUD: plain states its frames carry.
+            "STU_D75CDECC" | "STU_96333BBE" | "STU_A103C85E" => StateKind::Plain,
             "STUStatescriptStateHealthPool" if is_base_health_pool(node) => {
                 StateKind::HealthPool { pool: None }
             }
