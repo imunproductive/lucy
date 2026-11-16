@@ -418,6 +418,18 @@ pub trait World {
             .map(i64::from)
     }
 
+    /// Give `entity` team index `team` (-1 none, 0 to 4; `STU_0F647E55`).
+    /// False: this world keeps no entity teams.
+    fn set_entity_team(&mut self, _site: Site, _entity: u32, _team: i64) -> bool {
+        false
+    }
+
+    /// Remove `entity` from the match (`STU_523EE38D`). False: this world
+    /// can't.
+    fn destroy_entity(&mut self, _site: Site, _entity: u32) -> bool {
+        false
+    }
+
     fn body_on_fire(&mut self, _site: Site, _entity: u32) -> Option<bool> {
         None
     }

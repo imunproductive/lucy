@@ -642,17 +642,17 @@ fn native_fields(config: &Json, operands: &[&str]) -> bool {
     })
 }
 
-/// A target tag query (`STU_EB216A0B`) that names only its tag
-/// `m_9C7BD8B8`: its required and excluded tags and its filter are unset.
+/// A scene tag query's fields (`STU_EB216A0B`, `STU_B3E67A36`, the state
+/// `STU_160F2578` and the action `STU_42578342` share them) in the forms
+/// [`Evaluator::tag_query`] runs: no participant filter.
 fn tag_query_shape(config: &Json) -> bool {
-    !child(config, "m_9C7BD8B8").is_null()
-        && config.as_object().is_some_and(|fields| {
-            fields.iter().all(|(key, value)| match key.as_str() {
-                "$" | "m_9C7BD8B8" => true,
-                "m_EE729DCB" => value.as_u64() == Some(0),
-                _ => value.is_null(),
-            })
+    config.as_object().is_some_and(|fields| {
+        fields.iter().all(|(key, value)| match key.as_str() {
+            "$" | "m_9C7BD8B8" | "m_B486603E" | "m_8B2A4DF3" => true,
+            "m_EE729DCB" => value.as_u64() == Some(0),
+            _ => value.is_null(),
         })
+    })
 }
 
 fn is_expression(class: Option<&str>) -> bool {
@@ -922,6 +922,76 @@ impl Evaluator {
             value_rows(self.config(member, context, depth + 1)?, &mut rows)?;
         }
         Ok(Value::Array(rows))
+    }
+
+    /// The entities of a scene tag query, as the client keeps them
+    /// (`STU_160F2578` after its begin, 0x7FF789C4FE60): each field's tags
+    /// (0x7FF789C5E9A0: every tag its value gives, each once), then over
+    /// every entity (0x7FF789CC3850) those that carry a tag of
+    /// `m_9C7BD8B8` (any entity when it gives none), every tag of
+    /// `m_B486603E` and no tag of `m_8B2A4DF3` (0x7FF789CC5310). A world
+    /// lists only the entities with a tag ([`Context::entities_with_tag`]),
+    /// so a query that gives no tag in either of the first two fields, or
+    /// with a participant filter (`m_filter`), can't be run.
+    fn tag_query(
+        &mut self,
+        config: &Json,
+        context: &mut impl Context,
+        depth: usize,
+    ) -> Result<Vec<u32>, EvalError> {
+        let unsupported = || EvalError::UnsupportedConfig(class(config).unwrap_or("?").into());
+        if !tag_query_shape(config) {
+            return Err(unsupported());
+        }
+        let mut lists: [Vec<u64>; 3] = Default::default();
+        for (list, name) in lists
+            .iter_mut()
+            .zip(["m_9C7BD8B8", "m_B486603E", "m_8B2A4DF3"])
+        {
+            let mut rows = Vec::new();
+            value_rows(self.value(child(config, name), context, depth)?, &mut rows)?;
+            for row in rows {
+                match row {
+                    Value::Null | Value::Asset(0) => (),
+                    Value::Asset(tag) if tag >> 48 == crate::graph::TARGET_TAG_TYPE => {
+                        if !list.contains(&tag) {
+                            list.push(tag);
+                        }
+                    }
+                    _ => return Err(unsupported()),
+                }
+            }
+        }
+        let [any, all, none] = lists;
+        let listed: &[u64] = if any.is_empty() {
+            &all[..all.len().min(1)]
+        } else {
+            &any
+        };
+        if listed.is_empty() {
+            return Err(unsupported());
+        }
+        let mut found = Vec::new();
+        for &tag in listed {
+            for entity in context.entities_with_tag(tag).ok_or_else(unsupported)? {
+                if found.contains(&entity) {
+                    continue;
+                }
+                let mut keep = true;
+                for (tags, wanted) in [(&all, true), (&none, false)] {
+                    for &tag in tags {
+                        let carries = context
+                            .has_target_tag(entity, tag)
+                            .ok_or_else(unsupported)?;
+                        keep &= carries == wanted;
+                    }
+                }
+                if keep {
+                    found.push(entity);
+                }
+            }
+        }
+        Ok(found)
     }
 
     fn known_config(
@@ -1543,37 +1613,30 @@ impl Evaluator {
                     .reduce(f64::min);
                 Value::Float(least.unwrap_or(default))
             }
-            // The entities that carry a target tag (`STU_EB216A0B`, a
-            // `STU_1361E674` scene query with the fields of `STU_160F2578`),
-            // in the form with only the tag `m_9C7BD8B8`: each tag its value
-            // gives (a config list gives several), the entities of each in
-            // turn, each once; a null tag gives none. `0F4A` gathers the
-            // spawn rooms of the objective's two tags so (node 162, #11023)
-            // and the spawn doors by tag `04B3` (node 310, #12750). Inferred
-            // from its fields and uses, not read in the client.
-            "STU_EB216A0B" if tag_query_shape(config) => {
-                let unsupported = || EvalError::UnsupportedConfig(class.into());
-                let mut tags = Vec::new();
-                value_rows(
-                    self.value(child(config, "m_9C7BD8B8"), context, nested)?,
-                    &mut tags,
-                )?;
-                let mut entities = Vec::new();
-                for tag in tags {
-                    let tag = match tag {
-                        Value::Null => continue,
-                        Value::Asset(tag) if tag >> 48 == crate::graph::TARGET_TAG_TYPE => tag,
-                        _ => return Err(unsupported()),
-                    };
-                    for entity in context.entities_with_tag(tag).ok_or_else(unsupported)? {
-                        let entity = Value::Entity(entity);
-                        if !entities.contains(&entity) {
-                            entities.push(entity);
-                        }
-                    }
-                }
-                Value::Array(entities)
-            }
+            // A scene tag query (`STU_EB216A0B`, a `STU_1361E674` scene
+            // query with the fields of `STU_160F2578`): its entities
+            // ([`Evaluator::tag_query`]). `0F4A` gathers the spawn rooms of
+            // the objective's two tags so (node 162, #11023) and the spawn
+            // doors by tag `04B3` (node 310, #12750). Its evaluator
+            // (0x7FF78AA881A0) was not read; the fields and uses are those
+            // of `STU_160F2578`, whose query the client's code shows. The
+            // VM reads the fields of that state and of the action
+            // `STU_42578342` as this config (`vm/entities.rs`).
+            "STU_EB216A0B" | "STU_160F2578" | "STU_42578342" => Value::Array(
+                self.tag_query(config, context, nested)?
+                    .into_iter()
+                    .map(Value::Entity)
+                    .collect(),
+            ),
+            // The first entity of the same query (TrainingPartner.md: "first
+            // filter match"; the Practice Range console `265F` finds its pad
+            // by tag `09B7`), none when nothing matches.
+            "STU_B3E67A36" => Value::Entity(
+                self.tag_query(config, context, nested)?
+                    .first()
+                    .copied()
+                    .unwrap_or(0),
+            ),
             "STU_7197C080" => {
                 let base = to_float(&self.config(child(config, "m_01AFADB6"), context, nested)?);
                 let least = to_float(&self.config(child(config, "m_EA70ACC2"), context, nested)?);

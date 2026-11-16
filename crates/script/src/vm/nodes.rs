@@ -130,6 +130,15 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                         taken = true;
                         continue;
                     }
+                    if target.class == "STU_5E805B5A" && input == "m_F4DD996D" {
+                        // The spawn picker consumes its input, and picks
+                        // only while active (`vm/entities.rs`).
+                        if self.state(key).is_some_and(|state| state.active) {
+                            self.pick_spawn(key, target, depth + 1)?;
+                        }
+                        taken = true;
+                        continue;
+                    }
                     if target.class == "STU_7B9E8909" && input == "m_inPlug" {
                         // The bridge consumes its input even when inactive. Only an
                         // explicit begin request can open it.
@@ -315,6 +324,15 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
+            "STU_0F647E55" => self.assign_team(id, node, depth),
+            "STU_42578342" => {
+                if !self.write_tag_query(id, node)? {
+                    return Ok(false);
+                }
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
+            "STU_523EE38D" => self.destroy_entity(id, node, depth),
             "STU_08D6BA6E" => {
                 // The live Python server has no raycast provider: the action
                 // leaves its outputs and follows its out plug
@@ -623,6 +641,18 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // doesn't have: a plain state, as Python ran it, that its frames
             // carry for the client to run.
             "STU_75D1C308" => StateKind::Plain,
+            // The scene tag query state and the spawn picker run the base
+            // lifecycle; their work is `vm/entities.rs` (codec `none`).
+            "STU_160F2578" | "STU_5E805B5A" => StateKind::Plain,
+            // The aim speed (`STU_3716E1D4`): its own begin, end and update
+            // (0x7FF7897F6390, 0x7FF7897F63E0, 0x7FF7897F6410) only call
+            // 0x7FF789808820, which scales the pose rates of the entity's
+            // model (component 43; leafall903/ORPHEUS (MIT) `CorpseTimeScale`
+            // in `nodes.py`). The server animates no model: a plain state its
+            // frames carry (codec `link`, sent without a link). Soldier: 76's
+            // death (`01C7` node 68), `0C8E` st7/st25, the scopes of Ana,
+            // Ashe and Widowmaker.
+            "STU_3716E1D4" => StateKind::Plain,
             "STUStatescriptStateHealthPool" if is_base_health_pool(node) => {
                 StateKind::HealthPool { pool: None }
             }
@@ -832,6 +862,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::Status => self.begin_status(key, node),
             StateKind::CombatMod => self.begin_combat_mod(key, node),
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
+            StateKind::Plain if node.class == "STU_160F2578" => {
+                if !self.write_tag_query(id, node)? {
+                    return Ok(());
+                }
+            }
             StateKind::Plain if node.class == "STU_54FEB21C" && is_server_ended(node) => {
                 self.end_wind_up(key, node)?;
             }

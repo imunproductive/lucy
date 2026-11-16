@@ -540,6 +540,11 @@ fn tag_query_lists_the_entities_of_each_tag_once() {
                 _ => Some(Vec::new()),
             }
         }
+
+        fn has_target_tag(&mut self, entity: u32, tag: u64) -> Option<bool> {
+            self.entities_with_tag(tag)
+                .map(|entities| entities.contains(&entity))
+        }
     }
     let query = |tag: Json| json!({"$": "STU_EB216A0B", "m_9C7BD8B8": tag, "m_B486603E": null});
     assert_eq!(
@@ -554,15 +559,44 @@ fn tag_query_lists_the_entities_of_each_tag_once() {
         evaluate(&query(tag_config(SECOND)), &mut Tagged),
         Ok(Value::Array(vec![Value::Entity(8), Value::Entity(9)]))
     );
-    // A world that can't list tagged entities can't answer; nor is a query
-    // with required tags known.
+    // A world that can't list tagged entities can't answer.
     assert_eq!(
         evaluate(&query(tag_config(FIRST)), &mut EmptyContext),
         Err(EvalError::UnsupportedConfig("STU_EB216A0B".into())),
     );
+    // `m_B486603E`: every one of its tags; `m_8B2A4DF3`: none of them
+    // (0x7FF789CC5310). With no tag of `m_9C7BD8B8`, the first required
+    // tag lists the candidates.
     let mut required = query(tag_config(FIRST));
     required["m_B486603E"] = tag_config(SECOND);
-    assert!(evaluate(&required, &mut Tagged).is_err());
+    assert_eq!(
+        evaluate(&required, &mut Tagged),
+        Ok(Value::Array(vec![Value::Entity(8)]))
+    );
+    let mut excluded = query(tag_config(FIRST));
+    excluded["m_8B2A4DF3"] = tag_config(SECOND);
+    assert_eq!(
+        evaluate(&excluded, &mut Tagged),
+        Ok(Value::Array(vec![Value::Entity(7)]))
+    );
+    let mut only_required = query(Json::Null);
+    only_required["m_B486603E"] = tag_list(&[SECOND, FIRST]);
+    assert_eq!(
+        evaluate(&only_required, &mut Tagged),
+        Ok(Value::Array(vec![Value::Entity(8)]))
+    );
+    // The first entity (`STU_B3E67A36`), none when nothing matches.
+    let mut first = excluded.clone();
+    first["$"] = json!("STU_B3E67A36");
+    assert_eq!(evaluate(&first, &mut Tagged), Ok(Value::Entity(7)));
+    first["m_9C7BD8B8"] = tag_config(0x0d60_0000_0000_0001);
+    assert_eq!(evaluate(&first, &mut Tagged), Ok(Value::Entity(0)));
+    // Every entity (no tag to list them by) or a participant filter: not
+    // run.
+    assert!(evaluate(&query(Json::Null), &mut Tagged).is_err());
+    let mut filtered = query(tag_config(FIRST));
+    filtered["m_filter"] = json!({"$": "STUConfigVarFilter", "m_84065FD1": 1});
+    assert!(evaluate(&filtered, &mut Tagged).is_err());
 }
 
 #[test]
