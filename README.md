@@ -35,6 +35,7 @@ The first start derives the game data from the install, which takes about two mi
 - [Decisions](docs/dev/decisions.md): conventions, fixed data, decisions, and how the Python tests were retired.
 - [Hardcoded values](docs/dev/hardcoded-values.md): game values still kept in code, and whether the install has the real value.
 - [Research notes](docs/notes): protocol, behavior and acceptance records, references.
+- [Client tools](docs/dev/client-tools.md): scripts that answer questions about the client's code (statescript classes, fields, messages) from a dump and a debugger.
 
 ## License
 

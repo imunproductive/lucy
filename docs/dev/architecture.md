@@ -12,6 +12,7 @@ ORPHEUS/
 ├─ web/dashboard/      dashboard front end (JavaScript), embedded into the binary
 ├─ web/tests/          the dashboard JavaScript test
 ├─ research/ida/       the IDA script that extracted the statescript codecs
+├─ tools/              the client tools (Python): index, game database, debugger (docs/dev/client-tools.md)
 ├─ docs/user/          for players and hosts
 ├─ docs/dev/           for developers
 ├─ docs/notes/         research notes: protocol, behavior, references
@@ -155,6 +156,8 @@ So a debug build can stop a hero that a release build plays. Use a release build
 ### Dashboard
 
 The dashboard backend is in `server` and serves the files of `web/dashboard`, which are embedded into the binary. It shows the server state and the saved profiles and can change them. It can also start a second game for another account.
+
+With `ORPHEUS_DEBUG_SEND=1` it also has the marker message routes (`server/dashboard/debug.rs`, [troubleshooting](../user/troubleshooting.md#marker-messages)). They encode a message with the schema encoder and send it on the normal paths: a game link message goes to the game service as a request (`GameService::debug_send`), which queues it on the seat's reliable channel like the server's own messages; a lobby message is posted to the account's session through the hub.
 
 ## The program
 
