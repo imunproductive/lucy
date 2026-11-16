@@ -35,6 +35,8 @@ STATE_ITEMS = ("cache", "profiles", "profile.json")
 GAME_ARGS = ["--BNetServer=127.0.0.1:1119", "--tank_Locale=enUS", "--tank_NoFullScreen=1"]
 LOBBY_PORT = 3724
 OUT_DIR = paths.OWDBG_OUT  # git-ignored
+# One owdbg game at a time on this PC, across checkouts and worktrees (outside every repo).
+GAME_LOCK = Path(os.environ.get("OWDBG_GAME_LOCK", Path(tempfile.gettempdir()) / "owdbg-game.lock"))
 
 
 def out_path(tool, suffix):
@@ -128,6 +130,47 @@ class Server:
                 shutil.rmtree(self.state, ignore_errors=True)
 
 
+class _GameLock:
+    """One game at a time on this PC: an OS byte lock on GAME_LOCK, shared by every checkout and
+    worktree (the game and the server need fixed ports). Waits up to OWDBG_LOCK_WAIT seconds
+    (default 3600); Windows releases the lock when the process dies."""
+
+    def __init__(self, log):
+        self.log, self.fh = log, None
+
+    def acquire(self):
+        import msvcrt
+        import time
+        GAME_LOCK.parent.mkdir(parents=True, exist_ok=True)
+        self.fh = open(GAME_LOCK, "a+b")
+        deadline = time.monotonic() + float(os.environ.get("OWDBG_LOCK_WAIT", "3600"))
+        told = False
+        while True:
+            try:
+                self.fh.seek(0)
+                msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                if time.monotonic() > deadline:
+                    self.fh.close()
+                    raise RuntimeError(f"another owdbg game run holds {GAME_LOCK}")
+                if not told:
+                    self.log(f"[owdbg] waiting for the game lock {GAME_LOCK} (another run is using the game)")
+                    told = True
+                time.sleep(5)
+
+    def release(self):
+        import msvcrt
+        if self.fh is not None:
+            try:
+                self.fh.seek(0)
+                msvcrt.locking(self.fh.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+            self.fh.close()
+            self.fh = None
+
+
 class Session:
     """One debugging session: server (game only), debugger, relay injection, cleanup."""
 
@@ -146,19 +189,35 @@ class Session:
         self._login = {"done": False, "clicks": 0, "next": 0}
 
     def __enter__(self):
-        if self.is_game and not self.args.no_server:
-            self.server = Server(self.args.account, self.log, self.args.keep_state,
-                                 env=getattr(self.args, "server_env", None))
-            try:
-                self.server.start()
-            except BaseException:
-                self.server.stop()
-                raise
+        if self.is_game:
+            self._lock = _GameLock(self.log)
+            self._lock.acquire()
+        try:
+            if self.is_game and not self.args.no_server:
+                self.server = Server(self.args.account, self.log, self.args.keep_state,
+                                     env=getattr(self.args, "server_env", None))
+                try:
+                    self.server.start()
+                except BaseException:
+                    self.server.stop()
+                    raise
+        except BaseException:
+            self._release_lock()
+            raise
         return self
 
     def __exit__(self, *exc):
-        self.close()
+        try:
+            self.close()
+        finally:
+            self._release_lock()
         return False
+
+    def _release_lock(self):
+        lock = getattr(self, "_lock", None)
+        if lock is not None:
+            lock.release()
+            self._lock = None
 
     def close(self):
         try:
