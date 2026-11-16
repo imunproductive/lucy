@@ -283,6 +283,33 @@ fn entity_filter_applies_any_all_and_excluded_tag_lists() {
     assert_eq!(evaluate(&config, &mut world), unsupported,);
 }
 
+/// `STU_7042F028` (`180A`): the identifier map lists its rows in the
+/// native buckets' order (`0x416C % 8` = 4 after `0x4170 % 8` = 0), a
+/// `STU_45B0D2B2` row as the array of its graph resources.
+#[test]
+fn authored_identifier_map_keeps_bucket_order() {
+    let graph = |index: u64| json!({"$":"STU_105E1BCC", "m_graph":format!("0x{:016X}", 0x0580_0000_0000_0000 | index)});
+    let config = json!({"$":"STU_7042F028", "m_92829780":[
+        {"$":"STU_D8196947", "m_identifier":"0x01C000000000416C",
+         "m_value":{"$":"STU_45B0D2B2", "m_configVars":[graph(0x027f), graph(0x17df)]}},
+        {"$":"STU_D8196947", "m_identifier":"0x01C0000000004170",
+         "m_value":{"$":"STUConfigVarInt", "m_value":3}},
+    ]});
+    assert_eq!(
+        evaluate(&config, &mut EmptyContext),
+        Ok(Value::Map(vec![
+            (Value::Integer(0x4170), Value::Integer(3)),
+            (
+                Value::Integer(0x416c),
+                Value::Array(vec![
+                    Value::Asset(0x0580_0000_0000_027f),
+                    Value::Asset(0x0580_0000_0000_17df)
+                ])
+            ),
+        ]))
+    );
+}
+
 #[test]
 fn direct_target_tag_query_reads_membership_on_the_typed_entity() {
     let query = json!({
@@ -543,6 +570,11 @@ fn tag_query_lists_the_entities_of_each_tag_once() {
                 _ => Some(Vec::new()),
             }
         }
+
+        fn has_target_tag(&mut self, entity: u32, tag: u64) -> Option<bool> {
+            self.entities_with_tag(tag)
+                .map(|entities| entities.contains(&entity))
+        }
     }
     let query = |tag: Json| json!({"$": "STU_EB216A0B", "m_9C7BD8B8": tag, "m_B486603E": null});
     assert_eq!(
@@ -557,15 +589,44 @@ fn tag_query_lists_the_entities_of_each_tag_once() {
         evaluate(&query(tag_config(SECOND)), &mut Tagged),
         Ok(Value::Array(vec![Value::Entity(8), Value::Entity(9)]))
     );
-    // A world that can't list tagged entities can't answer; nor is a query
-    // with required tags known.
+    // A world that can't list tagged entities can't answer.
     assert_eq!(
         evaluate(&query(tag_config(FIRST)), &mut EmptyContext),
         Err(EvalError::UnsupportedConfig("STU_EB216A0B".into())),
     );
+    // `m_B486603E`: every one of its tags; `m_8B2A4DF3`: none of them
+    // (0x7FF789CC5310). With no tag of `m_9C7BD8B8`, the first required
+    // tag lists the candidates.
     let mut required = query(tag_config(FIRST));
     required["m_B486603E"] = tag_config(SECOND);
-    assert!(evaluate(&required, &mut Tagged).is_err());
+    assert_eq!(
+        evaluate(&required, &mut Tagged),
+        Ok(Value::Array(vec![Value::Entity(8)]))
+    );
+    let mut excluded = query(tag_config(FIRST));
+    excluded["m_8B2A4DF3"] = tag_config(SECOND);
+    assert_eq!(
+        evaluate(&excluded, &mut Tagged),
+        Ok(Value::Array(vec![Value::Entity(7)]))
+    );
+    let mut only_required = query(Json::Null);
+    only_required["m_B486603E"] = tag_list(&[SECOND, FIRST]);
+    assert_eq!(
+        evaluate(&only_required, &mut Tagged),
+        Ok(Value::Array(vec![Value::Entity(8)]))
+    );
+    // The first entity (`STU_B3E67A36`), none when nothing matches.
+    let mut first = excluded.clone();
+    first["$"] = json!("STU_B3E67A36");
+    assert_eq!(evaluate(&first, &mut Tagged), Ok(Value::Entity(7)));
+    first["m_9C7BD8B8"] = tag_config(0x0d60_0000_0000_0001);
+    assert_eq!(evaluate(&first, &mut Tagged), Ok(Value::Entity(0)));
+    // Every entity (no tag to list them by) or a participant filter: not
+    // run.
+    assert!(evaluate(&query(Json::Null), &mut Tagged).is_err());
+    let mut filtered = query(tag_config(FIRST));
+    filtered["m_filter"] = json!({"$": "STUConfigVarFilter", "m_84065FD1": 1});
+    assert!(evaluate(&filtered, &mut Tagged).is_err());
 }
 
 #[test]

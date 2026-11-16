@@ -50,6 +50,17 @@ const SERVER_NO_OPS: &[&str] = &[
     // 05AD node 165 and 023A/02CF/0686's server-only unlock-use reports.
     "STU_631D36C3",
     "STU_94771561",
+    // Execute 0x7FF789C3B040: the statescript's frame (+1 when its enum
+    // m_93CDFD2F is 1) as seconds (0x7FF789AC7100) raises a time on the
+    // entity's component 28 (+0x3A8) and its component 24 (+0x2B0)
+    // (0x7FF789B778D0); neither component is networked (no mirror), so the
+    // wire never carries it. Ability graphs of
+    // Cassidy, Doomfist, Genji, Pharah, Reinhardt, Tracer (16 nodes).
+    "STU_6FEE499E",
+    // Its own run (0x7FF7898195A0) jumps straight to the base run: the
+    // string m_5328E4F8 and value m_07DD813E are never read (69 nodes, the
+    // death layer `01CB` rid54/rid55 among them).
+    "STU_9F3FE778",
 ];
 
 /// Unnamed actions the server runs as no-ops without knowing what they do,
@@ -61,6 +72,22 @@ const ASSUMED_NO_OPS: &[&str] = &[
     // (05AD nodes 154 and 155, 02CF node 32): an entity and an integer, no
     // out link.
     "STU_71FE9852",
+    // Server-only (no registration of its own: the base action's run):
+    // m_D7DDEEAD points for m_target (always the owner), m_instigator
+    // optional. 23 sites: 120 or 60 on an ability's use, 40 a second
+    // during an ultimate, Genji's deflect (03A3) and Sigma's grasp (1D02)
+    // the damage they took from #41 beside its ult charge. Likely the On
+    // Fire score, a server rule the server has no model of.
+    "STU_D087B558",
+    // The death layer `01CB`'s kill cam (rid38 st21's path, only with a
+    // respawn time): server-only actions (no registration of their own).
+    // Strong guess from their fields and place: STU_3218BAEB records a reel
+    // of m_8796592F (#2441) seconds of m_0FD68554's view into m_D1F6024E
+    // (#1374, -1 before); STU_5EAA04BB plays script m_script (#9694) with
+    // message 0673 and that reel. The server records no reel: #1374 stays
+    // -1, which the camera state STU_D75CDECC then reads.
+    "STU_3218BAEB",
+    "STU_5EAA04BB",
 ];
 
 /// Melee's states (graph 0043): knockback and four unnamed ones. The client
@@ -127,6 +154,15 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                             "m_C6F3744E"
                         };
                         self.follow(id, target, output, Some(key), depth + 1)?;
+                        taken = true;
+                        continue;
+                    }
+                    if target.class == "STU_5E805B5A" && input == "m_F4DD996D" {
+                        // The spawn picker consumes its input, and picks
+                        // only while active (`vm/entities.rs`).
+                        if self.state(key).is_some_and(|state| state.active) {
+                            self.pick_spawn(key, target, depth + 1)?;
+                        }
                         taken = true;
                         continue;
                     }
@@ -315,6 +351,23 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
+            "STU_FF3471E9" => {
+                if !self.velocity_action(id, node)? {
+                    return Ok(false);
+                }
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
+            "STU_0F647E55" => self.assign_team(id, node, depth),
+            "STU_42578342" => {
+                if !self.write_tag_query(id, node)? {
+                    return Ok(false);
+                }
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
+            "STU_523EE38D" => self.destroy_entity(id, node, depth),
+            "STU_A1DF3B2D" => self.related_entities(id, node, depth),
             "STU_08D6BA6E" => {
                 // The live Python server has no raycast provider: the action
                 // leaves its outputs and follows its out plug
@@ -623,6 +676,34 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // doesn't have: a plain state, as Python ran it, that its frames
             // carry for the client to run.
             "STU_75D1C308" => StateKind::Plain,
+            // The scene tag query state and the spawn picker run the base
+            // lifecycle; their work is `vm/entities.rs` (codec `none`).
+            "STU_160F2578" | "STU_5E805B5A" => StateKind::Plain,
+            // The aim speed (`STU_3716E1D4`): its own begin, end and update
+            // (0x7FF7897F6390, 0x7FF7897F63E0, 0x7FF7897F6410) only call
+            // 0x7FF789808820, which scales the pose rates of the entity's
+            // model (component 43; leafall903/ORPHEUS (MIT) `CorpseTimeScale`
+            // in `nodes.py`). The server animates no model: a plain state its
+            // frames carry (codec `link`, sent without a link). Soldier: 76's
+            // death (`01C7` node 68), `0C8E` st7/st25, the scopes of Ana,
+            // Ashe and Widowmaker.
+            "STU_3716E1D4" => StateKind::Plain,
+            // The mission state (`STU_25CBEFB0`, `1B4A` st0, empty
+            // `m_108E51DD`): it shares `STU_9028E035`'s registered-state
+            // hooks (begin/end 1B72530/1B725C0 add it to and remove it from
+            // its class's list) and link codec (leafall903/ORPHEUS (MIT)
+            // `RegisteredState` in `nodes.py`), without a status effect: a
+            // plain state, sent like a status without a link.
+            "STU_25CBEFB0" => StateKind::Plain,
+            // The death layer `01CB`'s cameras (codec `none`, no update of
+            // their own). STU_D75CDECC's own begin (0x7FF7898CF220) and end
+            // (0x7FF7898CF840) post 014B/014C to the viewing client's HUD
+            // graph `0250` when the local view is this body. CameraLookAt
+            // (`STU_96333BBE`) and `STU_A103C85E` keep the base lifecycle
+            // and act through extra slots on the entity's model (component
+            // 43, 0x7FF789821920, 0x7FF78988F1C0). None ends by itself; the
+            // server has no camera or HUD: plain states its frames carry.
+            "STU_D75CDECC" | "STU_96333BBE" | "STU_A103C85E" => StateKind::Plain,
             "STUStatescriptStateHealthPool" if is_base_health_pool(node) => {
                 StateKind::HealthPool { pool: None }
             }
@@ -708,6 +789,32 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // what the server tracks; assumed plain.
             class @ ("STU_85124386" | "STU_0DB9E66B") => {
                 self.assume(self.site(id, node), class, "plain state");
+                StateKind::Plain
+            }
+            // Server-only states (no registration of their own: the client
+            // runs the base state, codec `none`), with a meaning the data
+            // doesn't tell: `STU_441B50E4` counts time in its stats
+            // (`m_stat`, `m_stats`, `m_D32CB484`) for `m_targets`
+            // (ModeGraphGaps.md); the server's stats are its own Rust.
+            // `STU_F08E1453` names the owner (`m_64C3E07E`) in 23 graphs
+            // (Tracer's Recall `001A` st26, Zarya's `0256` st10, the body's
+            // `01CB` st35), beside an entity control (`STU_33A46033`); what
+            // it does on the server is unknown. Plain states, as
+            // assumptions.
+            "STU_441B50E4" => {
+                self.assume(
+                    self.site(id, node),
+                    &node.class,
+                    "plain state (stat time not kept)",
+                );
+                StateKind::Plain
+            }
+            "STU_F08E1453" => {
+                self.assume(
+                    self.site(id, node),
+                    &node.class,
+                    "plain state (server-only, meaning unknown)",
+                );
                 StateKind::Plain
             }
             class if ASSUMED_PLAIN_STATES.contains(&class) => StateKind::Plain,
@@ -832,6 +939,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::Status => self.begin_status(key, node),
             StateKind::CombatMod => self.begin_combat_mod(key, node),
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
+            StateKind::Plain if node.class == "STU_160F2578" => {
+                if !self.write_tag_query(id, node)? {
+                    return Ok(());
+                }
+            }
             StateKind::Plain if node.class == "STU_54FEB21C" && is_server_ended(node) => {
                 self.end_wind_up(key, node)?;
             }

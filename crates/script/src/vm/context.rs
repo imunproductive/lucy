@@ -89,16 +89,7 @@ impl<W: World> Context for InstanceContext<'_, W> {
     }
 
     fn random_u64(&mut self) -> Option<u64> {
-        // SplitMix64 gives each component a reproducible stream without OS calls in graph execution.
-        let state = self
-            .machine
-            .random_state
-            .get()
-            .wrapping_add(0x9e37_79b9_7f4a_7c15);
-        self.machine.random_state.set(state);
-        let mixed = (state ^ (state >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        let mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        Some(mixed ^ (mixed >> 31))
+        Some(next_random(&self.machine.random_state))
     }
 
     fn body_scale(&mut self, entity: u32) -> Option<f64> {
@@ -222,4 +213,14 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.read(key);
         Some(self.machine.allows_stack(key, priority, None))
     }
+}
+
+/// The component's next random number. SplitMix64 gives each component a
+/// reproducible stream without OS calls in graph execution.
+pub(super) fn next_random(random_state: &Cell<u64>) -> u64 {
+    let state = random_state.get().wrapping_add(0x9e37_79b9_7f4a_7c15);
+    random_state.set(state);
+    let mixed = (state ^ (state >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    let mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    mixed ^ (mixed >> 31)
 }

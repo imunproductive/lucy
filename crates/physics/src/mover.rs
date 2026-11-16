@@ -47,8 +47,11 @@
 //! something (0x7FF789ACF8AC), 0x80000 the probe met a surface that is not
 //! ground. Mover +0x14DD is "landed this tick", state +40 the frame the body
 //! last stood up in, state +24 the gravity scale of the last tick
-//! (0x7FF789B4D869). Not modelled: throttle mods (17-19), velocity mods
-//! (STU_FF3471E9 states), abilities that take over the move, moving
+//! (0x7FF789B4D869). A statescript velocity action (`STU_FF3471E9`,
+//! [`Mover::act_on_velocity`]) gives the next pose one-pose mods 32..35 and
+//! velocity changes (mover +0x7D0) after them; a rise of the vertical speed
+//! over both takes the body off the ground. Not modelled: abilities that
+//! take over the move (the action's channel 0 among them), moving
 //! platforms, other bodies. Knockback is a velocity added at the next posed
 //! frame ([`Mover::push`]), a reconstruction (leafall903/ORPHEUS (MIT)
 //! `heavy_assault.py` `_push`), not the client's code. The capsule rests
@@ -76,7 +79,10 @@ use crate::{
     contact::world::ContactWorld,
     mover::ground::{GroundProbe, ProbePose, pogo, standing_body},
     mover::kinematics::{Ground, MotionInput, Poses, VelocityStep, poses},
-    mover::modifiers::{Modifier, ModifierKey, ModifierTimeline},
+    mover::modifiers::{
+        Modifier, ModifierKey, ModifierTimeline, TAKE_OFF, VelocityChange, VelocityElement,
+        change_velocity, narrow,
+    },
     mover::posture::{
         CROUCHED, FELL, IN_AIR, JUMPED, NOT_GROUND_UNDER, Posture, PostureStep, TOUCHING, snap,
     },
@@ -145,6 +151,10 @@ pub struct Mover {
     history: motion::History,
     /// The velocity [`Mover::push`] adds at the next posed frame.
     push: Option<[f64; 3]>,
+    /// The next pose's mods of velocity actions ([`Mover::act_on_velocity`]).
+    once: Vec<Modifier>,
+    /// The next pose's velocity changes with their priorities.
+    velocity_changes: Vec<(f64, VelocityChange)>,
 }
 
 impl Mover {
@@ -178,6 +188,8 @@ impl Mover {
             motion: None,
             history: motion::History::with_capacity(motion::HISTORY),
             push: None,
+            once: Vec::new(),
+            velocity_changes: Vec::new(),
         })
     }
 
@@ -234,6 +246,27 @@ impl Mover {
         if push[1] > 0.0 && self.posture.flags & IN_AIR == 0 {
             self.posture.flags |= FELL;
             self.posture.air_ticks = 0;
+        }
+    }
+
+    /// One element of a statescript velocity action for the next pose
+    /// (0x7FF789C3B350): a mod of its own, or a velocity change made from
+    /// the body's velocity now (channels 1 and 4 read it).
+    pub fn act_on_velocity(&mut self, element: VelocityElement) {
+        match element {
+            VelocityElement::Modifier(modifier) => self.once.push(modifier),
+            VelocityElement::Vector {
+                channel,
+                operation,
+                value,
+                priority,
+            } => {
+                if let Some(change) =
+                    VelocityChange::of(channel, operation, value, self.pose.velocity)
+                {
+                    self.velocity_changes.push((priority, change));
+                }
+            }
         }
     }
 
@@ -316,7 +349,11 @@ impl Mover {
         }
         self.take_push();
         self.driven = move_to.is_some();
-        let active = self.modifiers.at(command.frame);
+        let once = std::mem::take(&mut self.once);
+        let mut changes = std::mem::take(&mut self.velocity_changes);
+        changes.sort_by(|(left, _), (right, _)| left.total_cmp(right));
+        let changes: Vec<_> = changes.into_iter().map(|(_, change)| change).collect();
+        let active = self.modifiers.at(command.frame).with_once(&once);
         let settings = active.settings(&self.base);
         let input = MotionInput::new(&command, &active);
         let probe = self.probe.probe(
@@ -355,7 +392,7 @@ impl Mover {
             match move_to {
                 None => {
                     let ground = self.posture.ground();
-                    let velocity = VelocityStep {
+                    let before = VelocityStep {
                         base: &self.base,
                         settings: &settings,
                         input,
@@ -364,12 +401,18 @@ impl Mover {
                         dt,
                     }
                     .advance(self.pose.velocity);
-                    let velocity = active.limit_velocity(velocity, settings.jump_speed);
+                    let velocity = change_velocity(
+                        active.limit_velocity(before, settings.jump_speed),
+                        &changes,
+                    );
                     if ground != Ground::Standing {
                         self.posture.apply_fall(settings.gravity_scale, dt);
                     }
-                    let vertical =
-                        self.move_body(rays, velocity, normal, ground == Ground::Standing, dt)?;
+                    if narrow(velocity[1] - before[1]) > TAKE_OFF {
+                        self.posture.take_off();
+                    }
+                    let grounded = self.posture.ground() == Ground::Standing;
+                    let vertical = self.move_body(rays, velocity, normal, grounded, dt)?;
                     self.posture.finish_fall(settings.gravity_scale, vertical);
                     None
                 }

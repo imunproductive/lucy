@@ -22,6 +22,7 @@ use crate::{
     },
     wire::{Value, Variables},
 };
+use orpheus_wire::entity::GAME_MODE_ENTITY;
 
 /// One placed entity as the map places it.
 pub struct Placement<'a> {
@@ -78,6 +79,8 @@ pub struct PlacedEntity {
     component: Option<Component>,
     /// Why the component stopped or never started.
     fault: Option<String>,
+    /// The team index its script gave it (`STU_0F647E55`), if any.
+    team: Option<i64>,
 }
 
 impl PlacedEntity {
@@ -97,6 +100,12 @@ impl PlacedEntity {
     pub fn fault(&self) -> Option<&str> {
         self.fault.as_deref()
     }
+
+    /// The team index its script gave it (`STU_0F647E55`; -1 none, 0 to
+    /// 4); None: its script gave none.
+    pub fn team(&self) -> Option<i64> {
+        self.team
+    }
 }
 
 /// What the match lends the placed scripts each frame.
@@ -115,6 +124,7 @@ struct EntityWorld<'a, 'b> {
     shared: &'b mut Shared<'a>,
     entity: u32,
     position: [f64; 3],
+    team: &'b mut Option<i64>,
 }
 
 impl World for EntityWorld<'_, '_> {
@@ -149,6 +159,22 @@ impl World for EntityWorld<'_, '_> {
         self.entity_position(site, entity).unwrap_or_default()
     }
 
+    /// The mode entity's variables are the mode's (as [`crate::mode`]).
+    fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
+        if entity != GAME_MODE_ENTITY {
+            return Value::Null;
+        }
+        self.shared
+            .graphs
+            .mode_variables(self.shared.mode)
+            .and_then(|variables| variables.get(&id))
+            .copied()
+            .map_or(Value::Null, Value::from)
+    }
+
+    /// `STU_A3DEF368` is the mode entity (the first entity with component
+    /// 114, as [`crate::mode`] answers it): the Practice Range pad `26F8`
+    /// and console `265F` read ruleset 29450 through it.
     fn native(&mut self, _site: Site, config: &Json) -> Option<Value> {
         match config.get("$")?.as_str()? {
             "STU_082FA44E" => self
@@ -157,8 +183,34 @@ impl World for EntityWorld<'_, '_> {
                 .tunables()
                 .value(config)
                 .map(Value::Float),
+            "STU_A3DEF368" => Some(Value::Entity(GAME_MODE_ENTITY)),
             _ => None,
         }
+    }
+
+    /// Its own team is the one its script gave it; a player's, the
+    /// match's.
+    fn entity_team(&self, _site: Site, entity: u32) -> Option<i64> {
+        if entity == self.entity {
+            return *self.team;
+        }
+        self.shared
+            .players
+            .iter()
+            .find(|player| player.entity == entity)?
+            .team
+            .map(i64::from)
+    }
+
+    /// A placed entity keeps the team its script gives itself (the
+    /// Practice Range's spawn markers `01CE`); it can't give one to
+    /// another entity.
+    fn set_entity_team(&mut self, _site: Site, entity: u32, team: i64) -> bool {
+        if entity != self.entity {
+            return false;
+        }
+        *self.team = Some(team);
+        true
     }
 
     fn target_candidates(&self, _site: Site) -> Option<&[TargetCandidate]> {
@@ -248,6 +300,7 @@ impl MapEntityWorld {
                         position: placement.position,
                         component: None,
                         fault: Some(error.to_string()),
+                        team: None,
                     });
                     continue;
                 }
@@ -260,10 +313,12 @@ impl MapEntityWorld {
                 players: &world.players,
                 outbox: &mut world.outbox,
             };
+            let mut team = None;
             let mut entity_world = EntityWorld {
                 shared: &mut shared,
                 entity: placement.entity,
                 position: placement.position,
+                team: &mut team,
             };
             let started = Component::start(
                 Arc::clone(&world.graphs),
@@ -287,6 +342,7 @@ impl MapEntityWorld {
                 position: placement.position,
                 component,
                 fault,
+                team,
             });
         }
         world
@@ -332,6 +388,7 @@ impl MapEntityWorld {
                 shared: &mut shared,
                 entity: placed.entity,
                 position: placed.position,
+                team: &mut placed.team,
             };
             if let Err(error) = component.advance_frame(frame, &mut world) {
                 placed.fault = Some(error.to_string());
@@ -369,5 +426,94 @@ impl MapEntityWorld {
             }
         }
         gaps
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    const ENTITY: u32 = 0x8000_01CE;
+
+    /// A spawn marker as the Practice Range's `01CE` starts: it stores the
+    /// mode entity (`STU_A3DEF368`) in #1, then gives itself the team #1016
+    /// holds (`STU_0F647E55`), here 1.
+    #[test]
+    fn a_placed_entity_keeps_the_team_its_script_gives_it_and_finds_the_mode_entity() {
+        let owner = json!({"$": "STU_B5A0CAF0", "m_EE729DCB": 0});
+        let plug = |to: u16| json!({"$": "Plug", "links": [[to, "m_inPlug"]], "m_FF3DAF1E": []});
+        let node = |pos: u16, class: &str, fields: Json| {
+            json!({
+                "pos": pos, "class": class, "uid": pos, "rid": pos, "remote": -1,
+                "state": null, "client_only": false, "server_only": false, "fields": fields,
+            })
+        };
+        let var = |id: u32, entity: bool| json!({"$": "STUConfigVarDynamic", "m_identifier": id, "m_60DB8F99": entity});
+        let nodes = vec![
+            node(0, "STUStatescriptEntry", json!({"m_outPlug": plug(1)})),
+            node(
+                1,
+                "STUStatescriptActionSetVar",
+                json!({
+                    "m_out_Var": var(1, true),
+                    "m_value": {"$": "STU_A3DEF368", "m_EE729DCB": 0},
+                    "m_outPlug": plug(2),
+                }),
+            ),
+            node(
+                2,
+                "STU_0F647E55",
+                json!({"m_targets": owner, "m_67465E75": var(1016, false)}),
+            ),
+        ];
+        let graph = json!({
+            "index": 0x01ce, "items": nodes.len(), "nodes": nodes, "states": [],
+            "entries": [0], "remote": [], "sync_vars": [], "containers": {},
+            "unknown_nodes": [], "fields": {},
+            "header": {
+                "m_nodesBitCount": 4, "m_statesBitCount": 4,
+                "m_remoteSyncNodesBitCount": 4, "m_syncVarsBitCount": 4
+            }
+        });
+        let graphs = GraphStore::from_json(
+            &serde_json::to_vec(&json!({
+                "version": 1, "graphs": [graph], "bodies": {}, "missing": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let extra = [GraphBinding {
+            graph: Some(0x01ce),
+            sync: Some(vec![json!({
+                "$": "STUStatescriptSchemaEntry",
+                "m_0D09D2D9": "0x0D800000000003F8",
+                "m_value": {"$": "STUConfigVarInt", "m_value": 1, "m_EE729DCB": 0},
+            })]),
+            flags: 0,
+        }];
+        let world = MapEntityWorld::start(
+            Arc::new(graphs),
+            0,
+            0.0,
+            Unknowns::Refuse,
+            [Placement {
+                entity: ENTITY,
+                definition: 0,
+                position: [0.0; 3],
+                overrides: &[],
+                extra: &extra,
+            }],
+            1,
+        );
+        let placed = world.entity(ENTITY).unwrap();
+        let snapshot = placed.snapshot().unwrap();
+        assert!(placed.complete(), "{:?}", snapshot.diagnostics);
+        assert_eq!(placed.team(), Some(1));
+        assert_eq!(
+            snapshot.variables.get(&1),
+            Some(&Value::Entity(GAME_MODE_ENTITY))
+        );
     }
 }

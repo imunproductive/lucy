@@ -286,13 +286,14 @@ mod tests {
     }
 
     /// The Practice Range's 26 server placeables: 22 have graphs; the
-    /// spawn room `0D62` (126), the six barriers `00F6` and the three spawn
-    /// doors `0D32` (358, 479, 480) run whole and have frames, as do the
-    /// four whose graphs `0216`/`0217` end at once. The six spawn markers
-    /// `01CE` stop on action `STU_0F647E55` and the console `265F` and pad
-    /// `26F8` on their natives; they send nothing. Each door's frame
-    /// changes once in its first 300 frames (its alias states, see
-    /// `0D32`; which wait ends first is not pinned here).
+    /// spawn room `0D62` (126), the six barriers `00F6`, the three spawn
+    /// doors `0D32` (358, 479, 480) and the six spawn markers `01CE` (137,
+    /// 150, 243, 415, 482, 590: they give themselves their team,
+    /// `STU_0F647E55`) run whole and have frames, as do the four whose
+    /// graphs `0216`/`0217` end at once. The console `265F` and pad `26F8`
+    /// still meet gaps; they send nothing. Each door's frame changes once
+    /// in its first 300 frames (its alias states, see `0D32`; which wait
+    /// ends first is not pinned here).
     #[test]
     #[ignore = "requires the derived 104319 data"]
     fn the_range_placeables_run_their_graphs_and_have_frames() {
@@ -312,7 +313,8 @@ mod tests {
         assert_eq!(
             framed,
             [
-                126, 185, 188, 199, 204, 340, 358, 398, 400, 416, 424, 479, 480, 548
+                126, 137, 150, 185, 188, 199, 204, 243, 340, 358, 398, 400, 415, 416, 424, 479,
+                480, 482, 548, 590
             ]
         );
         for door in [358, 479, 480] {
@@ -324,9 +326,6 @@ mod tests {
             assert_eq!(frame.serial, 2, "door {door}");
         }
         let gaps = world.gaps();
-        assert_eq!(
-            gaps.get(&(0x01ce, "UnsupportedAction(\"STU_0F647E55\")".into())),
-            Some(&12)
-        );
+        assert!(gaps.keys().all(|(graph, _)| *graph != 0x01ce), "{gaps:?}");
     }
 }

@@ -12,6 +12,7 @@ mod arrays;
 mod auras;
 mod buttons;
 mod context;
+mod entities;
 mod filter_array;
 mod flow;
 mod health;
@@ -53,7 +54,9 @@ use crate::{
     wheel,
     wire::{Value, Variables},
 };
-use orpheus_physics::mover::modifiers::{Modifier, ModifierKey, Operation};
+use orpheus_physics::mover::modifiers::{
+    Modifier, ModifierKey, Operation, VectorOperation, VelocityElement,
+};
 use orpheus_wire::{commands::Command, entity::MAX_MOVEMENT_AXIS};
 
 pub const MAX_INIT_WORK: usize = 100_000;
@@ -418,6 +421,18 @@ pub trait World {
             .map(i64::from)
     }
 
+    /// Give `entity` team index `team` (-1 none, 0 to 4; `STU_0F647E55`).
+    /// False: this world keeps no entity teams.
+    fn set_entity_team(&mut self, _site: Site, _entity: u32, _team: i64) -> bool {
+        false
+    }
+
+    /// Remove `entity` from the match (`STU_523EE38D`). False: this world
+    /// can't.
+    fn destroy_entity(&mut self, _site: Site, _entity: u32) -> bool {
+        false
+    }
+
     fn body_on_fire(&mut self, _site: Site, _entity: u32) -> Option<bool> {
         None
     }
@@ -586,6 +601,8 @@ pub enum Motion {
     Rewind { seconds: f64, duration: f64 },
     /// The rewind state ended: finished (the path is done) or aborted.
     EndRewind { finished: bool },
+    /// An element of a velocity action (`STU_FF3471E9`) for the next pose.
+    Velocity(VelocityElement),
 }
 
 #[derive(Default)]
