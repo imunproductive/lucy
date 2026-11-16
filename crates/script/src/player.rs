@@ -688,7 +688,8 @@ mod tests {
     /// `0011.025`, as the match sends it. `004B` rates the hurt (#10417e),
     /// `02C5` starts the networked knockback anim st7 for a splash hit
     /// (Helix Rocket explosion tags: `078D`, not `0302`) with the hit's
-    /// direction, `01CF` asks for the attacker's controller (#9737), and
+    /// direction, `01CF` asks for the attacker's pet owner (#9737, `STU_F76C486C`:
+    /// component 72's owner, so none for a hero body or a bot), and
     /// 0.15 s later `01CA` raises the pain criteria on the body: severe
     /// `0609` for a Training Bot's 120 (0.6 + 0.3 × 120 / 125 = 0.888), minor
     /// `0608` for his own rocket's 40 at his feet (0.2 + 0.3 × 40 / 125 =
@@ -794,12 +795,11 @@ mod tests {
                 .is_some_and(|state| state.active);
             let strength = flinch.variables.get(&1024).cloned();
             assert_eq!(flinch.variables[&1018], Value::Vector(direction));
-            let controller = match source {
-                BODY => CONTROLLER,
-                BOT => BOT_CONTROLLER,
-                other => other & !0xff,
-            };
-            assert_eq!(instance(0x01cf).variables[&9737], Value::Entity(controller));
+            // `STU_F76C486C` is component 72's (STUPetComponent's) owner in the
+            // client's evaluator (`0x7FF789BF2CF0` → `0x7FF789C2BEE0`, which
+            // reads `GetComp72`); a hero body or a Training Bot has none, so
+            // `01CF` keeps no assist attacker for a direct hit (see loose ends).
+            assert_eq!(instance(0x01cf).variables[&9737], Value::Entity(0));
             let Value::Float(rating) = snapshot.variables[&10417] else {
                 panic!("004B rates the hurt");
             };
