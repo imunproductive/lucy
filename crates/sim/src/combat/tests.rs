@@ -136,7 +136,9 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
         if terminal {
             assert_eq!(
                 components[1],
-                crate::scene::filter_component(0x0100_0000 | 0x41 | 0x10)
+                crate::scene::filter_component(
+                    0x0100_0000 | crate::scene::BODY_KINDS | crate::scene::DEAD
+                )
             );
         }
     }
