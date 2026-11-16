@@ -12,6 +12,7 @@ mod arrays;
 mod auras;
 mod buttons;
 mod context;
+mod entities;
 mod filter_array;
 mod flow;
 mod health;

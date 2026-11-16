@@ -740,6 +740,32 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.assume(self.site(id, node), class, "plain state");
                 StateKind::Plain
             }
+            // Server-only states (no registration of their own: the client
+            // runs the base state, codec `none`), with a meaning the data
+            // doesn't tell: `STU_441B50E4` counts time in its stats
+            // (`m_stat`, `m_stats`, `m_D32CB484`) for `m_targets`
+            // (ModeGraphGaps.md); the server's stats are its own Rust.
+            // `STU_F08E1453` names the owner (`m_64C3E07E`) in 23 graphs
+            // (Tracer's Recall `001A` st26, Zarya's `0256` st10, the body's
+            // `01CB` st35), beside an entity control (`STU_33A46033`); what
+            // it does on the server is unknown. Plain states, as
+            // assumptions.
+            "STU_441B50E4" => {
+                self.assume(
+                    self.site(id, node),
+                    &node.class,
+                    "plain state (stat time not kept)",
+                );
+                StateKind::Plain
+            }
+            "STU_F08E1453" => {
+                self.assume(
+                    self.site(id, node),
+                    &node.class,
+                    "plain state (server-only, meaning unknown)",
+                );
+                StateKind::Plain
+            }
             class if ASSUMED_PLAIN_STATES.contains(&class) => StateKind::Plain,
             class if ASSUMED_INERT_STATES.contains(&class) => StateKind::Plain,
             "STU_77E13026" => StateKind::HitList,

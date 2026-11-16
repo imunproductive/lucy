@@ -428,3 +428,92 @@ impl MapEntityWorld {
         gaps
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    const ENTITY: u32 = 0x8000_01CE;
+
+    /// A spawn marker as the Practice Range's `01CE` starts: it stores the
+    /// mode entity (`STU_A3DEF368`) in #1, then gives itself the team #1016
+    /// holds (`STU_0F647E55`), here 1.
+    #[test]
+    fn a_placed_entity_keeps_the_team_its_script_gives_it_and_finds_the_mode_entity() {
+        let owner = json!({"$": "STU_B5A0CAF0", "m_EE729DCB": 0});
+        let plug = |to: u16| json!({"$": "Plug", "links": [[to, "m_inPlug"]], "m_FF3DAF1E": []});
+        let node = |pos: u16, class: &str, fields: Json| {
+            json!({
+                "pos": pos, "class": class, "uid": pos, "rid": pos, "remote": -1,
+                "state": null, "client_only": false, "server_only": false, "fields": fields,
+            })
+        };
+        let var = |id: u32, entity: bool| json!({"$": "STUConfigVarDynamic", "m_identifier": id, "m_60DB8F99": entity});
+        let nodes = vec![
+            node(0, "STUStatescriptEntry", json!({"m_outPlug": plug(1)})),
+            node(
+                1,
+                "STUStatescriptActionSetVar",
+                json!({
+                    "m_out_Var": var(1, true),
+                    "m_value": {"$": "STU_A3DEF368", "m_EE729DCB": 0},
+                    "m_outPlug": plug(2),
+                }),
+            ),
+            node(
+                2,
+                "STU_0F647E55",
+                json!({"m_targets": owner, "m_67465E75": var(1016, false)}),
+            ),
+        ];
+        let graph = json!({
+            "index": 0x01ce, "items": nodes.len(), "nodes": nodes, "states": [],
+            "entries": [0], "remote": [], "sync_vars": [], "containers": {},
+            "unknown_nodes": [], "fields": {},
+            "header": {
+                "m_nodesBitCount": 4, "m_statesBitCount": 4,
+                "m_remoteSyncNodesBitCount": 4, "m_syncVarsBitCount": 4
+            }
+        });
+        let graphs = GraphStore::from_json(
+            &serde_json::to_vec(&json!({
+                "version": 1, "graphs": [graph], "bodies": {}, "missing": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let extra = [GraphBinding {
+            graph: Some(0x01ce),
+            sync: Some(vec![json!({
+                "$": "STUStatescriptSchemaEntry",
+                "m_0D09D2D9": "0x0D800000000003F8",
+                "m_value": {"$": "STUConfigVarInt", "m_value": 1, "m_EE729DCB": 0},
+            })]),
+            flags: 0,
+        }];
+        let world = MapEntityWorld::start(
+            Arc::new(graphs),
+            0,
+            0.0,
+            Unknowns::Refuse,
+            [Placement {
+                entity: ENTITY,
+                definition: 0,
+                position: [0.0; 3],
+                overrides: &[],
+                extra: &extra,
+            }],
+            1,
+        );
+        let placed = world.entity(ENTITY).unwrap();
+        let snapshot = placed.snapshot().unwrap();
+        assert!(placed.complete(), "{:?}", snapshot.diagnostics);
+        assert_eq!(placed.team(), Some(1));
+        assert_eq!(
+            snapshot.variables.get(&1),
+            Some(&Value::Entity(GAME_MODE_ENTITY))
+        );
+    }
+}
