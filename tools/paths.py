@@ -42,6 +42,7 @@ OUT = ORPHEUS / "research" / "out"
 INDEX = OUT / "index" / "ow_index.sqlite"
 IDA_GAME = OUT / "ida_game"  # game IDB, its input image, Rose results, build state and log
 OWDBG_OUT = OUT / "owdbg"  # owdbg reports, minidumps, JSONL logs
+OWSEARCH = OUT / "owsearch"  # owsearch.sqlite: code constants, branches, console variables
 
 
 def research_tool(name):
