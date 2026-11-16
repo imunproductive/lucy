@@ -23,6 +23,18 @@ fn spawned(
     slot: i8,
     team: u8,
 ) -> WorldDelivery {
+    spawned_as(scene, card, entity, slot, team, SOLDIER)
+}
+
+/// A started world whose player plays `hero` for `team`.
+fn spawned_as(
+    scene: &PreparedScene,
+    card: &PlayerCard,
+    entity: u32,
+    slot: i8,
+    team: u8,
+    hero: u64,
+) -> WorldDelivery {
     let viewer = PlayerAppearance {
         entity,
         slot,
@@ -35,7 +47,7 @@ fn spawned(
     world.start(scene, &viewer, FIRST_TICK).unwrap();
     world.created.insert(entity);
     world.present(scene, FIRST_TICK).unwrap();
-    let hero = scene.heroes().get(SOLDIER).unwrap();
+    let hero = scene.heroes().get(hero).unwrap();
     world
         .switch(
             scene,
@@ -192,6 +204,56 @@ fn in_the_practice_range_a_second_training_bot_kill_pulses_the_double_kill() {
         );
     }
     assert_double_kill_sent(&scene, &shooter, ticks[1]);
+}
+
+/// Three Training Bot kills, each within 2 s of the last: `0215` rid85
+/// waits 1.6 s (100 ticks of 16 ms) after the third, then its server-only
+/// st28 names `00C9.078` on the controller, which the player's body says
+/// (ClientInVoice 27500). Tracer's voice set has the line (Soldier: 76's
+/// doesn't: 24 of the 33 sets do). The body sends no commands here, so
+/// its own elimination line (`01CA`, on its frames) doesn't come.
+#[test]
+#[ignore = "requires a derived 104319 pack"]
+fn a_third_kill_in_the_window_makes_the_hero_say_his_multikill_line() {
+    const TRACER: u64 = 0x02e0_0000_0000_0003;
+    // Tracer's graphs meet content debug builds refuse; the release
+    // server tolerates it (as the spawn room tests do).
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(orpheus_script::vm::Unknowns::Tolerate);
+    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let card = PlayerCard::default();
+    let mut shooter = spawned_as(&scene, &card, SHOOTER, 0, 0, TRACER);
+    assert!(shooter.body_script.is_some(), "Tracer's body script runs");
+    let graphs = scene.shared_graphs();
+    let training_bot = scene.bots().first().map(|bot| bot.spawn.body);
+    let first = FIRST_TICK + 100;
+    let kills = [first, first + 60, first + 120];
+    let mut said = Vec::new();
+    for tick in first..first + 300 {
+        if kills.contains(&tick) {
+            shooter.eliminated(
+                &graphs,
+                tick,
+                crate::bots::BOT_ENTITY,
+                training_bot,
+                &DamageTags::NONE,
+            );
+        }
+        said.extend(
+            shooter
+                .take_voice_lines(&scene, tick)
+                .into_iter()
+                .map(|line| (tick, line.speaker, line.stimulus)),
+        );
+    }
+    assert_eq!(
+        said,
+        [(
+            kills[2] + 100,
+            shooter.current_body().unwrap(),
+            0x0ee0_0000_0000_00c9
+        )]
+    );
 }
 
 /// The last controller frame queued for `shooter` carries the one he would

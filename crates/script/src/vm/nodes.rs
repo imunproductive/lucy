@@ -912,8 +912,15 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::Status => self.begin_status(key, node),
             StateKind::CombatMod => self.begin_combat_mod(key, node),
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
+            // The client's own run finishes the state once its line has
+            // played (`0x7FF789C54090` keeps the line's end at `+488` and
+            // then calls `0x7FF78AA812E0`); a state left on would ignore the
+            // next begin: `01CA` st46 says one line per kill. The server
+            // finishes it at once (it doesn't know the line's length; `01CA`
+            // st34's finished plug only clears a list).
             StateKind::Plain if node.class == "STU_40E05F6B" && node.server_only => {
                 self.begin_voice_stimulus(key, node);
+                self.post(id, Event::Finish(key.raw))?;
             }
             StateKind::Plain if node.class == "STU_54FEB21C" && is_server_ended(node) => {
                 self.end_wind_up(key, node)?;

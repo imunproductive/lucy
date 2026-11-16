@@ -1015,6 +1015,21 @@ mod tests {
             said(ELIMINATION, kill(melee)),
             (vec![(44, line(0x0ee0_0000_0000_0032))], Vec::new())
         );
+        // A second kill asks again: the state finished after the first
+        // (a state left on would ignore the begin; game check 2026-11-17).
+        let (mut world, mut component) = start();
+        world.victim_tags = Some((BOT, BTreeSet::from([TRAINING_BOT_TAG])));
+        let mut asked = Vec::new();
+        for kill_frame in [FIRST + 1, FIRST + 61] {
+            component
+                .receive_message(0, ELIMINATION, kill(bullet), &mut world)
+                .unwrap();
+            for frame in kill_frame..kill_frame + 60 {
+                component.advance_frame(frame, &mut world).unwrap();
+                asked.extend(world.take_voices().into_iter().map(|v| v.stimulus));
+            }
+        }
+        assert_eq!(asked, [0x0ee0_0000_0000_0008; 2]);
         let respawn = Variables::from([(0xc6, Value::Bool(true))]);
         assert_eq!(
             said(RESET, respawn),
