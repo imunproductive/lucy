@@ -782,17 +782,19 @@ fn filter_exclusion(filter: &Json) -> Option<u64> {
     {
         return None;
     }
-    // The supported form has no selectors beyond candidate exclusions and the three tag lists.
+    // The supported form has no selectors beyond candidate exclusions and the
+    // three tag lists (`m_C1903771`, +0x70, is not read by the client's
+    // filter test 0x7FF789C1DA20).
     let supported = filter
         .as_object()?
         .iter()
         .all(|(key, value)| match key.as_str() {
-            "$" | "m_84065FD1" | "m_4EA686DB" | "m_B486603E" | "m_8B2A4DF3" | "m_C1903771" => true,
+            "$" | "m_84065FD1" | "m_4EA686DB" | "m_9C7BD8B8" | "m_B486603E" | "m_8B2A4DF3"
+            | "m_C1903771" => true,
             "m_EE729DCB" | "m_1E14CCA8" | "m_27CF71D5" | "m_66747E7D" | "m_89831602" => {
                 value.as_u64() == Some(0)
             }
             "m_93FA1642" => value.is_null() || value.as_array().is_some_and(Vec::is_empty),
-            "m_9C7BD8B8" => value.is_null() || target_tag_config(value) == Some(0),
             "m_condition" | "m_F61726FE" | "m_B40362FC" => value.is_null(),
             _ => false,
         });
@@ -1723,10 +1725,13 @@ impl Evaluator {
         }
         let mut unknown = exclude != 0 && flags.is_none();
         let mut has_fact = flags.is_some();
+        // The client's filter tag test (0x7FF789C1EC70 → 0x7FF789CC2FD0,
+        // the rule of 0x7FF789CC5310): any of `m_9C7BD8B8`, all of
+        // `m_B486603E`, none of `m_8B2A4DF3`.
         for (field, condition) in [
-            ("m_B486603E", TagCondition::Any),
-            ("m_8B2A4DF3", TagCondition::All),
-            ("m_C1903771", TagCondition::Exclude),
+            ("m_9C7BD8B8", TagCondition::Any),
+            ("m_B486603E", TagCondition::All),
+            ("m_8B2A4DF3", TagCondition::Exclude),
         ] {
             match check_tag_set(child(filter, field), condition, entity, context)? {
                 TagCheck::Unused => (),

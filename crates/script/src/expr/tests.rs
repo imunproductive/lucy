@@ -234,7 +234,7 @@ fn entity_filter_distinguishes_rejection_from_unavailable_facts() {
     let mut config = entity_filter(2);
     config["m_filter"]["m_9C7BD8B8"] =
         json!({"$":"STU_357DABBB", "m_7D7C86A1":null, "m_resourceKey":null});
-    config["m_filter"]["m_8B2A4DF3"] = tag_config(REQUIRED_TAG);
+    config["m_filter"]["m_B486603E"] = tag_config(REQUIRED_TAG);
     let mut world = FilterWorld {
         entity: Some(FILTER_OWNER),
         ..Default::default()
@@ -254,12 +254,15 @@ fn entity_filter_distinguishes_rejection_from_unavailable_facts() {
     assert_eq!(evaluate(&config, &mut world), unknown);
 }
 
+/// The filter's tag lists as the client tests them (0x7FF789C1EC70 →
+/// 0x7FF789CC2FD0): `m_9C7BD8B8` any, `m_B486603E` all, `m_8B2A4DF3`
+/// none; `m_C1903771` (+0x70) is not read there.
 #[test]
 fn entity_filter_applies_any_all_and_excluded_tag_lists() {
     let mut config = entity_filter(0);
-    config["m_filter"]["m_B486603E"] = tag_list(&[SECOND_TAG, REQUIRED_TAG]);
-    config["m_filter"]["m_8B2A4DF3"] = tag_list(&[REQUIRED_TAG]);
-    config["m_filter"]["m_C1903771"] = tag_config(EXCLUDED_TAG);
+    config["m_filter"]["m_9C7BD8B8"] = tag_list(&[SECOND_TAG, REQUIRED_TAG]);
+    config["m_filter"]["m_B486603E"] = tag_list(&[REQUIRED_TAG]);
+    config["m_filter"]["m_8B2A4DF3"] = tag_config(EXCLUDED_TAG);
     let mut world = FilterWorld {
         entity: Some(FILTER_OWNER),
         tags: BTreeMap::from([(REQUIRED_TAG, true), (EXCLUDED_TAG, false)]),
@@ -275,7 +278,7 @@ fn entity_filter_applies_any_all_and_excluded_tag_lists() {
     let unsupported = Err(EvalError::UnsupportedConfig("STU_AC829876".into()));
     assert_eq!(evaluate(&config, &mut world), unsupported);
     world.tags.insert(EXCLUDED_TAG, false);
-    config["m_filter"]["m_B486603E"]["m_configVars"] =
+    config["m_filter"]["m_9C7BD8B8"]["m_configVars"] =
         json!([tag_config(REQUIRED_TAG), {"$":"unresolved-tag-config"}]);
     assert_eq!(evaluate(&config, &mut world), unsupported,);
 }
