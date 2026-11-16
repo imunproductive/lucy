@@ -29,6 +29,14 @@
 //!   `voicelines.py` `queue_voice_notice`: +0x7C the listener's body, +0x80
 //!   0xFFFFFFFF (no observer override), the rest 0; a Talon NPC's hit line
 //!   played from it on the original client.
+//! - 25008 `{f32 x, f32 y, f32 z, f32 w}` (Msg25008_Handler 0x7FF7895D4420)
+//!   sets the local player's view (component 59 of the entity at
+//!   `world+664`) to the quaternion, absolutely, through the set-view
+//!   0x7FF7894E00A0, the only writer of the stored view besides the
+//!   per-frame copy. Game check (refs/reports/RespawnFacing.md, "Game
+//!   checks (2026-11-16)"): `(0, sin θ/2, 0, cos θ/2)` turned the stored yaw
+//!   from 180° to +θ = 90°; Y is up and the yaw is the command's
+//!   (forward = `(sin yaw, 0, cos yaw)`).
 
 use crate::{
     jam::codec::{Fields, Schemas, Value},
@@ -38,6 +46,7 @@ use crate::{
 const HIT: u32 = 25001;
 const DEATH: u32 = 25004;
 const ELIMINATION: u32 = 25005;
+const VIEW: u32 = 25008;
 const VOICE: u32 = 27500;
 /// ClientInVoice's "no observer override" (+0x80).
 const NO_OBSERVER: u32 = 0xffff_ffff;
@@ -67,11 +76,19 @@ pub enum CombatNotice {
         stimulus: u64,
         line: u64,
     },
+    /// Turn the player's view to `yaw` (1/65536 turns, the mover's and the
+    /// command's convention), level: 25008 with the rotation about Y.
+    View {
+        yaw: i32,
+    },
 }
 
 impl CombatNotice {
     pub fn needs_mode_ui(self) -> bool {
-        !matches!(self, Self::Hit { .. } | Self::Voice { .. })
+        !matches!(
+            self,
+            Self::Hit { .. } | Self::Voice { .. } | Self::View { .. }
+        )
     }
 
     pub fn required_identity(self) -> Option<u32> {
@@ -80,6 +97,7 @@ impl CombatNotice {
             Self::Death { source, killed_by } => killed_by.then_some(source),
             Self::Elimination { victim, .. } => Some(victim),
             Self::Voice { speaker, .. } => Some(speaker),
+            Self::View { .. } => None,
         }
     }
 
@@ -146,6 +164,22 @@ impl CombatNotice {
                     (0xa0, Value::Unsigned(0)),
                 ]),
             ),
+            Self::View { yaw } => {
+                let half = f64::from(yaw) * std::f64::consts::PI / 65536.0;
+                let (sin, cos) = half.sin_cos();
+                (
+                    VIEW,
+                    Fields::from([(
+                        0x78,
+                        Value::Struct(Fields::from([
+                            (0, Value::Float32(0.0)),
+                            (4, Value::Float32(sin as f32)),
+                            (8, Value::Float32(0.0)),
+                            (12, Value::Float32(cos as f32)),
+                        ])),
+                    )]),
+                )
+            }
         };
         messages::encode(schemas, id, &fields)
     }
@@ -237,5 +271,36 @@ mod tests {
                 (0xa0, Value::Unsigned(0)),
             ])
         );
+    }
+
+    /// 25008 on ClientInCombat (channel 2, message 8), the schema's four
+    /// f32 at +0x78: a quarter turn is the quaternion GameChecks sent
+    /// (yaw +90°), half a turn faces -Z.
+    #[test]
+    fn a_view_notice_is_the_rotation_about_y() {
+        let schemas = Schemas::game();
+        let (_, crc, _) = messages::locate(VIEW).unwrap();
+        let rotation = |yaw| {
+            let notice = CombatNotice::View { yaw };
+            assert_eq!(notice.required_identity(), None);
+            assert!(!notice.needs_mode_ui());
+            let bytes = notice.encode(&schemas).unwrap();
+            assert_eq!(bytes[..2], [2, 8]);
+            let fields = schemas.decode(crc, VIEW, &bytes[2..], true).unwrap();
+            let Some(Value::Struct(quaternion)) = fields.get(&0x78) else {
+                panic!("no quaternion in {fields:?}");
+            };
+            assert_eq!(fields.len(), 1);
+            [0, 4, 8, 12].map(|at| match quaternion[&at] {
+                Value::Float32(value) => value,
+                ref other => panic!("not an f32: {other:?}"),
+            })
+        };
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        assert_eq!(rotation(16384), [0.0, half, 0.0, half]);
+        assert_eq!(rotation(0), [0.0, 0.0, 0.0, 1.0]);
+        let [x, y, z, w] = rotation(-32768);
+        assert_eq!([x, y, z], [0.0, -1.0, 0.0]);
+        assert!(w.abs() < 1e-7);
     }
 }

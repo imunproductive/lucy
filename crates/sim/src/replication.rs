@@ -68,6 +68,7 @@ use orpheus_script::{
     wire::{Value as ScriptValue, Variables},
 };
 use orpheus_wire::{
+    combat_messages::CombatNotice,
     commands::{Command, CommandQueue, FRAME_HALF, SUBFRAME, frame_distance},
     entity::{
         Component as WorldComponent, EntityUpdate, GAME_MODE_ENTITY, MAX_PAYLOAD, Operation,
@@ -1396,6 +1397,10 @@ pub struct WorldDelivery {
     spawn_flag: (bool, u64),
     /// A hero picked while the body was dead: the respawn plays it.
     respawn_hero: Option<(u64, SkinTheme)>,
+    /// A body placed at a spawn point and its facing (1/65536 turns): the
+    /// view turn (25008) waits for its possession to arrive
+    /// ([`Self::take_spawn_view`]).
+    spawn_view: Option<(BodyId, i32)>,
     /// The player's controller graph (`0C90`) in the VM, from the world's
     /// start; it counts his multikills (`crate::announcer`). Whether a
     /// pulse waits for its controller frame.
@@ -1506,6 +1511,7 @@ impl WorldDelivery {
             spawn_room: None,
             spawn_flag: (true, 0),
             respawn_hero: None,
+            spawn_view: None,
             controller_script: None,
             multikill_due: false,
         }
@@ -1606,6 +1612,7 @@ impl WorldDelivery {
         self.target_candidates.clear();
         self.notices = SwitchNotices::default();
         self.spawn_room = None;
+        self.spawn_view = None;
         self.controller_script = None;
         self.multikill_due = false;
     }
@@ -2789,6 +2796,25 @@ impl WorldDelivery {
         self.body.map(|body| body.id.entity)
     }
 
+    /// The view turn of a body placed at a spawn point (first spawn,
+    /// respawn, new round), once the client has its possession: the client
+    /// keeps its view on the player, not the body, and only 25006/25008/
+    /// 25009 set it (`refs/reports/RespawnFacing.md`), so without it a
+    /// respawn kept the view of the death. Taken once; a newer body drops
+    /// it.
+    pub fn take_spawn_view(&mut self) -> Option<CombatNotice> {
+        let (id, yaw) = self.spawn_view?;
+        if self.body.is_none_or(|body| body.id != id) {
+            self.spawn_view = None;
+            return None;
+        }
+        if self.bound != Some(id) {
+            return None;
+        }
+        self.spawn_view = None;
+        Some(CombatNotice::View { yaw })
+    }
+
     /// The bodies the target searches can find from now on
     /// (`Combat::target_candidates`): the current body's and the next.
     pub fn set_target_candidates(&mut self, candidates: &[TargetCandidate]) {
@@ -3882,17 +3908,12 @@ impl WorldDelivery {
         self.retained_elsewhere.extend(bodies);
     }
 
-    /// A new body for the player (match.py `switch_hero`), then a full
-    /// controller frame: a pick closes hero select with it (unless the
-    /// heroes are still assembling), and a body placed at the spawn point
-    /// without a pick (a respawn, a new round) sends it with hero select as
-    /// it was. That frame after the new body's possession is what the first
-    /// spawn has and a respawn lacked in the game: the first spawn faced the
-    /// spawn's way, a respawn (also one with a hero picked while dead, whose
-    /// frame went at the pick, with the dead body) kept the view of the
-    /// death (user's check, 2026-11-13). Assumption: the client sets its
-    /// view to the possessed body's facing on that frame; it may need hero
-    /// select closing instead (`refs/reports/RespawnFacing.md`).
+    /// A new body for the player (match.py `switch_hero`). A pick closes
+    /// hero select with a full controller frame (unless the heroes are still
+    /// assembling). A body placed at the spawn point (not a pick of a living
+    /// body, which changes the hero where he stands) turns the view to the
+    /// spawn's facing with 25008 after its possession
+    /// ([`Self::take_spawn_view`]).
     #[allow(clippy::too_many_arguments)]
     fn switch(
         &mut self,
@@ -3986,13 +4007,9 @@ impl WorldDelivery {
             hero: hero.guid,
             skin: (skin.guid != 0).then_some(skin.guid),
         };
-        let placed = here.is_none() && !self.headless && self.can_handle_game_message();
-        let open = if pick {
-            self.assembling && self.select_open
-        } else {
-            self.select_open
-        };
-        let frame = (pick || placed)
+        let placed = here.is_none() && !self.headless;
+        let open = self.assembling && self.select_open;
+        let frame = pick
             .then(|| self.controller_chunk(scene, tick, open, Some(hero.guid), None))
             .transpose()?;
 
@@ -4010,6 +4027,7 @@ impl WorldDelivery {
         self.plain_vitals = None;
         self.respawn_hero = None;
         self.spawn_room = None;
+        self.spawn_view = placed.then_some((id, movement.yaw));
         if let Some(controller) = &mut self.controller_script {
             controller.possessed(entity, hero.guid);
         }

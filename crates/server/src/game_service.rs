@@ -3070,6 +3070,9 @@ impl State {
             // retail's PC default); the forced last drain step only retires.
             if !force && peer.open {
                 if !drain {
+                    if let Some(view) = peer.world.take_spawn_view() {
+                        peer.notice(view);
+                    }
                     peer.flush_combat(&self.schemas, now);
                 }
                 let movements = if drain {

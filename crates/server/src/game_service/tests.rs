@@ -1818,7 +1818,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
 
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
-    let controller = scene.controller();
+    let facing = scene.map().spawn_point(0, 0).unwrap().1;
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let tags = ["shooter#1111", "target#2222"];
@@ -2198,42 +2198,38 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
             .definition
     };
     assert_ne!(definition(respawned), definition(target_body), "Ana's body");
-    // As after the first pick, the possession of the new body is followed
-    // by a full controller frame (hero select closed, his hero Ana): the
-    // frame the first spawn had and a respawn lacked, after which the first
-    // spawn faced the spawn's way in the game (`WorldDelivery::switch`).
-    let respawn_frame = |watcher: &Watcher| {
-        let possessed = watcher.find(created, |record| {
-            record.entity == target_owner && record.operation == Some(2)
-        })?;
-        watcher.find(possessed, |record| {
-            record.entity == target_owner
-                && record.script.as_ref().is_some_and(|chunk| {
-                    let mut reader = chunk.bits();
-                    if chunk.first != 0 || reader.bits(3).unwrap() != 2 {
-                        return false;
-                    }
-                    let expected = controller
-                        .controller_frame(
-                            reader.w_var().unwrap(),
-                            ControllerFrame {
-                                hide_assemble: true,
-                                hero: Some(ANA),
-                                ..ControllerFrame::default()
-                            },
-                        )
-                        .unwrap();
-                    (chunk.width, chunk.data.as_slice())
-                        == (expected.bit_len(), expected.as_bytes())
-                })
-        })
-    };
+    // Each spawn turns the view to the spawn's facing (25008, the rotation
+    // about Y) once the client has the new body's possession: the first
+    // spawn before the death, the respawn after its possession
+    // (`WorldDelivery::take_spawn_view`). The Practice Range has one spawn,
+    // so both face its way.
+    let half = f64::from((facing * 65536.0 / 360.0).round_ties_even() as i32)
+        * std::f64::consts::PI
+        / 65536.0;
+    let rotation = Value::Struct(Fields::from([
+        (0, Value::Float32(0.0)),
+        (4, Value::Float32(half.sin() as f32)),
+        (8, Value::Float32(0.0)),
+        (12, Value::Float32(half.cos() as f32)),
+    ]));
     pump_until(
         &mut [shooter, target],
         &schemas,
-        "the respawn's controller frame",
-        |watchers| respawn_frame(watchers[1]).is_some(),
+        "the respawn's view turn",
+        |watchers| messages_of(watchers[1], 25008).len() == 2,
     );
+    let views = messages_of(target, 25008);
+    assert!(views[0].0 < died, "the first spawn's view turn");
+    let possessed = target
+        .find(created, |record| {
+            record.entity == target_owner && record.operation == Some(2)
+        })
+        .unwrap();
+    assert!(views[1].0 > possessed, "after the respawn's possession");
+    for (_, view) in views {
+        assert_eq!(view, Fields::from([(0x78, rotation.clone())]));
+    }
+    assert_eq!(messages_of(shooter, 25008).len(), 1, "the shooter's own");
     server.stop().unwrap();
 }
 
