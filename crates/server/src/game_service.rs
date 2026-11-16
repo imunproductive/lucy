@@ -281,6 +281,20 @@ enum Request {
         change: String,
         reply: mpsc::SyncSender<Result<HurtFeedback, String>>,
     },
+    /// The marker messages (`ORPHEUS_DEBUG_SEND`): the seat's entities.
+    DebugSeat {
+        connection: u32,
+        id: MatchId,
+        reply: mpsc::SyncSender<Option<DebugSeat>>,
+    },
+    /// The marker messages: encoded game messages for the seat's game,
+    /// queued as the server's own reliable messages.
+    DebugSend {
+        connection: u32,
+        id: MatchId,
+        messages: Vec<Vec<u8>>,
+        reply: mpsc::SyncSender<bool>,
+    },
     /// More players for a match that is on (server.py `join_match`).
     Join {
         id: MatchId,
@@ -326,6 +340,15 @@ struct OpenRequest {
 struct WorldStart {
     scene: Box<PreparedScene>,
     combat: Option<Combat>,
+}
+
+/// The entities of a seat whose game is connected to its match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DebugSeat {
+    /// The player entity: the controller.
+    pub controller: u32,
+    /// The hero body it possesses; none before the first pick.
+    pub body: Option<u32>,
 }
 
 impl GameService {
@@ -605,6 +628,28 @@ impl GameService {
     pub fn hurt_feedback(&self, change: &str) -> io::Result<Result<HurtFeedback, String>> {
         let change = change.to_owned();
         self.request(|reply| Request::Hurt { change, reply })
+    }
+
+    /// The marker messages (`ORPHEUS_DEBUG_SEND`): the seat's controller and
+    /// body, or none when its game is not connected to the match.
+    pub(crate) fn debug_seat(&self, handoff: &Handoff) -> io::Result<Option<DebugSeat>> {
+        self.request(|reply| Request::DebugSeat {
+            connection: handoff.conn,
+            id: handoff.match_id,
+            reply,
+        })
+    }
+
+    /// The marker messages: queue encoded game messages for the seat's game
+    /// as reliable messages, in order. False when its game is not connected
+    /// to the match.
+    pub(crate) fn debug_send(&self, handoff: &Handoff, messages: Vec<Vec<u8>>) -> io::Result<bool> {
+        self.request(|reply| Request::DebugSend {
+            connection: handoff.conn,
+            id: handoff.match_id,
+            messages,
+            reply,
+        })
     }
 
     fn seat(&self, handoff: &Handoff, release: bool) -> io::Result<bool> {
@@ -1684,7 +1729,38 @@ impl State {
                 });
                 let _ = reply.send(changed);
             }
+            Request::DebugSeat {
+                connection,
+                id,
+                reply,
+            } => {
+                let _ = reply.send(self.debug_seat(connection, id));
+            }
+            Request::DebugSend {
+                connection,
+                id,
+                messages,
+                reply,
+            } => {
+                let sent = self.debug_seat(connection, id).is_some_and(|_| {
+                    let peer = &mut self.peers[&connection];
+                    messages
+                        .into_iter()
+                        .all(|message| peer.egress.queue_reliable(message).is_ok())
+                });
+                let _ = reply.send(sent);
+            }
         }
+    }
+
+    /// The entities of a seat of match `id` whose game is connected.
+    fn debug_seat(&self, connection: u32, id: MatchId) -> Option<DebugSeat> {
+        let &(match_id, slot) = self.seats.get(&connection).filter(|seat| seat.0 == id)?;
+        let peer = self.peers.get(&connection)?;
+        Some(DebugSeat {
+            controller: self.rooms.get(&match_id)?.players[slot].entity,
+            body: peer.world.current_body(),
+        })
     }
 
     /// A pick of the hero, as the client's own pick message (21616) carries

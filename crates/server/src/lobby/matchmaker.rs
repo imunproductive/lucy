@@ -838,6 +838,15 @@ impl Matchmaker {
         self.maps.map_name(guid)
     }
 
+    /// The handoff of the account's seat in a match it has not left, if
+    /// any (the marker messages, `ORPHEUS_DEBUG_SEND`).
+    pub(crate) fn seat_of(&self, account_lo: u32) -> Option<Handoff> {
+        let state = self.lock();
+        let (room, seat) = state.player_of(account_lo)?;
+        let seat = &state.rooms[room].seats[seat];
+        (!seat.released).then(|| seat.handoff.clone())
+    }
+
     /// Send the account's game, or every game for `None`, that is connected
     /// to a match back to the menu (20304 with 0 = leave for good) and take
     /// the player out of it. How many games were told (Python

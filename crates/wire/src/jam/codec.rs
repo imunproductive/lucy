@@ -181,7 +181,8 @@ pub struct Field {
 }
 
 impl Field {
-    fn counted(&self) -> bool {
+    /// An array with a u32 count before its elements.
+    pub fn counted(&self) -> bool {
         self.array || self.count == -1
     }
 
@@ -259,6 +260,14 @@ impl Schemas {
             .and_then(|group| group.get(&id))
             .map(Vec::as_slice)
             .ok_or(CodecError::UnknownMessage { crc, id })
+    }
+
+    /// The protocol whose layouts hold message `id`, if any.
+    pub fn protocol_of(&self, id: u32) -> Option<u32> {
+        self.groups
+            .iter()
+            .find(|(_, group)| group.contains_key(&id))
+            .map(|(crc, _)| *crc)
     }
 
     pub fn base(&self, crc: u32) -> Result<u32, CodecError> {

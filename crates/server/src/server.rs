@@ -287,6 +287,7 @@ impl Server {
                     services: Arc::clone(&shared.services),
                     lobby: Some(Arc::clone(&shared)),
                     clock,
+                    debug_send: dashboard::debug_send_enabled(),
                 };
                 Dashboard::start(port, parts)
             })

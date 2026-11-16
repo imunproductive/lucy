@@ -2,7 +2,10 @@
 
 mod api;
 mod bot_group;
+mod debug;
 mod events;
+
+pub(super) use debug::enabled as debug_send_enabled;
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -75,6 +78,8 @@ pub struct DashboardParts {
     pub(crate) lobby: Option<Arc<crate::lobby::Lobby>>,
     /// The lobby's clock: the uptime is its time.
     pub clock: Clock,
+    /// The marker message routes (`ORPHEUS_DEBUG_SEND=1`, `debug.rs`).
+    pub debug_send: bool,
 }
 
 impl Dashboard {
@@ -105,7 +110,13 @@ impl Dashboard {
                         lobby: parts.lobby.as_deref(),
                         uptime: parts.clock.now(),
                     };
-                    let _ = handle(&api, parts.lobby.as_deref(), port, request);
+                    let _ = handle(
+                        &api,
+                        parts.lobby.as_deref(),
+                        port,
+                        parts.debug_send,
+                        request,
+                    );
                 }
             })?;
         Ok(Self {
@@ -131,6 +142,7 @@ fn handle(
     api: &Api,
     lobby: Option<&crate::lobby::Lobby>,
     port: u16,
+    debug_send: bool,
     mut request: Request,
 ) -> io::Result<()> {
     // A page on another site can reach this loopback server: through DNS
@@ -166,11 +178,17 @@ fn handle(
                 "/api/status" => api.state(account).map(|state| state["profile"].clone()),
                 "/api/collection" => api.collection(&query),
                 "/api/bot_plate" => api.bot_plate(None),
+                debug::MESSAGES if debug_send => {
+                    debug::messages(lobby.map(|lobby| &lobby.schemas), &query)
+                }
                 _ => Err(not_found()),
             })
         }
         Method::Post => {
-            let result = read_body(&mut request).and_then(|data| post(api, lobby, path, &data));
+            let result = read_body(&mut request).and_then(|data| match path {
+                debug::SEND if debug_send => debug::send(api, lobby, &data),
+                _ => post(api, lobby, path, &data),
+            });
             json_reply(result)
         }
         _ => json_reply(Err(ApiError::new(405, "Method not allowed"))),
@@ -386,16 +404,9 @@ mod tests {
         (status, body)
     }
 
-    #[test]
-    fn serves_the_page_the_api_and_refuses_unported_actions() {
-        let state = tempfile::tempdir().unwrap();
-        let accounts = Arc::new(
-            Accounts::new(
-                state.path().join("profiles"),
-                state.path().join("profile.json"),
-            )
-            .unwrap(),
-        );
+    fn parts(state: &Path, debug_send: bool) -> DashboardParts {
+        let accounts =
+            Arc::new(Accounts::new(state.join("profiles"), state.join("profile.json")).unwrap());
         let templates = RetailTemplates::from_reader(
             br#"{"format":1,"server":[
                 ["70E5A247",24900,{"+0x80":[],"+0x98":[]}],
@@ -405,14 +416,14 @@ mod tests {
         )
         .unwrap();
         let collection = Collection::new(&templates, Arc::new(ItemDb::default())).unwrap();
-        let parts = DashboardParts {
+        DashboardParts {
             selected: Arc::new(Mutex::new(accounts.get("Alpha").unwrap())),
             accounts,
             online: Arc::default(),
             services: Arc::new(Services::new(&collection, Arc::default())),
             collection: Arc::new(collection),
-            data: state.path().into(),
-            assets: state.path().join("assets"),
+            data: state.into(),
+            assets: state.join("assets"),
             lobby_port: 3724,
             platform: Arc::new(Platform::new(
                 std::net::Ipv4Addr::LOCALHOST,
@@ -421,8 +432,40 @@ mod tests {
             )),
             lobby: None,
             clock: Clock::wall(),
-        };
-        let mut dashboard = Dashboard::start(0, parts).unwrap();
+            debug_send,
+        }
+    }
+
+    #[test]
+    fn the_marker_message_routes_exist_only_with_the_switch() {
+        let state = tempfile::tempdir().unwrap();
+        let send = r##"{"id":25000,"fields":{"#0":1}}"##;
+        let mut off = Dashboard::start(0, parts(state.path(), false)).unwrap();
+        let addr = off.addr();
+        assert_eq!(
+            request(addr, "GET", "/api/debug/messages?id=25000", "").0,
+            404
+        );
+        assert_eq!(request(addr, "POST", "/api/debug/send", send).0, 404);
+        off.stop();
+
+        let mut on = Dashboard::start(0, parts(state.path(), true)).unwrap();
+        let addr = on.addr();
+        let (status, layout) = request(addr, "GET", "/api/debug/messages?id=25000", "");
+        assert_eq!(status, 200);
+        let layout: Json = serde_json::from_str(&layout).unwrap();
+        assert_eq!(layout["link"], "game");
+        assert_eq!(
+            request(addr, "POST", "/api/debug/send", send),
+            (503, r#"{"error":"The lobby is not running."}"#.into())
+        );
+        on.stop();
+    }
+
+    #[test]
+    fn serves_the_page_the_api_and_refuses_unported_actions() {
+        let state = tempfile::tempdir().unwrap();
+        let mut dashboard = Dashboard::start(0, parts(state.path(), false)).unwrap();
         let addr = dashboard.addr();
 
         let (status, page) = request(addr, "GET", "/", "");

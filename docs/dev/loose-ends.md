@@ -42,6 +42,10 @@ Small things left undone by finished work. Each entry says what is missing, wher
 - **Training Partner Spawner** (the Practice Range console that spawns a hero dummy): large; needs server-run map entity scripts. `D:/Work/Coding/refs/reports/TrainingPartner.md`.
 - **The Range as `005A` is not checked in the game** (2026-11-13): the load, bots, spawn room, hero change, the bot plate tool, and two players of one party in one Range. What the client's 288A does only in `0018` (its st3 runs `292E` there) no longer runs; what `292E` shows is not known. The hero switch notice (`037F`) now shows in the Range, since both teams have `0C90`. `crates/sim/src/controller.rs`, `docs/notes/behavior.md` (Practice Range mode).
 
+## Joining and matches
+
+- **Joining a match sometimes shows no HUD and no weapon** (user report, 2026-11-16). It happens now and then on join; not reproduced or investigated. The user suspects a dropped packet: a create or possession message lost or applied in the wrong order. Where: the join path, the possession and hero select messages to the joining client.
+
 ## Interface and voice
 
 - **"Need Healing" plays no voice line:** its line comes from `05AD`'s `0307` entry, routed by the engine (`STU_57692020`). IDA list, section 8.
@@ -52,6 +56,7 @@ Small things left undone by finished work. Each entry says what is missing, wher
 ## Tools and tests
 
 - **`ORPHEUS_DEBUG_BOT_BODY`** crashes the game: it changes only the bot's create while the server runs the old body's graphs. Fix: choose the body when the bot list loads. `D:/Work/Coding/refs/reports/HitPredict.md`.
+- **Marker messages (`ORPHEUS_DEBUG_SEND`) to the lobby can't report a drop.** A lobby message is posted to the account's session mailbox; if the client never announced that protocol, `LobbySession::send` returns false and the message is dropped, but `/api/debug/send` already answered `sent`. Telling it needs a reply path from the session thread. Not yet checked with the game at all (the research side does the live check). `crates/server/src/server/dashboard/debug.rs`, `crates/server/src/lobby/mod.rs` (mailbox loop).
 - **Data cache hardening.** `cache::ensure` now derives each run into `104319.new.<pid>`, so runs at the same time can't mix their files (fixed after a stamped half pack stopped the user's server, 2026-11-13). Still open: a killed run leaves its `104319.new.<pid>` folder behind (about 1.7 GB; nothing deletes stale ones), and a pack is trusted on its stamp alone. Checking that every file the server requires exists before trusting the stamp would make any future partial pack re-derive. `crates/assets/src/cache.rs`, `apps/orpheus/src/serve.rs`.
 - **Quick melee isn't rewound.** Graph `0043`'s search sees bodies where the match placed them this tick, not as the shooter's client showed them (the Rust melee rewound them). `vm/targets.rs`, `Combat::modify_health`.
 - **Target search filter bit `m_89831602` 2 is open.** Bit 1 (enemies only) and 4 (not the searcher) are read; a search with bit 2 (Brigitte `12BE` st19, `0D00` st1, Moira `1007` st17, guessed "allies only") finds nothing. `vm/targets.rs`, `refs/reports/HealthAuras.md` (HealthFix follow-up).
