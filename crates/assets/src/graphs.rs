@@ -9,9 +9,9 @@
 //! graphs of every entity a kept weapon volley spawns (its projectile and
 //! what the projectile leaves where it lands). It also holds
 //! each mode's initial variables and each body's authored target tags. The
-//! bot bundle adds the Practice Range bot bodies and their AI definitions
-//! (with the AI weapon buttons) and the graphs placed by the maps' AI
-//! spawners, and has no target tags.
+//! bot bundle adds the Practice Range bot bodies with their target tags and
+//! AI definitions (with the AI weapon buttons) and the graphs placed by the
+//! maps' AI spawners; its hero bodies have no target tags.
 //!
 //! Per graph it keeps what a runtime needs and drops the editor layout
 //! (positions, comments, display names, colours). The file format is
@@ -180,6 +180,9 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
             if !buttons.is_empty() {
                 record.insert("ai_weapon_buttons".into(), Json::Object(buttons));
             }
+            // The bots' bodies as the players' target filters test them
+            // (a dead bot's `05AC` hint tests its killer's tags).
+            record.insert("target_tags".into(), target_tags(&asset)?.into());
             entities.insert(
                 format!("0x{:016X}", 0x0400_0000_0000_0000 | index),
                 Json::Object(record),

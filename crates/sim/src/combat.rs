@@ -27,7 +27,13 @@
 //! a new id. Unverified (OW1 rule; the client has no damage code): armour
 //! stops 5 per hit, at most half.
 
-use std::{collections::HashMap, fs, io, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fs, io,
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
 
 use crate::{
     bot_plate::BotPlate,
@@ -318,6 +324,9 @@ pub struct BotHit {
     /// What a heal gave the bot, for the healer's Healing Done and his
     /// ultimate; 0 for a damaging hit.
     pub healed: f64,
+    /// The health change's tags (the hit's, or the heal's), for the
+    /// shooter's damage dealt or healing done (`orpheus_script::ultimate`).
+    pub tags: DamageTags,
 }
 
 /// What the environment deals a body it kills: more than any hero's pools
@@ -370,6 +379,9 @@ pub struct PlayerTarget {
     /// Its pools are below their maximum ([`Vitals::hurt`]): a hit that
     /// strikes hurt allies strikes it.
     pub hurt: bool,
+    /// Its body definition's target tags, if the data gives them
+    /// ([`PreparedScene::body_tags`]).
+    pub tags: Option<Arc<BTreeSet<u64>>>,
 }
 
 struct Target {
@@ -503,17 +515,19 @@ impl Combat {
     /// 92: the bot's AI definition possesses it).
     pub fn target_candidates(&self, scene: &PreparedScene) -> Vec<TargetCandidate> {
         let free_for_all = scene.map().free_for_all;
-        let candidate = |entity, team, dead, controller, ai, pose: &TargetPose| TargetCandidate {
-            entity,
-            team: (!free_for_all).then_some(team),
-            dead,
-            controller,
-            ai,
-            feet: pose.feet,
-            height: pose.height,
-            radius: pose.radius,
-            yaw: pose.yaw,
-        };
+        let candidate =
+            |entity, team, dead, controller, ai, pose: &TargetPose, tags| TargetCandidate {
+                entity,
+                team: (!free_for_all).then_some(team),
+                dead,
+                controller,
+                ai,
+                feet: pose.feet,
+                height: pose.height,
+                radius: pose.radius,
+                yaw: pose.yaw,
+                tags,
+            };
         self.players
             .iter()
             .map(|slot| {
@@ -526,6 +540,7 @@ impl Combat {
                     controller,
                     false,
                     &target.pose,
+                    target.tags.clone(),
                 )
             })
             .chain(scene.bots().iter().enumerate().map(|(slot, bot)| {
@@ -538,6 +553,7 @@ impl Combat {
                     controller,
                     true,
                     &pose,
+                    scene.body_tags(bot.spawn.body),
                 )
             }))
             .collect()
@@ -850,12 +866,17 @@ impl Combat {
                 impact,
             )
         }));
-        // Its explosion pushes the bots it can reach, as it pushes its
-        // shooter (`ProjectileFlight::blast_push`), the live ones after its
-        // damage ([`PreparedScene::knock_bot`]). Beyond Python, which moved
-        // no bot. Other players' bodies get no push yet.
+        // Its explosion pushes the bots it can reach and hurt, as it pushes
+        // its shooter (`ProjectileFlight::blast_push`), the live ones after
+        // its damage ([`PreparedScene::knock_bot`]): not an ally it heals,
+        // nor an invulnerable one, as the shooter takes no push where he
+        // takes no damage (`WorldDelivery::can_be_damaged`). Beyond
+        // Python, which moved no bot. Other players' bodies get no push yet.
         if step.end.as_ref().is_some_and(|end| end.exploded) {
             for (entity, pose) in &candidates[first_bot..] {
+                if !bot_hurtable(scene, *entity, shooter, free_for_all) {
+                    continue;
+                }
                 if let Some(push) = flight.blast_push(pose) {
                     scene.knock_bot(*entity, push, context.tick);
                 }
@@ -1066,7 +1087,7 @@ impl Combat {
             .find(|(bot, _)| !bot.dead && bot.entity == impact.entity)?;
         if !free_for_all && bot.spawn.team == shooter.team {
             let given = target.vitals.heal(impact.heal * healing);
-            return (given > 0.0).then(|| healed_bot(bot, target, given, &plate));
+            return (given > 0.0).then(|| healed_bot(bot, target, given, &plate, impact.tags));
         }
         if invulnerable {
             return None;
@@ -1118,6 +1139,7 @@ impl Combat {
             bot: bot.entity,
             remaining: target.vitals.total(),
             healed: 0.0,
+            tags: impact.tags,
             death: result.killed.then_some(BotDeath {
                 bot: bot.entity,
                 killer: shooter.source,
@@ -1215,7 +1237,13 @@ impl Combat {
             let target = &mut self.targets[slot];
             let given = target.vitals.heal(amount);
             if given > 0.0 {
-                bots.push(healed_bot(bot, target, given, scene.bot_plate()));
+                bots.push(healed_bot(
+                    bot,
+                    target,
+                    given,
+                    scene.bot_plate(),
+                    DamageTags::NONE,
+                ));
             }
         }
         (players, bots)
@@ -1224,7 +1252,13 @@ impl Combat {
 
 /// A bot's heal of `given`: its new pools for every client, and no notice
 /// (combat.py `_heal` sends none).
-fn healed_bot(bot: &Bot, target: &mut Target, given: f64, plate: &BotPlate) -> BotHit {
+fn healed_bot(
+    bot: &Bot,
+    target: &mut Target,
+    given: f64,
+    plate: &BotPlate,
+    tags: DamageTags,
+) -> BotHit {
     let health = EntityUpdate {
         entity: bot.entity,
         operation: Some(Operation::Update(vec![plate.pools(&target.vitals)])),
@@ -1239,6 +1273,7 @@ fn healed_bot(bot: &Bot, target: &mut Target, given: f64, plate: &BotPlate) -> B
         death: None,
         healed: given,
         damage: None,
+        tags,
     }
 }
 
@@ -1288,12 +1323,19 @@ pub fn apply_player_hits(
         }) else {
             continue;
         };
+        let victim_body = players[victim]
+            .world
+            .as_deref()
+            .and_then(|world| world.current_hero())
+            .and_then(|hero| scene.heroes().get(hero))
+            .map(|hero| hero.body);
         if hit.heal {
             let given = players[victim].world.as_deref_mut().map_or(0.0, |world| {
                 world.heal_body(scene, hit.body, hit.amount, &hit.tags)
             });
             if !hit.shooter.bot {
-                credit_healing(scene, players, hit.shooter.source, given);
+                let target = (hit.body, victim_body);
+                credit_healing(scene, players, hit.shooter.source, target, given, &hit.tags);
             }
             continue;
         }
@@ -1307,6 +1349,18 @@ pub fn apply_player_hits(
         let shooter = (!hit.shooter.bot)
             .then(|| player_of(players, hit.shooter.source))
             .flatten();
+        // His body's `0B8B` decides the charge, his own blow's too (none:
+        // rid28, the body hit must be hostile to him).
+        if let Some(world) = shooter.and_then(|shooter| players[shooter].world.as_deref_mut()) {
+            world.dealt(
+                &scene.shared_graphs(),
+                hit.body,
+                victim_body,
+                damage.dealt,
+                &hit.tags,
+                false,
+            );
+        }
         if let Some(shooter) = shooter.filter(|&shooter| shooter != victim) {
             notices[shooter].push(CombatNotice::Hit {
                 target: hit.body,
@@ -1316,9 +1370,6 @@ pub fn apply_player_hits(
                 shot_frame: hit.frame,
             });
             players[shooter].stats.add(board.hero_damage, damage.dealt);
-            if let Some(world) = players[shooter].world.as_deref_mut() {
-                world.gain_ult(damage.dealt);
-            }
         }
         if !damage.killed {
             continue;
@@ -1327,12 +1378,6 @@ pub fn apply_player_hits(
         let own_blow = shooter == Some(victim);
         if let Some(killer) = shooter.filter(|_| !own_blow) {
             players[killer].stats.add(board.eliminations, 1.0);
-            let victim_body = players[victim]
-                .world
-                .as_deref()
-                .and_then(|world| world.current_hero())
-                .and_then(|hero| scene.heroes().get(hero))
-                .map(|hero| hero.body);
             if let Some(world) = players[killer].world.as_deref_mut() {
                 world.eliminated(
                     &scene.shared_graphs(),
@@ -1356,43 +1401,85 @@ pub fn apply_player_hits(
 }
 
 /// combat.py `heal_area` for players' bodies: each heals, and the healer's
-/// Healing Done counts what they took, with what the bots took (`bots_healed`);
-/// his ultimate charges for it, his own healing included (unverified).
+/// Healing Done counts what they took, with what the `bots` took; his body
+/// takes each heal as healing done (his own body's included: `0B8B` charges
+/// it, unverified in the game).
 pub fn heal_players(
     scene: &PreparedScene,
     healer: u32,
     bodies: &[u32],
     amount: f64,
-    bots_healed: f64,
+    bots: &[BotHit],
     players: &mut [CombatPlayer<'_>],
 ) {
-    let mut healed = bots_healed;
     for &body in bodies {
+        let mut healed = None;
         for player in players.iter_mut() {
-            if let Some(world) = player.world.as_deref_mut() {
-                if world.current_body() == Some(body) {
-                    healed += world.heal_body(scene, body, amount, &DamageTags::NONE);
-                }
+            if let Some(world) = player.world.as_deref_mut()
+                && world.current_body() == Some(body)
+            {
+                let hero = world
+                    .current_hero()
+                    .and_then(|hero| scene.heroes().get(hero))
+                    .map(|hero| hero.body);
+                healed = Some((
+                    world.heal_body(scene, body, amount, &DamageTags::NONE),
+                    hero,
+                ));
             }
         }
+        if let Some((given, hero)) = healed {
+            credit_healing(
+                scene,
+                players,
+                healer,
+                (body, hero),
+                given,
+                &DamageTags::NONE,
+            );
+        }
     }
-    credit_healing(scene, players, healer, healed);
+    for hit in bots {
+        let body = scene
+            .bots()
+            .iter()
+            .find(|bot| bot.entity == hit.bot)
+            .map(|bot| bot.spawn.body);
+        credit_healing(
+            scene,
+            players,
+            healer,
+            (hit.bot, body),
+            hit.healed,
+            &hit.tags,
+        );
+    }
 }
 
-/// The healer's Healing Done counts `healed` and his ultimate charges for
-/// it (combat.py `_heal`), when he is a player of the room.
+/// The healer's Healing Done counts `healed` of `target` (its entity and
+/// body definition), and his body takes it as healing done (combat.py
+/// `_heal`), when he is a player of the room.
 fn credit_healing(
     scene: &PreparedScene,
     players: &mut [CombatPlayer<'_>],
     healer: u32,
+    (target, target_body): (u32, Option<u64>),
     healed: f64,
+    tags: &DamageTags,
 ) {
     if let Some(healer) = player_of(players, healer).filter(|_| healed > 0.0) {
         players[healer]
             .stats
             .add(scene.board_stats().healing, healed);
         if let Some(world) = players[healer].world.as_deref_mut() {
-            world.gain_ult(healed);
+            world.dealt(
+                &scene.shared_graphs(),
+                target,
+                target_body,
+                healed,
+                tags,
+                true,
+            );
         }
     }
 }
@@ -1612,6 +1699,18 @@ fn eligible_bot(
         && (free_for_all
             || bot.spawn.team != shooter.team
             || strikes_ally(allies, target.vitals.hurt()))
+}
+
+/// Whether `shooter`'s hit can hurt the bot `entity` (`apply_bot_impact`'s
+/// gate): alive, an enemy (anyone in a free-for-all) and holding no
+/// invulnerable status.
+fn bot_hurtable(scene: &PreparedScene, entity: u32, shooter: Shooter, free_for_all: bool) -> bool {
+    scene.bots().iter().any(|bot| {
+        bot.entity == entity && !bot.dead && (free_for_all || bot.spawn.team != shooter.team)
+    }) && !scene
+        .bot_scripts()
+        .effects(entity)
+        .is_some_and(|effects| effects.invulnerable())
 }
 
 /// Whether a hit that strikes `allies` strikes an ally that is `hurt` or

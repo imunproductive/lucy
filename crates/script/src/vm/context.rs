@@ -208,6 +208,19 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.world.speed_scale(self.site, entity)
     }
 
+    fn map_ray(
+        &mut self,
+        origin: [f64; 3],
+        direction: [f64; 3],
+        reach: f64,
+    ) -> Option<Option<[f64; 3]>> {
+        self.read_native = true;
+        let hit = self
+            .world
+            .map_ray(self.site, origin, direction, reach, None)?;
+        Some(hit.map(|hit| hit.point))
+    }
+
     fn map_supports_mode(&mut self, mode: u64) -> Option<bool> {
         self.read_native = true;
         self.world.map_supports_mode(self.site, mode)

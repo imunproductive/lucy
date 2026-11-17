@@ -2,6 +2,14 @@
 
 ORPHEUS is a Rust server for the Overwatch 1.74 client (build 104319). Read [README.md](README.md) and [docs/dev](docs/dev) first. [docs/dev/testing.md](docs/dev/testing.md) has the test tiers and the `just` recipes.
 
+## Run the game's graphs, don't rewrite them
+
+The client and the retail server share the statescript graphs. When a graph does what you need, make the server run it (start the graph, send the messages it waits for, answer its natives from the client's code with the [client tools](docs/dev/client-tools.md)). Don't write the same behaviour again in Rust. A Rust copy the client never sees goes out of step with the client's prediction. Example: a native spawn-room rule refused the Helix push on the server, but the spawn room's `0C8E` states never ran, so the client still predicted the push and was snapped back.
+
+- Before you write game logic in Rust, search the graphs for it (`orpheus script query`, `tools/stu.py`). If a graph does it, run the graph.
+- Rust is right only for what the retail server did natively: hit registration, movement, the network, damage and death messages, and the other items in `D:/Work/Coding/refs/reports/RustInsteadOfGraphs.md` §9. Check that list, and check it isn't wrong: it said no graph adds ultimate charge, but `0B8B` does.
+- When a graph is blocked (a native the VM can't answer, a message nobody sends), unblock it rather than work around it. If you must leave a Rust stand-in for now, add a `docs/dev/loose-ends.md` entry naming the graph and what blocks it, and remove the stand-in in the same change that makes the graph run, so nothing runs twice.
+
 ## CPU use
 
 This PC has 16 logical CPUs, and cargo by default uses all 16 to build and runs 16 tests at once. Use a quarter: 4 build jobs and 4 tests at once. The `just` recipes set both themselves (`CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` in the `justfile`). Before any plain `cargo` command, set them yourself:

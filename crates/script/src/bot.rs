@@ -1835,6 +1835,7 @@ mod tests {
                 height: 1.8,
                 radius: 0.4,
                 yaw: 0.0,
+                tags: None,
             };
             bot.set_target_candidates(&[body(ENTITY, 1), body(ANA, thrower_team)]);
             let landed = 130;

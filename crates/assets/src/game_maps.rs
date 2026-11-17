@@ -262,9 +262,17 @@ pub(crate) fn mode_identifiers(install: &Install) -> Vec<(u64, Vec<u64>)> {
 }
 
 /// Entity definition (by its lower 32 bits) -> the component STU hashes of
-/// its own m_componentMap; empty when the install can't decode it.
+/// its own m_componentMap and its target tags (`06C` indexes of its
+/// `STUTargetTagComponent.m_targetTags`); empty when the install can't
+/// decode it.
 #[derive(Default)]
-pub(crate) struct Components(HashMap<u64, BTreeSet<u32>>);
+pub(crate) struct Components(HashMap<u64, Definition>);
+
+#[derive(Default)]
+struct Definition {
+    components: BTreeSet<u32>,
+    tags: Vec<u64>,
+}
 
 impl Components {
     pub(crate) fn load(&mut self, install: &Install, definitions: impl Iterator<Item = u64>) {
@@ -273,20 +281,48 @@ impl Components {
             .collect();
         let missing: Vec<u64> = missing.into_iter().collect();
         for (guid, asset) in install.stu_all(&missing) {
-            let found = match asset
-                .ok()
-                .as_ref()
-                .and_then(|asset| asset.root()?.get("m_componentMap").cloned())
-            {
-                Some(Stu::Map(entries)) => entries.iter().map(|(key, _)| *key as u32).collect(),
-                _ => BTreeSet::new(),
-            };
-            self.0.insert(guid & 0xFFFF_FFFF, found);
+            let definition = asset.ok().as_ref().map(definition_of).unwrap_or_default();
+            self.0.insert(guid & 0xFFFF_FFFF, definition);
         }
     }
 
     pub(crate) fn of(&self, definition: u64) -> Option<&BTreeSet<u32>> {
-        self.0.get(&(definition & 0xFFFF_FFFF))
+        self.0
+            .get(&(definition & 0xFFFF_FFFF))
+            .map(|found| &found.components)
+    }
+
+    /// The definition's target tags (`06C` indexes), in authored order.
+    pub(crate) fn tags(&self, definition: u64) -> &[u64] {
+        self.0
+            .get(&(definition & 0xFFFF_FFFF))
+            .map_or(&[], |found| &found.tags)
+    }
+}
+
+fn definition_of(asset: &orpheus_stu::Asset) -> Definition {
+    let Some(Stu::Map(entries)) = asset.root().and_then(|root| root.get("m_componentMap")) else {
+        return Definition::default();
+    };
+    let tags = entries
+        .iter()
+        .filter_map(|(_, index)| asset.instances.get((*index)?)?.as_ref())
+        .filter(|component| component.class_name() == Some("STUTargetTagComponent"))
+        .filter_map(|component| match component.get("m_targetTags")? {
+            Stu::Array(items) => Some(items),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|item| match item {
+            Stu::Guid(guid) if *guid != 0 && guid_type(*guid) == TARGET_TAG => {
+                Some(name_index(*guid))
+            }
+            _ => None,
+        })
+        .collect();
+    Definition {
+        components: entries.iter().map(|(key, _)| *key as u32).collect(),
+        tags,
     }
 }
 

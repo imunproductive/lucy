@@ -710,12 +710,19 @@ pub fn create(origin: usize, entity: &Create) -> Result<BitWriter, WorldError> {
     Ok(out)
 }
 
-pub fn create_placeable(origin: usize, index: u32) -> Result<BitWriter, WorldError> {
+/// A create of map placeable `index` at the map's transform, with
+/// `components` as its update body (applied before the entity's spawn
+/// callbacks run, as a full create's are).
+pub fn create_placeable(
+    origin: usize,
+    index: u32,
+    components: &[Component],
+) -> Result<BitWriter, WorldError> {
     let mut out = BitWriter::new();
     out.bit(true);
     out.bits(u64::from(index), 32)?;
     out.bit(false); // Keep the map's transform.
-    write_components(&mut out, origin, &[])?;
+    write_components(&mut out, origin, components)?;
     Ok(out)
 }
 
@@ -728,7 +735,8 @@ pub fn update(origin: usize, components: &[Component]) -> Result<BitWriter, Worl
 #[derive(Clone, Debug, PartialEq)]
 pub enum Operation {
     Create(Box<Create>),
-    Placeable(u32),
+    /// A map placeable's index and the components of its create.
+    Placeable(u32, Vec<Component>),
     Update(Vec<Component>),
     Destroy,
 }
@@ -774,7 +782,7 @@ fn write_entity(out: &mut BitWriter, item: &EntityUpdate, tick: u32) -> Result<(
         return Ok(());
     };
     let opcode = match operation {
-        Operation::Create(_) | Operation::Placeable(_) => 1,
+        Operation::Create(_) | Operation::Placeable(..) => 1,
         Operation::Update(_) => 2,
         Operation::Destroy => 3,
     };
@@ -782,7 +790,9 @@ fn write_entity(out: &mut BitWriter, item: &EntityUpdate, tick: u32) -> Result<(
     let origin = out.bit_len() + 14;
     let record = match operation {
         Operation::Create(entity) => Some(create(origin, entity)?),
-        Operation::Placeable(index) => Some(create_placeable(origin, *index)?),
+        Operation::Placeable(index, components) => {
+            Some(create_placeable(origin, *index, components)?)
+        }
         Operation::Update(components) => Some(update(origin, components)?),
         Operation::Destroy => None,
     };

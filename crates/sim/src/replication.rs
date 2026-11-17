@@ -251,12 +251,6 @@ pub trait OwnerBodyRuntime: Send {
         Ok(())
     }
 
-    /// The hero dealt `points` of damage or healing: his ultimate charges
-    /// for it.
-    fn gain_ult(&mut self, _points: f64) -> io::Result<()> {
-        Ok(())
-    }
-
     /// An aura comes on the body or goes off it (`vm/auras.rs` in
     /// `orpheus_script`): a hit's, or an ApplyAura's.
     fn change_aura(&mut self, _change: &AuraChange) -> io::Result<()> {
@@ -3139,6 +3133,7 @@ impl WorldDelivery {
             pose: scene.player_target(hero, mover.pose().position, mover.crouched()),
             dead: self.death.is_some(),
             hurt: vitals.is_some_and(Vitals::hurt),
+            tags: scene.body_tags(hero.body),
         })
     }
 
@@ -3191,11 +3186,7 @@ impl WorldDelivery {
         if self.death.is_some() || hit.amount.is_nan() || hit.amount <= 0.0 {
             return None;
         }
-        // Invulnerable in his team's spawn room (`map_areas`: 0C8E `03D4`),
-        // or while his graphs hold a status (`STU_9028E035`).
-        if self.spawn_room == Some(true)
-            || self.body_effects().is_some_and(BodyEffects::invulnerable)
-        {
+        if !self.can_be_damaged() {
             return None;
         }
         let death_tick = hit.world_tick.unwrap_or(tick);
@@ -3374,6 +3365,15 @@ impl WorldDelivery {
             .and_then(|script| script.runtime.effects())
     }
 
+    /// Whether a hit can hurt the current body: not in his team's spawn
+    /// room (`map_areas`: 0C8E `03D4`) and no invulnerable status
+    /// (`STU_9028E035`) held by his graphs. An explosion pushes only a body
+    /// it can hurt (the user's game check, 2026-11-17: no push in the spawn
+    /// room), so the knockback takes the same gate as the damage.
+    fn can_be_damaged(&self) -> bool {
+        self.spawn_room != Some(true) && !self.body_effects().is_some_and(BodyEffects::invulnerable)
+    }
+
     /// An aura comes on the player's living body (Biotic Grenade's
     /// explosion, an ApplyAura) or goes off it.
     pub fn change_aura(&mut self, change: &AuraChange) {
@@ -3404,10 +3404,23 @@ impl WorldDelivery {
             .map_or_else(Vec::new, |script| script.runtime.take_aura_changes())
     }
 
-    /// The player's living body dealt `points` of damage or healing: its
-    /// ultimate charges for it.
-    pub fn gain_ult(&mut self, points: f64) {
-        if self.death.is_some() {
+    /// The player's living body dealt `amount` of damage (or healing, with
+    /// `heal`) to `target`, a body of definition `target_body`, in a health
+    /// change tagged `tags`: its body takes `0012.025` (or `0044.025`), as
+    /// from the retail server, and its graph `0B8B` charges the ultimate
+    /// for it (`orpheus_script::ultimate`). The body learns the target's
+    /// authored target tags first (`0B8B` rid45 tests `02ED`, rid50 `03C3`,
+    /// rid85 `011E`).
+    pub fn dealt(
+        &mut self,
+        graphs: &GraphStore,
+        target: u32,
+        target_body: Option<u64>,
+        amount: f64,
+        tags: &DamageTags,
+        heal: bool,
+    ) {
+        if self.death.is_some() || amount <= 0.0 {
             return;
         }
         let Some(body) = self.body else {
@@ -3417,7 +3430,19 @@ impl WorldDelivery {
             .body_script
             .as_mut()
             .filter(|script| script.id == body.id)
-            .and_then(|script| script.runtime.gain_ult(points).err());
+            .and_then(|script| {
+                let target_tags = target_body
+                    .and_then(|body| graphs.bodies().get(&body))
+                    .and_then(|body| body.target_tags.clone())
+                    .unwrap_or_default();
+                script.runtime.set_victim_tags(target, target_tags);
+                let (message, parameters) =
+                    orpheus_script::ultimate::dealt_message(target, amount, tags, heal);
+                script
+                    .runtime
+                    .receive_message(body.id.entity, message, parameters)
+                    .err()
+            });
         if let Some(error) = failure {
             self.drop_failed_script(&error.to_string());
         }
@@ -3695,6 +3720,9 @@ impl WorldDelivery {
         first_tick: u32,
         mut step: impl FnMut(u32, &mut ProjectileFlight) -> io::Result<Option<FlightEnd>>,
     ) -> io::Result<()> {
+        // His own explosion pushes him only where it could hurt him
+        // ([`Self::can_be_damaged`]).
+        let pushable = self.can_be_damaged();
         let Some(script) = &mut self.body_script else {
             return Ok(());
         };
@@ -3711,7 +3739,7 @@ impl WorldDelivery {
                     ..
                 })),
                 Some(mover),
-            ) = (&result, mover.as_mut())
+            ) = (&result, mover.as_mut().filter(|_| pushable))
             {
                 mover.push(*knockback);
             }

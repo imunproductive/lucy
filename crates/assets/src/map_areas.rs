@@ -63,6 +63,13 @@
 //! and `1225`, a model with the child `12F4`'s effect `178C.00D`), each with
 //! `00F6` overrides `0877` = 0 and `0878` = 1. Strong guess: these are the
 //! doorways' glowing barrier frames.
+//!
+//! The tagged entities are what the scene tag queries find
+//! (`orpheus_script::map_tags`): every entity placeable the server's world
+//! holds (on the loading list, or server-owned) with target tags of its
+//! own (`STUTargetTagInstanceData.m_targetTags`) or of its definition
+//! (`STUTargetTagComponent.m_targetTags`), both together. Spawn points,
+//! spawn rooms and doors are among them.
 
 use std::{collections::HashMap, path::Path};
 
@@ -90,6 +97,10 @@ const ROOM_TEAM: u64 = 1777;
 const DAMAGE_AREA_DATA: u32 = 0x6E7E_D1C2;
 const DAMAGE_AREA: usize = 8;
 const DAMAGE: usize = 24;
+/// `STUMirroredIdleAnimComponent` (client component 27): the definition's
+/// model plays an idle animation that moves it (the Practice Range's
+/// platforms, definition `0516`).
+const MIRRORED_IDLE_ANIM: u32 = 0x3AA5_CB04;
 const TARGET_TAG: u16 = 0x06C;
 const MAP: u16 = 0x002;
 /// The collision mask of a kill volume: query category `0x02` alone.
@@ -107,7 +118,10 @@ its damage areas: every entity placeable with STUECDamageAreaInstanceData whose 
 area of the map, its first identifier (a placeable with one exists only in the modes that list it), \
 its damage (m_B81F7395) and its boxes; its server placeables: every entity placeable with client id 0 \
 whose definition (003) has neither component 0x737C5C41 nor 0xCA1FB0B8 (those are on the loading \
-list), with its definition and its first identifier; its kill volumes: the boxes the triangles of the \
+list), with its definition and its first identifier; its tagged entities: every entity placeable on \
+the loading list or with client id 0 that has target tags (STUTargetTagInstanceData.m_targetTags, then \
+its definition's STUTargetTagComponent.m_targetTags, each once), with its first identifier and \
+position; its kill volumes: the boxes the triangles of the \
 collision chunk (0x11) with mask 0x0002 alone make (12 triangles each), as centre, half extents \
 and rotation x y z w.";
 
@@ -126,18 +140,22 @@ pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
             Ok(rooms) => Map::from_iter([("spawn_rooms".into(), json!(rooms))]),
             Err(error) => Map::from_iter([("error".into(), json!(error.to_string()))]),
         };
-        let (damage_areas, server_placeables) = match read_map(&data) {
+        let (damage_areas, server_placeables, tagged) = match read_map(&data) {
             Ok((base, entities)) => (
                 damage_areas(&data, base, &entities),
                 server_placeables(install, &mut components, base, &entities),
+                tagged(&components, base, &entities),
             ),
-            Err(_) => (Vec::new(), Vec::new()),
+            Err(_) => (Vec::new(), Vec::new(), Vec::new()),
         };
         if !damage_areas.is_empty() {
             entry.insert("damage_areas".into(), json!(damage_areas));
         }
         if !server_placeables.is_empty() {
             entry.insert("server_placeables".into(), json!(server_placeables));
+        }
+        if !tagged.is_empty() {
+            entry.insert("tagged".into(), json!(tagged));
         }
         let kill_volumes =
             kill_volumes(&data).map_err(|error| asset_error(format!("map {map:X}: {error}")))?;
@@ -381,7 +399,57 @@ fn server_placeables(
             if let Some(script) = placed_script(&placed.instances) {
                 entry.insert("script".into(), script);
             }
+            if components
+                .of(placed.entity.definition)
+                .is_some_and(|found| found.contains(&MIRRORED_IDLE_ANIM))
+            {
+                entry.insert("moving".into(), json!(true));
+            }
             Json::Object(entry)
+        })
+        .collect()
+}
+
+/// The map's entities with target tags that the server's world holds, in
+/// placeable order: those on the loading list and the server-owned ones
+/// (client id 0); the client-made rest exists only in the clients. Each
+/// with its first identifier, its position and the tags of its instance
+/// data and its definition together (each once, instance tags first).
+/// [`server_placeables`] loads the definitions first.
+fn tagged(components: &Components, base: usize, entities: &[Placed<'_>]) -> Vec<Json> {
+    entities
+        .iter()
+        .enumerate()
+        .filter_map(|(number, placed)| {
+            let found = components.of(placed.entity.definition);
+            let listed =
+                found.is_some_and(|found| found.contains(&SPAWN) || found.contains(&REQUIRED));
+            if !listed && placed.entity.client_id != 0 {
+                return None;
+            }
+            let mut tags: Vec<u64> = target_tags(&placed.instances);
+            for tag in components.tags(placed.entity.definition) {
+                if !tags.contains(tag) {
+                    tags.push(*tag);
+                }
+            }
+            if tags.is_empty() {
+                return None;
+            }
+            let mut entry = placeable_entry(base + number, placed);
+            entry.insert(
+                "position".into(),
+                json!(placed.entity.translation.map(short)),
+            );
+            entry.insert(
+                "tags".into(),
+                json!(
+                    tags.into_iter()
+                        .map(|tag| guid_hex(guid_of(tag, TARGET_TAG)))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            Some(Json::Object(entry))
         })
         .collect()
 }

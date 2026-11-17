@@ -22,6 +22,7 @@ use orpheus_core::bits::BitWriter;
 use orpheus_script::{
     codecs::CodecTable,
     graph::GraphStore,
+    map_tags::MapTags,
     placed::MapEntityWorld,
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{ScriptChunk, Stream, StreamError},
@@ -46,6 +47,8 @@ pub struct PlacedScripts {
     /// The match's mode entity value ([`crate::scene::mode_create`]).
     mode_random: f32,
     placed: Vec<Arc<PlacedScript>>,
+    /// The map's tagged entities in the mode, for the tag queries.
+    map_tags: Arc<MapTags>,
     world: Option<MapEntityWorld>,
     /// The last projection and frame of each complete script.
     frames: BTreeMap<u32, (ProjectedSnapshot, PlacedFrame)>,
@@ -58,6 +61,7 @@ impl PlacedScripts {
         mode: u64,
         mode_random: f32,
         placed: Vec<Arc<PlacedScript>>,
+        map_tags: Arc<MapTags>,
     ) -> Self {
         Self {
             graphs,
@@ -65,6 +69,7 @@ impl PlacedScripts {
             mode,
             mode_random,
             placed,
+            map_tags,
             world: None,
             frames: BTreeMap::new(),
             gaps_logged: false,
@@ -96,9 +101,7 @@ impl PlacedScripts {
                     self.mode_random,
                     Unknowns::for_build(),
                     self.placed.iter().map(|placed| placed.placement()),
-                    // The map's tagged placeables are not derived yet
-                    // (docs/dev/loose-ends.md).
-                    None,
+                    Some(Arc::clone(&self.map_tags)),
                     tick,
                 ));
             }

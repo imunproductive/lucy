@@ -67,7 +67,7 @@ What was taken from upstream ORPHEUS after the fork's sync (the plan: `D:/Work/C
 | Tab board | kjs `254fa913`, `827ef2d7` | Component 64's stat GUIDs go as ids. The mode entity's hand-built frame lists the mode graph with its `06DF.025` poster state on and `0CB6` under it, for the modes upstream listed (`scene::BOARD_POSTERS`); a graph driven by the VM still sends its own frames. Upstream swapped the names of 0x1D/0x1E and 0x07/0x09; the mode data (`0C5` `m_teams`) says 0x1D is Team Deathmatch (`0F60`), 0x1E Deathmatch (`0F73`), 0x07 Capture the Flag (`0CE8`), 0x09 Elimination (`0D0B`). Our names were right; the graph per mode id is the same in both. |
 | Hitscan pellets and spread seed | kjs `1e2e10c3`, `1dc5b995`; main `9ed63eed` | A hitscan volley with pellet rings fires a ray per pellet (the same ring layout as projectiles, any sync). The volley spread's seed takes the state's `m_states` index, not its node position. |
 | Training Bot rebuild and the `#7082` gate | kjs `a667ef27`, kjs-port `a9096f5d` | A bot made again at its spawner gets `0013.025` on its `0BA8` instances before its first frame. A kill between two bots that both hold `#7082` sends no kill feed pulse. |
-| PvE start markers | kjs `08561fe4` | `game_maps` lists an entity whose only team tag is 0x310 as a spawn (derivations version 26). |
+| PvE start markers | kjs `08561fe4` | `game_maps` lists an entity whose only team tag is 0x310 as a spawn (derivations version 28). |
 
 ## Python test classification
 

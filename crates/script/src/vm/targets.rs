@@ -200,7 +200,7 @@ impl BodyFilter {
     /// the searching entity (relations matter only when a word is set).
     fn passes(&self, candidate: &TargetCandidate, hostile: bool, searcher: bool) -> bool {
         self.masks
-            .passes(filter_word(candidate), !hostile || searcher, searcher)
+            .passes(candidate.filter_word(), !hostile || searcher, searcher)
     }
 
     fn relations(&self) -> bool {
@@ -215,7 +215,7 @@ impl BodyFilter {
 }
 
 /// A body's filter word, as the match sends it (see the module notes).
-fn filter_word(candidate: &TargetCandidate) -> u64 {
+pub(crate) fn filter_word(candidate: &TargetCandidate) -> u64 {
     let team = candidate.team.unwrap_or(FREE_FOR_ALL_TEAM);
     let dead = if candidate.dead { DEAD } else { 0 };
     TEAM_BIT << team | BODY_KINDS | dead
@@ -376,7 +376,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     candidate.entity == site.entity,
                 )
             })
-            .copied()
+            .cloned()
             .collect())
     }
 

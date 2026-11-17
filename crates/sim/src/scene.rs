@@ -75,6 +75,36 @@
 //!   for. With 0x41 alone the bots were in groups 0x1 and 0x40 and every
 //!   client shot went through them; with 0x10000 the client's hit-shape
 //!   test hits them. So every body gets it ([`BODY_KINDS`]).
+//! - A moving map placeable (the Practice Range's platforms, definition
+//!   `0516`, moved by its `STUMirroredIdleAnimComponent`) has client shapes
+//!   of category 0x1000, picked from model data (`0x7FF78A9CC460`), and a
+//!   shot's world ray asks only for 0x81, so it never meets them. The shot's
+//!   entity query does: it keeps the weapon profile's whole body mask
+//!   (0x1FDF), accepts an entity whose moving bodies' categories overlap it
+//!   (`0x7FF789B01DD0`) and tests those bodies (`0x7FF789B00C50`); but it
+//!   walks only group 0x10000. A placeable created from the map has
+//!   components 25 and 26 (the network create adds them), and the client
+//!   files it by the component 26 word when its spawn callback runs
+//!   (`0x7FF789A9C530`; component 26 changes before that are dropped,
+//!   `0x7FF789A9C9D0` waits for comp26 +0x98). So the placeable's create
+//!   carries component 26 with [`MOVING_KINDS`] ([`placeable_components`]).
+//! - The client rewinds a remote body for its own shots from a history of
+//!   bounding spheres in the body's component 24 (`+0x70` ring of 20
+//!   spheres, `+0x1D0` their frames; read by `0x7FF789AE1BC0` in the
+//!   hitscan group walk `0x7FF789B83200`, which drops a body whose sphere at
+//!   the shot's view frame misses the ray). A new sample is appended only
+//!   when its frame is above the newest one's; otherwise it overwrites the
+//!   newest and keeps that frame (`0x7FF789B80F70` @`0x7FF789B81216`,
+//!   unsigned). A create without a movement state leaves the body at frame
+//!   0xFFFFFFFF, so every later record overwrote that sample and the ring
+//!   kept only two: one at the world origin from the entity's creation
+//!   frame (its model bounds before the transform) and the newest. The
+//!   rewind then interpolated between them by frame and put the sphere near
+//!   the origin: the client's shots skipped a bot they crossed and left
+//!   their hole on the wall behind it (checked in the game, 2026-11-17,
+//!   HitPredict.md "Day"). So a bot's create carries its movement state at
+//!   frame 0 ([`BOT_CREATE_FRAME_BACK`]), and its movement records, at
+//!   their packet frames, append to the history.
 //! - Component 29 (MPlayerComponentData): the player's 16-byte id, BattleTag
 //!   (the client names the entity by it), level, and on a competitive card
 //!   the rank (m_rankedLevel, m_heroicRank, m_rankedLevelTier), which the team
@@ -125,6 +155,7 @@ use crate::{
     bot_plate::BotPlate,
     bots::{BOT_CONTROLLER_ENTITY, BOT_ENTITY, Bot},
     instance::FREE_FOR_ALL_TEAM,
+    map_areas::PlacedScript,
 };
 use orpheus_content::{
     maps::{GameMap, SpawnChoice},
@@ -139,12 +170,16 @@ use orpheus_script::{
 };
 use orpheus_wire::{
     entity::{
-        Component, ComponentValue, Create, EntityUpdate, GAME_MODE_ENTITY, Operation, PLAYER_PATH,
-        SkinTheme, WITH_PARTICIPANT, WITH_SCALE, WITH_TRANSFORM,
+        CREATE_BASE, Component, ComponentValue, Create, EntityUpdate, GAME_MODE_ENTITY, Movement,
+        Operation, PLAYER_PATH, SkinTheme, WITH_PARTICIPANT, WITH_SCALE, WITH_TRANSFORM,
     },
     jam::codec::Fields,
 };
 
+/// A bot create's movement state counts back from the create base
+/// ([`CREATE_BASE`], u32::MAX) by u32::MAX: frame 0, older than any of the
+/// bot's movement records (see the module notes).
+const BOT_CREATE_FRAME_BACK: u32 = CREATE_BASE;
 const PLAYER_DEFINITION: u64 = 0x0400_0000_0000_000e;
 const GAME_MODE_DEFINITION: u64 = 0x0400_0000_0000_16b2;
 const PLAYER_FILTER: u64 = 0x0004_0001;
@@ -154,6 +189,10 @@ const TEAM_BIT: u64 = 0x0080_0000;
 pub const BODY_KINDS: u64 = 0x1_0041;
 /// The filter bit of a dead body (see the module notes).
 pub const DEAD: u64 = 0x10;
+/// The kind bits of a moving map placeable (the Practice Range's platforms):
+/// the client's hitscan group (0x10000), so a shot's entity query tests
+/// its moving bodies (see the module notes).
+pub const MOVING_KINDS: u64 = 0x1_0000;
 const MODE_UI: u32 = 0x0cb6;
 const MODE_UI_STATE: usize = 21;
 /// The training bots' stand-in accounts: `BOT_ACCOUNT + slot`, with the
@@ -397,13 +436,21 @@ pub fn draw_mode_random() -> f32 {
 }
 
 /// A bot's create: its body with its full pools, as the live nameplate tool
-/// has them ([`BotPlate::pools`]), and its filter bits.
+/// has them ([`BotPlate::pools`]), its filter bits, and its movement state
+/// at frame 0 ([`BOT_CREATE_FRAME_BACK`]).
 pub fn bot_create(bot: &Bot, plate: &BotPlate) -> io::Result<EntityUpdate> {
     let pools = plate.pools(&Vitals::new(bot.spawn.health, 0.0, 0.0));
     let body = BOT_BODY.unwrap_or(bot.spawn.body);
     let mut definition = Create::new(body, vec![pools, bot_filter(bot)?]);
     definition.position = bot.position.map(|position| position as f32);
     definition.rotation = yaw_rotation(bot.yaw.round_ties_even());
+    definition.movement = Some(Movement {
+        input_frame: None,
+        throttles: [0; 2],
+        input_throttles: [0; 2],
+        ..bot.movement(0)
+    });
+    definition.frame_back = BOT_CREATE_FRAME_BACK;
     Ok(create(bot.entity, definition))
 }
 
@@ -422,7 +469,7 @@ pub fn initial_world(
     let mut updates = Vec::with_capacity(map.placeables.len() + 2 + 2 * bots.len());
     updates.extend(map.placeables.iter().map(|&index| EntityUpdate {
         entity: 0x8000_0000 | index,
-        operation: Some(Operation::Placeable(index)),
+        operation: Some(Operation::Placeable(index, Vec::new())),
         ..EntityUpdate::default()
     }));
     updates.push(player_create(map, player, None, Some(board))?);
@@ -559,6 +606,16 @@ pub fn filter_component(bits: u64) -> Component {
     fields(26, vec![Some(ComponentValue::Id(bits))])
 }
 
+/// The components of a server placeable's create: a moving one gets
+/// [`MOVING_KINDS`].
+pub fn placeable_components(placed: &PlacedScript) -> Vec<Component> {
+    if placed.moving {
+        vec![filter_component(MOVING_KINDS)]
+    } else {
+        Vec::new()
+    }
+}
+
 /// A body's target tags component (76): the tags its states add, then the
 /// ones they suppress. The client keeps a tag as the low 32 bits of its
 /// `06C` GUID, the index (`0042.06C` is 0x42).
@@ -657,11 +714,12 @@ mod tests {
         let board = stats.component(&PlayerStats::default(), map.mode_guid, None, None);
         // The Python reference's world has no stand-in controllers: each
         // bot's controller comes right after its body here. Its bots' filter
-        // bits were their team bit alone; ours add the body's kind (module
-        // notes). Its bots were `0xC0001000 + n`; ours are in id class 0
-        // (`bots.rs` module notes). Its mode entity had component 114 field
-        // 1 alone; ours adds field 9 ([`mode_create`]). The other records
-        // match the Python frame byte for byte.
+        // bits were their team bit alone; ours add the body's kind, and our
+        // bot creates carry a movement state at frame 0, where Python's had
+        // none (module notes). Its bots were `0xC0001000 + n`; ours are in
+        // id class 0 (`bots.rs` module notes). Its mode entity had component
+        // 114 field 1 alone; ours adds field 9 ([`mode_create`]). The other
+        // records match the Python frame byte for byte.
         let updates =
             initial_world(&map, &player, board, &bots, 1, &BotPlate::default(), 0.25).unwrap();
         const PYTHON_BOT_ENTITY: u32 = 0xc000_1000;
@@ -685,6 +743,10 @@ mod tests {
                     let filter = &mut create.components[1];
                     assert_eq!(*filter, filter_component(team | BODY_KINDS));
                     *filter = filter_component(team);
+                    let movement = create.movement.take().expect("a movement state");
+                    assert_eq!(movement.position, bot.position);
+                    assert_eq!(create.frame_back, u32::MAX);
+                    create.frame_back = 1;
                     update.entity = update.entity - BOT_ENTITY + PYTHON_BOT_ENTITY;
                 }
                 update

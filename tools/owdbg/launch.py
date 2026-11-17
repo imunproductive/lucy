@@ -10,8 +10,9 @@ is loaded by a remote LoadLibraryW thread created at the system breakpoint.
 The client's first Battle.net attempt usually ends in "UNABLE TO LOG YOU IN / DISCONNECTED"; the
 session then clicks LOGIN (PostMessage) until the relay log shows `relay CONNECTED` (--no-login
 turns this off). Reports when the relay loaded, its `BYTE-STREAM ... host='127.0.0.1' port=1119`
-line, the login, the game window and the exceptions passed to the game. Runs until --duration,
-the game exits or Ctrl+C; then terminates the game and the server.
+line, the login, the game window and the exceptions passed to the game. Runs until --duration
+(default 600 s), the game exits, the --actions script ends (plus --close-after) or Ctrl+C; then terminates
+the game and the server and frees the game lock. Use --keep-running and a long --duration to play.
 --enter-range goes into the Practice Range; --actions runs an in-match script (tools/owdbg/actions.py).
 """
 import argparse
@@ -23,7 +24,7 @@ from .game import Session, add_session_args, find_window, screenshot, window_tit
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     actions.add_action_args(p)
-    add_session_args(p)
+    add_session_args(p, duration=600)
     p.add_argument("--screenshot", help="save a PNG of the game window")
     p.add_argument("--screenshot-at", type=float, default=60.0, help="seconds after start (default 60)")
     args = p.parse_args(argv)

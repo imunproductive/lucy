@@ -34,10 +34,10 @@ use orpheus_script::{
     codecs::CodecTable,
     expr::{team_from_filter, to_float},
     graph::GraphStore,
+    map_tags::MapTags,
     player::PlayerWorld,
     snapshot::{SnapshotEncoder, View},
     timeline::FRAME_MS,
-    ultimate::{ChargeRates, UltimateCharge},
     vitals::Vitals,
     vm::{
         AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays, Motion,
@@ -60,6 +60,14 @@ const OWNER_HEALTH: u32 = 253;
 const DEAD_FLAG: u32 = orpheus_script::bot::DEAD_FLAG;
 const HUD_HEALTH: u32 = 1732;
 const HUD_MAX_HEALTH: u32 = 1737;
+
+/// The map a player body's scripts meet: its collision for their ray casts
+/// and its tagged placeables for their tag queries.
+#[derive(Clone)]
+pub struct BodyMap {
+    pub rays: Arc<dyn MapRays>,
+    pub tags: Arc<MapTags>,
+}
 
 /// The mode graph's message that tells a body its respawn time (`06FD.025`),
 /// and its seconds parameter (`00B7`).
@@ -126,8 +134,6 @@ pub struct PlayerBodyFactory {
     controller_on_fire: bool,
     combat: BodyCombat,
     unknowns: Unknowns,
-    /// How fast the hero's ultimate charges.
-    ult_rates: ChargeRates,
     mode_body: ModeBody,
 }
 
@@ -142,7 +148,7 @@ impl PlayerBodyFactory {
         controller_on_fire: bool,
         combat: BodyCombat,
         unknowns: Unknowns,
-        ult_rates: Option<ChargeRates>,
+        ult_generation: Option<Variables>,
         mode_body: ModeBody,
         probe: OwnerBodySpawn,
     ) -> io::Result<Self> {
@@ -155,10 +161,13 @@ impl PlayerBodyFactory {
             })?;
         let roots = orpheus_script::vm::player_roots(body, &graphs).map_err(unsupported)?;
         let health = pools.unwrap_or(FALLBACK_POOLS).total();
-        let variables = orpheus_script::vm::player_entity_variables(body, health, health);
+        let mut variables = orpheus_script::vm::player_entity_variables(body, health, health);
+        // The ruleset's ultimate generation settings, which `0B8B` reads as
+        // entity variables (`orpheus_script::ultimate`), or the override.
+        variables.extend(ult_generation.unwrap_or_else(|| {
+            orpheus_script::ultimate::generation_variables(graphs.rulesets(), hero.guid, mode)
+        }));
         let target_tags = body.target_tags.clone();
-        let ult_rates =
-            ult_rates.unwrap_or_else(|| ChargeRates::of(graphs.rulesets(), hero.guid, mode));
         let mut factory = Self {
             graphs,
             codecs,
@@ -171,7 +180,6 @@ impl PlayerBodyFactory {
             controller_on_fire,
             combat,
             unknowns,
-            ult_rates,
             mode_body,
         };
         // A mode body script the server can't run (refused content in a
@@ -215,11 +223,11 @@ impl PlayerBodyFactory {
     }
 
     /// [`Self::start`] on a map whose collision the body's ray casts meet
-    /// (none: no map).
+    /// and whose tagged placeables its tag queries find (none: no map).
     pub fn start_on(
         &self,
         spawn: OwnerBodySpawn,
-        map_rays: Option<Arc<dyn MapRays>>,
+        map: Option<BodyMap>,
     ) -> io::Result<PlayerBodyRuntime> {
         if spawn.quanta != RETAIL_QUANTA {
             return Err(unsupported("the owner VM requires the 16 ms retail clock"));
@@ -235,7 +243,10 @@ impl PlayerBodyFactory {
         );
         world.position = spawn.pose.position;
         world.mode_random = Some(spawn.mode_random);
-        world.map_rays = map_rays;
+        if let Some(map) = map {
+            world.map_rays = Some(map.rays);
+            world.map_tags = Some(map.tags);
+        }
         world.movement = spawn.pose;
         // A new mover's (`Mover::speed_scale`): no move yet.
         world.speed_scale = Some(1.0);
@@ -294,9 +305,6 @@ impl PlayerBodyFactory {
                 component.evaluate_state_config(instance, raw, config, &mut world)
             },
         )?;
-        // driver.py `BodyScript._spawn`: the abilities that start on the
-        // ultimate's charge.
-        let ultimate = UltimateCharge::new(&component, &self.graphs, self.ult_rates);
         let runtime = PlayerBodyRuntime {
             component,
             world,
@@ -304,7 +312,6 @@ impl PlayerBodyFactory {
             modifiers,
             leases,
             frame: spawn.frame,
-            ultimate,
             combat: self.combat.clone(),
         };
         runtime.log_assumptions();
@@ -338,7 +345,6 @@ pub struct PlayerBodyRuntime {
     modifiers: Option<BTreeMap<ModifierKey, Modifier>>,
     leases: ProjectileLeases,
     frame: u32,
-    ultimate: UltimateCharge,
     /// The body's eyes and the Biotic Field.
     combat: BodyCombat,
 }
@@ -420,9 +426,6 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
             self.component
                 .advance_command(command, &mut self.world)
                 .map_err(unsupported)?;
-            self.ultimate
-                .charge(&mut self.component, &mut self.world)
-                .map_err(unsupported)?;
             self.modifiers = self
                 .component
                 .movement_modifiers(&mut self.world)
@@ -501,12 +504,6 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     fn effects(&self) -> Option<&BodyEffects> {
         Some(&self.world.effects)
-    }
-
-    fn gain_ult(&mut self, points: f64) -> io::Result<()> {
-        self.ultimate
-            .gain(points, &mut self.component, &mut self.world)
-            .map_err(unsupported)
     }
 
     fn receive_message(

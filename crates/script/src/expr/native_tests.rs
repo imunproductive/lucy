@@ -25,6 +25,9 @@ struct World {
     flags: BTreeMap<u32, u64>,
     speed_scales: BTreeMap<u32, f64>,
     map_modes: Option<Vec<u64>>,
+    /// The map's floor, the plane `y = a + b·x + c·z` (`[a, b, c]`); None:
+    /// no map.
+    floor: Option<[f64; 3]>,
 }
 
 impl Context for World {
@@ -71,6 +74,18 @@ impl Context for World {
 
     fn speed_scale(&mut self, entity: u32) -> Option<f64> {
         self.speed_scales.get(&entity).copied()
+    }
+
+    fn map_ray(
+        &mut self,
+        origin: [f64; 3],
+        direction: [f64; 3],
+        reach: f64,
+    ) -> Option<Option<[f64; 3]>> {
+        let [a, b, c] = self.floor?;
+        assert_eq!(direction, [0.0, -1.0, 0.0]);
+        let y = a + b * origin[0] + c * origin[2];
+        Some((origin[1] >= y && origin[1] - y <= reach).then_some([origin[0], y, origin[2]]))
     }
 
     fn map_supports_mode(&mut self, mode: u64) -> Option<bool> {
@@ -586,4 +601,68 @@ fn team_literal_and_local_input_test_need_no_world() {
         evaluate(&json!({"$":"STU_D3685C04","m_EE729DCB":0}), &mut world),
         Ok(Value::Bool(false))
     );
+}
+
+/// `Eval_STU_6EDA44A7`: points in the entity's frame (side, up, forward),
+/// each swept down `m_height`; the largest angle of a hit below the
+/// entity's position when more than half the points hit, else 90. With
+/// Reinhardt's barrier points (`0095` rid57): level ground is 0, a floor
+/// falling 1 m a metre ahead is 45, out of reach 90, and the points turn
+/// with the body.
+#[test]
+fn the_ground_drop_sweeps_down_under_points_ahead_of_the_entity() {
+    let point = |z: f64| json!({"$":"STUConfigVarVec3","m_value":{"X":0.0,"Y":2.0,"Z":z}});
+    let drop = json!({"$":"STU_6EDA44A7", "m_entity": var(1),
+        "m_BD631144": list(&[point(0.75), point(1.0), point(1.5)]),
+        "m_height": float(3.0), "m_EE729DCB":0});
+    let mut world = World::default();
+    world.variables.insert(1, Value::Entity(BODY));
+    world.positions.insert(BODY, [10.0, 5.0, -4.0]);
+    world.facing.insert(BODY, [0, 0]);
+    let angle = |world: &mut World| match evaluate(&drop, world) {
+        Ok(Value::Float(angle)) => angle,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        evaluate(&drop, &mut world),
+        Err(EvalError::UnsupportedConfig("STU_6EDA44A7".into()))
+    );
+    world.floor = Some([5.0, 0.0, 0.0]);
+    assert_eq!(angle(&mut world), 0.0);
+    // Falling 1 m a metre along +z, through the feet.
+    world.floor = Some([1.0, 0.0, -1.0]);
+    assert!(
+        (angle(&mut world) - 45.0).abs() < 0.01,
+        "{}",
+        angle(&mut world)
+    );
+    // Facing +x, the same floor runs sideways: level under the points.
+    world.facing.insert(BODY, [16_384, 0]);
+    world.floor = Some([5.0 + 10.0, -1.0, 0.0]);
+    assert!(
+        (angle(&mut world) - 45.0).abs() < 0.01,
+        "{}",
+        angle(&mut world)
+    );
+    world.floor = Some([1.0, 0.0, -1.0]);
+    assert!(angle(&mut world).abs() < 0.01, "{}", angle(&mut world));
+    world.floor = Some([-10.0, 0.0, 0.0]);
+    assert_eq!(angle(&mut world), 90.0);
+}
+
+/// The client's arcsine polynomial: π/2 at ±1 (clamped beyond), odd, and
+/// near but not equal to `asin` between (0.2460 at 0.25, where `asin`
+/// gives 0.2527).
+#[test]
+fn the_clients_arcsine_is_its_polynomial() {
+    for (sine, expected) in [
+        (1.0f32, std::f32::consts::FRAC_PI_2),
+        (2.0, std::f32::consts::FRAC_PI_2),
+        (0.5, std::f32::consts::FRAC_PI_6),
+        (-0.5, -std::f32::consts::FRAC_PI_6),
+        (0.25, 0.2460),
+        (0.0, 0.0),
+    ] {
+        assert!((client_asin(sine) - expected).abs() < 1e-4, "{sine}");
+    }
 }

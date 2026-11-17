@@ -181,12 +181,11 @@ impl Context for AllyProbe {
         })
     }
 
-    /// `STU_A58C1E63` asks whether `m_target` is hostile to `m_source`: of
-    /// another team (`C1CF60`'s two-team branch; leafall903/ORPHEUS (MIT)
-    /// `scene.py` `native`, commit c239a84). An ally is not.
-    fn native(&mut self, config: &Json) -> Option<Value> {
-        (config.get("$").and_then(Json::as_str) == Some("STU_A58C1E63"))
-            .then_some(Value::Bool(false))
+    /// `STU_A58C1E63` asks whether `m_target` is hostile to `m_source`
+    /// (the client's enemy test, `expr.rs`): the shooter and his ally are
+    /// of one team.
+    fn entity_team(&mut self, entity: u32) -> Option<i64> {
+        matches!(entity, PROBE_SHOOTER | PROBE_ALLY).then_some(0)
     }
 }
 
