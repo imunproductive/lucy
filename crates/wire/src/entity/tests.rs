@@ -48,7 +48,7 @@ fn moving() -> Movement {
 #[test]
 fn placeable_create_and_pose_match_python() {
     // The fixtures in tests/test_game_world.py, emitted by Python world.py.
-    let item = entity(0x8000_0088, Operation::Placeable(0x88));
+    let item = entity(0x8000_0088, Operation::Placeable(0x88, Vec::new()));
     assert_eq!(
         frame(1234, 1234, &[], &[], &[&item]).unwrap(),
         hex("a509509a005000884b5301220200000000")
@@ -327,7 +327,7 @@ fn mixed_frame_matches_python_at_every_component_and_channel_boundary() {
 fn budget_reuses_trimmed_space_and_only_displaces_remote_movement() {
     let reliable = [(1, vec![0; 720]), (2, vec![0; 700])];
     let unreliable = [vec![0; 300], vec![0; 200]];
-    let queued = [entity(0x8000_0077, Operation::Placeable(0x77))];
+    let queued = [entity(0x8000_0077, Operation::Placeable(0x77, Vec::new()))];
     let mut chunk = BitWriter::new();
     chunk.raw(&[0; 180]);
     let movements = [
