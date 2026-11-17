@@ -1511,14 +1511,15 @@ fn a_body_that_dies_raises_its_dead_flag() {
 /// `0686`. Need Healing sends effect 40 (remote 8), Hello its callout 27
 /// (remote 6), a configurable choice (`01EC`) callout 59 (remote 11), the
 /// Voice Line slot pulses 0686's voice state 13; each a frame action or
-/// state the clients get. Hello and a configurable choice raise their voice
-/// criteria on the body, which its voice set answers with a line
-/// ([`crate::voice_lines`]): Hello `0AEB` 0.3 s later, `01EC` the `0721` its
-/// map gives, both for every player to hear. Need Healing raises none here:
-/// its line hangs on the `0307` that `0686`'s `STU_57692020` sends to every
-/// entity, which `05AD` rid15 takes with the sender in #40 (the body's own
-/// here; the match gives it to every other body). Nothing in the path is
-/// unsupported.
+/// state the clients get. Each choice raises its voice criteria on the
+/// body, which its voice set answers with a line ([`crate::voice_lines`]):
+/// Hello `0AEB` 0.3 s later, `01EC` the `0721` its map gives, both for every
+/// player to hear. Need Healing's line hangs on the `0307` that `0686`'s
+/// `STU_57692020` sends to every entity, which `05AD` rid15 takes with the
+/// sender in #40 (the body's own here; the match gives it to every other
+/// body): the sender is its own ally (rid16 `STU_AC829876`), so it raises
+/// `0724` on itself for itself to hear (rid48/rid56, BotVoice.md). Nothing
+/// in the path is unsupported.
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn wheel_choices_run_the_callout_graph() {
@@ -1538,10 +1539,15 @@ fn wheel_choices_run_the_callout_graph() {
         .hero_pools(SOLDIER)
         .unwrap();
     let body = &graphs.bodies()[&0x0400_0000_0000_03cf];
+    let entity = 0xa000_0101;
     for (action, expected_node, criteria) in [
-        (0x16c, Some(40), None),
-        (0x16b, Some(27), Some(0x0d80_0000_0000_0aeb)),
-        (0x1ec, Some(59), Some(0x0d80_0000_0000_0721)),
+        (
+            0x16c,
+            Some(40),
+            Some((0x0d80_0000_0000_0724, Some(vec![entity]))),
+        ),
+        (0x16b, Some(27), Some((0x0d80_0000_0000_0aeb, None))),
+        (0x1ec, Some(59), Some((0x0d80_0000_0000_0721, None))),
         (0x16f, None, None),
     ] {
         let roots = orpheus_script::vm::player_roots(body, &graphs).unwrap();
@@ -1550,7 +1556,7 @@ fn wheel_choices_run_the_callout_graph() {
         let mut world = PlayerWorld::new(
             Arc::clone(&graphs),
             0xa000_0100,
-            0xa000_0101,
+            entity,
             crate::scene::team_bit(0).unwrap(),
             PRACTICE_RANGE_MODE,
             SOLDIER,
@@ -1589,14 +1595,14 @@ fn wheel_choices_run_the_callout_graph() {
                 .advance_frame(FIRST_TICK + frame, &mut world)
                 .unwrap();
         }
-        // Every player hears the wheel's lines (`0686` names all players,
-        // `STU_BD2D717B`, as their audience).
+        // Every player hears the wheel's own lines (`0686` names all
+        // players, `STU_BD2D717B`, as their audience); `0724` names #40.
         assert_eq!(
             world.take_criteria(),
-            Vec::from_iter(criteria.map(|identifier| RaisedCriteria {
+            Vec::from_iter(criteria.map(|(identifier, audience)| RaisedCriteria {
                 identifier,
-                target: world.entity,
-                audience: None,
+                target: entity,
+                audience,
             })),
             "{action:X}'s voice criteria"
         );
@@ -1799,6 +1805,7 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
         ModeBody {
             scripts: BTreeMap::from([(0, MODE_BODY)]),
             respawn_seconds: Some(3),
+            team_sizes: Vec::new(),
         },
         spawn,
     )

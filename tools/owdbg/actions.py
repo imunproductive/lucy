@@ -242,6 +242,11 @@ def add_action_args(p):
     g.add_argument("--foreground-input", action="store_true",
                    help="send buttons with SendInput to the focused game window instead of writing the "
                         "client's input (takes the desktop)")
+    g.add_argument("--close-after", type=float, default=5.0,
+                   help="seconds the session stays up after the script ends, then it closes the game and the "
+                        "server and frees the game lock (default 5)")
+    g.add_argument("--keep-running", action="store_true",
+                   help="keep the game up after the script ends (until --duration or the game exits)")
 
 
 def prepare(args):
@@ -872,6 +877,10 @@ class Actions:
             if self.i >= len(self.steps):
                 self.done = True
                 self.log(f"script done ({self.samples} input samples, {self.calls} set-view calls)")
+                if not self.args.keep_running:
+                    linger = max(0.0, self.args.close_after)
+                    self.log(f"closing in {linger:g} s (--keep-running keeps the game up)")
+                    self.dbg.after(linger, self.dbg.stop)
                 return
             self._begin(self.steps[self.i], now)
 

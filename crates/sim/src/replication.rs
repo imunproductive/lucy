@@ -2122,10 +2122,21 @@ impl WorldDelivery {
             return;
         }
         let mut retry = Vec::new();
+        let traced = tracing::enabled!(target: "orpheus::join", tracing::Level::DEBUG);
         for packet in report.packets {
             for record in packet.records {
                 if !self.current(&record) {
                     continue;
+                }
+                if let Some(kind) = traced.then(|| self.join_kind(&record)).flatten() {
+                    tracing::debug!(
+                        target: "orpheus::join",
+                        sequence = packet.sequence,
+                        arrived = packet.arrived,
+                        entity = format_args!("{:08X}", record.update.entity),
+                        kind,
+                        "record acknowledged"
+                    );
                 }
                 match (packet.arrived, record.delivery) {
                     (arrived, Delivery::BodyScript { last, .. }) => {
@@ -2271,6 +2282,24 @@ impl WorldDelivery {
         let mut queued = std::mem::take(&mut self.queued);
         queued.retain(|record| self.current(record));
         self.queued = queued;
+    }
+
+    /// The records a player's body, view and HUD depend on, named for the
+    /// `orpheus::join` trace.
+    fn join_kind(&self, record: &Record) -> Option<&'static str> {
+        Some(match record.delivery {
+            Delivery::Baseline if matches!(record.update.operation, Some(Operation::Create(_))) => {
+                "create"
+            }
+            Delivery::CreateBody(_) => "body create",
+            Delivery::Possession(_) => "possession",
+            Delivery::DestroyBody(_) => "body destroy",
+            Delivery::BodyScript { delta: false, .. } => "owner full frame",
+            Delivery::Script { close: true, .. } => "controller frame (close)",
+            Delivery::Script { .. } if record.update.entity == self.owner => "controller frame",
+            Delivery::Script { .. } => "mode frame",
+            _ => return None,
+        })
     }
 
     pub(crate) fn ready(&self) -> Vec<Ready<'_>> {
@@ -2435,6 +2464,30 @@ impl WorldDelivery {
             send,
         )?;
         let indexes = Self::sent_indices(&queued, &sent.records);
+        let traced = tracing::enabled!(target: "orpheus::join", tracing::Level::DEBUG);
+        for &index in &indexes {
+            let record = &self.queued[index];
+            // The client takes this datagram's frame as the body's command
+            // frame (`BodyStream::full_sent`).
+            if let Delivery::BodyScript {
+                id, delta: false, ..
+            } = record.delivery
+            {
+                if let Some(script) = self.body_script.as_mut().filter(|script| script.id == id) {
+                    script.stream.full_sent(tick);
+                }
+            }
+            if let Some(kind) = traced.then(|| self.join_kind(record)).flatten() {
+                tracing::debug!(
+                    target: "orpheus::join",
+                    sequence = sent.sequence,
+                    tick,
+                    entity = format_args!("{:08X}", record.update.entity),
+                    kind,
+                    "record sent"
+                );
+            }
+        }
         self.sent(&indexes);
         let selected = owner_index
             .zip(correction)
@@ -2716,7 +2769,18 @@ impl WorldDelivery {
         if message.entity != self.owner {
             return Ok(());
         }
-        match message.hero_select(scene.heroes()) {
+        let request = message.hero_select(scene.heroes());
+        tracing::debug!(
+            target: "orpheus::join",
+            tick,
+            guid = format_args!("{:016X}", message.guid),
+            request = ?request.map(|request| match request {
+                HeroSelectRequest::Pick(hero) => format!("pick {:016X}", hero.map_or(0, |hero| hero.guid)),
+                HeroSelectRequest::OpenOrClose(wanted) => format!("open/close {wanted:?}"),
+            }),
+            "game message"
+        );
+        match request {
             Some(HeroSelectRequest::Pick(Some(hero))) => {
                 if viewer
                     .card
@@ -3075,6 +3139,7 @@ impl WorldDelivery {
             pose: scene.player_target(hero, mover.pose().position, mover.crouched()),
             dead: self.death.is_some(),
             hurt: vitals.is_some_and(Vitals::hurt),
+            tags: scene.body_tags(hero.body),
         })
     }
 
@@ -3127,11 +3192,7 @@ impl WorldDelivery {
         if self.death.is_some() || hit.amount.is_nan() || hit.amount <= 0.0 {
             return None;
         }
-        // Invulnerable in his team's spawn room (`map_areas`: 0C8E `03D4`),
-        // or while his graphs hold a status (`STU_9028E035`).
-        if self.spawn_room == Some(true)
-            || self.body_effects().is_some_and(BodyEffects::invulnerable)
-        {
+        if !self.can_be_damaged() {
             return None;
         }
         let death_tick = hit.world_tick.unwrap_or(tick);
@@ -3308,6 +3369,15 @@ impl WorldDelivery {
             .as_ref()
             .filter(|script| script.id == body.id)
             .and_then(|script| script.runtime.effects())
+    }
+
+    /// Whether a hit can hurt the current body: not in his team's spawn
+    /// room (`map_areas`: 0C8E `03D4`) and no invulnerable status
+    /// (`STU_9028E035`) held by his graphs. An explosion pushes only a body
+    /// it can hurt (the user's game check, 2026-11-17: no push in the spawn
+    /// room), so the knockback takes the same gate as the damage.
+    fn can_be_damaged(&self) -> bool {
+        self.spawn_room != Some(true) && !self.body_effects().is_some_and(BodyEffects::invulnerable)
     }
 
     /// An aura comes on the player's living body (Biotic Grenade's
@@ -3631,6 +3701,9 @@ impl WorldDelivery {
         first_tick: u32,
         mut step: impl FnMut(u32, &mut ProjectileFlight) -> io::Result<Option<FlightEnd>>,
     ) -> io::Result<()> {
+        // His own explosion pushes him only where it could hurt him
+        // ([`Self::can_be_damaged`]).
+        let pushable = self.can_be_damaged();
         let Some(script) = &mut self.body_script else {
             return Ok(());
         };
@@ -3647,7 +3720,7 @@ impl WorldDelivery {
                     ..
                 })),
                 Some(mover),
-            ) = (&result, mover.as_mut())
+            ) = (&result, mover.as_mut().filter(|_| pushable))
             {
                 mover.push(*knockback);
             }
@@ -4262,6 +4335,14 @@ impl WorldDelivery {
         if let Some(frame) = frame {
             self.push(frame);
         }
+        tracing::debug!(
+            target: "orpheus::join",
+            tick,
+            body = format_args!("{entity:08X}"),
+            hero = format_args!("{:016X}", hero.guid),
+            pick,
+            "body switch queued"
+        );
         self.remove_stale();
         Ok(())
     }
@@ -4320,6 +4401,15 @@ impl WorldDelivery {
                 )
             })
             .map_err(invalid)?;
+        tracing::debug!(
+            target: "orpheus::join",
+            tick,
+            last = chunk.last,
+            open,
+            hero = format_args!("{:016X}", hero.unwrap_or_default()),
+            presence = presence.is_some(),
+            "controller frame queued"
+        );
         Ok(Record::script(
             chunk,
             hero.is_some() && !open && presence.is_none(),

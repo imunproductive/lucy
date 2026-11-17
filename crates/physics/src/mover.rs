@@ -155,6 +155,8 @@ pub struct Mover {
     once: Vec<Modifier>,
     /// The next pose's velocity changes with their priorities.
     velocity_changes: Vec<(f64, VelocityChange)>,
+    /// The move-speed scale of the last move (mover `+0x4D8`).
+    speed_scale: f64,
 }
 
 impl Mover {
@@ -190,11 +192,18 @@ impl Mover {
             push: None,
             once: Vec::new(),
             velocity_changes: Vec::new(),
+            speed_scale: 1.0,
         })
     }
 
     pub fn pose(&self) -> Movement {
         self.pose
+    }
+
+    /// The move-speed scale (mod 0) its last move used, as the client's
+    /// mover keeps it at `+0x4D8` (`STU_ED807E07`); 1 before the first.
+    pub fn speed_scale(&self) -> f64 {
+        self.speed_scale
     }
 
     pub fn crouched(&self) -> bool {
@@ -355,6 +364,7 @@ impl Mover {
         let changes: Vec<_> = changes.into_iter().map(|(_, change)| change).collect();
         let active = self.modifiers.at(command.frame).with_once(&once);
         let settings = active.settings(&self.base);
+        self.speed_scale = active.speed_scale();
         let input = MotionInput::new(&command, &active);
         let probe = self.probe.probe(
             rays,

@@ -88,6 +88,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.world.mode_random()
     }
 
+    fn team_size(&mut self, team: i64) -> Option<i64> {
+        self.read_native = true;
+        self.world.team_size(team)
+    }
+
     fn random_u64(&mut self) -> Option<u64> {
         Some(next_random(&self.machine.random_state))
     }
@@ -191,6 +196,34 @@ impl<W: World> Context for InstanceContext<'_, W> {
     fn entity_facing(&mut self, entity: u32) -> Option<[i32; 2]> {
         self.read_native = true;
         self.world.entity_facing(self.site, entity)
+    }
+
+    fn entity_yaw(&mut self, entity: u32) -> Option<i32> {
+        self.read_native = true;
+        self.world.entity_yaw(self.site, entity)
+    }
+
+    fn speed_scale(&mut self, entity: u32) -> Option<f64> {
+        self.read_native = true;
+        self.world.speed_scale(self.site, entity)
+    }
+
+    fn map_ray(
+        &mut self,
+        origin: [f64; 3],
+        direction: [f64; 3],
+        reach: f64,
+    ) -> Option<Option<[f64; 3]>> {
+        self.read_native = true;
+        let hit = self
+            .world
+            .map_ray(self.site, origin, direction, reach, None)?;
+        Some(hit.map(|hit| hit.point))
+    }
+
+    fn map_supports_mode(&mut self, mode: u64) -> Option<bool> {
+        self.read_native = true;
+        self.world.map_supports_mode(self.site, mode)
     }
 
     fn entity_team(&mut self, entity: u32) -> Option<i64> {

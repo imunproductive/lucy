@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::combat::{Combat, CombatPlayer, ENVIRONMENT_DAMAGE, Shooter, apply_player_hits};
+use crate::scene::{MOVING_KINDS, filter_component};
 use crate::scene_assets::{FellOut, install_collision_build};
 use orpheus_content::{maps::SpawnChoice, stats::PlayerStats};
 use orpheus_wire::combat_messages::CombatNotice;
@@ -181,6 +182,94 @@ fn the_spawn_room_shields_heals_and_gates_hero_change() {
     assert_eq!(flags(&world), [true]);
     let healed = world.health_share().unwrap();
     assert!(healed > hurt);
+}
+
+/// The height his own explosion lifts the body in 20 ticks: an exploding
+/// flight whose end pushes him 8 m/s up (`advance_projectiles`), then his
+/// mover runs idle commands.
+fn lift(
+    world: &mut WorldDelivery,
+    scene: &PreparedScene,
+    viewer: &PlayerAppearance<'_>,
+    tick: &mut u32,
+) -> f64 {
+    let ballistics = orpheus_script::weapons::ProjectileBallistics {
+        speed: 50.0,
+        lifetime: 2.0,
+        definition: None,
+        direct: None,
+        blast: None,
+        radius: 0.0,
+        gravity: 0.0,
+        fuse: None,
+        unmodelled: Vec::new(),
+        ray_profile: None,
+    };
+    let flight = ProjectileFlight::new(ballistics, [0.0; 3], [0.0, 0.0, 1.0], None).unwrap();
+    world
+        .body_script
+        .as_mut()
+        .unwrap()
+        .flights
+        .push((None, flight));
+    let floor = world.mover.as_ref().unwrap().pose().position[1];
+    world
+        .advance_projectiles(*tick, *tick, |_, _| {
+            Ok(Some(FlightEnd {
+                point: [0.0; 3],
+                exploded: true,
+                travelled: 0.0,
+                knockback: Some([0.0, 8.0, 0.0]),
+            }))
+        })
+        .unwrap();
+    let mut top = floor;
+    for _ in 0..20 {
+        *tick += 1;
+        world.queue_commands(
+            *tick,
+            &[orpheus_wire::commands::Command {
+                frame: *tick,
+                ..Default::default()
+            }],
+        );
+        world.release_input(1);
+        while world.has_input_work() {
+            world
+                .advance_input(scene, viewer, RETAIL_QUANTA, 64)
+                .unwrap();
+        }
+        top = top.max(world.mover.as_ref().unwrap().pose().position[1]);
+    }
+    top - floor
+}
+
+/// An explosion pushes only a body it can hurt (the user, 2026-11-17): his
+/// own Helix Rocket's knockback leaves him standing in the spawn room,
+/// where he is invulnerable, and lifts him out on the range.
+#[test]
+#[ignore = "requires a derived 104319 Practice Range pack"]
+fn his_own_explosion_pushes_him_only_outside_the_spawn_room() {
+    let scene = scene();
+    let card = PlayerCard::default();
+    let viewer = viewer(&card);
+    let mut world = spawned(&scene, &viewer);
+    let (spawn, _) = scene
+        .map()
+        .spawn_point_in(0, 0, SpawnChoice::First)
+        .unwrap();
+    place(&mut world, &scene, spawn, 0);
+    world.area_step(&scene, &viewer);
+    assert_eq!(world.in_spawn_room(), Some(true));
+    let mut tick = FIRST_TICK;
+    let lifted = lift(&mut world, &scene, &viewer, &mut tick);
+    assert!(lifted.abs() < 0.01, "{lifted} m up in the room");
+
+    place(&mut world, &scene, outside(&scene), 0);
+    world.area_step(&scene, &viewer);
+    assert_eq!(world.in_spawn_room(), Some(false));
+    let lifted = lift(&mut world, &scene, &viewer, &mut tick);
+    assert!(lifted > 1.0, "{lifted} m up on the range");
 }
 
 /// A hero change in the room keeps the body where it stands and its
@@ -403,25 +492,44 @@ fn a_pick_while_dead_takes_the_respawn() {
 /// loading list, the player and the mode, before the bots: on the Practice
 /// Range its 26 (the spawn room, the six barriers in the three doorways, the
 /// Training Partner console and pad, ...), none of them with an identifier.
+/// The four moving platforms (definition `0516`: 129, 194, 271, 403) are
+/// created in the client's hitscan group (component 26 = 0x10000); the
+/// others carry no components.
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
 fn the_server_placeables_follow_the_player_and_the_mode() {
     let scene = scene();
     let card = PlayerCard::default();
     let updates = scene.initial_world(&viewer(&card)).unwrap();
-    let creates: Vec<u32> = updates
+    let creates: Vec<(u32, &Vec<orpheus_wire::entity::Component>)> = updates
         .iter()
-        .filter(|update| matches!(update.operation, Some(Operation::Placeable(_))))
-        .map(|update| update.entity & 0x7FFF_FFFF)
+        .filter_map(|update| match &update.operation {
+            Some(Operation::Placeable(_, components)) => {
+                Some((update.entity & 0x7FFF_FFFF, components))
+            }
+            _ => None,
+        })
         .collect();
     assert_eq!(
-        creates,
+        creates
+            .iter()
+            .map(|(entity, _)| *entity)
+            .collect::<Vec<_>>(),
         [
             0x88, 0x22e, 0x234, 0x289, // the loading list
             126, 129, 137, 150, 185, 188, 194, 199, 204, 243, 267, 271, 340, 358, 398, 400, 403,
             415, 416, 424, 479, 480, 482, 548, 586, 590,
         ]
     );
+    let moving: Vec<u32> = creates
+        .iter()
+        .filter(|(_, components)| !components.is_empty())
+        .map(|(entity, components)| {
+            assert_eq!(**components, [filter_component(MOVING_KINDS)]);
+            *entity
+        })
+        .collect();
+    assert_eq!(moving, [129, 194, 271, 403]);
     // The 4 loading placeables, the player and the mode come first.
     assert_eq!(updates[6].entity, 0x8000_0000 | 126);
 }
@@ -452,7 +560,7 @@ fn rialto_and_volskaya_get_their_server_placeables() {
             .initial_world(&viewer(&card))
             .unwrap()
             .iter()
-            .filter(|update| matches!(update.operation, Some(Operation::Placeable(_))))
+            .filter(|update| matches!(update.operation, Some(Operation::Placeable(..))))
             .map(|update| update.entity & 0x7FFF_FFFF)
             .collect();
         assert_eq!(creates.len(), loading + server, "{name}");

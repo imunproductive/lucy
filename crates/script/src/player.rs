@@ -19,6 +19,7 @@ use serde_json::Value as Json;
 use crate::{
     expr::{EntityRelation, native_shape, team_from_filter, valid_entity},
     graph::GraphStore,
+    map_tags::{MapTags, TaggedEntity},
     vitals::{PoolKind, Vitals},
     vm::{
         AuraChange, BodyEffects, CombatMod, GameMessage, HealthChange, MapHit, MapRays,
@@ -53,12 +54,18 @@ pub struct PlayerWorld {
     /// when the match doesn't say.
     pub eye_height: Option<f64>,
     pub movement: Movement,
+    /// The move-speed scale the body's mover used on its last move (mover
+    /// `+0x4D8`, `STU_ED807E07`); none: the match doesn't say.
+    pub speed_scale: Option<f64>,
     pub throttles: [i8; 2],
     pub mode: u64,
     /// The match's value of the mode entity's component 114 field 9
     /// (`STU_B182C5C9`, which the mode body script `0C8E` reads); none:
     /// unknown.
     pub mode_random: Option<f32>,
+    /// The game struct's team entries (team, size), which `STU_D289FA32`
+    /// reads ([`crate::mode::team_size`]); empty: unknown.
+    pub team_sizes: Vec<(u8, u8)>,
     pub hero: u64,
     /// The hero's body definition (`003`), which names its animation data.
     pub body: Option<u64>,
@@ -77,6 +84,9 @@ pub struct PlayerWorld {
     pub targets: Option<Vec<TargetCandidate>>,
     /// The map's collision the body's ray casts meet; none: no map.
     pub map_rays: Option<Arc<dyn MapRays>>,
+    /// The map's tagged placeables the scene tag queries find; none: no
+    /// map.
+    pub map_tags: Option<Arc<MapTags>>,
     /// How the body treats graph content the VM doesn't implement; by
     /// default as every script does ([`Unknowns::for_build`]).
     pub unknowns: Unknowns,
@@ -141,6 +151,10 @@ impl World for PlayerWorld {
 
     fn mode_random(&self) -> Option<f64> {
         self.mode_random.map(f64::from)
+    }
+
+    fn team_size(&self, team: i64) -> Option<i64> {
+        crate::mode::team_size(&self.team_sizes, team)
     }
 
     /// From the body's compiled animation data
@@ -337,13 +351,47 @@ impl World for PlayerWorld {
             return None;
         }
         if entity != self.entity {
-            let (victim, tags) = self.victim_tags.as_ref()?;
-            return (*victim == entity).then(|| tags.contains(&tag));
+            if let Some((victim, tags)) = &self.victim_tags
+                && *victim == entity
+            {
+                return Some(tags.contains(&tag));
+            }
+            if let Some(listed) = self.listed(entity) {
+                return listed.tags.as_ref().map(|tags| tags.contains(&tag));
+            }
+            return self
+                .map_entity(entity)
+                .map(|placed| placed.tags.contains(&tag));
         }
         if let Some(counts) = self.target_tag_effects.get(&tag) {
             return Some(counts.suppressions == 0);
         }
         Some(self.target_tags.as_ref()?.contains(&tag))
+    }
+
+    /// The map's placeables that carry the tag ([`MapTags::with_tag`]); for
+    /// a tag a body definition carries, then the body itself and the
+    /// bodies the match lists that carry it, when the list is known and
+    /// gives every body's tags (assumption: no other entity, such as a
+    /// pet or a projectile, carries a body's tag).
+    fn entities_with_tag(&self, site: Site, tag: u64) -> Option<Vec<u32>> {
+        if !self.is_player_site(site) {
+            return None;
+        }
+        let map = self.map_tags.as_ref()?;
+        if !map.body_may_carry(tag) {
+            return Some(map.placed_with_tag(tag));
+        }
+        let mut found = map.placed_with_tag(tag);
+        if self.has_target_tag(site, self.entity, tag)? {
+            found.push(self.entity);
+        }
+        for body in self.targets.as_deref()? {
+            if body.entity != self.entity && body.tags.as_ref()?.contains(&tag) {
+                found.push(body.entity);
+            }
+        }
+        Some(found)
     }
 
     fn set_target_tag_effect(&mut self, site: Site, effect: TargetTagEffect, active: bool) -> bool {
@@ -386,12 +434,21 @@ impl World for PlayerWorld {
         true
     }
 
+    /// The body's own word, else a listed body's as the target searches
+    /// take it ([`TargetCandidate::filter_word`]).
     fn entity_filter_flags(&self, site: Site, entity: u32) -> Option<u64> {
-        (self.is_player_site(site) && entity == self.entity).then_some(self.body_filter)
+        if !self.is_player_site(site) {
+            return None;
+        }
+        if entity == self.entity {
+            return Some(self.body_filter);
+        }
+        self.listed(entity).map(TargetCandidate::filter_word)
     }
 
-    /// The body, its controller, the mode entity (when the mode has one) and
-    /// the bodies the match lists exist; any other entity is unknown.
+    /// The body, its controller, the mode entity (when the mode has one),
+    /// the bodies the match lists and the map's tagged placeables exist;
+    /// any other entity is unknown.
     fn entity_exists(&self, site: Site, entity: u32) -> Option<bool> {
         if !self.is_player_site(site) {
             return None;
@@ -399,12 +456,14 @@ impl World for PlayerWorld {
         let known = entity == self.entity
             || (valid_entity(self.controller) && entity == self.controller)
             || (entity == GAME_MODE_ENTITY && self.graphs.mode_variables(self.mode).is_some())
-            || self.listed(entity).is_some();
+            || self.listed(entity).is_some()
+            || self.map_entity(entity).is_some();
         known.then_some(true)
     }
 
     /// The body stands where its mover put it; the other bodies where the
-    /// match placed them this tick.
+    /// match placed them this tick; a tagged placeable where the map puts
+    /// it.
     fn entity_position(&self, site: Site, entity: u32) -> Option<[f64; 3]> {
         if !self.is_player_site(site) {
             return None;
@@ -412,7 +471,9 @@ impl World for PlayerWorld {
         if entity == self.entity {
             return Some(self.position);
         }
-        self.listed(entity).map(|body| body.feet)
+        self.listed(entity)
+            .map(|body| body.feet)
+            .or_else(|| self.map_entity(entity).map(|placed| placed.position))
     }
 
     /// The body looks along its last movement record's yaw and pitch
@@ -421,6 +482,13 @@ impl World for PlayerWorld {
     fn entity_facing(&self, site: Site, entity: u32) -> Option<[i32; 2]> {
         (self.is_player_site(site) && entity == self.entity)
             .then_some([self.movement.yaw, self.movement.pitch])
+    }
+
+    /// The body's own mover's, as the match gives it each move.
+    fn speed_scale(&self, site: Site, entity: u32) -> Option<f64> {
+        (self.is_player_site(site) && entity == self.entity)
+            .then_some(self.speed_scale)
+            .flatten()
     }
 
     /// The body's team from its filter bits; the other bodies' as listed.
@@ -570,9 +638,11 @@ impl PlayerWorld {
             position: [0.0; 3],
             eye_height: None,
             movement: Movement::default(),
+            speed_scale: None,
             throttles: [0; 2],
             mode,
             mode_random: None,
+            team_sizes: Vec::new(),
             hero,
             vitals: Vitals::empty(),
             pool_types_known: false,
@@ -580,6 +650,7 @@ impl PlayerWorld {
             target_tag_effects: BTreeMap::new(),
             target_tags_changed: false,
             map_rays: None,
+            map_tags: None,
             controller_on_fire: false,
             targets: None,
             victim_tags: None,
@@ -662,6 +733,11 @@ impl PlayerWorld {
             .flatten()
             .find(|body| body.entity == entity)
     }
+
+    /// A tagged placeable of the map.
+    fn map_entity(&self, entity: u32) -> Option<&TaggedEntity> {
+        self.map_tags.as_ref()?.get(entity)
+    }
 }
 
 /// `{"$": "STU_B5A0CAF0"}` (the owner), optionally with a zero
@@ -701,6 +777,8 @@ mod tests {
             feet,
             height: 1.8,
             radius: 0.4,
+            yaw: 0.0,
+            tags: None,
         }
     }
 
@@ -764,6 +842,69 @@ mod tests {
             ..site
         };
         assert_eq!(world.entity_exists(other_site, BODY), None);
+    }
+
+    /// Listed bodies' target tags and filter words come from the match's
+    /// list; a tag a body definition carries lists the map's placeables,
+    /// the body and the listed bodies with it, once every listed body's
+    /// tags are known.
+    #[test]
+    fn listed_bodies_answer_their_tags_and_filter_words() {
+        const HERO: u64 = 0x0d60_0000_0000_00f8;
+        const PLACE: u64 = 0x0d60_0000_0000_0310;
+        const OTHER: u32 = 0xa000_0102;
+        const BOT: u32 = 0xa000_0103;
+        let graphs = Arc::new(
+            GraphStore::from_json(
+                br#"{"version":1,"graphs":[],"missing":[],"bodies":{"0x0400000000000001":
+                {"hero":null,"name":"Hero","manager":null,"weapons":[],"graphs":[],
+                "target_tags":["0x0D600000000000F8"]}}}"#,
+            )
+            .unwrap(),
+        );
+        let filter = 0x0001_0041 | 0x80_0000;
+        let mut world = PlayerWorld::new(Arc::clone(&graphs), CONTROLLER, BODY, filter, 0, 0);
+        world.target_tags = Some(BTreeSet::from([HERO]));
+        let placed = TaggedEntity {
+            entity: 0x8000_0010,
+            position: [0.0; 3],
+            tags: BTreeSet::from([HERO, PLACE]),
+        };
+        world.map_tags = Some(Arc::new(MapTags::new(vec![placed], &graphs)));
+        let tagged = |entity, team, tags: Option<&[u64]>| TargetCandidate {
+            tags: tags.map(|tags| Arc::new(tags.iter().copied().collect())),
+            ..body(entity, team, [0.0; 3])
+        };
+        world.targets = Some(vec![
+            tagged(BODY, Some(0), Some(&[HERO])),
+            tagged(OTHER, Some(1), Some(&[HERO])),
+            tagged(BOT, Some(1), None),
+        ]);
+        let site = Site {
+            entity: BODY,
+            instance: 1,
+            graph: 42,
+            node: None,
+        };
+        assert_eq!(world.has_target_tag(site, OTHER, HERO), Some(true));
+        assert_eq!(world.has_target_tag(site, OTHER, PLACE), Some(false));
+        assert_eq!(world.has_target_tag(site, BOT, HERO), None);
+        assert_eq!(
+            world.entity_filter_flags(site, OTHER),
+            Some(0x80_0000 << 1 | 0x0001_0041)
+        );
+        assert_eq!(world.entity_filter_flags(site, 0xa000_0104), None);
+        assert_eq!(
+            world.entities_with_tag(site, PLACE),
+            Some(vec![0x8000_0010])
+        );
+        // The bot's tags are unknown: it might carry the hero's tag.
+        assert_eq!(world.entities_with_tag(site, HERO), None);
+        world.targets.as_mut().unwrap()[2] = tagged(BOT, Some(1), Some(&[]));
+        assert_eq!(
+            world.entities_with_tag(site, HERO),
+            Some(vec![0x8000_0010, BODY, OTHER])
+        );
     }
 
     /// A hit Soldier: 76 survives reaches his body as the damage message

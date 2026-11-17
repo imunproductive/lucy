@@ -753,9 +753,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // doesn't have: a plain state, as Python ran it, that its frames
             // carry for the client to run.
             "STU_75D1C308" => StateKind::Plain,
-            // The scene tag query state and the spawn picker run the base
-            // lifecycle; their work is `vm/entities.rs` (codec `none`).
-            "STU_160F2578" | "STU_5E805B5A" => StateKind::Plain,
+            // The scene tag query state, the spawn picker and the shuffled
+            // picker run the base lifecycle; their work is `vm/entities.rs`
+            // (codec `none`).
+            "STU_160F2578" | "STU_5E805B5A" | "STU_37072672" => StateKind::Plain,
             // The aim speed (`STU_3716E1D4`): its own begin, end and update
             // (0x7FF7897F6390, 0x7FF7897F63E0, 0x7FF7897F6410) only call
             // 0x7FF789808820, which scales the pose rates of the entity's
@@ -896,6 +897,22 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 );
                 StateKind::Plain
             }
+            // `STU_87621906` (server-only, `0033` st11 alone): while a living
+            // hero body is hurt (st10) it writes an entity into
+            // `m_0E739B87` (#1195), which `0033` then sends `0643.025`
+            // every 0.5 s when that entity's #6396 is on a team or is the
+            // body; `m_1A69E234` is `STU_B9BE2BE1` 0 and `m_05140BC3` the
+            // owner. Which entity it picks is not derivable (no client
+            // code): it writes none, as the release build's plain state
+            // did, so `0643` goes nowhere.
+            "STU_87621906" => {
+                self.assume(
+                    self.site(id, node),
+                    &node.class,
+                    "plain state (server-only, picks no entity)",
+                );
+                StateKind::Plain
+            }
             class if ASSUMED_PLAIN_STATES.contains(&class) => StateKind::Plain,
             class if ASSUMED_INERT_STATES.contains(&class) => StateKind::Plain,
             "STU_77E13026" => StateKind::HitList,
@@ -1030,6 +1047,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
             StateKind::Plain if node.class == "STU_160F2578" => {
                 if !self.write_tag_query(id, node)? {
+                    return Ok(());
+                }
+            }
+            StateKind::Plain if node.class == "STU_37072672" => {
+                if !self.pick_shuffled(id, node)? {
                     return Ok(());
                 }
             }

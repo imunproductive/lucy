@@ -51,6 +51,8 @@ Two state classes have verified layouts but no runtime meaning yet:
 
 A link is `(instance, raw index)`. Owner frames (H = 1) use the owner state indexes, remote frames (H = 0) the remote-sync indexes, each with the graph's own bit width. An entity id is 0 (none) or a 32-bit id with bit 31 set and a nonzero 29-bit index.
 
+Each statescript host keeps a command frame on the client. An owner frame (H = 1) sets it to its CmFD; a frame without a CmFD (H = 0) sets it to the frame (server tick) of the datagram that brought the chunk. An owner frame whose CmFD is not past the host's command frame is stale: the client reads past its payload and counts the chunk as applied (`0x7FF78991E050` returns 2, `0x7FF78991E3C0`). So every owner frame of a host needs a CmFD above the last one and above the datagram frame of any H = 0 chunk before it (`Stream::full_owner`, `BodyStream::owner_kind`).
+
 ## Relay hook points
 
 From the relay (`crates/relay`, ported from the community C++ relay; addresses are offsets from the `Overwatch.exe` image base):

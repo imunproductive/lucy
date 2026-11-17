@@ -1,7 +1,7 @@
 //! Server-only actions on other entities: a team (`STU_0F647E55`) and a
 //! removal (`STU_523EE38D`); the scene tag queries of a state
 //! (`STU_160F2578`) and an action (`STU_42578342`); the spawn picker
-//! (`STU_5E805B5A`).
+//! (`STU_5E805B5A`); the shuffled picker (`STU_37072672`).
 //!
 //! Client research (1.74, `python tools/stu.py`): `STU_0F647E55` and
 //! `STU_523EE38D` register no action of their own. The client looks up the
@@ -223,6 +223,128 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
         self.follow(id, node, "m_1405CDCB", Some(key), depth)?;
         Ok(())
+    }
+
+    /// The shuffled picker `STU_37072672` (after-begin 0x7FF789C51AE0,
+    /// begin 0x7FF789C51A80): `m_E6DD2A93` (default 1, at least 0) entries
+    /// of the list `m_814F8EC3`, in a shuffled order, into `m_3DC6FAAA`
+    /// (cleared first). Its begin empties the order, so each begin shuffles
+    /// the whole list afresh (0x7FF789C601F0 over `[0, n)`) and its window
+    /// starts at the running index `m_index` (default 0; the state never
+    /// writes it). The k-th pick is `order[index + k − window]`; past the
+    /// window's `n` entries it reshuffles and the window starts there: with
+    /// `m_A07336C2` set, `[0, 2n/3)` and then `[max(min(n − 1, 1), n/3), n)`,
+    /// which keeps the last picks out of the next ones; else the whole
+    /// order. Elimination's random heroes (`0D0B` st11: from the hero list
+    /// #8449e, as many as the larger team, into #8684e) and `0F2F` st2. The
+    /// client draws from its thread's random numbers; the server from the
+    /// component's stream. False: a field can't be evaluated here.
+    pub(super) fn pick_shuffled(&mut self, id: u16, node: &Node) -> Result<bool, InitFault> {
+        let target = match expr::lvalue(field(&node.fields, "m_3DC6FAAA")) {
+            Ok(target) => target.map(|target| source_key(id, target)),
+            Err(error) => {
+                self.report(self.site(id, node), Issue::Expression(error));
+                return Ok(false);
+            }
+        };
+        let Some(list) = self.evaluate(id, node, field(&node.fields, "m_814F8EC3"), None) else {
+            return Ok(false);
+        };
+        let mut integer = |name: &str, default: i64| -> Option<i64> {
+            let value = field(&node.fields, name);
+            if value.is_null() {
+                return Some(default);
+            }
+            Some(expr::to_int(
+                &self.evaluate(id, node, value, None)?,
+                default,
+            ))
+        };
+        let Some(index) = integer("m_index", 0) else {
+            return Ok(false);
+        };
+        let Some(wanted) = integer("m_E6DD2A93", 1) else {
+            return Ok(false);
+        };
+        let apart = field(&node.fields, "m_A07336C2")
+            .as_i64()
+            .is_some_and(|flag| flag != 0);
+        let picked = match list {
+            Value::Map(entries) => Value::Map(self.shuffled_picks(&entries, index, wanted, apart)?),
+            Value::Pairs(entries) => {
+                Value::Pairs(self.shuffled_picks(&entries, index, wanted, apart)?)
+            }
+            Value::Array(items) => Value::Array(self.shuffled_picks(&items, index, wanted, apart)?),
+            Value::Null => Value::Array(Vec::new()),
+            value => Value::Array(self.shuffled_picks(&[value], index, wanted, apart)?),
+        };
+        if let Some(target) = target {
+            self.write(target, picked)?;
+        }
+        Ok(true)
+    }
+
+    fn shuffled_picks<T: Clone>(
+        &mut self,
+        items: &[T],
+        index: i64,
+        wanted: i64,
+        apart: bool,
+    ) -> Result<Vec<T>, InitFault> {
+        let count = items.len();
+        if count == 0 || wanted <= 0 {
+            return Ok(Vec::new());
+        }
+        // One unit of work a pick: the client loops the count it is given.
+        let wanted = usize::try_from(wanted).unwrap_or(usize::MAX);
+        self.machine.work_left =
+            self.machine
+                .work_left
+                .checked_sub(wanted)
+                .ok_or(InitFault::WorkBudget {
+                    limit: self.machine.max_work,
+                    operation: "shuffled picks",
+                })?;
+        let mut order: Vec<usize> = (0..count).collect();
+        self.shuffle(&mut order, 0, count);
+        let count = count as i64;
+        let mut window = index;
+        let mut picks = Vec::with_capacity(wanted);
+        for next in (index..).take(wanted) {
+            if !(window..window + count).contains(&next) {
+                let n = count as usize;
+                if apart {
+                    self.shuffle(&mut order, 0, 2 * n / 3);
+                    self.shuffle(&mut order, (n - 1).min(1).max(n / 3), n);
+                } else {
+                    self.shuffle(&mut order, 0, n);
+                }
+                window = next;
+            }
+            picks.push(items[order[(next - window) as usize]].clone());
+        }
+        Ok(picks)
+    }
+
+    /// 0x7FF789C601F0: each entry of `order[from..to)` in turn goes to a
+    /// random free slot of the range (a random slot, then the next free
+    /// one, wrapping).
+    fn shuffle(&mut self, order: &mut [usize], from: usize, to: usize) {
+        if to <= from {
+            return;
+        }
+        let len = to - from;
+        let mut slots: Vec<Option<usize>> = vec![None; len];
+        for &entry in &order[from..to] {
+            let mut slot = self.random_u32() as usize % len;
+            while slots[slot].is_some() {
+                slot = (slot + 1) % len;
+            }
+            slots[slot] = Some(entry);
+        }
+        for (target, entry) in order[from..to].iter_mut().zip(slots) {
+            *target = entry.expect("every slot filled");
+        }
     }
 
     /// A random number from the component's stream, as the client's

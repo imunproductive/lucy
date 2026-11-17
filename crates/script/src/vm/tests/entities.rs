@@ -143,3 +143,72 @@ fn the_tag_query_state_leaves_out_the_excluded_tag_and_nothing_to_pick_gives_nul
     assert_eq!(pick(&mut empty), Value::Null);
     assert_eq!(variable(&empty, 12), Value::Bool(true));
 }
+
+/// Entry: st0 `STU_37072672` picks `count` entries of the entity list #10
+/// into #11 from the running index 4, keeping the last picks apart.
+fn shuffled(count: i64) -> GraphStore {
+    store(vec![graph(
+        42,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntry",
+                None,
+                json!({"m_outPlug":plug(&[(1, "m_beginPlug")], &[])}),
+            ),
+            node(
+                1,
+                "STU_37072672",
+                Some(0),
+                json!({
+                    "m_814F8EC3":var(10, true),
+                    "m_index":{"$":"STUConfigVarInt","m_value":4},
+                    "m_3DC6FAAA":var(11, true),
+                    "m_E6DD2A93":{"$":"STUConfigVarInt","m_value":count},
+                    "m_A07336C2":1,
+                }),
+            ),
+        ],
+        json!([1]),
+        json!([0]),
+    )])
+}
+
+fn picks(count: i64, list: Value) -> Vec<Value> {
+    let component = Component::start(
+        Arc::new(shuffled(count)),
+        42,
+        Variables::from([(10, list)]),
+        vec![Root::new(1, 42)],
+        0,
+        &mut SpawnPoints,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    assert!(component.snapshot().unwrap().diagnostics.is_empty());
+    match component.snapshot().unwrap().variables.get(&11) {
+        Some(Value::Array(items)) => items.clone(),
+        other => panic!("the picks are an array, not {other:?}"),
+    }
+}
+
+#[test]
+fn the_shuffled_picker_takes_each_entry_once_a_round_and_keeps_the_last_apart() {
+    let list: Vec<Value> = (0..5).map(Value::Integer).collect();
+    // Three of five: three different entries of the list.
+    let mut three = picks(3, Value::Array(list.clone()));
+    three.sort_by_key(|value| expr::to_int(value, 0));
+    three.dedup();
+    assert_eq!(three.len(), 3);
+    assert!(three.iter().all(|value| list.contains(value)));
+    // Seven of five: a whole round, then a reshuffle that keeps the
+    // round's last two (the last third) out of the next first pick.
+    let seven = picks(7, Value::Array(list.clone()));
+    let mut round = seven[..5].to_vec();
+    round.sort_by_key(|value| expr::to_int(value, 0));
+    assert_eq!(round, list);
+    assert!(!seven[3..5].contains(&seven[5]), "{seven:?}");
+    // None wanted, or nothing to pick: an empty array.
+    assert_eq!(picks(0, Value::Array(list)), Vec::new());
+    assert_eq!(picks(2, Value::Array(Vec::new())), Vec::new());
+}

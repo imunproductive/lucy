@@ -18,7 +18,7 @@ use std::{
 use serde::Deserialize;
 
 use crate::{
-    body_script::{ModeBody, OwnerBodySpawn, PlayerBodyFactory},
+    body_script::{BodyMap, ModeBody, OwnerBodySpawn, PlayerBodyFactory},
     bot_animation::{BotRigCatalog, ScriptAnims},
     bot_plate::{BotPlate, PlateSample},
     bot_script::{BotEvent, BotScripts, BotShot},
@@ -40,7 +40,9 @@ use crate::{
     pools::PoolCatalog,
     projectiles::{BioticField, FIELD_ENTITY, FieldFrames},
     replication::OwnerBodyRuntime,
-    scene::{PlayerAppearance, bot_controller_entity, initial_world, mode_ui},
+    scene::{
+        PlayerAppearance, bot_controller_entity, initial_world, mode_ui, placeable_components,
+    },
 };
 use orpheus_content::{
     heroes::{EyeCatalog, Hero, HeroCatalog, SOLDIER},
@@ -65,6 +67,7 @@ use orpheus_physics::{
 use orpheus_script::{
     codecs::CodecTable,
     graph::GraphStore,
+    map_tags::MapTags,
     ultimate::ChargeRates,
     vitals::Vitals,
     vm::{MapRays, TargetCandidate, Unknowns},
@@ -94,9 +97,9 @@ fn ground_height(
     }
 }
 
-/// Starts a player body: its hero, its spawn and the map's collision its
-/// ray casts meet ([`PreparedScene::map_rays`]).
-type OwnerBodyFactory = dyn Fn(&Hero, OwnerBodySpawn, Arc<dyn MapRays>) -> io::Result<Option<Box<dyn OwnerBodyRuntime>>>
+/// Starts a player body: its hero, its spawn and the map its scripts meet
+/// ([`PreparedScene::body_map`]).
+type OwnerBodyFactory = dyn Fn(&Hero, OwnerBodySpawn, BodyMap) -> io::Result<Option<Box<dyn OwnerBodyRuntime>>>
     + Send
     + Sync;
 
@@ -161,6 +164,8 @@ pub struct SceneAssets {
     /// Each map's spawn rooms, damage areas and server placeables
     /// (`game_map_areas_174.json`).
     map_areas: MapAreaData,
+    /// Each body definition's target tags ([`body_tags`]).
+    body_tags: Arc<BodyTags>,
 }
 
 /// Why the environment kills a body ([`PreparedScene::fell_out`]).
@@ -230,6 +235,11 @@ pub struct PreparedScene {
     /// the loading screen doesn't wait for, created after the player and
     /// the mode, with their script data.
     server_placeables: Vec<Arc<PlacedScript>>,
+    /// The map's entities with target tags in this mode, which the scene
+    /// tag queries find (`map_areas::MapAreaData::map_tags`).
+    map_tags: Arc<MapTags>,
+    /// Each body definition's target tags ([`body_tags`]).
+    body_tags: Arc<BodyTags>,
     /// Their scripts (`placed_script`).
     placed_scripts: PlacedScripts,
     /// Where a falling body dies on a map with neither damage areas nor
@@ -278,6 +288,7 @@ impl SceneAssets {
         let mode_rules = ModeRulesData::load(&graphs, &data)?;
         let objectives = ObjectiveData::load(&data)?;
         let map_areas = MapAreaData::load(&data)?;
+        let body_tags = Arc::new(body_tags(&graphs, bot_graphs.as_deref()));
         let script_anims = Arc::new(
             bot_graphs
                 .as_deref()
@@ -318,6 +329,7 @@ impl SceneAssets {
             objectives,
             ray_profiles: Arc::new(RayProfiles::load(data.join(RAY_PROFILES_FILE))?),
             map_areas,
+            body_tags,
         })
     }
 
@@ -473,6 +485,7 @@ impl SceneAssets {
         // The client shows a server-owned placeable only once the server
         // creates it.
         let server_placeables = self.map_areas.placed_scripts(&map, identifiers);
+        let map_tags = self.map_areas.map_tags(&map, identifiers, &self.graphs);
         let lowest_spawn = map
             .spawns
             .iter()
@@ -544,8 +557,11 @@ impl SceneAssets {
                 map_mode,
                 mode_random,
                 server_placeables.clone(),
+                Arc::clone(&map_tags),
             ),
             server_placeables,
+            map_tags,
+            body_tags: Arc::clone(&self.body_tags),
         };
         let mut factories = self
             .owner_bodies
@@ -633,6 +649,7 @@ impl SceneAssets {
                 })
                 .collect(),
             respawn_seconds: self.respawns.sent(mode).map(|time| time.as_secs() as i64),
+            team_sizes: crate::instance::team_entries(scene.map()),
         };
         let ready = self
             .codecs
@@ -646,7 +663,7 @@ impl SceneAssets {
             });
         let prepared: Mutex<HashMap<u64, Result<Arc<PlayerBodyFactory>, String>>> =
             Mutex::default();
-        Some(Arc::new(move |hero, spawn, map_rays| {
+        Some(Arc::new(move |hero, spawn, map| {
             let factory = prepared
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -678,8 +695,7 @@ impl SceneAssets {
                 })
                 .clone()
                 .map_err(|reason| io::Error::new(io::ErrorKind::Unsupported, reason))?;
-            let runtime: Box<dyn OwnerBodyRuntime> =
-                Box::new(factory.start_on(spawn, Some(map_rays))?);
+            let runtime: Box<dyn OwnerBodyRuntime> = Box::new(factory.start_on(spawn, Some(map))?);
             Ok(Some(runtime))
         }))
     }
@@ -781,8 +797,8 @@ impl PreparedScene {
         self.kill_height
     }
 
-    /// The player body for `hero`, its ray casts meeting this map
-    /// ([`Self::map_rays`]).
+    /// The player body for `hero`, its scripts meeting this map
+    /// ([`Self::body_map`]).
     pub(crate) fn owner_body_runtime(
         &self,
         hero: &Hero,
@@ -790,7 +806,16 @@ impl PreparedScene {
     ) -> io::Result<Option<Box<dyn OwnerBodyRuntime>>> {
         self.owner_body_factory
             .as_ref()
-            .map_or(Ok(None), |factory| factory(hero, spawn, self.map_rays()))
+            .map_or(Ok(None), |factory| factory(hero, spawn, self.body_map()))
+    }
+
+    /// The map as a player body's scripts meet it: its collision for their
+    /// ray casts and its tagged entities for their tag queries.
+    pub fn body_map(&self) -> BodyMap {
+        BodyMap {
+            rays: self.map_rays(),
+            tags: self.map_tags(),
+        }
     }
 
     /// The map's collision as the scripts' ray casts meet it.
@@ -799,6 +824,18 @@ impl PreparedScene {
             scene: Arc::clone(&self.rays),
             profiles: Arc::clone(&self.ray_profiles),
         })
+    }
+
+    /// The map's entities with target tags in this mode, for the scripts'
+    /// tag queries.
+    pub fn map_tags(&self) -> Arc<MapTags> {
+        Arc::clone(&self.map_tags)
+    }
+
+    /// The target tags of body definition `body` (a hero's or a bot's);
+    /// None when the data doesn't give them.
+    pub fn body_tags(&self, body: u64) -> Option<Arc<BTreeSet<u64>>> {
+        self.body_tags.get(&body).cloned()
     }
 
     pub fn heroes(&self) -> &HeroCatalog {
@@ -1272,7 +1309,10 @@ impl PreparedScene {
             at..at,
             self.server_placeables.iter().map(|placed| EntityUpdate {
                 entity: placed.entity(),
-                operation: Some(Operation::Placeable(placed.placeable)),
+                operation: Some(Operation::Placeable(
+                    placed.placeable,
+                    placeable_components(placed),
+                )),
                 ..EntityUpdate::default()
             }),
         );
@@ -1323,6 +1363,20 @@ fn read_mode_props(path: &Path) -> io::Result<BTreeMap<u64, BTreeSet<u64>>> {
         .collect()
 }
 
+/// Body definition GUID → its target tags.
+type BodyTags = HashMap<u64, Arc<BTreeSet<u64>>>;
+
+/// The target tags of every body definition the bundles give them for: the
+/// heroes' (hero bundle) and the bots' (bot bundle).
+fn body_tags(graphs: &GraphStore, bots: Option<&GraphStore>) -> BodyTags {
+    let heroes = graphs.bodies().iter();
+    let bots = bots.into_iter().flat_map(|bots| bots.entity_bodies());
+    heroes
+        .chain(bots)
+        .filter_map(|(guid, body)| Some((*guid, Arc::new(body.target_tags.clone()?))))
+        .collect()
+}
+
 /// The version of a collision cache file, `None` when it is none
 /// (collision.py `cache_version`).
 fn cache_version(path: &Path) -> Option<u32> {
@@ -1361,6 +1415,78 @@ mod tests {
     use crate::{bots::BOT_ENTITY, instance::RETAIL_QUANTA, scene::team_bit};
     use orpheus_content::heroes::SOLDIER;
     use orpheus_core::tick::FIRST_TICK;
+
+    /// The mode graph's tag queries find the map's tagged placeables: on
+    /// Hanamura's Assault, `0F4A`'s child `0C8F` lists each team's spawn
+    /// points (#8365, #8366), which its spawn picker draws from. Until
+    /// `0F4A` writes the teams' spawn tags (#8364e, from the objectives'
+    /// #10551, which this world never gets) a query names no any-of tag,
+    /// so both lists are every placeable with #11016's tag (`042C`).
+    /// `0F4A`'s #12750 (tag `04B3`) is answered, and empty: no placeable of
+    /// any map carries `04B3`.
+    #[test]
+    #[ignore = "requires a derived 104319 pack (just test-game <install>)"]
+    fn the_mode_graph_lists_hanamuras_spawn_points() {
+        use orpheus_content::maps::MapCatalog;
+        use orpheus_script::{
+            mode::{ModeScript, ModeWorld},
+            wire::Value,
+        };
+        let runtime = orpheus_testkit::runtime_dir();
+        let data = runtime.join("data");
+        let assets = SceneAssets::load(&runtime).unwrap();
+        let catalog = MapCatalog::load(&data)
+            .unwrap()
+            .with_modes(GameModes::load(data.join(MODES_FILE)).unwrap());
+        let mode = crate::match_flow::ASSAULT;
+        let hanamura = catalog
+            .map_catalog()
+            .into_iter()
+            .find(|listing| listing.name == "Hanamura")
+            .unwrap();
+        let map = catalog
+            .game_map(hanamura.guid, mode, "Assault", false, &[6, 6])
+            .unwrap();
+        let empty = BTreeSet::new();
+        let identifiers = assets.mode_props.get(&mode).unwrap_or(&empty);
+        let mut world = ModeWorld::new(Arc::clone(&assets.graphs), mode, Unknowns::Tolerate);
+        world.players = [1, 1];
+        world.team_sizes = vec![(0, 6), (1, 6)];
+        world.ready = true;
+        let tags = assets.map_areas.map_tags(&map, identifiers, &assets.graphs);
+        world.map_tags = Some(Arc::clone(&tags));
+        let mut script = ModeScript::start(world, 0x0f4a, 1).unwrap();
+        let entities = |value: Option<&Value>| match value {
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|item| match item {
+                    Value::Entity(entity) => *entity,
+                    other => panic!("{other:?}"),
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let mut spawns = [Vec::new(), Vec::new()];
+        for frame in 2..3000 {
+            script.advance(frame).unwrap();
+            let snapshot = script.snapshot().unwrap();
+            if let Some(picker) = snapshot.instances.values().find(|i| i.graph == 0x0c8f) {
+                spawns = [8365, 8366].map(|var| entities(picker.variables.get(&var)));
+                if spawns.iter().all(|list| !list.is_empty()) {
+                    break;
+                }
+            }
+        }
+        let snapshot = script.snapshot().unwrap();
+        assert_eq!(
+            snapshot.instances[&1].variables.get(&12750),
+            Some(&Value::Array(Vec::new()))
+        );
+        assert_eq!(snapshot.variables.get(&8364), None);
+        let every = tags.placed_with_tag(0x0d60_0000_0000_042c);
+        assert!(!every.is_empty());
+        assert_eq!(spawns, [every.clone(), every]);
+    }
 
     #[test]
     #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
@@ -1639,6 +1765,8 @@ mod tests {
             feet: [x + dx, y, z],
             height: 1.8,
             radius: 0.4,
+            yaw: 0.0,
+            tags: None,
         };
         let count = |candidates: &[TargetCandidate]| {
             let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
@@ -1695,7 +1823,10 @@ mod tests {
         let enemy = body(BOT_ENTITY, 1, 2.0);
         let far = body(BOT_ENTITY + 1, 0, 30.0);
         let ally = body(BOT_ENTITY + 2, 0, 3.0);
-        assert_eq!(count(&[caster, enemy, far]), Some(Value::Integer(0)));
+        assert_eq!(
+            count(&[caster.clone(), enemy.clone(), far.clone()]),
+            Some(Value::Integer(0))
+        );
         assert_eq!(count(&[caster, enemy, far, ally]), Some(Value::Integer(1)));
     }
 
@@ -1741,6 +1872,8 @@ mod tests {
             feet: [x + dx, y, z + dz],
             height: 1.8,
             radius: 0.4,
+            yaw: 0.0,
+            tags: None,
         };
         let swing = |candidates: &[TargetCandidate]| {
             let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();

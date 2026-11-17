@@ -57,6 +57,9 @@ pub struct GameMap {
     /// The teams' spawn rooms with the objectives or the Control stage
     /// they serve (`game_maps` `objectives` and `stage`), in source order.
     pub rooms: Vec<SpawnRoom>,
+    /// The game modes the map's header supports (`m_supportedGamemodes`),
+    /// which the mode graph's `STU_16753B11` tests.
+    pub supported_modes: Vec<u64>,
 }
 
 /// A spawn point of a team's spawn room and when the mode uses it.
@@ -146,6 +149,7 @@ impl GameMap {
             free_for_all: false,
             objectives: Vec::new(),
             rooms: Vec::new(),
+            supported_modes: vec![PYTHON_PRACTICE_RANGE_MODE, PRACTICE_RANGE_MODE],
         }
     }
 
@@ -382,6 +386,7 @@ impl MapCatalog {
             free_for_all: false,
             objectives: Vec::new(),
             rooms: Vec::new(),
+            supported_modes: entry.modes.clone(),
         })
     }
 
@@ -440,6 +445,7 @@ impl MapCatalog {
                     stage: entry.stage,
                 })
                 .collect(),
+            supported_modes: entry.modes.clone(),
         })
     }
 }

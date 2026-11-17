@@ -34,6 +34,7 @@ use orpheus_script::{
     codecs::CodecTable,
     expr::{team_from_filter, to_float},
     graph::GraphStore,
+    map_tags::MapTags,
     player::PlayerWorld,
     snapshot::{SnapshotEncoder, View},
     timeline::FRAME_MS,
@@ -60,6 +61,14 @@ const OWNER_HEALTH: u32 = 253;
 const DEAD_FLAG: u32 = orpheus_script::bot::DEAD_FLAG;
 const HUD_HEALTH: u32 = 1732;
 const HUD_MAX_HEALTH: u32 = 1737;
+
+/// The map a player body's scripts meet: its collision for their ray casts
+/// and its tagged placeables for their tag queries.
+#[derive(Clone)]
+pub struct BodyMap {
+    pub rays: Arc<dyn MapRays>,
+    pub tags: Arc<MapTags>,
+}
 
 /// The mode graph's message that tells a body its respawn time (`06FD.025`),
 /// and its seconds parameter (`00B7`).
@@ -109,6 +118,9 @@ pub struct ModeBody {
     pub scripts: BTreeMap<i64, u32>,
     /// The seconds of the mode graph's `06FD.025`, when it sends one.
     pub respawn_seconds: Option<i64>,
+    /// The game struct's team entries (team, size; `instance::team_entries`),
+    /// which `STU_D289FA32` reads.
+    pub team_sizes: Vec<(u8, u8)>,
 }
 
 pub struct PlayerBodyFactory {
@@ -184,7 +196,10 @@ impl PlayerBodyFactory {
                 hero.name,
                 factory.mode_body.scripts.values().collect::<Vec<_>>()
             );
-            factory.mode_body = ModeBody::default();
+            factory.mode_body = ModeBody {
+                team_sizes: std::mem::take(&mut factory.mode_body.team_sizes),
+                ..ModeBody::default()
+            };
             factory.probe(probe)?;
         }
         Ok(factory)
@@ -209,11 +224,11 @@ impl PlayerBodyFactory {
     }
 
     /// [`Self::start`] on a map whose collision the body's ray casts meet
-    /// (none: no map).
+    /// and whose tagged placeables its tag queries find (none: no map).
     pub fn start_on(
         &self,
         spawn: OwnerBodySpawn,
-        map_rays: Option<Arc<dyn MapRays>>,
+        map: Option<BodyMap>,
     ) -> io::Result<PlayerBodyRuntime> {
         if spawn.quanta != RETAIL_QUANTA {
             return Err(unsupported("the owner VM requires the 16 ms retail clock"));
@@ -229,8 +244,13 @@ impl PlayerBodyFactory {
         );
         world.position = spawn.pose.position;
         world.mode_random = Some(spawn.mode_random);
-        world.map_rays = map_rays;
+        if let Some(map) = map {
+            world.map_rays = Some(map.rays);
+            world.map_tags = Some(map.tags);
+        }
         world.movement = spawn.pose;
+        // A new mover's (`Mover::speed_scale`): no move yet.
+        world.speed_scale = Some(1.0);
         if !has_authored_pools {
             world.vitals = self.pools.unwrap_or(FALLBACK_POOLS).vitals();
         }
@@ -238,6 +258,7 @@ impl PlayerBodyFactory {
         world.target_tags = self.target_tags.clone();
         world.controller_on_fire = self.controller_on_fire;
         world.unknowns = self.unknowns;
+        world.team_sizes = self.mode_body.team_sizes.clone();
         let mut roots = self.roots.clone();
         let mode_script = self
             .mode_body
@@ -385,6 +406,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         }
         let pose = mover.pose();
         self.world.position = pose.position;
+        self.world.speed_scale = Some(mover.speed_scale());
         self.world.eye_height = Some(self.combat.eyes.height(mover.crouched()));
         // Its own body, as the target searches see it, stands where it moved.
         let entity = self.world.entity;

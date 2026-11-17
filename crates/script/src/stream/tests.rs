@@ -144,9 +144,16 @@ fn body_full_waits_for_create_and_the_first_owner_delta_retries_unchanged() {
     stream.create_arrived();
     assert!(stream.ready_to_send(full.last));
     assert!(stream.sent(full.last).is_none());
+    stream.full_sent(99);
     assert!(stream.lost(full.last).retry);
+    assert!(stream.sent(full.last).is_none());
+    stream.full_sent(100);
     assert!(stream.arrived(full.last).advanced);
     assert_eq!(stream.base(), Some((1, &100)));
+    // The client took 100, the frame of the datagram that brought the full
+    // chunk, as the body's command frame: an owner frame at 100 would be
+    // stale there.
+    assert_eq!(stream.owner_kind(100, false, false).unwrap(), None);
     let change = ChangeKey::State(11, 10);
     let initial_kind = stream.owner_kind(101, false, false).unwrap().unwrap();
     assert_eq!(initial_kind, DeltaKind::InitialOwner(101));

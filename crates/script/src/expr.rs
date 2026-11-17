@@ -160,6 +160,12 @@ pub trait Context {
         None
     }
 
+    /// A team's size as the game struct gives it (`STU_D289FA32`; the
+    /// entry of `team`, else the "any team" entry 5); None: unknown.
+    fn team_size(&mut self, _team: i64) -> Option<i64> {
+        None
+    }
+
     /// Whether `entity` is an AI controller (has component 92); None:
     /// unknown.
     fn controller_is_ai(&mut self, _entity: u32) -> Option<bool> {
@@ -222,6 +228,36 @@ pub trait Context {
     /// A body's yaw and pitch in turns of 65536 (the command's units; the
     /// pitch is positive looking down); None: unknown.
     fn entity_facing(&mut self, _entity: u32) -> Option<[i32; 2]> {
+        None
+    }
+
+    /// A body's yaw alone, in the same units (its facing along the ground);
+    /// by default the facing's.
+    fn entity_yaw(&mut self, entity: u32) -> Option<i32> {
+        self.entity_facing(entity).map(|[yaw, _]| yaw)
+    }
+
+    /// The move-speed scale of `entity`'s mover (`STU_ED807E07`); None:
+    /// unknown.
+    fn speed_scale(&mut self, _entity: u32) -> Option<f64> {
+        None
+    }
+
+    /// The map point a ray from `origin` along unit `direction` meets
+    /// within `reach` (a cast without a ray profile); Some(None) when it
+    /// meets none, None when this world has no map.
+    fn map_ray(
+        &mut self,
+        _origin: [f64; 3],
+        _direction: [f64; 3],
+        _reach: f64,
+    ) -> Option<Option<[f64; 3]>> {
+        None
+    }
+
+    /// Whether the match's map supports game mode `mode` (`STU_16753B11`);
+    /// None: unknown.
+    fn map_supports_mode(&mut self, _mode: u64) -> Option<bool> {
         None
     }
 
@@ -562,6 +598,29 @@ pub fn team_from_filter(bits: u64) -> i64 {
     }
 }
 
+/// Filter bit 28 of component 25's word, which the team relation
+/// 0x7FF789B2CB00 reads through 0x7FF789B2F000 and 0x7FF789B2ECD0.
+const TEAM_RELATION_BIT: u64 = 1 << 28;
+
+/// Whether team `team` is hostile to an entity of team `own` (−1 none)
+/// with filter word `flags` (0x7FF789B2CB00 without an override): with
+/// filter bit 28 and no team, only team 1 is; with bit 28, any other team;
+/// else any other team, and teams −1 and 4 on either side are hostile to
+/// all.
+fn hostile_to_team(team: i64, own: i64, flags: u64) -> bool {
+    if flags & TEAM_RELATION_BIT != 0 {
+        return if team_from_filter(flags) == -1 {
+            team == 1
+        } else {
+            team != own
+        };
+    }
+    matches!(team, -1 | 4) || matches!(own, -1 | 4) || team != own
+}
+
+/// A quarter of a turn in the yaw units of [`aim`].
+const QUARTER_TURN: i32 = 16_384;
+
 /// The unit vector a body looks along, each axis rounded to f32: forward is
 /// `(sin yaw, 0, cos yaw)` and a positive pitch looks down (`combat.aim` and
 /// `Match.script_body_facing` in leafall903/ORPHEUS, commit c239a84).
@@ -570,6 +629,30 @@ pub(crate) fn aim([yaw, pitch]: [i32; 2]) -> [f64; 3] {
     let (yaw_sin, yaw_cos) = (f64::from(yaw) * TURN).sin_cos();
     let (pitch_sin, pitch_cos) = (f64::from(pitch) * TURN).sin_cos();
     [yaw_sin * pitch_cos, -pitch_sin, yaw_cos * pitch_cos].map(rounded)
+}
+
+/// The client's arcsine (0x7FF7894D7970): the sine clamped to [−1, 1], then
+/// an odd polynomial in f32 (π/2 at 1), as the client sums it.
+pub(crate) fn client_asin(sine: f32) -> f32 {
+    let x = sine.clamp(-1.0, 1.0);
+    let a = x.abs();
+    let a2 = a * a;
+    let a3 = a2 * a;
+    let a5 = a3 * a2;
+    let a7 = a5 * a2;
+    let a9 = a7 * a2;
+    let a11 = a9 * a2;
+    let a13 = a11 * a2;
+    let a15 = a2 * a13;
+    let value = a * 0.872_197_5
+        + a3 * 2.821_105_7
+        + a5 * -21.305_187
+        + a7 * 88.440_08
+        + a9 * -205.448_36
+        + a11 * 271.334_17
+        - a13 * 189.901_58
+        + a15 * 54.758_385;
+    if x < 0.0 { -value } else { value }
 }
 
 /// MEMBER_BY_INDEX. Typed pairs take a number as a position and any other
@@ -644,11 +727,12 @@ fn native_fields(config: &Json, operands: &[&str]) -> bool {
 
 /// A scene tag query's fields (`STU_EB216A0B`, `STU_B3E67A36`, the state
 /// `STU_160F2578` and the action `STU_42578342` share them) in the forms
-/// [`Evaluator::tag_query`] runs: no participant filter.
+/// [`Evaluator::tag_query`] runs: the three tag lists and the participant
+/// filter.
 fn tag_query_shape(config: &Json) -> bool {
     config.as_object().is_some_and(|fields| {
         fields.iter().all(|(key, value)| match key.as_str() {
-            "$" | "m_9C7BD8B8" | "m_B486603E" | "m_8B2A4DF3" => true,
+            "$" | "m_9C7BD8B8" | "m_B486603E" | "m_8B2A4DF3" | "m_filter" => true,
             "m_EE729DCB" => value.as_u64() == Some(0),
             _ => value.is_null(),
         })
@@ -804,32 +888,98 @@ pub(crate) fn target_tag_config(config: &Json) -> Option<u64> {
     }
 }
 
-fn filter_exclusion(filter: &Json) -> Option<u64> {
-    if class(filter) != Some("STUConfigVarFilter")
-        || child(filter, "m_84065FD1").as_u64() != Some(0x3fff_ffff)
-    {
-        return None;
+/// A `STUConfigVarFilter`'s masks and relation words, as the client's
+/// `Filter_TestTeamMasks` (0x7FF789ADAAE0) reads them (`vm/targets.rs`
+/// module notes): any-of `m_84065FD1` (`0x3FFFFFFF` every kind), all-of
+/// `m_1E14CCA8`, none-of `m_4EA686DB` against the entity's filter word;
+/// include `m_27CF71D5`, require `m_66747E7D`, exclude `m_89831602` of the
+/// relation bits 1 friendly, 2 hostile, 4 the searcher.
+pub(crate) struct FilterMasks {
+    any: u64,
+    all: u64,
+    none: u64,
+    include: u64,
+    require: u64,
+    exclude: u64,
+}
+
+/// `m_84065FD1`: every kind.
+const ALL_KINDS: u64 = 0x3fff_ffff;
+const FRIENDLY: u64 = 1;
+const HOSTILE: u64 = 2;
+const SEARCHER: u64 = 4;
+
+impl FilterMasks {
+    /// The masks of a filter whose other fields are the three tag lists
+    /// (`m_C1903771`, +0x70, is not read by the client's filter test
+    /// 0x7FF789C1DA20) and a condition ([`passes_filter`]); None: a field
+    /// the evaluator can't compute.
+    fn read(filter: &Json) -> Option<Self> {
+        if class(filter) != Some("STUConfigVarFilter") {
+            return None;
+        }
+        let supported = filter
+            .as_object()?
+            .iter()
+            .all(|(key, value)| match key.as_str() {
+                "$" | "m_9C7BD8B8" | "m_B486603E" | "m_8B2A4DF3" | "m_C1903771" | "m_condition" => {
+                    true
+                }
+                "m_84065FD1" | "m_1E14CCA8" | "m_4EA686DB" | "m_27CF71D5" | "m_66747E7D"
+                | "m_89831602" => value.as_u64().is_some(),
+                "m_EE729DCB" => value.as_u64() == Some(0),
+                "m_93FA1642" => value.is_null() || value.as_array().is_some_and(Vec::is_empty),
+                "m_F61726FE" | "m_B40362FC" => value.is_null(),
+                _ => false,
+            });
+        supported.then(|| Self::words(filter))
     }
-    // The supported form has no selectors beyond candidate exclusions and the
-    // three tag lists (`m_C1903771`, +0x70, is not read by the client's
-    // filter test 0x7FF789C1DA20).
-    let supported = filter
-        .as_object()?
-        .iter()
-        .all(|(key, value)| match key.as_str() {
-            "$" | "m_84065FD1" | "m_4EA686DB" | "m_9C7BD8B8" | "m_B486603E" | "m_8B2A4DF3"
-            | "m_C1903771" => true,
-            "m_EE729DCB" | "m_1E14CCA8" | "m_27CF71D5" | "m_66747E7D" | "m_89831602" => {
-                value.as_u64() == Some(0)
-            }
-            "m_93FA1642" => value.is_null() || value.as_array().is_some_and(Vec::is_empty),
-            "m_condition" | "m_F61726FE" | "m_B40362FC" => value.is_null(),
-            _ => false,
-        });
-    if !supported {
-        return None;
+
+    /// The six words of a filter, each 0 when unset; its other fields are
+    /// the caller's.
+    pub(crate) fn words(filter: &Json) -> Self {
+        let word = |name: &str| child(filter, name).as_u64().unwrap_or(0);
+        Self {
+            any: word("m_84065FD1"),
+            all: word("m_1E14CCA8"),
+            none: word("m_4EA686DB"),
+            include: word("m_27CF71D5"),
+            require: word("m_66747E7D"),
+            exclude: word("m_89831602"),
+        }
     }
-    filter.get("m_4EA686DB").map_or(Some(0), Json::as_u64)
+
+    /// Whether the masks read the entity's filter word.
+    fn read_word(&self) -> bool {
+        self.any != ALL_KINDS || self.all != 0 || self.none != 0
+    }
+
+    pub(crate) fn relations(&self) -> bool {
+        self.include | self.require | self.exclude != 0
+    }
+
+    /// Whether nothing can pass: no any-of mask and no include word.
+    pub(crate) fn passes_none(&self) -> bool {
+        self.any == 0 && self.include == 0
+    }
+
+    /// The client's test: `word` the entity's filter word (unread when
+    /// [`Self::read_word`] is false), `friendly` and `searcher` its
+    /// relation to the evaluating entity (unread without relation words).
+    pub(crate) fn passes(&self, word: u64, friendly: bool, searcher: bool) -> bool {
+        let relation = |bits: u64| {
+            (bits & FRIENDLY != 0 && friendly)
+                || (bits & HOSTILE != 0 && !friendly)
+                || (bits & SEARCHER != 0 && searcher)
+        };
+        let any = self.any == ALL_KINDS || word & self.any != 0 || relation(self.include);
+        let all = word & self.all == self.all
+            && !(self.require & FRIENDLY != 0 && !friendly
+                || self.require & HOSTILE != 0 && friendly
+                || self.require & SEARCHER != 0 && !searcher);
+        let none = word & self.none != 0 || relation(self.exclude);
+        any && all && !none
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -973,10 +1123,14 @@ impl Evaluator {
     /// (0x7FF789C5E9A0: every tag its value gives, each once), then over
     /// every entity (0x7FF789CC3850) those that carry a tag of
     /// `m_9C7BD8B8` (any entity when it gives none), every tag of
-    /// `m_B486603E` and no tag of `m_8B2A4DF3` (0x7FF789CC5310). A world
-    /// lists only the entities with a tag ([`Context::entities_with_tag`]),
-    /// so a query that gives no tag in either of the first two fields, or
-    /// with a participant filter (`m_filter`), can't be run.
+    /// `m_B486603E` and no tag of `m_8B2A4DF3` (0x7FF789CC5310), and pass
+    /// the participant filter `m_filter` when it has one. A world lists
+    /// only the entities with a tag ([`Context::entities_with_tag`]), so
+    /// the entities come from the first two fields' tags, else from the
+    /// filter's own any-of and all-of tag lists; a query that names no tag
+    /// can't be run. Assumption: the filter is tested as `STU_AC829876`
+    /// tests one (the script's owner the searcher); the call that tests it
+    /// in 0x7FF789CC3850 was not read.
     fn tag_query(
         &mut self,
         config: &Json,
@@ -1007,14 +1161,25 @@ impl Evaluator {
             }
         }
         let [any, all, none] = lists;
-        let listed: &[u64] = if any.is_empty() {
-            &all[..all.len().min(1)]
+        let filter = child(config, "m_filter");
+        let filter = if filter.is_null() {
+            None
         } else {
-            &any
+            Some((filter, FilterMasks::read(filter).ok_or_else(unsupported)?))
         };
-        if listed.is_empty() {
-            return Err(unsupported());
-        }
+        let filter_tags = |field: &str| -> Result<Vec<u64>, EvalError> {
+            let Some((filter, _)) = filter else {
+                return Ok(Vec::new());
+            };
+            filter_tag_list(child(filter, field)).ok_or_else(unsupported)
+        };
+        let (filter_any, filter_all) = (filter_tags("m_9C7BD8B8")?, filter_tags("m_B486603E")?);
+        let listed: &[u64] = [&any, &all, &filter_any, &filter_all]
+            .into_iter()
+            .zip([usize::MAX, 1, usize::MAX, 1])
+            .find(|(tags, _)| !tags.is_empty())
+            .map(|(tags, take)| &tags[..tags.len().min(take)])
+            .ok_or_else(unsupported)?;
         let mut found = Vec::new();
         for &tag in listed {
             for entity in context.entities_with_tag(tag).ok_or_else(unsupported)? {
@@ -1030,6 +1195,12 @@ impl Evaluator {
                         keep &= carries == wanted;
                     }
                 }
+                if keep && let Some((filter, masks)) = &filter {
+                    keep = match passes_filter(filter, masks, entity, context) {
+                        Err(EvalError::UnsupportedConfig(_)) => return Err(unsupported()),
+                        result => result?,
+                    };
+                }
                 if keep {
                     found.push(entity);
                 }
@@ -1037,7 +1208,30 @@ impl Evaluator {
         }
         Ok(found)
     }
+}
 
+/// The tags of a filter's tag list field (null, one `STU_357DABBB` or a
+/// config list of them), as [`check_tag_set`] reads them; None: another
+/// form.
+fn filter_tag_list(field: &Json) -> Option<Vec<u64>> {
+    let configs = if field.is_null() {
+        &[]
+    } else if native_shape(field, CONFIG_LIST, Some("m_configVars")) {
+        field.get("m_configVars")?.as_array()?.as_slice()
+    } else {
+        std::slice::from_ref(field)
+    };
+    let mut tags = Vec::new();
+    for config in configs {
+        let tag = target_tag_config(config)?;
+        if tag != 0 && !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
+    Some(tags)
+}
+
+impl Evaluator {
     fn known_config(
         &mut self,
         config: &Json,
@@ -1419,6 +1613,194 @@ impl Evaluator {
                     _ => Value::Null,
                 }
             }
+            // An entity's position (`Eval_STU_8CBDD81C` 0x7FF789BF6430 →
+            // 0x7FF789C26460): an entity with a mover (component 31) and a
+            // pose, the pose's position (0x7FF789B471D0); else component
+            // 1's translation placed in its parent's frame. No entity or an
+            // invalid one fails, null here. Mostly the owner (32 of 37).
+            "STU_8CBDD81C" if native_shape(config, class, Some("m_entity")) => {
+                match to_entity(&self.config(child(config, "m_entity"), context, nested)?) {
+                    Some(entity) if valid_entity(entity) => Value::Vector(
+                        context
+                            .entity_position(entity)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    ),
+                    _ => Value::Null,
+                }
+            }
+            // An entity's side axis (`Eval_STU_66F3B89E` 0x7FF789BF8460 →
+            // 0x7FF789C2B5E0): the first row of its world matrix, which for
+            // a posed body is up × forward of its model's pose (the yaw
+            // alone, the model doesn't pitch): `(cos yaw, 0, −sin yaw)`, the
+            // facing turned a quarter (upstream `scene.py`: `aim(yaw +
+            // 16384, 0)`). No entity or an invalid one fails, null here.
+            // Mostly the owner (51 of 66): knockback and launch sides.
+            "STU_66F3B89E" if native_shape(config, class, Some("m_entity")) => {
+                if let Some(value) = context.native(config) {
+                    return Ok(value);
+                }
+                match to_entity(&self.config(child(config, "m_entity"), context, nested)?) {
+                    Some(entity) if valid_entity(entity) => {
+                        let yaw = context
+                            .entity_yaw(entity)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
+                        Value::Vector(aim([yaw.wrapping_add(QUARTER_TURN), 0]))
+                    }
+                    _ => Value::Null,
+                }
+            }
+            // An entity's move-speed scale (`Eval_STU_ED807E07`
+            // 0x7FF789BE3570): the float its mover (component 31) keeps at
+            // `+0x4D8`, which the mover update 0x7FF789B4CBA0 writes each
+            // move with the result of mod 0, the factor of every run and
+            // crouch speed (OwnerPrediction.md 11.3); 1.0 without a mover;
+            // 0.0 for no entity or one the host can't find. Reinhardt,
+            // Doomfist and Brigitte charge speeds (`007D` st95, `0D06`
+            // st83/84, `0EE3` st100), all on the owner.
+            "STU_ED807E07" if native_shape(config, class, Some("m_entity")) => {
+                let entity = child(config, "m_entity");
+                let entity = if entity.is_null() {
+                    None
+                } else {
+                    to_entity(&self.config(entity, context, nested)?)
+                };
+                match entity {
+                    Some(entity) if valid_entity(entity) => Value::Float(rounded(
+                        context
+                            .speed_scale(entity)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    )),
+                    _ => Value::Float(0.0),
+                }
+            }
+            // The steepest drop under points in an entity's frame
+            // (`Eval_STU_6EDA44A7` 0x7FF789BF2870): `m_height` (unset 2.0,
+            // 0x7FF78B52275C); each point of `m_BD631144` goes through
+            // `m_entity`'s world matrix (0x7FF789C33B40: side, up, forward
+            // rows and position; no entity: the point as given and the
+            // origin as position), and the scene query (flags 0x1081, type
+            // 10, 0x7FF78AA65110 on the script entity's scene) runs from it
+            // down `m_height`. A hit gives the angle below the entity's
+            // position, `asin((position.y − hit.y) / |hit − position|)`
+            // in degrees ([`client_asin`], × 57.29578). The result is the
+            // largest angle when more than half the points hit (0.5 at
+            // 0x7FF78B505A48), else 90.0 (0x7FF78B542000). Reinhardt's and
+            // Brigitte's barriers (`0095` rid57, `0EE3` rid86 ChaseVar
+            // #502), on the owner, three points 2 m up and 0.75 to 1.5 m
+            // ahead, 3 m down. Assumption: the query meets the map as a
+            // ray without a ray profile does ([`Context::map_ray`]); what
+            // flags 0x1081 and type 10 select was not read.
+            "STU_6EDA44A7" if native_fields(config, &["m_entity", "m_BD631144", "m_height"]) => {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let height = child(config, "m_height");
+                let height = if height.is_null() {
+                    2.0
+                } else {
+                    to_float(&self.config(height, context, nested)?)
+                };
+                let entity = child(config, "m_entity");
+                let entity = if entity.is_null() {
+                    None
+                } else {
+                    to_entity(&self.config(entity, context, nested)?).filter(|e| valid_entity(*e))
+                };
+                let (position, yaw) = match entity {
+                    Some(entity) => (
+                        context.entity_position(entity).ok_or_else(unsupported)?,
+                        context.entity_yaw(entity).ok_or_else(unsupported)?,
+                    ),
+                    None => ([0.0; 3], 0),
+                };
+                let side = aim([yaw.wrapping_add(QUARTER_TURN), 0]);
+                let forward = aim([yaw, 0]);
+                let mut rows = Vec::new();
+                value_rows(
+                    self.value(child(config, "m_BD631144"), context, nested)?,
+                    &mut rows,
+                )?;
+                let mut hits = 0usize;
+                let mut steepest = -10_000.0f32;
+                for row in &rows {
+                    let Value::Vector(local) = row else {
+                        return Err(unsupported());
+                    };
+                    let start = if entity.is_some() {
+                        std::array::from_fn(|axis| {
+                            position[axis]
+                                + local[0] * side[axis]
+                                + local[2] * forward[axis]
+                                + if axis == 1 { local[1] } else { 0.0 }
+                        })
+                    } else {
+                        *local
+                    };
+                    let Some(hit) = context
+                        .map_ray(start, [0.0, -1.0, 0.0], height)
+                        .ok_or_else(unsupported)?
+                    else {
+                        continue;
+                    };
+                    let offset: [f64; 3] = std::array::from_fn(|axis| hit[axis] - position[axis]);
+                    let length = offset.iter().map(|part| part * part).sum::<f64>().sqrt();
+                    let sine = ((position[1] - hit[1]) / length) as f32;
+                    hits += 1;
+                    steepest = steepest.max(client_asin(sine) * 57.295_78);
+                }
+                let share = if rows.is_empty() {
+                    0.0
+                } else {
+                    hits as f32 / rows.len() as f32
+                };
+                Value::Float(f64::from(if share > 0.5 { steepest } else { 90.0 }))
+            }
+            // Is `m_team` hostile to the script's entity (`Eval_STU_47703870`
+            // 0x7FF789845DA0 → 0x7FF789B2CB00): the team (unset −1), the
+            // entity's team (0x7FF789B2B570: component 25's filter bits 23
+            // to 27; −1 none) and its filter bit 28 ([`hostile_to_team`]).
+            // 0x7FF789B2CB00 first asks a per-entity override list (entity
+            // `+40` object `+0x140`, slot 30; its last entry's team `+24`
+            // decides) whose writer was not traced: no world keeps one, so
+            // the rule below is the answer for an entity without overrides.
+            // `0EC2` rid420/421 order the two teams' Control progress.
+            "STU_47703870" if native_shape(config, class, Some("m_team")) => {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let team = child(config, "m_team");
+                let team = if team.is_null() {
+                    -1
+                } else {
+                    i64::from(to_int(&self.config(team, context, nested)?, -1) as i32)
+                };
+                let owner = to_entity(&context.owner())
+                    .filter(|&entity| valid_entity(entity))
+                    .ok_or_else(unsupported)?;
+                let own = context.entity_team(owner).ok_or_else(unsupported)?;
+                let flags = context.entity_filter_flags(owner).ok_or_else(unsupported)?;
+                Value::Bool(hostile_to_team(team, own, flags))
+            }
+            // Does the current map support `m_gamemode`
+            // (`Eval_STU_16753B11` 0x7FF789C03860): the mode is in the map
+            // header's (`STU_02514B6A`) `m_supportedGamemodes` (+56, 16-byte
+            // entries, GUID at +8), or is `0230:0045`; no mode, false.
+            // Skirmish `0D76` rid37/39/112.
+            "STU_16753B11" if native_shape(config, class, Some("m_gamemode")) => {
+                const ALWAYS: u64 = 0x0230_0000_0000_0045;
+                let mode = child(config, "m_gamemode");
+                let mode = if mode.is_null() {
+                    Value::Null
+                } else {
+                    self.config(mode, context, nested)?
+                };
+                match mode {
+                    Value::Asset(ALWAYS) => Value::Bool(true),
+                    Value::Asset(mode) if mode != 0 => Value::Bool(
+                        context
+                            .map_supports_mode(mode)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    ),
+                    Value::Asset(_) | Value::Null => Value::Bool(false),
+                    _ => return Err(EvalError::UnsupportedConfig(class.into())),
+                }
+            }
             // Where a body looks: 2200A66D along its aim, 021D01CD along the
             // ground, C8C4C20D its heading in degrees, atan2(x, z) of the
             // ground direction (`BodyWorld.native` in leafall903/ORPHEUS,
@@ -1433,9 +1815,11 @@ impl Evaluator {
                 let entity = to_entity(&self.config(child(config, "m_entity"), context, nested)?)
                     .filter(|&entity| valid_entity(entity))
                     .ok_or_else(unsupported)?;
-                let [yaw, pitch] = context.entity_facing(entity).ok_or_else(unsupported)?;
-                let pitch = if class == "STU_2200A66D" { pitch } else { 0 };
-                let facing = aim([yaw, pitch]);
+                let facing = if class == "STU_2200A66D" {
+                    aim(context.entity_facing(entity).ok_or_else(unsupported)?)
+                } else {
+                    aim([context.entity_yaw(entity).ok_or_else(unsupported)?, 0])
+                };
                 if class == "STU_C8C4C20D" {
                     const DEGREES: f64 = 57.295_780_181_884_766;
                     let [x, _, z] = facing;
@@ -1443,6 +1827,77 @@ impl Evaluator {
                 } else {
                     Value::Vector(facing)
                 }
+            }
+            // A direction kept within a cone of another (Eval 0x7FF789BFB820):
+            // `m_32B00625`'s yaw atan2(x, z) and pitch asin(−y) (both
+            // normalized; unset or not a vector: (0, 0, 1)), each moved to
+            // within `m_5023B9B0` (yaw) and `m_E26E5E09` (pitch) degrees of
+            // `m_3661BC45`'s (differences wrapped to ±π, 0x7FF78A75AEC0),
+            // and made a direction again (0x7FF78A7596E0: the forward row of
+            // a pitch, then yaw, rotation). A zero vector gives (0, 0, 0).
+            // Knockback and launch directions (`1513`, `010A`, `0B27`).
+            "STU_0762B33A" => {
+                let mut direction = |name: &str| -> Result<Option<[f64; 3]>, EvalError> {
+                    let value = match self.config(child(config, name), context, nested)? {
+                        Value::Vector(parts) => parts,
+                        _ => [0.0, 0.0, 1.0],
+                    };
+                    let length = value.iter().map(|part| part * part).sum::<f64>().sqrt();
+                    Ok((length * length >= 1.175_494_4e-36)
+                        .then(|| value.map(|part| part / length)))
+                };
+                let (Some(from), Some(around)) =
+                    (direction("m_32B00625")?, direction("m_3661BC45")?)
+                else {
+                    return Ok(Value::Vector([0.0; 3]));
+                };
+                let mut degrees = |name: &str| -> Result<f64, EvalError> {
+                    Ok(to_float(&self.config(child(config, name), context, nested)?).to_radians())
+                };
+                let yaw_limit = degrees("m_5023B9B0")?;
+                let pitch_limit = degrees("m_E26E5E09")?;
+                let angles = |[x, y, z]: [f64; 3]| {
+                    let yaw = if x != 0.0 || z != 0.0 {
+                        x.atan2(z)
+                    } else {
+                        0.0
+                    };
+                    [yaw, (-y).clamp(-1.0, 1.0).asin()]
+                };
+                let [yaw, pitch] = angles(from);
+                let [around_yaw, around_pitch] = angles(around);
+                let within = |angle: f64, around: f64, limit: f64| {
+                    use std::f64::consts::{PI, TAU};
+                    let difference = (around - angle + PI).rem_euclid(TAU) - PI;
+                    if difference.abs() <= limit {
+                        angle
+                    } else if difference > 0.0 {
+                        around - limit
+                    } else {
+                        around + limit
+                    }
+                };
+                let yaw = within(yaw, around_yaw, yaw_limit);
+                let pitch = within(pitch, around_pitch, pitch_limit);
+                let (yaw_sin, yaw_cos) = yaw.sin_cos();
+                let (pitch_sin, pitch_cos) = pitch.sin_cos();
+                Value::Vector([yaw_sin * pitch_cos, -pitch_sin, yaw_cos * pitch_cos].map(rounded))
+            }
+            // A team's size (Eval 0x7FF789BF48D0 → 0x7FF789CADB40): the
+            // game struct's entry for `m_team` (unset: -1), else the "any
+            // team" entry 5. Elimination picks as many heroes as the larger
+            // team (`0D0B`), Deathmatch counts half the players (`0F73`
+            // team 4), a body asks whether its team is alone (`006D`).
+            "STU_D289FA32" if native_shape(config, class, Some("m_team")) => {
+                let team = match child(config, "m_team") {
+                    Json::Null => -1,
+                    team => to_int(&self.config(team, context, nested)?, -1),
+                };
+                Value::Integer(
+                    context
+                        .team_size(team)
+                        .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                )
             }
             // An entity's team (CEEDC0): -1 for no entity or an invalid one
             // (`entity_team.evaluate` in leafall903/ORPHEUS, commit c239a84,
@@ -1575,12 +2030,19 @@ impl Evaluator {
             // 0x7FF789C055D0 → 0x7FF7894CFBA0, `Eval_STU_005D99E6`
             // 0x7FF789BDBD10 → 0x7FF7894D01F0; no entity reads 0; BotVoice.md,
             // "Client tools pass (2026-11-16)"). `05AD` rid147 rates the
-            // sender of Need Healing's `0307` by them.
+            // sender of Need Healing's `0307` by them. `m_7BE02F89` (a named
+            // pool, read as an identifier: 0x7FF789E75540) is not modelled;
+            // an identifier literal of none (Zenyatta's `0176`) reads 0, as
+            // when it is unset (`Eval_STU_783B4CF0` 0x7FF789BEFCC0).
             "STU_783B4CF0" | "STU_68883EAC" | "STU_F1C45C59" | "STU_005D99E6" => {
                 let unsupported = || EvalError::UnsupportedConfig(class.into());
-                if !native_fields(config, &["m_entity", "m_7E8B666C", "m_7BE02F89"])
-                    || !child(config, "m_7BE02F89").is_null()
-                {
+                let pool = child(config, "m_7BE02F89");
+                let no_pool = pool.is_null()
+                    || (native_fields(pool, &["m_identifier", "m_resourceKey"])
+                        && self::class(pool) == Some("STUConfigVarIdentifier")
+                        && child(pool, "m_identifier").is_null()
+                        && child(pool, "m_resourceKey").is_null());
+                if !native_fields(config, &["m_entity", "m_7E8B666C", "m_7BE02F89"]) || !no_pool {
                     return Err(unsupported());
                 }
                 let selector = child(config, "m_7E8B666C");
@@ -1803,6 +2265,13 @@ impl Evaluator {
         Ok(result)
     }
 
+    /// `STU_AC829876`: whether `m_entity` passes `m_filter`, as the
+    /// client's `ScriptHost_EntityPassesFilter` (0x7FF789C1DA20): the masks
+    /// against the entity's filter word and its relation to the evaluating
+    /// entity (`Filter_TestTeamMasks`, [`FilterMasks`]; the searcher is the
+    /// script's owner, hostile as `vm/targets.rs` tells), then the tag
+    /// lists. Unsupported when a fact it needs is unknown, or nothing about
+    /// the entity is known at all.
     fn entity_filter(
         &mut self,
         config: &Json,
@@ -1814,44 +2283,82 @@ impl Evaluator {
             return Err(unsupported());
         }
         let filter = child(config, "m_filter");
-        let exclude = filter_exclusion(filter).ok_or_else(unsupported)?;
+        let masks = FilterMasks::read(filter).ok_or_else(unsupported)?;
         let Value::Entity(entity) = self.config(child(config, "m_entity"), context, depth)? else {
             return Err(unsupported());
         };
         if !valid_entity(entity) {
             return Ok(Value::Bool(false));
         }
-        let flags = if exclude == 0 {
-            None
+        passes_filter(filter, &masks, entity, context).map(Value::Bool)
+    }
+}
+
+/// Whether `entity` passes a filter whose masks are `masks`, as
+/// [`Evaluator::entity_filter`] tells. The client also requires the
+/// filter's `m_condition` (`Filter_TestEntityCondition` 0x7FF78AA9D970,
+/// evaluated with the entity pushed as the candidate parameter); the
+/// evaluator doesn't bind one, so a set condition leaves an entity the
+/// masks and tag lists pass unanswered, while one they reject fails.
+fn passes_filter(
+    filter: &Json,
+    masks: &FilterMasks,
+    entity: u32,
+    context: &mut impl Context,
+) -> Result<bool, EvalError> {
+    let unsupported = || EvalError::UnsupportedConfig("STU_AC829876".into());
+    let flags = context.entity_filter_flags(entity);
+    let mut has_fact = flags.is_some();
+    let mut unknown = masks.read_word() && flags.is_none();
+    let (friendly, searcher) = if masks.relations() {
+        let owner = to_entity(&context.owner());
+        if owner == Some(entity) {
+            has_fact = true;
+            (true, true)
         } else {
-            context.entity_filter_flags(entity)
-        };
-        if flags.is_some_and(|flags| flags & exclude != 0) {
-            return Ok(Value::Bool(false));
-        }
-        let mut unknown = exclude != 0 && flags.is_none();
-        let mut has_fact = flags.is_some();
-        // The client's filter tag test (0x7FF789C1EC70 → 0x7FF789CC2FD0,
-        // the rule of 0x7FF789CC5310): any of `m_9C7BD8B8`, all of
-        // `m_B486603E`, none of `m_8B2A4DF3`.
-        for (field, condition) in [
-            ("m_9C7BD8B8", TagCondition::Any),
-            ("m_B486603E", TagCondition::All),
-            ("m_8B2A4DF3", TagCondition::Exclude),
-        ] {
-            match check_tag_set(child(filter, field), condition, entity, context)? {
-                TagCheck::Unused => (),
-                TagCheck::Accept => has_fact = true,
-                TagCheck::Reject => return Ok(Value::Bool(false)),
-                TagCheck::Unknown => unknown = true,
+            let teams = owner.and_then(|owner| context.entity_team(owner));
+            match (teams, context.entity_team(entity)) {
+                (Some(own), Some(team)) => {
+                    has_fact = true;
+                    // Teams -1 and 4 (a free-for-all body) are hostile to
+                    // every other entity.
+                    let hostile = own != team || matches!(own, -1 | 4);
+                    (!hostile, false)
+                }
+                _ => {
+                    unknown = true;
+                    (true, false)
+                }
             }
         }
-        if unknown || !has_fact && context.entity_filter_flags(entity).is_none() {
-            return Err(unsupported());
-        }
-        Ok(Value::Bool(true))
+    } else {
+        (true, false)
+    };
+    if !unknown && !masks.passes(flags.unwrap_or(0), friendly, searcher) {
+        return Ok(false);
     }
+    // The client's filter tag test (0x7FF789C1EC70 → 0x7FF789CC2FD0, the
+    // rule of 0x7FF789CC5310): any of `m_9C7BD8B8`, all of `m_B486603E`,
+    // none of `m_8B2A4DF3`.
+    for (field, condition) in [
+        ("m_9C7BD8B8", TagCondition::Any),
+        ("m_B486603E", TagCondition::All),
+        ("m_8B2A4DF3", TagCondition::Exclude),
+    ] {
+        match check_tag_set(child(filter, field), condition, entity, context)? {
+            TagCheck::Unused => (),
+            TagCheck::Accept => has_fact = true,
+            TagCheck::Reject => return Ok(false),
+            TagCheck::Unknown => unknown = true,
+        }
+    }
+    if unknown || !has_fact || !child(filter, "m_condition").is_null() {
+        return Err(unsupported());
+    }
+    Ok(true)
+}
 
+impl Evaluator {
     fn expression(
         &mut self,
         config: &Json,

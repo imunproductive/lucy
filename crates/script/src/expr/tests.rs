@@ -250,8 +250,14 @@ fn entity_filter_distinguishes_rejection_from_unavailable_facts() {
     world.flags = Some(2 | 0x100);
     world.tags.clear();
     assert_eq!(evaluate(&config, &mut world), Ok(Value::Bool(false)));
+    // A relation word: the owner is the searcher, so friendly, and
+    // requiring a hostile entity (2) fails it (`Filter_TestTeamMasks`).
     config["m_filter"]["m_66747E7D"] = json!(2);
-    assert_eq!(evaluate(&config, &mut world), unknown);
+    assert_eq!(evaluate(&config, &mut world), Ok(Value::Bool(false)));
+    config["m_filter"]["m_66747E7D"] = json!(4);
+    world.flags = Some(0x100);
+    world.tags.insert(REQUIRED_TAG, true);
+    assert_eq!(evaluate(&config, &mut world), Ok(Value::Bool(true)));
 }
 
 /// The filter's tag lists as the client tests them (0x7FF789C1EC70 →
@@ -281,6 +287,65 @@ fn entity_filter_applies_any_all_and_excluded_tag_lists() {
     config["m_filter"]["m_9C7BD8B8"]["m_configVars"] =
         json!([tag_config(REQUIRED_TAG), {"$":"unresolved-tag-config"}]);
     assert_eq!(evaluate(&config, &mut world), unsupported,);
+}
+
+/// A filter with `m_condition` (the killer hints of `010C`, `00A4`, `01A3`,
+/// `003D`: a hero tag and `#392.id(1216) == 2.0`): the masks and tag lists
+/// still reject an entity, but one they pass is unanswered, since the
+/// evaluator doesn't bind the condition's candidate.
+#[test]
+fn entity_filter_with_a_condition_answers_only_rejections() {
+    let mut config = entity_filter(0);
+    config["m_filter"]["m_B486603E"] = tag_config(REQUIRED_TAG);
+    config["m_filter"]["m_condition"] = json!({"$":"STUConfigVarBool", "m_value":1});
+    let mut world = FilterWorld {
+        entity: Some(FILTER_OWNER),
+        tags: BTreeMap::from([(REQUIRED_TAG, false)]),
+        ..Default::default()
+    };
+    assert_eq!(evaluate(&config, &mut world), Ok(Value::Bool(false)));
+    world.tags.insert(REQUIRED_TAG, true);
+    assert_eq!(
+        evaluate(&config, &mut world),
+        Err(EvalError::UnsupportedConfig("STU_AC829876".into()))
+    );
+}
+
+/// `STU_783B4CF0` with `m_7BE02F89` an identifier of none (Zenyatta's
+/// `0176`) reads the pool kind as when it is unset; a named pool is not
+/// modelled.
+#[test]
+fn pool_health_takes_an_identifier_of_none_as_no_pool() {
+    struct Pools;
+    impl Context for Pools {
+        fn owner(&mut self) -> Value {
+            Value::Entity(FILTER_OWNER)
+        }
+
+        fn body_health(
+            &mut self,
+            _entity: u32,
+            kind: Option<PoolKind>,
+            maximum: bool,
+        ) -> Option<f64> {
+            assert_eq!((kind, maximum), (Some(PoolKind::Health), false));
+            Some(50.0)
+        }
+    }
+    let identifier = |guid: Json| json!({"$":"STUConfigVarIdentifier", "m_identifier":guid, "m_resourceKey":null, "m_EE729DCB":0});
+    let health = |pool: Json| {
+        json!({"$":"STU_783B4CF0", "m_entity":{"$":"STU_B5A0CAF0"},
+            "m_7E8B666C":{"$":"STU_297E1A30", "m_7E8B666C":0}, "m_7BE02F89":pool})
+    };
+    let mut world = Pools;
+    assert_eq!(
+        evaluate(&health(identifier(Json::Null)), &mut world),
+        Ok(Value::Float(50.0))
+    );
+    assert_eq!(
+        evaluate(&health(identifier(json!("0x0D8000000000249D"))), &mut world),
+        Err(EvalError::UnsupportedConfig("STU_783B4CF0".into()))
+    );
 }
 
 /// `STU_7042F028` (`180A`): the identifier map lists its rows in the
@@ -630,12 +695,62 @@ fn tag_query_lists_the_entities_of_each_tag_once() {
     assert_eq!(evaluate(&first, &mut Tagged), Ok(Value::Entity(7)));
     first["m_9C7BD8B8"] = tag_config(0x0d60_0000_0000_0001);
     assert_eq!(evaluate(&first, &mut Tagged), Ok(Value::Entity(0)));
-    // Every entity (no tag to list them by) or a participant filter: not
-    // run.
+    // Every entity (no tag to list them by), or a participant filter on
+    // entities whose filter word the world doesn't know: not run.
     assert!(evaluate(&query(Json::Null), &mut Tagged).is_err());
     let mut filtered = query(tag_config(FIRST));
     filtered["m_filter"] = json!({"$": "STUConfigVarFilter", "m_84065FD1": 1});
     assert!(evaluate(&filtered, &mut Tagged).is_err());
+}
+
+/// A participant filter (`STU_B3E67A36` in Mercy's `0071`: an ally hero,
+/// not herself, with a hero's tag): the candidates come from the
+/// filter's own tag list, and each must pass the filter as
+/// `STU_AC829876` tests it.
+#[test]
+fn a_tag_query_with_only_a_filter_lists_the_entities_that_pass_it() {
+    const MERCY: u64 = 0x0d60_0000_0000_00f8;
+    const OWNER: u32 = 1;
+    struct Match;
+    impl Context for Match {
+        fn owner(&mut self) -> Value {
+            Value::Entity(OWNER)
+        }
+
+        fn entities_with_tag(&mut self, tag: u64) -> Option<Vec<u32>> {
+            Some(if tag == MERCY {
+                vec![OWNER, 2, 3]
+            } else {
+                Vec::new()
+            })
+        }
+
+        fn has_target_tag(&mut self, entity: u32, tag: u64) -> Option<bool> {
+            Some(tag == MERCY && entity <= 3)
+        }
+
+        fn entity_filter_flags(&mut self, _entity: u32) -> Option<u64> {
+            Some(1)
+        }
+
+        fn entity_team(&mut self, entity: u32) -> Option<i64> {
+            Some(if entity == 3 { 1 } else { 0 })
+        }
+    }
+    let filter = json!({"$": "STUConfigVarFilter", "m_84065FD1": 1, "m_1E14CCA8": 0,
+        "m_4EA686DB": 0, "m_27CF71D5": 0, "m_66747E7D": 1, "m_89831602": 4,
+        "m_B486603E": tag_config(MERCY)});
+    let query = json!({"$": "STU_EB216A0B", "m_filter": filter.clone()});
+    assert_eq!(
+        evaluate(&query, &mut Match),
+        Ok(Value::Array(vec![Value::Entity(2)]))
+    );
+    let first = json!({"$": "STU_B3E67A36", "m_filter": filter});
+    assert_eq!(evaluate(&first, &mut Match), Ok(Value::Entity(2)));
+    // A filter with a condition is not run.
+    let conditioned = json!({"$": "STU_B3E67A36", "m_filter": {"$": "STUConfigVarFilter",
+        "m_84065FD1": 1, "m_B486603E": tag_config(MERCY), "m_condition": {"$": "STUConfigVarBool", "m_value": 1}}});
+    assert!(evaluate(&conditioned, &mut Match).is_err());
 }
 
 #[test]

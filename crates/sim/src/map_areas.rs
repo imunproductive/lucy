@@ -107,7 +107,11 @@ use std::{
 
 use orpheus_content::maps::{GameMap, SpawnChoice};
 use orpheus_physics::collision::index::SceneTriangle;
-use orpheus_script::{graph::GraphBinding, placed::Placement};
+use orpheus_script::{
+    graph::{GraphBinding, GraphStore},
+    map_tags::{MapTags, TaggedEntity},
+    placed::Placement,
+};
 use serde::Deserialize;
 
 use crate::objectives::CaptureBox;
@@ -198,6 +202,9 @@ pub struct PlacedScript {
     pub position: [f64; 3],
     pub overrides: Vec<GraphBinding>,
     pub extra: Vec<GraphBinding>,
+    /// Its definition moves it by an idle animation the client plays (a
+    /// `STUMirroredIdleAnimComponent`): the Practice Range's platforms.
+    pub moving: bool,
 }
 
 impl PlacedScript {
@@ -226,6 +233,8 @@ struct MapAreas {
     /// The server placeables' script data, in the same order.
     scripts: Vec<Arc<PlacedScript>>,
     kill_volumes: Arc<[CaptureBox]>,
+    /// The entities with target tags, with the placeable each is.
+    tagged: Vec<(MapPlaceable, TaggedEntity)>,
 }
 
 /// Every map's spawn rooms, damage areas, server placeables and kill volumes, by
@@ -251,6 +260,8 @@ struct RawMap {
     server_placeables: Vec<RawServerPlaceable>,
     #[serde(default)]
     kill_volumes: Vec<CaptureBox>,
+    #[serde(default)]
+    tagged: Vec<RawTagged>,
 }
 
 #[derive(Deserialize)]
@@ -284,6 +295,8 @@ struct RawServerPlaceable {
     position: [f64; 3],
     #[serde(default)]
     script: RawScript,
+    #[serde(default)]
+    moving: bool,
 }
 
 #[derive(Default, Deserialize)]
@@ -292,6 +305,14 @@ struct RawScript {
     overrides: Vec<GraphBinding>,
     #[serde(default)]
     extra: Vec<GraphBinding>,
+}
+
+#[derive(Deserialize)]
+struct RawTagged {
+    #[serde(flatten)]
+    placeable: RawPlaceable,
+    position: [f64; 3],
+    tags: Vec<String>,
 }
 
 impl RawPlaceable {
@@ -389,11 +410,34 @@ impl MapAreaData {
                     position: raw.position,
                     overrides: raw.script.overrides,
                     extra: raw.script.extra,
+                    moving: raw.moving,
                 }));
                 server_placeables.push(placeable);
             }
             for (number, volume) in (0u32..).zip(&raw.kill_volumes) {
                 check_boxes(std::slice::from_ref(volume), &key, "kill volume", number)?;
+            }
+            let mut tagged = Vec::new();
+            for raw in raw.tagged {
+                let placeable = raw.placeable.read(&key)?;
+                let tags = raw
+                    .tags
+                    .iter()
+                    .map(|text| {
+                        u64::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|_| {
+                            invalid(format!(
+                                "{FILE}: map {key}: placeable {}: tag {text}",
+                                placeable.placeable
+                            ))
+                        })
+                    })
+                    .collect::<io::Result<_>>()?;
+                let entity = TaggedEntity {
+                    entity: 0x8000_0000 | placeable.placeable,
+                    position: raw.position,
+                    tags,
+                };
+                tagged.push((placeable, entity));
             }
             maps.insert(
                 guid,
@@ -403,6 +447,7 @@ impl MapAreaData {
                     server_placeables,
                     scripts,
                     kill_volumes: raw.kill_volumes.into(),
+                    tagged,
                 },
             );
         }
@@ -472,6 +517,26 @@ impl MapAreaData {
             .get(&map.map_guid)
             .map(|areas| Arc::clone(&areas.kill_volumes))
             .unwrap_or_default()
+    }
+
+    /// The map's tagged entities that exist in a mode that lists
+    /// `identifiers`, for the scene tag queries (`orpheus_script::map_tags`;
+    /// `graphs` tells which tags bodies may carry).
+    pub fn map_tags(
+        &self,
+        map: &GameMap,
+        identifiers: &BTreeSet<u64>,
+        graphs: &GraphStore,
+    ) -> Arc<MapTags> {
+        let entities = self
+            .maps
+            .get(&map.map_guid)
+            .into_iter()
+            .flat_map(|areas| &areas.tagged)
+            .filter(|(placeable, _)| placeable.in_mode(identifiers))
+            .map(|(_, entity)| entity.clone())
+            .collect();
+        Arc::new(MapTags::new(entities, graphs))
     }
 }
 

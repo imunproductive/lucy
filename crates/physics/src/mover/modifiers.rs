@@ -426,6 +426,13 @@ impl ActiveModifiers {
         [x, y, z]
     }
 
+    /// Mod 0, the factor of every run and crouch speed, as the mover keeps
+    /// it at `+0x4D8` (0x7FF789B4CBA0; `STU_ED807E07` reads it): 1 folded
+    /// through the mods, at least 0.
+    pub fn speed_scale(&self) -> f64 {
+        self.intent(SPEED as u8, 1.0).max(0.0)
+    }
+
     pub fn intent(&self, index: u8, base: f64) -> f64 {
         self.0
             .iter()

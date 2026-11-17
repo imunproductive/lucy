@@ -100,8 +100,8 @@ fn practice_range() -> PreparedScene {
 fn faulting(scene: &mut PreparedScene, fault: &Arc<AtomicBool>) {
     let stock = scene.owner_body_factory.take().unwrap();
     let fault = Arc::clone(fault);
-    scene.owner_body_factory = Some(Arc::new(move |hero, spawn, map_rays| {
-        Ok(stock(hero, spawn, map_rays)?.map(|inner| {
+    scene.owner_body_factory = Some(Arc::new(move |hero, spawn, map| {
+        Ok(stock(hero, spawn, map)?.map(|inner| {
             Box::new(Faulting {
                 inner,
                 fault: Arc::clone(&fault),
@@ -336,9 +336,17 @@ fn a_same_hero_pick_after_a_fault_replaces_the_body_and_waits_for_fresh_acks() {
     assert!(script_frames(&world, new).is_empty());
     transport_outcome(&mut world, &mut egress, full, true);
     world.prepare_body_updates(FIRST_TICK + 3);
+    // The full frame went out in a datagram of tick FIRST_TICK + 2, which
+    // the client takes as the body's command frame: the initial owner delta
+    // waits for a command past it (`BodyStream::full_sent`).
+    assert!(script_frames(&world, new).is_empty());
+    let third = fire(FIRST_TICK + 3);
+    world.queue_commands(FIRST_TICK + 4, &[third]);
+    drain(&mut world, &scene, &viewer);
+    world.prepare_body_updates(FIRST_TICK + 4);
     assert_eq!(script_frames(&world, new), [true]);
     let script = world.body_script.as_ref().unwrap();
-    assert_eq!(script.stream.command_frame(), second.frame);
+    assert_eq!(script.stream.command_frame(), third.frame);
     assert_eq!(ammo(&world), ScriptValue::Integer(29));
 }
 
