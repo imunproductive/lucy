@@ -5145,8 +5145,8 @@ fn practice_bots_run_their_scripts_for_a_client() {
         .client
         .send(ACK, aimed_batch(idle, 1, -16384, 0, 0, false));
     // The first hit's 25001, and with it or after it a frame of the bot's
-    // script, which doesn't fire: its nameplate enabled (upstream
-    // `show_damage_nameplate`); no elimination yet.
+    // script, which doesn't fire: its flinch (`0011.025`); no elimination
+    // yet.
     let hits_from = |watcher: &Watcher, from: usize, id: u32| {
         (from..watcher.datagrams.len())
             .find(|&index| watcher.datagrams[index].0.iter().any(|item| item.id == id))
@@ -5170,7 +5170,7 @@ fn practice_bots_run_their_scripts_for_a_client() {
     {
         assert!(
             server.now() < deadline,
-            "waiting for the surviving hit's nameplate frame"
+            "waiting for the surviving hit's flinch frame"
         );
         command(&mut watcher, FIRE);
         watcher.pump(&schemas);
