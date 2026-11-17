@@ -8,7 +8,7 @@ use std::io;
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
-use crate::{templates::CUSTOM_GAMES, transport::LobbyMessage};
+use crate::transport::LobbyMessage;
 use orpheus_wire::jam::codec::{Fields, Value, id16};
 
 /// The solo Practice Range create-game request.
@@ -25,11 +25,6 @@ const QUEUE_POPPED: u64 = 1;
 const GAME_QUEUE: u64 = 4;
 const GAME_FOUND: i64 = 4;
 const GENERAL_CHANNEL: [u64; 2] = [0x8b0c, 0x8000_0000_0000_0000];
-const TEAM_COLOURS: u32 = 23310;
-/// `0CE` team colours from the install: `F6`'s UI colour is #27AAE1, the
-/// friendly blue; `F7`'s is #C80013, the enemy red.
-const FRIENDLY_COLOUR: u64 = 0x0b30_0000_0000_00f6;
-const ENEMY_COLOUR: u64 = 0x0b30_0000_0000_00f7;
 
 fn chat_channel(id: [u64; 2], kind: u64) -> Fields {
     Fields::from([
@@ -207,42 +202,18 @@ pub fn game_found(
     messages
 }
 
-/// The session's team colour table: the viewer's team friendly, every other
-/// team enemy. The HUD's widgets take their colours from it and stay fully
-/// transparent without it; the game's welcome (20300 `+0x518`) turns its use
-/// on. Found live by ow1-preservation (`docs/notes/related-projects.md`),
-/// which sent the other fields of the message empty, as here.
-pub fn team_colours(viewer: u8, teams: &[u8]) -> LobbyMessage {
-    let entry = |team: u8| {
-        let colour = if team == viewer {
-            FRIENDLY_COLOUR
-        } else {
-            ENEMY_COLOUR
-        };
-        Value::Struct(Fields::from([
-            (0x10, Value::Unsigned(colour)),
-            (0x18, Value::Unsigned(u64::from(team))),
-        ]))
-    };
-    (
-        CUSTOM_GAMES,
-        TEAM_COLOURS,
-        Fields::from([(
-            0x138,
-            Value::Array(teams.iter().copied().map(entry).collect()),
-        )]),
-    )
-}
-
-/// Leave General, join the match channel, send the team colours, then
-/// transfer to the game server.
+/// Leave General, join the match channel, then transfer to the game server.
+///
+/// No team colour table (custom games 23310) is sent: it puts the client in
+/// team-colour mode, where every nameplate carries a number badge (an empty
+/// box before a bot's name) and the health bars take a black outline
+/// (refs report `Statuses.md`, "Day 3").
 pub fn enter_game(
     general: Fields,
     match_channel: Fields,
-    colours: LobbyMessage,
     handoff: &Handoff,
     (host, port): (&str, u16),
-) -> io::Result<[LobbyMessage; 4]> {
+) -> io::Result<[LobbyMessage; 3]> {
     Ok([
         (
             CHAT_IN,
@@ -250,7 +221,6 @@ pub fn enter_game(
             Fields::from([(0x78, Value::Struct(general))]),
         ),
         join_chat_channel(match_channel),
-        colours,
         (HANDOFF, HANDOFF_MESSAGE, handoff.fields(host, port)?),
     ])
 }
@@ -480,34 +450,10 @@ mod tests {
             [53000, 53001, 53003, 53002]
         );
 
-        let colours = team_colours(1, &[0, 1]);
-        let entering = enter_game(
-            Fields::new(),
-            Fields::new(),
-            colours.clone(),
-            &seat,
-            ("127.0.0.1", 3730),
-        )
-        .unwrap();
+        let entering = enter_game(Fields::new(), Fields::new(), &seat, ("127.0.0.1", 3730)).unwrap();
         assert_eq!(
             entering.map(|(_, id, _)| id),
-            [20404, 20402, TEAM_COLOURS, HANDOFF_MESSAGE]
-        );
-        let Value::Array(entries) = &colours.2[&0x138] else {
-            panic!("no team colour list");
-        };
-        let colour = |entry: &Value| {
-            let Value::Struct(fields) = entry else {
-                panic!("a team colour entry is a struct");
-            };
-            (fields[&0x18].clone(), fields[&0x10].clone())
-        };
-        assert_eq!(
-            entries.iter().map(colour).collect::<Vec<_>>(),
-            [
-                (Value::Unsigned(0), Value::Unsigned(ENEMY_COLOUR)),
-                (Value::Unsigned(1), Value::Unsigned(FRIENDLY_COLOUR)),
-            ]
+            [20404, 20402, HANDOFF_MESSAGE]
         );
         assert_eq!(handoff_delay(false, FOUND_DELAY, true), Duration::ZERO);
         assert_eq!(handoff_delay(true, FOUND_DELAY, true), FOUND_DELAY);

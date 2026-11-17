@@ -49,7 +49,6 @@ use orpheus_lobby::{
     accounts::Account,
     handoff::{
         self, FOUND_DELAY, Handoff, LobbySeat, general_channel, match_channel, queue_popped,
-        team_colours,
     },
     lineup,
     login::Identity,
@@ -430,14 +429,12 @@ impl Matchmaker {
         let sent = handoff::enter_game(
             general_channel(),
             match_channel(found.match_id),
-            team_colours(found.team, &found.teams),
             &found.handoff,
             (&host, port),
         )
-        .and_then(|[leave, join, colours, ticket]| {
+        .and_then(|[leave, join, ticket]| {
             peer.send(&leave)?;
             peer.send(&join)?;
-            peer.send(&colours)?;
             peer.send(&ticket)
         });
         match sent {

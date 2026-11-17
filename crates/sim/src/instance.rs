@@ -154,9 +154,6 @@ impl Instance<'_> {
                     0x508,
                     Struct(Fields::from([(0, Unsigned(1)), (8, Unsigned(1))])),
                 ),
-                // Use the session's team colour table (lobby 23310) for this
-                // world; without it the HUD stays transparent.
-                (0x518, Bool(true)),
             ]),
         }
     }
@@ -386,10 +383,7 @@ mod tests {
             ),
         ];
         for (instance, expected) in cases {
-            let mut load = instance.load(members[0].entity, RETAIL_QUANTA);
-            // The team colour switch is this server's addition to the Python
-            // reference's welcome.
-            assert_eq!(load.fields.remove(&0x518), Some(Bool(true)));
+            let load = instance.load(members[0].entity, RETAIL_QUANTA);
             let messages = [load, instance.update(members[2].entity)];
             for (message, (length, digest)) in messages.into_iter().zip(expected) {
                 let bytes = encode(&schemas, message.id, &message.fields).unwrap();
