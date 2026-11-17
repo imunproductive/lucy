@@ -1059,11 +1059,42 @@ fn a_timed_chase_keeps_its_begin_payload_and_binding_until_it_arrives() {
     stream.create_arrived();
     let baseline = encoder.queue_full(&mut stream, &owner).unwrap();
     stream.arrived(baseline.last);
-    component.advance_frame(1001, &mut world).unwrap();
-    let snapshot = component.snapshot().unwrap();
-    let owner = encoder.project(snapshot, View::Owner).unwrap();
-    let delta = encoder
-        .queue_delta(&mut stream, &owner, DeltaKind::InitialOwner(1001), 16)
+    let mut send = |owner: &ProjectedSnapshot, kind| {
+        let Some(chunk) = encoder.queue_delta(&mut stream, owner, kind, 16).unwrap() else {
+            return std::collections::BTreeSet::new();
+        };
+        let listed = stream.sent(chunk.last).unwrap().changes.clone();
+        assert!(stream.arrived(chunk.last).advanced);
+        listed
+    };
+    let (timed, vector_chase) = (ChangeKey::State(1, 0), ChangeKey::State(1, 1));
+    let variable = ChangeKey::Variable(1, 100);
+    let begun = owner.state(1, 0).unwrap();
+    assert_eq!(begun.payload["cur"], Value::Float(0.5));
+    assert_eq!(begun.payload["last"], Value::Integer(16_000));
+    assert_eq!(begun.payload["remaining"], Value::Integer(125));
+    assert_eq!(owner.instance_variable(1, 100), Some(&Value::Float(0.5)));
+    let bound = &owner.instances[&1].variables.bindings[&100];
+    assert_eq!((bound.len(), bound[0].state, bound[0].slot), (1, 0, 0));
+    assert!(send(&owner, DeltaKind::InitialOwner(1000)).contains(&timed));
+
+    // 16 000 + 125 ms is in frame 1007 (16 112..16 127).
+    for frame in 1001..=1006 {
+        component.advance_frame(frame, &mut world).unwrap();
+        let owner = encoder
+            .project(component.snapshot().unwrap(), View::Owner)
+            .unwrap();
+        assert_eq!(owner.state(1, 0).unwrap().payload, begun.payload);
+        // Corrections follow the initial owner frame once it settled.
+        let listed = send(&owner, DeltaKind::Correction(frame + OWNER_SETTLE_FRAMES));
+        assert!(!listed.contains(&timed) && !listed.contains(&variable));
+        assert!(listed.contains(&vector_chase), "frame {frame}");
+    }
+    // Read between ticks, the value is where the chase has got to: 96 of
+    // 125 ms at frame 1006's start.
+    let value = component.snapshot().unwrap().instances[&1].states[&0]
+        .chase
+        .as_ref()
         .unwrap()
         .value_at(16_096);
     let share = f64::from((96.0_f64 / 125.0) as f32);

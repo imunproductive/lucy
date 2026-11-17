@@ -503,8 +503,24 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             0 => self.unlink_single_output(key, self.output_write_depth)?,
             1 => {
                 let value = chase_value(&stored(&self.machine.snapshot, target));
-                if let Some(chase) = self.state_mut(key).and_then(|state| state.chase.as_mut()) {
-                    chase.current = value;
+                let now = self.machine.now_ms;
+                let Some(chase) = self.state_mut(key).and_then(|state| state.chase.as_mut()) else {
+                    return Ok(());
+                };
+                chase.current = value;
+                if chase.timed.is_some() {
+                    // The client starts it again from the written value
+                    // (event 2: `0x7FF78AAAF430` with a2 = 1).
+                    chase.last_ms = now;
+                    chase.reached = false;
+                    let Some(remaining_ms) = self.chase_duration(id, node) else {
+                        return Ok(());
+                    };
+                    if let Some(chase) = self.state_mut(key).and_then(|state| state.chase.as_mut())
+                    {
+                        chase.remaining_ms = remaining_ms;
+                    }
+                    self.arm_chase_arrival(key)?;
                 }
             }
             _ => (),
