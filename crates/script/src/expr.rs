@@ -1954,41 +1954,57 @@ impl Evaluator {
             // client's spectator test (0x7FF789B2F000) on both sides. An
             // entity whose owner the world doesn't know counts as ownerless
             // (assumption).
-            "STU_53F4CA65" if native_fields(config, &["m_target", "m_source", "m_AFBBE9C3"]) => {
+            //
+            // `STU_A58C1E63` ("`m_target` is an enemy of `m_source`") is the
+            // same enemy test called directly: `Eval_STU_A58C1E63`
+            // (0x7FF789BF5020) looks up both entities' records and returns
+            // `sub_7FF789B2CF60(target, source, m_AFBBE9C3)`, so it is the
+            // negation of the ally answer above. A value that is no entity
+            // reads as the invalid entity there (dword_7FF78C151288).
+            "STU_53F4CA65" | "STU_A58C1E63"
+                if native_fields(config, &["m_target", "m_source", "m_AFBBE9C3"]) =>
+            {
                 let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let enemy = class == "STU_A58C1E63";
                 let flag = child(config, "m_AFBBE9C3");
                 let target_only = !flag.is_null() && truthy(&self.config(flag, context, nested)?);
                 let target = to_entity(&self.config(child(config, "m_target"), context, nested)?);
-                if target_only {
-                    let team = match target.filter(|&entity| valid_entity(entity)) {
-                        Some(target) => context.entity_team(target).ok_or_else(unsupported)?,
-                        None => -1,
+                let ally = 'ally: {
+                    if target_only {
+                        let team = match target.filter(|&entity| valid_entity(entity)) {
+                            Some(target) => context.entity_team(target).ok_or_else(unsupported)?,
+                            None => -1,
+                        };
+                        break 'ally team != 1;
+                    }
+                    let source =
+                        to_entity(&self.config(child(config, "m_source"), context, nested)?);
+                    let (target, source) = match (target, source) {
+                        (Some(target), Some(source)) => (target, source),
+                        // A value that is no entity at all is no ally.
+                        _ if !enemy => break 'ally false,
+                        (target, source) => (target.unwrap_or(0), source.unwrap_or(0)),
                     };
-                    return Ok(Value::Bool(team != 1));
-                }
-                let source = to_entity(&self.config(child(config, "m_source"), context, nested)?);
-                // A value that is no entity at all is no ally.
-                let (Some(target), Some(source)) = (target, source) else {
-                    return Ok(Value::Bool(false));
+                    if !valid_entity(target) || !valid_entity(source) {
+                        break 'ally target == source;
+                    }
+                    let mut owner = |entity: u32| {
+                        context
+                            .related_entity(EntityRelation::Owner, entity)
+                            .filter(|&owner| valid_entity(owner))
+                            .unwrap_or(entity)
+                    };
+                    let (target, source) = (owner(target), owner(source));
+                    if target == source {
+                        true
+                    } else {
+                        let target = context.entity_team(target).ok_or_else(unsupported)?;
+                        let source = context.entity_team(source).ok_or_else(unsupported)?;
+                        let free_for_all = |team| team == -1 || team == 4;
+                        !free_for_all(target) && !free_for_all(source) && target == source
+                    }
                 };
-                if !valid_entity(target) || !valid_entity(source) {
-                    return Ok(Value::Bool(target == source));
-                }
-                let mut owner = |entity: u32| {
-                    context
-                        .related_entity(EntityRelation::Owner, entity)
-                        .filter(|&owner| valid_entity(owner))
-                        .unwrap_or(entity)
-                };
-                let (target, source) = (owner(target), owner(source));
-                if target == source {
-                    Value::Bool(true)
-                } else {
-                    let target = context.entity_team(target).ok_or_else(unsupported)?;
-                    let source = context.entity_team(source).ok_or_else(unsupported)?;
-                    let free_for_all = |team| team == -1 || team == 4;
-                    Value::Bool(!free_for_all(target) && !free_for_all(source) && target == source)
-                }
+                Value::Bool(ally != enemy)
             }
             // Whether the entity has component 92 (an AI controller). A
             // world's own answer comes first; no entity has none.

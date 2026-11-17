@@ -251,12 +251,6 @@ pub trait OwnerBodyRuntime: Send {
         Ok(())
     }
 
-    /// The hero dealt `points` of damage or healing: his ultimate charges
-    /// for it.
-    fn gain_ult(&mut self, _points: f64) -> io::Result<()> {
-        Ok(())
-    }
-
     /// An aura comes on the body or goes off it (`vm/auras.rs` in
     /// `orpheus_script`): a hit's, or an ApplyAura's.
     fn change_aura(&mut self, _change: &AuraChange) -> io::Result<()> {
@@ -3410,10 +3404,23 @@ impl WorldDelivery {
             .map_or_else(Vec::new, |script| script.runtime.take_aura_changes())
     }
 
-    /// The player's living body dealt `points` of damage or healing: its
-    /// ultimate charges for it.
-    pub fn gain_ult(&mut self, points: f64) {
-        if self.death.is_some() {
+    /// The player's living body dealt `amount` of damage (or healing, with
+    /// `heal`) to `target`, a body of definition `target_body`, in a health
+    /// change tagged `tags`: its body takes `0012.025` (or `0044.025`), as
+    /// from the retail server, and its graph `0B8B` charges the ultimate
+    /// for it (`orpheus_script::ultimate`). The body learns the target's
+    /// authored target tags first (`0B8B` rid45 tests `02ED`, rid50 `03C3`,
+    /// rid85 `011E`).
+    pub fn dealt(
+        &mut self,
+        graphs: &GraphStore,
+        target: u32,
+        target_body: Option<u64>,
+        amount: f64,
+        tags: &DamageTags,
+        heal: bool,
+    ) {
+        if self.death.is_some() || amount <= 0.0 {
             return;
         }
         let Some(body) = self.body else {
@@ -3423,7 +3430,19 @@ impl WorldDelivery {
             .body_script
             .as_mut()
             .filter(|script| script.id == body.id)
-            .and_then(|script| script.runtime.gain_ult(points).err());
+            .and_then(|script| {
+                let target_tags = target_body
+                    .and_then(|body| graphs.bodies().get(&body))
+                    .and_then(|body| body.target_tags.clone())
+                    .unwrap_or_default();
+                script.runtime.set_victim_tags(target, target_tags);
+                let (message, parameters) =
+                    orpheus_script::ultimate::dealt_message(target, amount, tags, heal);
+                script
+                    .runtime
+                    .receive_message(body.id.entity, message, parameters)
+                    .err()
+            });
         if let Some(error) = failure {
             self.drop_failed_script(&error.to_string());
         }
