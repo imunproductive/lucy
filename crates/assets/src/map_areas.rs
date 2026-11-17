@@ -90,6 +90,10 @@ const ROOM_TEAM: u64 = 1777;
 const DAMAGE_AREA_DATA: u32 = 0x6E7E_D1C2;
 const DAMAGE_AREA: usize = 8;
 const DAMAGE: usize = 24;
+/// `STUMirroredIdleAnimComponent` (client component 27): the definition's
+/// model plays an idle animation that moves it (the Practice Range's
+/// platforms, definition `0516`).
+const MIRRORED_IDLE_ANIM: u32 = 0x3AA5_CB04;
 const TARGET_TAG: u16 = 0x06C;
 const MAP: u16 = 0x002;
 /// The collision mask of a kill volume: query category `0x02` alone.
@@ -380,6 +384,12 @@ fn server_placeables(
             );
             if let Some(script) = placed_script(&placed.instances) {
                 entry.insert("script".into(), script);
+            }
+            if components
+                .of(placed.entity.definition)
+                .is_some_and(|found| found.contains(&MIRRORED_IDLE_ANIM))
+            {
+                entry.insert("moving".into(), json!(true));
             }
             Json::Object(entry)
         })

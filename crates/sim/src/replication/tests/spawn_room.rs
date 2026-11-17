@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::combat::{Combat, CombatPlayer, ENVIRONMENT_DAMAGE, Shooter, apply_player_hits};
+use crate::scene::{MOVING_KINDS, filter_component};
 use crate::scene_assets::{FellOut, install_collision_build};
 use orpheus_content::{maps::SpawnChoice, stats::PlayerStats};
 use orpheus_wire::combat_messages::CombatNotice;
@@ -403,25 +404,44 @@ fn a_pick_while_dead_takes_the_respawn() {
 /// loading list, the player and the mode, before the bots: on the Practice
 /// Range its 26 (the spawn room, the six barriers in the three doorways, the
 /// Training Partner console and pad, ...), none of them with an identifier.
+/// The four moving platforms (definition `0516`: 129, 194, 271, 403) are
+/// created in the client's hitscan group (component 26 = 0x10000); the
+/// others carry no components.
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
 fn the_server_placeables_follow_the_player_and_the_mode() {
     let scene = scene();
     let card = PlayerCard::default();
     let updates = scene.initial_world(&viewer(&card)).unwrap();
-    let creates: Vec<u32> = updates
+    let creates: Vec<(u32, &Vec<orpheus_wire::entity::Component>)> = updates
         .iter()
-        .filter(|update| matches!(update.operation, Some(Operation::Placeable(_))))
-        .map(|update| update.entity & 0x7FFF_FFFF)
+        .filter_map(|update| match &update.operation {
+            Some(Operation::Placeable(_, components)) => {
+                Some((update.entity & 0x7FFF_FFFF, components))
+            }
+            _ => None,
+        })
         .collect();
     assert_eq!(
-        creates,
+        creates
+            .iter()
+            .map(|(entity, _)| *entity)
+            .collect::<Vec<_>>(),
         [
             0x88, 0x22e, 0x234, 0x289, // the loading list
             126, 129, 137, 150, 185, 188, 194, 199, 204, 243, 267, 271, 340, 358, 398, 400, 403,
             415, 416, 424, 479, 480, 482, 548, 586, 590,
         ]
     );
+    let moving: Vec<u32> = creates
+        .iter()
+        .filter(|(_, components)| !components.is_empty())
+        .map(|(entity, components)| {
+            assert_eq!(**components, [filter_component(MOVING_KINDS)]);
+            *entity
+        })
+        .collect();
+    assert_eq!(moving, [129, 194, 271, 403]);
     // The 4 loading placeables, the player and the mode come first.
     assert_eq!(updates[6].entity, 0x8000_0000 | 126);
 }
@@ -452,7 +472,7 @@ fn rialto_and_volskaya_get_their_server_placeables() {
             .initial_world(&viewer(&card))
             .unwrap()
             .iter()
-            .filter(|update| matches!(update.operation, Some(Operation::Placeable(_))))
+            .filter(|update| matches!(update.operation, Some(Operation::Placeable(..))))
             .map(|update| update.entity & 0x7FFF_FFFF)
             .collect();
         assert_eq!(creates.len(), loading + server, "{name}");
