@@ -438,11 +438,69 @@ pub fn initial_world(
     Ok(updates)
 }
 
-/// H=0 game mode graph with its client-only UI entry dependencies retained.
-pub fn mode_ui(graphs: &GraphStore, variables: &Variables) -> io::Result<BitWriter> {
+/// The modes whose graph the mode entity carries so the Tab board opens: the
+/// mode, its graph, the remote slot of the graph's state that posts game
+/// message `06DF.025` (`STU_38EE1100`), and the state index of the
+/// SubScript that starts `0CB6` in it (None: the graph starts `0CB6` in a
+/// client-only state of its own). The client holds the board shut until
+/// `06DF.025` is posted, and only a server-sent state of the mode graph
+/// posts it (upstream kjs `254fa913`, `827ef2d7`, `tab-board.md`; seen
+/// there in the Range, Team Deathmatch, Deathmatch and Control). Assault,
+/// Escort and Hybrid (`0F4A`) are left out: a board state without its phase
+/// state draws an "UNSPECIFIED 0.0" objective header. Upstream names 0x1D
+/// Deathmatch and 0x1E Team Deathmatch, 0x07 Elimination and 0x09 Capture
+/// the Flag; the modes' teams (`0C5` `m_teams`) say the reverse: 0x1E has
+/// one free-for-all team of 12 and `0F73` asks that team's size, 0x09 has
+/// Elimination's controller `0D6F`. The graph per mode id is the same.
+/// `0CE8` (0x07) and `1A59` (0x46) are not in the graph bundle, so those
+/// modes keep the plain frame.
+const BOARD_POSTERS: [(u64, u32, usize, Option<u16>); 10] = [
+    (0x0230_0000_0000_0007, 0x0ce8, 1, Some(14)), // Capture the Flag
+    (0x0230_0000_0000_0009, 0x0d0b, 6, Some(3)),  // Elimination
+    (0x0230_0000_0000_0010, 0x0d76, 2, Some(15)), // Skirmish
+    (0x0230_0000_0000_0017, 0x0ec2, 1, None),     // Control
+    (0x0230_0000_0000_0018, 0x13c0, 4, Some(21)), // Practice Range
+    (0x0230_0000_0000_001d, 0x0f60, 0, Some(13)), // Team Deathmatch
+    (0x0230_0000_0000_001e, 0x0f73, 0, Some(10)), // Deathmatch
+    (0x0230_0000_0000_0046, 0x1a59, 6, Some(2)),  // Freezethaw Elimination
+    (0x0230_0000_0000_005a, 0x13c0, 4, Some(21)), // the Range's other mode
+    (0x0230_0000_0000_0070, 0x0f73, 0, Some(10)), // Bounty Hunter
+];
+
+/// The game mode entity's H=0 full frame: the mode's own graph with its
+/// board state on and `0CB6` under it ([`BOARD_POSTERS`]), else `0CB6`
+/// alone with its client-only UI entry dependencies retained.
+pub fn mode_ui(graphs: &GraphStore, mode: u64, variables: &Variables) -> io::Result<BitWriter> {
     let graph = graphs
         .graph(MODE_UI)
         .ok_or_else(|| invalid("missing game mode UI graph 0CB6"))?;
+    let poster = BOARD_POSTERS
+        .iter()
+        .find(|row| row.0 == mode)
+        .and_then(|&(_, index, slot, host)| Some((graphs.graph(index)?, slot, host)));
+    if let Some((own, slot, host)) = poster {
+        let posts_board = own
+            .remote_positions()
+            .get(slot)
+            .and_then(|&pos| own.node(pos))
+            .is_some_and(|node| node.class == "STU_38EE1100");
+        if !posts_board {
+            return Err(invalid("the mode graph's board state is not a 06DF poster"));
+        }
+        let mut instance = Instance::new(1, Layout::try_from(own).map_err(invalid)?, None);
+        let mut active = BitWriter::new();
+        // Present and active, then the state's one payload bit: no optional
+        // integer (calibrated live upstream on `0D28`).
+        active.bits(3, 2).map_err(invalid)?;
+        active.bit(false);
+        instance.states.insert(slot, active);
+        let mut instances = vec![instance];
+        if let Some(host) = host {
+            let layout = Layout::try_from(graph).map_err(invalid)?;
+            instances.push(Instance::new(2, layout, Some((1, host))));
+        }
+        return wire::remote_full(&instances, variables).map_err(invalid);
+    }
     let state = graph
         .state(MODE_UI_STATE)
         .filter(|node| node.class == "STU_9D7BF987")
@@ -859,6 +917,14 @@ mod tests {
     #[ignore = "requires the derived 104319 graph bundle"]
     fn mode_ui_preserves_its_shared_variable_state_with_or_without_countdown() {
         let graphs = GraphStore::load(runtime().join("game_graphs_174.json.gz")).unwrap();
+        let hex = |frame: &BitWriter| -> String {
+            frame
+                .as_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
+        };
+        let assault = 0x0230_0000_0000_0014;
         let cases = [
             (Variables::new(), 38, "085b06000c"),
             (
@@ -868,13 +934,22 @@ mod tests {
             ),
         ];
         for (vars, length, expected) in cases {
-            let frame = mode_ui(&graphs, &vars).unwrap();
-            let actual: String = frame
-                .as_bytes()
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect();
-            assert_eq!((frame.bit_len(), actual.as_str()), (length, expected));
+            let frame = mode_ui(&graphs, assault, &vars).unwrap();
+            assert_eq!((frame.bit_len(), hex(&frame).as_str()), (length, expected));
+        }
+        // The Range's board frame: `13C0` with remote slot 4 on and `0CB6`
+        // under its state 21, bit for bit the frame upstream saw open the
+        // board (kjs `254fa913`, `tab-board.md`).
+        let range = mode_ui(&graphs, 0x0230_0000_0000_0018, &Variables::new()).unwrap();
+        assert_eq!(
+            (range.bit_len(), hex(&range).as_str()),
+            (96, "08e00910b60c14a002003000")
+        );
+        // Every listed mode whose graph is in the bundle names a 06DF poster.
+        for (mode, graph, ..) in BOARD_POSTERS {
+            let frame = mode_ui(&graphs, mode, &Variables::new()).unwrap();
+            let plain = graphs.graph(graph).is_none();
+            assert_eq!(frame.bit_len() == 38, plain, "mode {mode:X}");
         }
     }
 }

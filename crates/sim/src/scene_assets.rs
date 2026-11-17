@@ -449,7 +449,7 @@ impl SceneAssets {
         );
         let controller =
             Controller::load(&self.graphs, map.mode_guid)?.with_unknowns(self.player_unknowns);
-        let mode_ui = mode_ui(&self.graphs, &Variables::new())?;
+        let mode_ui = mode_ui(&self.graphs, map.mode_guid, &Variables::new())?;
         let initial_board =
             self.stats
                 .component(&PlayerStats::default(), map.mode_guid, None, None);
@@ -853,7 +853,7 @@ impl PreparedScene {
     /// match flow publishes, such as the clock v1303 (match.py
     /// `_send_countdown`, combat.py `mode_frame`).
     pub fn mode_frame(&self, variables: &Variables) -> io::Result<BitWriter> {
-        mode_ui(&self.graphs, variables)
+        mode_ui(&self.graphs, self.map.mode_guid, variables)
     }
 
     /// The map's server placeables in this mode with their script data, in
