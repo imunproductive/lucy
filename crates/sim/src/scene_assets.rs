@@ -40,7 +40,9 @@ use crate::{
     pools::PoolCatalog,
     projectiles::{BioticField, FIELD_ENTITY, FieldFrames},
     replication::OwnerBodyRuntime,
-    scene::{PlayerAppearance, bot_controller_entity, initial_world, mode_ui},
+    scene::{
+        PlayerAppearance, bot_controller_entity, initial_world, mode_ui, placeable_components,
+    },
 };
 use orpheus_content::{
     heroes::{EyeCatalog, Hero, HeroCatalog, SOLDIER},
@@ -1272,7 +1274,10 @@ impl PreparedScene {
             at..at,
             self.server_placeables.iter().map(|placed| EntityUpdate {
                 entity: placed.entity(),
-                operation: Some(Operation::Placeable(placed.placeable)),
+                operation: Some(Operation::Placeable(
+                    placed.placeable,
+                    placeable_components(placed),
+                )),
                 ..EntityUpdate::default()
             }),
         );

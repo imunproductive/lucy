@@ -198,6 +198,9 @@ pub struct PlacedScript {
     pub position: [f64; 3],
     pub overrides: Vec<GraphBinding>,
     pub extra: Vec<GraphBinding>,
+    /// Its definition moves it by an idle animation the client plays (a
+    /// `STUMirroredIdleAnimComponent`): the Practice Range's platforms.
+    pub moving: bool,
 }
 
 impl PlacedScript {
@@ -284,6 +287,8 @@ struct RawServerPlaceable {
     position: [f64; 3],
     #[serde(default)]
     script: RawScript,
+    #[serde(default)]
+    moving: bool,
 }
 
 #[derive(Default, Deserialize)]
@@ -389,6 +394,7 @@ impl MapAreaData {
                     position: raw.position,
                     overrides: raw.script.overrides,
                     extra: raw.script.extra,
+                    moving: raw.moving,
                 }));
                 server_placeables.push(placeable);
             }
