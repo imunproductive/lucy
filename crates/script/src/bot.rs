@@ -53,6 +53,15 @@ pub const DAMAGE_AMOUNT: u32 = 0x0013;
 pub const DAMAGE_DIRECTION: u32 = 0x0065;
 /// `0013.025`: the placement's eligibility reset.
 pub const RESET: u64 = 0x0240_0000_0000_0013;
+/// The Training Bot's body graph that puts a respawned bot together: its
+/// entry for [`RESET`] plays Anim state 0 or 1 (alias `0451.0C8`, 2.5 s;
+/// state 1 while entity variable 7143 is unset), and its Entry sets
+/// [`RANGE_BOT`] (upstream kjs `a667ef27`, `bot-rebuild.md`).
+pub const REBUILD_GRAPH: u32 = 0x0ba8;
+/// Entity variable `#7082`, set by [`REBUILD_GRAPH`]'s Entry on every
+/// Practice Range bot body. The bot's death graph `0C18` sends its kill
+/// feed message only when the victim or the killer lacks it.
+pub const RANGE_BOT: u32 = 7082;
 /// The Practice Range firing placement behavior (`FIRING` in
 /// `ow174/game/bots.py`).
 pub const FIRING_GRAPH: u32 = 0x0b92;
@@ -482,6 +491,13 @@ pub struct BotSpawn<'a> {
     /// The nameplate starts enabled ([`ENABLE_NAMEPLATE`]): a bot no player
     /// can hit, which [`BotBody::show_damage_nameplate`] never enables.
     pub nameplate_enabled: bool,
+    /// A bot made again at its spawner after a death: [`RESET`] goes to its
+    /// [`REBUILD_GRAPH`] instances before its first frame, so it is seen
+    /// putting itself together (upstream kjs `a667ef27`; seen there in the
+    /// original client: the parts gather over about 0.9 s). Retail's sender
+    /// of the message is not known: a reconstruction. A first spawn plays
+    /// no rebuild.
+    pub respawned: bool,
 }
 
 /// An NPC body's statescript on the server clock (`BotScript` in bot.py).
@@ -554,6 +570,19 @@ impl BotBody {
                 component.queue_message(id, RESET, Variables::new())?;
                 component.run_now(&mut world)?;
             }
+        }
+        if spawn.respawned {
+            let rebuilds: Vec<u16> = component
+                .snapshot()
+                .into_iter()
+                .flat_map(|snapshot| &snapshot.instances)
+                .filter(|(_, instance)| instance.graph == REBUILD_GRAPH)
+                .map(|(&id, _)| id)
+                .collect();
+            for id in rebuilds {
+                component.queue_message(id, RESET, Variables::new())?;
+            }
+            component.run_now(&mut world)?;
         }
         if !spawn.name.is_empty() {
             for id in nameplates(&component) {
@@ -1125,6 +1154,7 @@ mod tests {
             health: 200.0,
             firing_position,
             nameplate_enabled: false,
+            respawned: false,
         }
     }
 
@@ -1488,6 +1518,47 @@ mod tests {
         let snapshot = bot.snapshot().unwrap();
         assert!(snapshot.initialization_complete());
         encoder_full(&graphs, &codecs, &bot);
+    }
+
+    /// A Training Bot made again after a death gets `0013.025` on its
+    /// `0BA8`, which starts the rebuild Anim (state 1 with #7143 unset); a
+    /// first spawn plays none. Either way `0BA8`'s Entry sets #7082, the
+    /// kill feed gate of bot-on-bot kills.
+    #[test]
+    #[ignore = "requires the derived game data's bot graph bundle"]
+    fn a_respawned_training_bot_rebuilds_itself() {
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let graphs =
+            Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
+        let rebuild = |respawned| {
+            let bot = BotBody::start(
+                Arc::clone(&graphs),
+                BotSpawn {
+                    respawned,
+                    ..spawn(None)
+                },
+                Unknowns::Tolerate,
+            )
+            .unwrap();
+            let snapshot = bot.snapshot().unwrap();
+            assert_eq!(
+                snapshot.variables.get(&RANGE_BOT).map(crate::expr::truthy),
+                Some(true)
+            );
+            let (_, instance) = snapshot
+                .instances
+                .iter()
+                .find(|(_, instance)| instance.graph == REBUILD_GRAPH)
+                .expect("the bot body lists 0BA8");
+            [0, 1].map(|state| {
+                instance
+                    .states
+                    .get(&state)
+                    .is_some_and(|state| state.active)
+            })
+        };
+        assert_eq!(rebuild(false), [false, false]);
+        assert_eq!(rebuild(true), [false, true]);
     }
 
     /// The pack's Friendly Bot, which no player can hit, starts with its
