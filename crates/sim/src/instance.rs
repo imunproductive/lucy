@@ -33,7 +33,7 @@
 use orpheus_content::maps::GameMap;
 use orpheus_wire::jam::codec::{
     Fields,
-    Value::{Array, Bool, String, Struct, Unsigned},
+    Value::{Array, String, Struct, Unsigned},
 };
 use orpheus_wire::messages::Message;
 

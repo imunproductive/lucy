@@ -184,8 +184,6 @@ struct Found {
     match_id: [u64; 2],
     handoff: Handoff,
     map_name: String,
-    team: u8,
-    teams: Vec<u8>,
     /// On the lobby's clock.
     deadline: Duration,
 }
@@ -1037,12 +1035,6 @@ impl Room {
             roles,
         }
     }
-
-    fn teams(&self) -> Vec<u8> {
-        (0..self.map.team_sizes.len().max(2))
-            .map(|team| u8::try_from(team).unwrap_or(u8::MAX))
-            .collect()
-    }
 }
 
 struct Ctx<'a> {
@@ -1480,11 +1472,8 @@ impl Ctx<'_> {
             }
         };
         self.seat(room, &entries, &handoffs, records);
-        let (name, teams) = (
-            self.state.rooms[room].map.name.clone(),
-            self.state.rooms[room].teams(),
-        );
-        self.send_to_game(entries, handoffs, &name, &teams, true);
+        let name = self.state.rooms[room].map.name.clone();
+        self.send_to_game(entries, handoffs, &name, true);
         true
     }
 
@@ -1647,11 +1636,8 @@ impl Ctx<'_> {
                 .tickets
                 .retain(|ticket| !used.contains(&ticket.party.id));
         }
-        let (name, teams) = (
-            self.state.rooms[room].map.name.clone(),
-            self.state.rooms[room].teams(),
-        );
-        self.send_to_game(entries, handoffs, &name, &teams, popped);
+        let name = self.state.rooms[room].map.name.clone();
+        self.send_to_game(entries, handoffs, &name, popped);
         true
     }
 
@@ -1663,7 +1649,6 @@ impl Ctx<'_> {
         entries: Vec<Entry>,
         handoffs: Vec<Handoff>,
         map_name: &str,
-        teams: &[u8],
         popped: bool,
     ) {
         let mut players: Vec<(Entry, Handoff)> = entries.into_iter().zip(handoffs).collect();
@@ -1705,8 +1690,6 @@ impl Ctx<'_> {
                 match_id: handoff.match_id,
                 handoff,
                 map_name: map_name.to_owned(),
-                team: entry.team,
-                teams: teams.to_vec(),
                 deadline,
             });
         }
