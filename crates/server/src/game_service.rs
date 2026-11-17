@@ -1299,7 +1299,14 @@ impl Peer {
 
     fn reliable(&mut self, schemas: &Schemas, message: Message) -> io::Result<u32> {
         let bytes = encode(schemas, message.id, &message.fields).map_err(invalid)?;
-        self.egress.queue_reliable(bytes).map_err(invalid)
+        let ordinal = self.egress.queue_reliable(bytes).map_err(invalid)?;
+        tracing::debug!(
+            target: "orpheus::join",
+            id = message.id,
+            ordinal,
+            "reliable message queued"
+        );
+        Ok(ordinal)
     }
 
     /// This tick's frame over the peer's link: the queued reliable messages

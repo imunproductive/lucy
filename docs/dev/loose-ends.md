@@ -52,7 +52,7 @@ Small things left undone by finished work. Each entry says what is missing, wher
 
 ## Joining and matches
 
-- **Joining a match sometimes shows no HUD and no weapon** (user report, 2026-11-16). It happens now and then on join; not reproduced or investigated. The user suspects a dropped packet: a create or possession message lost or applied in the wrong order. Where: the join path, the possession and hero select messages to the joining client.
+- **The server can't see a skipped owner frame** (2026-11-17): the client acknowledges the datagram of an owner frame it skipped as stale (`0x7FF78991E050` returns 2), so the server takes it as arrived. The initial owner delta now waits for a command frame past its full frame's datagram (behavior.md), and later owner frames carry strictly increasing command frames; any other way to an equal or older CmFD on one host would again leave states unstarted with no trace in the server log. `crates/script/src/stream.rs` (`BodyStream::owner_kind`, `Stream::full_owner`), `refs/reports/OwnerPrediction.md` "Day (2026-11-17)".
 
 ## Interface and voice
 

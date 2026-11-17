@@ -293,6 +293,9 @@ pub struct BodyStream<S> {
     lost_keys: BTreeMap<ChangeKey, u32>,
     latest_lost: Option<S>,
     initial_owner: Option<u32>,
+    /// The newest frame (server tick) of a datagram that carried the full
+    /// chunk ([`Self::full_sent`]).
+    full_frame: u32,
 }
 
 impl<S> BodyStream<S> {
@@ -311,6 +314,7 @@ impl<S> BodyStream<S> {
             lost_keys: BTreeMap::new(),
             latest_lost: None,
             initial_owner: None,
+            full_frame: 0,
         }
     }
 
@@ -380,6 +384,19 @@ impl<S> BodyStream<S> {
         Ok(result)
     }
 
+    /// The full chunk went out in the datagram of `frame` (the server tick in
+    /// its header). A full chunk carries no command frame: the client takes
+    /// the frame of the datagram that brought it as the body's command frame
+    /// (`0x7FF78991E3C0` keeps the chunk's frame, which the receive path set
+    /// to the datagram's), and skips an owner frame whose command frame isn't
+    /// past it as stale (`0x7FF78991E050` returns 2: the payload is read
+    /// past, the chunk counts as applied). The initial owner delta, which
+    /// begins every running state, waits for a command frame past the newest
+    /// datagram that carried the full chunk ([`Self::owner_kind`]).
+    pub fn full_sent(&mut self, frame: u32) {
+        self.full_frame = self.full_frame.max(frame);
+    }
+
     /// Find the kind of owner update due at this command frame. A caller may
     /// refresh an unsent projection at the same frame, or replace its initial
     /// projection before the old one reaches the transport.
@@ -401,7 +418,7 @@ impl<S> BodyStream<S> {
             return Ok(None);
         }
         let Some(first) = self.first_owner_frame.filter(|_| !replace_initial) else {
-            return Ok(Some(DeltaKind::InitialOwner(frame)));
+            return Ok((frame > self.full_frame).then_some(DeltaKind::InitialOwner(frame)));
         };
         Ok((frame.saturating_sub(first) >= OWNER_SETTLE_FRAMES)
             .then_some(DeltaKind::Correction(frame)))
