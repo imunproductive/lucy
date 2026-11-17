@@ -3417,6 +3417,20 @@ fn genjis_fan_hits_a_bot_once_a_shot_for_its_damage_alone_unseen() {
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn doomfists_hand_cannon_hits_with_all_eleven_pellets() {
+    every_pellet_hits("Doomfist", 11, 6);
+}
+
+/// Reaper's Hellfire Shotguns (graph `0019` node 10, hitscan: 20 pellets
+/// in rings, 6 damage each): a ray per pellet, each hit its own 25001
+/// (upstream kjs `1e2e10c3`, `1dc5b995`: "20 pellets of 6" at 3 m), so a
+/// training bot 2 m ahead takes twenty hits of 6 from one shot.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene"]
+fn reapers_shotgun_hits_with_every_hitscan_pellet() {
+    every_pellet_hits("Reaper", 20, 6);
+}
+
+fn every_pellet_hits(hero: &str, pellets: usize, damage: u64) {
     use orpheus_script::vm::Unknowns;
     use orpheus_sim::{
         projectiles::{SEEN_FIRST, SEEN_SPAN},
@@ -3430,7 +3444,7 @@ fn doomfists_hand_cannon_hits_with_all_eleven_pellets() {
     let mut aim = None;
     let (mut server, schemas, [mut doomfist, mut viewer], _) = practice_world(
         [
-            ("doomfist#1111", 0, "Doomfist"),
+            ("doomfist#1111", 0, hero),
             ("viewer#2222", 0, "Soldier: 76"),
         ],
         &assets,
@@ -3482,7 +3496,7 @@ fn doomfists_hand_cannon_hits_with_all_eleven_pellets() {
     let fired = (doomfist.datagrams.len(), viewer.datagrams.len());
     command(&mut doomfist, FIRE);
     let deadline = server.now() + Duration::from_secs(5);
-    while hits_of(&doomfist, fired.0).len() < 11 {
+    while hits_of(&doomfist, fired.0).len() < pellets {
         assert!(
             server.now() < deadline,
             "waiting for the pellets: {:?}",
@@ -3501,7 +3515,7 @@ fn doomfists_hand_cannon_hits_with_all_eleven_pellets() {
 
     assert_eq!(
         hits_of(&doomfist, fired.0),
-        vec![(Value::Unsigned(u64::from(bot)), Value::Unsigned(6)); 11]
+        vec![(Value::Unsigned(u64::from(bot)), Value::Unsigned(damage)); pellets]
     );
     assert!(
         viewer

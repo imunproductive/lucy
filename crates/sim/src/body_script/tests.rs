@@ -822,7 +822,7 @@ fn projectile_volleys_fly_leased_for_damage_alone_or_not_at_all() {
 /// volley whose launch spread grows (`STU_239B571E`, ramp 4, 1° to 3°)
 /// turns each hitscan shot by the client's circular spread at the shot's
 /// normalized spread (the first shot: 1/4, so 1.5°), seeded from the body,
-/// instance, state node and activation counter.
+/// instance, state index and activation counter.
 #[test]
 fn a_growing_spread_turns_each_shot_inside_its_cone() {
     use crate::weapon_spread::{direction, seed_base};
@@ -862,9 +862,11 @@ fn a_growing_spread_turns_each_shot_inside_its_cone() {
     };
     let aim = aim_direction(&fire);
     let cone = 1.5f64.to_radians() as f32;
+    // The volley is node 2, state 1: the seed takes the state index
+    // (upstream main `9ed63eed`).
     assert_eq!(
         shot.direction,
-        direction(aim, cone, seed_base(spawn.entity, 1, 2, 1), 0, 0, false)
+        direction(aim, cone, seed_base(spawn.entity, 1, 1, 1), 0, 0, false)
     );
     assert_ne!(shot.direction, aim);
     let dot: f64 = aim.iter().zip(shot.direction).map(|(a, b)| a * b).sum();
