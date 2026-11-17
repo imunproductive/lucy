@@ -356,6 +356,9 @@ impl World for PlayerWorld {
             {
                 return Some(tags.contains(&tag));
             }
+            if let Some(listed) = self.listed(entity) {
+                return listed.tags.as_ref().map(|tags| tags.contains(&tag));
+            }
             return self
                 .map_entity(entity)
                 .map(|placed| placed.tags.contains(&tag));
@@ -366,12 +369,29 @@ impl World for PlayerWorld {
         Some(self.target_tags.as_ref()?.contains(&tag))
     }
 
-    /// The map's placeables that carry the tag ([`MapTags::with_tag`]).
+    /// The map's placeables that carry the tag ([`MapTags::with_tag`]); for
+    /// a tag a body definition carries, then the body itself and the
+    /// bodies the match lists that carry it, when the list is known and
+    /// gives every body's tags (assumption: no other entity, such as a
+    /// pet or a projectile, carries a body's tag).
     fn entities_with_tag(&self, site: Site, tag: u64) -> Option<Vec<u32>> {
         if !self.is_player_site(site) {
             return None;
         }
-        self.map_tags.as_ref()?.with_tag(tag)
+        let map = self.map_tags.as_ref()?;
+        if !map.body_may_carry(tag) {
+            return Some(map.placed_with_tag(tag));
+        }
+        let mut found = map.placed_with_tag(tag);
+        if self.has_target_tag(site, self.entity, tag)? {
+            found.push(self.entity);
+        }
+        for body in self.targets.as_deref()? {
+            if body.entity != self.entity && body.tags.as_ref()?.contains(&tag) {
+                found.push(body.entity);
+            }
+        }
+        Some(found)
     }
 
     fn set_target_tag_effect(&mut self, site: Site, effect: TargetTagEffect, active: bool) -> bool {
@@ -414,8 +434,16 @@ impl World for PlayerWorld {
         true
     }
 
+    /// The body's own word, else a listed body's as the target searches
+    /// take it ([`TargetCandidate::filter_word`]).
     fn entity_filter_flags(&self, site: Site, entity: u32) -> Option<u64> {
-        (self.is_player_site(site) && entity == self.entity).then_some(self.body_filter)
+        if !self.is_player_site(site) {
+            return None;
+        }
+        if entity == self.entity {
+            return Some(self.body_filter);
+        }
+        self.listed(entity).map(TargetCandidate::filter_word)
     }
 
     /// The body, its controller, the mode entity (when the mode has one),
@@ -750,6 +778,7 @@ mod tests {
             height: 1.8,
             radius: 0.4,
             yaw: 0.0,
+            tags: None,
         }
     }
 
@@ -813,6 +842,69 @@ mod tests {
             ..site
         };
         assert_eq!(world.entity_exists(other_site, BODY), None);
+    }
+
+    /// Listed bodies' target tags and filter words come from the match's
+    /// list; a tag a body definition carries lists the map's placeables,
+    /// the body and the listed bodies with it, once every listed body's
+    /// tags are known.
+    #[test]
+    fn listed_bodies_answer_their_tags_and_filter_words() {
+        const HERO: u64 = 0x0d60_0000_0000_00f8;
+        const PLACE: u64 = 0x0d60_0000_0000_0310;
+        const OTHER: u32 = 0xa000_0102;
+        const BOT: u32 = 0xa000_0103;
+        let graphs = Arc::new(
+            GraphStore::from_json(
+                br#"{"version":1,"graphs":[],"missing":[],"bodies":{"0x0400000000000001":
+                {"hero":null,"name":"Hero","manager":null,"weapons":[],"graphs":[],
+                "target_tags":["0x0D600000000000F8"]}}}"#,
+            )
+            .unwrap(),
+        );
+        let filter = 0x0001_0041 | 0x80_0000;
+        let mut world = PlayerWorld::new(Arc::clone(&graphs), CONTROLLER, BODY, filter, 0, 0);
+        world.target_tags = Some(BTreeSet::from([HERO]));
+        let placed = TaggedEntity {
+            entity: 0x8000_0010,
+            position: [0.0; 3],
+            tags: BTreeSet::from([HERO, PLACE]),
+        };
+        world.map_tags = Some(Arc::new(MapTags::new(vec![placed], &graphs)));
+        let tagged = |entity, team, tags: Option<&[u64]>| TargetCandidate {
+            tags: tags.map(|tags| Arc::new(tags.iter().copied().collect())),
+            ..body(entity, team, [0.0; 3])
+        };
+        world.targets = Some(vec![
+            tagged(BODY, Some(0), Some(&[HERO])),
+            tagged(OTHER, Some(1), Some(&[HERO])),
+            tagged(BOT, Some(1), None),
+        ]);
+        let site = Site {
+            entity: BODY,
+            instance: 1,
+            graph: 42,
+            node: None,
+        };
+        assert_eq!(world.has_target_tag(site, OTHER, HERO), Some(true));
+        assert_eq!(world.has_target_tag(site, OTHER, PLACE), Some(false));
+        assert_eq!(world.has_target_tag(site, BOT, HERO), None);
+        assert_eq!(
+            world.entity_filter_flags(site, OTHER),
+            Some(0x80_0000 << 1 | 0x0001_0041)
+        );
+        assert_eq!(world.entity_filter_flags(site, 0xa000_0104), None);
+        assert_eq!(
+            world.entities_with_tag(site, PLACE),
+            Some(vec![0x8000_0010])
+        );
+        // The bot's tags are unknown: it might carry the hero's tag.
+        assert_eq!(world.entities_with_tag(site, HERO), None);
+        world.targets.as_mut().unwrap()[2] = tagged(BOT, Some(1), Some(&[]));
+        assert_eq!(
+            world.entities_with_tag(site, HERO),
+            Some(vec![0x8000_0010, BODY, OTHER])
+        );
     }
 
     /// A hit Soldier: 76 survives reaches his body as the damage message

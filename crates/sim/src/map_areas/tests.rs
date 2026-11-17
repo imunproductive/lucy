@@ -147,3 +147,45 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
     assert!(data.lethal_areas(&map, &listed).is_empty());
     assert!(data.kill_volumes(&map).is_empty());
 }
+
+/// The tagged entities: an entity with an identifier is found only in the
+/// modes that list it, each as `0x80000000 | flat` with its tags.
+#[test]
+fn the_tag_queries_find_the_maps_tagged_entities_of_the_mode() {
+    let data = MapAreaData::read(
+        br#"{"maps": {"0x0800000000000001": {"tagged": [
+            {"placeable": 126, "position": [1, 2, 3], "tags": ["0x0D6000000000030F", "0x0D60000000000310"]},
+            {"placeable": 127, "identifier": "0x0D80000000002962", "position": [0, 0, 0],
+             "tags": ["0x0D60000000000310"]}
+        ]}}}"#,
+    )
+    .unwrap();
+    let graphs =
+        GraphStore::from_json(br#"{"version": 1, "graphs": [], "bodies": {}, "missing": []}"#)
+            .unwrap();
+    let mut map = GameMap::practice_range();
+    map.map_guid = 0x0800_0000_0000_0001;
+    let none = BTreeSet::new();
+    let listed = BTreeSet::from([0x0D80_0000_0000_2962]);
+    let tags = data.map_tags(&map, &none, &graphs);
+    assert_eq!(
+        tags.with_tag(0x0D60_0000_0000_0310),
+        Some(vec![0x8000_007E])
+    );
+    assert_eq!(
+        tags.get(0x8000_007E).map(|entity| entity.position),
+        Some([1.0, 2.0, 3.0])
+    );
+    let tags = data.map_tags(&map, &listed, &graphs);
+    assert_eq!(
+        tags.with_tag(0x0D60_0000_0000_0310),
+        Some(vec![0x8000_007E, 0x8000_007F])
+    );
+    assert_eq!(tags.with_tag(0x0D60_0000_0000_0311), Some(Vec::new()));
+    map.map_guid = 0x0800_0000_0000_0002;
+    assert_eq!(
+        data.map_tags(&map, &listed, &graphs)
+            .with_tag(0x0D60_0000_0000_0310),
+        Some(Vec::new())
+    );
+}

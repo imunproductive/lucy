@@ -56,16 +56,25 @@ impl MapTags {
     /// The entities that carry `tag`, in placeable order; None when a body
     /// definition carries it too (the bodies' tags are not listed here).
     pub fn with_tag(&self, tag: u64) -> Option<Vec<u32>> {
-        if self.body_tags.contains(&tag) {
+        if self.body_may_carry(tag) {
             return None;
         }
-        Some(
-            self.entities
-                .iter()
-                .filter(|entity| entity.tags.contains(&tag))
-                .map(|entity| entity.entity)
-                .collect(),
-        )
+        Some(self.placed_with_tag(tag))
+    }
+
+    /// The placeables that carry `tag`, in placeable order, whether or not
+    /// bodies may carry it too.
+    pub fn placed_with_tag(&self, tag: u64) -> Vec<u32> {
+        self.entities
+            .iter()
+            .filter(|entity| entity.tags.contains(&tag))
+            .map(|entity| entity.entity)
+            .collect()
+    }
+
+    /// Whether some body definition of the bundle carries `tag`.
+    pub fn body_may_carry(&self, tag: u64) -> bool {
+        self.body_tags.contains(&tag)
     }
 
     /// A listed entity.

@@ -100,8 +100,8 @@ fn practice_range() -> PreparedScene {
 fn faulting(scene: &mut PreparedScene, fault: &Arc<AtomicBool>) {
     let stock = scene.owner_body_factory.take().unwrap();
     let fault = Arc::clone(fault);
-    scene.owner_body_factory = Some(Arc::new(move |hero, spawn, map_rays| {
-        Ok(stock(hero, spawn, map_rays)?.map(|inner| {
+    scene.owner_body_factory = Some(Arc::new(move |hero, spawn, map| {
+        Ok(stock(hero, spawn, map)?.map(|inner| {
             Box::new(Faulting {
                 inner,
                 fault: Arc::clone(&fault),

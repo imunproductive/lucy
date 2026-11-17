@@ -27,7 +27,13 @@
 //! a new id. Unverified (OW1 rule; the client has no damage code): armour
 //! stops 5 per hit, at most half.
 
-use std::{collections::HashMap, fs, io, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fs, io,
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
 
 use crate::{
     bot_plate::BotPlate,
@@ -370,6 +376,9 @@ pub struct PlayerTarget {
     /// Its pools are below their maximum ([`Vitals::hurt`]): a hit that
     /// strikes hurt allies strikes it.
     pub hurt: bool,
+    /// Its body definition's target tags, if the data gives them
+    /// ([`PreparedScene::body_tags`]).
+    pub tags: Option<Arc<BTreeSet<u64>>>,
 }
 
 struct Target {
@@ -503,17 +512,19 @@ impl Combat {
     /// 92: the bot's AI definition possesses it).
     pub fn target_candidates(&self, scene: &PreparedScene) -> Vec<TargetCandidate> {
         let free_for_all = scene.map().free_for_all;
-        let candidate = |entity, team, dead, controller, ai, pose: &TargetPose| TargetCandidate {
-            entity,
-            team: (!free_for_all).then_some(team),
-            dead,
-            controller,
-            ai,
-            feet: pose.feet,
-            height: pose.height,
-            radius: pose.radius,
-            yaw: pose.yaw,
-        };
+        let candidate =
+            |entity, team, dead, controller, ai, pose: &TargetPose, tags| TargetCandidate {
+                entity,
+                team: (!free_for_all).then_some(team),
+                dead,
+                controller,
+                ai,
+                feet: pose.feet,
+                height: pose.height,
+                radius: pose.radius,
+                yaw: pose.yaw,
+                tags,
+            };
         self.players
             .iter()
             .map(|slot| {
@@ -526,6 +537,7 @@ impl Combat {
                     controller,
                     false,
                     &target.pose,
+                    target.tags.clone(),
                 )
             })
             .chain(scene.bots().iter().enumerate().map(|(slot, bot)| {
@@ -538,6 +550,7 @@ impl Combat {
                     controller,
                     true,
                     &pose,
+                    scene.body_tags(bot.spawn.body),
                 )
             }))
             .collect()

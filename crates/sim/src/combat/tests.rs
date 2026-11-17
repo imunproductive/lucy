@@ -266,6 +266,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
             },
             dead,
             hurt,
+            tags: None,
         },
         history: TargetHistory::new(None),
     };
@@ -342,6 +343,7 @@ fn target_searches_see_the_players_then_the_bots() {
         pose: pose.clone(),
         dead: true,
         hurt: false,
+        tags: None,
     };
     combat.record_poses(&scene, &[player], 1000);
     let candidates = combat.target_candidates(&scene);
@@ -358,6 +360,7 @@ fn target_searches_see_the_players_then_the_bots() {
             height: pose.height,
             radius: pose.radius,
             yaw: pose.yaw,
+            tags: None,
         }
     );
     for (slot, (candidate, bot)) in candidates[1..].iter().zip(scene.bots()).enumerate() {
@@ -413,6 +416,7 @@ fn a_players_shot_on_another_player_carries_its_tags_and_way() {
         },
         dead: false,
         hurt: false,
+        tags: None,
     };
     combat.record_poses(
         &scene,
@@ -570,6 +574,7 @@ fn the_biotic_rifle_heals_hurt_allies_and_damages_enemies() {
         },
         dead: false,
         hurt,
+        tags: None,
     };
     combat.record_poses(&scene, &[player(true)], context.tick);
     assert!(fire(&mut combat, &mut scene).is_none());
