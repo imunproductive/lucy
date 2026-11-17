@@ -3072,8 +3072,31 @@ impl State {
                     // The live bots' reactions to their hits, and the voice
                     // lines they call for.
                     world.scene.advance_live_bots(tick);
-                    // The server placeables' scripts (placed_script.rs).
-                    world.scene.advance_placed(tick);
+                    // The server placeables' scripts (placed_script.rs),
+                    // with the spawn rooms the match flow's spawns hold,
+                    // and their messages to the players' bodies (the
+                    // spawn rooms' `0723`).
+                    let flow = room.flow.as_ref();
+                    world.scene.advance_placed(tick, |team| {
+                        flow.map_or(SpawnChoice::First, |flow| flow.spawn_choice(team))
+                    });
+                    let (messages, ends) = world.scene.take_placed_messages();
+                    let mut peers =
+                        room_peers(&mut self.peers, &self.seats, id, room.players.len());
+                    for message in &messages {
+                        for peer in peers.iter_mut().flatten() {
+                            if peer.world.receive_body_message(message) {
+                                break;
+                            }
+                        }
+                    }
+                    for end in &ends {
+                        for peer in peers.iter_mut().flatten() {
+                            if peer.world.end_body_message(end) {
+                                break;
+                            }
+                        }
+                    }
                     bot_voices.insert(id, world.scene.take_bot_voices());
                     if let Some(combat) = &mut world.combat {
                         if let Ok(replacements) = combat.respawn_due(&mut world.scene, tick, now) {

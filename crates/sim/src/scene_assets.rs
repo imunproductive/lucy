@@ -70,7 +70,7 @@ use orpheus_script::{
     map_tags::MapTags,
     ultimate::ChargeRates,
     vitals::Vitals,
-    vm::{MapRays, TargetCandidate, Unknowns},
+    vm::{GameMessage, MapRays, MessageEnd, TargetCandidate, Unknowns},
     wire::Variables,
 };
 use orpheus_wire::entity::{Component, EntityUpdate, Operation};
@@ -514,6 +514,14 @@ impl SceneAssets {
                 map.name, map.mode_guid
             )));
         }
+        let placed_scripts = PlacedScripts::new(
+            Arc::clone(&self.graphs),
+            map_mode,
+            mode_random,
+            server_placeables.clone(),
+            Arc::clone(&map_tags),
+            Arc::clone(&spawn_rooms),
+        );
         let mut scene = PreparedScene {
             respawn: self.respawns.for_mode(map.mode_guid),
             map,
@@ -552,13 +560,7 @@ impl SceneAssets {
             kill_height,
             safety_net,
             mode_random,
-            placed_scripts: PlacedScripts::new(
-                Arc::clone(&self.graphs),
-                map_mode,
-                mode_random,
-                server_placeables.clone(),
-                Arc::clone(&map_tags),
-            ),
+            placed_scripts,
             server_placeables,
             map_tags,
             body_tags: Arc::clone(&self.body_tags),
@@ -903,10 +905,19 @@ impl PreparedScene {
         &self.placed_scripts
     }
 
-    /// Start the server placeables' scripts at the first call, then advance
-    /// them to `tick`.
-    pub fn advance_placed(&mut self, tick: u32) {
-        self.placed_scripts.advance(tick);
+    /// Start the server placeables' scripts at the first call, give the
+    /// spawn rooms the mode holds now the mode's message (`choice`: each
+    /// team's current spawn, the match flow's; [`map_areas::room_holds`]),
+    /// then advance them to `tick`.
+    pub fn advance_placed(&mut self, tick: u32, choice: impl Fn(u8) -> SpawnChoice) {
+        let holds = map_areas::room_holds(&self.spawn_rooms, &self.map, choice);
+        self.placed_scripts.advance(tick, &holds);
+    }
+
+    /// The placed scripts' game messages and message ends since the last
+    /// call, for the match to hand to the bodies.
+    pub fn take_placed_messages(&mut self) -> (Vec<GameMessage>, Vec<MessageEnd>) {
+        self.placed_scripts.take_messages()
     }
 
     /// The bodies the placeables' target searches can find from now on

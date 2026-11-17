@@ -535,6 +535,14 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         Ok(entries)
     }
 
+    fn end_message(&mut self, sender: u32, message: u64) -> io::Result<()> {
+        self.component
+            .end_message(sender, message, &mut self.world)
+            .map_err(unsupported)?;
+        self.log_assumptions();
+        Ok(())
+    }
+
     fn take_messages(&mut self) -> Vec<GameMessage> {
         self.world.take_messages()
     }

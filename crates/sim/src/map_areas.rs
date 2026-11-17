@@ -20,17 +20,17 @@
 //!   the server's.
 //!
 //! The rooms of the other team hurt intruders (`0B7B`, 0C8E st45: 400 a
-//! second); not done here, as the Practice Range has one team.
+//! second).
 //!
-//! The bodies run `0C8E` (`crate::body_script::ModeBody`), but these
-//! states of it stay idle: they wait for `0723`, which only the rooms'
-//! entities (`0D62`) send, and the server runs none. The server keeps the
-//! rules above in their place: the graph's own forms don't work on the
-//! server (st11's status `STU_9028E035` is native and unknown, st13's
-//! `ModifyHealth` is an inert state in the VM, and `068A`'s handler is in
-//! the client), and sending `0723` as well would heal twice once the VM
-//! runs `ModifyHealth`. The one networked part, st12's stack #8271e, is
-//! not sent.
+//! The server runs the rooms' `0D62` with the other server placeables
+//! (`crate::placed_script`) and hands their `0723` and `0B7B` to the
+//! bodies, which run `0C8E` (`crate::body_script::ModeBody`): its status
+//! makes the body invulnerable (`vm/statuses.rs`), its `ModifyHealth` heals
+//! with the room as instigator (`crate::combat::Combat::modify_health`).
+//! The mode graphs that send the rooms `0724` don't run on the server;
+//! [`room_holds`] sends it in their place (docs/dev/loose-ends.md). The
+//! hero select flag (component 74 field 6) stays the server's own rule:
+//! the body's feet in one of its team's rooms ([`in_spawn_room`]).
 //!
 //! A room the placeable gives a team belongs to it; a room without one gets
 //! its team from the mode (`0724` parameter `0473`). Assumption for those:
@@ -110,7 +110,8 @@ use orpheus_physics::collision::index::SceneTriangle;
 use orpheus_script::{
     graph::{GraphBinding, GraphStore},
     map_tags::{MapTags, TaggedEntity},
-    placed::Placement,
+    placed::{EntityVolumes, Placement},
+    wire::{Value as ScriptValue, Variables},
 };
 use serde::Deserialize;
 
@@ -132,8 +133,6 @@ pub const FALL_LIMIT: f64 = 20.0;
 /// The least damage of a damage area that kills: 100 % of the body's
 /// health (see the module notes).
 pub const LETHAL_DAMAGE: f64 = 100.0;
-/// What the room's `ModifyHealth` heals a second (0C8E st13, `m_amount`).
-pub const SPAWN_HEALING: f64 = 400.0;
 /// A ground triangle whose surface has this bit is not ground
 /// (`orpheus_physics::mover::ground::NOT_GROUND`).
 const NOT_GROUND: u16 = 1;
@@ -150,6 +149,85 @@ impl SpawnRoom {
     pub fn contains(&self, position: [f64; 3]) -> bool {
         self.boxes.iter().any(|area| area.contains(position))
     }
+
+    /// The room's entity, as the scene creates it
+    /// ([`PlacedScript::entity`]).
+    pub fn entity(&self) -> u32 {
+        0x8000_0000 | self.placeable
+    }
+}
+
+/// The spawn rooms' areas, as their `0D62` asks for its own
+/// (`STU_73E1C5F0`).
+pub struct RoomVolumes(pub Arc<[SpawnRoom]>);
+
+impl EntityVolumes for RoomVolumes {
+    fn contains(&self, entity: u32, point: [f64; 3]) -> Option<bool> {
+        self.0
+            .iter()
+            .find(|room| room.entity() == entity)
+            .map(|room| room.contains(point))
+    }
+}
+
+/// The mode graph's game message to a spawn room (`0724.025`) and its
+/// parameters: `03D4` invulnerable, `03D5` heal, `03D3` hero select, `0473`
+/// the room's team.
+pub const ROOM_MESSAGE: u64 = 0x0240_0000_0000_0724;
+const ROOM_INVULNERABLE: u32 = 0x03d4;
+const ROOM_HEAL: u32 = 0x03d5;
+const ROOM_HERO_SELECT: u32 = 0x03d3;
+const ROOM_TEAM: u32 = 0x0473;
+
+/// The mode graph's `0724` for a room it holds (see [`room_holds`]): all
+/// three flags on, as every mode graph sends them (`13C0` st9, `0F4A` st23
+/// and st90, `0EC2` st97, `0D76`, `0D0B`, `0F60`, `0F73`), and the team it
+/// gives the room, if any.
+pub fn room_message(team: Option<u8>) -> Variables {
+    let mut parameters = Variables::from([
+        (ROOM_INVULNERABLE, ScriptValue::Bool(true)),
+        (ROOM_HEAL, ScriptValue::Bool(true)),
+        (ROOM_HERO_SELECT, ScriptValue::Bool(true)),
+    ]);
+    if let Some(team) = team {
+        parameters.insert(ROOM_TEAM, ScriptValue::Integer(i64::from(team)));
+    }
+    parameters
+}
+
+/// The rooms the mode graph holds its `0724` for now, with the team it
+/// gives each (`0473`). Stand-in for the mode graphs, which the server
+/// doesn't run (docs/dev/loose-ends.md): a room the map gives a team gets
+/// the message with no team (its own `0D62` override names it, as the
+/// Practice Range's `13C0` sends it to every entity); a room without one
+/// gets the team whose current spawn point (the match flow's `choice`)
+/// stands in it, or no team when both teams' do or in a free-for-all; a
+/// room that holds no current spawn point gets none (the same rule as
+/// [`in_spawn_room`]).
+pub fn room_holds(
+    rooms: &[SpawnRoom],
+    map: &GameMap,
+    choice: impl Fn(u8) -> SpawnChoice,
+) -> Vec<(u32, Option<u8>)> {
+    rooms
+        .iter()
+        .filter_map(|room| {
+            if room.team.is_some() {
+                return Some((room.entity(), None));
+            }
+            let teams: Vec<u8> = (0..2)
+                .filter(|&team| {
+                    map.spawn_point_in(team, 0, choice(team))
+                        .is_some_and(|(at, _)| room.contains(at))
+                })
+                .collect();
+            match teams[..] {
+                [] => None,
+                [team] if !map.free_for_all => Some((room.entity(), Some(team))),
+                _ => Some((room.entity(), None)),
+            }
+        })
+        .collect()
 }
 
 /// A damage area of a map (`STUECDamageAreaInstanceData`): its damage and
