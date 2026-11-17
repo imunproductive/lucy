@@ -205,7 +205,7 @@ impl BodyFilter {
     /// the searching entity (relations matter only when a word is set).
     fn passes(&self, candidate: &TargetCandidate, hostile: bool, searcher: bool) -> bool {
         self.masks
-            .passes(filter_word(candidate), !hostile || searcher, searcher)
+            .passes(candidate.filter_word(), !hostile || searcher, searcher)
     }
 
     fn relations(&self) -> bool {

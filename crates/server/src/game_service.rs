@@ -2313,20 +2313,33 @@ impl State {
                 }
             }
         }
-        let points = hits
-            .iter()
-            .flat_map(|hit| &hit.notices)
-            .filter_map(|notice| match notice {
-                Some(CombatNotice::Hit { dealt, .. }) => Some(*dealt),
-                _ => None,
-            })
-            .sum::<f64>()
-            + healed;
-        if let Some(peer) = shooter
-            .filter(|_| points > 0.0)
-            .and_then(|shooter| self.peers.get_mut(&shooter))
-        {
-            peer.world.gain_ult(points);
+        // Each hit to the shooter's body as damage dealt or healing done:
+        // its `0B8B` charges the ultimate.
+        let scene = self
+            .rooms
+            .get(&id)
+            .and_then(|room| room.world.as_ref())
+            .map(|world| &world.scene);
+        if let (Some(scene), Some(peer)) = (
+            scene,
+            shooter.and_then(|shooter| self.peers.get_mut(&shooter)),
+        ) {
+            let graphs = scene.shared_graphs();
+            for hit in &hits {
+                let body = scene
+                    .bots()
+                    .iter()
+                    .find(|bot| bot.entity == hit.bot)
+                    .map(|bot| bot.spawn.body);
+                for notice in hit.notices.iter().flatten() {
+                    if let CombatNotice::Hit { dealt, .. } = notice {
+                        peer.world
+                            .dealt(&graphs, hit.bot, body, *dealt, &hit.tags, false);
+                    }
+                }
+                peer.world
+                    .dealt(&graphs, hit.bot, body, hit.healed, &hit.tags, true);
+            }
         }
         let scene = self
             .rooms
@@ -2413,15 +2426,7 @@ impl State {
                     };
                     let (bodies, bots) =
                         combat.heal_area(scene, healer, heal.centre, heal.radius, heal.amount);
-                    let healed = bots.iter().map(|hit| hit.healed).sum();
-                    heal_players(
-                        scene,
-                        healer.source,
-                        &bodies,
-                        heal.amount,
-                        healed,
-                        &mut room,
-                    );
+                    heal_players(scene, healer.source, &bodies, heal.amount, &bots, &mut room);
                     bot_heals.extend(bots);
                 }
                 let mut worlds: Vec<_> = room
