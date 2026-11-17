@@ -571,6 +571,12 @@ pub trait World {
             .map(i64::from)
     }
 
+    /// Whether `position` is inside `entity`'s volume (`STU_73E1C5F0`: the
+    /// area a spawn room `0D62` names); None: unknown here.
+    fn in_entity_volume(&self, _site: Site, _entity: u32, _position: [f64; 3]) -> Option<bool> {
+        None
+    }
+
     /// Give `entity` team index `team` (-1 none, 0 to 4; `STU_0F647E55`).
     /// False: this world keeps no entity teams.
     fn set_entity_team(&mut self, _site: Site, _entity: u32, _team: i64) -> bool {
@@ -674,6 +680,14 @@ pub trait World {
         false
     }
 
+    /// A persistent sender (a SendGameMessage state) no longer names
+    /// `target`, or ended: the target's receiving states that hold its
+    /// message go back to idle ([`Component::end_message`]). False: this
+    /// world delivers no ends, and the receiver stays as it is.
+    fn end_message(&mut self, _source: Site, _target: u32, _message: u64) -> bool {
+        false
+    }
+
     /// A `STUStatescriptActionCriteria` raised a criteria on an entity
     /// ([`RaisedCriteria::target`]: its `m_targets`, the body itself or
     /// another entity it names, such as its controller): the event the
@@ -769,6 +783,15 @@ pub struct GameMessage {
     pub target: u32,
     pub message: u64,
     pub parameters: Variables,
+}
+
+/// A persistent sender let its message go for a target
+/// ([`World::end_message`]), for the world to route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MessageEnd {
+    pub sender: u32,
+    pub target: u32,
+    pub message: u64,
 }
 
 /// A `MoveTo` state's fixed world target and speed in metres per second.
@@ -1443,6 +1466,21 @@ impl Component {
         Ok(entries)
     }
 
+    /// A persistent sender (`sender`) let its message go for this entity
+    /// ([`World::end_message`]): the receiving states it held go back to
+    /// idle now, and what that begins runs.
+    pub fn end_message(
+        &mut self,
+        sender: u32,
+        message: u64,
+        world: &mut impl World,
+    ) -> Result<(), InitFault> {
+        self.run(world, |vm| {
+            vm.release_message(sender, message)?;
+            vm.run()
+        })
+    }
+
     /// A new root instance of `graph` with the next free id. Its entries
     /// queue at the current clock and run at the next update
     /// (`Component.create` in `ow174/game/script/runtime.py`).
@@ -1811,6 +1849,21 @@ impl Event {
     }
 }
 
+/// Whom a SendGameMessage names: its message (0: none), the entities, and
+/// whether it goes to every entity.
+struct Recipients {
+    message: u64,
+    entities: Vec<u32>,
+    broadcast: bool,
+}
+
+/// The game message a node sends or waits for; None for none.
+fn message_of(node: &Node) -> Option<u64> {
+    node.field("m_gameMessage.m_gameMessage")
+        .and_then(asset_guid)
+        .filter(|&id| id != 0)
+}
+
 struct Machine {
     snapshot: Snapshot,
     queues: Timeline<Event>,
@@ -2169,6 +2222,15 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 return Ok(());
             }
             self.exit_subgraph(id, node, "m_33DA5163", 1)?;
+            // The sender now holds it ([`Self::release_message`]).
+            let since_ms = self.machine.now_ms;
+            let state = self.state_mut(key).expect("active receiving state");
+            if !state.tracked.iter().any(|held| held.entity == sender) {
+                state.tracked.push(TrackedTarget {
+                    entity: sender,
+                    since_ms,
+                });
+            }
             ("m_452862E6", Some(key))
         } else {
             ("m_outPlug", None)
@@ -2209,13 +2271,185 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(())
     }
 
+    /// A SendGameMessage action: the message goes once to the recipients
+    /// its target names now.
     fn send_game_message(&mut self, id: u16, node: &Node) -> Result<bool, InitFault> {
-        let Some(message) = node
-            .field("m_gameMessage.m_gameMessage")
-            .and_then(asset_guid)
-            .filter(|&id| id != 0)
-        else {
-            return Ok(true);
+        let Some(recipients) = self.message_recipients(id, node) else {
+            return Ok(false);
+        };
+        self.deliver_game_message(id, node, &recipients, &recipients.entities)
+    }
+
+    /// A SendGameMessage state (`STU_38EE1100`) is a persistent sender
+    /// (leafall903/ORPHEUS (MIT) `docs/MESSAGE_SENDER.txt` and
+    /// `MESSAGE_RECEIVER.txt`, from the client's message manager D4C3E0 and
+    /// the receiving state D4BD40): while it runs, the entities its target
+    /// names hold its message, and a receiving state (StateGameMessageEntry)
+    /// that holds it leaves its idle subgraph for its receive subgraph; when
+    /// the sender ends or no longer names an entity, that entity's receiver
+    /// goes back to idle. So the state sends its message to the entities its
+    /// target names at its begin, then each tick to those that came in since
+    /// ([`State::tracked`] lists the ones holding it), and ends it for those
+    /// that left and, at its own end, for all ([`World::end_message`]). A
+    /// target of channels (`STU_1D719351`, every entity) is sent once at
+    /// the begin, as before: who joins later is not followed.
+    pub(super) fn begin_send_state(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
+        let Some(recipients) = self.message_recipients(key.instance, node) else {
+            return Ok(());
+        };
+        if !self.deliver_game_message(key.instance, node, &recipients, &recipients.entities)? {
+            return Ok(());
+        }
+        if recipients.broadcast || recipients.message == 0 {
+            return Ok(());
+        }
+        let since_ms = self.machine.now_ms;
+        if let Some(state) = self.state_mut(key) {
+            state.tracked = recipients
+                .entities
+                .iter()
+                .map(|&entity| TrackedTarget { entity, since_ms })
+                .collect();
+        }
+        self.register_tick(key, since_ms);
+        Ok(())
+    }
+
+    /// A running sender's tick ([`Self::begin_send_state`]): the message
+    /// goes to the entities its target names that don't hold it yet, and
+    /// ends for those it no longer names.
+    pub(super) fn refresh_send_state(
+        &mut self,
+        key: StateKey,
+        node: &Node,
+    ) -> Result<(), InitFault> {
+        let Some(recipients) = self.message_recipients(key.instance, node) else {
+            return Ok(());
+        };
+        let held: Vec<u32> = self
+            .state(key)
+            .map(|state| state.tracked.iter().map(|target| target.entity).collect())
+            .unwrap_or_default();
+        let joined: Vec<u32> = recipients
+            .entities
+            .iter()
+            .copied()
+            .filter(|entity| !held.contains(entity))
+            .collect();
+        let left: Vec<u32> = held
+            .iter()
+            .copied()
+            .filter(|entity| !recipients.entities.contains(entity))
+            .collect();
+        if joined.is_empty() && left.is_empty() {
+            return Ok(());
+        }
+        if !self.deliver_game_message(key.instance, node, &recipients, &joined)? {
+            return Ok(());
+        }
+        for &entity in &left {
+            self.end_game_message(key.instance, node, recipients.message, entity)?;
+        }
+        let since_ms = self.machine.now_ms;
+        if let Some(state) = self.state_mut(key) {
+            state
+                .tracked
+                .retain(|target| !left.contains(&target.entity));
+            state.tracked.extend(
+                joined
+                    .iter()
+                    .map(|&entity| TrackedTarget { entity, since_ms }),
+            );
+        }
+        Ok(())
+    }
+
+    /// A sender's end: every entity that holds its message lets it go.
+    pub(super) fn end_send_state(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
+        let Some(message) = message_of(node) else {
+            return Ok(());
+        };
+        let held: Vec<u32> = self
+            .state(key)
+            .map(|state| state.tracked.iter().map(|target| target.entity).collect())
+            .unwrap_or_default();
+        for entity in held {
+            self.end_game_message(key.instance, node, message, entity)?;
+        }
+        Ok(())
+    }
+
+    /// `entity` no longer holds the sender's message: its own receiving
+    /// states here, another entity's through the world.
+    fn end_game_message(
+        &mut self,
+        id: u16,
+        node: &Node,
+        message: u64,
+        entity: u32,
+    ) -> Result<(), InitFault> {
+        self.spend("game message end")?;
+        let site = self.site(id, node);
+        if entity == site.entity {
+            self.release_message(site.entity, message)
+        } else {
+            // A world that delivers no ends leaves the receiver as it is.
+            self.world.end_message(site, entity, message);
+            Ok(())
+        }
+    }
+
+    /// The receiving states of `message` that hold it from `sender` go back
+    /// to their idle subgraph once no sender holds them
+    /// ([`Self::begin_send_state`]).
+    pub(super) fn release_message(&mut self, sender: u32, message: u64) -> Result<(), InitFault> {
+        let held: Vec<StateKey> = self
+            .machine
+            .snapshot
+            .instances
+            .iter()
+            .flat_map(|(&instance, item)| {
+                item.states
+                    .iter()
+                    .filter(|(_, state)| {
+                        state.active
+                            && state.kind == StateKind::MessageIdle
+                            && state.tracked.iter().any(|held| held.entity == sender)
+                    })
+                    .map(move |(&raw, _)| StateKey { instance, raw })
+            })
+            .collect();
+        for key in held {
+            let graphs = self.graphs;
+            let graph = self.machine.snapshot.instances[&key.instance].graph;
+            let node = graphs
+                .graph(graph)
+                .and_then(|graph| graph.state(usize::from(key.raw)))
+                .expect("active receiving state");
+            if message_of(node) != Some(message) {
+                continue;
+            }
+            let state = self.state_mut(key).expect("active receiving state");
+            state.tracked.retain(|held| held.entity != sender);
+            if !state.tracked.is_empty() {
+                continue;
+            }
+            self.exit_subgraph(key.instance, node, "m_452862E6", 1)?;
+            self.follow(key.instance, node, "m_33DA5163", Some(key), 0)?;
+        }
+        Ok(())
+    }
+
+    /// Whom a SendGameMessage names now; None when its target can't be
+    /// evaluated (reported).
+    fn message_recipients(&mut self, id: u16, node: &Node) -> Option<Recipients> {
+        let nobody = Recipients {
+            message: 0,
+            entities: Vec::new(),
+            broadcast: false,
+        };
+        let Some(message) = message_of(node) else {
+            return Some(nobody);
         };
         let site = self.site(id, node);
         let mut target = node
@@ -2243,7 +2477,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         // the clients' [assumption] and the server delivers nothing on them.
         let channels = target.get("$").and_then(Json::as_str) == Some("STU_1D719351");
         if channels && field(target, "m_6A8DB059").as_u64() == Some(0) {
-            return Ok(true);
+            return Some(nobody);
         }
         // `STU_57692020` names no receivers and the client has no code for
         // it: the server picks them. Its message reaches every entity, the
@@ -2258,12 +2492,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let value = if target.is_null() || broadcast {
             Value::Entity(site.entity)
         } else {
-            let Some(value) = self.evaluate(id, node, target, None) else {
-                return Ok(false);
-            };
-            value
+            self.evaluate(id, node, target, None)?
         };
-        let entities: Vec<_> = match value {
+        let mut entities: Vec<u32> = match value {
             Value::Entity(entity) if entity != 0 => vec![entity],
             Value::Array(items) => items
                 .into_iter()
@@ -2276,10 +2507,30 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 .collect(),
             _ => Vec::new(),
         };
-        if entities.is_empty() {
+        entities.dedup();
+        Some(Recipients {
+            message,
+            entities,
+            broadcast,
+        })
+    }
+
+    /// The message with its parameters, evaluated now, to `entities` (and
+    /// to every entity for a broadcast); false when a parameter or the
+    /// delivery failed (reported).
+    fn deliver_game_message(
+        &mut self,
+        id: u16,
+        node: &Node,
+        recipients: &Recipients,
+        entities: &[u32],
+    ) -> Result<bool, InitFault> {
+        if recipients.message == 0 || entities.is_empty() {
             // A message to nobody: its parameters are never read.
             return Ok(true);
         }
+        let site = self.site(id, node);
+        let message = recipients.message;
         let mut parameters = Variables::new();
         for parameter in array_field(&node.fields, "m_params")
             .iter()
@@ -2291,7 +2542,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             };
             parameters.insert(parameter_id(parameter), value);
         }
-        for entity in entities {
+        for &entity in entities {
             self.spend("game message routing")?;
             if entity == site.entity {
                 self.machine.queue_entries(
@@ -2309,7 +2560,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 return Ok(false);
             }
         }
-        if broadcast && !self.world.broadcast_message(site, message, &parameters) {
+        if recipients.broadcast && !self.world.broadcast_message(site, message, &parameters) {
             self.report(
                 site,
                 Issue::UnsupportedField("broadcast game message delivery"),

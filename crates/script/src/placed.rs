@@ -8,7 +8,8 @@
 //! The placeables' target searches find the players. A component that
 //! meets content the VM doesn't implement (refused in debug builds) or
 //! answers by assumption is not complete: the server doesn't send its
-//! frames (see [`MapEntityWorld::complete`]).
+//! frames (see [`PlacedEntity::complete`]); one that hasn't faulted is
+//! running, and the server routes its messages ([`PlacedEntity::running`]).
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -18,8 +19,8 @@ use crate::{
     graph::{GraphBinding, GraphStore},
     map_tags::{MapTags, TaggedEntity},
     vm::{
-        Component, GameMessage, InitFault, MAX_INIT_WORK, Root, Site, Snapshot, TargetCandidate,
-        Unknowns, World, bind_values,
+        Component, GameMessage, InitFault, MAX_INIT_WORK, MessageEnd, Root, Site, Snapshot,
+        TargetCandidate, Unknowns, World, bind_values,
     },
     wire::{Value, Variables},
 };
@@ -98,6 +99,16 @@ impl PlacedEntity {
             })
     }
 
+    /// Whether its graphs are running: initialized and not faulted, though
+    /// perhaps with assumptions (the server forwards such a script's
+    /// messages, not its frames).
+    pub fn running(&self) -> bool {
+        self.fault.is_none()
+            && self
+                .snapshot()
+                .is_some_and(|snapshot| snapshot.initialization_complete())
+    }
+
     pub fn fault(&self) -> Option<&str> {
         self.fault.as_deref()
     }
@@ -109,6 +120,14 @@ impl PlacedEntity {
     }
 }
 
+/// The volumes of the placed entities that have one: a spawn room's area
+/// (`STU_73E1C5F0`), from the map data the match holds.
+pub trait EntityVolumes: Send + Sync {
+    /// Whether `point` is inside `entity`'s volume; None: the entity has
+    /// none known.
+    fn contains(&self, entity: u32, point: [f64; 3]) -> Option<bool>;
+}
+
 /// What the match lends the placed scripts each frame.
 struct Shared<'a> {
     graphs: &'a GraphStore,
@@ -117,7 +136,9 @@ struct Shared<'a> {
     unknowns: Unknowns,
     players: &'a [TargetCandidate],
     map_tags: Option<&'a MapTags>,
+    volumes: Option<&'a dyn EntityVolumes>,
     outbox: &'a mut Vec<GameMessage>,
+    ends: &'a mut Vec<MessageEnd>,
 }
 
 impl Shared<'_> {
@@ -275,6 +296,20 @@ impl World for EntityWorld<'_, '_> {
         });
         true
     }
+
+    fn end_message(&mut self, _source: Site, target: u32, message: u64) -> bool {
+        self.shared.ends.push(MessageEnd {
+            sender: self.entity,
+            target,
+            message,
+        });
+        true
+    }
+
+    /// A spawn room's own area (the match's map data).
+    fn in_entity_volume(&self, _site: Site, entity: u32, point: [f64; 3]) -> Option<bool> {
+        self.shared.volumes?.contains(entity, point)
+    }
 }
 
 /// Every placed entity's script in one match.
@@ -287,7 +322,9 @@ pub struct MapEntityWorld {
     players: Vec<TargetCandidate>,
     /// The map's tagged placeables the scene tag queries find.
     map_tags: Option<Arc<MapTags>>,
+    volumes: Option<Arc<dyn EntityVolumes>>,
     outbox: Vec<GameMessage>,
+    ends: Vec<MessageEnd>,
     entities: Vec<PlacedEntity>,
     frame: u32,
 }
@@ -295,7 +332,8 @@ pub struct MapEntityWorld {
 impl MapEntityWorld {
     /// Start every placement that has graphs at `frame`, in order. A
     /// placement whose start faults keeps the fault and no component.
-    /// `map_tags`: the map's tagged placeables in this mode, if known.
+    /// `map_tags`: the map's tagged placeables in this mode, if known;
+    /// `volumes`: the placeables' volumes, if known.
     #[allow(clippy::too_many_arguments)]
     pub fn start<'p>(
         graphs: Arc<GraphStore>,
@@ -304,6 +342,7 @@ impl MapEntityWorld {
         unknowns: Unknowns,
         placements: impl IntoIterator<Item = Placement<'p>>,
         map_tags: Option<Arc<MapTags>>,
+        volumes: Option<Arc<dyn EntityVolumes>>,
         frame: u32,
     ) -> Self {
         let mut world = Self {
@@ -313,7 +352,9 @@ impl MapEntityWorld {
             unknowns,
             players: Vec::new(),
             map_tags,
+            volumes,
             outbox: Vec::new(),
+            ends: Vec::new(),
             entities: Vec::new(),
             frame,
         };
@@ -339,7 +380,9 @@ impl MapEntityWorld {
                 unknowns,
                 players: &world.players,
                 map_tags: world.map_tags.as_deref(),
+                volumes: world.volumes.as_deref(),
                 outbox: &mut world.outbox,
+                ends: &mut world.ends,
             };
             let mut team = None;
             let mut entity_world = EntityWorld {
@@ -400,6 +443,50 @@ impl MapEntityWorld {
             return false;
         }
         self.frame = frame;
+        self.run_scripts(
+            |_| true,
+            |component, world| component.advance_frame(frame, world),
+        );
+        true
+    }
+
+    /// A game message to the placed entity `target` from `sender` (the
+    /// mode's `0724` to a spawn room): its entries run now. False when no
+    /// running script of that entity took it.
+    pub fn receive_message(
+        &mut self,
+        target: u32,
+        sender: u32,
+        message: u64,
+        parameters: &Variables,
+    ) -> bool {
+        let mut taken = false;
+        self.run_scripts(
+            |entity| entity == target,
+            |component, world| {
+                taken = component.receive_message(sender, message, parameters.clone(), world)? != 0;
+                Ok(())
+            },
+        );
+        taken
+    }
+
+    /// A persistent sender (`sender`) let its message go for the placed
+    /// entity `target` ([`Component::end_message`]).
+    pub fn end_message(&mut self, target: u32, sender: u32, message: u64) {
+        self.run_scripts(
+            |entity| entity == target,
+            |component, world| component.end_message(sender, message, world),
+        );
+    }
+
+    /// Run `run` on the running script of each entity `pick` takes, with
+    /// its world; a script that faults stops.
+    fn run_scripts(
+        &mut self,
+        mut pick: impl FnMut(u32) -> bool,
+        mut run: impl FnMut(&mut Component, &mut EntityWorld<'_, '_>) -> Result<(), InitFault>,
+    ) {
         let mut shared = Shared {
             graphs: &self.graphs,
             mode: self.mode,
@@ -407,9 +494,14 @@ impl MapEntityWorld {
             unknowns: self.unknowns,
             players: &self.players,
             map_tags: self.map_tags.as_deref(),
+            volumes: self.volumes.as_deref(),
             outbox: &mut self.outbox,
+            ends: &mut self.ends,
         };
         for placed in &mut self.entities {
+            if !pick(placed.entity) {
+                continue;
+            }
             let Some(component) = placed.component.as_mut() else {
                 continue;
             };
@@ -419,17 +511,22 @@ impl MapEntityWorld {
                 position: placed.position,
                 team: &mut placed.team,
             };
-            if let Err(error) = component.advance_frame(frame, &mut world) {
+            if let Err(error) = run(component, &mut world) {
                 placed.fault = Some(error.to_string());
                 placed.component = None;
             }
         }
-        true
     }
 
     /// The game messages the scripts sent, for the match to route.
     pub fn take_messages(&mut self) -> Vec<GameMessage> {
         std::mem::take(&mut self.outbox)
+    }
+
+    /// The messages the scripts' senders let go since the last call
+    /// ([`World::end_message`]), for the match to route.
+    pub fn take_message_ends(&mut self) -> Vec<MessageEnd> {
+        std::mem::take(&mut self.ends)
     }
 
     /// The classes the VM refused or answered by assumption, and the
@@ -534,6 +631,7 @@ mod tests {
                 overrides: &[],
                 extra: &extra,
             }],
+            None,
             None,
             1,
         );

@@ -231,6 +231,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.world.entity_team(self.site, entity)
     }
 
+    fn in_entity_volume(&mut self, entity: u32, position: [f64; 3]) -> Option<bool> {
+        self.read_native = true;
+        self.world.in_entity_volume(self.site, entity, position)
+    }
+
     fn related_entity(&mut self, relation: EntityRelation, entity: u32) -> Option<u32> {
         self.read_native = true;
         self.world.related_entity(self.site, relation, entity)

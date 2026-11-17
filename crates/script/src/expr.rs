@@ -266,6 +266,12 @@ pub trait Context {
         None
     }
 
+    /// Whether `position` is inside `entity`'s volume (`STU_73E1C5F0`);
+    /// None: unknown.
+    fn in_entity_volume(&mut self, _entity: u32, _position: [f64; 3]) -> Option<bool> {
+        None
+    }
+
     fn ruleset(&mut self, _id: u32) -> Value {
         Value::Null
     }
@@ -1911,6 +1917,37 @@ impl Evaluator {
                     ),
                     _ => Value::Integer(-1),
                 }
+            }
+            // Whether a point is inside an entity's volume
+            // (`Eval_STU_73E1C5F0` 0x7FF789BF7D20): it evaluates the point
+            // `m_A8D12F28`, then each entity of `m_entity` (a value or an
+            // array) through the host (vtable +0x168) and tests the point
+            // against that entity's volume (0x7FF789CC4E40); true at the
+            // first that holds it, false for none or no point. The spawn
+            // room `0D62` asks it of its own entity for each hero its search
+            // finds (where its feet are, `STU_8CBDD81C`).
+            "STU_73E1C5F0" if native_fields(config, &["m_A8D12F28", "m_entity"]) => {
+                let Value::Vector(point) =
+                    self.config(child(config, "m_A8D12F28"), context, nested)?
+                else {
+                    return Ok(Value::Bool(false));
+                };
+                let entities = match self.config(child(config, "m_entity"), context, nested)? {
+                    Value::Array(items) => items,
+                    value => vec![value],
+                };
+                for entity in entities.iter().filter_map(to_entity) {
+                    if !valid_entity(entity) {
+                        continue;
+                    }
+                    if context
+                        .in_entity_volume(entity, point)
+                        .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?
+                    {
+                        return Ok(Value::Bool(true));
+                    }
+                }
+                Value::Bool(false)
             }
             "STU_F76C486C" | "STU_F7262B36" | "STU_0AC15F78" | "STU_DB742151" => {
                 let (relation, operand) = match class {
