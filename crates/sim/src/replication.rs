@@ -3127,11 +3127,7 @@ impl WorldDelivery {
         if self.death.is_some() || hit.amount.is_nan() || hit.amount <= 0.0 {
             return None;
         }
-        // Invulnerable in his team's spawn room (`map_areas`: 0C8E `03D4`),
-        // or while his graphs hold a status (`STU_9028E035`).
-        if self.spawn_room == Some(true)
-            || self.body_effects().is_some_and(BodyEffects::invulnerable)
-        {
+        if !self.can_be_damaged() {
             return None;
         }
         let death_tick = hit.world_tick.unwrap_or(tick);
@@ -3308,6 +3304,15 @@ impl WorldDelivery {
             .as_ref()
             .filter(|script| script.id == body.id)
             .and_then(|script| script.runtime.effects())
+    }
+
+    /// Whether a hit can hurt the current body: not in his team's spawn
+    /// room (`map_areas`: 0C8E `03D4`) and no invulnerable status
+    /// (`STU_9028E035`) held by his graphs. An explosion pushes only a body
+    /// it can hurt (the user's game check, 2026-11-17: no push in the spawn
+    /// room), so the knockback takes the same gate as the damage.
+    fn can_be_damaged(&self) -> bool {
+        self.spawn_room != Some(true) && !self.body_effects().is_some_and(BodyEffects::invulnerable)
     }
 
     /// An aura comes on the player's living body (Biotic Grenade's
@@ -3631,6 +3636,9 @@ impl WorldDelivery {
         first_tick: u32,
         mut step: impl FnMut(u32, &mut ProjectileFlight) -> io::Result<Option<FlightEnd>>,
     ) -> io::Result<()> {
+        // His own explosion pushes him only where it could hurt him
+        // ([`Self::can_be_damaged`]).
+        let pushable = self.can_be_damaged();
         let Some(script) = &mut self.body_script else {
             return Ok(());
         };
@@ -3647,7 +3655,7 @@ impl WorldDelivery {
                     ..
                 })),
                 Some(mover),
-            ) = (&result, mover.as_mut())
+            ) = (&result, mover.as_mut().filter(|_| pushable))
             {
                 mover.push(*knockback);
             }
