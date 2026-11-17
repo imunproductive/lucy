@@ -34,6 +34,7 @@ use orpheus_script::{
     codecs::CodecTable,
     expr::{team_from_filter, to_float},
     graph::GraphStore,
+    map_tags::MapTags,
     player::PlayerWorld,
     snapshot::{SnapshotEncoder, View},
     timeline::FRAME_MS,
@@ -60,6 +61,14 @@ const OWNER_HEALTH: u32 = 253;
 const DEAD_FLAG: u32 = orpheus_script::bot::DEAD_FLAG;
 const HUD_HEALTH: u32 = 1732;
 const HUD_MAX_HEALTH: u32 = 1737;
+
+/// The map a player body's scripts meet: its collision for their ray casts
+/// and its tagged placeables for their tag queries.
+#[derive(Clone)]
+pub struct BodyMap {
+    pub rays: Arc<dyn MapRays>,
+    pub tags: Arc<MapTags>,
+}
 
 /// The mode graph's message that tells a body its respawn time (`06FD.025`),
 /// and its seconds parameter (`00B7`).
@@ -215,11 +224,11 @@ impl PlayerBodyFactory {
     }
 
     /// [`Self::start`] on a map whose collision the body's ray casts meet
-    /// (none: no map).
+    /// and whose tagged placeables its tag queries find (none: no map).
     pub fn start_on(
         &self,
         spawn: OwnerBodySpawn,
-        map_rays: Option<Arc<dyn MapRays>>,
+        map: Option<BodyMap>,
     ) -> io::Result<PlayerBodyRuntime> {
         if spawn.quanta != RETAIL_QUANTA {
             return Err(unsupported("the owner VM requires the 16 ms retail clock"));
@@ -235,7 +244,10 @@ impl PlayerBodyFactory {
         );
         world.position = spawn.pose.position;
         world.mode_random = Some(spawn.mode_random);
-        world.map_rays = map_rays;
+        if let Some(map) = map {
+            world.map_rays = Some(map.rays);
+            world.map_tags = Some(map.tags);
+        }
         world.movement = spawn.pose;
         // A new mover's (`Mover::speed_scale`): no move yet.
         world.speed_scale = Some(1.0);

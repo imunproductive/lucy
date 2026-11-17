@@ -32,7 +32,7 @@ mod volleys;
 
 use std::{
     cell::Cell,
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     error::Error,
     fmt,
     sync::Arc,
@@ -217,7 +217,7 @@ pub struct TargetTagEffect {
 
 /// A body a target search (`TrackTargets`) can find, as the match places it
 /// this tick: players' bodies and training bots alike.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TargetCandidate {
     pub entity: u32,
     /// Its team; none in a free-for-all, where a body is only its own ally.
@@ -240,6 +240,11 @@ pub struct TargetCandidate {
     /// Where it faces, in radians: forward is `[sin, 0, cos]` (the match's
     /// `TargetPose::yaw`).
     pub yaw: f64,
+    /// Its body definition's target tags (`STUTargetTagComponent`), each
+    /// once; None: unknown. Assumption: a listed body carries them and no
+    /// tag its own graphs add or suppress (only the player's own body
+    /// knows those).
+    pub tags: Option<Arc<BTreeSet<u64>>>,
 }
 
 /// One turn in the yaw and pitch units of a movement record.
@@ -249,6 +254,12 @@ impl TargetCandidate {
     /// Its yaw in a movement record's units (65536 a turn).
     pub fn yaw_units(&self) -> i32 {
         (self.yaw * TURN_UNITS / std::f64::consts::TAU).round() as i64 as i32
+    }
+
+    /// Its filter word as the target searches test it (`vm/targets.rs`
+    /// module notes: team bit, body kinds, dead).
+    pub fn filter_word(&self) -> u64 {
+        targets::filter_word(self)
     }
 
     /// How far `point` is from the capsule's surface (0 inside).

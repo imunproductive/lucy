@@ -541,6 +541,11 @@ impl GraphStore {
         self.entities.get(&guid)
     }
 
+    /// Every entity definition the bundle keeps, by GUID.
+    pub fn entity_bodies(&self) -> &BTreeMap<u64, Body> {
+        &self.entities
+    }
+
     pub fn mode_variables(&self, mode: u64) -> Option<&BTreeMap<u32, ModeValue>> {
         self.mode_variables.get(&mode)
     }

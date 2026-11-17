@@ -3139,6 +3139,7 @@ impl WorldDelivery {
             pose: scene.player_target(hero, mover.pose().position, mover.crouched()),
             dead: self.death.is_some(),
             hurt: vitals.is_some_and(Vitals::hurt),
+            tags: scene.body_tags(hero.body),
         })
     }
 

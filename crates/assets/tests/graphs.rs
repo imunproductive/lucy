@@ -55,7 +55,8 @@ fn hero_bundle_matches_the_pack() {
 
 /// The bot bundle likewise keeps every pack graph, entity definition and
 /// AI weapon button; the derivation adds the same graphs as to the hero
-/// bundle (volley-spawned and match flow graphs).
+/// bundle (volley-spawned and match flow graphs) and each bot entity's
+/// target tags, which the pack doesn't have.
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and a runtime pack (just test-assets <install> <pack>)"]
 fn bot_bundle_matches_the_pack() {
@@ -75,7 +76,12 @@ fn bot_bundle_matches_the_pack() {
 /// unchanged, the listed top-level keys equal, and every root and missing
 /// graph the pack lists; return the derived graphs by index.
 fn keeps_the_pack(path: &str, equal: &[&str]) -> std::collections::BTreeMap<u64, Value> {
-    let derived = json(&derived(path).bytes);
+    let mut derived = json(&derived(path).bytes);
+    if let Some(entities) = derived["entities"].as_object_mut() {
+        for entity in entities.values_mut() {
+            entity.as_object_mut().unwrap().remove("target_tags");
+        }
+    }
     let pack = json(&std::fs::read(orpheus_testkit::oracle_pack().join(path)).unwrap());
     let by_index = |bundle: &Value| -> std::collections::BTreeMap<u64, Value> {
         bundle["graphs"]
