@@ -26,6 +26,20 @@ pub const EVERY_ENTITY: u32 = 0;
 /// fallback entry).
 const ANY_TEAM: i64 = 5;
 
+/// A team's size in the game struct's team entries (team, size): the
+/// entry of `team`, else the "any team" entry 5 (0x7FF789CADB40); the
+/// client's last fallback, a table of its own, is not known, so no entry
+/// leaves it unanswered.
+pub fn team_size(entries: &[(u8, u8)], team: i64) -> Option<i64> {
+    let entry = |wanted: i64| {
+        entries
+            .iter()
+            .find(|&&(entry, _)| i64::from(entry) == wanted)
+            .map(|&(_, size)| i64::from(size))
+    };
+    entry(team).or_else(|| entry(ANY_TEAM))
+}
+
 /// What the mode graph asks outside its own entity. The mode entity's
 /// variables are its own (the server writes them into the component);
 /// the bundle's mode variables (`0C5.m_3CE93B76`) answer the rest.
@@ -83,6 +97,7 @@ impl World for ModeWorld {
             "STU_082FA44E" => Some("the tunable's authored value"),
             "STU_81A9AB10" => Some("the server's own start condition (server-only)"),
             "STU_21A5BB52" => Some("false (server-only)"),
+            "STU_A90795E2" => Some("the team's players (server-only)"),
             _ => None,
         }
     }
@@ -93,6 +108,10 @@ impl World for ModeWorld {
 
     fn mode_random(&self) -> Option<f64> {
         self.mode_random.map(f64::from)
+    }
+
+    fn team_size(&self, team: i64) -> Option<i64> {
+        team_size(&self.team_sizes, team)
     }
 
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
@@ -112,16 +131,14 @@ impl World for ModeWorld {
     ///
     /// `STU_A5B9EAAD` (`m_team`) is "the team is full", a bool: the count
     /// of the team's entities but those of definition `003:25CB`, at least
-    /// the team's size in the game struct (that team's entry, else team
-    /// 5's; the client's last fallback, a table of its own, is not known,
-    /// so no entry leaves it unanswered). `Eval_STU_A5B9EAAD` 0x7FF789BF9E10,
-    /// size `sub_7FF789CADB40` (ModeGraphGaps.md, "Client tools pass
-    /// (2026-11-16)"). All seven uses ask both teams 0 and 1 before the
-    /// match leaves its waiting phase (`0F4A` nodes 14 and 419, `0EC2` 15
-    /// and 380, `0D0B` 237, `0F60` 27, `0F73` 16), so the start rule `25CA`
-    /// waits for full teams: a game with fewer players than its team sizes
-    /// waits there (the start rule `25CB` waits for message `0789`
-    /// instead).
+    /// the team's size ([`World::team_size`]). `Eval_STU_A5B9EAAD`
+    /// 0x7FF789BF9E10, size `sub_7FF789CADB40` (ModeGraphGaps.md, "Client
+    /// tools pass (2026-11-16)"). All seven uses ask both teams 0 and 1
+    /// before the match leaves its waiting phase (`0F4A` nodes 14 and 419,
+    /// `0EC2` 15 and 380, `0D0B` 237, `0F60` 27, `0F73` 16), so the start
+    /// rule `25CA` waits for full teams: a game with fewer players than its
+    /// team sizes waits there (the start rule `25CB` waits for message
+    /// `0789` instead).
     ///
     /// `STU_81A9AB10` (a bool with no fields) gates the same start in the
     /// default start rule (ruleset `#9672` = `25CA`; `0F4A` node 7: true
@@ -135,25 +152,35 @@ impl World for ModeWorld {
     /// message `11BA` (`0F4A` uid 1299); `0F60` and `0F73` read it in
     /// `STU_F7216D4F`. It is server-only (no client code); the server
     /// answers false, its own rule.
+    ///
+    /// `STU_A90795E2` (`m_6CE7A900`, a team) is server-only too (the base
+    /// config's evaluate). Its uses read it as the team's players: `1061`
+    /// (Team Deathmatch and Deathmatch, on `06A6`) creates the team's size
+    /// less it in AI heroes, `0D44` holds a count to it, and Elimination
+    /// (`0D0B` rid181) gives the round to team 0 when it has players and
+    /// team 1 none. The server answers [`ModeWorld::players`] (teams 0 and
+    /// 1; other teams unanswered).
     fn native(&mut self, _site: Site, config: &Json) -> Option<Value> {
+        let literal_team = |field: &str| {
+            let team = config.get(field)?;
+            if team.get("$")?.as_str()? != "STU_BD6CC023" {
+                return None;
+            }
+            team.get("m_6CE7A900")?.as_i64()
+        };
         match config.get("$")?.as_str()? {
             "STU_A3DEF368" => Some(Value::Entity(GAME_MODE_ENTITY)),
             "STU_082FA44E" => self.graphs.tunables().value(config).map(Value::Float),
             "STU_A5B9EAAD" => {
-                let team = config.get("m_team")?;
-                if team.get("$")?.as_str()? != "STU_BD6CC023" {
-                    return None;
-                }
-                let team = team.get("m_6CE7A900")?.as_i64()?;
+                let team = literal_team("m_team")?;
                 let players = *self.players.get(usize::try_from(team).ok()?)?;
-                let entry = |wanted: i64| {
-                    self.team_sizes
-                        .iter()
-                        .find(|&&(entry, _)| i64::from(entry) == wanted)
-                        .map(|&(_, size)| i64::from(size))
-                };
-                let size = entry(team).or_else(|| entry(ANY_TEAM))?;
-                Some(Value::Bool(players >= size))
+                Some(Value::Bool(players >= self.team_size(team)?))
+            }
+            "STU_A90795E2" => {
+                let team = literal_team("m_6CE7A900")?;
+                Some(Value::Integer(
+                    *self.players.get(usize::try_from(team).ok()?)?,
+                ))
             }
             "STU_81A9AB10" => Some(Value::Bool(self.ready)),
             "STU_21A5BB52" => Some(Value::Bool(false)),

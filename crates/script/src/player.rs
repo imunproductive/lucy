@@ -59,6 +59,9 @@ pub struct PlayerWorld {
     /// (`STU_B182C5C9`, which the mode body script `0C8E` reads); none:
     /// unknown.
     pub mode_random: Option<f32>,
+    /// The game struct's team entries (team, size), which `STU_D289FA32`
+    /// reads ([`crate::mode::team_size`]); empty: unknown.
+    pub team_sizes: Vec<(u8, u8)>,
     pub hero: u64,
     /// The hero's body definition (`003`), which names its animation data.
     pub body: Option<u64>,
@@ -141,6 +144,10 @@ impl World for PlayerWorld {
 
     fn mode_random(&self) -> Option<f64> {
         self.mode_random.map(f64::from)
+    }
+
+    fn team_size(&self, team: i64) -> Option<i64> {
+        crate::mode::team_size(&self.team_sizes, team)
     }
 
     /// From the body's compiled animation data
@@ -573,6 +580,7 @@ impl PlayerWorld {
             throttles: [0; 2],
             mode,
             mode_random: None,
+            team_sizes: Vec::new(),
             hero,
             vitals: Vitals::empty(),
             pool_types_known: false,

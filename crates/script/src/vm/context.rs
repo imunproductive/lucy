@@ -88,6 +88,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.world.mode_random()
     }
 
+    fn team_size(&mut self, team: i64) -> Option<i64> {
+        self.read_native = true;
+        self.world.team_size(team)
+    }
+
     fn random_u64(&mut self) -> Option<u64> {
         Some(next_random(&self.machine.random_state))
     }

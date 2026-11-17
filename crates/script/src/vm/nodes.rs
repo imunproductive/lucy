@@ -753,9 +753,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // doesn't have: a plain state, as Python ran it, that its frames
             // carry for the client to run.
             "STU_75D1C308" => StateKind::Plain,
-            // The scene tag query state and the spawn picker run the base
-            // lifecycle; their work is `vm/entities.rs` (codec `none`).
-            "STU_160F2578" | "STU_5E805B5A" => StateKind::Plain,
+            // The scene tag query state, the spawn picker and the shuffled
+            // picker run the base lifecycle; their work is `vm/entities.rs`
+            // (codec `none`).
+            "STU_160F2578" | "STU_5E805B5A" | "STU_37072672" => StateKind::Plain,
             // The aim speed (`STU_3716E1D4`): its own begin, end and update
             // (0x7FF7897F6390, 0x7FF7897F63E0, 0x7FF7897F6410) only call
             // 0x7FF789808820, which scales the pose rates of the entity's
@@ -1030,6 +1031,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
             StateKind::Plain if node.class == "STU_160F2578" => {
                 if !self.write_tag_query(id, node)? {
+                    return Ok(());
+                }
+            }
+            StateKind::Plain if node.class == "STU_37072672" => {
+                if !self.pick_shuffled(id, node)? {
                     return Ok(());
                 }
             }

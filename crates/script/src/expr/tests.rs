@@ -250,8 +250,14 @@ fn entity_filter_distinguishes_rejection_from_unavailable_facts() {
     world.flags = Some(2 | 0x100);
     world.tags.clear();
     assert_eq!(evaluate(&config, &mut world), Ok(Value::Bool(false)));
+    // A relation word: the owner is the searcher, so friendly, and
+    // requiring a hostile entity (2) fails it (`Filter_TestTeamMasks`).
     config["m_filter"]["m_66747E7D"] = json!(2);
-    assert_eq!(evaluate(&config, &mut world), unknown);
+    assert_eq!(evaluate(&config, &mut world), Ok(Value::Bool(false)));
+    config["m_filter"]["m_66747E7D"] = json!(4);
+    world.flags = Some(0x100);
+    world.tags.insert(REQUIRED_TAG, true);
+    assert_eq!(evaluate(&config, &mut world), Ok(Value::Bool(true)));
 }
 
 /// The filter's tag lists as the client tests them (0x7FF789C1EC70 →

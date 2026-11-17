@@ -384,6 +384,12 @@ pub trait World {
         None
     }
 
+    /// A team's size in the game struct ([`expr::Context::team_size`]);
+    /// None: unknown here.
+    fn team_size(&self, _team: i64) -> Option<i64> {
+        None
+    }
+
     fn entity_variable(&mut self, _entity: u32, _id: u32) -> Value {
         Value::Null
     }

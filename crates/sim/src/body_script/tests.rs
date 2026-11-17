@@ -1799,6 +1799,7 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
         ModeBody {
             scripts: BTreeMap::from([(0, MODE_BODY)]),
             respawn_seconds: Some(3),
+            team_sizes: Vec::new(),
         },
         spawn,
     )

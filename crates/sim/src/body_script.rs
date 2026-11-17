@@ -109,6 +109,9 @@ pub struct ModeBody {
     pub scripts: BTreeMap<i64, u32>,
     /// The seconds of the mode graph's `06FD.025`, when it sends one.
     pub respawn_seconds: Option<i64>,
+    /// The game struct's team entries (team, size; `instance::team_entries`),
+    /// which `STU_D289FA32` reads.
+    pub team_sizes: Vec<(u8, u8)>,
 }
 
 pub struct PlayerBodyFactory {
@@ -184,7 +187,10 @@ impl PlayerBodyFactory {
                 hero.name,
                 factory.mode_body.scripts.values().collect::<Vec<_>>()
             );
-            factory.mode_body = ModeBody::default();
+            factory.mode_body = ModeBody {
+                team_sizes: std::mem::take(&mut factory.mode_body.team_sizes),
+                ..ModeBody::default()
+            };
             factory.probe(probe)?;
         }
         Ok(factory)
@@ -238,6 +244,7 @@ impl PlayerBodyFactory {
         world.target_tags = self.target_tags.clone();
         world.controller_on_fire = self.controller_on_fire;
         world.unknowns = self.unknowns;
+        world.team_sizes = self.mode_body.team_sizes.clone();
         let mut roots = self.roots.clone();
         let mode_script = self
             .mode_body

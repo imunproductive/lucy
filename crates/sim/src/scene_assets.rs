@@ -633,6 +633,7 @@ impl SceneAssets {
                 })
                 .collect(),
             respawn_seconds: self.respawns.sent(mode).map(|time| time.as_secs() as i64),
+            team_sizes: crate::instance::team_entries(scene.map()),
         };
         let ready = self
             .codecs

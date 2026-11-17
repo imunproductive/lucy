@@ -134,8 +134,6 @@ const UNMODELLED_FILTER: &[&str] = &[
     "m_B40362FC",
 ];
 
-/// `m_84065FD1`: every kind.
-const ALL_KINDS: u64 = 0x3fff_ffff;
 /// A body's filter word (see the module notes): its team's bit
 /// `TEAM_BIT << team`, team 4 in a free-for-all, the kinds of a living body
 /// and [`DEAD`] once it died.
@@ -143,10 +141,6 @@ const TEAM_BIT: u64 = 0x0080_0000;
 const FREE_FOR_ALL_TEAM: u8 = 4;
 const BODY_KINDS: u64 = 0x1_0041;
 const DEAD: u64 = 0x10;
-/// The relation words' bits.
-const FRIENDLY: u64 = 1;
-const HOSTILE: u64 = 2;
-const SEARCHER: u64 = 4;
 
 /// Fields set in quick melee's search (`0043` st5) that the server runs
 /// without: the line of sight from `m_D59188D5` (the eye, `STU_21A13145`)
@@ -182,12 +176,7 @@ struct Search {
 /// body search tests (see the module notes); the ray casts
 /// (`vm/rays.rs`) test bodies with it too.
 pub(super) struct BodyFilter {
-    any: u64,
-    all: u64,
-    none: u64,
-    include: u64,
-    require: u64,
-    exclude: u64,
+    masks: expr::FilterMasks,
 }
 
 impl BodyFilter {
@@ -201,14 +190,8 @@ impl BodyFilter {
         {
             return Err(name);
         }
-        let number = |name: &str| number(filter, name);
         Ok(Self {
-            any: number("m_84065FD1"),
-            all: number("m_1E14CCA8"),
-            none: number("m_4EA686DB"),
-            include: number("m_27CF71D5"),
-            require: number("m_66747E7D"),
-            exclude: number("m_89831602"),
+            masks: expr::FilterMasks::words(filter),
         })
     }
 
@@ -216,30 +199,18 @@ impl BodyFilter {
     /// `Filter_TestTeamMasks`; `hostile` and `searcher` are its relation to
     /// the searching entity (relations matter only when a word is set).
     fn passes(&self, candidate: &TargetCandidate, hostile: bool, searcher: bool) -> bool {
-        let word = filter_word(candidate);
-        let friendly = !hostile || searcher;
-        let relation = |bits: u64| {
-            (bits & FRIENDLY != 0 && friendly)
-                || (bits & HOSTILE != 0 && !friendly)
-                || (bits & SEARCHER != 0 && searcher)
-        };
-        let any = word & self.any != 0 || self.any == ALL_KINDS || relation(self.include);
-        let all = word & self.all == self.all
-            && !(self.require & FRIENDLY != 0 && !friendly
-                || self.require & HOSTILE != 0 && friendly
-                || self.require & SEARCHER != 0 && !searcher);
-        let none = word & self.none != 0 || relation(self.exclude);
-        any && all && !none
+        self.masks
+            .passes(filter_word(candidate), !hostile || searcher, searcher)
     }
 
     fn relations(&self) -> bool {
-        self.include | self.require | self.exclude != 0
+        self.masks.relations()
     }
 
     /// Whether no body can pass: no any-of mask and no include word (the
     /// map-only filters of most ray casts).
     fn passes_none(&self) -> bool {
-        self.any == 0 && self.include == 0
+        self.masks.passes_none()
     }
 }
 
@@ -494,11 +465,6 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
         result.ok()
     }
-}
-
-/// A filter's number field; 0 when unset.
-fn number(filter: &Json, name: &str) -> u64 {
-    field(filter, name).as_u64().unwrap_or(0)
 }
 
 /// A config that says something: not null, and not a literal zero or false.

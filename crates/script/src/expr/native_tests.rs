@@ -21,6 +21,7 @@ struct World {
     facing: BTreeMap<u32, [i32; 2]>,
     teams: BTreeMap<u32, i64>,
     health: BTreeMap<u32, (f64, f64)>,
+    team_sizes: BTreeMap<i64, i64>,
 }
 
 impl Context for World {
@@ -55,6 +56,10 @@ impl Context for World {
 
     fn entity_team(&mut self, entity: u32) -> Option<i64> {
         self.teams.get(&entity).copied()
+    }
+
+    fn team_size(&mut self, team: i64) -> Option<i64> {
+        self.team_sizes.get(&team).copied()
     }
 }
 
@@ -339,6 +344,67 @@ fn facing_natives_read_the_body_yaw_and_pitch() {
     assert_eq!(
         evaluate(&query("STU_C8C4C20D", "m_entity", var(1)), &mut world),
         Err(EvalError::UnsupportedConfig("STU_C8C4C20D".into()))
+    );
+}
+
+/// `STU_0762B33A` (0x7FF789BFB820): the first direction's yaw and pitch
+/// moved to within the limits (degrees) of the second's; differences wrap
+/// across ±180 degrees; a zero vector gives zero.
+#[test]
+fn a_direction_is_kept_within_the_yaw_and_pitch_limits_of_another() {
+    let mut world = World::default();
+    let cone = |yaw: i64, pitch: i64| {
+        json!({"$":"STU_0762B33A","m_32B00625":var(1),"m_3661BC45":var(2),
+            "m_5023B9B0":int(yaw),"m_E26E5E09":int(pitch),"m_EE729DCB":0})
+    };
+    let mut direction = |from: [f64; 3], around: [f64; 3], yaw: i64, pitch: i64| {
+        world.variables.insert(1, Value::Vector(from));
+        world.variables.insert(2, Value::Vector(around));
+        match evaluate(&cone(yaw, pitch), &mut world).unwrap() {
+            Value::Vector(parts) => parts,
+            other => panic!("a direction, not {other:?}"),
+        }
+    };
+    let close = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-5);
+    let (sin30, cos30) = 30f64.to_radians().sin_cos();
+    let (sin10, cos10) = 10f64.to_radians().sin_cos();
+    // +x is 90 degrees right of +z: held at 30.
+    let held = direction([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 30, 90);
+    assert!(close(held, [sin30, 0.0, cos30]), "{held:?}");
+    // Within the cone: only normalized.
+    let kept = direction([0.0, 0.0, 2.0], [0.0, 0.0, 1.0], 30, 90);
+    assert!(close(kept, [0.0, 0.0, 1.0]), "{kept:?}");
+    // 45 degrees down (pitch asin(−y)), held at 10.
+    let half = std::f64::consts::FRAC_1_SQRT_2;
+    let down = direction([0.0, -half, half], [0.0, 0.0, 1.0], 90, 10);
+    assert!(close(down, [0.0, -sin10, cos10]), "{down:?}");
+    // 170 and −170 degrees are 20 apart.
+    let (sin170, cos170) = 170f64.to_radians().sin_cos();
+    let across = direction([sin170, 0.0, cos170], [-sin170, 0.0, cos170], 30, 0);
+    assert!(close(across, [sin170, 0.0, cos170]), "{across:?}");
+    assert_eq!(
+        direction([0.0; 3], [0.0, 0.0, 1.0], 30, 30),
+        [0.0, 0.0, 0.0]
+    );
+}
+
+/// `STU_D289FA32`: the world's size of the team `m_team` names (unset:
+/// -1); a team it doesn't know is refused.
+#[test]
+fn a_team_size_reads_the_team_its_config_names() {
+    let mut world = World {
+        team_sizes: BTreeMap::from([(0, 3), (1, 2), (-1, 6)]),
+        ..World::default()
+    };
+    let team = |index: i64| json!({"$":"STU_BD6CC023","m_6CE7A900":index,"m_EE729DCB":0});
+    let size = |team: Json| query("STU_D289FA32", "m_team", team);
+    assert_eq!(evaluate(&size(team(0)), &mut world), Ok(Value::Integer(3)));
+    assert_eq!(evaluate(&size(team(1)), &mut world), Ok(Value::Integer(2)));
+    let unset = json!({"$":"STU_D289FA32","m_EE729DCB":0});
+    assert_eq!(evaluate(&unset, &mut world), Ok(Value::Integer(6)));
+    assert_eq!(
+        evaluate(&size(team(4)), &mut world),
+        Err(EvalError::UnsupportedConfig("STU_D289FA32".into()))
     );
 }
 
