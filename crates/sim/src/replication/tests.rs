@@ -1052,19 +1052,40 @@ fn body_script_retries_frozen_initial_frames_and_ignores_old_generation_reports(
     )
     .unwrap();
     let rays = TriangleIndex::new([]).unwrap();
-    let command = forward(101);
-    mover
-        .step(&rays, command, 0.016, |mover, command| {
-            world
-                .body_script
-                .as_mut()
-                .unwrap()
-                .advance(mover, command, BodyStep::Posed, false)
-                .unwrap();
-        })
-        .unwrap();
+    let advance = |world: &mut WorldDelivery, mover: &mut Mover, frame| {
+        mover
+            .step(&rays, forward(frame), 0.016, |mover, command| {
+                world
+                    .body_script
+                    .as_mut()
+                    .unwrap()
+                    .advance(mover, command, BodyStep::Posed, false)
+                    .unwrap();
+            })
+            .unwrap();
+    };
+    // The full frame came in datagrams of frame 101, which the client takes
+    // as the body's command frame: the initial owner delta waits for a
+    // command past it (`BodyStream::full_sent`).
+    advance(&mut world, &mut mover, 101);
     assert!(
         transmit(&mut world, &mut egress, 101, 5)
+            .1
+            .records
+            .is_empty()
+    );
+    let stream = &world.body_script.as_ref().unwrap().stream;
+    assert_eq!(stream.pending().count(), 0);
+    advance(&mut world, &mut mover, 102);
+    assert!(
+        transmit(&mut world, &mut egress, 102, 6)
+            .1
+            .records
+            .is_empty()
+    );
+    advance(&mut world, &mut mover, 103);
+    assert!(
+        transmit(&mut world, &mut egress, 103, 7)
             .1
             .records
             .is_empty()
@@ -1074,68 +1095,49 @@ fn body_script_retries_frozen_initial_frames_and_ignores_old_generation_reports(
         stream.pending().map(|(last, ..)| last).collect::<Vec<_>>(),
         [3]
     );
-    assert_eq!(stream.command_frame(), 101);
+    assert_eq!(stream.command_frame(), 103);
 
     world.push(record(OWNER, Delivery::Possession(id)));
     assert_eq!(
-        transmit(&mut world, &mut egress, 101, 6).1.records,
+        transmit(&mut world, &mut egress, 103, 8).1.records,
         [RecordSource::Queued(0)]
     );
-    transport_outcome(&mut world, &mut egress, 6, true);
-    let (c0, sent) = transmit(&mut world, &mut egress, 102, 7);
+    transport_outcome(&mut world, &mut egress, 8, true);
+    let (c0, sent) = transmit(&mut world, &mut egress, 104, 9);
     assert_eq!(sent.records, [RecordSource::Queued(0)]);
-    let command = forward(117);
-    mover
-        .step(&rays, command, 0.016, |mover, command| {
-            world
-                .body_script
-                .as_mut()
-                .unwrap()
-                .advance(mover, command, BodyStep::Posed, false)
-                .unwrap();
-        })
-        .unwrap();
+    advance(&mut world, &mut mover, 119);
     assert!(
-        transmit(&mut world, &mut egress, 102, 8)
+        transmit(&mut world, &mut egress, 104, 10)
             .1
             .records
             .is_empty()
     );
-    transport_outcome(&mut world, &mut egress, 7, false);
-    assert_eq!(transmit(&mut world, &mut egress, 102, 9).0, c0);
-    // c0, the initial owner delta at the first command (101): chunks 2 to
-    // 3, the pending frame above.
-    let arrived = egress.acknowledge(10, 1);
-    assert_eq!(owner_frame(&arrived), (2, 1, 2, 101));
+    transport_outcome(&mut world, &mut egress, 9, false);
+    assert_eq!(transmit(&mut world, &mut egress, 104, 11).0, c0);
+    // c0, the initial owner delta at command 103: chunks 2 to 3, the
+    // pending frame above (it replaced the unsent one at 102).
+    let arrived = egress.acknowledge(12, 1);
+    assert_eq!(owner_frame(&arrived), (2, 1, 2, 103));
     world.acknowledge(arrived, Duration::ZERO);
     assert_eq!(
-        transmit(&mut world, &mut egress, 117, 10).1.records,
+        transmit(&mut world, &mut egress, 119, 12).1.records,
         [RecordSource::Queued(0)]
     );
-    // After the commands up to 117 the owner frame is a correction in the
+    // After the commands up to 119 the owner frame is a correction in the
     // next chunk.
-    let lost = egress.acknowledge(11, 0);
-    assert_eq!(owner_frame(&lost), (4, 0, 6, 117));
+    let lost = egress.acknowledge(13, 0);
+    assert_eq!(owner_frame(&lost), (4, 0, 6, 119));
     world.acknowledge(lost, Duration::ZERO);
     assert!(
-        transmit(&mut world, &mut egress, 118, 11)
+        transmit(&mut world, &mut egress, 120, 13)
             .1
             .records
             .is_empty()
     );
 
-    mover
-        .step(&rays, forward(118), 0.016, |mover, command| {
-            world
-                .body_script
-                .as_mut()
-                .unwrap()
-                .advance(mover, command, BodyStep::Posed, false)
-                .unwrap();
-        })
-        .unwrap();
+    advance(&mut world, &mut mover, 120);
     assert_eq!(
-        transmit(&mut world, &mut egress, 118, 12).1.records,
+        transmit(&mut world, &mut egress, 120, 14).1.records,
         [RecordSource::Queued(0)]
     );
     world.cancel_body_script();
@@ -1143,8 +1145,8 @@ fn body_script_retries_frozen_initial_frames_and_ignores_old_generation_reports(
     activate_script(&mut world, reused, 7, Arc::default());
     // The lost correction is covered by the next one: chunk 4 again, with
     // the one more command.
-    let arrived = egress.acknowledge(13, 1);
-    assert_eq!(owner_frame(&arrived), (4, 1, 6, 118));
+    let arrived = egress.acknowledge(15, 1);
+    assert_eq!(owner_frame(&arrived), (4, 1, 6, 120));
     world.acknowledge(arrived, Duration::ZERO);
     assert_eq!(world.body_script.as_ref().unwrap().stream.last(), 0);
     assert!(world.queued.is_empty());
