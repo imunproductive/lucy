@@ -57,6 +57,18 @@ The captured templates should become authored server content: TOML files a serve
 | --- | --- | --- | --- |
 | D2 | Can `resource_keys_174.json` be derived from the install? | If the install does contain the keys, the item moves out of the fixed data. | — |
 
+## Upstream ports
+
+What was taken from upstream ORPHEUS after the fork's sync (the plan: `D:/Work/Coding/refs/reports/UpstreamPort-2026-11-17.md`), and how it was fitted. The credits are in [CREDITS.md](../../CREDITS.md).
+
+| Item | Upstream | Result |
+| --- | --- | --- |
+| Lobby defaults and safety | kjs `1819125b`, main `8a464026`, `fix/chat-reply-traceback` `212d85d0` | Tips Display on by default. The `+0x130` entries are kept in the wire's form (value u64, key u32, as the lobby schema types them), not upstream's signed form: our encoder refuses a negative value for an unsigned field. A failing chat command logs one warning; the bot's answers are cut to 200 characters. |
+| Tab board | kjs `254fa913`, `827ef2d7` | Component 64's stat GUIDs go as ids. The mode entity's hand-built frame lists the mode graph with its `06DF.025` poster state on and `0CB6` under it, for the modes upstream listed (`scene::BOARD_POSTERS`); a graph driven by the VM still sends its own frames. Upstream swapped the names of 0x1D/0x1E and 0x07/0x09; the mode data (`0C5` `m_teams`) says 0x1D is Team Deathmatch (`0F60`), 0x1E Deathmatch (`0F73`), 0x07 Capture the Flag (`0CE8`), 0x09 Elimination (`0D0B`). Our names were right; the graph per mode id is the same in both. |
+| Hitscan pellets and spread seed | kjs `1e2e10c3`, `1dc5b995`; main `9ed63eed` | A hitscan volley with pellet rings fires a ray per pellet (the same ring layout as projectiles, any sync). The volley spread's seed takes the state's `m_states` index, not its node position. |
+| Training Bot rebuild and the `#7082` gate | kjs `a667ef27`, kjs-port `a9096f5d` | A bot made again at its spawner gets `0013.025` on its `0BA8` instances before its first frame. A kill between two bots that both hold `#7082` sends no kill feed pulse. |
+| PvE start markers | kjs `08561fe4` | `game_maps` lists an entity whose only team tag is 0x310 as a spawn (derivations version 26). |
+
 ## Python test classification
 
 Each of the 114 Python test files (at the tag `python-reference`): 78 covered by an existing Rust test, 10 ported to new Rust tests, 26 dropped. Covered tests marked "ignored" run only in the game tier (`just test-game`, `just test-assets`). The dashboard's JavaScript test stays, as `web/tests/test_dashboard_client.mjs`; `tests/golden/messages.json` moved to `crates/lobby/tests/golden/`.
