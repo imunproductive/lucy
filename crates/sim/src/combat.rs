@@ -850,12 +850,17 @@ impl Combat {
                 impact,
             )
         }));
-        // Its explosion pushes the bots it can reach, as it pushes its
-        // shooter (`ProjectileFlight::blast_push`), the live ones after its
-        // damage ([`PreparedScene::knock_bot`]). Beyond Python, which moved
-        // no bot. Other players' bodies get no push yet.
+        // Its explosion pushes the bots it can reach and hurt, as it pushes
+        // its shooter (`ProjectileFlight::blast_push`), the live ones after
+        // its damage ([`PreparedScene::knock_bot`]): not an ally it heals,
+        // nor an invulnerable one, as the shooter takes no push where he
+        // takes no damage (`WorldDelivery::can_be_damaged`). Beyond
+        // Python, which moved no bot. Other players' bodies get no push yet.
         if step.end.as_ref().is_some_and(|end| end.exploded) {
             for (entity, pose) in &candidates[first_bot..] {
+                if !bot_hurtable(scene, *entity, shooter, free_for_all) {
+                    continue;
+                }
                 if let Some(push) = flight.blast_push(pose) {
                     scene.knock_bot(*entity, push, context.tick);
                 }
@@ -1612,6 +1617,18 @@ fn eligible_bot(
         && (free_for_all
             || bot.spawn.team != shooter.team
             || strikes_ally(allies, target.vitals.hurt()))
+}
+
+/// Whether `shooter`'s hit can hurt the bot `entity` (`apply_bot_impact`'s
+/// gate): alive, an enemy (anyone in a free-for-all) and holding no
+/// invulnerable status.
+fn bot_hurtable(scene: &PreparedScene, entity: u32, shooter: Shooter, free_for_all: bool) -> bool {
+    scene.bots().iter().any(|bot| {
+        bot.entity == entity && !bot.dead && (free_for_all || bot.spawn.team != shooter.team)
+    }) && !scene
+        .bot_scripts()
+        .effects(entity)
+        .is_some_and(|effects| effects.invulnerable())
 }
 
 /// Whether a hit that strikes `allies` strikes an ally that is `hurt` or

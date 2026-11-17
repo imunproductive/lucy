@@ -184,6 +184,94 @@ fn the_spawn_room_shields_heals_and_gates_hero_change() {
     assert!(healed > hurt);
 }
 
+/// The height his own explosion lifts the body in 20 ticks: an exploding
+/// flight whose end pushes him 8 m/s up (`advance_projectiles`), then his
+/// mover runs idle commands.
+fn lift(
+    world: &mut WorldDelivery,
+    scene: &PreparedScene,
+    viewer: &PlayerAppearance<'_>,
+    tick: &mut u32,
+) -> f64 {
+    let ballistics = orpheus_script::weapons::ProjectileBallistics {
+        speed: 50.0,
+        lifetime: 2.0,
+        definition: None,
+        direct: None,
+        blast: None,
+        radius: 0.0,
+        gravity: 0.0,
+        fuse: None,
+        unmodelled: Vec::new(),
+        ray_profile: None,
+    };
+    let flight = ProjectileFlight::new(ballistics, [0.0; 3], [0.0, 0.0, 1.0], None).unwrap();
+    world
+        .body_script
+        .as_mut()
+        .unwrap()
+        .flights
+        .push((None, flight));
+    let floor = world.mover.as_ref().unwrap().pose().position[1];
+    world
+        .advance_projectiles(*tick, *tick, |_, _| {
+            Ok(Some(FlightEnd {
+                point: [0.0; 3],
+                exploded: true,
+                travelled: 0.0,
+                knockback: Some([0.0, 8.0, 0.0]),
+            }))
+        })
+        .unwrap();
+    let mut top = floor;
+    for _ in 0..20 {
+        *tick += 1;
+        world.queue_commands(
+            *tick,
+            &[orpheus_wire::commands::Command {
+                frame: *tick,
+                ..Default::default()
+            }],
+        );
+        world.release_input(1);
+        while world.has_input_work() {
+            world
+                .advance_input(scene, viewer, RETAIL_QUANTA, 64)
+                .unwrap();
+        }
+        top = top.max(world.mover.as_ref().unwrap().pose().position[1]);
+    }
+    top - floor
+}
+
+/// An explosion pushes only a body it can hurt (the user, 2026-11-17): his
+/// own Helix Rocket's knockback leaves him standing in the spawn room,
+/// where he is invulnerable, and lifts him out on the range.
+#[test]
+#[ignore = "requires a derived 104319 Practice Range pack"]
+fn his_own_explosion_pushes_him_only_outside_the_spawn_room() {
+    let scene = scene();
+    let card = PlayerCard::default();
+    let viewer = viewer(&card);
+    let mut world = spawned(&scene, &viewer);
+    let (spawn, _) = scene
+        .map()
+        .spawn_point_in(0, 0, SpawnChoice::First)
+        .unwrap();
+    place(&mut world, &scene, spawn, 0);
+    world.area_step(&scene, &viewer);
+    assert_eq!(world.in_spawn_room(), Some(true));
+    let mut tick = FIRST_TICK;
+    let lifted = lift(&mut world, &scene, &viewer, &mut tick);
+    assert!(lifted.abs() < 0.01, "{lifted} m up in the room");
+
+    place(&mut world, &scene, outside(&scene), 0);
+    world.area_step(&scene, &viewer);
+    assert_eq!(world.in_spawn_room(), Some(false));
+    let lifted = lift(&mut world, &scene, &viewer, &mut tick);
+    assert!(lifted > 1.0, "{lifted} m up on the range");
+}
+
 /// A hero change in the room keeps the body where it stands and its
 /// facing, not the spawn point.
 #[test]
