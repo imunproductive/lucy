@@ -710,7 +710,8 @@ impl<'a> SnapshotEncoder<'a> {
                 state.active
                     && matches!(
                         (state.kind, binding.slot),
-                        (StateKind::Stack { .. }, 0) | (StateKind::Ability { .. }, 1)
+                        (StateKind::Stack { .. } | StateKind::ChaseVar, 0)
+                            | (StateKind::Ability { .. }, 1)
                     )
             }) {
                 return Err(invalid());
