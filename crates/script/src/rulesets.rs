@@ -186,11 +186,12 @@ mod tests {
         );
     }
 
-    /// The ultimate's rates scale with the hero's ruleset settings, and a
-    /// hero without them charges at 100%.
+    /// The ultimate's generation settings become the body's entity
+    /// variables of the same ids (`0B8B` reads them); a hero without them
+    /// gets none, and the graph's `valueOr(…, 1)` charges at 100%.
     #[test]
-    fn ultimate_rates_follow_the_generation_settings() {
-        use crate::ultimate::{ChargeRates, PASSIVE_POINTS_PER_SECOND};
+    fn ultimate_generation_settings_become_entity_variables() {
+        use crate::ultimate::generation_variables;
 
         let rulesets = Rulesets::from_json(
             &serde_json::to_vec(&json!({
@@ -202,19 +203,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            ChargeRates::of(&rulesets, TRACER, PRACTICE_RANGE),
-            ChargeRates {
-                passive: PASSIVE_POINTS_PER_SECOND * 0.5,
-                combat: 1.0,
-            }
+            generation_variables(&rulesets, TRACER, PRACTICE_RANGE),
+            crate::wire::Variables::from([
+                (9532, Value::Float(2.0)),
+                (12918, Value::Float(0.25)),
+                (13022, Value::Float(0.5)),
+            ])
         );
-        assert_eq!(
-            ChargeRates::of(&rulesets, SOLDIER, PRACTICE_RANGE),
-            ChargeRates {
-                passive: PASSIVE_POINTS_PER_SECOND,
-                combat: 1.0,
-            }
-        );
+        assert!(generation_variables(&rulesets, SOLDIER, PRACTICE_RANGE).is_empty());
     }
 
     /// The install's table: 32 heroes and 24 modes list schemas, and the

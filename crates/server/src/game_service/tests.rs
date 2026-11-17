@@ -2924,11 +2924,12 @@ fn a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_
 
     let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     assets.set_player_unknowns(Unknowns::Tolerate);
-    // Her 1,260-point ultimate fills in a second.
-    assets.set_ult_rates(orpheus_script::ultimate::ChargeRates {
-        passive: 1260.0,
-        combat: 1.0,
-    });
+    // Her 1,260-point ultimate fills in a second: `0B8B`'s passive loop
+    // adds 5 points times "Ultimate Generation - Passive" after its 1 s Wait.
+    assets.set_ult_generation(orpheus_script::wire::Variables::from([(
+        orpheus_script::ultimate::PASSIVE_GENERATION,
+        orpheus_script::wire::Value::Float(252.0),
+    )]));
     let mut aim = None;
     let (mut server, schemas, [mut tracer, mut viewer], _) = practice_world(
         [

@@ -65,7 +65,6 @@ use orpheus_physics::{
 use orpheus_script::{
     codecs::CodecTable,
     graph::GraphStore,
-    ultimate::ChargeRates,
     vitals::Vitals,
     vm::{MapRays, TargetCandidate, Unknowns},
     wire::Variables,
@@ -127,8 +126,9 @@ pub struct SceneAssets {
     bot_graphs: Option<Arc<GraphStore>>,
     bot_unknowns: Unknowns,
     player_unknowns: Unknowns,
-    /// How fast players' ultimates charge; None: by the rulesets.
-    ult_rates: Option<ChargeRates>,
+    /// Players' bodies' ultimate generation variables; None: the rulesets'
+    /// (`orpheus_script::ultimate::generation_variables`).
+    ult_generation: Option<orpheus_script::wire::Variables>,
     bots: BotCatalog,
     movers: Arc<MoverCatalog>,
     eyes: Arc<EyeCatalog>,
@@ -297,7 +297,7 @@ impl SceneAssets {
             bot_graphs,
             bot_unknowns: Unknowns::for_build(),
             player_unknowns: Unknowns::for_build(),
-            ult_rates: None,
+            ult_generation: None,
             bots: BotCatalog::load(data.join("ai_spawners_174.json"))?,
             movers: Arc::new(MoverCatalog::load(
                 data.join("game_movers_174.json"),
@@ -366,10 +366,11 @@ impl SceneAssets {
         self.player_unknowns = unknowns;
     }
 
-    /// How fast players' ultimates charge: by default each hero's and mode's
-    /// ruleset rates; tests of an ultimate fill it sooner.
-    pub fn set_ult_rates(&mut self, rates: ChargeRates) {
-        self.ult_rates = Some(rates);
+    /// The ultimate generation variables of players' bodies, which `0B8B`
+    /// scales its charge by: by default each hero's and mode's ruleset
+    /// settings; tests of an ultimate fill it sooner.
+    pub fn set_ult_generation(&mut self, variables: orpheus_script::wire::Variables) {
+        self.ult_generation = Some(variables);
     }
 
     /// Load the map before handing it to the worker. The render layouts and
@@ -617,7 +618,7 @@ impl SceneAssets {
         let eyes = Arc::clone(&self.eyes);
         let field = self.field;
         let player_unknowns = self.player_unknowns;
-        let ult_rates = self.ult_rates;
+        let ult_generation = self.ult_generation.clone();
         let mode = scene.map.mode_guid;
         let mode_body = ModeBody {
             scripts: self
@@ -666,7 +667,7 @@ impl SceneAssets {
                             field,
                         },
                         player_unknowns,
-                        ult_rates,
+                        ult_generation.clone(),
                         mode_body.clone(),
                         spawn,
                     )

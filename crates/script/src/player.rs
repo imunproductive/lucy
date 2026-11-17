@@ -414,8 +414,16 @@ impl World for PlayerWorld {
         true
     }
 
+    /// Its own body's filter bits; another body the match lists has the
+    /// word the match sends for it ([`TargetCandidate::filter_word`]).
     fn entity_filter_flags(&self, site: Site, entity: u32) -> Option<u64> {
-        (self.is_player_site(site) && entity == self.entity).then_some(self.body_filter)
+        if !self.is_player_site(site) {
+            return None;
+        }
+        if entity == self.entity {
+            return Some(self.body_filter);
+        }
+        self.listed(entity).map(TargetCandidate::filter_word)
     }
 
     /// The body, its controller, the mode entity (when the mode has one),

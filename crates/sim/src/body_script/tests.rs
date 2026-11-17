@@ -913,137 +913,6 @@ fn a_spawning_canister_flies_its_arc_and_names_its_field() {
     assert_eq!(canister.volleys, 1);
 }
 
-/// A body whose entries set the ultimate's cost (#338) and whose ultimate
-/// ability, when `ability`, starts on the charge (#342 in its m_150F0D92).
-fn ultimate_factory(ability: bool) -> PlayerBodyFactory {
-    use orpheus_script::ultimate::{ULT_CHARGE, ULT_COST};
-    use serde_json::json;
-
-    let var = |id: u32| json!({"$":"STUConfigVarDynamic","m_identifier":id,"m_60DB8F99":true});
-    let mut links = vec![json!([1, "m_inPlug"])];
-    let mut nodes = vec![
-        json!({"pos":0,"class":"STUStatescriptEntry","uid":0,"rid":0,"remote":-1,
-            "state":null,"client_only":false,"server_only":false,"fields":{
-            "m_2BBEEAB8":false,"m_ADEB6E05":false}}),
-        json!({"pos":1,"class":"STUStatescriptActionSetVar","uid":1,"rid":1,"remote":-1,
-            "state":null,"client_only":false,"server_only":false,"fields":{
-            "m_2BBEEAB8":false,"m_ADEB6E05":true,"m_out_Var":var(ULT_COST),
-            "m_value":{"$":"STUConfigVarFloat","m_value":100.0}}}),
-    ];
-    if ability {
-        links.push(json!([2, "m_beginPlug"]));
-        nodes.push(
-            json!({"pos":2,"class":"STUStatescriptStateAbility","uid":2,"rid":2,"remote":-1,
-            "state":0,"client_only":false,"server_only":true,"fields":{
-            "m_2BBEEAB8":true,"m_ADEB6E05":false,"m_150F0D92":var(ULT_CHARGE)}}),
-        );
-    }
-    nodes[0]["fields"]["m_outPlug"] = json!({"$":"Plug","links":links,"m_FF3DAF1E":[]});
-    let states = if ability { json!([2]) } else { json!([]) };
-    fixture_graph_factory(
-        json!({
-            "index":42,"items":nodes.len(),"nodes":nodes,"states":states,"entries":[0],
-            "remote":[],"sync_vars":[],"containers":{},"unknown_nodes":[],"fields":{},
-            "header":{"m_nodesBitCount":4,"m_statesBitCount":4,
-                "m_remoteSyncNodesBitCount":4,"m_syncVarsBitCount":4}
-        }),
-        Variables::new(),
-    )
-}
-
-/// driver.py `BodyScript._charge_ult`: after every command frame the body
-/// runs, the ultimate's charge (#342) rises by PASSIVE_POINTS_PER_SECOND *
-/// 16 ms (no ruleset changes it here), in f32 steps; a timer frame charges
-/// nothing, and neither does any frame while an ability that starts on the
-/// charge (its m_150F0D92 reads #342) runs.
-#[test]
-fn the_ultimate_charges_on_command_frames_until_its_ability_runs() {
-    use orpheus_script::ultimate::{PASSIVE_POINTS_PER_SECOND, ULT_CHARGE};
-
-    let (_, spawn) = fixture_body_factory();
-    let mover = Mover::new(
-        MoverSettings::default(),
-        Arc::new(ContactWorld::new(Vec::new()).unwrap()),
-        spawn.pose.position,
-        0,
-        0x18,
-    )
-    .unwrap();
-    let step = (PASSIVE_POINTS_PER_SECOND * 16.0 / 1000.0) as f32;
-    let next = |charge: f64| f64::from((charge + f64::from(step)) as f32);
-    let charge = |runtime: &PlayerBodyRuntime| {
-        runtime
-            .snapshot()
-            .unwrap()
-            .variables
-            .get(&ULT_CHARGE)
-            .cloned()
-    };
-    let command = |frame| Command {
-        frame,
-        ..Command::default()
-    };
-
-    let mut runtime = ultimate_factory(false).start(spawn).unwrap();
-    assert_eq!(
-        charge(&runtime),
-        Some(Value::Float(0.0)),
-        "no charge before a command frame"
-    );
-    let mut expected = 0.0;
-    for frame in spawn.frame + 1..=spawn.frame + 3 {
-        runtime
-            .advance(command(frame), &mover, BodyStep::Posed)
-            .unwrap();
-        expected = next(expected);
-        assert_eq!(
-            charge(&runtime),
-            Some(Value::Float(expected)),
-            "frame {frame}"
-        );
-    }
-    let timer = spawn.frame + 10;
-    runtime
-        .advance(command(timer), &mover, BodyStep::UnposedTimer)
-        .unwrap();
-    assert_eq!(
-        charge(&runtime),
-        Some(Value::Float(expected)),
-        "timer frame"
-    );
-    runtime
-        .advance(command(timer + 1), &mover, BodyStep::UnposedBoundary)
-        .unwrap();
-    expected = next(expected);
-    assert_eq!(
-        charge(&runtime),
-        Some(Value::Float(expected)),
-        "neutral frame"
-    );
-
-    // The first charge starts the ability at its next tick; it runs, and
-    // the charge waits.
-    let mut runtime = ultimate_factory(true).start(spawn).unwrap();
-    let first = spawn.frame + 1;
-    runtime
-        .advance(command(first), &mover, BodyStep::Posed)
-        .unwrap();
-    let charged = Some(Value::Float(next(0.0)));
-    assert_eq!(charge(&runtime), charged);
-    for frame in first + 1..=first + 3 {
-        runtime
-            .advance(command(frame), &mover, BodyStep::Posed)
-            .unwrap();
-        let kind = runtime.snapshot().unwrap().instances[&1].states[&0].kind;
-        // ultimate.rs `ABILITY_RUNNING`.
-        assert!(
-            matches!(kind, StateKind::Ability { flags } if flags & 1 != 0),
-            "frame {frame}: {kind:?}"
-        );
-        assert_eq!(charge(&runtime), charged, "frame {frame}");
-    }
-}
-
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn prepared_soldier_starts_the_reference_body_and_weapon_tree() {
@@ -1904,4 +1773,178 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
     let done = projected(&runtime, View::Owner);
     assert!(done.state(id, 1).is_none() && done.state(id, 32).is_none());
     assert_eq!(done.instance_variable(id, 384), Some(&Value::Float(0.0)));
+}
+
+/// A hero body as the match starts it, with the game identifier the
+/// server sends every new body (`002D.025` {`0029` 0}, which turns on
+/// `01C7`'s #2426e) and the ultimate generation variables `generation`.
+fn charge_body(hero: u64, generation: Option<Variables>) -> (PlayerBodyRuntime, OwnerBodySpawn) {
+    use orpheus_content::{heroes::HeroCatalog, maps::GameMap};
+    use orpheus_core::tick::FIRST_TICK;
+
+    let root = orpheus_testkit::runtime_dir();
+    let graphs =
+        Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap());
+    let heroes = HeroCatalog::load(root.join("data/game_heroes_174.json")).unwrap();
+    let pools = crate::pools::PoolCatalog::from_graphs(&graphs)
+        .unwrap()
+        .hero_pools(hero)
+        .unwrap();
+    let spawn = OwnerBodySpawn {
+        controller: 0xa000_0100,
+        entity: 0xa000_0101,
+        body_filter: crate::scene::team_bit(0).unwrap(),
+        slot: 0,
+        frame: FIRST_TICK,
+        pose: Movement {
+            position: GameMap::practice_range().spawn_point(0, 0).unwrap().0,
+            ..Movement::default()
+        },
+        quanta: RETAIL_QUANTA,
+        mode_random: 0.5,
+    };
+    let factory = PlayerBodyFactory::prepare(
+        graphs,
+        Arc::new(CodecTable::client()),
+        PRACTICE_RANGE_MODE,
+        heroes.get(hero).unwrap(),
+        Some(pools),
+        false,
+        BodyCombat {
+            eyes: orpheus_content::heroes::Eyes {
+                standing: 1.55,
+                crouched: 1.085,
+            },
+            field: None,
+        },
+        Unknowns::Tolerate,
+        generation,
+        ModeBody::default(),
+        spawn,
+    )
+    .unwrap();
+    let mut runtime = factory.start(spawn).unwrap();
+    runtime
+        .receive_message(
+            0,
+            0x0240_0000_0000_002d,
+            Variables::from([(0x29, Value::Asset(0))]),
+        )
+        .unwrap();
+    (runtime, spawn)
+}
+
+fn charge_of(runtime: &PlayerBodyRuntime) -> f64 {
+    use orpheus_script::ultimate::ULT_CHARGE;
+    match runtime.snapshot().unwrap().variables.get(&ULT_CHARGE) {
+        Some(Value::Float(charge)) => *charge,
+        other => panic!("charge {other:?}"),
+    }
+}
+
+/// Run the body's first command frames after its spawn, `frames` × 16 ms.
+fn run_frames(runtime: &mut PlayerBodyRuntime, spawn: OwnerBodySpawn, frames: u32) {
+    let mover = Mover::new(
+        MoverSettings::default(),
+        Arc::new(ContactWorld::new(Vec::new()).unwrap()),
+        spawn.pose.position,
+        0,
+        0x18,
+    )
+    .unwrap();
+    for frame in spawn.frame + 1..=spawn.frame + frames {
+        runtime
+            .advance(
+                Command {
+                    frame,
+                    ..Command::default()
+                },
+                &mover,
+                BodyStep::Posed,
+            )
+            .unwrap();
+    }
+}
+
+/// Graph `0B8B` charges the ultimate: its server-only loop adds 5 points
+/// after each 1 s Wait once `01C7` turned #2426e on (from `002D.025`); the
+/// damage the body dealt (`0012.025`) to a hostile body adds its amount,
+/// to an ally or to itself nothing (rid28, `STU_A58C1E63`); healing done
+/// (`0044.025`) adds its amount; a direct grant (`00EB.025`, Mercy's staff
+/// `006B` rid189 among eight senders) adds its amount. Nothing in Rust adds
+/// to it.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn the_charge_graph_charges_soldier_s_ultimate() {
+    use orpheus_script::{ultimate::dealt_message, weapons::DamageTags};
+
+    const ENEMY: u32 = 0xa000_0301;
+    const ALLY: u32 = 0xa000_0401;
+    /// Training Bot (`02ED.06C`), which `0B8B` rid45 admits.
+    const TRAINING_BOT_TAG: u64 = 0x06c0_0000_0000_02ed;
+    let (mut runtime, spawn) = charge_body(SOLDIER, None);
+    assert_eq!(
+        runtime.snapshot().unwrap().variables.get(&2426),
+        Some(&Value::Bool(true))
+    );
+    assert_eq!(charge_of(&runtime), 0.0);
+    // 130 frames are 2.08 s: two of the loop's Waits.
+    run_frames(&mut runtime, spawn, 130);
+    assert_eq!(charge_of(&runtime), 10.0);
+
+    let body = |entity, team| TargetCandidate {
+        entity,
+        team: Some(team),
+        dead: false,
+        controller: None,
+        ai: true,
+        feet: [0.0; 3],
+        height: 1.8,
+        radius: 0.4,
+        yaw: 0.0,
+    };
+    runtime.set_target_candidates(&[body(ENEMY, 1), body(ALLY, 0)]);
+    let deal = |runtime: &mut PlayerBodyRuntime, target, amount, heal| {
+        runtime.set_victim_tags(target, BTreeSet::from([TRAINING_BOT_TAG]));
+        let (message, parameters) = dealt_message(target, amount, &DamageTags::NONE, heal);
+        runtime
+            .receive_message(spawn.entity, message, parameters)
+            .unwrap();
+    };
+    deal(&mut runtime, ENEMY, 100.0, false);
+    assert_eq!(charge_of(&runtime), 110.0, "damage to an enemy");
+    deal(&mut runtime, ALLY, 100.0, false);
+    deal(&mut runtime, spawn.entity, 100.0, false);
+    assert_eq!(charge_of(&runtime), 110.0, "damage to an ally or himself");
+    deal(&mut runtime, ALLY, 50.0, true);
+    assert_eq!(charge_of(&runtime), 160.0, "healing done");
+    runtime
+        .receive_message(
+            spawn.entity,
+            0x0240_0000_0000_00eb,
+            Variables::from([(0x2a, Value::Float(120.0))]),
+        )
+        .unwrap();
+    assert_eq!(charge_of(&runtime), 280.0, "a direct grant");
+    // The meter stops at the cost.
+    deal(&mut runtime, ENEMY, 5000.0, false);
+    assert_eq!(charge_of(&runtime), 2310.0);
+}
+
+/// D.Va's pilot (`040A`, a cost of 319.2) charges by `0B8B`'s loop as
+/// every hero does: kjs saw this loop start on her bodies only, and the
+/// server's own passive stood down for it; here it is the only passive.
+/// The ruleset key `32E0` (#13024e, `0B8B` rid66 from the Entry rid69)
+/// fills the meter at spawn.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn the_charge_graph_charges_d_va_and_fills_on_its_ruleset_key() {
+    const DVA: u64 = 0x02e0_0000_0000_007a;
+    let (mut runtime, spawn) = charge_body(DVA, None);
+    run_frames(&mut runtime, spawn, 130);
+    assert_eq!(charge_of(&runtime), 10.0);
+
+    let full = Variables::from([(13024, Value::Bool(true))]);
+    let (runtime, _) = charge_body(SOLDIER, Some(full));
+    assert_eq!(charge_of(&runtime), 2310.0);
 }

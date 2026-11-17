@@ -37,7 +37,6 @@ use orpheus_script::{
     player::PlayerWorld,
     snapshot::{SnapshotEncoder, View},
     timeline::FRAME_MS,
-    ultimate::{ChargeRates, UltimateCharge},
     vitals::Vitals,
     vm::{
         AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays, Motion,
@@ -126,8 +125,6 @@ pub struct PlayerBodyFactory {
     controller_on_fire: bool,
     combat: BodyCombat,
     unknowns: Unknowns,
-    /// How fast the hero's ultimate charges.
-    ult_rates: ChargeRates,
     mode_body: ModeBody,
 }
 
@@ -142,7 +139,7 @@ impl PlayerBodyFactory {
         controller_on_fire: bool,
         combat: BodyCombat,
         unknowns: Unknowns,
-        ult_rates: Option<ChargeRates>,
+        ult_generation: Option<Variables>,
         mode_body: ModeBody,
         probe: OwnerBodySpawn,
     ) -> io::Result<Self> {
@@ -155,10 +152,13 @@ impl PlayerBodyFactory {
             })?;
         let roots = orpheus_script::vm::player_roots(body, &graphs).map_err(unsupported)?;
         let health = pools.unwrap_or(FALLBACK_POOLS).total();
-        let variables = orpheus_script::vm::player_entity_variables(body, health, health);
+        let mut variables = orpheus_script::vm::player_entity_variables(body, health, health);
+        // The ruleset's ultimate generation settings, which `0B8B` reads as
+        // entity variables (`orpheus_script::ultimate`), or the override.
+        variables.extend(ult_generation.unwrap_or_else(|| {
+            orpheus_script::ultimate::generation_variables(graphs.rulesets(), hero.guid, mode)
+        }));
         let target_tags = body.target_tags.clone();
-        let ult_rates =
-            ult_rates.unwrap_or_else(|| ChargeRates::of(graphs.rulesets(), hero.guid, mode));
         let mut factory = Self {
             graphs,
             codecs,
@@ -171,7 +171,6 @@ impl PlayerBodyFactory {
             controller_on_fire,
             combat,
             unknowns,
-            ult_rates,
             mode_body,
         };
         // A mode body script the server can't run (refused content in a
@@ -294,9 +293,6 @@ impl PlayerBodyFactory {
                 component.evaluate_state_config(instance, raw, config, &mut world)
             },
         )?;
-        // driver.py `BodyScript._spawn`: the abilities that start on the
-        // ultimate's charge.
-        let ultimate = UltimateCharge::new(&component, &self.graphs, self.ult_rates);
         let runtime = PlayerBodyRuntime {
             component,
             world,
@@ -304,7 +300,6 @@ impl PlayerBodyFactory {
             modifiers,
             leases,
             frame: spawn.frame,
-            ultimate,
             combat: self.combat.clone(),
         };
         runtime.log_assumptions();
@@ -338,7 +333,6 @@ pub struct PlayerBodyRuntime {
     modifiers: Option<BTreeMap<ModifierKey, Modifier>>,
     leases: ProjectileLeases,
     frame: u32,
-    ultimate: UltimateCharge,
     /// The body's eyes and the Biotic Field.
     combat: BodyCombat,
 }
@@ -420,9 +414,6 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
             self.component
                 .advance_command(command, &mut self.world)
                 .map_err(unsupported)?;
-            self.ultimate
-                .charge(&mut self.component, &mut self.world)
-                .map_err(unsupported)?;
             self.modifiers = self
                 .component
                 .movement_modifiers(&mut self.world)
@@ -501,12 +492,6 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     fn effects(&self) -> Option<&BodyEffects> {
         Some(&self.world.effects)
-    }
-
-    fn gain_ult(&mut self, points: f64) -> io::Result<()> {
-        self.ultimate
-            .gain(points, &mut self.component, &mut self.world)
-            .map_err(unsupported)
     }
 
     fn receive_message(

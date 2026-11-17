@@ -1,179 +1,61 @@
-//! The ultimate's charge: entity variable #342 is server data that no graph
-//! adds to (the ultimate's graph sets it to 0 when it starts), and its cost
-//! #338 comes from the entries. The server adds to it as the retail server
-//! did: [`PASSIVE_POINTS_PER_SECOND`] by itself, and a point for each point
-//! of damage or healing the hero deals, each times the game ruleset's
-//! ultimate generation settings. Neither is added while the ultimate runs.
-
-use serde_json::Value as Json;
+//! The ultimate's charge: entity variable #342 against its cost #338, which
+//! the body's graphs set. Graph `0B8B` (a SubScript of `004B`, server-only
+//! nodes) charges it, as the retail server ran it: 5 points after each 1 s
+//! Wait by itself, and the amount of each damage dealt (`0012.025`) and
+//! healing done (`0044.025`) the server sends the body ([`DAMAGE_DEALT`],
+//! [`HEALING_DONE`]), each times the ruleset scales it reads from the
+//! body's entity variables (`docs/notes/behavior.md`, "Ultimate charge").
+//!
+//! What stays here is what no graph does: the messages' shape, and writing
+//! the ruleset's "Ultimate Generation" settings onto the body's entity
+//! variables (no graph writes #9532e, #12918e or #13022e; retail's server
+//! does, an inference from the reads, GameSettings.md).
 
 use crate::{
-    expr::{Scope, Variable, to_float},
-    graph::GraphStore,
     rulesets::Rulesets,
-    timeline::FRAME_MS,
-    vm::{Component, InitFault, StateKind, World},
-    wire::Value,
+    weapons::DamageTags,
+    wire::{Value, Variables},
 };
 
 pub const ULT_CHARGE: u32 = 342;
 pub const ULT_COST: u32 = 338;
-/// Points a hero's ultimate gains a second by itself. Assumption: the
-/// install has no base rate (the retail server added the charge), so this
-/// is the community's figure (docs/notes/game-rules.md, rule 153).
-pub const PASSIVE_POINTS_PER_SECOND: f64 = 5.0;
+/// `0012.025`: the body dealt damage: the amount (`0013`), the body hit
+/// (`0015`) and the hit's tags (`003D`). `0B8B` rid0 charges it.
+pub const DAMAGE_DEALT: u64 = 0x0240_0000_0000_0012;
+/// `0044.025`: the body healed another: the amount (`0040`), the body
+/// healed (`003F`) and its kind (`0041`). `0B8B` rid31 charges it.
+pub const HEALING_DONE: u64 = 0x0240_0000_0000_0044;
 /// The hero ruleset entries (`01C` indexes, schema `0A30…0007`, each 100% by
-/// default): "Ultimate Generation", "Ultimate Generation - Combat" and
-/// "Ultimate Generation - Passive".
-const ULTIMATE_GENERATION: u32 = 0x253C;
-const COMBAT_GENERATION: u32 = 0x32DE;
-const PASSIVE_GENERATION: u32 = 0x3276;
-const ABILITY_RUNNING: u8 = 1;
+/// default) that `0B8B` reads as entity variables of the same id:
+/// "Ultimate Generation" (both ways), "Ultimate Generation - Passive" (the
+/// 1 s loop, rid4) and "Ultimate Generation - Combat" (rid23, rid32).
+pub const ULTIMATE_GENERATION: u32 = 0x253C;
+pub const PASSIVE_GENERATION: u32 = 0x3276;
+pub const COMBAT_GENERATION: u32 = 0x32DE;
 
-/// How fast an ultimate charges.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ChargeRates {
-    /// Points a second, by itself.
-    pub passive: f64,
-    /// Points for each point of damage or healing dealt.
-    pub combat: f64,
+/// The ruleset's ultimate generation settings for the hero in the mode,
+/// as entity variables for the body's spawn: the ones the schemas set.
+pub fn generation_variables(rulesets: &Rulesets, hero: u64, mode: u64) -> Variables {
+    [ULTIMATE_GENERATION, PASSIVE_GENERATION, COMBAT_GENERATION]
+        .into_iter()
+        .filter_map(|key| Some((key, rulesets.default(key, hero, mode)?)))
+        .collect()
 }
 
-impl ChargeRates {
-    /// The rates the hero's and mode's ruleset defaults give: the passive
-    /// base times "Ultimate Generation" and "Passive", and one point a point
-    /// times "Ultimate Generation" and "Combat". A missing entry counts 100%.
-    pub fn of(rulesets: &Rulesets, hero: u64, mode: u64) -> Self {
-        let share = |key| {
-            rulesets
-                .default(key, hero, mode)
-                .map_or(1.0, |value| to_float(&value))
-        };
-        let generation = share(ULTIMATE_GENERATION);
-        Self {
-            passive: PASSIVE_POINTS_PER_SECOND * generation * share(PASSIVE_GENERATION),
-            combat: generation * share(COMBAT_GENERATION),
-        }
-    }
-}
-
-/// The abilities a body's ultimate charge waits for.
-pub struct UltimateCharge {
-    rates: ChargeRates,
-    /// Instance and raw state of each ability that starts on the charge.
-    abilities: Vec<(u16, u16)>,
-}
-
-impl UltimateCharge {
-    /// The abilities of the body's instances at spawn whose start condition
-    /// reads the charge (`BodyScript._spawn`).
-    pub fn new(component: &Component, graphs: &GraphStore, rates: ChargeRates) -> Self {
-        let abilities = component
-            .snapshot()
-            .into_iter()
-            .flat_map(|snapshot| &snapshot.instances)
-            .filter_map(|(&id, instance)| Some((id, graphs.graph(instance.graph)?)))
-            .flat_map(|(id, graph)| {
-                graph.nodes.iter().filter_map(move |node| {
-                    (node.class == "STUStatescriptStateAbility"
-                        && node.field("m_150F0D92").is_some_and(reads_charge))
-                    .then_some((id, node.state?))
-                })
-            })
-            .collect();
-        Self { rates, abilities }
-    }
-
-    /// One frame's passive charge (`BodyScript._charge_ult`): call it after
-    /// every command frame the body runs.
-    pub fn charge(
-        &self,
-        component: &mut Component,
-        world: &mut impl World,
-    ) -> Result<(), InitFault> {
-        self.add(
-            self.rates.passive * FRAME_MS as f64 / 1000.0,
-            component,
-            world,
-        )
-    }
-
-    /// The charge for `points` of damage or healing the hero dealt.
-    pub fn gain(
-        &self,
-        points: f64,
-        component: &mut Component,
-        world: &mut impl World,
-    ) -> Result<(), InitFault> {
-        self.add(self.rates.combat * points, component, world)
-    }
-
-    /// Add `points` up to the cost, in f32 steps, unless the ultimate runs.
-    fn add(
-        &self,
-        points: f64,
-        component: &mut Component,
-        world: &mut impl World,
-    ) -> Result<(), InitFault> {
-        if points.is_nan() || points <= 0.0 || self.running(component) {
-            return Ok(());
-        }
-        let read = |id| {
-            component
-                .resolved_variable(
-                    0,
-                    Variable {
-                        scope: Scope::Entity,
-                        id,
-                    },
-                )
-                .map_or(0.0, |value| to_float(&value))
-        };
-        let (cost, charge) = (read(ULT_COST), read(ULT_CHARGE));
-        if cost > 0.0 && charge < cost {
-            let next = f64::from((charge + f64::from(points as f32)) as f32);
-            set_ult_charge(component, cost.min(next), world)?;
-        }
-        Ok(())
-    }
-
-    fn running(&self, component: &Component) -> bool {
-        let Some(snapshot) = component.snapshot() else {
-            return false;
-        };
-        self.abilities.iter().any(|(id, raw)| {
-            snapshot
-                .instances
-                .get(id)
-                .and_then(|instance| instance.states.get(raw))
-                .is_some_and(|state| {
-                    matches!(state.kind, StateKind::Ability { flags } if flags & ABILITY_RUNNING != 0)
-                })
-        })
-    }
-}
-
-/// Set the ultimate's charge (`BodyScript.set_ult_charge`).
-pub fn set_ult_charge(
-    component: &mut Component,
-    points: f64,
-    world: &mut impl World,
-) -> Result<(), InitFault> {
-    component.set_entity_variable(ULT_CHARGE, Value::Float(f64::from(points as f32)), world)
-}
-
-/// Whether a config reads entity variable #342 (`_reads` in driver.py).
-fn reads_charge(config: &Json) -> bool {
-    match config {
-        Json::Object(fields)
-            if fields.get("$").and_then(Json::as_str) == Some("STUConfigVarDynamic") =>
-        {
-            let entity = fields.get("m_60DB8F99");
-            fields.get("m_identifier").and_then(Json::as_u64) == Some(u64::from(ULT_CHARGE))
-                && (entity == Some(&Json::Bool(true)) || entity.and_then(Json::as_u64) == Some(1))
-        }
-        Json::Object(fields) => fields.values().any(reads_charge),
-        Json::Array(items) => items.iter().any(reads_charge),
-        _ => false,
-    }
+/// The message the body takes for `amount` it dealt to `target`: damage
+/// with the hit's tags, or healing whose kind is the heal's tags
+/// (assumption: `0B8B` leaves out kinds `0292` and `025A`, and `01C7`
+/// tests `04AB`, all identifiers a health change's tags hold).
+pub fn dealt_message(target: u32, amount: f64, tags: &DamageTags, heal: bool) -> (u64, Variables) {
+    let (message, keys) = if heal {
+        (HEALING_DONE, [0x40, 0x3f, 0x41])
+    } else {
+        (DAMAGE_DEALT, [0x13, 0x15, 0x3d])
+    };
+    let parameters = Variables::from([
+        (keys[0], Value::Float(amount)),
+        (keys[1], Value::Entity(target)),
+        (keys[2], tags.to_value()),
+    ]);
+    (message, parameters)
 }
