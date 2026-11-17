@@ -62,6 +62,13 @@ const TARGET_TAG: u16 = 0x06C;
 pub(crate) const SPAWN: u32 = 0x737C_5C41;
 /// Component bit 94.
 pub(crate) const REQUIRED: u32 = 0xCA1F_B0B8;
+/// The PvE missions' start tag: a created entity whose only team tag it is
+/// counts as a spawn, though it has no spawn component (upstream kjs
+/// `08561fe4`, `uprising-mission.md`). The missions start the players at
+/// plain `0176` markers: their scripts write only 0x310 into `#8364`[0]
+/// (Uprising `0D28` node 23, Junkenstein `0C8C`, Retribution `100B`), then
+/// run the shared spawn graph `0C8F`, which gathers its candidates by it.
+const PVE_START_TAG: u64 = 0x310;
 /// Team of each spawn room tag.
 const TEAM_TAGS: [(u64, i64); 6] = [
     (0x310, 0),
@@ -447,10 +454,10 @@ fn map_data(
             identifiers.insert(flat.to_string(), json!(guid_hex(entity.identifier)));
             identifier_of.insert(flat, entity.identifier);
         }
-        if !found.contains(&SPAWN) {
+        let tags = target_tags(&placed.instances);
+        if !is_spawn(found, &tags) {
             continue;
         }
-        let tags = target_tags(&placed.instances);
         let team = tags.iter().find_map(|tag| lookup(&TEAM_TAGS, *tag));
         let [x, y, z, w] = entity.rotation.map(f64::from);
         let yaw = round(
@@ -571,6 +578,18 @@ fn lookup(table: &[(u64, i64)], tag: u64) -> Option<i64> {
         .iter()
         .find(|(key, _)| *key == tag)
         .map(|(_, value)| *value)
+}
+
+/// A created entity is a spawn point when it has the spawn component, or
+/// when [`PVE_START_TAG`] is its only team tag (Junkenstein's 0x30D markers
+/// and a menu backdrop's marker tagged for both teams stay out).
+fn is_spawn(components: &BTreeSet<u32>, tags: &[u64]) -> bool {
+    components.contains(&SPAWN) || {
+        let mut teams = tags
+            .iter()
+            .filter(|&&tag| lookup(&TEAM_TAGS, tag).is_some());
+        teams.next() == Some(&PVE_START_TAG) && teams.next().is_none()
+    }
 }
 
 /// A DataTool GUID text's index: `"000000002962.01C"` -> 0x2962.
@@ -1022,5 +1041,25 @@ mod tests {
         // The float Rust writes as "-1.2621775e-29": correctly rounded to
         // eight digits it doesn't read back, so Python takes nine.
         assert_eq!(short(-1.262_177_5e-29_f32), -1.262_177_45e-29);
+    }
+
+    #[test]
+    fn a_pve_start_marker_is_a_spawn_only_with_the_start_tag_alone() {
+        let spawn = BTreeSet::from([SPAWN]);
+        let marker = BTreeSet::from([REQUIRED]);
+        assert!(is_spawn(&spawn, &[]));
+        assert!(is_spawn(&spawn, &[0x341, 0x42C]));
+        assert!(is_spawn(&marker, &[0x310]));
+        assert!(is_spawn(&marker, &[0x310, 0x42C]));
+        for tags in [
+            &[][..],
+            &[0x42C],
+            &[0x30D],
+            &[0x341],
+            &[0x310, 0x341],
+            &[0x310, 0x30D],
+        ] {
+            assert!(!is_spawn(&marker, tags), "{tags:X?}");
+        }
     }
 }
