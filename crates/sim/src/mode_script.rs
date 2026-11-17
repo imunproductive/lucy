@@ -69,6 +69,7 @@ impl ModeRunner {
         let mut world = ModeWorld::new(Arc::clone(&graphs), mode, Unknowns::for_build());
         world.team_sizes = crate::instance::team_entries(scene.map());
         world.mode_random = Some(scene.mode_random());
+        world.map_modes = Some(scene.map().supported_modes.clone());
         match ModeScript::start(world, graph, frame) {
             Ok(script) if script.complete() => Self::Graph {
                 script: Box::new(script),

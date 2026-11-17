@@ -237,9 +237,20 @@ pub struct TargetCandidate {
     pub feet: [f64; 3],
     pub height: f64,
     pub radius: f64,
+    /// Where it faces, in radians: forward is `[sin, 0, cos]` (the match's
+    /// `TargetPose::yaw`).
+    pub yaw: f64,
 }
 
+/// One turn in the yaw and pitch units of a movement record.
+const TURN_UNITS: f64 = 65_536.0;
+
 impl TargetCandidate {
+    /// Its yaw in a movement record's units (65536 a turn).
+    pub fn yaw_units(&self) -> i32 {
+        (self.yaw * TURN_UNITS / std::f64::consts::TAU).round() as i64 as i32
+    }
+
     /// How far `point` is from the capsule's surface (0 inside).
     pub fn distance(&self, point: [f64; 3]) -> f64 {
         let [x, y, z] = self.feet;
@@ -510,6 +521,32 @@ pub trait World {
 
     /// A body's yaw and pitch, as [`expr::Context::entity_facing`].
     fn entity_facing(&self, _site: Site, _entity: u32) -> Option<[i32; 2]> {
+        None
+    }
+
+    /// A body's yaw alone (its facing along the ground): the facing's, else
+    /// a listed body's.
+    fn entity_yaw(&self, site: Site, entity: u32) -> Option<i32> {
+        if let Some([yaw, _]) = self.entity_facing(site, entity) {
+            return Some(yaw);
+        }
+        self.target_candidates(site)?
+            .iter()
+            .find(|body| body.entity == entity)
+            .map(TargetCandidate::yaw_units)
+    }
+
+    /// The move-speed scale `entity`'s mover keeps (component 31 `+0x4D8`,
+    /// the result of mover mod 0 its last move used; `STU_ED807E07`): 1.0
+    /// for an entity without a mover. None: unknown here.
+    fn speed_scale(&self, _site: Site, _entity: u32) -> Option<f64> {
+        None
+    }
+
+    /// Whether the match's map lists game mode `mode` among its supported
+    /// modes (`STU_02514B6A.m_supportedGamemodes`, `STU_16753B11`). None:
+    /// unknown here.
+    fn map_supports_mode(&self, _site: Site, _mode: u64) -> Option<bool> {
         None
     }
 

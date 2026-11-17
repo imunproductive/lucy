@@ -96,6 +96,9 @@ impl PlacedScripts {
                     self.mode_random,
                     Unknowns::for_build(),
                     self.placed.iter().map(|placed| placed.placement()),
+                    // The map's tagged placeables are not derived yet
+                    // (docs/dev/loose-ends.md).
+                    None,
                     tick,
                 ));
             }

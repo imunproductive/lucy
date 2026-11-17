@@ -19,6 +19,7 @@ use serde_json::Value as Json;
 use crate::{
     expr::{EntityRelation, native_shape, team_from_filter, valid_entity},
     graph::GraphStore,
+    map_tags::{MapTags, TaggedEntity},
     vitals::{PoolKind, Vitals},
     vm::{
         AuraChange, BodyEffects, CombatMod, GameMessage, HealthChange, MapHit, MapRays,
@@ -53,6 +54,9 @@ pub struct PlayerWorld {
     /// when the match doesn't say.
     pub eye_height: Option<f64>,
     pub movement: Movement,
+    /// The move-speed scale the body's mover used on its last move (mover
+    /// `+0x4D8`, `STU_ED807E07`); none: the match doesn't say.
+    pub speed_scale: Option<f64>,
     pub throttles: [i8; 2],
     pub mode: u64,
     /// The match's value of the mode entity's component 114 field 9
@@ -80,6 +84,9 @@ pub struct PlayerWorld {
     pub targets: Option<Vec<TargetCandidate>>,
     /// The map's collision the body's ray casts meet; none: no map.
     pub map_rays: Option<Arc<dyn MapRays>>,
+    /// The map's tagged placeables the scene tag queries find; none: no
+    /// map.
+    pub map_tags: Option<Arc<MapTags>>,
     /// How the body treats graph content the VM doesn't implement; by
     /// default as every script does ([`Unknowns::for_build`]).
     pub unknowns: Unknowns,
@@ -344,13 +351,27 @@ impl World for PlayerWorld {
             return None;
         }
         if entity != self.entity {
-            let (victim, tags) = self.victim_tags.as_ref()?;
-            return (*victim == entity).then(|| tags.contains(&tag));
+            if let Some((victim, tags)) = &self.victim_tags
+                && *victim == entity
+            {
+                return Some(tags.contains(&tag));
+            }
+            return self
+                .map_entity(entity)
+                .map(|placed| placed.tags.contains(&tag));
         }
         if let Some(counts) = self.target_tag_effects.get(&tag) {
             return Some(counts.suppressions == 0);
         }
         Some(self.target_tags.as_ref()?.contains(&tag))
+    }
+
+    /// The map's placeables that carry the tag ([`MapTags::with_tag`]).
+    fn entities_with_tag(&self, site: Site, tag: u64) -> Option<Vec<u32>> {
+        if !self.is_player_site(site) {
+            return None;
+        }
+        self.map_tags.as_ref()?.with_tag(tag)
     }
 
     fn set_target_tag_effect(&mut self, site: Site, effect: TargetTagEffect, active: bool) -> bool {
@@ -397,8 +418,9 @@ impl World for PlayerWorld {
         (self.is_player_site(site) && entity == self.entity).then_some(self.body_filter)
     }
 
-    /// The body, its controller, the mode entity (when the mode has one) and
-    /// the bodies the match lists exist; any other entity is unknown.
+    /// The body, its controller, the mode entity (when the mode has one),
+    /// the bodies the match lists and the map's tagged placeables exist;
+    /// any other entity is unknown.
     fn entity_exists(&self, site: Site, entity: u32) -> Option<bool> {
         if !self.is_player_site(site) {
             return None;
@@ -406,12 +428,14 @@ impl World for PlayerWorld {
         let known = entity == self.entity
             || (valid_entity(self.controller) && entity == self.controller)
             || (entity == GAME_MODE_ENTITY && self.graphs.mode_variables(self.mode).is_some())
-            || self.listed(entity).is_some();
+            || self.listed(entity).is_some()
+            || self.map_entity(entity).is_some();
         known.then_some(true)
     }
 
     /// The body stands where its mover put it; the other bodies where the
-    /// match placed them this tick.
+    /// match placed them this tick; a tagged placeable where the map puts
+    /// it.
     fn entity_position(&self, site: Site, entity: u32) -> Option<[f64; 3]> {
         if !self.is_player_site(site) {
             return None;
@@ -419,7 +443,9 @@ impl World for PlayerWorld {
         if entity == self.entity {
             return Some(self.position);
         }
-        self.listed(entity).map(|body| body.feet)
+        self.listed(entity)
+            .map(|body| body.feet)
+            .or_else(|| self.map_entity(entity).map(|placed| placed.position))
     }
 
     /// The body looks along its last movement record's yaw and pitch
@@ -428,6 +454,13 @@ impl World for PlayerWorld {
     fn entity_facing(&self, site: Site, entity: u32) -> Option<[i32; 2]> {
         (self.is_player_site(site) && entity == self.entity)
             .then_some([self.movement.yaw, self.movement.pitch])
+    }
+
+    /// The body's own mover's, as the match gives it each move.
+    fn speed_scale(&self, site: Site, entity: u32) -> Option<f64> {
+        (self.is_player_site(site) && entity == self.entity)
+            .then_some(self.speed_scale)
+            .flatten()
     }
 
     /// The body's team from its filter bits; the other bodies' as listed.
@@ -577,6 +610,7 @@ impl PlayerWorld {
             position: [0.0; 3],
             eye_height: None,
             movement: Movement::default(),
+            speed_scale: None,
             throttles: [0; 2],
             mode,
             mode_random: None,
@@ -588,6 +622,7 @@ impl PlayerWorld {
             target_tag_effects: BTreeMap::new(),
             target_tags_changed: false,
             map_rays: None,
+            map_tags: None,
             controller_on_fire: false,
             targets: None,
             victim_tags: None,
@@ -670,6 +705,11 @@ impl PlayerWorld {
             .flatten()
             .find(|body| body.entity == entity)
     }
+
+    /// A tagged placeable of the map.
+    fn map_entity(&self, entity: u32) -> Option<&TaggedEntity> {
+        self.map_tags.as_ref()?.get(entity)
+    }
 }
 
 /// `{"$": "STU_B5A0CAF0"}` (the owner), optionally with a zero
@@ -709,6 +749,7 @@ mod tests {
             feet,
             height: 1.8,
             radius: 0.4,
+            yaw: 0.0,
         }
     }
 

@@ -8,6 +8,7 @@ pub mod codecs;
 pub mod controller;
 pub mod expr;
 pub mod graph;
+pub mod map_tags;
 pub mod mode;
 pub mod placed;
 pub mod player;

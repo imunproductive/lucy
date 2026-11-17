@@ -237,6 +237,8 @@ impl PlayerBodyFactory {
         world.mode_random = Some(spawn.mode_random);
         world.map_rays = map_rays;
         world.movement = spawn.pose;
+        // A new mover's (`Mover::speed_scale`): no move yet.
+        world.speed_scale = Some(1.0);
         if !has_authored_pools {
             world.vitals = self.pools.unwrap_or(FALLBACK_POOLS).vitals();
         }
@@ -392,6 +394,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         }
         let pose = mover.pose();
         self.world.position = pose.position;
+        self.world.speed_scale = Some(mover.speed_scale());
         self.world.eye_height = Some(self.combat.eyes.height(mover.crouched()));
         // Its own body, as the target searches see it, stands where it moved.
         let entity = self.world.entity;

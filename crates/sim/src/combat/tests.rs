@@ -357,6 +357,7 @@ fn target_searches_see_the_players_then_the_bots() {
             feet: pose.feet,
             height: pose.height,
             radius: pose.radius,
+            yaw: pose.yaw,
         }
     );
     for (slot, (candidate, bot)) in candidates[1..].iter().zip(scene.bots()).enumerate() {

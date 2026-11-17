@@ -512,6 +512,7 @@ impl Combat {
             feet: pose.feet,
             height: pose.height,
             radius: pose.radius,
+            yaw: pose.yaw,
         };
         self.players
             .iter()

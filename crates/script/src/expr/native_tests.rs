@@ -22,6 +22,9 @@ struct World {
     teams: BTreeMap<u32, i64>,
     health: BTreeMap<u32, (f64, f64)>,
     team_sizes: BTreeMap<i64, i64>,
+    flags: BTreeMap<u32, u64>,
+    speed_scales: BTreeMap<u32, f64>,
+    map_modes: Option<Vec<u64>>,
 }
 
 impl Context for World {
@@ -60,6 +63,18 @@ impl Context for World {
 
     fn team_size(&mut self, team: i64) -> Option<i64> {
         self.team_sizes.get(&team).copied()
+    }
+
+    fn entity_filter_flags(&mut self, entity: u32) -> Option<u64> {
+        self.flags.get(&entity).copied()
+    }
+
+    fn speed_scale(&mut self, entity: u32) -> Option<f64> {
+        self.speed_scales.get(&entity).copied()
+    }
+
+    fn map_supports_mode(&mut self, mode: u64) -> Option<bool> {
+        Some(self.map_modes.as_ref()?.contains(&mode))
     }
 }
 
@@ -293,20 +308,23 @@ fn entity_position_reads_bound_entities_and_passes_vectors() {
 fn entity_world_position_reads_the_entity_or_its_anchor() {
     let mut world = World::default();
     world.positions.insert(OTHER, [1.0, 2.0, 3.0]);
-    let position = query("STU_309B0570", "m_entity", var(1));
-    for (value, expected) in [
-        (Value::Entity(OTHER), Ok(Value::Vector([1.0, 2.0, 3.0]))),
-        (Value::Entity(0), Ok(Value::Null)),
-        (Value::Null, Ok(Value::Null)),
-        (
-            Value::Entity(UNKNOWN),
-            Err(EvalError::UnsupportedConfig("STU_309B0570".into())),
-        ),
-    ] {
-        world.variables.insert(1, value.clone());
-        assert_eq!(evaluate(&position, &mut world), expected, "{value:?}");
+    // `Eval_STU_8CBDD81C` reads the same position, with no anchor.
+    for class in ["STU_8CBDD81C", "STU_309B0570"] {
+        let position = query(class, "m_entity", var(1));
+        for (value, expected) in [
+            (Value::Entity(OTHER), Ok(Value::Vector([1.0, 2.0, 3.0]))),
+            (Value::Entity(0), Ok(Value::Null)),
+            (Value::Null, Ok(Value::Null)),
+            (
+                Value::Entity(UNKNOWN),
+                Err(EvalError::UnsupportedConfig(class.into())),
+            ),
+        ] {
+            world.variables.insert(1, value.clone());
+            assert_eq!(evaluate(&position, &mut world), expected, "{value:?}");
+        }
     }
-    let mut anchored = position;
+    let mut anchored = query("STU_309B0570", "m_entity", var(1));
     anchored["m_5B94EDB8"] = json!({"$":"STUConfigVarBool","m_value":true});
     world.variables.insert(1, Value::Entity(OTHER));
     assert_eq!(
@@ -316,7 +334,8 @@ fn entity_world_position_reads_the_entity_or_its_anchor() {
 }
 
 /// `driver.py` (2200A66D, 021D01CD, C8C4C20D): the aim, the direction
-/// along the ground and the heading in degrees, atan2(x, z).
+/// along the ground and the heading in degrees, atan2(x, z); 66F3B89E the
+/// side axis of the body's world matrix (0x7FF789C2B5E0).
 #[test]
 fn facing_natives_read_the_body_yaw_and_pitch() {
     let mut world = World::default();
@@ -335,6 +354,11 @@ fn facing_natives_read_the_body_yaw_and_pitch() {
         panic!("the ground direction is a vector");
     };
     assert!((flat[0] - 1.0).abs() < 1e-6 && flat[1] == 0.0 && flat[2].abs() < 1e-6);
+    // 66F3B89E: the side axis, (cos yaw, 0, -sin yaw), pitch ignored.
+    let Value::Vector(side) = read("STU_66F3B89E", &mut world) else {
+        panic!("the side axis is a vector");
+    };
+    assert!(side[0].abs() < 1e-6 && side[1] == 0.0 && (side[2] + 1.0).abs() < 1e-6);
     assert_eq!(read("STU_C8C4C20D", &mut world), Value::Float(90.0));
     world.facing.insert(BODY, [-32768, 0]);
     assert_eq!(read("STU_C8C4C20D", &mut world), Value::Float(-180.0));
@@ -405,6 +429,104 @@ fn a_team_size_reads_the_team_its_config_names() {
     assert_eq!(
         evaluate(&size(team(4)), &mut world),
         Err(EvalError::UnsupportedConfig("STU_D289FA32".into()))
+    );
+}
+
+/// `Eval_STU_ED807E07`: the mover's speed scale (`+0x4D8`); no entity or
+/// an invalid one 0.0; an entity the world doesn't know is unsupported.
+#[test]
+fn the_speed_scale_reads_the_entitys_mover() {
+    let mut world = World::default();
+    world.speed_scales.insert(OTHER, 0.65);
+    let scale = query("STU_ED807E07", "m_entity", var(1));
+    for (value, expected) in [
+        (Value::Entity(OTHER), Ok(Value::Float(0.65_f32.into()))),
+        (Value::Entity(0), Ok(Value::Float(0.0))),
+        (Value::Null, Ok(Value::Float(0.0))),
+        (
+            Value::Entity(UNKNOWN),
+            Err(EvalError::UnsupportedConfig("STU_ED807E07".into())),
+        ),
+    ] {
+        world.variables.insert(1, value.clone());
+        assert_eq!(evaluate(&scale, &mut world), expected, "{value:?}");
+    }
+}
+
+/// `Eval_STU_47703870` → 0x7FF789B2CB00: is the team hostile to the
+/// script's entity. Without filter bit 28 another team, team −1 or 4 on
+/// either side is; with it, another team; with it and no team, team 1.
+#[test]
+fn a_team_relation_tells_whether_the_team_is_hostile_to_the_owner() {
+    let team = |index: i64| json!({"$":"STU_BD6CC023","m_6CE7A900":index,"m_EE729DCB":0});
+    let hostile = |own: i64, flags: u64, team: Option<Json>| {
+        let mut world = World::default();
+        world.teams.insert(BODY, own);
+        world.flags.insert(BODY, flags);
+        let config = match team {
+            Some(team) => query("STU_47703870", "m_team", team),
+            None => json!({"$":"STU_47703870","m_EE729DCB":0}),
+        };
+        evaluate(&config, &mut world)
+    };
+    let team_0 = 1 << 23;
+    let bit_28 = 1 << 28;
+    for (own, flags, other, expected) in [
+        (0, team_0, Some(0), false),
+        (0, team_0, Some(1), true),
+        (0, team_0, Some(4), true),
+        (0, team_0, None, true),
+        (-1, 0, Some(1), true),
+        (0, team_0 | bit_28, Some(0), false),
+        (0, team_0 | bit_28, Some(-1), true),
+        (-1, bit_28, Some(1), true),
+        (-1, bit_28, Some(0), false),
+        (-1, bit_28, Some(-1), false),
+    ] {
+        assert_eq!(
+            hostile(own, flags, other.map(team)),
+            Ok(Value::Bool(expected)),
+            "own {own}, flags {flags:X}, team {other:?}"
+        );
+    }
+    let mut world = World::default();
+    assert_eq!(
+        evaluate(&query("STU_47703870", "m_team", team(0)), &mut world),
+        Err(EvalError::UnsupportedConfig("STU_47703870".into()))
+    );
+}
+
+/// `Eval_STU_16753B11`: the map supports the mode, or the mode is
+/// `0230:0045`; no mode is false.
+#[test]
+fn a_mode_test_reads_the_maps_supported_modes() {
+    let mode =
+        |guid: u64| json!({"$":"STUConfigVarGameMode","m_gamemode":format!("0x{guid:016X}")});
+    let supports = |guid: Option<u64>, world: &mut World| {
+        let config = match guid {
+            Some(guid) => query("STU_16753B11", "m_gamemode", mode(guid)),
+            None => json!({"$":"STU_16753B11","m_EE729DCB":0}),
+        };
+        evaluate(&config, world)
+    };
+    let mut world = World::default();
+    assert_eq!(
+        supports(Some(0x0230_0000_0000_0045), &mut world),
+        Ok(Value::Bool(true))
+    );
+    assert_eq!(supports(None, &mut world), Ok(Value::Bool(false)));
+    assert_eq!(
+        supports(Some(0x0230_0000_0000_0022), &mut world),
+        Err(EvalError::UnsupportedConfig("STU_16753B11".into()))
+    );
+    world.map_modes = Some(vec![0x0230_0000_0000_0022]);
+    assert_eq!(
+        supports(Some(0x0230_0000_0000_0022), &mut world),
+        Ok(Value::Bool(true))
+    );
+    assert_eq!(
+        supports(Some(0x0230_0000_0000_0023), &mut world),
+        Ok(Value::Bool(false))
     );
 }
 

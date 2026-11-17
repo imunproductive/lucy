@@ -16,6 +16,7 @@ use serde_json::Value as Json;
 
 use crate::{
     graph::{GraphBinding, GraphStore},
+    map_tags::{MapTags, TaggedEntity},
     vm::{
         Component, GameMessage, InitFault, MAX_INIT_WORK, Root, Site, Snapshot, TargetCandidate,
         Unknowns, World, bind_values,
@@ -115,7 +116,15 @@ struct Shared<'a> {
     mode_random: f32,
     unknowns: Unknowns,
     players: &'a [TargetCandidate],
+    map_tags: Option<&'a MapTags>,
     outbox: &'a mut Vec<GameMessage>,
+}
+
+impl Shared<'_> {
+    /// A tagged placeable of the map.
+    fn tagged(&self, entity: u32) -> Option<&TaggedEntity> {
+        self.map_tags?.get(entity)
+    }
 }
 
 /// The world one placed entity's script sees: itself where the map put it,
@@ -217,6 +226,16 @@ impl World for EntityWorld<'_, '_> {
         Some(self.shared.players)
     }
 
+    /// The map's placeables that carry the tag ([`MapTags::with_tag`]).
+    fn entities_with_tag(&self, _site: Site, tag: u64) -> Option<Vec<u32>> {
+        self.shared.map_tags?.with_tag(tag)
+    }
+
+    fn has_target_tag(&self, _site: Site, entity: u32, tag: u64) -> Option<bool> {
+        Some(self.shared.tagged(entity)?.tags.contains(&tag))
+    }
+
+    /// Itself, the players and the map's tagged placeables.
     fn entity_exists(&self, _site: Site, entity: u32) -> Option<bool> {
         Some(
             entity == self.entity
@@ -224,7 +243,8 @@ impl World for EntityWorld<'_, '_> {
                     .shared
                     .players
                     .iter()
-                    .any(|player| player.entity == entity),
+                    .any(|player| player.entity == entity)
+                || self.shared.tagged(entity).is_some(),
         )
     }
 
@@ -237,6 +257,7 @@ impl World for EntityWorld<'_, '_> {
             .iter()
             .find(|player| player.entity == entity)
             .map(|player| player.feet)
+            .or_else(|| self.shared.tagged(entity).map(|placed| placed.position))
     }
 
     fn send_message(
@@ -264,6 +285,8 @@ pub struct MapEntityWorld {
     mode_random: f32,
     unknowns: Unknowns,
     players: Vec<TargetCandidate>,
+    /// The map's tagged placeables the scene tag queries find.
+    map_tags: Option<Arc<MapTags>>,
     outbox: Vec<GameMessage>,
     entities: Vec<PlacedEntity>,
     frame: u32,
@@ -272,12 +295,15 @@ pub struct MapEntityWorld {
 impl MapEntityWorld {
     /// Start every placement that has graphs at `frame`, in order. A
     /// placement whose start faults keeps the fault and no component.
+    /// `map_tags`: the map's tagged placeables in this mode, if known.
+    #[allow(clippy::too_many_arguments)]
     pub fn start<'p>(
         graphs: Arc<GraphStore>,
         mode: u64,
         mode_random: f32,
         unknowns: Unknowns,
         placements: impl IntoIterator<Item = Placement<'p>>,
+        map_tags: Option<Arc<MapTags>>,
         frame: u32,
     ) -> Self {
         let mut world = Self {
@@ -286,6 +312,7 @@ impl MapEntityWorld {
             mode_random,
             unknowns,
             players: Vec::new(),
+            map_tags,
             outbox: Vec::new(),
             entities: Vec::new(),
             frame,
@@ -311,6 +338,7 @@ impl MapEntityWorld {
                 mode_random,
                 unknowns,
                 players: &world.players,
+                map_tags: world.map_tags.as_deref(),
                 outbox: &mut world.outbox,
             };
             let mut team = None;
@@ -378,6 +406,7 @@ impl MapEntityWorld {
             mode_random: self.mode_random,
             unknowns: self.unknowns,
             players: &self.players,
+            map_tags: self.map_tags.as_deref(),
             outbox: &mut self.outbox,
         };
         for placed in &mut self.entities {
@@ -505,6 +534,7 @@ mod tests {
                 overrides: &[],
                 extra: &extra,
             }],
+            None,
             1,
         );
         let placed = world.entity(ENTITY).unwrap();

@@ -231,6 +231,24 @@ pub trait Context {
         None
     }
 
+    /// A body's yaw alone, in the same units (its facing along the ground);
+    /// by default the facing's.
+    fn entity_yaw(&mut self, entity: u32) -> Option<i32> {
+        self.entity_facing(entity).map(|[yaw, _]| yaw)
+    }
+
+    /// The move-speed scale of `entity`'s mover (`STU_ED807E07`); None:
+    /// unknown.
+    fn speed_scale(&mut self, _entity: u32) -> Option<f64> {
+        None
+    }
+
+    /// Whether the match's map supports game mode `mode` (`STU_16753B11`);
+    /// None: unknown.
+    fn map_supports_mode(&mut self, _mode: u64) -> Option<bool> {
+        None
+    }
+
     /// An entity's team index, 0 to 4, or -1 for none; None: unknown.
     fn entity_team(&mut self, _entity: u32) -> Option<i64> {
         None
@@ -567,6 +585,29 @@ pub fn team_from_filter(bits: u64) -> i64 {
         i64::from(teams.trailing_zeros())
     }
 }
+
+/// Filter bit 28 of component 25's word, which the team relation
+/// 0x7FF789B2CB00 reads through 0x7FF789B2F000 and 0x7FF789B2ECD0.
+const TEAM_RELATION_BIT: u64 = 1 << 28;
+
+/// Whether team `team` is hostile to an entity of team `own` (−1 none)
+/// with filter word `flags` (0x7FF789B2CB00 without an override): with
+/// filter bit 28 and no team, only team 1 is; with bit 28, any other team;
+/// else any other team, and teams −1 and 4 on either side are hostile to
+/// all.
+fn hostile_to_team(team: i64, own: i64, flags: u64) -> bool {
+    if flags & TEAM_RELATION_BIT != 0 {
+        return if team_from_filter(flags) == -1 {
+            team == 1
+        } else {
+            team != own
+        };
+    }
+    matches!(team, -1 | 4) || matches!(own, -1 | 4) || team != own
+}
+
+/// A quarter of a turn in the yaw units of [`aim`].
+const QUARTER_TURN: i32 = 16_384;
 
 /// The unit vector a body looks along, each axis rounded to f32: forward is
 /// `(sin yaw, 0, cos yaw)` and a positive pitch looks down (`combat.aim` and
@@ -1488,6 +1529,114 @@ impl Evaluator {
                     _ => Value::Null,
                 }
             }
+            // An entity's position (`Eval_STU_8CBDD81C` 0x7FF789BF6430 →
+            // 0x7FF789C26460): an entity with a mover (component 31) and a
+            // pose, the pose's position (0x7FF789B471D0); else component
+            // 1's translation placed in its parent's frame. No entity or an
+            // invalid one fails, null here. Mostly the owner (32 of 37).
+            "STU_8CBDD81C" if native_shape(config, class, Some("m_entity")) => {
+                match to_entity(&self.config(child(config, "m_entity"), context, nested)?) {
+                    Some(entity) if valid_entity(entity) => Value::Vector(
+                        context
+                            .entity_position(entity)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    ),
+                    _ => Value::Null,
+                }
+            }
+            // An entity's side axis (`Eval_STU_66F3B89E` 0x7FF789BF8460 →
+            // 0x7FF789C2B5E0): the first row of its world matrix, which for
+            // a posed body is up × forward of its model's pose (the yaw
+            // alone, the model doesn't pitch): `(cos yaw, 0, −sin yaw)`, the
+            // facing turned a quarter (upstream `scene.py`: `aim(yaw +
+            // 16384, 0)`). No entity or an invalid one fails, null here.
+            // Mostly the owner (51 of 66): knockback and launch sides.
+            "STU_66F3B89E" if native_shape(config, class, Some("m_entity")) => {
+                if let Some(value) = context.native(config) {
+                    return Ok(value);
+                }
+                match to_entity(&self.config(child(config, "m_entity"), context, nested)?) {
+                    Some(entity) if valid_entity(entity) => {
+                        let yaw = context
+                            .entity_yaw(entity)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
+                        Value::Vector(aim([yaw.wrapping_add(QUARTER_TURN), 0]))
+                    }
+                    _ => Value::Null,
+                }
+            }
+            // An entity's move-speed scale (`Eval_STU_ED807E07`
+            // 0x7FF789BE3570): the float its mover (component 31) keeps at
+            // `+0x4D8`, which the mover update 0x7FF789B4CBA0 writes each
+            // move with the result of mod 0, the factor of every run and
+            // crouch speed (OwnerPrediction.md 11.3); 1.0 without a mover;
+            // 0.0 for no entity or one the host can't find. Reinhardt,
+            // Doomfist and Brigitte charge speeds (`007D` st95, `0D06`
+            // st83/84, `0EE3` st100), all on the owner.
+            "STU_ED807E07" if native_shape(config, class, Some("m_entity")) => {
+                let entity = child(config, "m_entity");
+                let entity = if entity.is_null() {
+                    None
+                } else {
+                    to_entity(&self.config(entity, context, nested)?)
+                };
+                match entity {
+                    Some(entity) if valid_entity(entity) => Value::Float(rounded(
+                        context
+                            .speed_scale(entity)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    )),
+                    _ => Value::Float(0.0),
+                }
+            }
+            // Is `m_team` hostile to the script's entity (`Eval_STU_47703870`
+            // 0x7FF789845DA0 → 0x7FF789B2CB00): the team (unset −1), the
+            // entity's team (0x7FF789B2B570: component 25's filter bits 23
+            // to 27; −1 none) and its filter bit 28 ([`hostile_to_team`]).
+            // 0x7FF789B2CB00 first asks a per-entity override list (entity
+            // `+40` object `+0x140`, slot 30; its last entry's team `+24`
+            // decides) whose writer was not traced: no world keeps one, so
+            // the rule below is the answer for an entity without overrides.
+            // `0EC2` rid420/421 order the two teams' Control progress.
+            "STU_47703870" if native_shape(config, class, Some("m_team")) => {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let team = child(config, "m_team");
+                let team = if team.is_null() {
+                    -1
+                } else {
+                    i64::from(to_int(&self.config(team, context, nested)?, -1) as i32)
+                };
+                let owner = to_entity(&context.owner())
+                    .filter(|&entity| valid_entity(entity))
+                    .ok_or_else(unsupported)?;
+                let own = context.entity_team(owner).ok_or_else(unsupported)?;
+                let flags = context.entity_filter_flags(owner).ok_or_else(unsupported)?;
+                Value::Bool(hostile_to_team(team, own, flags))
+            }
+            // Does the current map support `m_gamemode`
+            // (`Eval_STU_16753B11` 0x7FF789C03860): the mode is in the map
+            // header's (`STU_02514B6A`) `m_supportedGamemodes` (+56, 16-byte
+            // entries, GUID at +8), or is `0230:0045`; no mode, false.
+            // Skirmish `0D76` rid37/39/112.
+            "STU_16753B11" if native_shape(config, class, Some("m_gamemode")) => {
+                const ALWAYS: u64 = 0x0230_0000_0000_0045;
+                let mode = child(config, "m_gamemode");
+                let mode = if mode.is_null() {
+                    Value::Null
+                } else {
+                    self.config(mode, context, nested)?
+                };
+                match mode {
+                    Value::Asset(ALWAYS) => Value::Bool(true),
+                    Value::Asset(mode) if mode != 0 => Value::Bool(
+                        context
+                            .map_supports_mode(mode)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    ),
+                    Value::Asset(_) | Value::Null => Value::Bool(false),
+                    _ => return Err(EvalError::UnsupportedConfig(class.into())),
+                }
+            }
             // Where a body looks: 2200A66D along its aim, 021D01CD along the
             // ground, C8C4C20D its heading in degrees, atan2(x, z) of the
             // ground direction (`BodyWorld.native` in leafall903/ORPHEUS,
@@ -1502,9 +1651,11 @@ impl Evaluator {
                 let entity = to_entity(&self.config(child(config, "m_entity"), context, nested)?)
                     .filter(|&entity| valid_entity(entity))
                     .ok_or_else(unsupported)?;
-                let [yaw, pitch] = context.entity_facing(entity).ok_or_else(unsupported)?;
-                let pitch = if class == "STU_2200A66D" { pitch } else { 0 };
-                let facing = aim([yaw, pitch]);
+                let facing = if class == "STU_2200A66D" {
+                    aim(context.entity_facing(entity).ok_or_else(unsupported)?)
+                } else {
+                    aim([context.entity_yaw(entity).ok_or_else(unsupported)?, 0])
+                };
                 if class == "STU_C8C4C20D" {
                     const DEGREES: f64 = 57.295_780_181_884_766;
                     let [x, _, z] = facing;

@@ -1640,6 +1640,7 @@ mod tests {
             feet: [x + dx, y, z],
             height: 1.8,
             radius: 0.4,
+            yaw: 0.0,
         };
         let count = |candidates: &[TargetCandidate]| {
             let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
@@ -1742,6 +1743,7 @@ mod tests {
             feet: [x + dx, y, z + dz],
             height: 1.8,
             radius: 0.4,
+            yaw: 0.0,
         };
         let swing = |candidates: &[TargetCandidate]| {
             let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();

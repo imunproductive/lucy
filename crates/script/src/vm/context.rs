@@ -198,6 +198,21 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.world.entity_facing(self.site, entity)
     }
 
+    fn entity_yaw(&mut self, entity: u32) -> Option<i32> {
+        self.read_native = true;
+        self.world.entity_yaw(self.site, entity)
+    }
+
+    fn speed_scale(&mut self, entity: u32) -> Option<f64> {
+        self.read_native = true;
+        self.world.speed_scale(self.site, entity)
+    }
+
+    fn map_supports_mode(&mut self, mode: u64) -> Option<bool> {
+        self.read_native = true;
+        self.world.map_supports_mode(self.site, mode)
+    }
+
     fn entity_team(&mut self, entity: u32) -> Option<i64> {
         self.read_native = true;
         self.world.entity_team(self.site, entity)

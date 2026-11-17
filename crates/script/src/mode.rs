@@ -13,6 +13,7 @@ use serde_json::Value as Json;
 
 use crate::{
     graph::GraphStore,
+    map_tags::MapTags,
     vm::{Component, GameMessage, InitFault, MAX_INIT_WORK, Root, Site, Snapshot, Unknowns, World},
     wire::{Value, Variables},
 };
@@ -60,6 +61,12 @@ pub struct ModeWorld {
     /// The match's value of the mode entity's component 114 field 9, as
     /// the server sends it (`STU_B182C5C9`); none: unknown.
     pub mode_random: Option<f32>,
+    /// The game modes the match's map supports (its header's
+    /// `m_supportedGamemodes`), which `STU_16753B11` tests; none: unknown.
+    pub map_modes: Option<Vec<u64>>,
+    /// The map's tagged placeables the scene tag queries find; none:
+    /// unknown.
+    pub map_tags: Option<Arc<MapTags>>,
     outbox: Vec<GameMessage>,
 }
 
@@ -73,6 +80,8 @@ impl ModeWorld {
             team_sizes: Vec::new(),
             ready: false,
             mode_random: None,
+            map_modes: None,
+            map_tags: None,
             outbox: Vec::new(),
         }
     }
@@ -112,6 +121,44 @@ impl World for ModeWorld {
 
     fn team_size(&self, team: i64) -> Option<i64> {
         team_size(&self.team_sizes, team)
+    }
+
+    fn map_supports_mode(&self, _site: Site, mode: u64) -> Option<bool> {
+        Some(self.map_modes.as_ref()?.contains(&mode))
+    }
+
+    /// The mode entity has no team: the server gives it no component 25
+    /// (`orpheus_sim::scene::mode_create`), so its filter word is empty.
+    fn entity_team(&self, _site: Site, entity: u32) -> Option<i64> {
+        (entity == GAME_MODE_ENTITY).then_some(-1)
+    }
+
+    fn entity_filter_flags(&self, _site: Site, entity: u32) -> Option<u64> {
+        (entity == GAME_MODE_ENTITY).then_some(0)
+    }
+
+    /// The map's placeables that carry the tag ([`MapTags::with_tag`]).
+    fn entities_with_tag(&self, _site: Site, tag: u64) -> Option<Vec<u32>> {
+        self.map_tags.as_ref()?.with_tag(tag)
+    }
+
+    fn has_target_tag(&self, _site: Site, entity: u32, tag: u64) -> Option<bool> {
+        let placed = self.map_tags.as_ref()?.get(entity)?;
+        Some(placed.tags.contains(&tag))
+    }
+
+    /// The mode entity and the map's tagged placeables exist.
+    fn entity_exists(&self, _site: Site, entity: u32) -> Option<bool> {
+        let known = entity == GAME_MODE_ENTITY
+            || self
+                .map_tags
+                .as_ref()
+                .is_some_and(|tags| tags.get(entity).is_some());
+        known.then_some(true)
+    }
+
+    fn entity_position(&self, _site: Site, entity: u32) -> Option<[f64; 3]> {
+        Some(self.map_tags.as_ref()?.get(entity)?.position)
     }
 
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
