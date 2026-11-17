@@ -81,7 +81,9 @@ class Server:
         self.state = None
         self.job = None
 
-    def start(self, timeout=90):
+    def start(self, timeout=None):
+        # A derivation version bump makes the first start re-derive the copied cache (minutes).
+        timeout = timeout or float(os.environ.get("OWDBG_SERVER_TIMEOUT", "600"))
         if port_open(LOBBY_PORT):
             raise RuntimeError(f"TCP {LOBBY_PORT} is already listening (another ORPHEUS server?); "
                                "stop it or pass --no-server")
