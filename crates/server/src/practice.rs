@@ -310,11 +310,7 @@ mod tests {
                 .iter()
                 .map(|&(crc, id, _)| (crc, id))
                 .collect::<Vec<_>>(),
-            [
-                (chat, 20404),
-                (chat, 20402),
-                (HANDOFF, HANDOFF_MESSAGE)
-            ],
+            [(chat, 20404), (chat, 20402), (HANDOFF, HANDOFF_MESSAGE)],
         );
         let Value::Struct(ticket) = &messages[2].2[&0x80] else {
             panic!("handoff ticket missing");

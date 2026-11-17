@@ -450,7 +450,8 @@ mod tests {
             [53000, 53001, 53003, 53002]
         );
 
-        let entering = enter_game(Fields::new(), Fields::new(), &seat, ("127.0.0.1", 3730)).unwrap();
+        let entering =
+            enter_game(Fields::new(), Fields::new(), &seat, ("127.0.0.1", 3730)).unwrap();
         assert_eq!(
             entering.map(|(_, id, _)| id),
             [20404, 20402, HANDOFF_MESSAGE]
