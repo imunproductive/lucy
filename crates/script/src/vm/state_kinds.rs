@@ -290,14 +290,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             value
         };
         let current = chase_value(&current);
-        let remaining_ms = if configured(node, "m_5BEFF040") {
-            let Some(value) = self.evaluate(id, node, field(&node.fields, "m_5BEFF040"), None)
-            else {
-                return Ok(());
-            };
-            Some((expr::to_float(&value) * 1000.0) as i64)
-        } else {
-            None
+        let Some(remaining_ms) = self.chase_duration(id, node) else {
+            return Ok(());
+        };
+        let Some(timed) = self.timed_chase(id, node) else {
+            return Ok(());
         };
         let now = self.machine.now_ms;
         let state = self.state_mut(key).expect("active chase");
@@ -306,6 +303,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             reached: false,
             remaining_ms,
             last_ms: now,
+            timed,
         });
         state.linked_variable = target;
         if let Some(target) = target {
@@ -323,7 +321,108 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             )?;
             self.notify_value(target, &old, None)?;
         }
-        self.register_tick(key, now);
+        if !self.arm_chase_arrival(key)? {
+            self.register_tick(key, now);
+        }
+        Ok(())
+    }
+
+    /// The chase's duration in ms (`m_5BEFF040`), if it has one; None: the
+    /// config failed to evaluate (reported).
+    fn chase_duration(&mut self, id: u16, node: &Node) -> Option<Option<i64>> {
+        if !configured(node, "m_5BEFF040") {
+            return Some(None);
+        }
+        let value = self.evaluate(id, node, field(&node.fields, "m_5BEFF040"), None)?;
+        Some(Some((expr::to_float(&value) * 1000.0) as i64))
+    }
+
+    /// `0x7FF78AAB0400`'s test for a [`TimedChase`]: no destination bone or
+    /// object, the destination and the speed absent or a constant
+    /// (`STUConfigVarInt` or `STUConfigVarFloat`, `0x7FF78A3D4380`,
+    /// `0x7FF78A3D4350`), and the speed above 1.2e-5; else the chase steps
+    /// each frame. None: a config that failed to evaluate (reported).
+    fn timed_chase(&mut self, id: u16, node: &Node) -> Option<Option<TimedChase>> {
+        let constant = |name| match field(&node.fields, name) {
+            Json::Null | Json::Number(_) => true,
+            config => matches!(
+                config.get("$").and_then(Json::as_str),
+                Some("STUConfigVarInt" | "STUConfigVarFloat")
+            ),
+        };
+        let present = |name| !field(&node.fields, name).is_null();
+        if present("m_destinationBone")
+            || present("m_destinationObject")
+            || !constant("m_destination")
+            || !constant("m_9B0385B4")
+        {
+            return Some(None);
+        }
+        let rate = if present("m_9B0385B4") {
+            let value = self.evaluate(id, node, field(&node.fields, "m_9B0385B4"), None)?;
+            expr::to_float(&value) as f32
+        } else {
+            1.0
+        };
+        if f64::from(rate) <= expr::EPSILON {
+            return Some(None);
+        }
+        let destination = self.evaluate(id, node, field(&node.fields, "m_destination"), None)?;
+        Some(Some(TimedChase {
+            destination: chase_value(&destination),
+            rate: f64::from(rate),
+        }))
+    }
+
+    /// A timed chase's one timer, from where it is now (`0x7FF78AAB0400`
+    /// posts it at the begin and when a write restarts the chase); false for
+    /// a chase that steps each frame.
+    fn arm_chase_arrival(&mut self, key: StateKey) -> Result<bool, InitFault> {
+        let Some(delay) = self
+            .state(key)
+            .and_then(|state| state.chase.as_ref())
+            .and_then(ChasePayload::arrival_ms)
+        else {
+            return Ok(false);
+        };
+        self.machine.queues.retain(
+            key.instance,
+            |_, event| !matches!(event, Event::Timer(raw, CHASE_ARRIVAL) if *raw == key.raw),
+        );
+        self.post_after(key.instance, delay, Event::Timer(key.raw, CHASE_ARRIVAL))?;
+        Ok(true)
+    }
+
+    /// A timed chase's timer: it is at its destination now (event 0 of
+    /// `0x7FF78AAA7F50`, `0x7FF78AAB0960`), and finishes unless it keeps
+    /// running (`m_CB671004`).
+    pub(super) fn chase_arrived(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
+        let now = self.machine.now_ms;
+        let Some(state) = self.state_mut(key) else {
+            return Ok(());
+        };
+        let target = state.linked_variable;
+        let Some(chase) = state.chase.as_mut().filter(|chase| !chase.reached) else {
+            return Ok(());
+        };
+        let Some(timed) = chase.timed.clone() else {
+            return Ok(());
+        };
+        // What the variable's watchers last heard: a timed chase tells
+        // them nothing on the way.
+        let before = std::mem::replace(&mut chase.current, timed.destination);
+        chase.reached = true;
+        chase.last_ms = now;
+        if chase.remaining_ms.is_some() {
+            chase.remaining_ms = Some(0);
+        }
+        if let Some(target) = target {
+            self.notify_value(target, &before, None)?;
+        }
+        self.post(key.instance, Event::ChaseReached(key.raw))?;
+        if !configured(node, "m_CB671004") {
+            self.post(key.instance, Event::Finish(key.raw))?;
+        }
         Ok(())
     }
 
@@ -414,13 +513,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     }
 
     pub(super) fn finish_chase(&mut self, key: StateKey, depth: usize) -> Result<(), InitFault> {
+        let now = self.machine.now_ms;
         let Some(state) = self.state_mut(key) else {
             return Ok(());
         };
         let Some(target) = state.linked_variable.take() else {
             return Ok(());
         };
-        let current = state.chase.as_ref().map(|chase| chase.current.clone());
+        let current = state.chase.as_ref().map(|chase| chase.value_at(now));
         self.remove_link(key, target, current, depth)
     }
 

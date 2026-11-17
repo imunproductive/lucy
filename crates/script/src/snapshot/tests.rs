@@ -1,4 +1,5 @@
 use super::*;
+use crate::stream::OWNER_SETTLE_FRAMES;
 use crate::vm::{Diagnostic, EmptyWorld, Issue, MAX_INIT_WORK, Root, Site, initialize};
 use serde_json::{Value as Json, json};
 
@@ -969,8 +970,17 @@ fn initial_owner_and_corrections_match_python_bytes_in_both_views() {
     );
 }
 
+/// Both chases begin as the Python VM wrote them. The one toward a constant
+/// (state 0: 0.5 to 3.0 in 0.125 s, on #100) runs as a timer, as the client's
+/// does (`0x7FF78AAB0400`): its payload keeps the value and time it began
+/// with and its variable goes out as its own value bound to it, so neither is
+/// listed again until it arrives at its begin plus its duration. Python moved
+/// both every tick, so the owner's client read them every frame, and a frame
+/// listing the variable without the chase's binding unbound it there
+/// (`0x7FF78AAB7420`): the chase never arrived on the client. The chase
+/// toward a vector (state 1) steps each frame, so its payload still moves.
 #[test]
-fn chased_values_and_watch_match_python_owner_and_observer_frames() {
+fn a_timed_chase_keeps_its_begin_payload_and_binding_until_it_arrives() {
     use crate::vm::Component;
     use std::sync::Arc;
 
@@ -1055,18 +1065,17 @@ fn chased_values_and_watch_match_python_owner_and_observer_frames() {
     let delta = encoder
         .queue_delta(&mut stream, &owner, DeltaKind::InitialOwner(1001), 16)
         .unwrap()
+        .value_at(16_096);
+    let share = f64::from((96.0_f64 / 125.0) as f32);
+    assert_eq!(value, Value::Float(f64::from((0.5 + 2.5 * share) as f32)));
+    component.advance_frame(1007, &mut world).unwrap();
+    let arrived = encoder
+        .project(component.snapshot().unwrap(), View::Owner)
         .unwrap();
-    check(
-        delta.update.chunk.as_ref().unwrap(),
-        364,
-        "040000e82740a50f54112000620ad7e30faf14aec71f5e00051c0000e00f00000010000010d0a888008002260600",
-    );
-    let observer = encoder.project(snapshot, View::Observer).unwrap();
-    check(
-        &encoder.full(&observer).unwrap(),
-        388,
-        "081500001df00100007f00000080000080800088295c8f3fac14aec71f5e001e0000e00f00000010000010d0a888000003",
-    );
+    assert!(arrived.state(1, 0).is_none());
+    assert_eq!(arrived.instance_variable(1, 100), Some(&Value::Float(3.0)));
+    let listed = send(&arrived, DeltaKind::Correction(1007 + OWNER_SETTLE_FRAMES));
+    assert!(listed.contains(&timed) && listed.contains(&variable));
 }
 
 #[test]

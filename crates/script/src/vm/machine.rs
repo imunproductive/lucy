@@ -94,9 +94,13 @@ impl Machine {
                 VarKey::Instance(instance, id) => (instance, id),
             };
             let Some(top) = entries.last() else { continue };
+            // A chase's link is a binding of its variable on the client too
+            // (its begin binds the variable, `0x7FF78AAAF430`); a frame that
+            // lists the variable without it unbinds the chase there
+            // (`0x7FF78AAB78A0` → `0x7FF78AAB7420` takes the frame's list).
             let bindings: Vec<_> = entries
                 .iter()
-                .filter(|entry| entry.stack)
+                .filter(|entry| entry.stack || matches!(entry.output, LinkValue::Chase))
                 .map(|entry| StackBinding {
                     instance: entry.state.instance,
                     raw_state: entry.state.raw,
@@ -185,8 +189,7 @@ impl Machine {
                 .chase
                 .as_ref()
                 .expect("linked chase state")
-                .current
-                .clone(),
+                .value_at(self.now_ms),
             LinkValue::Cooldown => Value::Float(
                 self.snapshot.instances[&entry.state.instance].states[&entry.state.raw]
                     .ability_cooldown
