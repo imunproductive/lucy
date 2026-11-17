@@ -247,12 +247,14 @@ pub fn settings(schemas: &Schemas, profile: &Profile) -> io::Result<Fields> {
     // Kill Cam, `+0x7` Tips Display). The client copies it into account
     // settings system 9 `+700`, and the kill feed panel of graph `0DEA`
     // shows only while it is on (#1962 = `STU_016D65A8` = system 9 `+700`).
-    // The client's own Options default is on, but system 9 holds only what
-    // 20802 sends, so without it no kill feed line draws. Python sent no
-    // default here; upstream kjs notes `research/lizrollin-runtime.md:446-461`,
-    // `research/lizrollin-lobby.md:84`.
+    // The client's own Options defaults (`0x7FF7899B8650`) have Kill Feed
+    // and Tips Display on, but system 9 holds only what 20802 sends, so we
+    // send those defaults (upstream kjs `1819125b`). Python sent none;
+    // `research/lizrollin-runtime.md:446-461`, `research/lizrollin-lobby.md:84`.
     if !saved.contains_key("+0x120") {
-        settings_block(&mut fields, 0x120)?.insert(4, Bool(true));
+        let gameplay = settings_block(&mut fields, 0x120)?;
+        gameplay.insert(4, Bool(true));
+        gameplay.insert(7, Bool(true));
     }
     Ok(fields)
 }
@@ -349,11 +351,11 @@ mod tests {
         let Value::Struct(gameplay) = &defaults[&0x120] else {
             panic!("missing gameplay options")
         };
-        // Kill Feed Display on; Always Skip Kill Cam and Tips Display stay
-        // the schema's off.
+        // The client's own defaults: Kill Feed and Tips Display on; Always
+        // Skip Kill Cam stays the schema's off.
         assert_eq!(gameplay[&4], Bool(true));
         assert_eq!(gameplay[&5], Bool(false));
-        assert_eq!(gameplay[&7], Bool(false));
+        assert_eq!(gameplay[&7], Bool(true));
 
         profile
             .settings

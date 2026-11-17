@@ -72,10 +72,42 @@ fn changed_values_replace_their_setting_id_in_place() {
         profile.settings["+0x130"],
         json!([{"+0x0": 3, "+0x8": 10}, {"+0x0": 5, "+0x8": 20}, {"+0x0": 7, "+0x8": 30}])
     );
+    // -1 is kept in the wire's u64 form, which 20802 can encode.
     set_saved_value(&mut profile, 10, -1);
     assert_eq!(
         profile.settings["+0x130"],
-        json!([{"+0x0": 5, "+0x8": 20}, {"+0x0": 7, "+0x8": 30}, {"+0x0": -1, "+0x8": 10}])
+        json!([{"+0x0": 5, "+0x8": 20}, {"+0x0": 7, "+0x8": 30}, {"+0x0": u64::MAX, "+0x8": 10}])
+    );
+    player_messages::settings(&Schemas::lobby(), &profile).unwrap();
+}
+
+#[test]
+fn a_key_saved_signed_or_as_text_matches_the_one_the_client_sends() {
+    let mut profile = Profile::default();
+    profile.settings.insert(
+        "+0x130".into(),
+        json!([
+            {"+0x0": -1, "+0x8": -2},
+            {"+0x0": "0x10", "+0x8": "20"},
+            {"+0x0": 1, "+0x8": 0x1_0000_0000u64},
+            {"+0x8": 30},
+        ]),
+    );
+    normalize_values(&mut profile);
+    assert_eq!(
+        profile.settings["+0x130"],
+        json!([{"+0x0": u64::MAX, "+0x8": 0xffff_fffeu32}, {"+0x0": 16, "+0x8": 20}])
+    );
+    save_values(
+        &mut profile,
+        &[Value::Struct(Fields::from([
+            (0, Value::Unsigned(4)),
+            (8, Value::Unsigned(0xffff_fffe)),
+        ]))],
+    );
+    assert_eq!(
+        profile.settings["+0x130"],
+        json!([{"+0x0": 4, "+0x8": 0xffff_fffeu32}, {"+0x0": 16, "+0x8": 20}])
     );
 }
 
