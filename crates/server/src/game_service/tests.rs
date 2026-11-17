@@ -3513,10 +3513,20 @@ fn every_pellet_hits(hero: &str, pellets: usize, damage: u64) {
         viewer.pump(&schemas);
     }
 
-    assert_eq!(
-        hits_of(&doomfist, fired.0),
-        vec![(Value::Unsigned(u64::from(bot)), Value::Unsigned(damage)); pellets]
-    );
+    // Every pellet hits the bot; one of a wide ring may strike its head
+    // for double damage (Reaper's 6° rings reach it at 2 m).
+    let hits = hits_of(&doomfist, fired.0);
+    assert_eq!(hits.len(), pellets);
+    for (target, amount) in hits {
+        assert_eq!(target, Value::Unsigned(u64::from(bot)));
+        assert!(
+            [damage, 2 * damage].contains(&match amount {
+                Value::Unsigned(amount) => amount,
+                other => panic!("damage {other:?}"),
+            }),
+            "pellet damage"
+        );
+    }
     assert!(
         viewer
             .find(fired.1, |record| seen(record.entity)
