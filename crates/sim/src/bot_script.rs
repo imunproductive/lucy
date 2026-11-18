@@ -33,7 +33,7 @@ use orpheus_content::{
     voice_sets::VoiceCatalog,
 };
 use orpheus_script::{
-    bot::{BotBody, BotError, BotSpawn as ScriptSpawn, practice_nameplate},
+    bot::{BotBody, BotError, BotSpawn as ScriptSpawn, RANGE_BOT, practice_nameplate},
     codecs::CodecTable,
     graph::GraphStore,
     snapshot::{ProjectedSnapshot, SnapshotEncoder, SnapshotError, View},
@@ -144,10 +144,6 @@ pub struct BotScripts {
     unknowns: Unknowns,
     mode: u64,
     practice: bool,
-    /// The one team that holds players, if just one does (the Practice
-    /// Range's team 0): its bots can't be hit, so their nameplates start
-    /// enabled ([`ScriptSpawn::nameplate_enabled`]).
-    players_team: Option<u8>,
     slots: Vec<Option<BotScript>>,
     /// The entity each slot's script was last prepared for.
     prepared: Vec<Option<u32>>,
@@ -185,23 +181,12 @@ impl BotScripts {
                 .map(|(slot, _)| slot)
                 .collect()
         });
-        let mut teams = map
-            .team_sizes
-            .iter()
-            .enumerate()
-            .filter(|&(_, &size)| size > 0)
-            .filter_map(|(team, _)| u8::try_from(team).ok());
-        let players_team = match (teams.next(), teams.next()) {
-            (Some(team), None) if !map.free_for_all => Some(team),
-            _ => None,
-        };
         Self {
             graphs,
             codecs,
             unknowns,
             mode: map.mode_guid,
             practice: map.map_guid == PRACTICE_RANGE_MAP && map.mode_guid == PRACTICE_RANGE_MODE,
-            players_team,
             slots: bots.iter().map(|_| None).collect(),
             prepared: vec![None; bots.len()],
             pending,
@@ -277,8 +262,10 @@ impl BotScripts {
 
     /// match.py `_prepare_bot_script`: a firing bot of the Practice Range
     /// starts its firing behavior at its spawner. The live nameplate tool's
-    /// variables are set before the first frame.
+    /// variables are set before the first frame. A bot made again after a
+    /// death puts itself together ([`ScriptSpawn::respawned`]).
     fn prepare(&mut self, slot: usize, bot: &Bot, tick: u32, plate: &BotPlate) {
+        let respawned = self.prepared[slot].is_some_and(|entity| entity != bot.entity);
         self.prepared[slot] = Some(bot.entity);
         self.slots[slot] = None;
         let Some(graphs) = &self.graphs else {
@@ -293,7 +280,7 @@ impl BotScripts {
             mode: self.mode,
             health: bot.spawn.health,
             firing_position: (bot.spawn.firing && self.practice).then_some(bot.position),
-            nameplate_enabled: self.players_team == Some(bot.spawn.team),
+            respawned,
         };
         let mut originals = BTreeMap::new();
         let started = BotBody::start(Arc::clone(graphs), spawn, self.unknowns)
@@ -646,49 +633,6 @@ impl BotScripts {
         }
     }
 
-    /// combat.py `_damage` after `_sync_body_health`, as leafall903/ORPHEUS
-    /// (MIT), commit c239a84, has it: a hit the bot survived enables its
-    /// nameplate ([`BotBody::show_damage_nameplate`]); the changed frame
-    /// goes to the clients as a live frame. Upstream does it for its Rialto
-    /// Talon NPCs only; here for every bot with a nameplate (assumption).
-    pub(crate) fn show_damage_nameplate(&mut self, entity: u32) {
-        let Some(slot) = self.slot(entity) else {
-            return;
-        };
-        let script = self.slots[slot].as_mut().expect("a running bot script");
-        let result = script
-            .body
-            .show_damage_nameplate()
-            .map_err(|error| error.to_string())
-            .and_then(|took| {
-                if !took {
-                    return Ok(None);
-                }
-                let script = self.slots[slot].as_ref().expect("a running bot script");
-                let snapshot = script.body.snapshot().ok_or("the script halted")?;
-                let frame = self
-                    .frame(&script.body, snapshot, &script.initial)
-                    .map_err(|error| error.to_string())?;
-                Ok((frame.full != script.produced).then_some(frame))
-            });
-        match result {
-            Ok(Some(frame)) => {
-                let script = self.slots[slot].as_mut().expect("a running bot script");
-                script.produced = frame.full.clone();
-                script.latest_live = Arc::new(frame);
-                self.events.push(BotEvent::Live {
-                    entity,
-                    frame: Arc::clone(&script.latest_live),
-                });
-            }
-            Ok(None) => {}
-            Err(reason) => {
-                eprintln!("bot {entity:08X}'s body script failed on its nameplate ({reason})");
-                self.slots[slot] = None;
-            }
-        }
-    }
-
     /// A hit the bot survived reaches its script: `0011.025` with the
     /// damage's tags, source, amount and direction
     /// ([`crate::combat::damage_message`]); the changed frame (its flinch)
@@ -872,6 +816,14 @@ impl BotScripts {
     /// The world tick of the bot's death and its killer.
     fn death(&self, entity: u32) -> Option<(u32, u32)> {
         self.script(entity).and_then(|script| script.death)
+    }
+
+    /// Whether the bot's script holds entity variable [`RANGE_BOT`].
+    fn range_bot(&self, entity: u32) -> bool {
+        self.script(entity)
+            .and_then(|script| script.body.snapshot())
+            .and_then(|snapshot| snapshot.variables.get(&RANGE_BOT))
+            .is_some_and(orpheus_script::expr::truthy)
     }
 
     fn encoder(&self) -> Option<SnapshotEncoder<'_>> {
@@ -1508,7 +1460,11 @@ impl Flush<'_, '_> {
         self.queue(entity, view, projected, false)
     }
 
-    /// combat.py `kill_feed_allowed`.
+    /// combat.py `kill_feed_allowed`. A kill between two bots that both
+    /// hold [`RANGE_BOT`] draws no line, as the bot's death graph `0C18`
+    /// sends its kill feed message only when the victim or the killer lacks
+    /// it (read from data upstream, kjs-port `a9096f5d`, `kill-feed.md`; the
+    /// original client drew no line for such kills).
     fn kill_feed_allowed(&self, entity: u32) -> bool {
         let Some((tick, killer)) = self.scripts.death(entity) else {
             return false;
@@ -1517,6 +1473,7 @@ impl Flush<'_, '_> {
             && kill_feed_fresh(self.context.tick, tick)
             && (self.context.identity)(entity)
             && (self.context.identity)(killer)
+            && !(self.scripts.range_bot(entity) && self.scripts.range_bot(killer))
     }
 
     /// server.py `_flush_bot_nameplates` for one bot: the nameplate alone

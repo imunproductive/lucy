@@ -14,7 +14,9 @@
 //!   their hashed field names: which mode takes which list is not known),
 //!   `m_72D00D60`, its difficulty profiles (`m_difficultyProfiles`: a
 //!   difficulty identifier `01C` and its `0AE` profile) and its AI weapon
-//!   controls (`STU_993B1B10.m_CD486A71`, `STUAIWeaponFireControlInfo`).
+//!   controls (`STU_993B1B10.m_CD486A71`, `STUAIWeaponFireControlInfo`), and
+//!   whether it declares component 92 (`STU_76AF64F0`, `component_92`),
+//!   which the graphs' `STU_D3EB8D87` tests on a body's possessor.
 //! - `profiles`: each `0AE` difficulty profile they name (`STU_806CF87E`),
 //!   with its parent (`m_469E51E3`) and its values resolved through its
 //!   parents: identifier `01C` → float (`m_D680006F`, `STU_FF175FB5`
@@ -248,6 +250,10 @@ fn definition(asset: &Asset, named: &mut BTreeSet<u64>) -> Result<Json> {
         None => Vec::new(),
     };
     record.insert("weapons".into(), weapons.into());
+    record.insert(
+        "component_92".into(),
+        component(asset, "STU_76AF64F0")?.is_some().into(),
+    );
     Ok(record.into())
 }
 

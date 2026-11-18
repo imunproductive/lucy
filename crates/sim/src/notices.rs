@@ -5,10 +5,12 @@
 //! 20308 {4 flags, card} keeps the card and, with +0x78 and +0x7B on, posts
 //! the card's name and " left the game." (+0x79 off) or " joined the game."
 //! (+0x79 and +0x7A on). The hero switch line is graph data of the PvP
-//! controller 0C90: three presence variables (the old hero, the new one and
-//! the player) that a client-only Watch posts once. They go in one
-//! controller frame only, and only to a client whose last frame had none of
-//! them.
+//! controller 0C90: the server sends 037F.025 to the switching player's
+//! controller script, whose rid220 keeps three presence variables (the old
+//! hero, the new one and the player) that a client-only Watch posts once
+//! (`orpheus_script::controller::ControllerScript::hero_switched`). They go
+//! in one controller frame only, and only to a client whose last frame had
+//! none of them.
 //!
 //! Client research (1.74): 20308 is handled at 0x7FF7896E88B0; " left the
 //! game." is 112C.07C (+0x79 off), " joined the game." 112B.07C (+0x7A on),
@@ -28,11 +30,11 @@
 //! whose teams use 0C90 have the notice (free for all 0F74, capture the flag
 //! 0CA2 and elimination 0D2A use other controllers).
 
-use std::{collections::BTreeMap, time::Duration};
+use std::time::Duration;
 
 use crate::scene::PlayerCard;
 use orpheus_content::maps::GameMode;
-use orpheus_script::wire::Value as ScriptValue;
+use orpheus_script::controller::HeroSwitch;
 use orpheus_wire::{
     jam::codec::{Fields, Value, id16},
     messages::Message,
@@ -44,12 +46,6 @@ pub const PLAYER_CARD: u32 = 20308;
 /// The PvP controller graph `0C90` (an `01B`), whose Watch posts the hero
 /// switch line.
 const SWITCH_CONTROLLER: u64 = 0x0580_0000_0000_0c90;
-
-/// 0C90's presence bits of v4513 (the old hero), v4514 (the new hero) and
-/// v4515 (the player).
-const OLD_HERO_BIT: usize = 4;
-const NEW_HERO_BIT: usize = 6;
-const PLAYER_BIT: usize = 7;
 
 /// A notice frame waits until the client has every controller frame sent
 /// before it, and a little more: the Watch's events of one frame have to run
@@ -115,25 +111,14 @@ fn message(flags: [Option<bool>; 4], card: Fields) -> Message {
     }
 }
 
-/// One hero switch: the hero GUIDs and the switching player's controller
-/// entity, whose component 29 names him.
+/// One hero switch as the switching player's 0C90 keeps it (#4513 the old
+/// hero, #4514 the new one, #4515 his controller entity, whose component
+/// 29 names him).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Switch {
-    pub old: u64,
-    pub new: u64,
-    pub player: u32,
+    pub kept: HeroSwitch,
     /// Counts the player's switches, so each client takes each one once.
     pub serial: u64,
-}
-
-impl Switch {
-    pub fn presence(&self) -> BTreeMap<usize, ScriptValue> {
-        BTreeMap::from([
-            (OLD_HERO_BIT, ScriptValue::Asset(self.old)),
-            (NEW_HERO_BIT, ScriptValue::Asset(self.new)),
-            (PLAYER_BIT, ScriptValue::Entity(self.player)),
-        ])
-    }
 }
 
 #[cfg(test)]
@@ -206,21 +191,6 @@ mod tests {
         assert!(!switch_notices(Some(&mode(&[pvp, None]))));
         assert!(!switch_notices(Some(&mode(&[]))));
         assert!(!switch_notices(None));
-        let presence = Switch {
-            old: 1,
-            new: 2,
-            player: 0xa000_0200,
-            serial: 1,
-        }
-        .presence();
-        assert_eq!(
-            presence.into_iter().collect::<Vec<_>>(),
-            [
-                (4, ScriptValue::Asset(1)),
-                (6, ScriptValue::Asset(2)),
-                (7, ScriptValue::Entity(0xa000_0200))
-            ]
-        );
     }
 
     /// The install's 0C90 modes are the ones notices.py lists.

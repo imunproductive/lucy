@@ -15,6 +15,7 @@ use serde_json::{Map, Value};
 use orpheus_core::guid::parse_guid;
 
 use crate::{
+    ai_definitions::{AI_DEFINITIONS_FILE, AiDefinitions},
     anim_lengths::{ANIM_LENGTHS_FILE, AnimLengths},
     rulesets::{self, Rulesets},
     weapons::{TUNABLES_FILE, Tunables},
@@ -361,6 +362,10 @@ pub struct GraphStore {
     /// loaded beside the bundle; none until
     /// [`GraphStore::with_anim_lengths`].
     anim_lengths: Arc<AnimLengths>,
+    /// The hero bodies' AI definitions and difficulty profiles
+    /// (`game_ai_definitions_174.json`), loaded beside the bundle; none
+    /// until [`GraphStore::with_ai_definitions`].
+    ai_definitions: Arc<AiDefinitions>,
     missing: Vec<u32>,
     auras: BTreeMap<u64, Aura>,
     /// The aura graphs and the graphs they play (`PlayScript`), whose
@@ -428,6 +433,7 @@ impl GraphStore {
             rulesets: Arc::default(),
             tunables: Arc::default(),
             anim_lengths: Arc::default(),
+            ai_definitions: Arc::default(),
             missing: bundle.missing,
             auras,
             aura_graphs,
@@ -446,17 +452,31 @@ impl GraphStore {
 
     /// A bundle of the runtime `data` folder with the folder's ruleset
     /// defaults (`game_rulesets_174.json`), tunable values
-    /// (`game_tunables_174.json`) and animation lengths
-    /// (`game_anim_lengths_174.json`), as the server runs it.
+    /// (`game_tunables_174.json`), animation lengths
+    /// (`game_anim_lengths_174.json`) and AI definitions
+    /// (`game_ai_definitions_174.json`), as the server runs it.
     pub fn load_runtime(data: impl AsRef<Path>, bundle: &str) -> io::Result<Self> {
         let data = data.as_ref();
         let rulesets = Rulesets::load(data.join(rulesets::FILE))?;
         let tunables = Tunables::load(data.join(TUNABLES_FILE))?;
         let anim_lengths = AnimLengths::load(data.join(ANIM_LENGTHS_FILE))?;
+        let ai_definitions = AiDefinitions::load(data.join(AI_DEFINITIONS_FILE))?;
         Ok(Self::load(data.join(bundle))?
             .with_rulesets(Arc::new(rulesets))
             .with_tunables(Arc::new(tunables))
-            .with_anim_lengths(Arc::new(anim_lengths)))
+            .with_anim_lengths(Arc::new(anim_lengths))
+            .with_ai_definitions(Arc::new(ai_definitions)))
+    }
+
+    /// The AI definitions an AI-possessed body's graphs read
+    /// ([`crate::ai_definitions`]).
+    pub fn with_ai_definitions(mut self, ai_definitions: Arc<AiDefinitions>) -> Self {
+        self.ai_definitions = ai_definitions;
+        self
+    }
+
+    pub fn ai_definitions(&self) -> &AiDefinitions {
+        &self.ai_definitions
     }
 
     /// The bodies' animation lengths, which `Anim` states without an

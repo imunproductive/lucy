@@ -7,9 +7,7 @@ use orpheus_content::maps::GameMap;
 use orpheus_lobby::{
     accounts::battle_tag,
     collection::Collection,
-    handoff::{
-        Handoff, LobbySeat, enter_game, general_channel, is_request, match_channel, team_colours,
-    },
+    handoff::{Handoff, LobbySeat, enter_game, general_channel, is_request, match_channel},
     player_messages,
     session::PreparedLogin,
     transport::LobbyMessage,
@@ -91,16 +89,14 @@ pub fn dispatch(
                 "the reserved UDP seat is for another match",
             ));
         }
-        let [leave, join, colours, ticket] = enter_game(
+        let [leave, join, ticket] = enter_game(
             input.general,
             input.match_channel,
-            team_colours(PLAYER_TEAM, &[0, 1]),
             &handoff,
             (input.host, game.local_addr().port()),
         )?;
         send(&leave)?;
         send(&join)?;
-        send(&colours)?;
         if !send(&ticket)? {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -314,14 +310,9 @@ mod tests {
                 .iter()
                 .map(|&(crc, id, _)| (crc, id))
                 .collect::<Vec<_>>(),
-            [
-                (chat, 20404),
-                (chat, 20402),
-                (0x2128_6b49, 23310),
-                (HANDOFF, HANDOFF_MESSAGE)
-            ],
+            [(chat, 20404), (chat, 20402), (HANDOFF, HANDOFF_MESSAGE)],
         );
-        let Value::Struct(ticket) = &messages[3].2[&0x80] else {
+        let Value::Struct(ticket) = &messages[2].2[&0x80] else {
             panic!("handoff ticket missing");
         };
         let connection = u32::try_from(require_unsigned(ticket, 0x28)).unwrap();

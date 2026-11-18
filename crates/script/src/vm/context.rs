@@ -231,6 +231,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.world.entity_team(self.site, entity)
     }
 
+    fn in_entity_volume(&mut self, entity: u32, position: [f64; 3]) -> Option<bool> {
+        self.read_native = true;
+        self.world.in_entity_volume(self.site, entity, position)
+    }
+
     fn related_entity(&mut self, relation: EntityRelation, entity: u32) -> Option<u32> {
         self.read_native = true;
         self.world.related_entity(self.site, relation, entity)
@@ -239,6 +244,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
     fn controller_is_ai(&mut self, entity: u32) -> Option<bool> {
         self.read_native = true;
         self.world.controller_is_ai(self.site, entity)
+    }
+
+    fn ai_parameter(&mut self, entity: u32, identifier: u64) -> Option<Option<f64>> {
+        self.read_native = true;
+        self.world.ai_parameter(self.site, entity, identifier)
     }
 
     fn would_stack_to_top(&mut self, variable: Variable, priority: StackPriority) -> Option<bool> {

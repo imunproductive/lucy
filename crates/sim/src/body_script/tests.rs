@@ -822,7 +822,7 @@ fn projectile_volleys_fly_leased_for_damage_alone_or_not_at_all() {
 /// volley whose launch spread grows (`STU_239B571E`, ramp 4, 1° to 3°)
 /// turns each hitscan shot by the client's circular spread at the shot's
 /// normalized spread (the first shot: 1/4, so 1.5°), seeded from the body,
-/// instance, state node and activation counter.
+/// instance, state index and activation counter.
 #[test]
 fn a_growing_spread_turns_each_shot_inside_its_cone() {
     use crate::weapon_spread::{direction, seed_base};
@@ -862,9 +862,11 @@ fn a_growing_spread_turns_each_shot_inside_its_cone() {
     };
     let aim = aim_direction(&fire);
     let cone = 1.5f64.to_radians() as f32;
+    // The volley is node 2, state 1: the seed takes the state index
+    // (upstream main `9ed63eed`).
     assert_eq!(
         shot.direction,
-        direction(aim, cone, seed_base(spawn.entity, 1, 2, 1), 0, 0, false)
+        direction(aim, cone, seed_base(spawn.entity, 1, 1, 1), 0, 0, false)
     );
     assert_ne!(shot.direction, aim);
     let dot: f64 = aim.iter().zip(shot.direction).map(|(a, b)| a * b).sum();
@@ -1654,6 +1656,7 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
         },
         quanta: RETAIL_QUANTA,
         mode_random: 0.5,
+        ai: None,
     };
     let factory = PlayerBodyFactory::prepare(
         Arc::clone(&graphs),
@@ -1779,6 +1782,16 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
 /// server sends every new body (`002D.025` {`0029` 0}, which turns on
 /// `01C7`'s #2426e) and the ultimate generation variables `generation`.
 fn charge_body(hero: u64, generation: Option<Variables>) -> (PlayerBodyRuntime, OwnerBodySpawn) {
+    hero_body(hero, generation, None)
+}
+
+/// [`charge_body`], possessed by an AI entity of the hero's AI definition
+/// playing at `difficulty` when one is given.
+fn hero_body(
+    hero: u64,
+    generation: Option<Variables>,
+    difficulty: Option<u64>,
+) -> (PlayerBodyRuntime, OwnerBodySpawn) {
     use orpheus_content::{heroes::HeroCatalog, maps::GameMap};
     use orpheus_core::tick::FIRST_TICK;
 
@@ -1790,6 +1803,11 @@ fn charge_body(hero: u64, generation: Option<Variables>) -> (PlayerBodyRuntime, 
         .unwrap()
         .hero_pools(hero)
         .unwrap();
+    let ai = difficulty.map(|difficulty| AiControl {
+        entity: 0x8000_7001,
+        definition: graphs.ai_definitions().definition(hero).unwrap(),
+        difficulty,
+    });
     let spawn = OwnerBodySpawn {
         controller: 0xa000_0100,
         entity: 0xa000_0101,
@@ -1802,6 +1820,7 @@ fn charge_body(hero: u64, generation: Option<Variables>) -> (PlayerBodyRuntime, 
         },
         quanta: RETAIL_QUANTA,
         mode_random: 0.5,
+        ai,
     };
     let factory = PlayerBodyFactory::prepare(
         graphs,
@@ -1898,6 +1917,7 @@ fn the_charge_graph_charges_soldier_s_ultimate() {
         dead: false,
         controller: None,
         ai: true,
+        ai_control: None,
         feet: [0.0; 3],
         height: 1.8,
         radius: 0.4,
@@ -1948,4 +1968,85 @@ fn the_charge_graph_charges_d_va_and_fills_on_its_ruleset_key() {
     let full = Variables::from([(13024, Value::Bool(true))]);
     let (runtime, _) = charge_body(SOLDIER, Some(full));
     assert_eq!(charge_of(&runtime), 2310.0);
+}
+
+/// An AI hero's weapons deal his AI profile's damage, as their graphs are
+/// written: Soldier: 76's volleys (`0254`) amount to
+/// `STU_D3EB8D87(STU_DB742151(owner)) ? STU_4049CF77(parameter, fallback) :
+/// player damage`. His AI entity (`11F4`, which declares component 92)
+/// possesses an AI's body, so the parameter is read from the profile of
+/// the room's difficulty (`game_ai_definitions_174.json`: `11F4`'s `195E`,
+/// `195F` and `1960` profiles): the rifle (st10) `1961` 4, 10 and 20 for the
+/// player's 20 (#476); the Helix Rocket (st16) `1995` 8, 20 and 40 direct
+/// for the player's 40, and `1996` 16, 40 and 80 in its blast for the
+/// player's 80. A human's body (no AI entity) deals the player's.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn an_ai_hero_deals_his_difficulty_profile_s_damage() {
+    use orpheus_script::{
+        ai_definitions::{EASY, HARD, MEDIUM},
+        expr::EntityRelation,
+    };
+
+    const WEAPON: u32 = 0x0254;
+    const RIFLE: u16 = 10;
+    const HELIX: u16 = 16;
+    let damage = |difficulty: Option<u64>| {
+        let (mut runtime, spawn) = hero_body(SOLDIER, None, difficulty);
+        let snapshot = runtime.snapshot().unwrap();
+        assert!(
+            snapshot.diagnostics.is_empty(),
+            "{:?}",
+            snapshot.diagnostics
+        );
+        let instance = snapshot
+            .instances
+            .iter()
+            .find(|(_, instance)| instance.graph == WEAPON)
+            .map(|(&id, _)| id)
+            .unwrap();
+        let graphs = Arc::clone(&runtime.world.graphs);
+        let state = |raw: u16, field: &str| {
+            graphs
+                .graph(WEAPON)
+                .unwrap()
+                .state(usize::from(raw))
+                .unwrap()
+                .field(field)
+                .unwrap()
+                .clone()
+        };
+        let mut hit = |raw: u16, config: &Json| {
+            let PlayerBodyRuntime {
+                component, world, ..
+            } = &mut runtime;
+            HitDefinition::from_authored(config, |value| {
+                component.evaluate_state_config(instance, raw, value, world)
+            })
+            .unwrap()
+            .unwrap()
+            .amount
+        };
+        let rifle = hit(RIFLE, &state(RIFLE, "m_6396149F"));
+        let direct = hit(HELIX, &state(HELIX, "m_6396149F"));
+        let blast = hit(HELIX, &state(HELIX, "m_D2D11CE9"));
+        // The body's primary possessor: the AI entity, else the controller.
+        let site = Site {
+            entity: spawn.entity,
+            instance,
+            graph: WEAPON,
+            node: None,
+        };
+        assert_eq!(
+            runtime
+                .world
+                .related_entity(site, EntityRelation::Controller, spawn.entity),
+            Some(spawn.ai.map_or(spawn.controller, |ai| ai.entity))
+        );
+        [rifle, direct, blast]
+    };
+    assert_eq!(damage(None), [20.0, 40.0, 80.0]);
+    assert_eq!(damage(Some(EASY)), [4.0, 8.0, 16.0]);
+    assert_eq!(damage(Some(MEDIUM)), [10.0, 20.0, 40.0]);
+    assert_eq!(damage(Some(HARD)), [20.0, 40.0, 80.0]);
 }

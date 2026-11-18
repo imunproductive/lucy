@@ -69,7 +69,7 @@ use orpheus_script::{
     graph::GraphStore,
     map_tags::MapTags,
     vitals::Vitals,
-    vm::{MapRays, TargetCandidate, Unknowns},
+    vm::{GameMessage, MapRays, MessageEnd, TargetCandidate, Unknowns},
     wire::Variables,
 };
 use orpheus_wire::entity::{Component, EntityUpdate, Operation};
@@ -462,7 +462,7 @@ impl SceneAssets {
         );
         let controller =
             Controller::load(&self.graphs, map.mode_guid)?.with_unknowns(self.player_unknowns);
-        let mode_ui = mode_ui(&self.graphs, &Variables::new())?;
+        let mode_ui = mode_ui(&self.graphs, map.mode_guid, &Variables::new())?;
         let initial_board =
             self.stats
                 .component(&PlayerStats::default(), map.mode_guid, None, None);
@@ -515,6 +515,14 @@ impl SceneAssets {
                 map.name, map.mode_guid
             )));
         }
+        let placed_scripts = PlacedScripts::new(
+            Arc::clone(&self.graphs),
+            map_mode,
+            mode_random,
+            server_placeables.clone(),
+            Arc::clone(&map_tags),
+            Arc::clone(&spawn_rooms),
+        );
         let mut scene = PreparedScene {
             respawn: self.respawns.for_mode(map.mode_guid),
             map,
@@ -553,13 +561,7 @@ impl SceneAssets {
             kill_height,
             safety_net,
             mode_random,
-            placed_scripts: PlacedScripts::new(
-                Arc::clone(&self.graphs),
-                map_mode,
-                mode_random,
-                server_placeables.clone(),
-                Arc::clone(&map_tags),
-            ),
+            placed_scripts,
             server_placeables,
             map_tags,
             body_tags: Arc::clone(&self.body_tags),
@@ -890,7 +892,7 @@ impl PreparedScene {
     /// match flow publishes, such as the clock v1303 (match.py
     /// `_send_countdown`, combat.py `mode_frame`).
     pub fn mode_frame(&self, variables: &Variables) -> io::Result<BitWriter> {
-        mode_ui(&self.graphs, variables)
+        mode_ui(&self.graphs, self.map.mode_guid, variables)
     }
 
     /// The map's server placeables in this mode with their script data, in
@@ -904,10 +906,19 @@ impl PreparedScene {
         &self.placed_scripts
     }
 
-    /// Start the server placeables' scripts at the first call, then advance
-    /// them to `tick`.
-    pub fn advance_placed(&mut self, tick: u32) {
-        self.placed_scripts.advance(tick);
+    /// Start the server placeables' scripts at the first call, give the
+    /// spawn rooms the mode holds now the mode's message (`choice`: each
+    /// team's current spawn, the match flow's; [`map_areas::room_holds`]),
+    /// then advance them to `tick`.
+    pub fn advance_placed(&mut self, tick: u32, choice: impl Fn(u8) -> SpawnChoice) {
+        let holds = map_areas::room_holds(&self.spawn_rooms, &self.map, choice);
+        self.placed_scripts.advance(tick, &holds);
+    }
+
+    /// The placed scripts' game messages and message ends since the last
+    /// call, for the match to hand to the bodies.
+    pub fn take_placed_messages(&mut self) -> (Vec<GameMessage>, Vec<MessageEnd>) {
+        self.placed_scripts.take_messages()
     }
 
     /// The bodies the placeables' target searches can find from now on
@@ -919,6 +930,11 @@ impl PreparedScene {
     /// The statescript graphs, for runs outside the scene (the mode graph).
     pub fn shared_graphs(&self) -> Arc<GraphStore> {
         Arc::clone(&self.graphs)
+    }
+
+    /// The statescript graphs and the data loaded with them.
+    pub fn graphs(&self) -> &GraphStore {
+        &self.graphs
     }
 
     /// The mode graphs' values the match flow uses (the wait after a
@@ -1146,12 +1162,10 @@ impl PreparedScene {
         self.bot_scripts.died(death);
     }
 
-    /// A bot's pools after a hit it survived (combat.py `_sync_body_health`),
-    /// then its nameplate enabled (`show_damage_nameplate`, leafall903/ORPHEUS
-    /// (MIT), commit c239a84).
+    /// A bot's pools after a hit it survived or a heal (combat.py
+    /// `_sync_body_health`).
     pub fn bot_health(&mut self, entity: u32, health: f64) {
         self.bot_scripts.set_health(entity, health);
-        self.bot_scripts.show_damage_nameplate(entity);
     }
 
     /// A hit the bot survived reaches its script as `0011.025` (its flinch,
@@ -1511,6 +1525,7 @@ mod tests {
                 .pose(),
             quanta: RETAIL_QUANTA,
             mode_random: scene.mode_random(),
+            ai: None,
         };
         assert!(
             scene.owner_body_runtime(pharah, spawn).unwrap().is_some(),
@@ -1573,6 +1588,7 @@ mod tests {
             pose: mover.pose(),
             quanta: RETAIL_QUANTA,
             mode_random: scene.mode_random(),
+            ai: None,
         };
         let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
         // (frames, forward throttle, buttons held)
@@ -1755,6 +1771,7 @@ mod tests {
             pose: mover.pose(),
             quanta: RETAIL_QUANTA,
             mode_random: scene.mode_random(),
+            ai: None,
         };
         let [x, y, z] = spawn.pose.position;
         let body = |entity, team, dx: f64| TargetCandidate {
@@ -1763,6 +1780,7 @@ mod tests {
             dead: false,
             controller: None,
             ai: false,
+            ai_control: None,
             feet: [x + dx, y, z],
             height: 1.8,
             radius: 0.4,
@@ -1861,6 +1879,7 @@ mod tests {
             pose: mover.pose(),
             quanta: RETAIL_QUANTA,
             mode_random: scene.mode_random(),
+            ai: None,
         };
         let [x, y, z] = spawn.pose.position;
         // Yaw 0 looks along +z.
@@ -1870,6 +1889,7 @@ mod tests {
             dead: false,
             controller: None,
             ai: false,
+            ai_control: None,
             feet: [x + dx, y, z + dz],
             height: 1.8,
             radius: 0.4,

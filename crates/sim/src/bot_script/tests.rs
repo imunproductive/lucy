@@ -11,7 +11,7 @@ use crate::{
     scene_assets::{PreparedScene, SceneAssets},
 };
 use orpheus_core::tick::FIRST_TICK;
-use orpheus_script::bot::{DEAD_FLAG, NAMEPLATE_ENABLED, NAMEPLATE_TEXT};
+use orpheus_script::bot::{DEAD_FLAG, NAMEPLATE_TEXT};
 use orpheus_wire::entity::{ComponentValue, EntityUpdate, Operation};
 
 const OWNER: u32 = 0xa000_0100;
@@ -128,9 +128,9 @@ fn practice_bots_start_one_script_per_update_and_the_firing_bots_shoot() {
 
 /// server.py: each client gets every bot's first frame once its create
 /// arrived, without the nameplate until the mode UI has arrived, then the
-/// nameplate alone, with the bot's name as its text, enabled for the bots
-/// on the player's team; a surviving hit's enabled nameplate; a death's
-/// frames with the dead flag; and the respawned bot's new script.
+/// nameplate alone, with the bot's name as its text; a surviving hit's
+/// pools without a frame, its flinch's live frame; a death's frames with
+/// the dead flag; and the respawned bot's new script.
 #[test]
 #[ignore = "requires the derived 104319 data with its bot graph bundle"]
 fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
@@ -204,64 +204,20 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
             .all(|&entity| nameplate(&scene, &world, entity).is_some())
     );
 
-    // The player's team's bots, which no player can hit, have it enabled
-    // from the start; a hit an enemy bot that doesn't fire survives enables
-    // its nameplate: a live frame with #8807 true, once (upstream
-    // `show_damage_nameplate`).
-    let enabled = |scene: &PreparedScene, world: &WorldDelivery, entity: u32| {
-        let child = scene
-            .bot_scripts()
-            .latest(entity)
-            .and_then(|latest| latest.plain.as_ref())
-            .unwrap()
-            .child;
-        world
-            .bot_stream(entity)
-            .and_then(|stream| stream.base())
-            .unwrap()
-            .1
-            .instance_variable(child, NAMEPLATE_ENABLED)
-            == Some(&Value::Bool(true))
-    };
-    let allies: BTreeSet<u32> = scene
-        .bots()
-        .iter()
-        .filter(|bot| bot.spawn.team == viewer.team)
-        .map(|bot| bot.entity)
-        .collect();
-    assert_eq!(allies.len(), 4);
+    // A hit an enemy bot survives changes its pools alone: no live frame
+    // (the client shows the plate itself, behavior.md "When a bot's plate
+    // shows").
     let hit = scene.bots()[1..]
         .iter()
         .find(|bot| !bot.spawn.firing && bot.spawn.team != viewer.team)
         .unwrap()
         .entity;
-    assert!(
-        entities
-            .iter()
-            .all(|&entity| enabled(&scene, &world, entity) == allies.contains(&entity))
-    );
     tick += 1;
     scene.bot_health(hit, 150.0);
-    let events = scene.take_bot_events();
-    assert!(matches!(
-        events.as_slice(),
-        [BotEvent::Live { entity, .. }] if *entity == hit
-    ));
-    world.update_bots(&scene, &events, tick);
-    assert_eq!(script_chunks(&deliver(&mut world)), [hit]);
-    assert!(enabled(&scene, &world, hit));
-    assert!(nameplate(&scene, &world, hit).is_some());
-    assert!(
-        entities
-            .iter()
-            .filter(|&&entity| entity != hit)
-            .all(|&entity| enabled(&scene, &world, entity) == allies.contains(&entity))
-    );
-    scene.bot_health(hit, 100.0);
     assert!(scene.take_bot_events().is_empty());
 
     // A death: the script's death message, then its timers. The victim, an
-    // enemy bot that doesn't fire, survives a hit first (its nameplate's
+    // enemy bot that doesn't fire, survives a rifle hit first (its flinch's
     // live frame) and dies before the client acknowledged that frame. The
     // death's frame goes out at once all the same: with the dead flag up,
     // 0D24 hides the health bar (`#17549` reads `!#478e`).
@@ -273,6 +229,19 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     let victim = scene.bots()[slot].entity;
     tick += 1;
     scene.bot_health(victim, 150.0);
+    let rifle: orpheus_script::weapons::DamageTags = [0x03bf, 0x09a2, 0x1e1e, 0x2d2f, 0x4d29]
+        .map(|tag| 0x0d80_0000_0000_0000 | tag)
+        .into_iter()
+        .collect();
+    scene.bot_hurt(
+        victim,
+        &crate::combat::BotDamage {
+            source: OWNER | 1,
+            dealt: 50.0,
+            tags: rifle,
+            tick,
+        },
+    );
     let events = scene.take_bot_events();
     assert!(matches!(
         events.as_slice(),
@@ -623,6 +592,7 @@ fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
         dead: false,
         hurt: false,
         tags: None,
+        ai: None,
     };
     let mut combat = Combat::new(&scene);
     let mut hits = Vec::new();

@@ -53,6 +53,15 @@ pub const DAMAGE_AMOUNT: u32 = 0x0013;
 pub const DAMAGE_DIRECTION: u32 = 0x0065;
 /// `0013.025`: the placement's eligibility reset.
 pub const RESET: u64 = 0x0240_0000_0000_0013;
+/// The Training Bot's body graph that puts a respawned bot together: its
+/// entry for [`RESET`] plays Anim state 0 or 1 (alias `0451.0C8`, 2.5 s;
+/// state 1 while entity variable 7143 is unset), and its Entry sets
+/// [`RANGE_BOT`] (upstream kjs `a667ef27`, `bot-rebuild.md`).
+pub const REBUILD_GRAPH: u32 = 0x0ba8;
+/// Entity variable `#7082`, set by [`REBUILD_GRAPH`]'s Entry on every
+/// Practice Range bot body. The bot's death graph `0C18` sends its kill
+/// feed message only when the victim or the killer lacks it.
+pub const RANGE_BOT: u32 = 7082;
 /// The Practice Range firing placement behavior (`FIRING` in
 /// `ow174/game/bots.py`).
 pub const FIRING_GRAPH: u32 = 0x0b92;
@@ -69,18 +78,6 @@ pub const PRACTICE_NAMEPLATE_PARENT: u32 = 0x0c18;
 /// server sets it to the bot hero's name as a string, the type the native
 /// name has. Assumption, not seen in retail traffic.
 pub const NAMEPLATE_TEXT: u32 = 8812;
-/// `0C3C.025`: the message `0D24`'s state 56 waits for; its state 57 then
-/// holds #8807 true. No graph sends it: the server does. leafall903/ORPHEUS
-/// (MIT), commit c239a84, `ENABLE_NAMEPLATE` in `ow174/game/script/bot.py`.
-pub const ENABLE_NAMEPLATE: u64 = 0x0240_0000_0000_0c3c;
-/// `0D24`'s enabled flag #8807 (a public schema entry and a synced instance
-/// variable). Graph `0D00` and the bodies `14A9`/`14D2` (two other Training
-/// Bot heroes, `016F`/`0170`) start their `0D24` with it true. The root
-/// presenter (st35) passes `#17850 = #8807 || #9374 || …` to its layout
-/// (`0D80…27A3`); for a bot the rest of `#17850` reads only the local view's
-/// enemy filters (`#17554`, `#17555`), so an ally's plate gets it from #8807
-/// alone. The health bar's own condition (st51) doesn't read it.
-pub const NAMEPLATE_ENABLED: u32 = 8807;
 /// The body's dead flag, entity variable #478 (`01DE.01C`). No graph writes
 /// it; 111 graphs read it, and `0D24` shares it with the clients (st76,
 /// remote 2). The overhead health bar (st51) needs `#17549 = !#478e && …`
@@ -174,8 +171,6 @@ impl World for BotWorld {
             // open. `0C17` rid 23 starts its pain lines' audience (#1839)
             // with it, and rid 22 and 21 add the bot and its attacker.
             "STU_ED45C5E8" => Some("no entities"),
-            // See `native`: no difficulty profile, so the authored fallback.
-            "STU_4049CF77" => Some("the authored fallback (no difficulty profile)"),
             _ => None,
         }
     }
@@ -284,6 +279,22 @@ impl World for BotWorld {
         self.targets.as_deref()
     }
 
+    /// `STU_4049CF77`: the bot's AI definition (`1404`, `14AF`) has no
+    /// difficulty profiles (`m_difficultyProfiles` null, BotDamage.md), so
+    /// the graphs take their authored fallback (the Training Bot's rocket,
+    /// `0BA3` node 178: `1961`, 8); another listed body's AI as the match
+    /// gives it.
+    fn ai_parameter(&mut self, site: Site, entity: u32, identifier: u64) -> Option<Option<f64>> {
+        if entity == site.entity {
+            return Some(None);
+        }
+        self.targets
+            .as_deref()?
+            .iter()
+            .find(|body| body.entity == entity || body.controller == Some(entity))
+            .map(|body| body.ai_parameter(self.graphs.ai_definitions(), identifier))
+    }
+
     fn native(&mut self, site: Site, config: &Json) -> Option<Value> {
         let class = config.get("$")?.as_str()?;
         if class == "STU_AC829876"
@@ -343,18 +354,6 @@ impl World for BotWorld {
             // (`0BA3` node 178) takes its AI damage, not the 19 a player's
             // copy of the volley would deal.
             "STU_D3EB8D87" if is_own_possessor(config.get("m_00903303")) => Some(Value::Bool(true)),
-            // An AI weapon parameter (`m_F00C2F3D`, such as the damage
-            // `1961`) of the possessing AI definition's difficulty profile
-            // (`STUAIBehaviorComponent.m_difficultyProfiles`; upstream
-            // reads Junkenstein's per difficulty). `1404` and `14AF` have no
-            // profiles, so the parameter is its authored fallback
-            // `m_A53100D5` (assumption: the field's meaning; where a profile
-            // exists, the fallback is one of its tiers' values, as Reaper's
-            // `0019` 3.5 is). Only a literal fallback is read; and only for
-            // the body itself (`m_C5D0FA56` none).
-            "STU_4049CF77" if config.get("m_C5D0FA56").is_none_or(Json::is_null) => {
-                literal_number(config.get("m_A53100D5")?)
-            }
             // IsTutorial (CE8580), as `PlayerWorld` answers it.
             "STU_A77AC2AC" if native_shape(config, class, None) => {
                 Some(Value::Bool(self.mode == TUTORIAL_MODE))
@@ -392,16 +391,6 @@ fn is_own_possessor(config: Option<&Json>) -> bool {
     config.is_some_and(|config| {
         native_shape(config, "STU_DB742151", Some("m_entity")) && is_owner(config.get("m_entity"))
     })
-}
-
-/// A literal `STUConfigVarInt` or `STUConfigVarFloat`.
-fn literal_number(config: &Json) -> Option<Value> {
-    let value = config.get("m_value")?;
-    match config.get("$")?.as_str()? {
-        "STUConfigVarInt" => value.as_i64().map(Value::Integer),
-        "STUConfigVarFloat" => value.as_f64().map(Value::Float),
-        _ => None,
-    }
 }
 
 /// The stock filter: its set fields (not null, not zero) are exactly the
@@ -479,9 +468,13 @@ pub struct BotSpawn<'a> {
     pub health: f64,
     /// The firing placement's position; none for a bot without one.
     pub firing_position: Option<[f64; 3]>,
-    /// The nameplate starts enabled ([`ENABLE_NAMEPLATE`]): a bot no player
-    /// can hit, which [`BotBody::show_damage_nameplate`] never enables.
-    pub nameplate_enabled: bool,
+    /// A bot made again at its spawner after a death: [`RESET`] goes to its
+    /// [`REBUILD_GRAPH`] instances before its first frame, so it is seen
+    /// putting itself together (upstream kjs `a667ef27`; seen there in the
+    /// original client: the parts gather over about 0.9 s). Retail's sender
+    /// of the message is not known: a reconstruction. A first spawn plays
+    /// no rebuild.
+    pub respawned: bool,
 }
 
 /// An NPC body's statescript on the server clock (`BotScript` in bot.py).
@@ -497,10 +490,9 @@ impl BotBody {
     /// Run the body's graphs through their spawn frame and, with a firing
     /// position and AI weapon buttons, start the firing behavior with its
     /// scoped reset. Each nameplate instance (`0D24`) then gets the name as
-    /// its text override ([`NAMEPLATE_TEXT`]) and, when the spawn says so,
-    /// is enabled at once (assumption: retail starts other Training Bots'
-    /// plates enabled, see [`NAMEPLATE_ENABLED`]; for these no source says
-    /// when, and a hit never comes).
+    /// its text override ([`NAMEPLATE_TEXT`]). Nothing enables the plate
+    /// (`#8807`): the client shows it by itself (`docs/notes/behavior.md`,
+    /// "When a bot's plate shows").
     pub fn start(
         graphs: Arc<GraphStore>,
         spawn: BotSpawn<'_>,
@@ -555,6 +547,19 @@ impl BotBody {
                 component.run_now(&mut world)?;
             }
         }
+        if spawn.respawned {
+            let rebuilds: Vec<u16> = component
+                .snapshot()
+                .into_iter()
+                .flat_map(|snapshot| &snapshot.instances)
+                .filter(|(_, instance)| instance.graph == REBUILD_GRAPH)
+                .map(|(&id, _)| id)
+                .collect();
+            for id in rebuilds {
+                component.queue_message(id, RESET, Variables::new())?;
+            }
+            component.run_now(&mut world)?;
+        }
         if !spawn.name.is_empty() {
             for id in nameplates(&component) {
                 component.set_instance_variable(
@@ -565,17 +570,13 @@ impl BotBody {
                 )?;
             }
         }
-        let mut bot = Self {
+        Ok(Self {
             component,
             world,
             behavior,
             frame: spawn.frame,
             death_frame: None,
-        };
-        if spawn.nameplate_enabled {
-            bot.enable_nameplates()?;
-        }
-        Ok(bot)
+        })
     }
 
     pub fn snapshot(&self) -> Option<&Snapshot> {
@@ -788,48 +789,6 @@ impl BotBody {
     /// ([`World::criteria`]).
     pub fn take_criteria(&mut self) -> Vec<RaisedCriteria> {
         std::mem::take(&mut self.world.criteria)
-    }
-
-    /// A hit the bot survived enables its nameplate: each `0D24` instance
-    /// whose #8807 isn't true yet gets `0C3C.025` ([`ENABLE_NAMEPLATE`]).
-    /// leafall903/ORPHEUS (MIT), commit c239a84,
-    /// `BotScript.show_damage_nameplate` in `ow174/game/script/bot.py`,
-    /// called from combat.py `_damage` after `_sync_body_health`; there its
-    /// Rialto Talon NPCs drew their name and health bar on the original
-    /// client (docs/RESEARCH_EVIDENCE.txt, "manual Rialto NPC nameplates";
-    /// docs/MCCREE_COMBAT.txt). Upstream posts the message for the next
-    /// frame of an NPC that advances every tick; most training bots never
-    /// advance live, so it runs now, on the script's own clock. True: a
-    /// nameplate took it.
-    pub fn show_damage_nameplate(&mut self) -> Result<bool, BotError> {
-        if self.component.owner_dead() {
-            return Ok(false);
-        }
-        self.enable_nameplates()
-    }
-
-    /// Each `0D24` instance whose #8807 isn't true yet gets
-    /// `0C3C.025`, and the script runs now. True: a nameplate took it.
-    fn enable_nameplates(&mut self) -> Result<bool, BotError> {
-        let enabled = Variable {
-            scope: Scope::Instance,
-            id: NAMEPLATE_ENABLED,
-        };
-        let due: Vec<u16> = nameplates(&self.component)
-            .into_iter()
-            .filter(|&id| self.component.resolved_variable(id, enabled) != Some(Value::Bool(true)))
-            .collect();
-        let mut taken = 0;
-        for id in due {
-            taken += self
-                .component
-                .queue_message(id, ENABLE_NAMEPLATE, Variables::new())?;
-        }
-        if taken == 0 {
-            return Ok(false);
-        }
-        self.component.run_now(&mut self.world)?;
-        Ok(true)
     }
 
     /// The bodies the body's target searches can find from now on, as the
@@ -1054,7 +1013,8 @@ mod tests {
             json!([0]),
         );
         // A body whose one graph is a nameplate stand-in: as the stock 0D24
-        // (st56, st57), a state waits for 0C3C and then holds #8807 true.
+        // (st56, st57), a state waits for `0C3C.025` and then holds #8807
+        // true.
         let nameplate = graph(
             PRACTICE_NAMEPLATE,
             vec![
@@ -1070,7 +1030,7 @@ mod tests {
                     Some(0),
                     json!({
                         "m_gameMessage":{
-                            "m_gameMessage":format!("0x{ENABLE_NAMEPLATE:016X}")
+                            "m_gameMessage":"0x0240000000000C3C"
                         },
                         "m_452862E6":{"$":"Plug","links":[[2, "m_beginPlug"]],"m_FF3DAF1E":[1]},
                     }),
@@ -1080,7 +1040,7 @@ mod tests {
                     "STUStatescriptStateStack",
                     Some(1),
                     json!({
-                        "m_out_Var":{"$":"STUConfigVarDynamic","m_identifier":NAMEPLATE_ENABLED},
+                        "m_out_Var":{"$":"STUConfigVarDynamic","m_identifier":8807},
                         "m_value":{"$":"STUConfigVarBool","m_value":1},
                     }),
                 ),
@@ -1124,7 +1084,7 @@ mod tests {
             mode: PRACTICE_RANGE_MODE,
             health: 200.0,
             firing_position,
-            nameplate_enabled: false,
+            respawned: false,
         }
     }
 
@@ -1164,87 +1124,6 @@ mod tests {
                 .values()
                 .all(|instance| !instance.variables.contains_key(&NAMEPLATE_TEXT))
         );
-    }
-
-    /// Upstream `show_damage_nameplate`: a surviving hit sends 0C3C to the
-    /// nameplate, whose state then holds #8807 true; once true, a later hit
-    /// sends nothing. A body without a nameplate and a dead bot take none;
-    /// death raises the dead flag. A bot that starts enabled has it at once.
-    #[test]
-    fn a_hit_enables_the_nameplate_once() {
-        let graphs = graphs();
-        let named = BotSpawn {
-            body: NAMED_BODY,
-            ..spawn(None)
-        };
-        let mut bot = BotBody::start(Arc::clone(&graphs), named, Unknowns::Refuse).unwrap();
-        let (&id, _) = bot
-            .snapshot()
-            .unwrap()
-            .instances
-            .iter()
-            .find(|(_, instance)| instance.graph == PRACTICE_NAMEPLATE)
-            .unwrap();
-        let enabled = Variable {
-            scope: Scope::Instance,
-            id: NAMEPLATE_ENABLED,
-        };
-        assert_ne!(
-            bot.component().resolved_variable(id, enabled),
-            Some(Value::Bool(true))
-        );
-        let frame = bot.frame();
-        assert!(bot.show_damage_nameplate().unwrap());
-        let snapshot = bot.snapshot().unwrap();
-        assert!(
-            snapshot.initialization_complete(),
-            "{:?}",
-            snapshot.diagnostics
-        );
-        // The message state keeps waiting; the holder state began.
-        assert!(snapshot.instances[&id].states[&0].active);
-        assert!(snapshot.instances[&id].states[&1].active);
-        assert_eq!(
-            bot.component().resolved_variable(id, enabled),
-            Some(Value::Bool(true))
-        );
-        // It ran on the script's own clock.
-        assert_eq!(bot.frame(), frame);
-        assert!(!bot.show_damage_nameplate().unwrap());
-
-        let mut plain = BotBody::start(Arc::clone(&graphs), spawn(None), Unknowns::Refuse).unwrap();
-        assert!(!plain.show_damage_nameplate().unwrap());
-        let mut dead = BotBody::start(Arc::clone(&graphs), named, Unknowns::Refuse).unwrap();
-        // No entry takes the death here; the bot is dead all the same, and
-        // its dead flag is up.
-        dead.die(101, Variables::new()).unwrap();
-        assert!(dead.component().owner_dead());
-        assert_eq!(
-            dead.snapshot().unwrap().variables.get(&DEAD_FLAG),
-            Some(&Value::Bool(true))
-        );
-        assert!(!dead.show_damage_nameplate().unwrap());
-
-        // A bot no player can hit starts with its nameplate enabled, in its
-        // first frame; a hit has nothing left to send.
-        let mut ally = BotBody::start(
-            graphs,
-            BotSpawn {
-                nameplate_enabled: true,
-                ..named
-            },
-            Unknowns::Refuse,
-        )
-        .unwrap();
-        let snapshot = ally.snapshot().unwrap();
-        assert!(snapshot.initialization_complete());
-        assert!(snapshot.instances[&id].states[&1].active);
-        assert_eq!(
-            ally.component().resolved_variable(id, enabled),
-            Some(Value::Bool(true))
-        );
-        assert_eq!(ally.frame(), frame);
-        assert!(!ally.show_damage_nameplate().unwrap());
     }
 
     #[test]
@@ -1392,8 +1271,8 @@ mod tests {
     /// The pack's Training Bot in the Practice Range, unknown content read as
     /// the Python reference did: the firing behavior runs out of sight, the
     /// stock nameplate mounts under 0C18 with the bot's name as its text and
-    /// the observers' full frame carries that name; a hit enables the
-    /// nameplate; the death raises the dead flag and runs to its end.
+    /// the observers' full frame carries that name; the death raises the
+    /// dead flag and runs to its end.
     #[test]
     #[ignore = "requires the derived game data's bot graph bundle"]
     fn the_practice_training_bot_starts_its_behavior_and_dies() {
@@ -1442,28 +1321,6 @@ mod tests {
             text.as_bytes(),
             text.bit_len()
         ));
-        // A hit it survives enables the nameplate (0C3C): st57 starts and
-        // the observers' frame carries #8807 true.
-        assert_ne!(
-            observed.instance_variable(nameplate, NAMEPLATE_ENABLED),
-            Some(&Value::Bool(true))
-        );
-        let holder = observed.state(nameplate, 57).cloned();
-        assert!(bot.show_damage_nameplate().unwrap());
-        let snapshot = bot.snapshot().unwrap();
-        assert!(snapshot.initialization_complete());
-        assert!(snapshot.instances[&nameplate].states[&57].active);
-        let encoder = bot.encoder(&graphs, &codecs);
-        let enabled = encoder
-            .project(snapshot, crate::snapshot::View::Observer)
-            .unwrap();
-        assert_eq!(
-            enabled.instance_variable(nameplate, NAMEPLATE_ENABLED),
-            Some(&Value::Bool(true))
-        );
-        assert_ne!(enabled.state(nameplate, 57).cloned(), holder);
-        encoder.full(&enabled).unwrap();
-        assert!(!bot.show_damage_nameplate().unwrap());
         for frame in 101..=160 {
             assert!(bot.advance_live(frame, Some([0.0, 0.0, 3.0])).unwrap());
         }
@@ -1490,47 +1347,45 @@ mod tests {
         encoder_full(&graphs, &codecs, &bot);
     }
 
-    /// The pack's Friendly Bot, which no player can hit, starts with its
-    /// nameplate enabled: st57 holds #8807 true in its first observer
-    /// frame, beside its name.
+    /// A Training Bot made again after a death gets `0013.025` on its
+    /// `0BA8`, which starts the rebuild Anim (state 1 with #7143 unset); a
+    /// first spawn plays none. Either way `0BA8`'s Entry sets #7082, the
+    /// kill feed gate of bot-on-bot kills.
     #[test]
     #[ignore = "requires the derived game data's bot graph bundle"]
-    fn the_practice_friendly_bot_starts_with_its_nameplate_enabled() {
+    fn a_respawned_training_bot_rebuilds_itself() {
         let data = orpheus_testkit::runtime_dir().join("data");
         let graphs =
             Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
-        let codecs = CodecTable::client();
-        let bot = BotBody::start(
-            Arc::clone(&graphs),
-            BotSpawn {
-                body: 0x0400_0000_0000_143e,
-                hero: 0x02e0_0000_0000_016c,
-                name: "Friendly Bot",
-                health: 225.0,
-                nameplate_enabled: true,
-                ..spawn(None)
-            },
-            Unknowns::Tolerate,
-        )
-        .unwrap();
-        let snapshot = bot.snapshot().unwrap();
-        assert!(snapshot.initialization_complete());
-        let nameplate = practice_nameplate(snapshot).unwrap();
-        assert!(snapshot.instances[&nameplate].states[&57].active);
-        let observed = bot
-            .encoder(&graphs, &codecs)
-            .project(snapshot, crate::snapshot::View::Observer)
+        let rebuild = |respawned| {
+            let bot = BotBody::start(
+                Arc::clone(&graphs),
+                BotSpawn {
+                    respawned,
+                    ..spawn(None)
+                },
+                Unknowns::Tolerate,
+            )
             .unwrap();
-        assert_eq!(
-            observed.instance_variable(nameplate, NAMEPLATE_ENABLED),
-            Some(&Value::Bool(true))
-        );
-        assert_eq!(
-            observed.instance_variable(nameplate, NAMEPLATE_TEXT),
-            Some(&Value::String("Friendly Bot".into()))
-        );
-        assert!(observed.state(nameplate, 57).is_some());
-        encoder_full(&graphs, &codecs, &bot);
+            let snapshot = bot.snapshot().unwrap();
+            assert_eq!(
+                snapshot.variables.get(&RANGE_BOT).map(crate::expr::truthy),
+                Some(true)
+            );
+            let (_, instance) = snapshot
+                .instances
+                .iter()
+                .find(|(_, instance)| instance.graph == REBUILD_GRAPH)
+                .expect("the bot body lists 0BA8");
+            [0, 1].map(|state| {
+                instance
+                    .states
+                    .get(&state)
+                    .is_some_and(|state| state.active)
+            })
+        };
+        assert_eq!(rebuild(false), [false, false]);
+        assert_eq!(rebuild(true), [false, true]);
     }
 
     /// The pack's Training Bot takes a Heavy Pulse Rifle hit it survives
@@ -1760,6 +1615,7 @@ mod tests {
                 dead: false,
                 controller: Some(entity & !0xff),
                 ai: false,
+                ai_control: None,
                 feet: [0.0; 3],
                 height: 1.8,
                 radius: 0.4,
