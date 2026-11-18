@@ -30,8 +30,8 @@ use crate::{
     graph::{GraphBinding, GraphStore},
     map_tags::{MapTags, TaggedEntity},
     vm::{
-        AuraChange, Component, GameMessage, InitFault, MAX_INIT_WORK, MessageEnd, Root, Site,
-        Snapshot, TargetCandidate, Unknowns, World, bind_values, listed_relation,
+        AuraChange, Component, GameMessage, InitFault, MAX_INIT_WORK, MapRays, MessageEnd, Root,
+        Site, Snapshot, TargetCandidate, Unknowns, World, bind_values, listed_relation,
     },
     wire::{Value, Variables},
 };
@@ -160,6 +160,7 @@ struct Shared<'a> {
     unknowns: Unknowns,
     players: &'a [TargetCandidate],
     map_tags: Option<&'a MapTags>,
+    map_rays: Option<&'a dyn MapRays>,
     volumes: Option<&'a dyn EntityVolumes>,
     outbox: &'a mut Vec<GameMessage>,
     auras: &'a mut Vec<AuraChange>,
@@ -187,6 +188,10 @@ struct EntityWorld<'a, 'b> {
 impl World for EntityWorld<'_, '_> {
     fn unknowns(&self) -> Unknowns {
         self.shared.unknowns
+    }
+
+    fn map_rays(&self) -> Option<&dyn MapRays> {
+        self.shared.map_rays
     }
 
     fn assumption(&self, class: &str) -> Option<&'static str> {
@@ -401,6 +406,8 @@ pub struct MapEntityWorld {
     players: Vec<TargetCandidate>,
     /// The map's tagged placeables the scene tag queries find.
     map_tags: Option<Arc<MapTags>>,
+    /// The map's collision the scripts' ray casts meet.
+    map_rays: Option<Arc<dyn MapRays>>,
     volumes: Option<Arc<dyn EntityVolumes>>,
     outbox: Vec<GameMessage>,
     /// The auras the spawned entities put on bodies or took off.
@@ -417,7 +424,8 @@ impl MapEntityWorld {
     /// Start every placement that has graphs at `frame`, in order. A
     /// placement whose start faults keeps the fault and no component.
     /// `map_tags`: the map's tagged placeables in this mode, if known;
-    /// `volumes`: the placeables' volumes, if known.
+    /// `map_rays`: the map's collision, if known; `volumes`: the
+    /// placeables' volumes, if known.
     #[allow(clippy::too_many_arguments)]
     pub fn start<'p>(
         graphs: Arc<GraphStore>,
@@ -426,6 +434,7 @@ impl MapEntityWorld {
         unknowns: Unknowns,
         placements: impl IntoIterator<Item = Placement<'p>>,
         map_tags: Option<Arc<MapTags>>,
+        map_rays: Option<Arc<dyn MapRays>>,
         volumes: Option<Arc<dyn EntityVolumes>>,
         frame: u32,
     ) -> Self {
@@ -436,6 +445,7 @@ impl MapEntityWorld {
             unknowns,
             players: Vec::new(),
             map_tags,
+            map_rays,
             volumes,
             outbox: Vec::new(),
             auras: Vec::new(),
@@ -501,6 +511,7 @@ impl MapEntityWorld {
             unknowns: self.unknowns,
             players: &self.players,
             map_tags: self.map_tags.as_deref(),
+            map_rays: self.map_rays.as_deref(),
             volumes: self.volumes.as_deref(),
             outbox: &mut self.outbox,
             auras: &mut self.auras,
@@ -631,6 +642,7 @@ impl MapEntityWorld {
             unknowns: self.unknowns,
             players: &self.players,
             map_tags: self.map_tags.as_deref(),
+            map_rays: self.map_rays.as_deref(),
             volumes: self.volumes.as_deref(),
             outbox: &mut self.outbox,
             auras: &mut self.auras,
@@ -702,6 +714,7 @@ impl MapEntityWorld {
             unknowns: self.unknowns,
             players: &self.players,
             map_tags: self.map_tags.as_deref(),
+            map_rays: self.map_rays.as_deref(),
             volumes: self.volumes.as_deref(),
             outbox: &mut self.outbox,
             auras: &mut self.auras,
@@ -845,6 +858,7 @@ mod tests {
                 overrides: &[],
                 extra: &extra,
             }],
+            None,
             None,
             None,
             1,

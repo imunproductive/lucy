@@ -225,7 +225,8 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.read_native = true;
         let hit = self
             .world
-            .map_ray(self.site, origin, direction, reach, None)?;
+            .map_rays()?
+            .cast(origin, direction, reach, None)?;
         Some(hit.map(|hit| hit.point))
     }
 

@@ -347,6 +347,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
             Vec::new(),
             0,
             0.0,
+            None,
         ),
         next_rocket: 0,
         landed: Vec::new(),

@@ -74,6 +74,7 @@ impl ModeRunner {
         world.mode_random = Some(scene.mode_random());
         world.map_modes = Some(scene.map().supported_modes.clone());
         world.map_tags = Some(scene.map_tags());
+        world.map_rays = Some(scene.map_rays());
         match ModeScript::start(world, graph, frame) {
             Ok(script) if script.complete() => Self::Graph {
                 script: Box::new(script),

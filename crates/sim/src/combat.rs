@@ -529,6 +529,7 @@ impl Combat {
                 scene.field_graphs().to_vec(),
                 scene.map().mode_guid,
                 scene.mode_random(),
+                Some(scene.map_rays()),
             ),
             next_rocket: 0,
             landed: Vec::new(),
