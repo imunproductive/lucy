@@ -13,6 +13,7 @@ fn frame_records<'a>(
 ) -> FrameRecords<'a> {
     FrameRecords {
         tick: 5000,
+        clock: 0,
         queued,
         movements,
         owner_correction: false,
@@ -352,6 +353,7 @@ fn selected_send_advances_ack_only_after_budget_and_transport_succeed() {
     ) -> FrameRecords<'a> {
         FrameRecords {
             tick: 107,
+            clock: 0,
             queued,
             movements,
             owner_correction: true,

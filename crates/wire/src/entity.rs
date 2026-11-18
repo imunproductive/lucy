@@ -5,11 +5,22 @@
 //!
 //! Client research (1.74). A kind-1 datagram's world frame, as the client
 //! reads it (0x7FF7896DE110): var_a packet frame; ch0 the message channel;
-//! ch3 `var_a ack, 4 bits flags, 1 bit "ping follows"` (the client drops its
-//! commands below ack - 1); ch4 1 bit (1 = keep, 0 resets the entity
-//! channel); ch5 1 bit (the end of an empty list); then 7 bits of entity
-//! count, and per entity its id and one bit per channel in order (0 ends the
-//! entity, 1 runs that channel's reader, which has presence bits of its own).
+//! ch3 `var_a ack, 4 bits clock flags, 1 bit "ping follows"` (the client
+//! drops its commands below ack - 1); ch4 1 bit (1 = keep, 0 resets the
+//! entity channel); ch5 1 bit (the end of an empty list); then 7 bits of
+//! entity count, and per entity its id and one bit per channel in order (0
+//! ends the entity, 1 runs that channel's reader, which has presence bits of
+//! its own).
+//!
+//! The clock flags (ch3 reader 0x7FF7896D0630 → 0x7FF7896DADD0, kept at the
+//! client clock's `+0xA0`) are retail's time dilation (GDC 2017, Ford): the
+//! clock step 0x7FF789D28B10 scales each frame's real time by `1 - k` with
+//! [`CLOCK_SLOWER`], by `1 + k` with [`CLOCK_FASTER`], and by the same with
+//! `4k` again with [`CLOCK_STRONGER`] (`k` = the float at 0x7FF78BC536C0,
+//! 0.00625 in the running 1.74 client: a frame of 16.1 ms or 15.9 ms),
+//! so the client makes its commands slower or faster and the server's input
+//! buffer shrinks or grows. Bit 4 resets the client's command ring
+//! (0x7FF789B3D6A0); the server never sends it.
 //!
 //! The entity channel (ch4, reader 0x7FF78969BBC0) takes a 2-bit op: 1
 //! create, 2 update, 3 destroy; a create or update carries 14 bits of length
@@ -76,6 +87,13 @@ use orpheus_core::bits::{BitError, BitWriter};
 pub const MAX_ENTITY_RECORDS: usize = 127;
 pub const MAX_PAYLOAD: usize = MAX_DATAGRAM - HEADER_SIZE;
 pub const GAME_MODE_ENTITY: u32 = 0xd000_0010;
+
+/// ch3 clock flags (see the module notes): the client runs its clock slower.
+pub const CLOCK_SLOWER: u8 = 0x1;
+/// The client runs its clock faster.
+pub const CLOCK_FASTER: u8 = 0x2;
+/// With [`CLOCK_SLOWER`] or [`CLOCK_FASTER`]: four times as much again.
+pub const CLOCK_STRONGER: u8 = 0x8;
 
 pub const WITH_SKIN: u8 = 0x01;
 pub const WITH_MOVEMENT: u8 = 0x02;
@@ -807,10 +825,12 @@ fn write_entity(out: &mut BitWriter, item: &EntityUpdate, tick: u32) -> Result<(
     Ok(())
 }
 
-/// Encode one kind-1 payload. Entity and message ordering belong to the caller.
+/// Encode one kind-1 payload. Entity and message ordering belong to the
+/// caller; `clock` is the ch3 clock flags.
 pub fn frame(
     tick: u32,
     ack: u32,
+    clock: u8,
     reliable: &[(u32, Vec<u8>)],
     unreliable: &[Vec<u8>],
     entities: &[&EntityUpdate],
@@ -822,7 +842,7 @@ pub fn frame(
     out.var_a(tick);
     write_channel(&mut out, reliable, unreliable)?;
     out.var_a(ack);
-    out.bits(0, 4)?;
+    out.bits(u64::from(clock & 0xF), 4)?;
     out.bit(false); // No ping time.
     out.bit(true); // Keep channel 4.
     out.bit(false); // Empty channel 5.
@@ -835,6 +855,8 @@ pub fn frame(
 
 pub struct FrameCandidates<'a, Queued = EntityUpdate> {
     pub tick: u32,
+    /// The ch3 clock flags.
+    pub clock: u8,
     pub reliable: &'a [(u32, Vec<u8>)],
     pub unreliable: &'a [Vec<u8>],
     pub queued: &'a [Queued],
@@ -861,6 +883,7 @@ pub fn select_frame<'a, Queued: Borrow<EntityUpdate>>(
 ) -> Result<SelectedFrame<'a>, WorldError> {
     let FrameCandidates {
         tick,
+        clock,
         reliable,
         unreliable,
         queued,
@@ -890,6 +913,7 @@ pub fn select_frame<'a, Queued: Borrow<EntityUpdate>>(
             frame(
                 tick,
                 ack_for_records(records),
+                clock,
                 reliable,
                 unreliable,
                 records,

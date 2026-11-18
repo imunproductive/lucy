@@ -736,6 +736,7 @@ mod tests {
             let selected = select_frame(
                 FrameCandidates {
                     tick: 1234,
+                    clock: 0,
                     reliable: &[],
                     unreliable: &[],
                     queued: remaining,

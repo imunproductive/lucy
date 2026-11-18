@@ -72,8 +72,8 @@ use orpheus_wire::{
     combat_messages::CombatNotice,
     commands::{Command, CommandQueue, FRAME_HALF, SUBFRAME, frame_distance},
     entity::{
-        Component as WorldComponent, EntityUpdate, GAME_MODE_ENTITY, MAX_PAYLOAD, Operation,
-        SkinTheme, frame,
+        CLOCK_FASTER, CLOCK_SLOWER, CLOCK_STRONGER, Component as WorldComponent, EntityUpdate,
+        GAME_MODE_ENTITY, MAX_PAYLOAD, Operation, SkinTheme, frame,
     },
     link::delivery,
     messages::Message,
@@ -99,20 +99,34 @@ const MAX_SCRIPT_TAIL: u32 = 256;
 // when a tick runs its own, and a datagram up to a tick late runs on time.
 const BUFFER_TARGET: usize = 1;
 // Before mid-2016 retail let up to 4 commands wait (~48 ms). Beyond that a
-// tick runs the oldest at once (assumption: retail's client slowed down
-// instead, and we have no signal that tells ours to).
+// tick runs the oldest at once.
 const MAX_BUFFERED: usize = 4;
 // Retail's client shrank and grew the buffer by dilating its 16 ms frame
-// (15.2 ms, Ford): one command in 20 frames. We have no field that asks it
-// to (`docs/notes/behavior.md`, "Input timing"), so the server does it
-// from its side: a buffer above the target for this many ticks in a row
-// runs one command more, and one below it while the client sends waits a
-// tick (assumption).
+// (15.2 ms, Ford) when the server asked (the ch3 clock flags,
+// [`clock_flags`]). The server also does it from its side: a buffer above
+// the target for this many ticks in a row runs one command more, and one
+// below it while the client sends waits a tick (assumption).
 const DRAIN_TICKS: u32 = 20;
 // A dry buffer repeats the client's last input for at most this many ticks
 // in a row (assumption: a longer silence is not a late datagram, so the
 // body waits for the client's next command as it did before the buffer).
 const MAX_REPEATS: u32 = MAX_BUFFERED as u32;
+
+/// The ch3 clock flags for `depth` commands in hand as a tick takes its
+/// own: they move the client's lead toward [`BUFFER_TARGET`] commands
+/// left waiting. Faster with fewer, four times as much again with none (a
+/// dry tick repeats the last input, and a press in the frame it stood in
+/// for runs late: the client's prediction of that frame is wrong);
+/// slower with more, four times as much again beyond [`MAX_BUFFERED`].
+fn clock_flags(depth: usize) -> u8 {
+    match depth {
+        0 => CLOCK_FASTER | CLOCK_STRONGER,
+        depth if depth <= BUFFER_TARGET => CLOCK_FASTER,
+        depth if depth > MAX_BUFFERED => CLOCK_SLOWER | CLOCK_STRONGER,
+        depth if depth > BUFFER_TARGET + 1 => CLOCK_SLOWER,
+        _ => 0,
+    }
+}
 
 /// correction.py `HEROES`: the heroes whose owner gets his body's state
 /// (owner corrections): the ones whose movement the server's mover follows.
@@ -970,6 +984,8 @@ struct InputQueue {
     /// A command of the client came since the last tick.
     arrived: bool,
     late: LateInput,
+    /// The ch3 clock flags of the frames sent after the last release.
+    clock: u8,
     closing: bool,
 }
 
@@ -1071,13 +1087,18 @@ impl InputQueue {
     /// when no more than the target is in hand while the client sends (the
     /// buffer grows by one). With no command in hand, the messages, then
     /// the client's last input repeated for the next frame while his body
-    /// is in the world (`body`).
+    /// is in the world (`body`). Sets the clock flags the client's next
+    /// frames get ([`clock_flags`]).
     fn release(&mut self, ticks: u32, body: bool) {
+        self.clock = 0;
         if self.immediate || self.closing {
             return;
         }
         let arrived = std::mem::take(&mut self.arrived);
         let depth = self.depth();
+        if body && self.last.is_some() {
+            self.clock = clock_flags(depth);
+        }
         if depth == 0 {
             self.surplus = 0;
             self.work.extend(self.buffer.drain(..));
@@ -1212,6 +1233,7 @@ impl InputQueue {
         self.surplus = 0;
         self.arrived = false;
         self.late = LateInput::default();
+        self.clock = 0;
         self.closing = false;
     }
 }
@@ -2434,6 +2456,7 @@ impl WorldDelivery {
         let sent = egress.send_frame(
             FrameRecords {
                 tick,
+                clock: self.input.clock,
                 queued: &queued,
                 movements: &movements,
                 owner_correction: owner_index.is_some(),
