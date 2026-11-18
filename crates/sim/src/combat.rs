@@ -40,6 +40,7 @@ use crate::{
     bot_script::SeenRocket,
     bots::{BOT_ENTITY, BOT_RECORD_DELAY, Bot},
     hitscan::{HitscanShot, Impact, TargetHistory, TargetPose, ViewFrame},
+    hurt_feedback::HurtFeedback,
     projectile_flight::{FlightEnd, ProjectileFlight},
     projectiles::{FieldDeliver, FieldIds, FiredProjectile, ProjectileEvent, SeenIds, ShotKey},
     replication::WorldDelivery,
@@ -167,15 +168,18 @@ pub fn death_message(
 }
 
 /// The damage message (`0011.025`, [`DAMAGED`]) a body's script takes for a
-/// hit it survived: the damage's tags, who dealt it, how much and the way it
-/// travels ([`damage_direction`]). Neither Python nor upstream sends it; no
-/// graph does either, so the server does, as for the death message. The
+/// hit: the damage's tags, who dealt it, how much and the way it travels
+/// ([`damage_direction`]). Neither Python nor upstream sends it; no graph
+/// does either, so the server does, as for the death message. The
 /// Training Bot's flinch and pain graphs take it (`0E8C`, `0C17`), and
 /// every hero body's: its pain line (`01CA` or `14B1`, after `004B` rid 63
 /// rates the hurt as #10417e), its hit flinch and knockback (`02C5`) and
-/// its "recently hurt" flag (`01CF` rid 171). Assumptions: the amount is
-/// the damage dealt; a killing hit sends none (the death message goes
-/// instead).
+/// its "recently hurt" flag (`01CF` rid 171). The clients see what the
+/// graphs keep of it in their shared variables: the attacker (`01CF`
+/// #392), the way (`02C5` #1018), the amount (`08B6` #476) and the tags
+/// (`1688` #510). A killing hit's goes before the death message, with the
+/// kill's fields ([`hit_messages`]). Assumption: the amount is the damage
+/// dealt.
 pub fn damage_message(
     source: u32,
     dealt: f64,
@@ -194,6 +198,46 @@ pub fn damage_message(
             ),
         ]),
     )
+}
+
+/// The messages a player's body takes for `hit`, with `tags` (the hit's,
+/// plus any its damage modifiers added, `vm/statuses.rs`), which dealt
+/// `dealt` and `killed` it or not ([`WorldDelivery::damage_body`]), in
+/// order: its damage message ([`damage_message`]), then for a killing hit
+/// its death message ([`death_message`]). A killing hit's damage message
+/// also carries the kill's fields (the credited body `00BD`, crit `0095`,
+/// loadout `03E6`, assists `03E7`), as retail's damage event does: Echo's
+/// `1544` rid54 reads them from `0011.025` alone, not `003E.025`, and posts
+/// the kill feed line (`0765.025`) from them when a native flag (#33688e,
+/// no graph writes it) marks the blow as lethal
+/// (`refs/reports/PlayerHurt.md`, "Killing hit"). The live hurt feedback
+/// switch ([`HurtFeedback`]) holds the damage message back, or with the
+/// flinch off sends it without its tags; the death message is not switched.
+pub fn hit_messages(
+    hit: &PlayerHit,
+    tags: DamageTags,
+    dealt: f64,
+    killed: bool,
+    feedback: HurtFeedback,
+) -> Vec<(u64, Variables)> {
+    let source = hit.shooter.source;
+    let mut messages = Vec::new();
+    if feedback.message {
+        let flinch = if feedback.flinch {
+            tags
+        } else {
+            DamageTags::NONE
+        };
+        let (message, mut parameters) = damage_message(source, dealt, flinch, hit.direction);
+        if killed {
+            parameters.extend(death_message(source, hit.critical, hit.loadout, flinch).1);
+        }
+        messages.push((message, parameters));
+    }
+    if killed {
+        messages.push(death_message(source, hit.critical, hit.loadout, tags));
+    }
+    messages
 }
 
 /// The way a hit from `from` to `to` travels, as a unit vector; none when
@@ -358,6 +402,20 @@ pub struct PlayerHit {
     pub direction: Option<Vec3>,
 }
 
+/// An explosion's push on another player's body ([`Combat::take_player_pushes`]),
+/// for the match to hand to his mover ([`WorldDelivery::knock`]): the
+/// victim's client predicts none (it runs the explosion-ring knockback
+/// `0x7FF789A433F0` only on its own body, for an explosion its own body's
+/// script made: `0x7FF789A3BB10`), so it learns the push from the owner
+/// corrections, as the shooter learns the part of his own push his client
+/// didn't predict.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerPush {
+    pub body: u32,
+    /// Metres a second added to the body's velocity.
+    pub push: Vec3,
+}
+
 #[derive(Clone)]
 pub struct BotReplacement {
     pub retired: u32,
@@ -425,6 +483,7 @@ pub struct Combat {
     players: Vec<PlayerSlot>,
     rockets: Vec<BotRocket>,
     player_hits: Vec<PlayerHit>,
+    player_pushes: Vec<PlayerPush>,
     next_bot: u32,
     /// The ids of the projectiles the other clients see and of the Biotic
     /// Fields (projectiles.py `Projectiles.next_seen`, `next_field`).
@@ -461,6 +520,7 @@ impl Combat {
             players: Vec::new(),
             rockets: Vec::new(),
             player_hits: Vec::new(),
+            player_pushes: Vec::new(),
             next_bot: BOT_ENTITY + scene.bots().len() as u32,
             seen_ids: SeenIds::new(),
             field_ids: FieldIds::default(),
@@ -574,6 +634,12 @@ impl Combat {
     /// The hits on players' bodies since the last call, in order.
     pub fn take_player_hits(&mut self) -> Vec<PlayerHit> {
         std::mem::take(&mut self.player_hits)
+    }
+
+    /// The pushes explosions gave players' bodies since the last call, in
+    /// order.
+    pub fn take_player_pushes(&mut self) -> Vec<PlayerPush> {
+        std::mem::take(&mut self.player_pushes)
     }
 
     /// The environment kills the player's body at `tick` (`map_areas`
@@ -938,13 +1004,28 @@ impl Combat {
                 impact,
             )
         }));
-        // Its explosion pushes the bots it can reach and hurt, as it pushes
-        // its shooter (`ProjectileFlight::blast_push`), the live ones after
-        // its damage ([`PreparedScene::knock_bot`]): not an ally it heals,
-        // nor an invulnerable one, as the shooter takes no push where he
-        // takes no damage (`WorldDelivery::can_be_damaged`). Beyond
-        // Python, which moved no bot. Other players' bodies get no push yet.
+        // Its explosion pushes the bodies it can reach and hurt, as it
+        // pushes its shooter (`ProjectileFlight::blast_push`): the live bots
+        // after its damage ([`PreparedScene::knock_bot`]), and other
+        // players' bodies through their movers ([`PlayerPush`]; their
+        // worlds refuse it to a body the hit killed or can't hurt,
+        // [`WorldDelivery::knock`]): not an ally it heals, nor an
+        // invulnerable body, as the shooter takes no push where he takes no
+        // damage (`WorldDelivery::can_be_damaged`). Beyond Python, which
+        // moved no one.
         if step.end.as_ref().is_some_and(|end| end.exploded) {
+            for (entity, pose) in &candidates[..first_bot] {
+                let enemy = self.players.iter().any(|slot| {
+                    slot.target.body == *entity
+                        && (free_for_all || slot.target.team != shooter.team)
+                });
+                if let Some(push) = flight.blast_push(pose).filter(|_| enemy) {
+                    self.player_pushes.push(PlayerPush {
+                        body: *entity,
+                        push,
+                    });
+                }
+            }
             for (entity, pose) in &candidates[first_bot..] {
                 if !bot_hurtable(scene, *entity, shooter, free_for_all) {
                     continue;
@@ -1428,6 +1509,21 @@ pub fn apply_player_hits(
         });
     }
     notices
+}
+
+/// The explosions' pushes on players' bodies ([`Combat::take_player_pushes`]),
+/// after their hits ([`apply_player_hits`]): each goes to the mover of the
+/// player whose body it is ([`WorldDelivery::knock`]).
+pub fn apply_player_pushes(pushes: Vec<PlayerPush>, players: &mut [CombatPlayer<'_>]) {
+    for push in pushes {
+        let world = players
+            .iter_mut()
+            .filter_map(|player| player.world.as_deref_mut())
+            .find(|world| world.current_body() == Some(push.body));
+        if let Some(world) = world {
+            world.knock(push.body, push.push);
+        }
+    }
 }
 
 /// The healer's Healing Done counts `healed` of `target` (its entity and
