@@ -72,9 +72,9 @@ use orpheus_sim::{
     bot_plate::{BotPlate, PlateChange, PlateView},
     bot_script::{BotShotKind, SeenRocket},
     combat::{
-        BotHit, BotReplacement, Combat, CombatPlayer, FieldHeal, PosedShot, Shooter, ShotContext,
+        BotHit, BotReplacement, Combat, CombatPlayer, PosedShot, Shooter, ShotContext,
         apply_player_hits, deliver_body_messages, deliver_projectiles, finish_bot_rockets,
-        heal_players, show_bot_rockets, show_fired,
+        show_bot_rockets, show_fired,
     },
     controller::ControllerFrame,
     egress::GameEgress,
@@ -2230,7 +2230,7 @@ impl State {
         }
         for (id, shooter, hits) in struck {
             self.deliver_bot_hits(id, shooter, hits);
-            self.resolve_player_hits(id, tick, now, None);
+            self.resolve_player_hits(id, tick, now, false);
         }
         self.peers.values().any(|peer| peer.world.has_input_work())
     }
@@ -2372,16 +2372,9 @@ impl State {
     }
 
     /// The hits on players' bodies of a room (combat.py `_damage`, `_died`).
-    /// On a tick (`heals` given) also the Biotic Fields' heals
-    /// (projectiles.py `_field`: `heal_area`) and the messages between
-    /// bodies (match.py `deliver_body_messages`), in that order.
-    fn resolve_player_hits(
-        &mut self,
-        id: MatchId,
-        tick: u32,
-        now: Duration,
-        heals: Option<Vec<FieldHeal>>,
-    ) {
+    /// On a tick (`on_tick`) also the messages between bodies (match.py
+    /// `deliver_body_messages`).
+    fn resolve_player_hits(&mut self, id: MatchId, tick: u32, now: Duration, on_tick: bool) {
         let Some(Room {
             players,
             world,
@@ -2405,7 +2398,6 @@ impl State {
         }
         let teams: Vec<u8> = players.iter().map(|player| player.info.team).collect();
         let mut peers = room_peers(&mut self.peers, &self.seats, id, players.len());
-        let mut bot_heals = Vec::new();
         let notices = {
             let mut room: Vec<_> = players
                 .iter_mut()
@@ -2417,18 +2409,7 @@ impl State {
                 })
                 .collect();
             let notices = apply_player_hits(scene, hits, &mut room, tick, now);
-            if let Some(heals) = heals {
-                for heal in heals {
-                    let healer = Shooter {
-                        source: heal.source,
-                        team: teams[heal.slot],
-                        bot: false,
-                    };
-                    let (bodies, bots) =
-                        combat.heal_area(scene, healer, heal.centre, heal.radius, heal.amount);
-                    heal_players(scene, healer.source, &bodies, heal.amount, &bots, &mut room);
-                    bot_heals.extend(bots);
-                }
+            if on_tick {
                 let mut worlds: Vec<_> = room
                     .iter_mut()
                     .filter_map(|player| player.world.as_deref_mut())
@@ -2458,14 +2439,8 @@ impl State {
                 }
             }
         }
-        for hit in &bot_heals {
-            bot_hit_script(scene, hit);
-        }
         for (peer, notices) in peers.into_iter().zip(notices) {
             if let Some(peer) = peer {
-                for hit in &bot_heals {
-                    peer.world.queue_health(hit.health.clone());
-                }
                 for notice in notices {
                     peer.notice(notice);
                 }
@@ -2506,6 +2481,7 @@ impl State {
             changes.extend(peer.world.take_body_aura_changes());
         }
         changes.extend(world.scene.take_bot_aura_changes());
+        changes.extend(combat.take_field_auras());
         for change in &changes {
             let target = change.target();
             if world.scene.bots().iter().any(|bot| bot.entity == target) {
@@ -2557,7 +2533,7 @@ impl State {
             .map(|(&id, _)| id)
             .collect();
         for id in ids {
-            let (bot_hits, first_tick) = {
+            let bot_hits = {
                 let Room { players, world, .. } = self.rooms.get_mut(&id).expect("room");
                 let world = world.as_mut().expect("room with a world");
                 let targets: Vec<_> = room_peers(&mut self.peers, &self.seats, id, players.len())
@@ -2572,7 +2548,6 @@ impl State {
                 let combat = world
                     .combat
                     .get_or_insert_with(|| Combat::new(&world.scene));
-                let first_tick = combat.catch_up(tick);
                 combat.record_poses(&world.scene, &targets, tick);
                 // The bodies the statescript's target searches (`TrackTargets`)
                 // find until the next update, as placed this tick.
@@ -2590,10 +2565,9 @@ impl State {
                     tick,
                     now,
                 };
-                let hits = combat
+                combat
                     .step_bot_projectiles(&mut world.scene, context)
-                    .unwrap_or_default();
-                (hits, first_tick)
+                    .unwrap_or_default()
             };
             self.deliver_bot_hits(id, None, bot_hits);
             // projectiles.py `flown`: the copies of the rockets that landed.
@@ -2677,25 +2651,17 @@ impl State {
                 };
                 let world = room.world.as_mut().expect("room with a world");
                 let mut hits = Vec::new();
-                let _ = peer
-                    .world
-                    .advance_projectiles(tick, first_tick, |source, flight| {
-                        let combat = world
-                            .combat
-                            .get_or_insert_with(|| Combat::new(&world.scene));
-                        let shooter = Shooter {
-                            source,
-                            team,
-                            bot: false,
-                        };
-                        combat.step_projectile(
-                            &mut world.scene,
-                            shooter,
-                            flight,
-                            context,
-                            &mut hits,
-                        )
-                    });
+                let _ = peer.world.advance_projectiles(tick, |source, flight| {
+                    let combat = world
+                        .combat
+                        .get_or_insert_with(|| Combat::new(&world.scene));
+                    let shooter = Shooter {
+                        source,
+                        team,
+                        bot: false,
+                    };
+                    combat.step_projectile(&mut world.scene, shooter, flight, context, &mut hits)
+                });
                 struck.push((connection, hits));
             }
             for (connection, hits) in struck {
@@ -2736,8 +2702,8 @@ impl State {
                     }
                 }
             }
-            let heals = self.deliver_projectiles(id, tick);
-            self.resolve_player_hits(id, tick, now, Some(heals));
+            self.deliver_projectiles(id, tick);
+            self.resolve_player_hits(id, tick, now, true);
             let connections: Vec<u32> = self
                 .peers
                 .keys()
@@ -2775,14 +2741,14 @@ impl State {
     }
 
     /// projectiles.py `Projectiles.update` for a room once its players'
-    /// shots stepped: the other clients' copies, the Biotic Fields'
-    /// entities, and the fields' heals for [`Self::resolve_player_hits`].
-    fn deliver_projectiles(&mut self, id: MatchId, tick: u32) -> Vec<FieldHeal> {
+    /// shots stepped: the other clients' copies and the Biotic Fields
+    /// (`orpheus_sim::spawned`).
+    fn deliver_projectiles(&mut self, id: MatchId, tick: u32) {
         let Some(Room { players, world, .. }) = self.rooms.get_mut(&id) else {
-            return Vec::new();
+            return;
         };
         let Some(world) = world.as_mut() else {
-            return Vec::new();
+            return;
         };
         let combat = world
             .combat
@@ -2792,7 +2758,7 @@ impl State {
             .iter_mut()
             .map(|peer| peer.as_deref_mut().map(|peer| &mut peer.world))
             .collect();
-        deliver_projectiles(&world.scene, combat, &mut worlds, tick)
+        deliver_projectiles(&world.scene, combat, &mut worlds, tick);
     }
 
     fn send_home(&mut self, connection: u32, now: Duration) {

@@ -551,8 +551,10 @@ impl World for PlayerWorld {
             // Another body the match lists: the controller it gives, and no
             // owner.
             EntityRelation::Controller => self.listed(entity)?.controller,
-            EntityRelation::Owner => self.listed(entity).map(|_| 0),
-            _ => None,
+            EntityRelation::Owner if self.listed(entity).is_some() => Some(0),
+            // The others the listed bodies tell: another controller's body,
+            // a spawned entity's owner.
+            _ => crate::vm::listed_relation(self.targets.as_deref()?, relation, entity),
         }
     }
 
@@ -778,6 +780,7 @@ mod tests {
             height: 1.8,
             radius: 0.4,
             yaw: 0.0,
+            spawned: Vec::new(),
             tags: None,
         }
     }

@@ -38,7 +38,7 @@ use crate::{
     objectives::CaptureBox,
     placed_script::PlacedScripts,
     pools::PoolCatalog,
-    projectiles::{BioticField, FIELD_ENTITY, FieldFrames},
+    projectiles::FIELD_ENTITY,
     replication::OwnerBodyRuntime,
     scene::{
         PlayerAppearance, bot_controller_entity, initial_world, mode_ui, placeable_components,
@@ -146,8 +146,8 @@ pub struct SceneAssets {
     respawns: RespawnTimes,
     /// The mode graphs' values the match flow uses.
     mode_graph_values: ModeGraphValues,
-    /// The Biotic Field, when its graph reads; without it no field opens.
-    field: Option<BioticField>,
+    /// The Biotic Field's initial graphs; without them no field runs.
+    field_graphs: Vec<u32>,
     stats: Arc<StatsCatalog>,
     /// The stats the server counts (the Tab board's player list).
     board: BoardStats,
@@ -212,9 +212,8 @@ pub struct PreparedScene {
     stats: Arc<StatsCatalog>,
     board: BoardStats,
     pub owner_body_factory: Option<Arc<OwnerBodyFactory>>,
-    /// The Biotic Field's frames (projectiles.py `field_frame`); without
-    /// them no field is shown.
-    field_frames: Option<Arc<FieldFrames>>,
+    /// The Biotic Field's initial graphs (`03DC.003` starts `0258`).
+    field_graphs: Vec<u32>,
     /// The mode posts hero switches in the chat (notices.py).
     switch_notices: bool,
     /// The map's AI navigation, when the data has it (Practice vs AI).
@@ -274,15 +273,11 @@ impl SceneAssets {
             .get(SOLDIER)
             .ok_or_else(|| invalid("the hero catalog has no Soldier: 76"))?
             .body;
-        let field = match field_graph(&data.join("game_spawns_174.json"))
-            .and_then(|graph| BioticField::read(&graphs, graph))
-        {
-            Ok(field) => Some(field),
-            Err(error) => {
+        let field_graphs =
+            field_graphs(&data.join("game_spawns_174.json")).unwrap_or_else(|error| {
                 eprintln!("the Biotic Field is unavailable ({error})");
-                None
-            }
-        };
+                Vec::new()
+            });
         let stats = Arc::new(StatsCatalog::load(data.join("game_stats_174.json"))?);
         let board = stats.board()?;
         let mode_rules = ModeRulesData::load(&graphs, &data)?;
@@ -301,7 +296,7 @@ impl SceneAssets {
             build_collision: None,
             mode_props: read_mode_props(&data.join("collision_props_174.json"))?,
             mode_graph_values: ModeGraphValues::read(&graphs)?,
-            field,
+            field_graphs,
             graphs,
             codecs,
             owner_bodies: Mutex::default(),
@@ -351,11 +346,6 @@ impl SceneAssets {
 
     pub fn heroes(&self) -> &HeroCatalog {
         &self.heroes
-    }
-
-    /// The Biotic Field read from its graph, if it reads.
-    pub fn biotic_field(&self) -> Option<&BioticField> {
-        self.field.as_ref()
     }
 
     /// The bot graph bundle (`game_graphs_bots_174.json.gz`), when the data
@@ -466,13 +456,6 @@ impl SceneAssets {
         let initial_board =
             self.stats
                 .component(&PlayerStats::default(), map.mode_guid, None, None);
-        let field_frames = match (&self.codecs, &self.field) {
-            (Some(codecs), Some(field)) => FieldFrames::new(&self.graphs, codecs, field)
-                .map(Arc::new)
-                .map_err(|error| eprintln!("the Biotic Field has no frames ({error})"))
-                .ok(),
-            _ => None,
-        };
         let map_mode = map.mode_guid;
         let navigation = self.navigation(&map);
         let mode_random = crate::scene::draw_mode_random();
@@ -541,7 +524,7 @@ impl SceneAssets {
             stats: Arc::clone(&self.stats),
             board: self.board,
             owner_body_factory: None,
-            field_frames,
+            field_graphs: self.field_graphs.clone(),
             switch_notices: switch_notices(self.modes.get(map_mode)),
             navigation,
             mode_rules,
@@ -632,7 +615,6 @@ impl SceneAssets {
         let graphs = Arc::clone(&self.graphs);
         let pools = Arc::clone(&self.pools);
         let eyes = Arc::clone(&self.eyes);
-        let field = self.field;
         let player_unknowns = self.player_unknowns;
         let ult_generation = self.ult_generation.clone();
         let mode = scene.map.mode_guid;
@@ -680,7 +662,6 @@ impl SceneAssets {
                         on_fire,
                         BodyCombat {
                             eyes: eyes.for_body(hero.body),
-                            field,
                         },
                         player_unknowns,
                         ult_generation.clone(),
@@ -996,9 +977,9 @@ impl PreparedScene {
         &self.board
     }
 
-    /// The Biotic Field's frames, before and after its fade.
-    pub(crate) fn field_frames(&self) -> Option<&Arc<FieldFrames>> {
-        self.field_frames.as_ref()
+    /// The Biotic Field's initial graphs (`crate::spawned`).
+    pub(crate) fn field_graphs(&self) -> &[u32] {
+        &self.field_graphs
     }
 
     /// A player's body as a target (combat.py `_targets`): a capsule from
@@ -1326,9 +1307,10 @@ struct PropCatalog {
     modes: BTreeMap<String, Vec<String>>,
 }
 
-/// The Biotic Field's graph: the first initial graph of [`FIELD_ENTITY`] in
-/// `game_spawns_174.json` (projectiles.py `FIELD_GRAPH`, 0258).
-fn field_graph(path: &Path) -> io::Result<u32> {
+/// The Biotic Field's initial graphs: those of [`FIELD_ENTITY`] in
+/// `game_spawns_174.json` (`0258`). Assumption: they bind no values, as
+/// the file lists none.
+fn field_graphs(path: &Path) -> io::Result<Vec<u32>> {
     #[derive(Deserialize)]
     struct Spawn {
         graphs: Vec<u32>,
@@ -1337,7 +1319,8 @@ fn field_graph(path: &Path) -> io::Result<u32> {
         serde_json::from_str(&fs::read_to_string(path)?).map_err(invalid)?;
     spawns
         .get(&format!("0x{FIELD_ENTITY:016X}"))
-        .and_then(|spawn| spawn.graphs.first().copied())
+        .map(|spawn| spawn.graphs.clone())
+        .filter(|graphs| !graphs.is_empty())
         .ok_or_else(|| invalid("the Biotic Field entity starts no graph"))
 }
 
@@ -1768,6 +1751,7 @@ mod tests {
             radius: 0.4,
             yaw: 0.0,
             tags: None,
+            spawned: Vec::new(),
         };
         let count = |candidates: &[TargetCandidate]| {
             let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
@@ -1875,6 +1859,7 @@ mod tests {
             radius: 0.4,
             yaw: 0.0,
             tags: None,
+            spawned: Vec::new(),
         };
         let swing = |candidates: &[TargetCandidate]| {
             let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();

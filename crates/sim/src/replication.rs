@@ -30,7 +30,7 @@ use crate::{
         ObservedScript, ObserverActivity, OtherDelivery, Others, PlayerView, RemoteBody,
         RemoteDeath, ShowContext, ShowOutput, ViewerReadiness,
     },
-    placed_script::PlacedViews,
+    placed_script::{PlacedFrame, PlacedViews},
     pools::FALLBACK_POOLS,
     projectile_flight::{FlightEnd, ProjectileFlight},
     projectiles::{
@@ -519,17 +519,13 @@ impl BodyScript {
         let token = match (&mut self.projectiles, definition) {
             (Some(projectiles), Some(definition)) if projectile.leased => {
                 match (projectile.field, projectile.spawn) {
-                    (Some(field), _) => projectiles.admit_field(
-                        projectile.shot,
-                        definition,
-                        bound,
-                        projectile.feet,
-                        *field,
-                    ),
-                    (None, Some(_)) => {
+                    (true, _) => {
+                        projectiles.admit_field(projectile.shot, definition, bound, projectile.feet)
+                    }
+                    (false, Some(_)) => {
                         projectiles.admit_spawning(projectile.shot, definition, bound)
                     }
-                    (None, None) => projectiles.admit_volley(
+                    (false, None) => projectiles.admit_volley(
                         projectile.shot,
                         definition,
                         bound,
@@ -3709,15 +3705,14 @@ impl WorldDelivery {
     }
 
     /// projectiles.py `Projectiles.update` for the player's shots: their
-    /// flights, confirmations and releases at `tick`, whose retained combat
-    /// frames start at `first_tick`. What they ask of the room waits for
-    /// [`crate::combat::deliver_projectiles`]. An explosion's push on his
-    /// own body ([`FlightEnd::knockback`]) goes to his mover for its next
-    /// posed frame, and the owner corrections carry it to his client.
+    /// flights, confirmations and releases at `tick`. What they ask of the
+    /// room waits for [`crate::combat::deliver_projectiles`]. An
+    /// explosion's push on his own body ([`FlightEnd::knockback`]) goes to
+    /// his mover for its next posed frame, and the owner corrections carry
+    /// it to his client.
     pub fn advance_projectiles(
         &mut self,
         tick: u32,
-        first_tick: u32,
         mut step: impl FnMut(u32, &mut ProjectileFlight) -> io::Result<Option<FlightEnd>>,
     ) -> io::Result<()> {
         // His own explosion pushes him only where it could hurt him
@@ -3770,7 +3765,7 @@ impl WorldDelivery {
         let Some(projectiles) = &mut script.projectiles else {
             return Ok(());
         };
-        deliveries.extend(projectiles.advance(tick, first_tick));
+        deliveries.extend(projectiles.advance(tick));
         self.projectile_events.extend(
             projectiles
                 .take_events()
@@ -3940,9 +3935,10 @@ impl WorldDelivery {
         }
     }
 
-    /// The field faded: its frames go again (`FieldArrived.send`).
-    pub(crate) fn fade_field(&mut self, shot: ShotKey) {
-        match self.fields.fade(shot) {
+    /// The field graph's frame changed: the field's copies get it
+    /// (`FieldArrived.send`).
+    pub(crate) fn refresh_field(&mut self, shot: ShotKey, frame: &PlacedFrame) {
+        match self.fields.refresh(shot, frame) {
             Ok(records) => {
                 for (update, delivery) in records {
                     self.push(Record {
@@ -3951,7 +3947,22 @@ impl WorldDelivery {
                     });
                 }
             }
-            Err(error) => eprintln!("a faded Biotic Field frame failed ({error})"),
+            Err(error) => eprintln!("a Biotic Field frame failed ({error})"),
+        }
+    }
+
+    /// The field's graph removed it: its shot ends (the canister goes)
+    /// when it is this player's.
+    pub(crate) fn end_field(&mut self, (body, token): ShotKey) {
+        let Some(script) = self.body_script.as_mut().filter(|script| script.id == body) else {
+            return;
+        };
+        let Some(projectiles) = &mut script.projectiles else {
+            return;
+        };
+        let deliveries = projectiles.end_field(token);
+        if let Err(error) = self.queue_projectiles(body, deliveries) {
+            eprintln!("a Biotic Field's canister did not go ({error})");
         }
     }
 

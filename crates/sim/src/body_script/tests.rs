@@ -1667,7 +1667,6 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
                 standing: 1.55,
                 crouched: 1.085,
             },
-            field: None,
         },
         Unknowns::Tolerate,
         None,
@@ -1815,7 +1814,6 @@ fn charge_body(hero: u64, generation: Option<Variables>) -> (PlayerBodyRuntime, 
                 standing: 1.55,
                 crouched: 1.085,
             },
-            field: None,
         },
         Unknowns::Tolerate,
         generation,
@@ -1903,6 +1901,7 @@ fn the_charge_graph_charges_soldier_s_ultimate() {
         radius: 0.4,
         yaw: 0.0,
         tags: None,
+        spawned: Vec::new(),
     };
     runtime.set_target_candidates(&[body(ENEMY, 1), body(ALLY, 0)]);
     let deal = |runtime: &mut PlayerBodyRuntime, target, amount, heal| {
@@ -1948,4 +1947,73 @@ fn the_charge_graph_charges_d_va_and_fills_on_its_ruleset_key() {
     let full = Variables::from([(13024, Value::Bool(true))]);
     let (runtime, _) = charge_body(SOLDIER, Some(full));
     assert_eq!(charge_of(&runtime), 2310.0);
+}
+
+/// The Biotic Field's aura `025F` heals the body it is on through the
+/// body's own graph `0B3C`: st0 ModifyHealth changes health over time,
+/// `m_amount` `#420 * #567` (35 × 5 = 175) every `m_95F1FB0B`
+/// `#567 - 0.050000004` seconds (4.95), each tick its share of the time
+/// since the last (`vm/health.rs`), dealt by the body the field's owner
+/// possesses (`STU_0AC15F78(STU_F76C486C(#40))`). The field keeps the aura
+/// on for 312 ticks (`spawned.rs` `the_field_runs_its_graph_from_aura_to_removal`):
+/// 312 × 16 ms = 4.992 s, so 175 × 4.992 / 4.95 is credited.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn the_biotic_field_aura_heals_the_body_through_its_own_graph() {
+    use orpheus_script::vm::{AuraChange, AuraSource};
+
+    const FIELD: u32 = 0xa008_0000;
+    let (mut runtime, spawn) = charge_body(SOLDIER, None);
+    runtime.set_target_candidates(&[TargetCandidate {
+        entity: spawn.entity,
+        team: Some(0),
+        dead: false,
+        controller: Some(spawn.controller),
+        ai: false,
+        feet: [0.0; 3],
+        height: 1.8,
+        radius: 0.4,
+        yaw: 0.0,
+        tags: None,
+        spawned: vec![FIELD],
+    }]);
+    let source = AuraSource {
+        entity: FIELD,
+        instance: 1,
+        state: 7,
+        activation: 1,
+    };
+    runtime
+        .change_aura(&AuraChange::Apply {
+            source: Some(source),
+            target: spawn.entity,
+            aura: 0x04a0_0000_0000_025f,
+            instigator: FIELD,
+            parameters: vec![
+                (0x0a40_0000_0000_002a, Value::Float(35.0)),
+                (0x0a40_0000_0000_002b, Value::Integer(5)),
+            ],
+        })
+        .unwrap();
+    run_frames(&mut runtime, spawn, 312);
+    runtime
+        .change_aura(&AuraChange::Remove {
+            source,
+            target: spawn.entity,
+        })
+        .unwrap();
+    let changes = runtime.world.take_health_changes();
+    assert!(!changes.is_empty());
+    for change in &changes {
+        assert!(change.heal && change.target == spawn.entity, "{change:?}");
+        assert_eq!(change.instigator, spawn.entity, "the owner's body heals");
+    }
+    let healed: f64 = changes.iter().map(|change| change.amount).sum();
+    // The expression's float arithmetic is f32's.
+    let period = f64::from(5.0_f32 - 0.050_000_004_f32);
+    let expected = 175.0 * 4.992 / period;
+    assert!(
+        (healed - expected).abs() < 1e-6,
+        "healed {healed}, not {expected}"
+    );
 }

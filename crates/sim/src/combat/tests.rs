@@ -283,9 +283,19 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
         rockets: Vec::new(),
         player_hits: Vec::new(),
         next_bot: BOT_ENTITY,
-        tick: 0,
         seen_ids: SeenIds::new(),
         field_ids: FieldIds::default(),
+        fields: SpawnedFields::new(
+            Arc::new(
+                orpheus_script::graph::GraphStore::from_json(
+                    br#"{"version": 1, "graphs": [], "bodies": {}, "missing": []}"#,
+                )
+                .unwrap(),
+            ),
+            Vec::new(),
+            0,
+            0.0,
+        ),
         next_rocket: 0,
         landed: Vec::new(),
         auras: Vec::new(),
@@ -361,6 +371,7 @@ fn target_searches_see_the_players_then_the_bots() {
             radius: pose.radius,
             yaw: pose.yaw,
             tags: None,
+            spawned: Vec::new(),
         }
     );
     for (slot, (candidate, bot)) in candidates[1..].iter().zip(scene.bots()).enumerate() {

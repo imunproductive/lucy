@@ -214,7 +214,7 @@ fn lift(
         .push((None, flight));
     let floor = world.mover.as_ref().unwrap().pose().position[1];
     world
-        .advance_projectiles(*tick, *tick, |_, _| {
+        .advance_projectiles(*tick, |_, _| {
             Ok(Some(FlightEnd {
                 point: [0.0; 3],
                 exploded: true,

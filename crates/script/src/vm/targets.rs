@@ -319,14 +319,21 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let search = self.target_search(id, node)?;
         let site = self.site(id, node);
         let bodies = self.passing_bodies(site, &search.filter)?;
+        // The sphere goes with a listed body, else with any entity the
+        // world places (a spawned Biotic Field's own search).
         let centre = match search.entity {
             Some(entity) => {
-                let candidates = self.world.target_candidates(site).ok_or(Gap::NoBodies)?;
-                let body = candidates
+                let listed = self
+                    .world
+                    .target_candidates(site)
+                    .ok_or(Gap::NoBodies)?
                     .iter()
                     .find(|candidate| candidate.entity == entity)
+                    .map(|body| body.feet);
+                let feet = listed
+                    .or_else(|| self.world.entity_position(site, entity))
                     .ok_or(Gap::Field("m_8DCA77B6"))?;
-                std::array::from_fn(|axis| body.feet[axis] + search.offset[axis])
+                std::array::from_fn(|axis| feet[axis] + search.offset[axis])
             }
             None => search.offset,
         };
@@ -355,9 +362,16 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             .filter(|&owner| expr::valid_entity(owner))
             .unwrap_or(site.entity);
         let candidates = self.world.target_candidates(site).ok_or(Gap::NoBodies)?;
+        // An owner that is a controller (a spawned entity's) counts as the
+        // body it possesses.
         let owner = candidates
             .iter()
-            .find(|candidate| candidate.entity == owner);
+            .find(|candidate| candidate.entity == owner)
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .find(|candidate| candidate.controller == Some(owner))
+            });
         if filter.relations() && owner.is_none() {
             return Err(Gap::Filter("m_66747E7D"));
         }
