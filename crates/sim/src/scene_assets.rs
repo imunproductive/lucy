@@ -28,7 +28,6 @@ use crate::{
     hitboxes::HitboxCatalog,
     hitscan::{RAY_PROFILES_FILE, RayProfiles, SceneRays},
     hurt_feedback::HurtFeedback,
-    instance::RosterBot,
     map_areas::{self, DamageArea, MapAreaData, PlacedScript, SpawnRoom},
     match_flow::{MatchFlow, Mode, Timers},
     messages::Bots,
@@ -41,9 +40,7 @@ use crate::{
     pools::PoolCatalog,
     projectiles::FIELD_ENTITY,
     replication::OwnerBodyRuntime,
-    scene::{
-        PlayerAppearance, bot_controller_entity, initial_world, mode_ui, placeable_components,
-    },
+    scene::{PlayerAppearance, initial_world, mode_ui, placeable_components},
 };
 use orpheus_content::{
     heroes::{EyeCatalog, Hero, HeroCatalog, SOLDIER},
@@ -211,9 +208,6 @@ pub struct PreparedScene {
     graphs: Arc<GraphStore>,
     initial_board: Component,
     bots: Vec<Bot>,
-    /// The roster slots the room's own players took before the bots got
-    /// theirs (`scene::bot_roster_slot`); the room sets it.
-    bot_roster: usize,
     bot_scripts: BotScripts,
     /// The live nameplate tool's changes to the bots (`bot_plate`).
     bot_plate: Arc<BotPlate>,
@@ -549,7 +543,6 @@ impl SceneAssets {
             initial_board,
             bots,
             bot_scripts,
-            bot_roster: 0,
             bot_plate: Arc::default(),
             hurt: HurtFeedback::default(),
             script_anims: Arc::clone(&self.script_anims),
@@ -979,29 +972,6 @@ impl PreparedScene {
         &self.bots
     }
 
-    /// The training bots as the roster names them: each one's stand-in
-    /// controller, name, team and roster slot (`scene::bot_roster_slot`).
-    pub fn roster_bots(&self) -> Vec<RosterBot<'_>> {
-        self.bots
-            .iter()
-            .enumerate()
-            .filter_map(|(slot, bot)| {
-                Some(RosterBot {
-                    controller: bot_controller_entity(slot).ok()?,
-                    name: &bot.spawn.name,
-                    team: bot.spawn.team,
-                    slot: self.bot_roster + slot,
-                })
-            })
-            .collect()
-    }
-
-    /// The room's own players took the first `players` roster slots: the
-    /// bots' stand-in controllers take the next ones.
-    pub fn set_bot_roster(&mut self, players: usize) {
-        self.bot_roster = players;
-    }
-
     pub fn bots_mut(&mut self) -> &mut [Bot] {
         &mut self.bots
     }
@@ -1357,7 +1327,6 @@ impl PreparedScene {
             viewer,
             self.initial_board.clone(),
             &self.bots,
-            self.bot_roster,
             &self.bot_plate,
             self.mode_random,
         )?;
