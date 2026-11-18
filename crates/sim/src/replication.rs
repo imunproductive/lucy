@@ -10,7 +10,6 @@ use std::{
 };
 
 use crate::{
-    announcer,
     body::{BodyCreate, BodyView, body_create, owner_pose},
     body_script::OwnerBodySpawn,
     bot_script::{BotEvent, BotViewContext, BotViews, SeenDelivery, SeenRocket},
@@ -56,7 +55,9 @@ use orpheus_physics::{
     mover::kinematics::{Poses, poses as kinematics_poses, repeated},
     mover::modifiers::{Modifier, ModifierKey},
 };
-use orpheus_script::controller::ControllerScript;
+use orpheus_script::controller::{
+    ControllerScript, HeroSelectRequest as SelectRequest, HeroSelectState, HeroSwitch,
+};
 use orpheus_script::{
     ai_definitions::AiControl,
     graph::GraphStore,
@@ -1274,6 +1275,7 @@ pub fn show_players(
     tick: u32,
     now: Duration,
 ) -> Vec<Vec<Message>> {
+    deliver_controller_broadcasts(players, tick);
     let controller = scene.controller();
     let entry = move |hero| controller.team_entry_frame(hero);
     let context = ShowContext {
@@ -1356,9 +1358,53 @@ pub fn show_players(
             if let Err(error) = world.send_multikills(scene, tick) {
                 eprintln!("multikill pulse for {:08X} failed ({error})", world.owner);
             }
+            if let Err(error) = world.send_hero_select(scene, tick) {
+                eprintln!("hero select frame for {:08X} failed ({error})", world.owner);
+            }
             cards
         })
         .collect()
+}
+
+/// The messages each player's controller graph sent every entity since the
+/// last tick (`0C90` st5/st21/st70 after a pick: `068E`, `070B` the hero's
+/// role, `08BE` the hero) to the other players' controller scripts, from
+/// their sender: `0C90` st4/st8 keep a teammate's pick for the hero limit,
+/// st22 his role for the role limit (their filters test the sender's team).
+/// A message a script sends while it takes one goes the next tick. AI
+/// players' controllers send and take them too.
+fn deliver_controller_broadcasts(players: &mut [RoomPlayer<'_, '_>], tick: u32) {
+    let mut worlds: Vec<_> = players
+        .iter_mut()
+        .filter_map(|player| player.world.as_deref_mut())
+        .filter(|world| world.world_started())
+        .collect();
+    let roster: Vec<_> = worlds
+        .iter()
+        .filter_map(|world| world.controller_team())
+        .collect();
+    let messages: Vec<_> = worlds
+        .iter_mut()
+        .flat_map(|world| world.take_controller_broadcasts())
+        .collect();
+    for message in &messages {
+        for world in worlds
+            .iter_mut()
+            .filter(|world| world.owner != message.sender)
+        {
+            world.receive_controller_broadcast(tick, &roster, message);
+        }
+    }
+}
+
+/// What a controller frame shows of hero select: open, the pick, the skin
+/// selector and the hero he plays ([`WorldDelivery::send_hero_select`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SelectShown {
+    open: bool,
+    pick: Option<u64>,
+    skins: bool,
+    hero: Option<u64>,
 }
 
 pub struct WorldDelivery {
@@ -1377,7 +1423,14 @@ pub struct WorldDelivery {
     pub presentation_due: bool,
     controller: Stream,
     mode: Stream,
-    select_open: bool,
+    /// What the last controller frame showed of hero select; a change sends
+    /// the next ([`Self::send_hero_select`]).
+    select_shown: Option<SelectShown>,
+    /// Hero select stays shown open after a pick while the heroes assemble
+    /// (match.py `game_message`), though `288B` closes it (module notes of
+    /// `crate::controller`): until the client closes it or the countdown
+    /// ends.
+    keep_open: bool,
     body: Option<Body>,
     bound: Option<BodyId>,
     generation: u64,
@@ -1471,8 +1524,9 @@ pub struct WorldDelivery {
     /// ([`Self::take_spawn_view`]).
     spawn_view: Option<(BodyId, i32)>,
     /// The player's controller graph (`0C90`) in the VM, from the world's
-    /// start; it counts his multikills (`crate::announcer`). Whether a
-    /// pulse waits for its controller frame.
+    /// start: hero select (`288B`) takes his picks and opens, its snapshot
+    /// is his controller frames, and it counts his multikills
+    /// (`crate::announcer`). Whether a pulse waits for its controller frame.
     controller_script: Option<ControllerScript>,
     multikill_due: bool,
 }
@@ -1546,7 +1600,8 @@ impl WorldDelivery {
             presentation_due: false,
             controller: Stream::new(owner),
             mode: Stream::new(GAME_MODE_ENTITY),
-            select_open: true,
+            select_shown: None,
+            keep_open: false,
             body: None,
             bound: None,
             generation: 0,
@@ -1704,6 +1759,8 @@ impl WorldDelivery {
         self.spawn_room = None;
         self.spawn_view = None;
         self.controller_script = None;
+        self.select_shown = None;
+        self.keep_open = false;
         self.multikill_due = false;
     }
 
@@ -1814,13 +1871,11 @@ impl WorldDelivery {
         {
             return Ok(());
         }
-        let (open, hero) = (self.select_open, self.body.map(|body| body.hero));
         if self.notices.chunk == Some(self.controller.latest_data()) {
-            self.queue_controller(scene, tick, open, hero, None)?;
+            self.queue_controller(scene, tick, None)?;
         } else {
             let switch = self.notices.waiting.pop_front().expect("waiting switch");
-            let presence = scene.controller().switch_presence(switch.kept);
-            self.queue_controller(scene, tick, open, hero, Some(&presence))?;
+            self.queue_controller(scene, tick, Some(switch.kept))?;
             self.notices.chunk = Some(self.controller.latest_data());
         }
         self.notices.sent_at = Some(now);
@@ -1897,8 +1952,8 @@ impl WorldDelivery {
         }
     }
 
-    /// A multikill pulse goes out at once in a controller frame, which
-    /// carries `0215` from then on ([`crate::announcer`]).
+    /// A multikill pulse goes out at once in a controller frame
+    /// ([`crate::announcer`]).
     fn send_multikills(&mut self, scene: &PreparedScene, tick: u32) -> io::Result<()> {
         if !std::mem::take(&mut self.multikill_due)
             || self.headless
@@ -1906,8 +1961,133 @@ impl WorldDelivery {
         {
             return Ok(());
         }
-        let (open, hero) = (self.select_open, self.body.map(|body| body.hero));
-        self.queue_controller(scene, tick, open, hero, None)
+        self.queue_controller(scene, tick, None)
+    }
+
+    /// A controller frame once what it shows of hero select changed: the
+    /// script's `288B` after a request or on its own (st95 closes the screen
+    /// once the picked hero's body lives; st98 when the player may no longer
+    /// pick), the hero he plays, the skin selector.
+    fn send_hero_select(&mut self, scene: &PreparedScene, tick: u32) -> io::Result<()> {
+        if self.headless || !self.can_handle_game_message() {
+            return Ok(());
+        }
+        self.advance_controller(tick);
+        let shown = self
+            .select_input(scene.controller().practice())
+            .map(|(shown, _)| shown);
+        if shown.is_some() && shown != self.select_shown {
+            self.queue_controller(scene, tick, None)?;
+        }
+        Ok(())
+    }
+
+    /// The controller script's world facts the server keeps (component 74
+    /// field 6, the body's dead flag), then its clock at `tick`. A fault
+    /// stops it.
+    fn advance_controller(&mut self, tick: u32) {
+        let (may_pick, dead) = (self.may_change_hero(), self.death.is_some());
+        let Some(script) = &mut self.controller_script else {
+            return;
+        };
+        script.set_may_pick(may_pick);
+        script.set_body_dead(dead);
+        if let Err(error) = script.advance(tick) {
+            eprintln!("controller script of {:08X} stopped ({error})", self.owner);
+            self.controller_script = None;
+        }
+    }
+
+    /// The client's hero select request to the controller script's `288B`
+    /// at `tick`; its state after, none without a script.
+    fn select_request(&mut self, tick: u32, request: SelectRequest) -> Option<HeroSelectState> {
+        self.advance_controller(tick);
+        let script = self.controller_script.as_mut()?;
+        match script.hero_select(tick, request) {
+            Ok(state) => state,
+            Err(error) => {
+                eprintln!("controller script of {:08X} stopped ({error})", self.owner);
+                self.controller_script = None;
+                None
+            }
+        }
+    }
+
+    /// What a controller frame shows of hero select now, and the frame's
+    /// input besides the script (`crate::controller` module notes): shown
+    /// open while `288B` has it open or [`Self::keep_open`]; the skin
+    /// selector while open in the Practice Range or while heroes assemble
+    /// (match.py `send_controller`); the assemble title hidden in the
+    /// Practice Range only.
+    fn select_input(&self, practice: bool) -> Option<(SelectShown, ControllerFrame)> {
+        let state = self.controller_script.as_ref()?.hero_select_state()?;
+        let open = state.open || self.keep_open;
+        let skins = open && (practice || self.assembling);
+        let hero = self.body.map(|body| body.hero);
+        Some((
+            SelectShown {
+                open,
+                pick: state.pick,
+                skins,
+                hero,
+            },
+            ControllerFrame {
+                keep_open: self.keep_open,
+                skins,
+                hide_assemble: practice,
+                notice: None,
+                hero,
+            },
+        ))
+    }
+
+    /// The game messages the controller graph sent every entity since the
+    /// last call (`0C90` st5/st21/st70: `068E`, `070B`, `08BE` after a
+    /// pick), for the other players' controllers
+    /// ([`deliver_controller_broadcasts`]). Its messages to the
+    /// mode (`06FF`, `0685`) have no taker yet (the mode graph doesn't run)
+    /// and are dropped.
+    pub fn take_controller_broadcasts(&mut self) -> Vec<GameMessage> {
+        self.controller_script
+            .as_mut()
+            .map_or_else(Vec::new, ControllerScript::take_messages)
+            .into_iter()
+            .filter(|message| message.target == orpheus_script::mode::EVERY_ENTITY)
+            .collect()
+    }
+
+    /// This player's controller and team, as another's controller script
+    /// knows it; none without a script.
+    pub fn controller_team(&self) -> Option<(u32, i64)> {
+        let script = self.controller_script.as_ref()?;
+        Some((script.entity(), script.team()?))
+    }
+
+    /// Another player's controller broadcast `message` at `tick`
+    /// (`players`: the room's controllers and teams): this player's
+    /// controller script takes it.
+    pub fn receive_controller_broadcast(
+        &mut self,
+        tick: u32,
+        players: &[(u32, i64)],
+        message: &GameMessage,
+    ) {
+        self.advance_controller(tick);
+        let owner = self.owner;
+        let Some(script) = &mut self.controller_script else {
+            return;
+        };
+        script.set_players(
+            players
+                .iter()
+                .copied()
+                .filter(|&(controller, _)| controller != owner)
+                .collect(),
+        );
+        if let Err(error) = script.broadcast_from(tick, message) {
+            eprintln!("controller script of {owner:08X} stopped ({error})");
+            self.controller_script = None;
+        }
     }
 
     fn push(&mut self, record: Record) {
@@ -2720,8 +2900,8 @@ impl WorldDelivery {
             }
         }
         self.started = Some(tick);
-        // The player's controller graph runs from the world's start; one
-        // that can't start leaves the frames without multikills.
+        // The player's controller graph runs from the world's start: hero
+        // select, the multikills.
         let heroes = scene
             .heroes()
             .heroes()
@@ -2737,6 +2917,12 @@ impl WorldDelivery {
                 );
             })
             .ok();
+        // Hero select opens at the start: nothing in `288B` opens it then
+        // (only the client-only rid21 and rid226 after a body goes away
+        // send `1360`), so the server sends the open itself, as the
+        // client's H would (stand-in: the mode or the client opens it in
+        // retail; not found).
+        self.select_request(tick, SelectRequest::OpenOrClose(true));
         // The player's create sends the spawn room flag set.
         self.spawn_flag = (true, self.spawn_flag.1 + 1);
         Ok(())
@@ -2744,7 +2930,7 @@ impl WorldDelivery {
 
     pub fn present(&mut self, scene: &PreparedScene, tick: u32) -> io::Result<()> {
         if self.controller.latest_data() == 0 && self.created.contains(&self.owner) {
-            self.queue_controller(scene, tick, true, None, None)?;
+            self.queue_controller(scene, tick, None)?;
         }
         // While heroes assemble the countdown frames are the mode entity's
         // first (combat.py `spawned`).
@@ -2786,15 +2972,19 @@ impl WorldDelivery {
     }
 
     /// The countdown is over: a player with a hero gets hero select closed,
-    /// and the skin selector goes (match.py `_end_assemble`).
+    /// and the skin selector goes (match.py `_end_assemble`). The close goes
+    /// to `288B` as the client's would (stand-in for the mode graph's end of
+    /// the assembly, which doesn't run).
     pub fn end_assemble(&mut self, scene: &PreparedScene, tick: u32) -> io::Result<()> {
         self.assembling = false;
+        self.keep_open = false;
         if !self.can_handle_game_message() {
             return Ok(());
         }
-        let hero = self.body.map(|body| body.hero);
-        let open = self.select_open && hero.is_none();
-        self.queue_controller(scene, tick, open, hero, None)
+        if self.body.is_some() {
+            self.select_request(tick, SelectRequest::OpenOrClose(false));
+        }
+        self.queue_controller(scene, tick, None)
     }
 
     fn can_handle_game_message(&self) -> bool {
@@ -2836,8 +3026,15 @@ impl WorldDelivery {
             }),
             "game message"
         );
+        // The controller graph's `288B` decides (rid24: a pick he may make
+        // now, of a hero he may play; rid22: an open where he may pick, any
+        // close; st95/st98 close the screen); its frames go out when what
+        // they show changes ([`Self::send_hero_select`]). The server keeps
+        // the role queue, the body, the skin and the dead player's wait.
         match request {
             Some(HeroSelectRequest::Pick(Some(hero))) => {
+                // The card's role queue (not a graph's: `STU_1AAB4B4F` still
+                // answers every hero).
                 if viewer
                     .card
                     .role
@@ -2845,55 +3042,47 @@ impl WorldDelivery {
                 {
                     return Ok(());
                 }
+                let open = self
+                    .controller_script
+                    .as_ref()
+                    .and_then(ControllerScript::hero_select_state)
+                    .is_some_and(|state| state.open);
+                let picked = self.select_request(tick, SelectRequest::Pick(hero.guid));
+                if picked.and_then(|state| state.pick) != Some(hero.guid) {
+                    return Ok(());
+                }
+                // The screen stays open until the heroes are assembled, as
+                // in retail (match.py `game_message`); `288B` closes it.
+                self.keep_open |= self.assembling && open;
                 let skin = viewer
                     .card
                     .skins
                     .get(&hero.guid)
                     .copied()
                     .unwrap_or_default();
-                let open = self.assembling && self.select_open;
                 // A dead player's pick waits for his respawn: the new hero
                 // comes back at the spawn after the delay (assumption: as in
                 // retail, where a hero change while dead keeps the timer).
                 if self.death.is_some() {
                     self.respawn_hero = Some((hero.guid, skin));
-                    self.queue_controller(scene, tick, open, Some(hero.guid), None)?;
-                    return Ok(());
-                }
-                // Only in a spawn room (game-rules.md 23); the client asks
-                // only there, so a pick from outside crossed the room's
-                // edge on its way: the screen closes on the current hero.
-                if !self.may_change_hero() {
-                    self.queue_controller(
-                        scene,
-                        tick,
-                        false,
-                        self.body.map(|body| body.hero),
-                        None,
-                    )?;
                     return Ok(());
                 }
                 // match.py `game_message`: the same hero and skin keep the
                 // body, unless its script failed (`needs_body`).
-                if !self.script_failed
-                    && self
-                        .body
-                        .is_some_and(|body| (body.hero, body.skin) == (hero.guid, skin))
+                let same = self
+                    .body
+                    .is_some_and(|body| (body.hero, body.skin) == (hero.guid, skin));
+                if (self.script_failed || !same)
+                    && let Some(entity) = self.next_body(now)
                 {
-                    // The screen stays open until the heroes are assembled,
-                    // as in retail (match.py `game_message`).
-                    if !self.assembling {
-                        self.queue_controller(scene, tick, false, Some(hero.guid), None)?;
-                    }
-                } else if let Some(entity) = self.next_body(now) {
                     self.switch(scene, viewer, tick, quanta, entity, (hero, skin), true)?;
                 }
             }
             Some(HeroSelectRequest::OpenOrClose(wanted)) => {
-                // Hero select opens only where a pick is taken.
-                let open = self.body.is_none()
-                    || (self.may_change_hero() && wanted.unwrap_or(!self.select_open));
-                self.queue_controller(scene, tick, open, self.body.map(|body| body.hero), None)?;
+                let shown = self.select_shown.is_some_and(|shown| shown.open);
+                let open = wanted.unwrap_or(!shown);
+                self.keep_open &= open;
+                self.select_request(tick, SelectRequest::OpenOrClose(open));
             }
             _ => {}
         }
@@ -3613,7 +3802,11 @@ impl WorldDelivery {
         self.switch(scene, viewer, tick, quanta, entity, (hero, skin), false)?;
         self.revived();
         if select && self.can_handle_game_message() {
-            self.queue_controller(scene, tick, true, Some(hero.guid), None)?;
+            // `288B` opens as on the client's H; it stays shown open while
+            // the heroes assemble.
+            self.select_request(tick, SelectRequest::OpenOrClose(true));
+            self.keep_open = true;
+            self.queue_controller(scene, tick, None)?;
         }
         Ok(true)
     }
@@ -4395,10 +4588,6 @@ impl WorldDelivery {
             skin: (skin.guid != 0).then_some(skin.guid),
         };
         let placed = here.is_none() && !self.headless;
-        let open = self.assembling && self.select_open;
-        let frame = pick
-            .then(|| self.controller_chunk(scene, tick, open, Some(hero.guid), None))
-            .transpose()?;
 
         self.generation = generation;
         self.bodies.insert(entity, (generation, Lifetime::Live));
@@ -4437,9 +4626,6 @@ impl WorldDelivery {
         self.spawn_view = placed.then_some((id, movement.yaw));
         if let Some(controller) = &mut self.controller_script {
             controller.possessed(entity, hero.guid);
-        }
-        if frame.is_some() {
-            self.select_open = open;
         }
         // A switch from one hero to another, not the first pick: `037F.025`
         // to the player's controller script, whose `0C90` rid220 keeps it
@@ -4484,8 +4670,11 @@ impl WorldDelivery {
         if let Some(old) = old {
             self.retire_body(old.id);
         }
-        if let Some(frame) = frame {
-            self.push(frame);
+        // A pick's frame names the new hero (#940e); `288B` closes the
+        // screen a frame later, once the body lives (st95), in a frame of
+        // its own ([`Self::send_hero_select`]).
+        if pick {
+            self.queue_controller(scene, tick, None)?;
         }
         tracing::debug!(
             target: "orpheus::join",
@@ -4515,70 +4704,48 @@ impl WorldDelivery {
         });
     }
 
-    /// A full controller frame. A frame with a hero switch's presence bits is
-    /// a separate event, even when the menu is already closed.
-    fn controller_chunk(
-        &mut self,
-        scene: &PreparedScene,
-        tick: u32,
-        open: bool,
-        hero: Option<u64>,
-        presence: Option<&BTreeMap<usize, ScriptValue>>,
-    ) -> io::Result<Record> {
-        let command_frame = self.command_ack(tick);
-        // The skin selector shows in the PvP modes while heroes are
-        // assembled, in the Practice Range whenever the screen is open; only
-        // the Practice Range hides the assemble title (match.py
-        // `send_controller`).
-        let practice = scene.controller().practice();
-        let skins = open && (practice || self.assembling);
-        let multikills = self
-            .controller_script
-            .as_ref()
-            .and_then(ControllerScript::multikill)
-            .map(|multikill| announcer::pulse(multikill, tick));
-        let chunk = self
-            .controller
-            .full_owner(command_frame, |cmfd| {
-                scene.controller().controller_frame(
-                    cmfd,
-                    ControllerFrame {
-                        select_open: open,
-                        skins,
-                        hide_assemble: practice,
-                        presence,
-                        hero,
-                        multikills,
-                    },
-                )
-            })
-            .map_err(invalid)?;
-        tracing::debug!(
-            target: "orpheus::join",
-            tick,
-            last = chunk.last,
-            open,
-            hero = format_args!("{:016X}", hero.unwrap_or_default()),
-            presence = presence.is_some(),
-            "controller frame queued"
-        );
-        Ok(Record::script(
-            chunk,
-            hero.is_some() && !open && presence.is_none(),
-        ))
-    }
-
+    /// A full controller frame projected from the controller script
+    /// (`crate::controller`), with a hero switch notice's variables when
+    /// `notice` is given: a separate event, even when the menu is already
+    /// closed. Nothing without a script; a frame the projection can't write
+    /// (a gap the script met, in a debug build) is reported and not sent.
     fn queue_controller(
         &mut self,
         scene: &PreparedScene,
         tick: u32,
-        open: bool,
-        hero: Option<u64>,
-        presence: Option<&BTreeMap<usize, ScriptValue>>,
+        notice: Option<HeroSwitch>,
     ) -> io::Result<()> {
-        let record = self.controller_chunk(scene, tick, open, hero, presence)?;
-        self.select_open = open;
-        self.push(record);
+        self.advance_controller(tick);
+        let Some((shown, mut input)) = self.select_input(scene.controller().practice()) else {
+            return Ok(());
+        };
+        input.notice = notice;
+        let command_frame = self.command_ack(tick);
+        let Some(script) = &self.controller_script else {
+            return Ok(());
+        };
+        self.select_shown = Some(shown);
+        let chunk = match self.controller.full_owner(command_frame, |cmfd| {
+            scene.controller().controller_frame(script, cmfd, input)
+        }) {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                eprintln!("controller frame of {:08X} not sent ({error})", self.owner);
+                return Ok(());
+            }
+        };
+        tracing::debug!(
+            target: "orpheus::join",
+            tick,
+            last = chunk.last,
+            open = shown.open,
+            pick = format_args!("{:016X}", shown.pick.unwrap_or_default()),
+            hero = format_args!("{:016X}", shown.hero.unwrap_or_default()),
+            notice = notice.is_some(),
+            "controller frame queued"
+        );
+        let close = shown.hero.is_some() && !shown.open && notice.is_none();
+        self.push(Record::script(chunk, close));
         self.remove_stale();
         Ok(())
     }

@@ -78,7 +78,7 @@ use std::{collections::BTreeMap, error::Error, fmt};
 use indexmap::IndexMap;
 
 use crate::graph::{Graph, ModeValue};
-use orpheus_core::bits::{BitError, BitWriter};
+use orpheus_core::bits::{BitError, BitReader, BitWriter};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -579,6 +579,96 @@ fn full_frame(
     }
     out.bits(0, 2)?; // no frame events
     Ok(out)
+}
+
+/// The head of a full frame as the client reads it: the owner frame's
+/// CmFD (none for an observer's), the instances (id, graph, parent instance
+/// and raw state) and the entity's variables. For tests and logs: a value
+/// with Stack links or of a kind other than bool, number, asset, entity or
+/// null is an error.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FullHead {
+    pub command_frame: Option<u32>,
+    pub instances: Vec<(u16, u16, Option<(u32, u32)>)>,
+    pub variables: Variables,
+}
+
+pub fn read_full_head(bytes: &[u8]) -> Result<FullHead, WireError> {
+    let mut bits = BitReader::new(bytes);
+    if bits.bit()? {
+        return Err(WireError::InvalidValue);
+    }
+    let command_frame = if bits.bit()? {
+        bits.bit()?;
+        Some(bits.w_var()?)
+    } else {
+        None
+    };
+    let mut instances = Vec::new();
+    let mut id = 0_u16;
+    loop {
+        let step = bits.w_u16()?;
+        if step == 0 {
+            break;
+        }
+        id = id.checked_add(step).ok_or(WireError::InstanceId)?;
+        let graph = bits.bits(16)? as u16;
+        bits.bits(2)?;
+        let parent = if bits.bit()? {
+            Some((bits.w_var()?, bits.w_var()?))
+        } else {
+            None
+        };
+        if bits.bit()? {
+            return Err(WireError::InvalidValue);
+        }
+        instances.push((id, graph, parent));
+    }
+    let mut variables = Variables::new();
+    if bits.bit()? {
+        loop {
+            let variable = bits.w_var()?;
+            if variable == 0 {
+                break;
+            }
+            let value = match bits.bits(4)? {
+                0 => Value::Bool(bits.bit()?),
+                1 => Value::Integer(bits.signed(4)?),
+                2 => Value::Integer(bits.signed(8)?),
+                3 => Value::Integer(bits.signed(16)?),
+                4 => Value::Integer(bits.signed(32)?),
+                5 => Value::Float(bits.bits(4)? as f64),
+                6 => Value::Float(bits.signed(8)? as f64),
+                8 => Value::Float(f64::from(bits.f32()?)),
+                9 => {
+                    bits.bit()?;
+                    let kind = bits.bits(16)?;
+                    let index = if kind == 0 {
+                        0
+                    } else {
+                        u64::from(bits.w_var()?)
+                    };
+                    Value::Asset(kind << 48 | index)
+                }
+                13 => Value::Entity(if bits.bit()? {
+                    bits.bits(32)? as u32
+                } else {
+                    0
+                }),
+                15 if bits.bits(3)? == 3 => Value::Null,
+                _ => return Err(WireError::InvalidValue),
+            };
+            if bits.bit()? {
+                return Err(WireError::InvalidBinding);
+            }
+            variables.insert(variable, value);
+        }
+    }
+    Ok(FullHead {
+        command_frame,
+        instances,
+        variables,
+    })
 }
 
 pub fn subscript(child: u16) -> BitWriter {

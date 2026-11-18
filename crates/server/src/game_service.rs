@@ -64,6 +64,7 @@ use orpheus_content::{
 use orpheus_core::tick::FIRST_TICK;
 use orpheus_lobby::handoff::Handoff;
 use orpheus_script::{
+    controller::HeroSelectRequest,
     vm::{AuraChange, GameMessage},
     wire::chunk,
 };
@@ -989,16 +990,32 @@ struct CombatUi {
     last_hit_frame: u32,
 }
 
+/// The first controller frame a player of `team` gets, hero select open
+/// with the skin selector, projected from a controller script started for
+/// the size check (its frames are the script's: `orpheus_sim::controller`).
 fn initial_controller(
     scene: &PreparedScene,
+    entity: u32,
+    team: u8,
     tick: u32,
 ) -> io::Result<orpheus_core::bits::BitWriter> {
-    scene
-        .controller()
+    let heroes = scene
+        .heroes()
+        .heroes()
+        .map(|hero| (hero.guid, hero.role_guid()))
+        .collect();
+    let controller = scene.controller();
+    let mut script = controller
+        .start_script(scene.shared_graphs(), entity, team, heroes, tick)
+        .map_err(invalid)?;
+    script
+        .hero_select(tick, HeroSelectRequest::OpenOrClose(true))
+        .map_err(invalid)?;
+    controller
         .controller_frame(
+            &script,
             tick,
             ControllerFrame {
-                select_open: true,
                 skins: true,
                 hide_assemble: true,
                 ..ControllerFrame::default()
@@ -1021,7 +1038,7 @@ fn check_scene(
             "the native world bootstrap requires a scene without bot VM graphs",
         ));
     }
-    let controller = initial_controller(scene, FIRST_TICK)?;
+
     for (slot, card) in cards.iter().enumerate() {
         let team = teams[slot];
         let viewer = PlayerAppearance {
@@ -1033,6 +1050,7 @@ fn check_scene(
             card,
         };
         let creates = scene.initial_world(&viewer)?;
+        let controller = initial_controller(scene, viewer.entity, team, FIRST_TICK)?;
         let scripts = [
             script_record(viewer.entity, &controller)?,
             script_record(GAME_MODE_ENTITY, scene.mode_ui())?,

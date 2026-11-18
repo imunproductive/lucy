@@ -450,8 +450,14 @@ impl SceneAssets {
             &map,
             &bots,
         );
-        let controller =
-            Controller::load(&self.graphs, map.mode_guid)?.with_unknowns(self.player_unknowns);
+        let controller = Controller::load(
+            &self.graphs,
+            map.mode_guid,
+            self.codecs
+                .clone()
+                .unwrap_or_else(|| Arc::new(CodecTable::client())),
+        )?
+        .with_unknowns(self.player_unknowns);
         let mode_ui = mode_ui(&self.graphs, map.mode_guid, &Variables::new())?;
         let initial_board =
             self.stats
@@ -861,8 +867,8 @@ impl PreparedScene {
         &self.pools
     }
 
-    pub fn controller(&self) -> Controller {
-        self.controller
+    pub fn controller(&self) -> &Controller {
+        &self.controller
     }
 
     pub fn mode_ui(&self) -> &BitWriter {

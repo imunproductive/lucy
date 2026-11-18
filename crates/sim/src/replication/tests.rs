@@ -1929,6 +1929,7 @@ fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
 }
 
 mod hero_moves;
+mod hero_select;
 mod hero_switch;
 mod hurt;
 mod input_timing;
