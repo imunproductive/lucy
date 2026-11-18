@@ -691,6 +691,15 @@ impl BotScripts {
         self.slot(entity).is_some()
     }
 
+    /// The bots whose scripts run now.
+    pub(crate) fn entities(&self) -> Vec<u32> {
+        self.slots
+            .iter()
+            .flatten()
+            .map(|script| script.entity)
+            .collect()
+    }
+
     /// A game message at world tick `tick` ([`crate::messages`]) to the
     /// bot it names, or to every live bot but its sender
     /// ([`EVERY_ENTITY`]): each body's entries run now and a changed frame

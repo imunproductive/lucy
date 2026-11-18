@@ -173,6 +173,16 @@ impl SpawnedFields {
             .is_some_and(|placed| placed.running())
     }
 
+    /// The fields whose graphs run now.
+    pub fn entities(&self) -> Vec<u32> {
+        self.world
+            .entities()
+            .iter()
+            .filter(|placed| placed.running())
+            .map(|placed| placed.entity)
+            .collect()
+    }
+
     /// A game message to the field it names, or to every field but its
     /// sender ([`EVERY_ENTITY`]): their entries run now.
     pub fn receive_message(&mut self, message: &GameMessage) {

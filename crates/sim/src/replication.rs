@@ -4033,6 +4033,18 @@ impl WorldDelivery {
                 .is_some_and(|script| script.entity() == entity)
     }
 
+    /// The entities whose graphs this player runs now ([`Self::runs`]).
+    pub fn script_entities(&self) -> Vec<u32> {
+        let body = self
+            .current_body()
+            .filter(|&body| self.takes_body_message(body));
+        let controller = self
+            .controller_script
+            .as_ref()
+            .map(ControllerScript::entity);
+        body.into_iter().chain(controller).collect()
+    }
+
     /// A game message at `tick` ([`crate::messages`]) to the player's body
     /// or controller, whichever it names, or to both but its sender
     /// ([`EVERY_ENTITY`]). `players`: the room's controllers and teams, as
