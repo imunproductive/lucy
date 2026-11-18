@@ -46,10 +46,15 @@ pub const RAY_PROFILES_FILE: &str = "game_ray_profiles_174.json";
 
 /// The map mask of a shot or projectile whose volley names no ray profile,
 /// which is nearly every hitscan weapon's (Soldier: 76's rifle, Tracer's
-/// pistols, Cassidy's Peacekeeper, Widowmaker's rifle). Assumption: the
-/// client fills such a request with `STU_8EFC337B`'s class defaults, whose
-/// `m_category` packs to it; every 104319 profile's map mask is this one or
-/// `0x1F9F` (refs report `WeaponRays.md`, IDA question 1).
+/// pistols, Cassidy's Peacekeeper, Widowmaker's rifle): the client's query
+/// then takes profile `0001` (`0x7FF789AFEEB0`). Assumption: `0001`'s
+/// `m_category` (none in the data) packs to the class defaults; not
+/// confirmed, and doubtful: three other profiles without one (`0002`,
+/// `0017`, `0018`) load `0x0040` in the game (`orpheus_assets`
+/// `ray_profiles`); a session firing Soldier: 76's rifle saw no `0001`
+/// query being packed (the weapon's query object keeps its packed masks).
+/// Every 104319 profile's map mask in the data is this one or `0x1F9F`
+/// (refs reports `WeaponRays.md`, `Grapple.md` "DayGrapple2").
 pub const DEFAULT_MAP_MASK: u16 = 0x1FDF;
 
 /// Each ray profile's map mask (`097`, `STU_8EFC337B` `m_category` packed):

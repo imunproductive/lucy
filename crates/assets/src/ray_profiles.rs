@@ -6,8 +6,19 @@
 //! shapes with (leafall903/ORPHEUS (MIT) `docs/COMMUNICATION_WHEEL.txt`:
 //! `BEEEB0` packs +28 and +35 into request +2 and +0, `E122A0` copies +0
 //! into the static traversal). A map triangle or prop shape stops the ray
-//! when its mask shares a bit with the map mask. In 104319 every profile's
-//! is `0x1FDF` or `0x1F9F` (refs report `WeaponRays.md`).
+//! when its mask shares a bit with the map mask.
+//!
+//! The data's packing is not always what the client loads: measured in the
+//! game (2026-11-19, owdbg probe at `0x7FF789AFF25B` in the query
+//! `0x7FF789AFEEB0`, after both packs `0x7FF78A6B8FC0`: `r15` the profile,
+//! `[rsi+0x1DA]` the packed `m_category`, `[rsi+0x1C8]` the loaded
+//! profile), profiles `0002`, `0017` and `0018` (Widowmaker's Grappling
+//! Hook) load an `m_category` of `m_E552CFAA` alone, map mask `0x0040`,
+//! where their data has no `m_category` (packed here as the class's
+//! assumed defaults, `0x1FDF`). Those three take [`MEASURED`]; the others
+//! keep the data's packing, unconfirmed (their loaded `m_CBCB2AB9` bytes
+//! also differ from the data's, so the reading of explicit values is in
+//! doubt too; refs report `Grapple.md` "DayGrapple2").
 
 use std::path::Path;
 
@@ -21,6 +32,10 @@ use crate::{
 };
 
 pub(crate) const PATH: &str = "data/game_ray_profiles_174.json";
+
+/// Map masks measured in the game where the data's packing differs from
+/// what the client loads (module docs): profile index, map mask.
+const MEASURED: [(u64, u16); 3] = [(0x0002, 0x0040), (0x0017, 0x0040), (0x0018, 0x0040)];
 
 const RAY_PROFILE: u16 = 0x097;
 const PROFILE_CLASS: &str = "STU_8EFC337B";
@@ -38,17 +53,23 @@ pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
         let category = root
             .get("m_category")
             .and_then(|value| asset.resolve(value));
-        let mask = pack_flags(|field| {
-            category?
-                .fields
-                .iter()
-                .find(|(hash, _)| *hash == field)
-                .and_then(|(_, value)| match value {
-                    Value::Int(value) => Some(*value != 0),
-                    Value::UInt(value) => Some(*value != 0),
-                    _ => None,
-                })
-        });
+        let packed = || {
+            pack_flags(|field| {
+                category?
+                    .fields
+                    .iter()
+                    .find(|(hash, _)| *hash == field)
+                    .and_then(|(_, value)| match value {
+                        Value::Int(value) => Some(*value != 0),
+                        Value::UInt(value) => Some(*value != 0),
+                        _ => None,
+                    })
+            })
+        };
+        let mask = MEASURED
+            .iter()
+            .find(|(measured, _)| *measured == index)
+            .map_or_else(packed, |&(_, mask)| mask);
         profiles.insert(key(typed(index, RAY_PROFILE)), json!(mask));
     }
     Ok(vec![Output::json(
