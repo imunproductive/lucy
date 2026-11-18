@@ -33,7 +33,7 @@ use orpheus_content::{
     voice_sets::VoiceCatalog,
 };
 use orpheus_script::{
-    bot::{BotBody, BotError, BotSpawn as ScriptSpawn, practice_nameplate},
+    bot::{BotBody, BotError, BotSpawn as ScriptSpawn, RANGE_BOT, practice_nameplate},
     codecs::CodecTable,
     graph::GraphStore,
     snapshot::{ProjectedSnapshot, SnapshotEncoder, SnapshotError, View},
@@ -262,8 +262,10 @@ impl BotScripts {
 
     /// match.py `_prepare_bot_script`: a firing bot of the Practice Range
     /// starts its firing behavior at its spawner. The live nameplate tool's
-    /// variables are set before the first frame.
+    /// variables are set before the first frame. A bot made again after a
+    /// death puts itself together ([`ScriptSpawn::respawned`]).
     fn prepare(&mut self, slot: usize, bot: &Bot, tick: u32, plate: &BotPlate) {
+        let respawned = self.prepared[slot].is_some_and(|entity| entity != bot.entity);
         self.prepared[slot] = Some(bot.entity);
         self.slots[slot] = None;
         let Some(graphs) = &self.graphs else {
@@ -278,6 +280,7 @@ impl BotScripts {
             mode: self.mode,
             health: bot.spawn.health,
             firing_position: (bot.spawn.firing && self.practice).then_some(bot.position),
+            respawned,
         };
         let mut originals = BTreeMap::new();
         let started = BotBody::start(Arc::clone(graphs), spawn, self.unknowns)
@@ -813,6 +816,14 @@ impl BotScripts {
     /// The world tick of the bot's death and its killer.
     fn death(&self, entity: u32) -> Option<(u32, u32)> {
         self.script(entity).and_then(|script| script.death)
+    }
+
+    /// Whether the bot's script holds entity variable [`RANGE_BOT`].
+    fn range_bot(&self, entity: u32) -> bool {
+        self.script(entity)
+            .and_then(|script| script.body.snapshot())
+            .and_then(|snapshot| snapshot.variables.get(&RANGE_BOT))
+            .is_some_and(orpheus_script::expr::truthy)
     }
 
     fn encoder(&self) -> Option<SnapshotEncoder<'_>> {
@@ -1449,7 +1460,11 @@ impl Flush<'_, '_> {
         self.queue(entity, view, projected, false)
     }
 
-    /// combat.py `kill_feed_allowed`.
+    /// combat.py `kill_feed_allowed`. A kill between two bots that both
+    /// hold [`RANGE_BOT`] draws no line, as the bot's death graph `0C18`
+    /// sends its kill feed message only when the victim or the killer lacks
+    /// it (read from data upstream, kjs-port `a9096f5d`, `kill-feed.md`; the
+    /// original client drew no line for such kills).
     fn kill_feed_allowed(&self, entity: u32) -> bool {
         let Some((tick, killer)) = self.scripts.death(entity) else {
             return false;
@@ -1458,6 +1473,7 @@ impl Flush<'_, '_> {
             && kill_feed_fresh(self.context.tick, tick)
             && (self.context.identity)(entity)
             && (self.context.identity)(killer)
+            && !(self.scripts.range_bot(entity) && self.scripts.range_bot(killer))
     }
 
     /// server.py `_flush_bot_nameplates` for one bot: the nameplate alone

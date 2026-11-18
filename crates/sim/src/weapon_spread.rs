@@ -187,17 +187,19 @@ pub fn direction(
 /// A shot's direction: `aim` turned by its volley's growing spread (a
 /// launch `STU_239B571E` with a spread ramp; `ShotEvent::spread`), at a
 /// uniform radius in the cone, else `aim`. The seed's identities are the
-/// shot's body entity, instance, state node and activation counter, and
-/// the shot number its ordinal in the volley: upstream's reconstruction
-/// (`mccree.py` `fan_direction`, which it uses for McCree's Fan the Hammer
-/// alone; here for every such volley).
+/// shot's body entity, instance, the volley's `m_states` index (the client's
+/// seed reads the index written at `1B914DD`, `D74B68`; upstream main
+/// `9ed63eed`) and activation counter, and the shot number its ordinal in
+/// the volley: upstream's reconstruction (`mccree.py` `fan_direction`,
+/// which it uses for McCree's Fan the Hammer alone; here for every such
+/// volley). The owner word stays a guess.
 pub fn shot_direction(
     shot: &ShotEvent,
     node: &Node,
     aim: Vec3,
     evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
 ) -> Result<Vec3, EvalError> {
-    let Some(normalized) = shot.spread else {
+    let (Some(normalized), Some(state)) = (shot.spread, node.state) else {
         return Ok(aim);
     };
     let Some(cone) = spread_cone(node, normalized, evaluate)?.filter(|cone| *cone > 0.0) else {
@@ -206,7 +208,7 @@ pub fn shot_direction(
     let base = seed_base(
         shot.entity,
         u32::from(shot.instance),
-        u32::from(node.pos),
+        u32::from(state),
         u32::from(shot.activation),
     );
     Ok(direction(aim, cone, base, shot.ordinal, 0, false))

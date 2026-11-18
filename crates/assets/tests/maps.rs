@@ -18,10 +18,56 @@ fn check(name: &str) {
     }
 }
 
+/// Known difference: the PvE missions' start markers (entities whose only
+/// team tag is 0x310, without the spawn component) are spawns now (upstream
+/// kjs `08561fe4`): Junkenstein's Revenge `6C9` has 6, King's Row
+/// (Uprising) `6FE` and Rialto (Retribution) `79F` 4 each, all team 0,
+/// where the pack (Python's extractor) has none. The rest is the pack's.
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and a runtime pack (just test-assets <install> <pack>)"]
 fn game_maps_matches_the_pack() {
-    check("game_maps");
+    use orpheus_assets::Output;
+    use serde_json::{Value, json};
+
+    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
+    let pack = orpheus_testkit::oracle_pack();
+    let derivation = DERIVATIONS
+        .iter()
+        .find(|derivation| derivation.name == "game_maps")
+        .unwrap();
+    let outputs = (derivation.derive)(&install, &pack).unwrap();
+    assert_eq!(outputs.len(), 1);
+    let output = &outputs[0];
+    let mut derived: Value = serde_json::from_slice(&output.bytes).unwrap();
+    for (map, starts) in [
+        ("0x08000000000006C9", 6),
+        ("0x08000000000006FE", 4),
+        ("0x080000000000079F", 4),
+    ] {
+        let spawns = derived[map]["spawns"].take();
+        let spawns = spawns.as_array().unwrap();
+        assert_eq!(spawns.len(), starts, "{map}");
+        assert!(spawns.iter().all(|spawn| spawn["team"] == 0), "{map}");
+        derived[map]["spawns"] = json!([]);
+    }
+    let without_starts = Output {
+        path: output.path.clone(),
+        bytes: serde_json::to_vec(&derived).unwrap(),
+    };
+    // The pack's `mirrored` lists went in 4a50b2b (stage A: the server
+    // placeables are in `game_map_areas` now); compare without them.
+    let mut oracle: Value =
+        serde_json::from_slice(&std::fs::read(pack.join(&output.path)).unwrap()).unwrap();
+    for map in oracle.as_object_mut().unwrap().values_mut() {
+        map.as_object_mut().unwrap().remove("mirrored");
+    }
+    let stripped = std::env::temp_dir().join(format!("orpheus-game-maps-{}", std::process::id()));
+    let file = stripped.join(&output.path);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, serde_json::to_vec(&oracle).unwrap()).unwrap();
+    let found = diff(&without_starts, &stripped).unwrap();
+    std::fs::remove_dir_all(&stripped).unwrap();
+    assert_eq!(found, Difference::Same);
 }
 
 #[test]

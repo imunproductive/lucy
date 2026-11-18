@@ -17,12 +17,14 @@ const SPAWNED_GRAPHS: &[u64] = &[
 
 fn derived(path: &str) -> Output {
     let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::oracle_pack();
     let graphs = DERIVATIONS
         .iter()
         .find(|derivation| derivation.name == "graphs")
         .unwrap();
-    (graphs.derive)(&install, &pack)
+    // The derivation reads other derivations' outputs (the placed entities
+    // of `game_map_areas_174.json`, since 5866ba3, which no pack has), so it
+    // runs over the derived cache, not the pack.
+    (graphs.derive)(&install, &orpheus_testkit::runtime_dir())
         .unwrap()
         .into_iter()
         .find(|output| output.path == path)
@@ -55,20 +57,16 @@ fn hero_bundle_matches_the_pack() {
 
 /// The bot bundle likewise keeps every pack graph, entity definition and
 /// AI weapon button; the derivation adds the same graphs as to the hero
-/// bundle (volley-spawned and match flow graphs) and each bot entity's
-/// target tags, which the pack doesn't have.
+/// bundle (volley-spawned and match flow graphs), each bot entity's target
+/// tags, which the pack doesn't have, and the definitions of the map's
+/// placed entities whose scripts the server runs (since 5866ba3, from
+/// `game_map_areas_174.json`), so the pack's entities are a subset.
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and a runtime pack (just test-assets <install> <pack>)"]
 fn bot_bundle_matches_the_pack() {
     keeps_the_pack(
         "data/game_graphs_bots_174.json.gz",
-        &[
-            "version",
-            "bodies",
-            "mode_variables",
-            "entities",
-            "ai_weapon_buttons",
-        ],
+        &["version", "bodies", "mode_variables", "ai_weapon_buttons"],
     );
 }
 
@@ -108,6 +106,17 @@ fn keeps_the_pack(path: &str, equal: &[&str]) -> std::collections::BTreeMap<u64,
             None,
             "{key}"
         );
+    }
+    // Every entity definition the pack has comes out unchanged; the
+    // derivation may add more.
+    if let Some(entities) = pack["entities"].as_object() {
+        for (key, entity) in entities {
+            assert_eq!(
+                first_difference(&derived["entities"][key], entity, key),
+                None,
+                "entity {key}"
+            );
+        }
     }
     let contains = |outer: &Value, inner: &Value| {
         inner

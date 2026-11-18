@@ -708,7 +708,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                         }
                         None => vec![direction],
                     };
-                    return Some(PosedShot::Projectile(Box::new(PosedProjectile {
+                    return Some(vec![PosedShot::Projectile(Box::new(PosedProjectile {
                         shot,
                         ballistics,
                         origin,
@@ -721,7 +721,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                         volleys,
                         projectiles,
                         pellets,
-                    })));
+                    }))]);
                 }
                 let hit = HitDefinition::from_authored(node.field("m_6396149F")?, &mut evaluate)
                     .ok()??;
@@ -735,17 +735,44 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                     to_float(&evaluate(reach).ok()?)
                 };
                 log_spread();
-                Some(PosedShot::Hitscan(PosedHitscan {
-                    source: shot.entity,
-                    origin,
-                    command,
-                    direction: spread,
-                    shot_frame: shot.frame,
-                    reach,
-                    hit,
-                    ray_profile: ray_profile(node, &mut evaluate),
-                }))
+                let ray_profile = ray_profile(node, &mut evaluate);
+                // A hitscan shotgun (D.Va's Fusion Cannons `050A` n6,
+                // Reaper's Hellfire Shotguns `0019` n10) fires a ray per
+                // pellet of its rings, each hit its own 25001 (upstream kjs
+                // `1e2e10c3`, seen there: a Training Bot at 6 m dies about
+                // 1.3 s into D.Va's held fire). A volley without rings fires
+                // one ray whatever its pellet count.
+                let directions = match pellet_rings(node, &mut evaluate).ok()? {
+                    Some(rings) => {
+                        log_assumption(
+                            shot.graph,
+                            Some(node.pos),
+                            "STU_613BDDB0",
+                            "pellets evenly spaced around each ring, the first on the right",
+                        );
+                        ring_directions(spread, &rings)
+                    }
+                    None => vec![spread],
+                };
+                Some(
+                    directions
+                        .into_iter()
+                        .map(|direction| {
+                            PosedShot::Hitscan(PosedHitscan {
+                                source: shot.entity,
+                                origin,
+                                command,
+                                direction,
+                                shot_frame: shot.frame,
+                                reach,
+                                hit,
+                                ray_profile,
+                            })
+                        })
+                        .collect(),
+                )
             })
+            .flatten()
             .collect();
         posed.extend(health);
         posed

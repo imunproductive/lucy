@@ -355,6 +355,7 @@ fn read_profile(path: &Path) -> io::Result<(Profile, bool)> {
     let data: Value = serde_json::from_slice(&fs::read(path)?).map_err(json_error)?;
     let migrate = data.get(UNLOCKS_RESET_MARKER) != Some(&Value::Bool(true));
     let mut profile: Profile = serde_json::from_value(data).map_err(json_error)?;
+    crate::saved_settings::normalize_values(&mut profile);
     if migrate {
         profile.unlocked_items.clear();
     }

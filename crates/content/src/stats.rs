@@ -13,12 +13,14 @@
 //! 20308 card, the hero from his component 75. Its own numbers are the local
 //! player's component 64 (0x7FF7899B3F90 -> 0x7FF789A1CB00): fields 5-12 name
 //! 8 stats (062 GUIDs) with values in 21-28 and a medal each in 37-44; fields
-//! 13-18 name 6 more with values in 29-34; GUID 0 is no entry. The value is
-//! printed by the stat's display type (0x7FF789ABFD50). A medal (the stat
-//! item's Rank, 005A.05E) is 1 gold, 2 silver, 3 bronze, 0 none. Fields 5-34
-//! and 37-44 are owner-only (field flag 0x10). Unverified: which list goes in
-//! which slots, and the medal rule (OW1's: best three among teammates, above
-//! 0, not for a flagged stat like Deaths).
+//! 13-18 name 6 more with values in 29-34; GUID 0 is no entry. The GUIDs go
+//! as ids (a byte mask and the non-zero bytes): as raw u64 the board showed
+//! "UNKNOWN STAT" (seen live upstream, kjs `254fa913`, `tab-board.md`, which
+//! also saw this slot assignment named right). The value is printed by the
+//! stat's display type (0x7FF789ABFD50). A medal (the stat item's Rank,
+//! 005A.05E) is 1 gold, 2 silver, 3 bronze, 0 none. Fields 5-34 and 37-44
+//! are owner-only (field flag 0x10). Unverified: the medal rule (OW1's: best
+//! three among teammates, above 0, not for a flagged stat like Deaths).
 //!
 //! On Fire: the player card's fire meter (01CF st37's FireScore,
 //! 0x7FF78982EBB0) reads the local player's component 64 (MECGMPStats):
@@ -29,8 +31,8 @@
 //! body's possessor, on any client. The bar shows only in the Tutorial mode
 //! (0019.0C5): its FireBarVisible asks GetPvPEntity, which this client always
 //! answers with no entity (0x7FF789BD8000). Component 64's field types (type
-//! 0x7FF78BFE9DA0): 5 nested `{u64, f32}`, 14 u64, 16 f32, u16, u8 (36), 8
-//! u8. The server rule that fills the score is not in the client; the data
+//! 0x7FF78BFE9DA0): 5 nested `{u64, f32}`, 14 stat GUIDs, 16 f32, u16, u8
+//! (36), 8 u8. The server rule that fills the score is not in the client; the data
 //! has only the score events and their weights (003F.054).
 
 use std::{collections::HashMap, fs, io, path::Path};
@@ -228,7 +230,7 @@ impl StatsCatalog {
                 } else {
                     record.value(stat) as f32
                 };
-                fields[stat_offset + index] = Some(ComponentValue::U64(stat));
+                fields[stat_offset + index] = Some(ComponentValue::Id(stat));
                 fields[value_offset + index] = Some(ComponentValue::F32(value));
             }
         }
@@ -466,18 +468,22 @@ mod tests {
         let medals = Medals::from([(ELIMINATIONS, GOLD)]);
         let board = catalog.component(&stats, 0, Some(HERO), Some(&medals));
         let record = update(3, std::slice::from_ref(&board)).unwrap();
-        assert_eq!(record.bit_len(), 1485);
+        // Python's bytes had the stat GUIDs as raw u64 (1485 bits); they go
+        // as ids now, a byte mask and the non-zero bytes, as the client reads
+        // them (seen live upstream, kjs `254fa913`: raw u64 named "UNKNOWN
+        // STAT"). Every other field is Python's.
+        assert_eq!(record.bit_len(), 813);
         assert_eq!(
             format!("{:x}", Sha256::digest(record.as_bytes())),
-            "87fc1849c25d7c6d89a8418a326436b2f4de432c535be54f299389579f027128"
+            "7d2d94c00ae0186167a88de22c147c26c4a930827b68d418be7b450d97d6d32a"
         );
         assert_eq!(
             board.fields[MEDAL_STAT],
-            Some(ComponentValue::U64(ELIMINATIONS))
+            Some(ComponentValue::Id(ELIMINATIONS))
         );
         assert_eq!(board.fields[MEDAL_VALUE], Some(ComponentValue::F32(3.0)));
         assert_eq!(board.fields[MEDAL], Some(ComponentValue::U8(GOLD)));
-        assert_eq!(board.fields[HERO_STAT], Some(ComponentValue::U64(HEALING)));
+        assert_eq!(board.fields[HERO_STAT], Some(ComponentValue::Id(HEALING)));
         assert_eq!(board.fields[HERO_VALUE], Some(ComponentValue::F32(80.125)));
         assert_eq!(board.fields[SCORE], None);
         assert_eq!(board.fields[THRESHOLD], None);
@@ -486,7 +492,7 @@ mod tests {
         for index in 0..HERO_SLOTS {
             assert_eq!(
                 before_pick.fields[HERO_STAT + index],
-                Some(ComponentValue::U64(0))
+                Some(ComponentValue::Id(0))
             );
             assert_eq!(
                 before_pick.fields[HERO_VALUE + index],
@@ -496,9 +502,9 @@ mod tests {
         let switch_mode = catalog.component(&stats, MODE, Some(HERO), None);
         assert_eq!(
             switch_mode.fields[MEDAL_STAT + 1],
-            Some(ComponentValue::U64(0))
+            Some(ComponentValue::Id(0))
         );
-        assert_eq!(switch_mode.fields[HERO_STAT], Some(ComponentValue::U64(0)));
+        assert_eq!(switch_mode.fields[HERO_STAT], Some(ComponentValue::Id(0)));
     }
 
     #[test]
@@ -610,9 +616,11 @@ mod tests {
             }
         }
         assert_eq!((modes.len(), heroes.len(), case), (14, 32, 462));
+        // Python's corpus with the stat GUIDs as ids (kjs `254fa913`; see
+        // `owner_scoreboard_writes_full_slots_and_matches_python_at_bit_offset`).
         assert_eq!(
             format!("{:x}", digest.finalize()),
-            "50198309f54b9b975c225a13a2d6c0a5277faaa8615f715ad155e95e120b94de"
+            "6d9f46b2040bf950a11664db308c13756d09be0987ea38a3cdee90cb558fcc60"
         );
     }
 
