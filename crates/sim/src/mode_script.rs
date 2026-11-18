@@ -4,8 +4,9 @@
 //!
 //! At the match's start the room starts the mode graph once
 //! ([`ModeRunner::start`]). If it runs with no refused content and no
-//! assumption, it stays: the flow's variables are written into it each
-//! tick, it advances with the server frame, its observer frames are the
+//! assumption, it stays: the flow's variables and the match's players
+//! (`ModeScript::set_players`) are written into it each tick, it advances
+//! with the server frame, its observer frames are the
 //! mode entity's, and its messages go with every other entity's
 //! ([`crate::messages`]), which routes it those sent to the mode entity or
 //! to every entity. Otherwise
@@ -19,7 +20,7 @@ use orpheus_core::bits::BitWriter;
 use orpheus_script::{
     codecs::CodecTable,
     graph::GraphStore,
-    mode::{ModeScript, ModeWorld},
+    mode::{ModePlayer, ModeScript, ModeWorld},
     snapshot::{SnapshotEncoder, View},
     vm::{GameMessage, InitFault, MessageEnd, Unknowns},
     wire::Variables,
@@ -59,17 +60,21 @@ pub enum ModeRunner {
 }
 
 impl ModeRunner {
-    pub fn start(scene: &PreparedScene, frame: u32) -> Self {
+    /// Start the mode graph with the match's `players` now. The start
+    /// condition `STU_81A9AB10` (server-only) is the server's own rule:
+    /// true once the match's players are in the world, when the room
+    /// starts the mode.
+    pub fn start(scene: &PreparedScene, frame: u32, players: Vec<ModePlayer>) -> Self {
         let mode = scene.map().mode_guid;
         let Some(graph) = mode_graph(mode) else {
             return Self::HandBuilt { gaps: Gaps::new() };
         };
         let graphs = scene.shared_graphs();
         // The team sizes are the game's, as the 20300/20301 game struct
-        // sends them. The room gives no players or start condition yet:
-        // with the graph's gaps the flow drives the match, so the graph only
-        // lists them here.
+        // sends them.
         let mut world = ModeWorld::new(Arc::clone(&graphs), mode, Unknowns::for_build());
+        world.players = players;
+        world.ready = true;
         world.team_sizes = crate::instance::team_entries(scene.map());
         world.mode_random = Some(scene.mode_random());
         world.match_seed = Some(crate::scene::draw_match_seed());
@@ -113,14 +118,20 @@ impl ModeRunner {
         }
     }
 
-    /// One server frame with the flow's variables; the messages the graph
-    /// sent.
-    pub fn advance(&mut self, frame: u32, variables: &Variables) -> Vec<GameMessage> {
+    /// One server frame with the flow's variables and the match's players
+    /// now; the messages the graph sent.
+    pub fn advance(
+        &mut self,
+        frame: u32,
+        variables: &Variables,
+        players: Vec<ModePlayer>,
+    ) -> Vec<GameMessage> {
         let Self::Graph { script, .. } = self else {
             return Vec::new();
         };
         let result = script
             .set_variables(variables)
+            .and_then(|()| script.set_players(players, true))
             .and_then(|()| script.advance(frame).map(|_| ()));
         match result {
             Ok(()) => script.take_messages(),

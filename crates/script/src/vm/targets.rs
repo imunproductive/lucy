@@ -694,6 +694,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             candidate: self.candidate.as_ref(),
             watcher: None,
             read_native: false,
+            natives: Vec::new(),
             assumed: Vec::new(),
         };
         let result = expr::evaluate(config, &mut context);

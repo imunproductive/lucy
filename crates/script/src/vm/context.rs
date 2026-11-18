@@ -132,8 +132,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
 
     fn native(&mut self, config: &Json) -> Option<Value> {
         self.read_native = true;
-        let value = self.world.native(self.site, config)?;
         let class = config.get("$").and_then(Json::as_str).unwrap_or_default();
+        if !self.natives.iter().any(|read| read == class) {
+            self.natives.push(class.to_owned());
+        }
+        let value = self.world.native(self.site, config)?;
         if let Some(answer) = self.world.assumption(class) {
             self.assumed.push((class.to_owned(), answer));
         }
@@ -334,6 +337,7 @@ impl<W: World> Context for InstanceContext<'_, W> {
             candidate: None,
             watcher: None,
             read_native: false,
+            natives: Vec::new(),
             assumed: Vec::new(),
         };
         let value = expr::evaluate(field(row, "m_value"), &mut context);
@@ -348,6 +352,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
             }
         }
         self.read_native |= context.read_native;
+        for class in context.natives {
+            if !self.natives.contains(&class) {
+                self.natives.push(class);
+            }
+        }
         self.assumed.extend(context.assumed);
         value.ok()
     }

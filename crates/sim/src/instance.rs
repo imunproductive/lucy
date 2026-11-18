@@ -39,7 +39,7 @@ use orpheus_wire::messages::Message;
 
 pub const RETAIL_QUANTA: u32 = 16_000;
 pub const TOURNAMENT_QUANTA: u32 = 7_000;
-pub(crate) const FREE_FOR_ALL_TEAM: u8 = 4;
+pub const FREE_FOR_ALL_TEAM: u8 = 4;
 /// A debugging switch: `ORPHEUS_DEBUG_BOTS_IN_ROSTER=1` names the training
 /// bots in the 20300/20301 roster as kjs did (see the module notes), for an
 /// in-game check of whether the kill feed needs it. Off by default:

@@ -46,6 +46,20 @@ pub fn team_size(entries: &[(u8, u8)], team: i64) -> Option<i64> {
     entry(team).or_else(|| entry(ANY_TEAM))
 }
 
+/// A player of the match as the mode graph knows him: his controller, his
+/// current body (none while he has none) and his team as the client reads
+/// it from the entity's filter bits (a free-for-all player is on team 4).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ModePlayer {
+    pub controller: u32,
+    pub body: Option<u32>,
+    pub team: i64,
+}
+
+/// The native configs whose answers come from the match's players and its
+/// start condition ([`ModeScript::set_players`]).
+const PLAYER_NATIVES: [&str; 3] = ["STU_A5B9EAAD", "STU_A90795E2", "STU_81A9AB10"];
+
 /// What the mode graph asks outside its own entity. The mode entity's
 /// variables are its own (the server writes them into the component);
 /// the bundle's mode variables (`0C5.m_3CE93B76`) answer the rest.
@@ -53,9 +67,9 @@ pub struct ModeWorld {
     pub graphs: Arc<GraphStore>,
     pub mode: u64,
     pub unknowns: Unknowns,
-    /// The players on teams 0 and 1: the client counts the team's entities
-    /// but those of definition `003:25CB` (`STU_A5B9EAAD`).
-    pub players: [i64; 2],
+    /// The match's players (AI heroes too): the client counts a team's
+    /// entities but those of definition `003:25CB` (`STU_A5B9EAAD`).
+    pub players: Vec<ModePlayer>,
     /// Each team's size as the server sends it in the 20300/20301 game
     /// struct (`#0.#0.#0.#4`: byte `+0x60` the team, 5 any team, `+0x61`
     /// its size; `orpheus_sim::instance`).
@@ -86,7 +100,7 @@ impl ModeWorld {
             graphs,
             mode,
             unknowns,
-            players: [0; 2],
+            players: Vec::new(),
             team_sizes: Vec::new(),
             ready: false,
             mode_random: None,
@@ -96,6 +110,21 @@ impl ModeWorld {
             map_rays: None,
             outbox: Vec::new(),
         }
+    }
+
+    /// The players on `team`.
+    fn team_players(&self, team: i64) -> i64 {
+        self.players
+            .iter()
+            .filter(|player| player.team == team)
+            .count() as i64
+    }
+
+    /// The player whose controller or body `entity` is.
+    fn player_of(&self, entity: u32) -> Option<&ModePlayer> {
+        self.players
+            .iter()
+            .find(|player| player.controller == entity || player.body == Some(entity))
     }
 
     /// The game messages the graph sent other entities, for the match to
@@ -145,8 +174,12 @@ impl World for ModeWorld {
 
     /// The mode entity has no team: the server gives it no component 25
     /// (`orpheus_sim::scene::mode_create`), so its filter word is empty.
+    /// A player's controller and body are on his team.
     fn entity_team(&self, _site: Site, entity: u32) -> Option<i64> {
-        (entity == GAME_MODE_ENTITY).then_some(-1)
+        if entity == GAME_MODE_ENTITY {
+            return Some(-1);
+        }
+        Some(self.player_of(entity)?.team)
     }
 
     fn entity_filter_flags(&self, _site: Site, entity: u32) -> Option<u64> {
@@ -167,9 +200,11 @@ impl World for ModeWorld {
         Some(placed.tags.contains(&tag))
     }
 
-    /// The mode entity and the map's tagged placeables exist.
+    /// The mode entity, the players' controllers and bodies and the map's
+    /// tagged placeables exist.
     fn entity_exists(&self, _site: Site, entity: u32) -> Option<bool> {
         let known = entity == GAME_MODE_ENTITY
+            || self.player_of(entity).is_some()
             || self
                 .map_tags
                 .as_ref()
@@ -200,12 +235,15 @@ impl World for ModeWorld {
     /// of the team's entities but those of definition `003:25CB`, at least
     /// the team's size ([`World::team_size`]). `Eval_STU_A5B9EAAD`
     /// 0x7FF789BF9E10, size `sub_7FF789CADB40` (ModeGraphGaps.md, "Client
-    /// tools pass (2026-11-16)"). All seven uses ask both teams 0 and 1
-    /// before the match leaves its waiting phase (`0F4A` nodes 14 and 419,
-    /// `0EC2` 15 and 380, `0D0B` 237, `0F60` 27, `0F73` 16), so the start
-    /// rule `25CA` waits for full teams: a game with fewer players than its
-    /// team sizes waits there (the start rule `25CB` waits for message
-    /// `0789` instead).
+    /// tools pass (2026-11-16)"). Its uses ask both teams 0 and 1 before
+    /// the match leaves its waiting phase (`0F4A` nodes 14 and 419, `0EC2`
+    /// 15 and 380, `0D0B` 237, `0F60` 27), or the free-for-all team 4
+    /// (`0F73` 16), so the start rule `25CA` waits for full teams: a game
+    /// with fewer players than its team sizes waits there (the start rule
+    /// `25CB` waits for message `0789` instead). The evaluator makes the
+    /// asking state depend on the game's player list (channel 2 of the
+    /// game's dependency table, `sub_7FF789AEBA60`), so a player who joins
+    /// re-checks the waiting state's transition ([`ModeScript::set_players`]).
     ///
     /// `STU_81A9AB10` (a bool with no fields) gates the same start in the
     /// default start rule (ruleset `#9672` = `25CA`; `0F4A` node 7: true
@@ -225,8 +263,7 @@ impl World for ModeWorld {
     /// (Team Deathmatch and Deathmatch, on `06A6`) creates the team's size
     /// less it in AI heroes, `0D44` holds a count to it, and Elimination
     /// (`0D0B` rid181) gives the round to team 0 when it has players and
-    /// team 1 none. The server answers [`ModeWorld::players`] (teams 0 and
-    /// 1; other teams unanswered).
+    /// team 1 none. The server answers [`ModeWorld::players`]' count.
     fn native(&mut self, _site: Site, config: &Json) -> Option<Value> {
         let literal_team = |field: &str| {
             let team = config.get(field)?;
@@ -240,15 +277,13 @@ impl World for ModeWorld {
             "STU_082FA44E" => self.graphs.tunables().value(config).map(Value::Float),
             "STU_A5B9EAAD" => {
                 let team = literal_team("m_team")?;
-                let players = *self.players.get(usize::try_from(team).ok()?)?;
-                Some(Value::Bool(players >= self.team_size(team)?))
-            }
-            "STU_A90795E2" => {
-                let team = literal_team("m_6CE7A900")?;
-                Some(Value::Integer(
-                    *self.players.get(usize::try_from(team).ok()?)?,
+                Some(Value::Bool(
+                    self.team_players(team) >= self.team_size(team)?,
                 ))
             }
+            "STU_A90795E2" => Some(Value::Integer(
+                self.team_players(literal_team("m_6CE7A900")?),
+            )),
             "STU_81A9AB10" => Some(Value::Bool(self.ready)),
             "STU_21A5BB52" => Some(Value::Bool(false)),
             _ => None,
@@ -292,12 +327,23 @@ pub struct ModeScript {
 impl ModeScript {
     /// Start `graph` as the mode entity's instance 1 at `frame`, against
     /// `world`.
+    /// The mode entity's own variables start as its mode's
+    /// (`0C5.m_3CE93B76`, the bundle's `mode_variables`): the Practice
+    /// Range `005A`'s `#27534` true makes `13C0`'s #27536 false, the board
+    /// poster st6 and the open doors st18, where `0018`'s false takes the
+    /// training branch (st11, `0BD6`).
     pub fn start(mut world: ModeWorld, graph: u32, frame: u32) -> Result<Self, InitFault> {
         let graphs = Arc::clone(&world.graphs);
+        let variables: Variables = graphs
+            .mode_variables(world.mode)
+            .into_iter()
+            .flatten()
+            .map(|(&id, &value)| (id, Value::from(value)))
+            .collect();
         let mut component = Component::start(
             graphs,
             GAME_MODE_ENTITY,
-            Variables::new(),
+            variables,
             vec![Root::new(1, graph)],
             frame,
             &mut world,
@@ -356,6 +402,20 @@ impl ModeScript {
         Ok(())
     }
 
+    /// The match's players and its start condition now. When either
+    /// changed, the states that asked about them take the change
+    /// ([`Component::natives_changed`]): a waiting state tries its
+    /// transition again, as the client's does when a player joins.
+    pub fn set_players(&mut self, players: Vec<ModePlayer>, ready: bool) -> Result<(), InitFault> {
+        if self.world.players == players && self.world.ready == ready {
+            return Ok(());
+        }
+        self.world.players = players;
+        self.world.ready = ready;
+        self.component
+            .natives_changed(&PLAYER_NATIVES, &mut self.world)
+    }
+
     /// Advance to a later server frame; false for an old one.
     pub fn advance(&mut self, frame: u32) -> Result<bool, InitFault> {
         if frame <= self.frame {
@@ -401,12 +461,54 @@ mod tests {
 
     const ASSAULT: u64 = 0x0230_0000_0000_0014;
     const ESCORT: u64 = 0x0230_0000_0000_0015;
+    const TEAM_DEATHMATCH: u64 = 0x0230_0000_0000_001d;
     /// The mode graph's phase (v59 on its instance 1).
     const PHASE: u32 = 59;
 
     fn graphs() -> Arc<GraphStore> {
         let data = orpheus_testkit::runtime_dir().join("data");
         Arc::new(GraphStore::load_runtime(data, "game_graphs_174.json.gz").unwrap())
+    }
+
+    /// One player on each of teams 0 and 1.
+    fn one_a_team() -> Vec<ModePlayer> {
+        (0..2)
+            .map(|team| ModePlayer {
+                controller: 0x100 + team as u32,
+                body: Some(0x200 + team as u32),
+                team,
+            })
+            .collect()
+    }
+
+    /// Team Deathmatch's `0F60` waits in phase 0 (#59e) while its teams of
+    /// one aren't full, and leaves it when the players join, without the
+    /// waiting state beginning again: the default start rule `25CA` (st7's
+    /// transition, rid82 → rid240 `STU_81A9AB10` → rid21 both teams'
+    /// `STU_A5B9EAAD` → rid19 #59e = 1) is tried again when the players
+    /// change. A change posts the check at its frame's time, so the next
+    /// frame runs it: one player at frame 100 keeps phase 0 at 101 (team 1
+    /// isn't full), both at 101 make phase 1 (assemble) at 102.
+    #[test]
+    #[ignore = "requires the derived 104319 graph bundle"]
+    fn a_waiting_mode_graph_starts_when_the_players_join() {
+        let mut world = ModeWorld::new(graphs(), TEAM_DEATHMATCH, Unknowns::Tolerate);
+        world.team_sizes = vec![(0, 1), (1, 1)];
+        world.ready = true;
+        let mut script = ModeScript::start(world, 0x0f60, 1).unwrap();
+        let phase = |script: &ModeScript| script.snapshot().unwrap().variables.get(&PHASE).cloned();
+        for frame in 2..=100 {
+            script.advance(frame).unwrap();
+        }
+        assert_eq!(phase(&script), Some(Value::Float(0.0)));
+        let mut half = one_a_team();
+        half.truncate(1);
+        script.set_players(half, true).unwrap();
+        script.advance(101).unwrap();
+        assert_eq!(phase(&script), Some(Value::Float(0.0)));
+        script.set_players(one_a_team(), true).unwrap();
+        script.advance(102).unwrap();
+        assert_eq!(phase(&script), Some(Value::Integer(1)));
     }
 
     /// What a mode graph did in a match: its phase changes and the first
@@ -422,7 +524,7 @@ mod tests {
     /// start condition true, tolerating gaps, for `frames` frames.
     fn play(graphs: &Arc<GraphStore>, mode: u64, graph: u32, frames: u32) -> Run {
         let mut world = ModeWorld::new(Arc::clone(graphs), mode, Unknowns::Tolerate);
-        world.players = [1, 1];
+        world.players = one_a_team();
         world.team_sizes = vec![(0, 1), (1, 1)];
         world.ready = true;
         let mut run = Run {
