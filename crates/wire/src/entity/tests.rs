@@ -303,6 +303,7 @@ fn mixed_frame_matches_python_at_every_component_and_channel_boundary() {
     let payload = frame(
         0x1234_5678,
         0x0004_0001,
+        0,
         &[(7, vec![0, 2, 0xab])],
         &[vec![2, 1, 0xcd]],
         &[&create, &update, &destroy, &chunk_only, &empty],
@@ -368,7 +369,15 @@ fn budget_reuses_trimmed_space_and_only_displaces_remote_movement() {
     assert_eq!(result.entities, [&queued[0], &movements[2]]);
     assert_eq!(
         result.payload,
-        frame(5000, 1, &reliable[..1], &unreliable[..1], &result.entities).unwrap()
+        frame(
+            5000,
+            1,
+            0,
+            &reliable[..1],
+            &unreliable[..1],
+            &result.entities
+        )
+        .unwrap()
     );
     assert!(result.payload.len() <= MAX_PAYLOAD);
 }

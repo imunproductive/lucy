@@ -724,7 +724,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             with_controllers
         );
-        let encoded = frame(1234, 1234, &[], &[], &python.iter().collect::<Vec<_>>()).unwrap();
+        let encoded = frame(1234, 1234, 0, &[], &[], &python.iter().collect::<Vec<_>>()).unwrap();
         assert_eq!(encoded.len(), 1674);
         assert_eq!(
             format!("{:x}", Sha256::digest(&encoded)),
@@ -843,7 +843,7 @@ mod tests {
         assert_eq!(components[2].fields[2], Some(I8(2)));
         assert!(bot_roster_slot(127, 1).is_err());
         // The wire takes every component.
-        frame(1234, 1234, &[], &[], &[&update, &other]).unwrap();
+        frame(1234, 1234, 0, &[], &[], &[&update, &other]).unwrap();
     }
 
     /// A bot's body is a hero that can be hit, on its team (module notes):

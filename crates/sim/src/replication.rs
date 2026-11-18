@@ -629,7 +629,7 @@ impl BodyScript {
         };
         // An individual chunk that cannot fit alone needs fragmentation.
         // Fail this VM closed so it cannot hold up other entity records.
-        let packet = frame(u32::MAX, u32::MAX, &[], &[], &[&chunk.update]).map_err(invalid)?;
+        let packet = frame(u32::MAX, u32::MAX, 0, &[], &[], &[&chunk.update]).map_err(invalid)?;
         if packet.len() > MAX_PAYLOAD {
             return Err(invalid(
                 "body script chunk exceeds the game datagram budget",

@@ -1313,7 +1313,7 @@ impl Flush<'_, '_> {
             .queue_full(&mut stream, chosen.projected())
             .map_err(|error| error.to_string())
             .and_then(|chunk| {
-                let packet = frame(u32::MAX, u32::MAX, &[], &[], &[&chunk.update])
+                let packet = frame(u32::MAX, u32::MAX, 0, &[], &[], &[&chunk.update])
                     .map_err(|error| error.to_string())?;
                 if packet.len() > MAX_PAYLOAD {
                     return Err("its first frame exceeds the game datagram budget".into());

@@ -935,7 +935,7 @@ impl Others {
             let Some(chunk) = chunk else {
                 return Ok(None);
             };
-            let packet = frame(u32::MAX, u32::MAX, &[], &[], &[&chunk.update])
+            let packet = frame(u32::MAX, u32::MAX, 0, &[], &[], &[&chunk.update])
                 .map_err(|error| error.to_string())?;
             if packet.len() > MAX_PAYLOAD {
                 return Err("chunk exceeds the game datagram budget".into());
