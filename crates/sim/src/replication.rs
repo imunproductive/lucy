@@ -419,6 +419,9 @@ struct BodyScript {
     fired: Vec<FiredProjectile>,
     /// The buttons of the last command traced (`orpheus::owner` at debug).
     traced_buttons: u32,
+    /// The active states (instance, graph, state, activation) at the last
+    /// frame traced (`orpheus::pose` at debug).
+    traced_states: BTreeSet<(u16, u32, u16, u16)>,
     /// The last command the body ran with a pose: the frames of a gap
     /// repeat it ([`ScriptGap`]).
     input: Option<Command>,
@@ -455,8 +458,66 @@ impl BodyScript {
             server_shots: 0,
             fired: Vec::new(),
             traced_buttons: 0,
+            traced_states: BTreeSet::new(),
             input: None,
         })
+    }
+
+    /// `orpheus::pose` at debug: the body's movement after a command frame,
+    /// and the states that began or ended in it (instance/graph/state#activation),
+    /// to compare with the client's prediction frame by frame.
+    fn trace_pose(&mut self, mover: &Mover, frame: u32) {
+        if !tracing::enabled!(target: "orpheus::pose", tracing::Level::DEBUG) {
+            return;
+        }
+        let active: BTreeSet<_> = self
+            .runtime
+            .snapshot()
+            .into_iter()
+            .flat_map(|snapshot| {
+                snapshot.instances.iter().flat_map(|(&id, instance)| {
+                    instance
+                        .states
+                        .iter()
+                        .filter(|(_, state)| state.active)
+                        .map(move |(&raw, state)| (id, instance.graph, raw, state.activation))
+                })
+            })
+            .collect();
+        let name = |&(id, graph, raw, activation): &(u16, u32, u16, u16)| {
+            format!("{id}/{graph:04X}/{raw}#{activation}")
+        };
+        let began: Vec<_> = active.difference(&self.traced_states).map(name).collect();
+        let ended: Vec<_> = self.traced_states.difference(&active).map(name).collect();
+        self.traced_states = active;
+        let pose = mover.pose();
+        // Widowmaker's Grappling Hook's outputs when a state changes: #59
+        // (the switch), #431 (hook point), #433 (way), #434 (normal), #435
+        // (hit).
+        let hook: Vec<_> = (!began.is_empty() || !ended.is_empty())
+            .then(|| self.runtime.snapshot())
+            .flatten()
+            .into_iter()
+            .flat_map(|snapshot| snapshot.instances.values())
+            .filter(|instance| instance.graph == 0x005a)
+            .flat_map(|instance| {
+                [59, 431, 433, 434, 435]
+                    .into_iter()
+                    .filter_map(|id| Some(format!("#{id}={:?}", instance.variables.get(&id)?)))
+            })
+            .collect();
+        tracing::debug!(
+            target: "orpheus::pose",
+            body = format_args!("{:08X}", self.id.entity),
+            frame,
+            position = ?pose.position,
+            velocity = ?pose.velocity,
+            flags = format_args!("{:#x}", pose.flags),
+            began = ?began,
+            ended = ?ended,
+            hook = ?hook,
+            "owner pose"
+        );
     }
 
     /// One frame of the body's script, its searches that rewind seeing the
@@ -492,6 +553,7 @@ impl BodyScript {
                     "command buttons changed"
                 );
             }
+            self.trace_pose(mover, command.frame);
         }
         if !self
             .runtime
