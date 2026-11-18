@@ -119,8 +119,9 @@
 //!   the origin: the client's shots skipped a bot they crossed and left
 //!   their hole on the wall behind it (checked in the game, 2026-11-17,
 //!   HitPredict.md "Day"). So a bot's create carries its movement state at
-//!   frame 0 ([`BOT_CREATE_FRAME_BACK`]), and its movement records, at
-//!   their packet frames, append to the history.
+//!   frame 0 ([`FRAME_ZERO_BACK`]), and its movement records, at
+//!   their packet frames, append to the history; so does another
+//!   client's create of a player's body (`body::body_create`).
 //! - Component 29 (MPlayerComponentData): the player's 16-byte id, BattleTag
 //!   (the client names the entity by it), level, and on a competitive card
 //!   the rank (m_rankedLevel, m_heroicRank, m_rankedLevelTier), which the team
@@ -186,16 +187,12 @@ use orpheus_script::{
 };
 use orpheus_wire::{
     entity::{
-        CREATE_BASE, Component, ComponentValue, Create, EntityUpdate, GAME_MODE_ENTITY, Movement,
-        Operation, PLAYER_PATH, SkinTheme, WITH_PARTICIPANT, WITH_SCALE, WITH_TRANSFORM,
+        Component, ComponentValue, Create, EntityUpdate, FRAME_ZERO_BACK, GAME_MODE_ENTITY,
+        Movement, Operation, PLAYER_PATH, SkinTheme, WITH_PARTICIPANT, WITH_SCALE, WITH_TRANSFORM,
     },
     jam::codec::Fields,
 };
 
-/// A bot create's movement state counts back from the create base
-/// ([`CREATE_BASE`], u32::MAX) by u32::MAX: frame 0, older than any of the
-/// bot's movement records (see the module notes).
-const BOT_CREATE_FRAME_BACK: u32 = CREATE_BASE;
 const PLAYER_DEFINITION: u64 = 0x0400_0000_0000_000e;
 const GAME_MODE_DEFINITION: u64 = 0x0400_0000_0000_16b2;
 const PLAYER_FILTER: u64 = 0x0004_0001;
@@ -469,7 +466,7 @@ fn random_bits() -> u64 {
 
 /// A bot's create: its body with its full pools, as the live nameplate tool
 /// has them ([`BotPlate::pools`]), its filter bits, and its movement state
-/// at frame 0 ([`BOT_CREATE_FRAME_BACK`]).
+/// at frame 0 ([`FRAME_ZERO_BACK`]).
 pub fn bot_create(bot: &Bot, plate: &BotPlate) -> io::Result<EntityUpdate> {
     let pools = plate.pools(&Vitals::new(bot.spawn.health, 0.0, 0.0));
     let body = BOT_BODY.unwrap_or(bot.spawn.body);
@@ -482,7 +479,7 @@ pub fn bot_create(bot: &Bot, plate: &BotPlate) -> io::Result<EntityUpdate> {
         input_throttles: [0; 2],
         ..bot.movement(0)
     });
-    definition.frame_back = BOT_CREATE_FRAME_BACK;
+    definition.frame_back = FRAME_ZERO_BACK;
     Ok(create(bot.entity, definition))
 }
 

@@ -9,7 +9,7 @@ use std::{
 use serde_json::Value as Json;
 
 use crate::{
-    combat::{BodyCombat, PosedHitscan, PosedProjectile, PosedShot},
+    combat::{BodyCombat, PosedHitscan, PosedProjectile, PosedShot, TargetRewind},
     hitscan::aim_direction,
     instance::RETAIL_QUANTA,
     others::ObserverActivity,
@@ -598,6 +598,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         let targets = self.world.targets.get_or_insert_with(Vec::new);
         targets.clear();
         targets.extend_from_slice(candidates);
+    }
+
+    fn see_targets(&mut self, rewind: &TargetRewind<'_>, command: &Command) {
+        rewind.seen(command, self.world.seen.get_or_insert_with(Vec::new));
     }
 
     /// A hero setting is an entity variable no graph writes. A changed one

@@ -271,6 +271,9 @@ struct WorldRecord {
     /// A create's or update's components, when they are all of the kinds
     /// [`decode_components`] reads.
     components: Option<Vec<DecodedComponent>>,
+    /// A create's movement state's frame (counted back from the create's
+    /// base, `CREATE_BASE`), when it carries one.
+    create_frame: Option<u32>,
 }
 
 /// A component's index and its fields (absent ones `None`).
@@ -477,6 +480,7 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
                 base_health: None,
                 updated: None,
                 components: None,
+                create_frame: None,
             };
             assert!(reader.bit().unwrap());
             if !reader.bit().unwrap() {
@@ -532,17 +536,18 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
                             record.skin =
                                 Some((reader.bits(32).unwrap() as u32, reader.bit().unwrap()));
                         }
-                        if flags & orpheus_wire::entity::WITH_MOVEMENT == 0 {
-                            use orpheus_wire::entity::{WITH_SCALE, WITH_TRANSFORM};
-                            let mut components = reader;
-                            if flags & WITH_TRANSFORM != 0 {
-                                components.advance(7 * 32).unwrap();
-                            }
-                            if flags & (WITH_TRANSFORM | WITH_SCALE) != 0 {
-                                components.advance(3 * 32).unwrap();
-                            }
-                            record.components = decode_components(components);
+                        use orpheus_wire::entity::{WITH_MOVEMENT, WITH_SCALE, WITH_TRANSFORM};
+                        let mut components = reader;
+                        if flags & WITH_TRANSFORM != 0 {
+                            components.advance(7 * 32).unwrap();
                         }
+                        if flags & (WITH_TRANSFORM | WITH_SCALE) != 0 {
+                            components.advance(3 * 32).unwrap();
+                        }
+                        if flags & WITH_MOVEMENT != 0 {
+                            record.create_frame = Some(movement_state(&mut components));
+                        }
+                        record.components = decode_components(components);
                     } else if operation == 2 {
                         record.components = decode_components(reader);
                         let mut components = reader;
@@ -570,6 +575,88 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
             record
         })
         .collect()
+}
+
+/// A create's movement state as `orpheus_wire::entity::write_movement`
+/// writes it, read past; its frame, counted back from the create's base.
+fn movement_state(reader: &mut BitReader<'_>) -> u32 {
+    fn selector(reader: &mut BitReader<'_>, width: usize) {
+        if reader.bit().unwrap() {
+            assert_eq!(reader.bits(3).unwrap(), 0b100);
+            reader.advance(width).unwrap();
+        }
+    }
+    fn delta(reader: &mut BitReader<'_>, widths: &[usize]) {
+        if !reader.bit().unwrap() {
+            return;
+        }
+        let width = widths.iter().find(|_| reader.bit().unwrap()).unwrap_or(&32);
+        reader.advance(*width).unwrap();
+    }
+    fn raw_frame(reader: &mut BitReader<'_>) {
+        assert!(!reader.bit().unwrap());
+        reader.advance(32).unwrap();
+    }
+    if reader.bit().unwrap() {
+        for _ in 0..4 {
+            if reader.bit().unwrap() {
+                reader.advance(8).unwrap();
+            }
+        }
+    }
+    assert!(!reader.bit().unwrap(), "the 1/1024 grid");
+    let frame_back = if !reader.bit().unwrap() {
+        0
+    } else if reader.bit().unwrap() {
+        reader.bits(4).unwrap()
+    } else if reader.bit().unwrap() {
+        reader.bits(10).unwrap()
+    } else {
+        reader.bits(32).unwrap()
+    } as u32;
+    if reader.bit().unwrap() {
+        raw_frame(reader); // The discontinuity counter.
+    }
+    selector(reader, 16); // Pitch.
+    delta(reader, &[4, 10]); // Air ticks.
+    assert!(!reader.bit().unwrap(), "a timed movement event");
+    delta(reader, &[8, 10, 24]); // Gravity.
+    assert!(!reader.bit().unwrap(), "a move-speed scale");
+    let input = reader.bit().unwrap();
+    if input && reader.bit().unwrap() {
+        raw_frame(reader);
+    }
+    if reader.bit().unwrap() {
+        raw_frame(reader); // The crouch frame.
+    }
+    for _ in 0..if input { 4 } else { 2 } {
+        if reader.bit().unwrap() {
+            reader.advance(8).unwrap();
+        }
+    }
+    selector(reader, 16); // Yaw.
+    assert_eq!(reader.bits(2).unwrap(), 0, "Euler pitch or roll");
+    for _ in 0..3 {
+        selector(reader, orpheus_wire::entity::MOVEMENT_AXIS_BITS);
+    }
+    if reader.bit().unwrap() {
+        for _ in 0..3 {
+            selector(reader, orpheus_wire::entity::MOVEMENT_AXIS_BITS);
+        }
+    }
+    assert_eq!(reader.bits(9).unwrap(), 0);
+    if reader.bit().unwrap() {
+        reader.advance(64).unwrap(); // The parent and its matrix index.
+    }
+    delta(reader, &[8, 12, 17]);
+    delta(reader, &[8, 10, 24]);
+    delta(reader, &[8, 12, 17]);
+    assert!(!reader.bit().unwrap(), "+384");
+    if reader.bit().unwrap() {
+        assert_eq!(reader.bits(2).unwrap(), 0b10);
+        reader.advance(33).unwrap(); // The fall, then a clear bit.
+    }
+    orpheus_wire::entity::CREATE_BASE.wrapping_sub(frame_back)
 }
 
 /// The shot records after channel 2's events bit (projectiles.py
@@ -2133,6 +2220,22 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
         create.components.as_deref().and_then(filter),
         Some((26, vec![Some(DecodedField::Id(0x0101_0041))]))
     );
+    // The shooter's create of it carries its movement state at frame 0,
+    // below every record of it that follows, so his client's sphere
+    // history of it (`0x7FF789B80F70`) appends them; the target's own
+    // create keeps the default frame (`orpheus_sim::body::body_create`).
+    assert_eq!(create.create_frame, Some(0));
+    let own = target
+        .find(0, |record| {
+            record.entity == target_body && record.is_create()
+        })
+        .unwrap();
+    let own = target.datagrams[own]
+        .1
+        .iter()
+        .find(|record| record.entity == target_body && record.is_create())
+        .unwrap();
+    assert_eq!(own.create_frame, Some(0xffff_fffe));
     let dead = |watcher: &Watcher| {
         watcher
             .find(0, |record| {

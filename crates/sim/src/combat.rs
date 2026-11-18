@@ -57,8 +57,8 @@ use orpheus_script::{
     vitals::{Death, Vitals},
     vm::{
         ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, AuraChange, CombatMod, DAMAGE_DEALT,
-        DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, HealthChange, ShotEvent, TargetCandidate,
-        TrackedStat, combat_scale,
+        DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, HealthChange, SeenBody, ShotEvent,
+        TargetCandidate, TrackedStat, combat_scale,
     },
     weapons::{AllyHits, DamageTags, HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
@@ -485,6 +485,44 @@ struct PlayerSlot {
     history: TargetHistory,
 }
 
+/// Where a player's client showed the bodies (`TrackTargets` `m_1C2A9945`,
+/// `orpheus_script::vm::World::seen_bodies`): rewound to a command's view
+/// by the history the server's shots rewind with ([`TargetHistory::at`]).
+/// Assumption: a search sees them at the view of the command its script
+/// runs, as that command's shots do (the client's view time for a search,
+/// `0x7FF789CBB340`/`0x7FF789CC1AA0`, was not read past the player
+/// lookup).
+pub struct TargetRewind<'a> {
+    combat: &'a Combat,
+    scene: &'a PreparedScene,
+    quanta: u32,
+}
+
+impl TargetRewind<'_> {
+    /// Each body [`Combat::target_candidates`] lists, where `command`'s
+    /// view had it, into `seen`; one that did not exist then is left out.
+    pub fn seen(&self, command: &Command, seen: &mut Vec<SeenBody>) {
+        let view = ViewFrame::from_command(command, self.quanta);
+        let place = |entity, pose: TargetPose| SeenBody {
+            entity,
+            feet: pose.feet,
+            height: pose.height,
+            radius: pose.radius,
+            yaw: pose.yaw,
+        };
+        seen.clear();
+        seen.extend(self.combat.players.iter().filter_map(|slot| {
+            let pose = slot.history.at(view, slot.target.pose.clone())?;
+            Some(place(slot.target.body, pose))
+        }));
+        let bots = self.scene.bots().iter().zip(&self.combat.targets);
+        seen.extend(bots.filter_map(|(bot, target)| {
+            let pose = target.history.at(view, self.scene.bot_target(bot))?;
+            Some(place(bot.entity, pose))
+        }));
+    }
+}
+
 /// A bot's projectile in flight (combat.py `Rocket` with `last_tick`).
 struct BotRocket {
     id: u64,
@@ -640,6 +678,17 @@ impl Combat {
                 )
             }))
             .collect()
+    }
+
+    /// The bodies of [`Self::target_candidates`] as a player's client
+    /// showed them at his commands' views, for his body's target searches
+    /// that rewind ([`TargetRewind`]).
+    pub fn rewind<'a>(&'a self, scene: &'a PreparedScene, quanta: u32) -> TargetRewind<'a> {
+        TargetRewind {
+            combat: self,
+            scene,
+            quanta,
+        }
     }
 
     /// The pools of the bot in `slot` now.
@@ -817,9 +866,9 @@ impl Combat {
     /// graph named, whatever his team (the graph chose him), and no bot
     /// (the bots run no mode body graph that names one). A bot takes it
     /// only once its create reached the instigator's client (`visible`, as
-    /// for a shot); the dead take nothing. Unlike the shots (and Python's
-    /// `_melee`), quick melee's search saw the bodies where the match placed
-    /// them this tick, not as the shooter's client showed them. A change
+    /// for a shot); the dead take nothing. As for the shots, quick melee's
+    /// search found the bodies as the shooter's client showed them
+    /// ([`TargetRewind`]). A change
     /// that carries an aura puts it on the body it struck
     /// ([`Self::take_auras`]).
     pub fn modify_health(

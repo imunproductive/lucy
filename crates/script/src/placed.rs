@@ -31,7 +31,7 @@ use crate::{
     map_tags::{MapTags, TaggedEntity},
     vm::{
         AuraChange, Component, GameMessage, InitFault, MAX_INIT_WORK, MapRays, MessageEnd, Root,
-        Site, Snapshot, TargetCandidate, TrackedStat, Unknowns, World, bind_values,
+        SeenBodies, Site, Snapshot, TargetCandidate, TrackedStat, Unknowns, World, bind_values,
         listed_relation,
     },
     wire::{Value, Variables},
@@ -284,6 +284,13 @@ impl World for EntityWorld<'_, '_> {
 
     fn target_candidates(&self, _site: Site) -> Option<&[TargetCandidate]> {
         Some(self.shared.players)
+    }
+
+    /// A map placeable has no player: it sees the bodies where they are. A
+    /// spawned entity's owner's player saw them earlier, at a view the
+    /// match doesn't give its world: unknown.
+    fn seen_bodies(&self, _site: Site) -> Option<SeenBodies<'_>> {
+        self.owner.is_none().then_some(SeenBodies::Listed)
     }
 
     /// The map's placeables that carry the tag ([`MapTags::with_tag`]).

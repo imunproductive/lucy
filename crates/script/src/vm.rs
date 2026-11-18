@@ -271,6 +271,29 @@ pub struct TargetCandidate {
     pub spawned: Vec<u32>,
 }
 
+/// Where a listed body was as the searcher's player saw it, rewound to his
+/// view (a search with `m_1C2A9945`, `vm/targets.rs`): its capsule and
+/// facing then, in [`TargetCandidate`]'s terms.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SeenBody {
+    pub entity: u32,
+    pub feet: [f64; 3],
+    pub height: f64,
+    pub radius: f64,
+    pub yaw: f64,
+}
+
+/// The bodies a rewinding search on a site tests ([`World::seen_bodies`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SeenBodies<'a> {
+    /// The searcher has no player (a bot, a map placeable): the bodies as
+    /// listed.
+    Listed,
+    /// Each listed body that existed at the searcher's player's view,
+    /// where he saw it; a listed body missing here did not exist then.
+    Rewound(&'a [SeenBody]),
+}
+
 /// One turn in the yaw and pitch units of a movement record.
 const TURN_UNITS: f64 = 65_536.0;
 
@@ -562,6 +585,14 @@ pub trait World {
     /// order, the searching body among them. None: this world can't list
     /// them, and a search finds nothing.
     fn target_candidates(&self, _site: Site) -> Option<&[TargetCandidate]> {
+        None
+    }
+
+    /// Where the searcher on `site` saw the bodies of
+    /// [`Self::target_candidates`], for a search that rewinds them
+    /// (`TrackTargets` `m_1C2A9945`). None: this world can't tell, and the
+    /// search tests them as listed (an assumption).
+    fn seen_bodies(&self, _site: Site) -> Option<SeenBodies<'_>> {
         None
     }
 

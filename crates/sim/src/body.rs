@@ -8,8 +8,8 @@ use std::f64::consts::PI;
 use crate::pools::PoolCatalog;
 use orpheus_content::heroes::Hero;
 use orpheus_wire::entity::{
-    Component, ComponentValue, Create, EntityUpdate, LeaseBlock, Movement, NO_INPUT, Operation,
-    SkinTheme,
+    Component, ComponentValue, Create, EntityUpdate, FRAME_ZERO_BACK, LeaseBlock, Movement,
+    NO_INPUT, Operation, SkinTheme,
 };
 
 pub const CROUCHED_MOVEMENT_FLAG: u32 = 0x2;
@@ -38,7 +38,9 @@ pub enum BodyView<'a> {
         /// Frozen from the current body script after its instance is assigned.
         leases: &'a [LeaseBlock],
     },
-    Observer,
+    /// Another client's: `pose` is the body's mover pose, `gravity` its
+    /// mover's gravity scale (as [`remote_movement`] sends them).
+    Observer { pose: Movement, gravity: f64 },
 }
 
 /// Initial owner movement uses its pose and crouch flag. The client's mover
@@ -121,6 +123,19 @@ pub fn body_create(input: BodyCreate<'_>, view: BodyView<'_>, pools: &PoolCatalo
             fields: vec![Some(ComponentValue::Id(input.hero.guid))],
         },
     ];
+    let mut definition = Create::new(input.hero.body, Vec::new());
+    // The owner's create keeps the default frame (0xFFFFFFFE): his client
+    // takes his body's later records into its kept movement state only
+    // above it (`0x7FF7896DA7E7`), so that state stays the spawn pose, but
+    // the possessor's component 59 path after that test is not behind it,
+    // and upstream saw a frame change there matter (a Doomfist under the
+    // floor; refs report UpstreamPort-2026-11-17.md, "own-body create
+    // lead"): unchanged. Another client's create carries the body's state
+    // at frame 0, older than every record after it, or its component 24
+    // sphere history (`0x7FF789B80F70`, appends only on a higher frame)
+    // keeps the create's sample and its shots' rewind meets the body at
+    // the world origin (HitPredict.md "Day (2026-11-17), part 2"; bots
+    // likewise, `scene::bot_create`).
     let movement = match view {
         BodyView::Owner { pose, leases } => {
             if !leases.is_empty() {
@@ -129,16 +144,26 @@ pub fn body_create(input: BodyCreate<'_>, view: BodyView<'_>, pools: &PoolCatalo
                     fields: vec![Some(ComponentValue::Leases(leases.to_vec()))],
                 });
             }
+            definition.movement = pose;
             pose
         }
-        BodyView::Observer => None,
+        BodyView::Observer { pose, gravity } => {
+            definition.movement = Some(Movement {
+                // The create's own frame carries no input.
+                input_frame: None,
+                throttles: [0; 2],
+                input_throttles: [0; 2],
+                ..remote_movement(pose, 0, gravity)
+            });
+            definition.frame_back = FRAME_ZERO_BACK;
+            None
+        }
     };
     components.extend(input.tags);
-    let mut definition = Create::new(input.hero.body, components);
+    definition.components = components;
     definition.position = input.position.map(|position| position as f32);
     definition.rotation = yaw_rotation(f64::from(input.yaw));
     definition.skin = input.skin;
-    definition.movement = movement;
     EntityUpdate {
         entity: input.entity,
         operation: Some(Operation::Create(Box::new(definition))),
@@ -151,8 +176,11 @@ pub fn body_create(input: BodyCreate<'_>, view: BodyView<'_>, pools: &PoolCatalo
 mod tests {
     use super::*;
     use orpheus_content::heroes::SOLDIER;
+    use orpheus_core::bits::{BitReader, BitWriter};
     use orpheus_script::vitals::{Death, Vitals};
-    use orpheus_wire::entity::{WITH_SCALE, WITH_TRANSFORM, create, frame};
+    use orpheus_wire::entity::{
+        CREATE_BASE, WITH_MOVEMENT, WITH_SCALE, WITH_TRANSFORM, create, frame, write_movement,
+    };
     use sha2::{Digest, Sha256};
 
     const BODY: u32 = 0xa000_0101;
@@ -328,8 +356,14 @@ mod tests {
         );
     }
 
+    /// Another client's create of a player's body: its damaged pools
+    /// frozen, no lease, and its movement state (as its records carry it,
+    /// with no input) at frame 0, which the client's histories of the body
+    /// take the later records after. Python's create had no state; the rest
+    /// of the record is its bytes, the components padded from where they
+    /// now start.
     #[test]
-    fn observer_create_freezes_damaged_pools_and_omits_pose_and_lease() {
+    fn observer_create_freezes_damaged_pools_and_puts_the_pose_at_frame_zero() {
         let hero = Hero {
             guid: REINHARDT,
             name: "Reinhardt".into(),
@@ -344,13 +378,24 @@ mod tests {
         };
         assert_eq!(live.damage(30.0, hit).dealt, 25.0);
         live.clear_changed();
+        let pose = Movement {
+            position: [4.5, 2.0, -3.25],
+            yaw: 16384,
+            velocity: [0.0, 0.0, 2.5],
+            flags: CROUCHED_MOVEMENT_FLAG,
+            throttles: [0, 127],
+            input_frame: Some(1190),
+            spring: [125, 73],
+            spring_speed: 2.0,
+            ..Movement::default()
+        };
         let update = body_create(
             BodyCreate {
                 entity: 0xa000_0201,
                 hero: &hero,
                 filter: TEAM_BIT,
-                position: [4.5, 2.0, -3.25],
-                yaw: 16384,
+                position: pose.position,
+                yaw: pose.yaw,
                 skin: SkinTheme {
                     guid: 0,
                     golden: true,
@@ -358,12 +403,21 @@ mod tests {
                 health: Some(live.component()),
                 tags: None,
             },
-            BodyView::Observer,
+            BodyView::Observer {
+                pose,
+                gravity: 1.75,
+            },
             &PoolCatalog::default(),
         );
         assert_eq!(update.movement, None);
         let definition = definition(&update);
-        assert_eq!(definition.movement, None);
+        let state = Movement {
+            input_frame: None,
+            throttles: [0; 2],
+            input_throttles: [0; 2],
+            ..remote_movement(pose, 0, 1.75)
+        };
+        assert_eq!(definition.movement, Some(state));
         assert_eq!(
             definition
                 .components
@@ -372,11 +426,84 @@ mod tests {
                 .collect::<Vec<_>>(),
             [51, 26, 123]
         );
-        let record = create(5, definition).unwrap();
-        assert_eq!(record.bit_len(), 843);
+        let python = Create {
+            movement: None,
+            frame_back: 1,
+            ..definition.clone()
+        };
+        let python = create(5, &python).unwrap();
+        assert_eq!(python.bit_len(), 843);
         assert_eq!(
-            format!("{:x}", Sha256::digest(record.as_bytes())),
+            format!("{:x}", Sha256::digest(python.as_bytes())),
             "79d53aa18f160aa2245a17da9ce7f2ef80ac04dae880f65830f66c9c4d4a1898"
+        );
+        let record = create(5, definition).unwrap();
+        let mut bits = BitReader::new(record.as_bytes());
+        let mut plain = BitReader::new(python.as_bytes());
+        let same = |bits: &mut BitReader<'_>, other: &mut BitReader<'_>, count: usize| {
+            for _ in 0..count {
+                assert_eq!(bits.bit().unwrap(), other.bit().unwrap());
+            }
+        };
+        // The definition's index, then its flags with the movement bit.
+        same(&mut bits, &mut plain, 1);
+        assert_eq!(bits.guid_index().unwrap(), plain.guid_index().unwrap());
+        let flags = plain.bits(8).unwrap();
+        assert_eq!(bits.bits(8).unwrap(), flags | u64::from(WITH_MOVEMENT));
+        // The transform and scale, then the state.
+        same(&mut bits, &mut plain, 10 * 32);
+        let start = bits.position();
+        // Its flags (the crouch bit in the first byte), the grid, then the
+        // frame counted back from the create's base in 32 bits: frame 0.
+        assert!(bits.bit().unwrap());
+        assert_eq!(
+            (bits.bit().unwrap(), bits.bits(8).unwrap()),
+            (true, u64::from(CROUCHED_MOVEMENT_FLAG))
+        );
+        for _ in 1..4 {
+            assert!(!bits.bit().unwrap());
+        }
+        assert!(!bits.bit().unwrap());
+        assert!(bits.bit().unwrap());
+        assert!(!bits.bit().unwrap());
+        assert!(!bits.bit().unwrap());
+        let frame_back = bits.bits(32).unwrap() as u32;
+        assert_eq!(CREATE_BASE.wrapping_sub(frame_back), 0);
+        // The whole state as a create writes it, then the components as
+        // Python's create has them, padded to bytes from their new start.
+        let mut written = BitWriter::new();
+        write_movement(
+            &mut written,
+            &state,
+            Some(frame_back),
+            Some(CREATE_BASE),
+            None,
+        )
+        .unwrap();
+        let mut bits = BitReader::with_range(record.as_bytes(), start, record.bit_len()).unwrap();
+        same(
+            &mut bits,
+            &mut BitReader::new(written.as_bytes()),
+            written.bit_len(),
+        );
+        let at = |origin| orpheus_wire::entity::update(origin, &definition.components).unwrap();
+        let components = at(5 + bits.position());
+        assert_eq!(bits.left(), components.bit_len());
+        same(
+            &mut bits,
+            &mut BitReader::new(components.as_bytes()),
+            components.bit_len(),
+        );
+        // Python's create ends in the same components.
+        let python_components = at(5 + plain.position());
+        assert_eq!(
+            python.bit_len() - plain.position(),
+            python_components.bit_len()
+        );
+        same(
+            &mut plain,
+            &mut BitReader::new(python_components.as_bytes()),
+            python_components.bit_len(),
         );
         assert_eq!(live.heal(25.0), 25.0);
         assert_eq!(create(5, definition).unwrap(), record);
@@ -423,7 +550,10 @@ mod tests {
                         leases: &leases,
                     }
                 } else {
-                    BodyView::Observer
+                    BodyView::Observer {
+                        pose,
+                        gravity: 1.75,
+                    }
                 };
                 let body = body_create(
                     BodyCreate {
@@ -442,7 +572,14 @@ mod tests {
                     view,
                     &pools,
                 );
-                let record = create(origin, definition(&body)).unwrap();
+                // Python's observer create had no movement state (ours at
+                // frame 0: `observer_create_freezes_damaged_pools_and_puts_the_pose_at_frame_zero`).
+                let python = Create {
+                    movement: None,
+                    frame_back: 1,
+                    ..definition(&body).clone()
+                };
+                let record = create(origin, if own { definition(&body) } else { &python }).unwrap();
                 digest.update(hero.guid.to_le_bytes());
                 digest.update([u8::from(own)]);
                 digest.update(u32::try_from(origin).unwrap().to_le_bytes());

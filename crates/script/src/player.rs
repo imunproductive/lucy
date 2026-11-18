@@ -23,8 +23,8 @@ use crate::{
     vitals::{PoolKind, Vitals},
     vm::{
         AssistLink, AuraChange, BodyEffects, CombatMod, GameMessage, HealthChange, MapRays,
-        RaisedCriteria, Site, TargetCandidate, TargetTagEffect, TrackedStat, Unknowns,
-        VoiceRequest, World,
+        RaisedCriteria, SeenBodies, SeenBody, Site, TargetCandidate, TargetTagEffect, TrackedStat,
+        Unknowns, VoiceRequest, World,
     },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
@@ -95,6 +95,10 @@ pub struct PlayerWorld {
     /// The bodies a target search can find, as the match placed them this
     /// tick (its own body among them); none: the world lists no bodies.
     pub targets: Option<Vec<TargetCandidate>>,
+    /// Where the player saw the listed bodies at the view of the command
+    /// his body's script runs now, for the searches that rewind
+    /// (`World::seen_bodies`); none: the match can't tell.
+    pub seen: Option<Vec<SeenBody>>,
     /// The map's collision the body's ray casts meet; none: no map.
     pub map_rays: Option<Arc<dyn MapRays>>,
     /// The map's tagged placeables the scene tag queries find; none: no
@@ -505,6 +509,13 @@ impl World for PlayerWorld {
             .flatten()
     }
 
+    fn seen_bodies(&self, site: Site) -> Option<SeenBodies<'_>> {
+        self.is_player_site(site)
+            .then_some(self.seen.as_deref())
+            .flatten()
+            .map(SeenBodies::Rewound)
+    }
+
     fn map_rays(&self) -> Option<&dyn MapRays> {
         self.map_rays.as_deref()
     }
@@ -679,6 +690,7 @@ impl PlayerWorld {
             map_tags: None,
             controller_on_fire: false,
             targets: None,
+            seen: None,
             victim_tags: None,
             unknowns: Unknowns::for_build(),
             cosmetics: Cosmetics::default(),

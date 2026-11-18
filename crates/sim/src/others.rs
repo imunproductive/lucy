@@ -27,10 +27,12 @@
 //! possessor's 59 (0x7FF7896DAA95). A movement key counts as held for the
 //! animation while the last command with throttles is less than 0.1 s old
 //! (0x7FF789B20A70), so a standing body carries the tick of that command. A
-//! remote body's create must not carry a movement state (it would sit at
-//! frame 0xFFFFFFFE and the client refuses every later record that is not
-//! newer); retail sent a movement record for every other body in every
-//! frame, standing or not (OW2 traffic).
+//! remote body's create carries its movement state at frame 0, older than
+//! every record after it (at 0xFFFFFFFE, a create's default, the client
+//! would refuse every later record that is not newer, and its rewind
+//! history would keep the create's sample: `body::body_create`); retail
+//! sent a movement record for every other body in every frame, standing
+//! or not (OW2 traffic).
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -1119,10 +1121,8 @@ impl Others {
 
     /// match.py `ensure_remote_body`: his current body's create, once, with
     /// the target tags its states hold now (later ones follow as updates:
-    /// [`Self::send_tags`]). It is placed by its transform; movement
-    /// records move it from the next frame on (a movement state in the
-    /// create would sit at frame 0xFFFFFFFE, and the client refuses every
-    /// later record that is not newer).
+    /// [`Self::send_tags`]). It carries the body's movement state at frame
+    /// 0; movement records move it from the next frame on.
     fn ensure_body(
         &mut self,
         context: &ShowContext<'_>,
@@ -1153,7 +1153,10 @@ impl Others {
                 health: body.vitals.map(Vitals::component),
                 tags: body.tags.map(|(_, tags)| tags.clone()),
             },
-            BodyView::Observer,
+            BodyView::Observer {
+                pose: body.pose,
+                gravity: body.gravity,
+            },
             context.pools,
         );
         self.seen.insert(

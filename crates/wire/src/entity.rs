@@ -110,6 +110,11 @@ pub const SHIELDS_POOL: usize = 2;
 
 pub const NO_INPUT: u32 = u32::MAX;
 pub const CREATE_BASE: u32 = u32::MAX;
+/// A create's movement state counted back from [`CREATE_BASE`] by this many
+/// frames sits at frame 0, older than every movement record of the entity
+/// that follows, so the client's histories of it, which take a sample only
+/// above the newest (component 24's spheres, `0x7FF789B80F70`), take them.
+pub const FRAME_ZERO_BACK: u32 = CREATE_BASE;
 pub const ANGLE_UNITS: f64 = 65536.0 / std::f64::consts::TAU;
 pub const POSITION_UNITS: f64 = 1024.0;
 pub const MOVEMENT_AXIS_BITS: usize = 24;
