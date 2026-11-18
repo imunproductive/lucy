@@ -55,6 +55,7 @@ impl Machine {
             deferred: BTreeMap::new(),
             disabled: BTreeMap::new(),
             movements: BTreeMap::new(),
+            ai_moves: BTreeMap::new(),
             hero_selects: BTreeMap::new(),
             motions: Vec::new(),
             applied_auras: BTreeMap::new(),

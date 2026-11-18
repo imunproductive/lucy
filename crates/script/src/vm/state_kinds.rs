@@ -598,6 +598,56 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
     }
 
+    /// An AI movement state (`STU_ECAEE401`) reads its move goal at its
+    /// begin and at each request on its input plug: the point the move-to
+    /// goal (`STU_194D744E`, `m_BD2A95EE`) its subgraph plug starts names
+    /// becomes its request for the walker; none resolves, none. The client
+    /// evaluates the state's own numbers every update (`0x7FF789B92870`:
+    /// `m_BDDD203A` at least 0.2, `m_6F4283C8` at least 0.5, `m_888D9442`,
+    /// `m_9EE88257`, `m_priority`); what they mean to the native walk is
+    /// unknown, so the walker takes the body's own run speed and turning.
+    pub(super) fn resolve_ai_move(&mut self, key: StateKey, node: &Node) {
+        let id = key.instance;
+        let graph = self.graph(id);
+        let target = node
+            .links("m_subgraphPlug")
+            .filter_map(|(position, _)| graph.node(position?))
+            .filter(|goal| goal.class == "STU_194D744E")
+            .find_map(|goal| {
+                match self.evaluate(id, goal, field(&goal.fields, "m_BD2A95EE"), None) {
+                    Some(Value::Vector(point))
+                        if point.iter().all(|axis| axis.abs() <= MAX_MOVEMENT_AXIS) =>
+                    {
+                        Some(point)
+                    }
+                    _ => None,
+                }
+            });
+        match target {
+            Some(point) => self.machine.ai_moves.insert(key, point),
+            None => self.machine.ai_moves.remove(&key),
+        };
+    }
+
+    /// The walker's report that the AI movement state's walk is over
+    /// (`Component::ai_move_arrived`): the point goes and `m_1B09389D`
+    /// runs, while the state is on.
+    pub(super) fn ai_move_arrived(&mut self, key: StateKey) -> Result<(), InitFault> {
+        if !self
+            .state(key)
+            .is_some_and(|state| state.active && matches!(state.kind, StateKind::AiMove))
+        {
+            return Ok(());
+        }
+        self.machine.ai_moves.remove(&key);
+        let node = self
+            .graph(key.instance)
+            .state(usize::from(key.raw))
+            .expect("AI movement state");
+        self.follow(key.instance, node, "m_1B09389D", Some(key), 0)?;
+        Ok(())
+    }
+
     /// A config number, or `None` (reported by the evaluator) when it isn't one.
     fn number(&mut self, id: u16, node: &Node, name: &str) -> Option<f64> {
         match self.evaluate(id, node, field(&node.fields, name), None)? {

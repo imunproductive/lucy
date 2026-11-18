@@ -245,6 +245,7 @@ fn a_rig_refuses_a_bone_before_its_parent_and_an_unknown_clip() {
 mod game {
     use crate::{scene_assets::PreparedScene, scene_assets::SceneAssets};
     use orpheus_content::maps::GameMap;
+    use orpheus_script::vm::Unknowns;
 
     const TRAINING_BOT: u64 = 0x0400_0000_0000_1403;
 
@@ -253,6 +254,21 @@ mod game {
             .unwrap()
             .prepare(GameMap::practice_range())
             .unwrap()
+    }
+
+    /// The Practice Range with its bots' scripts, which ask for the
+    /// patrols' walks (they hold content the VM doesn't know yet).
+    fn scripted_practice_range() -> PreparedScene {
+        let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        assets.set_bot_unknowns(Unknowns::Tolerate);
+        assets.prepare(GameMap::practice_range()).unwrap()
+    }
+
+    /// The bots' tick as the match runs it: they walk, then their scripts
+    /// run what is due (the patrol's waits).
+    fn step(scene: &mut PreparedScene, tick: u32) {
+        scene.step_bots(tick);
+        scene.advance_live_bots(tick);
     }
 
     /// The critical shape's centre height over the bot's feet.
@@ -296,23 +312,23 @@ mod game {
     #[test]
     #[ignore = "requires a derived 104319 Practice Range scene"]
     fn a_walking_bot_is_posed_apart_from_standing() {
-        let mut scene = practice_range();
+        let mut scene = scripted_practice_range();
         let slot = scene
             .bots()
             .iter()
             .position(|bot| !bot.spawn.route.is_empty())
             .unwrap();
         let mut tick = 1000;
-        scene.step_bots(tick);
+        step(&mut scene, tick);
         let standing = scene.bot_target(&scene.bots()[slot]).shapes.unwrap();
         while !scene.bots()[slot].walking() {
             tick += 1;
-            scene.step_bots(tick);
+            step(&mut scene, tick);
         }
         // Two seconds into the walk: past the setting-off clip.
         for _ in 0..125 {
             tick += 1;
-            scene.step_bots(tick);
+            step(&mut scene, tick);
         }
         assert!(scene.bots()[slot].walking());
         let walking = scene.bot_target(&scene.bots()[slot]).shapes.unwrap();

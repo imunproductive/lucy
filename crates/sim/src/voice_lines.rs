@@ -186,8 +186,10 @@ pub(crate) fn delay_ticks(seconds: f64) -> u32 {
 
 /// The death cries the hero's `01CA` raises on the body 0.2 s after it
 /// died (rid62 → st19): `23E5` (mode `0008`), `05FC` (the killing hit
-/// tagged `04B1`), `05FB` (`0644`), `1C92` (`074E`), else `05FA`. They are
-/// the only lines a dead body says.
+/// tagged `04B1`), `05FB` (`0644`), `1C92` (`074E`), else `05FA`; a
+/// Training Bot's `0C17` raises `05FB` or `1C92` the same way 0.05 s after
+/// (its other deaths leave the cry to the client). They are the only lines
+/// a dead body says.
 const DEATH_CRIES: [u64; 5] = [
     0x0d80_0000_0000_23e5,
     0x0d80_0000_0000_05fc,

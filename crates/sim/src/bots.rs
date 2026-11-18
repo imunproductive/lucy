@@ -1,20 +1,25 @@
-//! Map AI spawners and the training bots' server-side patrol movement.
+//! Map AI spawners and the training bots' walker: the server's native
+//! locomotion, which walks the bot to the point its patrol graph asks for.
 //!
-//! The catalog and patrol behavior follow the Python reference.
+//! The catalog follows the Python reference.
 //!
 //! Research: the Practice Range has 15 spawners, 11 Training Bots on the red
 //! team and 4 Friendly Bots on the blue one (retail's OW2 Practice Range
 //! showed 15 bots too, each with a movement record in every frame, idle or
-//! not). Graph 0B8E walks a route: variable #6947 (0D80/1B23) lists AI hint
-//! points, #39 (0D80/0027) is the route index (2 to start); it waits 2 s,
-//! then 1 s (two StateWaits), sets `#39 = (#39 + 1) % count(#6947)` and walks
-//! to `#6947[#39]` (STU_ECAEE401 with move-to 194D744E and face-to AB9B30EF).
-//! Graph 0B92 alternates firing and waiting phases of 1.75 to 2.5 s within
-//! 0.4 m of spawn; its 0013.025 reset branch delays firing by 2.75 s. A bot's
-//! health is the body's override of 0033's #199 (Training Bots 200, Friendly
-//! Bots 225). The client's code for the AI's move-to, face-to and fire states
-//! is a stub (one shared class, vtable 0x7FF78B6BC800): they ran on the
-//! server only.
+//! not). Graph 0B8E (`orpheus_script::bot::PATROL_GRAPH`) runs in the bot's
+//! script and decides when and where it walks: variable #6947 (0D80/1B23)
+//! lists AI hint points, #39 (0D80/0027) is the route index (2 to start); it
+//! waits 2 s, then 1 s (two StateWaits), sets `#39 = (#39 + 1) %
+//! count(#6947)` and asks its AI movement state (STU_ECAEE401, move-to
+//! 194D744E and face-to AB9B30EF on `#6947[#39]`) for the walk; the walk's
+//! end waits 1 s and asks for the next point. The walker takes that point
+//! ([`Bot::step`]) and reports the walk's end, which the match hands back to
+//! the script. Graph 0B92 alternates firing and waiting phases of 1.75 to
+//! 2.5 s within 0.4 m of spawn; its 0013.025 reset branch delays firing by
+//! 2.75 s. A bot's health is the body's override of 0033's #199 (Training
+//! Bots 200, Friendly Bots 225). The client's code for the AI's move-to,
+//! face-to and fire states is a stub (one shared class, vtable
+//! 0x7FF78B6BC800): they ran on the server only.
 //!
 //! Measured on the retail OW2 Practice Range's live traffic (its four walking
 //! bots walk the far routes of these spawners): a bot sets off when its wait
@@ -23,8 +28,13 @@
 //! the way it walks at 60 degrees a second until 0.5 s (28 to 33 ticks) after
 //! it lets go. It speeds up at ground acceleration times run speed and lets go
 //! where ground friction (base times run speed) stops it on its point (4.5
-//! m/s^2, 4.5 m/s and 67.5 m/s^2 for the Training Bot body). The next walk
-//! starts 1.2 s (75 ticks) after the last tick with keys. Unverified: retail
+//! m/s^2, 4.5 m/s and 67.5 m/s^2 for the Training Bot body). The turn rate is
+//! the walker's own: 0B8E's movement state names no rate (its numbers
+//! `m_BDDD203A`, `m_6F4283C8`, `m_888D9442` are not decoded). The next walk
+//! started 1.2 s (75 ticks) after the last tick with keys; 0B8E's 1 s wait
+//! after the walk's end gives about 1.07 s (the slide to the point, then 63
+//! ticks): the 0.13 s left is OW2's or the native walk's (its end may come
+//! later than our stop), not known. Unverified: retail
 //! stopped 0.05-0.45 m short of the 1.74 points. The far runners (hero 016E,
 //! body 14ED) use 1.74's values: 6 m/s, up at 66 m/s^2, down at 39 m/s^2;
 //! OW2 put ordinary Training Bots on these routes (4.5 m/s) and changed three
@@ -65,7 +75,7 @@ use orpheus_physics::{
     collision::index::TriangleIndex,
     mover::{Mover, resting_spring, sample_movement_flags},
 };
-use orpheus_script::bot::BOT_MOVEMENT_SAMPLE;
+use orpheus_script::bot::{BOT_MOVEMENT_SAMPLE, PATROL_GRAPH, Patrol};
 use orpheus_wire::commands::Command;
 use orpheus_wire::entity::{Movement, NO_INPUT};
 
@@ -79,10 +89,8 @@ pub const BOT_CONTROLLER_ENTITY: u32 = 0x8000_8000;
 pub const DEAD_MOVEMENT_FLAG: u32 = 0x2000;
 pub const BOT_RECORD_DELAY: u32 = 8;
 
-const PATROL: u64 = 0x0580_0000_0000_0b8e;
+const PATROL: u64 = 0x0580_0000_0000_0000 | PATROL_GRAPH as u64;
 const FIRING: u64 = 0x0580_0000_0000_0b92;
-const FIRST_WAIT: f64 = 3.0;
-const WALK_GAP: f64 = 1.2;
 const ARRIVED: f64 = 0.05;
 const MAX_DETOUR_SAMPLES: usize = 64;
 const STEP_UP: f64 = 0.6;
@@ -138,7 +146,10 @@ pub struct BotSpawn {
     pub position: [f64; 3],
     pub yaw: i32,
     pub firing: bool,
+    /// The patrol's hint points ([`PATROL_GRAPH`]'s #6947); empty for a
+    /// spawner without the patrol.
     pub route: Vec<[f64; 3]>,
+    /// The patrol's first route index (#39).
     initial_index: i64,
 }
 
@@ -303,13 +314,6 @@ fn planar_distance(a: [f64; 3], b: [f64; 3]) -> f64 {
 type Detour = [Option<[f64; 3]>; 2];
 
 #[derive(Debug)]
-struct PatrolPlans {
-    first_index: usize,
-    first: Detour,
-    legs: Vec<Detour>,
-}
-
-#[derive(Debug)]
 struct PatrolCollision {
     body: CharacterBody,
     lift: f32,
@@ -370,12 +374,12 @@ pub struct Bot {
     walk: BotWalk,
     pace: f64,
     direction: [f64; 2],
-    index: usize,
-    wait: f64,
+    /// The point its script asked for when it last set off ([`Self::step`]).
+    goal: Option<[f64; 3]>,
+    /// The point it walks to now: the goal or a detour's corner on the way.
     target: Option<[f64; 3]>,
     waypoints: VecDeque<[f64; 3]>,
     collision: Option<PatrolCollision>,
-    plans: Option<Arc<PatrolPlans>>,
     start: [f64; 3],
     keys: bool,
     turning: f64,
@@ -411,11 +415,6 @@ impl fmt::Debug for BotFlight {
 
 impl Bot {
     fn new(entity: u32, spawn: Arc<BotSpawn>, walk: BotWalk) -> Self {
-        let index = if spawn.route.is_empty() {
-            0
-        } else {
-            spawn.initial_index.rem_euclid(spawn.route.len() as i64) as usize
-        };
         Self {
             entity,
             position: spawn.position,
@@ -425,12 +424,10 @@ impl Bot {
             walk,
             pace: 0.0,
             direction: [0.0, 1.0],
-            index,
-            wait: FIRST_WAIT,
+            goal: None,
             target: None,
             waypoints: VecDeque::new(),
             collision: None,
-            plans: None,
             start: spawn.position,
             keys: false,
             turning: 0.0,
@@ -475,26 +472,20 @@ impl Bot {
         settings: &MoverSettings,
         world: Arc<ContactWorld>,
         category: u16,
-        mut ground: impl FnMut(f64, f64, f64, f64) -> Option<f64>,
     ) {
         self.collision = Some(PatrolCollision {
             body: standing_body(settings, world, self.position, category),
             lift: pogo(settings, false) as f32,
         });
-        let count = self.spawn.route.len();
-        if count != 0 {
-            let first_index = (self.index + 1) % count;
-            self.plans = Some(Arc::new(PatrolPlans {
-                first_index,
-                first: self.detour(self.position, self.spawn.route[first_index], &mut ground),
-                legs: (0..count)
-                    .map(|index| {
-                        let from = self.spawn.route[(index + count - 1) % count];
-                        self.detour(from, self.spawn.route[index], &mut ground)
-                    })
-                    .collect(),
-            }));
-        }
+    }
+
+    /// The overrides its patrol graph starts with, for a spawner that lists
+    /// it ([`BotSpawn::route`]).
+    pub fn patrol(&self) -> Option<Patrol<'_>> {
+        (!self.spawn.route.is_empty()).then(|| Patrol {
+            route: &self.spawn.route,
+            index: self.spawn.initial_index,
+        })
     }
 
     fn detour(
@@ -550,23 +541,6 @@ impl Bot {
         [None; 2]
     }
 
-    fn planned_detour(&self, previous: usize) -> Detour {
-        let Some(plans) = &self.plans else {
-            return [None; 2];
-        };
-        if self.index == plans.first_index && self.position == self.spawn.position {
-            return plans.first;
-        }
-        let from = self.spawn.route[previous];
-        if planar_distance(self.position, from) <= ARRIVED
-            && (self.position[1] - from[1]).abs() <= STEP_UP
-        {
-            plans.legs[self.index]
-        } else {
-            [None; 2]
-        }
-    }
-
     /// A knockback (`push`, metres a second) throws the body: it leaves its
     /// patrol and flies on a mover of its own (`mover`, made at its feet
     /// when it isn't flying yet) until it stands still on the ground
@@ -589,15 +563,13 @@ impl Bot {
                 mover,
                 last_tick: tick,
             });
-            // The point it was walking to stays its next one.
-            let count = self.spawn.route.len();
-            if self.target.is_some() && count != 0 {
-                self.index = (self.index + count - 1) % count;
-            }
+            // The point it was walking to, still asked for, sets it off
+            // again once it lands (assumption: the native walk resumes; the
+            // script's movement state stays on).
+            self.goal = None;
             self.keys = false;
             self.held = [0; 2];
             self.turning = 0.0;
-            self.wait = WALK_GAP;
             self.stand();
         }
         if let Some(flight) = &mut self.flight {
@@ -606,8 +578,8 @@ impl Bot {
     }
 
     /// A knocked body's frames up to `tick` on its mover, with no input; it
-    /// lands once its mover has it on the ground and still. Then its patrol
-    /// goes on from there, after a walk's pause.
+    /// lands once its mover has it on the ground and still. Then its walk
+    /// goes on from there ([`Self::step`]).
     pub(crate) fn fly(&mut self, tick: u32, rays: &TriangleIndex) {
         let Some(flight) = &mut self.flight else {
             return;
@@ -653,56 +625,61 @@ impl Bot {
             .unwrap_or(BOT_MOVEMENT_SAMPLE)
     }
 
-    /// The floor provider can give a surface Y within the top and bottom
-    /// probe bounds. A missing surface uses the authored hint heights. A
-    /// knocked body flies instead ([`Self::fly`]); its patrol resumes once
-    /// it lands, with no catch-up for the flight.
-    pub fn step(&mut self, tick: u32, mut ground: impl FnMut(f64, f64, f64, f64) -> Option<f64>) {
-        if self.spawn.route.is_empty() || self.dead {
-            return;
+    /// Walk to `goal`, the point its script asks for now
+    /// ([`crate::bot_script::BotScripts::move_goal`]), through the ticks up
+    /// to `tick`: a new point sets it off from where it stands. The floor
+    /// provider can give a surface Y within the top and bottom probe bounds;
+    /// a missing surface uses the authored hint heights. A knocked body
+    /// flies instead ([`Self::fly`]); its walk goes on once it lands, with
+    /// no catch-up for the flight. The tick its walk ended (it stands still
+    /// on the point), for the script.
+    pub fn step(
+        &mut self,
+        tick: u32,
+        goal: Option<[f64; 3]>,
+        mut ground: impl FnMut(f64, f64, f64, f64) -> Option<f64>,
+    ) -> Option<u32> {
+        if self.dead {
+            return None;
         }
         if self.flight.is_some() {
             self.last_tick = Some(tick);
-            return;
+            return None;
         }
         let ticks = self
             .last_tick
             .map_or(1, |last| tick.saturating_sub(last))
             .min(CATCH_UP);
         if ticks == 0 {
-            return;
+            return None;
         }
         self.last_tick = Some(tick);
         let seconds = TICK_PERIOD.as_secs_f64();
+        let mut ended = None;
         for at in tick - (ticks - 1)..=tick {
-            self.tick(at, seconds, &mut ground);
+            if self.tick(at, seconds, goal, &mut ground) {
+                ended = Some(at);
+            }
         }
+        ended
     }
 
+    /// One tick of the walk; true when the walk ended in it.
     fn tick(
         &mut self,
         tick: u32,
         dt: f64,
+        goal: Option<[f64; 3]>,
         ground: &mut impl FnMut(f64, f64, f64, f64) -> Option<f64>,
-    ) {
+    ) -> bool {
         self.held = [0; 2];
-        if !self.keys {
-            self.wait -= dt;
-            if self.target.is_none() && self.wait <= EPSILON {
-                let previous = self.index;
-                self.index = (self.index + 1) % self.spawn.route.len();
-                let goal = self.spawn.route[self.index];
-                let detour = self.planned_detour(previous);
-                self.waypoints.extend(detour.into_iter().flatten());
-                self.target = Some(self.waypoints.pop_front().unwrap_or(goal));
-                if self.target != Some(goal) {
-                    self.waypoints.push_back(goal);
-                }
-                self.start = self.position;
-                self.keys = true;
-                self.turning = 0.0;
+        if goal != self.goal {
+            self.goal = goal;
+            if let Some(goal) = goal {
+                self.set_off(goal, ground);
             }
         }
+        let walking = self.target.is_some();
         if self.keys {
             self.walk(tick, dt, ground);
         } else {
@@ -714,6 +691,34 @@ impl Bot {
                 self.turn(dt);
             }
         }
+        walking && self.target.is_none()
+    }
+
+    /// Set off for `goal` from where it stands, around what blocks the
+    /// straight way ([`Self::detour`], from the route point it stands on).
+    fn set_off(
+        &mut self,
+        goal: [f64; 3],
+        ground: &mut impl FnMut(f64, f64, f64, f64) -> Option<f64>,
+    ) {
+        let from = self
+            .spawn
+            .route
+            .iter()
+            .copied()
+            .find(|&point| {
+                planar_distance(self.position, point) <= ARRIVED
+                    && (self.position[1] - point[1]).abs() <= STEP_UP
+            })
+            .unwrap_or(self.position);
+        let detour = self.detour(from, goal, ground);
+        self.waypoints.clear();
+        self.waypoints.extend(detour.into_iter().flatten());
+        self.waypoints.push_back(goal);
+        self.target = self.waypoints.pop_front();
+        self.start = self.position;
+        self.keys = true;
+        self.turning = 0.0;
     }
 
     fn walk(
@@ -734,7 +739,6 @@ impl Bot {
         }
         if distance <= ARRIVED {
             self.keys = false;
-            self.wait = WALK_GAP;
             self.stand();
             return;
         }
@@ -750,7 +754,6 @@ impl Bot {
             if distance - stride <= slide {
                 stride = (distance - slide).max(0.0);
                 self.keys = false;
-                self.wait = WALK_GAP;
                 self.turning = TURN_AFTER;
             }
         }

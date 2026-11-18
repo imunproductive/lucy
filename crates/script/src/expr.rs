@@ -1581,6 +1581,13 @@ impl Evaluator {
                     _ => Value::Null,
                 }
             }
+            // A server-only wrapper of one config (`m_094F4D35`; its client
+            // evaluate is the base `xor al, al`): the patrol `0B8E` (rid5)
+            // wraps `#6947[#39]`, the next hint, in it. Assumption: it
+            // passes its value through.
+            "STU_A8FB8712" if native_shape(config, class, Some("m_094F4D35")) => {
+                self.config(child(config, "m_094F4D35"), context, nested)?
+            }
             // Where an entity stands (CCC750): a bound entity's position; a
             // vector that isn't zero passes through; anything else fails,
             // null here (leafall903/ORPHEUS, commit c239a84). A world's own
