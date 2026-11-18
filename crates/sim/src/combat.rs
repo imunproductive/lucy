@@ -56,9 +56,9 @@ use orpheus_script::{
     bot::{DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE, DAMAGE_TAGS, DAMAGED, DIED},
     vitals::{Death, Vitals},
     vm::{
-        ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, AuraChange, CombatMod, DAMAGE_DEALT,
-        DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, HealthChange, SeenBody, ShotEvent,
-        TargetCandidate, TrackedStat, combat_scale,
+        ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, AuraChange, BodyEffects, CombatMod,
+        DAMAGE_DEALT, DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, HealthChange, SeenBody,
+        ShotEvent, TargetCandidate, TrackedStat, combat_scale,
     },
     weapons::{AllyHits, DamageTags, HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
@@ -460,6 +460,9 @@ pub struct PlayerTarget {
     /// graphs hold now (`orpheus_script::vm::statuses`: Nano Boost's
     /// `0B9F` st19), for its hits.
     pub dealt: Vec<CombatMod>,
+    /// The modifiers its graphs hold for other entities
+    /// (`BodyEffects::held_for_others`), which the room adds to theirs.
+    pub held: Vec<CombatMod>,
 }
 
 struct Target {
@@ -553,6 +556,10 @@ pub struct Combat {
     /// The stats the room counted natively since the match last looked
     /// ([`Self::take_tracked_stats`]).
     counted: Vec<TrackedStat>,
+    /// The modifiers the bodies' graphs hold for other entities, as the
+    /// players' and bots' were when the poses were last recorded: each
+    /// counts for its holder's hits and for the hits on it.
+    held: Vec<CombatMod>,
 }
 
 /// An aura a hit put on a body ([`Combat::take_auras`]): the match puts it
@@ -591,12 +598,15 @@ impl Combat {
             landed: Vec::new(),
             auras: Vec::new(),
             counted: Vec::new(),
+            held: Vec::new(),
         }
     }
 
     /// Keep where every body was this tick (combat.py `update`'s history):
     /// the players' current bodies, a new body with a history of its own
-    /// that refuses shots aimed before it existed, and the live bots.
+    /// that refuses shots aimed before it existed, and the live bots. The
+    /// modifiers the players' and bots' graphs hold for others are kept
+    /// with them.
     pub fn record_poses(&mut self, scene: &PreparedScene, players: &[PlayerTarget], tick: u32) {
         let mut previous = std::mem::take(&mut self.players);
         self.players = players
@@ -621,6 +631,14 @@ impl Combat {
                 target.history.record(tick, scene.bot_target(bot));
             }
         }
+        self.held.clear();
+        self.held.extend(
+            players
+                .iter()
+                .flat_map(|target| target.held.iter().cloned()),
+        );
+        self.held
+            .extend(scene.bot_scripts().held_for_others().cloned());
     }
 
     /// The bodies the statescript's target searches can find this tick
@@ -857,7 +875,9 @@ impl Combat {
             .enemy_of(scene, shooter, impact.entity)
             .then_some(impact.critical);
         self.count_shot(shooter, struck);
-        Ok(self.apply_impact(scene, shooter, shot_frame, world_tick, context, &impact))
+        Ok(self.apply_impact(
+            scene, shooter, shot_frame, world_tick, context, &impact, None,
+        ))
     }
 
     /// A health change a body's graph made ([`HealthChange`]: quick melee
@@ -935,8 +955,14 @@ impl Combat {
                 .then(|| self.feet(scene, shooter.source))
                 .flatten()
                 .and_then(|from| damage_direction(from, slot.target.pose.feet));
-            let (amount, tags) =
-                self.dealt(scene, shooter, change.heal, change.amount, change.tags);
+            let (amount, tags) = self.dealt(
+                scene,
+                shooter,
+                change.heal,
+                change.amount,
+                change.tags,
+                None,
+            );
             self.player_hits.push(PlayerHit {
                 body: target,
                 shooter,
@@ -964,7 +990,7 @@ impl Combat {
             tags: change.tags,
             heal: if change.heal { change.amount } else { 0.0 },
         };
-        let hit = self.apply_bot_impact(scene, shooter, change.frame, None, context, &impact);
+        let hit = self.apply_bot_impact(scene, shooter, change.frame, None, context, &impact, None);
         if hit.is_some() {
             self.auras.extend(aura);
         }
@@ -994,8 +1020,10 @@ impl Combat {
 
     /// A hit of `amount` with `tags` as the shooter's dealt modifiers make
     /// it (`orpheus_script::vm::statuses`): a heal scaled by those of the
-    /// healing he gives, damage by those of the damage he deals, at the
-    /// hit; with the tags they added.
+    /// healing he gives, damage by those of the damage he deals, as he
+    /// holds them at the hit ([`Self::dealt_modifiers`]) or, for a
+    /// projectile's hit, as `launched` kept them at its launch; with the
+    /// tags they added.
     fn dealt(
         &self,
         scene: &PreparedScene,
@@ -1003,22 +1031,52 @@ impl Combat {
         heal: bool,
         amount: f64,
         mut tags: DamageTags,
+        launched: Option<&[CombatMod]>,
     ) -> (f64, DamageTags) {
         let kind = if heal { HEALING_DEALT } else { DAMAGE_DEALT };
-        let scale = if shooter.bot {
-            scene
-                .bot_scripts()
-                .effects(shooter.source)
-                .map_or(1.0, |effects| effects.scale(kind, &mut tags))
-        } else {
-            self.players
-                .iter()
-                .find(|slot| slot.target.body == shooter.source)
-                .map_or(1.0, |slot| {
-                    combat_scale(&slot.target.dealt, kind, &mut tags)
-                })
+        // A dealt kind has no party filter (`m_5E6F1B8B` is set nowhere).
+        let scale = match launched {
+            Some(launched) => combat_scale(launched, kind, &mut tags, &[]),
+            None => combat_scale(self.dealt_modifiers(scene, shooter), kind, &mut tags, &[]),
         };
         (amount * scale, tags)
+    }
+
+    /// The modifiers the shooter holds now: a bot's from its script, a
+    /// player's as [`PlayerTarget::dealt`] has them, then those other
+    /// entities' graphs hold for him ([`Self::record_poses`]).
+    fn dealt_modifiers<'a>(
+        &'a self,
+        scene: &'a PreparedScene,
+        shooter: Shooter,
+    ) -> impl Iterator<Item = &'a CombatMod> {
+        let source = shooter.source;
+        let bot = shooter
+            .bot
+            .then(|| scene.bot_scripts().effects(source))
+            .flatten()
+            .into_iter()
+            .flat_map(BodyEffects::modifiers);
+        let player = (!shooter.bot)
+            .then(|| self.players.iter().find(|slot| slot.target.body == source))
+            .flatten()
+            .into_iter()
+            .flat_map(|slot| &slot.target.dealt);
+        let held = self
+            .held
+            .iter()
+            .filter(move |modifier| modifier.holder == source);
+        bot.chain(player).chain(held)
+    }
+
+    /// The modifiers held for `entity` by other entities' graphs, for a
+    /// hit on it.
+    fn held_for(&self, entity: u32) -> Vec<CombatMod> {
+        self.held
+            .iter()
+            .filter(|modifier| modifier.holder == entity)
+            .cloned()
+            .collect()
     }
 
     /// The auras the hits put on bodies since the last call, in order.
@@ -1134,6 +1192,14 @@ impl Combat {
                 .filter(|(bot, target)| eligible_bot(bot, target, shooter, free_for_all, allies))
                 .map(|(bot, _)| (bot.entity, scene.bot_target(bot))),
         );
+        // Its first step is its launch: it keeps its shooter's dealt
+        // modifiers as they are now for all its hits.
+        flight.launch(|| {
+            self.dealt_modifiers(scene, shooter)
+                .filter(|modifier| [DAMAGE_DEALT, HEALING_DEALT].contains(&modifier.kind))
+                .cloned()
+                .collect()
+        });
         let ray_profile = flight.ray_profile();
         let step = flight
             .advance(context.tick, &candidates, |origin, direction, reach| {
@@ -1151,6 +1217,7 @@ impl Combat {
                 Some(context.tick),
                 context,
                 impact,
+                flight.launch_modifiers(),
             ));
         }
         if step.end.is_some() && flight.damaging() {
@@ -1226,7 +1293,8 @@ impl Combat {
             })
             .and_then(|slot| flight.own_blast(&slot.target.pose));
         if let Some(own) = own.filter(|own| own.damage > 0.0) {
-            let (amount, tags) = self.dealt(scene, shooter, false, own.damage, own.tags);
+            let launched = flight.launch_modifiers();
+            let (amount, tags) = self.dealt(scene, shooter, false, own.damage, own.tags, launched);
             self.player_hits.push(PlayerHit {
                 body: shooter.source,
                 shooter,
@@ -1311,6 +1379,8 @@ impl Combat {
     /// for the match. An ally of the shooter (the hits that strike allies
     /// alone reach one) takes the impact's heal instead (combat.py
     /// `_heal`, leafall903/ORPHEUS (MIT) commit c239a84), and no damage.
+    /// `launched`: a projectile's dealt modifiers ([`Self::dealt`]).
+    #[allow(clippy::too_many_arguments)]
     fn apply_impact(
         &mut self,
         scene: &mut PreparedScene,
@@ -1319,6 +1389,7 @@ impl Combat {
         world_tick: Option<u32>,
         context: ShotContext,
         impact: &Impact,
+        launched: Option<&[CombatMod]>,
     ) -> Option<BotHit> {
         let free_for_all = scene.map().free_for_all;
         if let Some(slot) = self
@@ -1331,7 +1402,7 @@ impl Combat {
             let direction = self
                 .feet(scene, shooter.source)
                 .and_then(|from| damage_direction(from, slot.target.pose.feet));
-            let (amount, tags) = self.dealt(scene, shooter, heal, amount, impact.tags);
+            let (amount, tags) = self.dealt(scene, shooter, heal, amount, impact.tags, launched);
             if amount > 0.0 {
                 self.player_hits.push(PlayerHit {
                     body: impact.entity,
@@ -1348,7 +1419,9 @@ impl Combat {
             }
             return None;
         }
-        self.apply_bot_impact(scene, shooter, shot_frame, world_tick, context, impact)
+        self.apply_bot_impact(
+            scene, shooter, shot_frame, world_tick, context, impact, launched,
+        )
     }
 
     /// Where a shooter's feet were as the match last placed them: a
@@ -1367,6 +1440,7 @@ impl Combat {
             })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_bot_impact(
         &mut self,
         scene: &mut PreparedScene,
@@ -1375,6 +1449,7 @@ impl Combat {
         world_tick: Option<u32>,
         context: ShotContext,
         impact: &Impact,
+        launched: Option<&[CombatMod]>,
     ) -> Option<BotHit> {
         // A Training Bot is back after the mode's respawn time, as a hero
         // (`game_respawns`: 3 s in the practice modes).
@@ -1388,14 +1463,26 @@ impl Combat {
                 .any(|bot| bot.entity == impact.entity && bot.spawn.team == shooter.team);
         // The shooter's dealt modifiers, then the bot's statuses and taken
         // modifiers (`vm/statuses.rs`): an invulnerable bot takes no
-        // damage, and its modifiers scale what it takes (Biotic Grenade's
-        // anti-heal and heal boost, Nano Boost's damage reduction).
+        // damage, and its modifiers (its graphs', their party filters
+        // tested on the shooter, and those others hold for it) scale what
+        // it takes (Biotic Grenade's anti-heal and heal boost, Nano Boost's
+        // damage reduction).
         let amount = if heal { impact.heal } else { impact.damage };
-        let (amount, mut tags) = self.dealt(scene, shooter, heal, amount, impact.tags);
-        let effects = scene.bot_scripts().effects(impact.entity);
-        let invulnerable = effects.is_some_and(|effects| effects.invulnerable());
+        let (amount, mut tags) = self.dealt(scene, shooter, heal, amount, impact.tags, launched);
+        let invulnerable = scene
+            .bot_scripts()
+            .effects(impact.entity)
+            .is_some_and(|effects| effects.invulnerable());
         let taken = if heal { HEALING_TAKEN } else { DAMAGE_TAKEN };
-        let amount = amount * effects.map_or(1.0, |effects| effects.scale(taken, &mut tags));
+        let held = self.held_for(impact.entity);
+        let amount = amount
+            * scene.bot_scripts_mut().combat_scale(
+                impact.entity,
+                taken,
+                &mut tags,
+                shooter.source,
+                &held,
+            );
         let plate = Arc::clone(scene.bot_plate());
         let (bot, target) = scene
             .bots_mut()
@@ -1742,10 +1829,14 @@ pub fn apply_player_hits(
             .and_then(|world| world.current_hero())
             .and_then(|hero| scene.heroes().get(hero))
             .map(|hero| hero.body);
+        // What other bodies' graphs hold for the victim scales what he
+        // takes, after his own graphs' modifiers.
+        let held = held_for(scene, players, hit.body);
         if hit.heal {
-            let given = players[victim].world.as_deref_mut().map_or(0.0, |world| {
-                world.heal_body(scene, hit.body, hit.amount, &hit.tags)
-            });
+            let given = players[victim]
+                .world
+                .as_deref_mut()
+                .map_or(0.0, |world| world.heal_body(scene, &hit, &held));
             if !hit.shooter.bot {
                 let target = (hit.body, victim_body);
                 credit_healing(scene, players, hit.shooter.source, target, given, &hit.tags);
@@ -1755,7 +1846,7 @@ pub fn apply_player_hits(
         let Some(damage) = players[victim]
             .world
             .as_deref_mut()
-            .and_then(|world| world.apply_damage(scene, &hit, tick, now))
+            .and_then(|world| world.apply_damage(scene, &hit, tick, now, &held))
         else {
             continue;
         };
@@ -1867,6 +1958,19 @@ pub fn apply_player_hits(
         });
     }
     notices
+}
+
+/// The modifiers other bodies' graphs hold for `body` now
+/// (`BodyEffects::held_for_others`): the players' and the bots'.
+fn held_for(scene: &PreparedScene, players: &[CombatPlayer<'_>], body: u32) -> Vec<CombatMod> {
+    players
+        .iter()
+        .filter_map(|player| player.world.as_deref())
+        .flat_map(WorldDelivery::held_for_others)
+        .chain(scene.bot_scripts().held_for_others())
+        .filter(|modifier| modifier.holder == body)
+        .cloned()
+        .collect()
 }
 
 /// [`kill_credit`] of a player's death: the victim's recent attackers and
