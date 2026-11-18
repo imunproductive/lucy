@@ -1763,7 +1763,8 @@ impl WorldDelivery {
             self.queue_controller(scene, tick, open, hero, None)?;
         } else {
             let switch = self.notices.waiting.pop_front().expect("waiting switch");
-            self.queue_controller(scene, tick, open, hero, Some(&switch.presence()))?;
+            let presence = scene.controller().switch_presence(switch.kept);
+            self.queue_controller(scene, tick, open, hero, Some(&presence))?;
             self.notices.chunk = Some(self.controller.latest_data());
         }
         self.notices.sent_at = Some(now);
@@ -4321,19 +4322,32 @@ impl WorldDelivery {
         if frame.is_some() {
             self.select_open = open;
         }
-        // notices.py `hero_switched`: a switch from one hero to another, not
-        // the first pick. Other clients take it from this player's view.
+        // A switch from one hero to another, not the first pick: `037F.025`
+        // to the player's controller script, whose `0C90` rid220 keeps it
+        // for the chat line (`crate::notices`). Other clients take it from
+        // this player's view.
         if let Some(old) = old.filter(|old| old.hero != hero.guid) {
-            self.switches += 1;
-            let switch = Switch {
-                old: old.hero,
-                new: hero.guid,
-                player: self.owner,
-                serial: self.switches,
-            };
-            self.switch = Some(switch);
-            if scene.switch_notices() && self.controller.latest_data() != 0 {
-                self.notices.waiting.push_back(switch);
+            let kept = self
+                .controller_script
+                .as_mut()
+                .map(|controller| controller.hero_switched(tick, old.hero, hero.guid, self.owner));
+            match kept {
+                Some(Ok(Some(kept))) => {
+                    self.switches += 1;
+                    let switch = Switch {
+                        kept,
+                        serial: self.switches,
+                    };
+                    self.switch = Some(switch);
+                    if scene.switch_notices() && self.controller.latest_data() != 0 {
+                        self.notices.waiting.push_back(switch);
+                    }
+                }
+                Some(Err(error)) => {
+                    eprintln!("controller script of {:08X} stopped ({error})", self.owner);
+                    self.controller_script = None;
+                }
+                Some(Ok(None)) | None => {}
             }
         }
         self.push(Record {

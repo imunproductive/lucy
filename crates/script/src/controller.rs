@@ -9,12 +9,13 @@
 //! The match gives the world the controller's facts (its team, the heroes
 //! it may play) and routes the messages the graphs take and send. The
 //! server routes `0093.025` today: an elimination, which `0215` counts into
-//! multikills ([`ControllerScript::eliminated`]). The graphs also take, and
-//! the server does not route yet (`docs/dev/loose-ends.md`): the client's
-//! hero select requests (21616 to `288B`: [`PICK_HERO`], [`OPEN_OR_CLOSE`]),
-//! [`HERO_SWITCHED`] (`0C90` rid220 keeps #4513/#4514/#4515 for its
+//! multikills ([`ControllerScript::eliminated`]), and [`HERO_SWITCHED`] on
+//! each hero switch (`0C90` rid220 keeps #4513/#4514/#4515 for its
 //! client-only Watch, the chat line; `288B` rid228 takes the new hero as
-//! the pick) and [`RESPAWN_HERE`] from the mode's `0C8F`.
+//! the pick: [`ControllerScript::hero_switched`]). The graphs also take,
+//! and the server does not route yet (`docs/dev/loose-ends.md`): the
+//! client's hero select requests (21616 to `288B`: [`PICK_HERO`],
+//! [`OPEN_OR_CLOSE`]) and [`RESPAWN_HERE`] from the mode's `0C8F`.
 //!
 //! What the graphs send other entities (`06FF` and `0685` to the mode, ...)
 //! waits in [`ControllerScript::take_messages`]; messages to the controller
@@ -357,6 +358,52 @@ impl ControllerScript {
         Ok(())
     }
 
+    /// The controller's player switched from hero `old` to `new` at
+    /// `frame`: `037F.025` {`021E` old, `0220` new, `0221` the player's
+    /// controller} to the controller. `0C90` rid220 keeps them in
+    /// #4513/#4514/#4515 for its client-only Watch (the chat line);
+    /// `288B` rid228 takes the new hero as the pick. Returns what `0C90`
+    /// keeps, none if it did not take the message.
+    pub fn hero_switched(
+        &mut self,
+        frame: u32,
+        old: u64,
+        new: u64,
+        player: u32,
+    ) -> Result<Option<HeroSwitch>, InitFault> {
+        self.advance(frame)?;
+        self.receive(
+            HERO_SWITCHED,
+            Variables::from([
+                (0x21e, Value::Asset(old)),
+                (0x220, Value::Asset(new)),
+                (0x221, Value::Entity(player)),
+            ]),
+        )?;
+        Ok(self.hero_switch())
+    }
+
+    /// `0C90`'s #4513 (old hero), #4514 (new hero) and #4515 (player).
+    pub fn hero_switch(&self) -> Option<HeroSwitch> {
+        let instance = self
+            .snapshot()?
+            .instances
+            .values()
+            .find(|instance| instance.graph == PVP_CONTROLLER && instance.parent.is_none())?;
+        let asset = |id| match instance.variables.get(&id) {
+            Some(&Value::Asset(guid)) if guid != 0 => Some(guid),
+            _ => None,
+        };
+        let Some(&Value::Entity(player)) = instance.variables.get(&SWITCH_PLAYER) else {
+            return None;
+        };
+        Some(HeroSwitch {
+            old: asset(SWITCH_OLD_HERO)?,
+            new: asset(SWITCH_NEW_HERO)?,
+            player,
+        })
+    }
+
     /// `0215`'s ClientOnlyPulser st21 and #10122 once st21 has pulsed.
     pub fn multikill(&self) -> Option<Multikill> {
         let instance = self
@@ -414,6 +461,19 @@ impl ControllerScript {
 const MULTIKILL_PULSER: u16 = 21;
 /// `0215`'s #10122: the announcer's voice stimulus (`078`).
 const MULTIKILL_STIMULUS: u32 = 10122;
+/// `0C90`'s hero switch variables (rid220 from `037F.025`).
+const SWITCH_OLD_HERO: u32 = 4513;
+const SWITCH_NEW_HERO: u32 = 4514;
+const SWITCH_PLAYER: u32 = 4515;
+
+/// The last hero switch `0C90` keeps: the old and new hero and the
+/// switching player's controller entity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HeroSwitch {
+    pub old: u64,
+    pub new: u64,
+    pub player: u32,
+}
 
 /// What `0215` has for the announcer: st21's pulse count and the clock of
 /// its last pulse, and #10122.
@@ -554,5 +614,48 @@ mod tests {
             })
         );
         assert!(script.snapshot().unwrap().initialization_complete());
+    }
+
+    /// `037F.025` to the controller: `0C90` rid220 keeps the old hero, the
+    /// new one and the player in #4513/#4514/#4515 (the chat line's
+    /// Watch), each switch replacing the last.
+    #[test]
+    #[ignore = "requires the derived 104319 graph bundle"]
+    fn a_hero_switch_lands_in_the_controller_s_variables() {
+        use orpheus_content::heroes::ANA;
+        for mode in [RANGE, ESCORT] {
+            let mut script = start(mode);
+            assert_eq!(script.hero_switch(), None);
+            let first = script.hero_switched(20, SOLDIER, ANA, CONTROLLER).unwrap();
+            assert_eq!(
+                first,
+                Some(HeroSwitch {
+                    old: SOLDIER,
+                    new: ANA,
+                    player: CONTROLLER,
+                }),
+                "{mode:x}"
+            );
+            let back = script.hero_switched(30, ANA, SOLDIER, CONTROLLER).unwrap();
+            assert_eq!(
+                back,
+                Some(HeroSwitch {
+                    old: ANA,
+                    new: SOLDIER,
+                    player: CONTROLLER,
+                })
+            );
+            // rid228 makes the new hero the pick, so `0C90` st21 broadcasts
+            // `070B` with the hero's role: `STU_BE1161C0` (node 44) is the
+            // one gap (`docs/dev/loose-ends.md`, hero select limits).
+            let gaps: Vec<_> = script
+                .snapshot()
+                .unwrap()
+                .diagnostics
+                .iter()
+                .map(|diagnostic| (diagnostic.site.graph, diagnostic.site.node))
+                .collect();
+            assert_eq!(gaps, [(PVP_CONTROLLER, Some(44))], "{mode:x}");
+        }
     }
 }
