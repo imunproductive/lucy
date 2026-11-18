@@ -111,6 +111,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.world.combat_mod(self.site(id, node), None);
             }
             StateKind::ApplyAura => self.end_auras(key),
+            StateKind::SendMessage => self.end_send_state(key, node)?,
             _ => (),
         }
         let state = self.state_mut(key).expect("ending state");
@@ -286,6 +287,22 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.machine
                     .motions
                     .push(Motion::EndRewind { finished: false });
+            }
+            // Its persistent senders let their message go
+            // ([`Self::end_send_state`]).
+            let senders: Vec<u16> = self.machine.snapshot.instances[&id]
+                .states
+                .iter()
+                .filter(|(_, state)| {
+                    state.active
+                        && state.kind == StateKind::SendMessage
+                        && !state.tracked.is_empty()
+                })
+                .map(|(&raw, _)| raw)
+                .collect();
+            for raw in senders {
+                let node = self.graph(id).state(usize::from(raw)).expect("sender");
+                self.end_send_state(StateKey { instance: id, raw }, node)?;
             }
             self.machine.snapshot.instances.shift_remove(&id);
             self.machine.queues.remove(id);

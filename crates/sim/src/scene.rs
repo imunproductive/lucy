@@ -63,6 +63,22 @@
 //!   release point, but bullets still went through), nor the bots' entity
 //!   id class (`bots.rs` module notes), nor the spring steps (the bot's
 //!   collision capsule had sat 2.5 m too low, `Bot::movement`).
+//! - 0x4 marks a body its graphs hold a status on (`STU_9028E035`, either
+//!   type: the spawn room's invulnerability `0C8E` st11, Wraith Form,
+//!   Recall, ...): [`SHIELDED`]. The client's explosion knockback
+//!   (`0x7FF789A433F0`, gate @`0x7FF789A439CE`) pushes a body only when its
+//!   comp25 `+0x58` word has 0x40 and neither 0x10 nor 0x4, and no code on
+//!   that path reads a status; the word is component 26's. Checked in the
+//!   game (2026-11-17, Soldier: 76's Helix Rocket at his feet,
+//!   refs/reports/OwnerPrediction.md): in the spawn room with 0x4 the gate
+//!   read 0x810045 and queued no push, outside it read 0x810041 and his
+//!   client lifted him 2.3 m. The graphs' damage searches leave 0x4 out
+//!   with the dead (`m_4EA686DB` 0x14 in 96 filters: quick melee `0043`,
+//!   Death Blossom `0044`, ...); 76 leave out 0x10 alone (Lúcio's aura
+//!   search `073A` st17, the room's own `0D62`), and the weapons' ray
+//!   profiles deny it. So 0x4 is taken as the native mark of a status
+//!   (assumption: the retail server sets it from the status; the client
+//!   never sets it itself, `0x7FF789A9B020`).
 //! - The client's own hitscan finds a body only through its filter word's
 //!   bit 0x10000 (checked in the game, 2026-11-17, HitPredict.md "Night"):
 //!   the client files an entity under spatial groups by the word's bits
@@ -189,6 +205,10 @@ const TEAM_BIT: u64 = 0x0080_0000;
 pub const BODY_KINDS: u64 = 0x1_0041;
 /// The filter bit of a dead body (see the module notes).
 pub const DEAD: u64 = 0x10;
+/// The filter bit of a body its graphs hold a status on (`STU_9028E035`:
+/// the spawn room's invulnerability, Wraith Form, Recall, ...; see the
+/// module notes).
+pub const SHIELDED: u64 = 0x4;
 /// The kind bits of a moving map placeable (the Practice Range's platforms):
 /// the client's hitscan group (0x10000), so a shot's entity query tests
 /// its moving bodies (see the module notes).

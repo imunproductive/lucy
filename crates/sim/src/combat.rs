@@ -718,11 +718,15 @@ impl Combat {
     /// heal or damage the body they are on), applied as a shot's impact
     /// is: the damage message, the stats, a death and its respawn follow.
     /// Its instigator is the shooter, a player's body or a bot as the match
-    /// last placed them; another instigator changes nothing. The server's
-    /// native rule decides who takes it (assumption, as for the shots:
-    /// combat.py `_enemies`): damage strikes an enemy of the instigator
-    /// (anyone in a free-for-all) and the instigator's own body (the enemy
-    /// spawn room `0C8E` st45), a heal an ally or itself. A bot takes it
+    /// last placed them, or a server placeable of the map (the spawn room
+    /// `0D62` that `0C8E` st13's heal names, `#40`); another instigator
+    /// changes nothing. The server's native rule decides who takes it
+    /// (assumption, as for the shots: combat.py `_enemies`): damage strikes
+    /// an enemy of the instigator (anyone in a free-for-all) and the
+    /// instigator's own body (the enemy spawn room `0C8E` st45), a heal an
+    /// ally or itself; a placeable's change strikes the player's body its
+    /// graph named, whatever his team (the graph chose him), and no bot
+    /// (the bots run no mode body graph that names one). A bot takes it
     /// only once its create reached the instigator's client (`visible`, as
     /// for a shot); the dead take nothing. Unlike the shots (and Python's
     /// `_melee`), quick melee's search saw the bodies where the match placed
@@ -739,7 +743,24 @@ impl Combat {
         if !(change.amount.is_finite() && change.amount > 0.0) {
             return None;
         }
-        let shooter = self.shooter(scene, change.instigator)?;
+        let placeable = || {
+            scene
+                .server_placeables()
+                .iter()
+                .any(|placed| placed.entity() == change.instigator)
+        };
+        let (shooter, environment) = match self.shooter(scene, change.instigator) {
+            Some(shooter) => (shooter, false),
+            None if placeable() => (
+                Shooter {
+                    source: change.instigator,
+                    team: u8::MAX,
+                    bot: false,
+                },
+                true,
+            ),
+            None => return None,
+        };
         let free_for_all = scene.map().free_for_all;
         let target = change.target;
         let aura = change.aura.map(|aura| AuraHit {
@@ -754,11 +775,12 @@ impl Combat {
         {
             let own = target == shooter.source;
             let teammate = !own && !free_for_all && slot.target.team == shooter.team;
-            let takes = if change.heal {
-                own || teammate
-            } else {
-                !teammate
-            };
+            let takes = environment
+                || if change.heal {
+                    own || teammate
+                } else {
+                    !teammate
+                };
             if !takes {
                 return None;
             }
@@ -781,7 +803,7 @@ impl Combat {
             self.auras.extend(aura);
             return None;
         }
-        if !visible(target) {
+        if environment || !visible(target) {
             return None;
         }
         let impact = Impact {
