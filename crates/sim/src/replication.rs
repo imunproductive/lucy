@@ -43,7 +43,10 @@ use crate::{
     voice_lines::{VoiceLine, VoiceState, delay_ticks, is_death_cry},
 };
 use orpheus_content::{
-    hero_settings::{HeroSetting, HeroSettings, SCRIPT_SETTINGS},
+    hero_settings::{
+        HeroSetting, HeroSettings, NANO_BOOST_SENSITIVITY, NANO_BOOST_SENSITIVITY_DEFAULT,
+        SCRIPT_SETTINGS,
+    },
     heroes::{ANA, Hero, SOLDIER},
     parameters::{ClientGameMessage, HeroSelectRequest},
 };
@@ -1550,9 +1553,10 @@ pub struct WorldDelivery {
 /// The entity variables of the hero settings the client sends
 /// (`orpheus_content::hero_settings`): the setting identifier's index holds
 /// the chosen entry's identifier, or nothing (null) at DEFAULT, which the
-/// client sends as no entry.
+/// client sends as no entry. Ana's body also holds her NANO BOOST
+/// SENSITIVITY at its default, which no client sends.
 pub fn hero_setting_variables(settings: &HeroSettings, hero: u64) -> Variables {
-    SCRIPT_SETTINGS
+    let mut variables: Variables = SCRIPT_SETTINGS
         .iter()
         .map(|&setting| {
             let value = match settings.value(hero, setting) {
@@ -1561,7 +1565,14 @@ pub fn hero_setting_variables(settings: &HeroSettings, hero: u64) -> Variables {
             };
             (setting as u32, value)
         })
-        .collect()
+        .collect();
+    if hero == ANA {
+        variables.insert(
+            NANO_BOOST_SENSITIVITY as u32,
+            ScriptValue::Float(NANO_BOOST_SENSITIVITY_DEFAULT),
+        );
+    }
+    variables
 }
 
 /// A body's death (combat.py `Vitals.death_tick`, `killer`) and when it
