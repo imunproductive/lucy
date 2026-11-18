@@ -2013,6 +2013,105 @@ fn the_charge_graph_charges_d_va_and_fills_on_its_ruleset_key() {
     assert_eq!(charge_of(&runtime), 2310.0);
 }
 
+/// Ana's Nano Boost through her own graph `0B9E`, as the user presses it:
+/// with a full meter (the ruleset key `32E0`), ABILITY_3 (command bit 0x20,
+/// logical button 37) begins st0's ability; st6 searches a 10° cone
+/// (`10 × #9602e`, the hero setting NANO BOOST SENSITIVITY at its default
+/// 1, `orpheus_content::hero_settings`) 40 m along her aim from her eye for
+/// the ally nearest her crosshair; rid80 takes him into `#8070`, and after
+/// st11's 0.13 s st12 puts the aura `0269` on him (its graph `0B9F` is
+/// `nano_boost_halves_the_damage_a_bot_takes_and_boosts_what_it_deals`).
+/// The cone holds two allies: the one 0.3 m beside her aim at 20 m covers
+/// her crosshair and wins over the nearer one 0.6 m aside at 10 m (the
+/// scoring `m_84E5DE4E`: the screen distance to the crosshair, then 1 % of
+/// the distance over 40 m; the limit `m_C39691D9` 1); a third 2 m aside at
+/// 10 m (11°) is out of the 5° half-angle, and an enemy straight ahead never
+/// counts.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn anas_ultimate_puts_nano_boost_on_the_ally_in_her_sights() {
+    use crate::replication::hero_setting_variables;
+    use orpheus_content::{hero_settings::HeroSettings, heroes::ANA};
+    use orpheus_script::vm::AuraChange;
+
+    const NANO_BOOST: u64 = 0x04a0_0000_0000_0269;
+    const ABILITY_3: u32 = 0x20;
+    const FAR_ALLY: u32 = 0xa000_0201;
+    const NEAR_ALLY: u32 = 0xa000_0301;
+    const WIDE_ALLY: u32 = 0xa000_0501;
+    const ENEMY: u32 = 0xa000_0401;
+    let full = Variables::from([(13024, Value::Bool(true))]);
+    let (mut runtime, spawn) = hero_body(ANA, Some(full), None);
+    runtime
+        .set_hero_settings(&hero_setting_variables(&HeroSettings::default(), ANA))
+        .unwrap();
+    let [x, y, z] = spawn.pose.position;
+    let body = |entity, team, controller, feet| TargetCandidate {
+        entity,
+        team: Some(team),
+        dead: false,
+        controller: Some(controller),
+        ai: false,
+        ai_control: None,
+        feet,
+        height: 1.8,
+        radius: 0.4,
+        yaw: 0.0,
+        tags: None,
+        spawned: Vec::new(),
+    };
+    // She looks along +z (yaw 0, level).
+    runtime.set_target_candidates(&[
+        body(spawn.entity, 0, spawn.controller, spawn.pose.position),
+        body(ENEMY, 1, 0xa000_0400, [x, y, z + 5.0]),
+        body(WIDE_ALLY, 0, 0xa000_0500, [x + 2.0, y, z + 10.0]),
+        body(NEAR_ALLY, 0, 0xa000_0300, [x + 0.6, y, z + 10.0]),
+        body(FAR_ALLY, 0, 0xa000_0200, [x + 0.3, y, z + 20.0]),
+    ]);
+    let mover = Mover::new(
+        MoverSettings::default(),
+        Arc::new(ContactWorld::new(Vec::new()).unwrap()),
+        spawn.pose.position,
+        0,
+        0x18,
+    )
+    .unwrap();
+    let mut auras = Vec::new();
+    // One press at frame 30, then 60 frames (0.96 s) for st11's 0.13 s.
+    for frame in spawn.frame + 1..=spawn.frame + 90 {
+        let buttons = if frame == spawn.frame + 30 {
+            ABILITY_3
+        } else {
+            0
+        };
+        runtime
+            .advance(
+                Command {
+                    frame,
+                    buttons,
+                    ..Command::default()
+                },
+                &mover,
+                BodyStep::Posed,
+            )
+            .unwrap();
+        auras.extend(runtime.take_aura_changes());
+    }
+    let applied: Vec<_> = auras
+        .iter()
+        .filter_map(|change| match change {
+            AuraChange::Apply { target, aura, .. } => Some((*target, *aura)),
+            AuraChange::Remove { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        applied,
+        [(FAR_ALLY, NANO_BOOST)],
+        "assumptions: {:#?}",
+        runtime.snapshot().unwrap().assumptions
+    );
+}
+
 /// The Biotic Field's aura `025F` heals the body it is on through the
 /// body's own graph `0B3C`: st0 ModifyHealth changes health over time,
 /// `m_amount` `#420 * #567` (35 × 5 = 175) every `m_95F1FB0B`
