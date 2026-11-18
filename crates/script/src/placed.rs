@@ -10,17 +10,28 @@
 //! answers by assumption is not complete: the server doesn't send its
 //! frames (see [`PlacedEntity::complete`]); one that hasn't faulted is
 //! running, and the server routes its messages ([`PlacedEntity::running`]).
+//!
+//! The same world runs the entities the game spawns during the match
+//! ([`MapEntityWorld::spawn`]: Soldier: 76's Biotic Field `03DC`, whose
+//! `0258` searches for allies, puts its aura `025F` on them and destroys
+//! itself). A spawned entity has an owner (its hero's controller), puts
+//! auras on the bodies ([`MapEntityWorld::take_auras`]) and removes itself
+//! (`STU_523EE38D`), which ends its graphs, so its ApplyAura takes its
+//! auras off ([`MapEntityWorld::take_destroyed`]). Assumption: the map's
+//! own placeables do neither yet (their auras and removals have no client
+//! side here).
 
 use std::{collections::BTreeMap, sync::Arc};
 
 use serde_json::Value as Json;
 
 use crate::{
+    expr::EntityRelation,
     graph::{GraphBinding, GraphStore},
     map_tags::{MapTags, TaggedEntity},
     vm::{
-        Component, GameMessage, InitFault, MAX_INIT_WORK, MessageEnd, Root, Site, Snapshot,
-        TargetCandidate, Unknowns, World, bind_values,
+        AuraChange, Component, GameMessage, InitFault, MAX_INIT_WORK, MessageEnd, Root, Site,
+        Snapshot, TargetCandidate, Unknowns, World, bind_values, listed_relation,
     },
     wire::{Value, Variables},
 };
@@ -37,6 +48,17 @@ pub struct Placement<'a> {
     pub overrides: &'a [GraphBinding],
     /// `STUStatescriptComponentInstanceData.m_84D0983B`.
     pub extra: &'a [GraphBinding],
+}
+
+/// An entity the game spawns during the match ([`MapEntityWorld::spawn`]).
+pub struct Spawn<'a> {
+    pub entity: u32,
+    /// Its definition's initial graphs, in order (instance ids from 1, as
+    /// [`crate::vm::body_roots`] numbers them).
+    pub graphs: &'a [u32],
+    pub position: [f64; 3],
+    /// Its owner (component 72): the hero's controller.
+    pub owner: u32,
 }
 
 /// The roots a placement starts with, in the client's order (see the
@@ -83,6 +105,8 @@ pub struct PlacedEntity {
     fault: Option<String>,
     /// The team index its script gave it (`STU_0F647E55`), if any.
     team: Option<i64>,
+    /// A spawned entity's owner ([`Spawn::owner`]).
+    owner: Option<u32>,
 }
 
 impl PlacedEntity {
@@ -138,6 +162,8 @@ struct Shared<'a> {
     map_tags: Option<&'a MapTags>,
     volumes: Option<&'a dyn EntityVolumes>,
     outbox: &'a mut Vec<GameMessage>,
+    auras: &'a mut Vec<AuraChange>,
+    destroyed: &'a mut Vec<u32>,
     ends: &'a mut Vec<MessageEnd>,
 }
 
@@ -155,6 +181,7 @@ struct EntityWorld<'a, 'b> {
     entity: u32,
     position: [f64; 3],
     team: &'b mut Option<i64>,
+    owner: Option<u32>,
 }
 
 impl World for EntityWorld<'_, '_> {
@@ -218,16 +245,21 @@ impl World for EntityWorld<'_, '_> {
         }
     }
 
-    /// Its own team is the one its script gave it; a player's, the
-    /// match's.
+    /// Its own team is the one its script gave it, else a spawned
+    /// entity's owner's; a player's (or his controller's), the match's.
     fn entity_team(&self, _site: Site, entity: u32) -> Option<i64> {
-        if entity == self.entity {
-            return *self.team;
-        }
+        let entity = if entity == self.entity {
+            if self.team.is_some() {
+                return *self.team;
+            }
+            self.owner?
+        } else {
+            entity
+        };
         self.shared
             .players
             .iter()
-            .find(|player| player.entity == entity)?
+            .find(|player| player.entity == entity || player.controller == Some(entity))?
             .team
             .map(i64::from)
     }
@@ -297,6 +329,41 @@ impl World for EntityWorld<'_, '_> {
         true
     }
 
+    /// A spawned entity's owner is its hero's controller; the others,
+    /// what the listed bodies tell.
+    fn related_entity(
+        &mut self,
+        _site: Site,
+        relation: EntityRelation,
+        entity: u32,
+    ) -> Option<u32> {
+        match relation {
+            EntityRelation::Owner if entity == self.entity => self.owner,
+            _ => listed_relation(self.shared.players, relation, entity),
+        }
+    }
+
+    /// A spawned entity's ApplyAura puts its auras on the bodies through
+    /// the match.
+    fn change_aura(&mut self, _site: Site, change: AuraChange) -> bool {
+        if self.owner.is_none() {
+            return false;
+        }
+        self.shared.auras.push(change);
+        true
+    }
+
+    /// A spawned entity removes itself.
+    fn destroy_entity(&mut self, _site: Site, entity: u32) -> bool {
+        if self.owner.is_none() || entity != self.entity {
+            return false;
+        }
+        if !self.shared.destroyed.contains(&entity) {
+            self.shared.destroyed.push(entity);
+        }
+        true
+    }
+
     fn end_message(&mut self, _source: Site, target: u32, message: u64) -> bool {
         self.shared.ends.push(MessageEnd {
             sender: self.entity,
@@ -324,6 +391,11 @@ pub struct MapEntityWorld {
     map_tags: Option<Arc<MapTags>>,
     volumes: Option<Arc<dyn EntityVolumes>>,
     outbox: Vec<GameMessage>,
+    /// The auras the spawned entities put on bodies or took off.
+    auras: Vec<AuraChange>,
+    /// The spawned entities that removed themselves since the match last
+    /// looked.
+    destroyed: Vec<u32>,
     ends: Vec<MessageEnd>,
     entities: Vec<PlacedEntity>,
     frame: u32,
@@ -354,69 +426,109 @@ impl MapEntityWorld {
             map_tags,
             volumes,
             outbox: Vec::new(),
+            auras: Vec::new(),
+            destroyed: Vec::new(),
             ends: Vec::new(),
             entities: Vec::new(),
             frame,
         };
         for placement in placements {
-            let roots = match placed_roots(&world.graphs, &placement) {
-                Ok(roots) if roots.is_empty() => continue,
-                Ok(roots) => roots,
-                Err(error) => {
-                    world.entities.push(PlacedEntity {
-                        entity: placement.entity,
-                        position: placement.position,
-                        component: None,
-                        fault: Some(error.to_string()),
-                        team: None,
-                    });
-                    continue;
-                }
-            };
-            let mut shared = Shared {
-                graphs: &world.graphs,
-                mode,
-                mode_random,
-                unknowns,
-                players: &world.players,
-                map_tags: world.map_tags.as_deref(),
-                volumes: world.volumes.as_deref(),
-                outbox: &mut world.outbox,
-                ends: &mut world.ends,
-            };
-            let mut team = None;
-            let mut entity_world = EntityWorld {
-                shared: &mut shared,
-                entity: placement.entity,
-                position: placement.position,
-                team: &mut team,
-            };
-            let started = Component::start(
-                Arc::clone(&world.graphs),
-                placement.entity,
-                Variables::new(),
-                roots,
-                frame,
-                &mut entity_world,
-                MAX_INIT_WORK,
-            )
-            .and_then(|mut component| {
-                component.advance_frame(frame, &mut entity_world)?;
-                Ok(component)
-            });
-            let (component, fault) = match started {
-                Ok(component) => (Some(component), None),
-                Err(error) => (None, Some(error.to_string())),
-            };
-            world.entities.push(PlacedEntity {
-                entity: placement.entity,
-                position: placement.position,
-                component,
-                fault,
-                team,
-            });
+            let roots = placed_roots(&world.graphs, &placement);
+            world.start_entity(placement.entity, placement.position, roots, None);
         }
         world
+    }
+
+    /// Spawn an entity at the current frame: it starts its initial graphs
+    /// and runs them at once. False when it has none or one is missing.
+    pub fn spawn(&mut self, spawn: Spawn<'_>) -> bool {
+        if spawn.graphs.is_empty()
+            || spawn
+                .graphs
+                .iter()
+                .any(|&graph| self.graphs.graph(graph).is_none())
+        {
+            return false;
+        }
+        let roots = (1..)
+            .zip(spawn.graphs)
+            .map(|(id, &graph)| Root::new(id, graph))
+            .collect();
+        self.start_entity(spawn.entity, spawn.position, Ok(roots), Some(spawn.owner));
+        true
+    }
+
+    /// Start one entity's roots at the world's frame.
+    fn start_entity(
+        &mut self,
+        entity: u32,
+        position: [f64; 3],
+        roots: Result<Vec<Root>, InitFault>,
+        owner: Option<u32>,
+    ) {
+        let roots = match roots {
+            Ok(roots) if roots.is_empty() => return,
+            Ok(roots) => roots,
+            Err(error) => {
+                self.entities.push(PlacedEntity {
+                    entity,
+                    position,
+                    component: None,
+                    fault: Some(error.to_string()),
+                    team: None,
+                    owner,
+                });
+                return;
+            }
+        };
+        let frame = self.frame;
+        let mut shared = Shared {
+            graphs: &self.graphs,
+            mode: self.mode,
+            mode_random: self.mode_random,
+            unknowns: self.unknowns,
+            players: &self.players,
+            map_tags: self.map_tags.as_deref(),
+            volumes: self.volumes.as_deref(),
+            outbox: &mut self.outbox,
+            auras: &mut self.auras,
+            destroyed: &mut self.destroyed,
+            ends: &mut self.ends,
+        };
+        let mut team = None;
+        let mut entity_world = EntityWorld {
+            shared: &mut shared,
+            entity,
+            position,
+            team: &mut team,
+            owner,
+        };
+        let started = Component::start(
+            Arc::clone(&self.graphs),
+            entity,
+            Variables::new(),
+            roots,
+            frame,
+            &mut entity_world,
+            MAX_INIT_WORK,
+        )
+        .and_then(|mut component| {
+            component.advance_frame(frame, &mut entity_world)?;
+            Ok(component)
+        });
+        let (component, fault) = match started {
+            Ok(component) => (Some(component), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+        self.entities.push(PlacedEntity {
+            entity,
+            position,
+            component,
+            fault,
+            team,
+            owner,
+        });
+        self.end_destroyed();
     }
 
     pub fn unknowns(&self) -> Unknowns {
@@ -496,6 +608,8 @@ impl MapEntityWorld {
             map_tags: self.map_tags.as_deref(),
             volumes: self.volumes.as_deref(),
             outbox: &mut self.outbox,
+            auras: &mut self.auras,
+            destroyed: &mut self.destroyed,
             ends: &mut self.ends,
         };
         for placed in &mut self.entities {
@@ -510,17 +624,92 @@ impl MapEntityWorld {
                 entity: placed.entity,
                 position: placed.position,
                 team: &mut placed.team,
+                owner: placed.owner,
             };
             if let Err(error) = run(component, &mut world) {
                 placed.fault = Some(error.to_string());
                 placed.component = None;
             }
         }
+        self.end_destroyed();
+    }
+
+    /// Remove a spawned entity the match ends (its owner's body went): its
+    /// graphs end, as when it removes itself. False: no such entity.
+    pub fn remove(&mut self, entity: u32) -> bool {
+        let Some(index) = self
+            .entities
+            .iter()
+            .position(|placed| placed.entity == entity && placed.owner.is_some())
+        else {
+            return false;
+        };
+        self.end_entity(index);
+        true
+    }
+
+    /// The spawned entities that removed themselves go: their graphs end
+    /// (their ApplyAura states take their auras off).
+    fn end_destroyed(&mut self) {
+        let mut index = 0;
+        while index < self.entities.len() {
+            if self.destroyed.contains(&self.entities[index].entity) {
+                self.end_entity(index);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    fn end_entity(&mut self, index: usize) {
+        let mut placed = self.entities.remove(index);
+        let Some(mut component) = placed.component.take() else {
+            return;
+        };
+        let instances: Vec<u16> = component
+            .snapshot()
+            .map(|snapshot| snapshot.instances.keys().copied().collect())
+            .unwrap_or_default();
+        let mut shared = Shared {
+            graphs: &self.graphs,
+            mode: self.mode,
+            mode_random: self.mode_random,
+            unknowns: self.unknowns,
+            players: &self.players,
+            map_tags: self.map_tags.as_deref(),
+            volumes: self.volumes.as_deref(),
+            outbox: &mut self.outbox,
+            auras: &mut self.auras,
+            destroyed: &mut self.destroyed,
+            ends: &mut self.ends,
+        };
+        let mut world = EntityWorld {
+            shared: &mut shared,
+            entity: placed.entity,
+            position: placed.position,
+            team: &mut placed.team,
+            owner: placed.owner,
+        };
+        for id in instances {
+            // An instance that faults on its end leaves the rest to end.
+            let _ = component.destroy_instance(id, &mut world);
+        }
     }
 
     /// The game messages the scripts sent, for the match to route.
     pub fn take_messages(&mut self) -> Vec<GameMessage> {
         std::mem::take(&mut self.outbox)
+    }
+
+    /// The auras the spawned entities put on bodies or took off, for the
+    /// match to hand to the bodies' scripts.
+    pub fn take_auras(&mut self) -> Vec<AuraChange> {
+        std::mem::take(&mut self.auras)
+    }
+
+    /// The spawned entities that removed themselves since the last call.
+    pub fn take_destroyed(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.destroyed)
     }
 
     /// The messages the scripts' senders let go since the last call

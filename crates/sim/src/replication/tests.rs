@@ -893,7 +893,7 @@ fn projectile_retirement_retries_destroys_and_ignores_stale_confirmations() {
             125,
         )
         .unwrap();
-    let confirmation = projectiles.advance(133, 133);
+    let confirmation = projectiles.advance(133);
     world.body_script.as_mut().unwrap().projectiles = Some(projectiles);
     world.queue_projectiles(id, confirmation).unwrap();
     let old = Arc::clone(&world.queued[0]);

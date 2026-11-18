@@ -429,6 +429,7 @@ mod tests {
             radius: 0.4,
             yaw: 0.0,
             tags: None,
+            spawned: Vec::new(),
         };
         let outside = [spawn[0] + 60.0, spawn[1], spawn[2] + 60.0];
         let bodies = |at: [f64; 3]| {
