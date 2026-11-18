@@ -262,6 +262,88 @@ fn networked_for_code_state_keeps_its_subgraph_lifetime() {
     }
 }
 
+/// `STU_295F1CDE` reads the entity's ForCode row `254B` (`0033` st13's
+/// `valueOr(#9527e, 1.0)`, evaluated when read: 0x7FF789B2BBB0 →
+/// 0x7FF789C6ACC0); without a registering state it is unanswered (the
+/// client asks the entity's owner then).
+#[test]
+fn the_barrier_scale_reads_the_entitys_for_code_row() {
+    let scale = |registered: bool, variables: Variables| {
+        let read = node(
+            2,
+            "STUStatescriptActionSetVar",
+            None,
+            json!({"m_out_Var":var(200, false), "m_value":{"$":"STU_295F1CDE","m_EE729DCB":0}}),
+        );
+        let mut for_code = node(
+            1,
+            FOR_CODE_SYNCED,
+            Some(0),
+            json!({
+                "m_DC897C87":1, "m_598E32D5":0, "m_0582B0E4":0,
+                "m_values":[{
+                    "$":"STUStatescriptForCodeValue",
+                    "m_identifier":"0x0D8000000000254B",
+                    "m_value":{"$":"STU_91EFD5B1", "m_value":var(9527, true),
+                        "m_default":{"$":"STUConfigVarFloat","m_value":1.0}},
+                }],
+                "m_onBeginPlug":plug(&[(2, "m_inPlug")], &[]),
+            }),
+        );
+        for_code["remote"] = json!(0);
+        let (begin, states) = if registered {
+            (vec![(1, "m_beginPlug")], json!([1]))
+        } else {
+            (vec![(2, "m_inPlug")], json!([]))
+        };
+        let mut fixture = graph(
+            42,
+            vec![
+                node(
+                    0,
+                    "STUStatescriptEntry",
+                    None,
+                    json!({"m_outPlug":plug(&begin, &[])}),
+                ),
+                for_code,
+                read,
+            ],
+            states,
+            json!([0]),
+        );
+        fixture["remote"] = json!([1]);
+        Component::start(
+            Arc::new(store(vec![fixture])),
+            42,
+            variables,
+            vec![Root::new(1, 42)],
+            0,
+            &mut EmptyWorld,
+            MAX_INIT_WORK,
+        )
+        .unwrap()
+    };
+    let set = scale(true, Variables::from([(9527, Value::Float(1.5))]));
+    let snapshot = set.snapshot().unwrap();
+    assert_eq!(
+        snapshot.instances[&1].variables.get(&200),
+        Some(&Value::Float(1.5)),
+        "{:?}",
+        snapshot.diagnostics
+    );
+    let unset = scale(true, Variables::new());
+    assert_eq!(
+        unset.snapshot().unwrap().instances[&1].variables.get(&200),
+        Some(&Value::Float(1.0))
+    );
+    let unregistered = scale(false, Variables::new());
+    assert!(matches!(
+        unregistered.snapshot().unwrap().diagnostics.as_slice(),
+        [Diagnostic { issue: Issue::Expression(EvalError::UnsupportedConfig(class)), .. }]
+            if class == "STU_295F1CDE"
+    ));
+}
+
 #[test]
 fn movement_sample_updates_only_changed_authored_outputs() {
     struct SampleWorld(Option<u16>);

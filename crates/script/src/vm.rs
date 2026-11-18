@@ -86,6 +86,10 @@ const LINK_PRIORITY: StackPriority = StackPriority {
 };
 const ABORT_PLUG: &str = "m_F198FD3A";
 const SUBGRAPH_STATES: &str = "m_FF3DAF1E";
+/// The states that register rows (identifier, value) for game code to read
+/// ([`Context::for_code`]): ForCodeSynced and ForCode.
+const FOR_CODE_SYNCED: &str = "STU_CD46AF93";
+const FOR_CODE: &str = "STU_6A926B21";
 const MOVEMENT_BOOLEAN_OUTPUTS: [&str; 12] = [
     "m_105DF1D6",
     "m_49F4B33C",
@@ -1473,6 +1477,7 @@ impl Component {
             .ok_or(EvalError::MalformedConfig("state source"))?;
         let mut context = InstanceContext {
             machine: &self.machine,
+            graphs: &self.graphs,
             world,
             site: Site {
                 entity: snapshot.entity,
@@ -2846,6 +2851,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let site = self.site(id, node);
         let mut context = InstanceContext {
             machine: self.machine,
+            graphs: self.graphs,
             world: self.world,
             site,
             reads: Vec::new(),
@@ -3267,6 +3273,9 @@ fn chase_step(current: Value, destination: Value, step: f64) -> (Value, bool) {
 
 struct InstanceContext<'a, W> {
     machine: &'a Machine,
+    /// The graphs, for the nodes of the instances' active states (the
+    /// ForCode rows [`Context::for_code`] reads).
+    graphs: &'a GraphStore,
     world: &'a mut W,
     site: Site,
     reads: Vec<VarKey>,

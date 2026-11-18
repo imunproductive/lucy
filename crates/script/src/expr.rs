@@ -286,6 +286,14 @@ pub trait Context {
         None
     }
 
+    /// The value `entity`'s statescript registers under ForCode identifier
+    /// `identifier` (an active ForCode or ForCodeSynced row), evaluated
+    /// now; Some(Null) when no row has it; None: the world can't read that
+    /// entity's rows.
+    fn for_code(&mut self, _entity: u32, _identifier: u64) -> Option<Value> {
+        None
+    }
+
     fn ruleset(&mut self, _id: u32) -> Value {
         Value::Null
     }
@@ -530,6 +538,30 @@ pub fn to_int(value: &Value, default: i64) -> i64 {
 
 fn rounded(value: f64) -> f64 {
     f64::from(value as f32)
+}
+
+/// The client's f32 factors from radians to degrees (0x7FF78B53BD0C) and
+/// back (0x7FF78B51FC98).
+const DEGREES: f64 = 57.295_780_181_884_766;
+const RADIANS: f64 = 0.017_453_292_384_743_69;
+
+/// A unit direction's yaw atan2(x, z) (0 when x and z are both 0) and
+/// pitch asin(−y), clamped, in radians (0x7FF789BFB820, 0x7FF789BE29B0).
+fn yaw_pitch([x, y, z]: [f64; 3]) -> [f64; 2] {
+    let yaw = if x != 0.0 || z != 0.0 {
+        x.atan2(z)
+    } else {
+        0.0
+    };
+    [yaw, (-y).clamp(-1.0, 1.0).asin()]
+}
+
+/// The direction of a yaw and pitch in radians: the forward row of a
+/// pitch, then yaw, rotation of the identity (0x7FF78A7596E0).
+fn forward(yaw: f64, pitch: f64) -> [f64; 3] {
+    let (yaw_sin, yaw_cos) = yaw.sin_cos();
+    let (pitch_sin, pitch_cos) = pitch.sin_cos();
+    [yaw_sin * pitch_cos, -pitch_sin, yaw_cos * pitch_cos]
 }
 
 /// A uniform sample in `[0, 1)` from the top 53 bits of a random word.
@@ -886,7 +918,7 @@ fn identifier(config: &Json) -> Result<u32, EvalError> {
         .map_err(|_| EvalError::MalformedConfig("variable identifier out of range"))
 }
 
-fn resource(value: &Json) -> Option<u64> {
+pub(crate) fn resource(value: &Json) -> Option<u64> {
     asset_guid(value).or_else(|| {
         let text = value.as_str()?;
         text.starts_with("0x").then(|| parse_guid(text)).flatten()
@@ -1512,6 +1544,35 @@ impl Evaluator {
             // when there is none, as on a server (`CONFIG_EVALUATION.txt` in
             // leafall903/ORPHEUS, commit c239a84).
             "STU_D3685C04" if native_shape(config, class, None) => Value::Bool(false),
+            // A server-only bool of `m_entity` (no registration of its own,
+            // one use: `01CB` rid64, `!mode.id(9541) || 68F68CD7(owner) ||
+            // #11485`, which skips the kill cam). The client runs that
+            // networked node with the base config's evaluate (record #155,
+            // 0x7FF78A14CC10 `xor al, al`; slot 5 0x7FF78984CA10 then gives
+            // no value), and the expression's config opcode (0x7FF78AA91210,
+            // case 0xE) pushes the invalid value (type 255) for it: null,
+            // read as false. The server's own meaning is unknown; this is
+            // the client's answer (assumption: the same on the server).
+            "STU_68F68CD7" => Value::Null,
+            // The ForCode value `254B` of the script's entity as a float
+            // (`Eval_STU_295F1CDE` 0x7FF789BD9A80 → 0x7FF789B2BBB0 →
+            // 0x7FF789C6ACC0: the entity's statescript registry, first row
+            // of that identifier; it also makes the config depend on #9527,
+            // the variable the row reads). Every hero body registers it in
+            // `0033` st13 (ForCodeSynced, `valueOr(#9527e, 1.0)`); Reinhardt's
+            // `0095` scales his barrier by it. With no row (or an invalid
+            // value) the client asks the entity's owner (component 72),
+            // past a Rose-hidden jump: unanswered here.
+            "STU_295F1CDE" if native_shape(config, class, None) => {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let Value::Entity(entity) = context.owner() else {
+                    return Err(unsupported());
+                };
+                match context.for_code(entity, 0x0d80_0000_0000_254b) {
+                    Some(Value::Null) | None => return Err(unsupported()),
+                    Some(value) => Value::Float(rounded(to_float(&value))),
+                }
+            }
             // TeamIndex (1B860F0): the authored signed 32-bit team, -1 kept; a
             // literal, not the team of an entity (leafall903/ORPHEUS, commit
             // c239a84, `CONFIG_EVALUATION.txt`).
@@ -1866,7 +1927,6 @@ impl Evaluator {
                     aim([context.entity_yaw(entity).ok_or_else(unsupported)?, 0])
                 };
                 if class == "STU_C8C4C20D" {
-                    const DEGREES: f64 = 57.295_780_181_884_766;
                     let [x, _, z] = facing;
                     Value::Float(rounded(rounded(x.atan2(z)) * DEGREES))
                 } else {
@@ -1901,16 +1961,8 @@ impl Evaluator {
                 };
                 let yaw_limit = degrees("m_5023B9B0")?;
                 let pitch_limit = degrees("m_E26E5E09")?;
-                let angles = |[x, y, z]: [f64; 3]| {
-                    let yaw = if x != 0.0 || z != 0.0 {
-                        x.atan2(z)
-                    } else {
-                        0.0
-                    };
-                    [yaw, (-y).clamp(-1.0, 1.0).asin()]
-                };
-                let [yaw, pitch] = angles(from);
-                let [around_yaw, around_pitch] = angles(around);
+                let [yaw, pitch] = yaw_pitch(from);
+                let [around_yaw, around_pitch] = yaw_pitch(around);
                 let within = |angle: f64, around: f64, limit: f64| {
                     use std::f64::consts::{PI, TAU};
                     let difference = (around - angle + PI).rem_euclid(TAU) - PI;
@@ -1924,9 +1976,54 @@ impl Evaluator {
                 };
                 let yaw = within(yaw, around_yaw, yaw_limit);
                 let pitch = within(pitch, around_pitch, pitch_limit);
-                let (yaw_sin, yaw_cos) = yaw.sin_cos();
-                let (pitch_sin, pitch_cos) = pitch.sin_cos();
-                Value::Vector([yaw_sin * pitch_cos, -pitch_sin, yaw_cos * pitch_cos].map(rounded))
+                Value::Vector(forward(yaw, pitch).map(rounded))
+            }
+            // A direction from a yaw `m_7C831A8D` and a pitch `m_C0EDD7EC`
+            // in degrees (Eval 0x7FF789BDC480: each read as a float, unset
+            // 0, × 0.017453292 (0x7FF78B51FC98), then 0x7FF78A7596E0's
+            // forward row, as `STU_0762B33A` makes it). Ashe's coach gun
+            // (`1513` rid18) pushes her against it; Brigitte's `1248`
+            // searches and `0622`'s created entities (a random yaw) use it.
+            "STU_B113D362" if native_fields(config, &["m_7C831A8D", "m_C0EDD7EC"]) => {
+                let mut radians = |name: &str| -> Result<f64, EvalError> {
+                    let angle = match child(config, name) {
+                        Json::Null => 0.0,
+                        angle => to_float(&self.config(angle, context, nested)?),
+                    };
+                    Ok(rounded(angle * RADIANS))
+                };
+                let yaw = radians("m_7C831A8D")?;
+                let pitch = radians("m_C0EDD7EC")?;
+                Value::Vector(forward(yaw, pitch).map(rounded))
+            }
+            // A direction's yaw and pitch in degrees as the first two parts
+            // of a vector (Eval 0x7FF789BE29B0, written by 0x7FF789E774D0):
+            // `m_3ABD589C` read as a vector (default (0, 0, 1),
+            // 0x7FF78C1517A0), normalized, (0, 0, 1) when its squared length
+            // is under 1.1754944e-36 (0x7FF78B4F1860); yaw atan2(x, z) (0
+            // when both are 0), pitch asin(clamp(−y, −1, 1)), each ×
+            // 57.29578 (0x7FF78B53BD0C). Ashe's coach gun takes the yaw of
+            // her facing (`1513` rid18).
+            "STU_D0E0DA18" if native_shape(config, class, Some("m_3ABD589C")) => {
+                let vector = match child(config, "m_3ABD589C") {
+                    Json::Null => [0.0, 0.0, 1.0],
+                    vector => match self.config(vector, context, nested)? {
+                        Value::Vector(parts) => parts,
+                        _ => return Err(EvalError::UnsupportedConfig(class.into())),
+                    },
+                };
+                let squared: f64 = vector.iter().map(|part| part * part).sum();
+                let direction = if squared >= 1.175_494_4e-36 {
+                    vector.map(|part| part / squared.sqrt())
+                } else {
+                    [0.0, 0.0, 1.0]
+                };
+                let [yaw, pitch] = yaw_pitch(direction);
+                Value::Vector([
+                    rounded(rounded(yaw) * DEGREES),
+                    rounded(rounded(pitch) * DEGREES),
+                    0.0,
+                ])
             }
             // A team's size (Eval 0x7FF789BF48D0 → 0x7FF789CADB40): the
             // game struct's entry for `m_team` (unset: -1), else the "any

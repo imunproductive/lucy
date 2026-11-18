@@ -727,7 +727,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             // ForCodeSynced publishes to native game-code registration outside
             // the graph. Its VM plugs and empty wire payload use the base state.
-            "STU_CD46AF93" if is_networked_for_code_synced(node) => StateKind::Plain,
+            FOR_CODE_SYNCED if is_networked_for_code_synced(node) => StateKind::Plain,
             // Tips register their state key with native presentation code.
             // The graph still runs the base state's plugs and lifecycle.
             "STU_F5A99B2A"
@@ -870,7 +870,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // readers are the match's Rust code, which reads the graph's
             // variables itself; so it runs as a plain state. The forms with
             // transport sync (`m_598E32D5`, `m_0582B0E4`) are not known.
-            "STU_6A926B21"
+            FOR_CODE
                 if field(&node.fields, "m_598E32D5").as_u64().unwrap_or(0) == 0
                     && field(&node.fields, "m_0582B0E4").as_u64().unwrap_or(0) == 0 =>
             {

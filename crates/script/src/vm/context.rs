@@ -264,6 +264,73 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.read(key);
         Some(self.machine.allows_stack(key, priority, None))
     }
+
+    /// The client keeps each entity's active ForCode and ForCodeSynced
+    /// states in a list in the order they began (registry `+0x570`,
+    /// `sub_7FF789C1D8B0`) and answers a lookup with the first row of that
+    /// identifier, its value config evaluated then in the state's own
+    /// instance (`sub_7FF789C5B230`). Here: this component's active states
+    /// of the two classes, earliest begun first (instance, then state, on
+    /// a tie). The reads of the row's value join this evaluation's, so a
+    /// watcher sees the value change.
+    fn for_code(&mut self, entity: u32, identifier: u64) -> Option<Value> {
+        if entity != self.site.entity {
+            return None;
+        }
+        let (machine, graphs) = (self.machine, self.graphs);
+        let mut rows = Vec::new();
+        for (&instance, data) in &machine.snapshot.instances {
+            let graph = graphs.graph(data.graph)?;
+            for (&raw, state) in &data.states {
+                if !state.active {
+                    continue;
+                }
+                let node = graph.state(usize::from(raw))?;
+                if !matches!(node.class.as_str(), FOR_CODE_SYNCED | FOR_CODE) {
+                    continue;
+                }
+                let row = field(&node.fields, "m_values")
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|row| expr::resource(field(row, "m_identifier")) == Some(identifier));
+                if let Some(row) = row {
+                    rows.push((state.start_ms, instance, raw, data.graph, node.pos, row));
+                }
+            }
+        }
+        let Some(&(_, instance, _, graph, pos, row)) =
+            rows.iter().min_by_key(|row| (row.0, row.1, row.2))
+        else {
+            return Some(Value::Null);
+        };
+        let mut context = InstanceContext {
+            machine,
+            graphs,
+            world: &mut *self.world,
+            site: Site {
+                entity,
+                instance,
+                graph,
+                node: Some(pos),
+            },
+            reads: Vec::new(),
+            parameters: None,
+            candidate: None,
+            watcher: None,
+            read_native: false,
+            assumed: Vec::new(),
+        };
+        let value = expr::evaluate(field(row, "m_value"), &mut context);
+        for key in context.reads {
+            if !self.reads.contains(&key) {
+                self.reads.push(key);
+            }
+        }
+        self.read_native |= context.read_native;
+        self.assumed.extend(context.assumed);
+        value.ok()
+    }
 }
 
 /// The component's next random number. SplitMix64 gives each component a

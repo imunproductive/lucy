@@ -603,6 +603,76 @@ fn team_literal_and_local_input_test_need_no_world() {
     );
 }
 
+/// `STU_68F68CD7` (`01CB` rid64) has only the base config's evaluate on
+/// the client (0x7FF78A14CC10, `xor al, al`): no value, whatever its entity,
+/// so the kill cam test falls through to its other operands.
+#[test]
+fn the_death_layers_server_only_bool_reads_as_the_clients_no_value() {
+    let mut world = World::default();
+    for entity in [json!({"$":"STU_B5A0CAF0"}), var(1)] {
+        let config = json!({"$":"STU_68F68CD7","m_entity":entity,"m_EE729DCB":0});
+        assert_eq!(evaluate(&config, &mut world), Ok(Value::Null));
+    }
+}
+
+/// `Eval_STU_D0E0DA18` (0x7FF789BE29B0): a direction's yaw atan2(x, z) and
+/// pitch asin(−y) in degrees, the vector normalized first, (0, 0, 1) for a
+/// zero vector; `Eval_STU_B113D362` (0x7FF789BDC480) makes the direction
+/// of a yaw and pitch in degrees again. Ashe's coach gun (`1513` rid18):
+/// her facing's yaw, 55° down.
+#[test]
+fn yaw_and_pitch_in_degrees_make_a_direction_and_back() {
+    let vector =
+        |[x, y, z]: [f64; 3]| json!({"$":"STUConfigVarVec3","m_value":{"X":x,"Y":y,"Z":z}});
+    let angles = |parts| json!({"$":"STU_D0E0DA18","m_3ABD589C":vector(parts),"m_EE729DCB":0});
+    let direction = |yaw: Json, pitch: Json| json!({"$":"STU_B113D362","m_7C831A8D":yaw,"m_C0EDD7EC":pitch,"m_EE729DCB":0});
+    let parts = |value: Result<Value, EvalError>| match value {
+        Ok(Value::Vector(parts)) => parts,
+        other => panic!("{other:?}"),
+    };
+    let close = |value: Result<Value, EvalError>, expected: [f64; 3]| {
+        let parts = parts(value);
+        assert!(
+            parts
+                .iter()
+                .zip(expected)
+                .all(|(part, expected)| (part - expected).abs() < 1e-5),
+            "{parts:?} != {expected:?}"
+        );
+    };
+    let mut world = World::default();
+    close(
+        evaluate(&angles([2.0, 0.0, 0.0]), &mut world),
+        [90.0, 0.0, 0.0],
+    );
+    close(
+        evaluate(&angles([3.0, 0.0, 3.0]), &mut world),
+        [45.0, 0.0, 0.0],
+    );
+    close(
+        evaluate(&angles([0.0, -1.0, 0.0]), &mut world),
+        [0.0, 90.0, 0.0],
+    );
+    close(evaluate(&angles([0.0; 3]), &mut world), [0.0; 3]);
+
+    let (sin, cos) = 55_f64.to_radians().sin_cos();
+    close(
+        evaluate(&direction(float(0.0), float(55.0)), &mut world),
+        [0.0, -sin, cos],
+    );
+    close(
+        evaluate(&direction(float(-90.0), Json::Null), &mut world),
+        [-1.0, 0.0, 0.0],
+    );
+    // Back and forth: a direction 30° right of +z and 20° up.
+    let start = forward(30_f64.to_radians(), -20_f64.to_radians());
+    let [yaw, pitch, _] = parts(evaluate(&angles(start), &mut world));
+    close(
+        evaluate(&direction(float(yaw), float(pitch)), &mut world),
+        start,
+    );
+}
+
 /// `Eval_STU_6EDA44A7`: points in the entity's frame (side, up, forward),
 /// each swept down `m_height`; the largest angle of a hit below the
 /// entity's position when more than half the points hit, else 90. With
