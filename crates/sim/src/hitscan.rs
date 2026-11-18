@@ -102,9 +102,20 @@ impl RayProfiles {
 /// The map's collision as a script's ray casts meet it
 /// (`orpheus_script::vm` ray casts): the ray cache, masked by the cast's
 /// ray profile's map mask as a shot of that profile is.
+#[derive(Debug)]
 pub struct SceneRays {
-    pub(crate) scene: Arc<CollisionScene>,
-    pub(crate) profiles: Arc<RayProfiles>,
+    scene: Arc<CollisionScene>,
+    profiles: Arc<RayProfiles>,
+}
+
+impl SceneRays {
+    /// The map for every script world of a match.
+    pub fn shared(scene: &Arc<CollisionScene>, profiles: &Arc<RayProfiles>) -> Arc<dyn MapRays> {
+        Arc::new(Self {
+            scene: Arc::clone(scene),
+            profiles: Arc::clone(profiles),
+        })
+    }
 }
 
 impl MapRays for SceneRays {

@@ -1,13 +1,21 @@
 //! Ray casts: the action `STU_08D6BA6E`, the state RayCast
 //! (`STUStatescriptStateRayCast`, 019E0826) and the state TrackRay
-//! (`STUStatescriptStateTrackRay`, 164EF13B).
+//! (`STUStatescriptStateTrackRay`, 164EF13B). Every script world of a
+//! match casts against the same map ([`World::map_rays`]).
 //!
-//! All three end in the client's shared cast `0x7FF789B9DDA0`: the ray
-//! from a start along a direction (normalized there) for a length, with a
-//! radius, a filter, an ignore list and `m_type`. Type 0 is the general
-//! cast (`0x7FF789C717C0`: the scene's collision and the entities the
-//! filter passes); type 1 another path through the scene's entity
-//! (`0x7FF78A61D460`, stepped sideways by its +416); type 1 is not modelled.
+//! The action and RayCast end in the client's shared cast `0x7FF789B9DDA0`
+//! (TrackRay builds the same scene query itself, base slot 55
+//! `0x7FF789B98880`): the ray from a start along a direction (normalized
+//! there) for a length, with a radius, a filter, an ignore list and
+//! `m_type`. Type 0 is the scene query (`0x7FF789AFC340` builds it,
+//! `0x7FF789C717C0` → `0x7FF789AFEEB0` runs it: the map's collision of the
+//! filter's ray profile and the entities the filter passes, one sweep of
+//! the radius). Type 1 walks a grid of the caster's level instead (component
+//! 1 `+0x250` → `+1112` → `+0x1A0`; `0x7FF78A61D460` → `0x7FF78A61D4F0`,
+//! cells of `+416` by `+420`, so likely the AI navigation volumes), and with
+//! a radius of at least a cell casts more rays stepped sideways; a hit is
+//! where the walk is blocked. Type 1 is not modelled (its only uses, the
+//! four sideways checks of `0CD5`, can't run for other gaps).
 //!
 //! - The action (run `0x7FF789B95820`, `m_startPosWS`, `m_dirWS`,
 //!   `m_castLength`, `m_castRadius`, `m_castFilter`, `m_ignoreEntities`)
@@ -22,36 +30,56 @@
 //!   and normal and makes the entity none. Here the outputs are written at
 //!   the begin and whenever a cast changes them, and keep their last value
 //!   when the state ends.
-//! - TrackRay (base slot 55 `0x7FF789B98880` casts, slot 60 `0x7FF789B93A70`
-//!   stores; slot 14 casts again each update): from `m_3BC31C57`, in the
-//!   transform of entity `m_56B8547E` when set (else world), to `m_F5732403`:
-//!   `STU_9E9028E6` = the start plus `m_direction` times `m_6A79BD98`
-//!   (clamped to 1.19e-4..10000), or `STU_E5D454BA` = point `m_BD631144` in
-//!   entity `m_entity`'s transform (`m_68B8830B` true: that entity is
-//!   ignored too). It ignores its start entity and `m_ignoreEntities`; its
-//!   radius is `m_57DAE1B5` and its filter `m_filter`. A miss's point is the
-//!   end and its normal points from the end back to the start. Its outputs
-//!   are the fields of `m_target` (`STU_404DE6D3`, read from the variables
-//!   they feed): `m_7BA44A69` hit, `m_692DFF72` entity, `m_750377AA` the hit
-//!   entity as an array, `m_5ED803CF` the hit point (on a hit), `m_F2F8606D`
-//!   the point, `m_A7C2505B` the normal.
+//! - TrackRay (the winner's slot 55 `0x7FF78980FBB0` runs the base's cast
+//!   and records it; slot 60 stores; slot 14 casts again each update): from
+//!   `m_3BC31C57`, in the transform of entity `m_56B8547E` when it is a
+//!   valid entity (its model matrix, vtable +456: the position, turned by
+//!   the yaw), to `m_F5732403`: `STU_9E9028E6` = that start plus the world
+//!   direction `m_direction` (not turned) times `m_6A79BD98` (clamped to
+//!   1.19e-4..10000), or `STU_E5D454BA` = point `m_BD631144` in entity
+//!   `m_entity`'s transform (a world point when the entity is invalid;
+//!   `m_68B8830B` true: that entity is ignored too). It ignores its start
+//!   entity, `m_ignoreEntities` and the entities of `m_7AB75223` (the
+//!   query's second list, `+0xC0`, handed to the filter by
+//!   `0x7FF78AA6F970`: the server reads it as more ignored entities); its
+//!   radius is `m_57DAE1B5` and its filter `m_filter`, tested as the
+//!   instigator `m_instigator` (default the script's own entity). A miss's
+//!   point is the end and its normal points from the end back to the start.
+//!   Its outputs are the fields of `m_target` (`STU_404DE6D3`, read from
+//!   the variables they feed): `m_7BA44A69` hit, `m_692DFF72` entity,
+//!   `m_750377AA` the hit entity as an array, `m_5ED803CF` the hit point (on
+//!   a hit), `m_F2F8606D` the point, `m_A7C2505B` the normal.
+//! - `m_3B0AD973` (TrackRay slot 59 `0x7FF789B938E0`, the action's
+//!   argument 12) hands the query a callback (`off_7FF78B56F6D0`) whose one
+//!   slot only notes that the host (vtable +560) agreed; after the query the
+//!   host reports the instigator and the hit to itself (+552, when the hit
+//!   lacks tags 58 and 715). The hit doesn't change. Its five uses are
+//!   server-only TrackRays (Zarya `0241`, `157C`, Echo `1FBD`) whose
+//!   `m_750377AA` feeds a ModifyHealth; the report's server side isn't in
+//!   the client.
+//! - `m_8CBE558B` changes nothing: the action passes it to the shared cast
+//!   (argument 11), which never reads it (debug drawing, as TrackTargets').
+//! - The caster isn't left out by itself: the action's and RayCast's ignore
+//!   list is `m_ignoreEntities` alone (three uses list the owner there), and
+//!   TrackRay's adds its start entity.
 //!
 //! What the server runs (assumptions, recorded): the map's collision (the
 //! ray cache) masked by the filter's ray profile `m_C1903771` (`0690`, the
 //! default profile when unset) and the bodies the world lists, as the match
-//! places their capsules, that pass the filter's masks and relation words
-//! as a target search tests them (`vm/targets.rs`), the nearest first. The
-//! casting body itself is never hit, nor a body the ray starts in. A radius
-//! grows the bodies' capsules; against the map the ray stays thin. A hit
-//! on the map has no entity. An entity transform is only its position: the
-//! forms with a sideways offset or direction, hardpoints (`m_F745334E`,
-//! `m_hardPoint`), the second entity list `m_7AB75223`, the callback switch
-//! `m_3B0AD973`, `m_8CBE558B`, type 1 and the filter fields a target search
-//! doesn't model cast nothing: the outputs stay as they were (recorded as
-//! an assumption naming the field). So does a world with no map.
+//! places their capsules, that pass the filter's masks, relation words,
+//! condition and tag lists as a target search tests them (`vm/targets.rs`),
+//! the nearest first. A body the ray starts in is not hit. A radius grows
+//! the bodies' capsules; against the map the ray stays thin, where the
+//! client sweeps the radius through the whole query (`0x7FF789AFEEB0`'s
+//! `+0x1A0`). A hit on the map has no entity (the client gives the hit
+//! object's entity, `+176`: a placeable's own collision would name it; the
+//! ray cache keeps no placeables). Hardpoints (`m_F745334E`, `m_hardPoint`:
+//! the model's bone matrix, vtable +448) and type 1 cast nothing: the
+//! outputs stay as they were (recorded as an assumption naming the field).
+//! So do a world with no map and a filter field the server doesn't model.
 
 use super::{
-    targets::{BodyFilter, Gap},
+    targets::{BodyFilter, Gap, TAG_LISTS, is_set},
     *,
 };
 
@@ -61,6 +89,16 @@ const TRACK_RAY: &str = "STUStatescriptStateTrackRay";
 
 /// The filter field a cast reads itself: the map's ray profile.
 const PROFILE: &str = "m_C1903771";
+/// The filter fields a cast tests (beside its masks and words).
+const FILTER_FIELDS: [&str; 5] = [
+    PROFILE,
+    "m_condition",
+    TAG_LISTS[0],
+    TAG_LISTS[1],
+    TAG_LISTS[2],
+];
+/// The host's hit report switch (see the module notes).
+const REPORT: &str = "m_3B0AD973";
 
 /// TrackRay's `m_6A79BD98` clamp (base slot 55).
 const MIN_LENGTH: f64 = 1.19e-4;
@@ -92,6 +130,8 @@ struct Ray {
     reach: f64,
     radius: f64,
     filter: BodyFilter,
+    /// The node's filter field (its condition is evaluated per body).
+    filter_name: &'static str,
     profile: Option<u64>,
     ignore: Vec<u32>,
 }
@@ -157,7 +197,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
         }
         let site = self.site(id, node);
         let cast = match self.track_ray(id, node) {
-            Ok(ray) => self.cast(site, &ray).map(|hit| (ray, hit)),
+            Ok(ray) => self.cast(id, node, &ray).map(|hit| (ray, hit)),
             Err(gap) => Err(gap),
         };
         let (ray, hit) = match cast {
@@ -167,7 +207,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
                 return Ok(false);
             }
         };
-        self.ray_assumptions(site, TRACK_RAY, &ray);
+        self.ray_assumptions(site, TRACK_RAY, node, &ray);
         let end = ray.end();
         let (point, normal) = match &hit {
             Some(hit) => (hit.point, hit.normal),
@@ -214,12 +254,12 @@ impl<W: World> Vm<'_, '_, '_, W> {
     ) -> Result<Option<Option<Hit>>, InitFault> {
         let site = self.site(id, node);
         let cast = match self.node_ray(id, node) {
-            Ok(ray) => self.cast(site, &ray).map(|hit| (ray, hit)),
+            Ok(ray) => self.cast(id, node, &ray).map(|hit| (ray, hit)),
             Err(gap) => Err(gap),
         };
         Ok(match cast {
             Ok((ray, hit)) => {
-                self.ray_assumptions(site, class, &ray);
+                self.ray_assumptions(site, class, node, &ray);
                 Some(hit)
             }
             Err(gap) => {
@@ -248,7 +288,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
         }
     }
 
-    fn ray_assumptions(&mut self, site: Site, class: &str, ray: &Ray) {
+    fn ray_assumptions(&mut self, site: Site, class: &str, node: &Node, ray: &Ray) {
         self.assume(
             site,
             class,
@@ -261,47 +301,53 @@ impl<W: World> Vm<'_, '_, '_, W> {
                 "grows the bodies; a thin ray against the map",
             );
         }
+        if is_set(field(&node.fields, REPORT)) {
+            self.assume(
+                site,
+                &format!("{class} {REPORT}"),
+                "the host's hit report is not made; the hit is the nearest",
+            );
+        }
     }
 
     /// The nearest thing the ray meets: the map or a body that passes.
-    fn cast(&mut self, site: Site, ray: &Ray) -> Result<Option<Hit>, RayGap> {
+    fn cast(&mut self, id: u16, node: &Node, ray: &Ray) -> Result<Option<Hit>, RayGap> {
+        let site = self.site(id, node);
         let bodies = self.passing_bodies(site, &ray.filter)?;
         let map = self
             .world
-            .map_ray(site, ray.origin, ray.direction, ray.reach, ray.profile)
+            .map_rays()
+            .ok_or(RayGap::NoMap)?
+            .cast(ray.origin, ray.direction, ray.reach, ray.profile)
             .ok_or(RayGap::NoMap)?;
-        let mut best = map.map(|hit| {
-            (
-                hit.distance,
-                Hit {
-                    entity: None,
-                    point: hit.point,
-                    normal: hit.normal,
-                },
-            )
-        });
-        for body in bodies {
-            if body.entity == site.entity || ray.ignore.contains(&body.entity) {
-                continue;
-            }
-            let reach = best.as_ref().map_or(ray.reach, |(distance, _)| *distance);
-            if let Some((distance, normal)) =
-                body.ray_hit(ray.origin, ray.direction, reach, ray.radius)
-                && best.as_ref().is_none_or(|(nearest, _)| distance < *nearest)
-            {
-                let point =
-                    std::array::from_fn(|axis| ray.origin[axis] + ray.direction[axis] * distance);
-                best = Some((
-                    distance,
-                    Hit {
-                        entity: Some(body.entity),
-                        point,
-                        normal,
-                    },
-                ));
+        let reach = map.map_or(ray.reach, |hit| hit.distance);
+        let mut met: Vec<(f64, [f64; 3], u32)> = bodies
+            .iter()
+            .filter(|body| !ray.ignore.contains(&body.entity))
+            .filter_map(|body| {
+                let (distance, normal) =
+                    body.ray_hit(ray.origin, ray.direction, reach, ray.radius)?;
+                (map.is_none() || distance < reach).then_some((distance, normal, body.entity))
+            })
+            .collect();
+        met.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let filter_config = field(&node.fields, ray.filter_name);
+        for (distance, normal, entity) in met {
+            if self.filter_admits(id, node, filter_config, &ray.filter, entity)? {
+                return Ok(Some(Hit {
+                    entity: Some(entity),
+                    point: std::array::from_fn(|axis| {
+                        ray.origin[axis] + ray.direction[axis] * distance
+                    }),
+                    normal,
+                }));
             }
         }
-        Ok(best.map(|(_, hit)| hit))
+        Ok(map.map(|hit| Hit {
+            entity: None,
+            point: hit.point,
+            normal: hit.normal,
+        }))
     }
 
     /// The action's and RayCast's ray.
@@ -309,11 +355,6 @@ impl<W: World> Vm<'_, '_, '_, W> {
         let fields = &node.fields;
         if field(fields, "m_type").as_u64().unwrap_or(0) != 0 {
             return Err(RayGap::Field("m_type"));
-        }
-        for name in ["m_8CBE558B", "m_3B0AD973"] {
-            if self.flag(id, node, field(fields, name))? {
-                return Err(RayGap::Field(name));
-            }
         }
         let origin = self
             .vector(id, node, field(fields, "m_startPosWS"))
@@ -327,29 +368,23 @@ impl<W: World> Vm<'_, '_, '_, W> {
             .filter(|reach| *reach >= 0.0)
             .ok_or(RayGap::Field("m_castLength"))?;
         let radius = self.radius(id, node, field(fields, "m_castRadius"), "m_castRadius")?;
-        let filter = field(fields, "m_castFilter");
         let ignore = self.ignored(id, node, field(fields, "m_ignoreEntities"))?;
-        Ok(Ray {
+        Self::ray(
             origin,
             direction,
             reach,
             radius,
-            filter: BodyFilter::read(filter, &[PROFILE]).map_err(RayGap::Filter)?,
-            profile: profile(filter)?,
+            node,
+            "m_castFilter",
             ignore,
-        })
+        )
     }
 
     /// TrackRay's ray.
     fn track_ray(&mut self, id: u16, node: &Node) -> Result<Ray, RayGap> {
         let fields = &node.fields;
-        for name in ["m_F745334E", "m_7AB75223"] {
-            if !field(fields, name).is_null() {
-                return Err(RayGap::Field(name));
-            }
-        }
-        if self.flag(id, node, field(fields, "m_3B0AD973"))? {
-            return Err(RayGap::Field("m_3B0AD973"));
+        if !field(fields, "m_F745334E").is_null() {
+            return Err(RayGap::Field("m_F745334E"));
         }
         let site = self.site(id, node);
         let instigator = field(fields, "m_instigator");
@@ -359,6 +394,10 @@ impl<W: World> Vm<'_, '_, '_, W> {
             return Err(RayGap::Field("m_instigator"));
         }
         let mut ignore = self.ignored(id, node, field(fields, "m_ignoreEntities"))?;
+        let second = field(fields, "m_7AB75223");
+        if !second.is_null() {
+            ignore.extend(self.entities_of(id, node, second, "m_7AB75223")?);
+        }
         let start = field(fields, "m_3BC31C57");
         let start = if start.is_null() {
             [0.0; 3]
@@ -366,26 +405,20 @@ impl<W: World> Vm<'_, '_, '_, W> {
             self.vector(id, node, start)
                 .ok_or(RayGap::Field("m_3BC31C57"))?
         };
-        let origin_entity = self.entity(id, node, field(fields, "m_56B8547E"), "m_56B8547E")?;
-        let origin = match origin_entity {
+        let origin = match self.entity(id, node, field(fields, "m_56B8547E"), "m_56B8547E")? {
             Some(entity) => {
                 ignore.push(entity);
-                self.in_entity(site, entity, start)
-                    .ok_or(RayGap::Field("m_3BC31C57"))?
+                self.in_entity(id, node, entity, start, "m_3BC31C57")?
             }
             None => start,
         };
         let end = field(fields, "m_F5732403");
         let end = match field(end, "$").as_str() {
             Some("STU_9E9028E6") => {
+                // A world direction: slot 55 adds it to the start as it is.
                 let direction = self
                     .vector(id, node, field(end, "m_direction"))
                     .ok_or(RayGap::Field("m_F5732403.m_direction"))?;
-                // A direction in the entity's transform turns with it by a
-                // rule not modelled; a vertical one doesn't turn.
-                if origin_entity.is_some() && (direction[0] != 0.0 || direction[2] != 0.0) {
-                    return Err(RayGap::Field("m_F5732403.m_direction"));
-                }
                 let length = self
                     .config_number(id, node, field(end, "m_6A79BD98"))
                     .ok_or(RayGap::Field("m_F5732403.m_6A79BD98"))?
@@ -403,13 +436,13 @@ impl<W: World> Vm<'_, '_, '_, W> {
                     self.vector(id, node, point)
                         .ok_or(RayGap::Field("m_F5732403.m_BD631144"))?
                 };
+                let ignored = self.flag(id, node, field(end, "m_68B8830B"))?;
                 match self.entity(id, node, field(end, "m_entity"), "m_F5732403.m_entity")? {
                     Some(entity) => {
-                        if self.flag(id, node, field(end, "m_68B8830B"))? {
+                        if ignored {
                             ignore.push(entity);
                         }
-                        self.in_entity(site, entity, point)
-                            .ok_or(RayGap::Field("m_F5732403.m_BD631144"))?
+                        self.in_entity(id, node, entity, point, "m_F5732403.m_BD631144")?
                     }
                     None => point,
                 }
@@ -420,30 +453,54 @@ impl<W: World> Vm<'_, '_, '_, W> {
         let reach = length(delta);
         let direction = checked_unit(delta).ok_or(RayGap::Field("m_F5732403"))?;
         let radius = self.radius(id, node, field(fields, "m_57DAE1B5"), "m_57DAE1B5")?;
-        let filter = field(fields, "m_filter");
+        Self::ray(origin, direction, reach, radius, node, "m_filter", ignore)
+    }
+
+    fn ray(
+        origin: [f64; 3],
+        direction: [f64; 3],
+        reach: f64,
+        radius: f64,
+        node: &Node,
+        filter_name: &'static str,
+        ignore: Vec<u32>,
+    ) -> Result<Ray, RayGap> {
+        let filter = field(&node.fields, filter_name);
         Ok(Ray {
             origin,
             direction,
             reach,
             radius,
-            filter: BodyFilter::read(filter, &[PROFILE]).map_err(RayGap::Filter)?,
+            filter: BodyFilter::read(filter, &FILTER_FIELDS).map_err(RayGap::Filter)?,
+            filter_name,
             profile: profile(filter)?,
             ignore,
         })
     }
 
-    /// A point in `entity`'s transform: its position plus a vertical
-    /// offset. None for a sideways offset (it turns with the entity) or an
-    /// entity the world doesn't place.
-    fn in_entity(&self, site: Site, entity: u32, offset: [f64; 3]) -> Option<[f64; 3]> {
-        if offset[0] != 0.0 || offset[2] != 0.0 {
-            return None;
-        }
-        let [x, y, z] = self.world.entity_position(site, entity)?;
-        Some([x, y + offset[1], z])
+    /// `offset` in `entity`'s transform: its position plus the offset
+    /// turned by its yaw (its model matrix, as a target search's centre).
+    fn in_entity(
+        &mut self,
+        id: u16,
+        node: &Node,
+        entity: u32,
+        offset: [f64; 3],
+        name: &'static str,
+    ) -> Result<[f64; 3], RayGap> {
+        let site = self.site(id, node);
+        let position = self
+            .world
+            .entity_position(site, entity)
+            .ok_or(RayGap::Field(name))?;
+        let turned = self
+            .entity_offset(id, node, entity, offset, false)
+            .map_err(|_| RayGap::Field(name))?;
+        Ok(std::array::from_fn(|axis| position[axis] + turned[axis]))
     }
 
-    /// An entity config: None when unset.
+    /// An entity config: None when unset or not a valid entity (the client
+    /// then takes the point as a world point).
     fn entity(
         &mut self,
         id: u16,
@@ -455,32 +512,46 @@ impl<W: World> Vm<'_, '_, '_, W> {
             return Ok(None);
         }
         match self.evaluate_quietly(id, node, config) {
-            Some(Value::Entity(entity)) if expr::valid_entity(entity) => Ok(Some(entity)),
+            Some(Value::Entity(entity)) => Ok(expr::valid_entity(entity).then_some(entity)),
+            Some(Value::Null) => Ok(None),
             _ => Err(RayGap::Field(name)),
         }
     }
 
     /// The entities of an ignore list (each config an entity or an array of
-    /// them; invalid ones are left out).
+    /// them).
     fn ignored(&mut self, id: u16, node: &Node, list: &Json) -> Result<Vec<u32>, RayGap> {
         let mut ignore = Vec::new();
         for config in list.as_array().into_iter().flatten() {
-            let value = self
-                .evaluate_quietly(id, node, config)
-                .ok_or(RayGap::Field("m_ignoreEntities"))?;
-            let values = match value {
-                Value::Array(values) => values,
-                value => vec![value],
-            };
-            for value in values {
-                match value {
-                    Value::Entity(entity) if expr::valid_entity(entity) => ignore.push(entity),
-                    Value::Entity(_) | Value::Null => {}
-                    _ => return Err(RayGap::Field("m_ignoreEntities")),
-                }
-            }
+            ignore.extend(self.entities_of(id, node, config, "m_ignoreEntities")?);
         }
         Ok(ignore)
+    }
+
+    /// The valid entities of one config: an entity or an array of them.
+    fn entities_of(
+        &mut self,
+        id: u16,
+        node: &Node,
+        config: &Json,
+        name: &'static str,
+    ) -> Result<Vec<u32>, RayGap> {
+        let value = self
+            .evaluate_quietly(id, node, config)
+            .ok_or(RayGap::Field(name))?;
+        let values = match value {
+            Value::Array(values) => values,
+            value => vec![value],
+        };
+        let mut entities = Vec::new();
+        for value in values {
+            match value {
+                Value::Entity(entity) if expr::valid_entity(entity) => entities.push(entity),
+                Value::Entity(_) | Value::Null => {}
+                _ => return Err(RayGap::Field(name)),
+            }
+        }
+        Ok(entities)
     }
 
     fn flag(&mut self, id: u16, node: &Node, config: &Json) -> Result<bool, RayGap> {

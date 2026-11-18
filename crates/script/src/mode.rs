@@ -14,7 +14,10 @@ use serde_json::Value as Json;
 use crate::{
     graph::GraphStore,
     map_tags::MapTags,
-    vm::{Component, GameMessage, InitFault, MAX_INIT_WORK, Root, Site, Snapshot, Unknowns, World},
+    vm::{
+        Component, GameMessage, InitFault, MAX_INIT_WORK, MapRays, Root, Site, Snapshot, Unknowns,
+        World,
+    },
     wire::{Value, Variables},
 };
 use orpheus_wire::entity::GAME_MODE_ENTITY;
@@ -67,6 +70,8 @@ pub struct ModeWorld {
     /// The map's tagged placeables the scene tag queries find; none:
     /// unknown.
     pub map_tags: Option<Arc<MapTags>>,
+    /// The map's collision the graph's ray casts meet; none: no map.
+    pub map_rays: Option<Arc<dyn MapRays>>,
     outbox: Vec<GameMessage>,
 }
 
@@ -82,6 +87,7 @@ impl ModeWorld {
             mode_random: None,
             map_modes: None,
             map_tags: None,
+            map_rays: None,
             outbox: Vec::new(),
         }
     }
@@ -135,6 +141,10 @@ impl World for ModeWorld {
 
     fn entity_filter_flags(&self, _site: Site, entity: u32) -> Option<u64> {
         (entity == GAME_MODE_ENTITY).then_some(0)
+    }
+
+    fn map_rays(&self) -> Option<&dyn MapRays> {
+        self.map_rays.as_deref()
     }
 
     /// The map's placeables that carry the tag ([`MapTags::with_tag`]).

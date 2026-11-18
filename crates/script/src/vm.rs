@@ -393,7 +393,7 @@ pub struct MapHit {
 }
 
 /// The map's collision as a script's ray casts meet it (`vm/rays.rs`).
-pub trait MapRays: Send + Sync {
+pub trait MapRays: fmt::Debug + Send + Sync {
     /// The first map shape a ray from `origin` along unit `direction` meets
     /// within `reach`: the shapes that stop a ray of ray profile `profile`
     /// (`097`; none: the default profile's map mask). None: the map's
@@ -550,17 +550,11 @@ pub trait World {
         None
     }
 
-    /// The first map shape a ray cast on `site` meets (see
-    /// [`MapRays::cast`]): Some(None) when it meets none. None: this world
-    /// has no map, and the cast is a gap.
-    fn map_ray(
-        &self,
-        _site: Site,
-        _origin: [f64; 3],
-        _direction: [f64; 3],
-        _reach: f64,
-        _profile: Option<u64>,
-    ) -> Option<Option<MapHit>> {
+    /// The map's collision a ray cast on this world meets
+    /// ([`MapRays::cast`]); every world of a match gets the same map (the
+    /// bodies', bots', placeables' and mode's scripts). None: this world
+    /// has no map, and a cast is a gap.
+    fn map_rays(&self) -> Option<&dyn MapRays> {
         None
     }
 

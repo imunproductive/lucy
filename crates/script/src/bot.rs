@@ -19,8 +19,8 @@ use crate::{
     vitals::PoolKind,
     vm::{
         AiMoveRequest, AuraChange, BodyEffects, CombatMod, Component, HealthChange, InitFault,
-        MAX_INIT_WORK, RaisedCriteria, ShotEvent, Site, Snapshot, TargetCandidate, TargetTagEffect,
-        Unknowns, World, body_roots,
+        MAX_INIT_WORK, MapRays, RaisedCriteria, ShotEvent, Site, Snapshot, TargetCandidate,
+        TargetTagEffect, Unknowns, World, body_roots,
     },
     wire::{Value, Variables},
 };
@@ -175,11 +175,17 @@ pub struct BotWorld {
     pub aura_changes: Vec<AuraChange>,
     /// The statuses and combat modifiers its states hold.
     pub effects: BodyEffects,
+    /// The map's collision the body's ray casts meet; none: no map.
+    pub map_rays: Option<Arc<dyn MapRays>>,
 }
 
 impl World for BotWorld {
     fn unknowns(&self) -> Unknowns {
         self.unknowns
+    }
+
+    fn map_rays(&self) -> Option<&dyn MapRays> {
+        self.map_rays.as_deref()
     }
 
     fn assumption(&self, class: &str) -> Option<&'static str> {
@@ -527,6 +533,8 @@ pub struct BotSpawn<'a> {
     /// of the message is not known: a reconstruction. A first spawn plays
     /// no rebuild.
     pub respawned: bool,
+    /// The map's collision, for the body's ray casts; none: no map.
+    pub map_rays: Option<&'a Arc<dyn MapRays>>,
 }
 
 /// A patrolling spawner's overrides of [`PATROL_GRAPH`]'s variables.
@@ -590,6 +598,7 @@ impl BotBody {
             health_changes: Vec::new(),
             aura_changes: Vec::new(),
             effects: BodyEffects::default(),
+            map_rays: spawn.map_rays.cloned(),
         };
         let mut component = Component::start(
             graphs,
@@ -1181,6 +1190,7 @@ mod tests {
             firing_position,
             patrol: None,
             respawned: false,
+            map_rays: None,
         }
     }
 
@@ -1323,6 +1333,7 @@ mod tests {
             health_changes: Vec::new(),
             aura_changes: Vec::new(),
             effects: BodyEffects::default(),
+            map_rays: None,
         };
         assert_eq!(
             world.native(site(PRACTICE_NAMEPLATE_PARENT), &gate),

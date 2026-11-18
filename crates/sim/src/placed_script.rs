@@ -39,7 +39,7 @@ use orpheus_script::{
     placed::{EntityVolumes, MapEntityWorld},
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{ScriptChunk, Stream, StreamError},
-    vm::{GameMessage, MessageEnd, TargetCandidate, Unknowns},
+    vm::{GameMessage, MapRays, MessageEnd, TargetCandidate, Unknowns},
 };
 use orpheus_wire::entity::GAME_MODE_ENTITY;
 
@@ -63,6 +63,8 @@ pub struct PlacedScripts {
     placed: Vec<Arc<PlacedScript>>,
     /// The map's tagged entities in the mode, for the tag queries.
     map_tags: Arc<MapTags>,
+    /// The map's collision, for the scripts' ray casts.
+    map_rays: Arc<dyn MapRays>,
     rooms: Arc<[SpawnRoom]>,
     world: Option<MapEntityWorld>,
     /// The rooms that hold the mode's `0724`, with the team it gave each.
@@ -82,6 +84,7 @@ impl PlacedScripts {
         mode_random: f32,
         placed: Vec<Arc<PlacedScript>>,
         map_tags: Arc<MapTags>,
+        map_rays: Arc<dyn MapRays>,
         rooms: Arc<[SpawnRoom]>,
     ) -> Self {
         Self {
@@ -91,6 +94,7 @@ impl PlacedScripts {
             mode_random,
             placed,
             map_tags,
+            map_rays,
             rooms,
             world: None,
             held: BTreeMap::new(),
@@ -129,6 +133,7 @@ impl PlacedScripts {
                 Unknowns::for_build(),
                 self.placed.iter().map(|placed| placed.placement()),
                 Some(Arc::clone(&self.map_tags)),
+                Some(Arc::clone(&self.map_rays)),
                 Some(Arc::new(RoomVolumes(Arc::clone(&self.rooms))) as Arc<dyn EntityVolumes>),
                 tick,
             )),

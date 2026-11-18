@@ -40,8 +40,8 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk},
     timeline::FRAME_MS,
     vm::{
-        AiMoveRequest, AuraChange, BodyEffects, HealthChange, ShotEvent, Snapshot, TargetCandidate,
-        Unknowns,
+        AiMoveRequest, AuraChange, BodyEffects, HealthChange, MapRays, ShotEvent, Snapshot,
+        TargetCandidate, Unknowns,
     },
     weapons::{HitDefinition, ProjectileBallistics, authored_number, ray_profile},
     wire::Value,
@@ -164,6 +164,8 @@ pub struct BotScripts {
     /// The health changes the bots' graphs made (their auras' heals and
     /// damage) since the match last looked.
     health_changes: Vec<HealthChange>,
+    /// The map's collision, for the bodies' ray casts.
+    map_rays: Arc<dyn MapRays>,
 }
 
 impl BotScripts {
@@ -176,6 +178,7 @@ impl BotScripts {
         voice_sets: Arc<VoiceCatalog>,
         map: &GameMap,
         bots: &[Bot],
+        map_rays: Arc<dyn MapRays>,
     ) -> Self {
         let pending = graphs.as_ref().map_or_else(VecDeque::new, |graphs| {
             bots.iter()
@@ -199,6 +202,7 @@ impl BotScripts {
             voice_sets,
             voices: Vec::new(),
             health_changes: Vec::new(),
+            map_rays,
         }
     }
 
@@ -286,6 +290,7 @@ impl BotScripts {
             firing_position: (bot.spawn.firing && self.practice).then_some(bot.position),
             patrol: bot.patrol(),
             respawned,
+            map_rays: Some(&self.map_rays),
         };
         let mut originals = BTreeMap::new();
         let started = BotBody::start(Arc::clone(graphs), spawn, self.unknowns)

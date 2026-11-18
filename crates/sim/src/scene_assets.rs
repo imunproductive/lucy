@@ -439,6 +439,7 @@ impl SceneAssets {
                 bot.attach_animation(body);
             }
         }
+        let map_rays = SceneRays::shared(&rays, &self.ray_profiles);
         let bot_scripts = BotScripts::new(
             self.bot_graphs.clone(),
             self.codecs
@@ -448,6 +449,7 @@ impl SceneAssets {
             Arc::clone(&self.voice_sets),
             &map,
             &bots,
+            Arc::clone(&map_rays),
         );
         let controller = Controller::load(
             &self.graphs,
@@ -509,6 +511,7 @@ impl SceneAssets {
             mode_random,
             server_placeables.clone(),
             Arc::clone(&map_tags),
+            map_rays,
             Arc::clone(&spawn_rooms),
         );
         let mut scene = PreparedScene {
@@ -809,10 +812,7 @@ impl PreparedScene {
 
     /// The map's collision as the scripts' ray casts meet it.
     pub fn map_rays(&self) -> Arc<dyn MapRays> {
-        Arc::new(SceneRays {
-            scene: Arc::clone(&self.rays),
-            profiles: Arc::clone(&self.ray_profiles),
-        })
+        SceneRays::shared(&self.rays, &self.ray_profiles)
     }
 
     /// The map's entities with target tags in this mode, for the scripts'

@@ -182,7 +182,7 @@ const UNMODELLED_FILTER: &[&str] = &[
 
 /// The filter's tag lists (any of, all of, none of), as
 /// `0x7FF789C1EC70` tests them.
-const TAG_LISTS: [&str; 3] = ["m_9C7BD8B8", "m_B486603E", "m_8B2A4DF3"];
+pub(super) const TAG_LISTS: [&str; 3] = ["m_9C7BD8B8", "m_B486603E", "m_8B2A4DF3"];
 
 /// A body's filter word (see the module notes): its team's bit
 /// `TEAM_BIT << team`, team 4 in a free-for-all, the kinds of a living body
@@ -474,31 +474,45 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             None => search.offset,
         };
-        let condition = field(field(&node.fields, "m_filter"), "m_condition");
+        let filter_config = field(&node.fields, "m_filter");
         let mut found = Vec::new();
         for candidate in bodies
             .iter()
             .filter(|candidate| candidate.distance(centre) <= search.radius)
         {
-            if is_set(condition) {
-                let outer = self.candidate.replace(Value::Entity(candidate.entity));
-                let holds = self.evaluate_quietly(id, node, condition);
-                self.candidate = outer;
-                match holds {
-                    Some(value) if truthy(&value) => {}
-                    Some(_) => continue,
-                    None => return Err(Gap::Filter("m_condition")),
-                }
+            if self.filter_admits(id, node, filter_config, &search.filter, candidate.entity)? {
+                found.push(candidate.entity);
             }
-            if !search
-                .filter
-                .tags_pass(&*self.world, site, candidate.entity)?
-            {
-                continue;
-            }
-            found.push(candidate.entity);
         }
         Ok(found)
+    }
+
+    /// Whether `entity` passes the parts of a filter the client tests after
+    /// its masks (`ScriptHost_EntityPassesFilter`, see the module notes):
+    /// the condition (`m_condition` of `filter_config`, with the entity as
+    /// every parameter) and the tag lists. A condition the server can't
+    /// evaluate, or a tag the world can't tell, is the error.
+    pub(super) fn filter_admits(
+        &mut self,
+        id: u16,
+        node: &Node,
+        filter_config: &Json,
+        filter: &BodyFilter,
+        entity: u32,
+    ) -> Result<bool, Gap> {
+        let condition = field(filter_config, "m_condition");
+        if is_set(condition) {
+            let outer = self.candidate.replace(Value::Entity(entity));
+            let holds = self.evaluate_quietly(id, node, condition);
+            self.candidate = outer;
+            match holds {
+                Some(value) if truthy(&value) => {}
+                Some(_) => return Ok(false),
+                None => return Err(Gap::Filter("m_condition")),
+            }
+        }
+        let site = self.site(id, node);
+        filter.tags_pass(&*self.world, site, entity)
     }
 
     /// The bodies the world lists that pass `filter` for a search on
@@ -609,7 +623,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     /// its yaw (forward `+z`, sideways `+x`, as a rotation about the up
     /// axis), and first, with `follow_pitch`, by its pitch about its eye
     /// height (a positive pitch looks down, [`expr::aim`]).
-    fn entity_offset(
+    pub(super) fn entity_offset(
         &mut self,
         id: u16,
         node: &Node,

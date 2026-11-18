@@ -24,9 +24,8 @@ use crate::{
     map_tags::{MapTags, TaggedEntity},
     vitals::{PoolKind, Vitals},
     vm::{
-        AuraChange, BodyEffects, CombatMod, GameMessage, HealthChange, MapHit, MapRays,
-        RaisedCriteria, Site, TargetCandidate, TargetTagEffect, TrackedStat, Unknowns,
-        VoiceRequest, World,
+        AuraChange, BodyEffects, CombatMod, GameMessage, HealthChange, MapRays, RaisedCriteria,
+        Site, TargetCandidate, TargetTagEffect, TrackedStat, Unknowns, VoiceRequest, World,
     },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
@@ -540,19 +539,8 @@ impl World for PlayerWorld {
             .flatten()
     }
 
-    fn map_ray(
-        &self,
-        site: Site,
-        origin: [f64; 3],
-        direction: [f64; 3],
-        reach: f64,
-        profile: Option<u64>,
-    ) -> Option<Option<MapHit>> {
-        let rays = self
-            .map_rays
-            .as_ref()
-            .filter(|_| self.is_player_site(site))?;
-        rays.cast(origin, direction, reach, profile)
+    fn map_rays(&self) -> Option<&dyn MapRays> {
+        self.map_rays.as_deref()
     }
 
     fn body_on_fire(&mut self, site: Site, entity: u32) -> Option<bool> {
