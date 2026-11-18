@@ -1840,7 +1840,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     use orpheus_wire::commands::FIRE;
 
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let scene = assets.prepare(two_team_range()).unwrap();
     let facing = scene.map().spawn_point(0, 0).unwrap().1;
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
@@ -2368,6 +2368,24 @@ fn walking_out_of_the_spawn_room_clears_the_hero_select_flag() {
     server.stop().unwrap();
 }
 
+/// The Practice Range for players of both teams. Its mode has one blue
+/// team (retail puts no red player there): both its spawn points and its
+/// spawn room `0D62` (126) are blue, so a red player at the blue spawn
+/// stands in the room as an intruder, and the room's `0B7B` (`0C8E` st45,
+/// 400 a second) kills him again after every respawn. The tests that pit
+/// two teams' players against each other spawn everyone at the Range's
+/// other blue point (placeable 649), in the open outside the room.
+fn two_team_range() -> GameMap {
+    GameMap {
+        spawns: vec![orpheus_content::maps::Spawn {
+            team: None,
+            position: [34.24001, 1.991726, 22.97223],
+            yaw: 144.6566,
+        }],
+        ..GameMap::practice_range()
+    }
+}
+
 /// Players (BattleTag, team, hero name) in one prepared Practice Range, once
 /// each client has every other body, its possession and, for a body that
 /// runs a statescript (Soldier: 76's), its frames. Also where each spawned.
@@ -2388,7 +2406,12 @@ fn practice_world<const N: usize>(
 ) -> (Lockstep, Arc<Schemas>, [Watcher; N], [[f64; 3]; N]) {
     use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
 
-    let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let map = if players.iter().any(|&(_, team, _)| team != 0) {
+        two_team_range()
+    } else {
+        GameMap::practice_range()
+    };
+    let mut scene = assets.prepare(map).unwrap();
     arrange(&mut scene);
     let heroes = players.map(|(_, _, name)| assets.heroes().find_hero(name).unwrap().guid);
     // match.py Player.spawn: the n-th player of a team.

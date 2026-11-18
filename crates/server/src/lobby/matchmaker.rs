@@ -1311,6 +1311,16 @@ impl Ctx<'_> {
             let ai = self.state.test_ai.filter(|_| minimum != 0);
             (ruleset.clone(), minimum, ai)
         };
+        // The map's mode decides its teams: a forced Practice Range plays
+        // its own mode, one blue team of six and no red one (its spawn
+        // points and its spawn room are blue, so a red player would spawn
+        // in the blue room as an intruder and die there). Seat no one on a
+        // team the mode has no places for, as `Room::free` and the AI fill
+        // (`map.team_sizes`) already count.
+        let mut ruleset = ruleset;
+        for (size, &places) in ruleset.team_sizes.iter_mut().zip(&map.team_sizes) {
+            *size = (*size).min(places);
+        }
         let seekers: Vec<Vec<Vec<u8>>> = waiting
             .iter()
             .map(|&index| {
