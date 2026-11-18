@@ -118,6 +118,15 @@ impl ModeRunner {
         }
     }
 
+    /// The messages the graph holds to every entity now
+    /// ([`ModeScript::held`]); none while it doesn't drive the mode.
+    pub fn held(&self) -> &[GameMessage] {
+        match self {
+            Self::Graph { script, .. } => script.held(),
+            Self::HandBuilt { .. } => &[],
+        }
+    }
+
     /// One server frame with the flow's variables and the match's players
     /// now; the messages the graph sent.
     pub fn advance(

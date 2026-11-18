@@ -735,6 +735,16 @@ pub trait World {
         false
     }
 
+    /// A SendGameMessage state to every entity began: the client keeps
+    /// such a sender in its live-sender registry while the state runs, and
+    /// receivers look it up each frame, so an entity that starts later
+    /// finds it too (`sub_7FF789CAA770`, GameMessages.md). The state's end
+    /// comes as [`World::end_message`] to [`crate::mode::EVERY_ENTITY`].
+    /// By default a world delivers it once ([`World::broadcast_message`]).
+    fn hold_broadcast(&mut self, source: Site, message: u64, parameters: &Variables) -> bool {
+        self.broadcast_message(source, message, parameters)
+    }
+
     /// A persistent sender (a SendGameMessage state) no longer names
     /// `target`, or ended: the target's receiving states that hold its
     /// message go back to idle ([`Component::end_message`]). False: this
@@ -2156,6 +2166,8 @@ struct Recipients {
     message: u64,
     entities: Vec<u32>,
     broadcast: bool,
+    /// A broadcast held by a running state ([`World::hold_broadcast`]).
+    held: bool,
 }
 
 /// The game message a node sends or waits for; None for none.
@@ -2605,19 +2617,36 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     /// target names at its begin, then each tick to those that came in since
     /// ([`State::tracked`] lists the ones holding it), and ends it for those
     /// that left and, at its own end, for all ([`World::end_message`]). A
-    /// target of channels (`STU_1D719351`, every entity) is sent once at
-    /// the begin, as before: who joins later is not followed.
+    /// target of channels (`STU_1D719351`, every entity) is held while the
+    /// state runs ([`World::hold_broadcast`]) and ended with it, as the
+    /// client's live-sender registry keeps it for entities that look it up
+    /// later (GameMessages.md).
     pub(super) fn begin_send_state(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
-        let Some(recipients) = self.message_recipients(key.instance, node) else {
+        let Some(mut recipients) = self.message_recipients(key.instance, node) else {
             return Ok(());
         };
+        recipients.held = recipients.broadcast;
         if !self.deliver_game_message(key.instance, node, &recipients, &recipients.entities)? {
             return Ok(());
         }
-        if recipients.broadcast || recipients.message == 0 {
+        if recipients.message == 0 {
             return Ok(());
         }
         let since_ms = self.machine.now_ms;
+        if recipients.broadcast {
+            // The sender's own instances took it from the VM; every other
+            // entity holds it through the world.
+            if let Some(state) = self.state_mut(key) {
+                state.tracked = recipients
+                    .entities
+                    .iter()
+                    .copied()
+                    .chain([crate::mode::EVERY_ENTITY])
+                    .map(|entity| TrackedTarget { entity, since_ms })
+                    .collect();
+            }
+            return Ok(());
+        }
         if let Some(state) = self.state_mut(key) {
             state.tracked = recipients
                 .entities
@@ -2761,6 +2790,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             message: 0,
             entities: Vec::new(),
             broadcast: false,
+            held: false,
         };
         let Some(message) = message_of(node) else {
             return Some(nobody);
@@ -2826,6 +2856,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             message,
             entities,
             broadcast,
+            held: false,
         })
     }
 
@@ -2874,7 +2905,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 return Ok(false);
             }
         }
-        if recipients.broadcast && !self.world.broadcast_message(site, message, &parameters) {
+        let delivered = !recipients.broadcast
+            || if recipients.held {
+                self.world.hold_broadcast(site, message, &parameters)
+            } else {
+                self.world.broadcast_message(site, message, &parameters)
+            };
+        if !delivered {
             self.report(
                 site,
                 Issue::UnsupportedField("broadcast game message delivery"),

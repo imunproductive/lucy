@@ -83,7 +83,7 @@ use orpheus_sim::{
     hurt_feedback::HurtFeedback,
     instance::{FREE_FOR_ALL_TEAM, Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
     match_flow::{FlowEvent, MatchFlow, Mode, Phase, Standing, Timers},
-    messages::{Players, Recipients, deliver},
+    messages::{HeldReach, Players, Recipients, deliver, deliver_held},
     mode_script::ModeRunner,
     objectives::Participant,
     projectiles::FiredProjectile,
@@ -777,6 +777,8 @@ struct Room {
     /// What the mode graph and the match flow sent this tick, for
     /// `route_messages`.
     mail: Vec<GameMessage>,
+    /// Who each of the mode graph's held broadcasts reached.
+    held_reach: HeldReach,
     /// When the flow last advanced.
     flow_at: Duration,
     /// The tick the flow started: the first player came into the world,
@@ -806,6 +808,7 @@ impl Room {
             flow: None,
             mode: None,
             mail: Vec::new(),
+            held_reach: HeldReach::default(),
             flow_at: Duration::ZERO,
             flow_tick: 0,
             mode_frame: None,
@@ -2836,6 +2839,24 @@ impl State {
                 .map(|(&connection, &(_, slot))| (connection, slot))
                 .collect();
             connections.sort_by_key(|&(_, slot)| slot);
+            // The mode graph's players: those in the world, each with his
+            // controller, body and team (a free-for-all's players are on
+            // its one team, as their filter bits say).
+            let players: Vec<ModePlayer> = connections
+                .iter()
+                .filter(|&&(connection, slot)| {
+                    !room.players[slot].gone && self.peers[&connection].world.world_started()
+                })
+                .map(|&(connection, slot)| ModePlayer {
+                    controller: room.players[slot].entity,
+                    body: self.peers[&connection].world.current_body(),
+                    team: if room.map.free_for_all {
+                        i64::from(FREE_FOR_ALL_TEAM)
+                    } else {
+                        i64::from(room.players[slot].info.team)
+                    },
+                })
+                .collect();
             let (Some(flow), Some(world)) = (room.flow.as_mut(), room.world.as_ref()) else {
                 continue;
             };
@@ -2853,24 +2874,6 @@ impl State {
             let was = flow.phase();
             let events = flow.advance(seconds, &participants);
             let variables = flow.variables();
-            // The mode graph's players: those in the world, each with his
-            // controller, body and team (a free-for-all's players are on
-            // its one team, as their filter bits say).
-            let players = connections
-                .iter()
-                .filter(|&&(connection, slot)| {
-                    !room.players[slot].gone && self.peers[&connection].world.world_started()
-                })
-                .map(|&(connection, slot)| ModePlayer {
-                    controller: room.players[slot].entity,
-                    body: self.peers[&connection].world.current_body(),
-                    team: if room.map.free_for_all {
-                        i64::from(FREE_FOR_ALL_TEAM)
-                    } else {
-                        i64::from(room.players[slot].info.team)
-                    },
-                })
-                .collect();
             let mut messages = room
                 .mode
                 .as_mut()
@@ -3044,6 +3047,10 @@ impl State {
                 messages.extend(sent);
                 ends.extend(ended);
             }
+            let held = room
+                .mode
+                .as_ref()
+                .map_or_else(Vec::new, |mode| mode.held().to_vec());
             let (mut bots, placed) = world.scene.message_recipients(tick);
             let mut recipients: Vec<&mut dyn Recipients> = vec![&mut players, &mut bots, placed];
             if let Some(fields) = fields {
@@ -3052,6 +3059,7 @@ impl State {
             if let Some(mode) = &mut room.mode {
                 recipients.push(mode);
             }
+            deliver_held(&held, &mut room.held_reach, &mut recipients);
             deliver(messages, ends, &mut recipients);
         }
     }

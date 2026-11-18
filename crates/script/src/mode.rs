@@ -92,6 +92,7 @@ pub struct ModeWorld {
     /// The map's collision the graph's ray casts meet; none: no map.
     pub map_rays: Option<Arc<dyn MapRays>>,
     outbox: Vec<GameMessage>,
+    held: Vec<GameMessage>,
 }
 
 impl ModeWorld {
@@ -109,6 +110,7 @@ impl ModeWorld {
             map_tags: None,
             map_rays: None,
             outbox: Vec::new(),
+            held: Vec::new(),
         }
     }
 
@@ -315,6 +317,30 @@ impl World for ModeWorld {
         });
         true
     }
+
+    /// Held until the state's end ([`World::end_message`] to
+    /// [`EVERY_ENTITY`]); the match delivers it ([`ModeScript::held`]).
+    fn hold_broadcast(&mut self, _source: Site, message: u64, parameters: &Variables) -> bool {
+        self.held.push(GameMessage {
+            sender: GAME_MODE_ENTITY,
+            target: EVERY_ENTITY,
+            message,
+            parameters: parameters.clone(),
+        });
+        true
+    }
+
+    /// Only a held broadcast's end is followed; the mode graph's other
+    /// persistent sends end nowhere yet.
+    fn end_message(&mut self, _source: Site, target: u32, message: u64) -> bool {
+        if target != EVERY_ENTITY {
+            return false;
+        }
+        if let Some(index) = self.held.iter().position(|held| held.message == message) {
+            self.held.remove(index);
+        }
+        true
+    }
 }
 
 /// The mode graph running on the mode entity.
@@ -428,6 +454,13 @@ impl ModeScript {
 
     pub fn take_messages(&mut self) -> Vec<GameMessage> {
         self.world.take_messages()
+    }
+
+    /// The messages the graph holds to every entity now, in the order its
+    /// states began ([`World::hold_broadcast`]): the match gives each to
+    /// every entity that starts while it is held (`orpheus_sim::messages`).
+    pub fn held(&self) -> &[GameMessage] {
+        &self.world.held
     }
 
     /// A game message from `sender` to the mode entity (or to every
