@@ -1,17 +1,26 @@
 //! The Practice Range's spawn room and its fall out of the map
-//! (`crate::map_areas`): invulnerable and healed inside, hero change only
-//! inside and where the hero stands, the client's spawn room flag, and the
-//! environment's kill; Watchpoint: Gibraltar's kill volumes; and the server
-//! placeables of the Range, Rialto and Volskaya.
+//! (`crate::map_areas`): invulnerable and healed inside by the mode body
+//! graph `0C8E` on the room's `0723`, hero change only inside and where the
+//! hero stands, the client's spawn room flag, and the environment's kill;
+//! Watchpoint: Gibraltar's kill volumes; and the server placeables of the
+//! Range, Rialto and Volskaya.
 
 use super::*;
-use crate::combat::{Combat, CombatPlayer, ENVIRONMENT_DAMAGE, Shooter, apply_player_hits};
+use crate::combat::{
+    Combat, CombatPlayer, ENVIRONMENT_DAMAGE, Shooter, ShotContext, apply_player_hits,
+};
+use crate::map_areas::room_message;
 use crate::scene::{MOVING_KINDS, filter_component};
 use crate::scene_assets::{FellOut, install_collision_build};
 use orpheus_content::{maps::SpawnChoice, stats::PlayerStats};
+use orpheus_script::vm::{GameMessage, MessageEnd};
 use orpheus_wire::combat_messages::CombatNotice;
 
 const OWNER: u32 = 0xa000_0100;
+/// The Range's spawn room, the placeable `0D62` runs on.
+const ROOM: u32 = 0x8000_007e;
+/// The room's game message to the heroes inside (`0723.025`).
+const IN_ROOM: u64 = 0x0240_0000_0000_0723;
 
 fn scene() -> PreparedScene {
     let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
@@ -133,13 +142,117 @@ fn flags(world: &WorldDelivery) -> Vec<bool> {
         .collect()
 }
 
-/// At the spawn point the body is in its room: invulnerable, healed 400 a
-/// second, free to change heroes. Out on the range it takes damage, the
-/// client's flag goes off (once), and a pick is refused.
+/// The body's filter word records queued so far: whether each carries the
+/// status bit (`crate::scene::SHIELDED`).
+fn shields(world: &WorldDelivery) -> Vec<bool> {
+    let body = world.current_body().unwrap();
+    world
+        .queued
+        .iter()
+        .filter(|record| matches!(record.delivery, Delivery::Filter { .. }))
+        .map(|record| {
+            let Some(Operation::Update(components)) = &record.update.operation else {
+                panic!("an update");
+            };
+            assert_eq!(record.update.entity, body);
+            assert_eq!(components.len(), 1);
+            let Some(orpheus_wire::entity::ComponentValue::Id(bits)) = &components[0].fields[0]
+            else {
+                panic!("component 26's word");
+            };
+            assert_eq!(components[0].index, 26);
+            bits & crate::scene::SHIELDED != 0
+        })
+        .collect()
+}
+
+/// The room's `0723` with its three flags reaches the body, as the room's
+/// `0D62` sends it to a hero of its team whose feet are inside
+/// (`crate::placed_script`).
+fn enter(world: &mut WorldDelivery) {
+    let body = world.current_body().unwrap();
+    assert!(world.receive_body_message(&GameMessage {
+        sender: ROOM,
+        target: body,
+        message: IN_ROOM,
+        parameters: room_message(None),
+    }));
+}
+
+/// The room lets its `0723` go for the body that walked out.
+fn leave(world: &mut WorldDelivery) {
+    let body = world.current_body().unwrap();
+    assert!(world.end_body_message(&MessageEnd {
+        sender: ROOM,
+        target: body,
+        message: IN_ROOM,
+    }));
+}
+
+/// Idle commands for `ticks` ticks; the health changes the body's graphs
+/// made meanwhile go through the match's combat as in `game_service`.
+fn idle(
+    world: &mut WorldDelivery,
+    scene: &mut PreparedScene,
+    viewer: &PlayerAppearance<'_>,
+    tick: &mut u32,
+    ticks: u32,
+) {
+    let mut combat = Combat::new(scene);
+    for _ in 0..ticks {
+        *tick += 1;
+        world.queue_commands(
+            *tick,
+            &[Command {
+                frame: *tick,
+                ..Command::default()
+            }],
+        );
+        world.release_input(1);
+        while world.has_input_work() {
+            world
+                .advance_input(scene, viewer, RETAIL_QUANTA, 64)
+                .unwrap();
+        }
+        let target = world.combat_target(scene, 0).unwrap();
+        combat.record_poses(scene, &[target], *tick);
+        let context = ShotContext {
+            quanta: RETAIL_QUANTA,
+            tick: *tick,
+            now: Duration::ZERO,
+        };
+        for shot in world.take_shots() {
+            if let PosedShot::Health(change) = shot {
+                assert_eq!(change.instigator, ROOM);
+                combat.modify_health(scene, &change, context, |_| true);
+            }
+        }
+        let mut stats = PlayerStats::default();
+        apply_player_hits(
+            scene,
+            combat.take_player_hits(),
+            &mut [CombatPlayer {
+                entity: OWNER,
+                world: Some(world),
+                stats: &mut stats,
+            }],
+            *tick,
+            Duration::ZERO,
+        );
+    }
+}
+
+/// At the spawn point the body is in its room and free to change heroes;
+/// with the room's `0723` it is invulnerable (`0C8E` st11) and its filter
+/// word carries the status bit, so its client predicts no push. Out on the
+/// range, with the message let go, the bit goes, it takes damage, the
+/// client's flag goes off (once), and a pick is refused. Back in the room
+/// the flag comes back on and `0C8E` st13 heals it 400 a second, the room
+/// its instigator.
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
 fn the_spawn_room_shields_heals_and_gates_hero_change() {
-    let scene = scene();
+    let mut scene = scene();
     let card = PlayerCard::default();
     let viewer = viewer(&card);
     let mut world = spawned(&scene, &viewer);
@@ -148,13 +261,23 @@ fn the_spawn_room_shields_heals_and_gates_hero_change() {
     assert_eq!(world.in_spawn_room(), Some(true));
     assert!(world.may_change_hero());
     assert!(flags(&world).is_empty(), "the create sent the flag set");
+    assert!(
+        shields(&world).is_empty(),
+        "the create's word has no status"
+    );
+    enter(&mut world);
+    world.area_step(&scene, &viewer);
+    assert_eq!(shields(&world), [true]);
     assert_eq!(
         world.damage_body(&scene, &hit(body, 50.0), FIRST_TICK, Duration::ZERO),
         None
     );
 
     place(&mut world, &scene, outside(&scene), 0);
+    leave(&mut world);
     world.area_step(&scene, &viewer);
+    // The newer word supersedes the unsent one.
+    assert_eq!(shields(&world), [false]);
     assert_eq!(world.in_spawn_room(), Some(false));
     assert!(!world.may_change_hero());
     world.area_step(&scene, &viewer);
@@ -171,7 +294,12 @@ fn the_spawn_room_shields_heals_and_gates_hero_change() {
     assert_eq!(world.hero(), Some(SOLDIER), "a pick outside is refused");
     assert_eq!(world.current_body(), Some(body));
 
-    // Back in the room: the flag comes back on and one tick heals 6.4.
+    // Outside nothing heals him.
+    let mut tick = FIRST_TICK;
+    idle(&mut world, &mut scene, &viewer, &mut tick, 4);
+    assert_eq!(world.health_share(), Some(hurt));
+
+    // Back in the room.
     let (spawn, _) = scene
         .map()
         .spawn_point_in(0, 0, SpawnChoice::First)
@@ -180,8 +308,10 @@ fn the_spawn_room_shields_heals_and_gates_hero_change() {
     world.area_step(&scene, &viewer);
     // The newer flag supersedes the unsent one: the client gets it alone.
     assert_eq!(flags(&world), [true]);
+    enter(&mut world);
+    idle(&mut world, &mut scene, &viewer, &mut tick, 4);
     let healed = world.health_share().unwrap();
-    assert!(healed > hurt);
+    assert!(healed > hurt, "{healed} after {hurt}");
 }
 
 /// The height his own explosion lifts the body in 20 ticks: an exploding
@@ -246,7 +376,8 @@ fn lift(
 
 /// An explosion pushes only a body it can hurt (the user, 2026-11-17): his
 /// own Helix Rocket's knockback leaves him standing in the spawn room,
-/// where he is invulnerable, and lifts him out on the range.
+/// where the room's `0723` makes him invulnerable, and lifts him out on the
+/// range.
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
 fn his_own_explosion_pushes_him_only_outside_the_spawn_room() {
@@ -261,11 +392,13 @@ fn his_own_explosion_pushes_him_only_outside_the_spawn_room() {
     place(&mut world, &scene, spawn, 0);
     world.area_step(&scene, &viewer);
     assert_eq!(world.in_spawn_room(), Some(true));
+    enter(&mut world);
     let mut tick = FIRST_TICK;
     let lifted = lift(&mut world, &scene, &viewer, &mut tick);
     assert!(lifted.abs() < 0.01, "{lifted} m up in the room");
 
     place(&mut world, &scene, outside(&scene), 0);
+    leave(&mut world);
     world.area_step(&scene, &viewer);
     assert_eq!(world.in_spawn_room(), Some(false));
     let lifted = lift(&mut world, &scene, &viewer, &mut tick);

@@ -247,7 +247,7 @@ fn layout(index: u8) -> Result<&'static [Field], WorldError> {
             fields[index] = match index {
                 // These nested fields have no writer in the reference.
                 0..=4 => Unsupported,
-                5..=18 => U64,
+                5..=18 => Id,
                 _ => F32,
             };
             index += 1;

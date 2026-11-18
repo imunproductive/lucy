@@ -62,13 +62,18 @@
 //!     the same (`orpheus_sim::scene` module notes).
 //!   - The client also requires component 97 when a mask is set and the
 //!     any-of mask isn't every kind (bodies have it), and then tests the
-//!     condition and the tag lists (component 76); the condition and the
-//!     tag lists are not modelled.
+//!     condition and the tag lists (component 76). The server tests the
+//!     condition (`m_condition`) with each candidate as every parameter,
+//!     as FilterArray does (`vm/filter_array.rs`; the spawn room `0D62`
+//!     reads it as parameter 8: its team and whether its feet are in the
+//!     room's volume, `STU_73E1C5F0`); one it can't evaluate leaves the
+//!     search finding nothing. The tag lists are not modelled.
 //!
 //! The server runs the forms whose set fields are only these (an entity
 //! sphere with a vertical or forward offset, or a world point; a whole
-//! sphere; the masks and relation words): `0257`
-//! st6 and Reinhardt's `0095` st18, both counting allies within 10 m for a
+//! sphere; the masks, relation words and condition): the spawn rooms'
+//! `0D62` st0 and st3 (a 100 m sphere around the room's own placeable),
+//! `0257` st6 and Reinhardt's `0095` st18, both counting allies within 10 m for a
 //! criteria, and quick melee's `0043` st5, whose line of sight
 //! (`m_D59188D5`, `m_3D667CE3`) isn't tested and whose output `m_24A4AB8A`
 //! isn't written (assumptions, as the Python reference). A forward offset
@@ -323,25 +328,38 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         // world places (a spawned Biotic Field's own search).
         let centre = match search.entity {
             Some(entity) => {
-                let listed = self
-                    .world
-                    .target_candidates(site)
-                    .ok_or(Gap::NoBodies)?
+                let candidates = self.world.target_candidates(site).ok_or(Gap::NoBodies)?;
+                // A body is where the match placed it; another entity (the
+                // spawn room's placeable) where the world puts it.
+                let feet = candidates
                     .iter()
                     .find(|candidate| candidate.entity == entity)
-                    .map(|body| body.feet);
-                let feet = listed
+                    .map(|body| body.feet)
                     .or_else(|| self.world.entity_position(site, entity))
                     .ok_or(Gap::Field("m_8DCA77B6"))?;
                 std::array::from_fn(|axis| feet[axis] + search.offset[axis])
             }
             None => search.offset,
         };
-        Ok(bodies
+        let condition = field(field(&node.fields, "m_filter"), "m_condition");
+        let mut found = Vec::new();
+        for candidate in bodies
             .iter()
             .filter(|candidate| candidate.distance(centre) <= search.radius)
-            .map(|candidate| candidate.entity)
-            .collect())
+        {
+            if is_set(condition) {
+                let outer = self.candidate.replace(Value::Entity(candidate.entity));
+                let holds = self.evaluate_quietly(id, node, condition);
+                self.candidate = outer;
+                match holds {
+                    Some(value) if truthy(&value) => {}
+                    Some(_) => continue,
+                    None => return Err(Gap::Filter("m_condition")),
+                }
+            }
+            found.push(candidate.entity);
+        }
+        Ok(found)
     }
 
     /// The bodies the world lists that pass `filter` for a search on
@@ -408,7 +426,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         {
             return Err(Gap::Field("m_A30B383E"));
         }
-        let filter = BodyFilter::read(field(fields, "m_filter"), &[]).map_err(Gap::Filter)?;
+        let filter =
+            BodyFilter::read(field(fields, "m_filter"), &["m_condition"]).map_err(Gap::Filter)?;
         let entity = match field(fields, "m_8DCA77B6") {
             Json::Null => None,
             config => match self.evaluate_quietly(id, node, config) {
@@ -416,10 +435,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 _ => return Err(Gap::Field("m_8DCA77B6")),
             },
         };
-        let Some(Value::Vector(mut offset)) =
-            self.evaluate_quietly(id, node, field(fields, "m_05BE62DD"))
-        else {
-            return Err(Gap::Field("m_05BE62DD"));
+        // Unset (the spawn rooms' `0D62`): no offset, the STU default.
+        let mut offset = match field(fields, "m_05BE62DD") {
+            Json::Null => [0.0; 3],
+            config => match self.evaluate_quietly(id, node, config) {
+                Some(Value::Vector(offset)) => offset,
+                _ => return Err(Gap::Field("m_05BE62DD")),
+            },
         };
         if let Some(entity) = entity {
             // A sideways offset turns with the entity by a rule nothing in

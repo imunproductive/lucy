@@ -53,6 +53,15 @@ pub const DAMAGE_AMOUNT: u32 = 0x0013;
 pub const DAMAGE_DIRECTION: u32 = 0x0065;
 /// `0013.025`: the placement's eligibility reset.
 pub const RESET: u64 = 0x0240_0000_0000_0013;
+/// The Training Bot's body graph that puts a respawned bot together: its
+/// entry for [`RESET`] plays Anim state 0 or 1 (alias `0451.0C8`, 2.5 s;
+/// state 1 while entity variable 7143 is unset), and its Entry sets
+/// [`RANGE_BOT`] (upstream kjs `a667ef27`, `bot-rebuild.md`).
+pub const REBUILD_GRAPH: u32 = 0x0ba8;
+/// Entity variable `#7082`, set by [`REBUILD_GRAPH`]'s Entry on every
+/// Practice Range bot body. The bot's death graph `0C18` sends its kill
+/// feed message only when the victim or the killer lacks it.
+pub const RANGE_BOT: u32 = 7082;
 /// The Practice Range firing placement behavior (`FIRING` in
 /// `ow174/game/bots.py`).
 pub const FIRING_GRAPH: u32 = 0x0b92;
@@ -162,8 +171,6 @@ impl World for BotWorld {
             // open. `0C17` rid 23 starts its pain lines' audience (#1839)
             // with it, and rid 22 and 21 add the bot and its attacker.
             "STU_ED45C5E8" => Some("no entities"),
-            // See `native`: no difficulty profile, so the authored fallback.
-            "STU_4049CF77" => Some("the authored fallback (no difficulty profile)"),
             _ => None,
         }
     }
@@ -272,6 +279,22 @@ impl World for BotWorld {
         self.targets.as_deref()
     }
 
+    /// `STU_4049CF77`: the bot's AI definition (`1404`, `14AF`) has no
+    /// difficulty profiles (`m_difficultyProfiles` null, BotDamage.md), so
+    /// the graphs take their authored fallback (the Training Bot's rocket,
+    /// `0BA3` node 178: `1961`, 8); another listed body's AI as the match
+    /// gives it.
+    fn ai_parameter(&mut self, site: Site, entity: u32, identifier: u64) -> Option<Option<f64>> {
+        if entity == site.entity {
+            return Some(None);
+        }
+        self.targets
+            .as_deref()?
+            .iter()
+            .find(|body| body.entity == entity || body.controller == Some(entity))
+            .map(|body| body.ai_parameter(self.graphs.ai_definitions(), identifier))
+    }
+
     fn native(&mut self, site: Site, config: &Json) -> Option<Value> {
         let class = config.get("$")?.as_str()?;
         if class == "STU_AC829876"
@@ -331,18 +354,6 @@ impl World for BotWorld {
             // (`0BA3` node 178) takes its AI damage, not the 19 a player's
             // copy of the volley would deal.
             "STU_D3EB8D87" if is_own_possessor(config.get("m_00903303")) => Some(Value::Bool(true)),
-            // An AI weapon parameter (`m_F00C2F3D`, such as the damage
-            // `1961`) of the possessing AI definition's difficulty profile
-            // (`STUAIBehaviorComponent.m_difficultyProfiles`; upstream
-            // reads Junkenstein's per difficulty). `1404` and `14AF` have no
-            // profiles, so the parameter is its authored fallback
-            // `m_A53100D5` (assumption: the field's meaning; where a profile
-            // exists, the fallback is one of its tiers' values, as Reaper's
-            // `0019` 3.5 is). Only a literal fallback is read; and only for
-            // the body itself (`m_C5D0FA56` none).
-            "STU_4049CF77" if config.get("m_C5D0FA56").is_none_or(Json::is_null) => {
-                literal_number(config.get("m_A53100D5")?)
-            }
             // IsTutorial (CE8580), as `PlayerWorld` answers it.
             "STU_A77AC2AC" if native_shape(config, class, None) => {
                 Some(Value::Bool(self.mode == TUTORIAL_MODE))
@@ -380,16 +391,6 @@ fn is_own_possessor(config: Option<&Json>) -> bool {
     config.is_some_and(|config| {
         native_shape(config, "STU_DB742151", Some("m_entity")) && is_owner(config.get("m_entity"))
     })
-}
-
-/// A literal `STUConfigVarInt` or `STUConfigVarFloat`.
-fn literal_number(config: &Json) -> Option<Value> {
-    let value = config.get("m_value")?;
-    match config.get("$")?.as_str()? {
-        "STUConfigVarInt" => value.as_i64().map(Value::Integer),
-        "STUConfigVarFloat" => value.as_f64().map(Value::Float),
-        _ => None,
-    }
 }
 
 /// The stock filter: its set fields (not null, not zero) are exactly the
@@ -467,6 +468,13 @@ pub struct BotSpawn<'a> {
     pub health: f64,
     /// The firing placement's position; none for a bot without one.
     pub firing_position: Option<[f64; 3]>,
+    /// A bot made again at its spawner after a death: [`RESET`] goes to its
+    /// [`REBUILD_GRAPH`] instances before its first frame, so it is seen
+    /// putting itself together (upstream kjs `a667ef27`; seen there in the
+    /// original client: the parts gather over about 0.9 s). Retail's sender
+    /// of the message is not known: a reconstruction. A first spawn plays
+    /// no rebuild.
+    pub respawned: bool,
 }
 
 /// An NPC body's statescript on the server clock (`BotScript` in bot.py).
@@ -538,6 +546,19 @@ impl BotBody {
                 component.queue_message(id, RESET, Variables::new())?;
                 component.run_now(&mut world)?;
             }
+        }
+        if spawn.respawned {
+            let rebuilds: Vec<u16> = component
+                .snapshot()
+                .into_iter()
+                .flat_map(|snapshot| &snapshot.instances)
+                .filter(|(_, instance)| instance.graph == REBUILD_GRAPH)
+                .map(|(&id, _)| id)
+                .collect();
+            for id in rebuilds {
+                component.queue_message(id, RESET, Variables::new())?;
+            }
+            component.run_now(&mut world)?;
         }
         if !spawn.name.is_empty() {
             for id in nameplates(&component) {
@@ -1063,6 +1084,7 @@ mod tests {
             mode: PRACTICE_RANGE_MODE,
             health: 200.0,
             firing_position,
+            respawned: false,
         }
     }
 
@@ -1325,6 +1347,47 @@ mod tests {
         encoder_full(&graphs, &codecs, &bot);
     }
 
+    /// A Training Bot made again after a death gets `0013.025` on its
+    /// `0BA8`, which starts the rebuild Anim (state 1 with #7143 unset); a
+    /// first spawn plays none. Either way `0BA8`'s Entry sets #7082, the
+    /// kill feed gate of bot-on-bot kills.
+    #[test]
+    #[ignore = "requires the derived game data's bot graph bundle"]
+    fn a_respawned_training_bot_rebuilds_itself() {
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let graphs =
+            Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
+        let rebuild = |respawned| {
+            let bot = BotBody::start(
+                Arc::clone(&graphs),
+                BotSpawn {
+                    respawned,
+                    ..spawn(None)
+                },
+                Unknowns::Tolerate,
+            )
+            .unwrap();
+            let snapshot = bot.snapshot().unwrap();
+            assert_eq!(
+                snapshot.variables.get(&RANGE_BOT).map(crate::expr::truthy),
+                Some(true)
+            );
+            let (_, instance) = snapshot
+                .instances
+                .iter()
+                .find(|(_, instance)| instance.graph == REBUILD_GRAPH)
+                .expect("the bot body lists 0BA8");
+            [0, 1].map(|state| {
+                instance
+                    .states
+                    .get(&state)
+                    .is_some_and(|state| state.active)
+            })
+        };
+        assert_eq!(rebuild(false), [false, false]);
+        assert_eq!(rebuild(true), [false, true]);
+    }
+
     /// The pack's Training Bot takes a Heavy Pulse Rifle hit it survives
     /// (`0011.025` with the rifle's tags, graph `0254` rid 25): its flinch
     /// graph `0E8C` sets the strength #1024 to 0.2 for tag `09A2`, with the
@@ -1552,6 +1615,7 @@ mod tests {
                 dead: false,
                 controller: Some(entity & !0xff),
                 ai: false,
+                ai_control: None,
                 feet: [0.0; 3],
                 height: 1.8,
                 radius: 0.4,

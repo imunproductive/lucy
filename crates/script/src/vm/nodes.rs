@@ -1018,9 +1018,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.register_tick(key, self.machine.now_ms);
             }
             StateKind::Anim => self.arm_animation(key, node, depth)?,
-            StateKind::SendMessage => {
-                self.send_game_message(id, node)?;
-            }
+            StateKind::SendMessage => self.begin_send_state(key, node)?,
             StateKind::CosmeticEntity => self.begin_cosmetic(key, node, depth)?,
             StateKind::ChaseVar => self.begin_chase(key, node, depth)?,
             StateKind::Watch => {

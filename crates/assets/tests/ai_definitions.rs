@@ -62,7 +62,8 @@ fn each_ai_hero_has_its_own_definition() {
 }
 
 /// Bastion's first per-mode list, with `06FE`'s overrides, and his three
-/// difficulty profiles.
+/// difficulty profiles. Every AI definition declares component 92
+/// (`STU_76AF64F0`).
 #[test]
 #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
 fn bastion_lists_his_graphs_and_profiles() {
@@ -95,6 +96,13 @@ fn bastion_lists_his_graphs_and_profiles() {
         })
     );
     assert_eq!(bastion["m_72D00D60"], 0.1);
+    let definitions = table["definitions"].as_object().unwrap();
+    assert_eq!(definitions.len(), 15);
+    assert!(
+        definitions
+            .values()
+            .all(|definition| definition["component_92"] == true)
+    );
 }
 
 /// A profile's values are its own over its parent's: Soldier: 76's weapon

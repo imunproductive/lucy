@@ -15,7 +15,11 @@
 //!
 //! What the sources give:
 //! - rule 123: the leader picks Easy, Medium or Hard, which deal 25%, 50%
-//!   and 100% damage; bots never headshot; harder bots aim better;
+//!   and 100% damage; bots never headshot; harder bots aim better. The
+//!   damage is the data's: the hero's weapon graphs read it from the
+//!   difficulty profile of the body's AI entity
+//!   (`orpheus_script::ai_definitions`; Soldier: 76's rifle 4, 10 and 20
+//!   against the player's 20);
 //! - rule 124: the AI heroes are Roadhog, Zarya, Bastion, McCree (Cassidy),
 //!   Mei, Reaper, Soldier: 76, Sombra, Torbjörn, Ana, Lúcio and Zenyatta
 //!   (ow1-preservation's 2018 list has nine of them; the twelve are used);
@@ -33,6 +37,7 @@ use std::{cell::Cell, f64::consts::TAU};
 
 use orpheus_core::tick::TICK_PERIOD;
 use orpheus_physics::{mover::kinematics::poses, nav::Navigation};
+use orpheus_script::ai_definitions::{EASY, HARD, MEDIUM};
 use orpheus_wire::commands::{Command, FIRE, JUMP};
 
 /// Ability 2 (E) on the command (logical button 36).
@@ -147,12 +152,13 @@ impl Difficulty {
         }
     }
 
-    /// Rule 123: the share of its weapons' damage an AI deals.
-    pub fn damage_scale(self) -> f64 {
+    /// The difficulty identifier of its AI profiles
+    /// (`orpheus_script::ai_definitions`).
+    pub fn identifier(self) -> u64 {
         match self {
-            Self::Easy => 0.25,
-            Self::Medium => 0.5,
-            Self::Hard => 1.0,
+            Self::Easy => EASY,
+            Self::Medium => MEDIUM,
+            Self::Hard => HARD,
         }
     }
 

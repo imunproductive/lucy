@@ -55,8 +55,21 @@ fn chat(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
         .cloned()
         .unwrap_or(Value::Struct(Fields::new()));
     let said = text(fields.get(&0x90)).to_owned();
-    if said.starts_with('.') && match_command(peer, &channel, &said)? {
-        return Ok(());
+    if said.starts_with('.') {
+        // A failing command logs one line and answers nothing (upstream
+        // `212d85d0`): its text must not go out as chat, and the error must
+        // not end the lobby connection.
+        match match_command(peer, &said) {
+            Ok(None) => {}
+            Ok(Some(reply)) => {
+                bot_answer(peer, channel, &said, &reply)?;
+                return Ok(());
+            }
+            Err(error) => {
+                tracing::warn!("[chat] {said} -> {error}");
+                return Ok(());
+            }
+        }
     }
     let me = Arc::clone(&peer.login.account);
     let mut turn = Turn::new(peer.lobby)?;
@@ -98,15 +111,14 @@ fn deliver(
     }
 }
 
-/// Run a match command. False when it is not one, or the game server is off
-/// (`--game-port 0`), so the text goes out as chat. The answer comes from the
-/// bot, to the player only.
-fn match_command(peer: &mut Peer<'_, '_>, channel: &Value, said: &str) -> io::Result<bool> {
+/// Run a match command and give the bot's answer. None when it is not one,
+/// or the game server is off (`--game-port 0`), so the text goes out as chat.
+fn match_command(peer: &mut Peer<'_, '_>, said: &str) -> io::Result<Option<String>> {
     let (command, rest) = said[1..].split_once(' ').unwrap_or((&said[1..], ""));
     let command = command.to_lowercase();
     let lobby = peer.lobby;
     let Some(game) = lobby.game.as_deref() else {
-        return Ok(false);
+        return Ok(None);
     };
     let reply = match command.as_str() {
         "hero" => {
@@ -162,13 +174,32 @@ fn match_command(peer: &mut Peer<'_, '_>, channel: &Value, said: &str) -> io::Re
             Ok(hurt) => hurt.summary(),
             Err(reason) => reason,
         },
-        _ => return Ok(false),
+        _ => return Ok(None),
     };
+    Ok(Some(reply))
+}
+
+/// The longest bot answer, in characters. A chat message longer than the
+/// channel's slice is streamed without its control bytes, and the client's
+/// lobby chat channel dies from it (seen live upstream, `212d85d0`).
+const REPLY_LIMIT: usize = 200;
+
+/// The bot's answer to a match command, to the player only, cut to
+/// [`REPLY_LIMIT`] characters.
+fn bot_answer(peer: &mut Peer<'_, '_>, channel: Value, said: &str, reply: &str) -> io::Result<()> {
     tracing::info!("[chat] {said} -> {reply}");
+    let reply = capped(reply);
     let bot = &peer.lobby.accounts.bot;
     let record = Turn::new(peer.lobby)?.record(bot);
-    peer.send(&messages::chat_message(channel.clone(), record, &reply, 0))?;
-    Ok(true)
+    peer.send(&messages::chat_message(channel, record, reply, 0))?;
+    Ok(())
+}
+
+fn capped(reply: &str) -> &str {
+    reply
+        .char_indices()
+        .nth(REPLY_LIMIT)
+        .map_or(reply, |(end, _)| &reply[..end])
 }
 
 fn channel_members(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
@@ -261,4 +292,18 @@ fn follow_seat(peer: &mut Peer<'_, '_>) -> io::Result<()> {
     let mut turn = Turn::new(peer.lobby)?;
     turn.game_left(account_lo, match_id)?;
     turn.finish(peer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_long_answer_is_cut_to_the_limit_on_a_character_boundary() {
+        assert_eq!(capped("short"), "short");
+        let long = "é".repeat(REPLY_LIMIT + 50);
+        let cut = capped(&long);
+        assert_eq!(cut.chars().count(), REPLY_LIMIT);
+        assert!(long.starts_with(cut));
+    }
 }

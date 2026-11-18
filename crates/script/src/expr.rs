@@ -172,6 +172,14 @@ pub trait Context {
         None
     }
 
+    /// An AI parameter (`STU_4049CF77`): the value of `identifier` in the
+    /// difficulty profile of the AI that possesses `entity` (a body, or
+    /// the AI entity itself); Some(None) when `entity` has no AI, or its
+    /// AI's profile no such value; None: the world doesn't know `entity`.
+    fn ai_parameter(&mut self, _entity: u32, _identifier: u64) -> Option<Option<f64>> {
+        None
+    }
+
     fn body_scale(&mut self, _entity: u32) -> Option<f64> {
         None
     }
@@ -263,6 +271,12 @@ pub trait Context {
 
     /// An entity's team index, 0 to 4, or -1 for none; None: unknown.
     fn entity_team(&mut self, _entity: u32) -> Option<i64> {
+        None
+    }
+
+    /// Whether `position` is inside `entity`'s volume (`STU_73E1C5F0`);
+    /// None: unknown.
+    fn in_entity_volume(&mut self, _entity: u32, _position: [f64; 3]) -> Option<bool> {
         None
     }
 
@@ -1912,6 +1926,37 @@ impl Evaluator {
                     _ => Value::Integer(-1),
                 }
             }
+            // Whether a point is inside an entity's volume
+            // (`Eval_STU_73E1C5F0` 0x7FF789BF7D20): it evaluates the point
+            // `m_A8D12F28`, then each entity of `m_entity` (a value or an
+            // array) through the host (vtable +0x168) and tests the point
+            // against that entity's volume (0x7FF789CC4E40); true at the
+            // first that holds it, false for none or no point. The spawn
+            // room `0D62` asks it of its own entity for each hero its search
+            // finds (where its feet are, `STU_8CBDD81C`).
+            "STU_73E1C5F0" if native_fields(config, &["m_A8D12F28", "m_entity"]) => {
+                let Value::Vector(point) =
+                    self.config(child(config, "m_A8D12F28"), context, nested)?
+                else {
+                    return Ok(Value::Bool(false));
+                };
+                let entities = match self.config(child(config, "m_entity"), context, nested)? {
+                    Value::Array(items) => items,
+                    value => vec![value],
+                };
+                for entity in entities.iter().filter_map(to_entity) {
+                    if !valid_entity(entity) {
+                        continue;
+                    }
+                    if context
+                        .in_entity_volume(entity, point)
+                        .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?
+                    {
+                        return Ok(Value::Bool(true));
+                    }
+                }
+                Value::Bool(false)
+            }
             "STU_F76C486C" | "STU_F7262B36" | "STU_0AC15F78" | "STU_DB742151" => {
                 let (relation, operand) = match class {
                     "STU_F76C486C" => (EntityRelation::Owner, "m_D63CBEC2"),
@@ -2055,6 +2100,42 @@ impl Evaluator {
                         ),
                         _ => return Err(EvalError::UnsupportedConfig(class.into())),
                     }
+                }
+            }
+            // An AI parameter (`STU_4049CF77`; no client code, BotDamage.md
+            // "Client tools pass"): the value of identifier `m_F00C2F3D`
+            // in the difficulty profile of the AI that possesses
+            // `m_C5D0FA56` (none: the owner), else the authored fallback
+            // `m_A53100D5`. The weapons ask it behind `STU_D3EB8D87` (an AI
+            // possessor): Soldier: 76's rifle `0254` st10 deals `1961` (4,
+            // 10 or 20 by difficulty), fallback 10. Assumption: the
+            // fallback is the answer where the AI's profile has no such
+            // value (every graph's fallback is its hero's Medium value,
+            // AiDefinitions.md).
+            "STU_4049CF77"
+                if native_fields(config, &["m_F00C2F3D", "m_A53100D5", "m_C5D0FA56"]) =>
+            {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let Value::Asset(identifier) =
+                    self.config(child(config, "m_F00C2F3D"), context, nested)?
+                else {
+                    return Err(unsupported());
+                };
+                let target = child(config, "m_C5D0FA56");
+                let entity = if target.is_null() {
+                    context.owner()
+                } else {
+                    self.config(target, context, nested)?
+                };
+                let entity = to_entity(&entity)
+                    .filter(|&entity| valid_entity(entity))
+                    .ok_or_else(unsupported)?;
+                match context
+                    .ai_parameter(entity, identifier)
+                    .ok_or_else(unsupported)?
+                {
+                    Some(value) => Value::Float(value),
+                    None => self.config(child(config, "m_A53100D5"), context, nested)?,
                 }
             }
             // The normal pools' current (32E6E4D8) and maximum (7D7D2470)

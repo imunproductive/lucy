@@ -64,6 +64,7 @@ impl SpawnedFields {
             Unknowns::for_build(),
             [],
             None,
+            None,
             0,
         );
         Self {
@@ -121,8 +122,9 @@ impl SpawnedFields {
             }
         }
         // `0258` st8 sends its owner `0EEB.025`; the match routes no
-        // spawned entity's message yet (docs/dev/loose-ends.md).
+        // spawned entity's message (nor its end) yet (docs/dev/loose-ends.md).
         self.world.take_messages();
+        self.world.take_message_ends();
         let destroyed = self.world.take_destroyed();
         let ended = &mut self.ended;
         self.fields.retain(|field| {
@@ -266,6 +268,7 @@ mod tests {
             dead: false,
             controller: Some(entity & !0xff),
             ai: false,
+            ai_control: None,
             feet,
             height: 1.8,
             radius: 0.4,

@@ -51,6 +51,7 @@ use orpheus_content::{heroes::Eyes, stats::PlayerStats};
 use orpheus_core::guid::parse_guid;
 use orpheus_physics::static_ray::Vec3;
 use orpheus_script::{
+    ai_definitions::AiControl,
     bot::{DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE, DAMAGE_TAGS, DAMAGED, DIED},
     mode::EVERY_ENTITY,
     vitals::{Death, Vitals},
@@ -377,6 +378,9 @@ pub struct PlayerTarget {
     /// Its body definition's target tags, if the data gives them
     /// ([`PreparedScene::body_tags`]).
     pub tags: Option<Arc<BTreeSet<u64>>>,
+    /// An AI hero's AI entity, which possesses the body; none for a
+    /// human's.
+    pub ai: Option<AiControl>,
 }
 
 struct Target {
@@ -498,12 +502,14 @@ impl Combat {
     /// The bodies the statescript's target searches can find this tick
     /// (`TrackTargets`): the players' bodies as recorded, then the bots, in
     /// slot order; no teams in a free-for-all. A player's body is his
-    /// controller's (its id less the low byte), a bot's its stand-in
-    /// controller's (`scene::bot_controller_entity`), an AI's (component
-    /// 92: the bot's AI definition possesses it). A player's body lists
-    /// the Biotic Fields its controller owns.
+    /// controller's (its id less the low byte); an AI hero's is his AI
+    /// entity's, an AI (component 92, which its definition declares); a
+    /// bot's is its stand-in controller's (`scene::bot_controller_entity`),
+    /// an AI too (component 92: the bot's AI definition possesses it). A
+    /// player's body lists the Biotic Fields its controller owns.
     pub fn target_candidates(&self, scene: &PreparedScene) -> Vec<TargetCandidate> {
         let free_for_all = scene.map().free_for_all;
+        let definitions = scene.graphs().ai_definitions();
         let candidate =
             |entity, team, dead, controller, ai, pose: &TargetPose, tags| TargetCandidate {
                 entity,
@@ -511,6 +517,7 @@ impl Combat {
                 dead,
                 controller,
                 ai,
+                ai_control: None,
                 feet: pose.feet,
                 height: pose.height,
                 radius: pose.radius,
@@ -522,15 +529,16 @@ impl Combat {
             .iter()
             .map(|slot| {
                 let target = &slot.target;
-                let controller = Some(target.body & !0xff);
+                let controller = target.ai.map_or(target.body & !0xff, |ai| ai.entity);
                 TargetCandidate {
+                    ai_control: target.ai,
                     spawned: self.fields.owned_by(target.body),
                     ..candidate(
                         target.body,
                         target.team,
                         target.dead,
-                        controller,
-                        false,
+                        Some(controller),
+                        target.ai.is_some_and(|ai| ai.has_component_92(definitions)),
                         &target.pose,
                         target.tags.clone(),
                     )
@@ -711,11 +719,15 @@ impl Combat {
     /// heal or damage the body they are on), applied as a shot's impact
     /// is: the damage message, the stats, a death and its respawn follow.
     /// Its instigator is the shooter, a player's body or a bot as the match
-    /// last placed them; another instigator changes nothing. The server's
-    /// native rule decides who takes it (assumption, as for the shots:
-    /// combat.py `_enemies`): damage strikes an enemy of the instigator
-    /// (anyone in a free-for-all) and the instigator's own body (the enemy
-    /// spawn room `0C8E` st45), a heal an ally or itself. A bot takes it
+    /// last placed them, or a server placeable of the map (the spawn room
+    /// `0D62` that `0C8E` st13's heal names, `#40`); another instigator
+    /// changes nothing. The server's native rule decides who takes it
+    /// (assumption, as for the shots: combat.py `_enemies`): damage strikes
+    /// an enemy of the instigator (anyone in a free-for-all) and the
+    /// instigator's own body (the enemy spawn room `0C8E` st45), a heal an
+    /// ally or itself; a placeable's change strikes the player's body its
+    /// graph named, whatever his team (the graph chose him), and no bot
+    /// (the bots run no mode body graph that names one). A bot takes it
     /// only once its create reached the instigator's client (`visible`, as
     /// for a shot); the dead take nothing. Unlike the shots (and Python's
     /// `_melee`), quick melee's search saw the bodies where the match placed
@@ -732,7 +744,24 @@ impl Combat {
         if !(change.amount.is_finite() && change.amount > 0.0) {
             return None;
         }
-        let shooter = self.shooter(scene, change.instigator)?;
+        let placeable = || {
+            scene
+                .server_placeables()
+                .iter()
+                .any(|placed| placed.entity() == change.instigator)
+        };
+        let (shooter, environment) = match self.shooter(scene, change.instigator) {
+            Some(shooter) => (shooter, false),
+            None if placeable() => (
+                Shooter {
+                    source: change.instigator,
+                    team: u8::MAX,
+                    bot: false,
+                },
+                true,
+            ),
+            None => return None,
+        };
         let free_for_all = scene.map().free_for_all;
         let target = change.target;
         let aura = change.aura.map(|aura| AuraHit {
@@ -747,11 +776,12 @@ impl Combat {
         {
             let own = target == shooter.source;
             let teammate = !own && !free_for_all && slot.target.team == shooter.team;
-            let takes = if change.heal {
-                own || teammate
-            } else {
-                !teammate
-            };
+            let takes = environment
+                || if change.heal {
+                    own || teammate
+                } else {
+                    !teammate
+                };
             if !takes {
                 return None;
             }
@@ -774,7 +804,7 @@ impl Combat {
             self.auras.extend(aura);
             return None;
         }
-        if !visible(target) {
+        if environment || !visible(target) {
             return None;
         }
         let impact = Impact {

@@ -24,7 +24,6 @@ use crate::{
         DeliveryReport, FrameRecords, GameEgress, PacketDelivery, RecordSource, SendError,
         SentFrame,
     },
-    map_areas::SPAWN_HEALING,
     notices::{NOTICE_GAP, Switch},
     others::{
         ObservedScript, ObserverActivity, OtherDelivery, Others, PlayerView, RemoteBody,
@@ -38,7 +37,9 @@ use crate::{
         ProjectileDelivery, ProjectileEvent, ProjectileLeases, ProjectileToken, ServerCopies,
         ShotKey,
     },
-    scene::{PlayerAppearance, Possession, body_filter, filter_component, player_team_bit},
+    scene::{
+        PlayerAppearance, Possession, SHIELDED, body_filter, filter_component, player_team_bit,
+    },
     scene_assets::PreparedScene,
     voice_lines::{VoiceLine, VoiceState, delay_ticks, is_death_cry},
 };
@@ -57,13 +58,14 @@ use orpheus_physics::{
 };
 use orpheus_script::controller::ControllerScript;
 use orpheus_script::{
+    ai_definitions::AiControl,
     graph::GraphStore,
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
     vm::{
-        AuraChange, BodyEffects, GameMessage, Motion, MoveRequest, RaisedCriteria, Snapshot,
-        TargetCandidate, VoiceRequest,
+        AuraChange, BodyEffects, GameMessage, MessageEnd, Motion, MoveRequest, RaisedCriteria,
+        Snapshot, TargetCandidate, VoiceRequest,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
@@ -278,6 +280,12 @@ pub trait OwnerBodyRuntime: Send {
         _parameters: Variables,
     ) -> io::Result<usize> {
         Ok(0)
+    }
+
+    /// A persistent sender (`sender`) let its message go for the body: its
+    /// receiving states that held it go back to idle, now.
+    fn end_message(&mut self, _sender: u32, _message: u64) -> io::Result<()> {
+        Ok(())
     }
 
     /// The game messages the body sent other entities since the last call.
@@ -776,6 +784,11 @@ enum Delivery {
     /// The player's spawn room flag (component 74 field 6, `scene.rs`
     /// `spawn_room_flag`); a newer one supersedes it.
     SpawnFlag {
+        revision: u64,
+    },
+    /// The current body's filter word with or without [`SHIELDED`]
+    /// (`WorldDelivery::shield_step`); a newer one supersedes it.
+    Filter {
         revision: u64,
     },
 }
@@ -1401,6 +1414,11 @@ pub struct WorldDelivery {
     /// views nobody, and its records arrive as soon as they are ready
     /// ([`Self::deliver_locally`]).
     headless: bool,
+    /// An AI player's AI entity and the difficulty identifier it plays at
+    /// (`orpheus_script::ai_definitions`); none for a human's world. Each
+    /// body he plays is possessed by the AI entity, made from that body's
+    /// AI definition.
+    ai: Option<(u32, u64)>,
     /// Time the match flow adds to a death's respawn now (overtime,
     /// game-rules.md 11).
     respawn_extra: Duration,
@@ -1420,6 +1438,10 @@ pub struct WorldDelivery {
     /// The spawn room flag (component 74 field 6) as last queued, and its
     /// revision; the player's create sends it set.
     spawn_flag: (bool, u64),
+    /// Whether the current body's filter word (component 26) as last
+    /// queued carries [`SHIELDED`], and its revision; a new body's create
+    /// sends it without.
+    shield: (bool, u64),
     /// A hero picked while the body was dead: the respawn plays it.
     respawn_hero: Option<(u64, SkinTheme)>,
     /// A body placed at a spawn point and its facing (1/65536 turns): the
@@ -1533,12 +1555,14 @@ impl WorldDelivery {
             board: BoardDelivery::default(),
             assembling: false,
             headless: false,
+            ai: None,
             respawn_extra: Duration::ZERO,
             hero_settings: HeroSettings::default(),
             voice: None,
             pending_voices: Vec::new(),
             spawn_room: None,
             spawn_flag: (true, 0),
+            shield: (false, 0),
             respawn_hero: None,
             spawn_view: None,
             controller_script: None,
@@ -1547,14 +1571,28 @@ impl WorldDelivery {
     }
 
     /// The world of an AI player, whose body the server plays without a
-    /// client (`crate::ai`).
-    pub fn headless(owner: u32) -> Self {
+    /// client (`crate::ai`): his AI entity `ai_entity` possesses each body
+    /// he plays, at `difficulty` (a difficulty identifier,
+    /// `orpheus_script::ai_definitions::EASY` and up).
+    pub fn headless(owner: u32, ai_entity: u32, difficulty: u64) -> Self {
         let mut world = Self {
             headless: true,
+            ai: Some((ai_entity, difficulty)),
             ..Self::new(owner)
         };
         world.input.immediate = true;
         world
+    }
+
+    /// The AI that possesses this player's body of `hero`: none for a
+    /// human's.
+    fn ai_control(&self, graphs: &GraphStore, hero: u64) -> Option<AiControl> {
+        let (entity, difficulty) = self.ai?;
+        Some(AiControl {
+            entity,
+            definition: graphs.ai_definitions().definition(hero)?,
+            difficulty,
+        })
     }
 
     /// Whether this is an AI player's world.
@@ -1759,7 +1797,8 @@ impl WorldDelivery {
             self.queue_controller(scene, tick, open, hero, None)?;
         } else {
             let switch = self.notices.waiting.pop_front().expect("waiting switch");
-            self.queue_controller(scene, tick, open, hero, Some(&switch.presence()))?;
+            let presence = scene.controller().switch_presence(switch.kept);
+            self.queue_controller(scene, tick, open, hero, Some(&presence))?;
             self.notices.chunk = Some(self.controller.latest_data());
         }
         self.notices.sent_at = Some(now);
@@ -2075,6 +2114,9 @@ impl WorldDelivery {
             Delivery::Tags { revision } => self.tag_updates.get(&entity) == Some(&revision),
             Delivery::Board { revision } => self.board.revision == revision,
             Delivery::SpawnFlag { revision } => self.spawn_flag.1 == revision,
+            Delivery::Filter { revision } => {
+                self.shield.1 == revision && self.body.is_some_and(|body| body.id.entity == entity)
+            }
             Delivery::Script {
                 last, close: true, ..
             } => last == self.controller.latest_data(),
@@ -2193,7 +2235,8 @@ impl WorldDelivery {
                         true,
                         Delivery::Board { .. }
                         | Delivery::BotLink { .. }
-                        | Delivery::SpawnFlag { .. },
+                        | Delivery::SpawnFlag { .. }
+                        | Delivery::Filter { .. },
                     ) => {}
                     (true, Delivery::Health { .. }) => {
                         self.health_updates.remove(&record.update.entity);
@@ -2319,7 +2362,7 @@ impl WorldDelivery {
                     {
                         return None;
                     }
-                    Delivery::Health { .. } | Delivery::Tags { .. }
+                    Delivery::Health { .. } | Delivery::Tags { .. } | Delivery::Filter { .. }
                         if !self.identity_ready(record.update.entity) =>
                     {
                         return None;
@@ -3130,6 +3173,7 @@ impl WorldDelivery {
             dead: self.death.is_some(),
             hurt: vitals.is_some_and(Vitals::hurt),
             tags: scene.body_tags(hero.body),
+            ai: self.ai_control(scene.graphs(), body.hero),
         })
     }
 
@@ -3317,11 +3361,11 @@ impl WorldDelivery {
         self.spawn_room
     }
 
-    /// The spawn rooms each tick (`map_areas` module notes, mode body graph
-    /// `0C8E`): where the living body stands; inside, it heals
-    /// [`SPAWN_HEALING`] a second (one tick's share, [`TICK_PERIOD`]) and
-    /// takes no damage ([`Self::damage_body`]); the client's spawn room
-    /// flag (component 74 field 6) follows [`Self::may_change_hero`].
+    /// The spawn rooms each tick (`map_areas` module notes): whether the
+    /// living body stands in one of his team's; the client's spawn room
+    /// flag (component 74 field 6) follows [`Self::may_change_hero`]. The
+    /// room's heal and invulnerability are the mode body graph's (`0C8E`
+    /// st11 and st13, on the room's `0723`: `crate::placed_script`).
     pub fn area_step(&mut self, scene: &PreparedScene, viewer: &PlayerAppearance<'_>) {
         if self.started.is_none() {
             return;
@@ -3332,10 +3376,7 @@ impl WorldDelivery {
             }
             _ => None,
         };
-        if let (Some(true), Some(body)) = (self.spawn_room, self.body) {
-            let amount = SPAWN_HEALING * TICK_PERIOD.as_secs_f64();
-            self.heal_body(scene, body.id.entity, amount, &DamageTags::NONE);
-        }
+        self.shield_step();
         let inside = self.may_change_hero();
         // The controller graph's `STU_E4C6AAB4` reads the same field 6.
         if let Some(script) = &mut self.controller_script {
@@ -3352,6 +3393,32 @@ impl WorldDelivery {
         }
     }
 
+    /// The body's filter word follows the statuses its graphs hold
+    /// ([`SHIELDED`], `scene` module notes): the owner's client then
+    /// predicts no explosion push on it, as it gets none from the server
+    /// ([`Self::can_be_damaged`]). A dead body's word comes with its pools.
+    fn shield_step(&mut self) {
+        let Some(body) = self.body.filter(|_| self.death.is_none()) else {
+            return;
+        };
+        let shielded = self.body_effects().is_some_and(BodyEffects::invulnerable);
+        if shielded == self.shield.0 {
+            return;
+        }
+        let revision = self.shield.1 + 1;
+        self.shield = (shielded, revision);
+        let bits = body_filter(body.team_bit, false) | if shielded { SHIELDED } else { 0 };
+        self.push(Record {
+            update: EntityUpdate {
+                entity: body.id.entity,
+                operation: Some(Operation::Update(vec![filter_component(bits)])),
+                ..EntityUpdate::default()
+            },
+            delivery: Delivery::Filter { revision },
+        });
+        self.remove_stale();
+    }
+
     /// The statuses and combat modifiers the current body's states hold.
     fn body_effects(&self) -> Option<&BodyEffects> {
         let body = self.body?;
@@ -3361,13 +3428,13 @@ impl WorldDelivery {
             .and_then(|script| script.runtime.effects())
     }
 
-    /// Whether a hit can hurt the current body: not in his team's spawn
-    /// room (`map_areas`: 0C8E `03D4`) and no invulnerable status
-    /// (`STU_9028E035`) held by his graphs. An explosion pushes only a body
-    /// it can hurt (the user's game check, 2026-11-17: no push in the spawn
-    /// room), so the knockback takes the same gate as the damage.
+    /// Whether a hit can hurt the current body: no invulnerable status
+    /// (`STU_9028E035`) held by his graphs (the spawn room's is `0C8E`
+    /// st11). An explosion pushes only a body it can hurt (the user's game
+    /// check, 2026-11-17: no push in the spawn room), so the knockback takes
+    /// the same gate as the damage.
     fn can_be_damaged(&self) -> bool {
-        self.spawn_room != Some(true) && !self.body_effects().is_some_and(BodyEffects::invulnerable)
+        !self.body_effects().is_some_and(BodyEffects::invulnerable)
     }
 
     /// An aura comes on the player's living body (Biotic Grenade's
@@ -3673,6 +3740,23 @@ impl WorldDelivery {
             message.message,
             message.parameters.clone(),
         ) {
+            self.drop_failed_script(&error.to_string());
+        }
+        true
+    }
+
+    /// A persistent sender let its message go for the current body
+    /// (`orpheus_script` `World::end_message`): its receiving states that
+    /// held it go back to idle now; a failure stops the body's script.
+    /// False when the end is not for this body.
+    pub fn end_body_message(&mut self, end: &MessageEnd) -> bool {
+        if !self.takes_body_message(end.target) {
+            return false;
+        }
+        let Some(script) = &mut self.body_script else {
+            return false;
+        };
+        if let Err(error) = script.runtime.end_message(end.sender, end.message) {
             self.drop_failed_script(&error.to_string());
         }
         true
@@ -4246,6 +4330,7 @@ impl WorldDelivery {
                     pose: movement,
                     quanta,
                     mode_random: scene.mode_random(),
+                    ai: self.ai_control(scene.graphs(), hero.guid),
                 },
             )
             .ok()
@@ -4296,6 +4381,7 @@ impl WorldDelivery {
         self.bodies.insert(entity, (generation, Lifetime::Live));
         self.created.remove(&entity);
         let old = self.body.replace(body);
+        self.shield.0 = false;
         self.cancel_body_script();
         self.body_script = script;
         // `01C7` rid32 sets #1928e on `002D.025` {`0029`}: unless that
@@ -4332,19 +4418,32 @@ impl WorldDelivery {
         if frame.is_some() {
             self.select_open = open;
         }
-        // notices.py `hero_switched`: a switch from one hero to another, not
-        // the first pick. Other clients take it from this player's view.
+        // A switch from one hero to another, not the first pick: `037F.025`
+        // to the player's controller script, whose `0C90` rid220 keeps it
+        // for the chat line (`crate::notices`). Other clients take it from
+        // this player's view.
         if let Some(old) = old.filter(|old| old.hero != hero.guid) {
-            self.switches += 1;
-            let switch = Switch {
-                old: old.hero,
-                new: hero.guid,
-                player: self.owner,
-                serial: self.switches,
-            };
-            self.switch = Some(switch);
-            if scene.switch_notices() && self.controller.latest_data() != 0 {
-                self.notices.waiting.push_back(switch);
+            let kept = self
+                .controller_script
+                .as_mut()
+                .map(|controller| controller.hero_switched(tick, old.hero, hero.guid, self.owner));
+            match kept {
+                Some(Ok(Some(kept))) => {
+                    self.switches += 1;
+                    let switch = Switch {
+                        kept,
+                        serial: self.switches,
+                    };
+                    self.switch = Some(switch);
+                    if scene.switch_notices() && self.controller.latest_data() != 0 {
+                        self.notices.waiting.push_back(switch);
+                    }
+                }
+                Some(Err(error)) => {
+                    eprintln!("controller script of {:08X} stopped ({error})", self.owner);
+                    self.controller_script = None;
+                }
+                Some(Ok(None)) | None => {}
             }
         }
         self.push(Record {

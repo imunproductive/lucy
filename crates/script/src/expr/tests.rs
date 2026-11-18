@@ -935,3 +935,65 @@ fn not_an_enemy_follows_owners_free_for_all_teams_and_the_target_only_flag() {
         );
     }
 }
+
+/// `STU_4049CF77` (the AI weapon parameter): the value in the difficulty
+/// profile of the AI that possesses `m_C5D0FA56` (none: the owner), else
+/// the authored fallback `m_A53100D5`, a literal or any expression; an
+/// entity the world doesn't know is unsupported.
+#[test]
+fn an_ai_parameter_reads_the_ai_s_profile_else_its_fallback() {
+    const DAMAGE: u64 = 0x0d80_0000_0000_1961;
+    /// The owner 0x101's AI gives `1961` 4 and nothing else; 0x201 has no
+    /// AI; other entities are unknown. Variable n holds entity n from 0x100
+    /// up, else the number n.
+    struct Profiles;
+    impl Context for Profiles {
+        fn owner(&mut self) -> Value {
+            Value::Entity(0x101)
+        }
+
+        fn variable(&mut self, variable: Variable) -> Value {
+            if variable.id >= 0x100 {
+                Value::Entity(variable.id)
+            } else {
+                Value::Float(f64::from(variable.id))
+            }
+        }
+
+        fn ai_parameter(&mut self, entity: u32, identifier: u64) -> Option<Option<f64>> {
+            match entity {
+                0x101 => Some((identifier == DAMAGE).then_some(4.0)),
+                0x201 => Some(None),
+                _ => None,
+            }
+        }
+    }
+    let parameter = |identifier: u64, entity: Option<u32>, fallback: Json| {
+        let config = json!({
+            "$": "STU_4049CF77",
+            "m_F00C2F3D": {"$": "STUConfigVarIdentifier",
+                "m_identifier": format!("0x{identifier:016X}"), "m_resourceKey": null},
+            "m_A53100D5": fallback,
+            "m_C5D0FA56": entity.map_or(Json::Null, |entity| variable(entity, Scope::Instance)),
+        });
+        evaluate(&config, &mut Profiles)
+    };
+    let ten = json!({"$": "STUConfigVarInt", "m_value": 10});
+    assert_eq!(parameter(DAMAGE, None, ten.clone()), Ok(Value::Float(4.0)));
+    assert_eq!(
+        parameter(DAMAGE, Some(0x101), ten.clone()),
+        Ok(Value::Float(4.0))
+    );
+    assert_eq!(
+        parameter(DAMAGE + 1, None, ten.clone()),
+        Ok(Value::Integer(10))
+    );
+    assert_eq!(
+        parameter(DAMAGE, Some(0x201), variable(7, Scope::Instance)),
+        Ok(Value::Float(7.0))
+    );
+    assert_eq!(
+        parameter(DAMAGE, Some(0x301), ten),
+        Err(EvalError::UnsupportedConfig("STU_4049CF77".into()))
+    );
+}
