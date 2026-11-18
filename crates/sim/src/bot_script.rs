@@ -941,7 +941,7 @@ fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShot
                     spawn: None,
                     leased: false,
                     server_shown: false,
-                    field: None,
+                    field: false,
                     feet: bot.position,
                     volleys,
                     // combat.py `_shoot`: the NPC path flies one whatever
@@ -1265,7 +1265,7 @@ impl Flush<'_, '_> {
             .queue_full(&mut stream, chosen.projected())
             .map_err(|error| error.to_string())
             .and_then(|chunk| {
-                let packet = frame(u32::MAX, u32::MAX, &[], &[], &[&chunk.update])
+                let packet = frame(u32::MAX, u32::MAX, 0, &[], &[], &[&chunk.update])
                     .map_err(|error| error.to_string())?;
                 if packet.len() > MAX_PAYLOAD {
                     return Err("its first frame exceeds the game datagram budget".into());

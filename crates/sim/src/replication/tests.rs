@@ -444,7 +444,9 @@ fn released_frames(input: &mut InputQueue) -> Vec<u32> {
 /// One command a tick, in frame order, with one more in hand
 /// (`BUFFER_TARGET`): a datagram a tick late still runs on time. A burst
 /// runs all but `MAX_BUFFERED` at once; more than the target waiting for
-/// `DRAIN_TICKS` ticks runs one more.
+/// `DRAIN_TICKS` ticks runs one more. The frames after each tick ask the
+/// client's clock to go faster with fewer than two in hand, slower with
+/// more, four times as much beyond `MAX_BUFFERED`.
 #[test]
 fn the_input_buffer_runs_a_command_a_tick_with_the_next_in_hand() {
     let mut input = InputQueue::default();
@@ -452,16 +454,19 @@ fn the_input_buffer_runs_a_command_a_tick_with_the_next_in_hand() {
     input.commands(100, &[forward(100)]);
     input.release(1, true);
     assert!(released_frames(&mut input).is_empty());
+    assert_eq!(input.clock, CLOCK_FASTER);
     // Each datagram resends the window: the oldest runs, one waits.
     for frame in 101..110 {
         input.commands(frame, &[forward(frame - 1), forward(frame)]);
         input.release(1, true);
         assert_eq!(released_frames(&mut input), [frame - 1]);
+        assert_eq!(input.clock, 0, "frame {frame}");
     }
     // 110 comes a tick late: 109, in hand, runs on time; then 110 runs
     // and 111 waits.
     input.release(1, true);
     assert_eq!(released_frames(&mut input), [109]);
+    assert_eq!(input.clock, CLOCK_FASTER);
     input.commands(111, &[forward(109), forward(110), forward(111)]);
     input.release(1, true);
     assert_eq!(released_frames(&mut input), [110]);
@@ -469,6 +474,7 @@ fn the_input_buffer_runs_a_command_a_tick_with_the_next_in_hand() {
     input.commands(112, &(111..=121).map(forward).collect::<Vec<_>>());
     input.release(1, true);
     assert_eq!(released_frames(&mut input), (111..=117).collect::<Vec<_>>());
+    assert_eq!(input.clock, CLOCK_SLOWER | CLOCK_STRONGER);
     // Four wait; the burst's tick was the first of 20 with more than one
     // waiting, the 20th (frame 140 comes) runs two.
     for frame in 122..=140 {
@@ -485,6 +491,7 @@ fn the_input_buffer_runs_a_command_a_tick_with_the_next_in_hand() {
     input.commands(141, &[forward(141)]);
     input.release(2, true);
     assert_eq!(released_frames(&mut input), [138, 139]);
+    assert_eq!(input.clock, CLOCK_SLOWER);
 }
 
 /// A dry tick repeats the client's last input for the next frame; the
@@ -505,14 +512,17 @@ fn a_dry_tick_repeats_the_last_input_and_the_late_command_keeps_its_press() {
     assert_eq!(released(&mut world.input), [(100, 0)]);
     world.input.processed = Some(100);
     // Nothing comes for two ticks: 101, in hand, runs; then 101's input
-    // again for 102. No body: nothing repeats.
+    // again for 102, and the client's clock goes four times as fast. No
+    // body: nothing repeats, the clock is left alone.
     world.release_input(1);
     assert_eq!(released(&mut world.input), [(101, 0)]);
     world.input.processed = Some(101);
     world.release_input(1);
     assert!(released(&mut world.input).is_empty());
+    assert_eq!(world.input.clock, 0);
     world.input.release(1, true);
     assert_eq!(released(&mut world.input), [(102, 0)]);
+    assert_eq!(world.input.clock, CLOCK_FASTER | CLOCK_STRONGER);
     world.input.processed = Some(102);
     assert_eq!(world.command_ack(103), 101);
     // 102 was a one-frame tap with its click: it comes with 103 and 104,
@@ -893,7 +903,7 @@ fn projectile_retirement_retries_destroys_and_ignores_stale_confirmations() {
             125,
         )
         .unwrap();
-    let confirmation = projectiles.advance(133, 133);
+    let confirmation = projectiles.advance(133);
     world.body_script.as_mut().unwrap().projectiles = Some(projectiles);
     world.queue_projectiles(id, confirmation).unwrap();
     let old = Arc::clone(&world.queued[0]);

@@ -50,7 +50,7 @@ fn placeable_create_and_pose_match_python() {
     // The fixtures in tests/test_game_world.py, emitted by Python world.py.
     let item = entity(0x8000_0088, Operation::Placeable(0x88, Vec::new()));
     assert_eq!(
-        frame(1234, 1234, &[], &[], &[&item]).unwrap(),
+        frame(1234, 1234, 0, &[], &[], &[&item]).unwrap(),
         hex("a509509a005000884b5301220200000000")
     );
     let pose = movement_record(
@@ -303,6 +303,7 @@ fn mixed_frame_matches_python_at_every_component_and_channel_boundary() {
     let payload = frame(
         0x1234_5678,
         0x0004_0001,
+        0,
         &[(7, vec![0, 2, 0xab])],
         &[vec![2, 1, 0xcd]],
         &[&create, &update, &destroy, &chunk_only, &empty],
@@ -353,6 +354,7 @@ fn budget_reuses_trimmed_space_and_only_displaces_remote_movement() {
     let result = select_frame(
         FrameCandidates {
             tick: 5000,
+            clock: 0,
             reliable: &reliable,
             unreliable: &unreliable,
             queued: &queued,
@@ -367,7 +369,15 @@ fn budget_reuses_trimmed_space_and_only_displaces_remote_movement() {
     assert_eq!(result.entities, [&queued[0], &movements[2]]);
     assert_eq!(
         result.payload,
-        frame(5000, 1, &reliable[..1], &unreliable[..1], &result.entities).unwrap()
+        frame(
+            5000,
+            1,
+            0,
+            &reliable[..1],
+            &unreliable[..1],
+            &result.entities
+        )
+        .unwrap()
     );
     assert!(result.payload.len() <= MAX_PAYLOAD);
 }
@@ -395,6 +405,7 @@ fn record_cap_keeps_fifo_and_allows_a_valid_owner_replacement() {
         let result = select_frame(
             FrameCandidates {
                 tick: 5000,
+                clock: 0,
                 reliable: &[],
                 unreliable: &[],
                 queued: &queued[..count],
@@ -442,6 +453,7 @@ fn rejects_over_budget_oldest_records_and_malformed_components() {
     )];
     let candidates = FrameCandidates {
         tick: 5000,
+        clock: 0,
         reliable: &reliable,
         unreliable: &[],
         queued: &oversized,
@@ -455,6 +467,7 @@ fn rejects_over_budget_oldest_records_and_malformed_components() {
     ));
     let candidates = FrameCandidates {
         tick: 5000,
+        clock: 0,
         reliable: &[],
         unreliable: &[],
         queued: &oversized,
@@ -481,7 +494,7 @@ fn rejects_over_budget_oldest_records_and_malformed_components() {
         )]),
     );
     assert!(matches!(
-        frame(0, 0, &[], &[], &[&oversized]),
+        frame(0, 0, 0, &[], &[], &[&oversized]),
         Err(WorldError::EntityRecordTooLong)
     ));
 }

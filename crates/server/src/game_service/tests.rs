@@ -432,7 +432,9 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
     reader.var_a().unwrap();
     read_channel(&mut reader, schemas).unwrap();
     reader.var_a().unwrap();
-    assert_eq!(reader.bits(7).unwrap(), 0b010_0000);
+    // The ch3 clock flags (any), then no ping, keep ch4, an empty ch5.
+    reader.bits(4).unwrap();
+    assert_eq!(reader.bits(3).unwrap(), 0b010);
     let count = reader.bits(7).unwrap();
     (0..count)
         .map(|_| {
@@ -1840,7 +1842,7 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     use orpheus_wire::commands::FIRE;
 
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let scene = assets.prepare(two_team_range()).unwrap();
     let facing = scene.map().spawn_point(0, 0).unwrap().1;
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
@@ -2368,6 +2370,24 @@ fn walking_out_of_the_spawn_room_clears_the_hero_select_flag() {
     server.stop().unwrap();
 }
 
+/// The Practice Range for players of both teams. Its mode has one blue
+/// team (retail puts no red player there): both its spawn points and its
+/// spawn room `0D62` (126) are blue, so a red player at the blue spawn
+/// stands in the room as an intruder, and the room's `0B7B` (`0C8E` st45,
+/// 400 a second) kills him again after every respawn. The tests that pit
+/// two teams' players against each other spawn everyone at the Range's
+/// other blue point (placeable 649), in the open outside the room.
+fn two_team_range() -> GameMap {
+    GameMap {
+        spawns: vec![orpheus_content::maps::Spawn {
+            team: None,
+            position: [34.24001, 1.991726, 22.97223],
+            yaw: 144.6566,
+        }],
+        ..GameMap::practice_range()
+    }
+}
+
 /// Players (BattleTag, team, hero name) in one prepared Practice Range, once
 /// each client has every other body, its possession and, for a body that
 /// runs a statescript (Soldier: 76's), its frames. Also where each spawned.
@@ -2388,7 +2408,12 @@ fn practice_world<const N: usize>(
 ) -> (Lockstep, Arc<Schemas>, [Watcher; N], [[f64; 3]; N]) {
     use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
 
-    let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let map = if players.iter().any(|&(_, team, _)| team != 0) {
+        two_team_range()
+    } else {
+        GameMap::practice_range()
+    };
+    let mut scene = assets.prepare(map).unwrap();
     arrange(&mut scene);
     let heroes = players.map(|(_, _, name)| assets.heroes().find_hero(name).unwrap().guid);
     // match.py Player.spawn: the n-th player of a team.
@@ -3863,13 +3888,13 @@ fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
     server.stop().unwrap();
 }
 
-/// projectiles.py `_field`, `_deliver_field`: Soldier: 76's Biotic Field
-/// (ABILITY_2: 0257) heals a wounded teammate standing in it, the healer's
-/// Tab board counts the healing, and every client gets the field entity
-/// (03DC.003), its frame once the create arrived, and its destroy when the
-/// field ends, FIELD_TICKS after it opened. The teammate is Tracer, whose
-/// body runs no statescript: a wounded Soldier: 76 body reaches an entity
-/// filter (0033 node 29, `STU_AC829876`) that debug builds refuse.
+/// Soldier: 76's Biotic Field (ABILITY_2: 0257) heals a wounded teammate
+/// standing in it, the healer's Tab board counts the healing, and every
+/// client gets the field entity (03DC.003), its frame (graph `0258`'s, run
+/// on the server, `orpheus_sim::spawned`) once the create arrived, and its
+/// destroy when the field removes itself. The heal is the aura `025F`'s
+/// graph `0B3C` on the patient's own body, so the patient is a hero whose
+/// body script runs: another Soldier: 76.
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene without bot VM graphs"]
 fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
@@ -3879,14 +3904,16 @@ fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
     /// tests/test_game_projectiles.py `ABILITY_2`: 0257 st0's button.
     const ABILITY_2: u32 = 0x10;
     const FIELD: u32 = 0x03dc;
-    /// projectiles.py `FIELD_TICKS`: 0258's 5 s.
-    const FIELD_TICKS: u32 = 313;
+    /// `0258` st4 removes the field 5 s after it opened; a frame runs the
+    /// events due in its 16 ms, so 5000 ms falls in frame 312 (4992-5007
+    /// ms after the opening frame's start).
+    const FIELD_TICKS: u32 = 312;
 
     // The enemy and the patient share the spawn point; the healer stands
     // 1.5 m beside it.
     let (mut server, schemas, [mut enemy, mut patient, mut healer], _) = practice_players([
         ("enemy#1111", 0, "Soldier: 76"),
-        ("patient#2222", 1, "Tracer"),
+        ("patient#2222", 1, "Soldier: 76"),
         ("healer#3333", 1, "Soldier: 76"),
     ]);
     let patient_body = patient.owner | 1;
@@ -3903,7 +3930,7 @@ fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
     // same spawn point and, as enemies, push each other apart, so each
     // burst aims from where the two bodies stand (bodies: the enemy's, the
     // patient's, the healer's).
-    let full = 150.0;
+    let full = 200.0;
     let mut frame = enemy.tick + 1;
     let deadline = server.now() + Duration::from_secs(10);
     while !health(&patient).is_some_and(|health| health < full) {
@@ -3953,19 +3980,32 @@ fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
             })
             .is_some()
     };
-    pump_commanding(
-        &mut [&mut enemy, &mut patient, &mut healer],
-        &schemas,
-        "the fields' destroys",
-        2,
-        &mut next,
-        |watchers| {
-            watchers.iter().zip(cast).all(|(watcher, from)| {
-                let fields = created(watcher, from);
-                !fields.is_empty() && fields.iter().all(|&entity| destroyed(watcher, entity))
-            })
-        },
-    );
+    // The healer and the patient both play on: a body's graphs (the aura's
+    // heal `0B3C` among them) run at its client's command frames.
+    let mut patient_next = patient.tick + 1;
+    let deadline = server.now() + Duration::from_secs(15);
+    loop {
+        let watchers = [&enemy, &patient, &healer];
+        let done = watchers.iter().zip(cast).all(|(watcher, from)| {
+            let fields = created(watcher, from);
+            !fields.is_empty() && fields.iter().all(|&entity| destroyed(watcher, entity))
+        });
+        if done {
+            break;
+        }
+        assert!(server.now() < deadline, "waiting for the fields' destroys");
+        for (watcher, next) in [(&mut healer, &mut next), (&mut patient, &mut patient_next)] {
+            if *next <= watcher.tick + 8 {
+                watcher
+                    .client
+                    .send(ACK, command_batch(*next, 16, 0, 0, false));
+                *next += 16;
+            }
+        }
+        for watcher in [&mut enemy, &mut patient, &mut healer] {
+            watcher.pump(&schemas);
+        }
+    }
     for (watcher, from) in [(&enemy, cast[0]), (&patient, cast[1]), (&healer, cast[2])] {
         let fields = created(watcher, from);
         if watcher.owner != healer.owner {
@@ -3994,10 +4034,10 @@ fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
                 .unwrap();
             if watcher.owner != healer.owner {
                 let lived = watcher.ticks[gone] - watcher.ticks[create];
-                // FieldSchedule::step: the field opens at its start tick S
-                // (the cast's first update + FIELD_DELAY) and expires at
-                // S + FIELD_TICKS. The create is queued at S and the destroy
-                // at S + FIELD_TICKS, and each goes in its own tick's
+                // The field opens at its start tick S (the cast's first
+                // update + FIELD_DELAY), where the room spawns it and queues
+                // its create; its graph removes it in tick S + FIELD_TICKS,
+                // which queues the destroy. Each goes in its own tick's
                 // datagram: FIELD_TICKS ticks apart.
                 assert_eq!(lived, FIELD_TICKS, "the field lived {lived} ticks");
             }

@@ -31,11 +31,6 @@ use std::io;
 
 use orpheus_core::bits::{BitError, BitWriter};
 use orpheus_physics::static_ray::Vec3;
-use orpheus_script::{
-    codecs::{CodecTable, PayloadMode, StatePayload},
-    graph::GraphStore,
-    wire::{self, Instance, Layout, Value, Variables},
-};
 use orpheus_wire::entity::{Create, EntityUpdate, Movement, Operation, SkinTheme};
 
 use crate::projectiles::FIELD_ENTITY;
@@ -58,16 +53,6 @@ pub fn confirmation(entity: u32, definition: u64) -> EntityUpdate {
 /// Movement state +0 bit 24: the block keeps its own rotation, not the
 /// parent's (`KEEP_ROTATION` in ow174/game/projectiles.py).
 pub const KEEP_ROTATION: u32 = 0x0100_0000;
-
-/// 0258's remote states that are on: st2 the ring (`STU_691BFA55`, counter
-/// 1), st3 the canister on the ground, st5 the DataFlowMapping until the field
-/// fades (`FIELD_STATES` in ow174/game/projectiles.py).
-const FIELD_STATES: [(u16, &str, Option<i64>); 3] = [
-    (2, "STU_691BFA55", Some(1)),
-    (3, "STUStatescriptStateCosmeticEntity", None),
-    (5, "STUStatescriptStateDataFlowMapping", None),
-];
-const FADING_STATE: u16 = 5;
 
 /// The Biotic Field entity's (03DC.003) create (`field_create` in
 /// ow174/game/projectiles.py). With a parent (the owner's canister) it
@@ -100,52 +85,6 @@ pub fn field_create(
         operation: Some(Operation::Create(Box::new(create))),
         ..EntityUpdate::default()
     }
-}
-
-/// The field graph's (0258) plain (H = 0) full frame as instance 1
-/// (`field_frame` in ow174/game/projectiles.py): the client builds the
-/// instance from 03DC's initial graphs and the frame adopts it. The ring and
-/// the canister stay on; st5 goes off once the field has faded.
-pub fn field_frame(
-    graphs: &GraphStore,
-    codecs: &CodecTable,
-    field_graph: u32,
-    faded: bool,
-) -> io::Result<BitWriter> {
-    let graph = graphs
-        .graph(field_graph)
-        .ok_or_else(|| invalid("missing the Biotic Field graph"))?;
-    let mut instance = Instance::new(1, Layout::try_from(graph).map_err(io::Error::other)?, None);
-    for (index, class, counter) in FIELD_STATES {
-        if faded && index == FADING_STATE {
-            continue;
-        }
-        let slot = graph
-            .remote_positions()
-            .iter()
-            .position(|&pos| graph.node(pos).and_then(|node| node.state) == Some(index))
-            .ok_or_else(|| invalid("Biotic Field state has no remote slot"))?;
-        let codec = codecs
-            .codec(class)
-            .ok_or_else(|| invalid("missing Biotic Field state codec"))?;
-        let payload: StatePayload = counter
-            .map(|counter| ("counter".to_owned(), Value::Integer(counter)))
-            .into_iter()
-            .collect();
-        let mut bits = BitWriter::new();
-        bits.bit(true); // X: on in this full frame
-        if codec.stec() {
-            bits.bit(true); // Y
-        }
-        bits.bit(true); // A / StAc
-        bits.append(
-            &codec
-                .payload(&payload, PayloadMode::Remote { full: true })
-                .map_err(io::Error::other)?,
-        );
-        instance.states.insert(slot, bits);
-    }
-    wire::remote_full(&[instance], &Variables::new()).map_err(io::Error::other)
 }
 
 /// Release an acknowledged predicted projectile at its client impact point.
@@ -456,26 +395,5 @@ mod tests {
                 expected,
             );
         }
-    }
-
-    #[test]
-    #[ignore = "requires the derived 104319 statescript catalog"]
-    fn field_frames_match_the_python_wire_bytes() {
-        let graphs =
-            GraphStore::load(orpheus_testkit::runtime_dir().join("data/game_graphs_174.json.gz"))
-                .unwrap();
-        let codecs = CodecTable::client();
-        // projectiles.py `FIELD_GRAPH`.
-        let graph = 0x0258;
-        check(
-            &field_frame(&graphs, &codecs, graph, false).unwrap(),
-            48,
-            "082c0100780f",
-        );
-        check(
-            &field_frame(&graphs, &codecs, graph, true).unwrap(),
-            47,
-            "082c01007803",
-        );
     }
 }

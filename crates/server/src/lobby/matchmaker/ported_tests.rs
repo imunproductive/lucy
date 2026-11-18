@@ -596,6 +596,29 @@ mod queue {
         assert!(fixture.entries(&alpha).is_empty());
     }
 
+    /// A forced Practice Range plays its own mode: one blue team, so two
+    /// players who search the open queue apart both sit on team 0 (a red
+    /// player would spawn in the blue spawn room and die there).
+    #[test]
+    #[ignore = "requires a derived 104319 runtime"]
+    fn a_forced_practice_range_seats_everyone_on_the_blue_team() {
+        let fixture = Fixture::new();
+        let matchmaker = &fixture.lobby.matchmaker;
+        matchmaker.set_forced_map(Some(GameMap::practice_range().map_guid));
+        matchmaker.set_minimum_players(&fixture.lobby, 2);
+        let alpha = fixture.log_in("Alpha");
+        let beta = fixture.log_in("Beta");
+        enter_queue(&fixture, &alpha, open_queue());
+        enter_queue(&fixture, &beta, open_queue());
+        let state = matchmaker.lock();
+        let [room] = &state.rooms[..] else {
+            panic!("one match, not {}", state.rooms.len())
+        };
+        assert_eq!(room.map.map_guid, GameMap::practice_range().map_guid);
+        let teams: Vec<u8> = room.seats.iter().map(|seat| seat.team).collect();
+        assert_eq!(teams, [0, 0]);
+    }
+
     /// `tests/test_queue.py::QueueTests::test_a_role_queue_starts_with_a_role_check`
     #[test]
     #[ignore = "requires a derived 104319 runtime"]
