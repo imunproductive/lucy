@@ -10,9 +10,9 @@
 //! the placeable's own script stream (the mode entity's pattern). A
 //! script with gaps (classes the VM refuses in debug builds, or answers
 //! by assumption) or a fault sends no frames; its gaps are logged once.
-//! A script that hasn't faulted still sends its messages: every target
-//! search is an assumption (its flag fields are unread), and the rooms'
-//! messages are what the bodies need.
+//! A script that hasn't faulted still sends its messages (the gap log
+//! names what it assumed); the spawn rooms' are what the bodies need, and
+//! their searches assume nothing (`orpheus_script` `vm/targets.rs`).
 //!
 //! The spawn rooms (`0D62`) wait for the mode graph's `0724`; the server
 //! sends it in the mode graph's place to the rooms the mode holds now
@@ -150,9 +150,8 @@ impl PlacedScripts {
             world.receive_message(room, GAME_MODE_ENTITY, ROOM_MESSAGE, &room_message(team));
             self.held.insert(room, team);
         }
-        // A running script's messages count (its searches may rest on
-        // assumptions, which the gap log lists); only complete scripts send
-        // frames.
+        // A running script's messages count (the gap log lists what it
+        // assumes); only complete scripts send frames.
         let running = |world: &MapEntityWorld, sender| {
             world.entity(sender).is_some_and(|placed| placed.running())
         };
@@ -358,16 +357,15 @@ mod tests {
     }
 
     /// The Practice Range's 26 server placeables: 22 have graphs; the six
-    /// barriers `00F6`, the three spawn doors `0D32` (358, 479, 480) and
-    /// the six spawn markers `01CE` (137, 150, 243, 415, 482, 590: they
-    /// give themselves their team, `STU_0F647E55`) run whole and have
-    /// frames, as do the four whose graphs `0216`/`0217` end at once. The
-    /// spawn room `0D62` (126) runs, but its target searches (begun by the
-    /// mode's `0724`) rest on the search assumption ("flag fields
-    /// unread"), so it sends its messages and no frame; the console `265F`
-    /// and pad `26F8` still meet gaps and send nothing. Each door's frame
-    /// changes once in its first 300 frames (its alias states, see `0D32`;
-    /// which wait ends first is not pinned here).
+    /// barriers `00F6`, the three spawn doors `0D32` (358, 479, 480), the
+    /// six spawn markers `01CE` (137, 150, 243, 415, 482, 590: they give
+    /// themselves their team, `STU_0F647E55`) and the spawn room `0D62`
+    /// (126, whose target searches the mode's `0724` begins: every field
+    /// they set is understood, `vm/targets.rs`) run whole and have frames,
+    /// as do the four whose graphs `0216`/`0217` end at once; the console
+    /// `265F` and pad `26F8` still meet gaps and send nothing. Each door's
+    /// frame changes once in its first 300 frames (its alias states, see
+    /// `0D32`; which wait ends first is not pinned here).
     #[test]
     #[ignore = "requires the derived 104319 data"]
     fn the_range_placeables_run_their_graphs_and_have_frames() {
@@ -380,7 +378,7 @@ mod tests {
         let world = scene.placed_scripts().world().unwrap();
         assert_eq!(world.entities().len(), 22);
         let room = world.entity(0x8000_007E).unwrap();
-        assert!(room.running() && !room.complete(), "{:?}", world.gaps());
+        assert!(room.running() && room.complete(), "{:?}", world.gaps());
         let framed: Vec<u32> = scene
             .placed_scripts()
             .frames()
@@ -389,8 +387,8 @@ mod tests {
         assert_eq!(
             framed,
             [
-                137, 150, 185, 188, 199, 204, 243, 340, 358, 398, 400, 415, 416, 424, 479, 480,
-                482, 548, 590
+                126, 137, 150, 185, 188, 199, 204, 243, 340, 358, 398, 400, 415, 416, 424, 479,
+                480, 482, 548, 590
             ]
         );
         for door in [358, 479, 480] {
@@ -402,17 +400,29 @@ mod tests {
             assert_eq!(frame.serial, 2, "door {door}");
         }
         let gaps = world.gaps();
-        assert!(gaps.keys().all(|(graph, _)| *graph != 0x01ce), "{gaps:?}");
+        assert!(
+            gaps.keys()
+                .all(|(graph, _)| ![0x01ce, 0x0d62].contains(graph)),
+            "{gaps:?}"
+        );
     }
 
     /// The Practice Range's spawn room `0D62` (126) takes the mode's `0724`
     /// and sends `0723` with its three flags to a living blue hero whose
     /// feet are in its area (`STU_73E1C5F0`), not to a red one, a dead one
-    /// or one outside; it lets it go when he walks out.
+    /// or one outside; it lets it go when he walks out. Its two searches
+    /// (st0, rid 0, and st3, rid 4) search every 12 frames (`m_DD792FF0`
+    /// 3): on the ticks where `(tick + h) as i32 % 12 == 0`, `h` the FNV-1a
+    /// hash of the bytes of `0x8000_007E ^ rid`: for st0 `0xA9DA_B4EB`,
+    /// -1445284629 as i32 (-1445284629 + 105 = -12 × 120440377: ticks 105,
+    /// 117, 129, …), for st3 `0xEA8B_B12F`, -359943889 (-359943889 + 97 =
+    /// -12 × 29995316: ticks 97, 109, 121, …). The room's frame goes out
+    /// from the first tick, and again when its searches change it.
     #[test]
     #[ignore = "requires the derived 104319 data"]
     fn the_range_spawn_room_holds_the_heroes_of_its_team_inside() {
         const ROOM: u32 = 0x8000_007E;
+        const HELD: u64 = 0x0240_0000_0000_0723;
         let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
         let map = GameMap::practice_range();
         let (spawn, _) = map.spawn_point_in(0, 0, SpawnChoice::First).unwrap();
@@ -439,30 +449,52 @@ mod tests {
                 body(0x0000_1003, 0, true, spawn),
             ]
         };
+        let frame_serial = |scene: &crate::scene_assets::PreparedScene| {
+            scene
+                .placed_scripts()
+                .frames()
+                .find(|(entity, _)| *entity == ROOM)
+                .map(|(_, frame)| frame.serial)
+        };
         scene.advance_placed(100, |_| SpawnChoice::First);
         let world = scene.placed_scripts().world().unwrap();
-        assert!(world.entity(ROOM).unwrap().running(), "{:?}", world.gaps());
+        let room = world.entity(ROOM).unwrap();
+        assert!(room.running() && room.complete(), "{:?}", world.gaps());
+        let first = frame_serial(&scene).expect("the room's frame");
+        // Each tick of `ticks`: the `0723`s sent (tick, target, parameters)
+        // and let go (tick, target).
+        let run = |scene: &mut crate::scene_assets::PreparedScene,
+                   ticks: std::ops::RangeInclusive<u32>| {
+            let (mut sent, mut ended) = (Vec::new(), Vec::new());
+            for tick in ticks {
+                scene.advance_placed(tick, |_| SpawnChoice::First);
+                let (messages, ends) = scene.take_placed_messages();
+                sent.extend(
+                    messages
+                        .iter()
+                        .filter(|message| message.message == HELD)
+                        .map(|message| {
+                            assert_eq!(message.sender, ROOM);
+                            (tick, message.target, message.parameters.len())
+                        }),
+                );
+                ended.extend(ends.iter().map(|end| {
+                    assert_eq!((end.sender, end.message), (ROOM, HELD));
+                    (tick, end.target)
+                }));
+            }
+            (sent, ended)
+        };
         scene.set_placed_target_candidates(&bodies(spawn));
-        scene.advance_placed(101, |_| SpawnChoice::First);
-        let (messages, ends) = scene.take_placed_messages();
-        let sent: Vec<_> = messages
-            .iter()
-            .filter(|message| message.message == 0x0240_0000_0000_0723)
-            .map(|message| (message.sender, message.target, message.parameters.len()))
-            .collect();
-        assert_eq!(sent, [(ROOM, 0x0000_1001, 3)]);
-        assert!(ends.is_empty());
-        scene.set_placed_target_candidates(&bodies(outside));
-        scene.advance_placed(102, |_| SpawnChoice::First);
-        let (messages, ends) = scene.take_placed_messages();
-        assert!(messages.is_empty());
         assert_eq!(
-            ends,
-            [MessageEnd {
-                sender: ROOM,
-                target: 0x0000_1001,
-                message: 0x0240_0000_0000_0723,
-            }]
+            run(&mut scene, 101..=120),
+            (vec![(105, 0x0000_1001, 3)], vec![])
+        );
+        assert!(frame_serial(&scene).unwrap() > first);
+        scene.set_placed_target_candidates(&bodies(outside));
+        assert_eq!(
+            run(&mut scene, 121..=140),
+            (vec![], vec![(129, 0x0000_1001)])
         );
     }
 }

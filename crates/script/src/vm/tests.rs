@@ -4313,12 +4313,18 @@ fn wrecking_balls_reticle_follows_the_growing_spread() {
     );
 }
 
-/// The bodies a target search can find, as a match lists them.
+/// The bodies a target search can find, as a match lists them, with the
+/// target tags each lists.
 struct Bodies(Vec<TargetCandidate>);
 
 impl World for Bodies {
     fn target_candidates(&self, _site: Site) -> Option<&[TargetCandidate]> {
         Some(&self.0)
+    }
+
+    fn has_target_tag(&self, _site: Site, entity: u32, tag: u64) -> Option<bool> {
+        let body = self.0.iter().find(|body| body.entity == entity)?;
+        Some(body.tags.as_ref()?.contains(&tag))
     }
 }
 
@@ -4349,7 +4355,9 @@ fn body(entity: u32, team: u8, feet: [f64; 3]) -> TargetCandidate {
 /// Soldier: 76's search when his Biotic Field lands (`0257` st6): a 10 m
 /// sphere a metre over his feet, allies (`m_66747E7D` 1) but not himself
 /// (`m_89831602` 4), living (`m_4EA686DB` 16) heroes (`m_84065FD1` 1); the
-/// targets to #375, their count to #1192. A switch reads the count.
+/// targets to #375, their count to #1192. A switch reads the count. It
+/// tests the found bodies again (`m_32AFE9AA`) and, unlike `0257` (every
+/// 12 frames, `m_DD792FF0` 3), searches every frame unless `extra` says.
 fn search_fixture(filter: Json, extra: Json) -> GraphStore {
     let mut search = json!({
         "m_8DCA77B6":{"$":"STU_B5A0CAF0"},
@@ -4360,7 +4368,7 @@ fn search_fixture(filter: Json, extra: Json) -> GraphStore {
         "m_8A2905A0":var(375, false),
         "m_1B89EA79":var(1192, false),
         "m_8CBE558B":{"$":"STUConfigVarInt","m_value":0},
-        "m_DD792FF0":3, "m_08285CD6":1, "m_E4A295CE":1,
+        "m_DD792FF0":0, "m_08285CD6":1, "m_E4A295CE":1, "m_32AFE9AA":1,
     });
     for (key, value) in extra.as_object().unwrap() {
         search[key] = value.clone();
@@ -4417,7 +4425,8 @@ fn found(component: &Component) -> (Vec<u32>, Value, Value, StateKind) {
 /// A body entering the sphere joins the targets and one leaving it, or
 /// dying, goes; each change rewrites the outputs, and the switch reading
 /// the count follows. The searcher, the enemy, the dead and the far ally
-/// are never found; the owner frame carries each target and its age.
+/// are never found. The owner frame's list holds only dropped targets
+/// still waiting (`m_93AB8C13`, unset): it is empty, the bit alone.
 #[test]
 fn a_target_search_follows_bodies_in_and_out_of_its_sphere() {
     use crate::{
@@ -4476,18 +4485,12 @@ fn a_target_search_follows_bodies_in_and_out_of_its_sphere() {
         )
     );
     let snapshot = component.snapshot().unwrap();
-    let tracked = &snapshot.instances[&1].states[&0].tracked;
-    assert!(tracked[0].since_ms < tracked[1].since_ms);
     let codecs = CodecTable::client();
     let encoder = SnapshotEncoder::new(&graphs, &codecs);
     let owner = encoder.project(snapshot, View::Owner).unwrap();
-    let age = |since: u64| Value::Integer((snapshot.now_ms - since) as i64);
     assert_eq!(
         owner.state_payload(1, 0).unwrap()["targets"],
-        Value::Array(vec![
-            Value::Array(vec![Value::Entity(ALLY), age(tracked[0].since_ms)]),
-            Value::Array(vec![Value::Entity(FAR_ALLY), age(tracked[1].since_ms)]),
-        ])
+        Value::Array(Vec::new())
     );
     encoder.full(&owner).unwrap();
 
@@ -4518,12 +4521,68 @@ fn a_target_search_follows_bodies_in_and_out_of_its_sphere() {
     );
     let snapshot = component.snapshot().unwrap();
     assert!(snapshot.initialization_complete());
+    // Every field this form sets is understood: no assumption.
     assert!(
-        snapshot
+        !snapshot
             .assumptions
             .iter()
-            .any(|item| item.class == "STUStatescriptStateTrackTargets"
-                && item.answer == "a sphere search (flag fields unread)")
+            .any(|item| item.class.starts_with("STUStatescriptStateTrackTargets")),
+        "{:?}",
+        snapshot.assumptions
+    );
+}
+
+/// A search with `m_DD792FF0` 3 searches at its begin, then only every 12
+/// frames, at frames 10, 22, 34, …: the client's gate (`0x7FF789BB9460`)
+/// takes the frames where `(frame + h) as i32 % 12 == 0`, `h` = FNV-1a of
+/// the bytes of `SEARCHER ^ rid` (`0xA000_0101 ^ 1` = `0xA000_0100`: bytes
+/// 00 01 00 A0) = `0xACB0_3DAA`, -1397736022 as i32, and -1397736022 + 10
+/// = -12 × 116478001. Without `m_32AFE9AA` a found body stays found after
+/// it walks off.
+#[test]
+fn a_target_search_runs_on_its_rate_frames_and_keeps_bodies_without_recheck() {
+    let run = |recheck: u64| {
+        let graphs = Arc::new(search_fixture(
+            allies_filter(),
+            json!({"m_DD792FF0":3, "m_32AFE9AA":recheck}),
+        ));
+        let mut world = Bodies(vec![
+            body(SEARCHER, 0, [0.0; 3]),
+            body(ALLY, 0, [3.0, 0.0, 0.0]),
+            body(FAR_ALLY, 0, [30.0, 0.0, 0.0]),
+        ]);
+        let mut component = Component::start(
+            graphs,
+            SEARCHER,
+            Variables::new(),
+            vec![Root::new(1, 42)],
+            0,
+            &mut world,
+            MAX_INIT_WORK,
+        )
+        .unwrap();
+        assert_eq!(found(&component).0, [ALLY]);
+        // The far ally walks in and the first ally off at frame 1; the
+        // search sees it only at frame 10.
+        world.0[1].feet = [40.0, 0.0, 0.0];
+        world.0[2].feet = [9.5, 0.0, 0.0];
+        let mut seen = Vec::new();
+        for frame in 1..=22 {
+            component.advance_frame(frame, &mut world).unwrap();
+            seen.push((frame, found(&component).0));
+        }
+        seen.dedup_by(|later, earlier| later.1 == earlier.1);
+        seen
+    };
+    assert_eq!(
+        run(1),
+        [(1, vec![ALLY]), (10, vec![FAR_ALLY])],
+        "tested again"
+    );
+    assert_eq!(
+        run(0),
+        [(1, vec![ALLY]), (10, vec![ALLY, FAR_ALLY])],
+        "kept"
     );
 }
 
@@ -4532,7 +4591,9 @@ fn a_target_search_follows_bodies_in_and_out_of_its_sphere() {
 /// friendly with the searcher, 2 hostile, 4 the searcher) and the all-of
 /// mask (`m_1E14CCA8`, a team's bit `0x800000 << team`) on the body's
 /// filter word. Without teams (a free-for-all) only the searcher is his own
-/// ally.
+/// ally. Then the tag lists (`0x7FF789C1EC70`): any of `m_9C7BD8B8`, all
+/// of `m_B486603E`, none of `m_8B2A4DF3`; a body whose tags the world
+/// can't tell leaves the search finding nothing.
 #[test]
 fn a_target_search_filters_by_team_and_the_searcher_as_authored() {
     let run = |relation: u64, flags: u64, all: u64, teams: bool| {
@@ -4583,6 +4644,57 @@ fn a_target_search_filters_by_team_and_the_searcher_as_authored() {
     assert_eq!(run(2, 0, 0, false), [ALLY, ENEMY]);
     assert_eq!(run(0, 1, 0, false), [ALLY, ENEMY]);
     assert_eq!(run(0, 2, 0, false), [SEARCHER]);
+
+    const ALLY_TAG: u64 = 0x0d60_0000_0000_003a;
+    const ENEMY_TAG: u64 = 0x0d60_0000_0000_02f2;
+    let tagged = |list: &str, tag: u64, known: bool| {
+        let mut filter = allies_filter();
+        filter["m_66747E7D"] = json!(0);
+        filter["m_89831602"] = json!(0);
+        filter[list] = json!({"$":"STU_357DABBB",
+            "m_7D7C86A1":format!("0x{tag:016X}"),"m_resourceKey":null});
+        let tags = |tags: &[u64]| Some(Arc::new(tags.iter().copied().collect()));
+        let mut world = Bodies(vec![
+            body(SEARCHER, 0, [0.0; 3]),
+            body(ALLY, 0, [3.0, 0.0, 0.0]),
+            body(ENEMY, 1, [2.0, 0.0, 0.0]),
+        ]);
+        world.0[0].tags = known.then(|| Arc::new(Default::default()));
+        world.0[1].tags = tags(&[ALLY_TAG]);
+        world.0[2].tags = tags(&[ENEMY_TAG]);
+        let component = Component::start(
+            Arc::new(search_fixture(filter, json!({}))),
+            SEARCHER,
+            Variables::new(),
+            vec![Root::new(1, 42)],
+            0,
+            &mut world,
+            MAX_INIT_WORK,
+        )
+        .unwrap();
+        let gaps: Vec<_> = component
+            .snapshot()
+            .unwrap()
+            .assumptions
+            .iter()
+            .filter(|item| item.class.starts_with("STUStatescriptStateTrackTargets"))
+            .map(|item| item.class.clone())
+            .collect();
+        (found(&component).0, gaps)
+    };
+    assert_eq!(tagged("m_9C7BD8B8", ALLY_TAG, true), (vec![ALLY], vec![]));
+    assert_eq!(tagged("m_B486603E", ENEMY_TAG, true), (vec![ENEMY], vec![]));
+    assert_eq!(
+        tagged("m_8B2A4DF3", ALLY_TAG, true),
+        (vec![SEARCHER, ENEMY], vec![])
+    );
+    assert_eq!(
+        tagged("m_9C7BD8B8", ALLY_TAG, false),
+        (
+            vec![],
+            vec!["STUStatescriptStateTrackTargets m_filter.m_9C7BD8B8".to_owned()]
+        )
+    );
 }
 
 /// A form with a part the server doesn't model (here the scoring
@@ -4667,14 +4779,23 @@ impl World for Healer {
         self.changes.push(change);
         true
     }
+
+    /// The searcher's eye (`STU_21A13145`), 1.6 m over its feet.
+    fn native(&mut self, _site: Site, config: &Json) -> Option<Value> {
+        (config["$"] == "STU_21A13145").then(|| {
+            let [x, y, z] = self.bodies[0].feet;
+            Value::Vector([x, y + 1.6, z])
+        })
+    }
 }
 
 /// Quick melee's form (`0043` st5 starting st4): a 1 m search 1.5 m ahead
-/// of the owner's eye (1.6 m over his feet), his enemies (`m_89831602` 1)
-/// of kind 64 but the dead, the found to #375; a ModifyHealth of 30 to
-/// #375 with a tag and a loadout, a blow (`m_7B2B3F5C` 0) of damage
-/// (`m_93CDFD2F` 1). The search's line of sight and its open exclusion bit
-/// aren't read.
+/// of the owner's eye (1.6 m over his feet), turned by his pitch about the
+/// eye too (`m_0297060F`), his enemies (`m_89831602` 1) of kind 64 but the
+/// dead, the found to #375 and kept (no `m_32AFE9AA`); a ModifyHealth of
+/// 30 to #375 with a tag and a loadout, a blow (`m_7B2B3F5C` 0) of damage
+/// (`m_93CDFD2F` 1). The search's line of sight (`m_95FFC3C5`) and rewind
+/// (`m_1C2A9945`) aren't modelled.
 fn melee_fixture(rate: bool) -> GraphStore {
     let search = json!({
         "m_8DCA77B6":{"$":"STU_B5A0CAF0"},
@@ -4685,6 +4806,8 @@ fn melee_fixture(rate: bool) -> GraphStore {
             "m_66747E7D":0,"m_89831602":1},
         "m_8A2905A0":var(375, false),
         "m_subgraphPlug":plug(&[(2, "m_beginPlug")], &[1]),
+        "m_DD792FF0":0, "m_08285CD6":1, "m_0297060F":1, "m_95FFC3C5":1,
+        "m_32AFE9AA":0, "m_E4A295CE":1, "m_1C2A9945":1,
     });
     let modify = json!({
         "m_FA3ECC43":var(375, false),
@@ -4784,7 +4907,7 @@ fn a_modify_health_blow_strikes_each_found_body_once() {
         .map(|item| (item.class.as_str(), item.answer))
         .collect();
     assert!(assumed.contains(&(
-        "STUStatescriptStateTrackTargets m_D59188D5",
+        "STUStatescriptStateTrackTargets m_95FFC3C5",
         "no line-of-sight test"
     )));
 }

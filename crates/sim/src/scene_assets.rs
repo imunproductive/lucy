@@ -1807,6 +1807,8 @@ mod tests {
             let search = &field.states[&6];
             assert_eq!(search.kind, StateKind::TrackTargets);
             assert_eq!((search.active, search.activation), (false, 1));
+            // The client's line of sight (`m_95FFC3C5`) and rewind
+            // (`m_1C2A9945`) are what the search runs without.
             assert!(snapshot.assumptions.iter().any(|item| {
                 (
                     item.site.graph,
@@ -1816,8 +1818,8 @@ mod tests {
                 ) == (
                     0x0257,
                     Some(11),
-                    "STUStatescriptStateTrackTargets",
-                    "a sphere search (flag fields unread)",
+                    "STUStatescriptStateTrackTargets m_95FFC3C5",
+                    "no line-of-sight test",
                 )
             }));
             field.variables.get(&FIELD_COUNT).cloned()
