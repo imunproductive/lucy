@@ -51,14 +51,14 @@ These were rules of Blizzard's servers, live-service data, or code inside the cl
 
 | Item | Where | Code | Why it stays |
 | --- | --- | --- | --- |
-| Passive ultimate charge | `script/src/ultimate.rs` | 5 points a second | The retail server added the charge. The ruleset multipliers are already read. |
 | Armour damage reduction | `sim/src/vitals.rs:10` | 5 per hit | Not found in any asset or graph. |
 | Pulse Bomb fuse | `script/src/weapons.rs:103` | 1 s | Graph `0034` has a 1 s wait, but it cannot be tied to the bomb. |
 | World gravity | `physics/src/mover/kinematics.rs:22` | 10 m/s² | In the client's program code. Each hero's gravity scale is already read from the data. |
 | Crouch-again delay | `physics/src/mover/posture.rs:37` | 0.15 s | No asset field found. |
 | AI difficulty: damage share, aim error, reaction time, behaviour | `sim/src/ai.rs` | 25/50/100% and guesses | The data has them per hero and difficulty (`game_ai_definitions_174.json`, profiles `195E`/`195F`/`1960`, read as Easy/Medium/Hard): weapon damage per parameter (Hard = player damage, Medium ½, Easy ¼ or ⅕), melee 8/15/30; aim and reaction values are native and not decoded. `D:/Work/Coding/refs/reports/AiDefinitions.md`. |
 | AI hero roster | `sim/src/ai.rs:44` | 12 heroes | Matches the data: the heroes with `STUHero.m_906C3711` set (DataTool `SupportsAi`), each with its own AI definition. |
-| Overtime respawn +3 s, match end 20 s, Deathmatch top 4 | `sim/src/match_flow.rs` | As in the community rules | Not found in any graph. |
+| Overtime respawn +3 s | `sim/src/match_flow.rs` (`OVERTIME_RESPAWN`) | 3 s | It is in a graph: `0C8E` st34 adds it (refs report `RustInsteadOfGraphs.md`). Stays until the respawn runs from `0C8E` `0685` (migration row 1). |
+| Match end 20 s, Deathmatch top 4 | `sim/src/match_flow.rs` | As in the community rules | Not found in any graph. |
 | Objective details the graphs leave to native code | `sim/src/objectives.rs`, `sim/src/match_flow.rs` | Every attacker advances a point (0E8E ignores players with v10414 set; the server sets none); a Control tie picks team 0 (the graph picks at random); a payload event fires once; Hybrid's unlock run starts after the waits; a match with a ranked player plays with "Competitive Rules" | The graphs read native state the server doesn't have. |
 | Safety net under a map | `sim/src/map_areas.rs` (`FALL_LIMIT`) | A body whose capsule centre is 20 m below the map's lowest collision triangle dies; the server logs a warning | Not a game rule: it catches falls where the map's data has no damage area, kill volume or catch floor. |
 | Hitscan reach and projectile lifetime when a weapon has none | `sim/src/hitscan.rs:24`, `script/src/weapons.rs:87` | 200 m, 5 s | Fallbacks. Not found. |
