@@ -565,3 +565,72 @@ fn fifteen_practice_bots_match_python_roster() {
         "04745e4f99dbbfa08bdef514d77ccc0b8e023e769efa4f5fb58e6f794f50ac4b"
     );
 }
+
+/// The Practice Range's patrols walk to every point of their routes, the
+/// legs a straight line can't take too (Training Bot `80008809`: both legs
+/// of its 26 m route, with something between; `8000880B`: its 20 m leg out;
+/// `8000880C`: up to its route's raised point): their walks go around over
+/// the map's navigation, each
+/// line one the bot's capsule walks. As the match runs them: the patrol
+/// graph `0B8E` asks for the points (3 s, then 1 s waits), the walker
+/// walks, its end goes back to the script.
+#[test]
+#[ignore = "requires the derived 104319 data with its bot graph bundle and navigation"]
+fn practice_range_patrols_walk_around_what_blocks_the_straight_way() {
+    use crate::scene_assets::SceneAssets;
+    use orpheus_content::maps::GameMap;
+    use orpheus_core::tick::FIRST_TICK;
+    use orpheus_script::vm::Unknowns;
+
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    // The stock bot graphs hold content the VM doesn't know yet.
+    assets.set_bot_unknowns(Unknowns::Tolerate);
+    let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
+    // The patrols with a leg the bot's capsule can't walk straight.
+    let blocked: Vec<usize> = scene
+        .bots()
+        .iter()
+        .enumerate()
+        .filter(|(_, bot)| {
+            let walkable = scene.walk_test(Some(bot.spawn.body), bot.spawn.team);
+            let route = &bot.spawn.route;
+            (0..route.len()).any(|leg| !walkable(route[leg], route[(leg + 1) % route.len()]))
+        })
+        .map(|(slot, _)| slot)
+        .collect();
+    let entities: Vec<u32> = blocked
+        .iter()
+        .map(|&slot| scene.bots()[slot].entity)
+        .collect();
+    assert_eq!(entities, [BOT_ENTITY + 9, BOT_ENTITY + 11, BOT_ENTITY + 12]);
+    let mut reached: Vec<Vec<bool>> = blocked
+        .iter()
+        .map(|&slot| vec![false; scene.bots()[slot].spawn.route.len()])
+        .collect();
+    // 8000880C's route of three: 3 s, the 10 m and 13 m legs at 6 m/s with
+    // 1 s between; 40 s leaves room for the turns.
+    for tick in FIRST_TICK..FIRST_TICK + 40 * 1000 / TICK_PERIOD.as_millis() as u32 {
+        scene.step_bots(tick);
+        scene.advance_live_bots(tick);
+        for (index, &slot) in blocked.iter().enumerate() {
+            let bot = &scene.bots()[slot];
+            assert!(!bot.dead);
+            for (point, done) in bot.spawn.route.iter().zip(&mut reached[index]) {
+                if !bot.walking() && planar_distance(bot.position, *point) <= ARRIVED {
+                    *done = true;
+                }
+            }
+        }
+    }
+    for (index, slot) in blocked.into_iter().enumerate() {
+        let bot = &scene.bots()[slot];
+        assert!(
+            reached[index].iter().all(|&done| done),
+            "{:08X} reached {:?} of {:?}, at {:?}",
+            bot.entity,
+            reached[index],
+            bot.spawn.route,
+            bot.position
+        );
+    }
+}

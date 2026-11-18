@@ -61,7 +61,7 @@ use orpheus_physics::{
     contact::cache::CapsulePose,
     contact::world::ContactWorld,
     mover::Mover,
-    mover::ground::NOT_GROUND,
+    mover::ground::{NOT_GROUND, pogo, standing_body},
     mover::settings::{MoverCatalog, MoverSettings},
     nav::{self, Navigation},
 };
@@ -445,14 +445,18 @@ impl SceneAssets {
                 .map(Arc::new)
                 .map_err(invalid)?,
         );
-        if let Some(world) = &contacts {
-            for bot in bots.iter_mut().filter(|bot| !bot.spawn.route.is_empty()) {
+        let navigation = self.navigation(&map);
+        for bot in bots.iter_mut().filter(|bot| !bot.spawn.route.is_empty()) {
+            if let Some(world) = &contacts {
                 let category = mover_category(&map, bot.spawn.team);
                 bot.attach_collision(
                     self.movers.for_body(Some(bot.spawn.body)),
                     Arc::clone(world),
                     category,
                 );
+            }
+            if let Some(navigation) = &navigation {
+                bot.attach_navigation(Arc::clone(navigation));
             }
         }
         for bot in &mut bots {
@@ -485,7 +489,6 @@ impl SceneAssets {
             self.stats
                 .component(&PlayerStats::default(), map.mode_guid, None, None);
         let map_mode = map.mode_guid;
-        let navigation = self.navigation(&map);
         let mode_random = crate::scene::draw_mode_random();
         let mode_rules =
             self.mode_rules
@@ -1088,6 +1091,33 @@ impl PreparedScene {
     /// The map's AI navigation, if the data has it.
     pub fn navigation(&self) -> Option<&Navigation> {
         self.navigation.as_deref()
+    }
+
+    /// Whether a hero body `body` (the movers' fallback body when none) of
+    /// team `team` walks straight from one floor point to another: its
+    /// standing capsule on the map's collision with the team's mask, and
+    /// floor under every step ([`crate::navigate::walkable`]); every walk,
+    /// without player collision. An AI hero's walks are made with it
+    /// ([`crate::ai::Senses::walkable`]).
+    pub fn walk_test(
+        &self,
+        body: Option<u64>,
+        team: u8,
+    ) -> impl Fn([f64; 3], [f64; 3]) -> bool + '_ {
+        let settings = self.movers.for_body(body);
+        let category = mover_category(&self.map, team);
+        let capsule = self.contacts.as_ref().map(|world| {
+            (
+                standing_body(settings, Arc::clone(world), [0.0; 3], category),
+                pogo(settings, false) as f32,
+            )
+        });
+        let ground = ground_height(self.ground.triangles(), category);
+        move |from, to| {
+            capsule.as_ref().is_none_or(|(capsule, lift)| {
+                crate::navigate::walkable(capsule, *lift, &ground, from, to)
+            })
+        }
     }
 
     /// Whether nothing of the map's collision stands between two points,

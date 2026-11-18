@@ -40,6 +40,8 @@ use orpheus_physics::{mover::kinematics::poses, nav::Navigation};
 use orpheus_script::ai_definitions::{EASY, HARD, MEDIUM};
 use orpheus_wire::commands::{Command, FIRE, JUMP};
 
+use crate::navigate;
+
 /// Ability 2 (E) on the command (logical button 36).
 pub const ABILITY_2: u32 = 0x10;
 /// The angle units of a command: a turn is 65536.
@@ -287,6 +289,10 @@ pub struct Senses<'a> {
     pub paths: &'a Cell<usize>,
     /// Whether nothing of the map stands between two points.
     pub sight: &'a dyn Fn([f64; 3], [f64; 3]) -> bool,
+    /// Whether its body walks straight from one floor point to another
+    /// (`PreparedScene::walk_test`): its walks are made with it
+    /// ([`crate::navigate`]).
+    pub walkable: &'a dyn Fn([f64; 3], [f64; 3]) -> bool,
 }
 
 /// The enemy an AI shoots at: the nearest living enemy within `range` it
@@ -683,7 +689,8 @@ impl AiController {
 
     /// The point to walk to next on the way to `goal`; `None` once there
     /// or at the end of its walk (a goal off the walkable cells ends the
-    /// walk at the nearest one). A new walk when there is none, the goal
+    /// walk at the nearest one). A new walk ([`crate::navigate::path`], the
+    /// path query the Training Bots use too) when there is none, the goal
     /// moved (at most every [`REPATH`] seconds while the walk goes on) or
     /// the AI was pushed off the end of its walk, as the room's paths this
     /// tick allow; until then the old walk, if any.
@@ -712,15 +719,13 @@ impl AiController {
             }
             if senses.paths.get() > 0 {
                 senses.paths.set(senses.paths.get() - 1);
-                let waypoints = senses
-                    .navigation
-                    .and_then(|navigation| navigation.path(to_nav(feet), to_nav(goal)))
-                    .map(|walk| walk.waypoints.into_iter().map(from_nav).collect())
-                    .unwrap_or_else(|| vec![goal]);
+                let waypoints = navigate::path(senses.navigation, feet, goal, |from, to| {
+                    (senses.walkable)(from, to)
+                })
+                .unwrap_or_else(|| vec![goal]);
                 self.walk = Some(Walking {
                     goal,
                     waypoints,
-                    // The first waypoint is where it stands: steering passes it.
                     next: 0,
                     made: tick,
                 });

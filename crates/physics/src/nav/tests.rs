@@ -100,6 +100,21 @@ fn a_point_stands_in_its_cell_or_one_layer_above() {
     assert_eq!(nav.volume_at([22.5, 1.75, 0.5]), Some(4));
 }
 
+/// Floors are rounded up to the 0.35 m grid: feet on a floor at 1.2 stand
+/// under the 1.4 (the bottom of layer 1) the volume gives, in layer 0.
+#[test]
+fn feet_under_a_rounded_up_floor_stand_in_its_cell() {
+    let file =
+        json!({"volumes": [volume([0, 1, 0], [1, 1, 1], &[[0, 1, 0]], [0.5, 1.4, 0.5], &[])]});
+    let nav = Navigation::from_json(&serde_json::to_vec(&file).unwrap()).unwrap();
+    let spot = Spot {
+        volume: 0,
+        cell: [0, 1, 0],
+    };
+    assert_eq!(nav.locate([0.5, 1.2, 0.5]), Some(spot));
+    assert_eq!(nav.locate([0.5, 0.9, 0.5]), None);
+}
+
 #[test]
 fn points_off_the_walkable_cells_snap_to_the_nearest() {
     let nav = plaza();
@@ -210,6 +225,64 @@ fn paths_climb_layers_and_stop_at_unlinked_volumes() {
     let walk = nav.path([0.5, FLOOR, 0.5], [5.6, FLOOR, 5.7]).unwrap();
     assert_eq!(walk.waypoints.last(), Some(&[4.5, FLOOR, 5.5]));
     assert_eq!(nav.path([0.5, FLOOR, 0.5], [50.0, FLOOR, 50.0]), None);
+}
+
+/// An L of corridors three cells wide (x 0..3 up z 0..10, then z 7..10 out
+/// to x 10): the walk round the inner corner (3, 7) keeps a cell from it,
+/// along the middle of each corridor; without the edge cost it would turn
+/// at the corner's cell (2.5, 6.5), its capsule on the wall.
+#[test]
+fn walks_turn_a_cell_away_from_walls() {
+    let cells: Vec<Cell> = (0..10)
+        .flat_map(|x| (0..10).map(move |z| [x, 0, z]))
+        .filter(|&[x, _, z]| x < 3 || z >= 7)
+        .collect();
+    let file = json!({"volumes": [volume([0, 0, 0], [10, 1, 10], &cells, [1.5, FLOOR, 0.5], &[])]});
+    let nav = Navigation::from_json(&serde_json::to_vec(&file).unwrap()).unwrap();
+    let walk = nav.path([1.5, FLOOR, 0.5], [9.5, FLOOR, 8.5]).unwrap();
+    assert_walkable(&nav, &walk);
+    let turns = &walk.waypoints[1..walk.waypoints.len() - 1];
+    assert!(!turns.is_empty());
+    for turn in turns {
+        let gap = (turn[0] - 3.0).hypot(turn[2] - 7.0);
+        assert!(gap >= 1.0, "{turn:?} in {:?}", walk.waypoints);
+    }
+}
+
+/// The caller's test decides the lines and the steps: a line it refuses
+/// keeps the cells' turns, a step between neighbouring cells it refuses (a
+/// railing the cells don't show) is walked round, a step to another layer
+/// it refuses is no way.
+#[test]
+fn paths_keep_only_lines_and_layer_steps_the_caller_walks() {
+    let nav = plaza();
+    let short = |a: Vec3, b: Vec3| distance(a, b) <= 3.0;
+    let walk = nav
+        .path_with([0.5, FLOOR, 0.5], [7.5, FLOOR, 3.5], short)
+        .unwrap();
+    assert!(walk.waypoints.len() > 2, "{:?}", walk.waypoints);
+    for pair in walk.waypoints.windows(2) {
+        assert!(distance(pair[0], pair[1]) <= 3.0, "{:?}", walk.waypoints);
+    }
+    assert_walkable(&nav, &walk);
+    // A railing along x = 2 from z = 0 to 2 in tile 0.
+    let railing = |a: Vec3, b: Vec3| {
+        let crosses = (a[0] - 2.0) * (b[0] - 2.0) < 0.0;
+        let z = a[2] + (b[2] - a[2]) * (2.0 - a[0]) / (b[0] - a[0]);
+        !(crosses && z < 2.0)
+    };
+    let walk = nav
+        .path_with([0.5, FLOOR, 0.5], [3.5, FLOOR, 0.5], railing)
+        .unwrap();
+    for pair in walk.waypoints.windows(2) {
+        assert!(railing(pair[0], pair[1]), "{:?}", walk.waypoints);
+    }
+    assert_walkable(&nav, &walk);
+    let flat = |a: Vec3, b: Vec3| a[1] == b[1];
+    assert_eq!(
+        nav.path_with([20.5, FLOOR, 0.5], [23.5, 1.75, 0.5], flat),
+        None
+    );
 }
 
 #[test]

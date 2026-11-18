@@ -223,6 +223,10 @@ impl AiSeat {
             .spawn_point_in(team, viewer.spawn, viewer.room)
             .map_or_else(|| feet.unwrap_or_default(), |(point, _)| point);
         let sight = |from, to| scene.line_of_sight(from, to);
+        let body = playing
+            .and_then(|hero| scene.heroes().get(hero))
+            .map(|hero| hero.body);
+        let walkable = scene.walk_test(body, team);
         let senses = Senses {
             tick,
             team,
@@ -236,6 +240,7 @@ impl AiSeat {
             navigation: scene.navigation(),
             paths,
             sight: &sight,
+            walkable: &walkable,
         };
         let command = self.controller.command(&senses);
         delivery.queue_commands(tick, &[command]);

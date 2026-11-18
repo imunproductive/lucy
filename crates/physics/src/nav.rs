@@ -14,10 +14,22 @@
 //! the volume graph from the attacker spawn to a point, a cell per bot near
 //! the goal, walkable voxel columns) follows the ow1-preservation project's
 //! notes (`docs/notes/related-projects.md`, "AI bots and navigation").
+//!
+//! The client's own path query (`0x7FF78A626BC0`, Widowmaker's ledge pull
+//! and the AI locomotion of component 88) searches the chunk's other
+//! document, the AI cell data (`STU_3BC32A6E`): 16 m cells keyed as that
+//! document's cell keys, each a sparse 64 × 64 × 64 voxel grid, with an A*
+//! whose estimate is 1000 × the Manhattan distance in its nodes
+//! (`D:/Work/Coding/refs/reports/Navigation.md`). That document isn't
+//! decoded, so the server paths over these volumes instead (assumption:
+//! the same walkable floor at 1 m instead of 0.25 m). Their heights are
+//! coarse (a layer is 1.4 m), so [`Navigation::path_with`] lets the caller
+//! test the steps between layers and the straight lines against the map's
+//! collision.
 
 use std::{
     cmp::Ordering,
-    collections::{BinaryHeap, HashMap},
+    collections::{BinaryHeap, HashMap, HashSet},
     fs::File,
     io::{self, BufReader, Read},
     path::{Path, PathBuf},
@@ -38,6 +50,15 @@ const FLOOR_STEP: f32 = 0.35;
 /// How far a point off the walkable cells (a capture point's centre on a
 /// prop, a spawn in a doorway) snaps to the nearest walkable cell.
 pub const SNAP: f32 = 4.0;
+/// What a step onto a cell next to a wall or an edge (a neighbour no body
+/// can step to) costs on top of its length: walks keep a cell away from
+/// walls where there is room, so a body's capsule doesn't catch on the
+/// corners it turns (assumption; the client's step costs aren't decoded).
+const EDGE_COST: f32 = 1.0;
+/// How many times a walk is searched again without a step the caller
+/// refused ([`Navigation::path_with`]; assumption: enough to get round a
+/// railing or a corner the cells don't show, cheap enough for a tick).
+const REPLANS: usize = 8;
 
 /// A map's navigation file under the runtime folder.
 pub fn file(runtime: &Path, map_guid: u64) -> PathBuf {
@@ -252,18 +273,28 @@ impl Navigation {
         self.components[volume]
     }
 
-    /// The walkable cell a point stands in: its own voxel, or the one below
-    /// (a body stands about 0.8 m above the floor, which can be the next
-    /// layer up).
+    /// The walkable cell a point stands in: its own voxel, the one below (a
+    /// body stands about 0.8 m above the floor, which can be the next layer
+    /// up), or the one above when that cell's floor estimate is within a
+    /// quarter layer over the point: floors are rounded up to the 0.35 m grid,
+    /// so feet on a floor at 11.0 stand under the 11.2 the volume gives,
+    /// which is the next layer's bottom (a Practice Range patrol).
     pub fn locate(&self, point: Vec3) -> Option<Spot> {
         let [x, layer, z] = cell_of(point);
-        [layer, layer - 1].into_iter().find_map(|layer| {
+        let find = |layer: i32, fits: &dyn Fn(&Volume) -> bool| {
             let cell = [x, layer, z];
             self.volumes
                 .iter()
-                .position(|volume| volume.walkable(cell))
+                .position(|volume| volume.walkable(cell) && fits(volume))
                 .map(|volume| Spot { volume, cell })
-        })
+        };
+        find(layer, &|_| true)
+            .or_else(|| find(layer - 1, &|_| true))
+            .or_else(|| {
+                find(layer + 1, &|volume| {
+                    volume.floor_y(layer + 1) - point[1] <= FLOOR_STEP + 1e-3
+                })
+            })
     }
 
     /// The volume a point stands in (see [`Self::locate`]).
@@ -350,20 +381,38 @@ impl Navigation {
         })
     }
 
+    /// A walk from one point to another, the map's cells alone deciding
+    /// ([`Self::path_with`] with every step and line walkable).
+    pub fn path(&self, from: Vec3, to: Vec3) -> Option<Walk> {
+        self.path_with(from, to, |_, _| true)
+    }
+
     /// A walk from one point to another: both snap to walkable cells (within
     /// [`SNAP`] metres), the route picks the volumes, an A* over their cells
-    /// finds the walk and the waypoints keep only the turns (a straight line
-    /// to a later cell replaces the cells between when it crosses only
-    /// walkable, passable cells). The first and last waypoints are the
-    /// points themselves on the floor when they stand on walkable cells, the
+    /// finds the walk (a cell a step from a wall or an edge costs
+    /// [`EDGE_COST`] more) and the waypoints keep only the turns (a straight
+    /// line to a later cell replaces the cells between when it crosses only
+    /// walkable, passable cells). `walkable` tells whether a body walks
+    /// straight from one floor point to another (heights are the cells'
+    /// floor estimates, a layer off on a slope): the A* asks it for each step
+    /// to another layer, the waypoints for each line that replaces cells and
+    /// for each step between neighbouring cells they keep. A kept step it
+    /// refuses (a railing or a wall's corner inside the cells) is taken out
+    /// and the A* runs again, at most [`REPLANS`] times, then as often over
+    /// the route's volumes and those linked to them; the first walk is kept
+    /// when none passes. The first and last waypoints are the points
+    /// themselves on the floor when they stand on walkable cells, the
     /// snapped cells' centres otherwise. `None` when either point is off the
     /// map's walkable cells or no route joins them.
-    pub fn path(&self, from: Vec3, to: Vec3) -> Option<Walk> {
+    pub fn path_with(
+        &self,
+        from: Vec3,
+        to: Vec3,
+        mut walkable: impl FnMut(Vec3, Vec3) -> bool,
+    ) -> Option<Walk> {
         let start = self.nearest(from, SNAP)?;
         let goal = self.nearest(to, SNAP)?;
         let route = self.route(start.volume, goal.volume)?;
-        let corridor = &route.volumes;
-        let cells = self.walk_cells(corridor, start.cell, goal.cell)?;
         let end = |point: Vec3, spot: Spot| {
             let volume = &self.volumes[spot.volume];
             if self.locate(point) == Some(spot) {
@@ -372,20 +421,84 @@ impl Navigation {
                 volume.centre(spot.cell)
             }
         };
-        let mut waypoints = vec![end(from, start)];
+        let ends = [end(from, start), end(to, goal)];
+        // The route's volumes, then those and their linked ones: a way round
+        // what the route's cells can't pass may lead through a volume beside.
+        let narrow = route.volumes.clone();
+        let mut wide = narrow.clone();
+        for &volume in &narrow {
+            for &next in &self.volumes[volume].neighbours {
+                if !wide.contains(&next) {
+                    wide.push(next);
+                }
+            }
+        }
+        let mut waypoints = None;
+        for corridor in [&narrow, &wide] {
+            let mut blocked = HashSet::new();
+            for _ in 0..=REPLANS {
+                let Some(cells) =
+                    self.walk_cells(corridor, start.cell, goal.cell, &mut walkable, &blocked)
+                else {
+                    break;
+                };
+                let (turns, refused) = self.turns(corridor, &cells, ends, &mut walkable);
+                let Some((a, b)) = refused else {
+                    return Some(Walk {
+                        route,
+                        waypoints: turns,
+                    });
+                };
+                waypoints.get_or_insert(turns);
+                blocked.insert((a, b));
+                blocked.insert((b, a));
+            }
+        }
+        Some(Walk {
+            route,
+            waypoints: waypoints?,
+        })
+    }
+
+    /// The waypoints of a walk over `cells` from `ends[0]` to `ends[1]`: the
+    /// turns ([`Self::path_with`]), and the first step between neighbouring
+    /// cells `walkable` refuses, if any.
+    fn turns(
+        &self,
+        corridor: &[usize],
+        cells: &[Cell],
+        [first, last]: [Vec3; 2],
+        walkable: &mut impl FnMut(Vec3, Vec3) -> bool,
+    ) -> (Vec<Vec3>, Option<(Cell, Cell)>) {
+        let point = |index: usize| {
+            if index + 1 == cells.len() {
+                last
+            } else {
+                self.centre_in(corridor, cells[index])
+            }
+        };
+        let mut waypoints = vec![first];
+        let mut refused = None;
         let mut anchor = 0;
         while anchor + 1 < cells.len() {
+            let at = waypoints[waypoints.len() - 1];
             let mut reach = anchor + 1;
-            while reach + 1 < cells.len() && self.clear(corridor, cells[anchor], cells[reach + 1]) {
+            while reach + 1 < cells.len()
+                && self.clear(corridor, cells[anchor], cells[reach + 1])
+                && walkable(at, point(reach + 1))
+            {
                 reach += 1;
             }
+            if reach == anchor + 1 && refused.is_none() && !walkable(at, point(reach)) {
+                refused = Some((cells[anchor], cells[reach]));
+            }
             if reach + 1 < cells.len() {
-                waypoints.push(self.centre_in(corridor, cells[reach]));
+                waypoints.push(point(reach));
             }
             anchor = reach;
         }
-        waypoints.push(end(to, goal));
-        Some(Walk { route, waypoints })
+        waypoints.push(last);
+        (waypoints, refused)
     }
 
     /// Up to `count` standing cells around a point, spread apart: walkable
@@ -523,8 +636,30 @@ impl Navigation {
         open(to[0], from[2]) && open(from[0], to[2])
     }
 
-    /// The shortest walk over the route's cells (A*, 8 directions).
-    fn walk_cells(&self, corridor: &[usize], start: Cell, goal: Cell) -> Option<Vec<Cell>> {
+    /// Whether a cell is a step from a wall or an edge: one of its eight
+    /// neighbours is no cell a body can step to (a wall's corner counts).
+    fn edge(&self, corridor: &[usize], cell: Cell) -> bool {
+        (-1..=1).any(|dx| {
+            (-1..=1).any(|dz| {
+                (dx, dz) != (0, 0)
+                    && (-1..=1).all(|dl| {
+                        !self.passable(corridor, cell, [cell[0] + dx, cell[1] + dl, cell[2] + dz])
+                    })
+            })
+        })
+    }
+
+    /// The shortest walk over the route's cells (A*, 8 directions; a step
+    /// to another layer only where `walkable` says a body takes it; no step
+    /// in `blocked`).
+    fn walk_cells(
+        &self,
+        corridor: &[usize],
+        start: Cell,
+        goal: Cell,
+        walkable: &mut impl FnMut(Vec3, Vec3) -> bool,
+        blocked: &HashSet<(Cell, Cell)>,
+    ) -> Option<Vec<Cell>> {
         let goal_centre = self.centre_in(corridor, goal);
         let mut index = HashMap::from([(start, 0)]);
         let mut cells = vec![start];
@@ -552,11 +687,22 @@ impl Navigation {
                     }
                     for dl in -1..=1 {
                         let next = [cell[0] + dx, cell[1] + dl, cell[2] + dz];
-                        if !self.passable(corridor, cell, next) {
+                        if !self.passable(corridor, cell, next)
+                            || index.get(&next).is_some_and(|&slot| closed[slot])
+                            || blocked.contains(&(cell, next))
+                        {
                             continue;
                         }
                         let next_centre = self.centre_in(corridor, next);
-                        let reached = cost[node] + distance(centre, next_centre);
+                        if dl != 0 && !walkable(centre, next_centre) {
+                            continue;
+                        }
+                        let edge = if self.edge(corridor, next) {
+                            EDGE_COST
+                        } else {
+                            0.0
+                        };
+                        let reached = cost[node] + distance(centre, next_centre) + edge;
                         let slot = *index.entry(next).or_insert_with(|| {
                             cells.push(next);
                             cost.push(f32::INFINITY);
