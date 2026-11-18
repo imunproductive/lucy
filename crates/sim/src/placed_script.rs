@@ -423,6 +423,7 @@ mod tests {
             dead,
             controller: None,
             ai: false,
+            ai_control: None,
             feet,
             height: 2.0,
             radius: 0.4,
