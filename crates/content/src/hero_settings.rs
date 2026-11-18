@@ -54,6 +54,18 @@ pub const FRIENDLY_OUTLINES_ALWAYS: u64 = 0x0d80_0000_0000_6baf;
 /// The hero settings the server puts on the body: the two the client sends.
 pub const SCRIPT_SETTINGS: [u64; 2] = [ALLIED_HEALTH_BARS, FRIENDLY_OUTLINES];
 
+/// Ana's HERO > NANO BOOST SENSITIVITY (`054/0126` `STUHeroSettingFloat`
+/// `2582.01C`, name `1037B.07C`; `m_default` 1, `m_min` 0.1, `m_max` 1,
+/// `m_84E9992A` 0, so the client never sends it). Her networked search
+/// `0B9E` st6 (and its client-only twin st3) reads it as `#9602e`: the
+/// target cone is `10 × #9602e` degrees wide. The server puts the default
+/// on her body: the widest cone, so every ally the client's cone (at any
+/// sensitivity) finds is in the server's too, and the same crosshair
+/// scoring picks him. Assumption: retail's server did the same, as it
+/// can't know the value either.
+pub const NANO_BOOST_SENSITIVITY: u64 = 0x0d80_0000_0000_2582;
+pub const NANO_BOOST_SENSITIVITY_DEFAULT: f64 = 1.0;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HeroSetting {
     /// The hero GUID the entry is for; 0 for every hero.
