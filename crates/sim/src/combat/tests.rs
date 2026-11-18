@@ -150,6 +150,29 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
             .unwrap()
             .is_none()
     );
+    // The shooter's board, as the match counts it from the room's native
+    // stats: eight shots, three missed (the bot not yet seen, a shooter
+    // of its team, the dead bot), five critical hits that took its 200,
+    // and the kill: an elimination and a final blow.
+    let catalog = scene.stats();
+    let board = *scene.board_stats();
+    let mut stats = PlayerStats::default();
+    for tracked in combat.take_tracked_stats() {
+        assert_eq!(tracked.targets, [SHOOTER.source]);
+        for stat in tracked.stats {
+            catalog.credit(&mut stats, stat, tracked.amount);
+        }
+    }
+    let value = |stat| catalog.value(&stats, stat);
+    assert_eq!(value(board.eliminations), 1.0);
+    assert_eq!(value(FINAL_BLOWS), 1.0);
+    assert_eq!(value(board.hero_damage), 200.0);
+    assert_eq!(value(SHOTS_FIRED), 8.0);
+    // Weapon Accuracy (`002F`) and Critical Hit Accuracy (`03E2`), derived
+    // by the data's rules.
+    assert_eq!(value(0x0860_0000_0000_002f), 5.0 / 8.0);
+    assert_eq!(value(0x0860_0000_0000_03e2), 1.0);
+    assert!(combat.take_tracked_stats().is_empty());
     let due = context.now + scene.respawn_time();
     assert!(
         combat
@@ -417,6 +440,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
         next_rocket: 0,
         landed: Vec::new(),
         auras: Vec::new(),
+        counted: Vec::new(),
     };
     let bodies = |free_for_all, allies| -> Vec<u32> {
         combat

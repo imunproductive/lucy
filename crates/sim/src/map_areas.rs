@@ -390,6 +390,7 @@ struct RawTagged {
     #[serde(flatten)]
     placeable: RawPlaceable,
     position: [f64; 3],
+    rotation: [f64; 4],
     tags: Vec<String>,
 }
 
@@ -513,6 +514,7 @@ impl MapAreaData {
                 let entity = TaggedEntity {
                     entity: 0x8000_0000 | placeable.placeable,
                     position: raw.position,
+                    rotation: raw.rotation,
                     tags,
                 };
                 tagged.push((placeable, entity));

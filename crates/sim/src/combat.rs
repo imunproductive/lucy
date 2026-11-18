@@ -552,6 +552,9 @@ pub struct Combat {
     landed: Vec<u64>,
     /// The auras the hits put on bodies since the match last looked.
     auras: Vec<AuraHit>,
+    /// The stats the room counted natively since the match last looked
+    /// ([`Self::take_tracked_stats`]).
+    counted: Vec<TrackedStat>,
 }
 
 /// An aura a hit put on a body ([`Combat::take_auras`]): the match puts it
@@ -589,6 +592,7 @@ impl Combat {
             next_rocket: 0,
             landed: Vec::new(),
             auras: Vec::new(),
+            counted: Vec::new(),
         }
     }
 
@@ -848,8 +852,13 @@ impl Combat {
             )
             .map_err(io::Error::other)?
         else {
+            self.count_shot(shooter, None);
             return Ok(None);
         };
+        let struck = self
+            .enemy_of(scene, shooter, impact.entity)
+            .then_some(impact.critical);
+        self.count_shot(shooter, struck);
         Ok(self.apply_impact(scene, shooter, shot_frame, world_tick, context, &impact))
     }
 
@@ -1025,10 +1034,76 @@ impl Combat {
         self.fields.take_auras()
     }
 
-    /// The stats the room's Biotic Fields counted since the last call
-    /// (`0258` rid14 "Biotic Fields Deployed", for its owner's player).
-    pub fn take_field_stats(&mut self) -> Vec<TrackedStat> {
-        self.fields.take_tracked_stats()
+    /// The stats the room counted since the last call, for the players
+    /// they name: what its Biotic Fields' graphs counted (`0258` rid14
+    /// "Biotic Fields Deployed", for its owner's player), and what the
+    /// server counts itself, as the retail server did (no graph names
+    /// them; `refs/reports/StatCredit.md`): a player's damage to the
+    /// training bots, his heals of them and the bots he eliminated
+    /// ([`Self::apply_bot_impact`]), and his weapons' shots
+    /// ([`Self::count_shot`]).
+    pub fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
+        let mut stats = self.fields.take_tracked_stats();
+        stats.append(&mut self.counted);
+        stats
+    }
+
+    /// `amount` of each of `stats` for the player whose body (or entity)
+    /// `player` is.
+    fn count(&mut self, player: u32, stats: Vec<u64>, amount: f64) {
+        self.counted.push(TrackedStat {
+            stats,
+            amount,
+            targets: vec![player],
+        });
+    }
+
+    /// One shot of a player's volley: a hitscan ray (a pellet of a hitscan
+    /// shotgun each), or a projectile once its flight ended. It counts
+    /// Shots Fired (`0030`, stat event 9), and Shots Hit (`0031`, event 10)
+    /// when it struck an enemy (`struck`: whether that hit was critical,
+    /// which also counts Critical Hits `03DE`, event 12), else Shots Missed
+    /// (`05F2`, event 63). The board's Weapon Accuracy (`002F`) and Critical
+    /// Hit Accuracy (`03E2`) are ratios over them (`game_stat_rules_174.json`).
+    /// Assumptions (no data or client code says): every damaging volley of
+    /// the hero counts (its abilities' too), a projectile counts as a hit
+    /// when it hurt an enemy directly or by its explosion, and a shot that
+    /// struck only an ally (a heal) counts as missed. A bot's shots count
+    /// nothing.
+    fn count_shot(&mut self, shooter: Shooter, struck: Option<bool>) {
+        if shooter.bot {
+            return;
+        }
+        let mut stats = vec![SHOTS_FIRED];
+        match struck {
+            Some(critical) => {
+                stats.push(SHOTS_HIT);
+                if critical {
+                    stats.push(CRITICAL_HITS);
+                }
+            }
+            None => stats.push(SHOTS_MISSED),
+        }
+        self.count(shooter.source, stats, 1.0);
+    }
+
+    /// Whether `entity`, a player's body or a bot, is an enemy of
+    /// `shooter`: of another team, or anyone else in a free-for-all.
+    fn enemy_of(&self, scene: &PreparedScene, shooter: Shooter, entity: u32) -> bool {
+        let free_for_all = scene.map().free_for_all;
+        let team = self
+            .players
+            .iter()
+            .find(|slot| slot.target.body == entity)
+            .map(|slot| slot.target.team)
+            .or_else(|| {
+                scene
+                    .bots()
+                    .iter()
+                    .find(|bot| bot.entity == entity)
+                    .map(|bot| bot.spawn.team)
+            });
+        team.is_some_and(|team| entity != shooter.source && (free_for_all || team != shooter.team))
     }
 
     /// The room's Biotic Fields, which send and take game messages
@@ -1067,16 +1142,22 @@ impl Combat {
                 scene.hitscan_wall(origin, direction, reach, ray_profile)
             })
             .map_err(io::Error::other)?;
-        hits.extend(step.impacts.iter().filter_map(|impact| {
-            self.apply_impact(
+        for impact in &step.impacts {
+            if self.enemy_of(scene, shooter, impact.entity) {
+                flight.strike(impact.critical);
+            }
+            hits.extend(self.apply_impact(
                 scene,
                 shooter,
                 context.tick,
                 Some(context.tick),
                 context,
                 impact,
-            )
-        }));
+            ));
+        }
+        if step.end.is_some() && flight.damaging() {
+            self.count_shot(shooter, flight.struck());
+        }
         // Its explosion pushes the bodies it can reach and hurt, as it
         // pushes its shooter (`ProjectileFlight::blast_push`): the live bots
         // after its damage ([`PreparedScene::knock_bot`]), and other
@@ -1300,6 +1381,7 @@ impl Combat {
         // A Training Bot is back after the mode's respawn time, as a hero
         // (`game_respawns`: 3 s in the practice modes).
         let respawn = scene.respawn_time();
+        let board = *scene.board_stats();
         let free_for_all = scene.map().free_for_all;
         let heal = !free_for_all
             && scene
@@ -1324,7 +1406,12 @@ impl Combat {
             .find(|(bot, _)| !bot.dead && bot.entity == impact.entity)?;
         if heal {
             let given = target.vitals.heal(amount);
-            return (given > 0.0).then(|| healed_bot(bot, target, given, &plate, tags));
+            let hit = (given > 0.0).then(|| healed_bot(bot, target, given, &plate, tags));
+            // A player healer's Healing Done counts what the pools took.
+            if hit.is_some() && !shooter.bot {
+                self.count(shooter.source, vec![board.healing], given);
+            }
+            return hit;
         }
         if invulnerable {
             return None;
@@ -1358,7 +1445,7 @@ impl Combat {
         // A bot's hit tells no one (combat.py `_damage`: only a player
         // shooter gets 25001 and 25005).
         let player = !shooter.bot;
-        Some(BotHit {
+        let hit = BotHit {
             notices: [
                 player.then_some(CombatNotice::Hit {
                     target: bot.entity,
@@ -1393,7 +1480,19 @@ impl Combat {
                 tags,
                 tick: death_tick,
             }),
-        })
+        };
+        // A player's board counts the bot as it counts a player's body
+        // (`apply_player_hits`): Hero Damage Done for what the pools took,
+        // and for the kill Eliminations and Final Blows (the Training Bots
+        // are heroes: `016B`, `016E`). A bot's death credits only its
+        // killer: no hit log or assist states for bot victims.
+        if player {
+            self.count(shooter.source, vec![board.hero_damage], result.dealt);
+            if result.killed {
+                self.count(shooter.source, vec![board.eliminations, FINAL_BLOWS], 1.0);
+            }
+        }
+        Some(hit)
     }
 
     pub fn respawn_due(
@@ -1497,6 +1596,13 @@ pub fn credits_damage(at: Duration, now: Duration) -> bool {
 /// Final Blows (`002B`): the career counter of the stat event 0
 /// (`m_primaryEvent`), the hero board's "Final Blows".
 const FINAL_BLOWS: u64 = 0x0860_0000_0000_002b;
+/// Shots Fired (`0030`, stat event 9), Shots Hit (`0031`, event 10), Shots
+/// Missed (`05F2`, event 63) and Critical Hits (`03DE`, event 12):
+/// [`Combat::count_shot`].
+const SHOTS_FIRED: u64 = 0x0860_0000_0000_0030;
+const SHOTS_HIT: u64 = 0x0860_0000_0000_0031;
+const SHOTS_MISSED: u64 = 0x0860_0000_0000_05f2;
+const CRITICAL_HITS: u64 = 0x0860_0000_0000_03de;
 /// Offensive Assists (`03D4`, stat event 47) and Defensive Assists
 /// (`03DA`, event 48), on the support heroes' boards.
 const OFFENSIVE_ASSISTS: u64 = 0x0860_0000_0000_03d4;
