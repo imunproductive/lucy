@@ -84,6 +84,18 @@ const ASSUMED: &[(&str, &str)] = &[
     // read). Answered: true for a living body; the flag's meaning is not
     // read (assumption: a dead body has it).
     ("STU_3D5F853C", "true for the living possessed body"),
+    // `288B` st134 on `0738` (which `0C90` st32 sends its own controller
+    // while the mode's `0727` holds and the controller has no body):
+    // `!STU_A89D860A() && in spawn room` opens hero select (#2438e). A
+    // bool with no fields and no client registration (the base
+    // `STUConfigVar` evaluate, `xor al, al`; `tools/stu.py`): the server
+    // answers it. Answered false, so a player who joins the Practice Range
+    // sees hero select open in the spawn room, as retail shows him
+    // (`0CD5` and `0D8E`, its only other readers, are not run here).
+    (
+        "STU_A89D860A",
+        "false: hero select opens on the mode's 0727",
+    ),
 ];
 
 /// What the controller graph asks outside its own entity.
@@ -210,6 +222,7 @@ impl World for ControllerWorld {
                     .collect(),
             )),
             "STU_E4C6AAB4" if self.owner(config, "m_F3E612FD") => Some(Value::Bool(self.may_pick)),
+            "STU_A89D860A" => Some(Value::Bool(false)),
             // AIIsPathFollowing: a human controller follows no AI path.
             "STU_D3EB8D87" if self.owner(config, "m_00903303") => Some(Value::Bool(false)),
             "STU_AC829876" => Some(Value::Bool(true)),

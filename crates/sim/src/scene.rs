@@ -530,17 +530,17 @@ pub fn initial_world(
 /// one free-for-all team of 12 and `0F73` asks that team's size, 0x09 has
 /// Elimination's controller `0D6F`. The graph per mode id is the same.
 /// `0CE8` (0x07) and `1A59` (0x46) are not in the graph bundle, so those
-/// modes keep the plain frame.
-const BOARD_POSTERS: [(u64, u32, usize, Option<u16>); 10] = [
+/// modes keep the plain frame. The Practice Range is not listed: its `13C0`
+/// runs whole and its own frames carry the poster state
+/// (`crate::mode_script`).
+const BOARD_POSTERS: [(u64, u32, usize, Option<u16>); 8] = [
     (0x0230_0000_0000_0007, 0x0ce8, 1, Some(14)), // Capture the Flag
     (0x0230_0000_0000_0009, 0x0d0b, 6, Some(3)),  // Elimination
     (0x0230_0000_0000_0010, 0x0d76, 2, Some(15)), // Skirmish
     (0x0230_0000_0000_0017, 0x0ec2, 1, None),     // Control
-    (0x0230_0000_0000_0018, 0x13c0, 4, Some(21)), // Practice Range
     (0x0230_0000_0000_001d, 0x0f60, 0, Some(13)), // Team Deathmatch
     (0x0230_0000_0000_001e, 0x0f73, 0, Some(10)), // Deathmatch
     (0x0230_0000_0000_0046, 0x1a59, 6, Some(2)),  // Freezethaw Elimination
-    (0x0230_0000_0000_005a, 0x13c0, 4, Some(21)), // the Range's other mode
     (0x0230_0000_0000_0070, 0x0f73, 0, Some(10)), // Bounty Hunter
 ];
 
@@ -1035,14 +1035,16 @@ mod tests {
             let frame = mode_ui(&graphs, assault, &vars).unwrap();
             assert_eq!((frame.bit_len(), hex(&frame).as_str()), (length, expected));
         }
-        // The Range's board frame: `13C0` with remote slot 4 on and `0CB6`
-        // under its state 21, bit for bit the frame upstream saw open the
-        // board (kjs `254fa913`, `tab-board.md`).
-        let range = mode_ui(&graphs, 0x0230_0000_0000_0018, &Variables::new()).unwrap();
-        assert_eq!(
-            (range.bit_len(), hex(&range).as_str()),
-            (96, "08e00910b60c14a002003000")
-        );
+        // The Range has no poster row: `13C0` runs whole and its own frames
+        // carry the board poster st6 and `0CB6` under st21 (test
+        // `mode_script::tests::the_range_mode_graph_drives_the_mode_entity_with_its_board_poster`).
+        // Its hand-built frame, which a client gets only if `13C0` stops,
+        // is `0CB6` alone with no variables: Assault's first case, bit for
+        // bit.
+        for range in [0x0230_0000_0000_0018, 0x0230_0000_0000_005a] {
+            let frame = mode_ui(&graphs, range, &Variables::new()).unwrap();
+            assert_eq!((frame.bit_len(), hex(&frame).as_str()), (38, "085b06000c"));
+        }
         // Every listed mode whose graph is in the bundle names a 06DF poster.
         for (mode, graph, ..) in BOARD_POSTERS {
             let frame = mode_ui(&graphs, mode, &Variables::new()).unwrap();

@@ -55,7 +55,7 @@ fn h_opens_a_pick_switches_and_288b_closes() {
     let mut world = WorldDelivery::new(PLAYER);
     world.start(&scene, &viewer, FIRST_TICK).unwrap();
     world.created.insert(PLAYER);
-    world.present(&scene, FIRST_TICK).unwrap();
+    world.present(&scene, scene.mode_ui(), FIRST_TICK).unwrap();
     let shown = |world: &WorldDelivery| {
         world
             .select_shown
