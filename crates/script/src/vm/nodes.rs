@@ -826,6 +826,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_E4A30BCF" => StateKind::DisableButton { button: 0 },
             "STU_D7F9E1C3" => StateKind::AiFire { button: None },
             "STUStatescriptStateMoveTo" => StateKind::MoveTo,
+            "STU_4BBC5D09" => StateKind::GrappleCast,
+            "STU_1F5ED928" => StateKind::NavPath,
+            // A beam effect from a hardpoint to an entity variable's point
+            // (Widowmaker's hook rope, `005A` st7/st53; codec none): the
+            // client's presentation alone.
+            "STU_9932D728" => StateKind::Plain,
             "STU_ECAEE401" => StateKind::AiMove,
             // The AI movement state's goals (`STU_B28C2E5E` move-to
             // `194D744E` and the unnamed `2C18F116`, `STU_627A461C` face-to
@@ -1005,6 +1011,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::DisableButton { .. } => self.begin_disable_button(key, node, depth)?,
             StateKind::AiFire { .. } => self.begin_ai_fire(key, node)?,
             StateKind::MoveTo => self.begin_move_to(key, node),
+            StateKind::GrappleCast => self.begin_grapple(key, node)?,
+            StateKind::NavPath => self.begin_nav_path(key, node)?,
             StateKind::AiMove => self.resolve_ai_move(key, node),
             StateKind::Rewind => self.begin_rewind(key, node)?,
             StateKind::WaitFrames { .. } => self.arm_frame_wait(key, node)?,

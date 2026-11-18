@@ -3485,13 +3485,29 @@ fn move_to_exposes_only_a_fixed_target_while_active() {
         )]))
     };
     let mut component = start(fixture(json!(0)), 100, &mut EmptyWorld);
+    // The block: the destination and the speed; every unset number is 0.
     assert_eq!(
         component.move_requests(),
         [MoveRequest {
             instance: 1,
             raw_state: 0,
-            target: [1.0, 2.0, -3.0],
-            speed: 5.5
+            activation: 1,
+            params: orpheus_physics::mover::MoveTo {
+                destination: [1.0, 2.0, -3.0],
+                surface: [0.0; 3],
+                free_spot: false,
+                speed: orpheus_physics::mover::Speed::MetresPerSecond(5.5),
+                acceleration: 0.0,
+                slow_radius: 0.0,
+                lateral_seconds: 0.0,
+                stuck_distance: 0.0,
+                stuck_seconds: 0.0,
+                exit_horizontal: 0.0,
+                exit_vertical: 0.0,
+                exit_total: 0.0,
+                exit_on_end: false,
+                abort_past: false,
+            },
         }]
     );
     message(&mut component, 1, &mut EmptyWorld);

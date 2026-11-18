@@ -159,6 +159,18 @@ impl CharacterBody {
         }
     }
 
+    /// A new capsule size without the fit test, its contacts kept (the
+    /// client's stance capsule change `0x7FF789CCAC00`, as a `MoveTo`'s
+    /// free-spot search grows its capsule, `0x7FF789C4A8A0`).
+    pub fn reshape(&mut self, radius: f32, top: f32) {
+        self.pose = CapsulePose {
+            radius,
+            top,
+            ..self.pose
+        };
+        self.move_proxy(self.pose.bounds());
+    }
+
     pub fn try_resize(&mut self, radius: f32, top: f32) -> Result<bool, HullContactError> {
         if !self.fits(radius, top)? {
             return Ok(false);

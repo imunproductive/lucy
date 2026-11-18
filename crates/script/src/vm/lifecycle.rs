@@ -100,6 +100,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::MoveTo => {
                 self.machine.movements.remove(&key);
             }
+            StateKind::GrappleCast => {
+                self.machine.grapples.remove(&key);
+            }
             StateKind::AiMove => {
                 self.machine.ai_moves.remove(&key);
             }
@@ -318,6 +321,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             self.machine.deferred.remove(&id);
             self.machine.joins.remove(&id);
             self.machine.movements.retain(|key, _| key.instance != id);
+            self.machine.grapples.retain(|key, _| key.instance != id);
             self.machine
                 .hero_selects
                 .retain(|key, _| key.instance != id);

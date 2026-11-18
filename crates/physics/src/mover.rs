@@ -62,6 +62,7 @@ pub mod ground;
 pub mod kinematics;
 pub mod modifiers;
 mod motion;
+pub mod move_to;
 #[cfg(test)]
 mod ported_tests;
 pub(crate) mod posture;
@@ -80,14 +81,15 @@ use crate::{
     mover::ground::{GroundProbe, ProbePose, pogo, standing_body},
     mover::kinematics::{Ground, MotionInput, Poses, VelocityStep, poses},
     mover::modifiers::{
-        Modifier, ModifierKey, ModifierTimeline, TAKE_OFF, VelocityChange, VelocityElement,
-        change_velocity, narrow,
+        ActiveModifiers, Modifier, ModifierKey, ModifierTimeline, TAKE_OFF, VelocityChange,
+        VelocityElement, change_velocity, narrow,
     },
     mover::posture::{
         CROUCHED, FELL, IN_AIR, JUMPED, NOT_GROUND_UNDER, Posture, PostureStep, TOUCHING, snap,
     },
     mover::settings::MoverSettings,
 };
+pub use move_to::{MoveEnd, MoveKey, MoveTo, Speed};
 use orpheus_wire::{
     commands::Command,
     entity::{Movement, NO_INPUT, POSITION_UNITS},
@@ -142,9 +144,8 @@ pub struct Mover {
     last_command: Option<Command>,
     last_input: Option<u32>,
     pose: Movement,
-    /// The last pose was a world-target move (`Mover.driven` in
-    /// `ow174/game/mover.py`).
-    driven: bool,
+    /// The `MoveTo` move the body's graphs run ([`move_to`]).
+    move_to: Option<move_to::Run>,
     /// A dash or rewind the body's graphs started ([`motion`]).
     motion: Option<motion::Motion>,
     /// Recent feet positions for a rewind.
@@ -186,7 +187,7 @@ impl Mover {
                 spring,
                 ..Movement::default()
             },
-            driven: false,
+            move_to: None,
             motion: None,
             history: motion::History::with_capacity(motion::HISTORY),
             push: None,
@@ -334,30 +335,24 @@ impl Mover {
     }
 
     /// One posed frame (`Mover.step_pose` in `ow174/game/mover.py`). With
-    /// `move_to` (a feet target and a speed in metres per second) the body
-    /// sweeps toward the target instead of following the input and the result
-    /// is `Some(true)` once it arrived, `Some(false)` once it is blocked, and
-    /// `None` while it is still on its way. A target the speed can't move a
-    /// whole grid step this frame is ignored: no fractional progress is kept
-    /// between poses. The first pose without a target after driven ones starts
-    /// from rest. A dash or rewind the body's graphs started ([`Mover::dash`],
-    /// [`Mover::rewind`]) takes the pose before either.
+    /// `move_to` (a `MoveTo` state's move, [`move_to`]) the body's velocity
+    /// goes toward the move's target instead of following the input; a new
+    /// key begins a new move, none drops the running one. The result is the
+    /// move's end at the frame it ends (`None` while it runs, and on frames
+    /// after its end before the state lets it go). A dash or rewind the
+    /// body's graphs started ([`Mover::dash`], [`Mover::rewind`]) takes the
+    /// pose before either.
     pub fn step_pose_to(
         &mut self,
         rays: &TriangleIndex,
         command: Command,
         dt: f64,
-        move_to: Option<([f64; 3], f64)>,
-    ) -> Result<Option<bool>, HullContactError> {
-        let move_to = move_to.filter(|&(_, speed)| {
-            (speed * dt).partial_cmp(&STEP) != Some(std::cmp::Ordering::Less)
-        });
+        move_to: Option<(MoveKey, &MoveTo)>,
+    ) -> Result<Option<MoveEnd>, HullContactError> {
         let rewinding = self.rewinding();
-        if self.driven && move_to.is_none() {
-            self.pose.velocity = [0.0; 3];
-        }
         self.take_push();
-        self.driven = move_to.is_some();
+        self.begin_move(move_to)?;
+        let driven = self.move_to.as_ref().is_some_and(move_to::Run::drives);
         let once = std::mem::take(&mut self.once);
         let mut changes = std::mem::take(&mut self.velocity_changes);
         changes.sort_by(|(left, _), (right, _)| left.total_cmp(right));
@@ -389,7 +384,7 @@ impl Mover {
                 probe,
                 dt,
                 aim_held: input.aim_held,
-                driven: move_to.is_some() || rewinding,
+                driven: driven || rewinding,
             },
             &mut self.pose.position,
             &mut self.pose.velocity,
@@ -398,36 +393,31 @@ impl Mover {
         let normal = probe.ground.map_or([0.0, 1.0, 0.0], |hit| hit.normal);
         let outcome = if self.step_motion(rays, normal, dt)? {
             None
+        } else if driven {
+            self.drive(rays, &active, &settings, &changes, dt)?
         } else {
-            match move_to {
-                None => {
-                    let ground = self.posture.ground();
-                    let before = VelocityStep {
-                        base: &self.base,
-                        settings: &settings,
-                        input,
-                        ground,
-                        crouched: self.posture.crouched(),
-                        dt,
-                    }
-                    .advance(self.pose.velocity);
-                    let velocity = change_velocity(
-                        active.limit_velocity(before, settings.jump_speed),
-                        &changes,
-                    );
-                    if ground != Ground::Standing {
-                        self.posture.apply_fall(settings.gravity_scale, dt);
-                    }
-                    if narrow(velocity[1] - before[1]) > TAKE_OFF {
-                        self.posture.take_off();
-                    }
-                    let grounded = self.posture.ground() == Ground::Standing;
-                    let vertical = self.move_body(rays, velocity, normal, grounded, dt)?;
-                    self.posture.finish_fall(settings.gravity_scale, vertical);
-                    None
-                }
-                Some((target, speed)) => self.move_to(rays, dt, target, speed)?,
+            let ground = self.posture.ground();
+            let before = VelocityStep {
+                base: &self.base,
+                settings: &settings,
+                input,
+                ground,
+                crouched: self.posture.crouched(),
+                dt,
             }
+            .advance(self.pose.velocity);
+            let velocity =
+                change_velocity(active.limit_velocity(before, settings.jump_speed), &changes);
+            if ground != Ground::Standing {
+                self.posture.apply_fall(settings.gravity_scale, dt);
+            }
+            if narrow(velocity[1] - before[1]) > TAKE_OFF {
+                self.posture.take_off();
+            }
+            let grounded = self.posture.ground() == Ground::Standing;
+            let vertical = self.move_body(rays, velocity, normal, grounded, dt)?;
+            self.posture.finish_fall(settings.gravity_scale, vertical);
+            self.move_to.as_mut().and_then(move_to::Run::take_end)
         };
         if !self.rewinding() {
             self.record_history();
@@ -455,68 +445,69 @@ impl Mover {
         Ok(outcome)
     }
 
-    /// Sweep a speed-limited displacement toward a world feet position
-    /// (`Mover._move_to` in `ow174/game/mover.py`): `Some(true)` arrived,
-    /// `Some(false)` blocked (less than half a grid step of progress), `None`
-    /// still moving.
-    fn move_to(
+    /// The move the state hands over this frame: a new key begins it (its
+    /// begin takes a body on the ground off it), none lets it go.
+    fn begin_move(&mut self, request: Option<(MoveKey, &MoveTo)>) -> Result<(), HullContactError> {
+        if let Some(run) = self
+            .move_to
+            .take_if(|run| request.is_none_or(|(key, _)| run.key != key))
+        {
+            self.pose.velocity = run.let_go(self.pose.velocity).map(snap);
+        }
+        let Some((key, params)) = request else {
+            return Ok(());
+        };
+        if self.move_to.is_some() {
+            return Ok(());
+        }
+        let run = move_to::Run::start(
+            key,
+            *params,
+            move_to::Body {
+                feet: self.pose.position,
+                lift: f64::from(self.lift()),
+                body: &self.body,
+                base: &self.base,
+                crouched: self.posture.crouched(),
+            },
+        )?;
+        if run.drives() && self.posture.flags & IN_AIR == 0 {
+            self.posture.take_off();
+        }
+        self.move_to = Some(run);
+        Ok(())
+    }
+
+    /// A frame the move drives ([`move_to`]): its velocity, the velocity
+    /// mods only on the frame it ends, and no gravity; the capsule moves by
+    /// the velocity alone (the pogo spring is the behaviour's to skip), and
+    /// the velocity loses what goes into the contact planes.
+    fn drive(
         &mut self,
         rays: &TriangleIndex,
+        active: &ActiveModifiers,
+        settings: &MoverSettings,
+        changes: &[VelocityChange],
         dt: f64,
-        target: [f64; 3],
-        speed: f64,
-    ) -> Result<Option<bool>, HullContactError> {
-        let start = self.pose.position;
-        let [dx, dy, dz] = std::array::from_fn(|axis| target[axis] - start[axis]);
-        let distance = dx.hypot(dy).hypot(dz);
-        if distance > STEP {
-            let scale = (speed * dt / distance).min(1.0);
-            let [x, y, z] = start;
-            let [bx, by, bz] = self.body.position().map(f64::from);
-            let lift = f64::from(self.lift());
-            let displacement = [
-                (x + dx * scale - bx) as f32,
-                (y + dy * scale + lift - by) as f32,
-                (z + dz * scale - bz) as f32,
-            ];
-            let movement = self.body.move_capsule(displacement, dt as f32)?;
-            let (mut end, touching) = (movement.position, movement.touching);
-            // The spring holds the capsule above the feet. On descent the
-            // feet still stop at walkable ground even when the capsule could
-            // move lower.
-            let lift = self.lift();
-            let feet = f64::from(end[1]) - f64::from(lift);
-            if dy < 0.0 && feet < y {
-                if let Some(ground) = rays
-                    .ground(
-                        f64::from(end[0]),
-                        f64::from(end[2]),
-                        y + STEP,
-                        feet,
-                        self.category,
-                    )
-                    .filter(|&hit| self.probe.walkable(hit))
-                {
-                    end[1] = (ground.y + f64::from(lift)) as f32;
-                }
-            }
-            self.place(rays, end, touching);
+    ) -> Result<Option<MoveEnd>, HullContactError> {
+        let run = self.move_to.as_mut().expect("a driving move");
+        let mut velocity = run.step(self.pose.position, self.pose.velocity, dt);
+        if !run.drives() {
+            velocity = change_velocity(
+                active.limit_velocity(velocity, settings.jump_speed),
+                changes,
+            );
         }
-        let position = self.pose.position;
-        let [rx, ry, rz] = std::array::from_fn(|axis| position[axis] - target[axis]);
-        let remaining = rx.hypot(ry).hypot(rz);
+        let end = run.take_end();
         self.posture.fall = 0.0;
-        if position[1] - start[1] > STEP && self.posture.flags & IN_AIR == 0 {
-            self.posture.flags |= FELL;
-            self.posture.air_ticks = 0;
-        }
-        if remaining <= STEP || distance - remaining < STEP / 2.0 {
-            self.pose.velocity = [0.0; 3];
-            self.driven = false;
-            return Ok(Some(remaining <= STEP));
-        }
-        self.pose.velocity = std::array::from_fn(|axis| snap((position[axis] - start[axis]) / dt));
-        Ok(None)
+        let [x, y, z] = velocity.map(|axis| axis as f32);
+        let dt = dt as f32;
+        let movement = self.body.move_capsule([x * dt, y * dt, z * dt], dt)?;
+        let velocity = clip_velocity([x, y, z], movement.planes).map(f64::from);
+        let (position, touching) = (movement.position, movement.touching);
+        self.place(rays, position, touching);
+        self.pose.velocity = velocity.map(snap);
+        Ok(end)
     }
 
     /// The capsule's lowest point above the feet: the pogo plus the spring
@@ -647,12 +638,39 @@ mod tests {
         }
     }
 
-    /// Drive toward `target` at 5 m/s until the move ends; the outcomes.
-    fn drive(mover: &mut Mover, rays: &TriangleIndex, target: [f64; 3]) -> Vec<Option<bool>> {
+    const MOVE: MoveKey = MoveKey {
+        instance: 1,
+        raw_state: 0,
+        activation: 1,
+    };
+
+    /// A move to `destination` at 5 m/s with the grapple's other numbers
+    /// (`005A` st1: 100 speeds a second, 0.3 s across, 1 m and 0.3 s stuck).
+    fn move_to(destination: [f64; 3]) -> MoveTo {
+        MoveTo {
+            destination,
+            surface: [0.0; 3],
+            free_spot: false,
+            speed: Speed::MetresPerSecond(5.0),
+            acceleration: 100.0,
+            slow_radius: 0.0,
+            lateral_seconds: 0.3,
+            stuck_distance: 1.0,
+            stuck_seconds: 0.3,
+            exit_horizontal: 0.0,
+            exit_vertical: 0.0,
+            exit_total: 0.0,
+            exit_on_end: false,
+            abort_past: false,
+        }
+    }
+
+    /// Run `params` until the move ends; the ends, one a frame.
+    fn drive(mover: &mut Mover, rays: &TriangleIndex, params: &MoveTo) -> Vec<Option<MoveEnd>> {
         let mut outcomes = Vec::new();
         for frame in 1..=100 {
             let outcome = mover
-                .step_pose_to(rays, idle(frame), 0.016, Some((target, 5.0)))
+                .step_pose_to(rays, idle(frame), 0.016, Some((MOVE, params)))
                 .unwrap();
             outcomes.push(outcome);
             if outcome.is_some() {
@@ -662,21 +680,27 @@ mod tests {
         outcomes
     }
 
+    /// At 5 m/s the body goes 0.08 m a frame; the frame that would pass the
+    /// target lands on it, and the next one arrives with the velocity held
+    /// to the exit limits (0).
     #[test]
-    fn world_target_moves_arrive_or_report_blocking() {
+    fn a_move_lands_on_its_target_and_arrives_the_frame_after() {
         let rays = TriangleIndex::new([]).unwrap();
+        let mut mover = mover_in(Vec::new());
         let target = [1.0, 0.0, 0.0];
+        let outcomes = drive(&mut mover, &rays, &move_to(target));
+        // 12 frames of 0.08 m, the 13th lands, the 14th arrives.
+        assert_eq!(outcomes.len(), 14);
+        assert_eq!(outcomes.last(), Some(&Some(MoveEnd::Arrived)));
+        assert_eq!(mover.pose().position, target);
+        assert_eq!(mover.pose().velocity, [0.0; 3]);
+    }
 
-        let mut open = mover_in(Vec::new());
-        let outcomes = drive(&mut open, &rays, target);
-        let (last, moving) = outcomes.split_last().unwrap();
-        assert_eq!(*last, Some(true));
-        assert!(moving.len() > 10 && moving.iter().all(Option::is_none));
-        assert_eq!(open.pose().position, target);
-        assert_eq!(open.pose().velocity, [0.0; 3]);
-        assert!(!open.driven);
-
-        // A sphere across the path stops the capsule short of the target.
+    /// A body held within the stuck distance of its last checkpoint for the
+    /// stuck time blocks when the target is farther than that distance.
+    #[test]
+    fn a_move_held_by_a_wall_blocks_after_its_stuck_time() {
+        let rays = TriangleIndex::new([]).unwrap();
         let wall = StaticGeometry::Round {
             shape: RoundShape::Sphere(Sphere {
                 center: [0.7, 1.0, 0.0],
@@ -684,42 +708,58 @@ mod tests {
             }),
             mask: 0x18,
         };
-        let mut blocked = mover_in(vec![StaticShape::new(wall, None).unwrap()]);
-        let outcomes = drive(&mut blocked, &rays, target);
-        assert_eq!(outcomes.last(), Some(&Some(false)));
-        assert!(blocked.pose().position[0] < 0.4);
-        assert_eq!(blocked.pose().velocity, [0.0; 3]);
-        assert!(!blocked.driven);
+        let mut mover = mover_in(vec![StaticShape::new(wall, None).unwrap()]);
+        let outcomes = drive(&mut mover, &rays, &move_to([3.0, 0.0, 0.0]));
+        assert_eq!(outcomes.last(), Some(&Some(MoveEnd::Blocked)));
+        // The checkpoint is the start (never 1 m away): 0.3 s is 19 frames.
+        assert_eq!(outcomes.len(), 19);
+        assert!(mover.pose().position[0] < 0.4);
     }
 
+    /// The velocity across the direction goes over `m_7F3716A6` seconds in
+    /// equal parts: 3 m/s over three frames leaves 2, 1 and 0 (the target
+    /// far enough that the sideways drift doesn't turn the direction).
     #[test]
-    fn undriven_poses_start_from_rest_and_slow_targets_are_ignored() {
+    fn a_move_drops_the_velocity_across_it_in_equal_parts() {
         let rays = TriangleIndex::new([]).unwrap();
         let mut mover = mover_in(Vec::new());
-        let target = [1.0, 0.0, 0.0];
-        assert_eq!(
+        let params = MoveTo {
+            lateral_seconds: 0.048,
+            ..move_to([1000.0, 0.0, 0.0])
+        };
+        mover.push([0.0, 0.0, 3.0]);
+        let mut across = Vec::new();
+        for frame in 1..=4 {
             mover
-                .step_pose_to(&rays, idle(1), 0.016, Some((target, 5.0)))
-                .unwrap(),
-            None
-        );
-        assert!(mover.driven);
-        // 0.08 m on the 1/1024 grid is 82 steps; the velocity is that over dt, on the grid.
-        let x = mover.pose().position[0];
-        assert_eq!(x, 82.0 / 1024.0);
-        assert_eq!(mover.pose().velocity, [5125.0 / 1024.0, 0.0, 0.0]);
-        // A speed below one grid step per frame keeps no fractional progress:
-        // the pose runs as if it had no target, from rest.
-        assert_eq!(
-            mover
-                .step_pose_to(&rays, idle(2), 0.016, Some((target, 0.01)))
-                .unwrap(),
-            None
-        );
-        assert!(!mover.driven);
-        let pose = mover.pose();
-        assert_eq!((pose.velocity[0], pose.velocity[2]), (0.0, 0.0));
-        assert_eq!(pose.position[0], x);
+                .step_pose_to(&rays, idle(frame), 0.016, Some((MOVE, &params)))
+                .unwrap();
+            across.push(mover.pose().velocity[2]);
+        }
+        assert_eq!(across, [2.0, 1.0, 0.0, 0.0]);
+    }
+
+    /// A key the mover hasn't seen begins a new move; no request lets the
+    /// move go and the pose runs as usual (here: falls).
+    #[test]
+    fn a_new_key_begins_a_move_and_none_lets_it_go() {
+        let rays = TriangleIndex::new([]).unwrap();
+        let mut mover = mover_in(Vec::new());
+        let params = move_to([0.0, 0.0, 5.0]);
+        mover
+            .step_pose_to(&rays, idle(1), 0.016, Some((MOVE, &params)))
+            .unwrap();
+        assert_eq!(mover.pose().velocity, [0.0, 0.0, 5.0]);
+        mover.step_pose_to(&rays, idle(2), 0.016, None).unwrap();
+        assert!(mover.move_to.is_none());
+        assert!(mover.pose().velocity[1] < 0.0);
+        let again = MoveKey {
+            activation: 2,
+            ..MOVE
+        };
+        mover
+            .step_pose_to(&rays, idle(3), 0.016, Some((again, &params)))
+            .unwrap();
+        assert_eq!(mover.move_to.as_ref().map(|run| run.key), Some(again));
     }
 
     #[test]
@@ -732,8 +772,9 @@ mod tests {
             mover
                 .step_pending_with(&mut pending, usize::MAX, |mover, command| {
                     frames.push(command.frame);
+                    let params = move_to([1.0, 0.0, 0.0]);
                     mover
-                        .step_pose_to(&rays, command, 0.016, Some(([1.0, 0.0, 0.0], 5.0)))
+                        .step_pose_to(&rays, command, 0.016, Some((MOVE, &params)))
                         .map(drop)
                 })
                 .unwrap();

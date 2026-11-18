@@ -50,10 +50,10 @@ use orpheus_content::{
 use orpheus_core::tick::{MAX_LEASE_FRAME, TICK_PERIOD};
 use orpheus_physics::{
     contact::cache::CapsulePose,
-    mover::Mover,
     mover::correction::CorrectionHistory,
     mover::kinematics::{Poses, poses as kinematics_poses, repeated},
     mover::modifiers::{Modifier, ModifierKey},
+    mover::{MoveEnd, MoveKey, Mover},
 };
 use orpheus_script::controller::{
     ControllerScript, HeroSelectRequest as SelectRequest, HeroSelectState, HeroSwitch,
@@ -145,9 +145,9 @@ fn clock_flags(depth: usize) -> u8 {
 /// (inferred, not traced) counts twice: 1.3, a speed scalar below 0. They
 /// send its own value now (`SnapshotEncoder` `project_variables`). Without corrections, any other difference between
 /// her client's body and the server's lasted until she died, and her shots
-/// left from the wrong place. Widowmaker stays out: the server can't run
-/// her Grappling Hook (`005A` st1, a `MoveTo` to an entity and bone), so a
-/// correction would pull her back. The other heroes stay out until the
+/// left from the wrong place. Widowmaker stays out: the server runs her
+/// Grappling Hook (`005A`) but not its ledge pull (`STU_1F5ED928`, a
+/// navigation path), so a correction would pull her back. The other heroes stay out until the
 /// server runs all of their movement (`docs/notes/behavior.md`, "Owner
 /// corrections").
 const CORRECTED_HEROES: [u64; 2] = [SOLDIER, ANA];
@@ -4602,9 +4602,20 @@ impl WorldDelivery {
                     [request] => Some(request),
                     _ => None,
                 };
-                let outcome =
-                    mover.step_pose_to(rays, command, dt, request.map(|r| (r.target, r.speed)))?;
-                let ended = request.zip(outcome).map_or(Ok(()), |(request, arrived)| {
+                let key = request.map(|request| MoveKey {
+                    instance: request.instance,
+                    raw_state: request.raw_state,
+                    activation: request.activation,
+                });
+                let outcome = mover.step_pose_to(
+                    rays,
+                    command,
+                    dt,
+                    key.zip(request.as_ref())
+                        .map(|(key, request)| (key, &request.params)),
+                )?;
+                let ended = request.zip(outcome).map_or(Ok(()), |(request, end)| {
+                    let arrived = end == MoveEnd::Arrived;
                     script.runtime.finish_move(request, arrived, command.frame)
                 });
                 match ended.and_then(|()| script.advance(mover, command, BodyStep::Posed, false)) {

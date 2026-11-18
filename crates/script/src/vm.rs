@@ -15,6 +15,7 @@ mod context;
 mod entities;
 mod filter_array;
 mod flow;
+mod grapple;
 mod health;
 mod hero_select;
 mod lifecycle;
@@ -60,8 +61,9 @@ use crate::{
     wheel,
     wire::{Value, Variables},
 };
-use orpheus_physics::mover::modifiers::{
-    Modifier, ModifierKey, Operation, VectorOperation, VelocityElement,
+use orpheus_physics::mover::{
+    MoveTo, Speed,
+    modifiers::{Modifier, ModifierKey, Operation, VectorOperation, VelocityElement},
 };
 use orpheus_wire::{commands::Command, entity::MAX_MOVEMENT_AXIS};
 
@@ -593,6 +595,12 @@ pub trait World {
         None
     }
 
+    /// Where a body's eye is (its feet and eye height) and its yaw and
+    /// pitch: the view a Grappling Hook starts from (`vm/grapple.rs`).
+    fn eye(&self, _site: Site, _entity: u32) -> Option<([f64; 3], [i32; 2])> {
+        None
+    }
+
     /// A body's yaw alone (its facing along the ground): the facing's, else
     /// a listed body's.
     fn entity_yaw(&self, site: Site, entity: u32) -> Option<i32> {
@@ -874,13 +882,16 @@ pub struct MessageEnd {
     pub message: u64,
 }
 
-/// A `MoveTo` state's fixed world target and speed in metres per second.
+/// A running `MoveTo` state's move for the mover
+/// (`orpheus_physics::mover::move_to`): the state, its activation (a
+/// state begun again is a new move) and the block it handed over at its
+/// begin.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MoveRequest {
     pub instance: u16,
     pub raw_state: u16,
-    pub target: [f64; 3],
-    pub speed: f64,
+    pub activation: u16,
+    pub params: MoveTo,
 }
 
 /// An AI movement state's (`STU_ECAEE401`) point to walk to, from its move
@@ -1020,9 +1031,16 @@ pub enum StateKind {
     },
     /// Finishes after its count of server frames (`WaitForServerFrames`).
     ServerFrames,
-    /// A fixed world target and speed for bot movement (`MoveTo`); the
-    /// request is in [`Component::move_requests`].
+    /// A `MoveTo`: the move it handed the mover is in
+    /// [`Component::move_requests`] while it runs.
     MoveTo,
+    /// Widowmaker's Grappling Hook cast (`STU_4BBC5D09`, `vm/grapple.rs`):
+    /// the hook flies each tick until it hits or reaches its range.
+    GrappleCast,
+    /// A mover behaviour that walks a navigation path (`STU_1F5ED928`,
+    /// kind 10): the server has no path query, so the path fails and the
+    /// state finishes the frame after it begins (`vm/grapple.rs`).
+    NavPath,
     /// An AI movement state (`STU_ECAEE401`): the point its move goal names
     /// for the server's walker, in [`Component::ai_move_requests`].
     AiMove,
@@ -1714,25 +1732,26 @@ impl Component {
         self.machine.queues.next_due()
     }
 
-    /// The active `MoveTo` states' targets, for the mover
-    /// (`MoveTo.move_request` as `ow174/game/match.py` collects them).
+    /// The active `MoveTo` states' moves, for the mover.
     pub fn move_requests(&self) -> Vec<MoveRequest> {
         self.machine
             .movements
             .iter()
-            .filter(|(key, _)| {
-                self.machine
+            .filter_map(|(key, &params)| {
+                let state = self
+                    .machine
                     .snapshot
                     .instances
-                    .get(&key.instance)
-                    .and_then(|instance| instance.states.get(&key.raw))
-                    .is_some_and(|state| state.active)
-            })
-            .map(|(key, &(target, speed))| MoveRequest {
-                instance: key.instance,
-                raw_state: key.raw,
-                target,
-                speed,
+                    .get(&key.instance)?
+                    .states
+                    .get(&key.raw)
+                    .filter(|state| state.active)?;
+                Some(MoveRequest {
+                    instance: key.instance,
+                    raw_state: key.raw,
+                    activation: state.activation,
+                    params,
+                })
             })
             .collect()
     }
@@ -2122,8 +2141,10 @@ struct Machine {
     deferred: BTreeMap<u16, Vec<(f64, u16)>>,
     /// The active `DisableLogicalButton` states by the button they block.
     disabled: BTreeMap<i64, Vec<StateKey>>,
-    /// `MoveTo` targets and speeds of the activations that resolved one.
-    movements: BTreeMap<StateKey, ([f64; 3], f64)>,
+    /// The blocks the running `MoveTo` states handed the mover at their begin.
+    movements: BTreeMap<StateKey, MoveTo>,
+    /// The running Grappling Hook casts (`STU_4BBC5D09`, `vm/grapple.rs`).
+    grapples: BTreeMap<StateKey, grapple::Cast>,
     /// The running AI movement states' points to walk to ([`AiMoveRequest`]).
     ai_moves: BTreeMap<StateKey, [f64; 3]>,
     /// The running HeroSelect states' hero limits (`vm/hero_select.rs`).

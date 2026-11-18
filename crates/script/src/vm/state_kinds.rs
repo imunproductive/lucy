@@ -556,8 +556,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
     }
 
-    /// `MoveTo.on_begin`: only a fixed world target with a speed resolves a
-    /// request, and only one the movement record can carry.
+    /// A `MoveTo`'s begin: the block it hands the mover
+    /// (`orpheus_physics::mover::move_to`, which has the client's code).
+    /// It moves only toward a point: a destination entity that is a valid
+    /// entity is not modelled (the target would move with it and its bone),
+    /// nor is a block handed again each update (`m_84D349FB`); the fields
+    /// whose readers were not traced are recorded when set. A destination
+    /// the movement record can't carry moves nothing.
     pub(super) fn begin_move_to(&mut self, key: StateKey, node: &Node) {
         self.machine.movements.remove(&key);
         let fixed = match field(&node.fields, "m_B060F688") {
@@ -565,36 +570,137 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             Json::Bool(mode) => !mode,
             _ => false,
         };
-        let speed = field(&node.fields, "m_speed");
-        if !fixed
-            || speed.is_null()
-            || ["m_destinationEntity", "m_destinationBone", "m_5BEFF040"]
-                .iter()
-                .any(|name| !field(&node.fields, name).is_null())
-        {
+        if !fixed {
             return;
         }
         let id = key.instance;
-        let Some(destination) = self.evaluate(id, node, field(&node.fields, "m_865F3D01"), None)
+        let site = self.site(id, node);
+        let entity = field(&node.fields, "m_destinationEntity");
+        if !entity.is_null() {
+            match self.evaluate(id, node, entity, None) {
+                Some(Value::Entity(entity)) if !expr::valid_entity(entity) => {}
+                Some(Value::Null) => {}
+                Some(value) if expr::to_float(&value) == 0.0 => {}
+                _ => {
+                    self.assume(
+                        site,
+                        "STUStatescriptStateMoveTo m_destinationEntity",
+                        "moves nothing (a destination entity)",
+                    );
+                    return;
+                }
+            }
+        }
+        for name in [
+            "m_84D349FB",
+            "m_1866524C",
+            "m_B769BC47",
+            "m_000B044B",
+            "m_5E3A7FC5",
+            "m_6D6BA94D",
+        ] {
+            if targets::is_set(field(&node.fields, name)) {
+                self.assume(
+                    site,
+                    &format!("STUStatescriptStateMoveTo {name}"),
+                    "changes nothing",
+                );
+            }
+        }
+        let Some(Value::Vector(destination)) =
+            self.evaluate(id, node, field(&node.fields, "m_865F3D01"), None)
         else {
             return;
         };
-        let Some(speed) = self.evaluate(id, node, speed, None) else {
+        let surface = match field(&node.fields, "m_7183E9CE") {
+            Json::Null => Some([0.0; 3]),
+            config => match self.evaluate(id, node, config, None) {
+                Some(Value::Vector(surface)) => Some(surface),
+                _ => None,
+            },
+        };
+        let numbers = [
+            ("m_5BEFF040", 0.0),
+            ("m_speed", 0.0),
+            ("m_717EAFE7", 0.0),
+            ("m_187E2318", 0.0),
+            ("m_7F3716A6", 0.0),
+            ("m_86EA271E", 0.0),
+            ("m_725EB364", 0.0),
+            ("m_C1E1F78C", 0.0),
+            ("m_03B764BE", 0.0),
+            ("m_6AC330A6", 0.0),
+        ]
+        .map(|(name, unset)| self.move_number(id, node, name, unset));
+        let (
+            Some(surface),
+            [
+                Some(seconds),
+                Some(speed),
+                Some(acceleration),
+                Some(slow_radius),
+                Some(lateral_seconds),
+                Some(stuck_distance),
+                Some(stuck_seconds),
+                Some(exit_horizontal),
+                Some(exit_vertical),
+                Some(exit_total),
+            ],
+        ) = (surface, numbers)
+        else {
             return;
         };
-        let speed = match speed {
-            Value::Integer(speed) => speed as f64,
-            Value::Float(speed) => speed,
-            _ => return,
+        let flag = |vm: &mut Self, name: &str| {
+            let config = field(&node.fields, name);
+            !config.is_null()
+                && vm
+                    .evaluate(id, node, config, None)
+                    .is_some_and(|value| truthy(&value))
         };
-        let Value::Vector(target) = destination else {
-            return;
-        };
-        if speed > 0.0
-            && speed <= MAX_MOVEMENT_AXIS
-            && target.iter().all(|axis| axis.abs() <= MAX_MOVEMENT_AXIS)
+        let free_spot = flag(self, "m_EA99616F");
+        let exit_on_end = flag(self, "m_AE1CEDB5");
+        if !destination
+            .iter()
+            .all(|axis| axis.is_finite() && axis.abs() <= MAX_MOVEMENT_AXIS)
         {
-            self.machine.movements.insert(key, (target, speed));
+            return;
+        }
+        self.machine.movements.insert(
+            key,
+            MoveTo {
+                destination,
+                surface,
+                free_spot,
+                speed: if seconds > 1.192_092_9e-4 {
+                    Speed::Seconds(seconds)
+                } else {
+                    Speed::MetresPerSecond(speed)
+                },
+                acceleration,
+                slow_radius,
+                lateral_seconds,
+                stuck_distance,
+                stuck_seconds,
+                exit_horizontal,
+                exit_vertical,
+                exit_total,
+                exit_on_end,
+                abort_past: site.graph == grapple::GRAPPLING_HOOK,
+            },
+        );
+    }
+
+    /// A number field of a `MoveTo`: `unset` when the node has none, None
+    /// when it is no number.
+    fn move_number(&mut self, id: u16, node: &Node, name: &str, unset: f64) -> Option<f64> {
+        let config = field(&node.fields, name);
+        if config.is_null() {
+            return Some(unset);
+        }
+        match self.evaluate(id, node, config, None)? {
+            Value::Integer(value) => Some(value as f64),
+            Value::Float(value) if value.is_finite() => Some(value),
+            _ => None,
         }
     }
 
