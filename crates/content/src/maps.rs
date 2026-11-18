@@ -1065,6 +1065,7 @@ mod tests {
         count(&mut digest, listing.len());
         let mut cases = 0;
         let mut accepted = 0;
+        let mut pve = 0;
         for entry in &listing {
             digest.update(entry.guid.to_le_bytes());
             text(&mut digest, &entry.name);
@@ -1087,7 +1088,19 @@ mod tests {
                 for ffa in [false, true] {
                     cases += 1;
                     let sizes: &[u8] = if ffa { &[8] } else { &[6, 6] };
-                    let game = catalog.game_map(entry.guid, mode, "Fixture", ffa, sizes);
+                    let mut game = catalog.game_map(entry.guid, mode, "Fixture", ffa, sizes);
+                    // Beyond Python: Junkenstein's Revenge (map `6C9`, modes
+                    // 0x03 and 0x2A, no scripted loading) has spawns since
+                    // its 0x310 start markers count (upstream kjs `08561fe4`,
+                    // `game_maps` `is_spawn`), so its team match is accepted;
+                    // Python's maps had none and refused it. Hash Python's
+                    // refusal in its place.
+                    if entry.guid == 0x0800_0000_0000_06c9 {
+                        if let Some(game) = game.take() {
+                            assert_eq!((ffa, game.spawns.len()), (false, 6));
+                            pve += 1;
+                        }
+                    }
                     digest.update([u8::from(game.is_some())]);
                     let Some(game) = game else { continue };
                     accepted += 1;
@@ -1117,7 +1130,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!((listing.len(), cases, accepted), (95, 698, 551));
+        assert_eq!((listing.len(), cases, accepted, pve), (95, 698, 551, 2));
         // Python game.content catalog and selection outputs on the derived
         // data, with geometry as LE f32. (On the prepared pack, whose five
         // lobby maps carried internal names, Python gives 414daebd....)

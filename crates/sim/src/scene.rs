@@ -783,10 +783,16 @@ mod tests {
             with_controllers
         );
         let encoded = frame(1234, 1234, &[], &[], &python.iter().collect::<Vec<_>>()).unwrap();
-        assert_eq!(encoded.len(), 1674);
+        // Python's frame was 1674 bytes (digest b82987cb…). The one
+        // deliberate difference left is the player's Tab board (component
+        // 64): its 14 stat GUID fields go as ids, a byte mask and the
+        // non-zero bytes, where Python wrote raw u64 (port 1b, upstream kjs
+        // `254fa913`: raw u64 showed "UNKNOWN STAT"); the frame is 76 bytes
+        // shorter for it.
+        assert_eq!(encoded.len(), 1598);
         assert_eq!(
             format!("{:x}", Sha256::digest(&encoded)),
-            "b82987cb93e2e93851a16452fbb2230637b89edd70cf9f07b9a34c054689d66f",
+            "bd3c71aafd2797e9bd34511e9c52903ff372dccaddedf8f56f8c17f9a0887919",
         );
         let mut remaining = updates.as_slice();
         let mut transmitted = Vec::new();
