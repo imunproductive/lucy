@@ -37,6 +37,7 @@ use std::{cell::Cell, f64::consts::TAU};
 
 use orpheus_core::tick::TICK_PERIOD;
 use orpheus_physics::{mover::kinematics::poses, nav::Navigation};
+use orpheus_script::ai_definitions::{EASY, HARD, MEDIUM};
 use orpheus_wire::commands::{Command, FIRE, JUMP};
 
 /// Ability 2 (E) on the command (logical button 36).

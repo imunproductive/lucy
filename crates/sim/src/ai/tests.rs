@@ -137,9 +137,17 @@ fn difficulty_picks_its_profile_and_accuracy_as_the_rules_say() {
     );
     assert_eq!(Difficulty::from_level(0), None);
     assert_eq!(Difficulty::from_level(4), None);
-    // Rule 123: 25%, 50% and 100% of the damage.
-    let scales: Vec<_> = levels.iter().map(|level| level.damage_scale()).collect();
-    assert_eq!(scales, [0.25, 0.5, 1.0]);
+    // The card's levels play the profiles `195E`, `195F` and `1960`, which
+    // the client orders lowest to highest (`orpheus_script::ai_definitions`).
+    let profiles: Vec<_> = levels.iter().map(|level| level.identifier()).collect();
+    assert_eq!(
+        profiles,
+        [
+            0x0d80_0000_0000_195e,
+            0x0d80_0000_0000_195f,
+            0x0d80_0000_0000_1960
+        ]
+    );
     // Harder bots aim better and react sooner.
     assert!(
         levels
