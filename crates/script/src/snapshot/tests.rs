@@ -1,4 +1,5 @@
 use super::*;
+use crate::expr::Variable;
 use crate::stream::OWNER_SETTLE_FRAMES;
 use crate::vm::{Diagnostic, EmptyWorld, Issue, MAX_INIT_WORK, Root, Site, initialize};
 use serde_json::{Value as Json, json};
@@ -1109,8 +1110,15 @@ fn a_timed_chase_keeps_its_begin_payload_and_binding_until_it_arrives() {
     assert!(listed.contains(&timed) && listed.contains(&variable));
 }
 
+/// The owner's chunks list a weapon volley's ammunition variable at the
+/// server's value, unbound, while the volley is off, so a chunk from before a
+/// press the client predicted unbinds it before the client replays the press
+/// (StartFiring reads it as resolved). While the volley runs, the variable
+/// goes only when its value changes, as its output, never as the count
+/// before the volley (the old seed, which the client drew for a frame on
+/// every tap; refs/reports/OwnerPrediction.md, 2026-11-18).
 #[test]
-fn a_new_volley_reseeds_ammo_after_an_unacknowledged_stop() {
+fn owner_chunks_list_an_idle_volley_s_ammo_and_never_seed_it() {
     const RIFLE: u16 = 11;
     const VOLLEY: u16 = 10;
     const AMMO: u32 = 53;
@@ -1120,7 +1128,9 @@ fn a_new_volley_reseeds_ammo_after_an_unacknowledged_stop() {
             0,
             "STUStatescriptStateWeaponVolley",
             Some(VOLLEY),
-            json!({}),
+            json!({
+                "m_24E351A4":{"$":"STUConfigVarDynamic","m_identifier":AMMO,"m_60DB8F99":false}
+            }),
         )],
         json!([
             null, null, null, null, null, null, null, null, null, null, 0
@@ -1176,102 +1186,55 @@ fn a_new_volley_reseeds_ammo_after_an_unacknowledged_stop() {
     };
     let first = volley(true, 1, 1031_u32, 30, 29);
     let stopped = volley(false, 1, 1031_u32, 30, 29);
-    let ended = volley(false, 3, 1050_u32, 28, 27);
     let second = volley(true, 2, 1042_u32, 29, 28);
     let observer_second = encoder.project(&snapshot, View::Observer).unwrap();
     let mut stream = BodyStream::new(ENTITY);
     stream.create_arrived();
     let baseline = encoder.queue_full(&mut stream, &idle).unwrap();
     stream.arrived(baseline.last);
-    let initial = encoder
-        .queue_delta(&mut stream, &idle, DeltaKind::InitialOwner(1001), 16)
-        .unwrap()
-        .unwrap();
-    stream.sent(initial.last);
-    stream.arrived(initial.last);
-
-    // Python owner_delta and chunk vectors from the same minimal 0254 layout.
-    let intro = ChangeKey::VolleyIntroduction(RIFLE, VOLLEY);
     let key = ChangeKey::Variable(RIFLE, AMMO);
-    for (frame, state, bits, bytes, ammo, introduced, dropped) in [
-        (
-            1031,
-            &first,
-            137,
-            "06000050e60e08105980e2811c0082ec0000",
-            30,
-            true,
-            false,
-        ),
-        (
-            1032,
-            &stopped,
-            137,
-            "08000050e61008105980d2810c0882ec0000",
-            29,
-            false,
-            true,
-        ),
-        (
-            1042,
-            &second,
-            137,
-            "08000450e62408105980d2811c0084ec0000",
-            29,
-            true,
-            true,
-        ),
-        (
-            1043,
-            &second,
-            137,
-            "08000850e62608105980d2811c0884ec0000",
-            29,
-            true,
-            false,
-        ),
-        (
-            1044,
-            &second,
-            114,
-            "0e0000e0e42808b45880c201d90100",
-            28,
-            false,
-            false,
-        ),
-        (
-            1050,
-            &ended,
-            137,
-            "10000050e63408105980b2810c0086ec0000",
-            27,
-            true,
-            false,
-        ),
-    ] {
+    let intro = ChangeKey::VolleyIntroduction(RIFLE, VOLLEY);
+    // Each chunk arrives; what it listed and the ammunition it carried.
+    let mut send = |state: &ProjectedSnapshot, kind| {
         let chunk = encoder
-            .queue_delta(&mut stream, state, DeltaKind::Correction(frame), 16)
+            .queue_delta(&mut stream, state, kind, 16)
             .unwrap()
             .unwrap();
-        check(chunk.update.chunk.as_ref().unwrap(), bits, bytes);
         let sent = stream.sent(chunk.last).unwrap();
-        assert_eq!(sent.changes.contains(&intro), introduced);
-        assert!(sent.changes.contains(&key));
-        assert_eq!(
-            sent.snapshot.instances[&RIFLE].variables.values[&AMMO],
-            Value::Integer(ammo)
-        );
-        assert!(stream.sent(chunk.last).is_none());
-        if dropped {
-            let lost = stream.lost(chunk.last);
-            assert!(!lost.retry);
-            assert_eq!(lost.owner_report, Some(false));
-        } else {
-            assert!(stream.arrived(chunk.last).advanced);
-        }
-        assert!(!stream.touched().contains(&intro));
+        let listed = sent.changes.clone();
+        let variables = &sent.snapshot.instances[&RIFLE].variables;
+        let ammo = variables.values[&AMMO].clone();
+        assert!(!variables.bindings.contains_key(&AMMO));
+        assert!(stream.arrived(chunk.last).advanced);
+        (listed, ammo)
+    };
+    // Idle: listed at its own value in every chunk.
+    for kind in [
+        DeltaKind::InitialOwner(1001),
+        DeltaKind::Correction(1001 + OWNER_SETTLE_FRAMES),
+    ] {
+        let (listed, ammo) = send(&idle, kind);
+        assert!(listed.contains(&key), "{kind:?}");
+        assert_eq!(ammo, Value::Integer(30));
     }
+    // The press frame: the volley's output after its first shot, not 30.
+    let (listed, ammo) = send(&first, DeltaKind::Correction(1031));
+    assert!(listed.contains(&intro) && listed.contains(&key));
+    assert_eq!(ammo, Value::Integer(29));
+    // Running and unchanged: not listed.
+    let (listed, _) = send(&first, DeltaKind::Correction(1032));
+    assert!(!listed.contains(&key));
+    // Off again: listed every chunk.
+    for frame in [1035, 1036] {
+        let (listed, ammo) = send(&stopped, DeltaKind::Correction(frame));
+        assert!(listed.contains(&key), "frame {frame}");
+        assert_eq!(ammo, Value::Integer(29));
+    }
+    let (listed, ammo) = send(&second, DeltaKind::Correction(1042));
+    assert!(listed.contains(&intro) && listed.contains(&key));
+    assert_eq!(ammo, Value::Integer(28));
 
+    // An observer gets no owner variables.
     let mut stream = BodyStream::new(ENTITY);
     stream.create_arrived();
     let baseline = encoder.queue_full(&mut stream, &observer_idle).unwrap();

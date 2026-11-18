@@ -46,6 +46,8 @@ impl<E: Error + 'static> Error for SendError<E> {
 
 pub struct FrameRecords<'a, Queued = EntityUpdate> {
     pub tick: u32,
+    /// The ch3 clock flags (`orpheus_wire::entity::CLOCK_*`).
+    pub clock: u8,
     /// The match supplies the records eligible to send in dependency order.
     pub queued: &'a [Queued],
     pub movements: &'a [EntityUpdate],
@@ -155,6 +157,7 @@ impl<T> GameEgress<T> {
         } = select_frame(
             FrameCandidates {
                 tick: records.tick,
+                clock: records.clock,
                 reliable: self.reliable.make_contiguous(),
                 unreliable: self.unreliable.make_contiguous(),
                 queued: records.queued,

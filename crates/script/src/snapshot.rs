@@ -20,7 +20,7 @@ use std::{
 };
 
 use crate::codecs::{Codec, CodecTable, PayloadError, PayloadMode, StatePayload};
-use crate::expr::{Scope, Variable, equal};
+use crate::expr::{Scope, equal};
 use crate::graph::{Graph, GraphStore, Node, asset_guid};
 use crate::stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, StreamError};
 use crate::vm::{Snapshot, StackBinding, State, StateKind, Unknowns};
@@ -237,7 +237,6 @@ pub struct ProjectedState {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct VolleyActivation {
     identity: (u16, u64), // activation counter and start time
-    ammo: Option<(Variable, i64)>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -255,11 +254,6 @@ impl ProjectedVariables {
             owner,
             &self.bindings,
         )
-    }
-
-    fn seed_ammo(&mut self, variable: u32, ammo: i64) {
-        self.values.insert(variable, Value::Integer(ammo));
-        self.bindings.remove(&variable);
     }
 }
 
@@ -550,15 +544,11 @@ impl<'a> SnapshotEncoder<'a> {
                         active: state.active,
                         activation: state.activation,
                         payload,
-                        volley: match state.kind {
-                            StateKind::WeaponVolley {
-                                ammo_var, ammo0, ..
-                            } => Some(VolleyActivation {
+                        volley: matches!(state.kind, StateKind::WeaponVolley { .. }).then_some(
+                            VolleyActivation {
                                 identity: (state.activation, state.start_ms),
-                                ammo: ammo_var.map(|variable| (variable, ammo0)),
-                            }),
-                            _ => None,
-                        },
+                            },
+                        ),
                     },
                 );
             }
@@ -841,9 +831,56 @@ impl<'a> SnapshotEncoder<'a> {
         }
         let mut delivered = snapshot.clone();
         delivered.action_serial = action.map_or(base.action_serial, |(_, action)| action.serial);
-        delta.seed_owner_ammo(&mut delivered);
         let frame = self.delta_frame(snapshot, &delta, kind, frame_ms, action)?;
         Ok(Some(stream.delta(&frame, delivered, delta.keys, kind)?))
+    }
+
+    /// The owner's chunks list each weapon volley's ammunition variable
+    /// (`m_24E351A4`) at its own value, unbound, while the volley is off.
+    /// The client binds the variable to the volley's output when it
+    /// predicts a press (StartFiring, `0x7FF789C6E160`) and takes the next
+    /// volley's ammunition from it as resolved (`0x7FF78AAB2E80`). A chunk
+    /// from before the press rolls the volley back, and before the first
+    /// volley since the spawn there is no record to restore it from, so the
+    /// volley is cleared (`0x7FF789C71710`: `+0x284` = 1) while the variable
+    /// stays bound to it: the replayed press then read 0 and drew 0
+    /// (refs/reports/OwnerPrediction.md, 2026-11-18). Listed, the variable
+    /// is unbound by the chunk before the replay, and the replay reads the
+    /// count.
+    fn idle_volley_ammo(
+        &self,
+        current: &ProjectedSnapshot,
+    ) -> Result<BTreeSet<ChangeKey>, SnapshotError> {
+        let mut keys = BTreeSet::new();
+        if current.view != View::Owner {
+            return Ok(keys);
+        }
+        for (&id, instance) in &current.instances {
+            let graph = self.graph(id, instance.graph)?;
+            for node in &graph.nodes {
+                let Some(raw) = node
+                    .state
+                    .filter(|_| node.class == "STUStatescriptStateWeaponVolley")
+                else {
+                    continue;
+                };
+                if instance.states.get(&raw).is_some_and(|state| state.active) {
+                    continue;
+                }
+                let Some(Ok(Some(variable))) = node.field("m_24E351A4").map(crate::expr::lvalue)
+                else {
+                    continue;
+                };
+                let (owner, values) = match variable.scope {
+                    Scope::Entity => (0, &current.variables.values),
+                    Scope::Instance => (id, &instance.variables.values),
+                };
+                if values.contains_key(&variable.id) {
+                    keys.insert(ChangeKey::Variable(owner, variable.id));
+                }
+            }
+        }
+        Ok(keys)
     }
 
     fn differences<'s>(
@@ -854,6 +891,12 @@ impl<'a> SnapshotEncoder<'a> {
         known: &BTreeSet<u16>,
     ) -> Result<SnapshotDelta<'s>, SnapshotError> {
         let mut delta = SnapshotDelta::default();
+        let idle = self.idle_volley_ammo(current)?;
+        let touched = &if idle.is_empty() {
+            Cow::Borrowed(touched)
+        } else {
+            Cow::Owned(touched.union(&idle).copied().collect())
+        };
         delta.variables = delta_variables(
             0,
             Some(&base.variables),
@@ -932,25 +975,15 @@ impl<'a> SnapshotEncoder<'a> {
                 };
                 states.insert(raw, entry);
                 delta.keys.insert(key);
-                let Some((now, volley)) = now
+                let Some(volley) = now
                     .filter(|_| current.view == View::Owner)
-                    .and_then(|state| state.volley.map(|volley| (state, volley)))
+                    .and_then(|state| state.volley)
                 else {
                     continue;
                 };
                 let previous = was.and_then(|state| state.volley);
-                let introduced = previous.is_none_or(|was| was.identity != volley.identity);
-                if introduced {
+                if previous.is_none_or(|was| was.identity != volley.identity) {
                     delta.keys.insert(ChangeKey::VolleyIntroduction(id, raw));
-                }
-                if let Some((variable, ammo)) = volley.ammo.filter(|_| {
-                    now.active && (introduced || !was.is_some_and(|state| state.active))
-                }) {
-                    let owner = match variable.scope {
-                        Scope::Entity => 0,
-                        Scope::Instance => id,
-                    };
-                    delta.ammo_seeds.insert((owner, variable.id), ammo);
                 }
             }
             if descriptor || !variables.values.is_empty() || !states.is_empty() {
@@ -1331,35 +1364,6 @@ struct SnapshotDelta<'a> {
     variables: ProjectedVariables,
     instances: BTreeMap<u16, InstanceDelta<'a>>,
     keys: BTreeSet<ChangeKey>,
-    ammo_seeds: BTreeMap<(u16, u32), i64>,
-}
-
-impl SnapshotDelta<'_> {
-    fn seed_owner_ammo(&mut self, delivered: &mut ProjectedSnapshot) {
-        // StartFiring reads the unbound, pre-volley count once after applying
-        // the frame. The acknowledged snapshot must match that wire value.
-        for (&(owner, variable), &ammo) in &self.ammo_seeds {
-            let (wire, baseline) = if owner == 0 {
-                (&mut self.variables, &mut delivered.variables)
-            } else {
-                (
-                    &mut self
-                        .instances
-                        .get_mut(&owner)
-                        .expect("introduced volley")
-                        .variables,
-                    &mut delivered
-                        .instances
-                        .get_mut(&owner)
-                        .expect("introduced volley")
-                        .variables,
-                )
-            };
-            wire.seed_ammo(variable, ammo);
-            baseline.seed_ammo(variable, ammo);
-            self.keys.insert(ChangeKey::Variable(owner, variable));
-        }
-    }
 }
 
 #[derive(Default)]

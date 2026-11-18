@@ -1038,7 +1038,7 @@ fn check_scene(
             script_record(GAME_MODE_ENTITY, scene.mode_ui())?,
         ];
         for record in creates.iter().chain(&scripts) {
-            let packet = frame(u32::MAX, u32::MAX, &[], &[], &[record]).map_err(invalid)?;
+            let packet = frame(u32::MAX, u32::MAX, 0, &[], &[], &[record]).map_err(invalid)?;
             if packet.len() > MAX_PAYLOAD {
                 return Err(invalid("a world baseline exceeds the game datagram budget"));
             }
@@ -1543,7 +1543,7 @@ impl State {
     fn check_roster(&self, room: &Room) -> io::Result<()> {
         let initial = room.message(0, true);
         let bytes = encode(&self.schemas, initial.id, &initial.fields).map_err(invalid)?;
-        let payload = frame(u32::MAX, u32::MAX, &[(0, bytes)], &[], &[]).map_err(invalid)?;
+        let payload = frame(u32::MAX, u32::MAX, 0, &[(0, bytes)], &[], &[]).map_err(invalid)?;
         if payload.len() > MAX_PAYLOAD {
             return Err(invalid("match roster exceeds the game datagram budget"));
         }

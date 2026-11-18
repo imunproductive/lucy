@@ -255,7 +255,7 @@ mod tests {
             format!("{:x}", Sha256::digest(record.as_bytes())),
             "a157b1187c3679a0e869d69ec935efa82d85d66b92ed5f3616fea8c93fe1ee46"
         );
-        let packet = frame(1200, 900, &[], &[], &[&update]).unwrap();
+        let packet = frame(1200, 900, 0, &[], &[], &[&update]).unwrap();
         assert_eq!(
             format!("{:x}", Sha256::digest(&packet)),
             "44d49b099d2766c02592e1dd41acef3d53b1d41c10bd6c9edb173755d683dbab"

@@ -802,7 +802,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             with_controllers
         );
-        let encoded = frame(1234, 1234, &[], &[], &python.iter().collect::<Vec<_>>()).unwrap();
+        let encoded = frame(1234, 1234, 0, &[], &[], &python.iter().collect::<Vec<_>>()).unwrap();
         // Python's frame was 1674 bytes (digest b82987cb…). The one
         // deliberate difference left is the player's Tab board (component
         // 64): its 14 stat GUID fields go as ids, a byte mask and the
@@ -820,6 +820,7 @@ mod tests {
             let selected = select_frame(
                 FrameCandidates {
                     tick: 1234,
+                    clock: 0,
                     reliable: &[],
                     unreliable: &[],
                     queued: remaining,
@@ -926,7 +927,7 @@ mod tests {
         assert_eq!(components[2].fields[2], Some(I8(2)));
         assert!(bot_roster_slot(127, 1).is_err());
         // The wire takes every component.
-        frame(1234, 1234, &[], &[], &[&update, &other]).unwrap();
+        frame(1234, 1234, 0, &[], &[], &[&update, &other]).unwrap();
     }
 
     /// A bot's body is a hero that can be hit, on its team (module notes):
