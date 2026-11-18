@@ -88,6 +88,20 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.world.mode_random()
     }
 
+    fn match_seed(&mut self) -> Option<i64> {
+        self.read_native = true;
+        self.world.match_seed()
+    }
+
+    /// The script's own entity only: the VM holds its buttons.
+    fn button_held(&mut self, entity: u32, button: i64) -> Option<bool> {
+        if entity != self.site.entity {
+            return None;
+        }
+        self.read_native = true;
+        Some(u8::try_from(button).is_ok_and(|button| self.machine.held_buttons.contains(&button)))
+    }
+
     fn team_size(&mut self, team: i64) -> Option<i64> {
         self.read_native = true;
         self.world.team_size(team)

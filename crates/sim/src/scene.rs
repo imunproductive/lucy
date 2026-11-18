@@ -448,11 +448,23 @@ pub fn mode_create(mode: u64, mode_random: f32) -> EntityUpdate {
 /// Retail's draw is server-side and not known; `0F4A` uid 1299 keeps it
 /// as the payload's random speed factor #29093 for the whole match.
 pub fn draw_mode_random() -> f32 {
+    (random_bits() >> 40) as f32 / (1u32 << 24) as f32
+}
+
+/// One match's random table index (`STU_CBF6FF14`, server-only; Control
+/// `0EC2` picks its stages from the table at it): 14 random bits, the
+/// table's index range, so that the graph's `index + round` stays exact as
+/// an `f32`. Retail's value is not known.
+pub fn draw_match_seed() -> u16 {
+    (random_bits() >> 50) as u16
+}
+
+/// 64 bits from the OS-seeded hasher keys.
+fn random_bits() -> u64 {
     use std::hash::{BuildHasher, Hasher};
-    let bits = std::collections::hash_map::RandomState::new()
+    std::collections::hash_map::RandomState::new()
         .build_hasher()
-        .finish();
-    (bits >> 40) as f32 / (1u32 << 24) as f32
+        .finish()
 }
 
 /// A bot's create: its body with its full pools, as the live nameplate tool

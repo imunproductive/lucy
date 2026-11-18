@@ -13,6 +13,7 @@ pub mod map_tags;
 pub mod mode;
 pub mod placed;
 pub mod player;
+pub mod random_tables;
 pub mod rulesets;
 pub mod snapshot;
 pub mod stream;
