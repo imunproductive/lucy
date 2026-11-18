@@ -154,9 +154,10 @@ fn the_area_file_reads_rooms_damage_areas_placeables_kill_volumes_and_failures()
 fn the_tag_queries_find_the_maps_tagged_entities_of_the_mode() {
     let data = MapAreaData::read(
         br#"{"maps": {"0x0800000000000001": {"tagged": [
-            {"placeable": 126, "position": [1, 2, 3], "tags": ["0x0D6000000000030F", "0x0D60000000000310"]},
+            {"placeable": 126, "position": [1, 2, 3], "rotation": [0, 0, 0, 1],
+             "tags": ["0x0D6000000000030F", "0x0D60000000000310"]},
             {"placeable": 127, "identifier": "0x0D80000000002962", "position": [0, 0, 0],
-             "tags": ["0x0D60000000000310"]}
+             "rotation": [0, 0, 0, 1], "tags": ["0x0D60000000000310"]}
         ]}}}"#,
     )
     .unwrap();

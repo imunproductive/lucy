@@ -977,11 +977,16 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     }
     let mut mode = false;
     let mut controller = false;
-    // The mode's and the controller's first script chunks.
+    // The mode's and the controller's first script chunks (the Training
+    // Partner's player, `player_entity(1)`, and his body have their own:
+    // not checked here).
     let first_script = |record: &WorldRecord, mode: &mut bool, controller: &mut bool| {
         let Some(script) = &record.script else {
             return;
         };
+        if record.entity & !0xFF == player_entity(1) {
+            return;
+        }
         assert_eq!((script.first, script.span), (0, 1));
         if record.entity == GAME_MODE_ENTITY {
             // The Range's board frame (`scene::BOARD_POSTERS`, port 1b):
@@ -1006,8 +1011,10 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     // The rest of the world follows, with no script whose create the
     // client hasn't acknowledged: 4 placeables, the player, the mode, the
     // map's 26 server placeables (`game_map_areas` `server_placeables`),
-    // 15 bots and their 15 stand-in controllers: 4 + 2 + 26 + 15 + 15 = 62.
-    while creates.len() < 62 {
+    // 15 bots and their 15 stand-in controllers, and the Training Partner
+    // the console `265F` makes (his player and body, `ai.rs`):
+    // 4 + 2 + 26 + 15 + 15 + 2 = 64.
+    while creates.len() < 64 {
         let frame = client.receive();
         assert!(client.window.accept(frame.seq));
         let records = world_records(&schemas, &frame);
@@ -1024,7 +1031,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         }
         assert!(client.now() < deadline, "waiting for the rest of the world");
     }
-    assert_eq!(creates.len(), 62);
+    assert_eq!(creates.len(), 64);
 
     // Even after the retransmission, a script stays behind its create ACK.
     let withheld = client.receive();
@@ -2435,13 +2442,16 @@ fn walking_out_of_the_spawn_room_clears_the_hero_select_flag() {
 /// spawn room `0D62` (126) are blue, so a red player at the blue spawn
 /// stands in the room as an intruder, and the room's `0B7B` (`0C8E` st45,
 /// 400 a second) kills him again after every respawn. The tests that pit
-/// two teams' players against each other spawn everyone at the Range's
-/// other blue point (placeable 649), in the open outside the room.
+/// two teams' players against each other spawn everyone near the Range's
+/// other blue point (placeable 649), in the open outside the room. That
+/// point is on the Training Partner's pad `3992`, where the console `265F`
+/// puts its Tracer, so they spawn 1.5 m to its side (along (0.8157, 0,
+/// 0.5785), square to its facing).
 fn two_team_range() -> GameMap {
     GameMap {
         spawns: vec![orpheus_content::maps::Spawn {
             team: None,
-            position: [34.24001, 1.991726, 22.97223],
+            position: [35.46356, 1.991726, 23.83998],
             yaw: 144.6566,
         }],
         ..GameMap::practice_range()
@@ -2594,6 +2604,40 @@ fn practice_world<const N: usize>(
         }
     }
     (server, schemas, watchers, spawns)
+}
+
+/// The Practice Range's Training Partner console `265F` makes its default
+/// partner at its start (`STU_FC3921B1`, `orpheus_sim::placed_script`): a
+/// Tracer (`0003.075`) on the red team, an AI player in the room's next
+/// slot (`ai.rs`), whose body stands still on the console's pad `3992`
+/// (34.24, 1.99, 22.97) facing the pad's way, and whose body the player's
+/// client gets.
+#[test]
+#[ignore = "requires the derived 104319 data"]
+fn the_range_console_puts_a_tracer_training_partner_on_its_pad() {
+    const TRACER: u64 = 0x02E0_0000_0000_0003;
+    const PAD: [f64; 3] = [34.24001, 1.9917264, 22.972233];
+    let (server, schemas, mut watchers, _) = practice_players([("player#1111", 0, "Soldier: 76")]);
+    let partner = player_entity(1) | 1;
+    let mut all: Vec<&mut Watcher> = watchers.iter_mut().collect();
+    pump_until(
+        &mut all,
+        &schemas,
+        "the Training Partner's body",
+        |watchers| watchers[0].created(partner).is_some(),
+    );
+    let bodies = server.bodies(MATCH).unwrap();
+    let [_, dummy] = bodies.as_slice() else {
+        panic!("{bodies:?}");
+    };
+    assert!(dummy.ai);
+    assert_eq!((dummy.team, dummy.hero), (1, Some(TRACER)));
+    let feet = dummy.position.unwrap();
+    assert!(
+        (feet[0] - PAD[0]).abs() < 1e-3 && (feet[2] - PAD[2]).abs() < 1e-3,
+        "{feet:?}"
+    );
+    assert!((feet[1] - PAD[1]).abs() < 0.1, "{feet:?}");
 }
 
 /// Team 0's first player (slot 0 of the room) runs out of his spawn room

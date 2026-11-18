@@ -505,6 +505,24 @@ pub fn lvalue(config: &Json) -> Result<Option<Variable>, EvalError> {
     dynamic(entry)
 }
 
+/// The variable an entity member expression reads (`entity.#id`: a config
+/// push, the identifier, the member read: `[14 c, 7 v, 15 0]`).
+fn member_identifier(config: &Json) -> Result<Option<u32>, EvalError> {
+    if !is_expression(class(config)) {
+        return Ok(None);
+    }
+    let parts = Expression::read(config)?;
+    let code: Vec<Option<u64>> = parts.code.iter().map(Json::as_u64).collect();
+    if !matches!(
+        code.as_slice(),
+        [Some(14), _, Some(7), _, Some(15), Some(0)]
+    ) {
+        return Ok(None);
+    }
+    let index = byte(&parts.code[3], 3)?;
+    identifier(table(parts.dynamics, index, 2)?).map(Some)
+}
+
 pub fn valid_entity(id: u32) -> bool {
     id != 0 && (id & 0x1fff_ffff) != 0x1fff_ffff
 }
@@ -2396,12 +2414,22 @@ impl Evaluator {
                     .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
                 Value::Float(scale)
             }
+            // GetGameRulesetValue (`Eval_STU_3832D36C` 0x7FF789BDFAC0,
+            // GameSettings.md 15.2): `m_value` first, and a value wins (an
+            // entity variable of the key's id); else the ruleset default of
+            // the key, `m_value`'s variable: a dynamic one, or an entity's
+            // member (`mode.#29450`, 58 uses: the Practice Range pad `26F8`
+            // and console `265F` read the Training Partner setting so).
             "STU_3832D36C" => {
-                let key = match dynamic(value)? {
-                    Some(variable) => Some(variable.id),
-                    None => u32::try_from(to_int(&self.config(value, context, nested)?, 0)).ok(),
+                let found = self.config(value, context, nested)?;
+                let key = match (dynamic(value)?, member_identifier(value)?) {
+                    (Some(variable), _) => Some(variable.id),
+                    (None, id) => id,
                 };
-                key.map_or(Value::Null, |key| context.ruleset(key))
+                match key {
+                    Some(key) if found == Value::Null => context.ruleset(key),
+                    _ => found,
+                }
             }
             "STU_91EFD5B1" => {
                 let value = self.config(value, context, nested)?;

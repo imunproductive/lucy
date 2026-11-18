@@ -69,6 +69,7 @@ use orpheus_script::{
     codecs::CodecTable,
     graph::GraphStore,
     map_tags::MapTags,
+    placed::{DummyChange, NextDummy},
     vitals::Vitals,
     vm::{GameMessage, MapRays, MessageEnd, TargetCandidate, Unknowns},
     wire::Variables,
@@ -926,6 +927,18 @@ impl PreparedScene {
     /// call, for the match to route ([`crate::messages`]).
     pub fn take_placed_messages(&mut self) -> (Vec<GameMessage>, Vec<MessageEnd>) {
         self.placed_scripts.take_messages()
+    }
+
+    /// The player and first body the next dummy bot the placed scripts
+    /// make gets ([`PlacedScripts::set_next_dummy`]).
+    pub fn set_next_dummy(&mut self, next: Option<NextDummy>) {
+        self.placed_scripts.set_next_dummy(next);
+    }
+
+    /// The dummy bots the placed scripts made or removed since the last
+    /// call, for the match to make or remove.
+    pub fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
+        self.placed_scripts.take_dummy_changes()
     }
 
     /// The scene's entities that take game messages at world tick `tick`
