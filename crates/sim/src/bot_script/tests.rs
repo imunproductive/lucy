@@ -192,7 +192,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
 
     // The mode UI arrives: each bot's nameplate follows alone.
     tick += 1;
-    world.present(&scene, tick).unwrap();
+    world.present(&scene, scene.mode_ui(), tick).unwrap();
     deliver(&mut world);
     assert!(world.mode_ready());
     world.update_bots(&scene, &[], tick);
@@ -253,7 +253,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
     scene.bot_died(&BotDeath {
         bot: victim,
         killer: OWNER | 1,
-        critical: false,
+        critical: true,
         loadout: None,
         tags: orpheus_script::weapons::DamageTags::NONE,
         tick,
@@ -278,6 +278,22 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
             .cloned()
     };
     assert_eq!(dead(&world), Some(Value::Bool(true)));
+    // Its kill feed graph `0C18` keeps the death's crit (`0095` → #1821,
+    // synced, rid10 sends it as the line's headshot marker `03EF`).
+    let crit = |world: &WorldDelivery, entity: u32| {
+        let base = &world
+            .bot_stream(entity)
+            .and_then(|stream| stream.base())
+            .unwrap()
+            .1;
+        let feed = base
+            .instance_graphs()
+            .find(|&(_, graph)| graph == 0x0c18)
+            .map(|(instance, _)| instance)
+            .expect("the bot runs 0C18");
+        base.instance_variable(feed, 1821).cloned()
+    };
+    assert_eq!(crit(&world, victim), Some(Value::Bool(true)));
     let mut updates = 0;
     // The death script runs for its lifetime, 187 frames.
     for _ in 0..200 {
@@ -359,6 +375,9 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
             .cloned()
     };
     assert_eq!(dead_flag(&world), Some(Value::Bool(true)));
+    // A death without a critical says so too: the client's line takes its
+    // marker from the variable, not from the last line's.
+    assert_eq!(crit(&world, source), Some(Value::Bool(false)));
     // The copy's launch, then the rest of the death.
     world.advance_observed(tick);
     let launched = deliver(&mut world);

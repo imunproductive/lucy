@@ -32,7 +32,7 @@ fn a_hero_switch_takes_its_notice_from_the_controller_graph() {
     let mut world = WorldDelivery::new(PLAYER);
     world.start(&scene, &viewer, FIRST_TICK).unwrap();
     world.created.insert(PLAYER);
-    world.present(&scene, FIRST_TICK).unwrap();
+    world.present(&scene, scene.mode_ui(), FIRST_TICK).unwrap();
     let pick = |world: &mut WorldDelivery, tick, body, hero| {
         let hero = scene.heroes().get(hero).unwrap();
         world
