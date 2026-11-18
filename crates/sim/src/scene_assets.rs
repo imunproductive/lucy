@@ -921,6 +921,11 @@ impl PreparedScene {
         Arc::clone(&self.graphs)
     }
 
+    /// The statescript graphs and the data loaded with them.
+    pub fn graphs(&self) -> &GraphStore {
+        &self.graphs
+    }
+
     /// The mode graphs' values the match flow uses (the wait after a
     /// round, the overtime fuse, Control's capture times).
     pub fn mode_graph_values(&self) -> ModeGraphValues {
@@ -1511,6 +1516,7 @@ mod tests {
                 .pose(),
             quanta: RETAIL_QUANTA,
             mode_random: scene.mode_random(),
+            ai: None,
         };
         assert!(
             scene.owner_body_runtime(pharah, spawn).unwrap().is_some(),
@@ -1573,6 +1579,7 @@ mod tests {
             pose: mover.pose(),
             quanta: RETAIL_QUANTA,
             mode_random: scene.mode_random(),
+            ai: None,
         };
         let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
         // (frames, forward throttle, buttons held)
@@ -1755,6 +1762,7 @@ mod tests {
             pose: mover.pose(),
             quanta: RETAIL_QUANTA,
             mode_random: scene.mode_random(),
+            ai: None,
         };
         let [x, y, z] = spawn.pose.position;
         let body = |entity, team, dx: f64| TargetCandidate {
@@ -1763,6 +1771,7 @@ mod tests {
             dead: false,
             controller: None,
             ai: false,
+            ai_control: None,
             feet: [x + dx, y, z],
             height: 1.8,
             radius: 0.4,
@@ -1861,6 +1870,7 @@ mod tests {
             pose: mover.pose(),
             quanta: RETAIL_QUANTA,
             mode_random: scene.mode_random(),
+            ai: None,
         };
         let [x, y, z] = spawn.pose.position;
         // Yaw 0 looks along +z.
@@ -1870,6 +1880,7 @@ mod tests {
             dead: false,
             controller: None,
             ai: false,
+            ai_control: None,
             feet: [x + dx, y, z + dz],
             height: 1.8,
             radius: 0.4,

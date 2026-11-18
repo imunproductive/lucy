@@ -174,8 +174,6 @@ impl World for BotWorld {
             // open. `0C17` rid 23 starts its pain lines' audience (#1839)
             // with it, and rid 22 and 21 add the bot and its attacker.
             "STU_ED45C5E8" => Some("no entities"),
-            // See `native`: no difficulty profile, so the authored fallback.
-            "STU_4049CF77" => Some("the authored fallback (no difficulty profile)"),
             _ => None,
         }
     }
@@ -284,6 +282,22 @@ impl World for BotWorld {
         self.targets.as_deref()
     }
 
+    /// `STU_4049CF77`: the bot's AI definition (`1404`, `14AF`) has no
+    /// difficulty profiles (`m_difficultyProfiles` null, BotDamage.md), so
+    /// the graphs take their authored fallback (the Training Bot's rocket,
+    /// `0BA3` node 178: `1961`, 8); another listed body's AI as the match
+    /// gives it.
+    fn ai_parameter(&mut self, site: Site, entity: u32, identifier: u64) -> Option<Option<f64>> {
+        if entity == site.entity {
+            return Some(None);
+        }
+        self.targets
+            .as_deref()?
+            .iter()
+            .find(|body| body.entity == entity || body.controller == Some(entity))
+            .map(|body| body.ai_parameter(self.graphs.ai_definitions(), identifier))
+    }
+
     fn native(&mut self, site: Site, config: &Json) -> Option<Value> {
         let class = config.get("$")?.as_str()?;
         if class == "STU_AC829876"
@@ -343,18 +357,6 @@ impl World for BotWorld {
             // (`0BA3` node 178) takes its AI damage, not the 19 a player's
             // copy of the volley would deal.
             "STU_D3EB8D87" if is_own_possessor(config.get("m_00903303")) => Some(Value::Bool(true)),
-            // An AI weapon parameter (`m_F00C2F3D`, such as the damage
-            // `1961`) of the possessing AI definition's difficulty profile
-            // (`STUAIBehaviorComponent.m_difficultyProfiles`; upstream
-            // reads Junkenstein's per difficulty). `1404` and `14AF` have no
-            // profiles, so the parameter is its authored fallback
-            // `m_A53100D5` (assumption: the field's meaning; where a profile
-            // exists, the fallback is one of its tiers' values, as Reaper's
-            // `0019` 3.5 is). Only a literal fallback is read; and only for
-            // the body itself (`m_C5D0FA56` none).
-            "STU_4049CF77" if config.get("m_C5D0FA56").is_none_or(Json::is_null) => {
-                literal_number(config.get("m_A53100D5")?)
-            }
             // IsTutorial (CE8580), as `PlayerWorld` answers it.
             "STU_A77AC2AC" if native_shape(config, class, None) => {
                 Some(Value::Bool(self.mode == TUTORIAL_MODE))
@@ -392,16 +394,6 @@ fn is_own_possessor(config: Option<&Json>) -> bool {
     config.is_some_and(|config| {
         native_shape(config, "STU_DB742151", Some("m_entity")) && is_owner(config.get("m_entity"))
     })
-}
-
-/// A literal `STUConfigVarInt` or `STUConfigVarFloat`.
-fn literal_number(config: &Json) -> Option<Value> {
-    let value = config.get("m_value")?;
-    match config.get("$")?.as_str()? {
-        "STUConfigVarInt" => value.as_i64().map(Value::Integer),
-        "STUConfigVarFloat" => value.as_f64().map(Value::Float),
-        _ => None,
-    }
 }
 
 /// The stock filter: its set fields (not null, not zero) are exactly the
@@ -1760,6 +1752,7 @@ mod tests {
                 dead: false,
                 controller: Some(entity & !0xff),
                 ai: false,
+                ai_control: None,
                 feet: [0.0; 3],
                 height: 1.8,
                 radius: 0.4,

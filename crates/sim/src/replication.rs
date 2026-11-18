@@ -57,6 +57,7 @@ use orpheus_physics::{
 };
 use orpheus_script::controller::ControllerScript;
 use orpheus_script::{
+    ai_definitions::AiControl,
     graph::GraphStore,
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
@@ -1405,6 +1406,11 @@ pub struct WorldDelivery {
     /// views nobody, and its records arrive as soon as they are ready
     /// ([`Self::deliver_locally`]).
     headless: bool,
+    /// An AI player's AI entity and the difficulty identifier it plays at
+    /// (`orpheus_script::ai_definitions`); none for a human's world. Each
+    /// body he plays is possessed by the AI entity, made from that body's
+    /// AI definition.
+    ai: Option<(u32, u64)>,
     /// Time the match flow adds to a death's respawn now (overtime,
     /// game-rules.md 11).
     respawn_extra: Duration,
@@ -1537,6 +1543,7 @@ impl WorldDelivery {
             board: BoardDelivery::default(),
             assembling: false,
             headless: false,
+            ai: None,
             respawn_extra: Duration::ZERO,
             hero_settings: HeroSettings::default(),
             voice: None,
@@ -1551,14 +1558,28 @@ impl WorldDelivery {
     }
 
     /// The world of an AI player, whose body the server plays without a
-    /// client (`crate::ai`).
-    pub fn headless(owner: u32) -> Self {
+    /// client (`crate::ai`): his AI entity `ai_entity` possesses each body
+    /// he plays, at `difficulty` (a difficulty identifier,
+    /// `orpheus_script::ai_definitions::EASY` and up).
+    pub fn headless(owner: u32, ai_entity: u32, difficulty: u64) -> Self {
         let mut world = Self {
             headless: true,
+            ai: Some((ai_entity, difficulty)),
             ..Self::new(owner)
         };
         world.input.immediate = true;
         world
+    }
+
+    /// The AI that possesses this player's body of `hero`: none for a
+    /// human's.
+    fn ai_control(&self, graphs: &GraphStore, hero: u64) -> Option<AiControl> {
+        let (entity, difficulty) = self.ai?;
+        Some(AiControl {
+            entity,
+            definition: graphs.ai_definitions().definition(hero)?,
+            difficulty,
+        })
     }
 
     /// Whether this is an AI player's world.
@@ -3134,6 +3155,7 @@ impl WorldDelivery {
             dead: self.death.is_some(),
             hurt: vitals.is_some_and(Vitals::hurt),
             tags: scene.body_tags(hero.body),
+            ai: self.ai_control(scene.graphs(), body.hero),
         })
     }
 
@@ -4235,6 +4257,7 @@ impl WorldDelivery {
                     pose: movement,
                     quanta,
                     mode_random: scene.mode_random(),
+                    ai: self.ai_control(scene.graphs(), hero.guid),
                 },
             )
             .ok()

@@ -31,6 +31,7 @@ use orpheus_physics::{
     mover::modifiers::{Modifier, ModifierKey},
 };
 use orpheus_script::{
+    ai_definitions::AiControl,
     codecs::CodecTable,
     expr::{team_from_filter, to_float},
     graph::GraphStore,
@@ -87,6 +88,9 @@ pub struct OwnerBodySpawn {
     /// ([`crate::scene::mode_create`]), which the mode body script `0C8E`
     /// reads (`STU_B182C5C9`).
     pub mode_random: f32,
+    /// The AI entity that possesses an AI hero's body (none for a human's):
+    /// the body's graphs read their AI damage from its profile.
+    pub ai: Option<AiControl>,
 }
 
 /// What the game mode adds to each player body: its team's body script
@@ -241,6 +245,7 @@ impl PlayerBodyFactory {
             self.mode,
             self.hero,
         );
+        world.ai = spawn.ai;
         world.position = spawn.pose.position;
         world.mode_random = Some(spawn.mode_random);
         if let Some(map) = map {
@@ -778,6 +783,7 @@ pub fn fixture_body_factory() -> (PlayerBodyFactory, OwnerBodySpawn) {
         },
         quanta: RETAIL_QUANTA,
         mode_random: 0.5,
+        ai: None,
     };
     let factory = PlayerBodyFactory::prepare(
         graphs,

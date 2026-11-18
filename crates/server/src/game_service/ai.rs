@@ -9,6 +9,15 @@
 //! his entry in the team list, his body and its observer frames. His
 //! commands come from an [`AiController`] (`orpheus_sim::ai`) once a tick.
 //!
+//! His body is possessed by his AI entity ([`ai_entity`]), made from the
+//! hero body's AI definition at the room's difficulty
+//! (`orpheus_script::ai_definitions`): the body's graphs see an AI
+//! possessor with component 92 and read his weapons' damage from its
+//! difficulty profile (Soldier: 76's rifle 4, 10 or 20 for the player's 20),
+//! as retail's weapon graphs are written to. The AI entity is the
+//! server's: the clients see his controller possess the body, as a human's
+//! (`docs/dev/loose-ends.md`).
+//!
 //! The Python reference server had no AI players: this is the Rust
 //! server's own (`docs/notes/related-projects.md`, "AI heroes as
 //! server-driven players"). Assumptions: an AI's name is its hero's
@@ -24,7 +33,6 @@ use orpheus_sim::{
     ai::{
         AiController, Difficulty, Goal, PATHS_PER_TICK, Random, Seen, Senses, pick_heroes, ticks,
     },
-    combat::PlayerHit,
     match_flow::{MatchFlow, Phase},
     replication::WorldDelivery,
     scene::PlayerCard,
@@ -36,9 +44,23 @@ use super::{
     pick_message, player_entity,
 };
 
+/// The AI entity of the AI in slot n is `AI_ENTITY + n`: in id class 0,
+/// where the server's own entities are, between the map's placeables (at
+/// most `0x80001250`) and the training bots' controllers (`bots.rs`).
+const AI_ENTITY: u32 = 0x8000_7000;
+
+/// The AI entity of the AI player in `slot`.
+fn ai_entity(slot: usize) -> u32 {
+    AI_ENTITY + slot as u32
+}
+
 /// An AI player's seat: what plays him.
 pub(super) struct AiSeat {
     controller: AiController,
+    /// His AI entity ([`ai_entity`]), which possesses each body he plays.
+    pub(super) entity: u32,
+    /// The difficulty identifier his AI plays at.
+    pub(super) difficulty: u64,
     /// His roster hero, by name, until the scene names its GUID.
     name: &'static str,
     hero: Option<u64>,
@@ -103,6 +125,8 @@ impl Room {
                     slot,
                     AiSeat {
                         controller,
+                        entity: ai_entity(slot),
+                        difficulty: difficulty.identifier(),
                         name,
                         hero: None,
                         ask_again: 0,
@@ -111,21 +135,6 @@ impl Room {
             }
         }
         seats
-    }
-}
-
-/// Rule 123: an AI hero deals its difficulty's share of his weapons'
-/// damage, to players and AI heroes alike. His heals stay whole
-/// (assumption: the rule speaks of damage alone).
-pub(super) fn scale_damage(hits: &mut [PlayerHit], players: &[Player], difficulty: Difficulty) {
-    for hit in hits.iter_mut().filter(|hit| !hit.heal) {
-        let shooter = hit.shooter.source & !0xff;
-        if players
-            .iter()
-            .any(|player| player.ai && player.entity == shooter)
-        {
-            hit.amount *= difficulty.damage_scale();
-        }
     }
 }
 

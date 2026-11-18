@@ -623,6 +623,7 @@ fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
         dead: false,
         hurt: false,
         tags: None,
+        ai: None,
     };
     let mut combat = Combat::new(&scene);
     let mut hits = Vec::new();

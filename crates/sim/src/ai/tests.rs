@@ -127,7 +127,7 @@ fn walk(feet: [f64; 3], command: &Command) -> [f64; 3] {
 }
 
 #[test]
-fn difficulty_scales_damage_and_accuracy_as_the_rules_say() {
+fn difficulty_picks_its_profile_and_accuracy_as_the_rules_say() {
     let levels: Vec<_> = (1..=3)
         .map(|level| Difficulty::from_level(level).unwrap())
         .collect();

@@ -45,6 +45,7 @@ use serde_json::Value as Json;
 pub use statuses::{BodyEffects, CombatMod, DAMAGE_TAKEN, HEALING_TAKEN, INVULNERABLE, PHASED_OUT};
 
 use crate::{
+    ai_definitions::{AiControl, AiDefinitions},
     expr::{
         self, Context, EmptyContext, EntityRelation, EvalError, Scope, StackPriority, Variable,
         equal, truthy,
@@ -223,15 +224,19 @@ pub struct TargetCandidate {
     /// Its team; none in a free-for-all, where a body is only its own ally.
     pub team: Option<u8>,
     pub dead: bool,
-    /// The entity that controls it: a player's controller, a training
-    /// bot's stand-in controller; none when the match has none.
+    /// The entity that controls it (its primary possessor, `STU_DB742151`):
+    /// a player's controller, an AI hero's AI entity, a training bot's
+    /// stand-in controller; none when the match has none.
     pub controller: Option<u32>,
     /// Whether that controller is an AI (has component 92, which
     /// `STU_D3EB8D87` tests): a training bot's, whose body its AI
-    /// definition possesses. Players' controllers are not, AI heroes'
-    /// included: the server gives them the player's damage times a share
-    /// (`orpheus_sim::ai::scale_damage`).
+    /// definition possesses, and an AI hero's AI entity. Players'
+    /// controllers are not.
     pub ai: bool,
+    /// An AI hero's AI entity (the `controller`) with its definition and
+    /// difficulty, whose profile `STU_4049CF77` reads; none for a player
+    /// and a training bot (whose AI definitions have no profiles).
+    pub ai_control: Option<AiControl>,
     /// Its capsule: from the feet up `height`, `radius` round (the match's
     /// `TargetPose`).
     pub feet: [f64; 3],
@@ -260,6 +265,12 @@ impl TargetCandidate {
     /// module notes: team bit, body kinds, dead).
     pub fn filter_word(&self) -> u64 {
         targets::filter_word(self)
+    }
+
+    /// `STU_4049CF77` of this body or its controller: its AI's profile
+    /// value of `identifier`; none without an AI profile or such a value.
+    pub fn ai_parameter(&self, definitions: &AiDefinitions, identifier: u64) -> Option<f64> {
+        self.ai_control?.parameter(definitions, identifier)
     }
 
     /// How far `point` is from the capsule's surface (0 inside).
@@ -610,6 +621,12 @@ pub trait World {
             .iter()
             .find(|body| body.controller == Some(entity))
             .map(|body| body.ai)
+    }
+
+    /// An AI parameter (`STU_4049CF77`, [`expr::Context::ai_parameter`]);
+    /// None: unknown here.
+    fn ai_parameter(&mut self, _site: Site, _entity: u32, _identifier: u64) -> Option<Option<f64>> {
+        None
     }
 
     /// None leaves an encountered AI candidate explicitly unsupported.
