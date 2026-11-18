@@ -241,7 +241,12 @@ fn an_instance_made_by_another_entity_names_its_creator() {
     for view in [View::Owner, View::Observer] {
         let projected = encoder.project(&snapshot, view).unwrap();
         let frame = encoder.full(&projected).unwrap();
-        let head = wire::read_full_head(frame.as_bytes()).unwrap();
+        let head = wire::read_full_head(frame.as_bytes(), |graph| {
+            graphs
+                .graph(u32::from(graph))
+                .map(|graph| graph.header.states_bits)
+        })
+        .unwrap();
         assert_eq!(
             head.instances,
             [(1, 42, None, None), (2, 43, Some(THROWER), Some((1, 1)))],
@@ -756,6 +761,22 @@ fn ability_cooldown_and_push_binding_match_python_bytes() {
         &encoder.full(&observer).unwrap(),
         146,
         "081500001d40003c200000e84f0000801f0000",
+    );
+    // The owner's full frame head: the pushed value and its Stack link.
+    let head = crate::wire::read_full_head(
+        encoder.owner_full(&owner, 1001, 16).unwrap().as_bytes(),
+        |graph| {
+            graphs
+                .graph(u32::from(graph))
+                .map(|graph| graph.header.states_bits)
+        },
+    )
+    .unwrap();
+    assert_eq!(head.command_frame, Some(1001));
+    assert_eq!(head.variables, Variables::from([(7, Value::Bool(true))]));
+    assert_eq!(
+        head.links,
+        std::collections::BTreeMap::from([(7, vec![(1, 0)])])
     );
 
     snapshot.bindings[&(0, 7)][0].slot = 0;
@@ -1498,6 +1519,32 @@ fn larger_masks_preserve_group_presence_before_slot_bits() {
     let mut bits = BitWriter::new();
     write_mask(&mut bits, 22, &BTreeSet::from([0, 8, 17]));
     check(&bits, 25, "0f081000");
+}
+
+/// A delta lists a variable whose wire value changed, also from unset to
+/// false or 0, which the scripts' equality takes for the same (the client
+/// otherwise keeps it unset: a bot's `0C18` #1821, the kill feed's
+/// headshot marker, stayed unset for a kill that wasn't critical). A value
+/// the client already holds stays out.
+#[test]
+fn a_delta_lists_a_variable_that_went_from_unset_to_false_or_zero() {
+    let vars = |values: &[(u32, Value)]| ProjectedVariables {
+        values: values.iter().cloned().collect(),
+        bindings: Bindings::new(),
+    };
+    let before = vars(&[(3, Value::Bool(true)), (4, Value::Integer(0))]);
+    let current = vars(&[
+        (1821, Value::Bool(false)),
+        (2, Value::Integer(0)),
+        (3, Value::Bool(true)),
+        (4, Value::Integer(0)),
+        (5, Value::Array(vec![Value::Bool(false)])),
+    ]);
+    let mut changes = BTreeSet::new();
+    let delta = delta_variables(7, Some(&before), &current, &BTreeSet::new(), &mut changes);
+    let mut listed: Vec<_> = delta.values.keys().copied().collect();
+    listed.sort_unstable();
+    assert_eq!(listed, [2, 5, 1821]);
 }
 
 #[test]

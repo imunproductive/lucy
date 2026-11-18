@@ -806,7 +806,14 @@ impl Inputs<'_> {
 }
 
 impl Context for Inputs<'_> {
+    /// A ruleset entry's own variable is unset: GetGameRulesetValue reads
+    /// it first, then the entry (`STU_3832D36C`).
     fn variable(&mut self, variable: Variable) -> Value {
+        if self.rulesets.iter().any(|(key, _)| *key == variable.id)
+            && !self.variables.iter().any(|(key, _)| *key == variable.id)
+        {
+            return Value::Null;
+        }
         self.input(self.variables, variable.id, "variable")
     }
 

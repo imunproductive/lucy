@@ -28,7 +28,6 @@ use crate::{
     hitboxes::HitboxCatalog,
     hitscan::{RAY_PROFILES_FILE, RayProfiles, SceneRays},
     hurt_feedback::HurtFeedback,
-    instance::RosterBot,
     map_areas::{self, DamageArea, MapAreaData, PlacedScript, SpawnRoom},
     match_flow::{MatchFlow, Mode, Timers},
     messages::Bots,
@@ -41,9 +40,7 @@ use crate::{
     pools::PoolCatalog,
     projectiles::FIELD_ENTITY,
     replication::OwnerBodyRuntime,
-    scene::{
-        PlayerAppearance, bot_controller_entity, initial_world, mode_ui, placeable_components,
-    },
+    scene::{PlayerAppearance, initial_world, mode_ui, placeable_components},
 };
 use orpheus_content::{
     heroes::{EyeCatalog, Hero, HeroCatalog, SOLDIER},
@@ -69,6 +66,7 @@ use orpheus_script::{
     codecs::CodecTable,
     graph::GraphStore,
     map_tags::MapTags,
+    placed::{DummyChange, NextDummy},
     vitals::Vitals,
     vm::{GameMessage, MapRays, MessageEnd, TargetCandidate, Unknowns},
     wire::Variables,
@@ -210,9 +208,6 @@ pub struct PreparedScene {
     graphs: Arc<GraphStore>,
     initial_board: Component,
     bots: Vec<Bot>,
-    /// The roster slots the room's own players took before the bots got
-    /// theirs (`scene::bot_roster_slot`); the room sets it.
-    bot_roster: usize,
     bot_scripts: BotScripts,
     /// The live nameplate tool's changes to the bots (`bot_plate`).
     bot_plate: Arc<BotPlate>,
@@ -548,7 +543,6 @@ impl SceneAssets {
             initial_board,
             bots,
             bot_scripts,
-            bot_roster: 0,
             bot_plate: Arc::default(),
             hurt: HurtFeedback::default(),
             script_anims: Arc::clone(&self.script_anims),
@@ -662,7 +656,12 @@ impl SceneAssets {
                     ))
                 })
                 .collect(),
-            respawn_seconds: self.respawns.sent(mode).map(|time| time.as_secs() as i64),
+            // The Range's `13C0` holds its own `06FD` to every body.
+            respawn_seconds: self
+                .respawns
+                .sent(mode)
+                .filter(|_| !crate::mode_script::without_flow(mode))
+                .map(|time| time.as_secs() as i64),
             team_sizes: crate::instance::team_entries(scene.map()),
         };
         let ready = self
@@ -913,19 +912,37 @@ impl PreparedScene {
         &self.placed_scripts
     }
 
+    /// The spawn rooms the mode holds now the mode's message for, in the
+    /// mode graph's place (`choice`: each team's current spawn, the match
+    /// flow's; [`map_areas::room_holds`]).
+    pub fn room_holds(&self, choice: impl Fn(u8) -> SpawnChoice) -> Vec<(u32, Option<u8>)> {
+        map_areas::room_holds(&self.spawn_rooms, &self.map, choice)
+    }
+
     /// Start the server placeables' scripts at the first call, give the
-    /// spawn rooms the mode holds now the mode's message (`choice`: each
-    /// team's current spawn, the match flow's; [`map_areas::room_holds`]),
-    /// then advance them to `tick`.
-    pub fn advance_placed(&mut self, tick: u32, choice: impl Fn(u8) -> SpawnChoice) {
-        let holds = map_areas::room_holds(&self.spawn_rooms, &self.map, choice);
-        self.placed_scripts.advance(tick, &holds);
+    /// spawn rooms `holds` (none where the mode graph sends its `0724`
+    /// itself; else [`Self::room_holds`]) the mode's message, then advance
+    /// them to `tick`.
+    pub fn advance_placed(&mut self, tick: u32, holds: &[(u32, Option<u8>)]) {
+        self.placed_scripts.advance(tick, holds);
     }
 
     /// The placed scripts' game messages and message ends since the last
     /// call, for the match to route ([`crate::messages`]).
     pub fn take_placed_messages(&mut self) -> (Vec<GameMessage>, Vec<MessageEnd>) {
         self.placed_scripts.take_messages()
+    }
+
+    /// The player and first body the next dummy bot the placed scripts
+    /// make gets ([`PlacedScripts::set_next_dummy`]).
+    pub fn set_next_dummy(&mut self, next: Option<NextDummy>) {
+        self.placed_scripts.set_next_dummy(next);
+    }
+
+    /// The dummy bots the placed scripts made or removed since the last
+    /// call, for the match to make or remove.
+    pub fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
+        self.placed_scripts.take_dummy_changes()
     }
 
     /// The scene's entities that take game messages at world tick `tick`
@@ -964,29 +981,6 @@ impl PreparedScene {
 
     pub fn bots(&self) -> &[Bot] {
         &self.bots
-    }
-
-    /// The training bots as the roster names them: each one's stand-in
-    /// controller, name, team and roster slot (`scene::bot_roster_slot`).
-    pub fn roster_bots(&self) -> Vec<RosterBot<'_>> {
-        self.bots
-            .iter()
-            .enumerate()
-            .filter_map(|(slot, bot)| {
-                Some(RosterBot {
-                    controller: bot_controller_entity(slot).ok()?,
-                    name: &bot.spawn.name,
-                    team: bot.spawn.team,
-                    slot: self.bot_roster + slot,
-                })
-            })
-            .collect()
-    }
-
-    /// The room's own players took the first `players` roster slots: the
-    /// bots' stand-in controllers take the next ones.
-    pub fn set_bot_roster(&mut self, players: usize) {
-        self.bot_roster = players;
     }
 
     pub fn bots_mut(&mut self) -> &mut [Bot] {
@@ -1344,7 +1338,6 @@ impl PreparedScene {
             viewer,
             self.initial_board.clone(),
             &self.bots,
-            self.bot_roster,
             &self.bot_plate,
             self.mode_random,
         )?;

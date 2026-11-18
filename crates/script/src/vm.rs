@@ -686,6 +686,18 @@ pub trait World {
         false
     }
 
+    /// Create a dummy bot (`STU_FC3921B1`): a hero body no player plays;
+    /// the entity it gets. None: this world creates none.
+    fn create_dummy_bot(&mut self, _site: Site, _dummy: DummyBot) -> Option<u32> {
+        None
+    }
+
+    /// Remove the dummy bot in a team's slot (`STU_C1561031`). False: this
+    /// world removes none.
+    fn remove_dummy_bot(&mut self, _site: Site, _team: i64, _slot: i64) -> bool {
+        false
+    }
+
     fn body_on_fire(&mut self, _site: Site, _entity: u32) -> Option<bool> {
         None
     }
@@ -909,6 +921,24 @@ pub struct TrackedStat {
     /// `m_targets`, each once: whose stats (the owner itself unevaluated;
     /// a body, a controller or a player entity).
     pub targets: Vec<u32>,
+}
+
+/// A dummy bot a graph asks for (`STU_FC3921B1`, server-only: no client
+/// code; its fields are the Workshop's "Create Dummy Bot" parameters one
+/// for one, `refs/reports/TrainingPartner.md`). The Practice Range's
+/// Training Partner console `265F` makes one so.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DummyBot {
+    /// `m_heroGUID`: the hero (`075`).
+    pub hero: u64,
+    /// `m_67465E75`: the team index (0 blue, 1 red).
+    pub team: i64,
+    /// `m_slot`: its slot in the team.
+    pub slot: i64,
+    /// `m_06B5A4F1`: where it stands.
+    pub position: [f64; 3],
+    /// `m_9211FBC7`: where it faces.
+    pub facing: [f64; 3],
 }
 
 /// A game message one body sends another, for the world to route

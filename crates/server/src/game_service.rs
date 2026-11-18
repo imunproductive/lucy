@@ -788,6 +788,10 @@ struct Room {
     /// next is due.
     mode_frame: Option<orpheus_core::bits::BitWriter>,
     next_mode_frame: Duration,
+    /// The mode graph's newest frame while it drives the mode entity: a
+    /// client's first mode frame (`Room::first_mode_frame`), and what the
+    /// Range's next frame is compared with.
+    graph_frame: Option<orpheus_core::bits::BitWriter>,
     /// Hero select closed this tick: the heroes are assembled.
     assembled: bool,
     /// Its collision failed: it takes nobody more (match.py `ended`).
@@ -796,6 +800,8 @@ struct Room {
     started: Instant,
     /// The level of the AI heroes that fill its teams, if any.
     ai: Option<Difficulty>,
+    /// Its dummy bots (`ai.rs`): the Practice Range's Training Partner.
+    dummies: Vec<ai::DummySeat>,
 }
 
 impl Room {
@@ -813,34 +819,15 @@ impl Room {
             flow_tick: 0,
             mode_frame: None,
             next_mode_frame: Duration::ZERO,
+            graph_frame: None,
             assembled: false,
             ended: false,
             started: Instant::now(),
             ai: None,
+            dummies: Vec::new(),
         };
         room.add(players);
-        room.attach_bots();
         room
-    }
-
-    /// The training bots take the roster slots after every player slot the
-    /// match can have (its players now, or the mode's team sizes if more),
-    /// so a player who joins later never shares a slot with a bot (kjs
-    /// `match.py`: later players take unused slots). Its world's scene
-    /// gives them to their stand-in controllers' creates
-    /// (`orpheus_sim::scene::bot_roster_slot`).
-    fn attach_bots(&mut self) {
-        let players = self.players.len();
-        if let Some(world) = &mut self.world {
-            let seats = world
-                .scene
-                .map()
-                .team_sizes
-                .iter()
-                .map(|&size| usize::from(size))
-                .sum::<usize>();
-            world.scene.set_bot_roster(players.max(seats));
-        }
     }
 
     /// The players after those already in the match, each in the next slot
@@ -863,6 +850,30 @@ impl Room {
 
     fn assembling(&self) -> bool {
         self.flow.as_ref().is_some_and(MatchFlow::assembling)
+    }
+
+    /// The mode entity's first frame for a client: the mode graph's newest
+    /// while it drives the mode entity, else the scene's hand-built one.
+    fn first_mode_frame<'a>(
+        &'a self,
+        scene: &'a PreparedScene,
+    ) -> &'a orpheus_core::bits::BitWriter {
+        match (&self.mode, &self.graph_frame) {
+            (Some(mode), Some(frame)) if mode.graph_driven() => frame,
+            _ => scene.mode_ui(),
+        }
+    }
+
+    /// The Practice Range, which has no match flow, starts its mode graph
+    /// with its first tick, before its placed scripts' first, so they find
+    /// its held `0724` as they start (`mode_script::without_flow`).
+    fn begin_mode_without_flow(&mut self, tick: u32) {
+        let Some(world) = &self.world else {
+            return;
+        };
+        if self.mode.is_none() && orpheus_sim::mode_script::without_flow(self.map.mode_guid) {
+            self.mode = Some(ModeRunner::start(&world.scene, tick, Vec::new()));
+        }
     }
 
     /// The players are in a PvP world: the flow starts with "assemble your
@@ -947,16 +958,9 @@ impl Room {
                 ranked: player.info.ranked,
             })
             .collect();
-        let bots = self
-            .world
-            .as_ref()
-            .map(|world| world.scene.roster_bots())
-            .unwrap_or_default();
         let instance = Instance {
             map: &self.map,
             members: &members,
-            bots: &bots,
-            list_bots: *orpheus_sim::instance::BOTS_IN_ROSTER,
         };
         let player = &self.players[slot];
         if initial {
@@ -1436,7 +1440,8 @@ impl Peer {
         }
         if self.world.presentation_due {
             let world = room.world.as_ref().expect("world started");
-            self.world.present(&world.scene, tick)?;
+            let first = room.first_mode_frame(&world.scene);
+            self.world.present(&world.scene, first, tick)?;
         }
         Ok(spawned)
     }
@@ -1650,7 +1655,6 @@ impl State {
                     scene,
                     combat: None,
                 });
-                room.attach_bots();
                 return;
             }
             Err(error) => error,
@@ -2349,23 +2353,14 @@ impl State {
     /// client gets the notices, every client of the room the bot's pools.
     /// The shooter's ultimate charges for the damage (assumption: training
     /// bots charge it as heroes do) and for the healing of allied bots
-    /// (combat.py `_heal`), which his Healing Done counts too. A bot he
-    /// kills counts for his multikills, in the Practice Range too
+    /// (combat.py `_heal`); his board counts both with the room's other
+    /// native stats (`Combat::take_tracked_stats`). A bot he kills counts
+    /// for his multikills, in the Practice Range too
     /// (`orpheus_sim::announcer`).
     fn deliver_bot_hits(&mut self, id: MatchId, shooter: Option<u32>, hits: Vec<BotHit>) {
-        let healed: f64 = hits.iter().map(|hit| hit.healed).sum();
-        if let Some(room) = self.rooms.get_mut(&id) {
-            if let Some(world) = room.world.as_mut() {
-                for hit in &hits {
-                    bot_hit_script(&mut world.scene, hit);
-                }
-                if let Some(slot) = shooter
-                    .filter(|_| healed > 0.0)
-                    .map(|shooter| self.seats[&shooter].1)
-                {
-                    let healing = world.scene.board_stats().healing;
-                    room.players[slot].stats.add(healing, healed);
-                }
+        if let Some(world) = self.rooms.get_mut(&id).and_then(|room| room.world.as_mut()) {
+            for hit in &hits {
+                bot_hit_script(&mut world.scene, hit);
             }
         }
         // Each hit to the shooter's body as damage dealt or healing done:
@@ -2860,6 +2855,30 @@ impl State {
                     },
                 })
                 .collect();
+            // The Range (no match flow): its graph advances with the room,
+            // and its frame goes to every client when it changed, at most
+            // once a second as the PvP modes' (`MODE_FRAME_EVERY`): the
+            // frame is a full one, and `0CBB` st58's timed ChaseVar (#19530e
+            // toward 99999, the chase's state in the frame too) changes it
+            // every tick.
+            if room.flow.is_none() {
+                if let (Some(mode), Some(world)) = (room.mode.as_mut(), room.world.as_ref()) {
+                    let variables = orpheus_script::wire::Variables::new();
+                    room.mail.extend(mode.advance(tick, &variables, players));
+                    if mode.graph_driven() && now >= room.next_mode_frame {
+                        room.next_mode_frame = now.saturating_add(MODE_FRAME_EVERY);
+                        match mode.frame(&world.scene, &variables) {
+                            Ok(frame) if room.graph_frame.as_ref() != Some(&frame) => {
+                                room.graph_frame = Some(frame.clone());
+                                room.mode_frame = Some(frame);
+                            }
+                            Ok(_) => {}
+                            Err(error) => tracing::warn!("[game] no game mode frame: {error}"),
+                        }
+                    }
+                }
+                continue;
+            }
             let (Some(flow), Some(world)) = (room.flow.as_mut(), room.world.as_ref()) else {
                 continue;
             };
@@ -2887,7 +2906,12 @@ impl State {
             if changed || now >= room.next_mode_frame {
                 if let Some(mode) = &room.mode {
                     match mode.frame(&world.scene, &variables) {
-                        Ok(frame) => room.mode_frame = Some(frame),
+                        Ok(frame) => {
+                            if mode.graph_driven() {
+                                room.graph_frame = Some(frame.clone());
+                            }
+                            room.mode_frame = Some(frame);
+                        }
                         Err(error) => tracing::warn!("[game] no game mode frame: {error}"),
                     }
                 }
@@ -3029,10 +3053,13 @@ impl State {
     /// Bots too. After the players' steps, so a pick's hero limit
     /// broadcasts reach the other controllers in its tick.
     fn route_messages(&mut self, tick: u32) {
+        let mut dummies = Vec::new();
         for (&id, room) in &mut self.rooms {
+            let next = room.next_dummy();
             let Some(world) = &mut room.world else {
                 continue;
             };
+            world.scene.set_next_dummy(Some(next));
             let mut peers = room_peers(&mut self.peers, &self.seats, id, room.players.len());
             let mut worlds: Vec<&mut WorldDelivery> = peers
                 .iter_mut()
@@ -3064,6 +3091,10 @@ impl State {
             }
             deliver_held(&held, &mut room.held_reach, &mut recipients);
             deliver(messages, ends, &mut recipients);
+            dummies.push((id, world.scene.take_dummy_changes()));
+        }
+        for (id, changes) in dummies {
+            self.change_dummies(id, changes);
         }
     }
 
@@ -3142,7 +3173,10 @@ impl State {
                 }
             }
             self.update_combat(tick, now);
+            let mut dummies = Vec::new();
             for (&id, room) in &mut self.rooms {
+                room.begin_mode_without_flow(tick);
+                let next = room.next_dummy();
                 if let Some(world) = &mut room.world {
                     // combat.py `update`: the dead bots' death scripts, then
                     // the respawns with new scripts.
@@ -3150,14 +3184,24 @@ impl State {
                     // The live bots' reactions to their hits, and the voice
                     // lines they call for.
                     world.scene.advance_live_bots(tick);
-                    // The server placeables' scripts (placed_script.rs),
-                    // with the spawn rooms the match flow's spawns hold; their
+                    // The server placeables' scripts (placed_script.rs); their
                     // messages (the spawn rooms' `0723`) go with the others
-                    // (`route_messages`).
-                    let flow = room.flow.as_ref();
-                    world.scene.advance_placed(tick, |team| {
-                        flow.map_or(SpawnChoice::First, |flow| flow.spawn_choice(team))
-                    });
+                    // (`route_messages`). A mode graph that drives the mode
+                    // entity holds the spawn rooms' `0724` itself; else the
+                    // rooms the match flow's spawns hold get it here. The
+                    // scripts' dummy bots (the Training Partner) are AI
+                    // players of the room (`ai.rs`).
+                    let holds = if room.mode.as_ref().is_some_and(ModeRunner::graph_driven) {
+                        Vec::new()
+                    } else {
+                        let flow = room.flow.as_ref();
+                        world.scene.room_holds(|team| {
+                            flow.map_or(SpawnChoice::First, |flow| flow.spawn_choice(team))
+                        })
+                    };
+                    world.scene.set_next_dummy(Some(next));
+                    world.scene.advance_placed(tick, &holds);
+                    dummies.push((id, world.scene.take_dummy_changes()));
                     bot_voices.insert(id, world.scene.take_bot_voices());
                     if let Some(combat) = &mut world.combat {
                         if let Ok(replacements) = combat.respawn_due(&mut world.scene, tick, now) {
@@ -3170,6 +3214,9 @@ impl State {
                     bot_events.insert(id, world.scene.take_bot_events());
                 }
             }
+            for (id, changes) in dummies {
+                self.change_dummies(id, changes);
+            }
         }
         // match.py `update`: the countdown (now the match flow) runs before
         // the players' steps.
@@ -3178,9 +3225,11 @@ impl State {
             // The AI heroes' input for this tick (ai.rs).
             self.drive_ai(tick, now);
         }
-        // What every player's graphs counted (the AI heroes' too) and what
-        // the entities they spawned counted for them (the Biotic Field's
-        // `0258` rid14) go to the stat tables before the boards go out.
+        // What every player's graphs counted (the AI heroes' too), what the
+        // entities they spawned counted for them (the Biotic Field's `0258`
+        // rid14) and what the room counts natively (shots, the training
+        // bots' damage, heals and kills) go to the stat tables before the
+        // boards go out.
         for (connection, peer) in &mut self.peers {
             let tracked = peer.world.take_tracked_stats();
             if let Some(Room {
@@ -3200,7 +3249,7 @@ impl State {
                 let tracked = world
                     .combat
                     .as_mut()
-                    .map(Combat::take_field_stats)
+                    .map(Combat::take_tracked_stats)
                     .unwrap_or_default();
                 credit_tracked_stats(&mut room.players, world.scene.stats(), tracked);
             }

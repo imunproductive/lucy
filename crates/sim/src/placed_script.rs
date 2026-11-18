@@ -39,7 +39,7 @@ use orpheus_script::{
     graph::GraphStore,
     map_tags::MapTags,
     mode::EVERY_ENTITY,
-    placed::{EntityVolumes, MapEntityWorld},
+    placed::{DummyChange, EntityVolumes, MapEntityWorld, NextDummy},
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{ScriptChunk, Stream, StreamError},
     vm::{GameMessage, MapRays, MessageEnd, TargetCandidate, Unknowns},
@@ -77,6 +77,10 @@ pub struct PlacedScripts {
     ends: Vec<MessageEnd>,
     /// The last projection and frame of each complete script.
     frames: BTreeMap<u32, (ProjectedSnapshot, PlacedFrame)>,
+    /// The player and body the next dummy bot gets, as the match gave.
+    next_dummy: Option<NextDummy>,
+    /// The running scripts' dummy bot changes for the match to carry out.
+    dummies: Vec<DummyChange>,
     gaps_logged: bool,
 }
 
@@ -104,6 +108,8 @@ impl PlacedScripts {
             messages: Vec::new(),
             ends: Vec::new(),
             frames: BTreeMap::new(),
+            next_dummy: None,
+            dummies: Vec::new(),
             gaps_logged: false,
         }
     }
@@ -126,20 +132,26 @@ impl PlacedScripts {
     pub fn advance(&mut self, tick: u32, holds: &[(u32, Option<u8>)]) {
         let world = match &mut self.world {
             Some(world) => {
+                world.set_next_dummy(self.next_dummy);
                 world.advance(tick);
                 world
             }
-            None => self.world.insert(MapEntityWorld::start(
-                Arc::clone(&self.graphs),
-                self.mode,
-                self.mode_random,
-                Unknowns::for_build(),
-                self.placed.iter().map(|placed| placed.placement()),
-                Some(Arc::clone(&self.map_tags)),
-                Some(Arc::clone(&self.map_rays)),
-                Some(Arc::new(RoomVolumes(Arc::clone(&self.rooms))) as Arc<dyn EntityVolumes>),
-                tick,
-            )),
+            None => {
+                let world = self.world.insert(MapEntityWorld::start(
+                    Arc::clone(&self.graphs),
+                    self.mode,
+                    self.mode_random,
+                    Unknowns::for_build(),
+                    [],
+                    Some(Arc::clone(&self.map_tags)),
+                    Some(Arc::clone(&self.map_rays)),
+                    Some(Arc::new(RoomVolumes(Arc::clone(&self.rooms))) as Arc<dyn EntityVolumes>),
+                    tick,
+                ));
+                world.set_next_dummy(self.next_dummy);
+                world.place(self.placed.iter().map(|placed| placed.placement()));
+                world
+            }
         };
         let gone: Vec<u32> = self
             .held
@@ -172,6 +184,7 @@ impl PlacedScripts {
         let ends = world.take_message_ends();
         self.ends
             .extend(ends.into_iter().filter(|end| running(world, end.sender)));
+        self.take_dummies();
         let world = self.world.as_mut().expect("started above");
         if !self.gaps_logged {
             self.gaps_logged = true;
@@ -247,6 +260,39 @@ impl PlacedScripts {
             std::mem::take(&mut self.messages),
             std::mem::take(&mut self.ends),
         )
+    }
+
+    /// The player and first body the next dummy bot the scripts make gets
+    /// (`STU_FC3921B1`, the Training Partner console `265F`); None: they
+    /// can make none now. The match sets it before each run.
+    pub fn set_next_dummy(&mut self, next: Option<NextDummy>) {
+        self.next_dummy = next;
+        if let Some(world) = &mut self.world {
+            world.set_next_dummy(next);
+        }
+    }
+
+    /// The dummy bots the running scripts made or removed since the last
+    /// call, in order, for the match to make or remove.
+    pub fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
+        self.take_dummies();
+        std::mem::take(&mut self.dummies)
+    }
+
+    /// The world's dummy bot changes go to the match.
+    fn take_dummies(&mut self) {
+        let Some(world) = &mut self.world else {
+            return;
+        };
+        let changes = world.take_dummy_changes();
+        if changes
+            .iter()
+            .any(|change| matches!(change, DummyChange::Create { .. }))
+        {
+            // The bot took the player and body it was given.
+            self.next_dummy = None;
+        }
+        self.dummies.extend(changes);
     }
 
     /// Whether a running script runs the placed entity `entity`.
@@ -353,8 +399,44 @@ impl PlacedViews {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene_assets::SceneAssets;
+    use crate::{
+        messages::{HeldReach, deliver_held},
+        mode_script::ModeRunner,
+        scene_assets::{PreparedScene, SceneAssets},
+    };
     use orpheus_content::maps::{GameMap, SpawnChoice};
+    use orpheus_script::wire::Variables;
+
+    /// The Practice Range as the room runs it (`game_service.rs` `tick`,
+    /// `update_flows`, `route_messages`): `13C0` from the room's first
+    /// tick, the placed scripts with no stand-in `0724`, then the mode
+    /// graph's held broadcasts to every placed script.
+    struct Range {
+        scene: PreparedScene,
+        mode: ModeRunner,
+        reach: HeldReach,
+    }
+
+    impl Range {
+        fn start(assets: &SceneAssets, tick: u32) -> Self {
+            let scene = assets.prepare(GameMap::practice_range()).unwrap();
+            let mode = ModeRunner::start(&scene, tick, Vec::new());
+            assert!(mode.graph_driven(), "{:?}", mode.gaps());
+            Self {
+                scene,
+                mode,
+                reach: HeldReach::default(),
+            }
+        }
+
+        fn advance(&mut self, tick: u32) {
+            self.scene.advance_placed(tick, &[]);
+            self.mode.advance(tick, &Variables::new(), Vec::new());
+            let held = self.mode.held().to_vec();
+            let (_, placed) = self.scene.message_recipients(tick);
+            deliver_held(&held, &mut self.reach, &mut [placed]);
+        }
+    }
 
     fn frame(serial: u64) -> PlacedFrame {
         let mut bits = BitWriter::new();
@@ -399,25 +481,31 @@ mod tests {
         assert!(views.current(DOOR, 2));
     }
 
-    /// The Practice Range's 26 server placeables: 22 have graphs; the six
+    /// The Practice Range's 26 server placeables, with `13C0` running: 22
+    /// have graphs; the six
     /// barriers `00F6`, the three spawn doors `0D32` (358, 479, 480), the
     /// six spawn markers `01CE` (137, 150, 243, 415, 482, 590: they give
-    /// themselves their team, `STU_0F647E55`) and the spawn room `0D62`
-    /// (126, whose target searches the mode's `0724` begins: every field
+    /// themselves their team, `STU_0F647E55`, and take `13C0`'s `0724`,
+    /// st2, whose st1 tags each marker `0035`) and the spawn room `0D62`
+    /// (126, whose target searches `13C0`'s `0724` begins: every field
     /// they set is understood, `vm/targets.rs`) run whole and have frames,
-    /// as do the four whose graphs `0216`/`0217` end at once; the console
-    /// `265F` and pad `26F8` still meet gaps and send nothing. Each door's
-    /// frame changes once in its first 300 frames (its alias states, see
-    /// `0D32`; which wait ends first is not pinned here).
+    /// as do the four whose graphs `0216`/`0217` end at once and the pad
+    /// `26F8` (586: the Training Partner setting, ruleset 29450, is on, so
+    /// it keeps itself); the console `265F` still meets gaps and sends
+    /// nothing. Each door's frame changes twice in its first 300 frames: as
+    /// it takes `13C0`'s `0702` (st12, remote slot 7, writes its remote sync
+    /// variables #8869 and #8870 from `03C5` and `03C4`) and by its alias
+    /// states (see `0D32`; which wait ends first is not pinned here).
     #[test]
     #[ignore = "requires the derived 104319 data"]
     fn the_range_placeables_run_their_graphs_and_have_frames() {
         let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-        let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
-        assert_eq!(scene.server_placeables().len(), 26);
+        let mut range = Range::start(&assets, 100);
+        assert_eq!(range.scene.server_placeables().len(), 26);
         for tick in 100..400 {
-            scene.advance_placed(tick, |_| SpawnChoice::First);
+            range.advance(tick);
         }
+        let scene = &range.scene;
         let world = scene.placed_scripts().world().unwrap();
         assert_eq!(world.entities().len(), 22);
         let room = world.entity(0x8000_007E).unwrap();
@@ -431,7 +519,7 @@ mod tests {
             framed,
             [
                 126, 137, 150, 185, 188, 199, 204, 243, 340, 358, 398, 400, 415, 416, 424, 479,
-                480, 482, 548, 590
+                480, 482, 548, 586, 590
             ]
         );
         for door in [358, 479, 480] {
@@ -440,7 +528,7 @@ mod tests {
                 .frames()
                 .find(|(entity, _)| *entity == 0x8000_0000 | door)
                 .unwrap();
-            assert_eq!(frame.serial, 2, "door {door}");
+            assert_eq!(frame.serial, 3, "door {door}");
         }
         let gaps = world.gaps();
         assert!(
@@ -450,7 +538,72 @@ mod tests {
         );
     }
 
-    /// The Practice Range's spawn room `0D62` (126) takes the mode's `0724`
+    /// The Practice Range's Training Partner console `265F` (267), with
+    /// `13C0` running: at its
+    /// start it finds its pad `3992` (586, tag `09B7`) and takes the pad's
+    /// position and facing (`STU_71A87E92`/`STU_2200A66D`, rid6), reads
+    /// the Training Partner setting (ruleset 29450 of the mode entity,
+    /// true in `0060.0C6`), so the pad keeps itself (`26F8`), and asks for
+    /// its default partner: it removes the dummy bot in red slot 0
+    /// (`STU_C1561031`, rid34) and makes a Tracer (`0003.075`, rid36's
+    /// #940) there (`STU_FC3921B1`, rid35), whose body goes to #29454.
+    /// The facing is the pad's rotation (x y z w) `[0, 0.9528117, 0,
+    /// 0.3035622]` turned +z, (2wy, 0, 1 − 2y²) = (0.578470, 0, −0.815704),
+    /// as 1/65536 turns (`World::entity_facing`), within 1e-4.
+    #[test]
+    #[ignore = "requires the derived 104319 data"]
+    fn the_range_console_makes_its_training_partner_on_its_pad() {
+        const CONSOLE: u32 = 0x8000_010B;
+        const PAD: u32 = 0x8000_024A;
+        const TRACER: u64 = 0x02E0_0000_0000_0003;
+        let next = NextDummy {
+            player: 0xA000_0200,
+            body: 0xA000_0201,
+        };
+        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let mut range = Range::start(&assets, 100);
+        range.scene.set_next_dummy(Some(next));
+        range.advance(100);
+        let changes = range.scene.take_dummy_changes();
+        let world = range.scene.placed_scripts().world().unwrap();
+        assert!(world.entity(PAD).is_some(), "{:?}", world.gaps());
+        let [
+            DummyChange::Remove { team: 1, slot: 0 },
+            DummyChange::Create { dummy, next: made },
+        ] = changes.as_slice()
+        else {
+            panic!("{changes:?} {:?}", world.gaps());
+        };
+        assert_eq!(*made, next);
+        assert_eq!((dummy.hero, dummy.team, dummy.slot), (TRACER, 1, 0));
+        assert_eq!(dummy.position, [34.24001, 1.9917264, 22.972233]);
+        let forward = [0.578_470, 0.0, -0.815_704];
+        assert!(
+            dummy
+                .facing
+                .iter()
+                .zip(forward)
+                .all(|(got, want)| (got - want).abs() < 1e-4),
+            "{:?}",
+            dummy.facing
+        );
+        let console = world.entity(CONSOLE).unwrap().snapshot().unwrap();
+        let partner = console
+            .instances
+            .values()
+            .find_map(|instance| instance.variables.get(&29454));
+        assert_eq!(
+            partner,
+            Some(&orpheus_script::wire::Value::Entity(next.body))
+        );
+        // One bot a player and body: the next needs new ones.
+        range.advance(101);
+        assert!(range.scene.take_dummy_changes().is_empty());
+    }
+
+    /// The Practice Range's spawn room `0D62` (126) takes `13C0`'s `0724`
+    /// (st9, held to every entity: invulnerable, heal and hero select, no
+    /// team), the only `0724` there is,
     /// and sends `0723` with its three flags to a living blue hero whose
     /// feet are in its area (`STU_73E1C5F0`), not to a red one, a dead one
     /// or one outside; it lets it go when he walks out. Its two searches
@@ -469,7 +622,18 @@ mod tests {
         let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
         let map = GameMap::practice_range();
         let (spawn, _) = map.spawn_point_in(0, 0, SpawnChoice::First).unwrap();
-        let mut scene = assets.prepare(map).unwrap();
+        let mut range = Range::start(&assets, 100);
+        let from_mode = GameMessage {
+            sender: GAME_MODE_ENTITY,
+            target: EVERY_ENTITY,
+            message: ROOM_MESSAGE,
+            parameters: room_message(None),
+        };
+        assert!(
+            range.mode.held().contains(&from_mode),
+            "{:?}",
+            range.mode.held()
+        );
         let body = |entity: u32, team: u8, dead: bool, feet: [f64; 3]| TargetCandidate {
             entity,
             team: Some(team),
@@ -492,26 +656,25 @@ mod tests {
                 body(0x0000_1003, 0, true, spawn),
             ]
         };
-        let frame_serial = |scene: &crate::scene_assets::PreparedScene| {
+        let frame_serial = |scene: &PreparedScene| {
             scene
                 .placed_scripts()
                 .frames()
                 .find(|(entity, _)| *entity == ROOM)
                 .map(|(_, frame)| frame.serial)
         };
-        scene.advance_placed(100, |_| SpawnChoice::First);
-        let world = scene.placed_scripts().world().unwrap();
+        range.advance(100);
+        let world = range.scene.placed_scripts().world().unwrap();
         let room = world.entity(ROOM).unwrap();
         assert!(room.running() && room.complete(), "{:?}", world.gaps());
-        let first = frame_serial(&scene).expect("the room's frame");
+        let first = frame_serial(&range.scene).expect("the room's frame");
         // Each tick of `ticks`: the `0723`s sent (tick, target, parameters)
         // and let go (tick, target).
-        let run = |scene: &mut crate::scene_assets::PreparedScene,
-                   ticks: std::ops::RangeInclusive<u32>| {
+        let run = |range: &mut Range, ticks: std::ops::RangeInclusive<u32>| {
             let (mut sent, mut ended) = (Vec::new(), Vec::new());
             for tick in ticks {
-                scene.advance_placed(tick, |_| SpawnChoice::First);
-                let (messages, ends) = scene.take_placed_messages();
+                range.advance(tick);
+                let (messages, ends) = range.scene.take_placed_messages();
                 sent.extend(
                     messages
                         .iter()
@@ -528,15 +691,15 @@ mod tests {
             }
             (sent, ended)
         };
-        scene.set_placed_target_candidates(&bodies(spawn));
+        range.scene.set_placed_target_candidates(&bodies(spawn));
         assert_eq!(
-            run(&mut scene, 101..=120),
+            run(&mut range, 101..=120),
             (vec![(105, 0x0000_1001, 3)], vec![])
         );
-        assert!(frame_serial(&scene).unwrap() > first);
-        scene.set_placed_target_candidates(&bodies(outside));
+        assert!(frame_serial(&range.scene).unwrap() > first);
+        range.scene.set_placed_target_candidates(&bodies(outside));
         assert_eq!(
-            run(&mut scene, 121..=140),
+            run(&mut range, 121..=140),
             (vec![], vec![(129, 0x0000_1001)])
         );
     }

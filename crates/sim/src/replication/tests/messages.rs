@@ -58,7 +58,7 @@ fn spawned(scene: &PreparedScene, card: &PlayerCard, entity: u32, ai: bool) -> W
     };
     world.start(scene, &viewer, FIRST_TICK).unwrap();
     world.created.insert(entity);
-    world.present(scene, FIRST_TICK).unwrap();
+    world.present(scene, scene.mode_ui(), FIRST_TICK).unwrap();
     let hero = scene.heroes().get(SOLDIER).unwrap();
     world
         .switch(

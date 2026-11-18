@@ -38,6 +38,9 @@ pub struct ProjectileFlight {
     ended: bool,
     /// It ended with its explosion.
     exploded: bool,
+    /// It hurt an enemy (`Some`, whether critically), for its shooter's
+    /// shot stats ([`ProjectileFlight::strike`]).
+    struck: Option<bool>,
 }
 
 /// A projectile that stuck: to a body (`entity`) at `offset` from its feet,
@@ -119,7 +122,24 @@ impl ProjectileFlight {
             stuck: None,
             ended: false,
             exploded: false,
+            struck: None,
         })
+    }
+
+    /// Whether it does damage where it hits or explodes.
+    pub fn damaging(&self) -> bool {
+        self.ballistics.damaging()
+    }
+
+    /// One of its impacts struck an enemy, critically or not; it hit with
+    /// any, critically with any critical one.
+    pub fn strike(&mut self, critical: bool) {
+        self.struck = Some(self.struck.unwrap_or(false) || critical);
+    }
+
+    /// Whether it struck an enemy so far, and whether critically.
+    pub fn struck(&self) -> Option<bool> {
+        self.struck
     }
 
     /// The direct hit of the projectile, if it has one.

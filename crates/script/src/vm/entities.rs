@@ -1,10 +1,11 @@
-//! Server-only actions on other entities: a team (`STU_0F647E55`) and a
-//! removal (`STU_523EE38D`); the scene tag queries of a state
-//! (`STU_160F2578`) and an action (`STU_42578342`); the spawn picker
-//! (`STU_5E805B5A`); the shuffled picker (`STU_37072672`).
+//! Server-only actions on other entities: a team (`STU_0F647E55`), a
+//! removal (`STU_523EE38D`) and the dummy bots (`STU_FC3921B1`,
+//! `STU_C1561031`); the scene tag queries of a state (`STU_160F2578`) and
+//! an action (`STU_42578342`); the spawn picker (`STU_5E805B5A`); the
+//! shuffled picker (`STU_37072672`).
 //!
-//! Client research (1.74, `python tools/stu.py`): `STU_0F647E55` and
-//! `STU_523EE38D` register no action of their own. The client looks up the
+//! Client research (1.74, `python tools/stu.py`): `STU_0F647E55`,
+//! `STU_523EE38D`, `STU_FC3921B1` and `STU_C1561031` register no action of their own. The client looks up the
 //! base action (record #165, `execute` 0x7FF789C44A80 = `mov al, 1; ret`),
 //! so it never runs them: they are the server's rules, read from their
 //! fields and uses. The others are the client's code (addresses below).
@@ -69,6 +70,88 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             if !self.world.destroy_entity(site, entity) {
                 self.assume(site, &node.class, "the world removes no entity");
             }
+        }
+        self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
+    }
+
+    /// `STU_FC3921B1` (server-only: the base action's run on the client):
+    /// ask the world for a dummy bot of hero `m_heroGUID` in team
+    /// `m_67465E75`'s slot `m_slot`, standing at `m_06B5A4F1` and facing
+    /// `m_9211FBC7`, and write the entity it gets to `m_4AEEE6A1`. The
+    /// Practice Range console `265F` makes its Training Partner so (rid4,
+    /// rid35). A world that makes none leaves the output, as an assumption.
+    pub(super) fn create_dummy_bot(
+        &mut self,
+        id: u16,
+        node: &Node,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        let target = match expr::lvalue(field(&node.fields, "m_4AEEE6A1")) {
+            Ok(target) => target.map(|target| source_key(id, target)),
+            Err(error) => {
+                self.report(self.site(id, node), Issue::Expression(error));
+                return Ok(false);
+            }
+        };
+        let mut read = |name| self.evaluate(id, node, field(&node.fields, name), None);
+        let (Some(hero), Some(team), Some(slot), Some(position), Some(facing)) = (
+            read("m_heroGUID"),
+            read("m_67465E75"),
+            read("m_slot"),
+            read("m_06B5A4F1"),
+            read("m_9211FBC7"),
+        ) else {
+            return Ok(false);
+        };
+        let (Value::Asset(hero), Value::Vector(position), Value::Vector(facing)) =
+            (hero, position, facing)
+        else {
+            self.report(
+                self.site(id, node),
+                Issue::UnsupportedField("dummy bot hero, position or facing"),
+            );
+            return Ok(false);
+        };
+        let dummy = DummyBot {
+            hero,
+            team: expr::to_int(&team, -1),
+            slot: expr::to_int(&slot, -1),
+            position,
+            facing,
+        };
+        let site = self.site(id, node);
+        match self.world.create_dummy_bot(site, dummy) {
+            Some(entity) => {
+                if let Some(target) = target {
+                    self.write(target, Value::Entity(entity))?;
+                }
+            }
+            None => self.assume(site, &node.class, "the world makes no dummy bot"),
+        }
+        self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
+    }
+
+    /// `STU_C1561031` (server-only, as `STU_FC3921B1`): remove the dummy
+    /// bot in team `m_67465E75`'s slot `m_slot`, if there is one; the
+    /// console `265F` does so before each `STU_FC3921B1`.
+    pub(super) fn remove_dummy_bot(
+        &mut self,
+        id: u16,
+        node: &Node,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        let mut read = |name| self.evaluate(id, node, field(&node.fields, name), None);
+        let (Some(team), Some(slot)) = (read("m_67465E75"), read("m_slot")) else {
+            return Ok(false);
+        };
+        let site = self.site(id, node);
+        if !self
+            .world
+            .remove_dummy_bot(site, expr::to_int(&team, -1), expr::to_int(&slot, -1))
+        {
+            self.assume(site, &node.class, "the world removes no dummy bot");
         }
         self.follow(id, node, "m_outPlug", None, depth)?;
         Ok(true)

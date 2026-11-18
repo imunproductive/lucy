@@ -1610,6 +1610,9 @@ pub struct WorldDelivery {
     /// (`crate::announcer`). Whether a pulse waits for its controller frame.
     controller_script: Option<ControllerScript>,
     multikill_due: bool,
+    /// Where his bodies come into the world instead of a spawn point, and
+    /// their facing (1/65536 turns): a dummy bot's ([`Self::place_bodies_at`]).
+    placement: Option<([f64; 3], i32)>,
 }
 
 /// The entity variables of the hero settings the client sends
@@ -1758,6 +1761,7 @@ impl WorldDelivery {
             spawn_view: None,
             controller_script: None,
             multikill_due: false,
+            placement: None,
         }
     }
 
@@ -1789,6 +1793,13 @@ impl WorldDelivery {
     /// Whether this is an AI player's world.
     pub fn is_headless(&self) -> bool {
         self.headless
+    }
+
+    /// His bodies come into the world at `position` facing `yaw` (1/65536
+    /// turns) rather than at his team's spawn point: a dummy bot stands
+    /// where the graph that made him put him (`STU_FC3921B1`).
+    pub fn place_bodies_at(&mut self, position: [f64; 3], yaw: i32) {
+        self.placement = Some((position, yaw));
     }
 
     /// An AI player's send frame: what a client would get this frame
@@ -3051,7 +3062,15 @@ impl WorldDelivery {
         Ok(())
     }
 
-    pub fn present(&mut self, scene: &PreparedScene, tick: u32) -> io::Result<()> {
+    /// The player's controller frame and the mode entity's first frame,
+    /// `mode_frame`: the mode graph's now where it drives the mode entity
+    /// (`crate::mode_script`), else [`PreparedScene::mode_ui`].
+    pub fn present(
+        &mut self,
+        scene: &PreparedScene,
+        mode_frame: &orpheus_core::bits::BitWriter,
+        tick: u32,
+    ) -> io::Result<()> {
         if self.controller.latest_data() == 0 && self.created.contains(&self.owner) {
             self.queue_controller(scene, tick, None)?;
         }
@@ -3061,7 +3080,7 @@ impl WorldDelivery {
             && !self.assembling
             && self.created.contains(&GAME_MODE_ENTITY)
         {
-            let chunk = self.mode.full(scene.mode_ui()).map_err(invalid)?;
+            let chunk = self.mode.full(mode_frame).map_err(invalid)?;
             self.push(Record::script(chunk, false));
         }
         self.presentation_due = self.controller.latest_data() == 0 || self.mode.latest_data() == 0;
@@ -4887,9 +4906,16 @@ impl WorldDelivery {
             .as_ref()
             .filter(|_| pick && self.body.is_some() && self.death.is_none())
             .map(Mover::pose);
-        let mover = match here {
-            Some(here) => scene.player_mover_at(hero.body, viewer.team, here.position, here.yaw)?,
-            None => scene.player_spawn_mover(hero.body, viewer.team, viewer.spawn, viewer.room)?,
+        let mover = match (here, self.placement) {
+            (Some(here), _) => {
+                scene.player_mover_at(hero.body, viewer.team, here.position, here.yaw)?
+            }
+            (None, Some((position, yaw))) => {
+                scene.player_mover_at(hero.body, viewer.team, position, yaw)?
+            }
+            (None, None) => {
+                scene.player_spawn_mover(hero.body, viewer.team, viewer.spawn, viewer.room)?
+            }
         };
         let movement = mover.pose();
         let pose = owner_pose(movement);
