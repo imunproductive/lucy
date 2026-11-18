@@ -237,6 +237,9 @@ impl ProjectedSnapshot {
 #[derive(Clone, Debug, PartialEq)]
 struct ProjectedInstance {
     graph: u32,
+    /// The entity it was created with when that isn't the snapshot's own
+    /// (the descriptor's creator, `wire::write_descriptor`).
+    creator: Option<u32>,
     parent: Option<(u16, u16)>,
     variables: ProjectedVariables,
     states: BTreeMap<u16, ProjectedState>,
@@ -590,6 +593,7 @@ impl<'a> SnapshotEncoder<'a> {
                 id,
                 ProjectedInstance {
                     graph: instance.graph,
+                    creator: (instance.source != snapshot.entity).then_some(instance.source),
                     parent: instance.parent,
                     variables,
                     states,
@@ -765,6 +769,7 @@ impl<'a> SnapshotEncoder<'a> {
         for (&id, instance) in &snapshot.instances {
             let graph = self.graph(id, instance.graph)?;
             let mut wire = Instance::new(id, Layout::try_from(graph)?, instance.parent);
+            wire.creator = instance.creator;
             wire.variables = instance.variables.values.clone();
             for (slot, (_, var)) in graph.presence_vars().enumerate() {
                 if let Some(value) = var.0.and_then(|var| wire.variables.swap_remove(&var)) {
@@ -821,7 +826,7 @@ impl<'a> SnapshotEncoder<'a> {
             last = id;
             let graph =
                 u16::try_from(instance.graph).map_err(|_| WireError::GraphIndex(instance.graph))?;
-            wire::write_descriptor(&mut out, graph, instance.parent)?;
+            wire::write_descriptor(&mut out, graph, instance.creator, instance.parent)?;
         }
         out.w_u16(0);
         let variables = &snapshot.variables;
@@ -1057,9 +1062,11 @@ impl<'a> SnapshotEncoder<'a> {
         );
         for (&id, next) in &current.instances {
             let before = base.instances.get(&id);
-            if before
-                .is_some_and(|before| before.graph != next.graph || before.parent != next.parent)
-            {
+            if before.is_some_and(|before| {
+                before.graph != next.graph
+                    || before.creator != next.creator
+                    || before.parent != next.parent
+            }) {
                 return Err(SnapshotError::ReboundInstance(id));
             }
             let descriptor = before.is_none();
@@ -1212,7 +1219,7 @@ impl<'a> SnapshotEncoder<'a> {
                 if instance.descriptor {
                     let graph = u16::try_from(current.graph)
                         .map_err(|_| WireError::GraphIndex(current.graph))?;
-                    wire::write_descriptor(&mut body, graph, current.parent)?;
+                    wire::write_descriptor(&mut body, graph, current.creator, current.parent)?;
                 }
             }
         }

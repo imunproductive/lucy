@@ -26,11 +26,10 @@ impl<W: World> Context for InstanceContext<'_, W> {
     fn variable(&mut self, variable: Variable) -> Value {
         let value = self.read(source_key(self.site.instance, variable));
         // `#27` unwritten is the entity the instance was created with,
-        // which the engine holds (not a variable the frames carry).
+        // which the engine holds (the frames carry it in the instance's
+        // descriptor, not as a variable).
         if value == Value::Null && variable.scope == Scope::Instance && variable.id == CREATOR {
-            if let Some(source) = self.machine.snapshot.instances[&self.site.instance].source {
-                return Value::Entity(source);
-            }
+            return Value::Entity(self.machine.snapshot.instances[&self.site.instance].source);
         }
         value
     }
