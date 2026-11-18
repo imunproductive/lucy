@@ -113,6 +113,7 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
                 critical: true,
                 loadout: None,
                 tags: shot.hit.tags,
+                dealt: 40.0,
                 tick: context.tick,
             })
         );

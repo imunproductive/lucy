@@ -840,6 +840,19 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptStateMoveTo" => StateKind::MoveTo,
             "STU_4BBC5D09" => StateKind::GrappleCast,
             "STU_1F5ED928" => StateKind::NavPath,
+            // The scoped heroes' zoom-in input flag (Widowmaker `001B`
+            // st103, Ana `0B94` st78, Ashe `14FC` st111; codec none). The
+            // client's begin puts the state on its instance's update list
+            // (`0x7FF78AA82DC0`); each frame its update (`0x7FF789808F70`)
+            // writes `m_9A86AC74` (`#27203e`/`#27204e`/`#27205e`, set by no
+            // graph, `&& #169 < 1.0`: the zoom is still coming in) as a byte
+            // into component 43 `+0x270`, and its end clears it
+            // (`0x7FF7897F64C0`). Only the client's own aim code reads that
+            // byte (`0x7FF789671DA0`, with the mouse look scale at `+0x274`
+            // that the input sampler applies); the server gets the commands
+            // it shaped. So it is a plain state here: its activity goes out
+            // in the owner frames, its value is the client's.
+            "STU_D1BF5FA6" => StateKind::Plain,
             // A beam effect from a hardpoint to an entity variable's point
             // (Widowmaker's hook rope, `005A` st7/st53; codec none): the
             // client's presentation alone.

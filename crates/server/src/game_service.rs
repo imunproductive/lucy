@@ -1105,8 +1105,9 @@ fn pick_message(entity: u32, hero: u64) -> Message {
     }
 }
 
-/// A hit on a bot reaches its script (combat.py `_damage`): the death
-/// message for a killing hit (`_bot_died`), else its new health
+/// A hit on a bot reaches its script (combat.py `_damage`): for a killing
+/// hit its damage message `0011.025` with the kill's fields, then the death
+/// message (`_bot_died`, [`PreparedScene::bot_died`]), else its new health
 /// (`_sync_body_health`) and, for damage, the damage message `0011.025`
 /// (its flinch and pain line).
 fn bot_hit_script(scene: &mut PreparedScene, hit: &BotHit) {

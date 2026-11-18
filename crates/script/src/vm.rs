@@ -387,13 +387,16 @@ impl TargetCandidate {
 }
 
 /// How `entity` relates, as far as the listed bodies tell: a listed body's
-/// controller; a listed controller is its own (it has component 44) and
-/// possesses its body; a spawned entity a body lists
-/// ([`TargetCandidate::spawned`]) is owned by that body's controller.
+/// controller, which also possesses it now; a listed controller is its own
+/// (it has component 44) and possesses its body; a spawned entity a body
+/// lists ([`TargetCandidate::spawned`]) is owned by that body's controller.
 /// Assumption: the owner (component 72) of an entity the game spawns for
 /// a hero is his controller, as the Biotic Field's aura `0B3C` heals for
 /// `STU_0AC15F78(STU_F76C486C(#40))`, the body the field's owner
-/// possesses. None: the bodies don't tell.
+/// possesses. Assumption: another body's current possessor is its
+/// controller, as a player's world answers for its own body (Biotic
+/// Grenade's enemy aura `0C72` rid21 asks `STU_F7262B36(#40)` of the
+/// thrower's body on the body it hit). None: the bodies don't tell.
 pub fn listed_relation(
     bodies: &[TargetCandidate],
     relation: EntityRelation,
@@ -405,6 +408,9 @@ pub fn listed_relation(
             .iter()
             .find(|body| body.entity == entity)
             .map_or_else(|| by_controller().map(|_| entity), |body| body.controller),
+        EntityRelation::CurrentPossessor => {
+            bodies.iter().find(|body| body.entity == entity)?.controller
+        }
         EntityRelation::PossessedBody => by_controller().map(|body| body.entity),
         EntityRelation::Owner => {
             bodies

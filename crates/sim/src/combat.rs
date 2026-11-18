@@ -354,6 +354,8 @@ pub struct BotDeath {
     pub loadout: Option<u64>,
     /// The killing hit's damage tags.
     pub tags: DamageTags,
+    /// What the killing hit dealt, for its damage message (`0011.025`).
+    pub dealt: f64,
     pub tick: u32,
 }
 
@@ -1382,6 +1384,7 @@ impl Combat {
                 critical: impact.critical,
                 loadout: impact.loadout,
                 tags,
+                dealt: result.dealt,
                 tick: death_tick,
             }),
             damage: (!result.killed).then_some(BotDamage {

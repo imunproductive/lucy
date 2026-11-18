@@ -256,6 +256,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         critical: false,
         loadout: None,
         tags: orpheus_script::weapons::DamageTags::NONE,
+        dealt: 100.0,
         tick,
     });
     let events = scene.take_bot_events();
@@ -342,6 +343,7 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         critical: false,
         loadout: None,
         tags: orpheus_script::weapons::DamageTags::NONE,
+        dealt: 200.0,
         tick,
     });
     let events = scene.take_bot_events();
@@ -542,6 +544,70 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
         assert_eq!(variable(&world, entity, 6036), None, "{entity:08X}");
         assert!(nameplate(&scene, &world, entity).is_some());
     }
+}
+
+/// A bot's killing hit reaches its script as a player's does
+/// ([`BotScripts::died`], `combat::hit_messages`): `0011.025` with the
+/// kill's fields first, then `003E.025`. Only the damage message reaches
+/// `0E8C` (the rifle's `09A2` flinch strength #1024, 0.2) and `0C17`'s sum
+/// of the last second's damage (#337); a message after the death would
+/// reach neither (a dead body takes none). The death goes out as one frame.
+#[test]
+#[ignore = "requires the derived 104319 data with its bot graph bundle"]
+fn a_bots_killing_hit_reaches_its_script_before_its_death() {
+    const FLINCH: u32 = 0x0e8c;
+    const PAIN: u32 = 0x0c17;
+    let mut scene = practice_scene();
+    let mut tick = FIRST_TICK;
+    while !scene.bot_scripts_ready() {
+        scene.step_bots(tick);
+        tick += 1;
+    }
+    scene.take_bot_events();
+    let slot = scene
+        .bots()
+        .iter()
+        .position(|bot| !bot.spawn.firing)
+        .unwrap();
+    let victim = scene.bots()[slot].entity;
+    let rifle: orpheus_script::weapons::DamageTags = [0x03bf, 0x09a2, 0x1e1e, 0x2d2f, 0x4d29]
+        .map(|tag| 0x0d80_0000_0000_0000 | tag)
+        .into_iter()
+        .collect();
+    tick += 1;
+    scene.bots_mut()[slot].died();
+    scene.bot_died(&BotDeath {
+        bot: victim,
+        killer: OWNER | 1,
+        critical: false,
+        loadout: None,
+        tags: rifle,
+        dealt: 200.0,
+        tick,
+    });
+    assert!(matches!(
+        scene.take_bot_events().as_slice(),
+        [BotEvent::Death { entity, frame: Some(_) }] if *entity == victim
+    ));
+    let scripts = scene.bot_scripts();
+    let body = &scripts.slots[scripts.slot(victim).unwrap()]
+        .as_ref()
+        .unwrap()
+        .body;
+    let snapshot = body.snapshot().unwrap();
+    let variable = |graph: u32, id: u32| {
+        snapshot
+            .instances
+            .values()
+            .find(|instance| instance.graph == graph)
+            .and_then(|instance| instance.variables.get(&id))
+    };
+    assert_eq!(
+        variable(FLINCH, 1024),
+        Some(&Value::Float(f64::from(0.2_f32)))
+    );
+    assert_eq!(variable(PAIN, 337), Some(&Value::Float(200.0)));
+    assert_eq!(body.entity_variable(DEAD_FLAG), Some(&Value::Bool(true)));
 }
 
 /// combat.py `_bot_weapons` and `_fly`: a firing bot's rockets leave its eye

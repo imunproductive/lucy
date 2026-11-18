@@ -318,7 +318,8 @@ impl World for BotWorld {
     /// The patrol is written for the AI entity that possesses the body: it
     /// reads the body as `STU_0AC15F78(owner())` (the health test of its
     /// BooleanSwitch). Here it runs on the body itself, which is that body.
-    /// Otherwise as the base world: a listed body's controller.
+    /// Otherwise as the base world: a listed body's controller, which also
+    /// possesses it now ([`crate::vm::listed_relation`]).
     fn related_entity(&mut self, site: Site, relation: EntityRelation, entity: u32) -> Option<u32> {
         match relation {
             EntityRelation::PossessedBody
@@ -326,7 +327,7 @@ impl World for BotWorld {
             {
                 Some(entity)
             }
-            EntityRelation::Controller => {
+            EntityRelation::Controller | EntityRelation::CurrentPossessor => {
                 self.target_candidates(site)?
                     .iter()
                     .find(|body| body.entity == entity)?
@@ -1842,7 +1843,19 @@ mod tests {
     /// on the bot for a killing hit tagged `0644`, else `1C92` for `074E`;
     /// any other hit leaves the line to the clients' own 20 % death cry
     /// (client-only, stimulus `0001`). The kill criteria `071B` names the
-    /// killer, not the bot, so the bot keeps none of it.
+    /// killer, not the bot, so the bot keeps none of it. The killing hit's
+    /// damage message comes first, with the kill's fields, as the match
+    /// sends it (`orpheus_sim::bot_script` `BotScripts::died`): it adds no
+    /// second cry, but `0C17`'s pain branch still runs (its entry rid0 on
+    /// `0011`, server-only; only tag `0262` skips it, rid25): rid34 reads
+    /// the health left (#520 = `STU_9B7648C3(self)`, 0 after the kill),
+    /// rid35 adds the hit to the last second's damage (#7404 = 200), and
+    /// 0.1 s later (rid20; frame 206) rid3 tests `#7404 / #520 < 0.1`. The
+    /// VM's division by zero gives 0 (`expr::arithmetic` opcode 26), so the
+    /// test holds and rid5 raises the minor pain `0608`, not rid4's severe
+    /// `0609`; rid38's `> 0.05` fails, so no `191D`. The match drops every
+    /// criteria of a dead bot but its death cries
+    /// (`voice_lines::is_death_cry`), so no client hears it.
     #[test]
     #[ignore = "requires the derived game data's bot graph bundle"]
     fn a_dead_training_bot_raises_the_death_cry_its_killing_tags_pick() {
@@ -1859,6 +1872,10 @@ mod tests {
                 (DAMAGE_TAGS, tags.to_value()),
                 (DAMAGE_SOURCE, Value::Entity(KILLER)),
             ]);
+            let mut damage = parameters.clone();
+            damage.insert(DAMAGE_AMOUNT, Value::Float(200.0));
+            bot.set_health(0.0).unwrap();
+            bot.take_damage(200, damage).unwrap();
             assert!(bot.die(200, parameters).unwrap());
             let mut criteria: Vec<_> = Vec::new();
             for frame in 200..=260 {
@@ -1872,9 +1889,10 @@ mod tests {
             }
             criteria
         };
-        assert_eq!(cry(&[0x0644]), [(204, 0x0d80_0000_0000_05fb)]);
-        assert_eq!(cry(&[0x03bf, 0x074e]), [(204, 0x0d80_0000_0000_1c92)]);
-        assert_eq!(cry(&[0x03bf, 0x09a2]), []);
+        const PAIN: (u32, u64) = (206, 0x0d80_0000_0000_0608);
+        assert_eq!(cry(&[0x0644]), [(204, 0x0d80_0000_0000_05fb), PAIN]);
+        assert_eq!(cry(&[0x03bf, 0x074e]), [(204, 0x0d80_0000_0000_1c92), PAIN]);
+        assert_eq!(cry(&[0x03bf, 0x09a2]), [PAIN]);
     }
 
     /// Biotic Grenade's aura (`053:0267`) on the pack's Training Bot: its
