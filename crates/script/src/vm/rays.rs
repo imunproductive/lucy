@@ -105,7 +105,7 @@ const MIN_LENGTH: f64 = 1.19e-4;
 const MAX_LENGTH: f64 = 10_000.0;
 
 /// Why a cast can't run.
-enum RayGap {
+pub(super) enum RayGap {
     Field(&'static str),
     Filter(&'static str),
     NoBodies,
@@ -123,7 +123,7 @@ impl From<Gap> for RayGap {
 }
 
 /// A cast as evaluated now.
-struct Ray {
+pub(super) struct Ray {
     origin: [f64; 3],
     /// Unit length.
     direction: [f64; 3],
@@ -143,11 +143,12 @@ impl Ray {
 }
 
 /// What a cast met first.
-struct Hit {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Hit {
     /// None: the map.
-    entity: Option<u32>,
-    point: [f64; 3],
-    normal: [f64; 3],
+    pub(super) entity: Option<u32>,
+    pub(super) point: [f64; 3],
+    pub(super) normal: [f64; 3],
 }
 
 impl<W: World> Vm<'_, '_, '_, W> {
@@ -269,7 +270,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
         })
     }
 
-    fn ray_gap(&mut self, site: Site, class: &str, gap: RayGap) {
+    pub(super) fn ray_gap(&mut self, site: Site, class: &str, gap: RayGap) {
         match gap {
             RayGap::Field(name) => self.assume(site, &format!("{class} {name}"), "casts nothing"),
             RayGap::Filter(name) => {
@@ -311,7 +312,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
     }
 
     /// The nearest thing the ray meets: the map or a body that passes.
-    fn cast(&mut self, id: u16, node: &Node, ray: &Ray) -> Result<Option<Hit>, RayGap> {
+    pub(super) fn cast(&mut self, id: u16, node: &Node, ray: &Ray) -> Result<Option<Hit>, RayGap> {
         let site = self.site(id, node);
         let bodies = self.passing_bodies(site, &ray.filter)?;
         let map = self
@@ -456,7 +457,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
         Self::ray(origin, direction, reach, radius, node, "m_filter", ignore)
     }
 
-    fn ray(
+    pub(super) fn ray(
         origin: [f64; 3],
         direction: [f64; 3],
         reach: f64,
@@ -554,7 +555,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
         Ok(entities)
     }
 
-    fn flag(&mut self, id: u16, node: &Node, config: &Json) -> Result<bool, RayGap> {
+    pub(super) fn flag(&mut self, id: u16, node: &Node, config: &Json) -> Result<bool, RayGap> {
         if config.is_null() {
             return Ok(false);
         }
@@ -570,7 +571,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
         }
     }
 
-    fn config_number(&mut self, id: u16, node: &Node, config: &Json) -> Option<f64> {
+    pub(super) fn config_number(&mut self, id: u16, node: &Node, config: &Json) -> Option<f64> {
         self.evaluate_quietly(id, node, config)
             .map(|value| expr::to_float(&value))
             .filter(|value| value.is_finite())
@@ -593,7 +594,13 @@ impl<W: World> Vm<'_, '_, '_, W> {
     }
 
     /// Write output field `name` of the node.
-    fn put(&mut self, id: u16, node: &Node, name: &str, value: Value) -> Result<(), InitFault> {
+    pub(super) fn put(
+        &mut self,
+        id: u16,
+        node: &Node,
+        name: &str,
+        value: Value,
+    ) -> Result<(), InitFault> {
         self.put_config(id, node, field(&node.fields, name), value)
     }
 

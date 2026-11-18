@@ -471,6 +471,16 @@ impl World for PlayerWorld {
             .then_some([self.movement.yaw, self.movement.pitch])
     }
 
+    /// The body's own eye, as `STU_21A13145` gives it, and its facing.
+    fn eye(&self, site: Site, entity: u32) -> Option<([f64; 3], [i32; 2])> {
+        if !self.is_player_site(site) || entity != self.entity {
+            return None;
+        }
+        let [x, y, z] = self.position;
+        let eye = self.eye_height?;
+        Some(([x, y + eye, z], [self.movement.yaw, self.movement.pitch]))
+    }
+
     /// The body's own mover's, as the match gives it each move.
     fn speed_scale(&self, site: Site, entity: u32) -> Option<f64> {
         (self.is_player_site(site) && entity == self.entity)
