@@ -373,7 +373,7 @@ fn the_server_pulls_widowmaker_along_her_grappling_hook_as_her_client_predicts()
         while server.has_input_work() {
             let before = server.body_script.as_ref().unwrap().frame;
             server
-                .advance_input(&scene, &viewer(&card), RETAIL_QUANTA, 1)
+                .advance_input(&scene, &viewer(&card), RETAIL_QUANTA, 1, None)
                 .unwrap();
             let (frame, projected, pose) = state(&server);
             if frame == before {
