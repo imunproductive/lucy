@@ -447,6 +447,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         if kind == StateKind::Anim && parameter == 1 {
             self.follow(key.instance, node, "m_A3B86BB0", Some(key), 0)?;
         }
+        if kind == StateKind::ChaseVar && parameter == CHASE_ARRIVAL {
+            self.chase_arrived(key, node)?;
+        }
         if let StateKind::DelayedSwitch { current, undecided } = kind {
             let branch = match parameter {
                 SWITCH_TO_TRUE => Some(true),

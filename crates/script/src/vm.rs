@@ -74,6 +74,11 @@ const ABILITY_PUSHED: u8 = 2;
 const ABILITY_HELD: u8 = 4;
 const SWITCH_TO_TRUE: u16 = 1;
 const SWITCH_TO_FALSE: u16 = 2;
+/// The timer parameter of a timed chase's arrival ([`TimedChase`]): the
+/// owner's client takes its timers from the frames, and its chase handles
+/// timer 0 as the arrival (`0x7FF78AAA7F50` → `0x7FF78AAB0960`); timer 1
+/// unbinds the chase's variable there.
+const CHASE_ARRIVAL: u16 = 0;
 const LINK_PRIORITY: StackPriority = StackPriority {
     level: 0,
     above_equals: true,
@@ -1007,10 +1012,68 @@ impl AbilityCooldown {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChasePayload {
+    /// The value as of `last_ms`. A timed chase keeps the value it began
+    /// with until it arrives, as the client's does.
     pub current: Value,
     pub reached: bool,
     pub remaining_ms: Option<i64>,
     pub last_ms: u64,
+    /// The destination and speed of a chase toward a constant.
+    pub timed: Option<TimedChase>,
+}
+
+/// A chase toward a constant, which the client doesn't step each frame:
+/// `sub_7FF78AAB0400` marks it (`+624`), turns its update off and posts one
+/// timer at its begin, its duration or `R(distance / speed * 1000)` ms on;
+/// the timer (event 0, `0x7FF78AAA7F50` → `0x7FF78AAB0960`) puts it at its
+/// destination and finishes it. Its value in between is worked out when read
+/// (`0x7FF78AAAEC80`), and its block (the payload) keeps the value and time
+/// it began with. A payload that moved each frame (Python's per-tick chase)
+/// made the owner's client read the state every frame, and its own arrival
+/// never fired, so Ana's, Roadhog's and Zenyatta's re-fire after a cooldown
+/// chase (`0B94` st13 on `#173`) was never predicted (OwnerPrediction.md,
+/// "Day (2026-11-17)").
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimedChase {
+    pub destination: Value,
+    pub rate: f64,
+}
+
+impl ChasePayload {
+    /// The chased value at `now_ms` (`0x7FF78AAAEC80` for a timed chase: a
+    /// share of its duration, or its speed's step from where it began).
+    pub(crate) fn value_at(&self, now_ms: u64) -> Value {
+        let Some(timed) = self.timed.as_ref().filter(|_| !self.reached) else {
+            return self.current.clone();
+        };
+        let elapsed = now_ms.saturating_sub(self.last_ms);
+        if let Some(remaining) = self.remaining_ms {
+            if remaining <= elapsed as i64 {
+                return timed.destination.clone();
+            }
+            let share = f64::from((elapsed as f64 / remaining as f64) as f32);
+            return chase_lerp(self.current.clone(), timed.destination.clone(), share);
+        }
+        let seconds = (f64::from(elapsed as f32) * 0.001) as f32;
+        let step = f64::from(seconds * timed.rate as f32);
+        if chase_distance(&self.current, &timed.destination) > step + expr::EPSILON {
+            chase_step(self.current.clone(), timed.destination.clone(), step).0
+        } else {
+            timed.destination.clone()
+        }
+    }
+
+    /// How long after `last_ms` a timed chase arrives (`0x7FF78AAB0400`:
+    /// its duration, else `(int)((distance / speed) * 1000 + 0.5)` in f32).
+    fn arrival_ms(&self) -> Option<u64> {
+        let timed = self.timed.as_ref()?;
+        if let Some(remaining) = self.remaining_ms {
+            return Some(remaining.max(0) as u64);
+        }
+        let distance = chase_distance(&self.current, &timed.destination) as f32;
+        let ms = (distance / timed.rate as f32) * 1000.0 + 0.5;
+        Some((ms as i32).max(0) as u64)
+    }
 }
 
 /// The instance variable the engine sets to the entity an instance was
@@ -2745,6 +2808,19 @@ fn chase_vector(value: Value) -> [f64; 3] {
         Value::Vector(vector) => vector,
         _ => [expr::to_float(&value), 0.0, 0.0],
     }
+}
+
+/// The f32 length from `current` to `destination`.
+fn chase_distance(current: &Value, destination: &Value) -> f64 {
+    let current = chase_vector(current.clone());
+    let destination = chase_vector(destination.clone());
+    let squares = (0..3)
+        .map(|axis| {
+            let delta = (destination[axis] - current[axis]) as f32;
+            delta * delta
+        })
+        .sum::<f32>();
+    f64::from(squares.sqrt())
 }
 
 fn chase_lerp(current: Value, destination: Value, share: f64) -> Value {
