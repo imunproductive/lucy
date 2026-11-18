@@ -427,13 +427,22 @@ impl ReceivedChunk {
 /// What a full owner controller frame shows (its head: the controller
 /// script's projection, `orpheus_sim::controller`): hero select open
 /// (#2438e), the pick (#13161e while #2114e) and the hero he plays (#940e).
-/// None for another chunk.
-fn controller_shows(chunk: &ReceivedChunk) -> Option<(bool, Option<u64>, Option<u64>)> {
+/// None for another chunk. `graphs` give the states of the variables' Stack
+/// links (`0C90`'s mode ruleset switch st47 binds #8430e or #8431e).
+fn controller_shows(
+    graphs: &orpheus_script::graph::GraphStore,
+    chunk: &ReceivedChunk,
+) -> Option<(bool, Option<u64>, Option<u64>)> {
     use orpheus_script::wire::{Value as ScriptValue, read_full_head};
     if chunk.first != 0 {
         return None;
     }
-    let head = read_full_head(&chunk.data).ok()?;
+    let head = read_full_head(&chunk.data, |graph| {
+        graphs
+            .graph(u32::from(graph))
+            .map(|graph| graph.header.states_bits)
+    })
+    .expect("a full frame's head");
     head.command_frame?;
     let flag = |id| head.variables.get(&id) == Some(&ScriptValue::Bool(true));
     let asset = |id| match head.variables.get(&id) {
@@ -1135,10 +1144,15 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         assert!(client.window.accept(frame.seq));
         for record in world_records(&schemas, &frame) {
             assert!(!record.is_create());
+            // The bots move, and so may the Training Partner's body (a
+            // player's body: the console `265F`'s dummy, `ai.rs`).
+            let partner = record.entity & !0xFF == player_entity(1);
             if record.movement {
-                assert!((BOT_ENTITY..BOT_ENTITY + 15).contains(&record.entity));
                 assert!(creates.contains(&record.entity));
-                moving_bot = true;
+                if !partner {
+                    assert!((BOT_ENTITY..BOT_ENTITY + 15).contains(&record.entity));
+                    moving_bot = true;
+                }
             }
             first_script(&record, &mut mode, &mut controller);
         }
@@ -1374,7 +1388,10 @@ fn exercise_hero_selection(
         let mut reader = script.bits();
         assert_eq!(reader.bits(3).unwrap(), 2);
         let cmfd = reader.w_var().unwrap();
-        assert_eq!(controller_shows(script), Some((open, pick, Some(hero))));
+        assert_eq!(
+            controller_shows(assets.graphs(), script),
+            Some((open, pick, Some(hero)))
+        );
         cmfd
     };
 
@@ -1400,7 +1417,7 @@ fn exercise_hero_selection(
                     .find(|script| script.span == 3)
                     .unwrap();
                 assert_eq!(
-                    controller_shows(close),
+                    controller_shows(assets.graphs(), close),
                     Some((false, Some(SOLDIER), Some(SOLDIER)))
                 );
             }
@@ -1500,10 +1517,9 @@ fn exercise_hero_selection(
         // The close of the pick (st95) may come first.
         let closed = records.iter().any(|record| {
             record.entity == OWNER
-                && record
-                    .script
-                    .as_ref()
-                    .is_some_and(|script| controller_shows(script).is_some_and(|(open, ..)| !open))
+                && record.script.as_ref().is_some_and(|script| {
+                    controller_shows(assets.graphs(), script).is_some_and(|(open, ..)| !open)
+                })
         });
         if !closed && !describe(&records).is_empty() {
             let described: Vec<_> = describe(&records)
@@ -3922,9 +3938,10 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
 /// the dart's 70 with her 25001. An enemy Soldier: 76 wounds the bot: he
 /// walks ahead of the spawn both share and fires at it, 8 m out along their
 /// facing. They share the practice spawn, and as enemies their capsules
-/// push them apart (Ana about 1 m sideways), so Ana aims from where she
-/// then stands: at him until a dart strikes him (the enemy), then at the
-/// bot. Ana's client
+/// push them apart (one of them about 1 m sideways: which one depends on
+/// the spawn's neighbours, such as the Training Partner on his pad), so
+/// each aims from where he then stands: the Soldier at the bot, Ana at him
+/// until a dart strikes him (the enemy), then at the bot. Ana's client
 /// gets her own body's state, as Soldier: 76's does (owner corrections,
 /// `replication.rs` `CORRECTED_HEROES`).
 #[test]
@@ -4026,10 +4043,20 @@ fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
         .send(ACK, command_batch(frames[1], 25, yaw, 0, true));
     frames[1] += 25;
     settle([&mut ana, &mut soldier], &mut frames, yaw, &schemas, 0.5);
+    let facing = |from: [f64; 3], to: [f64; 3]| {
+        let degrees = (to[0] - from[0]).atan2(to[2] - from[2]).to_degrees();
+        (degrees * 65536.0 / 360.0).round() as i32 as i16
+    };
     let deadline = server.now() + Duration::from_secs(10);
     while !bot_health(&ana).is_some_and(|health| health < full) {
         assert!(server.now() < deadline, "waiting for the bot's wound");
-        command(&mut soldier, &mut frames[1], yaw, FIRE);
+        let soldier_at = server.bodies(MATCH).unwrap()[1].position.unwrap();
+        command(
+            &mut soldier,
+            &mut frames[1],
+            facing(soldier_at, bot_at),
+            FIRE,
+        );
         command(&mut ana, &mut frames[0], yaw, 0);
         ana.pump(&schemas);
         soldier.pump(&schemas);
@@ -4042,10 +4069,6 @@ fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
     // strikes him, then at the bot. Bodies: Ana's, then the Soldier's.
     let fired = ana.datagrams.len();
     let soldier_body = Value::Unsigned(u64::from(soldier.owner | 1));
-    let facing = |from: [f64; 3], to: [f64; 3]| {
-        let degrees = (to[0] - from[0]).atan2(to[2] - from[2]).to_degrees();
-        (degrees * 65536.0 / 360.0).round() as i32 as i16
-    };
     let deadline = server.now() + Duration::from_secs(20);
     while !bot_health(&ana).is_some_and(|health| health > wounded) {
         assert!(
@@ -4374,7 +4397,8 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
     // Whether a controller frame shows hero select so, with the hero he
     // plays.
     let shows = |chunk: &ReceivedChunk, open: bool, hero: Option<u64>| {
-        controller_shows(chunk).is_some_and(|(shown, _, played)| (shown, played) == (open, hero))
+        controller_shows(assets.graphs(), chunk)
+            .is_some_and(|(shown, _, played)| (shown, played) == (open, hero))
     };
 
     let mut watchers: Vec<_> = tickets
