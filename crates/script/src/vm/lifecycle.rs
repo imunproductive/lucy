@@ -100,6 +100,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::MoveTo => {
                 self.machine.movements.remove(&key);
             }
+            StateKind::AiMove => {
+                self.machine.ai_moves.remove(&key);
+            }
             StateKind::HeroSelect => {
                 self.machine.hero_selects.remove(&key);
             }

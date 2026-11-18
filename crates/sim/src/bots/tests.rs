@@ -1,6 +1,5 @@
 use super::*;
 use orpheus_content::maps::PRACTICE_RANGE_MAP;
-use orpheus_wire::entity::movement_record;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
@@ -43,31 +42,22 @@ fn walker(target: [f64; 3]) -> Bot {
 /// (23405.7, rounded half up).
 const RESTING_SPRING: [i32; 2] = [23406; 2];
 
-/// The bots' movement records at each tick, as Python's. The digests were
-/// Python's with each record's `record_due` too; that cadence went (every
-/// frame carries a bot's record now, `Bot::record_due`), and they were
-/// taken again from the same records without it. Python's records left the
-/// spring steps at 0, which put the bot's capsule under the floor
-/// (`Bot::movement`): every record has them at rest now, and the digests
-/// take every other field of each record as Python had it.
-fn route_vector(bots: &mut [Bot], ticks: impl IntoIterator<Item = u32>) -> String {
-    let mut digest = Sha256::new();
-    for tick in ticks {
-        for bot in &mut *bots {
-            bot.step(tick, |_, _, _, _| None);
-            let record = bot.movement(tick);
-            assert_eq!(record.spring, RESTING_SPRING, "tick {tick}");
-            let python = Movement {
-                spring: [0; 2],
-                ..record
-            };
-            let bits = movement_record(&python, Some(tick)).unwrap();
-            digest.update(tick.to_le_bytes());
-            digest.update(u32::try_from(bits.bit_len()).unwrap().to_le_bytes());
-            digest.update(bits.as_bytes());
-        }
-    }
-    format!("{:x}", digest.finalize())
+/// Step `bot` through `ticks` with its script asking for `goal`, with no
+/// floor data; the ticks its walk ended in. Every record has its spring at
+/// rest.
+fn walk_to(
+    bot: &mut Bot,
+    goal: Option<[f64; 3]>,
+    ticks: impl IntoIterator<Item = u32>,
+) -> Vec<u32> {
+    ticks
+        .into_iter()
+        .filter_map(|tick| {
+            let ended = bot.step(tick, goal, |_, _, _, _| None);
+            assert_eq!(bot.movement(tick).spring, RESTING_SPRING, "tick {tick}");
+            ended
+        })
+        .collect()
 }
 
 #[test]
@@ -111,7 +101,10 @@ fn catalogs_only_unconditional_spawners_and_preserves_the_hint_sequence() {
         bots[0].spawn.route,
         [[4.0, 5.0, 6.0], [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
     );
-    assert_eq!(bots[0].index, 2);
+    let patrol = bots[0].patrol().unwrap();
+    assert_eq!(patrol.index, 2);
+    assert_eq!(patrol.route, bots[0].spawn.route.as_slice());
+    assert!(bots[1].patrol().is_none());
     assert!(!bots[1].spawn.firing);
     assert!(bots[1].spawn.route.is_empty());
     assert!(catalog.make(0, |_| unreachable!()).is_empty());
@@ -128,47 +121,77 @@ fn missing_spawner_file_leaves_an_empty_catalog() {
     );
 }
 
+/// The walker sets off in the tick its script asks for a point and holds
+/// its keys until ground friction will stop it there. The fixture walks at
+/// 4.5 m/s, speeds up at 1.0 × 4.5 = 4.5 m/s² (0.072 m/s a 16 ms tick, so
+/// full speed from tick 63, 2.249856 m covered in ticks 1-62) and brakes at
+/// 15 × 4.5 = 67.5 m/s² (1.08 m/s a tick: 3.42, 2.34, 1.26, 0.18, 0.1152 m
+/// of slide from full speed). 20 m behind it: 17.750144 m are left after
+/// tick 62, 0.072 m a tick at full speed, and it lets go in the first tick
+/// whose stride would leave no more than the slide: 62 + 245 = tick 307
+/// (17.750144 − 245 × 0.072 = 0.110144 ≤ 0.1152), stopping on the point
+/// four ticks later, in tick 311, the walk's end. It walks backwards and
+/// turns about at 60° a second (180° in 3 s), so it faces the way it walked
+/// by the end. Asked for the same point again it doesn't walk; a new point
+/// sets it off in the tick it is asked for.
 #[test]
-fn backward_walk_brake_and_next_leg_match_python_wire_vectors() {
-    // Python tests/test_bots.py::behind(), captured at every 16 ms tick.
-    let mut bot = walker([0.0, 0.0, -20.0]);
-    assert_eq!(
-        route_vector(std::slice::from_mut(&mut bot), 1..=750),
-        "a7d4ccfed08132ae435ed48eecdfa9b418123700b7c5ef3ab42f84cb27e0a6ac"
-    );
+fn a_walk_sets_off_when_asked_and_ends_still_on_its_point() {
+    let origin = [0.0; 3];
+    let behind = [0.0, 0.0, -20.0];
+    let mut bot = walker(behind);
+    assert!(walk_to(&mut bot, None, 1..=10).is_empty());
+    assert!(!bot.walking());
+    assert!(walk_to(&mut bot, Some(behind), [11]).is_empty());
+    assert!(bot.walking());
+    assert_ne!(bot.movement(11).throttles, [0; 2]);
+    assert_eq!(walk_to(&mut bot, Some(behind), 12..=400), [321]);
+    // Keys last held in tick 317 (10 + 307), still from 321 (10 + 311).
+    assert_eq!(bot.movement(400).input_frame, Some(317));
+    assert!(!bot.walking());
+    assert_eq!(bot.position, behind);
+    assert_eq!(bot.velocity, [0.0; 3]);
+    assert_eq!(bot.yaw, -32768.0);
+    assert!(walk_to(&mut bot, None, [401]).is_empty());
+    assert!(walk_to(&mut bot, Some(origin), [402]).is_empty());
+    assert!(bot.walking());
+    assert_eq!(bot.target, Some(origin));
 }
 
 #[test]
 fn skipped_ticks_catch_up_without_replaying_a_duplicate_tick() {
+    let goal = Some([0.0, 0.0, 10.0]);
     let mut contiguous = walker([0.0, 0.0, 10.0]);
-    for tick in 1..=251 {
-        contiguous.step(tick, |_, _, _, _| None);
+    for tick in 1..=120 {
+        contiguous.step(tick, goal, |_, _, _, _| None);
     }
     let mut skipped = walker([0.0, 0.0, 10.0]);
-    for tick in [1, 201, 251, 251, 100] {
-        skipped.step(tick, |_, _, _, _| None);
+    for tick in [1, 80, 120, 120, 50] {
+        skipped.step(tick, goal, |_, _, _, _| None);
     }
-    assert_eq!(contiguous.movement(251), skipped.movement(251));
+    assert!(skipped.walking());
+    assert_eq!(contiguous.movement(120), skipped.movement(120));
 
     let mut late = walker([0.0, 0.0, 10.0]);
     let mut bounded = walker([0.0, 0.0, 10.0]);
-    late.step(1, |_, _, _, _| None);
-    late.step(10_000, |_, _, _, _| None);
-    bounded.step(10_000 - CATCH_UP, |_, _, _, _| None);
-    bounded.step(10_000, |_, _, _, _| None);
+    late.step(1, goal, |_, _, _, _| None);
+    late.step(10_000, goal, |_, _, _, _| None);
+    bounded.step(10_000 - CATCH_UP, goal, |_, _, _, _| None);
+    bounded.step(10_000, goal, |_, _, _, _| None);
     assert_eq!(late.movement(10_000), bounded.movement(10_000));
 }
 
 #[test]
 fn terrain_probe_uses_ramp_speed_and_falls_back_to_hint_height() {
+    let goal = Some([0.0, 10.0, 20.0]);
     let mut ramp = walker([0.0, 10.0, 20.0]);
     let mut fallback = walker([0.0, 10.0, 20.0]);
-    for tick in 1..=344 {
-        ramp.step(tick, |_, z, top, bottom| {
+    // 157 ticks in: at full speed (from 63 ticks on), not near the point.
+    for tick in 1..=157 {
+        ramp.step(tick, goal, |_, z, top, bottom| {
             let height = 0.5 * z;
             (bottom..=top).contains(&height).then_some(height)
         });
-        fallback.step(tick, |_, _, _, _| None);
+        fallback.step(tick, goal, |_, _, _, _| None);
     }
     let [_, y, z] = ramp.position;
     assert!((y - 0.5 * z).abs() < 1.0e-12);
@@ -214,11 +237,11 @@ fn patrol_uses_the_shared_capsule_and_team_mask() {
     let settings = MoverSettings::default();
     let mut blocked = walker([0.0, 0.0, 4.0]);
     let mut allowed = walker([0.0, 0.0, 4.0]);
-    blocked.attach_collision(&settings, Arc::clone(&world), 0x08, |_, _, _, _| Some(0.0));
-    allowed.attach_collision(&settings, world, 0x10, |_, _, _, _| Some(0.0));
-    for tick in 1..=295 {
+    blocked.attach_collision(&settings, Arc::clone(&world), 0x08);
+    allowed.attach_collision(&settings, world, 0x10);
+    for tick in 1..=108 {
         for bot in [&mut blocked, &mut allowed] {
-            bot.step(tick, |_, _, _, _| Some(0.0));
+            bot.step(tick, Some([0.0, 0.0, 4.0]), |_, _, _, _| Some(0.0));
         }
     }
     assert!(blocked.position[2] < 2.0);
@@ -228,9 +251,10 @@ fn patrol_uses_the_shared_capsule_and_team_mask() {
 
 #[test]
 fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
+    let goal = Some([0.0, 0.0, 10.0]);
     let mut bot = walker([0.0, 0.0, 10.0]);
-    bot.step(1, |_, _, _, _| None);
-    bot.step(250, |_, _, _, _| None);
+    bot.step(1, goal, |_, _, _, _| None);
+    bot.step(100, goal, |_, _, _, _| None);
     assert!(bot.walking());
     let death_position = bot.position;
     // A living bot blocks other bodies with its standing capsule; a dead one
@@ -240,21 +264,21 @@ fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
     assert_eq!(bot.capsule(&settings), Some(standing));
     bot.died();
     assert_eq!(bot.capsule(&settings), None);
-    bot.step(400, |_, _, _, _| unreachable!());
+    assert_eq!(bot.step(400, goal, |_, _, _, _| unreachable!()), None);
     assert!(!bot.walking());
     assert_eq!(bot.position, death_position);
-    let state = bot.movement(250);
+    let state = bot.movement(100);
     assert_eq!(state.flags, DEAD_MOVEMENT_FLAG);
     assert_eq!(state.velocity, [0.0; 3]);
     assert_eq!(state.throttles, [0; 2]);
     assert_eq!(state.input_frame, None);
-    assert_eq!(bot.movement(251).input_frame, Some(250));
+    assert_eq!(bot.movement(101).input_frame, Some(100));
     // A dead bot's record goes in every frame, as a living one's.
-    assert!((251..400).all(|tick| bot.record_due(tick)));
+    assert!((101..400).all(|tick| bot.record_due(tick)));
 
     let replacement = BOT_ENTITY + 15;
     // Respawned after the practice modes' 3 s (`game_respawns`).
-    let tick = 250
+    let tick = 100
         + Duration::from_secs(3)
             .as_millis()
             .div_ceil(TICK_PERIOD.as_millis()) as u32;
@@ -270,10 +294,12 @@ fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
     // second, so the client couldn't place the bot until its turn).
     assert!(!fresh.record_due(records_from - 1));
     assert!((records_from..records_from + 200).all(|at| fresh.record_due(at)));
-    fresh.step(tick, |_, _, _, _| None);
-    fresh.step(tick + 186, |_, _, _, _| None);
+    // A new body stands until its script asks for a point (its patrol's
+    // first walk, 3 s on in `0B8E`), then sets off in that tick.
+    let goal = Some([0.0, 0.0, 10.0]);
+    fresh.step(tick, None, |_, _, _, _| None);
     assert!(!fresh.walking());
-    fresh.step(tick + 187, |_, _, _, _| None);
+    fresh.step(tick + 1, goal, |_, _, _, _| None);
     assert!(fresh.walking());
 }
 
@@ -331,11 +357,11 @@ fn flat_floor() -> (TriangleIndex, Arc<ContactWorld>) {
 
 /// A knockback (a Helix Rocket's within its 0.5 m ring: 4 m/s away, 6 m/s
 /// up) throws a walking Training Bot on its body's mover: in the air and
-/// rising from its next frame, it leaves its patrol, its records carry the
+/// rising from its next frame, it leaves its walk, its records carry the
 /// flight, it comes down after 2 × 6 / (9.81 × 1.75) = 0.7 s (43 ticks;
 /// ground friction stops it 3 ticks later), its
 /// sample says grounded from then on, and once it stands still it walks on
-/// to the point it was walking to, after a walk's pause.
+/// to the point it was walking to, which its script still asks for.
 #[test]
 fn a_knocked_bot_flies_on_its_mover_and_walks_on_once_it_lands() {
     let (rays, world) = flat_floor();
@@ -348,16 +374,16 @@ fn a_knocked_bot_flies_on_its_mover_and_walks_on_once_it_lands() {
     };
     let goal = [0.0, 0.0, 10.0];
     let mut bot = walker(goal);
-    bot.attach_collision(&settings, Arc::clone(&world), 0x10, |_, _, _, _| Some(0.0));
+    bot.attach_collision(&settings, Arc::clone(&world), 0x10);
     let run = |bot: &mut Bot, tick: u32| {
         bot.fly(tick, &rays);
-        bot.step(tick, |_, _, _, _| Some(0.0));
+        assert_eq!(bot.step(tick, Some(goal), |_, _, _, _| Some(0.0)), None);
     };
-    for tick in 1..=250 {
+    for tick in 1..=63 {
         run(&mut bot, tick);
     }
     assert!(bot.walking());
-    let knock = 250;
+    let knock = 63;
     let (from, yaw) = (bot.position, bot.movement(knock).yaw);
     bot.knock([0.0, 6.0, 4.0], knock, || {
         Mover::new(settings, Arc::clone(&world), from, yaw, 0x10).ok()
@@ -402,21 +428,15 @@ fn a_knocked_bot_flies_on_its_mover_and_walks_on_once_it_lands() {
     assert!(landed[2] - from[2] > 2.0, "from {from:?} to {landed:?}");
     assert_eq!(bot.movement(still).flags, 0);
     assert_eq!(bot.movement_sample(), BOT_MOVEMENT_SAMPLE);
-    // A walk's pause (1.2 s, 75 ticks, the landing tick the first) on the
-    // ground, then on to the goal.
-    let pause = still + 74;
-    for tick in still + 1..pause {
-        run(&mut bot, tick);
-        assert!(!bot.walking(), "{tick}");
-    }
-    run(&mut bot, pause);
+    // In the tick it stands still it sets off again for the point its
+    // script still asks for.
     assert!(bot.walking());
     assert_eq!(bot.target, Some(goal));
 }
 
 #[test]
 #[ignore = "requires the derived 104319 AI spawner and mover tables"]
-fn fifteen_practice_bots_match_python_roster_and_patrol_frames() {
+fn fifteen_practice_bots_match_python_roster() {
     let root = orpheus_testkit::runtime_dir();
     let data = root.join("data");
     let catalog = BotCatalog::load(data.join("ai_spawners_174.json")).unwrap();
@@ -426,7 +446,7 @@ fn fifteen_practice_bots_match_python_roster_and_patrol_frames() {
         0x0400_0000_0000_03cf,
     )
     .unwrap();
-    let mut bots = catalog.make(PRACTICE_RANGE_MAP, |body| {
+    let bots = catalog.make(PRACTICE_RANGE_MAP, |body| {
         BotWalk::from_mover(movers.for_body(Some(body)))
     });
     assert_eq!(bots.len(), 15);
@@ -476,13 +496,11 @@ fn fifteen_practice_bots_match_python_roster_and_patrol_frames() {
             }
         }
     }
-    // Generated by Python bots.make and world.movement_record with no floor data.
+    // Generated by Python bots.make with no floor data. Python's patrol
+    // frames digest went with its timings: the patrol graph `0B8E` decides
+    // when the bots walk now (`bot_script` tests).
     assert_eq!(
         format!("{:x}", roster.finalize()),
         "04745e4f99dbbfa08bdef514d77ccc0b8e023e769efa4f5fb58e6f794f50ac4b"
-    );
-    assert_eq!(
-        route_vector(&mut bots, (1..=1300).chain([1325, 1955, 1956, 1960])),
-        "ed1015f90ebf13f2100c3a31b4da1e79719551aec9c363f6e3df607d1e1a3ce5"
     );
 }

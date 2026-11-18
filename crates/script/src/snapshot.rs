@@ -1507,6 +1507,7 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
             | StateKind::AiFire { .. }
             | StateKind::ServerFrames
             | StateKind::MoveTo
+            | StateKind::AiMove
             | StateKind::ModifyHealth { .. }
             | StateKind::Status
             | StateKind::CombatMod,

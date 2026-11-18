@@ -431,7 +431,6 @@ impl SceneAssets {
                     self.movers.for_body(Some(bot.spawn.body)),
                     Arc::clone(world),
                     category,
-                    ground_height(ground.triangles(), category),
                 );
             }
         }
@@ -1068,7 +1067,9 @@ impl PreparedScene {
 
     /// One more bot gets its script (match.py `update`: one per update,
     /// within the loading window), then the knocked bots fly
-    /// ([`Bot::fly`]), the others walk, and the live ones are posed
+    /// ([`Bot::fly`]), the others walk to the point their scripts ask for
+    /// (the patrol `0B8E`; a walk that ended goes back to the script, which
+    /// takes it when it next runs), and the live ones are posed
     /// ([`crate::bot_animation`]), by what their scripts asked as of their
     /// last run.
     pub fn step_bots(&mut self, tick: u32) {
@@ -1077,10 +1078,15 @@ impl PreparedScene {
         let floor = self.ground.triangles();
         for (slot, bot) in self.bots.iter_mut().enumerate() {
             bot.fly(tick, floor);
-            bot.step(
+            let goal = self.bot_scripts.move_goal(slot, bot.entity);
+            let ended = bot.step(
                 tick,
+                goal.map(|goal| goal.target),
                 ground_height(floor, mover_category(&self.map, bot.spawn.team)),
             );
+            if let (Some(goal), Some(ended)) = (goal, ended) {
+                self.bot_scripts.move_arrived(slot, bot.entity, goal, ended);
+            }
             if !bot.dead {
                 let (arms_forward, anim) = self
                     .bot_scripts
@@ -1945,7 +1951,8 @@ mod tests {
     #[ignore = "requires a derived 104319 Practice Range pack"]
     fn elevated_practice_patrols_reach_their_hints_without_crossing_walls() {
         let runtime = orpheus_testkit::runtime_dir();
-        let assets = SceneAssets::load(runtime).unwrap();
+        let mut assets = SceneAssets::load(runtime).unwrap();
+        assets.set_bot_unknowns(Unknowns::Tolerate);
         let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
         assert_eq!(scene.bots().len(), 15);
         // Every Practice Range bot body has a graph in the bot bundle.
@@ -1964,6 +1971,8 @@ mod tests {
         let mut visited = [0; 2];
         for tick in 1001..=2900 {
             scene.step_bots(tick);
+            // The patrol graphs ask for the walks (`0B8E`).
+            scene.advance_live_bots(tick);
             for (slot, entity) in bots.into_iter().enumerate() {
                 let bot = scene
                     .bots()

@@ -876,6 +876,17 @@ pub struct MoveRequest {
     pub speed: f64,
 }
 
+/// An AI movement state's (`STU_ECAEE401`) point to walk to, from its move
+/// goal (`STU_194D744E`), for the server's walker
+/// ([`Component::ai_move_requests`]). The walker reports the walk's end with
+/// [`Component::ai_move_arrived`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AiMoveRequest {
+    pub instance: u16,
+    pub raw_state: u16,
+    pub target: [f64; 3],
+}
+
 /// A movement of the body's own that the graphs start and the mover carries out
 /// ([`Component::take_motions`]). No Python reference modelled these; the
 /// meaning of the authored values is an assumption, recorded at each node.
@@ -1005,6 +1016,9 @@ pub enum StateKind {
     /// A fixed world target and speed for bot movement (`MoveTo`); the
     /// request is in [`Component::move_requests`].
     MoveTo,
+    /// An AI movement state (`STU_ECAEE401`): the point its move goal names
+    /// for the server's walker, in [`Component::ai_move_requests`].
+    AiMove,
     /// Recall's rewind (`STU_41B3FC2B`): finishes after its duration; its
     /// begin and end are [`Motion`]s for the mover.
     Rewind,
@@ -1646,24 +1660,20 @@ impl Component {
         })
     }
 
-    /// A new root instance of `graph` with the next free id. Its entries
-    /// queue at the current clock and run at the next update
-    /// (`Component.create` in `ow174/game/script/runtime.py`).
+    /// A new root instance of `graph` with the next free id and its own
+    /// `variables` (a spawner's overrides). Its entries queue at the current
+    /// clock and run at the next update (`Component.create` in
+    /// `ow174/game/script/runtime.py`).
     pub fn add_instance(
         &mut self,
         graph: u32,
+        variables: Variables,
         world: &mut impl World,
     ) -> Result<Option<u16>, InitFault> {
         let id = u16::try_from(self.machine.next_id).map_err(|_| InitFault::InstanceIdExhausted)?;
         let mut created = false;
         self.run(world, |vm| {
-            created = vm.create(
-                id,
-                graph,
-                None,
-                Variables::new(),
-                vm.machine.snapshot.entity,
-            )?;
+            created = vm.create(id, graph, None, variables, vm.machine.snapshot.entity)?;
             Ok(())
         })?;
         Ok(created.then_some(id))
@@ -1713,6 +1723,21 @@ impl Component {
                 raw_state: key.raw,
                 target,
                 speed,
+            })
+            .collect()
+    }
+
+    /// The running AI movement states' points to walk to, for the walker
+    /// ([`AiMoveRequest`]); a state's point goes once the walker reported
+    /// the walk over, and comes back when its input plug asks again.
+    pub fn ai_move_requests(&self) -> Vec<AiMoveRequest> {
+        self.machine
+            .ai_moves
+            .iter()
+            .map(|(key, &target)| AiMoveRequest {
+                instance: key.instance,
+                raw_state: key.raw,
+                target,
             })
             .collect()
     }
@@ -1801,6 +1826,32 @@ impl Component {
             Event::Abort(raw_state)
         };
         self.run(world, |vm| vm.post_after(instance, delay_ms, event))
+    }
+
+    /// Queue the walker's report that an AI movement state's walk is over,
+    /// `delay_ms` after the current clock; it runs at the next advance. The
+    /// state lets its point go and follows `m_1B09389D`: the client's event
+    /// handler of `STU_ECAEE401` (`0x7FF789B89D30`) follows that plug on
+    /// event 3, the one the patrol `0B8E` and the idle wander `0B6F` wait
+    /// on before their next walk. Which native event that is (arrived,
+    /// gave up) is not in the client; arrived is the reading the data fits
+    /// (AiDefinitions.md, §19 Q5).
+    pub fn ai_move_arrived(
+        &mut self,
+        instance: u16,
+        raw_state: u16,
+        delay_ms: u64,
+        world: &mut impl World,
+    ) -> Result<(), InitFault> {
+        if self.halted {
+            return Err(InitFault::Halted);
+        }
+        if !self.machine.snapshot.instances.contains_key(&instance) {
+            return Ok(());
+        }
+        self.run(world, |vm| {
+            vm.post_after(instance, delay_ms, Event::AiMoveArrived(raw_state))
+        })
     }
 
     fn has_state(&self, key: StateKey) -> bool {
@@ -1987,6 +2038,9 @@ enum Event {
     /// A completion check of the state (TryComplete) a join asked for.
     Check(u16),
     ChaseReached(u16),
+    /// The walker's report that an AI movement state's walk is over
+    /// ([`Component::ai_move_arrived`]).
+    AiMoveArrived(u16),
     WatchChanged(u16),
     Message {
         position: u16,
@@ -2008,6 +2062,7 @@ impl Event {
             | Self::AbilityCheck(state)
             | Self::Check(state)
             | Self::ChaseReached(state)
+            | Self::AiMoveArrived(state)
             | Self::WatchChanged(state)
             | Self::Timer(state, _) => Some(state),
         }
@@ -2059,6 +2114,8 @@ struct Machine {
     disabled: BTreeMap<i64, Vec<StateKey>>,
     /// `MoveTo` targets and speeds of the activations that resolved one.
     movements: BTreeMap<StateKey, ([f64; 3], f64)>,
+    /// The running AI movement states' points to walk to ([`AiMoveRequest`]).
+    ai_moves: BTreeMap<StateKey, [f64; 3]>,
     /// The running HeroSelect states' hero limits (`vm/hero_select.rs`).
     hero_selects: BTreeMap<StateKey, hero_select::HeroLimits>,
     /// Motions started or ended since the mover took them.
@@ -2274,6 +2331,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                         self.try_complete(key(raw), node, 0)?;
                     }
                 }
+                Event::AiMoveArrived(raw) => self.ai_move_arrived(key(raw))?,
                 Event::WatchChanged(raw) => self.deliver_watch(key(raw))?,
                 Event::Message {
                     position,

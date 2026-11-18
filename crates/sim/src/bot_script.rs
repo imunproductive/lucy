@@ -26,7 +26,7 @@ use crate::{
         spawned_definitions,
     },
     replication::kill_feed_fresh,
-    voice_lines::{VoiceLine, VoiceState},
+    voice_lines::{VoiceLine, VoiceState, is_death_cry},
 };
 use orpheus_content::{
     maps::{GameMap, PRACTICE_RANGE_MAP, PRACTICE_RANGE_MODE},
@@ -39,7 +39,10 @@ use orpheus_script::{
     snapshot::{ProjectedSnapshot, SnapshotEncoder, SnapshotError, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk},
     timeline::FRAME_MS,
-    vm::{AuraChange, BodyEffects, HealthChange, ShotEvent, Snapshot, TargetCandidate, Unknowns},
+    vm::{
+        AiMoveRequest, AuraChange, BodyEffects, HealthChange, ShotEvent, Snapshot, TargetCandidate,
+        Unknowns,
+    },
     weapons::{HitDefinition, ProjectileBallistics, authored_number, ray_profile},
     wire::Value,
 };
@@ -261,7 +264,8 @@ impl BotScripts {
     }
 
     /// match.py `_prepare_bot_script`: a firing bot of the Practice Range
-    /// starts its firing behavior at its spawner. The live nameplate tool's
+    /// starts its firing behavior at its spawner, a bot whose spawner lists
+    /// the patrol its patrol (`Bot::patrol`). The live nameplate tool's
     /// variables are set before the first frame. A bot made again after a
     /// death puts itself together ([`ScriptSpawn::respawned`]).
     fn prepare(&mut self, slot: usize, bot: &Bot, tick: u32, plate: &BotPlate) {
@@ -280,6 +284,7 @@ impl BotScripts {
             mode: self.mode,
             health: bot.spawn.health,
             firing_position: (bot.spawn.firing && self.practice).then_some(bot.position),
+            patrol: bot.patrol(),
             respawned,
         };
         let mut originals = BTreeMap::new();
@@ -417,7 +422,7 @@ impl BotScripts {
             &self.codecs,
             self.unknowns,
             self.practice,
-            body.behavior(),
+            body.behaviors(),
             snapshot,
             initial,
         )
@@ -595,7 +600,7 @@ impl BotScripts {
                     &self.codecs,
                     self.unknowns,
                     self.practice,
-                    None,
+                    &[],
                     snapshot,
                     initial,
                 ) {
@@ -755,7 +760,10 @@ impl BotScripts {
             self.health_changes
                 .extend(script.body.take_health_changes());
             for criteria in script.body.take_criteria() {
-                if bot.dead {
+                // A dead bot says only its death cries: `0C17`'s `003E`
+                // branch (rid8) raises `05FB` for a killing hit tagged
+                // `0644`, `1C92` for `074E`, 0.05 s after the death.
+                if bot.dead && !is_death_cry(criteria.identifier) {
                     continue;
                 }
                 let set = self.voice_sets.for_body(bot.spawn.body);
@@ -763,6 +771,37 @@ impl BotScripts {
                     self.voices.push((voice, bot.position));
                 }
             }
+        }
+    }
+
+    /// The point the bot in `slot` (while its script is `entity`'s) is
+    /// asked to walk to now: its patrol's movement state's
+    /// ([`BotBody::move_goal`]).
+    pub(crate) fn move_goal(&self, slot: usize, entity: u32) -> Option<AiMoveRequest> {
+        let script = self.slots.get(slot)?.as_ref()?;
+        (script.entity == entity)
+            .then(|| script.body.move_goal())
+            .flatten()
+    }
+
+    /// The walker ended the bot's walk to `goal` at world tick `tick`; the
+    /// script takes it when it next runs ([`BotBody::move_arrived`]).
+    pub(crate) fn move_arrived(
+        &mut self,
+        slot: usize,
+        entity: u32,
+        goal: AiMoveRequest,
+        tick: u32,
+    ) {
+        let Some(script) = self.slots[slot]
+            .as_mut()
+            .filter(|script| script.entity == entity)
+        else {
+            return;
+        };
+        if let Err(error) = script.body.move_arrived(goal, tick) {
+            eprintln!("bot {entity:08X}'s body script failed on its walk's end ({error})");
+            self.slots[slot] = None;
         }
     }
 
@@ -875,19 +914,18 @@ fn project_frame(
     codecs: &CodecTable,
     unknowns: Unknowns,
     practice: bool,
-    behavior: Option<u16>,
+    behaviors: &[u16],
     snapshot: &Snapshot,
     initial: &ProjectedSnapshot,
 ) -> Result<BotFrame, SnapshotError> {
-    let hidden: Vec<u16> = behavior.into_iter().collect();
     let encoder = SnapshotEncoder::new(graphs, codecs)
         .with_unknowns(unknowns)
-        .hiding(&hidden);
+        .hiding(behaviors);
     let full = encoder.project_next(snapshot, initial)?;
     let plain = match practice_nameplate(snapshot).filter(|_| practice) {
         Some(child) => {
             let instance = &snapshot.instances[&child];
-            let mut hidden = hidden.clone();
+            let mut hidden = behaviors.to_vec();
             hidden.push(child);
             let stripped = SnapshotEncoder::new(graphs, codecs)
                 .with_unknowns(unknowns)

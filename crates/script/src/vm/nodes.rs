@@ -193,6 +193,17 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                         taken = true;
                         continue;
                     }
+                    if target.class == "STU_ECAEE401" && input == "m_8CBFEBB9" {
+                        // The AI movement state's request input (an
+                        // `STU_A1AAB8C4`, client slot 51 `0x7FF789B8A1A0`
+                        // hands it to the AI movement component 88): it
+                        // reads its move goal again, only while active.
+                        if self.state(key).is_some_and(|state| state.active) {
+                            self.resolve_ai_move(key, target);
+                        }
+                        taken = true;
+                        continue;
+                    }
                     let event = if input == ABORT_PLUG {
                         Event::Abort(raw)
                     } else {
@@ -815,6 +826,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_E4A30BCF" => StateKind::DisableButton { button: 0 },
             "STU_D7F9E1C3" => StateKind::AiFire { button: None },
             "STUStatescriptStateMoveTo" => StateKind::MoveTo,
+            "STU_ECAEE401" => StateKind::AiMove,
+            // The AI movement state's goals (`STU_B28C2E5E` move-to
+            // `194D744E` and the unnamed `2C18F116`, `STU_627A461C` face-to
+            // `AB9B30EF`): no registration of their own (the client runs the
+            // base state); the `STU_ECAEE401` above them reads them
+            // (`resolve_ai_move`). Data holders here.
+            "STU_194D744E" | "STU_2C18F116" | "STU_AB9B30EF" => StateKind::Plain,
             "STU_41B3FC2B" => StateKind::Rewind,
             "STU_D74D4F47" => StateKind::WaitFrames { target: 0 },
             "STU_91EF24A9" => StateKind::AiCandidate { selected: false },
@@ -987,6 +1005,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::DisableButton { .. } => self.begin_disable_button(key, node, depth)?,
             StateKind::AiFire { .. } => self.begin_ai_fire(key, node)?,
             StateKind::MoveTo => self.begin_move_to(key, node),
+            StateKind::AiMove => self.resolve_ai_move(key, node),
             StateKind::Rewind => self.begin_rewind(key, node)?,
             StateKind::WaitFrames { .. } => self.arm_frame_wait(key, node)?,
             StateKind::AiCandidate { .. } => {

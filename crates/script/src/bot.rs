@@ -12,14 +12,15 @@ use serde_json::Value as Json;
 
 use crate::{
     codecs::CodecTable,
-    expr::{EvalError, Scope, Variable, native_shape},
+    expr::{EntityRelation, EvalError, Scope, Variable, native_shape},
     graph::{GraphStore, Node},
     snapshot::SnapshotEncoder,
+    timeline::FRAME_MS,
     vitals::PoolKind,
     vm::{
-        AuraChange, BodyEffects, CombatMod, Component, HealthChange, InitFault, MAX_INIT_WORK,
-        RaisedCriteria, ShotEvent, Site, Snapshot, TargetCandidate, TargetTagEffect, Unknowns,
-        World, body_roots,
+        AiMoveRequest, AuraChange, BodyEffects, CombatMod, Component, HealthChange, InitFault,
+        MAX_INIT_WORK, RaisedCriteria, ShotEvent, Site, Snapshot, TargetCandidate, TargetTagEffect,
+        Unknowns, World, body_roots,
     },
     wire::{Value, Variables},
 };
@@ -65,6 +66,26 @@ pub const RANGE_BOT: u32 = 7082;
 /// The Practice Range firing placement behavior (`FIRING` in
 /// `ow174/game/bots.py`).
 pub const FIRING_GRAPH: u32 = 0x0b92;
+/// The Training Bot patrol behavior (bot bundle; the Practice Range's
+/// walking spawners list it, `ai_spawners_174.json`). Read 2026-11-18:
+/// Entry → #6960 = #39 → BooleanSwitch on the owner's health > 0 → the AI
+/// candidate `STU_91EF24A9` (st0), whose selected subgraph starts StateWait
+/// 2 s (st1) and the AI movement state `STU_ECAEE401` (st6, goals move-to
+/// and face-to #6948). The 2 s wait goes on to StateWait 1 s (st5), which
+/// sets `#39 = (#39 + 1) % count(#6947)` and `#6948 = #6947[#39]` and asks
+/// the movement state for the walk (its input `m_8CBFEBB9`). The walk's end
+/// (`m_1B09389D`) begins the 1 s wait again; its other plugs `m_881FC2B2`
+/// and `m_3D5F729C` begin the 2 s one. So the first walk sets off 3 s
+/// after the behavior starts and each next one 1 s after the last ended.
+pub const PATROL_GRAPH: u32 = 0x0b8e;
+/// The patrol's route `#6947` (`1B23.0D80`): the spawner's AI hint points,
+/// in order. Retail's value lists the hint entities; the server gives their
+/// positions, which the move goal's `STU_71A87E92` passes through as they
+/// are (assumption: the hints don't move).
+pub const PATROL_ROUTE: u32 = 6947;
+/// The patrol's route index `#39` (`0027.0D80`), the spawner's override (2
+/// on every Practice Range route).
+pub const PATROL_INDEX: u32 = 39;
 /// The nameplate and overhead health bar graph (client-only presenters; for
 /// a player under `01CF` state 29, for a training bot under `0C18` state 3).
 pub const PRACTICE_NAMEPLATE: u32 = 0x0d24;
@@ -269,10 +290,37 @@ impl World for BotWorld {
             .scalar(self.body, alias, category)
     }
 
-    /// The reconstruction policy for the single authored firing placement:
-    /// only its graph selects, and only with an owner position.
+    /// The reconstruction policy for the behaviors the server starts: the
+    /// single authored firing placement selects with an owner position, the
+    /// patrol always (one candidate each; the client has no scoring code,
+    /// AiDefinitions.md).
     fn selects_ai_behavior(&mut self, site: Site) -> Option<bool> {
-        Some(self.owner_position.is_some() && site.graph == FIRING_GRAPH)
+        Some(match site.graph {
+            FIRING_GRAPH => self.owner_position.is_some(),
+            PATROL_GRAPH => true,
+            _ => false,
+        })
+    }
+
+    /// The patrol is written for the AI entity that possesses the body: it
+    /// reads the body as `STU_0AC15F78(owner())` (the health test of its
+    /// BooleanSwitch). Here it runs on the body itself, which is that body.
+    /// Otherwise as the base world: a listed body's controller.
+    fn related_entity(&mut self, site: Site, relation: EntityRelation, entity: u32) -> Option<u32> {
+        match relation {
+            EntityRelation::PossessedBody
+                if site.graph == PATROL_GRAPH && entity == site.entity =>
+            {
+                Some(entity)
+            }
+            EntityRelation::Controller => {
+                self.target_candidates(site)?
+                    .iter()
+                    .find(|body| body.entity == entity)?
+                    .controller
+            }
+            _ => None,
+        }
     }
 
     fn target_candidates(&self, _site: Site) -> Option<&[TargetCandidate]> {
@@ -308,7 +356,7 @@ impl World for BotWorld {
             // filter flag 0x100 means natively is unverified.
             return Some(Value::Bool(true));
         }
-        if self.selects_ai_behavior(site) == Some(true) {
+        if site.graph == FIRING_GRAPH && self.owner_position.is_some() {
             let owner = config.get("m_entity");
             let possessed = owner
                 .filter(|owner| owner.get("$").and_then(Json::as_str) == Some("STU_0AC15F78"))
@@ -468,6 +516,10 @@ pub struct BotSpawn<'a> {
     pub health: f64,
     /// The firing placement's position; none for a bot without one.
     pub firing_position: Option<[f64; 3]>,
+    /// The patrol's route, for a spawner that lists [`PATROL_GRAPH`]: the
+    /// behavior starts with the body and asks the server's walker for each
+    /// walk ([`BotBody::move_goal`]).
+    pub patrol: Option<Patrol<'a>>,
     /// A bot made again at its spawner after a death: [`RESET`] goes to its
     /// [`REBUILD_GRAPH`] instances before its first frame, so it is seen
     /// putting itself together (upstream kjs `a667ef27`; seen there in the
@@ -477,19 +529,31 @@ pub struct BotSpawn<'a> {
     pub respawned: bool,
 }
 
+/// A patrolling spawner's overrides of [`PATROL_GRAPH`]'s variables.
+#[derive(Clone, Copy, Debug)]
+pub struct Patrol<'a> {
+    /// [`PATROL_ROUTE`]: the hint points' positions, in order.
+    pub route: &'a [[f64; 3]],
+    /// [`PATROL_INDEX`].
+    pub index: i64,
+}
+
 /// An NPC body's statescript on the server clock (`BotScript` in bot.py).
 pub struct BotBody {
     component: Component,
     world: BotWorld,
-    behavior: Option<u16>,
+    /// The AI behaviors the server started (firing, patrol): the server's
+    /// own, so the observers' frames leave them out.
+    behaviors: Vec<u16>,
     frame: u32,
     death_frame: Option<u32>,
 }
 
 impl BotBody {
-    /// Run the body's graphs through their spawn frame and, with a firing
-    /// position and AI weapon buttons, start the firing behavior with its
-    /// scoped reset. Each nameplate instance (`0D24`) then gets the name as
+    /// Run the body's graphs through their spawn frame and start the AI
+    /// behaviors the server gives it: with a firing position and AI weapon
+    /// buttons the firing behavior with its scoped reset, with a route the
+    /// patrol. Each nameplate instance (`0D24`) then gets the name as
     /// its text override ([`NAMEPLATE_TEXT`]). Nothing enables the plate
     /// (`#8807`): the client shows it by itself (`docs/notes/behavior.md`,
     /// "When a bot's plate shows").
@@ -537,13 +601,24 @@ impl BotBody {
             MAX_INIT_WORK,
         )?;
         component.advance_frame(spawn.frame, &mut world)?;
-        let mut behavior = None;
-        if world.owner_position.is_some() {
-            behavior = component.add_instance(FIRING_GRAPH, &mut world)?;
-            if let Some(id) = behavior {
-                // The reconstructed spawn reset goes to this instance only;
-                // other 0013 receivers have their own rules.
-                component.queue_message(id, RESET, Variables::new())?;
+        let mut behaviors = Vec::new();
+        if world.owner_position.is_some()
+            && let Some(id) = component.add_instance(FIRING_GRAPH, Variables::new(), &mut world)?
+        {
+            behaviors.push(id);
+            // The reconstructed spawn reset goes to this instance only;
+            // other 0013 receivers have their own rules.
+            component.queue_message(id, RESET, Variables::new())?;
+            component.run_now(&mut world)?;
+        }
+        if let Some(patrol) = spawn.patrol {
+            let route = patrol.route.iter().copied().map(Value::Vector).collect();
+            let variables = Variables::from([
+                (PATROL_ROUTE, Value::Array(route)),
+                (PATROL_INDEX, Value::Integer(patrol.index)),
+            ]);
+            if let Some(id) = component.add_instance(PATROL_GRAPH, variables, &mut world)? {
+                behaviors.push(id);
                 component.run_now(&mut world)?;
             }
         }
@@ -573,7 +648,7 @@ impl BotBody {
         Ok(Self {
             component,
             world,
-            behavior,
+            behaviors,
             frame: spawn.frame,
             death_frame: None,
         })
@@ -583,7 +658,7 @@ impl BotBody {
         self.component.snapshot()
     }
 
-    /// The observer frames' encoder: it leaves the firing behavior out.
+    /// The observer frames' encoder: it leaves the AI behaviors out.
     pub fn encoder<'a>(
         &'a self,
         graphs: &'a GraphStore,
@@ -591,7 +666,7 @@ impl BotBody {
     ) -> SnapshotEncoder<'a> {
         SnapshotEncoder::new(graphs, codecs)
             .with_unknowns(self.world.unknowns)
-            .hiding(self.behavior.as_slice())
+            .hiding(&self.behaviors)
     }
 
     pub fn component(&self) -> &Component {
@@ -608,9 +683,29 @@ impl BotBody {
         std::mem::replace(&mut self.world.movement_sample, sample) != sample
     }
 
-    /// The firing behavior's instance while it runs.
-    pub fn behavior(&self) -> Option<u16> {
-        self.behavior
+    /// The AI behaviors' instances (firing, patrol) while they run.
+    pub fn behaviors(&self) -> &[u16] {
+        &self.behaviors
+    }
+
+    /// The point the patrol's movement state asks the walker to walk to,
+    /// with the state ([`Component::ai_move_requests`]); none between
+    /// walks or once dead.
+    pub fn move_goal(&self) -> Option<AiMoveRequest> {
+        if self.component.owner_dead() {
+            return None;
+        }
+        self.component.ai_move_requests().into_iter().next()
+    }
+
+    /// The walker's report that the walk to `goal` ended at world tick
+    /// `frame` ([`Component::ai_move_arrived`]); the graph takes it at that
+    /// frame's time, when the body next runs.
+    pub fn move_arrived(&mut self, goal: AiMoveRequest, frame: u32) -> Result<(), BotError> {
+        let delay = u64::from(frame.saturating_sub(self.frame)) * FRAME_MS;
+        self.component
+            .ai_move_arrived(goal.instance, goal.raw_state, delay, &mut self.world)?;
+        Ok(())
     }
 
     pub fn frame(&self) -> u32 {
@@ -811,14 +906,14 @@ impl BotBody {
             return Ok(false);
         }
         self.frame = frame;
-        if let Some(position) = position.filter(|_| self.behavior.is_some()) {
+        if let Some(position) = position.filter(|_| self.world.owner_position.is_some()) {
             self.world.owner_position = Some(position);
         }
         self.component.advance_frame(frame, &mut self.world)?;
         Ok(true)
     }
 
-    /// Deliver the death message (`BotScript.die`): the behavior goes, the
+    /// Deliver the death message (`BotScript.die`): the behaviors go, the
     /// shots and held buttons are dropped, the frame runs, the dead flag
     /// ([`DEAD_FLAG`]) goes true, health is 0, and `003E.025` runs now. A
     /// bot that dies in its spawn frame runs the death in the next frame,
@@ -842,7 +937,7 @@ impl BotBody {
         }
         self.frame = frame.max(self.frame.saturating_add(1));
         self.component.set_owner_dead(true);
-        if let Some(behavior) = self.behavior.take() {
+        for behavior in std::mem::take(&mut self.behaviors) {
             self.component.destroy_instance(behavior, &mut self.world)?;
         }
         self.component.discard_shots();
@@ -1084,6 +1179,7 @@ mod tests {
             mode: PRACTICE_RANGE_MODE,
             health: 200.0,
             firing_position,
+            patrol: None,
             respawned: false,
         }
     }
@@ -1132,7 +1228,7 @@ mod tests {
         let codecs = CodecTable::client();
         // Without a firing position nothing presses the button.
         let mut idle = BotBody::start(Arc::clone(&graphs), spawn(None), Unknowns::Refuse).unwrap();
-        assert_eq!(idle.behavior(), None);
+        assert!(idle.behaviors().is_empty());
         assert!(idle.advance_live(101, None).unwrap());
         assert!(idle.take_shots().is_empty());
 
@@ -1142,7 +1238,7 @@ mod tests {
             Unknowns::Refuse,
         )
         .unwrap();
-        assert_eq!(bot.behavior(), Some(2));
+        assert_eq!(bot.behaviors(), [2]);
         let snapshot = bot.snapshot().unwrap();
         assert!(
             snapshot.initialization_complete(),
@@ -1177,7 +1273,7 @@ mod tests {
         );
         assert!(bot.die(101, Variables::new()).unwrap());
         assert!(bot.component().owner_dead());
-        assert_eq!(bot.behavior(), None);
+        assert!(bot.behaviors().is_empty());
         assert_eq!(bot.frame(), 102);
         assert_eq!(bot.death_frame(), Some(101));
         let snapshot = bot.snapshot().unwrap();
@@ -1288,7 +1384,9 @@ mod tests {
         .unwrap();
         let snapshot = bot.snapshot().unwrap();
         assert!(snapshot.initialization_complete());
-        let behavior = bot.behavior().unwrap();
+        let [behavior] = *bot.behaviors() else {
+            panic!("one behavior: {:?}", bot.behaviors());
+        };
         assert_eq!(snapshot.instances[&behavior].graph, FIRING_GRAPH);
         let nameplate = practice_nameplate(snapshot).unwrap();
         let parent = snapshot.instances[&nameplate].parent.unwrap();
@@ -1325,7 +1423,7 @@ mod tests {
             assert!(bot.advance_live(frame, Some([0.0, 0.0, 3.0])).unwrap());
         }
         assert!(bot.die(161, Variables::new()).unwrap());
-        assert_eq!(bot.behavior(), None);
+        assert!(bot.behaviors().is_empty());
         // The death raises the dead flag the health bar reads (0D24 st38),
         // and the observers' frame carries it.
         let dead = bot
@@ -1591,6 +1689,133 @@ mod tests {
         }
         assert_eq!(ended, Some(landing));
         encoder_full(&graphs, &codecs, &bot);
+    }
+
+    /// The patrol `0B8E` on the Training Bot asks the walker for its route
+    /// points on its own timings. The body's spawn frame 100 runs first; the
+    /// behavior starts at the end of it (the clock at 1615 ms): its 2 s wait
+    /// ends at 3615 ms, its 1 s wait at 4615 ms, in frame 288 (4615 / 16 =
+    /// 288.4): `#39` goes from 2 to (2 + 1) % 3 = 0 and the movement state
+    /// asks for route point 0. The walker reports the walk over at frame
+    /// 300, taken at that frame's end (4815 ms): the point goes, the 1 s
+    /// wait runs to 5815 ms, frame 363, and asks for point 1; over at 400,
+    /// point 2 at 7415 ms, frame 463; over at 500, point 0 again at 9015
+    /// ms, frame 563. The behavior is the server's: the observers' frames
+    /// leave it out. A dead bot asks for nothing.
+    #[test]
+    #[ignore = "requires the derived game data's bot graph bundle"]
+    fn the_patrol_asks_for_its_route_points_on_its_graphs_timings() {
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let graphs =
+            Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
+        let codecs = CodecTable::client();
+        let route = [[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]];
+        let mut bot = BotBody::start(
+            Arc::clone(&graphs),
+            BotSpawn {
+                patrol: Some(Patrol {
+                    route: &route,
+                    index: 2,
+                }),
+                ..spawn(None)
+            },
+            Unknowns::Tolerate,
+        )
+        .unwrap();
+        let snapshot = bot.snapshot().unwrap();
+        assert!(snapshot.initialization_complete());
+        let [patrol] = *bot.behaviors() else {
+            panic!("one behavior: {:?}", bot.behaviors());
+        };
+        assert_eq!(snapshot.instances[&patrol].graph, PATROL_GRAPH);
+        let observed = bot
+            .encoder(&graphs, &codecs)
+            .project(snapshot, crate::snapshot::View::Observer)
+            .unwrap();
+        assert_eq!(observed.instance_count(), snapshot.instances.len() - 1);
+        // Runs the body as the match does (a frame when something is due)
+        // up to `last`; the first frame it asks for a point, and the point.
+        let next_goal = |bot: &mut BotBody, frames: std::ops::RangeInclusive<u32>| {
+            for frame in frames {
+                if bot.due_by(frame) {
+                    assert!(bot.advance_live(frame, None).unwrap());
+                }
+                if let Some(goal) = bot.move_goal() {
+                    return Some((frame, goal));
+                }
+            }
+            None
+        };
+        let (mut asked, mut goal) = next_goal(&mut bot, 101..=600).unwrap_or_else(|| {
+            let snapshot = bot.snapshot().unwrap();
+            panic!(
+                "no walk asked for: {:?} {:?} {:?}",
+                snapshot.diagnostics,
+                snapshot.instances[&patrol].variables,
+                snapshot.instances[&patrol].states
+            )
+        });
+        assert_eq!((asked, goal.target), (288, route[0]));
+        assert_eq!(goal.instance, patrol);
+        let mut walks = Vec::new();
+        for arrived in [300, 400, 500] {
+            // Still asked for until the walk is over.
+            assert_eq!(
+                next_goal(&mut bot, asked + 1..=arrived - 1),
+                Some((asked + 1, goal))
+            );
+            bot.move_arrived(goal, arrived).unwrap();
+            assert!(bot.due_by(arrived));
+            assert!(bot.advance_live(arrived, None).unwrap());
+            assert_eq!(bot.move_goal(), None);
+            (asked, goal) = next_goal(&mut bot, arrived + 1..=arrived + 100).unwrap();
+            walks.push((asked, goal.target));
+        }
+        assert_eq!(walks, [(363, route[1]), (463, route[2]), (563, route[0])]);
+        assert!(bot.die(563, Variables::new()).unwrap());
+        assert!(bot.behaviors().is_empty());
+        assert_eq!(bot.move_goal(), None);
+    }
+
+    /// `0C17`'s death branch (rid8, server-only) takes `003E`'s tags
+    /// (`003D` → #1605) and killer (`0012` → #392) and, 0.05 s after the
+    /// death (frame 200; 3250 ms, in whole frames frame 204), raises `05FB`
+    /// on the bot for a killing hit tagged `0644`, else `1C92` for `074E`;
+    /// any other hit leaves the line to the clients' own 20 % death cry
+    /// (client-only, stimulus `0001`). The kill criteria `071B` names the
+    /// killer, not the bot, so the bot keeps none of it.
+    #[test]
+    #[ignore = "requires the derived game data's bot graph bundle"]
+    fn a_dead_training_bot_raises_the_death_cry_its_killing_tags_pick() {
+        const KILLER: u32 = 0xa000_0101;
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let graphs =
+            Arc::new(GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz").unwrap());
+        let cry = |tags: &[u64]| {
+            let mut bot =
+                BotBody::start(Arc::clone(&graphs), spawn(None), Unknowns::Tolerate).unwrap();
+            let tags: crate::weapons::DamageTags =
+                tags.iter().map(|tag| 0x0d80_0000_0000_0000 | tag).collect();
+            let parameters = Variables::from([
+                (DAMAGE_TAGS, tags.to_value()),
+                (DAMAGE_SOURCE, Value::Entity(KILLER)),
+            ]);
+            assert!(bot.die(200, parameters).unwrap());
+            let mut criteria: Vec<_> = Vec::new();
+            for frame in 200..=260 {
+                bot.advance_death(frame, 187, |_, _| {}).unwrap();
+                criteria.extend(
+                    bot.take_criteria()
+                        .into_iter()
+                        .filter(|raised| raised.target == ENTITY)
+                        .map(|raised| (frame, raised.identifier)),
+                );
+            }
+            criteria
+        };
+        assert_eq!(cry(&[0x0644]), [(204, 0x0d80_0000_0000_05fb)]);
+        assert_eq!(cry(&[0x03bf, 0x074e]), [(204, 0x0d80_0000_0000_1c92)]);
+        assert_eq!(cry(&[0x03bf, 0x09a2]), []);
     }
 
     /// Biotic Grenade's aura (`053:0267`) on the pack's Training Bot: its
