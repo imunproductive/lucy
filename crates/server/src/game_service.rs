@@ -819,28 +819,7 @@ impl Room {
             ai: None,
         };
         room.add(players);
-        room.attach_bots();
         room
-    }
-
-    /// The training bots take the roster slots after every player slot the
-    /// match can have (its players now, or the mode's team sizes if more),
-    /// so a player who joins later never shares a slot with a bot (kjs
-    /// `match.py`: later players take unused slots). Its world's scene
-    /// gives them to their stand-in controllers' creates
-    /// (`orpheus_sim::scene::bot_roster_slot`).
-    fn attach_bots(&mut self) {
-        let players = self.players.len();
-        if let Some(world) = &mut self.world {
-            let seats = world
-                .scene
-                .map()
-                .team_sizes
-                .iter()
-                .map(|&size| usize::from(size))
-                .sum::<usize>();
-            world.scene.set_bot_roster(players.max(seats));
-        }
     }
 
     /// The players after those already in the match, each in the next slot
@@ -947,16 +926,9 @@ impl Room {
                 ranked: player.info.ranked,
             })
             .collect();
-        let bots = self
-            .world
-            .as_ref()
-            .map(|world| world.scene.roster_bots())
-            .unwrap_or_default();
         let instance = Instance {
             map: &self.map,
             members: &members,
-            bots: &bots,
-            list_bots: *orpheus_sim::instance::BOTS_IN_ROSTER,
         };
         let player = &self.players[slot];
         if initial {
@@ -1650,7 +1622,6 @@ impl State {
                     scene,
                     combat: None,
                 });
-                room.attach_bots();
                 return;
             }
             Err(error) => error,
@@ -2349,23 +2320,14 @@ impl State {
     /// client gets the notices, every client of the room the bot's pools.
     /// The shooter's ultimate charges for the damage (assumption: training
     /// bots charge it as heroes do) and for the healing of allied bots
-    /// (combat.py `_heal`), which his Healing Done counts too. A bot he
-    /// kills counts for his multikills, in the Practice Range too
+    /// (combat.py `_heal`); his board counts both with the room's other
+    /// native stats (`Combat::take_tracked_stats`). A bot he kills counts
+    /// for his multikills, in the Practice Range too
     /// (`orpheus_sim::announcer`).
     fn deliver_bot_hits(&mut self, id: MatchId, shooter: Option<u32>, hits: Vec<BotHit>) {
-        let healed: f64 = hits.iter().map(|hit| hit.healed).sum();
-        if let Some(room) = self.rooms.get_mut(&id) {
-            if let Some(world) = room.world.as_mut() {
-                for hit in &hits {
-                    bot_hit_script(&mut world.scene, hit);
-                }
-                if let Some(slot) = shooter
-                    .filter(|_| healed > 0.0)
-                    .map(|shooter| self.seats[&shooter].1)
-                {
-                    let healing = world.scene.board_stats().healing;
-                    room.players[slot].stats.add(healing, healed);
-                }
+        if let Some(world) = self.rooms.get_mut(&id).and_then(|room| room.world.as_mut()) {
+            for hit in &hits {
+                bot_hit_script(&mut world.scene, hit);
             }
         }
         // Each hit to the shooter's body as damage dealt or healing done:
@@ -3178,9 +3140,11 @@ impl State {
             // The AI heroes' input for this tick (ai.rs).
             self.drive_ai(tick, now);
         }
-        // What every player's graphs counted (the AI heroes' too) and what
-        // the entities they spawned counted for them (the Biotic Field's
-        // `0258` rid14) go to the stat tables before the boards go out.
+        // What every player's graphs counted (the AI heroes' too), what the
+        // entities they spawned counted for them (the Biotic Field's `0258`
+        // rid14) and what the room counts natively (shots, the training
+        // bots' damage, heals and kills) go to the stat tables before the
+        // boards go out.
         for (connection, peer) in &mut self.peers {
             let tracked = peer.world.take_tracked_stats();
             if let Some(Room {
@@ -3200,7 +3164,7 @@ impl State {
                 let tracked = world
                     .combat
                     .as_mut()
-                    .map(Combat::take_field_stats)
+                    .map(Combat::take_tracked_stats)
                     .unwrap_or_default();
                 credit_tracked_stats(&mut room.players, world.scene.stats(), tracked);
             }

@@ -1579,7 +1579,7 @@ fn delta_variables(
         let bindings = current.bindings.get(&id);
         let previous_bindings = before.and_then(|vars| vars.bindings.get(&id));
         let key = ChangeKey::Variable(instance, id);
-        if touched.contains(&key) || !equal(now, was) || bindings != previous_bindings {
+        if touched.contains(&key) || !same_on_wire(now, was) || bindings != previous_bindings {
             result.values.insert(id, now.clone());
             if let Some(bindings) = bindings {
                 result.bindings.insert(id, bindings.clone());
@@ -1588,6 +1588,34 @@ fn delta_variables(
         }
     }
     result
+}
+
+/// Whether a client that holds `was` holds `now`: the same value of the
+/// same wire type. The scripts' equality ([`equal`]) takes an unset value
+/// for false or 0, and a delta that compared by it left out a variable
+/// that went from unset to false or 0, so the client kept it unset: a
+/// Training Bot's `0C18` #1821 (the death's crit, `0095`) stayed unset
+/// for a kill that wasn't critical, and its kill feed line sent `03EF`
+/// with no value; the user saw the marker follow earlier lines ("sometimes
+/// every elimination shows as a headshot, sometimes none", 2026-11-18;
+/// inference: `0DEA` rid4 keeps its #1821 when the parameter has no
+/// value, so the line took the last critical kill's marker).
+fn same_on_wire(now: &Value, was: &Value) -> bool {
+    match (now, was) {
+        (Value::Array(now), Value::Array(was)) => {
+            now.len() == was.len() && now.iter().zip(was).all(|(a, b)| same_on_wire(a, b))
+        }
+        (Value::Map(now), Value::Map(was)) | (Value::Pairs(now), Value::Pairs(was)) => {
+            now.len() == was.len()
+                && now
+                    .iter()
+                    .zip(was)
+                    .all(|((now_key, now_value), (was_key, was_value))| {
+                        same_on_wire(now_key, was_key) && same_on_wire(now_value, was_value)
+                    })
+        }
+        _ => std::mem::discriminant(now) == std::mem::discriminant(was) && equal(now, was),
+    }
 }
 
 fn write_mask(out: &mut BitWriter, width: usize, chosen: &BTreeSet<usize>) {
