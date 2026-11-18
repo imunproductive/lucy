@@ -799,6 +799,8 @@ impl Combat {
                 .then(|| self.feet(scene, shooter.source))
                 .flatten()
                 .and_then(|from| damage_direction(from, slot.target.pose.feet));
+            let (amount, tags) =
+                self.dealt(scene, shooter, change.heal, change.amount, change.tags);
             self.player_hits.push(PlayerHit {
                 body: target,
                 shooter,
