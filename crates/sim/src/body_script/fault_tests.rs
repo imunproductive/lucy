@@ -252,7 +252,7 @@ impl Player {
         };
         world.queue_game_message(tick, Duration::ZERO, pick);
         world
-            .advance_input(scene, &viewer, RETAIL_QUANTA, 16)
+            .advance_input(scene, &viewer, RETAIL_QUANTA, 16, None)
             .unwrap();
         assert_eq!(world.current_body(), Some(owner | 1));
         assert!(world.combat_body_active());
@@ -264,7 +264,7 @@ impl Player {
         let viewer = appearance(self.owner, self.slot, self.team, &self.card);
         self.world.queue_commands(command.frame, &[command]);
         self.world
-            .advance_input(scene, &viewer, RETAIL_QUANTA, 16)
+            .advance_input(scene, &viewer, RETAIL_QUANTA, 16, None)
             .unwrap();
         assert!(!self.world.has_input_work());
         self.world.take_shots()

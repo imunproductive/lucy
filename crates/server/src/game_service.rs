@@ -2210,9 +2210,12 @@ impl State {
                 now,
             };
             let budget = remaining.min(INPUT_PER_PEER);
+            // His body's searches that rewind see the bodies by the room's
+            // history, as his shots do.
+            let combat = world.combat.as_ref();
             let (used, leave) = peer
                 .world
-                .advance_input(&world.scene, &viewer, context.quanta, budget)
+                .advance_input(&world.scene, &viewer, context.quanta, budget, combat)
                 .unwrap_or((budget, true));
             remaining -= used;
             self.next_input_peer = (index + 1) % count;

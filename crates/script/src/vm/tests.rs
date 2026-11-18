@@ -4840,10 +4840,12 @@ fn a_target_search_the_server_cant_run_finds_nothing_and_names_the_gap() {
     );
 }
 
-/// Bodies to search, and the health changes a world applies.
+/// Bodies to search, where the searcher's player saw them (none: the
+/// world can't tell), and the health changes a world applies.
 #[derive(Default)]
 struct Healer {
     bodies: Vec<TargetCandidate>,
+    seen: Option<Vec<SeenBody>>,
     changes: Vec<HealthChange>,
     facing: Option<[i32; 2]>,
 }
@@ -4851,6 +4853,10 @@ struct Healer {
 impl World for Healer {
     fn target_candidates(&self, _site: Site) -> Option<&[TargetCandidate]> {
         Some(&self.bodies)
+    }
+
+    fn seen_bodies(&self, _site: Site) -> Option<SeenBodies<'_>> {
+        self.seen.as_deref().map(SeenBodies::Rewound)
     }
 
     fn entity_facing(&self, _site: Site, _entity: u32) -> Option<[i32; 2]> {
@@ -4876,8 +4882,8 @@ impl World for Healer {
 /// eye too (`m_0297060F`), his enemies (`m_89831602` 1) of kind 64 but the
 /// dead, the found to #375 and kept (no `m_32AFE9AA`); a ModifyHealth of
 /// 30 to #375 with a tag and a loadout, a blow (`m_7B2B3F5C` 0) of damage
-/// (`m_93CDFD2F` 1). The search's line of sight (`m_95FFC3C5`) and rewind
-/// (`m_1C2A9945`) aren't modelled.
+/// (`m_93CDFD2F` 1). The search rewinds (`m_1C2A9945`); its line of sight
+/// (`m_95FFC3C5`) isn't modelled.
 fn melee_fixture(rate: bool) -> GraphStore {
     let search = json!({
         "m_8DCA77B6":{"$":"STU_B5A0CAF0"},
@@ -4940,6 +4946,7 @@ fn a_modify_health_blow_strikes_each_found_body_once() {
             body(SECOND_ENEMY, 1, [-1.5, 0.0, 0.0]),
         ],
         changes: Vec::new(),
+        seen: None,
     };
     let mut component = Component::start(
         graphs,
@@ -4992,6 +4999,67 @@ fn a_modify_health_blow_strikes_each_found_body_once() {
         "STUStatescriptStateTrackTargets m_95FFC3C5",
         "no line-of-sight test"
     )));
+    // The world can't tell where the searcher's player saw the bodies.
+    assert!(assumed.contains(&(
+        "STUStatescriptStateTrackTargets m_1C2A9945",
+        "bodies where the match places them now, not rewound"
+    )));
+}
+
+/// A search that rewinds (`m_1C2A9945`, quick melee) finds the bodies
+/// where the searcher's player saw them: an enemy behind him now that he
+/// saw ahead is struck, one ahead now that he saw behind is not, nor one
+/// ahead that didn't exist at his view; the searcher's own body, which
+/// his view doesn't list, stays where it is. Nothing is assumed of it.
+#[test]
+fn a_rewinding_search_strikes_the_bodies_where_the_searcher_saw_them() {
+    const LATE_ENEMY: u32 = ENEMY + 2;
+    let graphs = Arc::new(melee_fixture(false));
+    let seen = |entity, feet| SeenBody {
+        entity,
+        feet,
+        height: 1.8,
+        radius: 0.4,
+        yaw: 0.0,
+    };
+    let mut world = Healer {
+        // Facing +x, level: the sphere is 1.5 m ahead.
+        facing: Some([16384, 0]),
+        bodies: vec![
+            body(SEARCHER, 0, [0.0; 3]),
+            body(ENEMY, 1, [-1.5, 0.0, 0.0]),
+            body(SECOND_ENEMY, 1, [1.5, 0.0, 0.0]),
+            body(LATE_ENEMY, 1, [1.5, 0.0, 0.2]),
+        ],
+        seen: Some(vec![
+            seen(ENEMY, [1.5, 0.0, 0.0]),
+            seen(SECOND_ENEMY, [-1.5, 0.0, 0.0]),
+        ]),
+        changes: Vec::new(),
+    };
+    let component = Component::start(
+        graphs,
+        SEARCHER,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        0,
+        &mut world,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let struck: Vec<_> = world
+        .changes
+        .iter()
+        .map(|change| (change.target, change.instigator))
+        .collect();
+    assert_eq!(struck, [(ENEMY, SEARCHER)]);
+    let snapshot = component.snapshot().unwrap();
+    assert!(
+        snapshot
+            .assumptions
+            .iter()
+            .all(|item| item.class != "STUStatescriptStateTrackTargets m_1C2A9945")
+    );
 }
 
 /// Quick melee strikes neither the swinger nor his allies: looking down,
@@ -5011,6 +5079,7 @@ fn quick_melee_strikes_neither_the_swinger_nor_his_allies() {
             body(ENEMY, 1, [-3.0, 0.0, 0.0]),
         ],
         changes: Vec::new(),
+        seen: None,
     };
     let mut component = Component::start(
         graphs,
@@ -5051,6 +5120,7 @@ fn a_modify_health_rate_applies_a_share_each_tick() {
         facing: Some([16384, 0]),
         bodies: vec![body(SEARCHER, 0, [0.0; 3]), body(ENEMY, 1, [1.5, 0.0, 0.0])],
         changes: Vec::new(),
+        seen: None,
     };
     let mut component = Component::start(
         graphs,

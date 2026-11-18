@@ -20,8 +20,8 @@ use crate::{
     vitals::PoolKind,
     vm::{
         AiMoveRequest, AuraChange, BodyEffects, CombatMod, Component, HealthChange, InitFault,
-        MAX_INIT_WORK, MapRays, Motion, RaisedCriteria, ShotEvent, Site, Snapshot, TargetCandidate,
-        TargetTagEffect, Unknowns, World, body_roots,
+        MAX_INIT_WORK, MapRays, Motion, RaisedCriteria, SeenBodies, ShotEvent, Site, Snapshot,
+        TargetCandidate, TargetTagEffect, Unknowns, World, body_roots,
     },
     wire::{Value, Variables},
 };
@@ -338,6 +338,11 @@ impl World for BotWorld {
 
     fn target_candidates(&self, _site: Site) -> Option<&[TargetCandidate]> {
         self.targets.as_deref()
+    }
+
+    /// A bot has no player: it sees the bodies where they are.
+    fn seen_bodies(&self, _site: Site) -> Option<SeenBodies<'_>> {
+        Some(SeenBodies::Listed)
     }
 
     /// `STU_4049CF77`: the bot's AI definition (`1404`, `14AF`) has no

@@ -59,7 +59,7 @@ fn viewer(card: &PlayerCard) -> PlayerAppearance<'_> {
 fn run(world: &mut WorldDelivery, scene: &PreparedScene, card: &PlayerCard) {
     while world.has_input_work() {
         world
-            .advance_input(scene, &viewer(card), RETAIL_QUANTA, 64)
+            .advance_input(scene, &viewer(card), RETAIL_QUANTA, 64, None)
             .unwrap();
     }
 }
@@ -197,7 +197,7 @@ fn the_server_runs_each_frame_as_the_client_predicted_it_while_nothing_is_lost()
         while server.has_input_work() {
             let before = server.body_script.as_ref().unwrap().frame;
             server
-                .advance_input(&scene, &viewer(&card), RETAIL_QUANTA, 1)
+                .advance_input(&scene, &viewer(&card), RETAIL_QUANTA, 1, None)
                 .unwrap();
             let (frame, projected, pose) = state(&server);
             if frame == before {

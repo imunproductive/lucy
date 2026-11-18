@@ -1999,6 +1999,111 @@ mod tests {
         assert_eq!((instigator, amount, heal), (spawn.entity, 30.0, false));
     }
 
+    /// Quick melee strikes the enemy where the swinger's client showed him
+    /// (`0043` st5 rewinds, `m_1C2A9945`): four enemy players stand 1.5 m
+    /// round Soldier: 76 (one where he looks, whichever way the spawn turns
+    /// him) and run off at 12 m/s ten frames before he swings. His commands
+    /// drew the world 200 ms (12.5 frames) back, so his search, rewound by
+    /// the match's history of them, finds the one he faced and strikes
+    /// him, though the match has them all 3.5 m away or more by then. The
+    /// same swing without the history strikes nobody.
+    #[test]
+    #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
+    fn quick_melee_strikes_the_enemy_where_the_swinger_saw_him() {
+        use crate::{
+            combat::{Combat, PlayerTarget, PosedShot},
+            replication::BodyStep,
+        };
+        use orpheus_wire::commands::Command;
+
+        const MELEE: u32 = 0x800;
+        /// An eighth of a turn down.
+        const PITCH: i32 = 8192;
+        /// The client's view delay, in ms.
+        const VIEW_DELAY: u16 = 200;
+        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let scene = assets.prepare(GameMap::practice_range()).unwrap();
+        let hero = scene.heroes().get(SOLDIER).unwrap();
+        let mover = scene
+            .player_spawn_mover(hero.body, 0, 0, SpawnChoice::First)
+            .unwrap();
+        let spawn = OwnerBodySpawn {
+            slot: 0,
+            controller: 0xa000_0100,
+            entity: 0xa000_0101,
+            body_filter: team_bit(0).unwrap(),
+            frame: FIRST_TICK,
+            pose: mover.pose(),
+            quanta: RETAIL_QUANTA,
+            mode_random: scene.mode_random(),
+            ai: None,
+        };
+        let swing_frame = spawn.frame + 31;
+        let enemies: Vec<u32> = (2..6).map(|slot| 0xa000_0001 | slot << 8).collect();
+        let [x, y, z] = spawn.pose.position;
+        let player = |body, team, [dx, dz]: [f64; 2]| PlayerTarget {
+            body,
+            team,
+            pose: scene.player_target(hero, [x + dx, y, z + dz], false),
+            dead: false,
+            hurt: false,
+            tags: None,
+            ai: None,
+            dealt: Vec::new(),
+        };
+        // Yaw 0 looks along +z.
+        let players = |frame: u32| {
+            let off = frame.saturating_sub(swing_frame - 10);
+            let reach = 1.5 + 0.2 * f64::from(off);
+            let around = [[0.0, 1.0], [0.0, -1.0], [1.0, 0.0], [-1.0, 0.0]];
+            std::iter::once(player(spawn.entity, 0, [0.0; 2]))
+                .chain(
+                    around
+                        .into_iter()
+                        .zip(&enemies)
+                        .map(|([dx, dz], &body)| player(body, 1, [dx * reach, dz * reach])),
+                )
+                .collect::<Vec<_>>()
+        };
+        let swing = |rewound: bool| {
+            let mut combat = Combat::new(&scene);
+            let mut runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
+            let buttons = std::iter::repeat_n(0, 30)
+                .chain(std::iter::repeat_n(MELEE, 2))
+                .chain(std::iter::repeat_n(0, 30));
+            let mut struck = Vec::new();
+            for (frame, buttons) in (spawn.frame + 1..).zip(buttons) {
+                // The match records where the bodies are, then runs the
+                // command (`GameService::update_combat`, `advance_input`).
+                combat.record_poses(&scene, &players(frame), frame);
+                runtime.set_target_candidates(&combat.target_candidates(&scene));
+                let command = Command {
+                    frame,
+                    buttons,
+                    pitch: PITCH,
+                    extra: VIEW_DELAY,
+                    ..Command::default()
+                };
+                if rewound {
+                    runtime.see_targets(&combat.rewind(&scene, RETAIL_QUANTA), &command);
+                }
+                runtime.advance(command, &mover, BodyStep::Posed).unwrap();
+                for shot in runtime.take_shots(Some(command), &mover) {
+                    if let PosedShot::Health(change) = shot {
+                        struck.push((change.target, change.instigator, change.amount));
+                    }
+                }
+            }
+            struck
+        };
+        let struck = swing(true);
+        assert_eq!(struck.len(), 1, "{struck:x?}");
+        let (target, instigator, amount) = struck[0];
+        assert!(enemies.contains(&target), "{target:x}");
+        assert_eq!((instigator, amount), (spawn.entity, 30.0));
+        assert!(swing(false).is_empty(), "now they are out of reach");
+    }
+
     #[test]
     #[ignore = "requires a derived 104319 Practice Range pack"]
     fn elevated_practice_patrols_reach_their_hints_without_crossing_walls() {

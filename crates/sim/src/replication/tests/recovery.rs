@@ -137,7 +137,7 @@ fn fire(frame: u32) -> Command {
 fn drain(world: &mut WorldDelivery, scene: &PreparedScene, viewer: &PlayerAppearance<'_>) {
     while world.has_input_work() {
         world
-            .advance_input(scene, viewer, RETAIL_QUANTA, 16)
+            .advance_input(scene, viewer, RETAIL_QUANTA, 16, None)
             .unwrap();
     }
 }

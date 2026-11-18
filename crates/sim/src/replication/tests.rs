@@ -592,7 +592,7 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
     world.queue_commands(FIRST_TICK, &[forward(first)]);
     assert_eq!(
         world
-            .advance_input(&scene, &viewer, RETAIL_QUANTA, 16)
+            .advance_input(&scene, &viewer, RETAIL_QUANTA, 16, None)
             .unwrap(),
         (1, false)
     );
@@ -630,7 +630,7 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
     world.queue_commands(FIRST_TICK + 2, &[actual]);
     assert_eq!(
         world
-            .advance_input(&scene, &viewer, RETAIL_QUANTA, 16)
+            .advance_input(&scene, &viewer, RETAIL_QUANTA, 16, None)
             .unwrap(),
         (1, false)
     );
@@ -655,7 +655,7 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
     for turn in 1..=4 {
         assert_eq!(
             world
-                .advance_input(&scene, &viewer, RETAIL_QUANTA, 16)
+                .advance_input(&scene, &viewer, RETAIL_QUANTA, 16, None)
                 .unwrap(),
             (16, false)
         );
@@ -683,7 +683,7 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
 
     assert_eq!(
         world
-            .advance_input(&scene, &viewer, RETAIL_QUANTA, 16)
+            .advance_input(&scene, &viewer, RETAIL_QUANTA, 16, None)
             .unwrap(),
         (2, false)
     );
@@ -1069,7 +1069,7 @@ fn body_script_retries_frozen_initial_frames_and_ignores_old_generation_reports(
                     .body_script
                     .as_mut()
                     .unwrap()
-                    .advance(mover, command, BodyStep::Posed, false)
+                    .advance(mover, command, BodyStep::Posed, None, false)
                     .unwrap();
             })
             .unwrap();
@@ -1299,7 +1299,7 @@ fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
     world.queue_commands(tick, &[forward(tick)]);
     assert_eq!(
         world
-            .advance_input(&scene, &viewer, RETAIL_QUANTA, 16)
+            .advance_input(&scene, &viewer, RETAIL_QUANTA, 16, None)
             .unwrap(),
         (1, false)
     );
@@ -1323,7 +1323,7 @@ fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
     for turn in 1..=16 {
         assert_eq!(
             world
-                .advance_input(&scene, &viewer, RETAIL_QUANTA, 16)
+                .advance_input(&scene, &viewer, RETAIL_QUANTA, 16, None)
                 .unwrap(),
             (16, false)
         );
@@ -1343,7 +1343,7 @@ fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {
     }
     assert_eq!(
         world
-            .advance_input(&scene, &viewer, RETAIL_QUANTA, 16)
+            .advance_input(&scene, &viewer, RETAIL_QUANTA, 16, None)
             .unwrap(),
         (3, false)
     );
