@@ -2989,7 +2989,15 @@ impl WorldDelivery {
         Ok(())
     }
 
-    pub fn present(&mut self, scene: &PreparedScene, tick: u32) -> io::Result<()> {
+    /// The player's controller frame and the mode entity's first frame,
+    /// `mode_frame`: the mode graph's now where it drives the mode entity
+    /// (`crate::mode_script`), else [`PreparedScene::mode_ui`].
+    pub fn present(
+        &mut self,
+        scene: &PreparedScene,
+        mode_frame: &orpheus_core::bits::BitWriter,
+        tick: u32,
+    ) -> io::Result<()> {
         if self.controller.latest_data() == 0 && self.created.contains(&self.owner) {
             self.queue_controller(scene, tick, None)?;
         }
@@ -2999,7 +3007,7 @@ impl WorldDelivery {
             && !self.assembling
             && self.created.contains(&GAME_MODE_ENTITY)
         {
-            let chunk = self.mode.full(scene.mode_ui()).map_err(invalid)?;
+            let chunk = self.mode.full(mode_frame).map_err(invalid)?;
             self.push(Record::script(chunk, false));
         }
         self.presentation_due = self.controller.latest_data() == 0 || self.mode.latest_data() == 0;

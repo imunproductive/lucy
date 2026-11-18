@@ -1,21 +1,26 @@
-//! The game mode entity's frames in a PvP match: from the mode's own graph
-//! when the VM runs it whole, else the hand-built mode UI frame carrying the
-//! match flow's variables.
+//! The game mode entity's frames: from the mode's own graph when the VM
+//! runs it whole, else the hand-built mode UI frame carrying the match
+//! flow's variables.
 //!
-//! At the match's start the room starts the mode graph once
-//! ([`ModeRunner::start`]). If it runs with no refused content and no
-//! assumption, it stays: the flow's variables and the match's players
-//! (`ModeScript::set_players`) are written into it each tick, it advances
-//! with the server frame, its observer frames are the
+//! In a PvP match the room starts the mode graph once at the match's start
+//! ([`ModeRunner::start`]); the Practice Range, which has no match flow
+//! ([`without_flow`]), starts `13C0` with the room, before the placed
+//! scripts' first tick. If it runs with no refused content and no
+//! assumption, it stays: the flow's variables (none in the Range) and the
+//! match's players (`ModeScript::set_players`) are written into it each
+//! tick, it advances with the server frame, its observer frames are the
 //! mode entity's, and its messages go with every other entity's
 //! ([`crate::messages`]), which routes it those sent to the mode entity or
-//! to every entity. Otherwise
+//! to every entity and gives every entity the broadcasts it holds
+//! ([`ModeRunner::held`]; in the Range `0724` for the spawn rooms, `06FD`
+//! for the bodies). Otherwise
 //! (0F4A and 0EC2 today, see `orpheus_script::mode`) the gaps are logged
 //! once and the mode entity gets graph 0CB6's frame with the flow's
 //! variables, as the countdown did before (match.py `_send_countdown`).
 
 use std::{collections::BTreeMap, io, sync::Arc};
 
+use orpheus_content::maps::{PRACTICE_RANGE_MODE, PYTHON_PRACTICE_RANGE_MODE};
 use orpheus_core::bits::BitWriter;
 use orpheus_script::{
     codecs::CodecTable,
@@ -29,6 +34,12 @@ use orpheus_wire::entity::GAME_MODE_ENTITY;
 
 use crate::{match_flow, scene_assets::PreparedScene};
 
+/// The modes with no match flow, the Practice Range's: the room starts
+/// their graph with itself, not at a match's start.
+pub fn without_flow(mode: u64) -> bool {
+    matches!(mode, PRACTICE_RANGE_MODE | PYTHON_PRACTICE_RANGE_MODE)
+}
+
 /// The mode entity's script (`m_controllerScript` of entity 16B2) per mode
 /// (`statescript_names.json` "modes").
 pub fn mode_graph(mode: u64) -> Option<u32> {
@@ -41,6 +52,7 @@ pub fn mode_graph(mode: u64) -> Option<u32> {
         ELIMINATION => 0x0d0b,
         TEAM_DEATHMATCH => 0x0f60,
         DEATHMATCH | BOUNTY_HUNTER => 0x0f73,
+        PRACTICE_RANGE_MODE | PYTHON_PRACTICE_RANGE_MODE => 0x13c0,
         _ => return None,
     })
 }
@@ -211,5 +223,89 @@ impl ModeRunner {
             }
         }
         scene.mode_frame(variables)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene_assets::SceneAssets;
+    use orpheus_content::maps::GameMap;
+    use orpheus_script::{mode::EVERY_ENTITY, wire::Value};
+
+    /// The Practice Range's `13C0` runs whole and drives the mode entity.
+    /// Mode `005A`'s variable #27534 is true, so #27536 is false and st2
+    /// takes its false subgraph: the Tab board poster st6 (`06DF`,
+    /// `STU_38EE1100`, remote slot 4) runs, with `0CB6` under st21, which
+    /// the hand-built frame stood in for (`scene::BOARD_POSTERS` had the
+    /// Range's rows). Its SendGameMessage states hold to every entity
+    /// (`STU_1D719351` byte A) `0727` (st1, the controllers' `0C90` st28),
+    /// `0694` (st3), `06DF` (st6), `0724` with invulnerable, heal and hero
+    /// select and no team (st9, the spawn rooms' `0D62`), `06FD` with 3
+    /// respawn seconds (st15, the bodies' `0C8E`) and `0702` (st18, the
+    /// doors' `0D32`); and its st5 SubScript `0CBB` (the PvP modes' shared
+    /// subgraph) holds from its entry rid9 `06E3` (st6, `017E` = #8736e)
+    /// and `06EE` (st8), whose targets have byte A set too (their bytes B
+    /// and C differ). That is what the room gives every entity
+    /// ([`crate::messages::deliver_held`]).
+    #[test]
+    #[ignore = "requires the derived 104319 data"]
+    fn the_range_mode_graph_drives_the_mode_entity_with_its_board_poster() {
+        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let scene = assets.prepare(GameMap::practice_range()).unwrap();
+        let mut mode = ModeRunner::start(&scene, 100, Vec::new());
+        assert!(mode.advance(101, &Variables::new(), Vec::new()).is_empty());
+        let ModeRunner::Graph {
+            script,
+            graphs,
+            codecs,
+        } = &mode
+        else {
+            panic!("13C0 doesn't drive the Range: {:?}", mode.gaps());
+        };
+        let snapshot = script.snapshot().unwrap();
+        let root = &snapshot.instances[&1];
+        assert_eq!(root.graph, 0x13c0);
+        assert!(root.states.get(&6).is_some_and(|state| state.active));
+        let encoder = SnapshotEncoder::new(graphs, codecs).with_unknowns(script.unknowns());
+        let projected = encoder.project(snapshot, View::Observer).unwrap();
+        assert!(
+            projected.state(1, 6).is_some(),
+            "the poster is in the frame"
+        );
+        assert!(projected.instance_graphs().any(
+            |(id, graph)| graph == 0x0cb6 && projected.instance(id).unwrap().1 == Some((1, 21))
+        ));
+        let held: Vec<(u64, &Variables)> = mode
+            .held()
+            .iter()
+            .map(|message| {
+                assert_eq!(
+                    (message.sender, message.target),
+                    (GAME_MODE_ENTITY, EVERY_ENTITY)
+                );
+                (message.message & 0xFFFF, &message.parameters)
+            })
+            .collect();
+        let mut ids: Vec<u64> = held.iter().map(|&(id, _)| id).collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            [
+                0x0694, 0x06df, 0x06e3, 0x06ee, 0x06fd, 0x0702, 0x0724, 0x0727
+            ]
+        );
+        let parameters = |id| held.iter().find(|&&(held, _)| held == id).unwrap().1;
+        assert_eq!(parameters(0x0724), &crate::map_areas::room_message(None));
+        assert_eq!(
+            parameters(0x06fd),
+            &Variables::from([(0x00b7, Value::Integer(3))])
+        );
+        let frame = mode.frame(&scene, &Variables::new()).unwrap();
+        assert_ne!(
+            &frame,
+            scene.mode_ui(),
+            "the graph's frame, not the hand-built one"
+        );
     }
 }

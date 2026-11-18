@@ -236,7 +236,7 @@ impl Player {
         let world = &mut player.world;
         world.start(scene, &viewer, tick).unwrap();
         deliver(world);
-        world.present(scene, tick).unwrap();
+        world.present(scene, scene.mode_ui(), tick).unwrap();
         deliver(world);
         let pick = Message {
             id: CLIENT_GAME_MESSAGE,

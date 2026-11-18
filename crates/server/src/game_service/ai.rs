@@ -177,7 +177,7 @@ impl AiSeat {
             // the AI heroes as there from the start, not as joining.
             delivery.start(scene, &viewer, room.flow_tick)?;
             delivery.deliver_locally(tick, now);
-            delivery.present(scene, tick)?;
+            delivery.present(scene, room.first_mode_frame(scene), tick)?;
             delivery.deliver_locally(tick, now);
         }
         delivery.set_assembling(room.assembling());

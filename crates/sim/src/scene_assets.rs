@@ -662,7 +662,12 @@ impl SceneAssets {
                     ))
                 })
                 .collect(),
-            respawn_seconds: self.respawns.sent(mode).map(|time| time.as_secs() as i64),
+            // The Range's `13C0` holds its own `06FD` to every body.
+            respawn_seconds: self
+                .respawns
+                .sent(mode)
+                .filter(|_| !crate::mode_script::without_flow(mode))
+                .map(|time| time.as_secs() as i64),
             team_sizes: crate::instance::team_entries(scene.map()),
         };
         let ready = self
@@ -913,13 +918,19 @@ impl PreparedScene {
         &self.placed_scripts
     }
 
+    /// The spawn rooms the mode holds now the mode's message for, in the
+    /// mode graph's place (`choice`: each team's current spawn, the match
+    /// flow's; [`map_areas::room_holds`]).
+    pub fn room_holds(&self, choice: impl Fn(u8) -> SpawnChoice) -> Vec<(u32, Option<u8>)> {
+        map_areas::room_holds(&self.spawn_rooms, &self.map, choice)
+    }
+
     /// Start the server placeables' scripts at the first call, give the
-    /// spawn rooms the mode holds now the mode's message (`choice`: each
-    /// team's current spawn, the match flow's; [`map_areas::room_holds`]),
-    /// then advance them to `tick`.
-    pub fn advance_placed(&mut self, tick: u32, choice: impl Fn(u8) -> SpawnChoice) {
-        let holds = map_areas::room_holds(&self.spawn_rooms, &self.map, choice);
-        self.placed_scripts.advance(tick, &holds);
+    /// spawn rooms `holds` (none where the mode graph sends its `0724`
+    /// itself; else [`Self::room_holds`]) the mode's message, then advance
+    /// them to `tick`.
+    pub fn advance_placed(&mut self, tick: u32, holds: &[(u32, Option<u8>)]) {
+        self.placed_scripts.advance(tick, holds);
     }
 
     /// The placed scripts' game messages and message ends since the last

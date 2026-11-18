@@ -1684,7 +1684,10 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
             | StateKind::Status
             | StateKind::CombatMod
             | StateKind::Assist
-            | StateKind::HeroSelect,
+            | StateKind::HeroSelect
+            // TrackStatTime: the client's reader is a nullsub
+            // (`0x7FF78ABF5640`, `statescript_codecs.json`).
+            | StateKind::StatTime,
             Some("none"),
         ) if codec.empty() => StatePayload::new(),
         // The Grappling Hook cast (`STU_4BBC5D09`, writer `0x7FF789BA5C40`):

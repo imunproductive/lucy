@@ -10,6 +10,8 @@ use crate::combat::{
     Combat, CombatPlayer, ENVIRONMENT_DAMAGE, Shooter, ShotContext, apply_player_hits,
 };
 use crate::map_areas::room_message;
+use crate::messages::{HeldReach, Players, deliver_held};
+use crate::mode_script::ModeRunner;
 use crate::scene::{MOVING_KINDS, filter_component};
 use crate::scene_assets::{FellOut, install_collision_build};
 use orpheus_content::{maps::SpawnChoice, stats::PlayerStats};
@@ -39,12 +41,15 @@ fn viewer(card: &PlayerCard) -> PlayerAppearance<'_> {
     }
 }
 
-/// A started world whose player has a Soldier: 76 at his spawn point.
+/// A started world whose player has a Soldier: 76 at his spawn point, with
+/// what the Range's `13C0` holds to every entity given to his controller
+/// and body once, as the room does (`crate::messages::deliver_held`): among
+/// them `06FD` (3 respawn seconds), without which `0C8E` counts no respawn.
 fn spawned(scene: &PreparedScene, viewer: &PlayerAppearance<'_>) -> WorldDelivery {
     let mut world = WorldDelivery::new(OWNER);
     world.start(scene, viewer, FIRST_TICK).unwrap();
     world.created.insert(OWNER);
-    world.present(scene, FIRST_TICK).unwrap();
+    world.present(scene, scene.mode_ui(), FIRST_TICK).unwrap();
     let hero = scene.heroes().get(SOLDIER).unwrap();
     world
         .switch(
@@ -57,6 +62,12 @@ fn spawned(scene: &PreparedScene, viewer: &PlayerAppearance<'_>) -> WorldDeliver
             true,
         )
         .unwrap();
+    let mode = ModeRunner::start(scene, FIRST_TICK, Vec::new());
+    assert!(mode.graph_driven(), "{:?}", mode.gaps());
+    let held = mode.held().to_vec();
+    let mut worlds = [&mut world];
+    let mut players = Players::new(&mut worlds, FIRST_TICK);
+    deliver_held(&held, &mut HeldReach::default(), &mut [&mut players]);
     world
 }
 

@@ -788,6 +788,10 @@ struct Room {
     /// next is due.
     mode_frame: Option<orpheus_core::bits::BitWriter>,
     next_mode_frame: Duration,
+    /// The mode graph's newest frame while it drives the mode entity: a
+    /// client's first mode frame (`Room::first_mode_frame`), and what the
+    /// Range's next frame is compared with.
+    graph_frame: Option<orpheus_core::bits::BitWriter>,
     /// Hero select closed this tick: the heroes are assembled.
     assembled: bool,
     /// Its collision failed: it takes nobody more (match.py `ended`).
@@ -813,6 +817,7 @@ impl Room {
             flow_tick: 0,
             mode_frame: None,
             next_mode_frame: Duration::ZERO,
+            graph_frame: None,
             assembled: false,
             ended: false,
             started: Instant::now(),
@@ -863,6 +868,30 @@ impl Room {
 
     fn assembling(&self) -> bool {
         self.flow.as_ref().is_some_and(MatchFlow::assembling)
+    }
+
+    /// The mode entity's first frame for a client: the mode graph's newest
+    /// while it drives the mode entity, else the scene's hand-built one.
+    fn first_mode_frame<'a>(
+        &'a self,
+        scene: &'a PreparedScene,
+    ) -> &'a orpheus_core::bits::BitWriter {
+        match (&self.mode, &self.graph_frame) {
+            (Some(mode), Some(frame)) if mode.graph_driven() => frame,
+            _ => scene.mode_ui(),
+        }
+    }
+
+    /// The Practice Range, which has no match flow, starts its mode graph
+    /// with its first tick, before its placed scripts' first, so they find
+    /// its held `0724` as they start (`mode_script::without_flow`).
+    fn begin_mode_without_flow(&mut self, tick: u32) {
+        let Some(world) = &self.world else {
+            return;
+        };
+        if self.mode.is_none() && orpheus_sim::mode_script::without_flow(self.map.mode_guid) {
+            self.mode = Some(ModeRunner::start(&world.scene, tick, Vec::new()));
+        }
     }
 
     /// The players are in a PvP world: the flow starts with "assemble your
@@ -1436,7 +1465,8 @@ impl Peer {
         }
         if self.world.presentation_due {
             let world = room.world.as_ref().expect("world started");
-            self.world.present(&world.scene, tick)?;
+            let first = room.first_mode_frame(&world.scene);
+            self.world.present(&world.scene, first, tick)?;
         }
         Ok(spawned)
     }
@@ -2860,6 +2890,30 @@ impl State {
                     },
                 })
                 .collect();
+            // The Range (no match flow): its graph advances with the room,
+            // and its frame goes to every client when it changed, at most
+            // once a second as the PvP modes' (`MODE_FRAME_EVERY`): the
+            // frame is a full one, and `0CBB` st58's timed ChaseVar (#19530e
+            // toward 99999, the chase's state in the frame too) changes it
+            // every tick.
+            if room.flow.is_none() {
+                if let (Some(mode), Some(world)) = (room.mode.as_mut(), room.world.as_ref()) {
+                    let variables = orpheus_script::wire::Variables::new();
+                    room.mail.extend(mode.advance(tick, &variables, players));
+                    if mode.graph_driven() && now >= room.next_mode_frame {
+                        room.next_mode_frame = now.saturating_add(MODE_FRAME_EVERY);
+                        match mode.frame(&world.scene, &variables) {
+                            Ok(frame) if room.graph_frame.as_ref() != Some(&frame) => {
+                                room.graph_frame = Some(frame.clone());
+                                room.mode_frame = Some(frame);
+                            }
+                            Ok(_) => {}
+                            Err(error) => tracing::warn!("[game] no game mode frame: {error}"),
+                        }
+                    }
+                }
+                continue;
+            }
             let (Some(flow), Some(world)) = (room.flow.as_mut(), room.world.as_ref()) else {
                 continue;
             };
@@ -2887,7 +2941,12 @@ impl State {
             if changed || now >= room.next_mode_frame {
                 if let Some(mode) = &room.mode {
                     match mode.frame(&world.scene, &variables) {
-                        Ok(frame) => room.mode_frame = Some(frame),
+                        Ok(frame) => {
+                            if mode.graph_driven() {
+                                room.graph_frame = Some(frame.clone());
+                            }
+                            room.mode_frame = Some(frame);
+                        }
                         Err(error) => tracing::warn!("[game] no game mode frame: {error}"),
                     }
                 }
@@ -3143,6 +3202,7 @@ impl State {
             }
             self.update_combat(tick, now);
             for (&id, room) in &mut self.rooms {
+                room.begin_mode_without_flow(tick);
                 if let Some(world) = &mut room.world {
                     // combat.py `update`: the dead bots' death scripts, then
                     // the respawns with new scripts.
@@ -3150,14 +3210,20 @@ impl State {
                     // The live bots' reactions to their hits, and the voice
                     // lines they call for.
                     world.scene.advance_live_bots(tick);
-                    // The server placeables' scripts (placed_script.rs),
-                    // with the spawn rooms the match flow's spawns hold; their
+                    // The server placeables' scripts (placed_script.rs); their
                     // messages (the spawn rooms' `0723`) go with the others
-                    // (`route_messages`).
-                    let flow = room.flow.as_ref();
-                    world.scene.advance_placed(tick, |team| {
-                        flow.map_or(SpawnChoice::First, |flow| flow.spawn_choice(team))
-                    });
+                    // (`route_messages`). A mode graph that drives the mode
+                    // entity holds the spawn rooms' `0724` itself; else the
+                    // rooms the match flow's spawns hold get it here.
+                    let holds = if room.mode.as_ref().is_some_and(ModeRunner::graph_driven) {
+                        Vec::new()
+                    } else {
+                        let flow = room.flow.as_ref();
+                        world.scene.room_holds(|team| {
+                            flow.map_or(SpawnChoice::First, |flow| flow.spawn_choice(team))
+                        })
+                    };
+                    world.scene.advance_placed(tick, &holds);
                     bot_voices.insert(id, world.scene.take_bot_voices());
                     if let Some(combat) = &mut world.combat {
                         if let Ok(replacements) = combat.respawn_due(&mut world.scene, tick, now) {

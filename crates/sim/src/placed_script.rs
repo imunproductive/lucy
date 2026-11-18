@@ -353,8 +353,44 @@ impl PlacedViews {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene_assets::SceneAssets;
+    use crate::{
+        messages::{HeldReach, deliver_held},
+        mode_script::ModeRunner,
+        scene_assets::{PreparedScene, SceneAssets},
+    };
     use orpheus_content::maps::{GameMap, SpawnChoice};
+    use orpheus_script::wire::Variables;
+
+    /// The Practice Range as the room runs it (`game_service.rs` `tick`,
+    /// `update_flows`, `route_messages`): `13C0` from the room's first
+    /// tick, the placed scripts with no stand-in `0724`, then the mode
+    /// graph's held broadcasts to every placed script.
+    struct Range {
+        scene: PreparedScene,
+        mode: ModeRunner,
+        reach: HeldReach,
+    }
+
+    impl Range {
+        fn start(assets: &SceneAssets, tick: u32) -> Self {
+            let scene = assets.prepare(GameMap::practice_range()).unwrap();
+            let mode = ModeRunner::start(&scene, tick, Vec::new());
+            assert!(mode.graph_driven(), "{:?}", mode.gaps());
+            Self {
+                scene,
+                mode,
+                reach: HeldReach::default(),
+            }
+        }
+
+        fn advance(&mut self, tick: u32) {
+            self.scene.advance_placed(tick, &[]);
+            self.mode.advance(tick, &Variables::new(), Vec::new());
+            let held = self.mode.held().to_vec();
+            let (_, placed) = self.scene.message_recipients(tick);
+            deliver_held(&held, &mut self.reach, &mut [placed]);
+        }
+    }
 
     fn frame(serial: u64) -> PlacedFrame {
         let mut bits = BitWriter::new();
@@ -399,25 +435,30 @@ mod tests {
         assert!(views.current(DOOR, 2));
     }
 
-    /// The Practice Range's 26 server placeables: 22 have graphs; the six
+    /// The Practice Range's 26 server placeables, with `13C0` running: 22
+    /// have graphs; the six
     /// barriers `00F6`, the three spawn doors `0D32` (358, 479, 480), the
     /// six spawn markers `01CE` (137, 150, 243, 415, 482, 590: they give
-    /// themselves their team, `STU_0F647E55`) and the spawn room `0D62`
-    /// (126, whose target searches the mode's `0724` begins: every field
+    /// themselves their team, `STU_0F647E55`, and take `13C0`'s `0724`,
+    /// st2, whose st1 tags each marker `0035`) and the spawn room `0D62`
+    /// (126, whose target searches `13C0`'s `0724` begins: every field
     /// they set is understood, `vm/targets.rs`) run whole and have frames,
     /// as do the four whose graphs `0216`/`0217` end at once; the console
     /// `265F` and pad `26F8` still meet gaps and send nothing. Each door's
-    /// frame changes once in its first 300 frames (its alias states, see
+    /// frame changes twice in its first 300 frames: as it takes `13C0`'s
+    /// `0702` (st12, remote slot 7, writes its remote sync variables #8869
+    /// and #8870 from `03C5` and `03C4`) and by its alias states (see
     /// `0D32`; which wait ends first is not pinned here).
     #[test]
     #[ignore = "requires the derived 104319 data"]
     fn the_range_placeables_run_their_graphs_and_have_frames() {
         let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-        let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
-        assert_eq!(scene.server_placeables().len(), 26);
+        let mut range = Range::start(&assets, 100);
+        assert_eq!(range.scene.server_placeables().len(), 26);
         for tick in 100..400 {
-            scene.advance_placed(tick, |_| SpawnChoice::First);
+            range.advance(tick);
         }
+        let scene = &range.scene;
         let world = scene.placed_scripts().world().unwrap();
         assert_eq!(world.entities().len(), 22);
         let room = world.entity(0x8000_007E).unwrap();
@@ -440,7 +481,7 @@ mod tests {
                 .frames()
                 .find(|(entity, _)| *entity == 0x8000_0000 | door)
                 .unwrap();
-            assert_eq!(frame.serial, 2, "door {door}");
+            assert_eq!(frame.serial, 3, "door {door}");
         }
         let gaps = world.gaps();
         assert!(
@@ -450,7 +491,9 @@ mod tests {
         );
     }
 
-    /// The Practice Range's spawn room `0D62` (126) takes the mode's `0724`
+    /// The Practice Range's spawn room `0D62` (126) takes `13C0`'s `0724`
+    /// (st9, held to every entity: invulnerable, heal and hero select, no
+    /// team), the only `0724` there is,
     /// and sends `0723` with its three flags to a living blue hero whose
     /// feet are in its area (`STU_73E1C5F0`), not to a red one, a dead one
     /// or one outside; it lets it go when he walks out. Its two searches
@@ -469,7 +512,18 @@ mod tests {
         let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
         let map = GameMap::practice_range();
         let (spawn, _) = map.spawn_point_in(0, 0, SpawnChoice::First).unwrap();
-        let mut scene = assets.prepare(map).unwrap();
+        let mut range = Range::start(&assets, 100);
+        let from_mode = GameMessage {
+            sender: GAME_MODE_ENTITY,
+            target: EVERY_ENTITY,
+            message: ROOM_MESSAGE,
+            parameters: room_message(None),
+        };
+        assert!(
+            range.mode.held().contains(&from_mode),
+            "{:?}",
+            range.mode.held()
+        );
         let body = |entity: u32, team: u8, dead: bool, feet: [f64; 3]| TargetCandidate {
             entity,
             team: Some(team),
@@ -492,26 +546,25 @@ mod tests {
                 body(0x0000_1003, 0, true, spawn),
             ]
         };
-        let frame_serial = |scene: &crate::scene_assets::PreparedScene| {
+        let frame_serial = |scene: &PreparedScene| {
             scene
                 .placed_scripts()
                 .frames()
                 .find(|(entity, _)| *entity == ROOM)
                 .map(|(_, frame)| frame.serial)
         };
-        scene.advance_placed(100, |_| SpawnChoice::First);
-        let world = scene.placed_scripts().world().unwrap();
+        range.advance(100);
+        let world = range.scene.placed_scripts().world().unwrap();
         let room = world.entity(ROOM).unwrap();
         assert!(room.running() && room.complete(), "{:?}", world.gaps());
-        let first = frame_serial(&scene).expect("the room's frame");
+        let first = frame_serial(&range.scene).expect("the room's frame");
         // Each tick of `ticks`: the `0723`s sent (tick, target, parameters)
         // and let go (tick, target).
-        let run = |scene: &mut crate::scene_assets::PreparedScene,
-                   ticks: std::ops::RangeInclusive<u32>| {
+        let run = |range: &mut Range, ticks: std::ops::RangeInclusive<u32>| {
             let (mut sent, mut ended) = (Vec::new(), Vec::new());
             for tick in ticks {
-                scene.advance_placed(tick, |_| SpawnChoice::First);
-                let (messages, ends) = scene.take_placed_messages();
+                range.advance(tick);
+                let (messages, ends) = range.scene.take_placed_messages();
                 sent.extend(
                     messages
                         .iter()
@@ -528,15 +581,15 @@ mod tests {
             }
             (sent, ended)
         };
-        scene.set_placed_target_candidates(&bodies(spawn));
+        range.scene.set_placed_target_candidates(&bodies(spawn));
         assert_eq!(
-            run(&mut scene, 101..=120),
+            run(&mut range, 101..=120),
             (vec![(105, 0x0000_1001, 3)], vec![])
         );
-        assert!(frame_serial(&scene).unwrap() > first);
-        scene.set_placed_target_candidates(&bodies(outside));
+        assert!(frame_serial(&range.scene).unwrap() > first);
+        range.scene.set_placed_target_candidates(&bodies(outside));
         assert_eq!(
-            run(&mut scene, 121..=140),
+            run(&mut range, 121..=140),
             (vec![], vec![(129, 0x0000_1001)])
         );
     }

@@ -88,6 +88,14 @@ const ASSUMED_NO_OPS: &[&str] = &[
     // the damage they took from #41 beside its ult charge. Likely the On
     // Fire score, a server rule the server has no model of.
     "STU_D087B558",
+    // Play of the Game data: server-only (no registration of its own: the
+    // base action's run, `tools/stu.py`), one inline `PlayOfTheGameData`
+    // (a `0C2` category, m_id, m_value, m_targets, m_description) and no
+    // output variable. 28 nodes in 10 graphs; the body's `01D8` (under
+    // `004B`) scores the owner's kills, heals and saves with it, and its
+    // st3 waits for the mode's `0694`, which `13C0` holds in the Practice
+    // Range. The server plays no Play of the Game, so it keeps no score.
+    "STU_0FC6DAEA",
     // The death layer `01CB`'s kill cam (rid38 st21's path, only with a
     // respawn time): server-only actions (no registration of their own).
     // Strong guess from their fields and place: STU_3218BAEB records a reel

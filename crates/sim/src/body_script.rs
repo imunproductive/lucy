@@ -106,20 +106,24 @@ pub struct OwnerBodySpawn {
 /// (ChaseVar st1) with the HUD stacks #6034 (seconds) and #6036 (share
 /// left). See `D:/Work/Coding/refs/reports/DeathCam.md`.
 ///
-/// The server's mode graph doesn't drive the match yet (its gaps,
-/// `orpheus_script::mode`), so nothing delivers its messages to every
-/// entity (`STU_1D719351`), and the body takes `06FD` from the mode as it
-/// starts. Assumptions: the mode body
+/// Where the server runs the mode graph (the Practice Range's `13C0`,
+/// `crate::mode_script`), it holds `06FD` to every entity and the room
+/// gives it to each body once (`crate::messages::deliver_held`). Where it
+/// doesn't (every PvP mode today, their gaps, `orpheus_script::mode`), the
+/// body takes `06FD` from the mode as it starts. Either way the body counts
+/// its respawn once its mode script took `06FD`. Assumptions: the mode body
 /// script is the body's last root instance, after the hero's weapons (the
-/// instance order retail uses is not known); `06FD` comes on the body's
-/// first frame, with `00B7` alone (`13C0` sends only that; `0F4A`'s other
-/// parameters are left out).
+/// instance order retail uses is not known); the stand-in `06FD` comes on
+/// the body's first frame, with `00B7` alone (`13C0` sends only that;
+/// `0F4A`'s other parameters are left out).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModeBody {
     /// `m_bodyScript` by team (`TeamIndex`, as the body's filter bits give
     /// it).
     pub scripts: BTreeMap<i64, u32>,
-    /// The seconds of the mode graph's `06FD.025`, when it sends one.
+    /// The seconds of the mode graph's `06FD.025` the body takes as it
+    /// starts, in the place of a mode graph the server doesn't run; none
+    /// where it runs it (`SceneAssets::prepare_owner_body`).
     pub respawn_seconds: Option<i64>,
     /// The game struct's team entries (team, size; `instance::team_entries`),
     /// which `STU_D289FA32` reads.
@@ -301,8 +305,8 @@ impl PlayerBodyFactory {
                 )
                 .map_err(unsupported)?;
         }
-        // The mode body script counts the respawn only once it took `06FD`.
-        let counts_respawn = counted.is_some_and(|(graph, _)| {
+        // The mode body script counts the respawn once it took `06FD`.
+        let respawn_counter = mode_script.is_some_and(|graph| {
             self.graphs
                 .graph(graph)
                 .is_some_and(|graph| graph.sends_message(RESPAWN_READY))
@@ -328,7 +332,8 @@ impl PlayerBodyFactory {
             leases,
             frame: spawn.frame,
             combat: self.combat.clone(),
-            counts_respawn,
+            respawn_counter,
+            counts_respawn: counted.is_some() && respawn_counter,
         };
         runtime.log_assumptions();
         Ok(runtime)
@@ -363,7 +368,9 @@ pub struct PlayerBodyRuntime {
     frame: u32,
     /// The body's eyes and the Biotic Field.
     combat: BodyCombat,
-    /// Its mode body script counts its respawn and sends `0685`.
+    /// Its mode body script counts a respawn and sends `0685` once it took
+    /// `06FD` (`counts_respawn`, from then on).
+    respawn_counter: bool,
     counts_respawn: bool,
 }
 
@@ -539,6 +546,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
             .component
             .receive_message(sender, message, parameters, &mut self.world)
             .map_err(unsupported)?;
+        self.counts_respawn |= message == RESPAWN_MESSAGE && self.respawn_counter;
         self.log_assumptions();
         Ok(entries)
     }

@@ -29,10 +29,11 @@ use crate::{
     expr::EntityRelation,
     graph::{GraphBinding, GraphStore},
     map_tags::{MapTags, TaggedEntity},
+    target_tags::TargetTags,
     vm::{
         AuraChange, Component, GameMessage, InitFault, MAX_INIT_WORK, MapRays, MessageEnd, Root,
-        SeenBodies, Site, Snapshot, TargetCandidate, TrackedStat, Unknowns, World, bind_values,
-        listed_relation,
+        SeenBodies, Site, Snapshot, TargetCandidate, TargetTagEffect, TrackedStat, Unknowns, World,
+        bind_values, listed_relation,
     },
     wire::{Value, Variables},
 };
@@ -106,6 +107,8 @@ pub struct PlacedEntity {
     fault: Option<String>,
     /// The team index its script gave it (`STU_0F647E55`), if any.
     team: Option<i64>,
+    /// The tags its own states add and suppress (`STU_E56BA8D8`).
+    target_tags: TargetTags,
     /// A spawned entity's owner ([`Spawn::owner`]).
     owner: Option<u32>,
 }
@@ -184,6 +187,7 @@ struct EntityWorld<'a, 'b> {
     entity: u32,
     position: [f64; 3],
     team: &'b mut Option<i64>,
+    target_tags: &'b mut TargetTags,
     owner: Option<u32>,
 }
 
@@ -298,8 +302,28 @@ impl World for EntityWorld<'_, '_> {
         self.shared.map_tags?.with_tag(tag)
     }
 
+    /// Its own tags as its states hold them, else the map's authored ones.
     fn has_target_tag(&self, _site: Site, entity: u32, tag: u64) -> Option<bool> {
+        if entity == self.entity {
+            if let Some(held) = self.target_tags.has(tag) {
+                return Some(held);
+            }
+        }
         Some(self.shared.tagged(entity)?.tags.contains(&tag))
+    }
+
+    /// A target tag state on itself (the Practice Range's spawn markers'
+    /// `01CE` st1 gives each `0035` while it holds the mode's `0724`); it
+    /// can't tag another entity. Only its own script sees the change: the
+    /// placeables' component 76 isn't sent, and other entities' tag
+    /// searches find the authored tags ([`MapTags`]).
+    fn set_target_tag_effect(
+        &mut self,
+        _site: Site,
+        effect: TargetTagEffect,
+        active: bool,
+    ) -> bool {
+        effect.entity == self.entity && self.target_tags.set(effect, active)
     }
 
     /// Itself, the players and the map's tagged placeables.
@@ -521,6 +545,7 @@ impl MapEntityWorld {
                     component: None,
                     fault: Some(error.to_string()),
                     team: None,
+                    target_tags: TargetTags::default(),
                     owner,
                 });
                 return;
@@ -543,11 +568,13 @@ impl MapEntityWorld {
             tracked_stats: &mut self.tracked_stats,
         };
         let mut team = None;
+        let mut target_tags = TargetTags::default();
         let mut entity_world = EntityWorld {
             shared: &mut shared,
             entity,
             position,
             team: &mut team,
+            target_tags: &mut target_tags,
             owner,
         };
         let started = Component::start(
@@ -573,6 +600,7 @@ impl MapEntityWorld {
             component,
             fault,
             team,
+            target_tags,
             owner,
         });
         self.end_destroyed();
@@ -686,6 +714,7 @@ impl MapEntityWorld {
                 entity: placed.entity,
                 position: placed.position,
                 team: &mut placed.team,
+                target_tags: &mut placed.target_tags,
                 owner: placed.owner,
             };
             if let Err(error) = run(component, &mut world) {
@@ -752,6 +781,7 @@ impl MapEntityWorld {
             entity: placed.entity,
             position: placed.position,
             team: &mut placed.team,
+            target_tags: &mut placed.target_tags,
             owner: placed.owner,
         };
         for id in instances {
@@ -902,6 +932,89 @@ mod tests {
         assert_eq!(
             snapshot.variables.get(&1),
             Some(&Value::Entity(GAME_MODE_ENTITY))
+        );
+    }
+
+    /// A spawn marker's `01CE` st1 (`STU_E56BA8D8`) gives the marker tag
+    /// `0035` while it runs: the placed world takes the effect on the
+    /// entity itself (it refused it as a gap before), so the script stays
+    /// whole with the state running.
+    #[test]
+    fn a_placed_entity_holds_the_target_tag_its_own_state_gives_it() {
+        const TAG: &str = "0x0D60000000000035";
+        let owner = json!({"$": "STU_B5A0CAF0", "m_EE729DCB": 0});
+        let plug =
+            |to: u16, name: &str| json!({"$": "Plug", "links": [[to, name]], "m_FF3DAF1E": []});
+        let node = |pos: u16, class: &str, state: Option<u16>, fields: Json| {
+            json!({
+                "pos": pos, "class": class, "uid": pos, "rid": pos, "remote": -1,
+                "state": state, "client_only": false, "server_only": false, "fields": fields,
+            })
+        };
+        let nodes = vec![
+            node(
+                0,
+                "STUStatescriptEntry",
+                None,
+                json!({"m_outPlug": plug(1, "m_beginPlug")}),
+            ),
+            node(
+                1,
+                "STU_E56BA8D8",
+                Some(0),
+                json!({
+                    "m_31714AFC": owner,
+                    "m_targetTags": {"$": "STU_357DABBB", "m_7D7C86A1": TAG},
+                    "m_2BBEEAB8": true,
+                }),
+            ),
+        ];
+        let graph = json!({
+            "index": 0x01ce, "items": nodes.len(), "nodes": nodes, "states": [1],
+            "entries": [0], "remote": [], "sync_vars": [], "containers": {},
+            "unknown_nodes": [], "fields": {},
+            "header": {
+                "m_nodesBitCount": 4, "m_statesBitCount": 4,
+                "m_remoteSyncNodesBitCount": 4, "m_syncVarsBitCount": 4
+            }
+        });
+        let graphs = GraphStore::from_json(
+            &serde_json::to_vec(&json!({
+                "version": 1, "graphs": [graph], "bodies": {}, "missing": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let extra = [GraphBinding {
+            graph: Some(0x01ce),
+            sync: None,
+            flags: 0,
+        }];
+        let world = MapEntityWorld::start(
+            Arc::new(graphs),
+            0,
+            0.0,
+            Unknowns::Refuse,
+            [Placement {
+                entity: ENTITY,
+                definition: 0,
+                position: [0.0; 3],
+                overrides: &[],
+                extra: &extra,
+            }],
+            None,
+            None,
+            None,
+            1,
+        );
+        let placed = world.entity(ENTITY).unwrap();
+        let snapshot = placed.snapshot().unwrap();
+        assert!(placed.complete(), "{:?}", snapshot.diagnostics);
+        assert!(
+            snapshot.instances[&1]
+                .states
+                .values()
+                .any(|state| state.active)
         );
     }
 }
