@@ -241,7 +241,12 @@ fn an_instance_made_by_another_entity_names_its_creator() {
     for view in [View::Owner, View::Observer] {
         let projected = encoder.project(&snapshot, view).unwrap();
         let frame = encoder.full(&projected).unwrap();
-        let head = wire::read_full_head(frame.as_bytes()).unwrap();
+        let head = wire::read_full_head(frame.as_bytes(), |graph| {
+            graphs
+                .graph(u32::from(graph))
+                .map(|graph| graph.header.states_bits)
+        })
+        .unwrap();
         assert_eq!(
             head.instances,
             [(1, 42, None, None), (2, 43, Some(THROWER), Some((1, 1)))],
@@ -756,6 +761,22 @@ fn ability_cooldown_and_push_binding_match_python_bytes() {
         &encoder.full(&observer).unwrap(),
         146,
         "081500001d40003c200000e84f0000801f0000",
+    );
+    // The owner's full frame head: the pushed value and its Stack link.
+    let head = crate::wire::read_full_head(
+        encoder.owner_full(&owner, 1001, 16).unwrap().as_bytes(),
+        |graph| {
+            graphs
+                .graph(u32::from(graph))
+                .map(|graph| graph.header.states_bits)
+        },
+    )
+    .unwrap();
+    assert_eq!(head.command_frame, Some(1001));
+    assert_eq!(head.variables, Variables::from([(7, Value::Bool(true))]));
+    assert_eq!(
+        head.links,
+        std::collections::BTreeMap::from([(7, vec![(1, 0)])])
     );
 
     snapshot.bindings[&(0, 7)][0].slot = 0;

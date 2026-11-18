@@ -796,6 +796,8 @@ struct Room {
     started: Instant,
     /// The level of the AI heroes that fill its teams, if any.
     ai: Option<Difficulty>,
+    /// Its dummy bots (`ai.rs`): the Practice Range's Training Partner.
+    dummies: Vec<ai::DummySeat>,
 }
 
 impl Room {
@@ -817,6 +819,7 @@ impl Room {
             ended: false,
             started: Instant::now(),
             ai: None,
+            dummies: Vec::new(),
         };
         room.add(players);
         room.attach_bots();
@@ -3029,10 +3032,13 @@ impl State {
     /// Bots too. After the players' steps, so a pick's hero limit
     /// broadcasts reach the other controllers in its tick.
     fn route_messages(&mut self, tick: u32) {
+        let mut dummies = Vec::new();
         for (&id, room) in &mut self.rooms {
+            let next = room.next_dummy();
             let Some(world) = &mut room.world else {
                 continue;
             };
+            world.scene.set_next_dummy(Some(next));
             let mut peers = room_peers(&mut self.peers, &self.seats, id, room.players.len());
             let mut worlds: Vec<&mut WorldDelivery> = peers
                 .iter_mut()
@@ -3064,6 +3070,10 @@ impl State {
             }
             deliver_held(&held, &mut room.held_reach, &mut recipients);
             deliver(messages, ends, &mut recipients);
+            dummies.push((id, world.scene.take_dummy_changes()));
+        }
+        for (id, changes) in dummies {
+            self.change_dummies(id, changes);
         }
     }
 
@@ -3142,7 +3152,9 @@ impl State {
                 }
             }
             self.update_combat(tick, now);
+            let mut dummies = Vec::new();
             for (&id, room) in &mut self.rooms {
+                let next = room.next_dummy();
                 if let Some(world) = &mut room.world {
                     // combat.py `update`: the dead bots' death scripts, then
                     // the respawns with new scripts.
@@ -3154,10 +3166,14 @@ impl State {
                     // with the spawn rooms the match flow's spawns hold; their
                     // messages (the spawn rooms' `0723`) go with the others
                     // (`route_messages`).
+                    // The scripts' dummy bots (the Training Partner) are AI
+                    // players of the room (`ai.rs`).
                     let flow = room.flow.as_ref();
+                    world.scene.set_next_dummy(Some(next));
                     world.scene.advance_placed(tick, |team| {
                         flow.map_or(SpawnChoice::First, |flow| flow.spawn_choice(team))
                     });
+                    dummies.push((id, world.scene.take_dummy_changes()));
                     bot_voices.insert(id, world.scene.take_bot_voices());
                     if let Some(combat) = &mut world.combat {
                         if let Ok(replacements) = combat.respawn_due(&mut world.scene, tick, now) {
@@ -3169,6 +3185,9 @@ impl State {
                     }
                     bot_events.insert(id, world.scene.take_bot_events());
                 }
+            }
+            for (id, changes) in dummies {
+                self.change_dummies(id, changes);
             }
         }
         // match.py `update`: the countdown (now the match flow) runs before

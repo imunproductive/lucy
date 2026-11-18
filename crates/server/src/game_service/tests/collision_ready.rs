@@ -269,7 +269,8 @@ fn seats_wait_for_their_scene_while_another_match_plays() {
     }
     assert_eq!(prepared.load(Ordering::Relaxed), 0);
     assert_eq!(states(&server, MATCH), [PlayerState::Loading; 2]);
-    assert_eq!(states(&server, OTHER), [PlayerState::Playing]);
+    // The other Range's player and its Training Partner (`ai.rs`).
+    assert_eq!(states(&server, OTHER), [PlayerState::Playing; 2]);
 
     release.send(()).unwrap();
     server.await_scenes();
@@ -283,7 +284,8 @@ fn seats_wait_for_their_scene_while_another_match_plays() {
         assert!(watcher.created(watcher.owner).is_some());
     }
     assert_eq!(prepared.load(Ordering::Relaxed), 1);
-    assert_eq!(states(&server, MATCH), [PlayerState::Playing; 2]);
+    // The two players and the Range's Training Partner (`ai.rs`).
+    assert_eq!(states(&server, MATCH), [PlayerState::Playing; 3]);
     server.stop().unwrap();
 }
 

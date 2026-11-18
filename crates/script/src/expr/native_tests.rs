@@ -31,6 +31,10 @@ struct World {
     match_seed: Option<i64>,
     /// The logical buttons each entity holds.
     held: BTreeMap<u32, Vec<i64>>,
+    /// Entity variables of other entities (`entity.#id`).
+    members: BTreeMap<(u32, u32), Value>,
+    /// The ruleset defaults (`STU_3832D36C`).
+    rulesets: BTreeMap<u32, Value>,
 }
 
 impl Context for World {
@@ -102,6 +106,47 @@ impl Context for World {
     fn button_held(&mut self, entity: u32, button: i64) -> Option<bool> {
         Some(self.held.get(&entity)?.contains(&button))
     }
+
+    fn entity_member(&mut self, entity: u32, id: u32) -> Value {
+        self.members
+            .get(&(entity, id))
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    fn ruleset(&mut self, id: u32) -> Value {
+        self.rulesets.get(&id).cloned().unwrap_or(Value::Null)
+    }
+
+    /// `STU_A3DEF368` is the mode entity.
+    fn native(&mut self, config: &Json) -> Option<Value> {
+        (class(config) == Some("STU_A3DEF368")).then_some(Value::Entity(MODE))
+    }
+}
+
+const MODE: u32 = 0x8000_0001;
+
+/// GetGameRulesetValue (`STU_3832D36C`, `Eval_STU_3832D36C`
+/// 0x7FF789BDFAC0, GameSettings.md 15.2): `m_value` first, and a value
+/// wins; else the ruleset default of its variable, a dynamic one or an
+/// entity's member (`mode.#29450`: the Training Partner setting the
+/// Practice Range's pad `26F8` and console `265F` read).
+#[test]
+fn a_ruleset_value_is_its_variable_else_the_default() {
+    let mut world = World::default();
+    world.rulesets.insert(29450, Value::Bool(true));
+    world.rulesets.insert(7, Value::Integer(3));
+    let member = json!({"$":"STU_3832D36C","m_value":{"$":"STU_919FD47C",
+        "m_expression":{"$":"STUConfigVarExpressionData","m_fragments":null,
+            "m_opcodes":[14,0,7,0,15,0],"m_dynamicVars":[var(29450)],"m_D99EF254":null},
+        "m_configVars":[{"$":"STU_A3DEF368"}]}});
+    assert_eq!(evaluate(&member, &mut world), Ok(Value::Bool(true)));
+    world.members.insert((MODE, 29450), Value::Bool(false));
+    assert_eq!(evaluate(&member, &mut world), Ok(Value::Bool(false)));
+    let direct = json!({"$":"STU_3832D36C","m_value":var(7)});
+    assert_eq!(evaluate(&direct, &mut world), Ok(Value::Integer(3)));
+    world.variables.insert(7, Value::Integer(5));
+    assert_eq!(evaluate(&direct, &mut world), Ok(Value::Integer(5)));
 }
 
 fn var(id: u32) -> Json {
