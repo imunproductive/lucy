@@ -1,5 +1,6 @@
-//! The world the VM sees from a human player's own body: what the server
-//! answers when the body's graphs ask about the game.
+//! The world the VM sees from a player's own body (a human's, or an AI
+//! hero's): what the server answers when the body's graphs ask about the
+//! game.
 //!
 //! Each answer is either computed from the server's state or, for the few
 //! questions whose meaning is still open, the answer the Python reference gives
@@ -17,6 +18,7 @@ use std::{
 use serde_json::Value as Json;
 
 use crate::{
+    ai_definitions::AiControl,
     expr::{EntityRelation, native_shape, team_from_filter, valid_entity},
     graph::GraphStore,
     map_tags::{MapTags, TaggedEntity},
@@ -46,8 +48,13 @@ pub const REACTION_GRAPHS: [u32; 2] = [0x01ca, 0x14b1];
 
 pub struct PlayerWorld {
     pub graphs: Arc<GraphStore>,
+    /// The player's controller (his participant entity, `0C90`'s).
     pub controller: u32,
     pub entity: u32,
+    /// An AI hero's AI entity, which possesses the body
+    /// ([`crate::ai_definitions`]); none for a human player's body, whose
+    /// primary possessor is his controller.
+    pub ai: Option<AiControl>,
     pub body_filter: u64,
     pub position: [f64; 3],
     /// How far above its feet the body's eye is now (crouched or not); none
@@ -455,6 +462,7 @@ impl World for PlayerWorld {
         }
         let known = entity == self.entity
             || (valid_entity(self.controller) && entity == self.controller)
+            || self.ai.is_some_and(|ai| ai.entity == entity)
             || (entity == GAME_MODE_ENTITY && self.graphs.mode_variables(self.mode).is_some())
             || self.listed(entity).is_some()
             || self.map_entity(entity).is_some();
@@ -535,18 +543,30 @@ impl World for PlayerWorld {
         {
             return None;
         }
-        // The client's readings (`EntityRelation`): this body and its
-        // controller, and the other bodies the match lists.
-        let known = entity == self.entity || entity == self.controller;
+        // The client's readings (`EntityRelation`): this body, its
+        // controller and its AI entity, and the other bodies the match
+        // lists.
+        let ai = self.ai.map(|ai| ai.entity);
+        let known = entity == self.entity || entity == self.controller || Some(entity) == ai;
         match relation {
+            // The controller, which the clients see possessing every
+            // player's body. Assumption for an AI hero's body: whether
+            // retail's current possessor was its AI entity is open.
             EntityRelation::CurrentPossessor if entity == self.entity => Some(self.controller),
-            // The controller possesses the body (it has component 44); the
-            // body's possessor is the controller.
-            EntityRelation::Controller if known => Some(self.controller),
-            EntityRelation::PossessedBody if entity == self.controller => Some(self.entity),
+            // The body's primary possessor (component 44): a human's
+            // controller, an AI hero's AI entity (`crate::ai_definitions`).
+            // A possessor is its own.
+            EntityRelation::Controller if entity == self.entity => {
+                Some(ai.unwrap_or(self.controller))
+            }
+            EntityRelation::Controller if known => Some(entity),
+            EntityRelation::PossessedBody if known && entity != self.entity => Some(self.entity),
             // Neither a body nor a controller has component 72.
             EntityRelation::Owner if known => Some(0),
-            // The authenticated human body has no AI control entity in this world.
+            // A human's body has no AI entity. An AI hero's runs none of
+            // its graphs yet (AiDefinitions.md, plan step 3), so the
+            // requests the body makes of it (`STU_066B4605`) find none and
+            // finish at once, as a human's do.
             EntityRelation::AiControlEntity if entity == self.entity => Some(0),
             // Another body the match lists: the controller it gives, and no
             // owner.
@@ -556,14 +576,18 @@ impl World for PlayerWorld {
         }
     }
 
-    /// Its own controller is a human player's; another listed body's as
-    /// the match marks it ([`TargetCandidate::ai`]).
+    /// Its own controller is a human player's; its AI entity has component
+    /// 92 when its definition declares it (all 15 do); another listed
+    /// body's as the match marks it ([`TargetCandidate::ai`]).
     fn controller_is_ai(&self, site: Site, entity: u32) -> Option<bool> {
         if !self.is_player_site(site) {
             return None;
         }
         if valid_entity(self.controller) && entity == self.controller {
             return Some(false);
+        }
+        if let Some(ai) = self.ai.filter(|ai| ai.entity == entity) {
+            return Some(ai.has_component_92(self.graphs.ai_definitions()));
         }
         self.targets
             .as_deref()?
@@ -572,13 +596,34 @@ impl World for PlayerWorld {
             .map(|body| body.ai)
     }
 
+    /// The profile of the body's own AI (none for a human's body: the
+    /// graphs' fallback), or of another listed body's.
+    fn ai_parameter(&mut self, site: Site, entity: u32, identifier: u64) -> Option<Option<f64>> {
+        if !self.is_player_site(site) {
+            return None;
+        }
+        let definitions = self.graphs.ai_definitions();
+        let ai = self.ai.map(|ai| ai.entity);
+        if entity == self.entity || entity == self.controller || Some(entity) == ai {
+            return Some(self.ai.and_then(|ai| ai.parameter(definitions, identifier)));
+        }
+        self.targets
+            .as_deref()?
+            .iter()
+            .find(|body| body.entity == entity || body.controller == Some(entity))
+            .map(|body| body.ai_parameter(definitions, identifier))
+    }
+
     fn native(&mut self, site: Site, config: &Json) -> Option<Value> {
         match config.get("$")?.as_str()? {
             "STU_1FF67CA6" => Some(Value::Entity(self.entity)),
-            // Whether the body's controller (`STU_DB742151` of the owner)
-            // has component 92: a human player's controller has not.
+            // Whether the body's primary possessor (`STU_DB742151` of the
+            // owner) has component 92: a human player's controller has
+            // not; an AI hero's AI entity has.
             "STU_D3EB8D87" if is_own_controller(config.get("m_00903303")) => {
-                Some(Value::Bool(false))
+                Some(Value::Bool(self.ai.is_some_and(|ai| {
+                    ai.has_component_92(self.graphs.ai_definitions())
+                })))
             }
             // Where the body's eye is (quick melee `0043` st5 measures the
             // eye's height above the feet with it, and looks from it,
@@ -634,6 +679,7 @@ impl PlayerWorld {
             graphs,
             controller,
             entity,
+            ai: None,
             body_filter,
             position: [0.0; 3],
             eye_height: None,
@@ -716,10 +762,12 @@ impl PlayerWorld {
     }
 
     /// Whether a line aimed at `target` is the body's to say: the body
-    /// itself, or its controller (which has no voice set; the voice is its
-    /// possessed body's).
+    /// itself, or its controller or AI entity (which have no voice set; the
+    /// voice is their possessed body's).
     fn speaks_for(&self, target: u32) -> bool {
-        target == self.entity || (valid_entity(self.controller) && target == self.controller)
+        target == self.entity
+            || (valid_entity(self.controller) && target == self.controller)
+            || self.ai.is_some_and(|ai| ai.entity == target)
     }
 
     fn is_player_site(&self, site: Site) -> bool {
@@ -774,6 +822,7 @@ mod tests {
             dead: false,
             controller: Some(entity & !0xff),
             ai: false,
+            ai_control: None,
             feet,
             height: 1.8,
             radius: 0.4,
@@ -842,6 +891,91 @@ mod tests {
             ..site
         };
         assert_eq!(world.entity_exists(other_site, BODY), None);
+    }
+
+    /// An AI hero's body is possessed by its AI entity, which has component
+    /// 92 and answers the AI parameters from its profile; another listed
+    /// AI hero's body (an aura's instigator, `#27`) answers the same from
+    /// the match's list. A human's body has his controller, no AI, and
+    /// takes the graphs' fallbacks.
+    #[test]
+    fn an_ai_hero_s_body_is_possessed_by_its_ai_entity() {
+        use crate::ai_definitions::{AiControl, AiDefinitions, EASY, HARD};
+
+        const DAMAGE: u64 = 0x0d80_0000_0000_1961;
+        const DEFINITION: u64 = 0x0400_0000_0000_11f4;
+        const AI: u32 = 0x8000_7001;
+        const OTHER_BODY: u32 = 0xa000_0201;
+        const OTHER_AI: u32 = 0x8000_7002;
+        let definitions = AiDefinitions::from_json(
+            br#"{"heroes": {}, "definitions": {"0x04000000000011F4": {
+                    "component_92": true,
+                    "difficulty_profiles": {
+                        "0x0D8000000000195E": "0x0B50000000000013",
+                        "0x0D80000000001960": "0x0B50000000000014"}}},
+                "profiles": {
+                    "0x0B50000000000013": {"values": {"0x0D80000000001961": 4.0}},
+                    "0x0B50000000000014": {"values": {"0x0D80000000001961": 20.0}}}}"#,
+        )
+        .unwrap();
+        let graphs =
+            GraphStore::from_json(br#"{"version":1,"graphs":[],"bodies":{},"missing":[]}"#)
+                .unwrap()
+                .with_ai_definitions(Arc::new(definitions));
+        let mut world = PlayerWorld::new(Arc::new(graphs), CONTROLLER, BODY, 0x0004_0001, 0, 0);
+        let site = Site {
+            entity: BODY,
+            instance: 1,
+            graph: 42,
+            node: None,
+        };
+        let control = |entity, difficulty| AiControl {
+            entity,
+            definition: DEFINITION,
+            difficulty,
+        };
+        world.targets = Some(vec![TargetCandidate {
+            controller: Some(OTHER_AI),
+            ai: true,
+            ai_control: Some(control(OTHER_AI, HARD)),
+            ..body(OTHER_BODY, Some(1), [0.0; 3])
+        }]);
+
+        // A human's body.
+        let controller = EntityRelation::Controller;
+        assert_eq!(
+            world.related_entity(site, controller, BODY),
+            Some(CONTROLLER)
+        );
+        assert_eq!(world.controller_is_ai(site, CONTROLLER), Some(false));
+        assert_eq!(world.ai_parameter(site, BODY, DAMAGE), Some(None));
+
+        world.ai = Some(control(AI, EASY));
+        assert_eq!(world.related_entity(site, controller, BODY), Some(AI));
+        assert_eq!(world.related_entity(site, controller, AI), Some(AI));
+        assert_eq!(
+            world.related_entity(site, EntityRelation::PossessedBody, AI),
+            Some(BODY)
+        );
+        assert_eq!(world.entity_exists(site, AI), Some(true));
+        assert_eq!(world.controller_is_ai(site, AI), Some(true));
+        assert_eq!(world.controller_is_ai(site, CONTROLLER), Some(false));
+        for entity in [BODY, AI] {
+            assert_eq!(world.ai_parameter(site, entity, DAMAGE), Some(Some(4.0)));
+        }
+        // A value the profile lacks: the graphs' fallback.
+        assert_eq!(world.ai_parameter(site, BODY, DAMAGE + 1), Some(None));
+
+        // The other AI hero's body, by the match's list.
+        assert_eq!(
+            world.related_entity(site, controller, OTHER_BODY),
+            Some(OTHER_AI)
+        );
+        assert_eq!(world.controller_is_ai(site, OTHER_AI), Some(true));
+        for entity in [OTHER_BODY, OTHER_AI] {
+            assert_eq!(world.ai_parameter(site, entity, DAMAGE), Some(Some(20.0)));
+        }
+        assert_eq!(world.ai_parameter(site, 0xa000_0301, DAMAGE), None);
     }
 
     /// Listed bodies' target tags and filter words come from the match's
@@ -1079,11 +1213,12 @@ mod tests {
         );
         assert!(!knockback);
         assert_eq!(strength, Some(Value::Float(f64::from(0.4_f32))));
-        // The same bullet from an Easy AI hero deals a quarter of it (4.75,
-        // `ai::scale_damage`): 0.02375 + 0.3 × 4.75 / 125 = 0.0352, at most
-        // 0.1, so it flinches but raises no pain line.
-        let (rating, criteria, _, strength) = hurt(ENEMY, 4.75, bullet, [0.0, 0.0, -1.0]);
-        assert!((rating - 0.035_15).abs() < 1e-6, "{rating}");
+        // The same bullet from an Easy AI Soldier: 76 deals his profile's 4
+        // (`1961` at `195E`, `crate::ai_definitions`): 0.02 +
+        // 0.3 × 4 / 125 = 0.0296, at most 0.1, so it flinches but raises no
+        // pain line.
+        let (rating, criteria, _, strength) = hurt(ENEMY, 4.0, bullet, [0.0, 0.0, -1.0]);
+        assert!((rating - 0.0296).abs() < 1e-6, "{rating}");
         assert!(criteria.is_empty(), "{criteria:?}");
         assert_eq!(strength, Some(Value::Float(f64::from(0.4_f32))));
         // The rocket's message without its tags (`.hurt flinch off`,

@@ -246,6 +246,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.world.controller_is_ai(self.site, entity)
     }
 
+    fn ai_parameter(&mut self, entity: u32, identifier: u64) -> Option<Option<f64>> {
+        self.read_native = true;
+        self.world.ai_parameter(self.site, entity, identifier)
+    }
+
     fn would_stack_to_top(&mut self, variable: Variable, priority: StackPriority) -> Option<bool> {
         let key = source_key(self.site.instance, variable);
         self.read(key);

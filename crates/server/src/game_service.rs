@@ -1190,11 +1190,11 @@ impl Peer {
         }
     }
 
-    /// An AI player's peer: a world no client receives, and the controller
-    /// that plays it.
+    /// An AI player's peer: a world no client receives, whose bodies his AI
+    /// entity possesses, and the controller that plays it.
     fn ai(owner: u32, seat: ai::AiSeat) -> Self {
         Self {
-            world: WorldDelivery::headless(owner),
+            world: WorldDelivery::headless(owner, seat.entity, seat.difficulty),
             ai: Some(Box::new(seat)),
             ..Self::new(owner)
         }
@@ -2386,7 +2386,6 @@ impl State {
             players,
             world,
             flow,
-            ai,
             ..
         }) = self.rooms.get_mut(&id)
         else {
@@ -2399,10 +2398,7 @@ impl State {
         else {
             return;
         };
-        let mut hits = combat.take_player_hits();
-        if let Some(difficulty) = *ai {
-            ai::scale_damage(&mut hits, players, difficulty);
-        }
+        let hits = combat.take_player_hits();
         let teams: Vec<u8> = players.iter().map(|player| player.info.team).collect();
         let mut peers = room_peers(&mut self.peers, &self.seats, id, players.len());
         let mut bot_heals = Vec::new();

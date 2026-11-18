@@ -52,6 +52,7 @@ use orpheus_content::{heroes::Eyes, stats::PlayerStats};
 use orpheus_core::guid::parse_guid;
 use orpheus_physics::static_ray::{Vec3, segment_distance};
 use orpheus_script::{
+    ai_definitions::AiControl,
     bot::{DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE, DAMAGE_TAGS, DAMAGED, DIED},
     mode::EVERY_ENTITY,
     vitals::{Death, Vitals},
@@ -382,6 +383,9 @@ pub struct PlayerTarget {
     /// Its body definition's target tags, if the data gives them
     /// ([`PreparedScene::body_tags`]).
     pub tags: Option<Arc<BTreeSet<u64>>>,
+    /// An AI hero's AI entity, which possesses the body; none for a
+    /// human's.
+    pub ai: Option<AiControl>,
 }
 
 struct Target {
@@ -510,11 +514,13 @@ impl Combat {
     /// The bodies the statescript's target searches can find this tick
     /// (`TrackTargets`): the players' bodies as recorded, then the bots, in
     /// slot order; no teams in a free-for-all. A player's body is his
-    /// controller's (its id less the low byte), a bot's its stand-in
-    /// controller's (`scene::bot_controller_entity`), an AI's (component
-    /// 92: the bot's AI definition possesses it).
+    /// controller's (its id less the low byte); an AI hero's is his AI
+    /// entity's, an AI (component 92, which its definition declares); a
+    /// bot's is its stand-in controller's (`scene::bot_controller_entity`),
+    /// an AI too (component 92: the bot's AI definition possesses it).
     pub fn target_candidates(&self, scene: &PreparedScene) -> Vec<TargetCandidate> {
         let free_for_all = scene.map().free_for_all;
+        let definitions = scene.graphs().ai_definitions();
         let candidate =
             |entity, team, dead, controller, ai, pose: &TargetPose, tags| TargetCandidate {
                 entity,
@@ -522,6 +528,7 @@ impl Combat {
                 dead,
                 controller,
                 ai,
+                ai_control: None,
                 feet: pose.feet,
                 height: pose.height,
                 radius: pose.radius,
@@ -532,16 +539,19 @@ impl Combat {
             .iter()
             .map(|slot| {
                 let target = &slot.target;
-                let controller = Some(target.body & !0xff);
-                candidate(
-                    target.body,
-                    target.team,
-                    target.dead,
-                    controller,
-                    false,
-                    &target.pose,
-                    target.tags.clone(),
-                )
+                let controller = target.ai.map_or(target.body & !0xff, |ai| ai.entity);
+                TargetCandidate {
+                    ai_control: target.ai,
+                    ..candidate(
+                        target.body,
+                        target.team,
+                        target.dead,
+                        Some(controller),
+                        target.ai.is_some_and(|ai| ai.has_component_92(definitions)),
+                        &target.pose,
+                        target.tags.clone(),
+                    )
+                }
             })
             .chain(scene.bots().iter().enumerate().map(|(slot, bot)| {
                 let controller = bot_controller_entity(slot).ok();
