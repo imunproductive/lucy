@@ -357,15 +357,17 @@ mod tests {
         assert!(views.current(DOOR, 2));
     }
 
-    /// The Practice Range's 26 server placeables: 22 have graphs; the
-    /// spawn room `0D62` (126), the six barriers `00F6`, the three spawn
-    /// doors `0D32` (358, 479, 480) and the six spawn markers `01CE` (137,
-    /// 150, 243, 415, 482, 590: they give themselves their team,
-    /// `STU_0F647E55`) run whole and have frames, as do the four whose
-    /// graphs `0216`/`0217` end at once. The console `265F` and pad `26F8`
-    /// still meet gaps; they send nothing. Each door's frame changes once
-    /// in its first 300 frames (its alias states, see `0D32`; which wait
-    /// ends first is not pinned here).
+    /// The Practice Range's 26 server placeables: 22 have graphs; the six
+    /// barriers `00F6`, the three spawn doors `0D32` (358, 479, 480) and
+    /// the six spawn markers `01CE` (137, 150, 243, 415, 482, 590: they
+    /// give themselves their team, `STU_0F647E55`) run whole and have
+    /// frames, as do the four whose graphs `0216`/`0217` end at once. The
+    /// spawn room `0D62` (126) runs, but its target searches (begun by the
+    /// mode's `0724`) rest on the search assumption ("flag fields
+    /// unread"), so it sends its messages and no frame; the console `265F`
+    /// and pad `26F8` still meet gaps and send nothing. Each door's frame
+    /// changes once in its first 300 frames (its alias states, see `0D32`;
+    /// which wait ends first is not pinned here).
     #[test]
     #[ignore = "requires the derived 104319 data"]
     fn the_range_placeables_run_their_graphs_and_have_frames() {
@@ -377,6 +379,8 @@ mod tests {
         }
         let world = scene.placed_scripts().world().unwrap();
         assert_eq!(world.entities().len(), 22);
+        let room = world.entity(0x8000_007E).unwrap();
+        assert!(room.running() && !room.complete(), "{:?}", world.gaps());
         let framed: Vec<u32> = scene
             .placed_scripts()
             .frames()
@@ -385,8 +389,8 @@ mod tests {
         assert_eq!(
             framed,
             [
-                126, 137, 150, 185, 188, 199, 204, 243, 340, 358, 398, 400, 415, 416, 424, 479,
-                480, 482, 548, 590
+                137, 150, 185, 188, 199, 204, 243, 340, 358, 398, 400, 415, 416, 424, 479, 480,
+                482, 548, 590
             ]
         );
         for door in [358, 479, 480] {
