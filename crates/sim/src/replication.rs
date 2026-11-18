@@ -61,6 +61,7 @@ use orpheus_script::controller::{
 use orpheus_script::{
     ai_definitions::AiControl,
     graph::GraphStore,
+    mode::EVERY_ENTITY,
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
@@ -1297,7 +1298,6 @@ pub fn show_players(
     tick: u32,
     now: Duration,
 ) -> Vec<Vec<Message>> {
-    deliver_controller_broadcasts(players, tick);
     let controller = scene.controller();
     let entry = move |hero| controller.team_entry_frame(hero);
     let context = ShowContext {
@@ -1386,37 +1386,6 @@ pub fn show_players(
             cards
         })
         .collect()
-}
-
-/// The messages each player's controller graph sent every entity since the
-/// last tick (`0C90` st5/st21/st70 after a pick: `068E`, `070B` the hero's
-/// role, `08BE` the hero) to the other players' controller scripts, from
-/// their sender: `0C90` st4/st8 keep a teammate's pick for the hero limit,
-/// st22 his role for the role limit (their filters test the sender's team).
-/// A message a script sends while it takes one goes the next tick. AI
-/// players' controllers send and take them too.
-fn deliver_controller_broadcasts(players: &mut [RoomPlayer<'_, '_>], tick: u32) {
-    let mut worlds: Vec<_> = players
-        .iter_mut()
-        .filter_map(|player| player.world.as_deref_mut())
-        .filter(|world| world.world_started())
-        .collect();
-    let roster: Vec<_> = worlds
-        .iter()
-        .filter_map(|world| world.controller_team())
-        .collect();
-    let messages: Vec<_> = worlds
-        .iter_mut()
-        .flat_map(|world| world.take_controller_broadcasts())
-        .collect();
-    for message in &messages {
-        for world in worlds
-            .iter_mut()
-            .filter(|world| world.owner != message.sender)
-        {
-            world.receive_controller_broadcast(tick, &roster, message);
-        }
-    }
 }
 
 /// What a controller frame shows of hero select: open, the pick, the skin
@@ -2075,21 +2044,6 @@ impl WorldDelivery {
         ))
     }
 
-    /// The game messages the controller graph sent every entity since the
-    /// last call (`0C90` st5/st21/st70: `068E`, `070B`, `08BE` after a
-    /// pick), for the other players' controllers
-    /// ([`deliver_controller_broadcasts`]). Its messages to the
-    /// mode (`06FF`, `0685`) have no taker yet (the mode graph doesn't run)
-    /// and are dropped.
-    pub fn take_controller_broadcasts(&mut self) -> Vec<GameMessage> {
-        self.controller_script
-            .as_mut()
-            .map_or_else(Vec::new, ControllerScript::take_messages)
-            .into_iter()
-            .filter(|message| message.target == orpheus_script::mode::EVERY_ENTITY)
-            .collect()
-    }
-
     /// This player's controller and team, as another's controller script
     /// knows it; none without a script.
     pub fn controller_team(&self) -> Option<(u32, i64)> {
@@ -2097,10 +2051,10 @@ impl WorldDelivery {
         Some((script.entity(), script.team()?))
     }
 
-    /// Another player's controller broadcast `message` at `tick`
-    /// (`players`: the room's controllers and teams): this player's
-    /// controller script takes it.
-    pub fn receive_controller_broadcast(
+    /// A message to the player's controller (or to every entity) at `tick`
+    /// (`players`: the room's controllers and teams): his controller
+    /// script takes it.
+    fn receive_controller_message(
         &mut self,
         tick: u32,
         players: &[(u32, i64)],
@@ -2118,7 +2072,7 @@ impl WorldDelivery {
                 .filter(|&(controller, _)| controller != owner)
                 .collect(),
         );
-        if let Err(error) = script.broadcast_from(tick, message) {
+        if let Err(error) = script.receive_from(tick, message) {
             eprintln!("controller script of {owner:08X} stopped ({error})");
             self.controller_script = None;
         }
@@ -3889,9 +3843,21 @@ impl WorldDelivery {
         }
     }
 
-    /// The game messages the current body sent other entities (match.py
-    /// `queue_body_message`), while other clients get the body (`_shown`).
-    pub fn take_body_messages(&mut self) -> Vec<GameMessage> {
+    /// The game messages the player's graphs sent other entities since the
+    /// last call, for the match to route ([`crate::messages`]): his current
+    /// body's (match.py `queue_body_message`), while other clients get the
+    /// body (`_shown`), then his controller's (`0C90` st5/st21/st70's
+    /// `068E`, `070B`, `08BE` to every entity after a pick, `06FF` to the
+    /// mode).
+    pub fn take_messages(&mut self) -> Vec<GameMessage> {
+        let mut messages = self.take_body_messages();
+        if let Some(controller) = &mut self.controller_script {
+            messages.extend(controller.take_messages());
+        }
+        messages
+    }
+
+    fn take_body_messages(&mut self) -> Vec<GameMessage> {
         if !self.world_started() {
             return Vec::new();
         }
@@ -4021,14 +3987,68 @@ impl WorldDelivery {
 
     /// Whether this client's current body runs a script that takes messages
     /// sent to `target` (match.py `_message_player`).
-    pub fn takes_body_message(&self, target: u32) -> bool {
+    fn takes_body_message(&self, target: u32) -> bool {
         self.world_started() && self.current_body() == Some(target) && self.body_script.is_some()
+    }
+
+    /// Whether this player's graphs are entity `entity`'s: his current
+    /// body's or his controller's.
+    pub fn runs(&self, entity: u32) -> bool {
+        self.takes_body_message(entity)
+            || self
+                .controller_script
+                .as_ref()
+                .is_some_and(|script| script.entity() == entity)
+    }
+
+    /// A game message at `tick` ([`crate::messages`]) to the player's body
+    /// or controller, whichever it names, or to both but its sender
+    /// ([`EVERY_ENTITY`]). `players`: the room's controllers and teams, as
+    /// the controller graph's filters know them.
+    pub fn receive_message(&mut self, tick: u32, players: &[(u32, i64)], message: &GameMessage) {
+        let controller = self
+            .controller_script
+            .as_ref()
+            .map(ControllerScript::entity);
+        if message.target == EVERY_ENTITY {
+            if let Some(body) = self.current_body().filter(|&body| body != message.sender) {
+                self.receive_body_message(&GameMessage {
+                    target: body,
+                    ..message.clone()
+                });
+            }
+            if controller.is_some_and(|controller| controller != message.sender) {
+                self.receive_controller_message(tick, players, message);
+            }
+        } else if !self.receive_body_message(message) && controller == Some(message.target) {
+            self.receive_controller_message(tick, players, message);
+        }
+    }
+
+    /// A persistent sender let its message to the player's body or
+    /// controller go.
+    pub fn end_message(&mut self, end: &MessageEnd) {
+        if self.end_body_message(end) {
+            return;
+        }
+        let owner = self.owner;
+        let Some(script) = self
+            .controller_script
+            .as_mut()
+            .filter(|script| script.entity() == end.target)
+        else {
+            return;
+        };
+        if let Err(error) = script.end_message(end.sender, end.message) {
+            eprintln!("controller script of {owner:08X} stopped ({error})");
+            self.controller_script = None;
+        }
     }
 
     /// A message to the current body (match.py `deliver_body_messages`):
     /// its entries run now; a failure stops the body's script. False when
     /// the message is not for this body.
-    pub fn receive_body_message(&mut self, message: &GameMessage) -> bool {
+    fn receive_body_message(&mut self, message: &GameMessage) -> bool {
         if !self.takes_body_message(message.target) {
             return false;
         }
@@ -4049,7 +4069,7 @@ impl WorldDelivery {
     /// (`orpheus_script` `World::end_message`): its receiving states that
     /// held it go back to idle now; a failure stops the body's script.
     /// False when the end is not for this body.
-    pub fn end_body_message(&mut self, end: &MessageEnd) -> bool {
+    fn end_body_message(&mut self, end: &MessageEnd) -> bool {
         if !self.takes_body_message(end.target) {
             return false;
         }

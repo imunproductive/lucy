@@ -598,16 +598,12 @@ impl ControllerScript {
         self.world.players = players;
     }
 
-    /// A message another player's controller sent every entity at
-    /// `frame` (`STU_1D719351`: `0C90` st5 `068E`, st70 `08BE`, st21
-    /// `070B`), from its sender: `0C90` st4/st8 keep a teammate's pick
-    /// (`08BE`) for the hero limit, st22 his role (`070B`) for the role
-    /// limit. Returns how many entries took it.
-    pub fn broadcast_from(
-        &mut self,
-        frame: u32,
-        message: &GameMessage,
-    ) -> Result<usize, InitFault> {
+    /// A message another entity sent the controller or every entity, at
+    /// `frame`, from its sender. Another player's controller's `0C90` st5
+    /// `068E`, st70 `08BE` and st21 `070B` (`STU_1D719351`): `0C90` st4/st8
+    /// keep a teammate's pick (`08BE`) for the hero limit, st22 his role
+    /// (`070B`) for the role limit. Returns how many entries took it.
+    pub fn receive_from(&mut self, frame: u32, message: &GameMessage) -> Result<usize, InitFault> {
         self.advance(frame)?;
         self.component.receive_message(
             message.sender,
@@ -615,6 +611,12 @@ impl ControllerScript {
             message.parameters.clone(),
             &mut self.world,
         )
+    }
+
+    /// A persistent sender (`sender`) let its message to the controller go
+    /// ([`Component::end_message`]).
+    pub fn end_message(&mut self, sender: u32, message: u64) -> Result<(), InitFault> {
+        self.component.end_message(sender, message, &mut self.world)
     }
 }
 

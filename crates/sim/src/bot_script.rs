@@ -36,12 +36,13 @@ use orpheus_script::{
     bot::{BotBody, BotError, BotSpawn as ScriptSpawn, RANGE_BOT, practice_nameplate},
     codecs::CodecTable,
     graph::GraphStore,
+    mode::EVERY_ENTITY,
     snapshot::{ProjectedSnapshot, SnapshotEncoder, SnapshotError, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk},
     timeline::FRAME_MS,
     vm::{
-        AiMoveRequest, AuraChange, BodyEffects, HealthChange, ShotEvent, Snapshot, TargetCandidate,
-        Unknowns,
+        AiMoveRequest, AuraChange, BodyEffects, GameMessage, HealthChange, MessageEnd, ShotEvent,
+        Snapshot, TargetCandidate, Unknowns,
     },
     weapons::{HitDefinition, ProjectileBallistics, authored_number, ray_profile},
     wire::Value,
@@ -676,6 +677,81 @@ impl BotScripts {
             });
         if let Err(reason) = result {
             eprintln!("bot {entity:08X}'s body script failed on its damage ({reason})");
+            self.slots[slot] = None;
+        }
+    }
+
+    /// Whether a script runs the graphs of bot `entity` now.
+    pub(crate) fn runs(&self, entity: u32) -> bool {
+        self.slot(entity).is_some()
+    }
+
+    /// A game message at world tick `tick` ([`crate::messages`]) to the
+    /// bot it names, or to every live bot but its sender
+    /// ([`EVERY_ENTITY`]): each body's entries run now and a changed frame
+    /// goes to the clients as a live frame. A dead bot takes none (as its
+    /// damage).
+    pub(crate) fn receive_message(&mut self, message: &GameMessage, tick: u32) {
+        let everywhere = message.target == EVERY_ENTITY;
+        for slot in 0..self.slots.len() {
+            let Some(script) = self.slots[slot].as_mut() else {
+                continue;
+            };
+            let named = if everywhere {
+                script.entity != message.sender
+            } else {
+                script.entity == message.target
+            };
+            if !named {
+                continue;
+            }
+            let entity = script.entity;
+            let result = script
+                .body
+                .receive_message(
+                    tick,
+                    message.sender,
+                    message.message,
+                    message.parameters.clone(),
+                )
+                .map_err(|error| error.to_string())
+                .and_then(|took| {
+                    if took {
+                        self.publish_live(slot)
+                    } else {
+                        Ok(())
+                    }
+                });
+            if let Err(reason) = result {
+                eprintln!("bot {entity:08X}'s body script failed on a game message ({reason})");
+                self.slots[slot] = None;
+            }
+        }
+    }
+
+    /// A persistent sender let its message to the live bot `end.target`
+    /// go.
+    pub(crate) fn end_message(&mut self, end: &MessageEnd) {
+        let Some(slot) = self.slot(end.target) else {
+            return;
+        };
+        if self.slots[slot]
+            .as_ref()
+            .is_some_and(|script| script.death.is_some())
+        {
+            return;
+        }
+        let script = self.slots[slot].as_mut().expect("a running bot script");
+        let result = script
+            .body
+            .end_message(end.sender, end.message)
+            .map_err(|error| error.to_string())
+            .and_then(|()| self.publish_live(slot));
+        if let Err(reason) = result {
+            eprintln!(
+                "bot {:08X}'s body script failed on a message end ({reason})",
+                end.target
+            );
             self.slots[slot] = None;
         }
     }

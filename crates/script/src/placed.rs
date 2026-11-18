@@ -329,6 +329,18 @@ impl World for EntityWorld<'_, '_> {
         true
     }
 
+    /// A message to every entity (`STU_1D719351`): queued with the target
+    /// [`crate::mode::EVERY_ENTITY`], as the mode graph's.
+    fn broadcast_message(&mut self, _source: Site, message: u64, parameters: &Variables) -> bool {
+        self.shared.outbox.push(GameMessage {
+            sender: self.entity,
+            target: crate::mode::EVERY_ENTITY,
+            message,
+            parameters: parameters.clone(),
+        });
+        true
+    }
+
     /// A spawned entity's owner is its hero's controller; the others,
     /// what the listed bodies tell.
     fn related_entity(
@@ -581,6 +593,19 @@ impl MapEntityWorld {
             },
         );
         taken
+    }
+
+    /// A game message `sender` sent every entity: the entries of every
+    /// running script but the sender's run now (the sender's own took it
+    /// when it was sent).
+    pub fn receive_everywhere(&mut self, sender: u32, message: u64, parameters: &Variables) {
+        self.run_scripts(
+            |entity| entity != sender,
+            |component, world| {
+                component.receive_message(sender, message, parameters.clone(), world)?;
+                Ok(())
+            },
+        );
     }
 
     /// A persistent sender (`sender`) let its message go for the placed

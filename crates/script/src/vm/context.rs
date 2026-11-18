@@ -315,6 +315,7 @@ impl<W: World> Context for InstanceContext<'_, W> {
                 node: Some(pos),
             },
             reads: Vec::new(),
+            foreign_reads: Vec::new(),
             parameters: None,
             candidate: None,
             watcher: None,
@@ -325,6 +326,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
         for key in context.reads {
             if !self.reads.contains(&key) {
                 self.reads.push(key);
+            }
+        }
+        for key in context.foreign_reads {
+            if !self.foreign_reads.contains(&key) {
+                self.foreign_reads.push(key);
             }
         }
         self.read_native |= context.read_native;

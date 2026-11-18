@@ -74,14 +74,14 @@ use orpheus_sim::{
     bot_script::{BotShotKind, SeenRocket},
     combat::{
         BotHit, BotReplacement, Combat, CombatPlayer, PosedShot, Shooter, ShotContext,
-        apply_player_hits, deliver_body_messages, deliver_projectiles, finish_bot_rockets,
-        show_bot_rockets, show_fired,
+        apply_player_hits, deliver_projectiles, finish_bot_rockets, show_bot_rockets, show_fired,
     },
     controller::ControllerFrame,
     egress::GameEgress,
     hurt_feedback::HurtFeedback,
     instance::{Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
     match_flow::{FlowEvent, MatchFlow, Mode, Phase, Standing, Timers},
+    messages::{Players, Recipients, deliver},
     mode_script::ModeRunner,
     objectives::Participant,
     projectiles::FiredProjectile,
@@ -772,6 +772,9 @@ struct Room {
     flow: Option<MatchFlow>,
     /// The game mode entity's frames: its graph's or the flow's.
     mode: Option<ModeRunner>,
+    /// What the mode graph and the match flow sent this tick, for
+    /// `route_messages`.
+    mail: Vec<GameMessage>,
     /// When the flow last advanced.
     flow_at: Duration,
     /// The tick the flow started: the first player came into the world,
@@ -800,6 +803,7 @@ impl Room {
             world,
             flow: None,
             mode: None,
+            mail: Vec::new(),
             flow_at: Duration::ZERO,
             flow_tick: 0,
             mode_frame: None,
@@ -2269,7 +2273,7 @@ impl State {
         }
         for (id, shooter, hits) in struck {
             self.deliver_bot_hits(id, shooter, hits);
-            self.resolve_player_hits(id, tick, now, false);
+            self.resolve_player_hits(id, tick, now);
         }
         self.peers.values().any(|peer| peer.world.has_input_work())
     }
@@ -2411,9 +2415,7 @@ impl State {
     }
 
     /// The hits on players' bodies of a room (combat.py `_damage`, `_died`).
-    /// On a tick (`on_tick`) also the messages between bodies (match.py
-    /// `deliver_body_messages`).
-    fn resolve_player_hits(&mut self, id: MatchId, tick: u32, now: Duration, on_tick: bool) {
+    fn resolve_player_hits(&mut self, id: MatchId, tick: u32, now: Duration) {
         let Some(Room {
             players,
             world,
@@ -2443,15 +2445,7 @@ impl State {
                     stats: &mut player.stats,
                 })
                 .collect();
-            let notices = apply_player_hits(scene, hits, &mut room, tick, now);
-            if on_tick {
-                let mut worlds: Vec<_> = room
-                    .iter_mut()
-                    .filter_map(|player| player.world.as_deref_mut())
-                    .collect();
-                deliver_body_messages(&mut worlds);
-            }
-            notices
+            apply_player_hits(scene, hits, &mut room, tick, now)
         };
         // The kills count for the match flow's score (Deathmatch, Team
         // Deathmatch): the victim's death notice names the killer's body.
@@ -2738,7 +2732,7 @@ impl State {
                 }
             }
             self.deliver_projectiles(id, tick);
-            self.resolve_player_hits(id, tick, now, true);
+            self.resolve_player_hits(id, tick, now);
             let connections: Vec<u32> = self
                 .peers
                 .keys()
@@ -2957,14 +2951,7 @@ impl State {
                 }
             }
             let overtime = flow.in_overtime();
-            for message in messages {
-                for (connection, _) in &connections {
-                    let peer = self.peers.get_mut(connection).expect("room peer");
-                    if peer.world.receive_body_message(&message) {
-                        break;
-                    }
-                }
-            }
+            room.mail.extend(messages);
             if let Some(select) = respawn {
                 let world = room.world.as_ref().expect("room with a world");
                 for &(connection, slot) in &connections {
@@ -2992,6 +2979,47 @@ impl State {
             if !self.links.cancel_handoff(connection) && self.peers.contains_key(&connection) {
                 self.send_home(connection, now);
             }
+        }
+    }
+
+    /// The game messages every room's entities sent since the last tick
+    /// (`orpheus_sim::messages`): from the players' and AI heroes' bodies
+    /// and controllers, the mode graph and the match flow in its place
+    /// (`Room::mail`), the placed scripts and the Biotic Fields, to the
+    /// entity each names or to every entity that runs graphs, the Training
+    /// Bots too. After the players' steps, so a pick's hero limit
+    /// broadcasts reach the other controllers in its tick.
+    fn route_messages(&mut self, tick: u32) {
+        for (&id, room) in &mut self.rooms {
+            let Some(world) = &mut room.world else {
+                continue;
+            };
+            let mut peers = room_peers(&mut self.peers, &self.seats, id, room.players.len());
+            let mut worlds: Vec<&mut WorldDelivery> = peers
+                .iter_mut()
+                .flatten()
+                .map(|peer| &mut peer.world)
+                .collect();
+            let mut players = Players::new(&mut worlds, tick);
+            let mut messages = players.take_messages();
+            messages.append(&mut room.mail);
+            let (placed, mut ends) = world.scene.take_placed_messages();
+            messages.extend(placed);
+            let mut fields = world.combat.as_mut().map(Combat::fields_mut);
+            if let Some(fields) = &mut fields {
+                let (sent, ended) = fields.take_messages();
+                messages.extend(sent);
+                ends.extend(ended);
+            }
+            let (mut bots, placed) = world.scene.message_recipients(tick);
+            let mut recipients: Vec<&mut dyn Recipients> = vec![&mut players, &mut bots, placed];
+            if let Some(fields) = fields {
+                recipients.push(fields);
+            }
+            if let Some(mode) = &mut room.mode {
+                recipients.push(mode);
+            }
+            deliver(messages, ends, &mut recipients);
         }
     }
 
@@ -3079,30 +3107,13 @@ impl State {
                     // lines they call for.
                     world.scene.advance_live_bots(tick);
                     // The server placeables' scripts (placed_script.rs),
-                    // with the spawn rooms the match flow's spawns hold,
-                    // and their messages to the players' bodies (the
-                    // spawn rooms' `0723`).
+                    // with the spawn rooms the match flow's spawns hold; their
+                    // messages (the spawn rooms' `0723`) go with the others
+                    // (`route_messages`).
                     let flow = room.flow.as_ref();
                     world.scene.advance_placed(tick, |team| {
                         flow.map_or(SpawnChoice::First, |flow| flow.spawn_choice(team))
                     });
-                    let (messages, ends) = world.scene.take_placed_messages();
-                    let mut peers =
-                        room_peers(&mut self.peers, &self.seats, id, room.players.len());
-                    for message in &messages {
-                        for peer in peers.iter_mut().flatten() {
-                            if peer.world.receive_body_message(message) {
-                                break;
-                            }
-                        }
-                    }
-                    for end in &ends {
-                        for peer in peers.iter_mut().flatten() {
-                            if peer.world.end_body_message(end) {
-                                break;
-                            }
-                        }
-                    }
                     bot_voices.insert(id, world.scene.take_bot_voices());
                     if let Some(combat) = &mut world.combat {
                         if let Ok(replacements) = combat.respawn_due(&mut world.scene, tick, now) {
@@ -3189,6 +3200,7 @@ impl State {
         }
         if !drain {
             self.say_player_lines(tick);
+            self.route_messages(tick);
             self.show_players(tick, now);
         }
         for (&connection, peer) in &mut self.peers {

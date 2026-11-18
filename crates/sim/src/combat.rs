@@ -53,9 +53,8 @@ use orpheus_physics::static_ray::Vec3;
 use orpheus_script::{
     ai_definitions::AiControl,
     bot::{DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE, DAMAGE_TAGS, DAMAGED, DIED},
-    mode::EVERY_ENTITY,
     vitals::{Death, Vitals},
-    vm::{AuraChange, GameMessage, HealthChange, ShotEvent, TargetCandidate},
+    vm::{AuraChange, HealthChange, ShotEvent, TargetCandidate},
     weapons::{AllyHits, DamageTags, HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
 };
@@ -73,9 +72,6 @@ pub const RESPAWN: Duration = Duration::from_secs(10);
 /// Between respawn attempts while every body id of the player is still
 /// reserved (combat.py `RESPAWN_RETRY`).
 pub const RESPAWN_RETRY: Duration = Duration::from_millis(250);
-/// The match's deferred messages between bodies per tick (match.py
-/// `MAX_BODY_MESSAGES`).
-pub const MAX_BODY_MESSAGES: usize = 256;
 /// The movement-state flag of a dead body: the 3P animation's dead pose
 /// (combat.py `DEAD`).
 pub const DEAD: u32 = 0x2000;
@@ -858,6 +854,12 @@ impl Combat {
         self.fields.take_auras()
     }
 
+    /// The room's Biotic Fields, which send and take game messages
+    /// ([`crate::messages`]).
+    pub fn fields_mut(&mut self) -> &mut SpawnedFields {
+        &mut self.fields
+    }
+
     pub fn step_projectile(
         &mut self,
         scene: &mut PreparedScene,
@@ -1403,50 +1405,6 @@ fn credit_healing(
                 tags,
                 true,
             );
-        }
-    }
-}
-
-/// match.py `queue_body_message` and `deliver_body_messages`: the messages
-/// the players' bodies sent go to the bodies they name in the room, at most
-/// MAX_BODY_MESSAGES a tick; a message to a body nobody plays takes no place
-/// in the queue. A message to every entity ([`EVERY_ENTITY`]: `0686`'s
-/// `0307` after Need Healing) goes to every other player's body; the
-/// sender's own instances took it when it was sent. A message a body sends
-/// while it takes one goes in the next batch.
-pub fn deliver_body_messages(worlds: &mut [&mut WorldDelivery]) {
-    let mut messages: Vec<_> = worlds
-        .iter_mut()
-        .flat_map(|world| world.take_body_messages())
-        .collect();
-    messages.retain(|message| {
-        message.target == EVERY_ENTITY
-            || worlds
-                .iter()
-                .any(|world| world.takes_body_message(message.target))
-    });
-    if messages.len() > MAX_BODY_MESSAGES {
-        eprintln!(
-            "match body message queue reached {MAX_BODY_MESSAGES}; {} dropped",
-            messages.len() - MAX_BODY_MESSAGES
-        );
-    }
-    for message in messages.into_iter().take(MAX_BODY_MESSAGES) {
-        if message.target == EVERY_ENTITY {
-            for world in worlds.iter_mut() {
-                if let Some(body) = world.current_body().filter(|&body| body != message.sender) {
-                    world.receive_body_message(&GameMessage {
-                        target: body,
-                        ..message.clone()
-                    });
-                }
-            }
-            continue;
-        }
-        for world in worlds.iter_mut() {
-            if world.receive_body_message(&message) {
-                break;
-            }
         }
     }
 }

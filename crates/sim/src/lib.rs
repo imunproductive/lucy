@@ -19,6 +19,7 @@ pub mod hurt_feedback;
 pub mod instance;
 pub mod map_areas;
 pub mod match_flow;
+pub mod messages;
 pub mod mode_graph_values;
 pub mod mode_rules_data;
 pub mod mode_script;

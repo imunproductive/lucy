@@ -830,6 +830,20 @@ impl BotBody {
     /// up to the frame before `frame`; a firing body still runs that frame
     /// for its weapons. False: it is dead or no entry took the message.
     pub fn take_damage(&mut self, frame: u32, parameters: Variables) -> Result<bool, BotError> {
+        self.receive_message(frame, 0, DAMAGED, parameters)
+    }
+
+    /// A game message from `sender` at world frame `frame` (to the body or
+    /// to every entity): its entries run now, after the script caught up
+    /// to the frame before (as [`Self::take_damage`]). False: the body is
+    /// dead or no entry took it.
+    pub fn receive_message(
+        &mut self,
+        frame: u32,
+        sender: u32,
+        message: u64,
+        parameters: Variables,
+    ) -> Result<bool, BotError> {
         if self.component.owner_dead() {
             return Ok(false);
         }
@@ -840,8 +854,16 @@ impl BotBody {
         }
         Ok(self
             .component
-            .receive_message(0, DAMAGED, parameters, &mut self.world)?
+            .receive_message(sender, message, parameters, &mut self.world)?
             != 0)
+    }
+
+    /// A persistent sender (`sender`) let its message to the body go
+    /// ([`Component::end_message`]).
+    pub fn end_message(&mut self, sender: u32, message: u64) -> Result<(), BotError> {
+        Ok(self
+            .component
+            .end_message(sender, message, &mut self.world)?)
     }
 
     /// Apply an aura change to the live body at `frame`
