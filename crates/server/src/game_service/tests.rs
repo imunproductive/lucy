@@ -956,7 +956,16 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         };
         assert_eq!((script.first, script.span), (0, 1));
         if record.entity == GAME_MODE_ENTITY {
-            assert_eq!(script.data, [0x08, 0x5b, 0x06, 0x00, 0x0c]);
+            // The Range's board frame (`scene::BOARD_POSTERS`, port 1b):
+            // `13C0` with its `06DF.025` poster on and `0CB6` under it,
+            // bit for bit the frame upstream kjs saw open the Tab board
+            // (`254fa913`). Python sent `0CB6` alone (`085b06000c`).
+            assert_eq!(
+                script.data,
+                [
+                    0x08, 0xe0, 0x09, 0x10, 0xb6, 0x0c, 0x14, 0xa0, 0x02, 0x00, 0x30, 0x00
+                ]
+            );
             *mode = true;
         } else {
             assert_eq!(record.entity, CONTROLLER);
