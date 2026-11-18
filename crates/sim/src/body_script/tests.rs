@@ -1623,10 +1623,10 @@ fn the_wheel_refuses_a_fourth_choice_until_a_count_expires() {
 /// dies, counts the respawn down in #384 (ChaseVar st1) with the HUD stacks
 /// #6034 (st32) and #6036 (st33), all in the owner frames; the observers get
 /// the countdown's remote state. On death it tells the mode its time (`08BB`,
-/// st41) and, when the count ends, that it can respawn (`0685`). Soldier's
-/// own death path has a gap a debug build refuses (`01C7` node 68, the aim
-/// speed `STU_3716E1D4`), so the body tolerates unknown content, as release
-/// builds do.
+/// st41) and, when the count ends, that it can respawn (`0685`). The body
+/// refuses unknown content, as debug builds do: the hero's death path
+/// (`004B` st14 → the death layer `01CB`, whose kill cam test reads the
+/// server-only `STU_68F68CD7`) runs to the end.
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
@@ -1671,7 +1671,7 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
                 crouched: 1.085,
             },
         },
-        Unknowns::Tolerate,
+        Unknowns::Refuse,
         None,
         ModeBody {
             scripts: BTreeMap::from([(0, MODE_BODY)]),
@@ -1704,7 +1704,24 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
     assert!(alive.state(id, 2).is_some() && alive.state(id, 0).is_some());
     assert!(alive.state(id, 1).is_none());
 
+    // The killer is an enemy body the match lists (as the Training Bots
+    // are): the death layer asks whether he still exists (`01CB` rid43,
+    // `STU_E72F6348(#40)`).
     let killer = 0xa000_0201;
+    runtime.set_target_candidates(&[TargetCandidate {
+        entity: killer,
+        team: Some(1),
+        dead: false,
+        controller: None,
+        ai: true,
+        ai_control: None,
+        feet: [0.0, 0.0, 6.0],
+        height: 1.8,
+        radius: 0.4,
+        yaw: 0.0,
+        tags: Some(Arc::new(BTreeSet::new())),
+        spawned: Vec::new(),
+    }]);
     let total = runtime.vitals().unwrap().total();
     runtime.vitals_mut().unwrap().damage(
         total,
@@ -1743,6 +1760,20 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
     }
     // The countdown is remote state 0: the others see it too.
     assert!(projected(&runtime, View::Observer).state(id, 1).is_some());
+    // The death layer passed its kill cam test (rid64:
+    // `!valueOr(mode.id(9541), true) || STU_68F68CD7(owner) || #11485`):
+    // no graph writes the mode's #9541, `STU_68F68CD7` has no value (as on
+    // the client) and #11485 is unset, so it takes the kill cam switch
+    // (st21), not the plain 3 s wait (st33).
+    let layer = runtime
+        .snapshot()
+        .unwrap()
+        .instances
+        .values()
+        .find(|instance| instance.graph == 0x01cb)
+        .expect("the death layer");
+    let active = |raw: u16| layer.states.get(&raw).is_some_and(|state| state.active);
+    assert!(active(21) && !active(33));
 
     // The count runs at 1 a second from the death's frame: 3000 ms is past
     // after 188 frames of 16 ms (187 make 2992 ms), when it sends `0685`
@@ -1775,6 +1806,19 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
     let done = projected(&runtime, View::Owner);
     assert!(done.state(id, 1).is_none() && done.state(id, 32).is_none());
     assert_eq!(done.instance_variable(id, 384), Some(&Value::Float(0.0)));
+    // The death layer ran its kill cam test and kept the body's script.
+    let snapshot = runtime.snapshot().unwrap();
+    assert!(
+        snapshot.diagnostics.is_empty(),
+        "{:?}",
+        snapshot.diagnostics
+    );
+    assert!(
+        snapshot
+            .instances
+            .values()
+            .any(|instance| instance.graph == 0x01cb)
+    );
 }
 
 /// A hero body as the match starts it, with the game identifier the

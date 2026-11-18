@@ -486,6 +486,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let site = self.site(id, node);
         let mut context = InstanceContext {
             machine: self.machine,
+            graphs: self.graphs,
             world: self.world,
             site,
             reads: Vec::new(),
