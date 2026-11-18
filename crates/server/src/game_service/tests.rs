@@ -1287,14 +1287,34 @@ fn exercise_hero_selection(
         (OWNER, Some(2), None),
         (OWNER, None, Some(2)),
     ];
-    assert_eq!(describe(&records), expected);
+    // The pick's frame names the new hero with the screen still open;
+    // `288B` closes it once the body lives (st95), a tick later: that
+    // frame may share the datagram, after the possession.
+    let pick_batch = |records: &[WorldRecord]| {
+        let described = describe(records);
+        assert_eq!(described[..3], expected);
+        match described[3..] {
+            [] => {}
+            [(OWNER, None, Some(3))] => {
+                let close = records
+                    .iter()
+                    .filter_map(|record| record.script.as_ref())
+                    .find(|script| script.span == 3)
+                    .unwrap();
+                assert_eq!(
+                    controller_shows(close),
+                    Some((false, Some(SOLDIER), Some(SOLDIER)))
+                );
+            }
+            ref rest => panic!("{rest:?}"),
+        }
+    };
+    pick_batch(&records);
     assert!(
         records
             .iter()
             .any(|record| record.entity == FIRST && record.movement)
     );
-    // The pick's frame names the new hero; `288B` closes the screen once
-    // the body lives (st95), a frame later.
     let first_cmfd = verify_controller(&records, true, Some(SOLDIER), SOLDIER);
 
     // A later datagram ACK identifies the first body batch as lost.
@@ -1303,7 +1323,7 @@ fn exercise_hero_selection(
     assert!(describe(&world_records(schemas, &following)).is_empty());
     client.send(ACK, Vec::new());
     let (retry, records) = next_body_frame(client, FIRST);
-    assert_eq!(describe(&records), expected);
+    pick_batch(&records);
     assert_eq!(
         verify_controller(&records, true, Some(SOLDIER), SOLDIER),
         first_cmfd
@@ -1412,7 +1432,7 @@ fn exercise_hero_selection(
         .map(|(entity, operation, script)| (entity, operation, script.is_some()))
         .collect();
     assert_eq!(
-        described,
+        described[..5],
         [
             (SECOND, Some(1), false),
             (OWNER, Some(2), false),
@@ -1420,6 +1440,12 @@ fn exercise_hero_selection(
             (OWNER, None, true),
             (OWNER, Some(2), false)
         ],
+    );
+    // `288B`'s close (st95) may follow in the same datagram.
+    assert!(
+        described[5..]
+            .iter()
+            .all(|&entry| entry == (OWNER, None, true))
     );
     assert!(verify_controller(&records, true, Some(tracer), tracer) > reopen_cmfd);
     assert!(client.window.accept(swap.seq));

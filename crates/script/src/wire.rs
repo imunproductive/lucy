@@ -589,9 +589,13 @@ fn full_frame(
 #[derive(Clone, Debug, PartialEq)]
 pub struct FullHead {
     pub command_frame: Option<u32>,
-    pub instances: Vec<(u16, u16, Option<(u32, u32)>)>,
+    pub instances: Vec<ListedInstance>,
     pub variables: Variables,
 }
+
+/// An instance a full frame lists: id, graph and parent (instance, raw
+/// state).
+pub type ListedInstance = (u16, u16, Option<(u32, u32)>);
 
 pub fn read_full_head(bytes: &[u8]) -> Result<FullHead, WireError> {
     let mut bits = BitReader::new(bytes);
