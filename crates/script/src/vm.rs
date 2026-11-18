@@ -24,6 +24,7 @@ mod nodes;
 mod play;
 mod rays;
 mod state_kinds;
+mod stats;
 mod statuses;
 mod switches;
 mod targets;
@@ -757,6 +758,13 @@ pub trait World {
         false
     }
 
+    /// A TrackStat action ran or a TrackStatTime state ended
+    /// ([`TrackedStat`]): the match adds the amount to the stats of each
+    /// target's player. False: this world keeps no stats.
+    fn track_stat(&mut self, _site: Site, _stat: TrackedStat) -> bool {
+        false
+    }
+
     /// A ModifyHealth state damaged or healed a body (`vm/health.rs`): the
     /// match applies it through its own health code. False: this world
     /// applies none, and the state has no effect.
@@ -820,6 +828,24 @@ pub struct VoiceRequest {
     pub delay: f64,
     /// `m_297E0B63`, read as for a criteria ([`RaisedCriteria::audience`]).
     pub audience: Option<Vec<u32>>,
+}
+
+/// An amount a graph added to stats ([`World::track_stat`]): TrackStat
+/// (`STU_CEBDAF17`) as it runs, TrackStatTime (`STU_441B50E4`) as it
+/// ends. Both are server-only (no client code; the client's action is the
+/// base action's run): the retail server's stat table took them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrackedStat {
+    /// `m_stat` then `m_stats` (`062` stats), each in order. The stats in
+    /// `m_D32CB484` (12 TrackStat nodes; every one a "Best in Game"
+    /// accuracy, the ratio of two counted stats) are not among them: the
+    /// server derives those from the stats counted; nothing adds to them.
+    pub stats: Vec<u64>,
+    /// `m_amount`; for TrackStatTime the seconds the state ran.
+    pub amount: f64,
+    /// `m_targets`, each once: whose stats (the owner itself unevaluated;
+    /// a body, a controller or a player entity).
+    pub targets: Vec<u32>,
 }
 
 /// A game message one body sends another, for the world to route
@@ -982,6 +1008,9 @@ pub enum StateKind {
     /// Recall's rewind (`STU_41B3FC2B`): finishes after its duration; its
     /// begin and end are [`Motion`]s for the mover.
     Rewind,
+    /// TrackStatTime (`STU_441B50E4`, server-only): the seconds it ran go
+    /// to its stats when it ends ([`World::track_stat`]).
+    StatTime,
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -64,7 +64,7 @@ use orpheus_content::{
 use orpheus_core::tick::FIRST_TICK;
 use orpheus_lobby::handoff::Handoff;
 use orpheus_script::{
-    vm::{AuraChange, GameMessage},
+    vm::{AuraChange, GameMessage, TrackedStat},
     wire::chunk,
 };
 use orpheus_sim::{
@@ -1107,6 +1107,27 @@ fn room_peers<'p>(
         }
     }
     room
+}
+
+/// The stats a player's graphs counted (TrackStat, TrackStatTime;
+/// `orpheus_script::vm` `stats`) go to the stat table of each target's
+/// player: the target is a player's controller or one of his bodies (the
+/// body ids share the controller's high bits). A target outside the room's
+/// players (a Training Bot, an entity of the map) keeps no stats.
+fn credit_tracked_stats(players: &mut [Player], tracked: Vec<TrackedStat>) {
+    for stat in tracked {
+        for target in stat.targets {
+            let Some(player) = players
+                .iter_mut()
+                .find(|player| player.entity == target & !0xff)
+            else {
+                continue;
+            };
+            for &counted in &stat.stats {
+                player.stats.add(counted, stat.amount);
+            }
+        }
+    }
 }
 
 /// match.py `_board`: the player's board numbers, with their medals among
@@ -3083,6 +3104,18 @@ impl State {
             self.update_flows(tick, now);
             // The AI heroes' input for this tick (ai.rs).
             self.drive_ai(tick, now);
+        }
+        // What every player's graphs counted (the AI heroes' too) goes to
+        // the stat tables before the boards go out.
+        for (connection, peer) in &mut self.peers {
+            let tracked = peer.world.take_tracked_stats();
+            if let Some(room) = self
+                .seats
+                .get(connection)
+                .and_then(|(id, _)| self.rooms.get_mut(id))
+            {
+                credit_tracked_stats(&mut room.players, tracked);
+            }
         }
         let timers = self.timers;
         for (&connection, peer) in &mut self.peers {

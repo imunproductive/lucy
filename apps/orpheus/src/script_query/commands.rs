@@ -985,7 +985,6 @@ fn vm_text(cls: &str, is_state: bool) -> String {
         "STU_1113EBD5" => action("joins m_B24D1794 distinct inputs, then aborts m_122DF0CA"),
         "STUStatescriptActionEffect"
         | "STUStatescriptActionCriteria"
-        | "STU_CEBDAF17"
         | "STU_100EF8C2"
         | "STUStatescriptActionSendClientGlobalGameMessage"
         | "STUStatescriptActionPlayScript"
@@ -994,6 +993,8 @@ fn vm_text(cls: &str, is_state: bool) -> String {
         | "STU_6E5C5F66" => action("no-op on the server"),
         "STU_1C2CC6D5" => action("ClearArray: writes a fresh empty array to m_26E3B366"),
         "STU_4C3509FB" | "STU_CBE8BDAA" => action("inserts m_value into the m_26E3B366 array"),
+        "STU_DA54F8F7" => action("removes m_index or m_value from the m_26E3B366 array"),
+        "STU_CEBDAF17" => action("TrackStat: m_amount to its stats for m_targets (vm/stats.rs)"),
         "STU_E9694EFD" => action("assumed no-op"),
         "STUStatescriptState"
         | "STU_9D7BF987"
@@ -1049,6 +1050,7 @@ fn vm_text(cls: &str, is_state: bool) -> String {
         | "STU_B5C87F3D"
         | "STU_54FEB21C" => state("Plain, assumed to have no effect"),
         "STU_77E13026" => state("HitList, recording no hits"),
+        "STU_441B50E4" => state("StatTime: its seconds to its stats when it ends"),
         "STUStatescriptStateWeaponVolley" => state("WeaponVolley"),
         _ if is_state => "a plain State (no model of its own)".into(),
         _ => "no model: it only follows m_outPlug".into(),

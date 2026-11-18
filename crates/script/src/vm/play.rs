@@ -5,9 +5,10 @@
 //! `play_queue.Queue` and `Instance.start_entries` (906E49..9070D0,
 //! 64D2C0/64CD10, 1B95950), `BodyWorld.play_script` and
 //! `BodyWorld.replicate_wheel_event` in `driver.py`. Only the wheel's own
-//! self-targeted PlayScript nodes ([`wheel::PLAY_SCRIPTS`]) and the aura
-//! graphs' (`vm/auras.rs`) run; every other PlayScript stays a no-op, as in
-//! the Python reference.
+//! self-targeted PlayScript nodes ([`wheel::PLAY_SCRIPTS`]), the aura
+//! graphs' (`vm/auras.rs`) and the hero body's attacker list
+//! ([`ATTACKER_LIST`]) run; every other PlayScript stays a no-op, as in the
+//! Python reference.
 //!
 //! A request needs a target that is the body itself. Its parameters are
 //! always arrays (1BA7C60). Policy (`m_AA4DE426`) 0 keeps a running instance
@@ -16,6 +17,22 @@
 //! the parameters named in its rows and the caller in `m_B60ABDA4`, and runs.
 
 use super::*;
+
+/// The hero body's `01CF` rid175 (node 201, server-only): on the damage
+/// message `0011.025` it plays `1901` on the body for an attacker not yet
+/// listed, with the attacker's owner (`STU_F76C486C`, #9737) as `06C5`.
+/// `1901` (7 nodes, all server-only) adds him to the body's #17557e, and
+/// takes him off 5 s after his last hit (each `0011.025` from him restarts
+/// the wait). No graph reads the list but `01CF` itself (a listed attacker
+/// plays no second `1901`) and the client's nameplate `0D24` st55: the
+/// retail server's credit for assists was its own.
+pub const ATTACKER_LIST: ((u32, u16), u32) = ((0x01cf, 201), 0x1901);
+
+/// The graph a server PlayScript node (not the wheel's) plays, if it is one.
+pub(super) fn server_played_graph(graph: u32, node: u16) -> Option<u32> {
+    let (site, played) = ATTACKER_LIST;
+    (site == (graph, node)).then_some(played)
+}
 
 impl<W: World> Vm<'_, '_, '_, W> {
     pub(super) fn play_script(

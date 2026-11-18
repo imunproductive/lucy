@@ -33,7 +33,6 @@ use super::*;
 /// (`no_op` in `ow174/game/script/nodes.py`) and one from upstream's research.
 const SERVER_NO_OPS: &[&str] = &[
     "STUStatescriptActionEffect",
-    "STU_CEBDAF17", // TrackStat
     "STU_100EF8C2", // SendClientOnlyGameMessage
     "STUStatescriptActionSendClientGlobalGameMessage",
     "STUStatescriptActionPlayScript",
@@ -109,11 +108,6 @@ const ASSUMED_INERT_STATES: &[&str] = &[
     "STUStatescriptStatePhysicsExplosion",
     "STU_B5C87F3D",
     "STU_54FEB21C",
-    // TrackStatTime (`0B8B` node 66, reached once `01C7` sets #1928e from
-    // `002D.025`): a time stat while it runs; the server keeps its stats in
-    // Rust and runs no TrackStat (`refs/reports/RustInsteadOfGraphs.md`,
-    // "Stats"), so it has no effect here.
-    "STU_441B50E4",
 ];
 
 /// The player controller's native states (`0C90`): their client codec has
@@ -248,7 +242,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             "STUStatescriptActionPlayScript" => {
                 let graph = self.graph(id).index;
-                if let Some(played) = wheel::played_graph(graph, node.pos) {
+                if let Some(played) = wheel::played_graph(graph, node.pos)
+                    .or_else(|| play::server_played_graph(graph, node.pos))
+                {
                     self.play_script(id, node, played)?;
                 } else if self.graphs.is_aura_graph(graph) {
                     // An aura's graph plays its effect on the body
@@ -297,6 +293,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             "STU_1C2CC6D5" => self.clear_array(id, node, depth),
             "STU_4C3509FB" | "STU_CBE8BDAA" => self.insert_array(id, node, caller, depth),
+            "STU_DA54F8F7" => self.remove_array(id, node, caller, depth),
             "STU_12F5D52D" => {
                 let mut complete = true;
                 for item in array_field(&node.fields, "m_143D4C5B") {
@@ -389,6 +386,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 Ok(true)
             }
             "STUStatescriptActionSwitch" => self.action_switch(id, node, depth),
+            "STU_CEBDAF17" => {
+                self.track_stat(id, node);
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
             "STUStatescriptActionCriteria" => {
                 self.raise_criteria(id, node);
                 self.follow(id, node, "m_outPlug", None, depth)?;
@@ -871,24 +873,16 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.assume(self.site(id, node), class, "plain state");
                 StateKind::Plain
             }
+            // TrackStatTime: the seconds it runs go to its stats
+            // (`vm/stats.rs`).
+            "STU_441B50E4" => StateKind::StatTime,
             // Server-only states (no registration of their own: the client
             // runs the base state, codec `none`), with a meaning the data
-            // doesn't tell: `STU_441B50E4` counts time in its stats
-            // (`m_stat`, `m_stats`, `m_D32CB484`) for `m_targets`
-            // (ModeGraphGaps.md); the server's stats are its own Rust.
-            // `STU_F08E1453` names the owner (`m_64C3E07E`) in 23 graphs
-            // (Tracer's Recall `001A` st26, Zarya's `0256` st10, the body's
-            // `01CB` st35), beside an entity control (`STU_33A46033`); what
-            // it does on the server is unknown. Plain states, as
-            // assumptions.
-            "STU_441B50E4" => {
-                self.assume(
-                    self.site(id, node),
-                    &node.class,
-                    "plain state (stat time not kept)",
-                );
-                StateKind::Plain
-            }
+            // doesn't tell: `STU_F08E1453` names the owner (`m_64C3E07E`) in
+            // 23 graphs (Tracer's Recall `001A` st26, Zarya's `0256` st10,
+            // the body's `01CB` st35), beside an entity control
+            // (`STU_33A46033`); what it does on the server is unknown. A
+            // plain state, as an assumption.
             "STU_F08E1453" => {
                 self.assume(
                     self.site(id, node),
@@ -1075,7 +1069,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::Plain
             | StateKind::MovementMod
             | StateKind::Effect
-            | StateKind::ActiveQuery => {}
+            | StateKind::ActiveQuery
+            | StateKind::StatTime => {}
         }
         self.follow(id, node, "m_onBeginPlug", Some(key), depth)?;
         self.follow(id, node, "m_subgraphPlug", Some(key), depth)?;
