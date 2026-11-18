@@ -1483,7 +1483,7 @@ mod tests {
     fn the_mode_graph_lists_hanamuras_spawn_points() {
         use orpheus_content::maps::MapCatalog;
         use orpheus_script::{
-            mode::{ModeScript, ModeWorld},
+            mode::{ModePlayer, ModeScript, ModeWorld},
             wire::Value,
         };
         let runtime = orpheus_testkit::runtime_dir();
@@ -1504,7 +1504,13 @@ mod tests {
         let empty = BTreeSet::new();
         let identifiers = assets.mode_props.get(&mode).unwrap_or(&empty);
         let mut world = ModeWorld::new(Arc::clone(&assets.graphs), mode, Unknowns::Tolerate);
-        world.players = [1, 1];
+        world.players = (0..2)
+            .map(|team| ModePlayer {
+                controller: 0x1001 + team as u32,
+                body: None,
+                team,
+            })
+            .collect();
         world.team_sizes = vec![(0, 6), (1, 6)];
         world.ready = true;
         let tags = assets.map_areas.map_tags(&map, identifiers, &assets.graphs);

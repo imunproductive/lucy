@@ -1044,6 +1044,24 @@ pub enum StateKind {
     StatTime,
 }
 
+impl StateKind {
+    /// Whether the state keeps a value it evaluated up to date, so a change
+    /// of what it read re-evaluates it ([`Vm::changed`]) rather than only
+    /// re-checking its transitions.
+    fn updates_on_change(self) -> bool {
+        matches!(
+            self,
+            Self::Switch { .. }
+                | Self::BooleanSwitch(_)
+                | Self::DelayedSwitch { .. }
+                | Self::Stack { .. }
+                | Self::Watch
+                | Self::FilterArray
+                | Self::HeroSelect
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct BufferedPress {
     time_ms: u64,
@@ -1506,6 +1524,7 @@ impl Component {
             candidate: None,
             watcher: None,
             read_native: false,
+            natives: Vec::new(),
             // A read outside the VM's run: nothing is recorded.
             assumed: Vec::new(),
         };
@@ -1575,6 +1594,48 @@ impl Component {
                 };
                 state.pending_change = true;
                 vm.post(watcher.instance, Event::Changed(watcher.raw))?;
+            }
+            Ok(())
+        })
+    }
+
+    /// What the world answers for the native configs `classes` changed:
+    /// each active state whose expressions read one of them takes it as
+    /// the client takes a change of a value it depends on
+    /// (`sub_7FF78AA9ED40`, ModeGraphGaps.md "Waiting state"): a state that
+    /// keeps a value up to date (a switch, a stack, a watch, a filtered
+    /// list) re-evaluates it, any other gets a completion check, so its
+    /// transitions are tried again (event kind 2, `sub_7FF78AA81220`).
+    pub fn natives_changed(
+        &mut self,
+        classes: &[&str],
+        world: &mut impl World,
+    ) -> Result<(), InitFault> {
+        self.run(world, |vm| {
+            let mut watchers: Vec<StateKey> = Vec::new();
+            for class in classes {
+                for &watcher in vm.machine.native_watchers.get(*class).into_iter().flatten() {
+                    if !watchers.contains(&watcher) {
+                        watchers.push(watcher);
+                    }
+                }
+            }
+            for watcher in watchers {
+                let Some(state) = vm
+                    .state_mut(watcher)
+                    .filter(|state| state.active && !state.ending)
+                else {
+                    continue;
+                };
+                if state.kind.updates_on_change() {
+                    if !state.pending_change {
+                        state.pending_change = true;
+                        vm.post(watcher.instance, Event::Changed(watcher.raw))?;
+                    }
+                } else if !state.pending_check {
+                    state.pending_check = true;
+                    vm.post(watcher.instance, Event::Check(watcher.raw))?;
+                }
             }
             Ok(())
         })
@@ -2111,6 +2172,9 @@ struct Machine {
     /// The states whose expressions read another entity's variable
     /// (entity, id), for [`Component::foreign_variable_changed`].
     foreign_watchers: BTreeMap<(u32, u32), Vec<StateKey>>,
+    /// The states whose expressions read a native config, by class, for
+    /// [`Component::natives_changed`].
+    native_watchers: BTreeMap<String, Vec<StateKey>>,
     ticking: BTreeMap<u16, IndexMap<u16, u64>>,
     links: BTreeMap<VarKey, Vec<VariableLink>>,
     volleys: BTreeMap<StateKey, Volley>,
@@ -2879,6 +2943,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             candidate: self.candidate.as_ref(),
             watcher,
             read_native: false,
+            natives: Vec::new(),
             assumed: Vec::new(),
         };
         let result = if assignment {
@@ -2889,6 +2954,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let reads = context.reads;
         let foreign_reads = context.foreign_reads;
         let read_native = context.read_native;
+        let natives = context.natives;
         for (class, answer) in context.assumed {
             self.assume(site, &class, answer);
         }
@@ -2901,6 +2967,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             for key in foreign_reads {
                 let watchers = self.machine.foreign_watchers.entry(key).or_default();
+                if !watchers.contains(&watcher) {
+                    watchers.push(watcher);
+                }
+            }
+            for class in natives {
+                let watchers = self.machine.native_watchers.entry(class).or_default();
                 if !watchers.contains(&watcher) {
                     watchers.push(watcher);
                 }
@@ -3305,6 +3377,8 @@ struct InstanceContext<'a, W> {
     candidate: Option<&'a Value>,
     watcher: Option<StateKey>,
     read_native: bool,
+    /// The native configs' classes read ([`Context::native`]).
+    natives: Vec<String>,
     /// Native answers the world marked as assumptions, by config class.
     assumed: Vec<(String, &'static str)>,
 }

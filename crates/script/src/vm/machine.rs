@@ -38,6 +38,7 @@ impl Machine {
             queues: Timeline::new(MAX_PENDING_EVENTS),
             watchers: BTreeMap::new(),
             foreign_watchers: BTreeMap::new(),
+            native_watchers: BTreeMap::new(),
             ticking: BTreeMap::new(),
             links: BTreeMap::new(),
             volleys: BTreeMap::new(),

@@ -65,6 +65,7 @@ use orpheus_core::tick::FIRST_TICK;
 use orpheus_lobby::handoff::Handoff;
 use orpheus_script::{
     controller::HeroSelectRequest,
+    mode::ModePlayer,
     vm::{AuraChange, GameMessage, TrackedStat},
     wire::chunk,
 };
@@ -80,7 +81,7 @@ use orpheus_sim::{
     controller::ControllerFrame,
     egress::GameEgress,
     hurt_feedback::HurtFeedback,
-    instance::{Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
+    instance::{FREE_FOR_ALL_TEAM, Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
     match_flow::{FlowEvent, MatchFlow, Mode, Phase, Standing, Timers},
     messages::{Players, Recipients, deliver},
     mode_script::ModeRunner,
@@ -906,7 +907,9 @@ impl Room {
             flow.mode()
         );
         self.flow = Some(flow);
-        self.mode = Some(ModeRunner::start(scene, tick));
+        // The players reach the graph with the next tick's flow
+        // (`update_flows`), as they join.
+        self.mode = Some(ModeRunner::start(scene, tick, Vec::new()));
         self.flow_at = now;
         self.flow_tick = tick;
         self.next_mode_frame = now;
@@ -2850,10 +2853,28 @@ impl State {
             let was = flow.phase();
             let events = flow.advance(seconds, &participants);
             let variables = flow.variables();
+            // The mode graph's players: those in the world, each with his
+            // controller, body and team (a free-for-all's players are on
+            // its one team, as their filter bits say).
+            let players = connections
+                .iter()
+                .filter(|&&(connection, slot)| {
+                    !room.players[slot].gone && self.peers[&connection].world.world_started()
+                })
+                .map(|&(connection, slot)| ModePlayer {
+                    controller: room.players[slot].entity,
+                    body: self.peers[&connection].world.current_body(),
+                    team: if room.map.free_for_all {
+                        i64::from(FREE_FOR_ALL_TEAM)
+                    } else {
+                        i64::from(room.players[slot].info.team)
+                    },
+                })
+                .collect();
             let mut messages = room
                 .mode
                 .as_mut()
-                .map_or_else(Vec::new, |mode| mode.advance(tick, &variables));
+                .map_or_else(Vec::new, |mode| mode.advance(tick, &variables, players));
             let changed = events
                 .iter()
                 .any(|event| matches!(event, FlowEvent::Phase(_)));

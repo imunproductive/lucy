@@ -717,6 +717,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             | "STU_E13B30A8"
             | "STUStatescriptStateUXPresenter"
             | "STUStatescriptStateAnimatedCamera" => StateKind::Plain,
+            // A UX presenter (parent `STUStatescriptStateUXPresenter`) whose
+            // runtime vtable (0x7FF78B560B70) differs from its parent's only
+            // in boilerplate and slot 58, 0x7FF7899E0240, which fills the
+            // presenter's data model (`68B2.01C`, `65F3.01C`) from the local
+            // player: presentation, as the base presenter's. Codec none.
+            // `13C0` st0, `0CB6` st4, `0160` st12.
+            "STU_62755D14" => StateKind::Plain,
             // The authored zero-valued form inherits the base state reader.
             "STU_D9843704"
                 if node.is_networked() && node.remote == -1 && {
