@@ -78,6 +78,12 @@ const ASSUMED: &[(&str, &str)] = &[
     // unset, as the hand-built frames had them.
     ("STU_9AD08FCC", "unset"),
     ("STU_F80D09DB", "unset"),
+    // `288B` st95 of the possessed body: `Eval_STU_3D5F853C` 0x7FF789833D80
+    // is true for an entity whose scene node (component 1) has bit 0 of
+    // `+0x230` clear, and that of the entity its component 46 names (none
+    // read). Answered: true for a living body; the flag's meaning is not
+    // read (assumption: a dead body has it).
+    ("STU_3D5F853C", "true for the living possessed body"),
 ];
 
 /// What the controller graph asks outside its own entity.
@@ -98,11 +104,18 @@ pub struct ControllerWorld {
     /// possession's: `scene::Possession`); none before the first.
     /// `STU_93DCDDFD` of the controller reads it, never the body's.
     pub hero: Option<u64>,
+    /// Whether the possessed body is dead: its dead flag #478e, which
+    /// `288B` st95 reads (no graph writes it; `orpheus_script::bot::DEAD_FLAG`).
+    pub body_dead: bool,
     /// Whether the player may pick a hero now (`STU_E4C6AAB4`): the
     /// client reads only component 74 field 6 (ControllerWorld.md, "Client
     /// tools pass (2026-11-16)"), which the server writes from
     /// `replication.rs` `may_change_hero`; that rule feeds this.
     pub may_pick: bool,
+    /// The other players' controller entities in the match, each with
+    /// its team: the senders of the broadcasts this controller takes
+    /// (`0C90` st4/st8/st22 test the sender's team against the owner's).
+    pub players: Vec<(u32, i64)>,
     pub unknowns: Unknowns,
     outbox: Vec<GameMessage>,
     /// The voice stimuli the graphs asked the controller to say.
@@ -122,7 +135,9 @@ impl ControllerWorld {
             heroes: Vec::new(),
             body: None,
             hero: None,
+            body_dead: false,
             may_pick: true,
+            players: Vec::new(),
             unknowns,
             outbox: Vec::new(),
             voices: Vec::new(),
@@ -136,6 +151,15 @@ impl ControllerWorld {
             .and_then(|value| value.get("$"))
             .and_then(Json::as_str)
             == Some("STU_B5A0CAF0")
+    }
+
+    /// `operand` names the owner's possessed body (`STU_0AC15F78` of the
+    /// owner).
+    fn possessed_body(&self, config: &Json, operand: &str) -> bool {
+        config.get(operand).is_some_and(|body| {
+            body.get("$").and_then(Json::as_str) == Some("STU_0AC15F78")
+                && self.owner(body, "m_entity")
+        })
     }
 }
 
@@ -156,8 +180,12 @@ impl World for ControllerWorld {
     }
 
     /// The mode entity's variables come from the bundle (`0C5`
-    /// `m_3CE93B76`), as in `ModeWorld`.
+    /// `m_3CE93B76`), as in `ModeWorld`; of the possessed body the world
+    /// knows its dead flag #478e.
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
+        if self.body == Some(entity) && id == BODY_DEAD {
+            return Value::Bool(self.body_dead);
+        }
         if entity != GAME_MODE_ENTITY {
             return Value::Null;
         }
@@ -193,20 +221,29 @@ impl World for ControllerWorld {
             "STU_93DCDDFD" if self.owner(config, "m_entity") => {
                 Some(self.hero.map_or(Value::Null, Value::Asset))
             }
+            "STU_3D5F853C" if self.possessed_body(config, "m_entity") => {
+                Some(Value::Bool(self.body.is_some() && !self.body_dead))
+            }
             _ => None,
         }
     }
 
     fn entity_exists(&self, _site: Site, entity: u32) -> Option<bool> {
-        let known =
-            entity == self.entity || entity == GAME_MODE_ENTITY || self.body == Some(entity);
+        let known = entity == self.entity
+            || entity == GAME_MODE_ENTITY
+            || self.body == Some(entity)
+            || self.players.iter().any(|&(player, _)| player == entity);
         known.then_some(true)
     }
 
     fn entity_team(&self, _site: Site, entity: u32) -> Option<i64> {
-        (entity == self.entity || self.body == Some(entity))
-            .then_some(self.team)
-            .flatten()
+        if entity == self.entity || self.body == Some(entity) {
+            return self.team;
+        }
+        self.players
+            .iter()
+            .find(|&&(player, _)| player == entity)
+            .map(|&(_, team)| team)
     }
 
     fn hero_available(&self, _site: Site, controller: u32, hero: u64) -> Option<bool> {
@@ -352,6 +389,66 @@ impl ControllerScript {
             .receive_message(0, message, parameters, &mut self.world)
     }
 
+    /// The client's hero select request (21616) at `frame`, to `288B`'s
+    /// instance as the client names it: a pick (`1361.025` {`005D` hero})
+    /// or an open or close (`1360.025` {`05A2` open}). rid24 takes a pick
+    /// the player may make now of a hero he may play; rid22 an open while
+    /// he may pick, any close. Returns the hero select state after it, none
+    /// without a `288B` instance.
+    pub fn hero_select(
+        &mut self,
+        frame: u32,
+        request: HeroSelectRequest,
+    ) -> Result<Option<HeroSelectState>, InitFault> {
+        self.advance(frame)?;
+        let Some(screen) = self.screen() else {
+            return Ok(None);
+        };
+        let (message, parameters) = match request {
+            HeroSelectRequest::Pick(hero) => {
+                (PICK_HERO, Variables::from([(0x5d, Value::Asset(hero))]))
+            }
+            HeroSelectRequest::OpenOrClose(open) => {
+                (OPEN_OR_CLOSE, Variables::from([(0x5a2, Value::Bool(open))]))
+            }
+        };
+        if self.component.queue_message(screen, message, parameters)? != 0 {
+            self.component.run_now(&mut self.world)?;
+        }
+        Ok(self.hero_select_state())
+    }
+
+    /// `288B`'s instance id.
+    fn screen(&self) -> Option<u16> {
+        self.snapshot()?
+            .instances
+            .iter()
+            .find(|(_, instance)| instance.graph == HERO_SELECT_SCREEN)
+            .map(|(&id, _)| id)
+    }
+
+    /// What `288B` keeps on the controller entity: #2438e (hero select
+    /// open), #2114e (a hero picked) and #13161e (the pick).
+    pub fn hero_select_state(&self) -> Option<HeroSelectState> {
+        let snapshot = self.snapshot()?;
+        self.screen()?;
+        let value = |id| {
+            snapshot
+                .resolved_bindings
+                .get(&(0, id))
+                .or_else(|| snapshot.variables.get(&id))
+        };
+        let flag = |id| matches!(value(id), Some(&Value::Bool(true)));
+        let pick = match value(PICKED_HERO) {
+            Some(&Value::Asset(hero)) if hero != 0 && flag(PICKED) => Some(hero),
+            _ => None,
+        };
+        Some(HeroSelectState {
+            open: flag(SELECT_OPEN),
+            pick,
+        })
+    }
+
     /// The controller's player eliminated `victim` with `killer` (his body)
     /// at `frame`: `0093.025` to the controller, which `0215` counts
     /// (rid14). Parameters: `0015` the victim (#393), `0012` the killer
@@ -466,12 +563,58 @@ impl ControllerScript {
     pub fn possessed(&mut self, body: u32, hero: u64) {
         self.world.body = Some(body);
         self.world.hero = Some(hero);
+        self.world.body_dead = false;
+    }
+
+    /// The possessed body died (or, false, lives again): its dead flag
+    /// #478e, which `288B` st95 reads.
+    pub fn set_body_dead(&mut self, dead: bool) {
+        self.world.body_dead = dead;
+    }
+
+    /// The graphs the script runs (and its frames are projected with).
+    pub fn graphs(&self) -> &GraphStore {
+        &self.world.graphs
     }
 
     /// Component 74 field 6, which the server writes from its own rule:
     /// what `STU_E4C6AAB4` answers.
     pub fn set_may_pick(&mut self, may_pick: bool) {
         self.world.may_pick = may_pick;
+    }
+
+    /// The controller entity the graph runs on.
+    pub fn entity(&self) -> u32 {
+        self.world.entity
+    }
+
+    /// The controller's team.
+    pub fn team(&self) -> Option<i64> {
+        self.world.team
+    }
+
+    /// The other players' controllers in the match, with their teams.
+    pub fn set_players(&mut self, players: Vec<(u32, i64)>) {
+        self.world.players = players;
+    }
+
+    /// A message another player's controller sent every entity at
+    /// `frame` (`STU_1D719351`: `0C90` st5 `068E`, st70 `08BE`, st21
+    /// `070B`), from its sender: `0C90` st4/st8 keep a teammate's pick
+    /// (`08BE`) for the hero limit, st22 his role (`070B`) for the role
+    /// limit. Returns how many entries took it.
+    pub fn broadcast_from(
+        &mut self,
+        frame: u32,
+        message: &GameMessage,
+    ) -> Result<usize, InitFault> {
+        self.advance(frame)?;
+        self.component.receive_message(
+            message.sender,
+            message.message,
+            message.parameters.clone(),
+            &mut self.world,
+        )
     }
 }
 
@@ -483,6 +626,30 @@ const MULTIKILL_STIMULUS: u32 = 10122;
 const SWITCH_OLD_HERO: u32 = 4513;
 const SWITCH_NEW_HERO: u32 = 4514;
 const SWITCH_PLAYER: u32 = 4515;
+/// `288B`'s entity variables: hero select open (#2438e), a hero picked
+/// (#2114e) and the pick (#13161e).
+const SELECT_OPEN: u32 = 2438;
+const PICKED: u32 = 2114;
+const PICKED_HERO: u32 = 13161;
+/// The possessed body's dead flag #478e (`crate::bot::DEAD_FLAG`).
+const BODY_DEAD: u32 = crate::bot::DEAD_FLAG;
+
+/// The client's hero select request (21616 to `288B`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HeroSelectRequest {
+    /// `1361.025` {`005D` hero}.
+    Pick(u64),
+    /// `1360.025` {`05A2` open}.
+    OpenOrClose(bool),
+}
+
+/// `288B`'s hero select state: whether the screen is open (#2438e) and
+/// the hero picked (#13161e while #2114e).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HeroSelectState {
+    pub open: bool,
+    pub pick: Option<u64>,
+}
 
 /// The last hero switch `0C90` keeps: the old and new hero and the
 /// switching player's controller entity.
@@ -520,6 +687,80 @@ mod tests {
         world.team = Some(0);
         world.heroes = vec![(SOLDIER, Some(orpheus_content::heroes::DAMAGE_ROLE))];
         ControllerScript::start(world, PVP_CONTROLLER, 1).unwrap()
+    }
+
+    /// The client's 21616 to `288B` in the VM (Range): an open sets #2438e
+    /// (rid22); a pick sets #13161e/#2114e (rid24) and the screen stays
+    /// open until the picked hero's body lives (st95, a later frame); an
+    /// open clears the pick; a dead player's pick closes at once (st95's
+    /// dead branch); without `may_pick` a pick is refused and st98 closes
+    /// the screen, and an open is refused (rid22). Every step projects to an
+    /// owner full frame.
+    #[test]
+    #[ignore = "requires the derived 104319 graph bundle"]
+    fn client_requests_drive_hero_select_in_the_vm() {
+        use crate::codecs::CodecTable;
+        use crate::snapshot::{SnapshotEncoder, View};
+        use orpheus_content::heroes::{ANA, DAMAGE_ROLE, SUPPORT_ROLE};
+        let state = |open, pick| Some(HeroSelectState { open, pick });
+        let codecs = CodecTable::client();
+        let projects = |script: &ControllerScript| {
+            let snapshot = script.snapshot().unwrap();
+            assert!(
+                snapshot.initialization_complete(),
+                "{:?}",
+                snapshot.diagnostics
+            );
+            let encoder = SnapshotEncoder::new(script.graphs(), &codecs);
+            let projected = encoder.project(snapshot, View::Owner).unwrap();
+            assert_eq!(projected.instance_count(), 5);
+            encoder.owner_full(&projected, 1234, 16).unwrap();
+        };
+        let mut script = start(RANGE);
+        script.world.heroes.push((ANA, Some(SUPPORT_ROLE)));
+        script.advance(10).unwrap();
+        assert_eq!(script.hero_select_state(), state(false, None));
+        projects(&script);
+        let open = script.hero_select(20, HeroSelectRequest::OpenOrClose(true));
+        assert_eq!(open.unwrap(), state(true, None));
+        let pick = script.hero_select(30, HeroSelectRequest::Pick(SOLDIER));
+        assert_eq!(pick.unwrap(), state(true, Some(SOLDIER)));
+        projects(&script);
+        // `070B` with the hero's role (node 44, `STU_BE1161C0`) and `08BE`
+        // with the pick go to every entity.
+        let broadcasts: Vec<_> = script
+            .take_messages()
+            .into_iter()
+            .filter(|message| message.target == crate::mode::EVERY_ENTITY)
+            .map(|message| (message.message & 0xffff, message.parameters))
+            .collect();
+        let role = Variables::from([(0x3c9, Value::Asset(DAMAGE_ROLE))]);
+        assert!(broadcasts.contains(&(0x070b, role)), "{broadcasts:?}");
+        let picked = Variables::from([(0x5d, Value::Asset(SOLDIER))]);
+        assert!(broadcasts.contains(&(0x08be, picked)), "{broadcasts:?}");
+        script.possessed(0x20, SOLDIER);
+        script.advance(40).unwrap();
+        assert_eq!(script.hero_select_state(), state(false, Some(SOLDIER)));
+        let reopen = script.hero_select(50, HeroSelectRequest::OpenOrClose(true));
+        assert_eq!(reopen.unwrap(), state(true, None));
+        let close = script.hero_select(60, HeroSelectRequest::OpenOrClose(false));
+        assert_eq!(close.unwrap(), state(false, None));
+        script.set_body_dead(true);
+        script
+            .hero_select(70, HeroSelectRequest::OpenOrClose(true))
+            .unwrap();
+        let dead = script.hero_select(80, HeroSelectRequest::Pick(ANA));
+        assert_eq!(dead.unwrap(), state(false, Some(ANA)));
+        script.possessed(0x21, ANA);
+        script
+            .hero_select(90, HeroSelectRequest::OpenOrClose(true))
+            .unwrap();
+        script.set_may_pick(false);
+        let refused = script.hero_select(100, HeroSelectRequest::Pick(SOLDIER));
+        assert_eq!(refused.unwrap(), state(false, None));
+        let closed = script.hero_select(110, HeroSelectRequest::OpenOrClose(true));
+        assert_eq!(closed.unwrap(), state(false, None));
+        projects(&script);
     }
 
     /// `0C90` starts on the controller in the Practice Range and in a PvP
@@ -684,8 +925,7 @@ mod tests {
                 })
             );
             // rid228 makes the new hero the pick, so `0C90` st21 broadcasts
-            // `070B` with the hero's role: `STU_BE1161C0` (node 44) is the
-            // one gap (`docs/dev/loose-ends.md`, hero select limits).
+            // `070B` with the hero's role (`STU_BE1161C0`, node 44): no gap.
             let gaps: Vec<_> = script
                 .snapshot()
                 .unwrap()
@@ -693,7 +933,7 @@ mod tests {
                 .iter()
                 .map(|diagnostic| (diagnostic.site.graph, diagnostic.site.node))
                 .collect();
-            assert_eq!(gaps, [(PVP_CONTROLLER, Some(44))], "{mode:x}");
+            assert!(gaps.is_empty(), "{mode:x}: {gaps:?}");
         }
     }
 }

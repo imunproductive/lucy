@@ -151,11 +151,11 @@ impl Stream {
 
     /// Build an owner's full frame with a strictly increasing CmFD. A writer
     /// error leaves both frame counters available for the next attempt.
-    pub fn full_owner(
+    pub fn full_owner<E: From<StreamError>>(
         &mut self,
         newest: u32,
-        encode: impl FnOnce(u32) -> Result<BitWriter, WireError>,
-    ) -> Result<ScriptChunk, StreamError> {
+        encode: impl FnOnce(u32) -> Result<BitWriter, E>,
+    ) -> Result<ScriptChunk, E> {
         validate_frame(self.cmfd, newest)?;
         let cmfd = newest.max(self.cmfd + 1);
         validate_frame(self.cmfd, cmfd)?;

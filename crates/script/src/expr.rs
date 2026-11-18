@@ -228,6 +228,12 @@ pub trait Context {
         None
     }
 
+    /// The role identifier of `hero` (`STU_BE1161C0`); None: the world
+    /// can't tell.
+    fn hero_role(&mut self, _hero: u64) -> Option<u64> {
+        None
+    }
+
     /// Where a bound entity stands; None: the world doesn't know it.
     fn entity_position(&mut self, _entity: u32) -> Option<[f64; 3]> {
         None
@@ -1566,6 +1572,24 @@ impl Evaluator {
                             .ok_or_else(unsupported)?,
                     ),
                     _ => Value::Bool(false),
+                }
+            }
+            // A hero's role (`0C90` node 44 on `070B`, the hero limits):
+            // `Eval_STU_BE1161C0` 0x7FF789BF79E0 loads `m_hero`'s asset and,
+            // for a hero (`STU_7C3457DC`), answers its `+0x58` (`m_category`,
+            // the role identifier), else asset 0.
+            "STU_BE1161C0"
+                if native_fields(config, &["m_hero", "m_resourceKey"])
+                    && child(config, "m_resourceKey").is_null() =>
+            {
+                match self.config(child(config, "m_hero"), context, nested)? {
+                    Value::Asset(hero) if hero != 0 => Value::Asset(
+                        context
+                            .hero_role(hero)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    ),
+                    Value::Null | Value::Asset(0) => Value::Asset(0),
+                    _ => return Err(EvalError::UnsupportedConfig(class.into())),
                 }
             }
             // An entity's health total as f32 (CEB6C0; `SceneWorld.native`
