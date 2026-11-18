@@ -741,10 +741,14 @@ fn project_targets(fields: &mut LayoutFields<'static>, vm: &Vm<'_>) -> Result<()
             ("age", age.clone().into()),
         ]));
     }
-    let count = u16::try_from(rows.len()).map_err(|_| invalid_field("targets"))?;
-    fields.insert("has_list", Value::Bool(true).into());
-    fields.insert("n", Value::Integer(i64::from(count)).into());
-    fields.insert("targets", FieldValue::Rows(rows));
+    // The client's writer (`0x7FF789BA5F80`) sends the list only when it
+    // has a row; an empty list is the bit alone.
+    fields.insert("has_list", Value::Bool(!rows.is_empty()).into());
+    if !rows.is_empty() {
+        let count = u16::try_from(rows.len()).map_err(|_| invalid_field("targets"))?;
+        fields.insert("n", Value::Integer(i64::from(count)).into());
+        fields.insert("targets", FieldValue::Rows(rows));
+    }
     Ok(())
 }
 
@@ -1035,9 +1039,12 @@ mod tests {
             }
         }
         assert_eq!(count, 1833);
+        // Python's digest, but for the empty TrackTargets list: Python
+        // sent the list bit and a zero count, the client's writer
+        // (`0x7FF789BA5F80`) sends the bit alone (0).
         assert_eq!(
             format!("{:x}", digest.finalize()),
-            "6f316769d720476a184200555630aa4ed0b33dd9418daf524cd3019412c14955"
+            "ae1a884a29f5614e9448c6a06b61c926b78be7010558bdb9d6211b47924ab98b"
         );
     }
 }

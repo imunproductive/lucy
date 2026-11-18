@@ -1233,7 +1233,7 @@ impl Evaluator {
 /// The tags of a filter's tag list field (null, one `STU_357DABBB` or a
 /// config list of them), as [`check_tag_set`] reads them; None: another
 /// form.
-fn filter_tag_list(field: &Json) -> Option<Vec<u64>> {
+pub(crate) fn filter_tag_list(field: &Json) -> Option<Vec<u64>> {
     let configs = if field.is_null() {
         &[]
     } else if native_shape(field, CONFIG_LIST, Some("m_configVars")) {

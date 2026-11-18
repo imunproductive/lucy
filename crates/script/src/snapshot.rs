@@ -1758,26 +1758,13 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
         (StateKind::HitList, Some("hits")) => {
             StatePayload::from([("flag".into(), Value::Bool(false))])
         }
-        // Each target's age is the milliseconds since it came in (assumed,
-        // `vm/targets.rs`).
-        (StateKind::TrackTargets, Some("targets")) => StatePayload::from([(
-            "targets".into(),
-            Value::Array(
-                state
-                    .tracked
-                    .iter()
-                    .map(|target| {
-                        let age = now_ms
-                            .saturating_sub(target.since_ms)
-                            .min(u64::from(u32::MAX));
-                        Value::Array(vec![
-                            Value::Entity(target.entity),
-                            Value::Integer(age as i64),
-                        ])
-                    })
-                    .collect(),
-            ),
-        )]),
+        // The frame lists the dropped targets a search still holds for its
+        // `m_93AB8C13` seconds (writer `0x7FF789BA5F80`), not the found
+        // ones (those go in the output variables). The server runs no
+        // search with that field (`vm/targets.rs`), so the list is empty.
+        (StateKind::TrackTargets, Some("targets")) => {
+            StatePayload::from([("targets".into(), Value::Array(Vec::new()))])
+        }
         (StateKind::Anim, Some("anim")) => StatePayload::from([(
             "counter".into(),
             Value::Integer(i64::from(state.activation & 7)),

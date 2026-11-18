@@ -1,19 +1,24 @@
 //! Target searches: `STUStatescriptStateTrackTargets` (OWLib's name, hash
 //! 41E3C7A7). While the state runs it keeps the bodies within a sphere that
-//! pass its filter, writes them to its output variables and sends them in
-//! its frames (the `targets` payload: each entity and its age).
+//! pass its filter and writes them to its output variables; its frames
+//! carry only the dropped targets it still holds (see `m_93AB8C13`).
 //!
 //! What the fields mean, read from the 292 uses in the hero and bot bundles
 //! (`game_graphs_174.json.gz`, `game_graphs_bots_174.json.gz`; 157 and 135):
 //!
 //! - `m_8DCA77B6`: the entity the sphere goes with (187 uses: always the
-//!   owner). `m_05BE62DD` is then an offset from that entity's feet: the
-//!   Biotic Field (`0258` st0) and Soldier: 76's ally count (`0257` st6)
-//!   use (0, 1, 0), a metre up, and quick melee (`0043` st5) adds
-//!   (0, 0, 1.5) to the eye's height above the feet (`STU_21A13145`, the
-//!   eye, less `STU_71A87E92`, the feet), 1.5 m ahead. Without
-//!   the entity, `m_05BE62DD` is a world point (an entity's position
-//!   config). Fairly sure.
+//!   owner). `m_05BE62DD` is then an offset in that entity's transform
+//!   (the centre setup `0x7FF789BAA430`: the model's matrix, so it turns
+//!   with the entity's yaw: forward `+z`, up `+y`): the Biotic Field
+//!   (`0258` st0) and Soldier: 76's ally count (`0257` st6) use (0, 1, 0),
+//!   a metre up, and quick melee (`0043` st5) adds (0, 0, 1.5) to the
+//!   eye's height above the feet (`STU_21A13145`, the eye, less
+//!   `STU_71A87E92`, the feet), 1.5 m ahead. With `m_0297060F` the offset
+//!   also turns with the entity's pitch, about its eye height
+//!   (`0x7FF789CAF3F0`): quick melee's centre goes 1.5 m along the aim
+//!   from the eye. Without the entity, `m_05BE62DD` is a world point (an
+//!   entity's position config); with `m_0297060F` it would be in the
+//!   searcher's own transform (not modelled: finds nothing).
 //! - `m_radius`: the sphere's radius in metres (Biotic Field `#422` = 5,
 //!   the radius the match's `heal_area` uses; `0257` st6 10). Sure.
 //! - `m_A30B383E`: 360 in 47 uses, 90 or 180 or an expression in others: a
@@ -60,37 +65,73 @@
 //!     team's bodies, and bits no body carries (none-of 4 in the hits,
 //!     `0x200000` in heals) change nothing. Assumption: the two words are
 //!     the same (`orpheus_sim::scene` module notes).
-//!   - The client also requires component 97 when a mask is set and the
-//!     any-of mask isn't every kind (bodies have it), and then tests the
-//!     condition and the tag lists (component 76). The server tests the
-//!     condition (`m_condition`) with each candidate as every parameter,
-//!     as FilterArray does (`vm/filter_array.rs`; the spawn room `0D62`
-//!     reads it as parameter 8: its team and whether its feet are in the
-//!     room's volume, `STU_73E1C5F0`); one it can't evaluate leaves the
-//!     search finding nothing. The tag lists are not modelled.
+//!   - The client's filter test (`ScriptHost_EntityPassesFilter`
+//!     0x7FF789C1DA20) also requires component 97 when a mask is set and
+//!     the any-of mask isn't every kind (bodies have it), then tests the
+//!     condition, then the tag lists (`0x7FF789C1EC70`: a tag of
+//!     `m_9C7BD8B8`, every tag of `m_B486603E`, no tag of `m_8B2A4DF3`, as
+//!     component 76 gives a body's tags). The server tests the condition
+//!     (`m_condition`) with each candidate as every parameter, as
+//!     FilterArray does (`vm/filter_array.rs`; the spawn room `0D62` reads
+//!     it as parameter 8: its team and whether its feet are in the room's
+//!     volume, `STU_73E1C5F0`), and the tag lists with the world's target
+//!     tags ([`World::has_target_tag`]); a condition it can't evaluate or
+//!     a tag the world can't tell leaves the search finding nothing.
 //!
-//! The server runs the forms whose set fields are only these (an entity
-//! sphere with a vertical or forward offset, or a world point; a whole
-//! sphere; the masks, relation words and condition): the spawn rooms'
-//! `0D62` st0 and st3 (a 100 m sphere around the room's own placeable),
-//! `0257` st6 and Reinhardt's `0095` st18, both counting allies within 10 m for a
-//! criteria, and quick melee's `0043` st5, whose line of sight
-//! (`m_D59188D5`, `m_3D667CE3`) isn't tested and whose output `m_24A4AB8A`
-//! isn't written (assumptions, as the Python reference). A forward offset
-//! goes along the entity's aim. Any other set field (sweep origins,
-//! scoring `m_84E5DE4E`, limits, the output `m_CEE20F6F` that SetVars
-//! read) or an offset the server can't evaluate leaves the search finding
-//! nothing, recorded as an assumption naming the field.
-//! The ten byte and enum fields after `m_2A0FB8BB` are in every use with
-//! values whose meaning is open; they are not read.
+//! The rest of the class, from the client's search `0x7FF789BBE3B0` (run
+//! by the begin `0x7FF789BA3570` and the update slot 14 `0x7FF789BA5590`;
+//! bodies `0x7FF789BBACF0`, line of sight `0x7FF789BB3570`, frame writer
+//! `0x7FF789BA5F80`):
+//!
+//! - When it searches: at its begin, then (slot 14, at a frame's last
+//!   update) on the frames the gate `0x7FF789BB9460` lets through:
+//!   `m_DD792FF0` 0 every frame; 1, 2, 3 or 4 every 3, 6, 12 or 30 frames,
+//!   on the frames where `(frame + h) as i32 % n == 0`, `h` the FNV-1a hash
+//!   of the four bytes of the entity id xor the node's `m_871A8203` (its
+//!   rid). The spawn rooms' `0D62` searches use 3 (12 frames).
+//! - `m_32AFE9AA`: each search tests the found bodies again and drops
+//!   those that no longer pass; without it a found body stays until the
+//!   state ends (quick melee: each body struck once a swing).
+//! - `m_93AB8C13`: a dropped body stays a target for that many seconds;
+//!   those waiting bodies, with the milliseconds since they were dropped,
+//!   are the frame's `targets` list, so it is empty without it. Not
+//!   modelled (finds nothing when set).
+//! - `m_43478CAD`: the targets' order (with the scoring `m_84E5DE4E` and
+//!   the limit `m_C39691D9`, `0x7FF789B9A0C0`); 0 keeps them in the order
+//!   found. Others are not modelled (find nothing).
+//! - `m_95FFC3C5`: a line-of-sight test of each new body (and, with
+//!   `m_32AFE9AA`, the found ones): rays from `m_D59188D5` (else the
+//!   centre) through the collision of `m_3D667CE3`'s profile (else
+//!   `0690.002D`) to 0.3 and 0.6 of the body's height (or its hardpoints
+//!   `0DC0.0001`/`0DC0.01CD`); `m_8D13DD07` adds a sweep first and
+//!   `m_2F5FAF65` two rays to the sides. Not modelled: a search with it is
+//!   an assumption ("no line-of-sight test"), as are its inputs.
+//! - `m_1C2A9945`: bodies are tested where the searcher's player (a
+//!   projectile's shooter's, component 50) saw them, rewound. The server
+//!   tests them where the match places them now (assumption).
+//! - `m_08285CD6`: the cone's direction leaves out the entity's pitch; a
+//!   whole sphere has none. `m_E4A295CE`: a predicting client replays its
+//!   recorded results after a rollback (`0x7FF789BA9250`); nothing for the
+//!   server. `m_8CBE558B` gates debug drawing (slot 56 `0x7FF789BA1860`,
+//!   read by the drawing slots 57-62 only); `m_4A6E0895` calls slot 64,
+//!   which returns at once. No client code writes `m_24A4AB8A`.
+//!
+//! The server runs the forms whose set fields are only these: the spawn
+//! rooms' `0D62` st0 and st3 (a 100 m sphere around the room's own
+//! placeable, whole: no assumption), `0257` st6 and Reinhardt's `0095`
+//! st18, both counting allies within 10 m for a criteria, the Biotic
+//! Field's `0258` st0 and quick melee's `0043` st5 (the last four with
+//! the line of sight and the rewind assumed). Any other set field (sweep
+//! origins, scoring `m_84E5DE4E`, limits, the output `m_CEE20F6F` that
+//! SetVars read) or an offset the server can't evaluate leaves the search
+//! finding nothing, recorded as an assumption naming the field.
 //!
 //! Assumed, as nothing in the data says: a body counts when its capsule
 //! (as the match places it) comes within the radius, as `heal_area`
 //! measures; new bodies come after those already found, in the world's
-//! order; the search runs at the state's begin and each tick; the outputs
-//! are written at the begin and whenever the set changes, and keep their
-//! last value when the state ends; a target's age in the payload is the
-//! milliseconds since it came in.
+//! order (the client appends them, `0x7FF789AF3D70`); the outputs are
+//! written at the begin and whenever the set changes, and keep their last
+//! value when the state ends.
 
 use super::*;
 
@@ -122,9 +163,9 @@ const UNMODELLED: &[&str] = &[
     "m_C39691D9",
     "m_CEE20F6F",
     "m_84E5DE4E",
-    "m_4A6E0895",
-    "m_8CBE558B",
     "m_2A0FB8BB",
+    // The order of the targets; 0 keeps the order found.
+    "m_43478CAD",
 ];
 
 /// The filter's fields the server doesn't model.
@@ -139,6 +180,10 @@ const UNMODELLED_FILTER: &[&str] = &[
     "m_B40362FC",
 ];
 
+/// The filter's tag lists (any of, all of, none of), as
+/// `0x7FF789C1EC70` tests them.
+const TAG_LISTS: [&str; 3] = ["m_9C7BD8B8", "m_B486603E", "m_8B2A4DF3"];
+
 /// A body's filter word (see the module notes): its team's bit
 /// `TEAM_BIT << team`, team 4 in a free-for-all, the kinds of a living body
 /// and [`DEAD`] once it died.
@@ -147,17 +192,28 @@ const FREE_FOR_ALL_TEAM: u8 = 4;
 const BODY_KINDS: u64 = 0x1_0041;
 const DEAD: u64 = 0x10;
 
-/// Fields set in quick melee's search (`0043` st5) that the server runs
-/// without: the line of sight from `m_D59188D5` (the eye, `STU_21A13145`)
-/// with the collision filter `m_3D667CE3` (`0690.002B`), which the Python
-/// reference didn't test either, and the output `m_24A4AB8A` (`#23530`,
-/// which only the ModifyHealth's unread `m_B12BFE8B` reads). Each set one
-/// is an assumption.
-const UNREAD: &[(&str, &str)] = &[
-    ("m_D59188D5", "no line-of-sight test"),
-    ("m_3D667CE3", "no line-of-sight test"),
-    ("m_24A4AB8A", "not written"),
+/// Fields the client reads that the server runs the search without, each
+/// an assumption when set (see the module notes).
+const ASSUMED: &[(&str, &str)] = &[
+    ("m_95FFC3C5", "no line-of-sight test"),
+    (
+        "m_1C2A9945",
+        "bodies where the match places them now, not rewound",
+    ),
 ];
+
+/// How often a search runs again (`m_DD792FF0`, gate `0x7FF789BB9460`):
+/// every `n` frames for the values 1 to 4, else every frame.
+const RATE: &str = "m_DD792FF0";
+/// `m_32AFE9AA`: the found bodies are tested again at each search.
+const RECHECK: &str = "m_32AFE9AA";
+/// `m_0297060F`: an entity's offset turns with its pitch too.
+const FOLLOW_PITCH: &str = "m_0297060F";
+/// The found bodies' output.
+const FOUND: &str = "m_8A2905A0";
+
+/// One turn in the yaw and pitch units of [`World::entity_facing`].
+const TURN: f64 = std::f64::consts::TAU / 65_536.0;
 
 /// Why a search finds nothing.
 pub(super) enum Gap {
@@ -177,11 +233,14 @@ struct Search {
     filter: BodyFilter,
 }
 
-/// A `STUConfigVarFilter`'s masks and relation words, the part of it a
-/// body search tests (see the module notes); the ray casts
+/// A `STUConfigVarFilter`'s masks, relation words and tag lists, the part
+/// of it a body search tests (see the module notes); the ray casts
 /// (`vm/rays.rs`) test bodies with it too.
 pub(super) struct BodyFilter {
     masks: expr::FilterMasks,
+    /// Any of, all of, none of (`TAG_LISTS`), each empty unless the
+    /// caller allows it.
+    tags: [Vec<u64>; 3],
 }
 
 impl BodyFilter {
@@ -195,8 +254,15 @@ impl BodyFilter {
         {
             return Err(name);
         }
+        let mut tags: [Vec<u64>; 3] = Default::default();
+        for (list, name) in tags.iter_mut().zip(TAG_LISTS) {
+            if allowed.contains(&name) {
+                *list = expr::filter_tag_list(field(filter, name)).ok_or(name)?;
+            }
+        }
         Ok(Self {
             masks: expr::FilterMasks::words(filter),
+            tags,
         })
     }
 
@@ -217,6 +283,59 @@ impl BodyFilter {
     fn passes_none(&self) -> bool {
         self.masks.passes_none()
     }
+
+    /// Whether `entity` carries a tag of the any-of list (when it has
+    /// one), every tag of the all-of list and none of the none-of list,
+    /// as the world gives its target tags; the list whose tag the world
+    /// can't tell, as the error.
+    fn tags_pass<W: World + ?Sized>(
+        &self,
+        world: &W,
+        site: Site,
+        entity: u32,
+    ) -> Result<bool, Gap> {
+        let [any, all, none] = &self.tags;
+        let carries = |tags: &[u64], list: &'static str| -> Result<Vec<bool>, Gap> {
+            tags.iter()
+                .map(|&tag| {
+                    world
+                        .has_target_tag(site, entity, tag)
+                        .ok_or(Gap::Filter(list))
+                })
+                .collect()
+        };
+        let any = carries(any, TAG_LISTS[0])?;
+        let all = carries(all, TAG_LISTS[1])?;
+        let none = carries(none, TAG_LISTS[2])?;
+        Ok((any.is_empty() || any.contains(&true))
+            && !all.contains(&false)
+            && !none.contains(&true))
+    }
+}
+
+/// Whether a running search searches again now (the client's slot 14,
+/// `0x7FF789BA5590`): at a frame's last update, on the frames the gate
+/// `0x7FF789BB9460` gives for its rate `m_DD792FF0` (see the module notes).
+fn search_due(now_ms: u64, frame: u32, site: Site, node: &Node) -> bool {
+    if now_ms % FRAME_MS != FRAME_MS - 1 {
+        return false;
+    }
+    let every: i32 = match field(&node.fields, RATE).as_u64() {
+        Some(1) => 3,
+        Some(2) => 6,
+        Some(3) => 12,
+        Some(4) => 30,
+        _ => return true,
+    };
+    let phase = fnv1a(site.entity ^ u32::from(node.rid));
+    (frame.wrapping_add(phase) as i32) % every == 0
+}
+
+/// 32-bit FNV-1a over the four little-endian bytes of `value`.
+fn fnv1a(value: u32) -> u32 {
+    value.to_le_bytes().iter().fold(0x811C_9DC5, |hash, &byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(16_777_619)
+    })
 }
 
 /// A body's filter word, as the match sends it (see the module notes).
@@ -228,7 +347,7 @@ pub(crate) fn filter_word(candidate: &TargetCandidate) -> u64 {
 
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     /// The search at the state's begin; a form the server runs searches
-    /// again each tick.
+    /// again on the frames its rate gives.
     pub(super) fn begin_track_targets(
         &mut self,
         key: StateKey,
@@ -240,7 +359,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(())
     }
 
-    /// Search and keep the result; true when the form runs.
+    /// Search (at the begin, or on a frame [`search_due`] lets through) and
+    /// keep the result; true when the form runs.
     pub(super) fn track_targets(
         &mut self,
         key: StateKey,
@@ -248,6 +368,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         begin: bool,
     ) -> Result<bool, InitFault> {
         let site = self.site(key.instance, node);
+        if !begin && !search_due(self.machine.now_ms, self.machine.frame, site, node) {
+            return Ok(true);
+        }
         let found = match self.search_targets(key.instance, node) {
             Ok(found) => found,
             Err(gap) => {
@@ -269,18 +392,28 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 return Ok(false);
             }
         };
-        self.assume(site, CLASS, "a sphere search (flag fields unread)");
-        for (name, answer) in UNREAD {
+        for (name, answer) in ASSUMED {
             if is_set(field(&node.fields, name)) {
                 self.assume(site, &format!("{CLASS} {name}"), answer);
             }
         }
+        // The client takes the bodies found before from the found output
+        // itself (none without it), keeps them unless `m_32AFE9AA` tests
+        // them again, and appends the new ones. The server keeps them in
+        // the state, cleared at its end: the same while no other node
+        // writes the output.
+        let keep = !is_set(field(&node.fields, RECHECK));
+        let listed = !field(&node.fields, FOUND).is_null();
         let now = self.machine.now_ms;
         let state = self.state_mut(key).expect("active TrackTargets");
         let before: Vec<u32> = state.tracked.iter().map(|target| target.entity).collect();
-        state
-            .tracked
-            .retain(|target| found.contains(&target.entity));
+        if !listed {
+            state.tracked.clear();
+        } else if !keep {
+            state
+                .tracked
+                .retain(|target| found.contains(&target.entity));
+        }
         for entity in found {
             if !state.tracked.iter().any(|target| target.entity == entity) {
                 state.tracked.push(TrackedTarget {
@@ -357,6 +490,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     None => return Err(Gap::Filter("m_condition")),
                 }
             }
+            if !search
+                .filter
+                .tags_pass(&*self.world, site, candidate.entity)?
+            {
+                continue;
+            }
             found.push(candidate.entity);
         }
         Ok(found)
@@ -426,8 +565,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         {
             return Err(Gap::Field("m_A30B383E"));
         }
-        let filter =
-            BodyFilter::read(field(fields, "m_filter"), &["m_condition"]).map_err(Gap::Filter)?;
+        let filter = BodyFilter::read(
+            field(fields, "m_filter"),
+            &["m_condition", TAG_LISTS[0], TAG_LISTS[1], TAG_LISTS[2]],
+        )
+        .map_err(Gap::Filter)?;
         let entity = match field(fields, "m_8DCA77B6") {
             Json::Null => None,
             config => match self.evaluate_quietly(id, node, config) {
@@ -443,24 +585,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 _ => return Err(Gap::Field("m_05BE62DD")),
             },
         };
-        if let Some(entity) = entity {
-            // A sideways offset turns with the entity by a rule nothing in
-            // the data shows. A forward one (quick melee's 1.5 m) goes along
-            // where the entity looks, its pitch included, as the Python
-            // reference aimed quick melee (`combat.py` `_melee`: the eye
-            // plus the aim times the reach); assumption.
-            if offset[0] != 0.0 {
-                return Err(Gap::Field("m_05BE62DD"));
-            }
-            if offset[2] != 0.0 {
-                let facing = self
-                    .world
-                    .entity_facing(self.site(id, node), entity)
-                    .ok_or(Gap::Field("m_05BE62DD"))?;
-                let aim = expr::aim(facing);
-                let ahead = offset[2];
-                offset = [aim[0] * ahead, offset[1] + aim[1] * ahead, aim[2] * ahead];
-            }
+        let follow_pitch = is_set(field(fields, FOLLOW_PITCH));
+        match entity {
+            Some(entity) => offset = self.entity_offset(id, node, entity, offset, follow_pitch)?,
+            // In the searcher's own transform: not modelled.
+            None if follow_pitch => return Err(Gap::Field(FOLLOW_PITCH)),
+            None => (),
         }
         let radius = self
             .evaluate_quietly(id, node, field(fields, "m_radius"))
@@ -473,6 +603,61 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             radius,
             filter,
         })
+    }
+
+    /// `offset` in `entity`'s transform (see the module notes): turned by
+    /// its yaw (forward `+z`, sideways `+x`, as a rotation about the up
+    /// axis), and first, with `follow_pitch`, by its pitch about its eye
+    /// height (a positive pitch looks down, [`expr::aim`]).
+    fn entity_offset(
+        &mut self,
+        id: u16,
+        node: &Node,
+        entity: u32,
+        [x, y, z]: [f64; 3],
+        follow_pitch: bool,
+    ) -> Result<[f64; 3], Gap> {
+        let site = self.site(id, node);
+        let (mut up, mut ahead) = (y, z);
+        if follow_pitch && (y != 0.0 || z != 0.0) {
+            let [_, pitch] = self
+                .world
+                .entity_facing(site, entity)
+                .ok_or(Gap::Field(FOLLOW_PITCH))?;
+            if pitch != 0 {
+                let eye = self.eye_height(id, node, entity)?;
+                let (sin, cos) = (f64::from(pitch) * TURN).sin_cos();
+                up = (y - eye) * cos - z * sin + eye;
+                ahead = (y - eye) * sin + z * cos;
+            }
+        }
+        if x == 0.0 && ahead == 0.0 {
+            return Ok([0.0, up, 0.0]);
+        }
+        let yaw = self
+            .world
+            .entity_yaw(site, entity)
+            .ok_or(Gap::Field("m_05BE62DD"))?;
+        let (sin, cos) = (f64::from(yaw) * TURN).sin_cos();
+        Ok([x * cos + ahead * sin, up, ahead * cos - x * sin])
+    }
+
+    /// How high `entity`'s eye is over its feet (`STU_21A13145` of the
+    /// search's own entity config, less its position).
+    fn eye_height(&mut self, id: u16, node: &Node, entity: u32) -> Result<f64, Gap> {
+        let config = serde_json::json!({
+            "$": "STU_21A13145",
+            "m_entity": field(&node.fields, "m_8DCA77B6"),
+        });
+        let site = self.site(id, node);
+        let feet = self
+            .world
+            .entity_position(site, entity)
+            .ok_or(Gap::Field(FOLLOW_PITCH))?;
+        match self.evaluate_quietly(id, node, &config) {
+            Some(Value::Vector(eye)) => Ok(eye[1] - feet[1]),
+            _ => Err(Gap::Field(FOLLOW_PITCH)),
+        }
     }
 
     /// A config's value now, or None where the server can't evaluate it; a
