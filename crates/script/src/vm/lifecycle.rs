@@ -112,6 +112,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             StateKind::ApplyAura => self.end_auras(key),
             StateKind::SendMessage => self.end_send_state(key, node)?,
+            StateKind::StatTime => self.end_stat_time(key, node),
             _ => (),
         }
         let state = self.state_mut(key).expect("ending state");

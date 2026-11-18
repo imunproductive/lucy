@@ -25,7 +25,8 @@ use crate::{
     vitals::{PoolKind, Vitals},
     vm::{
         AuraChange, BodyEffects, CombatMod, GameMessage, HealthChange, MapHit, MapRays,
-        RaisedCriteria, Site, TargetCandidate, TargetTagEffect, Unknowns, VoiceRequest, World,
+        RaisedCriteria, Site, TargetCandidate, TargetTagEffect, TrackedStat, Unknowns,
+        VoiceRequest, World,
     },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
@@ -113,6 +114,8 @@ pub struct PlayerWorld {
     /// The auras the body's ApplyAura states put on bodies or took off,
     /// for the match to apply.
     aura_changes: Vec<AuraChange>,
+    /// The stats the body's graphs counted, for the match's stat table.
+    tracked_stats: Vec<TrackedStat>,
     /// The statuses and combat modifiers its states hold.
     pub effects: BodyEffects,
 }
@@ -270,6 +273,16 @@ impl World for PlayerWorld {
             return false;
         }
         self.aura_changes.push(change);
+        true
+    }
+
+    /// The body's stats wait for the match, which adds each to its
+    /// targets' players' stats.
+    fn track_stat(&mut self, site: Site, stat: TrackedStat) -> bool {
+        if site.entity != self.entity {
+            return false;
+        }
+        self.tracked_stats.push(stat);
         true
     }
 
@@ -707,6 +720,7 @@ impl PlayerWorld {
             voices: Vec::new(),
             health_changes: Vec::new(),
             aura_changes: Vec::new(),
+            tracked_stats: Vec::new(),
             effects: BodyEffects::default(),
         }
     }
@@ -741,6 +755,11 @@ impl PlayerWorld {
     /// order.
     pub fn take_aura_changes(&mut self) -> Vec<AuraChange> {
         std::mem::take(&mut self.aura_changes)
+    }
+
+    /// The stats the body's graphs counted since the last call, in order.
+    pub fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
+        std::mem::take(&mut self.tracked_stats)
     }
 
     /// The game messages the body sent other entities since the last call,

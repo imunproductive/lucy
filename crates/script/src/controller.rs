@@ -34,7 +34,7 @@ use crate::{
     graph::GraphStore,
     vm::{
         Component, GameMessage, InitFault, MAX_INIT_WORK, Root, Site, Snapshot, StateKind,
-        Unknowns, VoiceRequest, World,
+        TrackedStat, Unknowns, VoiceRequest, World,
     },
     wire::{Value, Variables},
 };
@@ -107,6 +107,9 @@ pub struct ControllerWorld {
     outbox: Vec<GameMessage>,
     /// The voice stimuli the graphs asked the controller to say.
     voices: Vec<VoiceRequest>,
+    /// The stats the graphs counted (`0215` Multikills, `0C90` Lives and
+    /// Time Alive).
+    tracked_stats: Vec<TrackedStat>,
 }
 
 impl ControllerWorld {
@@ -123,6 +126,7 @@ impl ControllerWorld {
             unknowns,
             outbox: Vec::new(),
             voices: Vec::new(),
+            tracked_stats: Vec::new(),
         }
     }
 
@@ -289,6 +293,15 @@ impl World for ControllerWorld {
         self.voices.push(request);
         true
     }
+
+    /// The controller's stats wait for the match.
+    fn track_stat(&mut self, site: Site, stat: TrackedStat) -> bool {
+        if site.entity != self.entity {
+            return false;
+        }
+        self.tracked_stats.push(stat);
+        true
+    }
 }
 
 /// The controller graph running on the player's controller entity.
@@ -441,6 +454,11 @@ impl ControllerScript {
     /// last call; its possessed body says them.
     pub fn take_voices(&mut self) -> Vec<VoiceRequest> {
         std::mem::take(&mut self.world.voices)
+    }
+
+    /// The stats the graphs counted since the last call, in order.
+    pub fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
+        std::mem::take(&mut self.world.tracked_stats)
     }
 
     /// The controller now possesses `body` playing `hero`: its components
@@ -600,9 +618,29 @@ mod tests {
         tick += 1;
         script.eliminated(tick, 0x20, CONTROLLER | 1).unwrap();
         assert_eq!(script.multikill(), quiet, "the seventh kill has no line");
+        assert_eq!(script.take_tracked_stats(), [], "the streak runs on");
         tick += WINDOW;
         script.eliminated(tick, 0x20, CONTROLLER | 1).unwrap();
         assert_eq!(script.multikill(), quiet, "a new streak's first kill");
+        // The streak's wait ended at 7 kills (rid29: 3 or more): its
+        // TrackStats count it, rid28 the streak's length into the two
+        // "Multikill - Best" stats and rid27 one Multikill, for the owner.
+        let stat = |index: u64| 0x0860_0000_0000_0000 | index;
+        assert_eq!(
+            script.take_tracked_stats(),
+            [
+                TrackedStat {
+                    stats: vec![stat(0x0348), stat(0x0346)],
+                    amount: 7.0,
+                    targets: vec![CONTROLLER],
+                },
+                TrackedStat {
+                    stats: vec![stat(0x0345)],
+                    amount: 1.0,
+                    targets: vec![CONTROLLER],
+                },
+            ]
+        );
         tick += 1;
         script.eliminated(tick, 0x20, CONTROLLER | 1).unwrap();
         assert_eq!(

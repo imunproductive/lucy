@@ -42,8 +42,8 @@ use orpheus_script::{
     vitals::Vitals,
     vm::{
         AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays, Motion,
-        MoveRequest, RaisedCriteria, Root, Snapshot, StateKind, TargetCandidate, Unknowns,
-        VoiceRequest, World,
+        MoveRequest, RaisedCriteria, Root, Snapshot, StateKind, TargetCandidate, TrackedStat,
+        Unknowns, VoiceRequest, World,
     },
     weapons::{HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
@@ -547,6 +547,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     fn take_voices(&mut self) -> Vec<VoiceRequest> {
         self.world.take_voices()
+    }
+
+    fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
+        self.world.take_tracked_stats()
     }
 
     fn move_requests(&self) -> Vec<MoveRequest> {

@@ -65,7 +65,7 @@ use orpheus_script::{
     vitals::{Death, Vitals},
     vm::{
         AuraChange, BodyEffects, GameMessage, MessageEnd, Motion, MoveRequest, RaisedCriteria,
-        Snapshot, TargetCandidate, VoiceRequest,
+        Snapshot, TargetCandidate, TrackedStat, VoiceRequest,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
@@ -306,6 +306,12 @@ pub trait OwnerBodyRuntime: Send {
     /// The voice stimuli the body's server-only states asked it to say
     /// since the last call ([`crate::voice_lines`]).
     fn take_voices(&mut self) -> Vec<VoiceRequest> {
+        Vec::new()
+    }
+
+    /// The stats the body's graphs counted since the last call (TrackStat,
+    /// TrackStatTime): the match adds them to its players' stats.
+    fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
         Vec::new()
     }
 
@@ -3630,6 +3636,20 @@ impl WorldDelivery {
         self.body_script
             .as_mut()
             .map_or_else(Vec::new, |script| script.runtime.take_messages())
+    }
+
+    /// The stats the player's graphs counted since the last call: his
+    /// body's (TrackStat, TrackStatTime in its hero and ability graphs) and
+    /// his controller's (`0215`, `0C90`), for the match's stat table.
+    pub fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
+        let mut stats = self
+            .body_script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.runtime.take_tracked_stats());
+        if let Some(controller) = &mut self.controller_script {
+            stats.extend(controller.take_tracked_stats());
+        }
+        stats
     }
 
     /// The voice lines the current body says since the last call, by its

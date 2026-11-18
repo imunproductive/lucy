@@ -1,9 +1,10 @@
-//! The array actions: ClearArray (`STU_1C2CC6D5`) and the unkeyed array
-//! insert (`STU_4C3509FB`, `STU_CBE8BDAA`). Ported from leafall903/ORPHEUS
-//! (MIT), commit c239a84: `src/ow174/game/script/array_actions.py` and
-//! `docs/ARRAY_ACTIONS.txt`.
+//! The array actions: ClearArray (`STU_1C2CC6D5`), the unkeyed array
+//! insert (`STU_4C3509FB`, `STU_CBE8BDAA`) and the unkeyed remove
+//! (`STU_DA54F8F7`). Ported from leafall903/ORPHEUS (MIT), commit c239a84:
+//! `src/ow174/game/script/array_actions.py` and `docs/ARRAY_ACTIONS.txt`;
+//! the remove from the client's run (`0x7FF78AA7BEB0`).
 //!
-//! Both write the dynamic variable in `m_26E3B366`. A missing output, a
+//! Each writes the dynamic variable in `m_26E3B366`. A missing output, a
 //! variable with identifier 0 or a literal config (whose output cast fails
 //! natively) changes nothing and follows the out plug; any other output is
 //! unsupported.
@@ -21,6 +22,13 @@
 //! the end. The native limit of 200 (index or rows) raises a script
 //! diagnostic that isn't modelled, so it is unsupported here, as are keyed
 //! rows and a destination a state links to.
+//!
+//! The remove reads its index the same way (missing, -1). An index inside
+//! the array removes that row; a negative one removes every row equal to
+//! a row of its value (iterated as the insert iterates it, until it
+//! reaches the destination itself: `0x7FF78AA7EA20`); an index past the end
+//! removes nothing. Without a value and an index it leaves the destination
+//! alone; otherwise a destination that isn't an array becomes an empty one.
 
 use super::*;
 
@@ -234,6 +242,93 @@ impl<W: World> Vm<'_, '_, '_, W> {
             }
             None => rows.push(value),
         }
+        Ok(true)
+    }
+
+    /// RemoveFromArray (`STU_DA54F8F7`, run `0x7FF78AA7BEB0`), unkeyed.
+    pub(super) fn remove_array(
+        &mut self,
+        id: u16,
+        node: &Node,
+        caller: Option<StateKey>,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        let site = self.site(id, node);
+        let variable = match self.array_output(id, node, "array remove output") {
+            Output::Refused => return Ok(false),
+            Output::Variable(variable) if variable.id != 0 => variable,
+            Output::Variable(_) | Output::Skip => {
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                return Ok(true);
+            }
+        };
+        if !field(&node.fields, "m_key").is_null() {
+            self.report(site, Issue::UnsupportedField("keyed array remove"));
+            return Ok(false);
+        }
+        let source = field(&node.fields, "m_value");
+        let index = field(&node.fields, "m_index");
+        if source.is_null() && index.is_null() {
+            self.follow(id, node, "m_outPlug", None, depth)?;
+            return Ok(true);
+        }
+        let key = source_key(id, variable);
+        if self
+            .machine
+            .links
+            .get(&key)
+            .is_some_and(|entries| !entries.is_empty())
+        {
+            self.report(
+                site,
+                Issue::UnsupportedField("array remove from a linked variable"),
+            );
+            return Ok(false);
+        }
+        let index = if index.is_null() {
+            -1
+        } else {
+            let Some(value) = self.evaluate(id, node, index, caller) else {
+                return Ok(false);
+            };
+            native_index(&value)
+        };
+        let before = self.machine.value(key, None);
+        let mut rows = match &before {
+            Value::Array(items) => items.clone(),
+            _ => Vec::new(),
+        };
+        if let Ok(index) = usize::try_from(index) {
+            if index < rows.len() {
+                rows.remove(index);
+            }
+        } else if !source.is_null() {
+            let mut members = Vec::new();
+            if let Err(error) = expr::config_list_members(source, 0, &mut members) {
+                self.report(site, Issue::Expression(error));
+                return Ok(false);
+            }
+            for member in members {
+                if expr::dynamic(member).ok().flatten() == Some(variable) {
+                    break;
+                }
+                let Some(value) = self.evaluate(id, node, member, caller) else {
+                    return Ok(false);
+                };
+                let mut values = Vec::new();
+                if let Err(error) = expr::value_rows(value, &mut values) {
+                    self.report(site, Issue::Expression(error));
+                    return Ok(false);
+                }
+                for value in values {
+                    self.spend("array remove row")?;
+                    rows.retain(|row| !equal(row, &value));
+                }
+            }
+        }
+        self.set_base(key, Value::Array(rows));
+        self.notify_value(key, &before, None)?;
+        self.follow(id, node, "m_outPlug", None, depth)?;
         Ok(true)
     }
 
