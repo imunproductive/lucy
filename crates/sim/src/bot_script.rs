@@ -144,10 +144,6 @@ pub struct BotScripts {
     unknowns: Unknowns,
     mode: u64,
     practice: bool,
-    /// The one team that holds players, if just one does (the Practice
-    /// Range's team 0): its bots can't be hit, so their nameplates start
-    /// enabled ([`ScriptSpawn::nameplate_enabled`]).
-    players_team: Option<u8>,
     slots: Vec<Option<BotScript>>,
     /// The entity each slot's script was last prepared for.
     prepared: Vec<Option<u32>>,
@@ -185,23 +181,12 @@ impl BotScripts {
                 .map(|(slot, _)| slot)
                 .collect()
         });
-        let mut teams = map
-            .team_sizes
-            .iter()
-            .enumerate()
-            .filter(|&(_, &size)| size > 0)
-            .filter_map(|(team, _)| u8::try_from(team).ok());
-        let players_team = match (teams.next(), teams.next()) {
-            (Some(team), None) if !map.free_for_all => Some(team),
-            _ => None,
-        };
         Self {
             graphs,
             codecs,
             unknowns,
             mode: map.mode_guid,
             practice: map.map_guid == PRACTICE_RANGE_MAP && map.mode_guid == PRACTICE_RANGE_MODE,
-            players_team,
             slots: bots.iter().map(|_| None).collect(),
             prepared: vec![None; bots.len()],
             pending,
@@ -293,7 +278,6 @@ impl BotScripts {
             mode: self.mode,
             health: bot.spawn.health,
             firing_position: (bot.spawn.firing && self.practice).then_some(bot.position),
-            nameplate_enabled: self.players_team == Some(bot.spawn.team),
         };
         let mut originals = BTreeMap::new();
         let started = BotBody::start(Arc::clone(graphs), spawn, self.unknowns)
@@ -643,49 +627,6 @@ impl BotScripts {
         if let Err(error) = script.body.set_health(health) {
             eprintln!("bot {entity:08X}'s body script failed on its health ({error})");
             self.slots[slot] = None;
-        }
-    }
-
-    /// combat.py `_damage` after `_sync_body_health`, as leafall903/ORPHEUS
-    /// (MIT), commit c239a84, has it: a hit the bot survived enables its
-    /// nameplate ([`BotBody::show_damage_nameplate`]); the changed frame
-    /// goes to the clients as a live frame. Upstream does it for its Rialto
-    /// Talon NPCs only; here for every bot with a nameplate (assumption).
-    pub(crate) fn show_damage_nameplate(&mut self, entity: u32) {
-        let Some(slot) = self.slot(entity) else {
-            return;
-        };
-        let script = self.slots[slot].as_mut().expect("a running bot script");
-        let result = script
-            .body
-            .show_damage_nameplate()
-            .map_err(|error| error.to_string())
-            .and_then(|took| {
-                if !took {
-                    return Ok(None);
-                }
-                let script = self.slots[slot].as_ref().expect("a running bot script");
-                let snapshot = script.body.snapshot().ok_or("the script halted")?;
-                let frame = self
-                    .frame(&script.body, snapshot, &script.initial)
-                    .map_err(|error| error.to_string())?;
-                Ok((frame.full != script.produced).then_some(frame))
-            });
-        match result {
-            Ok(Some(frame)) => {
-                let script = self.slots[slot].as_mut().expect("a running bot script");
-                script.produced = frame.full.clone();
-                script.latest_live = Arc::new(frame);
-                self.events.push(BotEvent::Live {
-                    entity,
-                    frame: Arc::clone(&script.latest_live),
-                });
-            }
-            Ok(None) => {}
-            Err(reason) => {
-                eprintln!("bot {entity:08X}'s body script failed on its nameplate ({reason})");
-                self.slots[slot] = None;
-            }
         }
     }
 
