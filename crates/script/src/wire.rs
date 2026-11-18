@@ -11,15 +11,17 @@
 //!   owner frame is skipped unless its CmFD is larger than the last one
 //!   (unsigned, so 0 never applies).
 //! - A full frame lists the instances (w_u16 index steps, each with a
-//!   descriptor: 16 bits graph, bit other entity, bit flag, bit parent ->
-//!   w_var parent instance and w_var parent state index, bit references),
-//!   then the entity's variables, then per instance its variables (a presence
-//!   bit per m_syncVars entry with an identifier and instance scope,
-//!   0x7FF78991C270), one bit per state, and in an owner frame its event
-//!   list; then the frame's event list. It destroys the network instances it
-//!   does not list and first clears the variables the network set. The
-//!   dispatcher makes new instances and destroys gone ones first
-//!   (0x7FF78991EE10); an instance of the same id, graph and parent is kept
+//!   descriptor (0x7FF78991ADC0): 16 bits graph, bit creator -> entity id,
+//!   bit flag, bit parent -> w_var parent instance and w_var parent state
+//!   index, bit references), then the entity's variables, then per instance
+//!   its variables (a presence bit per m_syncVars entry with an identifier
+//!   and instance scope, 0x7FF78991C270), one bit per state, and in an owner
+//!   frame its event list; then the frame's event list. The creator is the
+//!   instance's `#27`; without the bit it is the frame's own entity
+//!   (0x7FF789C1D880). It destroys the network instances it does not list
+//!   and first clears the variables the network set. The dispatcher makes
+//!   new instances and destroys gone ones first (0x7FF78991EE10); an
+//!   instance of the same id, graph, parent and `#27` is kept
 //!   (0x7FF78991F200).
 //! - Owner-frame states are the graph's m_states minus client-only and
 //!   server-only ones (an entry DataTool could not read counts as client-only;
@@ -446,6 +448,9 @@ impl TryFrom<&Graph> for Layout {
 pub struct Instance {
     pub id: u16,
     pub layout: Layout,
+    /// The entity it was created with (its `#27`) when that isn't the
+    /// entity the frame is for.
+    pub creator: Option<u32>,
     /// Parent instance and raw state index.
     pub parent: Option<(u16, u16)>,
     pub presence: BTreeMap<usize, Value>,
@@ -460,6 +465,7 @@ impl Instance {
         Self {
             id,
             layout,
+            creator: None,
             parent,
             presence: BTreeMap::new(),
             variables: Variables::new(),
@@ -468,13 +474,25 @@ impl Instance {
     }
 }
 
+/// An instance descriptor, as the client reads it (0x7FF78991ADC0). The
+/// entity after the first bit becomes the instance's `#27` when the client
+/// creates it (0x7FF78991F3D8 → `sub_7FF789887F20` → `sub_7FF78AAA4B10`);
+/// without the bit the client takes the frame's own entity. It also keeps a
+/// predicted instance only when that one's `#27` is the same
+/// (0x7FF78991F2C7). So `creator` is the entity it was created with when
+/// that is another entity (an aura's applier), else none.
 pub(crate) fn write_descriptor(
     out: &mut BitWriter,
     graph: u16,
+    creator: Option<u32>,
     parent: Option<(u16, u16)>,
 ) -> Result<(), WireError> {
     out.bits(u64::from(graph), 16)?;
-    out.bits(0, 2)?; // this entity, flag clear
+    out.bit(creator.is_some());
+    if creator.is_some() {
+        out.entity_id(creator);
+    }
+    out.bit(false); // flag clear
     out.bit(parent.is_some());
     if let Some((parent, state)) = parent {
         out.w_var(u32::from(parent));
@@ -531,7 +549,12 @@ fn full_frame(
         }
         out.w_u16(instance.id - last);
         last = instance.id;
-        write_descriptor(&mut out, instance.layout.graph, instance.parent)?;
+        write_descriptor(
+            &mut out,
+            instance.layout.graph,
+            instance.creator,
+            instance.parent,
+        )?;
     }
     out.w_u16(0);
     variable_list(&mut out, variables, encoding)?;
@@ -593,9 +616,9 @@ pub struct FullHead {
     pub variables: Variables,
 }
 
-/// An instance a full frame lists: id, graph and parent (instance, raw
-/// state).
-pub type ListedInstance = (u16, u16, Option<(u32, u32)>);
+/// An instance a full frame lists: id, graph, creator (none: the frame's
+/// entity) and parent (instance, raw state).
+pub type ListedInstance = (u16, u16, Option<u32>, Option<(u32, u32)>);
 
 pub fn read_full_head(bytes: &[u8]) -> Result<FullHead, WireError> {
     let mut bits = BitReader::new(bytes);
@@ -617,7 +640,8 @@ pub fn read_full_head(bytes: &[u8]) -> Result<FullHead, WireError> {
         }
         id = id.checked_add(step).ok_or(WireError::InstanceId)?;
         let graph = bits.bits(16)? as u16;
-        bits.bits(2)?;
+        let creator = if bits.bit()? { bits.entity_id()? } else { None };
+        bits.bit()?;
         let parent = if bits.bit()? {
             Some((bits.w_var()?, bits.w_var()?))
         } else {
@@ -626,7 +650,7 @@ pub fn read_full_head(bytes: &[u8]) -> Result<FullHead, WireError> {
         if bits.bit()? {
             return Err(WireError::InvalidValue);
         }
-        instances.push((id, graph, parent));
+        instances.push((id, graph, creator, parent));
     }
     let mut variables = Variables::new();
     if bits.bit()? {
@@ -757,6 +781,26 @@ mod tests {
             379,
             "50d263861080080002008aac1f0100807f32a0008ed603000040df86df4baa6e8e0e00f85050c4060000fc0500000002",
         );
+    }
+
+    /// Read in the client's order (0x7FF78991ADC0): graph, the creator bit
+    /// and entity id (0x7FF789CC0F70: 2 type bits, then 8, 16 or 32 bits of
+    /// index), the flag, the parent, the references.
+    #[test]
+    fn a_descriptor_carries_a_creator_the_way_the_client_reads_it() {
+        let mut out = BitWriter::new();
+        write_descriptor(&mut out, 0x0c72, Some(0xa000_0202), Some((1, 43))).unwrap();
+        let mut bits = BitReader::new(out.as_bytes());
+        assert_eq!(bits.bits(16), Ok(0x0c72));
+        assert_eq!(bits.bit(), Ok(true));
+        assert_eq!(bits.bits(2), Ok(1));
+        assert_eq!((bits.bit(), bits.bit()), (Ok(true), Ok(false)));
+        assert_eq!(bits.bits(16), Ok(0x202));
+        assert_eq!(bits.bit(), Ok(false));
+        assert_eq!(bits.bit(), Ok(true));
+        assert_eq!((bits.w_var(), bits.w_var()), (Ok(1), Ok(43)));
+        assert_eq!(bits.bit(), Ok(false));
+        assert_eq!(bits.position(), out.bit_len());
     }
 
     #[test]

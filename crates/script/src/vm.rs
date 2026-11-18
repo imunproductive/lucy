@@ -1177,7 +1177,10 @@ impl ChasePayload {
 /// The instance variable the engine sets to the entity an instance was
 /// created with, its creator (the client's instance creation
 /// `sub_7FF789887F20`/`sub_7FF78988AA20` → setter `sub_7FF78AAA4B10`;
-/// HealthAuras.md, "Client tools pass 2 (2026-11-16)").
+/// HealthAuras.md, "Client tools pass 2 (2026-11-16)"). A creation without
+/// an entity sets the host's own (`ScriptHost_GetEntity` at
+/// `0x7FF78988816C`), so it is always an entity. A network-made instance
+/// takes it from its descriptor (`wire::write_descriptor`; InstanceCreator.md).
 pub(crate) const CREATOR: u32 = 27;
 
 #[derive(Clone, Debug)]
@@ -1185,9 +1188,8 @@ pub struct Instance {
     pub graph: u32,
     /// Parent instance and raw state index, as carried on the wire.
     pub parent: Option<(u16, u16)>,
-    /// The entity it was created with ([`CREATOR`]); none when that was no
-    /// entity.
-    pub source: Option<u32>,
+    /// The entity it was created with ([`CREATOR`]).
+    pub source: u32,
     /// When the instance was created.
     pub start_ms: u64,
     pub variables: Variables,
@@ -2185,12 +2187,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(())
     }
 
-    /// A new instance of `graph`, created with `source` (its [`CREATOR`],
-    /// set when it is an entity): the component's own entity for its roots,
-    /// the applier for an aura, the creating instance's own source for a
-    /// child or a played script (assumption: the client's PlayScript and
-    /// SubScript pass it on; that makes `0C71`'s children `0B99`/`0C72`
-    /// see the grenade's thrower, as their AI damage test expects).
+    /// A new instance of `graph`, created with `source` (its [`CREATOR`];
+    /// the snapshot's entity when `source` is none, as on the client): the
+    /// component's own entity for its roots, the applier for an aura, the
+    /// creating instance's own source for a child or a played script
+    /// (assumption: the client's PlayScript and SubScript pass it on; that
+    /// makes `0C71`'s children `0B99`/`0C72` see the grenade's thrower, as
+    /// their AI damage test expects).
     fn create(
         &mut self,
         id: u16,
@@ -2212,7 +2215,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             );
             return Ok(false);
         };
-        let source = expr::valid_entity(source).then_some(source);
+        let source = if expr::valid_entity(source) {
+            source
+        } else {
+            self.machine.snapshot.entity
+        };
         self.machine.next_id = self.machine.next_id.max(u32::from(id) + 1);
         self.machine.snapshot.instances.insert(
             id,
@@ -2242,8 +2249,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             .snapshot
             .instances
             .get(&id)
-            .and_then(|instance| instance.source)
-            .unwrap_or(0)
+            .map_or(0, |instance| instance.source)
     }
 
     fn run(&mut self) -> Result<(), InitFault> {

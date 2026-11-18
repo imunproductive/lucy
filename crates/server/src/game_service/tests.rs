@@ -438,7 +438,11 @@ fn controller_shows(chunk: &ReceivedChunk) -> Option<(bool, Option<u64>, Option<
         _ => None,
     };
     assert_eq!(flag(2438), flag(31435), "#31435 follows #2438");
-    let instances: Vec<_> = head.instances.iter().map(|&(_, graph, _)| graph).collect();
+    let instances: Vec<_> = head
+        .instances
+        .iter()
+        .map(|&(_, graph, _, _)| graph)
+        .collect();
     assert_eq!(instances, [0x0c90, 0x288a, 0x0215, 0x288b, 0x288d]);
     Some((flag(2438), asset(13161).filter(|_| flag(2114)), asset(940)))
 }

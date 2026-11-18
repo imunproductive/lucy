@@ -228,6 +228,28 @@ fn baseline_matches_python_for_both_views_and_enters_the_acknowledged_stream() {
     assert!(!owner.instances[&1].states.is_empty());
 }
 
+/// An instance created by another entity (an aura's applier) names it in its
+/// descriptor, in both views, so the client's `#27` is that entity; one
+/// created by the body itself leaves the bit clear (the frame's entity).
+#[test]
+fn an_instance_made_by_another_entity_names_its_creator() {
+    const THROWER: u32 = 0xa000_0202;
+    let (graphs, mut snapshot) = fixture();
+    snapshot.instances.get_mut(&2).unwrap().source = THROWER;
+    let codecs = CodecTable::from_json(CODECS).unwrap();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    for view in [View::Owner, View::Observer] {
+        let projected = encoder.project(&snapshot, view).unwrap();
+        let frame = encoder.full(&projected).unwrap();
+        let head = wire::read_full_head(frame.as_bytes()).unwrap();
+        assert_eq!(
+            head.instances,
+            [(1, 42, None, None), (2, 43, Some(THROWER), Some((1, 1)))],
+            "{view:?}"
+        );
+    }
+}
+
 /// The authored typed pairs of graph `05AD` (variable 29859) go out in the
 /// type-12 pair form (104319 D57899, leafall903/ORPHEUS (MIT)
 /// `_write_pair_array`), like any other variable.
