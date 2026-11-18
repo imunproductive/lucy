@@ -475,11 +475,16 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     }
 
     /// The entities a criteria action or a voice stimulus state names in
-    /// `m_targets`, each once: the owner without evaluating it, else what
-    /// the expression gives (an entity or a list), none when it can't be
-    /// evaluated.
+    /// `m_targets`, each once ([`Self::entity_list`]).
     pub(super) fn voice_targets(&mut self, id: u16, node: &Node) -> Vec<u32> {
-        let config = field(&node.fields, "m_targets");
+        self.entity_list(id, node, "m_targets")
+    }
+
+    /// The entities a node's field `name` names, each once: the owner
+    /// without evaluating it, else what the expression gives (an entity or
+    /// a list), none when it can't be evaluated.
+    pub(super) fn entity_list(&mut self, id: u16, node: &Node, name: &str) -> Vec<u32> {
+        let config = field(&node.fields, name);
         if config.get("$").and_then(Json::as_str) == Some("STU_B5A0CAF0") {
             return vec![self.site(id, node).entity];
         }
@@ -491,15 +496,15 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             Some(entity @ Value::Entity(_)) => vec![entity],
             _ => return Vec::new(),
         };
-        let mut targets = Vec::new();
+        let mut entities = Vec::new();
         for item in items {
             if let Value::Entity(entity) = item {
-                if expr::valid_entity(entity) && !targets.contains(&entity) {
-                    targets.push(entity);
+                if expr::valid_entity(entity) && !entities.contains(&entity) {
+                    entities.push(entity);
                 }
             }
         }
-        targets
+        entities
     }
 
     /// A server-only `VoiceStimulus` state began: ask the world to say its
@@ -880,14 +885,16 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_9028E035" => StateKind::Status,
             "STUStatescriptStateCombatModFilter" => StateKind::CombatMod,
             "STU_431F3FCC" => StateKind::ApplyAura,
-            // Biotic Grenade's auras (`0C72` st9 and st7, `0B99` the same):
-            // one takes the aura's source (`m_source`, `STU_DFAB9029` of
-            // #18763 and the instigator) into #18779, which only the aura's
-            // health change reads (`m_A3A0BDD6`, unread); the other names
-            // the instigator (`m_CABF569E`) with a time (3 s, 0 s) and a kind
-            // (`m_86DFF239` 1, 2), perhaps the assist credit. Neither changes
-            // what the server tracks; assumed plain.
-            class @ ("STU_85124386" | "STU_0DB9E66B") => {
+            // The assist credit (`vm/statuses.rs`): Biotic Grenade's
+            // auras (`0C72` st7, `0B99` st7), Discord and Harmony Orbs, the
+            // Biotic Field's heal and 26 more.
+            "STU_0DB9E66B" => StateKind::Assist,
+            // Biotic Grenade's auras (`0C72` st9, `0B99` the same): it
+            // takes the aura's source (`m_source`, `STU_DFAB9029` of #18763
+            // and the instigator) into #18779, which only the aura's health
+            // change reads (`m_A3A0BDD6`, unread). It changes nothing the
+            // server tracks; assumed plain.
+            class @ "STU_85124386" => {
                 self.assume(self.site(id, node), class, "plain state");
                 StateKind::Plain
             }
@@ -1046,6 +1053,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::ModifyHealth { .. } => self.begin_modify_health(key, node)?,
             StateKind::Status => self.begin_status(key, node),
             StateKind::CombatMod => self.begin_combat_mod(key, node),
+            StateKind::Assist => self.begin_assist(key, node),
             StateKind::ApplyAura => {
                 self.assume(
                     self.site(id, node),

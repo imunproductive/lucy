@@ -97,6 +97,7 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
             terminal.then_some(CombatNotice::Elimination {
                 killer: shot.source,
                 victim: entity,
+                assist: false,
             })
         );
         assert_eq!(
@@ -205,12 +206,18 @@ fn heroes_respawn_after_the_mode_time() {
 }
 
 /// The kill feed line reads the killer, the credited body (00BD), the
-/// tags (003D), the crit and the loadout from the "died" message.
+/// tags (003D), the crit, the loadout and the assisters' bodies (03E7)
+/// from the "died" message.
 #[test]
 fn the_died_message_names_the_killer_the_crit_the_loadout_and_the_tags() {
     let melee: DamageTags = [0x0d80_0000_0000_0302].into_iter().collect();
-    let (message, parameters) =
-        death_message(0xa000_0201, true, Some(0x0b90_0000_0000_008d), melee);
+    let (message, parameters) = death_message(
+        0xa000_0201,
+        true,
+        Some(0x0b90_0000_0000_008d),
+        melee,
+        &[0xa001_0201],
+    );
     assert_eq!(message, DIED);
     assert_eq!(parameters[&KILLER], Value::Entity(0xa000_0201));
     assert_eq!(parameters[&CREDITED], Value::Entity(0xa000_0201));
@@ -220,10 +227,14 @@ fn the_died_message_names_the_killer_the_crit_the_loadout_and_the_tags() {
     );
     assert_eq!(parameters[&CRIT], Value::Bool(true));
     assert_eq!(parameters[&LOADOUT], Value::Asset(0x0b90_0000_0000_008d));
-    assert_eq!(parameters[&ASSISTS], Value::Array(Vec::new()));
-    let plain = death_message(1, false, None, DamageTags::NONE).1;
+    assert_eq!(
+        parameters[&ASSISTS],
+        Value::Array(vec![Value::Entity(0xa001_0201)])
+    );
+    let plain = death_message(1, false, None, DamageTags::NONE, &[]).1;
     assert_eq!(plain[&LOADOUT], Value::Null);
     assert_eq!(plain[&DAMAGE_TAGS], Value::Array(Vec::new()));
+    assert_eq!(plain[&ASSISTS], Value::Array(Vec::new()));
 }
 
 /// A hit the body survives: its damage message carries the hit's tags, the
@@ -274,11 +285,11 @@ fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
     let on = HurtFeedback::default();
     let damage = damage_message(SHOOTER.source, 75.0, splash, hit.direction);
     assert_eq!(
-        hit_messages(&hit, hit.tags, 75.0, false, on),
+        hit_messages(&hit, hit.tags, 75.0, None, on),
         std::slice::from_ref(&damage)
     );
 
-    let [(first, killing), died] = hit_messages(&hit, hit.tags, 75.0, true, on)
+    let [(first, killing), died] = hit_messages(&hit, hit.tags, 75.0, Some(&[]), on)
         .try_into()
         .unwrap();
     assert_eq!(first, DAMAGED);
@@ -289,14 +300,67 @@ fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
     assert_eq!(killing[&CRIT], Value::Bool(true));
     assert_eq!(killing[&LOADOUT], Value::Asset(0x0b90_0000_0000_008e));
     assert_eq!(killing[&ASSISTS], Value::Array(Vec::new()));
-    assert_eq!(died, death_message(SHOOTER.source, true, loadout, splash));
+    assert_eq!(
+        died,
+        death_message(SHOOTER.source, true, loadout, splash, &[])
+    );
 
     let off = HurtFeedback {
         message: false,
         ..on
     };
-    assert!(hit_messages(&hit, hit.tags, 75.0, false, off).is_empty());
-    assert_eq!(hit_messages(&hit, hit.tags, 75.0, true, off), [died]);
+    assert!(hit_messages(&hit, hit.tags, 75.0, None, off).is_empty());
+    assert_eq!(hit_messages(&hit, hit.tags, 75.0, Some(&[]), off), [died]);
+}
+
+/// A kill's credit (`kill_credit`): slot 0 kills slot 1. Damage within
+/// 3 s of the death credits an elimination (slot 2, who hit 3 s before);
+/// damage 1 ms longer ago doesn't (slot 3). An offensive assist state on
+/// the victim credits its assister (slot 4, Discord); a defensive one on
+/// an eliminator credits its own (slot 5 healed slot 2); one on someone
+/// else (slot 3) credits nothing, nor one whose assister is the killer;
+/// with both kinds, the defensive one stands (slot 4 also heals the
+/// killer).
+#[test]
+fn a_kill_credits_recent_damagers_and_the_assist_states_assisters() {
+    let body = |slot: u32| 0xa000_0001 + (slot << 8);
+    let player_of = |entity: u32| Some(((entity >> 8) & 0xff) as usize);
+    let death = Duration::from_secs(20);
+    assert!(credits_damage(death - DAMAGE_CREDIT, death));
+    assert!(!credits_damage(
+        death - DAMAGE_CREDIT - Duration::from_millis(1),
+        death
+    ));
+    let link = |assister: u32, target: u32, kind| AssistLink {
+        assisters: vec![body(assister)],
+        targets: vec![body(target)],
+        kind,
+        linger_ms: 0,
+    };
+    let links = [
+        link(4, 1, ASSIST_OFFENSIVE),
+        link(5, 2, ASSIST_DEFENSIVE),
+        link(6, 3, ASSIST_DEFENSIVE),
+        link(0, 1, ASSIST_OFFENSIVE),
+        link(4, 0, ASSIST_DEFENSIVE),
+    ];
+    let bodies: Vec<_> = (0..7).map(|slot| Some(body(slot))).collect();
+    // The victim's attackers in the window: the killer and slot 2.
+    let credit = kill_credit(
+        (1, body(1)),
+        Some(0),
+        &[body(2), body(0)],
+        &links,
+        &bodies,
+        player_of,
+    );
+    assert_eq!(
+        credit,
+        KillCredit {
+            eliminations: vec![2],
+            assists: vec![(4, Assist::Defensive), (5, Assist::Defensive)],
+        }
+    );
 }
 
 #[test]

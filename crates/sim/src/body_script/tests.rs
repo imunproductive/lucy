@@ -1733,7 +1733,7 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
     );
     runtime.health_changed().unwrap();
     let (message, parameters) =
-        crate::combat::death_message(killer, false, None, Default::default());
+        crate::combat::death_message(killer, false, None, Default::default(), &[]);
     runtime.receive_message(0, message, parameters).unwrap();
     let to_mode = |runtime: &mut PlayerBodyRuntime| -> Vec<(u64, Variables)> {
         runtime

@@ -31,7 +31,8 @@ use crate::{
     map_tags::{MapTags, TaggedEntity},
     vm::{
         AuraChange, Component, GameMessage, InitFault, MAX_INIT_WORK, MapRays, MessageEnd, Root,
-        Site, Snapshot, TargetCandidate, Unknowns, World, bind_values, listed_relation,
+        Site, Snapshot, TargetCandidate, TrackedStat, Unknowns, World, bind_values,
+        listed_relation,
     },
     wire::{Value, Variables},
 };
@@ -166,6 +167,7 @@ struct Shared<'a> {
     auras: &'a mut Vec<AuraChange>,
     destroyed: &'a mut Vec<u32>,
     ends: &'a mut Vec<MessageEnd>,
+    tracked_stats: &'a mut Vec<TrackedStat>,
 }
 
 impl Shared<'_> {
@@ -381,6 +383,17 @@ impl World for EntityWorld<'_, '_> {
         true
     }
 
+    /// A spawned entity's stats go to the match, which credits each
+    /// target's player (Biotic Field `0258` rid14: "Biotic Fields
+    /// Deployed" for `STU_0340A42A(owner())`, its owner's player entity).
+    fn track_stat(&mut self, _site: Site, stat: TrackedStat) -> bool {
+        if self.owner.is_none() {
+            return false;
+        }
+        self.shared.tracked_stats.push(stat);
+        true
+    }
+
     fn end_message(&mut self, _source: Site, target: u32, message: u64) -> bool {
         self.shared.ends.push(MessageEnd {
             sender: self.entity,
@@ -416,6 +429,8 @@ pub struct MapEntityWorld {
     /// looked.
     destroyed: Vec<u32>,
     ends: Vec<MessageEnd>,
+    /// The stats the spawned entities counted ([`World::track_stat`]).
+    tracked_stats: Vec<TrackedStat>,
     entities: Vec<PlacedEntity>,
     frame: u32,
 }
@@ -451,6 +466,7 @@ impl MapEntityWorld {
             auras: Vec::new(),
             destroyed: Vec::new(),
             ends: Vec::new(),
+            tracked_stats: Vec::new(),
             entities: Vec::new(),
             frame,
         };
@@ -517,6 +533,7 @@ impl MapEntityWorld {
             auras: &mut self.auras,
             destroyed: &mut self.destroyed,
             ends: &mut self.ends,
+            tracked_stats: &mut self.tracked_stats,
         };
         let mut team = None;
         let mut entity_world = EntityWorld {
@@ -648,6 +665,7 @@ impl MapEntityWorld {
             auras: &mut self.auras,
             destroyed: &mut self.destroyed,
             ends: &mut self.ends,
+            tracked_stats: &mut self.tracked_stats,
         };
         for placed in &mut self.entities {
             if !pick(placed.entity) {
@@ -720,6 +738,7 @@ impl MapEntityWorld {
             auras: &mut self.auras,
             destroyed: &mut self.destroyed,
             ends: &mut self.ends,
+            tracked_stats: &mut self.tracked_stats,
         };
         let mut world = EntityWorld {
             shared: &mut shared,
@@ -754,6 +773,12 @@ impl MapEntityWorld {
     /// ([`World::end_message`]), for the match to route.
     pub fn take_message_ends(&mut self) -> Vec<MessageEnd> {
         std::mem::take(&mut self.ends)
+    }
+
+    /// The stats the spawned entities counted since the last call, for the
+    /// match to credit to their targets' players.
+    pub fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
+        std::mem::take(&mut self.tracked_stats)
     }
 
     /// The classes the VM refused or answered by assumption, and the

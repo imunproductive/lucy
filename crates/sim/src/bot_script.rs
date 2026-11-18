@@ -552,7 +552,8 @@ impl BotScripts {
         };
         let script = self.slots[slot].as_mut().expect("a running bot script");
         script.death = Some((tick, killer));
-        let (_, parameters) = death_message(killer, death.critical, death.loadout, death.tags);
+        // A Training Bot's death credits no assists (StatCredit.md "Open").
+        let (_, parameters) = death_message(killer, death.critical, death.loadout, death.tags, &[]);
         let frame = tick.max(script.body.frame());
         let result = script
             .body

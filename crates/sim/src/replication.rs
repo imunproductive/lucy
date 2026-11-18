@@ -16,7 +16,7 @@ use crate::{
     bots::BOT_RECORD_DELAY,
     combat::{
         BotReplacement, DEAD, PlayerHit, PlayerTarget, PosedProjectile, PosedShot, RESPAWN_RETRY,
-        hit_messages,
+        credits_damage, hit_messages,
     },
     controller::ControllerFrame,
     egress::{
@@ -66,9 +66,9 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
     vm::{
-        AuraChange, BodyEffects, DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage, HEALING_DEALT,
-        HEALING_TAKEN, MessageEnd, Motion, MoveRequest, RaisedCriteria, Snapshot, TargetCandidate,
-        TrackedStat, VoiceRequest,
+        AssistLink, AuraChange, BodyEffects, DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage,
+        HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, RaisedCriteria, Snapshot,
+        TargetCandidate, TrackedStat, VoiceRequest,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
@@ -289,6 +289,12 @@ pub trait OwnerBodyRuntime: Send {
     /// The statuses and combat modifiers the body's states hold.
     fn effects(&self) -> Option<&BodyEffects> {
         None
+    }
+
+    /// The assist credits the body's states hold now, the lingering ones
+    /// included (`orpheus_script::vm` [`AssistLink`]).
+    fn assists(&self) -> Vec<AssistLink> {
+        Vec::new()
     }
 
     /// A game message from another entity (`sender`; 0: none known), run
@@ -1466,6 +1472,10 @@ pub struct WorldDelivery {
     target_candidates: Vec<TargetCandidate>,
     /// The current body's death and respawn (combat.py `Vitals.died_at`).
     death: Option<BodyDeath>,
+    /// Who last hurt which of the player's bodies, and when: the player
+    /// sources of damage, for the eliminations a death credits
+    /// ([`Self::recent_attackers`]).
+    attackers: Vec<Attack>,
     /// The pools of a body that runs no script (combat.py `Vitals` from
     /// `pools.body_pools`).
     plain_vitals: Option<Vitals>,
@@ -1565,11 +1575,23 @@ struct BodyDeath {
     due: Option<Duration>,
 }
 
-/// How a hit on the player's body ended (combat.py `_damage`).
+/// How a hit on the player's body ended (combat.py `_damage`): the damage
+/// dealt, whether it killed the body, and the hit's tags as the body's
+/// damage modifiers left them, for its messages
+/// ([`WorldDelivery::send_hit_messages`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BodyDamage {
     pub dealt: f64,
     pub killed: bool,
+    pub tags: DamageTags,
+}
+
+/// A hit that hurt one of the player's bodies ([`WorldDelivery::attackers`]).
+#[derive(Clone, Copy, Debug)]
+struct Attack {
+    body: u32,
+    source: u32,
+    at: Duration,
 }
 
 /// The Tab board the client has (match.py `stats_sent`, `next_stats`).
@@ -1633,6 +1655,7 @@ impl WorldDelivery {
             placed_views: PlacedViews::default(),
             target_candidates: Vec::new(),
             death: None,
+            attackers: Vec::new(),
             plain_vitals: None,
             body_health: 0,
             body_tags: None,
@@ -1902,7 +1925,9 @@ impl WorldDelivery {
     /// multikills stop with it.
     ///
     /// The body's copy carries `0015` the victim, `0012` the killer (his
-    /// body), `0091` on (the final blow: the server credits no assists),
+    /// body), `0091` `final_blow` (off for an elimination credited for
+    /// damage before another player's killing blow,
+    /// [`crate::combat::kill_credit`]: `01CA` rid221 then says no line),
     /// and the killing hit's tags as `003D` and `0355` (`01CA` tests `0355`
     /// for the melee tag `0302`; assumption: both name the killing hit's
     /// tags). The body learns the victim's authored target tags first:
@@ -1915,6 +1940,7 @@ impl WorldDelivery {
         victim: u32,
         victim_body: Option<u64>,
         tags: &DamageTags,
+        final_blow: bool,
     ) {
         let killer = self.body.map_or(self.owner, |body| body.id.entity);
         if victim == killer {
@@ -1933,7 +1959,7 @@ impl WorldDelivery {
                 let parameters = Variables::from([
                     (0x15, ScriptValue::Entity(victim)),
                     (0x12, ScriptValue::Entity(killer)),
-                    (0x91, ScriptValue::Bool(true)),
+                    (0x91, ScriptValue::Bool(final_blow)),
                     (0x3d, tags.to_value()),
                     (0x355, tags.to_value()),
                 ]);
@@ -1952,7 +1978,7 @@ impl WorldDelivery {
             return;
         };
         let before = script.multikill();
-        match script.eliminated(tick, victim, killer) {
+        match script.eliminated(tick, victim, killer, final_blow) {
             Ok(()) => self.multikill_due |= script.multikill() != before,
             Err(error) => {
                 eprintln!("controller script of {:08X} stopped ({error})", self.owner);
@@ -3454,14 +3480,29 @@ impl WorldDelivery {
             && self.combat_identity_ready(death.killer)
     }
 
+    /// combat.py `_damage` and `_died` for the player's current body, its
+    /// messages included ([`Self::apply_damage`], then
+    /// [`Self::send_hit_messages`] without assists).
+    pub fn damage_body(
+        &mut self,
+        scene: &PreparedScene,
+        hit: &PlayerHit,
+        tick: u32,
+        now: Duration,
+    ) -> Option<BodyDamage> {
+        let damage = self.apply_damage(scene, hit, tick, now)?;
+        self.send_hit_messages(scene, hit, &damage, &[]);
+        Some(damage)
+    }
+
     /// combat.py `_damage` and `_died` for the player's current body: its
     /// pools take the hit, scaled by the damage-taken modifiers his graphs
     /// hold (`vm/statuses.rs`: Nano Boost's reduction), shields, armour,
-    /// health, and its script's health follows; its script takes the damage
-    /// message (`0011.025`), and a killing hit makes it dead and then gives
-    /// its script the "died" message (003E.025, which pulses the kill feed
-    /// line) and sets its respawn after the mode's time.
-    pub fn damage_body(
+    /// health, and its script's health follows; a killing hit makes it dead
+    /// and sets its respawn after the mode's time. The hit's source is kept
+    /// as the body's attacker ([`Self::recent_attackers`]). Its messages
+    /// are [`Self::send_hit_messages`]'s.
+    pub fn apply_damage(
         &mut self,
         scene: &PreparedScene,
         hit: &PlayerHit,
@@ -3508,10 +3549,17 @@ impl WorldDelivery {
             return None;
         }
         self.body_health += 1;
-        let script = self
-            .body_script
-            .as_mut()
-            .filter(|script| script.id == body.id && failure.is_none());
+        let attacker = hit.shooter.source;
+        self.attackers.retain(|attack| {
+            attack.body == body.id.entity
+                && attack.source != attacker
+                && credits_damage(attack.at, now)
+        });
+        self.attackers.push(Attack {
+            body: body.id.entity,
+            source: hit.shooter.source,
+            at: now,
+        });
         if result.killed {
             self.death = Some(BodyDeath {
                 body: body.id,
@@ -3521,28 +3569,72 @@ impl WorldDelivery {
                 due: None,
             });
         }
-        if let Some(script) = script {
-            let messages = hit_messages(
-                hit,
-                tags,
-                result.dealt,
-                result.killed,
-                scene.hurt_feedback(),
-            );
-            for (message, parameters) in messages {
-                failure = script.runtime.receive_message(0, message, parameters).err();
-                if failure.is_some() {
-                    break;
-                }
-            }
-        }
         if let Some(error) = failure {
             self.drop_failed_script(&error.to_string());
         }
         Some(BodyDamage {
             dealt: result.dealt,
             killed: result.killed,
+            tags,
         })
+    }
+
+    /// The messages of a hit [`Self::apply_damage`] applied to the current
+    /// body go to its script: the damage message (`0011.025`), and for a
+    /// killing hit the "died" message (003E.025, which pulses the kill
+    /// feed line), both naming `assists` (`03E7`: the assisters' bodies,
+    /// [`crate::combat::kill_credit`]).
+    pub fn send_hit_messages(
+        &mut self,
+        scene: &PreparedScene,
+        hit: &PlayerHit,
+        damage: &BodyDamage,
+        assists: &[u32],
+    ) {
+        let Some(script) = self
+            .body_script
+            .as_mut()
+            .filter(|script| script.id.entity == hit.body)
+        else {
+            return;
+        };
+        let messages = hit_messages(
+            hit,
+            damage.tags,
+            damage.dealt,
+            damage.killed.then_some(assists),
+            scene.hurt_feedback(),
+        );
+        let failure = messages.into_iter().find_map(|(message, parameters)| {
+            script.runtime.receive_message(0, message, parameters).err()
+        });
+        if let Some(error) = failure {
+            self.drop_failed_script(&error.to_string());
+        }
+    }
+
+    /// The players' sources (bodies) of the damage the body `body` took
+    /// within [`crate::combat::DAMAGE_CREDIT`] before `now`, each once, in the order of
+    /// their last hits.
+    pub fn recent_attackers(&self, body: u32, now: Duration) -> Vec<u32> {
+        self.attackers
+            .iter()
+            .filter(|attack| attack.body == body && credits_damage(attack.at, now))
+            .map(|attack| attack.source)
+            .collect()
+    }
+
+    /// The assist credits the current body's states hold now
+    /// ([`OwnerBodyRuntime::assists`]).
+    pub fn assist_links(&self) -> Vec<AssistLink> {
+        let Some(body) = self.body else {
+            return Vec::new();
+        };
+        self.body_script
+            .as_ref()
+            .filter(|script| script.id == body.id)
+            .map(|script| script.runtime.assists())
+            .unwrap_or_default()
     }
 
     /// combat.py `heal_area` for the player's living body, scaled by the

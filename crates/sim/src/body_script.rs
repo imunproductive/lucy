@@ -41,9 +41,9 @@ use orpheus_script::{
     timeline::FRAME_MS,
     vitals::Vitals,
     vm::{
-        AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays, Motion,
-        MoveRequest, RaisedCriteria, Root, Snapshot, StateKind, TargetCandidate, TrackedStat,
-        Unknowns, VoiceRequest, World,
+        AssistLink, AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays,
+        Motion, MoveRequest, RaisedCriteria, Root, Snapshot, StateKind, TargetCandidate,
+        TrackedStat, Unknowns, VoiceRequest, World,
     },
     weapons::{HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
@@ -522,6 +522,11 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     fn effects(&self) -> Option<&BodyEffects> {
         Some(&self.world.effects)
+    }
+
+    fn assists(&self) -> Vec<AssistLink> {
+        let now = self.component.now_ms();
+        self.world.effects.assists(now).cloned().collect()
     }
 
     fn receive_message(

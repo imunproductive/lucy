@@ -49,9 +49,50 @@
 //!   `012F`: strong guess, they count toward the 50 % reduction cap),
 //!   `m_E9517777` (`03A3`'s `19C4`, an identifier the query hands back) and
 //!   `m_893AABFC` (the query doesn't read it).
+//!
+//! `STU_0DB9E66B` (31 nodes in 30 graphs, server-only: no registration of
+//! its own, codec `none`) is the assist credit, the graphs' form of the
+//! Workshop's Start Assist (Assisters, Targets: "the players whose
+//! eliminations will grant assist credit to the assisters; allied: a
+//! defensive assist, otherwise offensive"). `m_CABF569E` names the
+//! assisters, `m_targets` the targets, `m_86DFF239` the kind, `m_43B917C6`
+//! seconds the credit outlasts the state, `m_AFAB6CCD` a tag list (always
+//! `2456.01C`, on the kind 1 nodes; not read). Kind 1 (11 nodes, each
+//! with 3 s, 2 s in `0ECA`) is on enemies: Biotic Grenade's enemy aura
+//! `0C72`, Zenyatta's Discord Orb `0176` st20, Reinhardt's `224E`; kind 2
+//! (19 nodes, 0 s) on allies: Mercy's weapon graph `006B`, Harmony Orb `017B`,
+//! the Biotic Field's heal `0B3C`, Biotic Grenade's ally aura `0B99`;
+//! kind 3 only in `02D1`. So kind 1 is the offensive assist, kind 2 the
+//! defensive one ([`ASSIST_OFFENSIVE`], [`ASSIST_DEFENSIVE`]; assumption,
+//! from the targets' sides, `refs/reports/StatCredit.md`). The server
+//! evaluates the assisters and targets when the state begins (assumption)
+//! and the match credits the assist at a death ([`AssistLink`]).
 
 use super::*;
 use crate::weapons::DamageTags;
+
+/// `STU_0DB9E66B` `m_86DFF239` of an offensive assist: the targets are
+/// the assister's enemies, credited when one dies.
+pub const ASSIST_OFFENSIVE: i64 = 1;
+/// `STU_0DB9E66B` `m_86DFF239` of a defensive assist: the targets are the
+/// assister's allies, credited when one of them eliminates an enemy.
+pub const ASSIST_DEFENSIVE: i64 = 2;
+
+/// The assist credit an assist state (`STU_0DB9E66B`) holds while it runs
+/// and for its linger after ([`World::assist`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AssistLink {
+    /// `m_CABF569E`: who gets the credit (bodies, or the player entity of
+    /// a field's owner).
+    pub assisters: Vec<u32>,
+    /// `m_targets` (the owner itself unevaluated).
+    pub targets: Vec<u32>,
+    /// `m_86DFF239`: [`ASSIST_OFFENSIVE`], [`ASSIST_DEFENSIVE`] or another.
+    pub kind: i64,
+    /// `m_43B917C6` in milliseconds: how long the credit outlasts the
+    /// state.
+    pub linger_ms: u64,
+}
 
 /// A combat modifier a `CombatModFilter` state holds on its body.
 #[derive(Clone, Debug, PartialEq)]
@@ -92,6 +133,36 @@ impl<W: World> Vm<'_, '_, '_, W> {
         if !self.world.set_status(site, Some(status)) {
             self.assume(site, &node.class, "no effect (the world keeps no status)");
         }
+    }
+
+    /// An assist state began: its credit goes to the world
+    /// ([`World::assist`]) with the assisters and targets as they are now.
+    pub(super) fn begin_assist(&mut self, key: StateKey, node: &Node) {
+        let id = key.instance;
+        let site = self.site(id, node);
+        let linger = match field(&node.fields, "m_43B917C6") {
+            Json::Null => 0.0,
+            config => self
+                .evaluate_quietly(id, node, config)
+                .map_or(0.0, |value| expr::to_float(&value)),
+        };
+        let link = AssistLink {
+            assisters: self.entity_list(id, node, "m_CABF569E"),
+            targets: self.entity_list(id, node, "m_targets"),
+            kind: field(&node.fields, "m_86DFF239").as_i64().unwrap_or(0),
+            linger_ms: (linger.max(0.0) * 1000.0) as u64,
+        };
+        let now = self.machine.now_ms;
+        if !self.world.assist(site, Some(link), now) {
+            self.assume(site, &node.class, "no effect (the world keeps no assist)");
+        }
+    }
+
+    /// An assist state ended: its credit lingers for its time.
+    pub(super) fn end_assist(&mut self, key: StateKey, node: &Node) {
+        let site = self.site(key.instance, node);
+        let now = self.machine.now_ms;
+        self.world.assist(site, None, now);
     }
 
     pub(super) fn begin_combat_mod(&mut self, key: StateKey, node: &Node) {
@@ -155,6 +226,9 @@ impl<W: World> Vm<'_, '_, '_, W> {
 pub struct BodyEffects {
     statuses: Vec<(Site, i64)>,
     modifiers: Vec<(Site, CombatMod)>,
+    /// The assist credits and, for one whose state ended, when its linger
+    /// ends.
+    assists: Vec<(Site, AssistLink, Option<u64>)>,
 }
 
 impl BodyEffects {
@@ -186,6 +260,37 @@ impl BodyEffects {
             Some(_) => false,
             None => true,
         }
+    }
+
+    /// [`World::assist`] at `now_ms`: a credit is kept while its state
+    /// runs, and after it ends for its linger (none: gone at once).
+    pub fn assist(&mut self, site: Site, link: Option<AssistLink>, now_ms: u64) -> bool {
+        self.assists
+            .retain(|(_, _, until)| until.is_none_or(|until| until >= now_ms));
+        let running = self
+            .assists
+            .iter()
+            .position(|(held, _, until)| *held == site && until.is_none());
+        if let Some(index) = running {
+            let linger = self.assists[index].1.linger_ms;
+            if linger == 0 {
+                self.assists.remove(index);
+            } else {
+                self.assists[index].2 = Some(now_ms + linger);
+            }
+        }
+        if let Some(link) = link {
+            self.assists.push((site, link, None));
+        }
+        true
+    }
+
+    /// The assist credits held at `now_ms`, the lingering ones included.
+    pub fn assists(&self, now_ms: u64) -> impl Iterator<Item = &AssistLink> {
+        self.assists
+            .iter()
+            .filter(move |(_, _, until)| until.is_none_or(|until| until >= now_ms))
+            .map(|(_, link, _)| link)
     }
 
     /// The body takes no damage (a status of type 0 or 1).
@@ -238,4 +343,39 @@ pub fn combat_scale<'a>(
         }
     }
     f64::max(f64::max(sum, 0.0) * product, 0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An assist credit holds while its state runs and, once it ends, for
+    /// its linger (Discord's 3 s), then goes; one without a linger goes as
+    /// its state ends.
+    #[test]
+    fn an_assist_credit_outlasts_its_state_by_its_linger() {
+        let site = |node| Site {
+            entity: 0xa000_0001,
+            instance: 1,
+            graph: 0x0176,
+            node: Some(node),
+        };
+        let link = |linger_ms| AssistLink {
+            assisters: vec![0xa000_0001],
+            targets: vec![0xa001_0001],
+            kind: ASSIST_OFFENSIVE,
+            linger_ms,
+        };
+        let mut effects = BodyEffects::default();
+        effects.assist(site(40), Some(link(3000)), 1000);
+        effects.assist(site(41), Some(link(0)), 1000);
+        assert_eq!(effects.assists(1500).count(), 2);
+        effects.assist(site(40), None, 2000);
+        effects.assist(site(41), None, 2000);
+        assert_eq!(
+            effects.assists(5000).cloned().collect::<Vec<_>>(),
+            [link(3000)]
+        );
+        assert_eq!(effects.assists(5001).count(), 0);
+    }
 }
