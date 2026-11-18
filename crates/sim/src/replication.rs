@@ -17,7 +17,7 @@ use crate::{
     bots::BOT_RECORD_DELAY,
     combat::{
         BotReplacement, DEAD, PlayerHit, PlayerTarget, PosedProjectile, PosedShot, RESPAWN_RETRY,
-        damage_message, death_message,
+        hit_messages,
     },
     controller::ControllerFrame,
     egress::{
@@ -3280,7 +3280,8 @@ impl WorldDelivery {
 
     /// combat.py `_damage` and `_died` for the player's current body: its
     /// pools take the hit (shields, armour, health) and its script's health
-    /// follows; a killing hit makes it dead, gives its script the "died"
+    /// follows; its script takes the damage message (`0011.025`), and a
+    /// killing hit makes it dead and then gives its script the "died"
     /// message (003E.025, which pulses the kill feed line) and sets its
     /// respawn after the mode's time.
     pub fn damage_body(
@@ -3337,22 +3338,15 @@ impl WorldDelivery {
                 died_at: now,
                 due: None,
             });
-            if let Some(script) = script {
-                let (message, parameters) =
-                    death_message(hit.shooter.source, hit.critical, hit.loadout, hit.tags);
+        }
+        if let Some(script) = script {
+            let messages = hit_messages(hit, result.dealt, result.killed, scene.hurt_feedback());
+            for (message, parameters) in messages {
                 failure = script.runtime.receive_message(0, message, parameters).err();
+                if failure.is_some() {
+                    break;
+                }
             }
-        } else if let Some(script) = script.filter(|_| scene.hurt_feedback().message) {
-            // The live hurt feedback switch (`crate::hurt_feedback`): with
-            // the flinch off the message goes without its tags.
-            let tags = if scene.hurt_feedback().flinch {
-                hit.tags
-            } else {
-                DamageTags::NONE
-            };
-            let (message, parameters) =
-                damage_message(hit.shooter.source, result.dealt, tags, hit.direction);
-            failure = script.runtime.receive_message(0, message, parameters).err();
         }
         if let Some(error) = failure {
             self.drop_failed_script(&error.to_string());
@@ -3502,6 +3496,23 @@ impl WorldDelivery {
     /// the same gate as the damage.
     fn can_be_damaged(&self) -> bool {
         !self.body_effects().is_some_and(BodyEffects::invulnerable)
+    }
+
+    /// Another's explosion pushes the player's living body `body`
+    /// ([`crate::combat::PlayerPush`]): `push` goes to his mover for its
+    /// next posed frame, as his own explosion's does
+    /// ([`Self::advance_projectiles`]), and the owner corrections carry it
+    /// to his client, which predicts no push from another's explosion. Not
+    /// where it can't hurt him ([`Self::can_be_damaged`]: the spawn room,
+    /// whose status bit 0x4 also stops the client's own push, `scene`
+    /// module notes) nor on a body the hit killed.
+    pub fn knock(&mut self, body: u32, push: [f64; 3]) {
+        if self.current_body() != Some(body) || self.death.is_some() || !self.can_be_damaged() {
+            return;
+        }
+        if let Some(mover) = &mut self.mover {
+            mover.push(push);
+        }
     }
 
     /// An aura comes on the player's living body (Biotic Grenade's

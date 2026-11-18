@@ -392,6 +392,17 @@ fn lift(
             }))
         })
         .unwrap();
+    rise(world, scene, viewer, tick, floor)
+}
+
+/// How far above `floor` the body rises in 20 ticks of idle commands.
+fn rise(
+    world: &mut WorldDelivery,
+    scene: &PreparedScene,
+    viewer: &PlayerAppearance<'_>,
+    tick: &mut u32,
+    floor: f64,
+) -> f64 {
     let mut top = floor;
     for _ in 0..20 {
         *tick += 1;
@@ -413,14 +424,105 @@ fn lift(
     top - floor
 }
 
+/// The height an enemy's Helix Rocket (graph `0254` node 35's numbers)
+/// lifts the body in 20 ticks, as the match runs it: it flies straight
+/// down 0.8 m beside his feet and bursts on the ground, 0.4 m from his
+/// capsule, within the 0.5 m knockback ring (4 m/s away from the burst, 6
+/// m/s up); the room's combat deals its hits, then hands its pushes to the
+/// victim's mover (`apply_player_pushes`).
+fn blasted(
+    world: &mut WorldDelivery,
+    scene: &mut PreparedScene,
+    viewer: &PlayerAppearance<'_>,
+    tick: &mut u32,
+) -> f64 {
+    use crate::combat::apply_player_pushes;
+    use orpheus_script::weapons::{
+        AllyHits, Blast, DamageTags, HitDefinition, Knockback, ProjectileBallistics,
+    };
+    let hit = |amount| HitDefinition {
+        amount,
+        loadout: None,
+        critical: 1.0,
+        falloff: None,
+        tags: DamageTags::NONE,
+        allies: AllyHits::None,
+    };
+    let helix = ProjectileBallistics {
+        speed: 50.0,
+        lifetime: 2.0,
+        definition: None,
+        direct: Some(hit(40.0)),
+        blast: Some(Blast {
+            hit: hit(80.0),
+            rings: vec![(1.0, 1.0), (3.0, 0.5)],
+            self_damage: 0.5,
+            aura: None,
+            knockback: Some(Knockback {
+                away: 4.0,
+                upward: 6.0,
+                away_rings: vec![(0.5, 1.0), (3.0, 0.75)],
+                upward_rings: vec![(0.5, 1.0), (3.0, 0.25)],
+            }),
+        }),
+        radius: 0.0,
+        gravity: 0.0,
+        fuse: None,
+        unmodelled: Vec::new(),
+        ray_profile: None,
+    };
+    let enemy = Shooter {
+        source: 0xa000_0201,
+        team: 1,
+        bot: false,
+    };
+    let target = world.combat_target(scene, 0).unwrap();
+    let [x, y, z] = target.pose.feet;
+    let mut combat = Combat::new(scene);
+    combat.record_poses(scene, &[target], *tick);
+    let mut flight =
+        ProjectileFlight::new(helix, [x + 0.8, y + 0.3, z], [0.0, -1.0, 0.0], Some(*tick)).unwrap();
+    let context = ShotContext {
+        quanta: RETAIL_QUANTA,
+        tick: *tick + 1,
+        now: Duration::ZERO,
+    };
+    let end = combat
+        .step_projectile(scene, enemy, &mut flight, context, &mut Vec::new())
+        .unwrap();
+    assert!(
+        end.is_some_and(|end| end.exploded),
+        "it bursts on the ground"
+    );
+    let floor = world.mover.as_ref().unwrap().pose().position[1];
+    let mut stats = PlayerStats::default();
+    let mut players = [CombatPlayer {
+        entity: OWNER,
+        world: Some(&mut *world),
+        stats: &mut stats,
+    }];
+    apply_player_hits(
+        scene,
+        combat.take_player_hits(),
+        &mut players,
+        context.tick,
+        Duration::ZERO,
+    );
+    apply_player_pushes(combat.take_player_pushes(), &mut players);
+    rise(world, scene, viewer, tick, floor)
+}
+
 /// An explosion pushes only a body it can hurt (the user, 2026-11-17): his
-/// own Helix Rocket's knockback leaves him standing in the spawn room,
-/// where the room's `0723` makes him invulnerable, and lifts him out on the
-/// range.
+/// own Helix Rocket's knockback and an enemy's leave him standing, and
+/// unhurt, in the spawn room, where the room's `0723` makes him
+/// invulnerable (its status bit 0x4 also stops his client's own push), and
+/// lift him out on the range, the enemy's through the room's combat as a
+/// push on his mover, whose owner corrections his client follows (it
+/// predicts no push from another's explosion).
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
-fn his_own_explosion_pushes_him_only_outside_the_spawn_room() {
-    let scene = scene();
+fn explosions_push_him_only_outside_the_spawn_room() {
+    let mut scene = scene();
     let card = PlayerCard::default();
     let viewer = viewer(&card);
     let mut world = spawned(&scene, &viewer);
@@ -435,13 +537,21 @@ fn his_own_explosion_pushes_him_only_outside_the_spawn_room() {
     let mut tick = FIRST_TICK;
     let lifted = lift(&mut world, &scene, &viewer, &mut tick);
     assert!(lifted.abs() < 0.01, "{lifted} m up in the room");
+    let lifted = blasted(&mut world, &mut scene, &viewer, &mut tick);
+    assert!(lifted.abs() < 0.01, "{lifted} m up in the room");
+    assert_eq!(world.health_share(), Some(1.0));
 
-    place(&mut world, &scene, outside(&scene), 0);
+    let outside = outside(&scene);
+    place(&mut world, &scene, outside, 0);
     leave(&mut world);
     world.area_step(&scene, &viewer);
     assert_eq!(world.in_spawn_room(), Some(false));
     let lifted = lift(&mut world, &scene, &viewer, &mut tick);
     assert!(lifted > 1.0, "{lifted} m up on the range");
+    place(&mut world, &scene, outside, 0);
+    let lifted = blasted(&mut world, &mut scene, &viewer, &mut tick);
+    assert!(lifted > 1.0, "{lifted} m up on the range");
+    assert!(world.health_share().unwrap() < 1.0, "the burst hurts him");
 }
 
 /// A hero change in the room keeps the body where it stands and its

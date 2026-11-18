@@ -73,8 +73,8 @@ use orpheus_sim::{
     bot_script::{BotShotKind, SeenRocket},
     combat::{
         BotHit, BotReplacement, Combat, CombatPlayer, PosedShot, Shooter, ShotContext,
-        apply_player_hits, deliver_body_messages, deliver_projectiles, finish_bot_rockets,
-        show_bot_rockets, show_fired,
+        apply_player_hits, apply_player_pushes, deliver_body_messages, deliver_projectiles,
+        finish_bot_rockets, show_bot_rockets, show_fired,
     },
     controller::ControllerFrame,
     egress::GameEgress,
@@ -2413,6 +2413,7 @@ impl State {
             return;
         };
         let hits = combat.take_player_hits();
+        let pushes = combat.take_player_pushes();
         let teams: Vec<u8> = players.iter().map(|player| player.info.team).collect();
         let mut peers = room_peers(&mut self.peers, &self.seats, id, players.len());
         let notices = {
@@ -2426,6 +2427,7 @@ impl State {
                 })
                 .collect();
             let notices = apply_player_hits(scene, hits, &mut room, tick, now);
+            apply_player_pushes(pushes, &mut room);
             if on_tick {
                 let mut worlds: Vec<_> = room
                     .iter_mut()

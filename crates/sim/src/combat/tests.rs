@@ -250,6 +250,53 @@ fn the_damage_message_carries_the_tags_the_attacker_and_the_way() {
     );
 }
 
+/// The messages a hit gives the body, in order: a hit it survives, its
+/// damage message; a killing hit, its damage message with the kill's
+/// fields (`1544` rid54 reads the credited body, crit, loadout and assists
+/// from `0011.025`), then the death message. The `.hurt off` switch holds
+/// back the damage message only.
+#[test]
+fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
+    let splash: DamageTags = [0x0d80_0000_0000_078d].into_iter().collect();
+    let loadout = Some(0x0b90_0000_0000_008e);
+    let hit = PlayerHit {
+        body: 0xa000_0201,
+        shooter: SHOOTER,
+        amount: 120.0,
+        critical: true,
+        loadout,
+        frame: 1000,
+        world_tick: Some(1000),
+        heal: false,
+        tags: splash,
+        direction: Some([0.0, 0.0, 1.0]),
+    };
+    let on = HurtFeedback::default();
+    let damage = damage_message(SHOOTER.source, 75.0, splash, hit.direction);
+    assert_eq!(
+        hit_messages(&hit, 75.0, false, on),
+        std::slice::from_ref(&damage)
+    );
+
+    let [(first, killing), died] = hit_messages(&hit, 75.0, true, on).try_into().unwrap();
+    assert_eq!(first, DAMAGED);
+    for (field, value) in &damage.1 {
+        assert_eq!(&killing[field], value);
+    }
+    assert_eq!(killing[&CREDITED], Value::Entity(SHOOTER.source));
+    assert_eq!(killing[&CRIT], Value::Bool(true));
+    assert_eq!(killing[&LOADOUT], Value::Asset(0x0b90_0000_0000_008e));
+    assert_eq!(killing[&ASSISTS], Value::Array(Vec::new()));
+    assert_eq!(died, death_message(SHOOTER.source, true, loadout, splash));
+
+    let off = HurtFeedback {
+        message: false,
+        ..on
+    };
+    assert!(hit_messages(&hit, 75.0, false, off).is_empty());
+    assert_eq!(hit_messages(&hit, 75.0, true, off), [died]);
+}
+
 #[test]
 fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
     let target = |body, team, dead, hurt| PlayerSlot {
@@ -283,6 +330,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
         ],
         rockets: Vec::new(),
         player_hits: Vec::new(),
+        player_pushes: Vec::new(),
         next_bot: BOT_ENTITY,
         seen_ids: SeenIds::new(),
         field_ids: FieldIds::default(),
