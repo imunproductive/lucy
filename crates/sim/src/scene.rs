@@ -159,11 +159,21 @@
 //!   `000E` created with the participant flag and without the player path
 //!   one, 26 = a player's filter bits, 74 with a roster slot of its own,
 //!   44 the body, 75 the bot's hero, and the bot named in the 20300/20301
-//!   roster at that slot (`instance.rs`). Assumption: the client names and
-//!   draws a controller in the feed only as a participant. Component 75 on
-//!   a stand-in without 74 crashed the game (2026-11-13, the removed
+//!   roster at that slot. Assumption: the client names and draws a
+//!   controller in the feed only as a participant. Component 75 on a
+//!   stand-in without 74 crashed the game (2026-11-13, the removed
 //!   `.plate hero`); kjs sent 75 with 74 and did not crash, nor did our
 //!   earlier AI-definition stand-in (`1404` with 26/44/75).
+//! - The stand-in keeps 74 but holds no roster slot (-1), and the roster
+//!   doesn't name the bots: the Tab board's rows are the entities with
+//!   component 44 (`0x7FF7899B6B90` walks that pool) whose 74 holds a slot
+//!   other than -1 and that have a team (`0x7FF789A1D3B0`), so a slot put
+//!   a row per bot on the board, which retail's Practice Range doesn't have
+//!   (the user, 2026-11-13 and 2026-11-18). The kill feed reads no slot:
+//!   `STU_CD7F3617` names a controller without component 43 by its own 29
+//!   and 75, and the feed drew "RESEARCHER -> TRAINING BOT" in the game
+//!   with the participant stand-in (`refs/reports/KillFeed.md`, "Client
+//!   tools pass").
 
 use std::{collections::HashMap, io};
 
@@ -228,27 +238,24 @@ pub fn bot_controller_entity(slot: usize) -> io::Result<u32> {
         .ok_or_else(|| invalid("too many training bots for their controller ids"))
 }
 
-/// The roster slot of the bot in `slot` when the first `players` slots are
-/// the players' (the room passes every slot its match can seat): the bots
-/// take the next ones, in their order (kjs `match.py` `_ensure_bots`, see
-/// the module notes).
-pub fn bot_roster_slot(players: usize, slot: usize) -> io::Result<i8> {
-    i8::try_from(players + slot).map_err(|_| invalid("too many roster slots for the bots"))
-}
+/// The roster slot of an entity that has none ([`bot_controller_create`]):
+/// the client's slot readers take -1 (`0xFF`) as "no slot"
+/// (`0x7FF789A1D3B0` returns false for it, `0x7FF789B46650` returns it as
+/// its own "none", `0x7FF789ADB8B0` refuses it).
+const NO_ROSTER_SLOT: i8 = -1;
 
-/// The create of the bot's stand-in controller in `slot`, with roster slot
-/// `roster` ([`bot_roster_slot`]), linked to its current body, so the
-/// client names the bot in "ELIMINATED <name>" and names it and draws its
-/// hero icon in the kill feed (see the module notes; the Python reference
-/// sent none). A participant as a player's entity is, from kjs: definition
-/// `000E`, created with the participant flag and without the player path
-/// one (that is the local player's own entity); 26 a player's filter bits
-/// with the bot's team bit, 29 a stand-in account and the bot's name, 74
-/// the roster slot (fields 6 and 7 on, as a player's and kjs's), 44 the
-/// body, 75 the bot's hero (no skin) as a player's [`Possession`] has them.
-/// "ELIMINATED <name>" checked in the game with 26/29/44 alone (2026-11-11);
-/// the kill feed with this create not yet.
-pub fn bot_controller_create(bot: &Bot, slot: usize, roster: i8) -> io::Result<EntityUpdate> {
+/// The create of the bot's stand-in controller in `slot`, linked to its
+/// current body, so the client names the bot in "ELIMINATED <name>" and
+/// names it and draws its hero icon in the kill feed (see the module
+/// notes; the Python reference sent none). A participant as a player's
+/// entity is, from kjs: definition `000E`, created with the participant
+/// flag and without the player path one (that is the local player's own
+/// entity); 26 a player's filter bits with the bot's team bit, 29 a
+/// stand-in account and the bot's name, 74 with fields 6 and 7 on (as a
+/// player's and kjs's) and no roster slot, 44 the body, 75 the bot's hero
+/// (no skin) as a player's [`Possession`] has them. No slot keeps it off
+/// the Tab board (module notes).
+pub fn bot_controller_create(bot: &Bot, slot: usize) -> io::Result<EntityUpdate> {
     use ComponentValue::*;
     let entity = bot_controller_entity(slot)?;
     let account = BOT_ACCOUNT + (entity - BOT_CONTROLLER_ENTITY);
@@ -269,7 +276,7 @@ pub fn bot_controller_create(bot: &Bot, slot: usize, roster: i8) -> io::Result<E
             vec![
                 None,
                 None,
-                Some(I8(roster)),
+                Some(I8(NO_ROSTER_SLOT)),
                 None,
                 None,
                 None,
@@ -484,14 +491,12 @@ pub fn bot_create(bot: &Bot, plate: &BotPlate) -> io::Result<EntityUpdate> {
 }
 
 /// Build the initial world before the local player picks a hero; each bot's
-/// stand-in controller right after its body, in the roster slots after the
-/// first `players` ([`bot_roster_slot`]).
+/// stand-in controller right after its body.
 pub fn initial_world(
     map: &GameMap,
     player: &PlayerAppearance<'_>,
     board: Component,
     bots: &[Bot],
-    players: usize,
     plate: &BotPlate,
     mode_random: f32,
 ) -> io::Result<Vec<EntityUpdate>> {
@@ -505,11 +510,7 @@ pub fn initial_world(
     updates.push(mode_create(map.mode_guid, mode_random));
     for (slot, bot) in bots.iter().enumerate() {
         updates.push(bot_create(bot, plate)?);
-        updates.push(bot_controller_create(
-            bot,
-            slot,
-            bot_roster_slot(players, slot)?,
-        )?);
+        updates.push(bot_controller_create(bot, slot)?);
     }
     Ok(updates)
 }
@@ -750,7 +751,7 @@ mod tests {
         // 114 field 1 alone; ours adds field 9 ([`mode_create`]). The other
         // records match the Python frame byte for byte.
         let updates =
-            initial_world(&map, &player, board, &bots, 1, &BotPlate::default(), 0.25).unwrap();
+            initial_world(&map, &player, board, &bots, &BotPlate::default(), 0.25).unwrap();
         const PYTHON_BOT_ENTITY: u32 = 0xc000_1000;
         let controllers = BOT_CONTROLLER_ENTITY..BOT_ENTITY;
         let python: Vec<_> = updates
@@ -883,13 +884,13 @@ mod tests {
 
     /// The player stand-in (module notes): a participant without the player
     /// path, a player's filter bits with the bot's team bit, a stand-in
-    /// account with the bot's name, the roster slot after the room's
-    /// players, its body and its hero.
+    /// account with the bot's name, no roster slot (no Tab board row), its
+    /// body and its hero.
     #[test]
     fn a_player_stand_in_names_the_bot_and_controls_its_body_as_its_hero() {
         use ComponentValue::*;
         let bots = fixture_bots();
-        let update = bot_controller_create(&bots[0], 0, bot_roster_slot(1, 0).unwrap()).unwrap();
+        let update = bot_controller_create(&bots[0], 0).unwrap();
         assert_eq!(update.entity, BOT_CONTROLLER_ENTITY);
         let create = created(&update);
         assert_eq!(create.definition, PLAYER_DEFINITION);
@@ -911,7 +912,7 @@ mod tests {
                     vec![
                         None,
                         None,
-                        Some(I8(1)),
+                        Some(I8(-1)),
                         None,
                         None,
                         None,
@@ -926,15 +927,14 @@ mod tests {
                 ),
             ]
         );
-        let other = bot_controller_create(&bots[1], 1, bot_roster_slot(1, 1).unwrap()).unwrap();
+        let other = bot_controller_create(&bots[1], 1).unwrap();
         assert_eq!(other.entity, BOT_CONTROLLER_ENTITY + 1);
         let components = &created(&other).components;
         let Some(Some(DbId(account, _))) = components[1].fields.first() else {
             panic!("no account");
         };
         assert_eq!(*account, u64::from(BOT_ACCOUNT) + 1);
-        assert_eq!(components[2].fields[2], Some(I8(2)));
-        assert!(bot_roster_slot(127, 1).is_err());
+        assert_eq!(components[2].fields[2], Some(I8(-1)));
         // The wire takes every component.
         frame(1234, 1234, 0, &[], &[], &[&update, &other]).unwrap();
     }
@@ -983,7 +983,7 @@ mod tests {
             fields: Vec::new(),
         };
         let entities: Vec<u32> =
-            initial_world(&map, &player, board, &bots, 1, &BotPlate::default(), 0.5)
+            initial_world(&map, &player, board, &bots, &BotPlate::default(), 0.5)
                 .unwrap()
                 .iter()
                 .map(|update| update.entity)

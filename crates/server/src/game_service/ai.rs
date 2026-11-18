@@ -18,6 +18,11 @@
 //! server's: the clients see his controller possess the body, as a human's
 //! (`docs/dev/loose-ends.md`).
 //!
+//! A dummy bot (`STU_FC3921B1`: the Practice Range's Training Partner,
+//! made by the console `265F`) is such a player too, in the room's next
+//! slot, whose seat gives his body no input: he stands where the graph put
+//! him, facing its way. `STU_C1561031` takes him out as a leaving player.
+//!
 //! The Python reference server had no AI players: this is the Rust
 //! server's own (`docs/notes/related-projects.md`, "AI heroes as
 //! server-driven players"). Assumptions: an AI's name is its hero's
@@ -29,6 +34,10 @@ use std::{cell::Cell, io, time::Duration};
 
 use orpheus_content::heroes::SOLDIER;
 use orpheus_lobby::login::Identity;
+use orpheus_script::{
+    placed::{DummyChange, NextDummy},
+    vm::DummyBot,
+};
 use orpheus_sim::{
     ai::{
         AiController, Difficulty, Goal, PATHS_PER_TICK, Random, Seen, Senses, pick_heroes, ticks,
@@ -38,6 +47,7 @@ use orpheus_sim::{
     scene::PlayerCard,
     scene_assets::PreparedScene,
 };
+use orpheus_wire::commands::Command;
 
 use super::{
     FIRST_AI_CONNECTION, MatchId, MatchPlayer, Peer, Player, PlayerStats, Room, State, invalid,
@@ -54,9 +64,19 @@ fn ai_entity(slot: usize) -> u32 {
     AI_ENTITY + slot as u32
 }
 
+/// What plays an AI player's body.
+enum Plays {
+    /// An AI hero: his controller's commands.
+    Ai(Box<AiController>),
+    /// A dummy bot (`STU_FC3921B1`: the Practice Range's Training
+    /// Partner): no input, as a Workshop dummy bot; he faces `yaw` (1/65536
+    /// turns), the way he was made.
+    Dummy { yaw: i32 },
+}
+
 /// An AI player's seat: what plays him.
 pub(super) struct AiSeat {
-    controller: AiController,
+    plays: Plays,
     /// His AI entity ([`ai_entity`]), which possesses each body he plays.
     pub(super) entity: u32,
     /// The difficulty identifier his AI plays at.
@@ -67,6 +87,13 @@ pub(super) struct AiSeat {
     /// When he may ask for his hero again, while his body isn't the one he
     /// asked for (a pick before his controller arrived goes nowhere).
     ask_again: u32,
+}
+
+/// A dummy bot of a team's slot and the room slot of his player.
+pub(super) struct DummySeat {
+    pub(super) team: i64,
+    pub(super) slot: i64,
+    pub(super) player: usize,
 }
 
 /// A seed for a room's AI heroes.
@@ -124,7 +151,7 @@ impl Room {
                 seats.push((
                     slot,
                     AiSeat {
-                        controller,
+                        plays: Plays::Ai(Box::new(controller)),
                         entity: ai_entity(slot),
                         difficulty: difficulty.identifier(),
                         name,
@@ -136,13 +163,27 @@ impl Room {
         }
         seats
     }
+
+    /// The player and first body the next dummy bot gets: the next slot's
+    /// player, whose first body is the first of his ring (`replication`'s
+    /// `next_body`).
+    pub(super) fn next_dummy(&self) -> NextDummy {
+        let player = player_entity(self.players.len());
+        NextDummy {
+            player,
+            body: player | 1,
+        }
+    }
 }
 
 /// Where an AI of `team` goes in this phase: the objective in the round
 /// (the nearest enemy without one); in setup, the defenders to the
 /// objective while the attackers wait behind their doors (rule 3); in
-/// hero select and once a round is over, nowhere.
-fn goal(flow: &MatchFlow, team: u8) -> Goal {
+/// hero select, once a round is over and without a match flow, nowhere.
+fn goal(flow: Option<&MatchFlow>, team: u8) -> Goal {
+    let Some(flow) = flow else {
+        return Goal::Hold;
+    };
     match flow.phase() {
         Phase::Round => flow.objective().map_or(Goal::Hunt, Goal::Objective),
         Phase::Setup if flow.attackers() != Some(team) => {
@@ -153,6 +194,20 @@ fn goal(flow: &MatchFlow, team: u8) -> Goal {
 }
 
 impl AiSeat {
+    /// A dummy bot's seat: he plays `hero`, facing `yaw`.
+    fn dummy(slot: usize, hero: u64, yaw: i32) -> Self {
+        Self {
+            plays: Plays::Dummy { yaw },
+            entity: ai_entity(slot),
+            // Assumption: a dummy's AI plays at the lowest level (he never
+            // fires, so its weapon profile goes unread).
+            difficulty: Difficulty::Easy.identifier(),
+            name: "",
+            hero: Some(hero),
+            ask_again: 0,
+        }
+    }
+
     /// His tick: into the world with the first player, his hero, then his
     /// command, which he gives once his body has taken the last one.
     #[allow(clippy::too_many_arguments)]
@@ -161,7 +216,7 @@ impl AiSeat {
         delivery: &mut WorldDelivery,
         room: &Room,
         scene: &PreparedScene,
-        flow: &MatchFlow,
+        flow: Option<&MatchFlow>,
         slot: usize,
         seen: &[Seen],
         paths: &Cell<usize>,
@@ -191,9 +246,12 @@ impl AiSeat {
                 .map_or(SOLDIER, |hero| hero.guid)
         });
         // A hero whose statescript could not start has no weapons:
-        // Soldier: 76 instead.
+        // Soldier: 76 instead. A dummy bot never fires: he keeps the hero
+        // his graph asked for.
         let playing = delivery.current_hero();
+        let dummy = matches!(self.plays, Plays::Dummy { .. });
         let wanted = match playing {
+            _ if dummy => hero,
             Some(current) if current != SOLDIER && !delivery.combat_body_active() => SOLDIER,
             Some(current) if current == SOLDIER && hero != SOLDIER => SOLDIER,
             _ => hero,
@@ -211,6 +269,19 @@ impl AiSeat {
         if delivery.has_input_work() {
             return Ok(());
         }
+        let controller = match &mut self.plays {
+            Plays::Ai(controller) => controller,
+            // A still body facing where he was made.
+            Plays::Dummy { yaw } => {
+                let still = Command {
+                    frame: tick,
+                    yaw: *yaw,
+                    ..Command::default()
+                };
+                delivery.queue_commands(tick, &[still]);
+                return Ok(());
+            }
+        };
         let me = delivery.combat_target(scene, team);
         let others: Vec<Seen> = seen
             .iter()
@@ -237,7 +308,7 @@ impl AiSeat {
             paths,
             sight: &sight,
         };
-        let command = self.controller.command(&senses);
+        let command = controller.command(&senses);
         delivery.queue_commands(tick, &[command]);
         Ok(())
     }
@@ -273,6 +344,106 @@ impl State {
             .map(|(&connection, _)| connection)
             .collect();
         for connection in seated {
+            self.seats.remove(&connection);
+            self.peers.shift_remove(&connection);
+        }
+    }
+
+    /// The dummy bots the room's placed scripts made or removed
+    /// (`STU_FC3921B1`, `STU_C1561031`: the Practice Range's Training
+    /// Partner console `265F`), in order.
+    pub(super) fn change_dummies(&mut self, id: MatchId, changes: Vec<DummyChange>) {
+        for change in changes {
+            match change {
+                DummyChange::Remove { team, slot } => self.remove_dummy(id, team, slot),
+                DummyChange::Create { dummy, next } => self.add_dummy(id, &dummy, next),
+            }
+        }
+    }
+
+    /// A dummy bot is an AI player in the room's next slot
+    /// ([`Room::next_dummy`], which the scripts' graph read), with a seat
+    /// that gives his body no input, and whose bodies come into the world
+    /// where the graph put him (`WorldDelivery::place_bodies_at`;
+    /// assumption: a dummy's respawns come back there). He is on the
+    /// graph's team; his name and card are his hero's (assumption, as an
+    /// AI hero's).
+    fn add_dummy(&mut self, id: MatchId, dummy: &DummyBot, next: NextDummy) {
+        let Some(room) = self.rooms.get_mut(&id) else {
+            return;
+        };
+        let hero = room
+            .world
+            .as_ref()
+            .and_then(|world| world.scene.heroes().get(dummy.hero))
+            .map(|hero| (hero.guid, hero.name.clone()));
+        let (Some((hero, name)), Ok(team)) = (hero, u8::try_from(dummy.team)) else {
+            tracing::warn!(
+                "[game] no dummy bot of hero {:016X} on team {}",
+                dummy.hero,
+                dummy.team
+            );
+            return;
+        };
+        if room.next_dummy() != next {
+            tracing::warn!("[game] a dummy bot's player {:08X} is taken", next.player);
+            return;
+        }
+        let slot = room.players.len();
+        let account = Identity::for_account(u32::MAX - slot as u32).account_id();
+        room.players.push(Player {
+            info: MatchPlayer {
+                name: name.clone(),
+                team,
+                tournament: false,
+                ranked: false,
+            },
+            card: PlayerCard {
+                account,
+                battle_tag: name,
+                ..PlayerCard::default()
+            },
+            hero,
+            entity: next.player,
+            gone: false,
+            stats: PlayerStats::default(),
+            ai: true,
+        });
+        room.dummies.push(DummySeat {
+            team: dummy.team,
+            slot: dummy.slot,
+            player: slot,
+        });
+        let [x, _, z] = dummy.facing;
+        let yaw = (x.atan2(z) * 65_536.0 / std::f64::consts::TAU).round() as i32;
+        let mut peer = Peer::ai(next.player, AiSeat::dummy(slot, hero, yaw));
+        peer.world.place_bodies_at(dummy.position, yaw);
+        let connection = self.next_ai_seat();
+        self.seats.insert(connection, (id, slot));
+        self.peers.insert(connection, peer);
+    }
+
+    /// The dummy bot of a team's slot leaves the room, as a player who
+    /// leaves: his peer goes, so the clients lose his body.
+    fn remove_dummy(&mut self, id: MatchId, team: i64, slot: i64) {
+        let Some(room) = self.rooms.get_mut(&id) else {
+            return;
+        };
+        let Some(index) = room
+            .dummies
+            .iter()
+            .position(|dummy| dummy.team == team && dummy.slot == slot)
+        else {
+            return;
+        };
+        let player = room.dummies.remove(index).player;
+        room.players[player].gone = true;
+        let seated = self
+            .seats
+            .iter()
+            .find(|&(_, &seat)| seat == (id, player))
+            .map(|(&connection, _)| connection);
+        if let Some(connection) = seated {
             self.seats.remove(&connection);
             self.peers.shift_remove(&connection);
         }
@@ -321,9 +492,10 @@ impl State {
         bodies
     }
 
-    /// Every AI hero's tick, in the rooms whose match flow started: what
-    /// he sees (the living bodies of the room), then his command; the
-    /// room's AI heroes share [`PATHS_PER_TICK`] new walks a tick.
+    /// Every AI player's tick, in the rooms with AI heroes whose match flow
+    /// started and the rooms with dummy bots: what he sees (the living
+    /// bodies of the room), then his command; the room's AI heroes share
+    /// [`PATHS_PER_TICK`] new walks a tick.
     pub(super) fn drive_ai(&mut self, tick: u32, now: Duration) {
         let Self {
             rooms,
@@ -332,12 +504,13 @@ impl State {
             ..
         } = self;
         for (&id, room) in rooms.iter() {
-            if room.ai.is_none() {
+            if room.ai.is_none() && room.dummies.is_empty() {
                 continue;
             }
-            let (Some(world), Some(flow)) = (&room.world, &room.flow) else {
+            let Some(world) = &room.world else {
                 continue;
             };
+            let flow = room.flow.as_ref();
             let scene = &world.scene;
             let mut seen = Vec::new();
             for (connection, peer) in peers.iter() {
@@ -370,7 +543,7 @@ impl State {
                 else {
                     continue;
                 };
-                if match_id != id {
+                if match_id != id || (flow.is_none() && matches!(seat.plays, Plays::Ai(_))) {
                     continue;
                 }
                 let step = seat.step(delivery, room, scene, flow, slot, &seen, &paths, tick, now);

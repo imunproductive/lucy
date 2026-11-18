@@ -20,6 +20,12 @@
 //! auras off ([`MapEntityWorld::take_destroyed`]). Assumption: the map's
 //! own placeables do neither yet (their auras and removals have no client
 //! side here).
+//!
+//! A script can make and remove dummy bots (`STU_FC3921B1`,
+//! `STU_C1561031`: the Practice Range's Training Partner console `265F`):
+//! the match gives the player and body the next one gets
+//! ([`MapEntityWorld::set_next_dummy`]), the graph reads the body at once,
+//! and the match makes the bot ([`MapEntityWorld::take_dummy_changes`]).
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -31,9 +37,9 @@ use crate::{
     map_tags::{MapTags, TaggedEntity},
     target_tags::TargetTags,
     vm::{
-        AuraChange, Component, GameMessage, InitFault, MAX_INIT_WORK, MapRays, MessageEnd, Root,
-        SeenBodies, Site, Snapshot, TargetCandidate, TargetTagEffect, TrackedStat, Unknowns, World,
-        bind_values, listed_relation,
+        AuraChange, Component, DummyBot, GameMessage, InitFault, MAX_INIT_WORK, MapRays,
+        MessageEnd, Root, SeenBodies, Site, Snapshot, TargetCandidate, TargetTagEffect,
+        TrackedStat, Unknowns, World, bind_values, listed_relation,
     },
     wire::{Value, Variables},
 };
@@ -61,6 +67,26 @@ pub struct Spawn<'a> {
     pub position: [f64; 3],
     /// Its owner (component 72): the hero's controller.
     pub owner: u32,
+}
+
+/// The player and first body the next dummy bot gets
+/// ([`MapEntityWorld::set_next_dummy`]): the match picks them, the graph
+/// that makes the bot reads the body at once (`STU_FC3921B1`'s output).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NextDummy {
+    pub player: u32,
+    pub body: u32,
+}
+
+/// A dummy bot change the scripts asked for, for the match to carry out
+/// ([`MapEntityWorld::take_dummy_changes`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum DummyChange {
+    /// Make `dummy` the player `next.player`, whose first body is
+    /// `next.body`.
+    Create { dummy: DummyBot, next: NextDummy },
+    /// Remove the dummy bot in a team's slot, if any.
+    Remove { team: i64, slot: i64 },
 }
 
 /// The roots a placement starts with, in the client's order (see the
@@ -167,6 +193,8 @@ struct Shared<'a> {
     map_rays: Option<&'a dyn MapRays>,
     volumes: Option<&'a dyn EntityVolumes>,
     outbox: &'a mut Vec<GameMessage>,
+    next_dummy: &'a mut Option<NextDummy>,
+    dummies: &'a mut Vec<DummyChange>,
     auras: &'a mut Vec<AuraChange>,
     destroyed: &'a mut Vec<u32>,
     ends: &'a mut Vec<MessageEnd>,
@@ -351,6 +379,17 @@ impl World for EntityWorld<'_, '_> {
             .or_else(|| self.shared.tagged(entity).map(|placed| placed.position))
     }
 
+    /// A tagged placeable faces its placement's forward axis
+    /// ([`TaggedEntity::forward`]): the client reads an entity's world
+    /// transform for `STU_2200A66D`/`STU_021D01CD` (0x7FF789C28780,
+    /// ScriptGap.md), a body's along its aim. The console `265F` gives its
+    /// Training Partner the facing of its pad `3992` so (#634).
+    fn entity_facing(&self, _site: Site, entity: u32) -> Option<[i32; 2]> {
+        let [x, y, z] = self.shared.tagged(entity)?.forward();
+        let units = |angle: f64| (angle * 65_536.0 / std::f64::consts::TAU).round() as i32;
+        Some([units(x.atan2(z)), units((-y).clamp(-1.0, 1.0).asin())])
+    }
+
     fn send_message(
         &mut self,
         _source: Site,
@@ -414,6 +453,21 @@ impl World for EntityWorld<'_, '_> {
         true
     }
 
+    /// A dummy bot gets the player and body the match gave
+    /// ([`MapEntityWorld::set_next_dummy`]), one a run; the match makes it.
+    fn create_dummy_bot(&mut self, _site: Site, dummy: DummyBot) -> Option<u32> {
+        let next = self.shared.next_dummy.take()?;
+        self.shared
+            .dummies
+            .push(DummyChange::Create { dummy, next });
+        Some(next.body)
+    }
+
+    fn remove_dummy_bot(&mut self, _site: Site, team: i64, slot: i64) -> bool {
+        self.shared.dummies.push(DummyChange::Remove { team, slot });
+        true
+    }
+
     /// A spawned entity's stats go to the match, which credits each
     /// target's player (Biotic Field `0258` rid14: "Biotic Fields
     /// Deployed" for `STU_0340A42A(owner())`, its owner's player entity).
@@ -462,6 +516,10 @@ pub struct MapEntityWorld {
     ends: Vec<MessageEnd>,
     /// The stats the spawned entities counted ([`World::track_stat`]).
     tracked_stats: Vec<TrackedStat>,
+    /// The player and body the next dummy bot gets, if the match gave one.
+    next_dummy: Option<NextDummy>,
+    /// The dummy bots made or removed since the match last looked.
+    dummies: Vec<DummyChange>,
     entities: Vec<PlacedEntity>,
     frame: u32,
 }
@@ -498,14 +556,22 @@ impl MapEntityWorld {
             destroyed: Vec::new(),
             ends: Vec::new(),
             tracked_stats: Vec::new(),
+            next_dummy: None,
+            dummies: Vec::new(),
             entities: Vec::new(),
             frame,
         };
-        for placement in placements {
-            let roots = placed_roots(&world.graphs, &placement);
-            world.start_entity(placement.entity, placement.position, roots, None);
-        }
+        world.place(placements);
         world
+    }
+
+    /// Start more placements at the world's frame, in order, as
+    /// [`Self::start`] does.
+    pub fn place<'p>(&mut self, placements: impl IntoIterator<Item = Placement<'p>>) {
+        for placement in placements {
+            let roots = placed_roots(&self.graphs, &placement);
+            self.start_entity(placement.entity, placement.position, roots, None);
+        }
     }
 
     /// Spawn an entity at the current frame: it starts its initial graphs
@@ -566,6 +632,8 @@ impl MapEntityWorld {
             destroyed: &mut self.destroyed,
             ends: &mut self.ends,
             tracked_stats: &mut self.tracked_stats,
+            next_dummy: &mut self.next_dummy,
+            dummies: &mut self.dummies,
         };
         let mut team = None;
         let mut target_tags = TargetTags::default();
@@ -701,6 +769,8 @@ impl MapEntityWorld {
             destroyed: &mut self.destroyed,
             ends: &mut self.ends,
             tracked_stats: &mut self.tracked_stats,
+            next_dummy: &mut self.next_dummy,
+            dummies: &mut self.dummies,
         };
         for placed in &mut self.entities {
             if !pick(placed.entity) {
@@ -775,6 +845,8 @@ impl MapEntityWorld {
             destroyed: &mut self.destroyed,
             ends: &mut self.ends,
             tracked_stats: &mut self.tracked_stats,
+            next_dummy: &mut self.next_dummy,
+            dummies: &mut self.dummies,
         };
         let mut world = EntityWorld {
             shared: &mut shared,
@@ -816,6 +888,18 @@ impl MapEntityWorld {
     /// match to credit to their targets' players.
     pub fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
         std::mem::take(&mut self.tracked_stats)
+    }
+
+    /// The player and first body the next dummy bot the scripts make gets
+    /// (`STU_FC3921B1`); None: they can make none now. A bot made takes it.
+    pub fn set_next_dummy(&mut self, next: Option<NextDummy>) {
+        self.next_dummy = next;
+    }
+
+    /// The dummy bots the scripts made or removed since the last call, in
+    /// order, for the match to make or remove.
+    pub fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
+        std::mem::take(&mut self.dummies)
     }
 
     /// The classes the VM refused or answered by assumption, and the

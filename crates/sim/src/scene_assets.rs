@@ -28,7 +28,6 @@ use crate::{
     hitboxes::HitboxCatalog,
     hitscan::{RAY_PROFILES_FILE, RayProfiles, SceneRays},
     hurt_feedback::HurtFeedback,
-    instance::RosterBot,
     map_areas::{self, DamageArea, MapAreaData, PlacedScript, SpawnRoom},
     match_flow::{MatchFlow, Mode, Timers},
     messages::Bots,
@@ -41,9 +40,7 @@ use crate::{
     pools::PoolCatalog,
     projectiles::FIELD_ENTITY,
     replication::OwnerBodyRuntime,
-    scene::{
-        PlayerAppearance, bot_controller_entity, initial_world, mode_ui, placeable_components,
-    },
+    scene::{PlayerAppearance, initial_world, mode_ui, placeable_components},
 };
 use orpheus_content::{
     heroes::{EyeCatalog, Hero, HeroCatalog, SOLDIER},
@@ -69,6 +66,7 @@ use orpheus_script::{
     codecs::CodecTable,
     graph::GraphStore,
     map_tags::MapTags,
+    placed::{DummyChange, NextDummy},
     vitals::Vitals,
     vm::{GameMessage, MapRays, MessageEnd, TargetCandidate, Unknowns},
     wire::Variables,
@@ -210,9 +208,6 @@ pub struct PreparedScene {
     graphs: Arc<GraphStore>,
     initial_board: Component,
     bots: Vec<Bot>,
-    /// The roster slots the room's own players took before the bots got
-    /// theirs (`scene::bot_roster_slot`); the room sets it.
-    bot_roster: usize,
     bot_scripts: BotScripts,
     /// The live nameplate tool's changes to the bots (`bot_plate`).
     bot_plate: Arc<BotPlate>,
@@ -548,7 +543,6 @@ impl SceneAssets {
             initial_board,
             bots,
             bot_scripts,
-            bot_roster: 0,
             bot_plate: Arc::default(),
             hurt: HurtFeedback::default(),
             script_anims: Arc::clone(&self.script_anims),
@@ -939,6 +933,18 @@ impl PreparedScene {
         self.placed_scripts.take_messages()
     }
 
+    /// The player and first body the next dummy bot the placed scripts
+    /// make gets ([`PlacedScripts::set_next_dummy`]).
+    pub fn set_next_dummy(&mut self, next: Option<NextDummy>) {
+        self.placed_scripts.set_next_dummy(next);
+    }
+
+    /// The dummy bots the placed scripts made or removed since the last
+    /// call, for the match to make or remove.
+    pub fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
+        self.placed_scripts.take_dummy_changes()
+    }
+
     /// The scene's entities that take game messages at world tick `tick`
     /// ([`crate::messages`]): the Training Bots and the placed scripts.
     pub fn message_recipients(&mut self, tick: u32) -> (Bots<'_>, &mut PlacedScripts) {
@@ -975,29 +981,6 @@ impl PreparedScene {
 
     pub fn bots(&self) -> &[Bot] {
         &self.bots
-    }
-
-    /// The training bots as the roster names them: each one's stand-in
-    /// controller, name, team and roster slot (`scene::bot_roster_slot`).
-    pub fn roster_bots(&self) -> Vec<RosterBot<'_>> {
-        self.bots
-            .iter()
-            .enumerate()
-            .filter_map(|(slot, bot)| {
-                Some(RosterBot {
-                    controller: bot_controller_entity(slot).ok()?,
-                    name: &bot.spawn.name,
-                    team: bot.spawn.team,
-                    slot: self.bot_roster + slot,
-                })
-            })
-            .collect()
-    }
-
-    /// The room's own players took the first `players` roster slots: the
-    /// bots' stand-in controllers take the next ones.
-    pub fn set_bot_roster(&mut self, players: usize) {
-        self.bot_roster = players;
     }
 
     pub fn bots_mut(&mut self) -> &mut [Bot] {
@@ -1355,7 +1338,6 @@ impl PreparedScene {
             viewer,
             self.initial_board.clone(),
             &self.bots,
-            self.bot_roster,
             &self.bot_plate,
             self.mode_random,
         )?;

@@ -606,21 +606,29 @@ fn full_frame(
 
 /// The head of a full frame as the client reads it: the owner frame's
 /// CmFD (none for an observer's), the instances (id, graph, parent instance
-/// and raw state) and the entity's variables. For tests and logs: a value
-/// with Stack links or of a kind other than bool, number, asset, entity or
-/// null is an error.
+/// and raw state), the entity's variables and their Stack links (instance,
+/// raw state: [`bound_variable`]'s form, which names the state in its
+/// graph's `m_statesBitCount` bits). For tests and logs: a value of a kind
+/// other than bool, number, asset, entity or null, or a link with a path,
+/// priority form or re-resolution the writer never sends, is an error.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FullHead {
     pub command_frame: Option<u32>,
     pub instances: Vec<ListedInstance>,
     pub variables: Variables,
+    pub links: BTreeMap<u32, Vec<(u16, u16)>>,
 }
 
 /// An instance a full frame lists: id, graph, creator (none: the frame's
 /// entity) and parent (instance, raw state).
 pub type ListedInstance = (u16, u16, Option<u32>, Option<(u32, u32)>);
 
-pub fn read_full_head(bytes: &[u8]) -> Result<FullHead, WireError> {
+/// `states_bits` gives a graph's `m_statesBitCount`, for the states the
+/// entity variables' Stack links name.
+pub fn read_full_head(
+    bytes: &[u8],
+    states_bits: impl Fn(u16) -> Option<u8>,
+) -> Result<FullHead, WireError> {
     let mut bits = BitReader::new(bytes);
     if bits.bit()? {
         return Err(WireError::InvalidValue);
@@ -653,6 +661,7 @@ pub fn read_full_head(bytes: &[u8]) -> Result<FullHead, WireError> {
         instances.push((id, graph, creator, parent));
     }
     let mut variables = Variables::new();
+    let mut links = BTreeMap::new();
     if bits.bit()? {
         loop {
             let variable = bits.w_var()?;
@@ -686,8 +695,9 @@ pub fn read_full_head(bytes: &[u8]) -> Result<FullHead, WireError> {
                 15 if bits.bits(3)? == 3 => Value::Null,
                 _ => return Err(WireError::InvalidValue),
             };
-            if bits.bit()? {
-                return Err(WireError::InvalidBinding);
+            let bound = read_links(&mut bits, &instances, &states_bits)?;
+            if !bound.is_empty() {
+                links.insert(variable, bound);
             }
             variables.insert(variable, value);
         }
@@ -696,7 +706,58 @@ pub fn read_full_head(bytes: &[u8]) -> Result<FullHead, WireError> {
         command_frame,
         instances,
         variables,
+        links,
     })
+}
+
+/// An entity variable's Stack links, as [`bound_variable`] writes them with
+/// no own instance: (instance, raw state) each.
+fn read_links(
+    bits: &mut BitReader<'_>,
+    instances: &[ListedInstance],
+    states_bits: &impl Fn(u16) -> Option<u8>,
+) -> Result<Vec<(u16, u16)>, WireError> {
+    let count = if !bits.bit()? {
+        0
+    } else if !bits.bit()? {
+        1
+    } else if !bits.bit()? {
+        2
+    } else {
+        bits.w_u16()?
+    };
+    (0..count)
+        .map(|_| {
+            // No path; another instance than the frame's own (an entity
+            // variable has none), by a positive id.
+            if bits.bit()? || !bits.bit()? || bits.bit()? {
+                return Err(WireError::InvalidBinding);
+            }
+            let instance = bits.w_u16()?;
+            let width = instances
+                .iter()
+                .find(|&&(id, ..)| id == instance)
+                .and_then(|&(_, graph, ..)| states_bits(graph))
+                .ok_or(WireError::InvalidBinding)?;
+            let state = bits.bits(usize::from(width))? as u16;
+            if bits.bit()? {
+                bits.w_var()?; // the slot
+            }
+            if bits.bit()? {
+                // An integer priority: sign, magnitude, above-equals.
+                if !bits.bit()? {
+                    return Err(WireError::InvalidBinding);
+                }
+                bits.bit()?;
+                bits.w_var()?;
+                bits.bit()?;
+            }
+            if bits.bit()? {
+                return Err(WireError::InvalidBinding);
+            }
+            Ok((instance, state))
+        })
+        .collect()
 }
 
 pub fn subscript(child: u16) -> BitWriter {

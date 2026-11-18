@@ -120,8 +120,8 @@ its damage (m_B81F7395) and its boxes; its server placeables: every entity place
 whose definition (003) has neither component 0x737C5C41 nor 0xCA1FB0B8 (those are on the loading \
 list), with its definition and its first identifier; its tagged entities: every entity placeable on \
 the loading list or with client id 0 that has target tags (STUTargetTagInstanceData.m_targetTags, then \
-its definition's STUTargetTagComponent.m_targetTags, each once), with its first identifier and \
-position; its kill volumes: the boxes the triangles of the \
+its definition's STUTargetTagComponent.m_targetTags, each once), with its first identifier, \
+position and rotation x y z w; its kill volumes: the boxes the triangles of the \
 collision chunk (0x11) with mask 0x0002 alone make (12 triangles each), as centre, half extents \
 and rotation x y z w.";
 
@@ -413,7 +413,7 @@ fn server_placeables(
 /// The map's entities with target tags that the server's world holds, in
 /// placeable order: those on the loading list and the server-owned ones
 /// (client id 0); the client-made rest exists only in the clients. Each
-/// with its first identifier, its position and the tags of its instance
+/// with its first identifier, its position and rotation and the tags of its instance
 /// data and its definition together (each once, instance tags first).
 /// [`server_placeables`] loads the definitions first.
 fn tagged(components: &Components, base: usize, entities: &[Placed<'_>]) -> Vec<Json> {
@@ -441,6 +441,7 @@ fn tagged(components: &Components, base: usize, entities: &[Placed<'_>]) -> Vec<
                 "position".into(),
                 json!(placed.entity.translation.map(short)),
             );
+            entry.insert("rotation".into(), json!(placed.entity.rotation.map(short)));
             entry.insert(
                 "tags".into(),
                 json!(

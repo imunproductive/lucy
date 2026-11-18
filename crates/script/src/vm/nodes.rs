@@ -398,6 +398,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 Ok(true)
             }
             "STU_523EE38D" => self.destroy_entity(id, node, depth),
+            "STU_FC3921B1" => self.create_dummy_bot(id, node, depth),
+            "STU_C1561031" => self.remove_dummy_bot(id, node, depth),
             "STU_A1DF3B2D" => self.related_entities(id, node, depth),
             "STU_08D6BA6E" => {
                 self.cast_action(id, node)?;

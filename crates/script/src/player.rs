@@ -987,6 +987,7 @@ mod tests {
         let placed = TaggedEntity {
             entity: 0x8000_0010,
             position: [0.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
             tags: BTreeSet::from([HERO, PLACE]),
         };
         world.map_tags = Some(Arc::new(MapTags::new(vec![placed], &graphs)));
