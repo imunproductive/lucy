@@ -17,7 +17,7 @@ use orpheus_script::{
 };
 use orpheus_wire::{
     commands::FIRE,
-    entity::{MAX_ENTITY_RECORDS, Movement},
+    entity::{ComponentValue, MAX_ENTITY_RECORDS, Movement},
     jam::codec::{Fields, Value},
 };
 use std::sync::{
@@ -1873,6 +1873,26 @@ fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
         assert!(world.body_script.is_some(), "{} has no script", hero.name);
         open(world)
     };
+    // The new body's create carries the tags its states took as it started
+    // (component 76: added, suppressed), as the update would.
+    let created_tags = |world: &WorldDelivery, entity: u32| {
+        world.queued.iter().find_map(|record| {
+            let Some(Operation::Create(definition)) = &record.update.operation else {
+                return None;
+            };
+            let component = definition
+                .components
+                .iter()
+                .find(|component| record.update.entity == entity && component.index == 76)?;
+            match component.fields.as_slice() {
+                [
+                    Some(ComponentValue::U32Array(added)),
+                    Some(ComponentValue::U32Array(suppressed)),
+                ] => Some((added.clone(), suppressed.clone())),
+                _ => None,
+            }
+        })
+    };
 
     let soldier = scene.heroes().get(SOLDIER).unwrap();
     let mut stream = spawn(&mut world, owner | 1, soldier);
@@ -1895,6 +1915,8 @@ fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
         [None, tag(owner | 2, true)],
         "respawn"
     );
+    let (added, suppressed) = created_tags(&world, owner | 2).expect("tags in the create");
+    assert!(added.contains(&0x42) && suppressed.is_empty(), "{added:?}");
 
     let ana = scene.heroes().find_hero("Ana").unwrap();
     let mut stream = spawn(&mut world, owner | 3, ana);
@@ -1913,6 +1935,10 @@ fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
         tag_states(&world, &mut stream),
         [tag(owner | 4, false), None],
         "respawn"
+    );
+    assert_eq!(
+        created_tags(&world, owner | 4).map(|(_, suppressed)| suppressed),
+        Some(vec![0x42])
     );
     world.update_hero_settings(&[]);
     assert_eq!(

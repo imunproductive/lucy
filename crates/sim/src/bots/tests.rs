@@ -434,6 +434,67 @@ fn a_knocked_bot_flies_on_its_mover_and_walks_on_once_it_lands() {
     assert_eq!(bot.target, Some(goal));
 }
 
+/// A velocity action its script began (Pharah's Jump Jet shape,
+/// `STU_FF3471E9`: channel 4 sets the velocity to 6 m/s up and 4 m/s
+/// along z) puts a walking bot on its body's mover as a knockback does:
+/// it rises from the frame after the tick the action began, leaves its
+/// walk, comes down and walks on once it stands still.
+#[test]
+fn a_velocity_action_lifts_a_walking_bot_onto_its_mover() {
+    use orpheus_physics::mover::modifiers::{VectorOperation, VelocityElement};
+
+    let (rays, world) = flat_floor();
+    let settings = MoverSettings {
+        run_forward: 4.5,
+        run_backward: 4.5,
+        run_strafe: 4.5,
+        accel_ground: 1.0,
+        ..MoverSettings::default()
+    };
+    let goal = [0.0, 0.0, 10.0];
+    let mut bot = walker(goal);
+    bot.attach_collision(&settings, Arc::clone(&world), 0x10);
+    let run = |bot: &mut Bot, tick: u32| {
+        bot.fly(tick, &rays);
+        bot.step(tick, Some(goal), |_, _, _, _| Some(0.0));
+    };
+    for tick in 1..=63 {
+        run(&mut bot, tick);
+    }
+    let began = 63;
+    let (from, yaw) = (bot.position, bot.movement(began).yaw);
+    let jet = Motion::Velocity(VelocityElement::Vector {
+        channel: 4,
+        operation: VectorOperation::Set,
+        value: [0.0, 6.0, 4.0],
+        priority: 0.0,
+    });
+    bot.start_motions(vec![jet], began, || {
+        Mover::new(settings, Arc::clone(&world), from, yaw, 0x10).ok()
+    });
+    assert!(!bot.walking());
+    run(&mut bot, began + 1);
+    assert!(bot.position[1] > 0.0, "{:?}", bot.position);
+    assert_eq!(bot.movement_sample() & 0b101, 0b101);
+    let mut top: f64 = 0.0;
+    for tick in began + 2..began + 300 {
+        run(&mut bot, tick);
+        top = top.max(bot.position[1]);
+        if bot.flight.is_none() {
+            break;
+        }
+    }
+    assert!(bot.flight.is_none());
+    assert!(top > 0.9, "{top} m up");
+    assert_eq!(bot.position[1], 0.0);
+    assert!(
+        bot.position[2] - from[2] > 2.0,
+        "from {from:?} to {:?}",
+        bot.position
+    );
+    assert!(bot.walking());
+}
+
 #[test]
 #[ignore = "requires the derived 104319 AI spawner and mover tables"]
 fn fifteen_practice_bots_match_python_roster() {

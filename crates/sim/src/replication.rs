@@ -1408,9 +1408,12 @@ pub struct WorldDelivery {
     bot_sights: HashMap<u32, BotSight>,
     health_updates: HashMap<u32, u64>,
     health_revision: u64,
-    /// The target tag updates of the current body this client doesn't have
-    /// yet, by entity: the revision of the newest.
+    /// The target tag updates of the current body and the bots this client
+    /// doesn't have yet, by entity: the revision of the newest.
     tag_updates: HashMap<u32, u64>,
+    /// The revision of each live bot's target tags this client was given,
+    /// in its create or an update ([`crate::bot_script::BotScripts::tags`]).
+    bot_tags: HashMap<u32, u64>,
     started: Option<u32>,
     pub presentation_due: bool,
     controller: Stream,
@@ -1600,6 +1603,7 @@ impl WorldDelivery {
             health_updates: HashMap::new(),
             health_revision: 0,
             tag_updates: HashMap::new(),
+            bot_tags: HashMap::new(),
             started: None,
             presentation_due: false,
             controller: Stream::new(owner),
@@ -1741,6 +1745,7 @@ impl WorldDelivery {
         self.bot_sights.clear();
         self.health_updates.clear();
         self.tag_updates.clear();
+        self.bot_tags.clear();
         self.started = None;
         self.presentation_due = false;
         self.mover = None;
@@ -2156,14 +2161,16 @@ impl WorldDelivery {
         });
     }
 
-    /// The current body's target tags at `revision` for its own client,
-    /// superseding the ones not yet delivered.
+    /// The current body's or a live bot's target tags at `revision` for
+    /// this client, superseding the ones not yet delivered; they wait for
+    /// the entity's create.
     fn queue_tags(&mut self, entity: u32, revision: u64, tags: WorldComponent) {
+        let live_bot = self.bots.get(&entity) == Some(&BotLifetime::Live);
         let live_body = self.body.is_some_and(|body| {
             body.id.entity == entity
                 && self.bodies.get(&entity) == Some(&(body.id.generation, Lifetime::Live))
         });
-        if !live_body {
+        if !live_bot && !live_body {
             return;
         }
         self.tag_updates.insert(entity, revision);
@@ -2207,7 +2214,9 @@ impl WorldDelivery {
     /// lifetimes' first frames, the room's live and death frames, what this
     /// client's ACKs made due and the practice nameplates
     /// (server.py `queue_bot_live`, `queue_bot_death`, `_flush_bot_frames`,
-    /// `_flush_bot_nameplates`).
+    /// `_flush_bot_nameplates`); then each bot's target tags (component 76)
+    /// that changed since this client was given them, as for a player's
+    /// body.
     pub fn update_bots(&mut self, scene: &PreparedScene, events: &[BotEvent], tick: u32) {
         if self.started.is_none() {
             return;
@@ -2238,6 +2247,14 @@ impl WorldDelivery {
                 update: chunk.update,
                 delivery: Delivery::BotFrames { last: chunk.last },
             });
+        }
+        for entity in live {
+            let Some((revision, tags)) = scene.bot_scripts().tags(entity) else {
+                continue;
+            };
+            if self.bot_tags.insert(entity, revision) != Some(revision) {
+                self.queue_tags(entity, revision, tags.clone());
+            }
         }
     }
 
@@ -2273,6 +2290,8 @@ impl WorldDelivery {
         self.created.remove(&old);
         self.bot_sights.remove(&old);
         self.health_updates.remove(&old);
+        self.tag_updates.remove(&old);
+        self.bot_tags.remove(&old);
         self.remove_stale();
         self.push(Record {
             update: EntityUpdate {
@@ -2878,6 +2897,12 @@ impl WorldDelivery {
                 .iter()
                 .map(|bot| (bot.entity, BotLifetime::Live)),
         );
+        // The bots' creates carry their target tags as they are now
+        // ([`PreparedScene::initial_world`]).
+        self.bot_tags.extend(scene.bots().iter().filter_map(|bot| {
+            let (revision, _) = scene.bot_scripts().tags(bot.entity)?;
+            Some((bot.entity, revision))
+        }));
         for update in records {
             if self.bots.contains_key(&update.entity) {
                 self.push(Record {
@@ -4670,7 +4695,7 @@ impl WorldDelivery {
         // A new body is alive (`scene` module notes).
         let body_filter = body_filter(team_bit, false);
         let start_frame = self.input.processed.unwrap_or(tick);
-        let script = scene
+        let mut script = scene
             .owner_body_runtime(
                 hero,
                 OwnerBodySpawn {
@@ -4696,6 +4721,11 @@ impl WorldDelivery {
                 Some(runtime)
             })
             .and_then(|runtime| BodyScript::new(body, start_frame, runtime).ok());
+        // The tags its states took as it started go in its create, as the
+        // other clients' creates of it carry them (`Others::ensure_body`).
+        let tags = script
+            .as_mut()
+            .and_then(|script| script.runtime.take_target_tags_update());
         let create = body_create(
             BodyCreate {
                 entity,
@@ -4708,6 +4738,7 @@ impl WorldDelivery {
                     .as_ref()
                     .and_then(|script| script.runtime.vitals())
                     .map(Vitals::component),
+                tags: tags.clone(),
             },
             BodyView::Owner {
                 pose: Some(pose),
@@ -4732,6 +4763,10 @@ impl WorldDelivery {
         self.shield.0 = false;
         self.cancel_body_script();
         self.body_script = script;
+        if let Some(tags) = tags {
+            self.tag_revision += 1;
+            self.body_tags = Some((id, self.tag_revision, tags));
+        }
         // `01C7` rid32 sets #1928e on `002D.025` {`0029`}: unless that
         // identifier is `018D`, `0016` or `0018`, the body's `01CA` says
         // elimination lines and `0215` may count kill streaks. Retail's
@@ -4939,10 +4974,11 @@ fn hero_vitals(scene: &PreparedScene, hero: u64) -> Vitals {
         .vitals()
 }
 
-/// Hand the body's new dashes, rewinds and velocity actions to its mover;
+/// Hand a body's new dashes, rewinds and velocity actions to its mover;
 /// they run from the next pose on (`orpheus_physics::mover::motion`,
-/// [`Mover::act_on_velocity`]).
-fn start_motions(mover: &mut Mover, motions: Vec<Motion>, dt: f64) {
+/// [`Mover::act_on_velocity`]). Players', AI heroes' and training bots'
+/// bodies alike ([`crate::bots::Bot::start_motions`]).
+pub(crate) fn start_motions(mover: &mut Mover, motions: Vec<Motion>, dt: f64) {
     for motion in motions {
         match motion {
             Motion::Dash { distance, seconds } => mover.dash(distance, seconds),

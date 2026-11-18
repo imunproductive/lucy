@@ -25,6 +25,11 @@ pub struct BodyCreate<'a> {
     pub skin: SkinTheme,
     /// The body's current pools (component 51); None = the hero's own pools.
     pub health: Option<Component>,
+    /// The target tags its states hold (component 76,
+    /// `scene::target_tags_component`); None: none touched yet. The client
+    /// reads a create's components with its update reader once the entity
+    /// is built (`0x7FF78969C360` → `0x7FF78969E5D0`).
+    pub tags: Option<Component>,
 }
 
 pub enum BodyView<'a> {
@@ -128,6 +133,7 @@ pub fn body_create(input: BodyCreate<'_>, view: BodyView<'_>, pools: &PoolCatalo
         }
         BodyView::Observer => None,
     };
+    components.extend(input.tags);
     let mut definition = Create::new(input.hero.body, components);
     definition.position = input.position.map(|position| position as f32);
     definition.rotation = yaw_rotation(f64::from(input.yaw));
@@ -224,6 +230,7 @@ mod tests {
                     golden: true,
                 },
                 health: None,
+                tags: None,
             },
             BodyView::Owner {
                 pose: Some(pose),
@@ -349,6 +356,7 @@ mod tests {
                     golden: true,
                 },
                 health: Some(live.component()),
+                tags: None,
             },
             BodyView::Observer,
             &PoolCatalog::default(),
@@ -429,6 +437,7 @@ mod tests {
                             golden: index % 2 == 0,
                         },
                         health: None,
+                        tags: None,
                     },
                     view,
                     &pools,

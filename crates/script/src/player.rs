@@ -10,10 +10,7 @@
 //! answers false.
 //! VM tests of hero graphs use this world, so they test what the server does.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeSet, sync::Arc};
 
 use serde_json::Value as Json;
 
@@ -22,6 +19,7 @@ use crate::{
     expr::{EntityRelation, native_shape, team_from_filter, valid_entity},
     graph::GraphStore,
     map_tags::{MapTags, TaggedEntity},
+    target_tags::{TargetTagLists, TargetTags},
     vitals::{PoolKind, Vitals},
     vm::{
         AuraChange, BodyEffects, CombatMod, GameMessage, HealthChange, MapRays, RaisedCriteria,
@@ -87,9 +85,8 @@ pub struct PlayerWorld {
     pub vitals: Vitals,
     pub pool_types_known: bool,
     pub target_tags: Option<BTreeSet<u64>>,
-    target_tag_effects: BTreeMap<u64, TargetTagCounts>,
-    /// A tag's effect began or ended since [`PlayerWorld::take_target_tag_change`].
-    target_tags_changed: bool,
+    /// The tags its own states add and suppress.
+    target_tag_effects: TargetTags,
     /// The body the hero last eliminated and its authored target tags (the
     /// match gives them with `0093.025`, whose `01CA` rid210 tests them).
     pub victim_tags: Option<(u32, BTreeSet<u64>)>,
@@ -125,20 +122,6 @@ pub struct PlayerWorld {
     tracked_stats: Vec<TrackedStat>,
     /// The statuses and combat modifiers its states hold.
     pub effects: BodyEffects,
-}
-
-#[derive(Default)]
-struct TargetTagCounts {
-    grants: u32,
-    suppressions: u32,
-}
-
-/// The tags a body's states add and suppress (target tag state
-/// `STU_E56BA8D8`), as tag GUIDs in order: what component 76 carries.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct TargetTagLists {
-    pub added: Vec<u64>,
-    pub suppressed: Vec<u64>,
 }
 
 impl World for PlayerWorld {
@@ -393,8 +376,8 @@ impl World for PlayerWorld {
                 .map_entity(entity)
                 .map(|placed| placed.tags.contains(&tag));
         }
-        if let Some(counts) = self.target_tag_effects.get(&tag) {
-            return Some(counts.suppressions == 0);
+        if let Some(held) = self.target_tag_effects.has(tag) {
+            return Some(held);
         }
         Some(self.target_tags.as_ref()?.contains(&tag))
     }
@@ -425,43 +408,9 @@ impl World for PlayerWorld {
     }
 
     fn set_target_tag_effect(&mut self, site: Site, effect: TargetTagEffect, active: bool) -> bool {
-        if !self.is_player_site(site) || effect.entity != self.entity {
-            return false;
-        }
-        let counts = if active {
-            self.target_tag_effects.entry(effect.tag).or_default()
-        } else {
-            let Some(counts) = self.target_tag_effects.get_mut(&effect.tag) else {
-                return false;
-            };
-            counts
-        };
-        // The authored removal can mask existing grants. A later grant's
-        // precedence over an already-active suppression is still unknown.
-        if active && effect.present && counts.suppressions != 0 {
-            return false;
-        }
-        let count = if effect.present {
-            &mut counts.grants
-        } else {
-            &mut counts.suppressions
-        };
-        let next = if active {
-            count.checked_add(1)
-        } else {
-            count.checked_sub(1)
-        };
-        let Some(next) = next else {
-            return false;
-        };
-        // A tag joins or leaves a list only when its count leaves or
-        // reaches zero.
-        self.target_tags_changed |= (*count == 0) != (next == 0);
-        *count = next;
-        if counts.grants == 0 && counts.suppressions == 0 {
-            self.target_tag_effects.remove(&effect.tag);
-        }
-        true
+        self.is_player_site(site)
+            && effect.entity == self.entity
+            && self.target_tag_effects.set(effect, active)
     }
 
     /// The body's own word, else a listed body's as the target searches
@@ -708,8 +657,7 @@ impl PlayerWorld {
             vitals: Vitals::empty(),
             pool_types_known: false,
             target_tags: None,
-            target_tag_effects: BTreeMap::new(),
-            target_tags_changed: false,
+            target_tag_effects: TargetTags::default(),
             map_rays: None,
             map_tags: None,
             controller_on_fire: false,
@@ -734,23 +682,9 @@ impl PlayerWorld {
     }
 
     /// The tags the body's states add and suppress now, when a tag came or
-    /// went since the last call. The client's tags are the authored ones
-    /// and the added ones, less the suppressed ones (`0x7FF789AF2980`), so
-    /// a suppression wins as it does in [`World::has_target_tag`].
+    /// went since the last call ([`TargetTags::take_change`]).
     pub fn take_target_tag_change(&mut self) -> Option<TargetTagLists> {
-        if !std::mem::take(&mut self.target_tags_changed) {
-            return None;
-        }
-        let mut lists = TargetTagLists::default();
-        for (&tag, counts) in &self.target_tag_effects {
-            if counts.grants != 0 {
-                lists.added.push(tag);
-            }
-            if counts.suppressions != 0 {
-                lists.suppressed.push(tag);
-            }
-        }
-        Some(lists)
+        self.target_tag_effects.take_change()
     }
 
     /// The aura changes the body's graphs made since the last call, in

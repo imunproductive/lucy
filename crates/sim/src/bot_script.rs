@@ -26,6 +26,7 @@ use crate::{
         spawned_definitions,
     },
     replication::kill_feed_fresh,
+    scene::target_tags_component,
     voice_lines::{VoiceLine, VoiceState, is_death_cry},
 };
 use orpheus_content::{
@@ -42,12 +43,12 @@ use orpheus_script::{
     timeline::FRAME_MS,
     vm::{
         AiMoveRequest, AuraChange, BodyEffects, GameMessage, HealthChange, MapRays, MessageEnd,
-        ShotEvent, Snapshot, TargetCandidate, Unknowns,
+        Motion, ShotEvent, Snapshot, TargetCandidate, Unknowns,
     },
     weapons::{HitDefinition, ProjectileBallistics, authored_number, ray_profile},
     wire::Value,
 };
-use orpheus_wire::entity::{EntityUpdate, MAX_PAYLOAD, frame};
+use orpheus_wire::entity::{Component, EntityUpdate, MAX_PAYLOAD, frame};
 
 /// How long a dead bot's death script runs: `int(BOT_RESPAWN / TICK)`
 /// frames, 3 s of 16 ms frames rounded down (combat.py `_advance_bot_death`).
@@ -139,6 +140,9 @@ struct BotScript {
     /// What each variable the live nameplate tool set had before it (none:
     /// never set), to put back when the tool lets it go.
     plate: BTreeMap<PlateVariable, Option<Value>>,
+    /// Its target tags as component 76, at a revision of
+    /// [`BotScripts::tag_revision`], once its states touched one.
+    tags: Option<(u64, Component)>,
 }
 
 /// Every training bot's script in one room, one slot per spawner.
@@ -167,6 +171,8 @@ pub struct BotScripts {
     health_changes: Vec<HealthChange>,
     /// The map's collision, for the bodies' ray casts.
     map_rays: Arc<dyn MapRays>,
+    /// Counts the bots' target tag changes ([`BotScript::tags`]).
+    tag_revision: u64,
 }
 
 impl BotScripts {
@@ -204,6 +210,7 @@ impl BotScripts {
             voices: Vec::new(),
             health_changes: Vec::new(),
             map_rays,
+            tag_revision: 0,
         }
     }
 
@@ -316,10 +323,14 @@ impl BotScripts {
                     death: None,
                     voice: VoiceState::default(),
                     plate: originals,
+                    tags: None,
                 })
             });
         match started {
-            Ok(script) => self.slots[slot] = Some(script),
+            Ok(script) => {
+                self.slots[slot] = Some(script);
+                self.take_tags(slot);
+            }
             Err(reason) => eprintln!(
                 "{}'s statescript could not start ({reason})",
                 bot.spawn.name
@@ -852,7 +863,40 @@ impl BotScripts {
                     self.voices.push((voice, bot.position));
                 }
             }
+            self.take_tags(slot);
         }
+    }
+
+    /// Its script's target tags changed since the last look: the new lists
+    /// as component 76 at the next revision.
+    fn take_tags(&mut self, slot: usize) {
+        let Some(script) = self.slots[slot].as_mut() else {
+            return;
+        };
+        if let Some(lists) = script.body.take_target_tag_change() {
+            self.tag_revision += 1;
+            script.tags = Some((self.tag_revision, target_tags_component(&lists)));
+        }
+    }
+
+    /// The live bot's target tags as its component 76 and their revision,
+    /// once its states touched one (a client sends them when it doesn't
+    /// have that revision: `WorldDelivery::update_bots`).
+    pub(crate) fn tags(&self, entity: u32) -> Option<(u64, &Component)> {
+        let (revision, tags) = self.script(entity)?.tags.as_ref()?;
+        Some((*revision, tags))
+    }
+
+    /// The dashes and velocity actions the script of the bot in `slot`
+    /// (while it is `entity`'s) began since the last call, for its mover
+    /// ([`Bot::start_motions`]).
+    pub(crate) fn take_motions(&mut self, slot: usize, entity: u32) -> Vec<Motion> {
+        self.slots
+            .get_mut(slot)
+            .and_then(Option::as_mut)
+            .filter(|script| script.entity == entity)
+            .map(|script| script.body.take_motions())
+            .unwrap_or_default()
     }
 
     /// The point the bot in `slot` (while its script is `entity`'s) is

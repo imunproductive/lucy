@@ -27,12 +27,26 @@ struct Player {
 impl Player {
     /// `hero` picked at the Practice Range spawn, standing for a second.
     fn spawn(hero: u64) -> Self {
+        Self::spawn_in(hero, WorldDelivery::new(OWNER).unbuffered())
+    }
+
+    /// `hero` played by an AI at the Practice Range spawn
+    /// ([`WorldDelivery::headless`]): his AI entity possesses the body.
+    fn spawn_ai(hero: u64) -> Self {
+        let difficulty = crate::ai::Difficulty::Hard.identifier();
+        Self::spawn_in(
+            hero,
+            WorldDelivery::headless(OWNER, 0x8000_7001, difficulty),
+        )
+    }
+
+    fn spawn_in(hero: u64, world: WorldDelivery) -> Self {
         let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
         assets.set_player_unknowns(Unknowns::Tolerate);
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let mut player = Self {
             scene,
-            world: WorldDelivery::new(OWNER).unbuffered(),
+            world,
             frame: FIRST_TICK,
             card: PlayerCard::default(),
         };
@@ -307,10 +321,7 @@ fn tracer_blink_stops_at_a_wall() {
 /// lift her off the ground well above a jump's 1 m, forward along her yaw;
 /// she comes down and rests (from the spawn facing +z she lands on a ledge
 /// 6 m higher).
-#[test]
-#[ignore = "requires the derived 104319 data and the Practice Range collision"]
-fn pharahs_jump_jet_lifts_her_off_the_ground() {
-    let mut pharah = Player::spawn(PHARAH);
+fn jump_jet_lifts_her_off_the_ground(mut pharah: Player) {
     let start = pharah.position();
     pharah.press(BLINK, 0);
     let mut top = start[1];
@@ -327,6 +338,27 @@ fn pharahs_jump_jet_lifts_her_off_the_ground() {
     );
     pharah.idle(30, 0);
     assert_eq!(pharah.position(), end);
+}
+
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn pharahs_jump_jet_lifts_her_off_the_ground() {
+    jump_jet_lifts_her_off_the_ground(Player::spawn(PHARAH));
+}
+
+/// An AI hero's body (an AI entity possesses it) takes its graphs'
+/// velocity actions through the same mover path as a player's.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn an_ai_pharahs_jump_jet_lifts_her_off_the_ground() {
+    let pharah = Player::spawn_ai(PHARAH);
+    assert!(pharah.world.is_headless());
+    let graphs = pharah.scene.graphs();
+    assert!(
+        graphs.ai_definitions().definition(PHARAH).is_some(),
+        "her AI entity possesses her body"
+    );
+    jump_jet_lifts_her_off_the_ground(pharah);
 }
 
 /// Echo's body graph `1DFC` keeps a RayCast (st10) 2.5 m down from a

@@ -5,7 +5,7 @@ use orpheus_physics::{
     collision::index::TriangleIndex, contact::world::ContactWorld, mover::settings::MoverSettings,
 };
 use orpheus_script::{
-    player::TargetTagLists,
+    target_tags::TargetTagLists,
     vm::{Site, TargetTagEffect, World},
     wire::Value,
 };

@@ -17,6 +17,7 @@ pub mod random_tables;
 pub mod rulesets;
 pub mod snapshot;
 pub mod stream;
+pub mod target_tags;
 pub mod timeline;
 pub mod ultimate;
 pub mod vitals;

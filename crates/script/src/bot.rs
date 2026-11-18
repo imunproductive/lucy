@@ -15,11 +15,12 @@ use crate::{
     expr::{EntityRelation, EvalError, Scope, Variable, native_shape},
     graph::{GraphStore, Node},
     snapshot::SnapshotEncoder,
+    target_tags::{TargetTagLists, TargetTags},
     timeline::FRAME_MS,
     vitals::PoolKind,
     vm::{
         AiMoveRequest, AuraChange, BodyEffects, CombatMod, Component, HealthChange, InitFault,
-        MAX_INIT_WORK, MapRays, RaisedCriteria, ShotEvent, Site, Snapshot, TargetCandidate,
+        MAX_INIT_WORK, MapRays, Motion, RaisedCriteria, ShotEvent, Site, Snapshot, TargetCandidate,
         TargetTagEffect, Unknowns, World, body_roots,
     },
     wire::{Value, Variables},
@@ -175,6 +176,9 @@ pub struct BotWorld {
     pub aura_changes: Vec<AuraChange>,
     /// The statuses and combat modifiers its states hold.
     pub effects: BodyEffects,
+    /// The tags its own states add and suppress (Biotic Grenade's enemy
+    /// aura `0C72` st4 grants `02FB`), as a player's body keeps them.
+    pub target_tags: TargetTags,
     /// The map's collision the body's ray casts meet; none: no map.
     pub map_rays: Option<Arc<dyn MapRays>>,
 }
@@ -253,16 +257,19 @@ impl World for BotWorld {
         true
     }
 
-    /// A target tag a state grants or removes (Biotic Grenade's enemy aura
-    /// `0C72` st4 grants `02FB`): accepted; the bot keeps no tags, so its
-    /// filters never see it (assumption).
-    fn set_target_tag_effect(
-        &mut self,
-        _site: Site,
-        _effect: TargetTagEffect,
-        _active: bool,
-    ) -> bool {
-        true
+    /// A target tag a state of the bot's own grants or removes on it
+    /// (Biotic Grenade's enemy aura `0C72` st4 grants `02FB`), kept as a
+    /// player's body keeps them; the match sends them as its component 76.
+    fn set_target_tag_effect(&mut self, site: Site, effect: TargetTagEffect, active: bool) -> bool {
+        effect.entity == site.entity && self.target_tags.set(effect, active)
+    }
+
+    /// Its own tags as its states hold them; the authored ones aren't
+    /// known here.
+    fn has_target_tag(&self, site: Site, entity: u32, tag: u64) -> Option<bool> {
+        (entity == site.entity)
+            .then(|| self.target_tags.has(tag))
+            .flatten()
     }
 
     fn set_status(&mut self, site: Site, status: Option<i64>) -> bool {
@@ -598,6 +605,7 @@ impl BotBody {
             health_changes: Vec::new(),
             aura_changes: Vec::new(),
             effects: BodyEffects::default(),
+            target_tags: TargetTags::default(),
             map_rays: spawn.map_rays.cloned(),
         };
         let mut component = Component::start(
@@ -684,6 +692,18 @@ impl BotBody {
 
     pub fn world(&self) -> &BotWorld {
         &self.world
+    }
+
+    /// The tags the body's states add and suppress now, when a tag came or
+    /// went since the last call ([`TargetTags::take_change`]).
+    pub fn take_target_tag_change(&mut self) -> Option<TargetTagLists> {
+        self.world.target_tags.take_change()
+    }
+
+    /// The dashes and velocity actions the body's graphs began since the
+    /// last call, for its mover ([`Component::take_motions`]).
+    pub fn take_motions(&mut self) -> Vec<Motion> {
+        self.component.take_motions()
     }
 
     /// Its movement bits from now on (the body's sampler reads them as its
@@ -1355,6 +1375,7 @@ mod tests {
             health_changes: Vec::new(),
             aura_changes: Vec::new(),
             effects: BodyEffects::default(),
+            target_tags: TargetTags::default(),
             map_rays: None,
         };
         assert_eq!(
