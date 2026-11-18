@@ -1134,10 +1134,12 @@ fn room_peers<'p>(
 
 /// The stats a player's graphs counted (TrackStat, TrackStatTime;
 /// `orpheus_script::vm` `stats`) go to the stat table of each target's
-/// player: the target is a player's controller or one of his bodies (the
-/// body ids share the controller's high bits). A target outside the room's
-/// players (a Training Bot, an entity of the map) keeps no stats.
-fn credit_tracked_stats(players: &mut [Player], tracked: Vec<TrackedStat>) {
+/// player, as the catalog keeps each ([`StatsCatalog::credit`]: a "Best"
+/// stat its best single amount): the target is a player's controller or
+/// one of his bodies (the body ids share the controller's high bits). A
+/// target outside the room's players (a Training Bot, an entity of the
+/// map) keeps no stats.
+fn credit_tracked_stats(players: &mut [Player], catalog: &StatsCatalog, tracked: Vec<TrackedStat>) {
     for stat in tracked {
         for target in stat.targets {
             let Some(player) = players
@@ -1147,7 +1149,7 @@ fn credit_tracked_stats(players: &mut [Player], tracked: Vec<TrackedStat>) {
                 continue;
             };
             for &counted in &stat.stats {
-                player.stats.add(counted, stat.amount);
+                catalog.credit(&mut player.stats, counted, stat.amount);
             }
         }
     }
@@ -2404,8 +2406,14 @@ impl State {
                             .iter()
                             .find(|bot| bot.entity == death.bot)
                             .map(|bot| bot.spawn.body);
-                        peer.world
-                            .eliminated(graphs, death.tick, death.bot, body, &death.tags);
+                        peer.world.eliminated(
+                            graphs,
+                            death.tick,
+                            death.bot,
+                            body,
+                            &death.tags,
+                            true,
+                        );
                     }
                     for notice in hit.notices.into_iter().flatten() {
                         peer.notice(notice);
@@ -3138,16 +3146,31 @@ impl State {
             // The AI heroes' input for this tick (ai.rs).
             self.drive_ai(tick, now);
         }
-        // What every player's graphs counted (the AI heroes' too) goes to
-        // the stat tables before the boards go out.
+        // What every player's graphs counted (the AI heroes' too) and what
+        // the entities they spawned counted for them (the Biotic Field's
+        // `0258` rid14) go to the stat tables before the boards go out.
         for (connection, peer) in &mut self.peers {
             let tracked = peer.world.take_tracked_stats();
-            if let Some(room) = self
+            if let Some(Room {
+                players,
+                world: Some(world),
+                ..
+            }) = self
                 .seats
                 .get(connection)
                 .and_then(|(id, _)| self.rooms.get_mut(id))
             {
-                credit_tracked_stats(&mut room.players, tracked);
+                credit_tracked_stats(players, world.scene.stats(), tracked);
+            }
+        }
+        for room in self.rooms.values_mut() {
+            if let Some(world) = &mut room.world {
+                let tracked = world
+                    .combat
+                    .as_mut()
+                    .map(Combat::take_field_stats)
+                    .unwrap_or_default();
+                credit_tracked_stats(&mut room.players, world.scene.stats(), tracked);
             }
         }
         let timers = self.timers;

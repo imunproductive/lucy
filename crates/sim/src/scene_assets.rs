@@ -48,7 +48,7 @@ use crate::{
 use orpheus_content::{
     heroes::{EyeCatalog, Hero, HeroCatalog, SOLDIER},
     maps::{GameMap, GameModes, MODES_FILE, SpawnChoice},
-    stats::{BoardStats, PlayerStats, StatsCatalog, initial_on_fire},
+    stats::{BoardStats, PlayerStats, StatRules, StatsCatalog, initial_on_fire},
     voice_sets::VoiceCatalog,
 };
 use orpheus_core::{bits::BitWriter, guid::parse_guid};
@@ -279,7 +279,10 @@ impl SceneAssets {
                 eprintln!("the Biotic Field is unavailable ({error})");
                 Vec::new()
             });
-        let stats = Arc::new(StatsCatalog::load(data.join("game_stats_174.json"))?);
+        let stats = Arc::new(
+            StatsCatalog::load(data.join("game_stats_174.json"))?
+                .with_rules(StatRules::load(data.join("game_stat_rules_174.json"))?),
+        );
         let board = stats.board()?;
         let mode_rules = ModeRulesData::load(&graphs, &data)?;
         let objectives = ObjectiveData::load(&data)?;

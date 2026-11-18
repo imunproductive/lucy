@@ -64,9 +64,13 @@ pub enum CombatNotice {
         source: u32,
         killed_by: bool,
     },
+    /// 25005 to `killer` (his body): he eliminated `victim`, or with
+    /// `assist` (`+0x89`) he assisted in its elimination: `1FC0` shows
+    /// "ASSIST" (`01F0.07C`) in place of "ELIMINATED" (`1126.07C`).
     Elimination {
         killer: u32,
         victim: u32,
+        assist: bool,
     },
     /// `speaker` says the voice line keyed `line` of its voice set, for
     /// `stimulus`, to the client whose body is `listener`.
@@ -137,14 +141,18 @@ impl CombatNotice {
                     (0x7c, entity(source)),
                 ]),
             ),
-            Self::Elimination { killer, victim } => (
+            Self::Elimination {
+                killer,
+                victim,
+                assist,
+            } => (
                 ELIMINATION,
                 Fields::from([
                     (0x78, Value::Unsigned(0)),
                     (0x80, entity(killer)),
                     (0x84, entity(victim)),
                     (0x88, Value::Unsigned(0)),
-                    (0x89, Value::Bool(false)),
+                    (0x89, Value::Bool(assist)),
                 ]),
             ),
             Self::Voice {
@@ -194,7 +202,7 @@ mod tests {
         const KILLER: u32 = 0xa000_0101;
         const TARGET: u32 = 0xa004_0010;
         let schemas = Schemas::game();
-        let cases: [(CombatNotice, Option<u32>, &[u8]); 4] = [
+        let cases: [(CombatNotice, Option<u32>, &[u8]); 5] = [
             (
                 CombatNotice::Hit {
                     target: TARGET,
@@ -210,9 +218,20 @@ mod tests {
                 CombatNotice::Elimination {
                     killer: KILLER,
                     victim: TARGET,
+                    assist: false,
                 },
                 Some(TARGET),
                 b"\x02\x05\x00\x00\x00\x00\x00\x00\x00\x00\x01\x01\x00\xa0\x10\x00\x04\xa0\x00\x00",
+            ),
+            // An assist: `+0x89` set, the last byte.
+            (
+                CombatNotice::Elimination {
+                    killer: KILLER,
+                    victim: TARGET,
+                    assist: true,
+                },
+                Some(TARGET),
+                b"\x02\x05\x00\x00\x00\x00\x00\x00\x00\x00\x01\x01\x00\xa0\x10\x00\x04\xa0\x00\x01",
             ),
             (
                 CombatNotice::Death {

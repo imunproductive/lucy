@@ -80,9 +80,80 @@ impl PlayerStats {
         self.values.insert(stat, value);
     }
 
+    /// Keep one amount of `stat`, the better of the kept one and `amount`
+    /// by `better` (`f64::max`, `f64::min`); the first amount is kept as
+    /// it comes.
+    pub fn keep(&mut self, stat: u64, amount: f64, better: fn(f64, f64) -> f64) {
+        self.values
+            .entry(stat)
+            .and_modify(|kept| *kept = better(*kept, amount))
+            .or_insert(amount);
+    }
+
     pub fn value(&self, stat: u64) -> f64 {
         self.values.get(&stat).copied().unwrap_or_default()
     }
+}
+
+/// How the stat table keeps the stats whose value isn't the sum of what
+/// was counted, from the stats' own data (`data/game_stat_rules_174.json`,
+/// `orpheus_assets` `heroes::stats::derive_rules`): a "Best" stat keeps
+/// the largest or the smallest single amount, a derived one is the ratio
+/// or the sum of two others.
+#[derive(Debug, Default)]
+pub struct StatRules {
+    best: HashMap<u64, fn(f64, f64) -> f64>,
+    derived: HashMap<u64, Derived>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Derived {
+    Ratio(u64, u64),
+    Sum(u64, u64),
+}
+
+/// Derived stats name derived stats ("Weapon Accuracy" divides by "Shots
+/// Hits + Missed"); deeper chains than this count as 0.
+const MAX_DERIVATION_DEPTH: u8 = 4;
+
+impl StatRules {
+    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::from_json(&fs::read_to_string(path)?)
+    }
+
+    pub fn from_json(text: &str) -> io::Result<Self> {
+        let raw: RawRules = serde_json::from_str(text)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let best = raw
+            .best
+            .into_iter()
+            .map(|(stat, rule)| {
+                let better: fn(f64, f64) -> f64 = match rule.as_str() {
+                    "max" => f64::max,
+                    "min" => f64::min,
+                    _ => return Err(invalid(format!("unknown best rule {rule:?}"))),
+                };
+                Ok((guid(&stat)?, better))
+            })
+            .collect::<io::Result<_>>()?;
+        let derived = raw
+            .derived
+            .into_iter()
+            .map(|(stat, rule)| {
+                let derived = match (rule.ratio, rule.sum) {
+                    (Some([base, other]), None) => Derived::Ratio(guid(&base)?, guid(&other)?),
+                    (None, Some([base, other])) => Derived::Sum(guid(&base)?, guid(&other)?),
+                    _ => return Err(invalid(format!("bad derived rule for {stat}"))),
+                };
+                Ok((guid(&stat)?, derived))
+            })
+            .collect::<io::Result<_>>()?;
+        Ok(Self { best, derived })
+    }
+}
+
+fn invalid(message: String) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
 pub type Medals = HashMap<u64, u8>;
@@ -139,6 +210,7 @@ pub struct StatsCatalog {
     player: StatLists,
     heroes: HashMap<u64, StatLists>,
     display: HashMap<u64, Option<u8>>,
+    rules: StatRules,
 }
 
 impl StatsCatalog {
@@ -161,7 +233,52 @@ impl StatsCatalog {
                 .into_iter()
                 .map(|(stat, display)| Ok((guid(&stat)?, display)))
                 .collect::<io::Result<_>>()?,
+            rules: StatRules::default(),
         })
+    }
+
+    /// The catalog with the stat table's rules ([`StatRules`]).
+    pub fn with_rules(mut self, rules: StatRules) -> Self {
+        self.rules = rules;
+        self
+    }
+
+    /// Count `amount` of `stat` for a player: a "Best" stat keeps the
+    /// better single amount, any other adds it.
+    pub fn credit(&self, record: &mut PlayerStats, stat: u64, amount: f64) {
+        match self.rules.best.get(&stat) {
+            Some(&better) => record.keep(stat, amount, better),
+            None => record.add(stat, amount),
+        }
+    }
+
+    /// A player's value of `stat`: a derived stat's from the stats it
+    /// combines (a ratio with nothing to divide by is 0), any other's as
+    /// counted.
+    pub fn value(&self, record: &PlayerStats, stat: u64) -> f64 {
+        self.derived_value(record, stat, MAX_DERIVATION_DEPTH)
+    }
+
+    fn derived_value(&self, record: &PlayerStats, stat: u64, depth: u8) -> f64 {
+        let Some(&rule) = self.rules.derived.get(&stat) else {
+            return record.value(stat);
+        };
+        let Some(depth) = depth.checked_sub(1) else {
+            return 0.0;
+        };
+        match rule {
+            Derived::Ratio(base, other) => {
+                let divisor = self.derived_value(record, other, depth);
+                if divisor == 0.0 {
+                    0.0
+                } else {
+                    self.derived_value(record, base, depth) / divisor
+                }
+            }
+            Derived::Sum(base, other) => {
+                self.derived_value(record, base, depth) + self.derived_value(record, other, depth)
+            }
+        }
     }
 
     /// The stats the server counts for each player; an error when the
@@ -228,7 +345,7 @@ impl StatsCatalog {
                 let value = if stat == 0 {
                     0.0
                 } else {
-                    record.value(stat) as f32
+                    self.value(record, stat) as f32
                 };
                 fields[stat_offset + index] = Some(ComponentValue::Id(stat));
                 fields[value_offset + index] = Some(ComponentValue::F32(value));
@@ -321,6 +438,18 @@ struct RawCatalog {
     player: RawLists,
     heroes: IndexMap<String, RawLists>,
     stats: IndexMap<String, Option<u8>>,
+}
+
+#[derive(Deserialize)]
+struct RawRules {
+    best: IndexMap<String, String>,
+    derived: IndexMap<String, RawDerived>,
+}
+
+#[derive(Deserialize)]
+struct RawDerived {
+    ratio: Option<[String; 2]>,
+    sum: Option<[String; 2]>,
 }
 
 #[derive(Deserialize)]
@@ -428,6 +557,39 @@ mod tests {
             StatsCatalog::load(&path).unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
+    }
+
+    /// A "Best" stat keeps the best single amount (`0346` "Multikill -
+    /// Best" the largest, `0525` "Fastest Gun" the smallest), any other
+    /// sums them; a derived ratio ("Scoped Accuracy" `0218`) divides its
+    /// base by the other stat, and is 0 while that is 0.
+    #[test]
+    fn best_stats_keep_one_amount_and_derived_stats_combine_two() {
+        const MULTIKILL_BEST: u64 = 0x0860_0000_0000_0346;
+        const FASTEST: u64 = 0x0860_0000_0000_0525;
+        const HITS: u64 = 0x0860_0000_0000_0216;
+        const SHOTS: u64 = 0x0860_0000_0000_0217;
+        const ACCURACY: u64 = 0x0860_0000_0000_0218;
+        let rules = StatRules::from_json(
+            r#"{
+                "best": {"0x0860000000000346": "max", "0x0860000000000525": "min"},
+                "derived": {"0x0860000000000218": {"ratio": ["0x0860000000000216", "0x0860000000000217"]}}
+            }"#,
+        )
+        .unwrap();
+        let catalog = fixture().with_rules(rules);
+        let mut stats = PlayerStats::default();
+        for amount in [2.0, 4.0, 3.0] {
+            for stat in [MULTIKILL_BEST, FASTEST, HITS] {
+                catalog.credit(&mut stats, stat, amount);
+            }
+        }
+        assert_eq!(stats.value(MULTIKILL_BEST), 4.0);
+        assert_eq!(stats.value(FASTEST), 2.0);
+        assert_eq!(stats.value(HITS), 9.0);
+        assert_eq!(catalog.value(&stats, ACCURACY), 0.0);
+        catalog.credit(&mut stats, SHOTS, 12.0);
+        assert_eq!(catalog.value(&stats, ACCURACY), 0.75);
     }
 
     #[test]

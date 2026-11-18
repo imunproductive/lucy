@@ -56,8 +56,9 @@ use orpheus_script::{
     bot::{DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE, DAMAGE_TAGS, DAMAGED, DIED},
     vitals::{Death, Vitals},
     vm::{
-        AuraChange, CombatMod, DAMAGE_DEALT, DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN,
-        HealthChange, ShotEvent, TargetCandidate, combat_scale,
+        ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, AuraChange, CombatMod, DAMAGE_DEALT,
+        DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, HealthChange, ShotEvent, TargetCandidate,
+        TrackedStat, combat_scale,
     },
     weapons::{AllyHits, DamageTags, HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
@@ -141,11 +142,14 @@ fn invalid(error: impl std::fmt::Display) -> io::Error {
 /// The "died" message a dead body's script takes (combat.py
 /// `_death_parameters`): the killer, the body credited with the kill,
 /// whether the blow was critical, its loadout, its damage tags and the
-/// assists (none). The dead body's `01CF` (a bot's `0C18`) shares #392,
+/// assists: the bodies of the players who earned an assist on the kill
+/// ([`kill_credit`]). The dead body's `01CF` (a bot's `0C18`) shares #392,
 /// #40, #510, #1821, #9300 and #9296 with every client, whose client-only
 /// plug posts the kill feed line (`0765.025`) from them: killer `03E9`, icon
-/// `03EB` (the loadout), headshot `03EF` (crit) and `08AF` (the tags hold
-/// `4FFB`). Python and upstream sent neither 00BD nor 003D. Assumption: the
+/// `03EB` (the loadout), headshot `03EF` (crit), assists `03EC` (`0DEA`
+/// rid50 draws each one's hero icon; `01CF` rid55 sends none in a
+/// free-for-all, team 4) and `08AF` (the tags hold `4FFB`). Python and
+/// upstream sent neither 00BD nor 003D, and no assists. Assumption: the
 /// credited body is the killer itself (no turret or pet kills anyone
 /// here). Unsent and unknown: 006B, 0142 and 03E8 (`03ED`, 0DEA #9297).
 pub fn death_message(
@@ -153,6 +157,7 @@ pub fn death_message(
     critical: bool,
     loadout: Option<u64>,
     tags: DamageTags,
+    assists: &[u32],
 ) -> (u64, Variables) {
     (
         DIED,
@@ -162,7 +167,10 @@ pub fn death_message(
             (DAMAGE_TAGS, tags.to_value()),
             (CRIT, Value::Bool(critical)),
             (LOADOUT, loadout.map_or(Value::Null, Value::Asset)),
-            (ASSISTS, Value::Array(Vec::new())),
+            (
+                ASSISTS,
+                Value::Array(assists.iter().copied().map(Value::Entity).collect()),
+            ),
         ]),
     )
 }
@@ -202,10 +210,11 @@ pub fn damage_message(
 
 /// The messages a player's body takes for `hit`, with `tags` (the hit's,
 /// plus any its damage modifiers added, `vm/statuses.rs`), which dealt
-/// `dealt` and `killed` it or not ([`WorldDelivery::damage_body`]), in
-/// order: its damage message ([`damage_message`]), then for a killing hit
-/// its death message ([`death_message`]). A killing hit's damage message
-/// also carries the kill's fields (the credited body `00BD`, crit `0095`,
+/// `dealt` and, for a killing hit, the assisters' bodies (`kill`; none:
+/// the body lives; [`WorldDelivery::send_hit_messages`]), in order: its
+/// damage message ([`damage_message`]), then for a killing hit its death
+/// message ([`death_message`]). A killing hit's damage message also
+/// carries the kill's fields (the credited body `00BD`, crit `0095`,
 /// loadout `03E6`, assists `03E7`), as retail's damage event does: Echo's
 /// `1544` rid54 reads them from `0011.025` alone, not `003E.025`, and posts
 /// the kill feed line (`0765.025`) from them when a native flag (#33688e,
@@ -217,7 +226,7 @@ pub fn hit_messages(
     hit: &PlayerHit,
     tags: DamageTags,
     dealt: f64,
-    killed: bool,
+    kill: Option<&[u32]>,
     feedback: HurtFeedback,
 ) -> Vec<(u64, Variables)> {
     let source = hit.shooter.source;
@@ -229,13 +238,19 @@ pub fn hit_messages(
             DamageTags::NONE
         };
         let (message, mut parameters) = damage_message(source, dealt, flinch, hit.direction);
-        if killed {
-            parameters.extend(death_message(source, hit.critical, hit.loadout, flinch).1);
+        if let Some(assists) = kill {
+            parameters.extend(death_message(source, hit.critical, hit.loadout, flinch, assists).1);
         }
         messages.push((message, parameters));
     }
-    if killed {
-        messages.push(death_message(source, hit.critical, hit.loadout, tags));
+    if let Some(assists) = kill {
+        messages.push(death_message(
+            source,
+            hit.critical,
+            hit.loadout,
+            tags,
+            assists,
+        ));
     }
     messages
 }
@@ -959,6 +974,12 @@ impl Combat {
         self.fields.take_auras()
     }
 
+    /// The stats the room's Biotic Fields counted since the last call
+    /// (`0258` rid14 "Biotic Fields Deployed", for its owner's player).
+    pub fn take_field_stats(&mut self) -> Vec<TrackedStat> {
+        self.fields.take_tracked_stats()
+    }
+
     /// The room's Biotic Fields, which send and take game messages
     /// ([`crate::messages`]).
     pub fn fields_mut(&mut self) -> &mut SpawnedFields {
@@ -1298,6 +1319,7 @@ impl Combat {
                 (player && result.killed).then_some(CombatNotice::Elimination {
                     killer: shooter.source,
                     victim: bot.entity,
+                    assist: false,
                 }),
             ],
             health,
@@ -1403,19 +1425,143 @@ fn player_of(players: &[CombatPlayer<'_>], body: u32) -> Option<usize> {
         .position(|player| player.entity == body & !0xff)
 }
 
+/// How long damage to a body counts toward the eliminations of its death:
+/// every player who hurt it within this before it died is credited one
+/// (the retail server's own rule: no graph or data names the window).
+/// Assumption: 3 s, the rule players measured (Overwatch Wiki, "Common
+/// Terms": "any player who dealt any damage to the eliminated enemy hero
+/// within 3 seconds before they died will get an Elimination credit"); the
+/// debuffs' assist credit outlasts them as long (`STU_0DB9E66B`
+/// `m_43B917C6` 3 s), while `1901`'s attacker list keeps a pet's owner 5 s
+/// (`refs/reports/StatCredit.md`).
+pub const DAMAGE_CREDIT: Duration = Duration::from_secs(3);
+
+/// Whether damage dealt at `at` counts toward a death at `now`
+/// ([`DAMAGE_CREDIT`]).
+pub fn credits_damage(at: Duration, now: Duration) -> bool {
+    now <= at + DAMAGE_CREDIT
+}
+
+/// Final Blows (`002B`): the career counter of the stat event 0
+/// (`m_primaryEvent`), the hero board's "Final Blows".
+const FINAL_BLOWS: u64 = 0x0860_0000_0000_002b;
+/// Offensive Assists (`03D4`, stat event 47) and Defensive Assists
+/// (`03DA`, event 48), on the support heroes' boards.
+const OFFENSIVE_ASSISTS: u64 = 0x0860_0000_0000_03d4;
+const DEFENSIVE_ASSISTS: u64 = 0x0860_0000_0000_03da;
+
+/// An assist a player earned on a kill ([`kill_credit`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Assist {
+    Offensive,
+    Defensive,
+}
+
+/// Whom a player's death credits besides its killer ([`kill_credit`]),
+/// by slot.
+#[derive(Debug, Default, PartialEq)]
+pub struct KillCredit {
+    /// The players who hurt the victim within [`DAMAGE_CREDIT`] before the
+    /// death: an elimination each.
+    pub eliminations: Vec<usize>,
+    /// The players whose assist states name the victim or one of its
+    /// eliminators: an assist each.
+    pub assists: Vec<(usize, Assist)>,
+}
+
+/// The credit of the death of `victim` (slot and body) killed by `killer`
+/// (a player's slot; none: a bot, the environment or his own blow), the
+/// retail server's native bookkeeping (no graph credits it):
+///
+/// - an elimination for every player among `attackers` (the sources of
+///   the damage the victim took within [`DAMAGE_CREDIT`]) but the killer
+///   and the victim;
+/// - an assist for every player an assist state names as its assister
+///   (`links`, every player's: `STU_0DB9E66B`, `vm/statuses.rs`): an
+///   offensive one (kind 1) when the state's targets hold the victim, a
+///   defensive one (kind 2) when they hold the body of a player credited
+///   with the elimination (the killer or one in the list above: "the
+///   players whose eliminations grant assist credit"). The killer and the
+///   victim get none; a player with both kinds gets the defensive one (a
+///   player's report, Blizzard forums 2022: "Zen healing someone who kills
+///   a discorded target counts as defensive"); an assister may be credited
+///   an elimination too. Assumptions, from the Workshop's Start Assist and
+///   the kinds' targets (`refs/reports/StatCredit.md`).
+///
+/// `bodies` are the players' current bodies, by slot; `player_of` names a
+/// body's (or player entity's) player.
+pub fn kill_credit(
+    (victim, victim_body): (usize, u32),
+    killer: Option<usize>,
+    attackers: &[u32],
+    links: &[AssistLink],
+    bodies: &[Option<u32>],
+    player_of: impl Fn(u32) -> Option<usize>,
+) -> KillCredit {
+    let others = |slot: &usize| *slot != victim && Some(*slot) != killer;
+    let mut eliminations: Vec<usize> = Vec::new();
+    for slot in attackers.iter().filter_map(|&source| player_of(source)) {
+        if others(&slot) && !eliminations.contains(&slot) {
+            eliminations.push(slot);
+        }
+    }
+    let eliminators: Vec<u32> = killer
+        .iter()
+        .chain(&eliminations)
+        .filter_map(|&slot| bodies.get(slot).copied().flatten())
+        .collect();
+    let mut assists: Vec<(usize, Assist)> = Vec::new();
+    for link in links {
+        let earned = match link.kind {
+            ASSIST_OFFENSIVE if link.targets.contains(&victim_body) => Assist::Offensive,
+            ASSIST_DEFENSIVE
+                if link
+                    .targets
+                    .iter()
+                    .any(|target| eliminators.contains(target)) =>
+            {
+                Assist::Defensive
+            }
+            _ => continue,
+        };
+        for slot in link
+            .assisters
+            .iter()
+            .filter_map(|&entity| player_of(entity))
+        {
+            if !others(&slot) {
+                continue;
+            }
+            match assists.iter_mut().find(|(held, _)| *held == slot) {
+                Some((_, kind)) if earned == Assist::Defensive => *kind = earned,
+                Some(_) => {}
+                None => assists.push((slot, earned)),
+            }
+        }
+    }
+    KillCredit {
+        eliminations,
+        assists,
+    }
+}
+
 /// The hits on players' bodies (combat.py `_damage`, `_tell_hit`,
 /// `_died`, `_kill_notice`): the victim's pools take each; a player who hit
 /// another gets 25001, Hero Damage Done and ultimate charge for it (his own
 /// explosion's damage to himself gives none of them: beyond Python, which
 /// never hurt the shooter; self damage gives no charge, game-rules.md 154,
-/// and isn't damage done or a hit to show, assumption); a kill counts
-/// Deaths for the victim, Eliminations and 25005 for another player who
-/// killed him (the scene's board stats), and gives the victim 25004 ("YOU
-/// WERE KILLED BY", or "YOU DIED" for his own blow), and the killer's
-/// multikills count it ([`crate::announcer`]). A heal of an ally
-/// (combat.py `_heal`, leafall903/ORPHEUS (MIT) commit c239a84) tells no
-/// one: a player healer's Healing Done and ultimate count what the pools
-/// took.
+/// and isn't damage done or a hit to show, assumption). A kill counts
+/// Deaths for the victim and gives him 25004 ("YOU WERE KILLED BY", or
+/// "YOU DIED" for his own blow); another player who killed him gets
+/// Eliminations, Final Blows, 25005 and `0093.025` (his body's
+/// elimination line, his multikills: [`crate::announcer`]); the others the
+/// death credits ([`kill_credit`]) get, for damage, Eliminations, 25005
+/// and `0093.025` without the final blow flag, and for an assist its stat
+/// (Offensive or Defensive Assists), 25005 as an assist ("ASSIST", unless
+/// he has the elimination's) and a place in the death message's assists
+/// (`03E7`, the kill feed's assist icons). A heal of an ally (combat.py
+/// `_heal`, leafall903/ORPHEUS (MIT) commit c239a84) tells no one: a
+/// player healer's Healing Done and ultimate count what the pools took.
 /// Returns each player's notices, by slot.
 pub fn apply_player_hits(
     scene: &PreparedScene,
@@ -1454,13 +1600,37 @@ pub fn apply_player_hits(
         let Some(damage) = players[victim]
             .world
             .as_deref_mut()
-            .and_then(|world| world.damage_body(scene, &hit, tick, now))
+            .and_then(|world| world.apply_damage(scene, &hit, tick, now))
         else {
             continue;
         };
         let shooter = (!hit.shooter.bot)
             .then(|| player_of(players, hit.shooter.source))
             .flatten();
+        let own_blow = shooter == Some(victim);
+        let killer = shooter.filter(|_| !own_blow);
+        let bodies: Vec<Option<u32>> = players
+            .iter()
+            .map(|player| {
+                player
+                    .world
+                    .as_deref()
+                    .and_then(WorldDelivery::current_body)
+            })
+            .collect();
+        let credit = if damage.killed {
+            death_credit(players, (victim, hit.body), killer, &bodies, now)
+        } else {
+            KillCredit::default()
+        };
+        let assisters: Vec<u32> = credit
+            .assists
+            .iter()
+            .filter_map(|&(slot, _)| bodies[slot])
+            .collect();
+        if let Some(world) = players[victim].world.as_deref_mut() {
+            world.send_hit_messages(scene, &hit, &damage, &assisters);
+        }
         // His body's `0B8B` decides the charge, his own blow's too (none:
         // rid28, the body hit must be hostile to him).
         if let Some(world) = shooter.and_then(|shooter| players[shooter].world.as_deref_mut()) {
@@ -1473,7 +1643,7 @@ pub fn apply_player_hits(
                 false,
             );
         }
-        if let Some(shooter) = shooter.filter(|&shooter| shooter != victim) {
+        if let Some(shooter) = killer {
             notices[shooter].push(CombatNotice::Hit {
                 target: hit.body,
                 dealt: damage.dealt,
@@ -1487,22 +1657,54 @@ pub fn apply_player_hits(
             continue;
         }
         players[victim].stats.add(board.deaths, 1.0);
-        let own_blow = shooter == Some(victim);
-        if let Some(killer) = shooter.filter(|_| !own_blow) {
-            players[killer].stats.add(board.eliminations, 1.0);
-            if let Some(world) = players[killer].world.as_deref_mut() {
+        let eliminators = killer
+            .map(|slot| (slot, true))
+            .into_iter()
+            .chain(credit.eliminations.iter().map(|&slot| (slot, false)));
+        for (slot, final_blow) in eliminators {
+            let player = &mut players[slot];
+            player.stats.add(board.eliminations, 1.0);
+            if final_blow {
+                player.stats.add(FINAL_BLOWS, 1.0);
+            }
+            if let Some(world) = player.world.as_deref_mut() {
                 world.eliminated(
                     &scene.shared_graphs(),
                     tick,
                     hit.body,
                     victim_body,
                     &hit.tags,
+                    final_blow,
                 );
             }
-            notices[killer].push(CombatNotice::Elimination {
-                killer: hit.shooter.source,
-                victim: hit.body,
-            });
+            let credited = if final_blow {
+                Some(hit.shooter.source)
+            } else {
+                bodies[slot]
+            };
+            if let Some(credited) = credited {
+                notices[slot].push(CombatNotice::Elimination {
+                    killer: credited,
+                    victim: hit.body,
+                    assist: false,
+                });
+            }
+        }
+        for &(slot, kind) in &credit.assists {
+            players[slot].stats.add(
+                match kind {
+                    Assist::Offensive => OFFENSIVE_ASSISTS,
+                    Assist::Defensive => DEFENSIVE_ASSISTS,
+                },
+                1.0,
+            );
+            if let Some(body) = bodies[slot].filter(|_| !credit.eliminations.contains(&slot)) {
+                notices[slot].push(CombatNotice::Elimination {
+                    killer: body,
+                    victim: hit.body,
+                    assist: true,
+                });
+            }
         }
         notices[victim].push(CombatNotice::Death {
             source: hit.shooter.source,
@@ -1510,6 +1712,30 @@ pub fn apply_player_hits(
         });
     }
     notices
+}
+
+/// [`kill_credit`] of a player's death: the victim's recent attackers and
+/// every player's assist credits, as their worlds hold them.
+fn death_credit(
+    players: &[CombatPlayer<'_>],
+    victim: (usize, u32),
+    killer: Option<usize>,
+    bodies: &[Option<u32>],
+    now: Duration,
+) -> KillCredit {
+    let attackers = players[victim.0]
+        .world
+        .as_deref()
+        .map(|world| world.recent_attackers(victim.1, now))
+        .unwrap_or_default();
+    let links: Vec<AssistLink> = players
+        .iter()
+        .filter_map(|player| player.world.as_deref())
+        .flat_map(WorldDelivery::assist_links)
+        .collect();
+    kill_credit(victim, killer, &attackers, &links, bodies, |entity| {
+        player_of(players, entity)
+    })
 }
 
 /// The explosions' pushes on players' bodies ([`Combat::take_player_pushes`]),

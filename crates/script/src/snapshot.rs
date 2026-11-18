@@ -1675,6 +1675,7 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
             | StateKind::ModifyHealth { .. }
             | StateKind::Status
             | StateKind::CombatMod
+            | StateKind::Assist
             | StateKind::HeroSelect,
             Some("none"),
         ) if codec.empty() => StatePayload::new(),
@@ -1687,7 +1688,8 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
             StateKind::Plain
             | StateKind::DisableButton { .. }
             | StateKind::Status
-            | StateKind::CombatMod,
+            | StateKind::CombatMod
+            | StateKind::Assist,
             Some("link"),
         ) => StatePayload::new(),
         (StateKind::Pulser { pulses, pulsed_ms }, Some("pulser")) => StatePayload::from([

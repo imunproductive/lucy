@@ -24,8 +24,9 @@ use crate::{
     map_tags::{MapTags, TaggedEntity},
     vitals::{PoolKind, Vitals},
     vm::{
-        AuraChange, BodyEffects, CombatMod, GameMessage, HealthChange, MapRays, RaisedCriteria,
-        Site, TargetCandidate, TargetTagEffect, TrackedStat, Unknowns, VoiceRequest, World,
+        AssistLink, AuraChange, BodyEffects, CombatMod, GameMessage, HealthChange, MapRays,
+        RaisedCriteria, Site, TargetCandidate, TargetTagEffect, TrackedStat, Unknowns,
+        VoiceRequest, World,
     },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
@@ -299,6 +300,12 @@ impl World for PlayerWorld {
 
     fn combat_mod(&mut self, site: Site, modifier: Option<CombatMod>) -> bool {
         self.is_player_site(site) && self.effects.combat_mod(site, modifier)
+    }
+
+    /// The body's assist credits wait for a death, which the match credits
+    /// from them.
+    fn assist(&mut self, site: Site, link: Option<AssistLink>, now_ms: u64) -> bool {
+        self.is_player_site(site) && self.effects.assist(site, link, now_ms)
     }
 
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {

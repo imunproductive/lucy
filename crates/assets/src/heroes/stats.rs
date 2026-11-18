@@ -96,6 +96,78 @@ pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
     Ok(vec![Output::json("data/game_stats_174.json", &table)])
 }
 
+/// `data/game_stat_rules_174.json`: how the stat table keeps the stats
+/// whose value isn't a plain sum, from each stat's (`062`, `STUStat`) own
+/// fields (every stat of the install, `refs/reports/StatCredit.md`):
+///
+/// - `"best"`: a "Best" stat (`m_timeFrame` 6: "Multikill - Best",
+///   "Transcendence Healing - Best", the arcade "Best … Score" stats) keeps
+///   one amount, the largest (`m_updateType` 1, `"max"`) or the smallest
+///   (2, `"min"`: "Fastest Gun") rather than their sum.
+/// - `"derived"`: a derived stat (`m_derivedStat` 1) of `m_updateType` 3
+///   combines its base stat `m_4C9917C1` with `m_155E2A47` by
+///   `m_16CCEFC8`: 1 the base divided by the other (the accuracies, shown
+///   as a percentage, "Average Energy", the averages), 3 their sum ("Shots
+///   Hits + Missed", the Weapon Accuracy's divisor): `{"ratio": [base,
+///   other]}` or `{"sum": [base, other]}`. A derived stat of
+///   `m_updateType` 4 is a copy of its base (Eliminations `0025` of
+///   `001F`): left out, the server counts the board's copies themselves.
+///   Another operator is left out.
+pub(crate) fn derive_rules(install: &Install, _out: &Path) -> Result<Vec<Output>> {
+    let mut best = Map::new();
+    let mut derived = Map::new();
+    let mut guids = install.guids(STAT);
+    guids.sort_unstable();
+    for (stat, asset) in install.stu_all(&guids) {
+        let asset = asset?;
+        let Some(root) = asset.root() else {
+            continue;
+        };
+        let int = |name| match field(root, name) {
+            Some(Value::Int(value)) => *value,
+            Some(Value::UInt(value)) => *value as i64,
+            _ => 0,
+        };
+        let stat_ref = |name| match field(root, name) {
+            Some(Value::Guid(other)) if *other != 0 && guid_type(*other) == STAT => {
+                Some(guid_hex(guid(*other, STAT)))
+            }
+            _ => None,
+        };
+        let key = guid_hex(guid(stat, STAT));
+        match (int("m_timeFrame"), int("m_updateType")) {
+            (BEST, 1) => {
+                best.insert(key.clone(), json!("max"));
+            }
+            (BEST, 2) => {
+                best.insert(key.clone(), json!("min"));
+            }
+            _ => {}
+        }
+        if int("m_derivedStat") == 0 || int("m_updateType") != COMBINED {
+            continue;
+        }
+        let (Some(base), Some(other)) = (stat_ref("m_4C9917C1"), stat_ref("m_155E2A47")) else {
+            continue;
+        };
+        let operator = match int("m_16CCEFC8") {
+            1 => "ratio",
+            3 => "sum",
+            _ => continue,
+        };
+        let mut rule = Map::new();
+        rule.insert(operator.to_owned(), json!([base, other]));
+        derived.insert(key, rule.into());
+    }
+    let table = json!({"best": best, "derived": derived});
+    Ok(vec![Output::json("data/game_stat_rules_174.json", &table)])
+}
+
+/// `STUStatTimeframe` of a "Best" stat.
+const BEST: i64 = 6;
+/// `STUStatUpdateType` of a derived stat that combines two stats.
+const COMBINED: i64 = 3;
+
 /// `{"default": entries of the default list, "modes": {mode: entries}}` of
 /// one settings or hero asset.
 ///

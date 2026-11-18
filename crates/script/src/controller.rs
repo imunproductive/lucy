@@ -452,17 +452,25 @@ impl ControllerScript {
     /// The controller's player eliminated `victim` with `killer` (his body)
     /// at `frame`: `0093.025` to the controller, which `0215` counts
     /// (rid14). Parameters: `0015` the victim (#393), `0012` the killer
-    /// (#392), `0091` (#1798) on: the final blow (assumption, KillFeed.md;
-    /// the server credits no assists, and no mode sets `0215`'s #12421 that
-    /// would ask for it).
-    pub fn eliminated(&mut self, frame: u32, victim: u32, killer: u32) -> Result<(), InitFault> {
+    /// (#392), `0091` (#1798): `final_blow`, on for the killing blow, off
+    /// for an elimination the server credits for damage within the window
+    /// before the death (`01CA` rid221 says the elimination line only on
+    /// it, so it is the final blow; `0215` counts both, as no mode sets
+    /// its #12421 that would ask for the final blow).
+    pub fn eliminated(
+        &mut self,
+        frame: u32,
+        victim: u32,
+        killer: u32,
+        final_blow: bool,
+    ) -> Result<(), InitFault> {
         self.advance(frame)?;
         self.receive(
             ELIMINATION,
             Variables::from([
                 (0x15, Value::Entity(victim)),
                 (0x12, Value::Entity(killer)),
-                (0x91, Value::Bool(true)),
+                (0x91, Value::Bool(final_blow)),
             ]),
         )?;
         Ok(())
@@ -836,11 +844,11 @@ mod tests {
         let pulsed = |tick: u32| u64::from(tick) * FRAME_MS + FRAME_MS - 1;
         let mut script = start(RANGE);
         let mut tick = 1000;
-        script.eliminated(tick, 0x20, CONTROLLER | 1).unwrap();
+        script.eliminated(tick, 0x20, CONTROLLER | 1, true).unwrap();
         assert_eq!(script.multikill(), None);
         for (pulses, stimulus) in (1_u8..).zip(0x058a_u64..=0x058e) {
             tick += WINDOW - 1;
-            script.eliminated(tick, 0x20, CONTROLLER | 1).unwrap();
+            script.eliminated(tick, 0x20, CONTROLLER | 1, true).unwrap();
             assert_eq!(
                 script.multikill(),
                 Some(Multikill {
@@ -859,11 +867,11 @@ mod tests {
             ..pulse
         });
         tick += 1;
-        script.eliminated(tick, 0x20, CONTROLLER | 1).unwrap();
+        script.eliminated(tick, 0x20, CONTROLLER | 1, true).unwrap();
         assert_eq!(script.multikill(), quiet, "the seventh kill has no line");
         assert_eq!(script.take_tracked_stats(), [], "the streak runs on");
         tick += WINDOW;
-        script.eliminated(tick, 0x20, CONTROLLER | 1).unwrap();
+        script.eliminated(tick, 0x20, CONTROLLER | 1, true).unwrap();
         assert_eq!(script.multikill(), quiet, "a new streak's first kill");
         // The streak's wait ended at 7 kills (rid29: 3 or more): its
         // TrackStats count it, rid28 the streak's length into the two
@@ -885,7 +893,7 @@ mod tests {
             ]
         );
         tick += 1;
-        script.eliminated(tick, 0x20, CONTROLLER | 1).unwrap();
+        script.eliminated(tick, 0x20, CONTROLLER | 1, true).unwrap();
         assert_eq!(
             script.multikill(),
             Some(Multikill {

@@ -401,6 +401,7 @@ mod tests {
         let elimination = CombatNotice::Elimination {
             killer: 0xa000_0101,
             victim: 0xa002_0005,
+            assist: false,
         }
         .encode(&schemas)
         .unwrap();

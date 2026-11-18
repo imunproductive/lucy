@@ -44,8 +44,8 @@ pub use health::HealthChange;
 use indexmap::IndexMap;
 use serde_json::Value as Json;
 pub use statuses::{
-    BodyEffects, CombatMod, DAMAGE_DEALT, DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, INVULNERABLE,
-    PHASED_OUT, combat_scale,
+    ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, BodyEffects, CombatMod, DAMAGE_DEALT,
+    DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, INVULNERABLE, PHASED_OUT, combat_scale,
 };
 
 use crate::{
@@ -791,6 +791,13 @@ pub trait World {
         false
     }
 
+    /// An assist state (`STU_0DB9E66B`, `vm/statuses.rs`) began with its
+    /// credit (Some) or ended (None), at the script's `now_ms`. False: this
+    /// world keeps none.
+    fn assist(&mut self, _site: Site, _link: Option<AssistLink>, _now_ms: u64) -> bool {
+        false
+    }
+
     /// An ApplyAura state (`STU_431F3FCC`, `vm/auras.rs`) put an aura on a
     /// body or took it off: the match hands it to the target's component
     /// ([`Component::change_aura`]). False: this world applies none, and
@@ -987,6 +994,9 @@ pub enum StateKind {
     Status,
     /// A combat modifier on the body while active (`CombatModFilter`).
     CombatMod,
+    /// An assist credit while active, and for its linger after
+    /// (`STU_0DB9E66B`, server-only; `vm/statuses.rs` [`AssistLink`]).
+    Assist,
     /// Auras on the bodies its targets list while active (ApplyAura
     /// `STU_431F3FCC`, `vm/auras.rs`); the bodies are [`State::tracked`].
     ApplyAura,

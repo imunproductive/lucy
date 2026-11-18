@@ -194,6 +194,7 @@ fn in_the_practice_range_a_second_training_bot_kill_pulses_the_double_kill() {
             crate::bots::BOT_ENTITY,
             training_bot,
             &DamageTags::NONE,
+            true,
         );
         shooter.send_multikills(&scene, tick).unwrap();
         let last = controller_frames(&shooter).last().cloned();
@@ -237,6 +238,7 @@ fn a_third_kill_in_the_window_makes_the_hero_say_his_multikill_line() {
                 crate::bots::BOT_ENTITY,
                 training_bot,
                 &DamageTags::NONE,
+                true,
             );
         }
         said.extend(

@@ -143,6 +143,10 @@ pub const DERIVATIONS: &[Derivation] = &[
         derive: heroes::stats::derive,
     },
     Derivation {
+        name: "game_stat_rules",
+        derive: heroes::stats::derive_rules,
+    },
+    Derivation {
         name: "game_map_areas",
         derive: map_areas::derive,
     },

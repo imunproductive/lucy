@@ -23,7 +23,7 @@ use orpheus_script::{
     mode::EVERY_ENTITY,
     placed::{MapEntityWorld, Spawn},
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
-    vm::{AuraChange, GameMessage, MapRays, MessageEnd, TargetCandidate, Unknowns},
+    vm::{AuraChange, GameMessage, MapRays, MessageEnd, TargetCandidate, TrackedStat, Unknowns},
 };
 
 use crate::{placed_script::PlacedFrame, projectiles::ShotKey};
@@ -164,6 +164,13 @@ impl SpawnedFields {
     /// match to route ([`crate::messages`]).
     pub fn take_messages(&mut self) -> (Vec<GameMessage>, Vec<MessageEnd>) {
         (self.world.take_messages(), self.world.take_message_ends())
+    }
+
+    /// The stats the fields' graphs counted since the last call (`0258`
+    /// rid14 counts "Biotic Fields Deployed" `035C` for its owner's player
+    /// entity), for the match's stat tables.
+    pub fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
+        self.world.take_tracked_stats()
     }
 
     /// Whether a field's running graphs are entity `entity`'s.
@@ -325,7 +332,9 @@ mod tests {
     /// Wait (`#567 - 0.5` = 4.5 s) ends st5 in frame 281 (4496-4511 ms), a
     /// new frame without st5; st4's 0.5 s later (5 s) the field removes
     /// itself in frame 312 (4992-5007 ms), which takes both auras off and
-    /// ends its shot.
+    /// ends its shot. At its opening rid14 counts "Biotic Fields Deployed"
+    /// (`035C`) once for `STU_0340A42A(owner())`: Soldier: 76's player
+    /// entity, whose stats the match credits.
     #[test]
     #[ignore = "requires the derived 104319 data"]
     fn the_field_runs_its_graph_from_aura_to_removal() {
@@ -370,6 +379,14 @@ mod tests {
             ],
         };
         assert_eq!(fields.take_auras(), [apply(SOLDIER), apply(ALLY)]);
+        assert_eq!(
+            fields.take_tracked_stats(),
+            [TrackedStat {
+                stats: vec![0x0860_0000_0000_035c],
+                amount: 1.0,
+                targets: vec![SOLDIER & !0xff],
+            }]
+        );
         let projected = |fields: &SpawnedFields| fields.fields[0].frame.clone().unwrap().0;
         let states = |fields: &SpawnedFields| -> Vec<u16> {
             let projected = projected(fields);

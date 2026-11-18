@@ -113,6 +113,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::CombatMod => {
                 self.world.combat_mod(self.site(id, node), None);
             }
+            StateKind::Assist => self.end_assist(key, node),
             StateKind::ApplyAura => self.end_auras(key),
             StateKind::SendMessage => self.end_send_state(key, node)?,
             StateKind::StatTime => self.end_stat_time(key, node),
