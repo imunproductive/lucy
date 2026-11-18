@@ -21,8 +21,10 @@
 //! inside (its target search and their area, `STU_73E1C5F0`), which their
 //! mode body graph `0C8E` turns into the spawn room's invulnerability and
 //! heal, and lets it go when they leave. The messages of running scripts
-//! go to the match ([`PlacedScripts::take_messages`]), which hands them to
-//! the bodies.
+//! go to the match ([`PlacedScripts::take_messages`]), which routes them
+//! with every other entity's ([`crate::messages`]); the scripts take the
+//! messages sent to them or to every entity
+//! ([`PlacedScripts::receive_message`]).
 //!
 //! [`PreparedScene::server_placeables`]: crate::scene_assets::PreparedScene::server_placeables
 
@@ -36,6 +38,7 @@ use orpheus_script::{
     codecs::CodecTable,
     graph::GraphStore,
     map_tags::MapTags,
+    mode::EVERY_ENTITY,
     placed::{EntityVolumes, MapEntityWorld},
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{ScriptChunk, Stream, StreamError},
@@ -234,12 +237,47 @@ impl PlacedScripts {
     }
 
     /// The running scripts' game messages and message ends since the last
-    /// call, for the match to hand to the bodies.
+    /// call, for the match to route ([`crate::messages`]).
     pub fn take_messages(&mut self) -> (Vec<GameMessage>, Vec<MessageEnd>) {
         (
             std::mem::take(&mut self.messages),
             std::mem::take(&mut self.ends),
         )
+    }
+
+    /// Whether a running script runs the placed entity `entity`.
+    pub fn runs(&self, entity: u32) -> bool {
+        self.world
+            .as_ref()
+            .and_then(|world| world.entity(entity))
+            .is_some_and(|placed| placed.running())
+    }
+
+    /// A game message to the placed entity it names, or to every running
+    /// script but its sender's ([`EVERY_ENTITY`]): their entries run now;
+    /// what they send goes with the next tick's messages.
+    pub fn receive_message(&mut self, message: &GameMessage) {
+        let Some(world) = &mut self.world else {
+            return;
+        };
+        if message.target == EVERY_ENTITY {
+            world.receive_everywhere(message.sender, message.message, &message.parameters);
+        } else {
+            world.receive_message(
+                message.target,
+                message.sender,
+                message.message,
+                &message.parameters,
+            );
+        }
+    }
+
+    /// A persistent sender let its message to the placed entity
+    /// `end.target` go.
+    pub fn end_message(&mut self, end: &MessageEnd) {
+        if let Some(world) = &mut self.world {
+            world.end_message(end.target, end.sender, end.message);
+        }
     }
 
     /// Each complete script's latest frame, by entity.

@@ -1460,10 +1460,7 @@ fn scripted_world(owner: u32, id: BodyId, runtime: Box<dyn OwnerBodyRuntime>) ->
 /// parameters; the sender takes nothing of it, and it goes once.
 #[test]
 fn a_body_message_runs_the_named_bodys_entries() {
-    use crate::{
-        body_script::{fixture_body_factory, fixture_graph_factory},
-        combat::deliver_body_messages,
-    };
+    use crate::body_script::{fixture_body_factory, fixture_graph_factory};
     use orpheus_script::wire::Value;
     use serde_json::{Value as Json, json};
 
@@ -1550,10 +1547,10 @@ fn a_body_message_runs_the_named_bodys_entries() {
             .cloned()
     };
     assert_eq!(taken(&b), None);
-    deliver_body_messages(&mut [&mut a, &mut b]);
+    route(&mut [&mut a, &mut b]);
     assert_eq!(taken(&b), Some(Value::Integer(9)));
     assert_eq!(taken(&a), None);
-    assert!(a.take_body_messages().is_empty(), "it went once");
+    assert!(a.take_messages().is_empty(), "it went once");
 }
 
 /// A body whose script only sends and takes messages.
@@ -1595,14 +1592,19 @@ impl OwnerBodyRuntime for Mailbox {
     }
 }
 
-/// match.py `queue_body_message`: a message to an entity no player's body
-/// is goes nowhere and takes no place in the match's queue, which holds
-/// MAX_BODY_MESSAGES a tick; the first ones go, in order. A message to every
-/// entity takes one place and reaches every body but the sender's.
-#[test]
-fn body_messages_to_unknown_entities_go_nowhere_and_the_rest_are_capped() {
-    use crate::combat::{MAX_BODY_MESSAGES, deliver_body_messages};
+/// The players' messages through the room's routing
+/// ([`crate::messages::deliver`]), with the players alone.
+fn route(worlds: &mut [&mut WorldDelivery]) {
+    let mut players = crate::messages::Players::new(worlds, 100);
+    let messages = players.take_messages();
+    crate::messages::deliver(messages, Vec::new(), &mut [&mut players]);
+}
 
+/// match.py `queue_body_message`: a message to an entity no player's body
+/// is goes nowhere; one to every entity reaches every body but the
+/// sender's, whose own instances took it when it was sent.
+#[test]
+fn body_messages_reach_the_named_body_or_every_body_but_the_senders() {
     const RECEIVER: u32 = 0xa000_0200;
     const NOBODY: u32 = 0xa000_0901;
     let (sending, receiving) = (
@@ -1618,11 +1620,11 @@ fn body_messages_to_unknown_entities_go_nowhere_and_the_rest_are_capped() {
         message,
         parameters: Variables::new(),
     };
-    let mut outbox = vec![mail(orpheus_script::mode::EVERY_ENTITY, 7777)];
-    for message in 0..300 {
-        outbox.push(mail(NOBODY, 1000 + message));
-        outbox.push(mail(receiving.entity, message));
-    }
+    let outbox = vec![
+        mail(orpheus_script::mode::EVERY_ENTITY, 7777),
+        mail(NOBODY, 1000),
+        mail(receiving.entity, 1),
+    ];
     let sent = Arc::new(Mutex::new(Vec::new()));
     let received = Arc::new(Mutex::new(Vec::new()));
     let mut a = scripted_world(
@@ -1643,16 +1645,9 @@ fn body_messages_to_unknown_entities_go_nowhere_and_the_rest_are_capped() {
             inbox: Arc::clone(&received),
         }),
     );
-    deliver_body_messages(&mut [&mut a, &mut b]);
-    assert_eq!(
-        *received.lock().unwrap(),
-        std::iter::once(7777)
-            .chain(0..MAX_BODY_MESSAGES as u64 - 1)
-            .collect::<Vec<_>>()
-    );
+    route(&mut [&mut a, &mut b]);
+    assert_eq!(*received.lock().unwrap(), [7777, 1]);
     assert!(sent.lock().unwrap().is_empty());
-    deliver_body_messages(&mut [&mut a, &mut b]);
-    assert_eq!(received.lock().unwrap().len(), MAX_BODY_MESSAGES);
 }
 
 /// The client's hero settings (21604) reach the current body's graphs as
@@ -1933,6 +1928,7 @@ mod hero_select;
 mod hero_switch;
 mod hurt;
 mod input_timing;
+mod messages;
 mod multikills;
 mod recovery;
 

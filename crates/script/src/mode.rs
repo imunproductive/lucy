@@ -19,8 +19,10 @@ use crate::{
 };
 use orpheus_wire::entity::GAME_MODE_ENTITY;
 
-/// The target [`ModeScript::take_messages`] gives a message the graph sent
-/// to every entity ([`World::broadcast_message`]); entity 0 is never one.
+/// The target the worlds give a message a graph sent to every entity
+/// ([`World::broadcast_message`]); entity 0 is never one. The match hands
+/// it to every entity that runs graphs on the server but the sender, whose
+/// own instances took it when it was sent (`orpheus_sim::messages`).
 pub const EVERY_ENTITY: u32 = 0;
 
 /// The game struct's team byte that stands for any team (`STU_A5B9EAAD`'s
@@ -348,6 +350,25 @@ impl ModeScript {
 
     pub fn take_messages(&mut self) -> Vec<GameMessage> {
         self.world.take_messages()
+    }
+
+    /// A game message from `sender` to the mode entity (or to every
+    /// entity): the graph's entries for it run now. Returns how many took
+    /// it.
+    pub fn receive_message(
+        &mut self,
+        sender: u32,
+        message: u64,
+        parameters: Variables,
+    ) -> Result<usize, InitFault> {
+        self.component
+            .receive_message(sender, message, parameters, &mut self.world)
+    }
+
+    /// A persistent sender (`sender`) let its message to the mode entity
+    /// go ([`Component::end_message`]).
+    pub fn end_message(&mut self, sender: u32, message: u64) -> Result<(), InitFault> {
+        self.component.end_message(sender, message, &mut self.world)
     }
 }
 

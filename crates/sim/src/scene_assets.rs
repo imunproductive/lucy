@@ -31,6 +31,7 @@ use crate::{
     instance::RosterBot,
     map_areas::{self, DamageArea, MapAreaData, PlacedScript, SpawnRoom},
     match_flow::{MatchFlow, Mode, Timers},
+    messages::Bots,
     mode_graph_values::ModeGraphValues,
     mode_rules_data::{ModeRules, ModeRulesData},
     notices::switch_notices,
@@ -903,9 +904,21 @@ impl PreparedScene {
     }
 
     /// The placed scripts' game messages and message ends since the last
-    /// call, for the match to hand to the bodies.
+    /// call, for the match to route ([`crate::messages`]).
     pub fn take_placed_messages(&mut self) -> (Vec<GameMessage>, Vec<MessageEnd>) {
         self.placed_scripts.take_messages()
+    }
+
+    /// The scene's entities that take game messages at world tick `tick`
+    /// ([`crate::messages`]): the Training Bots and the placed scripts.
+    pub fn message_recipients(&mut self, tick: u32) -> (Bots<'_>, &mut PlacedScripts) {
+        (
+            Bots {
+                scripts: &mut self.bot_scripts,
+                tick,
+            },
+            &mut self.placed_scripts,
+        )
     }
 
     /// The bodies the placeables' target searches can find from now on

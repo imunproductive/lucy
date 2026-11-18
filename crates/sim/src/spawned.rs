@@ -20,9 +20,10 @@ use std::{collections::BTreeMap, sync::Arc};
 use orpheus_script::{
     codecs::CodecTable,
     graph::GraphStore,
+    mode::EVERY_ENTITY,
     placed::{MapEntityWorld, Spawn},
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
-    vm::{AuraChange, TargetCandidate, Unknowns},
+    vm::{AuraChange, GameMessage, MessageEnd, TargetCandidate, Unknowns},
 };
 
 use crate::{placed_script::PlacedFrame, projectiles::ShotKey};
@@ -121,10 +122,6 @@ impl SpawnedFields {
                 self.ended.push(shot);
             }
         }
-        // `0258` st8 sends its owner `0EEB.025`; the match routes no
-        // spawned entity's message (nor its end) yet (docs/dev/loose-ends.md).
-        self.world.take_messages();
-        self.world.take_message_ends();
         let destroyed = self.world.take_destroyed();
         let ended = &mut self.ended;
         self.fields.retain(|field| {
@@ -158,6 +155,41 @@ impl SpawnedFields {
     /// The auras the fields put on bodies or took off.
     pub fn take_auras(&mut self) -> Vec<AuraChange> {
         self.world.take_auras()
+    }
+
+    /// The fields' game messages and message ends since the last call
+    /// (`0258` st8's `0EEB.025` to its owner's player entity), for the
+    /// match to route ([`crate::messages`]).
+    pub fn take_messages(&mut self) -> (Vec<GameMessage>, Vec<MessageEnd>) {
+        (self.world.take_messages(), self.world.take_message_ends())
+    }
+
+    /// Whether a field's running graphs are entity `entity`'s.
+    pub fn runs(&self, entity: u32) -> bool {
+        self.world
+            .entity(entity)
+            .is_some_and(|placed| placed.running())
+    }
+
+    /// A game message to the field it names, or to every field but its
+    /// sender ([`EVERY_ENTITY`]): their entries run now.
+    pub fn receive_message(&mut self, message: &GameMessage) {
+        if message.target == EVERY_ENTITY {
+            self.world
+                .receive_everywhere(message.sender, message.message, &message.parameters);
+        } else {
+            self.world.receive_message(
+                message.target,
+                message.sender,
+                message.message,
+                &message.parameters,
+            );
+        }
+    }
+
+    /// A persistent sender let its message to the field `end.target` go.
+    pub fn end_message(&mut self, end: &MessageEnd) {
+        self.world.end_message(end.target, end.sender, end.message);
     }
 
     /// A field's latest frame; none while its graph doesn't run.

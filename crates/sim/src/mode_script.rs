@@ -6,7 +6,9 @@
 //! ([`ModeRunner::start`]). If it runs with no refused content and no
 //! assumption, it stays: the flow's variables are written into it each
 //! tick, it advances with the server frame, its observer frames are the
-//! mode entity's, and its messages go to the players' bodies. Otherwise
+//! mode entity's, and its messages go with every other entity's
+//! ([`crate::messages`]), which routes it those sent to the mode entity or
+//! to every entity. Otherwise
 //! (0F4A and 0EC2 today, see `orpheus_script::mode`) the gaps are logged
 //! once and the mode entity gets graph 0CB6's frame with the flow's
 //! variables, as the countdown did before (match.py `_send_countdown`).
@@ -19,9 +21,10 @@ use orpheus_script::{
     graph::GraphStore,
     mode::{ModeScript, ModeWorld},
     snapshot::{SnapshotEncoder, View},
-    vm::{GameMessage, Unknowns},
+    vm::{GameMessage, InitFault, MessageEnd, Unknowns},
     wire::Variables,
 };
+use orpheus_wire::entity::GAME_MODE_ENTITY;
 
 use crate::{match_flow, scene_assets::PreparedScene};
 
@@ -120,15 +123,51 @@ impl ModeRunner {
         match result {
             Ok(()) => script.take_messages(),
             Err(error) => {
-                eprintln!(
-                    "the mode graph stopped ({error}); the match flow drives the mode entity"
-                );
-                *self = Self::HandBuilt {
-                    gaps: Gaps::from([((0, error.to_string()), 1)]),
-                };
+                self.stop(&error);
                 Vec::new()
             }
         }
+    }
+
+    /// Whether the graph runs entity `entity`: the mode entity's, while it
+    /// drives it.
+    pub fn runs(&self, entity: u32) -> bool {
+        entity == GAME_MODE_ENTITY && self.graph_driven()
+    }
+
+    /// A game message to the mode entity, or to every entity but from the
+    /// mode ([`crate::messages`]): the graph's entries run now; what they
+    /// send goes with the next frame's messages. A failure stops the graph
+    /// as in [`Self::advance`].
+    pub fn receive_message(&mut self, message: &GameMessage) {
+        let Self::Graph { script, .. } = self else {
+            return;
+        };
+        if message.sender == GAME_MODE_ENTITY {
+            return;
+        }
+        if let Err(error) =
+            script.receive_message(message.sender, message.message, message.parameters.clone())
+        {
+            self.stop(&error);
+        }
+    }
+
+    /// A persistent sender let its message to the mode entity go.
+    pub fn end_message(&mut self, end: &MessageEnd) {
+        let Self::Graph { script, .. } = self else {
+            return;
+        };
+        if let Err(error) = script.end_message(end.sender, end.message) {
+            self.stop(&error);
+        }
+    }
+
+    fn stop(&mut self, error: &InitFault) {
+        eprintln!("the mode graph stopped ({error}); the match flow drives the mode entity");
+        *self = Self::HandBuilt {
+            gaps: Gaps::from([((0, error.to_string()), 1)]),
+        };
     }
 
     /// The mode entity's full frame now.
