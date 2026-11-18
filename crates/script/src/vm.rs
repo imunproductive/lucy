@@ -43,7 +43,10 @@ pub use auras::{AURA_APPLIED, AuraChange, AuraSource};
 pub use health::HealthChange;
 use indexmap::IndexMap;
 use serde_json::Value as Json;
-pub use statuses::{BodyEffects, CombatMod, DAMAGE_TAKEN, HEALING_TAKEN, INVULNERABLE, PHASED_OUT};
+pub use statuses::{
+    BodyEffects, CombatMod, DAMAGE_DEALT, DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, INVULNERABLE,
+    PHASED_OUT, combat_scale,
+};
 
 use crate::{
     ai_definitions::{AiControl, AiDefinitions},

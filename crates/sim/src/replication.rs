@@ -66,8 +66,9 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
     vm::{
-        AuraChange, BodyEffects, GameMessage, MessageEnd, Motion, MoveRequest, RaisedCriteria,
-        Snapshot, TargetCandidate, TrackedStat, VoiceRequest,
+        AuraChange, BodyEffects, DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage, HEALING_DEALT,
+        HEALING_TAKEN, MessageEnd, Motion, MoveRequest, RaisedCriteria, Snapshot, TargetCandidate,
+        TrackedStat, VoiceRequest,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
@@ -3385,6 +3386,13 @@ impl WorldDelivery {
             hurt: vitals.is_some_and(Vitals::hurt),
             tags: scene.body_tags(hero.body),
             ai: self.ai_control(scene.graphs(), body.hero),
+            dealt: self.body_effects().map_or_else(Vec::new, |effects| {
+                effects
+                    .modifiers()
+                    .filter(|modifier| [DAMAGE_DEALT, HEALING_DEALT].contains(&modifier.kind))
+                    .cloned()
+                    .collect()
+            }),
         })
     }
 
@@ -3422,10 +3430,11 @@ impl WorldDelivery {
     }
 
     /// combat.py `_damage` and `_died` for the player's current body: its
-    /// pools take the hit (shields, armour, health) and its script's health
-    /// follows; a killing hit makes it dead, gives its script the "died"
-    /// message (003E.025, which pulses the kill feed line) and sets its
-    /// respawn after the mode's time.
+    /// pools take the hit, scaled by the damage-taken modifiers his graphs
+    /// hold (`vm/statuses.rs`: Nano Boost's reduction), shields, armour,
+    /// health, and its script's health follows; a killing hit makes it
+    /// dead, gives its script the "died" message (003E.025, which pulses
+    /// the kill feed line) and sets its respawn after the mode's time.
     pub fn damage_body(
         &mut self,
         scene: &PreparedScene,
@@ -3440,6 +3449,11 @@ impl WorldDelivery {
         if !self.can_be_damaged() {
             return None;
         }
+        let mut tags = hit.tags;
+        let amount = hit.amount
+            * self
+                .body_effects()
+                .map_or(1.0, |effects| effects.scale(DAMAGE_TAKEN, &mut tags));
         let death_tick = hit.world_tick.unwrap_or(tick);
         let source = Death {
             time: now.as_secs_f64(),
@@ -3453,7 +3467,7 @@ impl WorldDelivery {
             .filter(|script| script.id == body.id)
         {
             Some(script) => {
-                let result = script.runtime.vitals_mut()?.damage(hit.amount, source);
+                let result = script.runtime.vitals_mut()?.damage(amount, source);
                 if result.dealt > 0.0 {
                     failure = script.runtime.health_changed().err();
                 }
@@ -3462,7 +3476,7 @@ impl WorldDelivery {
             None => self
                 .plain_vitals
                 .get_or_insert_with(|| hero_vitals(scene, body.hero))
-                .damage(hit.amount, source),
+                .damage(amount, source),
         };
         if result.dealt <= 0.0 {
             return None;
@@ -3482,14 +3496,14 @@ impl WorldDelivery {
             });
             if let Some(script) = script {
                 let (message, parameters) =
-                    death_message(hit.shooter.source, hit.critical, hit.loadout, hit.tags);
+                    death_message(hit.shooter.source, hit.critical, hit.loadout, tags);
                 failure = script.runtime.receive_message(0, message, parameters).err();
             }
         } else if let Some(script) = script.filter(|_| scene.hurt_feedback().message) {
             // The live hurt feedback switch (`crate::hurt_feedback`): with
             // the flinch off the message goes without its tags.
             let tags = if scene.hurt_feedback().flinch {
-                hit.tags
+                tags
             } else {
                 DamageTags::NONE
             };
@@ -3523,10 +3537,11 @@ impl WorldDelivery {
         if self.death.is_some() {
             return 0.0;
         }
+        let mut tags = *tags;
         let amount = amount
             * self
                 .body_effects()
-                .map_or(1.0, |effects| effects.healing_scale(tags));
+                .map_or(1.0, |effects| effects.scale(HEALING_TAKEN, &mut tags));
         let mut failure = None;
         let given = match self
             .body_script

@@ -54,7 +54,10 @@ use orpheus_script::{
     ai_definitions::AiControl,
     bot::{DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE, DAMAGE_TAGS, DAMAGED, DIED},
     vitals::{Death, Vitals},
-    vm::{AuraChange, HealthChange, ShotEvent, TargetCandidate},
+    vm::{
+        AuraChange, CombatMod, DAMAGE_DEALT, DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN,
+        HealthChange, ShotEvent, TargetCandidate, combat_scale,
+    },
     weapons::{AllyHits, DamageTags, HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
 };
@@ -380,6 +383,10 @@ pub struct PlayerTarget {
     /// An AI hero's AI entity, which possesses the body; none for a
     /// human's.
     pub ai: Option<AiControl>,
+    /// The modifiers of the damage and healing the body deals that its
+    /// graphs hold now (`orpheus_script::vm::statuses`: Nano Boost's
+    /// `0B9F` st19), for its hits.
+    pub dealt: Vec<CombatMod>,
 }
 
 struct Target {
@@ -788,16 +795,18 @@ impl Combat {
                 .then(|| self.feet(scene, shooter.source))
                 .flatten()
                 .and_then(|from| damage_direction(from, slot.target.pose.feet));
+            let (amount, tags) =
+                self.dealt(scene, shooter, change.heal, change.amount, change.tags);
             self.player_hits.push(PlayerHit {
                 body: target,
                 shooter,
-                amount: change.amount,
+                amount,
                 critical: false,
                 loadout: change.loadout,
                 frame: change.frame,
                 world_tick: None,
                 heal: change.heal,
-                tags: change.tags,
+                tags,
                 direction,
             });
             self.auras.extend(aura);
@@ -841,6 +850,35 @@ impl Combat {
                 team: bot.spawn.team,
                 bot: true,
             })
+    }
+
+    /// A hit of `amount` with `tags` as the shooter's dealt modifiers make
+    /// it (`orpheus_script::vm::statuses`): a heal scaled by those of the
+    /// healing he gives, damage by those of the damage he deals, at the
+    /// hit; with the tags they added.
+    fn dealt(
+        &self,
+        scene: &PreparedScene,
+        shooter: Shooter,
+        heal: bool,
+        amount: f64,
+        mut tags: DamageTags,
+    ) -> (f64, DamageTags) {
+        let kind = if heal { HEALING_DEALT } else { DAMAGE_DEALT };
+        let scale = if shooter.bot {
+            scene
+                .bot_scripts()
+                .effects(shooter.source)
+                .map_or(1.0, |effects| effects.scale(kind, &mut tags))
+        } else {
+            self.players
+                .iter()
+                .find(|slot| slot.target.body == shooter.source)
+                .map_or(1.0, |slot| {
+                    combat_scale(&slot.target.dealt, kind, &mut tags)
+                })
+        };
+        (amount * scale, tags)
     }
 
     /// The auras the hits put on bodies since the last call, in order.
@@ -955,16 +993,17 @@ impl Combat {
             })
             .and_then(|slot| flight.own_blast(&slot.target.pose));
         if let Some(own) = own.filter(|own| own.damage > 0.0) {
+            let (amount, tags) = self.dealt(scene, shooter, false, own.damage, own.tags);
             self.player_hits.push(PlayerHit {
                 body: shooter.source,
                 shooter,
-                amount: own.damage,
+                amount,
                 critical: false,
                 loadout: own.loadout,
                 frame: context.tick,
                 world_tick: Some(context.tick),
                 heal: false,
-                tags: own.tags,
+                tags,
                 direction: Some(own.direction),
             });
         }
@@ -1059,6 +1098,7 @@ impl Combat {
             let direction = self
                 .feet(scene, shooter.source)
                 .and_then(|from| damage_direction(from, slot.target.pose.feet));
+            let (amount, tags) = self.dealt(scene, shooter, heal, amount, impact.tags);
             if amount > 0.0 {
                 self.player_hits.push(PlayerHit {
                     body: impact.entity,
@@ -1069,7 +1109,7 @@ impl Combat {
                     frame: shot_frame,
                     world_tick,
                     heal,
-                    tags: impact.tags,
+                    tags,
                     direction,
                 });
             }
@@ -1107,28 +1147,37 @@ impl Combat {
         // (`game_respawns`: 3 s in the practice modes).
         let respawn = scene.respawn_time();
         let free_for_all = scene.map().free_for_all;
-        // Its statuses and modifiers (`vm/statuses.rs`): an invulnerable
-        // bot takes no damage, and its healing modifiers scale a heal
-        // (Biotic Grenade's anti-heal and heal boost).
+        let heal = !free_for_all
+            && scene
+                .bots()
+                .iter()
+                .any(|bot| bot.entity == impact.entity && bot.spawn.team == shooter.team);
+        // The shooter's dealt modifiers, then the bot's statuses and taken
+        // modifiers (`vm/statuses.rs`): an invulnerable bot takes no
+        // damage, and its modifiers scale what it takes (Biotic Grenade's
+        // anti-heal and heal boost, Nano Boost's damage reduction).
+        let amount = if heal { impact.heal } else { impact.damage };
+        let (amount, mut tags) = self.dealt(scene, shooter, heal, amount, impact.tags);
         let effects = scene.bot_scripts().effects(impact.entity);
         let invulnerable = effects.is_some_and(|effects| effects.invulnerable());
-        let healing = effects.map_or(1.0, |effects| effects.healing_scale(&impact.tags));
+        let taken = if heal { HEALING_TAKEN } else { DAMAGE_TAKEN };
+        let amount = amount * effects.map_or(1.0, |effects| effects.scale(taken, &mut tags));
         let plate = Arc::clone(scene.bot_plate());
         let (bot, target) = scene
             .bots_mut()
             .iter_mut()
             .zip(&mut self.targets)
             .find(|(bot, _)| !bot.dead && bot.entity == impact.entity)?;
-        if !free_for_all && bot.spawn.team == shooter.team {
-            let given = target.vitals.heal(impact.heal * healing);
-            return (given > 0.0).then(|| healed_bot(bot, target, given, &plate, impact.tags));
+        if heal {
+            let given = target.vitals.heal(amount);
+            return (given > 0.0).then(|| healed_bot(bot, target, given, &plate, tags));
         }
         if invulnerable {
             return None;
         }
         let death_tick = world_tick.unwrap_or(context.tick);
         let result = target.vitals.damage(
-            impact.damage,
+            amount,
             Death {
                 time: context.now.as_secs_f64(),
                 frame: death_tick,
@@ -1173,19 +1222,19 @@ impl Combat {
             bot: bot.entity,
             remaining: target.vitals.total(),
             healed: 0.0,
-            tags: impact.tags,
+            tags,
             death: result.killed.then_some(BotDeath {
                 bot: bot.entity,
                 killer: shooter.source,
                 critical: impact.critical,
                 loadout: impact.loadout,
-                tags: impact.tags,
+                tags,
                 tick: death_tick,
             }),
             damage: (!result.killed).then_some(BotDamage {
                 source: shooter.source,
                 dealt: result.dealt,
-                tags: impact.tags,
+                tags,
                 tick: death_tick,
             }),
         })

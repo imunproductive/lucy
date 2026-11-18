@@ -593,6 +593,7 @@ fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
         hurt: false,
         tags: None,
         ai: None,
+        dealt: Vec::new(),
     };
     let mut combat = Combat::new(&scene);
     let mut hits = Vec::new();
@@ -633,4 +634,101 @@ fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
     assert_eq!(hits.len(), 1, "one direct hit, no splash");
     assert_eq!(hit.amount, 8.0);
     assert!(!hit.critical);
+}
+
+/// Nano Boost's aura (`053:0269`) on a Practice Range bot runs `0B9F`,
+/// whose st18 (`0318` -0.5) and st19 (`0317` +0.5) the bot's world keeps:
+/// a hit on it is halved, its own hits deal half again, on a bot and on a
+/// player's body (`vm/statuses.rs` in `orpheus_script`).
+#[test]
+#[ignore = "requires the derived 104319 data with its bot graph bundle"]
+fn nano_boost_halves_the_damage_a_bot_takes_and_boosts_what_it_deals() {
+    use crate::{
+        combat::{Combat, PlayerTarget, ShotContext},
+        hitscan::TargetPose,
+        instance::RETAIL_QUANTA,
+    };
+    use orpheus_script::{
+        vm::{AuraChange, HealthChange, Site},
+        weapons::DamageTags,
+    };
+
+    const NANO_BOOST: u64 = 0x04a0_0000_0000_0269;
+    let mut scene = practice_scene();
+    let mut tick = FIRST_TICK;
+    while !scene.bot_scripts_ready() {
+        scene.step_bots(tick);
+        tick += 1;
+    }
+    let team = |team| {
+        scene
+            .bots()
+            .iter()
+            .find(|bot| bot.spawn.team == team)
+            .unwrap()
+            .entity
+    };
+    let (boosted, enemy) = (team(1), team(0));
+    scene.change_bot_aura(
+        &AuraChange::Apply {
+            source: None,
+            target: boosted,
+            aura: NANO_BOOST,
+            instigator: boosted,
+            parameters: Vec::new(),
+        },
+        tick,
+    );
+    let body = OWNER | 1;
+    let player = PlayerTarget {
+        body,
+        team: 0,
+        pose: TargetPose {
+            feet: [0.0; 3],
+            height: 1.8,
+            radius: 0.35,
+            eye: 1.55,
+            yaw: 0.0,
+            shapes: None,
+        },
+        dead: false,
+        hurt: false,
+        tags: None,
+        ai: None,
+        dealt: Vec::new(),
+    };
+    let mut combat = Combat::new(&scene);
+    combat.record_poses(&scene, std::slice::from_ref(&player), tick);
+    let context = ShotContext {
+        quanta: RETAIL_QUANTA,
+        tick,
+        now: Duration::from_millis(u64::from(tick) * 16),
+    };
+    let strike = |combat: &mut Combat, scene: &mut PreparedScene, instigator, target| {
+        let change = HealthChange {
+            site: Site {
+                entity: instigator,
+                instance: 1,
+                graph: 0x0043,
+                node: None,
+            },
+            instigator,
+            target,
+            amount: 40.0,
+            heal: false,
+            tags: DamageTags::NONE,
+            loadout: None,
+            aura: None,
+            frame: tick,
+        };
+        combat
+            .modify_health(scene, &change, context, |_| true)
+            .and_then(|hit| hit.damage)
+            .map(|damage| damage.dealt)
+    };
+    assert_eq!(strike(&mut combat, &mut scene, enemy, boosted), Some(20.0));
+    assert_eq!(strike(&mut combat, &mut scene, boosted, enemy), Some(60.0));
+    assert_eq!(strike(&mut combat, &mut scene, boosted, body), None);
+    let [hit] = combat.take_player_hits().try_into().unwrap();
+    assert_eq!((hit.body, hit.amount), (body, 60.0));
 }

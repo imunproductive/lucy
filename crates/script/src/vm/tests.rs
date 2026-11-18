@@ -5198,7 +5198,8 @@ fn an_aura_runs_its_graph_on_the_body_until_its_instance_ends() {
         [(SEARCHER, ENEMY, 60.0, false)]
     );
     assert!(world.effects.invulnerable());
-    assert_eq!(world.effects.healing_scale(&DamageTags::NONE), 0.0);
+    let healing = |effects: &BodyEffects| effects.scale(HEALING_TAKEN, &mut DamageTags::default());
+    assert_eq!(healing(&world.effects), 0.0);
     // 4 s (250 frames of 16 ms) later the wait ends, the instance exits
     // and its states let go.
     for frame in 1..=251 {
@@ -5206,7 +5207,7 @@ fn an_aura_runs_its_graph_on_the_body_until_its_instance_ends() {
     }
     assert!(!component.snapshot().unwrap().instances.contains_key(&id));
     assert!(!world.effects.invulnerable());
-    assert_eq!(world.effects.healing_scale(&DamageTags::NONE), 1.0);
+    assert_eq!(healing(&world.effects), 1.0);
     assert!(component.snapshot().unwrap().initialization_complete());
 }
 
@@ -5370,12 +5371,14 @@ fn an_anim_outputs_its_scalar_while_it_runs() {
     assert_eq!(component.resolved_variable(1, output), Some(Value::Null));
 }
 
-/// A healing modifier applies only to a heal with one of its required tags
+/// A modifier applies only to a change with one of its required tags
 /// (`m_F60AA143`), and the tags it adds (`m_029060AC`) count for the
 /// modifiers after it (the client's CombatModFilter query, HealthAuras.md
-/// "Client tools pass (2026-11-16)").
+/// "Client tools pass (2026-11-16)"); of one kind, the additions sum before
+/// the multipliers scale them, whatever their order, and other kinds don't
+/// count.
 #[test]
-fn healing_modifiers_honour_required_and_added_tags() {
+fn combat_modifiers_honour_tags_and_combine_by_kind() {
     const REQUIRED: u64 = 0x0d80_0000_0000_06f9;
     const ADDED: u64 = 0x0d80_0000_0000_7139;
     let site = |node| Site {
@@ -5384,24 +5387,43 @@ fn healing_modifiers_honour_required_and_added_tags() {
         graph: 0x42,
         node: Some(node),
     };
-    let modifier = |value, required: &[u64], added: &[u64]| CombatMod {
-        kind: HEALING_TAKEN,
+    let modifier = |kind, value, multiplies, required: &[u64], added: &[u64]| CombatMod {
+        kind,
         value,
-        multiplies: true,
+        multiplies,
         required: required.to_vec(),
         exempt: Vec::new(),
         added: added.to_vec(),
     };
+    let scale = |effects: &BodyEffects, kind, tags: &[u64]| {
+        let mut tags = DamageTags::from_iter(tags.iter().copied());
+        effects.scale(kind, &mut tags)
+    };
     let mut effects = BodyEffects::default();
-    assert!(effects.combat_mod(site(1), Some(modifier(0.5, &[REQUIRED], &[]))));
-    assert_eq!(effects.healing_scale(&DamageTags::NONE), 1.0);
-    assert_eq!(
-        effects.healing_scale(&DamageTags::from_iter([REQUIRED])),
-        0.5
-    );
-    // A modifier before it that adds the required tag lets it apply.
+    let halved = modifier(HEALING_TAKEN, 0.5, true, &[REQUIRED], &[]);
+    assert!(effects.combat_mod(site(1), Some(halved)));
+    assert_eq!(scale(&effects, HEALING_TAKEN, &[]), 1.0);
+    assert_eq!(scale(&effects, HEALING_TAKEN, &[REQUIRED]), 0.5);
+    // A modifier before it that adds the required tag lets it apply, and
+    // the change leaves with the tags they added.
     let mut effects = BodyEffects::default();
-    assert!(effects.combat_mod(site(1), Some(modifier(2.0, &[], &[REQUIRED]))));
-    assert!(effects.combat_mod(site(2), Some(modifier(0.25, &[REQUIRED], &[ADDED]))));
-    assert_eq!(effects.healing_scale(&DamageTags::NONE), 0.5);
+    let doubled = modifier(HEALING_TAKEN, 2.0, true, &[], &[REQUIRED]);
+    assert!(effects.combat_mod(site(1), Some(doubled)));
+    let quartered = modifier(HEALING_TAKEN, 0.25, true, &[REQUIRED], &[ADDED]);
+    assert!(effects.combat_mod(site(2), Some(quartered)));
+    let mut tags = DamageTags::NONE;
+    assert_eq!(effects.scale(HEALING_TAKEN, &mut tags), 0.5);
+    assert_eq!(tags, DamageTags::from_iter([REQUIRED, ADDED]));
+    // Damage taken: x0.5 before -0.5 is (1 - 0.5) x 0.5; the dealt +0.5
+    // is the other kind's.
+    let mut effects = BodyEffects::default();
+    let multiplier = modifier(DAMAGE_TAKEN, 0.5, true, &[], &[]);
+    assert!(effects.combat_mod(site(1), Some(multiplier)));
+    let reduction = modifier(DAMAGE_TAKEN, -0.5, false, &[], &[]);
+    assert!(effects.combat_mod(site(2), Some(reduction)));
+    let boost = modifier(DAMAGE_DEALT, 0.5, false, &[], &[]);
+    assert!(effects.combat_mod(site(3), Some(boost)));
+    assert_eq!(scale(&effects, DAMAGE_TAKEN, &[]), 0.25);
+    assert_eq!(scale(&effects, DAMAGE_DEALT, &[]), 1.5);
+    assert_eq!(scale(&effects, HEALING_DEALT, &[]), 1.0);
 }
