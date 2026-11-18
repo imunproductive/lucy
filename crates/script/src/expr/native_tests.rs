@@ -28,6 +28,9 @@ struct World {
     /// The map's floor, the plane `y = a + b·x + c·z` (`[a, b, c]`); None:
     /// no map.
     floor: Option<[f64; 3]>,
+    match_seed: Option<i64>,
+    /// The logical buttons each entity holds.
+    held: BTreeMap<u32, Vec<i64>>,
 }
 
 impl Context for World {
@@ -90,6 +93,14 @@ impl Context for World {
 
     fn map_supports_mode(&mut self, mode: u64) -> Option<bool> {
         Some(self.map_modes.as_ref()?.contains(&mode))
+    }
+
+    fn match_seed(&mut self) -> Option<i64> {
+        self.match_seed
+    }
+
+    fn button_held(&mut self, entity: u32, button: i64) -> Option<bool> {
+        Some(self.held.get(&entity)?.contains(&button))
     }
 }
 
@@ -447,6 +458,68 @@ fn a_team_size_reads_the_team_its_config_names() {
     );
 }
 
+/// Control's stage picks (`0EC2` rid92/239/241/94) with the match's index
+/// 699: `STU_4EC41E8A` takes the uniform table's entries 699
+/// (0x7A3825C2 = 2050500034, 1 modulo 3) and 700 (0x0DAC73D4 = 229405652,
+/// 0 modulo 2) from the image dump, so the first stage is 1 and the second
+/// (rid239's index `699 + #7901`, an f32 sum) is 0; with bounds 1 and 2
+/// (rid94) it is 1. Without a match index `STU_CBF6FF14` is unanswered.
+#[test]
+fn controls_stage_pick_indexes_the_clients_random_table() {
+    let mut world = World {
+        match_seed: Some(699),
+        ..World::default()
+    };
+    let seed = json!({"$":"STU_CBF6FF14","m_EE729DCB":0});
+    let pick = |index: Json, first: i64, second: i64| json!({"$":"STU_4EC41E8A","m_index":index,"m_1C002272":int(first),"m_52CAFE20":int(second),"m_EE729DCB":0});
+    assert_eq!(
+        evaluate(&pick(seed.clone(), 0, 2), &mut world),
+        Ok(Value::Integer(1))
+    );
+    world.variables.insert(11_778, Value::Float(700.0));
+    assert_eq!(
+        evaluate(&pick(var(11_778), 0, 1), &mut world),
+        Ok(Value::Integer(0))
+    );
+    assert_eq!(
+        evaluate(&pick(var(11_778), 1, 2), &mut world),
+        Ok(Value::Integer(1))
+    );
+    // The bounds in either order; unset fields are 0.
+    assert_eq!(
+        evaluate(&pick(var(11_778), 2, 1), &mut world),
+        Ok(Value::Integer(1))
+    );
+    let unset = json!({"$":"STU_4EC41E8A","m_52CAFE20":int(2),"m_EE729DCB":0});
+    assert_eq!(evaluate(&unset, &mut world), Ok(Value::Integer(2)));
+    world.match_seed = None;
+    assert_eq!(
+        evaluate(&seed, &mut world),
+        Err(EvalError::UnsupportedConfig("STU_CBF6FF14".into()))
+    );
+}
+
+/// `Eval_STU_A2A35433`: whether the entity holds the logical button; no
+/// entity gives no value, an entity whose buttons the world doesn't know
+/// is unsupported.
+#[test]
+fn a_button_test_reads_the_entitys_held_buttons() {
+    let mut world = World {
+        held: BTreeMap::from([(BODY, vec![11])]),
+        ..World::default()
+    };
+    let held = |button: i64| json!({"$":"STU_A2A35433","m_entity":var(1),"m_logicalButton":{"$":"STUConfigVarLogicalButton","m_logicalButton":button},"m_EE729DCB":0});
+    assert_eq!(evaluate(&held(11), &mut world), Ok(Value::Null));
+    world.variables.insert(1, Value::Entity(BODY));
+    assert_eq!(evaluate(&held(11), &mut world), Ok(Value::Bool(true)));
+    assert_eq!(evaluate(&held(12), &mut world), Ok(Value::Bool(false)));
+    world.variables.insert(1, Value::Entity(UNKNOWN));
+    assert_eq!(
+        evaluate(&held(11), &mut world),
+        Err(EvalError::UnsupportedConfig("STU_A2A35433".into()))
+    );
+}
+
 /// `Eval_STU_ED807E07`: the mover's speed scale (`+0x4D8`); no entity or
 /// an invalid one 0.0; an entity the world doesn't know is unsupported.
 #[test]
@@ -584,9 +657,11 @@ fn entity_team_asks_the_world_for_valid_entities_only() {
 }
 
 /// `CONFIG_EVALUATION.txt`: TeamIndex keeps its signed authored value, and
-/// D3685C04 writes false with no local input record.
+/// D3685C04 and 555DD49F write false with no local player; the console
+/// variables have their values in the dump; 4B02509E is a 16 ms frame in
+/// seconds (16 × 0.001f); BEDA850F finds no game ruleset row (no value).
 #[test]
-fn team_literal_and_local_input_test_need_no_world() {
+fn team_literal_local_input_and_console_variables_need_no_world() {
     let mut world = World::default();
     for (authored, expected) in [(0, 0), (1, 1), (4, 4), (-1, -1), (0xffff_ffff_i64, -1)] {
         assert_eq!(
@@ -600,6 +675,32 @@ fn team_literal_and_local_input_test_need_no_world() {
     assert_eq!(
         evaluate(&json!({"$":"STU_D3685C04","m_EE729DCB":0}), &mut world),
         Ok(Value::Bool(false))
+    );
+    assert_eq!(
+        evaluate(&json!({"$":"STU_555DD49F","m_EE729DCB":0}), &mut world),
+        Ok(Value::Bool(false))
+    );
+    assert_eq!(
+        evaluate(&json!({"$":"STU_4B02509E","m_EE729DCB":0}), &mut world),
+        Ok(Value::Float(f64::from(0.016_f32)))
+    );
+    assert_eq!(
+        evaluate(&json!({"$":"STU_BEDA850F","m_EE729DCB":0}), &mut world),
+        Ok(Value::Null)
+    );
+    for (hash, expected) in [
+        (-507_386_878, Value::Integer(128)),
+        (266_461_246, Value::Bool(false)),
+        (-700_059_784, Value::Bool(false)),
+        (-1_545_470_432, Value::Float(1.0)),
+    ] {
+        let cvar = json!({"$":"STU_A753DC79","m_74A2248F":hash,"m_EE729DCB":0});
+        assert_eq!(evaluate(&cvar, &mut world), Ok(expected), "{hash}");
+    }
+    let unknown = json!({"$":"STU_A753DC79","m_74A2248F":1,"m_EE729DCB":0});
+    assert_eq!(
+        evaluate(&unknown, &mut world),
+        Err(EvalError::UnsupportedConfig("STU_A753DC79".into()))
     );
 }
 

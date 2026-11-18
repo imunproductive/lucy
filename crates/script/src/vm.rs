@@ -464,6 +464,12 @@ pub trait World {
         None
     }
 
+    /// The match's random table index `STU_CBF6FF14` reads
+    /// ([`expr::Context::match_seed`]); None: unknown here.
+    fn match_seed(&self) -> Option<i64> {
+        None
+    }
+
     /// A team's size in the game struct ([`expr::Context::team_size`]);
     /// None: unknown here.
     fn team_size(&self, _team: i64) -> Option<i64> {

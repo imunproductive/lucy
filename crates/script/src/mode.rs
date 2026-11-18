@@ -66,6 +66,9 @@ pub struct ModeWorld {
     /// The match's value of the mode entity's component 114 field 9, as
     /// the server sends it (`STU_B182C5C9`); none: unknown.
     pub mode_random: Option<f32>,
+    /// The match's random table index (`STU_CBF6FF14`, in `[0, 16384)`),
+    /// drawn by the server; none: unknown.
+    pub match_seed: Option<u16>,
     /// The game modes the match's map supports (its header's
     /// `m_supportedGamemodes`), which `STU_16753B11` tests; none: unknown.
     pub map_modes: Option<Vec<u64>>,
@@ -87,6 +90,7 @@ impl ModeWorld {
             team_sizes: Vec::new(),
             ready: false,
             mode_random: None,
+            match_seed: None,
             map_modes: None,
             map_tags: None,
             map_rays: None,
@@ -125,6 +129,10 @@ impl World for ModeWorld {
 
     fn mode_random(&self) -> Option<f64> {
         self.mode_random.map(f64::from)
+    }
+
+    fn match_seed(&self) -> Option<i64> {
+        self.match_seed.map(i64::from)
     }
 
     fn team_size(&self, team: i64) -> Option<i64> {

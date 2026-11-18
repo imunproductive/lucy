@@ -255,6 +255,9 @@ impl PlayerBodyFactory {
         world.movement = spawn.pose;
         // A new mover's (`Mover::speed_scale`): no move yet.
         world.speed_scale = Some(1.0);
+        // A new body stands: its eye before the first move (graphs that
+        // start a search from it at once, Wrecking Ball's `1566` st9).
+        world.eye_height = Some(self.combat.eyes.height(false));
         if !has_authored_pools {
             world.vitals = self.pools.unwrap_or(FALLBACK_POOLS).vitals();
         }

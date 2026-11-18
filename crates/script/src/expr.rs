@@ -160,6 +160,19 @@ pub trait Context {
         None
     }
 
+    /// The match's random table index (`STU_CBF6FF14`, server-only, in
+    /// `[0, 16384)`); None: the world doesn't know it.
+    fn match_seed(&mut self) -> Option<i64> {
+        None
+    }
+
+    /// Whether `entity` holds logical button `button` (`STU_A2A35433`:
+    /// the button is in the held list of the entity's statescript
+    /// component, 0x7FF78AA9D940); None: unknown.
+    fn button_held(&mut self, _entity: u32, _button: i64) -> Option<bool> {
+        None
+    }
+
     /// A team's size as the game struct gives it (`STU_D289FA32`; the
     /// entry of `team`, else the "any team" entry 5); None: unknown.
     fn team_size(&mut self, _team: i64) -> Option<i64> {
@@ -1544,6 +1557,37 @@ impl Evaluator {
             // when there is none, as on a server (`CONFIG_EVALUATION.txt` in
             // leafall903/ORPHEUS, commit c239a84).
             "STU_D3685C04" if native_shape(config, class, None) => Value::Bool(false),
+            // The local player's crouch toggle (`Eval_STU_555DD49F`
+            // 0x7FF78983F910 → 0x7FF789491330: the local player's entity's
+            // component 59 (command/aim) `+0x1588`, else false). The input
+            // sampler 0x7FF78961E170 flips it on input action 13, clears it
+            // on 11/12, and while it is on sets button bit 0x80 (logical
+            // button 12) in the command. A server has no local player:
+            // false. Wrecking Ball's `160A` rid72 gates a voice line on it.
+            "STU_555DD49F" if native_shape(config, class, None) => Value::Bool(false),
+            // One frame's length in seconds (`Eval_STU_4B02509E`
+            // 0x7FF789C026E0: the script context's (host `+0x10`) int64
+            // `+0x430` × 0.001f; the context keeps the milliseconds per
+            // frame there: the ability state's timing block, 0x7FF789B94AC0,
+            // makes a start time of `(frame + 1) × it`, the frame at
+            // context `+0x1D0`). Brigitte's `1248` waits it beyond #10349,
+            // Moira's `0F76` rid43 adds `3·x / 0.016` (3 a frame) and `15F5`
+            // rid18 moves a speed for `4·x` seconds.
+            "STU_4B02509E" if native_shape(config, class, None) => {
+                Value::Float(f64::from(crate::timeline::FRAME_MS as f32 * 0.001_f32))
+            }
+            // The game ruleset's "Competitive Rules" (`Eval_STU_BEDA850F`
+            // 0x7FF789BED1D0 → 0x7FF789CAD2C0(game, `0D8:2548`, bool)): the
+            // row of key 0x2548 (9544) in the game's ruleset table (`+216`
+            // items {u32 value, u16 key at +4}, `+224` count; 0x7FF789356650),
+            // which 0x7FF789CADDB0 loads from the resource in the mode
+            // entity's component 114 field 2 (`+0x140`) when it changes. The
+            // fallback through the mode's `STUGameMode.m_3CE93B76`
+            // (0x7FF789CAD640) writes a value but returns "not found", so
+            // the evaluate fails either way without that row. The server
+            // sends field 2 unset (`orpheus_sim::scene::mode_create`): the
+            // client has no row, so no value here either.
+            "STU_BEDA850F" if native_shape(config, class, None) => Value::Null,
             // A server-only bool of `m_entity` (no registration of its own,
             // one use: `01CB` rid64, `!mode.id(9541) || 68F68CD7(owner) ||
             // #11485`, which skips the kill cam). The client runs that
@@ -2413,6 +2457,63 @@ impl Evaluator {
                     .mode_random()
                     .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
             ),
+            // An entry of the client's uniform random table between two
+            // bounds (`Eval_STU_4EC41E8A` 0x7FF789BE0DD0): `m_index`,
+            // `m_1C002272` and `m_52CAFE20` as ints (0x7FF789E75260, unset
+            // 0), then 0x7FF78A75B220(index, least, greatest + 1). Control
+            // `0EC2` rid92/94/241 pick the match's stages with it.
+            "STU_4EC41E8A" if native_fields(config, &["m_index", "m_1C002272", "m_52CAFE20"]) => {
+                let mut int = |field: &str| -> Result<i32, EvalError> {
+                    Ok(match child(config, field) {
+                        Json::Null => 0,
+                        value => to_int(&self.config(value, context, nested)?, 0) as i32,
+                    })
+                };
+                let index = int("m_index")?;
+                let (first, second) = (int("m_1C002272")?, int("m_52CAFE20")?);
+                let (low, high) = (first.min(second), first.max(second));
+                Value::Integer(i64::from(crate::random_tables::uniform_pick(
+                    index,
+                    low,
+                    high.wrapping_add(1),
+                )))
+            }
+            // Server-only (no registration of its own: the client's base
+            // evaluate gives no value). Its two uses, Control `0EC2` rid92
+            // (`STU_4EC41E8A(m_index = CBF6FF14())`, the first stage) and
+            // rid239 (`CBF6FF14() + #7901`, the next round's), index the
+            // random table with it: the match's random index (assumption),
+            // drawn once per match by the server.
+            "STU_CBF6FF14" if native_shape(config, class, None) => Value::Integer(
+                context
+                    .match_seed()
+                    .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+            ),
+            // Whether an entity holds a logical button (`Eval_STU_A2A35433`
+            // 0x7FF789BDF4A0): the entity `m_entity` (no value: the invalid
+            // entity) through the host's entity table (not found: no
+            // value), its statescript component (47), then the button
+            // `m_logicalButton` (ToInt, unset 0) in that component's held
+            // list (0x7FF78AA9D940: `+0x440` items, `+0x448` count).
+            // Baptiste's `1983` rid39 asks it of his own jump.
+            "STU_A2A35433" if native_fields(config, &["m_entity", "m_logicalButton"]) => {
+                let entity = match child(config, "m_entity") {
+                    Json::Null => None,
+                    entity => to_entity(&self.config(entity, context, nested)?),
+                };
+                let Some(entity) = entity.filter(|&entity| valid_entity(entity)) else {
+                    return Ok(Value::Null);
+                };
+                let button = match child(config, "m_logicalButton") {
+                    Json::Null => 0,
+                    button => to_int(&self.config(button, context, nested)?, 0),
+                };
+                Value::Bool(
+                    context
+                        .button_held(entity, button)
+                        .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                )
+            }
             // The least of the values of `m_814F8EC3` (arrays opened), each as
             // an f32, a value that is no number counting as the default
             // `m_A53100D5` (itself 0 when it is no number); no value gives the
@@ -2509,14 +2610,21 @@ impl Evaluator {
                     // An engine console variable by its hash `m_74A2248F`
                     // (getter table 0x7FF789C04A60), as the in-game dump has
                     // them (ModeGraphGaps.md, "Client tools pass
-                    // (2026-11-16)"): 0xE1C1E402 an int, 128 (`0CBB` rid104),
-                    // 0x0FE1E03E a bool, false (`0CBB` rid122). The others'
-                    // values are not known.
-                    "STU_A753DC79" => match child(config, "m_74A2248F").as_i64() {
-                        Some(hash) if hash as u32 == 0xE1C1_E402 => Value::Integer(128),
-                        Some(hash) if hash as u32 == 0x0FE1_E03E => Value::Bool(false),
-                        _ => return Err(EvalError::UnsupportedConfig(class.into())),
-                    },
+                    // (2026-11-16)"; `python -m tools.owsearch cvar`, value
+                    // and default the same): 0xE1C1E402 an int, 128 (`0CBB`
+                    // rid104), 0x0FE1E03E a bool, false (`0CBB` rid122);
+                    // Reaper's server-only `0075` rid25/26: 0xD645EF78 a bool
+                    // (#48, getter 0x7FF789BFA5C0), false, and 0xA3E1FE20 a
+                    // double (#49, getter 0x7FF789C05E20 writes it as a
+                    // float), 1.0. The others' values are not known.
+                    "STU_A753DC79" => {
+                        match child(config, "m_74A2248F").as_i64().map(|hash| hash as u32) {
+                            Some(0xE1C1_E402) => Value::Integer(128),
+                            Some(0x0FE1_E03E | 0xD645_EF78) => Value::Bool(false),
+                            Some(0xA3E1_FE20) => Value::Float(1.0),
+                            _ => return Err(EvalError::UnsupportedConfig(class.into())),
+                        }
+                    }
                     _ => return Err(EvalError::UnsupportedConfig(class.into())),
                 }
             }
