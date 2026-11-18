@@ -2189,4 +2189,40 @@ mod tests {
             .unwrap();
         assert!(movement.is_none(), "{movement:?}");
     }
+
+    /// Widowmaker's Grappling Hook (`005A` st0, ray profile `0018.097`,
+    /// map mask `0x0040` as the client loads it) cast straight up the
+    /// Practice Range spawn passes the `0x1B9F` plane at y 11.2633 (a
+    /// player clip: it stops her body, not the hook) and meets the `0x04C0`
+    /// ceiling at y 12.6617. Measured in the game (2026-11-19): the
+    /// client's cast end wrote (54.5654, 12.6617, 43.9388) from this origin
+    /// and way; the server, casting with `0x1FDF`, stopped at the clip and
+    /// pulled her client there (refs report `Grapple.md` "DayGrapple2").
+    #[test]
+    #[ignore = "requires a derived 104319 Practice Range scene"]
+    fn the_grappling_hook_passes_the_range_spawns_player_clip() {
+        const HOOK_PROFILE: u64 = 0x0690_0000_0000_0018;
+        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let scene = assets.prepare(GameMap::practice_range()).unwrap();
+        let origin = [54.565_429_687_5, 2.5, 42.147_460_937_5];
+        let way = [0.0, 0.984_815_180_301_666_3, 0.173_606_216_901_201_22];
+        let hook = scene
+            .map_rays()
+            .cast(origin, way, 20.0, Some(HOOK_PROFILE))
+            .unwrap()
+            .unwrap();
+        let client = [54.5654, 12.6617, 43.9388];
+        assert!(
+            (0..3).all(|axis| (hook.point[axis] - client[axis]).abs() < 1e-3),
+            "{hook:?}"
+        );
+        // The clip is there, and stops a ray of the profiles' other mask.
+        let clip = scene
+            .rays
+            .cast_ray(origin, way, 20.0, 0x1FDF)
+            .unwrap()
+            .unwrap();
+        assert_eq!(clip.mask, 0x1B9F);
+        assert!((clip.point[1] - 11.2633).abs() < 1e-3, "{clip:?}");
+    }
 }
