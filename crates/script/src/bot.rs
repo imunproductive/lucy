@@ -1746,7 +1746,7 @@ mod tests {
             }
             None
         };
-        let (asked, goal) = next_goal(&mut bot, 101..=600).unwrap_or_else(|| {
+        let (mut asked, mut goal) = next_goal(&mut bot, 101..=600).unwrap_or_else(|| {
             let snapshot = bot.snapshot().unwrap();
             panic!(
                 "no walk asked for: {:?} {:?} {:?}",
@@ -1764,13 +1764,12 @@ mod tests {
                 next_goal(&mut bot, asked + 1..=arrived - 1),
                 Some((asked + 1, goal))
             );
-            let goal = bot.move_goal().unwrap();
             bot.move_arrived(goal, arrived).unwrap();
             assert!(bot.due_by(arrived));
             assert!(bot.advance_live(arrived, None).unwrap());
             assert_eq!(bot.move_goal(), None);
-            let (at, next) = next_goal(&mut bot, arrived + 1..=arrived + 100).unwrap();
-            walks.push((at, next.target));
+            (asked, goal) = next_goal(&mut bot, arrived + 1..=arrived + 100).unwrap();
+            walks.push((asked, goal.target));
         }
         assert_eq!(walks, [(363, route[1]), (463, route[2]), (563, route[0])]);
         assert!(bot.die(563, Variables::new()).unwrap());
