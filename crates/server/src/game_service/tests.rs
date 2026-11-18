@@ -863,10 +863,10 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     let ticket = result.unwrap().unwrap().handoff;
     assert_eq!(
         outgoing.iter().map(|(_, id, _)| *id).collect::<Vec<_>>(),
-        [20404, 20402, 23310, HANDOFF_MESSAGE]
+        [20404, 20402, HANDOFF_MESSAGE]
     );
-    assert_eq!(outgoing[3].0, HANDOFF);
-    let Value::Struct(wire) = &outgoing[3].2[&0x80] else {
+    assert_eq!(outgoing[2].0, HANDOFF);
+    let Value::Struct(wire) = &outgoing[2].2[&0x80] else {
         panic!("the decoded handoff has no seat body");
     };
     let key = |offset| {
@@ -5178,8 +5178,8 @@ fn practice_bots_run_their_scripts_for_a_client() {
         .client
         .send(ACK, aimed_batch(idle, 1, -16384, 0, 0, false));
     // The first hit's 25001, and with it or after it a frame of the bot's
-    // script, which doesn't fire: its nameplate enabled (upstream
-    // `show_damage_nameplate`); no elimination yet.
+    // script, which doesn't fire: its flinch (`0011.025`); no elimination
+    // yet.
     let hits_from = |watcher: &Watcher, from: usize, id: u32| {
         (from..watcher.datagrams.len())
             .find(|&index| watcher.datagrams[index].0.iter().any(|item| item.id == id))
@@ -5203,7 +5203,7 @@ fn practice_bots_run_their_scripts_for_a_client() {
     {
         assert!(
             server.now() < deadline,
-            "waiting for the surviving hit's nameplate frame"
+            "waiting for the surviving hit's flinch frame"
         );
         command(&mut watcher, FIRE);
         watcher.pump(&schemas);

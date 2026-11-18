@@ -51,14 +51,14 @@ These were rules of Blizzard's servers, live-service data, or code inside the cl
 
 | Item | Where | Code | Why it stays |
 | --- | --- | --- | --- |
-| Passive ultimate charge | `script/src/ultimate.rs` | 5 points a second | The retail server added the charge. The ruleset multipliers are already read. |
 | Armour damage reduction | `sim/src/vitals.rs:10` | 5 per hit | Not found in any asset or graph. |
 | Pulse Bomb fuse | `script/src/weapons.rs:103` | 1 s | Graph `0034` has a 1 s wait, but it cannot be tied to the bomb. |
 | World gravity | `physics/src/mover/kinematics.rs:22` | 10 m/s² | In the client's program code. Each hero's gravity scale is already read from the data. |
 | Crouch-again delay | `physics/src/mover/posture.rs:37` | 0.15 s | No asset field found. |
 | AI difficulty: damage share, aim error, reaction time, behaviour | `sim/src/ai.rs` | 25/50/100% and guesses | The data has them per hero and difficulty (`game_ai_definitions_174.json`, profiles `195E`/`195F`/`1960`, read as Easy/Medium/Hard): weapon damage per parameter (Hard = player damage, Medium ½, Easy ¼ or ⅕), melee 8/15/30; aim and reaction values are native and not decoded. `D:/Work/Coding/refs/reports/AiDefinitions.md`. |
 | AI hero roster | `sim/src/ai.rs:44` | 12 heroes | Matches the data: the heroes with `STUHero.m_906C3711` set (DataTool `SupportsAi`), each with its own AI definition. |
-| Overtime respawn +3 s, match end 20 s, Deathmatch top 4 | `sim/src/match_flow.rs` | As in the community rules | Not found in any graph. |
+| Overtime respawn +3 s | `sim/src/match_flow.rs` (`OVERTIME_RESPAWN`) | 3 s | It is in a graph: `0C8E` st34 adds it (refs report `RustInsteadOfGraphs.md`). Stays until the respawn runs from `0C8E` `0685` (migration row 1). |
+| Match end 20 s, Deathmatch top 4 | `sim/src/match_flow.rs` | As in the community rules | Not found in any graph. |
 | Objective details the graphs leave to native code | `sim/src/objectives.rs`, `sim/src/match_flow.rs` | Every attacker advances a point (0E8E ignores players with v10414 set; the server sets none); a Control tie picks team 0 (the graph picks at random); a payload event fires once; Hybrid's unlock run starts after the waits; a match with a ranked player plays with "Competitive Rules" | The graphs read native state the server doesn't have. |
 | Safety net under a map | `sim/src/map_areas.rs` (`FALL_LIMIT`) | A body whose capsule centre is 20 m below the map's lowest collision triangle dies; the server logs a warning | Not a game rule: it catches falls where the map's data has no damage area, kill volume or catch floor. |
 | Hitscan reach and projectile lifetime when a weapon has none | `sim/src/hitscan.rs:24`, `script/src/weapons.rs:87` | 200 m, 5 s | Fallbacks. Not found. |
@@ -67,7 +67,7 @@ These were rules of Blizzard's servers, live-service data, or code inside the cl
 | Body filter kind bits | `sim/src/scene.rs` (`BODY_KINDS`, `DEAD`) | `0x0001_0000_0000_0041`, dead `0x10` | Server-side values. Read from the graphs' filters and the weapons' ray profiles (`097`); the module docs give the evidence. |
 | Training Bot eye height | `sim/src/bots.rs:82` | 1.55 m | The bot asset says 2.0 m, but the Python server aimed from 1.55 m. Hit shapes now decide headshots for bots. |
 | Training Bot patrol timings | `sim/src/bots.rs:62-73` | First wait 3 s, walk gap 1.2 s, turn rate | The patrol graph `0B8E` is read, but these timings were not found in it. |
-| Bot nameplate inputs the server sends | `script/src/bot.rs` (`ENABLE_NAMEPLATE`, `DEAD_FLAG`) | `0C3C` to `0D24` on a hit the bot survives and at once for the players' team's bots; dead flag `#478` true when a bot or a player's body dies (`sim/src/body_script.rs`) | No graph sends `0C3C` or writes `#478`; the retail server did. When it did is upstream's guess and ours. |
+| Bot dead flag the server sets | `script/src/bot.rs` (`DEAD_FLAG`) | dead flag `#478` true when a bot or a player's body dies (`sim/src/body_script.rs`) | No graph writes `#478`; the retail server did. The server sends no `0C3C` (no graph sends it either): the client shows a bot's plate by itself (`docs/notes/behavior.md`, "When a bot's plate shows"). |
 | Bot animation blending | `sim/src/bot_animation.rs`, `assets/src/blend_trees.rs` | Layers add (translation summed, rotation `base · delta`, scale multiplied); branch changes are immediate; layers with a game-driven weight add nothing; a state machine stays in its first state; keys interpolate linearly | In the client's animation code. The trees name the nodes and blend times, not how they run. The module docs list each rule. |
 | Ranked: tier floors, placements, ±25 SR, leaver loss, demotion, competitive points | `lobby/src/ranked.rs` | Community rules and guesses | Server-side rules. No ranked asset is in the install. |
 | Leaderboard rule | `lobby/src/leaderboard.rs:51-53` | Top 500, 3000 SR, 25 wins | Server-side rule. |
