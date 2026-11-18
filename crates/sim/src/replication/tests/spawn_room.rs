@@ -211,7 +211,7 @@ fn idle(
         world.release_input(1);
         while world.has_input_work() {
             world
-                .advance_input(scene, viewer, RETAIL_QUANTA, 64)
+                .advance_input(scene, viewer, RETAIL_QUANTA, 64, None)
                 .unwrap();
         }
         let target = world.combat_target(scene, 0).unwrap();
@@ -265,7 +265,7 @@ fn respawn_frame(
         world.release_input(1);
         while world.has_input_work() {
             world
-                .advance_input(scene, viewer, RETAIL_QUANTA, 64)
+                .advance_input(scene, viewer, RETAIL_QUANTA, 64, None)
                 .unwrap();
         }
         world.take_body_messages();
@@ -416,7 +416,7 @@ fn rise(
         world.release_input(1);
         while world.has_input_work() {
             world
-                .advance_input(scene, viewer, RETAIL_QUANTA, 64)
+                .advance_input(scene, viewer, RETAIL_QUANTA, 64, None)
                 .unwrap();
         }
         top = top.max(world.mover.as_ref().unwrap().pose().position[1]);
@@ -670,7 +670,7 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
         world.release_input(1);
         while world.has_input_work() {
             world
-                .advance_input(&scene, &viewer, RETAIL_QUANTA, 64)
+                .advance_input(&scene, &viewer, RETAIL_QUANTA, 64, None)
                 .unwrap();
         }
         said.extend(

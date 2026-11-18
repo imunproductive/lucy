@@ -15,8 +15,8 @@ use crate::{
     bot_script::{BotEvent, BotViewContext, BotViews, SeenDelivery, SeenRocket},
     bots::BOT_RECORD_DELAY,
     combat::{
-        BotReplacement, DEAD, PlayerHit, PlayerTarget, PosedProjectile, PosedShot, RESPAWN_RETRY,
-        credits_damage, hit_messages,
+        BotReplacement, Combat, DEAD, PlayerHit, PlayerTarget, PosedProjectile, PosedShot,
+        RESPAWN_RETRY, TargetRewind, credits_damage, hit_messages,
     },
     controller::ControllerFrame,
     egress::{
@@ -50,10 +50,10 @@ use orpheus_content::{
 use orpheus_core::tick::{MAX_LEASE_FRAME, TICK_PERIOD};
 use orpheus_physics::{
     contact::cache::CapsulePose,
-    mover::Mover,
     mover::correction::CorrectionHistory,
     mover::kinematics::{Poses, poses as kinematics_poses, repeated},
     mover::modifiers::{Modifier, ModifierKey},
+    mover::{MoveEnd, MoveKey, Mover},
 };
 use orpheus_script::controller::{
     ControllerScript, HeroSelectRequest as SelectRequest, HeroSelectState, HeroSwitch,
@@ -145,9 +145,9 @@ fn clock_flags(depth: usize) -> u8 {
 /// (inferred, not traced) counts twice: 1.3, a speed scalar below 0. They
 /// send its own value now (`SnapshotEncoder` `project_variables`). Without corrections, any other difference between
 /// her client's body and the server's lasted until she died, and her shots
-/// left from the wrong place. Widowmaker stays out: the server can't run
-/// her Grappling Hook (`005A` st1, a `MoveTo` to an entity and bone), so a
-/// correction would pull her back. The other heroes stay out until the
+/// left from the wrong place. Widowmaker stays out: the server runs her
+/// Grappling Hook (`005A`) but not its ledge pull (`STU_1F5ED928`, a
+/// navigation path), so a correction would pull her back. The other heroes stay out until the
 /// server runs all of their movement (`docs/notes/behavior.md`, "Owner
 /// corrections").
 const CORRECTED_HEROES: [u64; 2] = [SOLDIER, ANA];
@@ -368,6 +368,10 @@ pub trait OwnerBodyRuntime: Send {
     /// (`Combat::target_candidates`).
     fn set_target_candidates(&mut self, _candidates: &[TargetCandidate]) {}
 
+    /// Where the player saw those bodies at `command`'s view, for the
+    /// searches that rewind, before the body's script runs the command.
+    fn see_targets(&mut self, _rewind: &TargetRewind<'_>, _command: &Command) {}
+
     /// The player's hero settings that the body's graphs read, as entity
     /// variables ([`hero_setting_variables`]).
     fn set_hero_settings(&mut self, _variables: &Variables) -> io::Result<()> {
@@ -452,16 +456,22 @@ impl BodyScript {
         })
     }
 
-    /// One frame of the body's script. A dead body's reports go nowhere
-    /// (combat.py `Combat.command`: the dead do not shoot).
+    /// One frame of the body's script, its searches that rewind seeing the
+    /// bodies as `rewind` has them at the command's view. A dead body's
+    /// reports go nowhere (combat.py `Combat.command`: the dead do not
+    /// shoot).
     fn advance(
         &mut self,
         mover: &mut Mover,
         command: Command,
         step: BodyStep,
+        rewind: Option<&TargetRewind<'_>>,
         dead: bool,
     ) -> io::Result<Vec<PosedShot>> {
         if command.frame > self.frame {
+            if let Some(rewind) = rewind {
+                self.runtime.see_targets(rewind, &command);
+            }
             self.runtime.advance(command, mover, step)?;
             self.frame = command.frame;
             if step == BodyStep::Posed {
@@ -4161,6 +4171,18 @@ impl WorldDelivery {
                 .is_some_and(|script| script.entity() == entity)
     }
 
+    /// The entities whose graphs this player runs now ([`Self::runs`]).
+    pub fn script_entities(&self) -> Vec<u32> {
+        let body = self
+            .current_body()
+            .filter(|&body| self.takes_body_message(body));
+        let controller = self
+            .controller_script
+            .as_ref()
+            .map(ControllerScript::entity);
+        body.into_iter().chain(controller).collect()
+    }
+
     /// A game message at `tick` ([`crate::messages`]) to the player's body
     /// or controller, whichever it names, or to both but its sender
     /// ([`EVERY_ENTITY`]). `players`: the room's controllers and teams, as
@@ -4573,14 +4595,18 @@ impl WorldDelivery {
 
     /// One unit per physics pose, unposed VM frame, pre-body command, or queued game message.
     /// A fresh frame is committed only after its final pose has completed.
+    /// `combat`: the room's, whose history the body's searches that rewind
+    /// see the bodies by (none yet: they can't tell).
     pub fn advance_input(
         &mut self,
         scene: &PreparedScene,
         viewer: &PlayerAppearance<'_>,
         quanta: u32,
         budget: usize,
+        combat: Option<&Combat>,
     ) -> io::Result<(usize, bool)> {
         let dt = f64::from(quanta) / 1_000_000.0;
+        let rewind = combat.map(|combat| combat.rewind(scene, quanta));
         let mut remaining = budget;
         while remaining != 0 {
             let Some(work) = self.input.work.pop_front() else {
@@ -4607,8 +4633,14 @@ impl WorldDelivery {
                     command,
                     mut pending,
                 } => {
-                    let (used, complete) =
-                        self.advance_command(scene, command, &mut pending, dt, remaining)?;
+                    let (used, complete) = self.advance_command(
+                        scene,
+                        command,
+                        &mut pending,
+                        dt,
+                        remaining,
+                        rewind.as_ref(),
+                    )?;
                     remaining -= used;
                     if !complete {
                         self.input
@@ -4631,6 +4663,7 @@ impl WorldDelivery {
         pending: &mut Option<PendingCommand>,
         dt: f64,
         budget: usize,
+        rewind: Option<&TargetRewind<'_>>,
     ) -> io::Result<(usize, bool)> {
         let Some(mover) = &mut self.mover else {
             return Ok((1, true));
@@ -4668,7 +4701,7 @@ impl WorldDelivery {
                     },
                     |input| repeated(input, frame),
                 );
-                if let Err(error) = script.advance(mover, held, step, dead) {
+                if let Err(error) = script.advance(mover, held, step, rewind, dead) {
                     mover.track_modifiers(frame, &BTreeMap::new());
                     pending.gap = ScriptGap::default();
                     failed = Some(error.to_string());
@@ -4680,7 +4713,9 @@ impl WorldDelivery {
             for command in pending.poses.by_ref().take(budget - used) {
                 used += 1;
                 if let Some(script) = script.as_mut().filter(|_| failed.is_none()) {
-                    if let Err(error) = script.advance(mover, command, BodyStep::Posed, true) {
+                    if let Err(error) =
+                        script.advance(mover, command, BodyStep::Posed, rewind, true)
+                    {
                         failed = Some(error.to_string());
                     }
                 }
@@ -4705,12 +4740,25 @@ impl WorldDelivery {
                     [request] => Some(request),
                     _ => None,
                 };
-                let outcome =
-                    mover.step_pose_to(rays, command, dt, request.map(|r| (r.target, r.speed)))?;
-                let ended = request.zip(outcome).map_or(Ok(()), |(request, arrived)| {
+                let key = request.map(|request| MoveKey {
+                    instance: request.instance,
+                    raw_state: request.raw_state,
+                    activation: request.activation,
+                });
+                let outcome = mover.step_pose_to(
+                    rays,
+                    command,
+                    dt,
+                    key.zip(request.as_ref())
+                        .map(|(key, request)| (key, &request.params)),
+                )?;
+                let ended = request.zip(outcome).map_or(Ok(()), |(request, end)| {
+                    let arrived = end == MoveEnd::Arrived;
                     script.runtime.finish_move(request, arrived, command.frame)
                 });
-                match ended.and_then(|()| script.advance(mover, command, BodyStep::Posed, false)) {
+                let advanced = ended
+                    .and_then(|()| script.advance(mover, command, BodyStep::Posed, rewind, false));
+                match advanced {
                     Ok(hits) => {
                         shots.extend(hits);
                         start_motions(mover, script.runtime.take_motions(), dt);

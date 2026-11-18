@@ -46,6 +46,79 @@ pub trait Recipients {
     /// A persistent sender let its message to `end.target`, one of these,
     /// go.
     fn end(&mut self, end: &MessageEnd);
+    /// The entities whose graphs these run now.
+    fn entities(&self) -> Vec<u32>;
+}
+
+/// The entities each held broadcast reached ([`deliver_held`]).
+#[derive(Default)]
+pub struct HeldReach {
+    /// By sender and message: the entities holding it now.
+    reached: Vec<((u32, u64), Vec<u32>)>,
+}
+
+/// The messages held to every entity now (`held`: a mode graph's
+/// SendGameMessage states, `orpheus_script::mode::ModeScript::held`):
+/// each goes once to every entity that runs graphs and hasn't had it,
+/// but its sender, as the client's receivers find a live sender at their
+/// next look-up whenever they start (GameMessages.md). An entity that
+/// went away is forgotten, so one that starts again under its id takes it
+/// again. A message no longer held ends for the entities it reached.
+pub fn deliver_held(
+    held: &[GameMessage],
+    reach: &mut HeldReach,
+    recipients: &mut [&mut dyn Recipients],
+) {
+    let key = |message: &GameMessage| (message.sender, message.message);
+    let (kept, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut reach.reached)
+        .into_iter()
+        .partition(|(sent, _)| held.iter().any(|message| key(message) == *sent));
+    for ((sender, message), entities) in gone {
+        for target in entities {
+            let end = MessageEnd {
+                sender,
+                target,
+                message,
+            };
+            if let Some(group) = recipients.iter_mut().find(|group| group.runs(target)) {
+                group.end(&end);
+            }
+        }
+    }
+    reach.reached = kept;
+    let present: Vec<u32> = recipients
+        .iter()
+        .flat_map(|group| group.entities())
+        .collect();
+    for message in held {
+        let index = match reach
+            .reached
+            .iter()
+            .position(|(sent, _)| *sent == key(message))
+        {
+            Some(index) => index,
+            None => {
+                reach.reached.push((key(message), Vec::new()));
+                reach.reached.len() - 1
+            }
+        };
+        reach.reached[index]
+            .1
+            .retain(|entity| present.contains(entity));
+        for &entity in &present {
+            if entity == message.sender || reach.reached[index].1.contains(&entity) {
+                continue;
+            }
+            let to = GameMessage {
+                target: entity,
+                ..message.clone()
+            };
+            if let Some(group) = recipients.iter_mut().find(|group| group.runs(entity)) {
+                group.receive(&to);
+            }
+            reach.reached[index].1.push(entity);
+        }
+    }
 }
 
 /// Hand the room's `messages`, then its message `ends`, to the entities
@@ -133,6 +206,13 @@ impl Recipients for Players<'_, '_> {
             world.end_message(end);
         }
     }
+
+    fn entities(&self) -> Vec<u32> {
+        self.worlds
+            .iter()
+            .flat_map(|world| world.script_entities())
+            .collect()
+    }
 }
 
 /// The Training Bots' body scripts at world tick `tick`.
@@ -153,6 +233,10 @@ impl Recipients for Bots<'_> {
     fn end(&mut self, end: &MessageEnd) {
         self.scripts.end_message(end);
     }
+
+    fn entities(&self) -> Vec<u32> {
+        self.scripts.entities()
+    }
 }
 
 impl Recipients for PlacedScripts {
@@ -166,6 +250,17 @@ impl Recipients for PlacedScripts {
 
     fn end(&mut self, end: &MessageEnd) {
         self.end_message(end);
+    }
+
+    fn entities(&self) -> Vec<u32> {
+        self.world().map_or_else(Vec::new, |world| {
+            world
+                .entities()
+                .iter()
+                .filter(|placed| placed.running())
+                .map(|placed| placed.entity)
+                .collect()
+        })
     }
 }
 
@@ -181,6 +276,10 @@ impl Recipients for SpawnedFields {
     fn end(&mut self, end: &MessageEnd) {
         self.end_message(end);
     }
+
+    fn entities(&self) -> Vec<u32> {
+        SpawnedFields::entities(self)
+    }
 }
 
 impl Recipients for ModeRunner {
@@ -194,6 +293,11 @@ impl Recipients for ModeRunner {
 
     fn end(&mut self, end: &MessageEnd) {
         self.end_message(end);
+    }
+
+    /// The mode entity's own instances take its broadcasts from the VM.
+    fn entities(&self) -> Vec<u32> {
+        Vec::new()
     }
 }
 
@@ -243,6 +347,10 @@ mod tests {
         fn end(&mut self, end: &MessageEnd) {
             self.ended.push((end.target, end.message));
         }
+
+        fn entities(&self) -> Vec<u32> {
+            self.entities.iter().copied().collect()
+        }
     }
 
     fn mail(sender: u32, target: u32, message: u64) -> GameMessage {
@@ -252,6 +360,31 @@ mod tests {
             message,
             parameters: Variables::new(),
         }
+    }
+
+    /// A held broadcast reaches every entity once, entities that start later
+    /// too, but not its sender; one that went away takes it again when it
+    /// comes back; when it is no longer held it ends for those it reached.
+    #[test]
+    fn a_held_broadcast_reaches_each_entity_once_and_later_ones_too() {
+        let held = [mail(0x20, EVERY_ENTITY, 7)];
+        let mut reach = HeldReach::default();
+        let mut players = Group::new(&[1]);
+        let mut mode = Group::new(&[0x20]);
+        deliver_held(&held, &mut reach, &mut [&mut players, &mut mode]);
+        deliver_held(&held, &mut reach, &mut [&mut players, &mut mode]);
+        assert_eq!(players.taken, [(1, 7)]);
+        assert!(mode.taken.is_empty());
+        players.entities.insert(2);
+        deliver_held(&held, &mut reach, &mut [&mut players, &mut mode]);
+        assert_eq!(players.taken, [(1, 7), (2, 7)]);
+        players.entities.remove(&2);
+        deliver_held(&held, &mut reach, &mut [&mut players, &mut mode]);
+        players.entities.insert(2);
+        deliver_held(&held, &mut reach, &mut [&mut players, &mut mode]);
+        assert_eq!(players.taken, [(1, 7), (2, 7), (2, 7)]);
+        deliver_held(&[], &mut reach, &mut [&mut players, &mut mode]);
+        assert_eq!(players.ended, [(1, 7), (2, 7)]);
     }
 
     /// A message to every entity reaches each entity of every group once,

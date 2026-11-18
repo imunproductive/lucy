@@ -15,6 +15,7 @@ mod context;
 mod entities;
 mod filter_array;
 mod flow;
+mod grapple;
 mod health;
 mod hero_select;
 mod lifecycle;
@@ -60,8 +61,9 @@ use crate::{
     wheel,
     wire::{Value, Variables},
 };
-use orpheus_physics::mover::modifiers::{
-    Modifier, ModifierKey, Operation, VectorOperation, VelocityElement,
+use orpheus_physics::mover::{
+    MoveTo, Speed,
+    modifiers::{Modifier, ModifierKey, Operation, VectorOperation, VelocityElement},
 };
 use orpheus_wire::{commands::Command, entity::MAX_MOVEMENT_AXIS};
 
@@ -267,6 +269,29 @@ pub struct TargetCandidate {
     /// (its Biotic Fields: [`crate::placed::MapEntityWorld::spawn`]), for
     /// the owner relation.
     pub spawned: Vec<u32>,
+}
+
+/// Where a listed body was as the searcher's player saw it, rewound to his
+/// view (a search with `m_1C2A9945`, `vm/targets.rs`): its capsule and
+/// facing then, in [`TargetCandidate`]'s terms.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SeenBody {
+    pub entity: u32,
+    pub feet: [f64; 3],
+    pub height: f64,
+    pub radius: f64,
+    pub yaw: f64,
+}
+
+/// The bodies a rewinding search on a site tests ([`World::seen_bodies`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SeenBodies<'a> {
+    /// The searcher has no player (a bot, a map placeable): the bodies as
+    /// listed.
+    Listed,
+    /// Each listed body that existed at the searcher's player's view,
+    /// where he saw it; a listed body missing here did not exist then.
+    Rewound(&'a [SeenBody]),
 }
 
 /// One turn in the yaw and pitch units of a movement record.
@@ -563,6 +588,14 @@ pub trait World {
         None
     }
 
+    /// Where the searcher on `site` saw the bodies of
+    /// [`Self::target_candidates`], for a search that rewinds them
+    /// (`TrackTargets` `m_1C2A9945`). None: this world can't tell, and the
+    /// search tests them as listed (an assumption).
+    fn seen_bodies(&self, _site: Site) -> Option<SeenBodies<'_>> {
+        None
+    }
+
     /// The map's collision a ray cast on this world meets
     /// ([`MapRays::cast`]); every world of a match gets the same map (the
     /// bodies', bots', placeables' and mode's scripts). None: this world
@@ -590,6 +623,12 @@ pub trait World {
 
     /// A body's yaw and pitch, as [`expr::Context::entity_facing`].
     fn entity_facing(&self, _site: Site, _entity: u32) -> Option<[i32; 2]> {
+        None
+    }
+
+    /// Where a body's eye is (its feet and eye height) and its yaw and
+    /// pitch: the view a Grappling Hook starts from (`vm/grapple.rs`).
+    fn eye(&self, _site: Site, _entity: u32) -> Option<([f64; 3], [i32; 2])> {
         None
     }
 
@@ -745,6 +784,16 @@ pub trait World {
     /// deliver it.
     fn broadcast_message(&mut self, _source: Site, _message: u64, _parameters: &Variables) -> bool {
         false
+    }
+
+    /// A SendGameMessage state to every entity began: the client keeps
+    /// such a sender in its live-sender registry while the state runs, and
+    /// receivers look it up each frame, so an entity that starts later
+    /// finds it too (`sub_7FF789CAA770`, GameMessages.md). The state's end
+    /// comes as [`World::end_message`] to [`crate::mode::EVERY_ENTITY`].
+    /// By default a world delivers it once ([`World::broadcast_message`]).
+    fn hold_broadcast(&mut self, source: Site, message: u64, parameters: &Variables) -> bool {
+        self.broadcast_message(source, message, parameters)
     }
 
     /// A persistent sender (a SendGameMessage state) no longer names
@@ -911,13 +960,16 @@ pub struct MessageEnd {
     pub message: u64,
 }
 
-/// A `MoveTo` state's fixed world target and speed in metres per second.
+/// A running `MoveTo` state's move for the mover
+/// (`orpheus_physics::mover::move_to`): the state, its activation (a
+/// state begun again is a new move) and the block it handed over at its
+/// begin.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MoveRequest {
     pub instance: u16,
     pub raw_state: u16,
-    pub target: [f64; 3],
-    pub speed: f64,
+    pub activation: u16,
+    pub params: MoveTo,
 }
 
 /// An AI movement state's (`STU_ECAEE401`) point to walk to, from its move
@@ -1060,9 +1112,16 @@ pub enum StateKind {
     },
     /// Finishes after its count of server frames (`WaitForServerFrames`).
     ServerFrames,
-    /// A fixed world target and speed for bot movement (`MoveTo`); the
-    /// request is in [`Component::move_requests`].
+    /// A `MoveTo`: the move it handed the mover is in
+    /// [`Component::move_requests`] while it runs.
     MoveTo,
+    /// Widowmaker's Grappling Hook cast (`STU_4BBC5D09`, `vm/grapple.rs`):
+    /// the hook flies each tick until it hits or reaches its range.
+    GrappleCast,
+    /// A mover behaviour that walks a navigation path (`STU_1F5ED928`,
+    /// kind 10): the server has no path query, so the path fails and the
+    /// state finishes the frame after it begins (`vm/grapple.rs`).
+    NavPath,
     /// An AI movement state (`STU_ECAEE401`): the point its move goal names
     /// for the server's walker, in [`Component::ai_move_requests`].
     AiMove,
@@ -1815,25 +1874,26 @@ impl Component {
         self.machine.queues.next_due()
     }
 
-    /// The active `MoveTo` states' targets, for the mover
-    /// (`MoveTo.move_request` as `ow174/game/match.py` collects them).
+    /// The active `MoveTo` states' moves, for the mover.
     pub fn move_requests(&self) -> Vec<MoveRequest> {
         self.machine
             .movements
             .iter()
-            .filter(|(key, _)| {
-                self.machine
+            .filter_map(|(key, &params)| {
+                let state = self
+                    .machine
                     .snapshot
                     .instances
-                    .get(&key.instance)
-                    .and_then(|instance| instance.states.get(&key.raw))
-                    .is_some_and(|state| state.active)
-            })
-            .map(|(key, &(target, speed))| MoveRequest {
-                instance: key.instance,
-                raw_state: key.raw,
-                target,
-                speed,
+                    .get(&key.instance)?
+                    .states
+                    .get(&key.raw)
+                    .filter(|state| state.active)?;
+                Some(MoveRequest {
+                    instance: key.instance,
+                    raw_state: key.raw,
+                    activation: state.activation,
+                    params,
+                })
             })
             .collect()
     }
@@ -2186,6 +2246,8 @@ struct Recipients {
     message: u64,
     entities: Vec<u32>,
     broadcast: bool,
+    /// A broadcast held by a running state ([`World::hold_broadcast`]).
+    held: bool,
 }
 
 /// The game message a node sends or waits for; None for none.
@@ -2226,8 +2288,10 @@ struct Machine {
     deferred: BTreeMap<u16, Vec<(f64, u16)>>,
     /// The active `DisableLogicalButton` states by the button they block.
     disabled: BTreeMap<i64, Vec<StateKey>>,
-    /// `MoveTo` targets and speeds of the activations that resolved one.
-    movements: BTreeMap<StateKey, ([f64; 3], f64)>,
+    /// The blocks the running `MoveTo` states handed the mover at their begin.
+    movements: BTreeMap<StateKey, MoveTo>,
+    /// The running Grappling Hook casts (`STU_4BBC5D09`, `vm/grapple.rs`).
+    grapples: BTreeMap<StateKey, grapple::Cast>,
     /// The running AI movement states' points to walk to ([`AiMoveRequest`]).
     ai_moves: BTreeMap<StateKey, [f64; 3]>,
     /// The running HeroSelect states' hero limits (`vm/hero_select.rs`).
@@ -2635,19 +2699,36 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     /// target names at its begin, then each tick to those that came in since
     /// ([`State::tracked`] lists the ones holding it), and ends it for those
     /// that left and, at its own end, for all ([`World::end_message`]). A
-    /// target of channels (`STU_1D719351`, every entity) is sent once at
-    /// the begin, as before: who joins later is not followed.
+    /// target of channels (`STU_1D719351`, every entity) is held while the
+    /// state runs ([`World::hold_broadcast`]) and ended with it, as the
+    /// client's live-sender registry keeps it for entities that look it up
+    /// later (GameMessages.md).
     pub(super) fn begin_send_state(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
-        let Some(recipients) = self.message_recipients(key.instance, node) else {
+        let Some(mut recipients) = self.message_recipients(key.instance, node) else {
             return Ok(());
         };
+        recipients.held = recipients.broadcast;
         if !self.deliver_game_message(key.instance, node, &recipients, &recipients.entities)? {
             return Ok(());
         }
-        if recipients.broadcast || recipients.message == 0 {
+        if recipients.message == 0 {
             return Ok(());
         }
         let since_ms = self.machine.now_ms;
+        if recipients.broadcast {
+            // The sender's own instances took it from the VM; every other
+            // entity holds it through the world.
+            if let Some(state) = self.state_mut(key) {
+                state.tracked = recipients
+                    .entities
+                    .iter()
+                    .copied()
+                    .chain([crate::mode::EVERY_ENTITY])
+                    .map(|entity| TrackedTarget { entity, since_ms })
+                    .collect();
+            }
+            return Ok(());
+        }
         if let Some(state) = self.state_mut(key) {
             state.tracked = recipients
                 .entities
@@ -2791,6 +2872,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             message: 0,
             entities: Vec::new(),
             broadcast: false,
+            held: false,
         };
         let Some(message) = message_of(node) else {
             return Some(nobody);
@@ -2856,6 +2938,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             message,
             entities,
             broadcast,
+            held: false,
         })
     }
 
@@ -2904,7 +2987,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 return Ok(false);
             }
         }
-        if recipients.broadcast && !self.world.broadcast_message(site, message, &parameters) {
+        let delivered = !recipients.broadcast
+            || if recipients.held {
+                self.world.hold_broadcast(site, message, &parameters)
+            } else {
+                self.world.broadcast_message(site, message, &parameters)
+            };
+        if !delivered {
             self.report(
                 site,
                 Issue::UnsupportedField("broadcast game message delivery"),

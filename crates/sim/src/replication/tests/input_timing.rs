@@ -24,12 +24,16 @@ const WINDOW: usize = 8;
 /// A Soldier: 76 picked at the Practice Range spawn; `buffered` is the
 /// server's input, else the client's VM, which runs each command at once.
 fn soldier(scene: &PreparedScene, card: &PlayerCard, buffered: bool) -> WorldDelivery {
+    picked(scene, card, SOLDIER, buffered)
+}
+
+fn picked(scene: &PreparedScene, card: &PlayerCard, hero: u64, buffered: bool) -> WorldDelivery {
     let mut world = WorldDelivery::new(OWNER);
     if !buffered {
         world = world.unbuffered();
     }
     world.started = Some(FIRST_TICK);
-    let hero = scene.heroes().get(SOLDIER).unwrap();
+    let hero = scene.heroes().get(hero).unwrap();
     world
         .switch(
             scene,
@@ -41,7 +45,7 @@ fn soldier(scene: &PreparedScene, card: &PlayerCard, buffered: bool) -> WorldDel
             true,
         )
         .unwrap();
-    assert!(world.body_script.is_some(), "Soldier: 76's body script");
+    assert!(world.body_script.is_some(), "the hero's body script");
     world
 }
 
@@ -59,7 +63,7 @@ fn viewer(card: &PlayerCard) -> PlayerAppearance<'_> {
 fn run(world: &mut WorldDelivery, scene: &PreparedScene, card: &PlayerCard) {
     while world.has_input_work() {
         world
-            .advance_input(scene, &viewer(card), RETAIL_QUANTA, 64)
+            .advance_input(scene, &viewer(card), RETAIL_QUANTA, 64, None)
             .unwrap();
     }
 }
@@ -197,7 +201,7 @@ fn the_server_runs_each_frame_as_the_client_predicted_it_while_nothing_is_lost()
         while server.has_input_work() {
             let before = server.body_script.as_ref().unwrap().frame;
             server
-                .advance_input(&scene, &viewer(&card), RETAIL_QUANTA, 1)
+                .advance_input(&scene, &viewer(&card), RETAIL_QUANTA, 1, None)
                 .unwrap();
             let (frame, projected, pose) = state(&server);
             if frame == before {
@@ -298,5 +302,112 @@ fn a_tap_the_dry_buffer_missed_still_fires_once_its_command_comes() {
         server.body_script.as_ref().unwrap().frame,
         first + 79,
         "every frame ran"
+    );
+}
+
+/// Widowmaker's Grappling Hook (`005A`) from the Range spawn: the press
+/// (Shift, logical button 35) casts the hook (`STU_4BBC5D09`), which flies
+/// 40 m/s until it meets the map, and the `MoveTo` pulls her toward it at
+/// 20 m/s; the ability ends after the pull. The server, its commands
+/// buffered a tick, has her where her client predicted her on every frame.
+#[test]
+#[ignore = "requires a derived 104319 Practice Range pack"]
+fn the_server_pulls_widowmaker_along_her_grappling_hook_as_her_client_predicts() {
+    const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
+    const HOOK: u32 = 0x08;
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(orpheus_script::vm::Unknowns::Tolerate);
+    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let card = PlayerCard::default();
+    // Up a little along the spawn's facing (+z), where the Range's ledge
+    // stands within the hook's 20 m.
+    let (yaw, pitch) = (0, -3000);
+    let input = |index: u32, frame: u32| Command {
+        frame,
+        yaw,
+        pitch,
+        buttons: if index == 30 { HOOK } else { 0 },
+        ..Command::default()
+    };
+    let mut server = picked(&scene, &card, WIDOWMAKER, true);
+    let mut client = picked(&scene, &card, WIDOWMAKER, false);
+    let hook = |world: &WorldDelivery, id: u32| {
+        let snapshot = world
+            .body_script
+            .as_ref()
+            .unwrap()
+            .runtime
+            .snapshot()
+            .unwrap();
+        let (_, instance) = snapshot
+            .instances
+            .iter()
+            .find(|(_, instance)| instance.graph == 0x005a)
+            .unwrap();
+        instance.variables.get(&id).cloned()
+    };
+    let first = FIRST_TICK + 1;
+    let frames = 200;
+    let mut predicted = BTreeMap::new();
+    let mut start = None;
+    let mut farthest: f64 = 0.0;
+    for index in 0..=frames {
+        let tick = FIRST_TICK + 1 + index;
+        if index < frames {
+            let command = input(index, first + index);
+            client.queue_commands(tick, &[command]);
+            run(&mut client, &scene, &card);
+            let (frame, projected, pose) = state(&client);
+            predicted.insert(frame, (projected, pose));
+            let at = pose.position;
+            let from = *start.get_or_insert(at);
+            farthest = farthest.max(
+                (0..3)
+                    .map(|axis| (at[axis] - from[axis]).powi(2))
+                    .sum::<f64>()
+                    .sqrt(),
+            );
+            server.queue_commands(tick, &[command]);
+        }
+        server.release_input(1);
+        while server.has_input_work() {
+            let before = server.body_script.as_ref().unwrap().frame;
+            server
+                .advance_input(&scene, &viewer(&card), RETAIL_QUANTA, 1, None)
+                .unwrap();
+            let (frame, projected, pose) = state(&server);
+            if frame == before {
+                continue;
+            }
+            let (expected, expected_pose) = &predicted[&frame];
+            assert_eq!(pose, *expected_pose, "frame {frame}: the body's movement");
+            assert_eq!(
+                projected, *expected,
+                "frame {frame}: the owner's statescript"
+            );
+        }
+    }
+    // The hook met the map (#435) and pulled her along it.
+    assert_eq!(hook(&client, 435), Some(ScriptValue::Bool(true)));
+    assert!(farthest > 2.0, "she moved {farthest} m");
+    assert_eq!(hook(&server, 435), hook(&client, 435));
+    // The pull (st1) and the cast (st0) are over.
+    let snapshot = client
+        .body_script
+        .as_ref()
+        .unwrap()
+        .runtime
+        .snapshot()
+        .unwrap();
+    let grapple = snapshot
+        .instances
+        .values()
+        .find(|instance| instance.graph == 0x005a)
+        .unwrap();
+    assert!(
+        [0, 1]
+            .iter()
+            .all(|raw| grapple.states.get(raw).is_none_or(|state| !state.active)),
+        "the grapple ended"
     );
 }

@@ -79,7 +79,7 @@ fn rockets(scene: &PreparedScene, hits: &[u32], ticks: u32) -> Reactions {
         world.release_input(1);
         while world.has_input_work() {
             world
-                .advance_input(scene, &viewer(&card), RETAIL_QUANTA, 64)
+                .advance_input(scene, &viewer(&card), RETAIL_QUANTA, 64, None)
                 .unwrap();
         }
         if hits.contains(&index) {

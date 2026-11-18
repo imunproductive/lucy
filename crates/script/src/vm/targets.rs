@@ -106,9 +106,17 @@
 //!   `0DC0.0001`/`0DC0.01CD`); `m_8D13DD07` adds a sweep first and
 //!   `m_2F5FAF65` two rays to the sides. Not modelled: a search with it is
 //!   an assumption ("no line-of-sight test"), as are its inputs.
-//! - `m_1C2A9945`: bodies are tested where the searcher's player (a
-//!   projectile's shooter's, component 50) saw them, rewound. The server
-//!   tests them where the match places them now (assumption).
+//! - `m_1C2A9945`: when the searcher has a player (component 43 → 29; a
+//!   projectile through its shooter, component 50), bodies are tested
+//!   where that player saw them, rewound (`0x7FF789CBB340`,
+//!   `0x7FF789CC1AA0`). The world says where ([`World::seen_bodies`]): a
+//!   player's body's world at the view of the command its script runs
+//!   (`orpheus_sim::combat::TargetRewind`, the history the server's shots
+//!   rewind with), a bot's and a map placeable's as listed (no player).
+//!   The searcher's own body stays where it is (its player sees it
+//!   there); a body that did not exist at the view is left out. A world
+//!   that can't tell (a spawned entity's: the Biotic Field `0258`) tests
+//!   them as listed, an assumption.
 //! - `m_08285CD6`: the cone's direction leaves out the entity's pitch; a
 //!   whole sphere has none. `m_E4A295CE`: a predicting client replays its
 //!   recorded results after a rollback (`0x7FF789BA9250`); nothing for the
@@ -121,13 +129,14 @@
 //! placeable, whole: no assumption), `0257` st6 and Reinhardt's `0095`
 //! st18, both counting allies within 10 m for a criteria, the Biotic
 //! Field's `0258` st0 and quick melee's `0043` st5 (the last four with
-//! the line of sight and the rewind assumed). Any other set field (sweep
+//! the line of sight assumed). Any other set field (sweep
 //! origins, scoring `m_84E5DE4E`, limits, the output `m_CEE20F6F` that
 //! SetVars read) or an offset the server can't evaluate leaves the search
 //! finding nothing, recorded as an assumption naming the field.
 //!
 //! Assumed, as nothing in the data says: a body counts when its capsule
-//! (as the match places it) comes within the radius, as `heal_area`
+//! (as the match places it, or where the searcher's player saw it) comes
+//! within the radius, as `heal_area`
 //! measures; new bodies come after those already found, in the world's
 //! order (the client appends them, `0x7FF789AF3D70`); the outputs are
 //! written at the begin and whenever the set changes, and keep their last
@@ -194,13 +203,10 @@ const DEAD: u64 = 0x10;
 
 /// Fields the client reads that the server runs the search without, each
 /// an assumption when set (see the module notes).
-const ASSUMED: &[(&str, &str)] = &[
-    ("m_95FFC3C5", "no line-of-sight test"),
-    (
-        "m_1C2A9945",
-        "bodies where the match places them now, not rewound",
-    ),
-];
+const ASSUMED: &[(&str, &str)] = &[("m_95FFC3C5", "no line-of-sight test")];
+
+/// `m_1C2A9945`: the bodies where the searcher's player saw them.
+const REWIND: &str = "m_1C2A9945";
 
 /// How often a search runs again (`m_DD792FF0`, gate `0x7FF789BB9460`):
 /// every `n` frames for the values 1 to 4, else every frame.
@@ -452,11 +458,45 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(())
     }
 
+    /// `bodies` where the searcher's player saw them (see the module
+    /// notes): each but the searcher's own body moved to its seen place,
+    /// or left out when it did not exist then. False: the world can't
+    /// tell, and they stay as listed.
+    fn rewind(&self, site: Site, bodies: &mut Vec<TargetCandidate>) -> bool {
+        match self.world.seen_bodies(site) {
+            None => false,
+            Some(SeenBodies::Listed) => true,
+            Some(SeenBodies::Rewound(seen)) => {
+                bodies.retain_mut(|body| {
+                    if body.entity == site.entity {
+                        return true;
+                    }
+                    let Some(place) = seen.iter().find(|place| place.entity == body.entity) else {
+                        return false;
+                    };
+                    body.feet = place.feet;
+                    body.height = place.height;
+                    body.radius = place.radius;
+                    body.yaw = place.yaw;
+                    true
+                });
+                true
+            }
+        }
+    }
+
     /// The bodies the search finds now, in the world's order.
     fn search_targets(&mut self, id: u16, node: &Node) -> Result<Vec<u32>, Gap> {
         let search = self.target_search(id, node)?;
         let site = self.site(id, node);
-        let bodies = self.passing_bodies(site, &search.filter)?;
+        let mut bodies = self.passing_bodies(site, &search.filter)?;
+        if is_set(field(&node.fields, REWIND)) && !self.rewind(site, &mut bodies) {
+            self.assume(
+                site,
+                &format!("{CLASS} {REWIND}"),
+                "bodies where the match places them now, not rewound",
+            );
+        }
         // The sphere goes with a listed body, else with any entity the
         // world places (a spawned Biotic Field's own search).
         let centre = match search.entity {

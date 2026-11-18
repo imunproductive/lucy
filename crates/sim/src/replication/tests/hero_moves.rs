@@ -94,7 +94,7 @@ impl Player {
         self.world.queue_commands(self.frame, &[command]);
         while self.world.has_input_work() {
             self.world
-                .advance_input(&self.scene, &viewer, RETAIL_QUANTA, 64)
+                .advance_input(&self.scene, &viewer, RETAIL_QUANTA, 64, None)
                 .unwrap();
         }
         assert!(self.world.body_script.is_some(), "the script kept running");
