@@ -432,7 +432,9 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
     reader.var_a().unwrap();
     read_channel(&mut reader, schemas).unwrap();
     reader.var_a().unwrap();
-    assert_eq!(reader.bits(7).unwrap(), 0b010_0000);
+    // The ch3 clock flags (any), then no ping, keep ch4, an empty ch5.
+    reader.bits(4).unwrap();
+    assert_eq!(reader.bits(3).unwrap(), 0b010);
     let count = reader.bits(7).unwrap();
     (0..count)
         .map(|_| {
