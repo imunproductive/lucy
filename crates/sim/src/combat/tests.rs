@@ -268,6 +268,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
             hurt,
             tags: None,
             ai: None,
+            dealt: Vec::new(),
         },
         history: TargetHistory::new(None),
     };
@@ -356,6 +357,7 @@ fn target_searches_see_the_players_then_the_bots() {
         hurt: false,
         tags: None,
         ai: None,
+        dealt: Vec::new(),
     };
     combat.record_poses(&scene, &[player], 1000);
     let candidates = combat.target_candidates(&scene);
@@ -432,6 +434,7 @@ fn a_players_shot_on_another_player_carries_its_tags_and_way() {
         hurt: false,
         tags: None,
         ai: None,
+        dealt: Vec::new(),
     };
     combat.record_poses(
         &scene,
@@ -591,6 +594,7 @@ fn the_biotic_rifle_heals_hurt_allies_and_damages_enemies() {
         hurt,
         tags: None,
         ai: None,
+        dealt: Vec::new(),
     };
     combat.record_poses(&scene, &[player(true)], context.tick);
     assert!(fire(&mut combat, &mut scene).is_none());
