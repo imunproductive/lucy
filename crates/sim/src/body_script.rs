@@ -670,11 +670,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                         && spawn.is_none()
                         && rings.is_none()
                         && projectiles == 1;
-                    let field = self
-                        .combat
-                        .field
-                        .filter(|_| leased && spawn == Some(crate::projectiles::FIELD_ENTITY))
-                        .map(Box::new);
+                    let field = leased && spawn == Some(crate::projectiles::FIELD_ENTITY);
                     let volleys = self
                         .component
                         .snapshot()
@@ -833,7 +829,6 @@ pub fn fixture_body_factory() -> (PlayerBodyFactory, OwnerBodySpawn) {
                 standing: 1.55,
                 crouched: 1.085,
             },
-            field: None,
         },
         Unknowns::for_build(),
         None,

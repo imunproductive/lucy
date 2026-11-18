@@ -941,7 +941,7 @@ fn shot_kind(body: &mut BotBody, shot: &ShotEvent, bot: &Bot) -> Option<(BotShot
                     spawn: None,
                     leased: false,
                     server_shown: false,
-                    field: None,
+                    field: false,
                     feet: bot.position,
                     volleys,
                     // combat.py `_shoot`: the NPC path flies one whatever

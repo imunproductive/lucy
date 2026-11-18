@@ -1986,6 +1986,40 @@ impl Evaluator {
                     .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
                 Value::Entity(related)
             }
+            // The player entity of `m_entity`, as the client's
+            // `Eval_STU_0340A42A` (0x7FF789C00660): the entity itself when it
+            // is a player entity (component 74, `sub_7FF789C1CAE0`), else
+            // its owner (component 72 `+0xD8`) when that is one. The
+            // client's last two tries (component 43, then a list from the
+            // world's slot `+576`) are not modelled: an entity they would
+            // answer is unsupported. The Biotic Field's `0258` sends `0EEB`
+            // and tracks its stat to it with its owner, and its aura `0B3C`
+            // st2 names it with the field. Assumption: a controller (it
+            // possesses a body, component 44) is a player entity.
+            "STU_0340A42A" if native_shape(config, class, Some("m_entity")) => {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let Some(entity) =
+                    to_entity(&self.config(child(config, "m_entity"), context, nested)?)
+                else {
+                    return Err(unsupported());
+                };
+                if !valid_entity(entity) {
+                    return Ok(Value::Entity(0));
+                }
+                fn player(context: &mut impl Context, entity: u32) -> bool {
+                    context.related_entity(EntityRelation::Controller, entity) == Some(entity)
+                }
+                if player(context, entity) {
+                    Value::Entity(entity)
+                } else {
+                    match context.related_entity(EntityRelation::Owner, entity) {
+                        Some(owner) if valid_entity(owner) && player(context, owner) => {
+                            Value::Entity(owner)
+                        }
+                        _ => return Err(unsupported()),
+                    }
+                }
+            }
             // "`m_target` is not an enemy of `m_source`", as the client's
             // `Eval_STU_53F4CA65` (0x7FF789BFAD90 → 0x7FF789B2C0E0, the negated
             // enemy test 0x7FF789B2CF60; HealthAuras.md, "Client tools pass

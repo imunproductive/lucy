@@ -255,6 +255,10 @@ pub struct TargetCandidate {
     /// tag its own graphs add or suppress (only the player's own body
     /// knows those).
     pub tags: Option<Arc<BTreeSet<u64>>>,
+    /// The spawned entities the match runs whose owner is its controller
+    /// (its Biotic Fields: [`crate::placed::MapEntityWorld::spawn`]), for
+    /// the owner relation.
+    pub spawned: Vec<u32>,
 }
 
 /// One turn in the yaw and pitch units of a movement record.
@@ -346,6 +350,36 @@ impl TargetCandidate {
             }
         }
         best
+    }
+}
+
+/// How `entity` relates, as far as the listed bodies tell: a listed body's
+/// controller; a listed controller is its own (it has component 44) and
+/// possesses its body; a spawned entity a body lists
+/// ([`TargetCandidate::spawned`]) is owned by that body's controller.
+/// Assumption: the owner (component 72) of an entity the game spawns for
+/// a hero is his controller, as the Biotic Field's aura `0B3C` heals for
+/// `STU_0AC15F78(STU_F76C486C(#40))`, the body the field's owner
+/// possesses. None: the bodies don't tell.
+pub fn listed_relation(
+    bodies: &[TargetCandidate],
+    relation: EntityRelation,
+    entity: u32,
+) -> Option<u32> {
+    let by_controller = || bodies.iter().find(|body| body.controller == Some(entity));
+    match relation {
+        EntityRelation::Controller => bodies
+            .iter()
+            .find(|body| body.entity == entity)
+            .map_or_else(|| by_controller().map(|_| entity), |body| body.controller),
+        EntityRelation::PossessedBody => by_controller().map(|body| body.entity),
+        EntityRelation::Owner => {
+            bodies
+                .iter()
+                .find(|body| body.spawned.contains(&entity))?
+                .controller
+        }
+        _ => None,
     }
 }
 
@@ -610,18 +644,9 @@ pub trait World {
     }
 
     /// None means this relationship is unsupported for the supplied entity.
-    /// By default a listed body's controller (none when the match gives
-    /// none).
+    /// By default what the listed bodies tell ([`listed_relation`]).
     fn related_entity(&mut self, site: Site, relation: EntityRelation, entity: u32) -> Option<u32> {
-        match relation {
-            EntityRelation::Controller => {
-                self.target_candidates(site)?
-                    .iter()
-                    .find(|body| body.entity == entity)?
-                    .controller
-            }
-            _ => None,
-        }
+        listed_relation(self.target_candidates(site)?, relation, entity)
     }
 
     /// Whether `entity` is an AI controller (component 92, `STU_D3EB8D87`);
