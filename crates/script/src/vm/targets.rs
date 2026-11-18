@@ -17,12 +17,41 @@
 //!   also turns with the entity's pitch, about its eye height
 //!   (`0x7FF789CAF3F0`): quick melee's centre goes 1.5 m along the aim
 //!   from the eye. Without the entity, `m_05BE62DD` is a world point (an
-//!   entity's position config); with `m_0297060F` it would be in the
-//!   searcher's own transform (not modelled: finds nothing).
+//!   entity's position config); with `m_0297060F` it is turned in the
+//!   searcher's own transform: into it, by its pitch about its eye height,
+//!   and back (`0x7FF789BAA430`); its own eye (Nano Boost's `0B9E` st6,
+//!   `STU_21A13145(owner())`) stays where it is.
 //! - `m_radius`: the sphere's radius in metres (Biotic Field `#422` = 5,
 //!   the radius the match's `heal_area` uses; `0257` st6 10). Sure.
-//! - `m_A30B383E`: 360 in 47 uses, 90 or 180 or an expression in others: a
-//!   cone's angle in degrees, 360 for the whole sphere. Fairly sure.
+//! - `m_A30B383E`: a cone's full angle in degrees (default 360: the whole
+//!   sphere; Nano Boost `10 × #9602e`). Its direction (`0x7FF789BAA430`,
+//!   `+0x10` of the shape) is `(sin y cos p, sin p, cos y cos p)` with the
+//!   yaw `y` = `m_D45E22FA` and the pitch `p` = `m_E46A19A3` in degrees
+//!   (both default 0), turned by the entity's model transform (no entity:
+//!   the world's; 46 searches give `STU_C8C4C20D(owner())`, the owner's
+//!   heading, as the yaw); with `m_08285CD6` the aim's pitch (component 28
+//!   `+66`, positive down) is taken off `p`, so the cone follows the aim.
+//!   A body in the sphere is in the cone when the point of its axis
+//!   nearest the sphere's diameter along the direction is within half the
+//!   angle of it, or that diameter crosses the axis ahead of the centre
+//!   (`0x7FF789B9E660`). The half-angle scales `m_B9BEAC7F`/`m_3119AD61`
+//!   (horizontal and vertical), the inner cone `m_544C3E6F` and the other
+//!   mode `m_E474FFD6` are not modelled.
+//! - `m_84E5DE4E`: the targets' score, lowest first (`0x7FF789BA6E10`):
+//!   `STU_B61DA2A5` sums its entries' terms, each with its `m_weight` (a
+//!   weight within 0.004 of 0 counts nothing); a `STU_0BCD3EFA` term maps
+//!   its measure from `m_ABC68B33` (min) to `m_2AFC083F` (max) onto
+//!   `[0, 1]`: `STU_2FD4C482` the screen distance from the crosshair to
+//!   the body's box (×√2) in a 90° view from the searcher's eye along its
+//!   aim, `STU_AD7331B0` the body's distance from the centre; a body behind
+//!   the view adds 100. Of the hero bundle's 30 searches with a scoring,
+//!   24 (Nano Boost's among them) use `[2FD4C482 0..1 ×1, AD7331B0 0..40
+//!   ×0.01]`, the ally nearest the crosshair, then the nearest; 2 add
+//!   `STU_153DF0E5`, 2 use `STU_E3EF9AFE` and 2 `STU_7658FFA9`, which are
+//!   not modelled.
+//! - `m_C39691D9`: the most targets (default `0x7FFFFFFF`): a search adds
+//!   at most that many new bodies, best first, and keeps the best that
+//!   many (`0x7FF789BBE3B0`).
 //! - `m_8A2905A0`: the found entities as an array (283 uses, `#375` in 143):
 //!   ModifyHealth's `m_FA3ECC43` and ApplyAura's `m_targets` read it, `0043`
 //!   counts it (opcode 18) and watches it grow. Sure.
@@ -96,9 +125,9 @@
 //!   those waiting bodies, with the milliseconds since they were dropped,
 //!   are the frame's `targets` list, so it is empty without it. Not
 //!   modelled (finds nothing when set).
-//! - `m_43478CAD`: the targets' order (with the scoring `m_84E5DE4E` and
-//!   the limit `m_C39691D9`, `0x7FF789B9A0C0`); 0 keeps them in the order
-//!   found. Others are not modelled (find nothing).
+//! - `m_43478CAD`: the targets' order without a scoring (`0x7FF789BB9570`
+//!   reads it only then); 0 keeps them in the order found. Others are not
+//!   modelled (find nothing). With a scoring it changes nothing.
 //! - `m_95FFC3C5`: a line-of-sight test of each new body (and, with
 //!   `m_32AFE9AA`, the found ones): rays from `m_D59188D5` (else the
 //!   centre) through the collision of `m_3D667CE3`'s profile (else
@@ -117,8 +146,8 @@
 //!   there); a body that did not exist at the view is left out. A world
 //!   that can't tell (a spawned entity's: the Biotic Field `0258`) tests
 //!   them as listed, an assumption.
-//! - `m_08285CD6`: the cone's direction leaves out the entity's pitch; a
-//!   whole sphere has none. `m_E4A295CE`: a predicting client replays its
+//! - `m_08285CD6`: the cone follows the aim's pitch (above); a whole
+//!   sphere has no direction. `m_E4A295CE`: a predicting client replays its
 //!   recorded results after a rollback (`0x7FF789BA9250`); nothing for the
 //!   server. `m_8CBE558B` gates debug drawing (slot 56 `0x7FF789BA1860`,
 //!   read by the drawing slots 57-62 only); `m_4A6E0895` calls slot 64,
@@ -128,11 +157,12 @@
 //! rooms' `0D62` st0 and st3 (a 100 m sphere around the room's own
 //! placeable, whole: no assumption), `0257` st6 and Reinhardt's `0095`
 //! st18, both counting allies within 10 m for a criteria, the Biotic
-//! Field's `0258` st0 and quick melee's `0043` st5 (the last four with
-//! the line of sight assumed). Any other set field (sweep
-//! origins, scoring `m_84E5DE4E`, limits, the output `m_CEE20F6F` that
-//! SetVars read) or an offset the server can't evaluate leaves the search
-//! finding nothing, recorded as an assumption naming the field.
+//! Field's `0258` st0, quick melee's `0043` st5 and the aimed ally cones
+//! (Nano Boost's `0B9E` st6; the line of sight assumed in all but the
+//! first). Any other set field (sweep origins, other scorings, the output
+//! `m_CEE20F6F` that SetVars read) or an offset the server can't evaluate
+//! leaves the search finding nothing, recorded as an assumption naming the
+//! field.
 //!
 //! Assumed, as nothing in the data says: a body counts when its capsule
 //! (as the match places it, or where the searcher's player saw it) comes
@@ -150,10 +180,8 @@ const CLASS: &str = "STUStatescriptStateTrackTargets";
 /// nothing.
 const UNMODELLED: &[&str] = &[
     "m_47AB1887",
-    "m_E46A19A3",
     "m_3119AD61",
     "m_B9BEAC7F",
-    "m_D45E22FA",
     "m_2F88C5F2",
     "m_544C3E6F",
     "m_762A56C0",
@@ -169,12 +197,8 @@ const UNMODELLED: &[&str] = &[
     "m_E8474EE8",
     "m_C1B724B2",
     "m_93AB8C13",
-    "m_C39691D9",
     "m_CEE20F6F",
-    "m_84E5DE4E",
     "m_2A0FB8BB",
-    // The order of the targets; 0 keeps the order found.
-    "m_43478CAD",
 ];
 
 /// The filter's fields the server doesn't model.
@@ -217,6 +241,20 @@ const RECHECK: &str = "m_32AFE9AA";
 const FOLLOW_PITCH: &str = "m_0297060F";
 /// The found bodies' output.
 const FOUND: &str = "m_8A2905A0";
+/// The cone: its angle in degrees (360, or unset: a whole sphere), the
+/// direction's yaw and pitch in degrees, and whether the pitch follows the
+/// aim's.
+const CONE_ANGLE: &str = "m_A30B383E";
+const CONE_YAW: &str = "m_D45E22FA";
+const CONE_PITCH: &str = "m_E46A19A3";
+const FOLLOW_AIM: &str = "m_08285CD6";
+/// The scoring, the order without one, and the most targets kept.
+const SCORING: &str = "m_84E5DE4E";
+const ORDER: &str = "m_43478CAD";
+const LIMIT: &str = "m_C39691D9";
+/// What the score adds for a body it can't measure (`0x7FF789BA6E10`: a
+/// missing entity, or one behind the view).
+const UNSCORED: f64 = 100.0;
 
 /// One turn in the yaw and pitch units of [`World::entity_facing`].
 const TURN: f64 = std::f64::consts::TAU / 65_536.0;
@@ -237,6 +275,49 @@ struct Search {
     offset: [f64; 3],
     radius: f64,
     filter: BodyFilter,
+    /// The cone's unit direction and the cosine of its half-angle; None:
+    /// the whole sphere.
+    cone: Option<([f64; 3], f64)>,
+    /// The scoring's terms (`m_84E5DE4E`): the lowest total comes first.
+    scoring: Vec<ScoreTerm>,
+    /// The most targets kept (`m_C39691D9`).
+    limit: Option<usize>,
+}
+
+/// What a `STU_0BCD3EFA` scoring term measures (`0x7FF789BA6E10`).
+#[derive(Clone, Copy)]
+enum Measure {
+    /// `STU_2FD4C482`: how far the body's box is from the crosshair on the
+    /// searcher's screen.
+    Crosshair,
+    /// `STU_AD7331B0`: how far the body is from the search's centre.
+    Distance,
+}
+
+/// One term of a score: its measure mapped from `[min, max]` onto `[0, 1]`
+/// (clamped), times its weight.
+#[derive(Clone, Copy)]
+struct ScoreTerm {
+    measure: Measure,
+    min: f64,
+    max: f64,
+    weight: f64,
+}
+
+/// What a search found: the bodies in the order kept, and each listed
+/// body's score (empty without a scoring).
+struct Found {
+    entities: Vec<u32>,
+    scores: Vec<(u32, f64)>,
+}
+
+impl Found {
+    fn score(&self, entity: u32) -> f64 {
+        self.scores
+            .iter()
+            .find(|(scored, _)| *scored == entity)
+            .map_or(UNSCORED, |(_, score)| *score)
+    }
 }
 
 /// A `STUConfigVarFilter`'s masks, relation words and tag lists, the part
@@ -377,7 +458,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         if !begin && !search_due(self.machine.now_ms, self.machine.frame, site, node) {
             return Ok(true);
         }
-        let found = match self.search_targets(key.instance, node) {
+        let (found, limit) = match self.search_targets(key.instance, node) {
             Ok(found) => found,
             Err(gap) => {
                 match gap {
@@ -405,11 +486,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
         // The client takes the bodies found before from the found output
         // itself (none without it), keeps them unless `m_32AFE9AA` tests
-        // them again, and appends the new ones. The server keeps them in
+        // them again, and appends up to the limit's count of new ones (best
+        // first); with a scoring, all of them then go best first, and the
+        // limit cuts the rest (`0x7FF789BBE3B0`). The server keeps them in
         // the state, cleared at its end: the same while no other node
         // writes the output.
         let keep = !is_set(field(&node.fields, RECHECK));
         let listed = !field(&node.fields, FOUND).is_null();
+        let limit = limit.unwrap_or(usize::MAX);
         let now = self.machine.now_ms;
         let state = self.state_mut(key).expect("active TrackTargets");
         let before: Vec<u32> = state.tracked.iter().map(|target| target.entity).collect();
@@ -418,16 +502,27 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         } else if !keep {
             state
                 .tracked
-                .retain(|target| found.contains(&target.entity));
+                .retain(|target| found.entities.contains(&target.entity));
         }
-        for entity in found {
-            if !state.tracked.iter().any(|target| target.entity == entity) {
-                state.tracked.push(TrackedTarget {
-                    entity,
-                    since_ms: now,
-                });
-            }
+        let new: Vec<u32> = found
+            .entities
+            .iter()
+            .copied()
+            .filter(|&entity| !state.tracked.iter().any(|target| target.entity == entity))
+            .take(limit)
+            .collect();
+        state
+            .tracked
+            .extend(new.into_iter().map(|entity| TrackedTarget {
+                entity,
+                since_ms: now,
+            }));
+        if !found.scores.is_empty() {
+            state
+                .tracked
+                .sort_by(|a, b| found.score(a.entity).total_cmp(&found.score(b.entity)));
         }
+        state.tracked.truncate(limit);
         let after: Vec<u32> = state.tracked.iter().map(|target| target.entity).collect();
         if begin || after != before {
             self.write_targets(key.instance, node, &after)?;
@@ -485,8 +580,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
     }
 
-    /// The bodies the search finds now, in the world's order.
-    fn search_targets(&mut self, id: u16, node: &Node) -> Result<Vec<u32>, Gap> {
+    /// The bodies the search finds now, best first with a scoring, else in
+    /// the world's order; and the limit.
+    fn search_targets(&mut self, id: u16, node: &Node) -> Result<(Found, Option<usize>), Gap> {
         let search = self.target_search(id, node)?;
         let site = self.site(id, node);
         let mut bodies = self.passing_bodies(site, &search.filter)?;
@@ -515,16 +611,44 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             None => search.offset,
         };
         let filter_config = field(&node.fields, "m_filter");
-        let mut found = Vec::new();
-        for candidate in bodies
-            .iter()
-            .filter(|candidate| candidate.distance(centre) <= search.radius)
-        {
+        let mut entities = Vec::new();
+        for candidate in bodies.iter().filter(|candidate| {
+            candidate.distance(centre) <= search.radius
+                && search.cone.is_none_or(|(direction, cos)| {
+                    in_cone(candidate, centre, direction, cos, search.radius)
+                })
+        }) {
             if self.filter_admits(id, node, filter_config, &search.filter, candidate.entity)? {
-                found.push(candidate.entity);
+                entities.push(candidate.entity);
             }
         }
-        Ok(found)
+        let mut found = Found {
+            entities,
+            scores: Vec::new(),
+        };
+        if !search.scoring.is_empty() {
+            let view = if search
+                .scoring
+                .iter()
+                .any(|term| matches!(term.measure, Measure::Crosshair))
+            {
+                Some(
+                    self.world
+                        .eye(site, site.entity)
+                        .ok_or(Gap::Field(SCORING))?,
+                )
+            } else {
+                None
+            };
+            found.scores = bodies
+                .iter()
+                .map(|body| (body.entity, score(&search.scoring, body, centre, view)))
+                .collect();
+            let mut ranked = std::mem::take(&mut found.entities);
+            ranked.sort_by(|a, b| found.score(*a).total_cmp(&found.score(*b)));
+            found.entities = ranked;
+        }
+        Ok((found, search.limit))
     }
 
     /// Whether `entity` passes the parts of a filter the client tests after
@@ -611,14 +735,6 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         if let Some(name) = UNMODELLED.iter().find(|name| is_set(field(fields, name))) {
             return Err(Gap::Field(name));
         }
-        let angle = field(fields, "m_A30B383E");
-        if is_set(angle)
-            && self
-                .evaluate_quietly(id, node, angle)
-                .is_none_or(|angle| expr::to_float(&angle) < 360.0)
-        {
-            return Err(Gap::Field("m_A30B383E"));
-        }
         let filter = BodyFilter::read(
             field(fields, "m_filter"),
             &["m_condition", TAG_LISTS[0], TAG_LISTS[1], TAG_LISTS[2]],
@@ -642,8 +758,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let follow_pitch = is_set(field(fields, FOLLOW_PITCH));
         match entity {
             Some(entity) => offset = self.entity_offset(id, node, entity, offset, follow_pitch)?,
-            // In the searcher's own transform: not modelled.
-            None if follow_pitch => return Err(Gap::Field(FOLLOW_PITCH)),
+            None if follow_pitch => offset = self.searcher_offset(id, node, offset)?,
             None => (),
         }
         let radius = self
@@ -651,12 +766,166 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             .map(|radius| expr::to_float(&radius))
             .filter(|radius| radius.is_finite() && *radius >= 0.0)
             .ok_or(Gap::Field("m_radius"))?;
+        let cone = self.cone(id, node, entity)?;
+        let mut scoring = Vec::new();
+        match field(fields, SCORING) {
+            Json::Null => {
+                if is_set(field(fields, ORDER)) {
+                    return Err(Gap::Field(ORDER));
+                }
+            }
+            config => self.score_terms(id, node, config, 1.0, &mut scoring)?,
+        }
+        let limit = match field(fields, LIMIT) {
+            Json::Null => None,
+            config => {
+                let limit = self
+                    .evaluate_quietly(id, node, config)
+                    .map(|limit| expr::to_float(&limit))
+                    .filter(|limit| limit.is_finite())
+                    .ok_or(Gap::Field(LIMIT))?;
+                Some(limit.max(0.0) as usize)
+            }
+        };
         Ok(Search {
             entity,
             offset,
             radius,
             filter,
+            cone,
+            scoring,
+            limit,
         })
+    }
+
+    /// A config in degrees (unset: 0), as radians.
+    fn radians(&mut self, id: u16, node: &Node, name: &'static str) -> Result<f64, Gap> {
+        match field(&node.fields, name) {
+            Json::Null => Ok(0.0),
+            config => self
+                .evaluate_quietly(id, node, config)
+                .map(|degrees| expr::to_float(&degrees))
+                .filter(|degrees| degrees.is_finite())
+                .map(f64::to_radians)
+                .ok_or(Gap::Field(name)),
+        }
+    }
+
+    /// The cone (see the module notes): its unit direction and the cosine of
+    /// its half-angle, or None for the whole sphere.
+    fn cone(
+        &mut self,
+        id: u16,
+        node: &Node,
+        entity: Option<u32>,
+    ) -> Result<Option<([f64; 3], f64)>, Gap> {
+        let angle = match field(&node.fields, CONE_ANGLE) {
+            Json::Null => return Ok(None),
+            config => self
+                .evaluate_quietly(id, node, config)
+                .map(|angle| expr::to_float(&angle))
+                .filter(|angle| angle.is_finite())
+                .ok_or(Gap::Field(CONE_ANGLE))?,
+        };
+        if angle >= 360.0 {
+            return Ok(None);
+        }
+        let site = self.site(id, node);
+        let mut yaw = self.radians(id, node, CONE_YAW)?;
+        let mut pitch = self.radians(id, node, CONE_PITCH)?;
+        if let Some(entity) = entity {
+            let turn = self
+                .world
+                .entity_yaw(site, entity)
+                .ok_or(Gap::Field(CONE_YAW))?;
+            yaw += f64::from(turn) * TURN;
+        }
+        if is_set(field(&node.fields, FOLLOW_AIM)) {
+            let [_, aim] = self
+                .world
+                .entity_facing(site, entity.unwrap_or(site.entity))
+                .ok_or(Gap::Field(FOLLOW_AIM))?;
+            pitch -= f64::from(aim) * TURN;
+        }
+        let half = (angle.max(0.0) * 0.5)
+            .to_radians()
+            .min(std::f64::consts::PI);
+        let direction = [
+            yaw.sin() * pitch.cos(),
+            pitch.sin(),
+            yaw.cos() * pitch.cos(),
+        ];
+        Ok(Some((direction, half.cos())))
+    }
+
+    /// The terms of the scoring `config` (`0x7FF789BA6E10`): a list
+    /// `STU_B61DA2A5` gives each entry its own weight `m_weight`; a term
+    /// whose weight is about 0 counts nothing. Other classes are not
+    /// modelled.
+    fn score_terms(
+        &mut self,
+        id: u16,
+        node: &Node,
+        config: &Json,
+        weight: f64,
+        terms: &mut Vec<ScoreTerm>,
+    ) -> Result<(), Gap> {
+        if weight.abs() <= 0.004 {
+            return Ok(());
+        }
+        let float = |vm: &mut Self, value: &Json| {
+            vm.evaluate_quietly(id, node, value)
+                .map(|value| expr::to_float(&value))
+                .filter(|value| value.is_finite())
+                .ok_or(Gap::Field(SCORING))
+        };
+        let measure = match field(config, "$").as_str() {
+            Some("STU_B61DA2A5") => {
+                let Json::Array(entries) = field(config, "m_503F0304") else {
+                    return Err(Gap::Field(SCORING));
+                };
+                for entry in entries {
+                    let weight = float(self, field(entry, "m_weight"))?;
+                    self.score_terms(id, node, field(entry, "m_84E5DE4E"), weight, terms)?;
+                }
+                return Ok(());
+            }
+            Some("STU_2FD4C482") => Measure::Crosshair,
+            Some("STU_AD7331B0") => Measure::Distance,
+            _ => return Err(Gap::Field(SCORING)),
+        };
+        let min = float(self, field(config, "m_ABC68B33"))?;
+        let max = float(self, field(config, "m_2AFC083F"))?;
+        if max > min {
+            terms.push(ScoreTerm {
+                measure,
+                min,
+                max,
+                weight,
+            });
+        }
+        Ok(())
+    }
+
+    /// A world point `offset` turned with the searcher's pitch about its eye
+    /// height, in its own transform (`m_0297060F` without an entity,
+    /// `0x7FF789BAA430`): Nano Boost's eye stays where it is.
+    fn searcher_offset(&mut self, id: u16, node: &Node, offset: [f64; 3]) -> Result<[f64; 3], Gap> {
+        let site = self.site(id, node);
+        let searcher = site.entity;
+        let feet = self
+            .world
+            .entity_position(site, searcher)
+            .ok_or(Gap::Field(FOLLOW_PITCH))?;
+        let yaw = self
+            .world
+            .entity_yaw(site, searcher)
+            .ok_or(Gap::Field(FOLLOW_PITCH))?;
+        let (sin, cos) = (f64::from(yaw) * TURN).sin_cos();
+        let [x, y, z] = std::array::from_fn(|axis| offset[axis] - feet[axis]);
+        let local = [x * cos - z * sin, y, x * sin + z * cos];
+        let turned = self.entity_offset(id, node, searcher, local, true)?;
+        Ok(std::array::from_fn(|axis| feet[axis] + turned[axis]))
     }
 
     /// `offset` in `entity`'s transform (see the module notes): turned by
@@ -697,12 +966,15 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     }
 
     /// How high `entity`'s eye is over its feet (`STU_21A13145` of the
-    /// search's own entity config, less its position).
+    /// search's own entity config, else of `owner()`, less its position).
     fn eye_height(&mut self, id: u16, node: &Node, entity: u32) -> Result<f64, Gap> {
-        let config = serde_json::json!({
-            "$": "STU_21A13145",
-            "m_entity": field(&node.fields, "m_8DCA77B6"),
-        });
+        let config = match field(&node.fields, "m_8DCA77B6") {
+            Json::Null => serde_json::json!({
+                "$": "STU_21A13145",
+                "m_entity": {"$": "STU_B5A0CAF0"},
+            }),
+            entity => serde_json::json!({"$": "STU_21A13145", "m_entity": entity}),
+        };
         let site = self.site(id, node);
         let feet = self
             .world
@@ -760,4 +1032,151 @@ pub(super) fn is_set(value: &Json) -> bool {
         }
         Json::String(text) => !text.is_empty(),
     }
+}
+
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    std::array::from_fn(|axis| a[axis] - b[axis])
+}
+
+fn along(point: [f64; 3], direction: [f64; 3], distance: f64) -> [f64; 3] {
+    std::array::from_fn(|axis| point[axis] + direction[axis] * distance)
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    (0..3).map(|axis| a[axis] * b[axis]).sum()
+}
+
+/// The closest points of segments `p1 q1` and `p2 q2` (Ericson, Real-Time
+/// Collision Detection 5.1.9), as the client's `0x7FF789CD8720` gives them.
+fn closest_points(p1: [f64; 3], q1: [f64; 3], p2: [f64; 3], q2: [f64; 3]) -> [[f64; 3]; 2] {
+    const EPSILON: f64 = 1e-12;
+    let (d1, d2, r) = (sub(q1, p1), sub(q2, p2), sub(p1, p2));
+    let (a, e, f) = (dot(d1, d1), dot(d2, d2), dot(d2, r));
+    let (s, t) = if a <= EPSILON && e <= EPSILON {
+        (0.0, 0.0)
+    } else if a <= EPSILON {
+        (0.0, (f / e).clamp(0.0, 1.0))
+    } else {
+        let c = dot(d1, r);
+        if e <= EPSILON {
+            ((-c / a).clamp(0.0, 1.0), 0.0)
+        } else {
+            let b = dot(d1, d2);
+            let denominator = a * e - b * b;
+            let s = if denominator == 0.0 {
+                0.0
+            } else {
+                ((b * f - c * e) / denominator).clamp(0.0, 1.0)
+            };
+            let t = (b * s + f) / e;
+            if t < 0.0 {
+                ((-c / a).clamp(0.0, 1.0), 0.0)
+            } else if t > 1.0 {
+                (((b - c) / a).clamp(0.0, 1.0), 1.0)
+            } else {
+                (s, t)
+            }
+        }
+    };
+    [along(p1, d1, s), along(p2, d2, t)]
+}
+
+/// Whether a body within the sphere is in the cone (the client's shape test
+/// `0x7FF789B9E660`): the point of its axis nearest the sphere's diameter
+/// along the cone's `direction` is within the half-angle (`cos`) of it, or
+/// that diameter crosses the axis ahead of the centre.
+fn in_cone(
+    body: &TargetCandidate,
+    centre: [f64; 3],
+    direction: [f64; 3],
+    cos: f64,
+    radius: f64,
+) -> bool {
+    let [x, y, z] = body.feet;
+    let low = y + body.radius.min(body.height * 0.5);
+    let high = y + (body.height - body.radius).max(body.height * 0.5);
+    let [axis, diameter] = closest_points(
+        [x, low, z],
+        [x, high, z],
+        along(centre, direction, radius),
+        along(centre, direction, -radius),
+    );
+    let offset = sub(axis, centre);
+    if sub(axis, diameter) == [0.0; 3] && dot(offset, direction) > 0.0 {
+        return true;
+    }
+    let length = dot(offset, offset).sqrt();
+    let unit = if length < 1e-18 {
+        [0.0, 0.0, 1.0]
+    } else {
+        offset.map(|value| value / length)
+    };
+    dot(unit, direction) >= cos
+}
+
+/// A body's score: each term's measure mapped onto `[0, 1]` times its
+/// weight, summed; [`UNSCORED`] for a term that can't measure it.
+fn score(
+    terms: &[ScoreTerm],
+    body: &TargetCandidate,
+    centre: [f64; 3],
+    view: Option<([f64; 3], [i32; 2])>,
+) -> f64 {
+    terms
+        .iter()
+        .map(|term| {
+            let measure = match term.measure {
+                Measure::Distance => {
+                    let offset = sub(body.feet, centre);
+                    dot(offset, offset).sqrt()
+                }
+                Measure::Crosshair => match view.and_then(|view| crosshair_distance(body, view)) {
+                    Some(distance) => distance * std::f64::consts::SQRT_2,
+                    None => return UNSCORED,
+                },
+            };
+            ((measure - term.min) / (term.max - term.min)).clamp(0.0, 1.0) * term.weight
+        })
+        .sum()
+}
+
+/// How far the crosshair is from a body's box on the searcher's screen
+/// (`0x7FF789BA6E10` with `STU_2FD4C482`): the view from its eye along its
+/// aim with a 90° field both ways (`0x7FF78A9884E0`), the screen from 0 to
+/// 1 each way, the crosshair in its middle; the box spans the projections
+/// of the body's feet a radius to the view's left and of its top a radius
+/// to the right. None when either point is behind the eye. Assumption: the
+/// viewport the client projects into (`0x7FF78A987F80`, `+0x1F0`) is that
+/// unit square; only the order of the scores matters, and the term weighs
+/// against the distance's 1 %.
+fn crosshair_distance(
+    body: &TargetCandidate,
+    (eye, [yaw, pitch]): ([f64; 3], [i32; 2]),
+) -> Option<f64> {
+    let (yaw_sin, yaw_cos) = (f64::from(yaw) * TURN).sin_cos();
+    let (pitch_sin, pitch_cos) = (f64::from(pitch) * TURN).sin_cos();
+    // A positive pitch looks down.
+    let forward = [yaw_sin * pitch_cos, -pitch_sin, yaw_cos * pitch_cos];
+    let right = [yaw_cos, 0.0, -yaw_sin];
+    let up = [yaw_sin * pitch_sin, pitch_cos, yaw_cos * pitch_sin];
+    let project = |point: [f64; 3]| {
+        let offset = sub(point, eye);
+        let depth = dot(offset, forward);
+        (depth > 0.0).then(|| {
+            [
+                0.5 + 0.5 * dot(offset, right) / depth,
+                0.5 - 0.5 * dot(offset, up) / depth,
+            ]
+        })
+    };
+    let [x, y, z] = body.feet;
+    let low = project(along(body.feet, right, -body.radius))?;
+    let high = project(along([x, y + body.height, z], right, body.radius))?;
+    let squared: f64 = (0..2)
+        .map(|axis| {
+            let nearest = 0.5_f64.clamp(low[axis].min(high[axis]), low[axis].max(high[axis]));
+            (0.5 - nearest).powi(2)
+        })
+        .sum();
+    Some(squared.sqrt())
 }
