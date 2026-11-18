@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::{
-    announcer::{MULTIKILL_WINDOW_TICKS, MultikillPulse},
+    announcer::MULTIKILL_WINDOW_TICKS,
     combat::{CombatPlayer, ENVIRONMENT_DAMAGE, Shooter, apply_player_hits},
     scene_assets::install_collision_build,
 };
@@ -256,27 +256,19 @@ fn a_third_kill_in_the_window_makes_the_hero_say_his_multikill_line() {
     );
 }
 
-/// The last controller frame queued for `shooter` carries the one he would
-/// get at `tick` with st21 pulsed once, fresh, for "Double kill".
+/// The controller script's `0215` pulsed st21 once for "Double kill", and
+/// the last controller frame queued for `shooter` is its projection then
+/// (`crate::controller`): it carries st21 and #10122.
 fn assert_double_kill_sent(scene: &PreparedScene, shooter: &WorldDelivery, tick: u32) {
-    let practice = scene.controller().practice();
+    let script = shooter.controller_script.as_ref().unwrap();
+    let multikill = script.multikill().unwrap();
+    assert_eq!(multikill.pulses, 1);
+    assert_eq!(multikill.stimulus, Some(0x0ee0_0000_0000_058a));
+    assert_eq!(multikill.pulsed_ms / 16, u64::from(tick));
+    let (_, input) = shooter.select_input(scene.controller().practice()).unwrap();
     let expected = scene
         .controller()
-        .controller_frame(
-            shooter.command_ack(tick),
-            ControllerFrame {
-                select_open: shooter.select_open,
-                skins: shooter.select_open && (practice || shooter.assembling),
-                hide_assemble: practice,
-                presence: None,
-                hero: Some(SOLDIER),
-                multikills: Some(MultikillPulse {
-                    count: 1,
-                    fresh: true,
-                    stimulus: Some(0x0ee0_0000_0000_058a),
-                }),
-            },
-        )
+        .controller_frame(script, shooter.controller.command_frame(), input)
         .unwrap();
     let frames = controller_frames(shooter);
     let chunk = frames.last().unwrap();

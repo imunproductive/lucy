@@ -26,7 +26,7 @@ fn controller_data_precedes_ack_only_chunks_and_ranges_match_python() {
     let at = Duration::from_millis;
     assert!(stream.owner_ack(at(0), Some(100)).unwrap().is_none());
     let first = stream
-        .full_owner(100, |cmfd| {
+        .full_owner::<StreamError>(100, |cmfd| {
             assert_eq!(cmfd, 100);
             Ok(payload())
         })
@@ -34,7 +34,7 @@ fn controller_data_precedes_ack_only_chunks_and_ranges_match_python() {
     check_chunk(&first, 1, true, 41, "000004505001");
     assert_eq!(first.update.entity, CONTROLLER);
     let second = stream
-        .full_owner(100, |cmfd| {
+        .full_owner::<StreamError>(100, |cmfd| {
             assert_eq!(cmfd, 101);
             Ok(payload())
         })
@@ -63,12 +63,12 @@ fn controller_data_precedes_ack_only_chunks_and_ranges_match_python() {
 fn writers_and_lease_boundaries_leave_the_existing_stream_usable() {
     let mut stream = Stream::new(CONTROLLER);
     assert_eq!(
-        stream.full_owner(42, |_| Err(WireError::InvalidValue)),
+        stream.full_owner(42, |_| Err(StreamError::Wire(WireError::InvalidValue))),
         Err(StreamError::Wire(WireError::InvalidValue))
     );
     assert_eq!(stream.command_frame(), 0);
     let full = stream
-        .full_owner(MAX_LEASE_FRAME, |_| Ok(payload()))
+        .full_owner::<StreamError>(MAX_LEASE_FRAME, |_| Ok(payload()))
         .unwrap();
     assert_eq!(full.last, 1);
     assert!(stream.arrived(full.last));
@@ -84,7 +84,7 @@ fn writers_and_lease_boundaries_leave_the_existing_stream_usable() {
         })
     );
     assert_eq!(
-        stream.full_owner(MAX_LEASE_FRAME, |_| unreachable!()),
+        stream.full_owner::<StreamError>(MAX_LEASE_FRAME, |_| unreachable!()),
         Err(StreamError::CommandLimit(MAX_LEASE_FRAME + 1))
     );
     assert_eq!(stream.command_frame(), MAX_LEASE_FRAME);

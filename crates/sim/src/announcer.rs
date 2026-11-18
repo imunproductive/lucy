@@ -41,7 +41,7 @@
 //! (`orpheus_script::controller`, enabler 2 of `docs/dev/graphs-plan.md`):
 //! each elimination goes to the controller as `0093.025`, and the
 //! controller frames carry st21's count and #10122 as the script has them
-//! ([`pulse`]). Assumptions: an elimination is the final blow (the server
+//! (projected from its snapshot, `crate::controller`). Assumptions: an elimination is the final blow (the server
 //! credits no assists; `0215` rid57 counts any elimination, or with
 //! `STU_A3DEF368().id(12421)`, which no mode sets, only `0091.026`, likely
 //! the final blow). The server applies rid15 before it sends `0093`
@@ -53,17 +53,14 @@
 //! (`25C3`). #1954 (set on
 //! `069C.025`) and #21925 (a mode entity variable) stay off. The wait ends
 //! before a kill of the same tick is counted. The frames carry `0215` from
-//! st21's first pulse on (retail: from the start; the frames are still
-//! built by hand, `crate::controller`). Not done: the hero's own reaction
+//! the start, as the script's tree has it. Not done: the hero's own reaction
 //! 1.6 s after a third kill (`00C9.078` on the controller, rid85: no hero's
 //! voice set has a line for it), the multikill career stats (rid28,
 //! `0345`/`0346`/`0348.062`), the "N PLAYER KILL STREAK!" text and the team
 //! kill (see `docs/notes/behavior.md`).
 
 use orpheus_core::tick::TICK_PERIOD;
-use orpheus_script::{controller::Multikill, graph::GraphStore};
-
-use crate::replication::kill_feed_fresh;
+use orpheus_script::graph::GraphStore;
 
 /// `0215` st4's wait, #2036 = 2 s, in world ticks (2000 / 16 = 125).
 pub const MULTIKILL_WINDOW_TICKS: u32 = 2000 / TICK_PERIOD.as_millis() as u32;
@@ -79,51 +76,4 @@ pub fn counted_victim(graphs: &GraphStore, body: Option<u64>) -> bool {
     body.and_then(|body| graphs.bodies().get(&body))
         .and_then(|body| body.target_tags.as_ref())
         .is_none_or(|tags| !UNCOUNTED_VICTIM_TAGS.iter().any(|tag| tags.contains(tag)))
-}
-
-/// What `0215`'s pulser and #10122 send.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MultikillPulse {
-    /// st21's pulse count (8 bits on the wire).
-    pub count: u8,
-    /// Its fresh bit: the last pulse is at most 500 ms old (the pulser
-    /// policy, [`kill_feed_fresh`]). A client that reads st21 for the first
-    /// time pulses once with the bit set, else takes the count as seen.
-    pub fresh: bool,
-    /// #10122; none once a kill without a line cleared it (`0215` rid72).
-    pub stimulus: Option<u64>,
-}
-
-/// st21 and #10122 of the controller's `0215` at world tick `tick`.
-pub fn pulse(multikill: Multikill, tick: u32) -> MultikillPulse {
-    let pulsed = multikill.pulsed_ms / TICK_PERIOD.as_millis() as u64;
-    MultikillPulse {
-        count: multikill.pulses,
-        fresh: kill_feed_fresh(tick, u32::try_from(pulsed).unwrap_or(u32::MAX)),
-        stimulus: multikill.stimulus,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The pulse stays fresh for 500 ms: 31 ticks of 16 ms, not 32.
-    #[test]
-    fn a_multikill_pulse_is_fresh_for_500_ms() {
-        let multikill = Multikill {
-            pulses: 2,
-            pulsed_ms: 1000 * 16,
-            stimulus: Some(0x0ee0_0000_0000_058b),
-        };
-        assert_eq!(
-            pulse(multikill, 1000 + 31),
-            MultikillPulse {
-                count: 2,
-                fresh: true,
-                stimulus: Some(0x0ee0_0000_0000_058b),
-            }
-        );
-        assert!(!pulse(multikill, 1000 + 32).fresh);
-    }
 }

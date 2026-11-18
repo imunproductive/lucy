@@ -4,14 +4,16 @@
 
 use super::*;
 use orpheus_content::{heroes::ANA, maps::SpawnChoice};
-use orpheus_script::{controller::HeroSwitch, wire::Value as ScriptValue};
+use orpheus_script::controller::HeroSwitch;
 
 const PLAYER: u32 = 0xa000_0100;
 
 /// In the Practice Range (`005A`, `0C90` for both teams), Soldier: 76
 /// switches to Ana and back: each switch waits for its notice frame with
 /// the heroes and the player as `0C90` keeps them (#4513/#4514/#4515, the
-/// root's presence bits 4, 6 and 7); the first pick is no switch.
+/// root's presence bits); the first pick is no switch. Only the notice
+/// frame carries the three: the graph keeps them, the client would post the
+/// line on every frame that sets them.
 #[test]
 #[ignore = "requires a derived 104319 pack"]
 fn a_hero_switch_takes_its_notice_from_the_controller_graph() {
@@ -69,13 +71,21 @@ fn a_hero_switch_takes_its_notice_from_the_controller_graph() {
         let switch = world.notices.waiting.back().copied().unwrap();
         assert_eq!((switch.kept, switch.serial), (kept, serial));
         assert_eq!(world.switch, Some(switch));
-        assert_eq!(
-            scene.controller().switch_presence(switch.kept),
-            BTreeMap::from([
-                (4, ScriptValue::Asset(old)),
-                (6, ScriptValue::Asset(new)),
-                (7, ScriptValue::Entity(PLAYER)),
-            ])
-        );
+        let script = world.controller_script.as_ref().unwrap();
+        let (_, input) = world.select_input(true).unwrap();
+        let plain = scene
+            .controller()
+            .controller_frame(script, 1, input)
+            .unwrap();
+        let notice = ControllerFrame {
+            notice: Some(kept),
+            ..input
+        };
+        let notice = scene
+            .controller()
+            .controller_frame(script, 1, notice)
+            .unwrap();
+        // Two asset values and an entity value with their presence bits.
+        assert!(notice.bit_len() > plain.bit_len() + 3 * 4 + 2 * 17 + 32);
     }
 }

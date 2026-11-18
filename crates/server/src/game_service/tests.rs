@@ -421,6 +421,28 @@ impl ReceivedChunk {
     }
 }
 
+/// What a full owner controller frame shows (its head: the controller
+/// script's projection, `orpheus_sim::controller`): hero select open
+/// (#2438e), the pick (#13161e while #2114e) and the hero he plays (#940e).
+/// None for another chunk.
+fn controller_shows(chunk: &ReceivedChunk) -> Option<(bool, Option<u64>, Option<u64>)> {
+    use orpheus_script::wire::{Value as ScriptValue, read_full_head};
+    if chunk.first != 0 {
+        return None;
+    }
+    let head = read_full_head(&chunk.data).ok()?;
+    head.command_frame?;
+    let flag = |id| head.variables.get(&id) == Some(&ScriptValue::Bool(true));
+    let asset = |id| match head.variables.get(&id) {
+        Some(&ScriptValue::Asset(guid)) if guid != 0 => Some(guid),
+        _ => None,
+    };
+    assert_eq!(flag(2438), flag(31435), "#31435 follows #2438");
+    let instances: Vec<_> = head.instances.iter().map(|&(_, graph, _)| graph).collect();
+    assert_eq!(instances, [0x0c90, 0x288a, 0x0215, 0x288b, 0x288d]);
+    Some((flag(2438), asset(13161).filter(|_| flag(2114)), asset(940)))
+}
+
 impl WorldRecord {
     fn is_create(&self) -> bool {
         self.operation == Some(1)
@@ -1243,35 +1265,18 @@ fn exercise_hero_selection(
             })
             .collect::<Vec<_>>()
     };
-    let controller = orpheus_sim::controller::Controller::load(
-        assets.graphs(),
-        orpheus_content::maps::PRACTICE_RANGE_MODE,
-    )
-    .unwrap();
-    let verify_controller = |records: &[WorldRecord], hero, open| {
+    // The frame the controller script's projection gives: hero select open
+    // or not, the pick and the hero he plays.
+    let verify_controller = |records: &[WorldRecord], open, pick: Option<u64>, hero| {
         let script = records
             .iter()
             .find(|record| record.entity == OWNER && record.script.is_some())
             .and_then(|record| record.script.as_ref())
             .expect("hero selection controller frame");
-        assert_eq!(script.first, 0);
         let mut reader = script.bits();
         assert_eq!(reader.bits(3).unwrap(), 2);
         let cmfd = reader.w_var().unwrap();
-        let expected = controller
-            .controller_frame(
-                cmfd,
-                ControllerFrame {
-                    select_open: open,
-                    skins: open,
-                    hide_assemble: true,
-                    hero: Some(hero),
-                    ..ControllerFrame::default()
-                },
-            )
-            .unwrap();
-        assert_eq!(script.width, expected.bit_len());
-        assert_eq!(script.data, expected.as_bytes());
+        assert_eq!(controller_shows(script), Some((open, pick, Some(hero))));
         cmfd
     };
 
@@ -1282,13 +1287,35 @@ fn exercise_hero_selection(
         (OWNER, Some(2), None),
         (OWNER, None, Some(2)),
     ];
-    assert_eq!(describe(&records), expected);
+    // The pick's frame names the new hero with the screen still open;
+    // `288B` closes it once the body lives (st95), a tick later: that
+    // frame may share the datagram, after the possession.
+    let pick_batch = |records: &[WorldRecord]| {
+        let described = describe(records);
+        assert_eq!(described[..3], expected);
+        match described[3..] {
+            [] => {}
+            [(OWNER, None, Some(3))] => {
+                let close = records
+                    .iter()
+                    .filter_map(|record| record.script.as_ref())
+                    .find(|script| script.span == 3)
+                    .unwrap();
+                assert_eq!(
+                    controller_shows(close),
+                    Some((false, Some(SOLDIER), Some(SOLDIER)))
+                );
+            }
+            ref rest => panic!("{rest:?}"),
+        }
+    };
+    pick_batch(&records);
     assert!(
         records
             .iter()
             .any(|record| record.entity == FIRST && record.movement)
     );
-    let first_cmfd = verify_controller(&records, SOLDIER, false);
+    let first_cmfd = verify_controller(&records, true, Some(SOLDIER), SOLDIER);
 
     // A later datagram ACK identifies the first body batch as lost.
     let following = client.receive();
@@ -1296,8 +1323,11 @@ fn exercise_hero_selection(
     assert!(describe(&world_records(schemas, &following)).is_empty());
     client.send(ACK, Vec::new());
     let (retry, records) = next_body_frame(client, FIRST);
-    assert_eq!(describe(&records), expected);
-    assert_eq!(verify_controller(&records, SOLDIER, false), first_cmfd);
+    pick_batch(&records);
+    assert_eq!(
+        verify_controller(&records, true, Some(SOLDIER), SOLDIER),
+        first_cmfd
+    );
     assert!(client.window.accept(retry.seq));
 
     let tick = BitReader::new(&retry.payload).var_a().unwrap();
@@ -1369,9 +1399,22 @@ fn exercise_hero_selection(
                     && record.script.is_none())
             })
             .collect();
-        if !describe(&records).is_empty() {
-            assert_eq!(describe(&records), [(OWNER, None, Some(3))]);
-            break verify_controller(&records, SOLDIER, true);
+        // The close of the pick (st95) may come first.
+        let closed = records.iter().any(|record| {
+            record.entity == OWNER
+                && record
+                    .script
+                    .as_ref()
+                    .is_some_and(|script| controller_shows(script).is_some_and(|(open, ..)| !open))
+        });
+        if !closed && !describe(&records).is_empty() {
+            let described: Vec<_> = describe(&records)
+                .into_iter()
+                .map(|(entity, operation, script)| (entity, operation, script.is_some()))
+                .collect();
+            assert_eq!(described, [(OWNER, None, true)]);
+            // An open clears the pick (`288B`).
+            break verify_controller(&records, true, None, SOLDIER);
         }
         assert!(
             client.now() < deadline,
@@ -1384,17 +1427,27 @@ fn exercise_hero_selection(
     send(client, 3, PICK_HERO, tracer.to_le_bytes().to_vec());
     let (swap, records) = next_body_frame(client, SECOND);
     // The board follows the hero (match.py `_send_board`: his hero's stats).
+    let described: Vec<_> = describe(&records)
+        .into_iter()
+        .map(|(entity, operation, script)| (entity, operation, script.is_some()))
+        .collect();
     assert_eq!(
-        describe(&records),
+        described[..5],
         [
-            (SECOND, Some(1), None),
-            (OWNER, Some(2), None),
-            (FIRST, Some(3), None),
-            (OWNER, None, Some(4)),
-            (OWNER, Some(2), None)
+            (SECOND, Some(1), false),
+            (OWNER, Some(2), false),
+            (FIRST, Some(3), false),
+            (OWNER, None, true),
+            (OWNER, Some(2), false)
         ],
     );
-    assert!(verify_controller(&records, tracer, false) > reopen_cmfd);
+    // `288B`'s close (st95) may follow in the same datagram.
+    assert!(
+        described[5..]
+            .iter()
+            .all(|&entry| entry == (OWNER, None, true))
+    );
+    assert!(verify_controller(&records, true, Some(tracer), tracer) > reopen_cmfd);
     assert!(client.window.accept(swap.seq));
     client.send(ACK, Vec::new());
 
@@ -4070,7 +4123,7 @@ fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
 fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
     use orpheus_content::{heroes::SOLDIER, maps::MapCatalog, parameters::PICK_HERO};
     use orpheus_script::wire::{Value as ScriptValue, Variables};
-    use orpheus_sim::{controller::Controller, scene_assets::SceneAssets};
+    use orpheus_sim::scene_assets::SceneAssets;
 
     const WORKSHOP_CHAMBER: u64 = 0x0800_0000_0000_0c48;
     const SKIRMISH: u64 = 0x0230_0000_0000_0010;
@@ -4087,8 +4140,6 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
     let map = catalog
         .game_map(WORKSHOP_CHAMBER, SKIRMISH, "Skirmish", false, &[6, 6])
         .expect("Workshop Chamber in Skirmish");
-    let controller = Controller::load(assets.graphs(), SKIRMISH).unwrap();
-    assert!(!controller.practice());
     let schemas = Arc::new(Schemas::game());
     let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
     let player = |tag: &str, team, account| WorldPlayer {
@@ -4169,27 +4220,10 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
         }
         frames
     };
-    // Whether a controller frame shows hero select so (match.py
-    // `send_controller`: no assemble title hidden in the PvP modes).
-    let shows = |chunk: &ReceivedChunk, open: bool, skins: bool, hero: Option<u64>| {
-        let mut reader = chunk.bits();
-        if chunk.first != 0 || reader.bits(3).unwrap() != 2 {
-            return false;
-        }
-        let cmfd = reader.w_var().unwrap();
-        let expected = controller
-            .controller_frame(
-                cmfd,
-                ControllerFrame {
-                    select_open: open,
-                    skins,
-                    hide_assemble: false,
-                    hero,
-                    ..ControllerFrame::default()
-                },
-            )
-            .unwrap();
-        (chunk.width, chunk.data.as_slice()) == (expected.bit_len(), expected.as_bytes())
+    // Whether a controller frame shows hero select so, with the hero he
+    // plays.
+    let shows = |chunk: &ReceivedChunk, open: bool, hero: Option<u64>| {
+        controller_shows(chunk).is_some_and(|(shown, _, played)| (shown, played) == (open, hero))
     };
 
     let mut watchers: Vec<_> = tickets
@@ -4226,7 +4260,7 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
         assert!(watcher.created(GAME_MODE_ENTITY).is_some());
         // Assembling already: hero select opens with the skin selector.
         let (_, first_frame) = &controllers(watcher)[0];
-        assert!(shows(first_frame, true, true, None));
+        assert!(shows(first_frame, true, None));
     }
 
     // A pick creates the body and keeps the screen open while the heroes
@@ -4245,9 +4279,9 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
     pump_until(&mut [first, second], &schemas, "the bodies", |watchers| {
         watchers.iter().all(|watcher| {
             watcher.created(watcher.owner | 1).is_some_and(|created| {
-                controllers(watcher).iter().any(|(index, chunk)| {
-                    *index >= created && shows(chunk, true, true, Some(SOLDIER))
-                })
+                controllers(watcher)
+                    .iter()
+                    .any(|(index, chunk)| *index >= created && shows(chunk, true, Some(SOLDIER)))
             })
         })
     });
@@ -4262,7 +4296,7 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
             watchers.iter().all(|watcher| {
                 controllers(watcher)
                     .iter()
-                    .any(|(_, chunk)| shows(chunk, false, false, Some(SOLDIER)))
+                    .any(|(_, chunk)| shows(chunk, false, Some(SOLDIER)))
             })
         },
     );
@@ -4279,7 +4313,7 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
     for watcher in [&*first, &*second] {
         let (closed, _) = controllers(watcher)
             .into_iter()
-            .find(|(_, chunk)| shows(chunk, false, false, Some(SOLDIER)))
+            .find(|(_, chunk)| shows(chunk, false, Some(SOLDIER)))
             .unwrap();
         let frames: Vec<_> = mode_frames(watcher)
             .into_iter()
@@ -4330,7 +4364,7 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
                 && watchers[1].created(third_owner).is_some()
         },
     );
-    assert!(shows(&controllers(&third)[0].1, true, false, None));
+    assert!(shows(&controllers(&third)[0].1, true, None));
     // His first frame may be the mode UI without variables (he was
     // presented after the heroes assembled); then the round's, with no
     // countdown (Skirmish has no round clock).

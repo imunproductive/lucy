@@ -98,6 +98,28 @@ impl ProjectedSnapshot {
         self.variables.values.get(&id)
     }
 
+    /// Send `value` for an entity variable instead of the script's (none:
+    /// leave it out), without Stack links: what the frames carry for
+    /// content the server doesn't run.
+    pub fn set_entity_variable(&mut self, id: u32, value: Option<Value>) {
+        self.variables.set(id, value);
+    }
+
+    /// As [`Self::set_entity_variable`], for an instance's variable;
+    /// nothing without the instance.
+    pub fn set_instance_variable(&mut self, instance: u16, id: u32, value: Option<Value>) {
+        if let Some(instance) = self.instances.get_mut(&instance) {
+            instance.variables.set(id, value);
+        }
+    }
+
+    /// The instances, each id with its graph.
+    pub fn instance_graphs(&self) -> impl Iterator<Item = (u16, u32)> + '_ {
+        self.instances
+            .iter()
+            .map(|(&id, instance)| (id, instance.graph))
+    }
+
     /// This projection with `other`'s instance `id` added, its variables,
     /// states and events with it (the practice nameplate on an acknowledged
     /// baseline: server.py `_flush_bot_nameplates`).
@@ -254,6 +276,18 @@ impl ProjectedVariables {
             owner,
             &self.bindings,
         )
+    }
+
+    fn set(&mut self, variable: u32, value: Option<Value>) {
+        self.bindings.remove(&variable);
+        match value {
+            Some(value) => {
+                self.values.insert(variable, value);
+            }
+            None => {
+                self.values.shift_remove(&variable);
+            }
+        }
     }
 }
 
@@ -745,6 +779,123 @@ impl<'a> SnapshotEncoder<'a> {
         Ok(wire::remote_full(&instances, &snapshot.variables.values)?)
     }
 
+    /// An owner's full frame of the projection (owner view) at command
+    /// frame `command_frame`, laid out as `wire::owner_full` writes one: the
+    /// tree, the entity's variables and, per instance, its presence values
+    /// and variables (with their Stack links), each owner state slot (1 and
+    /// the owner payload for a running state, 0 for one that isn't) and its
+    /// pending timer events. Values are tagged as in [`Self::full`] and the
+    /// owner deltas (compact): `wire::owner_full`'s explicit tags have no
+    /// array, and the client reads a value by its tag (assumption: the same
+    /// reader in an owner full frame). A StEC class's owner full form is not
+    /// known: such a running state fails the frame (or is left out,
+    /// tolerating).
+    pub fn owner_full(
+        &self,
+        snapshot: &ProjectedSnapshot,
+        command_frame: u32,
+        frame_ms: u32,
+    ) -> Result<BitWriter, SnapshotError> {
+        if snapshot.view != View::Owner {
+            return Err(SnapshotError::DifferentStream);
+        }
+        if command_frame == 0 {
+            return Err(WireError::ZeroCommandFrame.into());
+        }
+        let frame_time = u64::from(command_frame)
+            .checked_mul(u64::from(frame_ms))
+            .ok_or(SnapshotError::FrameTime)?;
+        let mode = PayloadMode::Owner {
+            full: true,
+            frame_time: i64::try_from(frame_time).map_err(|_| SnapshotError::FrameTime)?,
+            frame_ms,
+        };
+        let mut out = BitWriter::new();
+        out.bit(false);
+        out.bit(true); // an owner frame
+        out.bit(false); // not a correction
+        out.w_var(command_frame);
+        let mut last = 0;
+        for (&id, instance) in &snapshot.instances {
+            out.w_u16(id - last);
+            last = id;
+            let graph =
+                u16::try_from(instance.graph).map_err(|_| WireError::GraphIndex(instance.graph))?;
+            wire::write_descriptor(&mut out, graph, instance.parent)?;
+        }
+        out.w_u16(0);
+        let variables = &snapshot.variables;
+        wire::bound_variable_list(
+            &mut out,
+            &variables.values,
+            ValueEncoding::Compact,
+            0,
+            &variables.bindings,
+        )?;
+        for (&id, instance) in &snapshot.instances {
+            let graph = self.graph(id, instance.graph)?;
+            let mut values = instance.variables.values.clone();
+            for (_, var) in graph.presence_vars() {
+                let value = var.0.and_then(|var| Some((var, values.swap_remove(&var)?)));
+                out.bit(value.is_some());
+                if let Some((var, value)) = value {
+                    let links = instance.variables.bindings.get(&var);
+                    wire::bound_variable(
+                        &mut out,
+                        &value,
+                        ValueEncoding::Compact,
+                        id,
+                        links.map_or(&[][..], Vec::as_slice),
+                    )?;
+                }
+            }
+            wire::bound_variable_list(
+                &mut out,
+                &values,
+                ValueEncoding::Compact,
+                id,
+                &instance.variables.bindings,
+            )?;
+            let mut slots = BTreeMap::new();
+            for (&raw, state) in instance.states.iter().filter(|(_, state)| state.active) {
+                let site = StateSite {
+                    instance: id,
+                    graph: graph.index,
+                    state: raw,
+                };
+                let node = graph
+                    .state(usize::from(raw))
+                    .ok_or(SnapshotError::MissingState(site))?;
+                let slot = graph
+                    .owner_slot(usize::from(raw))
+                    .ok_or(SnapshotError::MissingState(site))?;
+                let codec = match self.codecs.codec(&node.class) {
+                    Some(codec) if !codec.stec() => codec,
+                    _ if self.unknowns == Unknowns::Tolerate => continue,
+                    _ => {
+                        return Err(SnapshotError::Payload {
+                            site,
+                            source: PayloadError::Unsupported(node.class.clone()),
+                        });
+                    }
+                };
+                let payload = codec
+                    .payload(&state.payload, mode)
+                    .map_err(|source| SnapshotError::Payload { site, source })?;
+                slots.insert(slot, payload);
+            }
+            for slot in 0..graph.owner_positions().len() {
+                out.bit(slots.contains_key(&slot));
+                if let Some(payload) = slots.get(&slot) {
+                    out.append(payload);
+                }
+            }
+            self.write_events(&mut out, graph, &instance.events, frame_time)?;
+        }
+        out.bits(0, 2)?; // no frame events
+        Ok(out)
+    }
+
     /// Prepare the baseline for this body's delivery stream. The body create
     /// acknowledgement still controls when the resulting chunk may be sent.
     pub fn queue_full(
@@ -1152,38 +1303,51 @@ impl<'a> SnapshotEncoder<'a> {
             out.w_u16(id - last_id);
             last_id = id;
             let graph = self.graph(id, instance.graph)?;
-            let mut events = instance.events.iter().collect::<Vec<_>>();
-            events.sort_by_key(|event| event.due_ms);
-            let mut last_time = frame_time;
-            for event in events {
-                if event.finish {
-                    out.bits(2, 2)?;
-                } else if event.parameter == 1 {
-                    out.bits(0, 2)?;
-                } else {
-                    out.bits(1, 2)?;
-                    out.bit(event.parameter == 0);
-                    if event.parameter != 0 {
-                        out.w_u16(event.parameter);
-                    }
-                }
-                out.bits(
-                    u64::from(event.raw_state),
-                    usize::from(graph.header.states_bits),
-                )?;
-                out.bit(event.due_ms == last_time);
-                if event.due_ms != last_time {
-                    out.bit(event.due_ms > last_time);
-                    let elapsed = u32::try_from(event.due_ms.abs_diff(last_time))
-                        .map_err(|_| SnapshotError::FrameTime)?;
-                    out.w_var(elapsed);
-                }
-                last_time = event.due_ms;
-            }
-            out.bits(3, 2)?;
+            self.write_events(out, graph, &instance.events, frame_time)?;
         }
         out.bit(false);
         out.w_u16(0);
+        Ok(())
+    }
+
+    /// One instance's timer events, by due time from `frame_time`, and the
+    /// list's end (3).
+    fn write_events(
+        &self,
+        out: &mut BitWriter,
+        graph: &Graph,
+        events: &[ProjectedEvent],
+        frame_time: u64,
+    ) -> Result<(), SnapshotError> {
+        let mut events = events.iter().collect::<Vec<_>>();
+        events.sort_by_key(|event| event.due_ms);
+        let mut last_time = frame_time;
+        for event in events {
+            if event.finish {
+                out.bits(2, 2)?;
+            } else if event.parameter == 1 {
+                out.bits(0, 2)?;
+            } else {
+                out.bits(1, 2)?;
+                out.bit(event.parameter == 0);
+                if event.parameter != 0 {
+                    out.w_u16(event.parameter);
+                }
+            }
+            out.bits(
+                u64::from(event.raw_state),
+                usize::from(graph.header.states_bits),
+            )?;
+            out.bit(event.due_ms == last_time);
+            if event.due_ms != last_time {
+                out.bit(event.due_ms > last_time);
+                let elapsed = u32::try_from(event.due_ms.abs_diff(last_time))
+                    .map_err(|_| SnapshotError::FrameTime)?;
+                out.w_var(elapsed);
+            }
+            last_time = event.due_ms;
+        }
+        out.bits(3, 2)?;
         Ok(())
     }
 
@@ -1509,7 +1673,8 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
             | StateKind::MoveTo
             | StateKind::ModifyHealth { .. }
             | StateKind::Status
-            | StateKind::CombatMod,
+            | StateKind::CombatMod
+            | StateKind::HeroSelect,
             Some("none"),
         ) if codec.empty() => StatePayload::new(),
         // The block's link field is the reference's absent link: Python
