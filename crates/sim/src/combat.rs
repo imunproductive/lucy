@@ -66,9 +66,10 @@ use orpheus_wire::{
     entity::{EntityUpdate, Operation},
 };
 
-/// A hero waits this long in a mode whose graph sends no respawn time
-/// (combat.py `RESPAWN`, the PvP modes' 10 s; [`RespawnTimes`] holds every
-/// mode's whose graph sends one).
+/// Stand-in respawn wait in a mode whose graph sends no respawn time
+/// (combat.py `RESPAWN`), for a body no mode body script counts the respawn
+/// of (`crate::replication::WorldDelivery::respawn_due`); [`RespawnTimes`]
+/// holds the time of every mode whose graph sends one.
 pub const RESPAWN: Duration = Duration::from_secs(10);
 /// Between respawn attempts while every body id of the player is still
 /// reserved (combat.py `RESPAWN_RETRY`).
@@ -96,7 +97,9 @@ const ASSISTS: u32 = 0x03e7;
 /// Each mode's respawn time for heroes (combat.py `respawn_seconds`): the
 /// seconds its mode graph sends the player in 06FD.025, derived into
 /// `game_respawns_174.json` (0F4A and 0EC2 send 10, the Practice Range's
-/// 13C0 sends 3).
+/// 13C0 sends 3). Every body takes them in `06FD` for its `0C8E`, which
+/// counts the respawn; only the stand-ins wait them out in Rust: the
+/// Training Bots, and bodies without a counting `0C8E`.
 #[derive(Debug, Default)]
 pub struct RespawnTimes(HashMap<u64, Duration>);
 

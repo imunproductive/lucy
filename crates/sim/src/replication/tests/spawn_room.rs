@@ -242,6 +242,45 @@ fn idle(
     }
 }
 
+/// Idle commands a tick at a time, as `game_service` does: each tick the
+/// body's messages are taken (its `0C8E`'s `0685` among them) and then its
+/// respawn checked. The last body frame run when it respawned (within
+/// `limit` ticks).
+fn respawn_frame(
+    world: &mut WorldDelivery,
+    scene: &PreparedScene,
+    viewer: &PlayerAppearance<'_>,
+    tick: &mut u32,
+    limit: u32,
+) -> Option<u32> {
+    for _ in 0..limit {
+        *tick += 1;
+        world.queue_commands(
+            *tick,
+            &[Command {
+                frame: *tick,
+                ..Command::default()
+            }],
+        );
+        world.release_input(1);
+        while world.has_input_work() {
+            world
+                .advance_input(scene, viewer, RETAIL_QUANTA, 64)
+                .unwrap();
+        }
+        world.take_body_messages();
+        let frame = world.input.processed;
+        // A late clock: only the body's `0685` may make it due.
+        if world
+            .respawn_due(scene, viewer, *tick, Duration::ZERO, RETAIL_QUANTA)
+            .unwrap()
+        {
+            return frame;
+        }
+    }
+    None
+}
+
 /// At the spawn point the body is in its room and free to change heroes;
 /// with the room's `0723` it is invulnerable (`0C8E` st11) and its filter
 /// word carries the status bit, so its client predicts no push. Out on the
@@ -486,24 +525,18 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
     );
     assert!(world.body_dead());
     assert!(world.may_change_hero(), "the dead may change heroes");
-    let due = now + scene.respawn_time();
     assert_eq!(scene.respawn_time(), Duration::from_secs(3));
-    let tick = FIRST_TICK + 30;
-    assert!(
-        !world
-            .respawn_due(
-                &scene,
-                &viewer,
-                tick,
-                due - Duration::from_millis(1),
-                RETAIL_QUANTA
-            )
-            .unwrap()
-    );
-    assert!(
-        world
-            .respawn_due(&scene, &viewer, tick, due, RETAIL_QUANTA)
-            .unwrap()
+    // The body's `0C8E` counts #384 down from #9575 = `06FD`'s 3 s (#2153;
+    // no overtime #3392e, scale #9531e 1) a 16 ms frame at a time from the
+    // death's frame, FIRST_TICK (the body ran none before): 3000 ms is past
+    // on frame FIRST_TICK + 188 (187 frames make 2992 ms), when it sends
+    // `0685`, and the respawn follows on the tick that ran that frame. The
+    // input runs the body's frames in order, one a tick, whatever the
+    // commands' frames.
+    let mut tick = FIRST_TICK + 20;
+    assert_eq!(
+        respawn_frame(&mut world, &scene, &viewer, &mut tick, 400),
+        Some(FIRST_TICK + 188)
     );
     let (spawn, _) = scene
         .map()
@@ -607,18 +640,44 @@ fn a_pick_while_dead_takes_the_respawn() {
     let tracer = scene.heroes().find_hero("Tracer").unwrap().guid;
     pick(&mut world, &scene, &viewer, tracer);
     assert_eq!(world.hero(), Some(SOLDIER), "still dead");
-    assert!(
-        world
-            .respawn_due(
-                &scene,
-                &viewer,
-                FIRST_TICK + 300,
-                scene.respawn_time(),
-                RETAIL_QUANTA
-            )
-            .unwrap()
+    // `0C8E`'s 3 s count (as in the fall test): 188 frames.
+    let mut tick = FIRST_TICK;
+    assert_eq!(
+        respawn_frame(&mut world, &scene, &viewer, &mut tick, 400),
+        Some(FIRST_TICK + 188)
     );
     assert_eq!(world.hero(), Some(tracer));
+}
+
+/// In overtime the mode entity's #3392e is on for the body's `0C8E`, whose
+/// st34 makes the count 3 s longer, and the respawn waits for it.
+#[test]
+#[ignore = "requires a derived 104319 Practice Range pack"]
+fn overtime_makes_0c8e_count_three_seconds_more() {
+    let scene = scene();
+    let card = PlayerCard::default();
+    let viewer = viewer(&card);
+    let mut world = spawned(&scene, &viewer);
+    world.set_overtime(true);
+    let body = world.current_body().unwrap();
+    place(&mut world, &scene, outside(&scene), 0);
+    world.area_step(&scene, &viewer);
+    world
+        .damage_body(
+            &scene,
+            &hit(body, ENVIRONMENT_DAMAGE),
+            FIRST_TICK,
+            Duration::ZERO,
+        )
+        .unwrap();
+    // #9575 = max((#2153 3 s + 3 s) × #9531e 1, …) = 6 s from the death's
+    // frame FIRST_TICK: reached on frame FIRST_TICK + 375 (375 × 16 ms =
+    // 6000 ms), 187 frames later than without overtime.
+    let mut tick = FIRST_TICK;
+    assert_eq!(
+        respawn_frame(&mut world, &scene, &viewer, &mut tick, 800),
+        Some(FIRST_TICK + 375)
+    );
 }
 
 /// The map's server-owned placeables are created from the map after the

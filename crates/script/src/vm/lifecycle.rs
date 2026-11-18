@@ -147,6 +147,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             watchers.retain(|watcher| *watcher != key);
             !watchers.is_empty()
         });
+        self.machine.foreign_watchers.retain(|_, watchers| {
+            watchers.retain(|watcher| *watcher != key);
+            !watchers.is_empty()
+        });
         let ending = if finished {
             "m_onFinishedPlug"
         } else {
@@ -320,6 +324,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 if matches!(key, VarKey::Instance(instance, _) if *instance == id) {
                     return false;
                 }
+                watchers.retain(|watcher| watcher.instance != id);
+                !watchers.is_empty()
+            });
+            self.machine.foreign_watchers.retain(|_, watchers| {
                 watchers.retain(|watcher| watcher.instance != id);
                 !watchers.is_empty()
             });

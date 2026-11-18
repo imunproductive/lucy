@@ -18,7 +18,7 @@ use crate::{
         ProjectileLeases, local_prediction, predicted_sync, projectiles_per_shot,
         spawned_definitions,
     },
-    replication::{BodyStep, OwnerBodyRuntime},
+    replication::{BodyStep, OwnerBodyRuntime, RESPAWN_READY},
     scene::target_tags_component,
     weapon_spread::{ring_directions, shot_direction},
 };
@@ -36,7 +36,7 @@ use orpheus_script::{
     expr::{team_from_filter, to_float},
     graph::GraphStore,
     map_tags::MapTags,
-    player::PlayerWorld,
+    player::{MODE_OVERTIME, PlayerWorld},
     snapshot::{SnapshotEncoder, View},
     timeline::FRAME_MS,
     vitals::Vitals,
@@ -50,7 +50,7 @@ use orpheus_script::{
 };
 use orpheus_wire::{
     commands::Command,
-    entity::{Component as EntityComponent, Movement},
+    entity::{Component as EntityComponent, GAME_MODE_ENTITY, Movement},
 };
 
 /// The owner's health for the graphs, and the HUD panel's current and
@@ -287,7 +287,8 @@ impl PlayerBodyFactory {
         component
             .advance_frame(spawn.frame, &mut world)
             .map_err(unsupported)?;
-        if let (Some(_), Some(seconds)) = (mode_script, self.mode_body.respawn_seconds) {
+        let counted = mode_script.zip(self.mode_body.respawn_seconds);
+        if let Some((_, seconds)) = counted {
             component
                 .receive_message(
                     0,
@@ -297,6 +298,12 @@ impl PlayerBodyFactory {
                 )
                 .map_err(unsupported)?;
         }
+        // The mode body script counts the respawn only once it took `06FD`.
+        let counts_respawn = counted.is_some_and(|(graph, _)| {
+            self.graphs
+                .graph(graph)
+                .is_some_and(|graph| graph.sends_message(RESPAWN_READY))
+        });
         world.vitals.clear_changed();
         let modifiers = component
             .movement_modifiers(&mut world)
@@ -318,6 +325,7 @@ impl PlayerBodyFactory {
             leases,
             frame: spawn.frame,
             combat: self.combat.clone(),
+            counts_respawn,
         };
         runtime.log_assumptions();
         Ok(runtime)
@@ -352,6 +360,8 @@ pub struct PlayerBodyRuntime {
     frame: u32,
     /// The body's eyes and the Biotic Field.
     combat: BodyCombat,
+    /// Its mode body script counts its respawn and sends `0685`.
+    counts_respawn: bool,
 }
 
 impl PlayerBodyRuntime {
@@ -587,6 +597,18 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                 .set_entity_variable(id, value.clone(), &mut self.world)
                 .map_err(unsupported)?;
         }
+        self.component.run_now(&mut self.world).map_err(unsupported)
+    }
+
+    fn counts_respawn(&self) -> bool {
+        self.counts_respawn
+    }
+
+    fn set_mode_overtime(&mut self, overtime: bool) -> io::Result<()> {
+        self.world.mode_overtime = overtime;
+        self.component
+            .foreign_variable_changed(GAME_MODE_ENTITY, MODE_OVERTIME, &mut self.world)
+            .map_err(unsupported)?;
         self.component.run_now(&mut self.world).map_err(unsupported)
     }
 

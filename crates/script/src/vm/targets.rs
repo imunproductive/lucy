@@ -480,6 +480,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             world: self.world,
             site,
             reads: Vec::new(),
+            foreign_reads: Vec::new(),
             parameters: self.parameters.as_deref(),
             candidate: self.candidate.as_ref(),
             watcher: None,

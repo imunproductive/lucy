@@ -224,6 +224,18 @@ impl Graph {
             .and_then(|pulser| pulser.state)
     }
 
+    /// Whether a node the server runs (not client-only) sends game message
+    /// `message` (a `STUConfigVarGameMessage` in `m_gameMessage`).
+    pub fn sends_message(&self, message: u64) -> bool {
+        self.nodes.iter().any(|node| {
+            !node.client_only
+                && node
+                    .field("m_gameMessage.m_gameMessage")
+                    .and_then(asset_guid)
+                    == Some(message)
+        })
+    }
+
     pub fn node(&self, pos: u16) -> Option<&Node> {
         self.nodes.get((*self.by_pos.get(usize::from(pos))?)?)
     }
