@@ -732,3 +732,123 @@ fn nano_boost_halves_the_damage_a_bot_takes_and_boosts_what_it_deals() {
     let [hit] = combat.take_player_hits().try_into().unwrap();
     assert_eq!((hit.body, hit.amount), (body, 60.0));
 }
+
+/// Biotic Grenade's aura (`053:0267`) on an enemy bot plays `0C72`, whose
+/// st4 grants the bot tag `02FB`: the bot's world keeps it as a player's
+/// body does, and a client that has the bot gets it as the bot's component
+/// 76 (added `0x2FB`, nothing suppressed). A client that starts later finds
+/// it in the bot's create and gets no update for it.
+#[test]
+#[ignore = "requires the derived 104319 data with its bot graph bundle"]
+fn a_bots_target_tags_go_out_as_its_component_76() {
+    use orpheus_script::vm::{AuraChange, TargetCandidate};
+    use orpheus_wire::entity::Component;
+
+    const BIOTIC_GRENADE: u64 = 0x04a0_0000_0000_0267;
+    const ANA: u32 = OWNER | 1;
+    let mut scene = practice_scene();
+    let mut tick = FIRST_TICK;
+    while !scene.bot_scripts_ready() {
+        scene.step_bots(tick);
+        tick += 1;
+    }
+    let card = PlayerCard::default();
+    let viewer = |entity| PlayerAppearance {
+        entity,
+        slot: 0,
+        team: 0,
+        spawn: 0,
+        room: orpheus_content::maps::SpawnChoice::First,
+        card: &card,
+    };
+    let mut world = WorldDelivery::new(OWNER);
+    world.start(&scene, &viewer(OWNER), tick).unwrap();
+    world.update_bots(&scene, &[], tick);
+    let tags_of = |update: &EntityUpdate| -> Option<Component> {
+        let components = match update.operation.as_ref()? {
+            Operation::Create(definition) => &definition.components,
+            Operation::Update(components) => components,
+            _ => return None,
+        };
+        components
+            .iter()
+            .find(|component| component.index == 76)
+            .cloned()
+    };
+    assert!(
+        deliver(&mut world)
+            .iter()
+            .all(|update| tags_of(update).is_none())
+    );
+
+    let bot = scene.bots().iter().find(|bot| bot.spawn.team == 1).unwrap();
+    let target = bot.entity;
+    let body = |entity, team, feet| TargetCandidate {
+        entity,
+        team: Some(team),
+        dead: false,
+        controller: Some(entity & !0xff),
+        ai: false,
+        ai_control: None,
+        feet,
+        height: 1.8,
+        radius: 0.4,
+        yaw: 0.0,
+        tags: None,
+        spawned: Vec::new(),
+    };
+    let candidates = [body(target, 1, bot.position), body(ANA, 0, [0.0; 3])];
+    scene.set_bot_target_candidates(&candidates);
+    tick += 1;
+    scene.change_bot_aura(
+        &AuraChange::Apply {
+            source: None,
+            target,
+            aura: BIOTIC_GRENADE,
+            instigator: ANA,
+            parameters: Vec::new(),
+        },
+        tick,
+    );
+    scene.advance_live_bots(tick);
+    let expected = Component {
+        index: 76,
+        fields: vec![
+            Some(ComponentValue::U32Array(vec![0x2fb])),
+            Some(ComponentValue::U32Array(Vec::new())),
+        ],
+    };
+    let events = scene.take_bot_events();
+    world.update_bots(&scene, &events, tick);
+    let tagged: Vec<_> = deliver(&mut world)
+        .iter()
+        .filter_map(|update| Some((update.entity, tags_of(update)?)))
+        .collect();
+    assert_eq!(tagged, [(target, expected.clone())]);
+    world.update_bots(&scene, &[], tick);
+    assert!(
+        deliver(&mut world)
+            .iter()
+            .all(|update| tags_of(update).is_none())
+    );
+
+    let late = OWNER + 0x100;
+    let mut world = WorldDelivery::new(late);
+    world.start(&scene, &viewer(late), tick).unwrap();
+    world.update_bots(&scene, &[], tick);
+    let tagged: Vec<_> = deliver(&mut world)
+        .iter()
+        .filter_map(|update| {
+            matches!(update.operation, Some(Operation::Create(_)))
+                .then(|| Some((update.entity, tags_of(update)?)))
+                .flatten()
+        })
+        .collect();
+    assert_eq!(tagged, [(target, expected)]);
+    world.update_bots(&scene, &[], tick);
+    assert!(
+        deliver(&mut world)
+            .iter()
+            .all(|update| tags_of(update).is_none())
+    );
+}

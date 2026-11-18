@@ -180,7 +180,7 @@ use orpheus_content::{
 use orpheus_core::bits::BitWriter;
 use orpheus_script::{
     graph::GraphStore,
-    player::TargetTagLists,
+    target_tags::TargetTagLists,
     vitals::Vitals,
     wire::{self, Instance, Layout, Variables},
 };

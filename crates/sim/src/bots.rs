@@ -76,12 +76,14 @@ use orpheus_physics::{
     mover::{Mover, resting_spring, sample_movement_flags},
 };
 use orpheus_script::bot::{BOT_MOVEMENT_SAMPLE, PATROL_GRAPH, Patrol};
+use orpheus_script::vm::Motion;
 use orpheus_wire::commands::Command;
 use orpheus_wire::entity::{Movement, NO_INPUT};
 
 use crate::{
     bot_animation::{AnimRequest, BodyRig, BotAnimation},
     hitboxes::HitShape,
+    replication::start_motions,
 };
 
 pub const BOT_ENTITY: u32 = 0x8000_8800;
@@ -552,15 +554,38 @@ impl Bot {
         tick: u32,
         mover: impl FnOnce() -> Option<Mover>,
     ) {
-        if self.dead {
+        if let Some(flying) = self.take_off(tick, mover) {
+            flying.push(push);
+        }
+    }
+
+    /// The dashes, rewinds and velocity actions its script began by the end
+    /// of tick `began` (Pharah's Jump Jet `STU_FF3471E9` on a hero body):
+    /// they act on its body's mover from its next frame on, as on a
+    /// player's ([`start_motions`]), so it flies ([`Self::knock`]).
+    pub(crate) fn start_motions(
+        &mut self,
+        motions: Vec<Motion>,
+        began: u32,
+        mover: impl FnOnce() -> Option<Mover>,
+    ) {
+        if motions.is_empty() {
             return;
         }
+        if let Some(flying) = self.take_off(began, mover) {
+            start_motions(flying, motions, TICK_PERIOD.as_secs_f64());
+        }
+    }
+
+    /// The mover it flies on, made at its feet (`mover`) if it walked until
+    /// now, as of `tick`; none once dead.
+    fn take_off(&mut self, tick: u32, mover: impl FnOnce() -> Option<Mover>) -> Option<&mut Mover> {
+        if self.dead {
+            return None;
+        }
         if self.flight.is_none() {
-            let Some(mover) = mover() else {
-                return;
-            };
             self.flight = Some(BotFlight {
-                mover,
+                mover: mover()?,
                 last_tick: tick,
             });
             // The point it was walking to, still asked for, sets it off
@@ -572,9 +597,7 @@ impl Bot {
             self.turning = 0.0;
             self.stand();
         }
-        if let Some(flight) = &mut self.flight {
-            flight.mover.push(push);
-        }
+        self.flight.as_mut().map(|flight| &mut flight.mover)
     }
 
     /// A knocked body's frames up to `tick` on its mover, with no input; it

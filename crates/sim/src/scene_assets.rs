@@ -85,6 +85,23 @@ fn mover_category(map: &GameMap, team: u8) -> u16 {
     }
 }
 
+/// The body's mover a bot flies on (a knockback, a velocity action), made
+/// at its feet and facing as of `tick` when it takes off; none without
+/// player collision. The training bots' bodies have a character mover as
+/// the heroes' have (`STUCharacterMoverComponent`).
+fn bot_mover<'a>(
+    contacts: Option<&'a Arc<ContactWorld>>,
+    movers: &MoverCatalog,
+    map: &GameMap,
+    bot: &Bot,
+    tick: u32,
+) -> impl FnOnce() -> Option<Mover> + 'a {
+    let settings = *movers.for_body(Some(bot.spawn.body));
+    let category = mover_category(map, bot.spawn.team);
+    let (position, yaw) = (bot.position, bot.movement(tick).yaw);
+    move || Mover::new(settings, Arc::clone(contacts?), position, yaw, category).ok()
+}
+
 fn ground_height(
     ground: &TriangleIndex,
     category: u16,
@@ -1085,7 +1102,9 @@ impl PreparedScene {
     }
 
     /// One more bot gets its script (match.py `update`: one per update,
-    /// within the loading window), then the knocked bots fly
+    /// within the loading window), then the motions the scripts began last
+    /// tick (a velocity action, `STU_FF3471E9`) put their bots on their
+    /// movers ([`Bot::start_motions`]), the knocked or moved bots fly
     /// ([`Bot::fly`]), the others walk to the point their scripts ask for
     /// (the patrol `0B8E`; a walk that ended goes back to the script, which
     /// takes it when it next runs), and the live ones are posed
@@ -1096,6 +1115,11 @@ impl PreparedScene {
             .prepare_next(&self.bots, tick, &self.bot_plate);
         let floor = self.ground.triangles();
         for (slot, bot) in self.bots.iter_mut().enumerate() {
+            let motions = self.bot_scripts.take_motions(slot, bot.entity);
+            if !motions.is_empty() {
+                let mover = bot_mover(self.contacts.as_ref(), &self.movers, &self.map, bot, tick);
+                bot.start_motions(motions, tick.saturating_sub(1), mover);
+            }
             bot.fly(tick, floor);
             let goal = self.bot_scripts.move_goal(slot, bot.entity);
             let ended = bot.step(
@@ -1120,25 +1144,17 @@ impl PreparedScene {
 
     /// A knockback on a live bot (an explosion's push,
     /// [`crate::projectile_flight::ProjectileFlight::blast_push`]): it flies
-    /// on its body's mover from its next frame on (`tick` is this one). The
-    /// training bots' bodies have a character mover as the heroes' have
-    /// (`STUCharacterMoverComponent`: gravity, air control, terminal speed),
-    /// and `0E8C`'s knockback anim waits for the ground (#545), so the
-    /// knockback moves them. Assumption: nothing in the data spares them.
-    /// Nothing happens without player collision.
+    /// on its body's mover from its next frame on (`tick` is this one), as
+    /// a velocity action moves it ([`Self::step_bots`]); `0E8C`'s knockback
+    /// anim waits for the ground (#545), so the knockback moves them.
+    /// Assumption: nothing in the data spares them. Nothing happens without
+    /// player collision.
     pub(crate) fn knock_bot(&mut self, entity: u32, push: [f64; 3], tick: u32) {
-        let Some(contacts) = &self.contacts else {
-            return;
-        };
         let Some(bot) = self.bots.iter_mut().find(|bot| bot.entity == entity) else {
             return;
         };
-        let settings = *self.movers.for_body(Some(bot.spawn.body));
-        let category = mover_category(&self.map, bot.spawn.team);
-        let (position, yaw) = (bot.position, bot.movement(tick).yaw);
-        bot.knock(push, tick, || {
-            Mover::new(settings, Arc::clone(contacts), position, yaw, category).ok()
-        });
+        let mover = bot_mover(self.contacts.as_ref(), &self.movers, &self.map, bot, tick);
+        bot.knock(push, tick, mover);
     }
 
     pub fn bot_scripts(&self) -> &BotScripts {
@@ -1314,6 +1330,11 @@ impl PreparedScene {
         self.bot_scripts.take_events()
     }
 
+    /// The world a client gets as it starts. A bot whose states hold target
+    /// tags carries them in its create as component 76: the client's
+    /// create (`0x7FF78969C360`) reads the create's components with the
+    /// update reader (`0x7FF78969E5D0`) once the entity's components are
+    /// built (`refs/reports/AllyBars.md` "NightBotMotion").
     pub fn initial_world(&self, viewer: &PlayerAppearance<'_>) -> io::Result<Vec<EntityUpdate>> {
         let mut updates = initial_world(
             &self.map,
@@ -1324,6 +1345,13 @@ impl PreparedScene {
             &self.bot_plate,
             self.mode_random,
         )?;
+        for update in &mut updates {
+            if let (Some((_, tags)), Some(Operation::Create(definition))) =
+                (self.bot_scripts.tags(update.entity), &mut update.operation)
+            {
+                definition.components.push(tags.clone());
+            }
+        }
         // After the placeables, the player and the mode, before the bots.
         let at = self.map.placeables.len() + 2;
         updates.splice(

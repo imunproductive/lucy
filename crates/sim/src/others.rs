@@ -1117,10 +1117,12 @@ impl Others {
         Ok(())
     }
 
-    /// match.py `ensure_remote_body`: his current body's create, once. It is
-    /// placed by its transform; movement records move it from the next frame
-    /// on (a movement state in the create would sit at frame 0xFFFFFFFE, and
-    /// the client refuses every later record that is not newer).
+    /// match.py `ensure_remote_body`: his current body's create, once, with
+    /// the target tags its states hold now (later ones follow as updates:
+    /// [`Self::send_tags`]). It is placed by its transform; movement
+    /// records move it from the next frame on (a movement state in the
+    /// create would sit at frame 0xFFFFFFFE, and the client refuses every
+    /// later record that is not newer).
     fn ensure_body(
         &mut self,
         context: &ShowContext<'_>,
@@ -1149,6 +1151,7 @@ impl Others {
                 yaw: body.pose.yaw,
                 skin: body.skin,
                 health: body.vitals.map(Vitals::component),
+                tags: body.tags.map(|(_, tags)| tags.clone()),
             },
             BodyView::Observer,
             context.pools,
@@ -1161,7 +1164,7 @@ impl Others {
                 sent: false,
                 arrived: false,
                 health: body.health,
-                tags: 0,
+                tags: body.tags.map_or(0, |(revision, _)| revision),
                 watch: Some(Watch {
                     stream: BodyStream::new(body.id.entity),
                     sent: None,
