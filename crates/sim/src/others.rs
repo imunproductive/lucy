@@ -1478,9 +1478,11 @@ mod tests {
             switch_notices: true,
         };
         let switch = |serial| Switch {
-            old: 1,
-            new: 2,
-            player: OTHER,
+            kept: orpheus_script::controller::HeroSwitch {
+                old: 1,
+                new: 2,
+                player: OTHER,
+            },
             serial,
         };
         let (mine, theirs) = (card("viewer#1"), card("other#2"));

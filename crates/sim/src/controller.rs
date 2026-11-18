@@ -30,7 +30,7 @@ use crate::announcer::MultikillPulse;
 use orpheus_content::maps::PRACTICE_RANGE_MODE;
 use orpheus_core::bits::BitWriter;
 use orpheus_script::{
-    controller::{ControllerScript, ControllerWorld, PVP_CONTROLLER},
+    controller::{ControllerScript, ControllerWorld, HeroSwitch, PVP_CONTROLLER},
     graph::{Graph, GraphStore},
     vm::{InitFault, Unknowns},
     wire::{Instance, Layout, Value, Variables, WireError, owner_full, remote_full, subscript},
@@ -67,6 +67,12 @@ struct StateSlot {
     wire: usize,
 }
 
+/// 0C90's hero switch variables (rid220 from 037F.025), which its
+/// client-only Watch posts as the chat line (`crate::notices`).
+const SWITCH_OLD_HERO: u32 = 4513;
+const SWITCH_NEW_HERO: u32 = 4514;
+const SWITCH_PLAYER: u32 = 4515;
+
 /// The `0215` instance (`crate::announcer`) under 0C90's BooleanSwitch st116
 /// and SubScript st117, and its pulser, shared variables and #10122.
 #[derive(Clone, Copy, Debug)]
@@ -90,6 +96,8 @@ pub struct Controller {
     allow: usize,
     hero_select: usize,
     start_host: StateSlot,
+    /// The presence bits of 0C90's #4513, #4514 and #4515.
+    switch: [usize; 3],
     start_screen: StateSlot,
     start_entry: StateSlot,
     assembling: usize,
@@ -137,6 +145,11 @@ impl Controller {
             entry: layout(entry)?,
             multikills,
             allow: presence_bit(root, ALLOW_SELECT)?,
+            switch: [
+                presence_bit(root, SWITCH_OLD_HERO)?,
+                presence_bit(root, SWITCH_NEW_HERO)?,
+                presence_bit(root, SWITCH_PLAYER)?,
+            ],
             hero_select: owner_slot(root, HERO_SELECT_STATE)?.wire,
             start_host: owner_slot(root, START_HERO_SELECT)?,
             start_screen: owner_slot(host, 0)?,
@@ -157,6 +170,17 @@ impl Controller {
     /// whenever hero select is open, and no assemble title.
     pub fn practice(&self) -> bool {
         self.practice
+    }
+
+    /// The root's presence bits of the hero switch `0C90` keeps: the frame
+    /// that posts the chat line (`crate::notices`).
+    pub fn switch_presence(&self, switch: HeroSwitch) -> BTreeMap<usize, Value> {
+        let [old, new, player] = self.switch;
+        BTreeMap::from([
+            (old, Value::Asset(switch.old)),
+            (new, Value::Asset(switch.new)),
+            (player, Value::Entity(switch.player)),
+        ])
     }
 
     /// Start `0C90` on the player's controller entity `entity` at world
@@ -373,6 +397,8 @@ mod tests {
         let practice = Controller::load(&graphs, PRACTICE_RANGE_MODE).unwrap();
         let pvp = Controller::load(&graphs, 0).unwrap();
         assert!(practice.practice() && !pvp.practice());
+        // 0C90's #4513, #4514 and #4515: the bits notices.py sent.
+        assert_eq!(practice.switch, [4, 6, 7]);
         let open = ControllerFrame {
             select_open: true,
             skins: true,
