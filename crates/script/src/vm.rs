@@ -1438,6 +1438,7 @@ impl Component {
                 node: Some(node.pos),
             },
             reads: Vec::new(),
+            foreign_reads: Vec::new(),
             parameters: None,
             candidate: None,
             watcher: None,
@@ -1483,6 +1484,36 @@ impl Component {
             let old = vm.machine.value(key, None);
             vm.set_base(key, value);
             vm.notify_value(key, &old, None)
+        })
+    }
+
+    /// Another entity's variable `id` changed in the world (as
+    /// [`World::entity_variable`] answers it): the active states whose
+    /// expressions read it re-evaluate, as for the entity's own variables.
+    pub fn foreign_variable_changed(
+        &mut self,
+        entity: u32,
+        id: u32,
+        world: &mut impl World,
+    ) -> Result<(), InitFault> {
+        self.run(world, |vm| {
+            let watchers = vm
+                .machine
+                .foreign_watchers
+                .get(&(entity, id))
+                .cloned()
+                .unwrap_or_default();
+            for watcher in watchers {
+                let Some(state) = vm
+                    .state_mut(watcher)
+                    .filter(|state| state.active && !state.ending && !state.pending_change)
+                else {
+                    continue;
+                };
+                state.pending_change = true;
+                vm.post(watcher.instance, Event::Changed(watcher.raw))?;
+            }
+            Ok(())
         })
     }
 
@@ -1973,6 +2004,9 @@ struct Machine {
     snapshot: Snapshot,
     queues: Timeline<Event>,
     watchers: BTreeMap<VarKey, Vec<StateKey>>,
+    /// The states whose expressions read another entity's variable
+    /// (entity, id), for [`Component::foreign_variable_changed`].
+    foreign_watchers: BTreeMap<(u32, u32), Vec<StateKey>>,
     ticking: BTreeMap<u16, IndexMap<u16, u64>>,
     links: BTreeMap<VarKey, Vec<VariableLink>>,
     volleys: BTreeMap<StateKey, Volley>,
@@ -2728,6 +2762,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             world: self.world,
             site,
             reads: Vec::new(),
+            foreign_reads: Vec::new(),
             parameters: self.parameters.as_deref(),
             candidate: self.candidate.as_ref(),
             watcher,
@@ -2740,6 +2775,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             expr::evaluate(config, &mut context)
         };
         let reads = context.reads;
+        let foreign_reads = context.foreign_reads;
         let read_native = context.read_native;
         for (class, answer) in context.assumed {
             self.assume(site, &class, answer);
@@ -2750,6 +2786,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }) {
             for key in reads {
                 self.watch(key, watcher);
+            }
+            for key in foreign_reads {
+                let watchers = self.machine.foreign_watchers.entry(key).or_default();
+                if !watchers.contains(&watcher) {
+                    watchers.push(watcher);
+                }
             }
             if let Some(start) = self
                 .state(watcher)
@@ -3141,6 +3183,8 @@ struct InstanceContext<'a, W> {
     world: &'a mut W,
     site: Site,
     reads: Vec<VarKey>,
+    /// Other entities' variables read (entity, id).
+    foreign_reads: Vec<(u32, u32)>,
     parameters: Option<&'a Variables>,
     /// Answers every parameter read when set: a `CycleIndex` candidate.
     candidate: Option<&'a Value>,

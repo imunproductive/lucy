@@ -2198,13 +2198,16 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     let created = target.created(respawned).unwrap();
     let respawn_tick = target.ticks[created];
     assert!(created > died);
-    // combat.py `PRACTICE_RESPAWN`: 3 s. The killing command runs from the
-    // shooter's input buffer as tick T is due, at T's time, before the tick
-    // (`InputQueue`): the death notice goes in that tick's datagram, T. The
-    // respawn is due at the first tick 3 s after the death, T + 188
-    // (3000 / 16 = 187.5), and the new body goes in that tick's datagram,
-    // T + 188: 188 ticks after the death notice. (Before the input buffer
-    // the command ran on arrival, at the time of the tick before: 187.)
+    // The respawn comes from the dead body's `0C8E`: it counts #384 down
+    // from #9575 = `06FD`'s 3 s (#2153; no overtime #3392e, ruleset scale
+    // #9531e 1), a 16 ms frame at a time from the frame that took the
+    // death, and sends `0685` on the 188th (187 frames make 2992 ms, 188
+    // make 3008). The killing command runs from the shooter's input buffer
+    // as tick T is due, before the tick (`InputQueue`): the death notice
+    // goes in that tick's datagram, T, and the dead body's frames follow
+    // the target's commands, one a tick. The match takes the `0685` among
+    // the bodies' messages and respawns him in the same tick: the new body
+    // goes in datagram T + 188.
     let waited = respawn_tick - death_tick;
     assert_eq!(waited, 188, "respawned after {waited} ticks");
     assert!(

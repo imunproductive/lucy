@@ -46,6 +46,9 @@ use orpheus_wire::entity::{GAME_MODE_ENTITY, Movement};
 /// voice set answers both (stimuli "PnMnr" and "PnSvr").
 pub const REACTION_GRAPHS: [u32; 2] = [0x01ca, 0x14b1];
 
+/// The mode entity's overtime flag #3392e (its ForCode identifier `0D40`).
+pub const MODE_OVERTIME: u32 = 0x0d40;
+
 pub struct PlayerWorld {
     pub graphs: Arc<GraphStore>,
     /// The player's controller (his participant entity, `0C90`'s).
@@ -70,6 +73,11 @@ pub struct PlayerWorld {
     /// (`STU_B182C5C9`, which the mode body script `0C8E` reads); none:
     /// unknown.
     pub mode_random: Option<f32>,
+    /// Whether the match is in overtime: the mode entity's #3392e, the
+    /// mode graph's ForCode value `0D40` (`0F4A`), which `0C8E` st34 adds
+    /// 3 s of respawn time for. The server's match flow decides it while
+    /// the mode graph doesn't run.
+    pub mode_overtime: bool,
     /// The game struct's team entries (team, size), which `STU_D289FA32`
     /// reads ([`crate::mode::team_size`]); empty: unknown.
     pub team_sizes: Vec<(u8, u8)>,
@@ -284,6 +292,9 @@ impl World for PlayerWorld {
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
         if entity != GAME_MODE_ENTITY {
             return Value::Null;
+        }
+        if id == MODE_OVERTIME && self.mode_overtime {
+            return Value::Bool(true);
         }
         self.graphs
             .mode_variables(self.mode)
@@ -690,6 +701,7 @@ impl PlayerWorld {
             throttles: [0; 2],
             mode,
             mode_random: None,
+            mode_overtime: false,
             team_sizes: Vec::new(),
             hero,
             vitals: Vitals::empty(),

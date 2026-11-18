@@ -817,17 +817,19 @@ fn an_elimination_round_still_on_after_its_time_is_a_draw() {
     assert_eq!(run.flow.team_score(0) + run.flow.team_score(1), 0);
 }
 
+/// Overtime is what the bodies' `0C8E` reads as the mode's #3392e, which
+/// adds 3 s to a respawn there (`WorldDelivery::set_overtime`).
 #[test]
-fn overtime_adds_three_seconds_to_respawns() {
+fn a_contested_end_starts_overtime() {
     let mut run = Run::new(new_flow(&assault(), false, Timers::default()).unwrap());
     run.flow.start();
     run.phase(100.0, &[], Phase::Round);
-    assert_eq!(run.flow.respawn_extra(), 0.0);
+    assert!(!run.flow.in_overtime());
     run.until(300.0, &[at(0, 1, A), at(1, 0, A)], |event| {
         *event == FlowEvent::Overtime(true)
     })
     .unwrap();
-    assert_eq!(run.flow.respawn_extra(), OVERTIME_RESPAWN);
+    assert!(run.flow.in_overtime());
 }
 
 #[test]

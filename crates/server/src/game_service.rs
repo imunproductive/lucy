@@ -2917,7 +2917,7 @@ impl State {
                     }
                 }
             }
-            let extra = Duration::from_secs_f64(flow.respawn_extra());
+            let overtime = flow.in_overtime();
             for message in messages {
                 for (connection, _) in &connections {
                     let peer = self.peers.get_mut(connection).expect("room peer");
@@ -2945,7 +2945,7 @@ impl State {
             }
             for (connection, _) in &connections {
                 if let Some(peer) = self.peers.get_mut(connection) {
-                    peer.world.set_respawn_extra(extra);
+                    peer.world.set_overtime(overtime);
                 }
             }
         }

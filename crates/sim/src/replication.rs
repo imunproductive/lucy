@@ -153,6 +153,10 @@ const CORRECTED_HEROES: [u64; 2] = [SOLDIER, ANA];
 const REVIVED: u64 = orpheus_script::bot::RESET;
 /// `0013.025`'s `00C6` (`01CA`'s #2227): on for a new life.
 const REVIVED_RESPAWN: u32 = 0x00c6;
+/// `0685.025`: the mode body script `0C8E` (rid2/rid78) tells the mode a
+/// dead body's respawn count ended (`0221` its controller, `03D9` the
+/// respawn camera's #22241).
+pub const RESPAWN_READY: u64 = 0x0240_0000_0000_0685;
 /// `002D.025` {`0029` an identifier}: the game's identifier, which `01C7`
 /// rid32 keeps in #59 and tests for #1928e.
 const GAME_IDENTIFIER: u64 = 0x0240_0000_0000_002d;
@@ -352,6 +356,18 @@ pub trait OwnerBodyRuntime: Send {
     /// The player's hero settings that the body's graphs read, as entity
     /// variables ([`hero_setting_variables`]).
     fn set_hero_settings(&mut self, _variables: &Variables) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// Whether the body runs a mode body script that counts its respawn
+    /// down and sends [`RESPAWN_READY`] to the mode when it ends (`0C8E`).
+    fn counts_respawn(&self) -> bool {
+        false
+    }
+
+    /// The match's overtime, which the body's mode script reads as the
+    /// mode entity's #3392e.
+    fn set_mode_overtime(&mut self, _overtime: bool) -> io::Result<()> {
         Ok(())
     }
 }
@@ -1441,9 +1457,10 @@ pub struct WorldDelivery {
     /// body he plays is possessed by the AI entity, made from that body's
     /// AI definition.
     ai: Option<(u32, u64)>,
-    /// Time the match flow adds to a death's respawn now (overtime,
-    /// game-rules.md 11).
-    respawn_extra: Duration,
+    /// Whether the match is in overtime (game-rules.md 11): every body's
+    /// mode script reads it as the mode entity's #3392e, and `0C8E` adds
+    /// 3 s to a respawn for it.
+    overtime: bool,
     /// The hero settings the player's client last sent (21604); every body
     /// he plays takes them. They are the client's, so a new world keeps them.
     hero_settings: HeroSettings,
@@ -1495,13 +1512,24 @@ pub fn hero_setting_variables(settings: &HeroSettings, hero: u64) -> Variables {
 }
 
 /// A body's death (combat.py `Vitals.death_tick`, `killer`) and when it
-/// respawns (`Combat.respawns`).
+/// respawns.
+///
+/// A body whose mode body script counts the respawn (`0C8E`,
+/// [`OwnerBodyRuntime::counts_respawn`]) respawns when that script sends
+/// [`RESPAWN_READY`] to the mode. Stand-in (loose ends, "Respawn without
+/// `0C8E`"): a body without such a script (Deathmatch, Team Deathmatch,
+/// Bounty Hunter and the tutorial, whose body scripts send no `0685`, or a
+/// body whose script failed) respawns the mode's `06FD` seconds after its
+/// death ([`PreparedScene::respawn_time`]).
 #[derive(Clone, Copy, Debug)]
 struct BodyDeath {
     body: BodyId,
     killer: u32,
     tick: u32,
-    respawn_at: Duration,
+    died_at: Duration,
+    /// When the respawn is due: from the script's `0685` on, or the next
+    /// try while every body id is still reserved; none: not yet.
+    due: Option<Duration>,
 }
 
 /// How a hit on the player's body ended (combat.py `_damage`).
@@ -1578,7 +1606,7 @@ impl WorldDelivery {
             assembling: false,
             headless: false,
             ai: None,
-            respawn_extra: Duration::ZERO,
+            overtime: false,
             hero_settings: HeroSettings::default(),
             voice: None,
             pending_voices: Vec::new(),
@@ -2768,9 +2796,20 @@ impl WorldDelivery {
         self.assembling = assembling;
     }
 
-    /// What the match flow adds to the respawn of a death from now on.
-    pub fn set_respawn_extra(&mut self, extra: Duration) {
-        self.respawn_extra = extra;
+    /// The match's overtime, for the current body's mode script and every
+    /// later one (the mode entity's #3392e).
+    pub fn set_overtime(&mut self, overtime: bool) {
+        if self.overtime == overtime {
+            return;
+        }
+        self.overtime = overtime;
+        let failure = self
+            .body_script
+            .as_mut()
+            .and_then(|script| script.runtime.set_mode_overtime(overtime).err());
+        if let Some(error) = failure {
+            self.drop_failed_script(&error.to_string());
+        }
     }
 
     /// A full frame of the game mode entity, such as the countdown; false
@@ -3289,9 +3328,8 @@ impl WorldDelivery {
                 body: body.id,
                 killer: hit.shooter.source,
                 tick: death_tick,
-                respawn_at: now
-                    .saturating_add(scene.respawn_time())
-                    .saturating_add(self.respawn_extra),
+                died_at: now,
+                due: None,
             });
             if let Some(script) = script {
                 let (message, parameters) =
@@ -3534,11 +3572,12 @@ impl WorldDelivery {
         }
     }
 
-    /// combat.py `_respawn`: once the mode's time is up, a dead player gets
-    /// a new body of the same hero at his spawn point, as a hero switch does
-    /// (match.py `switch_hero`), revived ([`Self::revived`]). While every id
-    /// of his body ring is still reserved, he tries again RESPAWN_RETRY
-    /// later. True when he respawned.
+    /// combat.py `_respawn`: once the body's respawn is due ([`BodyDeath`]:
+    /// its `0C8E` sent `0685`), a dead player gets a new body of the same
+    /// hero at his spawn point, as a hero switch does (match.py
+    /// `switch_hero`), revived ([`Self::revived`]). While every id of his
+    /// body ring is still reserved, he tries again RESPAWN_RETRY later.
+    /// True when he respawned.
     pub fn respawn_due(
         &mut self,
         scene: &PreparedScene,
@@ -3550,7 +3589,18 @@ impl WorldDelivery {
         let Some(death) = self.death else {
             return Ok(false);
         };
-        if now < death.respawn_at {
+        let counting = self
+            .body_script
+            .as_ref()
+            .is_some_and(|script| script.id == death.body && script.runtime.counts_respawn());
+        let due = death.due.unwrap_or_else(|| {
+            if counting {
+                Duration::MAX
+            } else {
+                death.died_at.saturating_add(scene.respawn_time())
+            }
+        });
+        if now < due {
             return Ok(false);
         }
         let Some(body) = self.body.filter(|body| body.id == death.body) else {
@@ -3559,7 +3609,7 @@ impl WorldDelivery {
         };
         let Some(entity) = self.next_body(now) else {
             if let Some(death) = &mut self.death {
-                death.respawn_at = now.saturating_add(RESPAWN_RETRY);
+                death.due = Some(now.saturating_add(RESPAWN_RETRY));
             }
             return Ok(false);
         };
@@ -3646,9 +3696,23 @@ impl WorldDelivery {
         if !self.world_started() {
             return Vec::new();
         }
-        self.body_script
-            .as_mut()
-            .map_or_else(Vec::new, |script| script.runtime.take_messages())
+        let Some(script) = self.body_script.as_mut() else {
+            return Vec::new();
+        };
+        let mut messages = script.runtime.take_messages();
+        // The mode body script's `0685`: the dead body may respawn now.
+        // Retail's mode graph takes it (`0C8F`, then `0687` to the
+        // controller, whose `0C90` revives the body); the server respawns
+        // the player itself (loose ends, "A respawn makes a new body").
+        let sender = script.id;
+        messages.retain(|message| {
+            let ready = message.message == RESPAWN_READY && message.target == GAME_MODE_ENTITY;
+            if ready && let Some(death) = self.death.as_mut().filter(|death| death.body == sender) {
+                death.due.get_or_insert(Duration::ZERO);
+            }
+            !ready
+        });
+        messages
     }
 
     /// The voice lines the current body says since the last call, by its
@@ -4413,14 +4477,19 @@ impl WorldDelivery {
         // server sends it (no graph does but `1225`); the identifier is its
         // `STU_ABB6C23E`, whose client evaluator writes 0, and 0 here
         // (assumption: the server's game identifier is none of the three).
+        // A body made in overtime reads it from the start.
+        let overtime = self.overtime;
         let failure = self.body_script.as_mut().and_then(|script| {
-            script
-                .runtime
-                .receive_message(
-                    0,
-                    GAME_IDENTIFIER,
-                    Variables::from([(0x29, ScriptValue::Asset(0))]),
-                )
+            overtime
+                .then(|| script.runtime.set_mode_overtime(true))
+                .transpose()
+                .and_then(|_| {
+                    script.runtime.receive_message(
+                        0,
+                        GAME_IDENTIFIER,
+                        Variables::from([(0x29, ScriptValue::Asset(0))]),
+                    )
+                })
                 .err()
         });
         if let Some(error) = failure {

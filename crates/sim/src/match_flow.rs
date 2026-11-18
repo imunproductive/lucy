@@ -169,10 +169,6 @@ pub const MATCH_END: f64 = 20.0;
 /// Rule 95: the top 4 of a free-for-all get win credit.
 pub const DEATHMATCH_WINNERS: usize = 4;
 
-/// Rule 11: overtime adds 3 s to a respawn (the notes favour the wiki's
-/// 3 s over the Jul 2016 patch's 2 s).
-pub const OVERTIME_RESPAWN: f64 = 3.0;
-
 /// Something the room acts on.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FlowEvent {
@@ -586,15 +582,6 @@ impl MatchFlow {
             return SpawnChoice::Stage(self.stage(self.round).order);
         }
         SpawnChoice::First
-    }
-
-    /// Seconds added to a respawn now: rule 11's 3 s in overtime.
-    pub fn respawn_extra(&self) -> f64 {
-        if self.overtime.is_some() {
-            self.scaled(OVERTIME_RESPAWN)
-        } else {
-            0.0
-        }
     }
 
     /// Hero select stays open while the heroes assemble.

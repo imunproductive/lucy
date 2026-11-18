@@ -68,6 +68,9 @@ impl<W: World> Context for InstanceContext<'_, W> {
         if entity == self.site.entity {
             self.read(VarKey::Entity(id))
         } else {
+            if !self.foreign_reads.contains(&(entity, id)) {
+                self.foreign_reads.push((entity, id));
+            }
             self.world.entity_variable(entity, id)
         }
     }
