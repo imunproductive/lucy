@@ -33,6 +33,7 @@ use crate::{
     messages::Bots,
     mode_graph_values::ModeGraphValues,
     mode_rules_data::{ModeRules, ModeRulesData},
+    navigate::PathBudget,
     notices::switch_notices,
     objective_data::{MapObjectives, ObjectiveData},
     objectives::CaptureBox,
@@ -231,6 +232,9 @@ pub struct PreparedScene {
     switch_notices: bool,
     /// The map's AI navigation, when the data has it (Practice vs AI).
     navigation: Option<Arc<Navigation>>,
+    /// The path work the room's walkers share a tick: its bots' walks
+    /// ([`Self::step_bots`]) and its AI heroes' ([`Self::path_budget`]).
+    paths: PathBudget,
     /// The rules of the mode's match flow.
     mode_rules: ModeRules,
     /// The mode graphs' values the match flow uses.
@@ -561,6 +565,7 @@ impl SceneAssets {
             field_graphs: self.field_graphs.clone(),
             switch_notices: switch_notices(self.modes.get(map_mode)),
             navigation,
+            paths: PathBudget::default(),
             mode_rules,
             mode_graph_values: self.mode_graph_values,
             objectives,
@@ -1087,6 +1092,13 @@ impl PreparedScene {
         self.navigation.as_deref()
     }
 
+    /// The path work the room's walkers share this tick
+    /// ([`crate::navigate::PathBudget`]): the bots' walks take theirs first
+    /// ([`Self::step_bots`]), the AI heroes the rest.
+    pub fn path_budget(&self) -> &PathBudget {
+        &self.paths
+    }
+
     /// Whether a hero body `body` (the movers' fallback body when none) of
     /// team `team` walks straight from one floor point to another: its
     /// standing capsule on the map's collision with the team's mask, and
@@ -1153,6 +1165,7 @@ impl PreparedScene {
                 tick,
                 goal.map(|goal| goal.target),
                 ground_height(floor, mover_category(&self.map, bot.spawn.team)),
+                &self.paths,
             );
             if let (Some(goal), Some(ended)) = (goal, ended) {
                 self.bot_scripts.move_arrived(slot, bot.entity, goal, ended);

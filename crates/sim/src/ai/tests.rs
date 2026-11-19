@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use orpheus_content::{
     heroes::SOLDIER,
     maps::{MapCatalog, ObjectiveKind, SpawnChoice},
@@ -77,9 +79,9 @@ fn enemy(slot: usize, feet: [f64; 3]) -> Seen {
     }
 }
 
-/// New walks without a limit, for a controller alone in its room.
-fn unlimited() -> Cell<usize> {
-    Cell::new(usize::MAX)
+/// Path work without a limit, for a controller alone in its room.
+fn unlimited() -> PathBudget {
+    PathBudget::unlimited()
 }
 
 fn senses<'a>(
@@ -88,7 +90,7 @@ fn senses<'a>(
     others: &'a [Seen],
     goal: Goal,
     navigation: Option<&'a Navigation>,
-    paths: &'a Cell<usize>,
+    paths: &'a PathBudget,
     sight: &'a dyn Fn([f64; 3], [f64; 3]) -> bool,
 ) -> Senses<'a> {
     Senses {
@@ -442,42 +444,59 @@ fn without_an_objective_an_ai_hunts_and_dead_it_idles() {
     assert_eq!((command.forward, command.right, command.buttons), (0, 0, 0));
 }
 
-/// A room's AIs share their new walks of a tick: with one left, the first
-/// AI to need a walk sets off and the second stands until the next tick.
+/// A room's AIs share the path work of a tick: with work for one walk, the
+/// first AI to need a walk sets off and the second stands until the next
+/// tick, when its search goes on.
 #[test]
 fn the_ais_of_a_room_take_turns_making_walks() {
     let nav = ring();
     let objective = [11.5, 0.35, 11.5];
     let start = [2.5, 0.35, 2.5];
+    // Each AI's cell (one AI on the team) and the work of its walk there.
+    let cell = from_nav(nav.free_cells(to_nav(objective), SPREAD, 1)[0]);
+    let probe = unlimited();
+    let walk = PathQuery::new(start, cell).advance(Some(&nav), &probe, 0, clear);
+    assert!(walk.is_some_and(|walk| walk.is_some()));
+    let paths = PathBudget::new(u32::MAX - probe.left(0));
     let mut first = AiController::new(Difficulty::Easy, 0, 1, 1);
     let mut second = AiController::new(Difficulty::Easy, 0, 1, 2);
     let moving = |command: Command| command.forward != 0 || command.right != 0;
     for (tick, expected) in [(0, [true, false]), (1, [true, true])] {
-        let paths = Cell::new(PATHS_PER_TICK);
         let goal = Goal::Objective(objective);
         let room = senses(tick, start, &[], goal, Some(&nav), &paths, &clear);
         let commands = [first.command(&room), second.command(&room)];
         assert_eq!(commands.map(moving), expected, "tick {tick}");
-        assert_eq!(paths.get(), 0);
+        assert_eq!(paths.left(tick), 0, "tick {tick}");
     }
 }
 
 /// A goal off the walkable cells (a hunted enemy on a ledge) ends its walk
 /// on the nearest cell: the AI stands there and makes no new walk while
-/// the goal stays, but one when it is pushed off the end of its walk.
+/// the goal stays (its walk tests asked once), but one when it is pushed
+/// off the end of its walk.
 #[test]
 fn a_walk_that_ends_short_of_its_goal_is_made_once() {
     let nav = ring();
     // 2 m past the ring's edge at x 16; the nearest cell's centre is
     // (15.5, 4.5). Out of sight, so the AI walks without shooting.
     let others = [enemy(4, [17.5, 0.35, 4.5])];
-    let paths = Cell::new(100);
+    let paths = unlimited();
+    let asked = Cell::new(0);
+    let counted = |_: [f64; 3], _: [f64; 3]| {
+        asked.set(asked.get() + 1);
+        true
+    };
     let mut ai = AiController::new(Difficulty::Easy, 0, 1, 4);
     let mut feet = [2.5, 0.35, 2.5];
     let mut standing = 0;
+    let mut first = 0;
     for tick in 0..1000 {
-        let now = senses(tick, feet, &others, Goal::Hunt, Some(&nav), &paths, &blind);
+        let mut now = senses(tick, feet, &others, Goal::Hunt, Some(&nav), &paths, &blind);
+        now.walkable = &counted;
         let command = ai.command(&now);
+        if tick == 0 {
+            first = asked.get();
+        }
         if command.forward == 0 && command.right == 0 {
             standing += 1;
         }
@@ -485,13 +504,15 @@ fn a_walk_that_ends_short_of_its_goal_is_made_once() {
     }
     assert!(flat_distance(feet, [15.5, 0.35, 4.5]) <= HOLD, "{feet:?}");
     assert!(standing > 500, "{standing}");
-    assert_eq!(paths.get(), 99);
+    assert!(first > 0);
+    assert_eq!(asked.get(), first);
     // Pushed 3 m back: a new walk to the same cell.
     feet[0] -= 3.0;
-    let now = senses(1000, feet, &others, Goal::Hunt, Some(&nav), &paths, &blind);
+    let mut now = senses(1000, feet, &others, Goal::Hunt, Some(&nav), &paths, &blind);
+    now.walkable = &counted;
     let command = ai.command(&now);
     assert!(walk(feet, &command)[0] > feet[0]);
-    assert_eq!(paths.get(), 98);
+    assert!(asked.get() > first);
 }
 
 /// Stuck is a second of its body's walking without progress, however far

@@ -3,6 +3,9 @@ use orpheus_content::maps::PRACTICE_RANGE_MAP;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
+/// Path work without a limit: these bots have no navigation.
+static PATHS: PathBudget = PathBudget::unlimited();
+
 const TRAINING: u64 = 0x02e0_0000_0000_016b;
 const TRAINING_BODY: u64 = 0x0400_0000_0000_1403;
 const FAR_RUNNER: u64 = 0x02e0_0000_0000_016e;
@@ -53,7 +56,7 @@ fn walk_to(
     ticks
         .into_iter()
         .filter_map(|tick| {
-            let ended = bot.step(tick, goal, |_, _, _, _| None);
+            let ended = bot.step(tick, goal, |_, _, _, _| None, &PATHS);
             assert_eq!(bot.movement(tick).spring, RESTING_SPRING, "tick {tick}");
             ended
         })
@@ -162,21 +165,21 @@ fn skipped_ticks_catch_up_without_replaying_a_duplicate_tick() {
     let goal = Some([0.0, 0.0, 10.0]);
     let mut contiguous = walker([0.0, 0.0, 10.0]);
     for tick in 1..=120 {
-        contiguous.step(tick, goal, |_, _, _, _| None);
+        contiguous.step(tick, goal, |_, _, _, _| None, &PATHS);
     }
     let mut skipped = walker([0.0, 0.0, 10.0]);
     for tick in [1, 80, 120, 120, 50] {
-        skipped.step(tick, goal, |_, _, _, _| None);
+        skipped.step(tick, goal, |_, _, _, _| None, &PATHS);
     }
     assert!(skipped.walking());
     assert_eq!(contiguous.movement(120), skipped.movement(120));
 
     let mut late = walker([0.0, 0.0, 10.0]);
     let mut bounded = walker([0.0, 0.0, 10.0]);
-    late.step(1, goal, |_, _, _, _| None);
-    late.step(10_000, goal, |_, _, _, _| None);
-    bounded.step(10_000 - CATCH_UP, goal, |_, _, _, _| None);
-    bounded.step(10_000, goal, |_, _, _, _| None);
+    late.step(1, goal, |_, _, _, _| None, &PATHS);
+    late.step(10_000, goal, |_, _, _, _| None, &PATHS);
+    bounded.step(10_000 - CATCH_UP, goal, |_, _, _, _| None, &PATHS);
+    bounded.step(10_000, goal, |_, _, _, _| None, &PATHS);
     assert_eq!(late.movement(10_000), bounded.movement(10_000));
 }
 
@@ -187,11 +190,16 @@ fn terrain_probe_uses_ramp_speed_and_falls_back_to_hint_height() {
     let mut fallback = walker([0.0, 10.0, 20.0]);
     // 157 ticks in: at full speed (from 63 ticks on), not near the point.
     for tick in 1..=157 {
-        ramp.step(tick, goal, |_, z, top, bottom| {
-            let height = 0.5 * z;
-            (bottom..=top).contains(&height).then_some(height)
-        });
-        fallback.step(tick, goal, |_, _, _, _| None);
+        ramp.step(
+            tick,
+            goal,
+            |_, z, top, bottom| {
+                let height = 0.5 * z;
+                (bottom..=top).contains(&height).then_some(height)
+            },
+            &PATHS,
+        );
+        fallback.step(tick, goal, |_, _, _, _| None, &PATHS);
     }
     let [_, y, z] = ramp.position;
     assert!((y - 0.5 * z).abs() < 1.0e-12);
@@ -241,7 +249,7 @@ fn patrol_uses_the_shared_capsule_and_team_mask() {
     allowed.attach_collision(&settings, world, 0x10);
     for tick in 1..=108 {
         for bot in [&mut blocked, &mut allowed] {
-            bot.step(tick, Some([0.0, 0.0, 4.0]), |_, _, _, _| Some(0.0));
+            bot.step(tick, Some([0.0, 0.0, 4.0]), |_, _, _, _| Some(0.0), &PATHS);
         }
     }
     assert!(blocked.position[2] < 2.0);
@@ -253,8 +261,8 @@ fn patrol_uses_the_shared_capsule_and_team_mask() {
 fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
     let goal = Some([0.0, 0.0, 10.0]);
     let mut bot = walker([0.0, 0.0, 10.0]);
-    bot.step(1, goal, |_, _, _, _| None);
-    bot.step(100, goal, |_, _, _, _| None);
+    bot.step(1, goal, |_, _, _, _| None, &PATHS);
+    bot.step(100, goal, |_, _, _, _| None, &PATHS);
     assert!(bot.walking());
     let death_position = bot.position;
     // A living bot blocks other bodies with its standing capsule; a dead one
@@ -264,7 +272,10 @@ fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
     assert_eq!(bot.capsule(&settings), Some(standing));
     bot.died();
     assert_eq!(bot.capsule(&settings), None);
-    assert_eq!(bot.step(400, goal, |_, _, _, _| unreachable!()), None);
+    assert_eq!(
+        bot.step(400, goal, |_, _, _, _| unreachable!(), &PATHS),
+        None
+    );
     assert!(!bot.walking());
     assert_eq!(bot.position, death_position);
     let state = bot.movement(100);
@@ -297,9 +308,9 @@ fn death_stops_the_bot_and_respawn_restarts_the_route_after_create() {
     // A new body stands until its script asks for a point (its patrol's
     // first walk, 3 s on in `0B8E`), then sets off in that tick.
     let goal = Some([0.0, 0.0, 10.0]);
-    fresh.step(tick, None, |_, _, _, _| None);
+    fresh.step(tick, None, |_, _, _, _| None, &PATHS);
     assert!(!fresh.walking());
-    fresh.step(tick + 1, goal, |_, _, _, _| None);
+    fresh.step(tick + 1, goal, |_, _, _, _| None, &PATHS);
     assert!(fresh.walking());
 }
 
@@ -377,7 +388,10 @@ fn a_knocked_bot_flies_on_its_mover_and_walks_on_once_it_lands() {
     bot.attach_collision(&settings, Arc::clone(&world), 0x10);
     let run = |bot: &mut Bot, tick: u32| {
         bot.fly(tick, &rays);
-        assert_eq!(bot.step(tick, Some(goal), |_, _, _, _| Some(0.0)), None);
+        assert_eq!(
+            bot.step(tick, Some(goal), |_, _, _, _| Some(0.0), &PATHS),
+            None
+        );
     };
     for tick in 1..=63 {
         run(&mut bot, tick);
@@ -456,7 +470,7 @@ fn a_velocity_action_lifts_a_walking_bot_onto_its_mover() {
     bot.attach_collision(&settings, Arc::clone(&world), 0x10);
     let run = |bot: &mut Bot, tick: u32| {
         bot.fly(tick, &rays);
-        bot.step(tick, Some(goal), |_, _, _, _| Some(0.0));
+        bot.step(tick, Some(goal), |_, _, _, _| Some(0.0), &PATHS);
     };
     for tick in 1..=63 {
         run(&mut bot, tick);

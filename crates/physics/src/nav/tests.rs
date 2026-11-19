@@ -285,6 +285,51 @@ fn paths_keep_only_lines_and_layer_steps_the_caller_walks() {
     );
 }
 
+/// A search run a little work at a time (a server's ticks) finds the walk
+/// the whole search finds, asking the caller the same tests in the same
+/// order; it does nothing without work, and with the work of one walk test
+/// asks at most one at a time. The railing (as in
+/// `paths_keep_only_lines_and_layer_steps_the_caller_walks`) refuses some.
+#[test]
+fn a_search_split_over_ticks_finds_the_walk_of_the_whole_search() {
+    let nav = plaza();
+    let railing = |a: Vec3, b: Vec3| {
+        let crosses = (a[0] - 2.0) * (b[0] - 2.0) < 0.0;
+        let z = a[2] + (b[2] - a[2]) * (2.0 - a[0]) / (b[0] - a[0]);
+        !(crosses && z < 2.0)
+    };
+    let (from, to) = ([0.5, FLOOR, 0.5], [7.5, FLOOR, 7.5]);
+    let mut whole_asked = Vec::new();
+    let whole = nav.path_with(from, to, |a, b| {
+        whole_asked.push((a, b));
+        railing(a, b)
+    });
+    assert!(whole.is_some());
+    assert!(whole_asked.iter().any(|&(a, b)| !railing(a, b)));
+
+    let mut search = PathSearch::new(from, to);
+    let mut none = 0;
+    assert_eq!(search.advance(&nav, &mut none, |_, _| unreachable!()), None);
+    let mut asked = Vec::new();
+    let mut ticks = 0;
+    let split = loop {
+        ticks += 1;
+        let before = asked.len();
+        let mut work = CHECK_WORK;
+        let done = search.advance(&nav, &mut work, |a, b| {
+            asked.push((a, b));
+            railing(a, b)
+        });
+        assert!(asked.len() - before <= 1, "tick {ticks}");
+        if let Some(walk) = done {
+            break walk;
+        }
+    };
+    assert_eq!(split, whole);
+    assert_eq!(asked, whole_asked);
+    assert!(ticks > whole_asked.len(), "{ticks} ticks");
+}
+
 #[test]
 fn free_cells_spread_over_interior_cells() {
     let nav = plaza();

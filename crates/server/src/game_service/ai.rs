@@ -30,7 +30,7 @@
 //! start plays Soldier: 76 instead; the AI heroes come into the world with
 //! the first player (the match flow's start), not before.
 
-use std::{cell::Cell, io, time::Duration};
+use std::{io, time::Duration};
 
 use orpheus_content::heroes::SOLDIER;
 use orpheus_lobby::login::Identity;
@@ -39,10 +39,9 @@ use orpheus_script::{
     vm::DummyBot,
 };
 use orpheus_sim::{
-    ai::{
-        AiController, Difficulty, Goal, PATHS_PER_TICK, Random, Seen, Senses, pick_heroes, ticks,
-    },
+    ai::{AiController, Difficulty, Goal, Random, Seen, Senses, pick_heroes, ticks},
     match_flow::{MatchFlow, Phase},
+    navigate::PathBudget,
     replication::WorldDelivery,
     scene::PlayerCard,
     scene_assets::PreparedScene,
@@ -219,7 +218,7 @@ impl AiSeat {
         flow: Option<&MatchFlow>,
         slot: usize,
         seen: &[Seen],
-        paths: &Cell<usize>,
+        paths: &PathBudget,
         tick: u32,
         now: Duration,
     ) -> io::Result<()> {
@@ -500,7 +499,7 @@ impl State {
     /// Every AI player's tick, in the rooms with AI heroes whose match flow
     /// started and the rooms with dummy bots: what he sees (the living
     /// bodies of the room), then his command; the room's AI heroes share
-    /// [`PATHS_PER_TICK`] new walks a tick.
+    /// path work of a tick with its bots (`PreparedScene::path_budget`).
     pub(super) fn drive_ai(&mut self, tick: u32, now: Duration) {
         let Self {
             rooms,
@@ -537,7 +536,7 @@ impl State {
                     });
                 }
             }
-            let paths = Cell::new(PATHS_PER_TICK);
+            let paths = scene.path_budget();
             for (connection, peer) in peers.iter_mut() {
                 let (match_id, slot) = seats[connection];
                 let Peer {
@@ -551,7 +550,7 @@ impl State {
                 if match_id != id || (flow.is_none() && matches!(seat.plays, Plays::Ai(_))) {
                     continue;
                 }
-                let step = seat.step(delivery, room, scene, flow, slot, &seen, &paths, tick, now);
+                let step = seat.step(delivery, room, scene, flow, slot, &seen, paths, tick, now);
                 if let Err(error) = step {
                     tracing::warn!(
                         "[game] AI {} stopped: {error}",

@@ -33,14 +33,14 @@
 //! reaction time per difficulty, the burst rhythm, the ranges, the health
 //! at which an AI falls back and the ability it uses then.
 
-use std::{cell::Cell, f64::consts::TAU};
+use std::f64::consts::TAU;
 
 use orpheus_core::tick::TICK_PERIOD;
 use orpheus_physics::{mover::kinematics::poses, nav::Navigation};
 use orpheus_script::ai_definitions::{EASY, HARD, MEDIUM};
 use orpheus_wire::commands::{Command, FIRE, JUMP};
 
-use crate::navigate;
+use crate::navigate::{PathBudget, PathQuery};
 
 /// Ability 2 (E) on the command (logical button 36).
 pub const ABILITY_2: u32 = 0x10;
@@ -81,11 +81,6 @@ pub const ENGAGE_RANGE: f64 = 35.0;
 /// often (assumption).
 const REPATH: f64 = 3.0;
 const GOAL_MOVED: f64 = 2.0;
-/// At most this many new walks a tick for a room's AIs: a path over the
-/// navigation is an A* over the cells of its route (a few milliseconds in
-/// a release build, a hundred times that in a debug one), so AIs that set
-/// off together take turns (assumption).
-pub const PATHS_PER_TICK: usize = 1;
 /// No progress over this much of its body's walking, by this much, means
 /// stuck: jump and step aside for this much of its walking, to one side
 /// and to the other the next time, then find a new path (assumption; rule
@@ -284,9 +279,10 @@ pub struct Senses<'a> {
     /// Its team's spawn, where it falls back to.
     pub home: [f64; 3],
     pub navigation: Option<&'a Navigation>,
-    /// The new walks its room's AIs may still make this tick
-    /// ([`PATHS_PER_TICK`]); a new walk takes one.
-    pub paths: &'a Cell<usize>,
+    /// The path work its room's walkers share this tick
+    /// ([`crate::navigate::PathBudget`]): a new walk is searched with it,
+    /// over as many ticks as it takes.
+    pub paths: &'a PathBudget,
     /// Whether nothing of the map stands between two points.
     pub sight: &'a dyn Fn([f64; 3], [f64; 3]) -> bool,
     /// Whether its body walks straight from one floor point to another
@@ -425,6 +421,8 @@ pub struct AiController {
     team_size: usize,
     body: Option<u32>,
     walk: Option<Walking>,
+    /// The new walk being searched for, and its goal.
+    search: Option<([f64; 3], PathQuery)>,
     /// The objective and the standing cell it took there.
     spot: Option<([f64; 3], [f64; 3])>,
     /// When it may start walking, once it has somewhere to go.
@@ -461,6 +459,7 @@ impl AiController {
             team_size: team_size.max(1),
             body: None,
             walk: None,
+            search: None,
             spot: None,
             leaves: None,
             target: None,
@@ -505,7 +504,7 @@ impl AiController {
         let Some(feet) = senses.feet else {
             // Dead or not yet in the world: no input, as a client's.
             self.target = None;
-            self.walk = None;
+            self.forget_walk();
             self.last = None;
             self.walked = 0;
             return command;
@@ -513,7 +512,7 @@ impl AiController {
         if senses.body != self.body {
             // A new body at the spawn: everything starts again.
             self.body = senses.body;
-            self.walk = None;
+            self.forget_walk();
             self.leaves = None;
             self.retreat = None;
             self.progress = None;
@@ -527,7 +526,7 @@ impl AiController {
         match self.retreat {
             None if senses.health < RETREAT_BELOW => {
                 self.retreat = Some(tick + ticks(RETREAT));
-                self.walk = None;
+                self.forget_walk();
                 if tick >= self.ability_ready {
                     self.ability_ready = tick + ticks(ABILITY_COOLDOWN);
                     command.buttons |= ABILITY_2;
@@ -535,7 +534,7 @@ impl AiController {
             }
             Some(until) if senses.health >= RECOVERED || tick >= until => {
                 self.retreat = None;
-                self.walk = None;
+                self.forget_walk();
             }
             _ => {}
         }
@@ -599,7 +598,7 @@ impl AiController {
             Some(goal) if tick >= leaves && aside.is_none() => self.next_point(senses, feet, goal),
             Some(_) => None,
             None => {
-                self.walk = None;
+                self.forget_walk();
                 None
             }
         };
@@ -633,7 +632,7 @@ impl AiController {
                 (command.forward, command.right) = (0, self.sidestep_side);
                 self.sidestep = Some((ticks(SIDESTEP), self.sidestep_side));
                 self.sidestep_side = -self.sidestep_side;
-                self.walk = None;
+                self.forget_walk();
             }
         } else {
             self.progress = None;
@@ -683,17 +682,25 @@ impl AiController {
             .get(self.rank % cells.len().max(1))
             .map_or(objective, |&cell| from_nav(cell));
         self.spot = Some((objective, cell));
-        self.walk = None;
+        self.forget_walk();
         cell
+    }
+
+    /// Its walk is done with: the next is made afresh (the search of one
+    /// begun too).
+    fn forget_walk(&mut self) {
+        self.walk = None;
+        self.search = None;
     }
 
     /// The point to walk to next on the way to `goal`; `None` once there
     /// or at the end of its walk (a goal off the walkable cells ends the
-    /// walk at the nearest one). A new walk ([`crate::navigate::path`], the
-    /// path query the Training Bots use too) when there is none, the goal
-    /// moved (at most every [`REPATH`] seconds while the walk goes on) or
-    /// the AI was pushed off the end of its walk, as the room's paths this
-    /// tick allow; until then the old walk, if any.
+    /// walk at the nearest one). A new walk ([`crate::navigate::PathQuery`],
+    /// the path query the Training Bots use too) when there is none, the
+    /// goal moved (at most every [`REPATH`] seconds while the walk goes on)
+    /// or the AI was pushed off the end of its walk, searched with the
+    /// room's path work over as many ticks as it takes (a search for a goal
+    /// that has since moved begins again); until then the old walk, if any.
     fn next_point(
         &mut self,
         senses: &Senses<'_>,
@@ -714,18 +721,28 @@ impl AiController {
         });
         if stale {
             if flat_distance(feet, goal) <= HOLD {
-                self.walk = None;
+                self.forget_walk();
                 return None;
             }
-            if senses.paths.get() > 0 {
-                senses.paths.set(senses.paths.get() - 1);
-                let waypoints = navigate::path(senses.navigation, feet, goal, |from, to| {
-                    (senses.walkable)(from, to)
-                })
-                .unwrap_or_else(|| vec![goal]);
+            if self
+                .search
+                .as_ref()
+                .is_some_and(|(to, _)| flat_distance(*to, goal) >= GOAL_MOVED)
+            {
+                self.search = None;
+            }
+            let (to, search) = self
+                .search
+                .get_or_insert_with(|| (goal, PathQuery::new(feet, goal)));
+            let to = *to;
+            let found = search.advance(senses.navigation, senses.paths, tick, |from, to| {
+                (senses.walkable)(from, to)
+            });
+            if let Some(waypoints) = found {
+                self.search = None;
                 self.walk = Some(Walking {
-                    goal,
-                    waypoints,
+                    goal: to,
+                    waypoints: waypoints.unwrap_or_else(|| vec![to]),
                     next: 0,
                     made: tick,
                 });

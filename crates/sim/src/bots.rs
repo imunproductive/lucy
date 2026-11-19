@@ -15,8 +15,10 @@
 //! end waits 1 s and asks for the next point. The walker takes that point
 //! ([`Bot::step`]) and walks to it over the map's navigation
 //! ([`crate::navigate`], the path query the AI heroes use too: around what
-//! stands between, checked with the bot's own capsule), and reports the
-//! walk's end, which the match hands back to the script. Graph 0B92
+//! stands between, checked with the bot's own capsule; its search shares
+//! the room's path work a tick, so a long one sets the bot off a few ticks
+//! later), and reports the walk's end, which the match hands back to the
+//! script. Graph 0B92
 //! alternates firing and waiting phases of 1.75 to
 //! 2.5 s within 0.4 m of spawn; its 0013.025 reset branch delays firing by
 //! 2.75 s. A bot's health is the body's override of 0033's #199 (Training
@@ -87,7 +89,7 @@ use orpheus_wire::entity::{Movement, NO_INPUT};
 use crate::{
     bot_animation::{AnimRequest, BodyRig, BotAnimation},
     hitboxes::HitShape,
-    navigate,
+    navigate::{self, PathBudget, PathQuery},
     replication::start_motions,
 };
 
@@ -369,6 +371,8 @@ pub struct Bot {
     collision: Option<PatrolCollision>,
     /// The map's navigation, which its walks follow ([`crate::navigate`]).
     navigation: Option<Arc<Navigation>>,
+    /// The walk to its goal being searched for, until it sets off.
+    search: Option<PathQuery>,
     start: [f64; 3],
     keys: bool,
     turning: f64,
@@ -418,6 +422,7 @@ impl Bot {
             waypoints: VecDeque::new(),
             collision: None,
             navigation: None,
+            search: None,
             start: spawn.position,
             keys: false,
             turning: 0.0,
@@ -590,7 +595,9 @@ impl Bot {
 
     /// Walk to `goal`, the point its script asks for now
     /// ([`crate::bot_script::BotScripts::move_goal`]), through the ticks up
-    /// to `tick`: a new point sets it off from where it stands. The floor
+    /// to `tick`: a new point sets it off from where it stands, once its
+    /// walk there is found with the room's path work of `tick` (`paths`;
+    /// it stands until then). The floor
     /// provider can give a surface Y within the top and bottom probe bounds;
     /// a missing surface uses the heights of the points it walks to. A
     /// knocked body flies instead ([`Self::fly`]); its walk goes on once it
@@ -601,6 +608,7 @@ impl Bot {
         tick: u32,
         goal: Option<[f64; 3]>,
         ground: impl Fn(f64, f64, f64, f64) -> Option<f64>,
+        paths: &PathBudget,
     ) -> Option<u32> {
         if self.dead {
             return None;
@@ -620,26 +628,46 @@ impl Bot {
         let seconds = TICK_PERIOD.as_secs_f64();
         let mut ended = None;
         for at in tick - (ticks - 1)..=tick {
-            if self.tick(at, seconds, goal, &ground) {
+            if self.tick(at, seconds, goal, &ground, (paths, tick)) {
                 ended = Some(at);
             }
         }
         ended
     }
 
-    /// One tick of the walk; true when the walk ended in it.
+    /// One tick of the walk; true when the walk ended in it. `paths` is the
+    /// room's path work and the tick it is spent from.
     fn tick(
         &mut self,
         tick: u32,
         dt: f64,
         goal: Option<[f64; 3]>,
         ground: &impl Fn(f64, f64, f64, f64) -> Option<f64>,
+        paths: (&PathBudget, u32),
     ) -> bool {
         self.held = [0; 2];
         if goal != self.goal {
             self.goal = goal;
-            if let Some(goal) = goal {
-                self.set_off(goal, ground);
+            self.search = goal.map(|goal| PathQuery::new(self.walk_start(), goal));
+        }
+        if let (Some(search), Some(goal)) = (&mut self.search, self.goal) {
+            let collision = &self.collision;
+            let walk = search.advance(self.navigation.as_deref(), paths.0, paths.1, |a, b| {
+                collision
+                    .as_ref()
+                    .is_none_or(|collision| collision.walkable(a, b, ground))
+            });
+            match walk {
+                Some(walk) => {
+                    self.search = None;
+                    self.set_off(goal, walk);
+                }
+                // Waiting for its walk: it stands.
+                None if self.target.is_some() => {
+                    self.keys = false;
+                    self.stand();
+                }
+                None => {}
             }
         }
         let walking = self.target.is_some();
@@ -657,14 +685,10 @@ impl Bot {
         walking && self.target.is_none()
     }
 
-    /// Set off for `goal` from where it stands (the route point it stands
-    /// on), through the turns of the map's navigation walk there, each line
-    /// one its capsule walks ([`crate::navigate`]); straight there without
-    /// navigation or a walk. It ends on the point asked for, wherever the
-    /// walk's end snapped to.
-    fn set_off(&mut self, goal: [f64; 3], ground: &impl Fn(f64, f64, f64, f64) -> Option<f64>) {
-        let from = self
-            .spawn
+    /// Where a walk sets off from: the route point it stands on, else where
+    /// it stands.
+    fn walk_start(&self) -> [f64; 3] {
+        self.spawn
             .route
             .iter()
             .copied()
@@ -672,12 +696,14 @@ impl Bot {
                 planar_distance(self.position, point) <= ARRIVED
                     && (self.position[1] - point[1]).abs() <= STEP_UP
             })
-            .unwrap_or(self.position);
-        let walk = navigate::path(self.navigation.as_deref(), from, goal, |a, b| {
-            self.collision
-                .as_ref()
-                .is_none_or(|collision| collision.walkable(a, b, ground))
-        });
+            .unwrap_or(self.position)
+    }
+
+    /// Set off for `goal` through the turns of `walk`, the map's navigation
+    /// walk there from [`Self::walk_start`], each line one its capsule walks
+    /// ([`crate::navigate`]); straight there without navigation or a walk.
+    /// It ends on the point asked for, wherever the walk's end snapped to.
+    fn set_off(&mut self, goal: [f64; 3], walk: Option<Vec<[f64; 3]>>) {
         self.waypoints.clear();
         self.waypoints.extend(walk.into_iter().flatten());
         if self
@@ -862,6 +888,7 @@ impl Bot {
         self.flight = None;
         self.keys = false;
         self.held = [0; 2];
+        self.search = None;
         self.stand();
     }
 
