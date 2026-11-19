@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+mod ai_cells;
 mod ai_definitions;
 mod ai_spawners;
 mod anim_lengths;
@@ -202,6 +203,10 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "navigation",
         derive: navigation::derive,
+    },
+    Derivation {
+        name: "aicells",
+        derive: ai_cells::derive,
     },
     Derivation {
         name: "game_objectives",

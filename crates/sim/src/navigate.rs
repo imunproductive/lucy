@@ -6,14 +6,11 @@
 //! from its callbacks `0x7FF789B07F20`/`0x7FF789B083E0`), and no graph
 //! paths (`D:/Work/Coding/refs/reports/RustInsteadOfGraphs.md` §9).
 //!
-//! A walk is the map's navigation's ([`Navigation::path_with`], over the AI
-//! tactical volumes), checked with the walker's own standing capsule on the
-//! map's collision ([`walkable`]): the volumes' cells are a metre wide and
-//! their heights a layer (1.4 m) coarse, so a straight line they find clear
-//! can graze a wall's corner, cross a railing or step down a ledge, and a
-//! step to another layer can be a ledge. The client's own path query
-//! searches the chunk's finer AI cell data instead (`orpheus_physics::nav`
-//! module notes).
+//! A walk is searched over the map's AI cell data, the client's own walk
+//! grid ([`WalkSearch`], when the navigation has the cells attached, as
+//! every derived map does), else over its tactical volumes
+//! ([`Navigation::path_with`]); either way checked with the walker's own
+//! standing capsule on the map's collision ([`walkable`]).
 //!
 //! A path can take tens of milliseconds (a long walk over a wide map, steps
 //! refused and searched round), more than a tick, so the server searches a
@@ -24,9 +21,10 @@
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 use orpheus_physics::{
+    ai_cells::WalkSearch,
     contact::body::CharacterBody,
     mover::ground::standing_origin,
-    nav::{LAYER, Navigation, PathSearch, Walk},
+    nav::{LAYER, Navigation, PathSearch},
 };
 
 /// The most a floor may rise or fall under one step of a straight walk
@@ -92,14 +90,56 @@ impl PathBudget {
 #[derive(Clone, Debug)]
 pub struct PathQuery {
     from: [f64; 3],
-    search: PathSearch,
+    to: [f64; 3],
+    /// `None` until the first call, which picks the search the navigation
+    /// has data for.
+    search: Option<Search>,
+}
+
+/// The search over the map's AI cells, or over its tactical volumes when
+/// the navigation has no cells attached.
+#[derive(Clone, Debug)]
+enum Search {
+    Cells(WalkSearch),
+    Volumes(PathSearch),
+}
+
+impl Search {
+    fn new(navigation: &Navigation, from: [f64; 3], to: [f64; 3]) -> Self {
+        if navigation.ai_cells().is_some() {
+            Self::Cells(WalkSearch::new(to_nav(from), to_nav(to)))
+        } else {
+            Self::Volumes(PathSearch::new(to_nav(from), to_nav(to)))
+        }
+    }
+
+    /// Search on while `work` is left: `None` while it goes on, then the
+    /// walk's points (the first where it starts).
+    fn advance(
+        &mut self,
+        navigation: &Navigation,
+        work: &mut u32,
+        mut walkable: impl FnMut([f64; 3], [f64; 3]) -> bool,
+    ) -> Option<Option<Vec<[f32; 3]>>> {
+        let walkable = |a, b| walkable(from_nav(a), from_nav(b));
+        match self {
+            Self::Cells(search) => {
+                let cells = navigation.ai_cells().expect("picked with cells");
+                search.advance(cells, work, walkable)
+            }
+            Self::Volumes(search) => search
+                .advance(navigation, work, walkable)
+                .map(|walk| walk.map(|walk| walk.waypoints)),
+        }
+    }
 }
 
 impl PathQuery {
     pub fn new(from: [f64; 3], to: [f64; 3]) -> Self {
         Self {
             from,
-            search: PathSearch::new(to_nav(from), to_nav(to)),
+            to,
+            search: None,
         }
     }
 
@@ -111,41 +151,45 @@ impl PathQuery {
         navigation: Option<&Navigation>,
         budget: &PathBudget,
         tick: u32,
-        mut walkable: impl FnMut([f64; 3], [f64; 3]) -> bool,
+        walkable: impl FnMut([f64; 3], [f64; 3]) -> bool,
     ) -> Option<Option<Vec<[f64; 3]>>> {
         let Some(navigation) = navigation else {
             return Some(None);
         };
-        let walk = budget.spend(tick, |work| {
-            self.search
-                .advance(navigation, work, |a, b| walkable(from_nav(a), from_nav(b)))
-        })?;
+        let search = self
+            .search
+            .get_or_insert_with(|| Search::new(navigation, self.from, self.to));
+        let walk = budget.spend(tick, |work| search.advance(navigation, work, walkable))?;
         Some(walk.map(|walk| points(walk, self.from)))
     }
 }
 
 /// The points to walk through from `from` to `to`: the turns of the map's
-/// navigation walk between them, then its end (`to` on the floor when it
-/// stands on walkable cells, else the nearest cell's centre). A turn or line
-/// is kept only where `walkable` says a body walks it straight. `None`
-/// without navigation, or when it has no walk between the points. The whole
-/// search at once ([`PathQuery`] spreads it over ticks).
+/// walk between them, then its end (`to` on the floor when it stands on the
+/// walkable grid, else the nearest walkable point). A turn or line is kept
+/// only where `walkable` says a body walks it straight. `None` without
+/// navigation, or when it has no walk between the points. The whole search
+/// at once ([`PathQuery`] spreads it over ticks).
 pub fn path(
     navigation: Option<&Navigation>,
     from: [f64; 3],
     to: [f64; 3],
     mut walkable: impl FnMut([f64; 3], [f64; 3]) -> bool,
 ) -> Option<Vec<[f64; 3]>> {
-    let walk = navigation?.path_with(to_nav(from), to_nav(to), |a, b| {
-        walkable(from_nav(a), from_nav(b))
-    })?;
-    Some(points(walk, from))
+    let navigation = navigation?;
+    let mut search = Search::new(navigation, from, to);
+    loop {
+        let mut work = u32::MAX;
+        if let Some(walk) = search.advance(navigation, &mut work, &mut walkable) {
+            return walk.map(|walk| points(walk, from));
+        }
+    }
 }
 
-fn points(walk: Walk, from: [f64; 3]) -> Vec<[f64; 3]> {
-    let mut points: Vec<[f64; 3]> = walk.waypoints.into_iter().map(from_nav).collect();
+fn points(walk: Vec<[f32; 3]>, from: [f64; 3]) -> Vec<[f64; 3]> {
+    let mut points: Vec<[f64; 3]> = walk.into_iter().map(from_nav).collect();
     // The first is where it stands (on the floor), unless that is off the
-    // walkable cells and it snapped to a cell.
+    // walkable grid and it snapped.
     if flat_distance(points[0], from) < 1.0e-3 {
         points.remove(0);
     }

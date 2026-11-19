@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ai_cells;
 pub mod collision;
 pub mod contact;
 pub mod mover;
