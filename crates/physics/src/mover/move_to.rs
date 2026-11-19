@@ -394,12 +394,10 @@ fn free_spot(
         top: height - radius,
     });
     for third in 1..=3 {
-        let share = third as f32 / 3.0;
-        probe.reshape(pose.radius * share, pose.top * share);
-        let wanted = sub(goal, feet);
-        let moved = probe.move_capsule(wanted.map(|axis| axis as f32), 0.0)?;
-        let [x, y, z] = moved.position;
-        feet = [f64::from(x), f64::from(y) - at.lift, f64::from(z)];
+        let share = third as f32 * (1.0 / 3.0);
+        probe.reshape(radius * share, (height - radius) * share);
+        let from = probe.position();
+        probe.move_fixed(std::array::from_fn(|k| goal[k] - from[k]), FREE_SPOT_ROUNDS)?;
     }
     Ok(probe.position().map(f64::from))
 }

@@ -219,6 +219,51 @@ impl CharacterBody {
         dt: f32,
     ) -> Result<BodyMove<'_>, HullContactError> {
         let rounds = self.budget;
+        let (current, passes_total) = self.move_rounds(displacement, dt, rounds)?;
+        self.budget = if passes_total > (rounds * 100).min(500) {
+            (self.budget / 2).max(1)
+        } else {
+            (self.budget * 2).min(MAX_ROUNDS)
+        };
+        self.planes.clear();
+        let mut touching = false;
+        for constraint in &self.constraints {
+            if constraint.impulse > 0.0 {
+                touching = true;
+                if constraint.impulse < f32::MAX {
+                    self.planes.push(constraint.plane);
+                }
+            }
+        }
+        Ok(BodyMove {
+            position: current,
+            planes: &self.planes,
+            touching,
+        })
+    }
+
+    /// A move of at most `rounds` rounds that leaves the round budget as it
+    /// is: a temporary character's, whose caller names the rounds (a
+    /// `MoveTo`'s free spot passes 5, `0x7FF789C4A8A0`). Where it stops.
+    pub fn move_fixed(
+        &mut self,
+        displacement: Vec3,
+        rounds: u32,
+    ) -> Result<Vec3, HullContactError> {
+        Ok(self.move_rounds(displacement, 0.0, rounds)?.0)
+    }
+
+    /// The character move `0x7FF789CC9320`: up to `rounds` rounds (its
+    /// request's `+0x2C`), each projecting the target onto the contact
+    /// planes and moving there, until a round moves less than the skin
+    /// ([`TOUCH`], the request's `+0x28`). Where it stops and the solver
+    /// passes it took.
+    fn move_rounds(
+        &mut self,
+        displacement: Vec3,
+        dt: f32,
+        rounds: u32,
+    ) -> Result<(Vec3, u32), HullContactError> {
         let mut current = self.pose.position;
         let target = add(add(scale([0.0; 3], dt), current), displacement);
         let mut passes_total = 0;
