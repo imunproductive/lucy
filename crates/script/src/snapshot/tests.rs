@@ -1525,6 +1525,88 @@ fn the_grappling_hooks_cast_goes_out_in_owner_frames_with_its_begin() {
     assert!(!send(&flying, DeltaKind::Correction(1041)).contains(&key));
 }
 
+/// Tracer's Recall (`001A` st0, `STU_41B3FC2B`) goes out with its end and
+/// its frames of history (`codecs.rs` `project_rewind`), to her and to the
+/// others, and a delta lists it only in the frame it began (the payload
+/// stays while it runs). Its codec (`time16+s64`) had no family, so the
+/// release build left the running rewind out of every frame.
+#[test]
+fn recalls_rewind_goes_out_with_its_end_and_history() {
+    const RECALL: u16 = 4;
+    const REWIND: u16 = 0;
+    let definition = graph(
+        0x001a,
+        vec![node(0, "STU_41B3FC2B", Some(REWIND), json!({}))],
+        json!([0]),
+        json!([]),
+        json!([0]),
+        json!([]),
+    );
+    let graphs = GraphStore::from_json(
+        &serde_json::to_vec(&json!({
+            "version":1, "graphs":[definition], "bodies":{}, "missing":[]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let codecs = CodecTable::client();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    let mut snapshot = initialize(
+        &graphs,
+        ENTITY,
+        Variables::new(),
+        vec![Root::new(RECALL, 0x001a)],
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let idle = encoder.project(&snapshot, View::Owner).unwrap();
+    let (_, fixture) = fixture();
+    let mut rewind = fixture.instances[&1].states[&0].clone();
+    // Pressed at frame 1031: 0.9 s to its end, 3 s (188 frames) back.
+    rewind.active = true;
+    rewind.activation = 1;
+    rewind.start_ms = 1031 * 16;
+    rewind.kind = StateKind::Rewind {
+        end_ms: 1031 * 16 + 900,
+        frames: 188,
+    };
+    snapshot.instances[&RECALL].states.insert(REWIND, rewind);
+    let rewinding = encoder.project(&snapshot, View::Owner).unwrap();
+    let payload = &rewinding.instances[&RECALL].states[&REWIND].payload;
+    assert_eq!(
+        *payload,
+        StatePayload::from([
+            ("end".into(), Value::Integer(17396)),
+            ("frames".into(), Value::Integer(188)),
+        ])
+    );
+    let observed = encoder.project(&snapshot, View::Observer).unwrap();
+    assert_eq!(
+        observed.instances[&RECALL].states[&REWIND].payload,
+        *payload
+    );
+
+    // Listed in the frame it began, then the client keeps it.
+    let mut stream = BodyStream::new(ENTITY);
+    stream.create_arrived();
+    let baseline = encoder.queue_full(&mut stream, &idle).unwrap();
+    stream.arrived(baseline.last);
+    let mut send = |owner: &ProjectedSnapshot, kind| {
+        let chunk = encoder
+            .queue_delta(&mut stream, owner, kind, 16)
+            .unwrap()
+            .unwrap();
+        let listed = stream.sent(chunk.last).unwrap().changes.clone();
+        assert!(stream.arrived(chunk.last).advanced);
+        listed
+    };
+    let key = ChangeKey::State(RECALL, REWIND);
+    assert!(!send(&idle, DeltaKind::InitialOwner(1031 - OWNER_SETTLE_FRAMES)).contains(&key));
+    assert!(send(&rewinding, DeltaKind::Correction(1031)).contains(&key));
+    assert!(!send(&rewinding, DeltaKind::Correction(1032)).contains(&key));
+}
+
 #[test]
 fn observer_delta_removes_an_instance_introduced_by_an_unacknowledged_chunk() {
     let (graphs, snapshot) = fixture();

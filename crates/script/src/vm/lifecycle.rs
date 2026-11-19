@@ -109,7 +109,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::HeroSelect => {
                 self.machine.hero_selects.remove(&key);
             }
-            StateKind::Rewind => self.machine.motions.push(Motion::EndRewind { finished }),
+            StateKind::Rewind { .. } => self.machine.motions.push(Motion::EndRewind { finished }),
             StateKind::Status => {
                 self.world.set_status(self.site(id, node), None);
             }
@@ -302,7 +302,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             if self.machine.snapshot.instances[&id]
                 .states
                 .values()
-                .any(|state| state.active && state.kind == StateKind::Rewind)
+                .any(|state| state.active && matches!(state.kind, StateKind::Rewind { .. }))
             {
                 self.machine
                     .motions

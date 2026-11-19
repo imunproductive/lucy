@@ -6,7 +6,10 @@
 //! release builds do.
 
 use super::*;
-use orpheus_script::{vm::Unknowns, wire::Value as ScriptValue};
+use orpheus_script::{
+    vm::{State, StateKind, Unknowns},
+    wire::Value as ScriptValue,
+};
 use orpheus_wire::{commands::Command, entity::MOVE_TO};
 
 const TRACER: u64 = 0x02e0_0000_0000_0003;
@@ -155,13 +158,14 @@ impl Player {
         }
     }
 
-    fn rewinding(&self) -> bool {
+    /// Recall's rewind (`001A` st0) while it runs.
+    fn rewind(&self) -> Option<&State> {
         self.snapshot()
             .instances
             .values()
             .find(|instance| instance.graph == 0x001a)
             .and_then(|instance| instance.states.get(&0))
-            .is_some_and(|state| state.active)
+            .filter(|state| state.active)
     }
 }
 
@@ -288,14 +292,26 @@ fn tracer_blinks_spends_charges_and_recalls() {
     });
     let press = tracer.frame;
     for _ in 0..120 {
-        if began.is_none() && tracer.rewinding() {
-            began = Some(tracer.frame);
+        if began.is_none() {
+            began = tracer
+                .rewind()
+                .map(|state| (tracer.frame, state.start_ms, state.kind));
         }
         tracer.idle(1, open);
     }
     // The wind-up ends at once: the rewind starts with the press.
-    assert_eq!(began, Some(press));
-    assert!(!tracer.rewinding());
+    let (frame, start_ms, kind) = began.unwrap();
+    assert_eq!(frame, press);
+    assert!(tracer.rewind().is_none());
+    // Its frames carry its end, 0.9 s after its begin, and its 3 s of
+    // history in frames, rounded up (`begin_rewind`).
+    assert_eq!(
+        kind,
+        StateKind::Rewind {
+            end_ms: start_ms + 900,
+            frames: 188
+        }
+    );
     // The rewind starts from the pose of the press and goes 3 s (188 poses
     // of 16 ms) back, which is 12 poses into the walk.
     let then = path[&(press - 188)];

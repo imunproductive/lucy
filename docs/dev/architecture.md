@@ -149,7 +149,9 @@ The lobby lives in `crates/server/src/lobby` and uses the services of the `lobby
 The VM does not implement every node of every graph. `script::vm::Unknowns` decides what happens with graph content it does not know:
 
 - **Refuse** (debug builds and tests): record a diagnostic and refuse the body. A gap cannot hide.
-- **Tolerate** (release builds): do what the Python reference did, and record each case in the snapshot's assumptions. An unknown state is a plain state. An unknown action follows its out plug. An unknown config value or opcode is null. An active state whose payload cannot be written is left out of frames.
+- **Tolerate** (release builds): do what the Python reference did, and record each case in the snapshot's assumptions. An unknown state is a plain state. An unknown action follows its out plug. An unknown config value or opcode is null. An active state whose payload cannot be written is left out of frames and logged once per class (`script::snapshot`).
+
+Every verified class of the client's codec table must have a payload family in `script::codecs`: `CodecTable::client()` panics in a debug build when one has none.
 
 So a debug build can stop a hero that a release build plays. Use a release build to play and a debug build to find gaps.
 

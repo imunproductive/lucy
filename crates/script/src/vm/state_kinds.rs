@@ -918,6 +918,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     /// `m_FAF3B2D3` seconds (variable `00D7`, 0.9), and the state finishes
     /// then, the public 3 s and 0.9 s. Its other configs (0.1, 0.1, variable
     /// `72A3`, 3) are assumed not to change the move.
+    ///
+    /// Its frames carry the finish time, as the client's begin computes it
+    /// (0x7FF7897FD090), and the history to rewind along in frames
+    /// (`codecs.rs` `project_rewind`). The client looks `m_6B5DA460`
+    /// seconds back in the history it copies, so that history is assumed
+    /// to be `m_6B5DA460` seconds, rounded up to whole frames (3 s: 188).
     pub(super) fn begin_rewind(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
         let id = key.instance;
         let (Some(seconds), Some(duration)) = (
@@ -929,12 +935,20 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         self.assume(
             self.site(id, node),
             &node.class,
-            "rewind m_6B5DA460 s of path over m_FAF3B2D3 s",
+            "rewind m_6B5DA460 s of path over m_FAF3B2D3 s; frames send m_6B5DA460 s of history",
         );
         self.machine
             .motions
             .push(Motion::Rewind { seconds, duration });
         let delay = (duration.max(0.0) * 1000.0).round() as u64;
+        let end_ms = self.machine.now_ms.saturating_add(delay);
+        let frames = (seconds.max(0.0) * 1000.0 / FRAME_MS as f64).ceil();
+        if let Some(state) = self.state_mut(key) {
+            state.kind = StateKind::Rewind {
+                end_ms,
+                frames: frames.min(f64::from(u16::MAX)) as u16,
+            };
+        }
         self.post_after(id, delay, Event::Finish(key.raw))
     }
 
