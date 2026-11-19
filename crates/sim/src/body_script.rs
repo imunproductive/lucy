@@ -36,14 +36,15 @@ use orpheus_script::{
     expr::{team_from_filter, to_float},
     graph::GraphStore,
     map_tags::MapTags,
+    placed::{DummyChange, NextDummy},
     player::{MODE_OVERTIME, PlayerWorld},
     snapshot::{SnapshotEncoder, View},
     timeline::FRAME_MS,
     vitals::Vitals,
     vm::{
         AssistLink, AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays,
-        Motion, MoveRequest, RaisedCriteria, Root, Snapshot, StateKind, TargetCandidate,
-        TrackedStat, Unknowns, VoiceRequest, World,
+        Motion, MoveRequest, RaisedCriteria, Root, ScopeChange, Snapshot, StateKind,
+        TargetCandidate, TrackedStat, Unknowns, VoiceRequest, World,
     },
     weapons::{HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
@@ -525,6 +526,23 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     fn take_aura_changes(&mut self) -> Vec<AuraChange> {
         self.world.take_aura_changes()
+    }
+
+    fn change_scope(&mut self, change: &ScopeChange) -> io::Result<Option<u16>> {
+        let opened = self
+            .component
+            .change_scope(change, &mut self.world)
+            .map_err(unsupported)?;
+        self.log_assumptions();
+        Ok(opened)
+    }
+
+    fn set_next_dummy(&mut self, next: Option<NextDummy>) {
+        self.world.next_dummy = next;
+    }
+
+    fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
+        self.world.take_dummy_changes()
     }
 
     fn effects(&self) -> Option<&BodyEffects> {

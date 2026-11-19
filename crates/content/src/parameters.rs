@@ -129,6 +129,147 @@ impl<'a> Parameters<'a> {
             }
         })
     }
+
+    /// The blob's rows (key, value), as the client's message builder
+    /// writes them (`sub_7FF78AAB7D30`): three compact u64 (a mask byte,
+    /// bit i set for each non-zero byte i, then those bytes), a bool byte,
+    /// the row count (unsigned varint, `sub_7FF7893015A0`), per row its
+    /// key (a compact u64: the `0A4` parameter GUID) and its value (a type
+    /// byte and a body, `sub_7FF789E76470`), then two u32 entities. None:
+    /// a blob this grammar doesn't read (a value type it doesn't know).
+    pub fn rows(self) -> Option<Vec<(u64, ParameterValue)>> {
+        let mut blob = Blob(self.0);
+        for _ in 0..3 {
+            blob.compact()?;
+        }
+        blob.take(1)?;
+        let count = blob.unsigned()?;
+        let mut rows = Vec::new();
+        for _ in 0..count {
+            let key = blob.compact()?;
+            let kind = blob.take(1)?[0];
+            rows.push((key, blob.value(kind)?));
+        }
+        blob.take(8)?;
+        blob.0.is_empty().then_some(rows)
+    }
+}
+
+/// A value of a 21616 parameter blob, by its type byte (`sub_7FF789E76500`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ParameterValue {
+    Null,
+    Bool(bool),
+    Integer(i64),
+    Float(f32),
+    Asset(u64),
+    Vector([f32; 3]),
+    Entity(u32),
+    /// Types 12 and 13: each item a key (`0xFF`: none) and a value
+    /// (`sub_7FF789E76410`). `STU_79A131B4` sends every parameter as one
+    /// (its values' items: `sub_7FF78AAB7C60`).
+    Array(Vec<ParameterValue>),
+}
+
+struct Blob<'a>(&'a [u8]);
+
+impl<'a> Blob<'a> {
+    fn take(&mut self, count: usize) -> Option<&'a [u8]> {
+        let (head, rest) = self.0.split_at_checked(count)?;
+        self.0 = rest;
+        Some(head)
+    }
+
+    fn u32(&mut self) -> Option<u32> {
+        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+
+    fn f32(&mut self) -> Option<f32> {
+        Some(f32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+
+    fn u64(&mut self) -> Option<u64> {
+        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+    }
+
+    /// `sub_7FF789301330`.
+    fn compact(&mut self) -> Option<u64> {
+        let mask = self.take(1)?[0];
+        let mut value = 0;
+        for byte in 0..8 {
+            if mask & (1 << byte) != 0 {
+                value |= u64::from(self.take(1)?[0]) << (8 * byte);
+            }
+        }
+        Some(value)
+    }
+
+    /// `sub_7FF7893015A0`: below 0x80 one byte; below 0x4000 two (the
+    /// high byte with 0x80); below 2^29 four (the top byte with 0xC0, the
+    /// next, then a u16); else 0xFF and a u64.
+    fn unsigned(&mut self) -> Option<u64> {
+        let first = self.take(1)?[0];
+        Some(match first {
+            0x00..=0x7f => u64::from(first),
+            0x80..=0xbf => u64::from(first & 0x3f) << 8 | u64::from(self.take(1)?[0]),
+            0xff => self.u64()?,
+            _ => {
+                let next = self.take(1)?[0];
+                let low = u16::from_le_bytes(self.take(2)?.try_into().ok()?);
+                u64::from(first & 0x3f) << 24 | u64::from(next) << 16 | u64::from(low)
+            }
+        })
+    }
+
+    /// `sub_7FF789301460`: a sign bit (0x80) on the first byte; below 0x40
+    /// one byte; below 0x2000 two (0x40 on the first); below 2^28 four
+    /// (0x60 on the first, then a byte and a u16); else 0xFF and a u64.
+    fn signed(&mut self) -> Option<i64> {
+        let first = self.take(1)?[0];
+        if first == 0xff {
+            return Some(self.u64()? as i64);
+        }
+        let magnitude = match first & 0x60 {
+            0x00 | 0x20 => i64::from(first & 0x3f),
+            0x40 => i64::from(first & 0x1f) << 8 | i64::from(self.take(1)?[0]),
+            _ => {
+                let next = self.take(1)?[0];
+                let low = u16::from_le_bytes(self.take(2)?.try_into().ok()?);
+                i64::from(first & 0x0f) << 24 | i64::from(next) << 16 | i64::from(low)
+            }
+        };
+        Some(if first & 0x80 != 0 {
+            -magnitude
+        } else {
+            magnitude
+        })
+    }
+
+    fn value(&mut self, kind: u8) -> Option<ParameterValue> {
+        Some(match kind {
+            0 => ParameterValue::Null,
+            1 => ParameterValue::Bool(self.take(1)?[0] != 0),
+            2 => ParameterValue::Integer(self.signed()?),
+            3 => ParameterValue::Float(self.f32()?),
+            4 => ParameterValue::Asset(self.u64()?),
+            6 => ParameterValue::Vector([self.f32()?, self.f32()?, self.f32()?]),
+            10 => ParameterValue::Entity(self.u32()?),
+            12 | 13 => {
+                let count = usize::try_from(self.signed()?).ok()?;
+                let mut items = Vec::with_capacity(count.min(64));
+                for _ in 0..count {
+                    let key = self.take(1)?[0];
+                    if key != 0xff {
+                        self.value(key)?;
+                    }
+                    let kind = self.take(1)?[0];
+                    items.push(self.value(kind)?);
+                }
+                ParameterValue::Array(items)
+            }
+            _ => return None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -222,6 +363,49 @@ mod tests {
         assert_eq!(Parameters::new(&bytes).bool_before_entities(), None);
         assert_eq!(Parameters::new(&bytes[..7]).split_entity_tail(), None);
         assert_eq!(Parameters::new(&bytes[3..]).bool_before_entities(), None);
+    }
+
+    /// The pick blob of the captured traffic (the Python test's `1361`):
+    /// one row, `005D` with an array of Soldier: 76; and the Training
+    /// Partner picker's `1213` as `STU_79A131B4` builds it, `08E6` an array
+    /// of a hero and `08E7` an array of a bool.
+    #[test]
+    fn parameter_rows_read_as_the_client_writes_them() {
+        let pick = [
+            0x00, 0x00, 0x00, 0x00, 0x01, 0xc1, 0x5d, 0x40, 0x0a, 0x0c, 0x01, 0xff, 0x04, 0x6e,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0xe0, 0x02, 0x00, 0x01, 0x00, 0xa0, 0x00, 0x02, 0x00,
+            0xa0,
+        ];
+        assert_eq!(
+            Parameters::new(&pick).rows(),
+            Some(vec![(
+                0x0a40_0000_0000_005d,
+                ParameterValue::Array(vec![ParameterValue::Asset(SOLDIER)])
+            )])
+        );
+        let mut partner = vec![0x00, 0x00, 0x00, 0x00, 0x02];
+        partner.extend([0xc3, 0xe6, 0x08, 0x40, 0x0a, 0x0c, 0x01, 0xff, 0x04]);
+        partner.extend(0x02e0_0000_0000_0002_u64.to_le_bytes());
+        partner.extend([0xc3, 0xe7, 0x08, 0x40, 0x0a, 0x0c, 0x01, 0xff, 0x01, 0x01]);
+        partner.extend(0xa000_0100_u32.to_le_bytes());
+        partner.extend(0xa000_0100_u32.to_le_bytes());
+        assert_eq!(
+            Parameters::new(&partner).rows(),
+            Some(vec![
+                (
+                    0x0a40_0000_0000_08e6,
+                    ParameterValue::Array(vec![ParameterValue::Asset(0x02e0_0000_0000_0002)])
+                ),
+                (
+                    0x0a40_0000_0000_08e7,
+                    ParameterValue::Array(vec![ParameterValue::Bool(true)])
+                ),
+            ])
+        );
+        // A blob cut short, or with bytes after its entities, reads none.
+        assert_eq!(Parameters::new(&partner[..partner.len() - 1]).rows(), None);
+        partner.push(0);
+        assert_eq!(Parameters::new(&partner).rows(), None);
     }
 
     #[test]

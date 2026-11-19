@@ -2210,6 +2210,58 @@ impl Evaluator {
                     }
                 }
             }
+            // The body a controller possesses: `Eval_STU_00707E1E`
+            // (0x7FF789BF7660) takes the entity's component 44 (a
+            // controller's) and answers its possessed entity
+            // (`sub_7FF789AE4A90`); an entity without one answers none.
+            // `STU_69DBE90D` (0x7FF789C02EE0, a list) answers the same
+            // entity, then the controller's other one (`sub_7FF789AE56F0`)
+            // when that differs, none without component 44. The console
+            // `265F` sends `1214` from a player's scope 126 (on his
+            // controller) to `STU_69DBE90D(owner())`, which its scope 12 (on
+            // his body) takes, and reads `STU_00707E1E(owner()).#25456`,
+            // which scope 12 writes on the body. Assumption: the second
+            // entity is the body as well (the server's controllers possess
+            // their body and view it).
+            "STU_00707E1E" | "STU_69DBE90D"
+                if native_shape(
+                    config,
+                    class,
+                    Some(if class == "STU_00707E1E" {
+                        "m_00903303"
+                    } else {
+                        "m_entity"
+                    }),
+                ) =>
+            {
+                let operand = if class == "STU_00707E1E" {
+                    "m_00903303"
+                } else {
+                    "m_entity"
+                };
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let entity = to_entity(&self.config(child(config, operand), context, nested)?)
+                    .filter(|&entity| valid_entity(entity));
+                let body = match entity {
+                    Some(entity)
+                        if context.related_entity(EntityRelation::Controller, entity)
+                            == Some(entity) =>
+                    {
+                        Some(
+                            context
+                                .related_entity(EntityRelation::PossessedBody, entity)
+                                .ok_or_else(unsupported)?,
+                        )
+                    }
+                    _ => None,
+                }
+                .filter(|&body| valid_entity(body));
+                if class == "STU_00707E1E" {
+                    Value::Entity(body.unwrap_or(0))
+                } else {
+                    Value::Array(body.map(Value::Entity).into_iter().collect())
+                }
+            }
             // "`m_target` is not an enemy of `m_source`", as the client's
             // `Eval_STU_53F4CA65` (0x7FF789BFAD90 → 0x7FF789B2C0E0, the negated
             // enemy test 0x7FF789B2CF60; HealthAuras.md, "Client tools pass

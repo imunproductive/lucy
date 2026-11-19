@@ -19,12 +19,13 @@ use crate::{
     expr::{EntityRelation, native_shape, team_from_filter, valid_entity},
     graph::GraphStore,
     map_tags::{MapTags, TaggedEntity},
+    placed::{DummyChange, NextDummy},
     target_tags::{TargetTagLists, TargetTags},
     vitals::{PoolKind, Vitals},
     vm::{
-        AssistLink, AuraChange, BodyEffects, CombatMod, GameMessage, HealthChange, MapRays,
-        RaisedCriteria, SeenBodies, SeenBody, Site, TargetCandidate, TargetTagEffect, TrackedStat,
-        Unknowns, VoiceRequest, World,
+        AssistLink, AuraChange, BodyEffects, CombatMod, DummyBot, GameMessage, HealthChange,
+        MapRays, RaisedCriteria, SeenBodies, SeenBody, Site, TargetCandidate, TargetTagEffect,
+        TrackedStat, Unknowns, VoiceRequest, World,
     },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
@@ -125,6 +126,12 @@ pub struct PlayerWorld {
     aura_changes: Vec<AuraChange>,
     /// The stats the body's graphs counted, for the match's stat table.
     tracked_stats: Vec<TrackedStat>,
+    /// The player and first body the next dummy bot the body's graphs make
+    /// gets (the Training Partner console's scope 12 on this body makes
+    /// one on a re-pick, `265F` node 30); none: they make none now.
+    pub next_dummy: Option<NextDummy>,
+    /// The dummy bots the body's graphs made or removed, for the match.
+    dummies: Vec<DummyChange>,
     /// The statuses and combat modifiers its states hold.
     pub effects: BodyEffects,
 }
@@ -278,6 +285,20 @@ impl World for PlayerWorld {
             return false;
         }
         self.tracked_stats.push(stat);
+        true
+    }
+
+    /// A dummy bot gets the player and body the match gave
+    /// ([`Self::next_dummy`]), one a run; the match makes it (as
+    /// `placed.rs` does for the map's scripts).
+    fn create_dummy_bot(&mut self, _site: Site, dummy: DummyBot) -> Option<u32> {
+        let next = self.next_dummy.take()?;
+        self.dummies.push(DummyChange::Create { dummy, next });
+        Some(next.body)
+    }
+
+    fn remove_dummy_bot(&mut self, _site: Site, team: i64, slot: i64) -> bool {
+        self.dummies.push(DummyChange::Remove { team, slot });
         true
     }
 
@@ -700,6 +721,8 @@ impl PlayerWorld {
             health_changes: Vec::new(),
             aura_changes: Vec::new(),
             tracked_stats: Vec::new(),
+            next_dummy: None,
+            dummies: Vec::new(),
             effects: BodyEffects::default(),
         }
     }
@@ -725,6 +748,12 @@ impl PlayerWorld {
     /// The stats the body's graphs counted since the last call, in order.
     pub fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
         std::mem::take(&mut self.tracked_stats)
+    }
+
+    /// The dummy bots the body's graphs made or removed since the last
+    /// call, in order, for the match to make or remove.
+    pub fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
+        std::mem::take(&mut self.dummies)
     }
 
     /// The game messages the body sent other entities since the last call,

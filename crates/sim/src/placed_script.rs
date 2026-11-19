@@ -42,7 +42,7 @@ use orpheus_script::{
     placed::{DummyChange, EntityVolumes, MapEntityWorld, NextDummy},
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{ScriptChunk, Stream, StreamError},
-    vm::{GameMessage, MapRays, MessageEnd, TargetCandidate, Unknowns},
+    vm::{GameMessage, MapRays, MessageEnd, ScopeChange, ScopeSource, TargetCandidate, Unknowns},
 };
 use orpheus_wire::entity::GAME_MODE_ENTITY;
 
@@ -293,6 +293,34 @@ impl PlacedScripts {
             self.next_dummy = None;
         }
         self.dummies.extend(changes);
+    }
+
+    /// The scope instances the running scripts' scope states opened or
+    /// closed on their targets since the last call (the Training Partner
+    /// console's scopes on the players' bodies and controllers), for the
+    /// match to carry out in the targets' components.
+    pub fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
+        let Some(world) = &mut self.world else {
+            return Vec::new();
+        };
+        let mut changes = world.take_scope_changes();
+        changes.retain(|change| {
+            let source = match change {
+                ScopeChange::Open { source, .. } | ScopeChange::Close { source, .. } => source,
+            };
+            world
+                .entity(source.entity)
+                .is_some_and(|placed| placed.running())
+        });
+        changes
+    }
+
+    /// The match opened the scope instance `instance` on `target` for the
+    /// scope state `source`.
+    pub fn scope_opened(&mut self, source: ScopeSource, target: u32, instance: u16) {
+        if let Some(world) = &mut self.world {
+            world.scope_opened(source, target, instance);
+        }
     }
 
     /// Whether a running script runs the placed entity `entity`.
@@ -599,6 +627,121 @@ mod tests {
         // One bot a player and body: the next needs new ones.
         range.advance(101);
         assert!(range.scene.take_dummy_changes().is_empty());
+    }
+
+    /// The console's scopes (`265F`, `vm/scopes.rs`): a living blue body
+    /// a metre from the console gets scope 12 (rid2 st1) and its
+    /// controller scope 126 (rid20 st6), both created with the console.
+    /// On the body the scope instance begins st1, which follows its scope
+    /// plug to the LogicalButton st9 (button 81); the hero select key (H,
+    /// action byte 42) there sets the body's `#25456e`, the picker's
+    /// condition (StateStack rid40).
+    #[test]
+    #[ignore = "requires the derived 104319 data"]
+    fn the_range_console_opens_its_scopes_and_h_raises_the_picker() {
+        use orpheus_script::vm::{Component, EmptyWorld, Root, ScopeChange};
+        use orpheus_wire::commands::Command;
+        const CONSOLE: u32 = 0x8000_010B;
+        const BODY: u32 = 0xA000_0101;
+        const CONTROLLER: u32 = 0xA000_0100;
+        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let mut range = Range::start(&assets, 100);
+        range.advance(100);
+        let console = range
+            .scene
+            .placed_scripts()
+            .world()
+            .unwrap()
+            .entity(CONSOLE)
+            .unwrap();
+        let [x, y, z] = console.position;
+        range.scene.set_placed_target_candidates(&[TargetCandidate {
+            entity: BODY,
+            team: Some(0),
+            dead: false,
+            controller: Some(CONTROLLER),
+            ai: false,
+            ai_control: None,
+            feet: [x + 1.0, y, z],
+            height: 2.0,
+            radius: 0.4,
+            yaw: 0.0,
+            tags: None,
+            spawned: Vec::new(),
+        }]);
+        range.scene.take_scope_changes();
+        for tick in 101..=112 {
+            range.advance(tick);
+        }
+        let changes = range.scene.take_scope_changes();
+        let opened = |target: u32| {
+            changes.iter().find(
+                |change| matches!(change, ScopeChange::Open { target: to, .. } if *to == target),
+            )
+        };
+        let gaps = range.scene.placed_scripts().world().unwrap().gaps();
+        let (Some(controller), Some(change)) = (opened(CONTROLLER), opened(BODY)) else {
+            panic!("{changes:?} {gaps:?}");
+        };
+        let ScopeChange::Open {
+            source,
+            graph: 0x265f,
+            scope: 126,
+            creator: CONSOLE,
+            ..
+        } = controller
+        else {
+            panic!("{controller:?}");
+        };
+        assert_eq!((source.entity, source.state), (CONSOLE, 6));
+        let ScopeChange::Open {
+            source,
+            graph: 0x265f,
+            scope: 12,
+            creator: CONSOLE,
+            ..
+        } = change
+        else {
+            panic!("{change:?}");
+        };
+        assert_eq!((source.entity, source.state), (CONSOLE, 1));
+        // The body's side, its own component: the scope instance.
+        let mut world = EmptyWorld;
+        let mut body = Component::start(
+            range.scene.shared_graphs(),
+            BODY,
+            Variables::new(),
+            Vec::<Root>::new(),
+            112,
+            &mut world,
+            orpheus_script::vm::MAX_INIT_WORK,
+        )
+        .unwrap();
+        let id = body.change_scope(change, &mut world).unwrap().unwrap();
+        let snapshot = body.snapshot().unwrap();
+        let instance = &snapshot.instances[&id];
+        assert_eq!(instance.scope.as_ref().map(|scope| scope.id), Some(12));
+        assert!(
+            instance.states.get(&9).is_some_and(|state| state.active),
+            "{:?} {:?}",
+            instance.states.keys().collect::<Vec<_>>(),
+            snapshot.diagnostics
+        );
+        body.advance_command(
+            Command {
+                frame: 113,
+                action: 42,
+                ..Command::default()
+            },
+            &mut world,
+        )
+        .unwrap();
+        let snapshot = body.snapshot().unwrap();
+        let raised = snapshot
+            .resolved_bindings
+            .get(&(0, 25456))
+            .or_else(|| snapshot.variables.get(&25456));
+        assert_eq!(raised, Some(&orpheus_script::wire::Value::Bool(true)));
     }
 
     /// The Practice Range's spawn room `0D62` (126) takes `13C0`'s `0724`

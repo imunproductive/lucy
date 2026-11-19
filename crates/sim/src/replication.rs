@@ -48,7 +48,7 @@ use orpheus_content::{
         SCRIPT_SETTINGS,
     },
     heroes::{ANA, Hero, SOLDIER},
-    parameters::{ClientGameMessage, HeroSelectRequest},
+    parameters::{ClientGameMessage, HeroSelectRequest, OPEN_OR_CLOSE, PICK_HERO, ParameterValue},
 };
 use orpheus_core::tick::{MAX_LEASE_FRAME, TICK_PERIOD};
 use orpheus_physics::{
@@ -65,13 +65,14 @@ use orpheus_script::{
     ai_definitions::AiControl,
     graph::GraphStore,
     mode::EVERY_ENTITY,
+    placed::{DummyChange, NextDummy},
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
     vm::{
         AssistLink, AuraChange, BodyEffects, DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage,
-        HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, RaisedCriteria, Snapshot,
-        TargetCandidate, TrackedStat, VoiceRequest,
+        HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, RaisedCriteria, ScopeChange,
+        Snapshot, TargetCandidate, TrackedStat, VoiceRequest,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
@@ -286,6 +287,23 @@ pub trait OwnerBodyRuntime: Send {
     /// The aura changes the body's ApplyAura states made since the last
     /// call, for the match to hand to their targets.
     fn take_aura_changes(&mut self) -> Vec<AuraChange> {
+        Vec::new()
+    }
+
+    /// A scope instance opened or closed on the body (`vm/scopes.rs` in
+    /// `orpheus_script`; the Training Partner console's scope 12): the
+    /// instance opened.
+    fn change_scope(&mut self, _change: &ScopeChange) -> io::Result<Option<u16>> {
+        Ok(None)
+    }
+
+    /// The player and body the next dummy bot the body's graphs make gets
+    /// (the console's scope 12 on a re-pick); none: they make none.
+    fn set_next_dummy(&mut self, _next: Option<NextDummy>) {}
+
+    /// The dummy bots the body's graphs made or removed since the last
+    /// call, for the match.
+    fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
         Vec::new()
     }
 
@@ -3106,6 +3124,10 @@ impl WorldDelivery {
         if message.entity != self.owner {
             return Ok(());
         }
+        if !matches!(message.guid, PICK_HERO | OPEN_OR_CLOSE) {
+            self.instance_message(tick, message);
+            return Ok(());
+        }
         let request = message.hero_select(scene.heroes());
         tracing::debug!(
             target: "orpheus::join",
@@ -3852,6 +3874,90 @@ impl WorldDelivery {
             .and_then(|script| script.runtime.change_aura(change).err());
         if let Some(error) = failure {
             self.drop_failed_script(&error.to_string());
+        }
+    }
+
+    /// A scope instance a scope state elsewhere (the Training Partner
+    /// console's `265F`: scope 12 on the player's body, scope 126 on his
+    /// controller) opens or closes on this player's body or controller at
+    /// `tick` (`orpheus_script` `vm/scopes.rs`): the instance opened. A
+    /// failure stops that script.
+    pub fn change_scope(&mut self, tick: u32, change: &ScopeChange) -> Option<u16> {
+        let target = change.target();
+        if self.takes_body_message(target) {
+            let script = self.body_script.as_mut()?;
+            return match script.runtime.change_scope(change) {
+                Ok(opened) => opened,
+                Err(error) => {
+                    self.drop_failed_script(&error.to_string());
+                    None
+                }
+            };
+        }
+        self.controller_script
+            .as_ref()
+            .filter(|script| script.entity() == target)?;
+        self.advance_controller(tick);
+        let script = self.controller_script.as_mut()?;
+        match script.change_scope(tick, change) {
+            Ok(opened) => opened,
+            Err(error) => {
+                eprintln!("controller script of {:08X} stopped ({error})", self.owner);
+                self.controller_script = None;
+                None
+            }
+        }
+    }
+
+    /// The player and body the next dummy bot the current body's graphs
+    /// make gets (the console's scope 12 there, on a re-pick).
+    pub fn set_next_dummy(&mut self, next: Option<NextDummy>) {
+        if let Some(script) = &mut self.body_script {
+            script.runtime.set_next_dummy(next);
+        }
+    }
+
+    /// The dummy bots the current body's graphs made or removed since the
+    /// last call, for the match.
+    pub fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
+        self.body_script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.runtime.take_dummy_changes())
+    }
+
+    /// A 21616 for the player's controller with a message other than hero
+    /// select's: what the controller's instance named there sends (the
+    /// action `STU_79A131B4`, 0x7FF789814C20, writes its host's entity and
+    /// its own instance; the Training Partner picker's `1213` from the
+    /// console's scope 126 there). Its parameters (`Parameters::rows`)
+    /// go to the instance's entries; a parameter the client sends as an
+    /// array of one value is that value, as the server's own sends carry
+    /// it. A blob the server can't read is dropped.
+    fn instance_message(&mut self, tick: u32, message: ClientGameMessage<'_>) {
+        let Ok(instance) = u16::try_from(message.instance) else {
+            return;
+        };
+        let Some(rows) = message.parameters.rows() else {
+            tracing::debug!(
+                target: "orpheus::join",
+                tick,
+                guid = format_args!("{:016X}", message.guid),
+                "game message with unread parameters"
+            );
+            return;
+        };
+        let parameters = rows
+            .into_iter()
+            .map(|(key, value)| (u32::from(key as u16), parameter_value(value)))
+            .collect();
+        self.advance_controller(tick);
+        let owner = self.owner;
+        let Some(script) = &mut self.controller_script else {
+            return;
+        };
+        if let Err(error) = script.receive_in_instance(tick, instance, message.guid, parameters) {
+            eprintln!("controller script of {owner:08X} stopped ({error})");
+            self.controller_script = None;
         }
     }
 
@@ -5168,6 +5274,28 @@ pub(crate) fn start_motions(mover: &mut Mover, motions: Vec<Motion>, dt: f64) {
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+}
+
+/// A 21616 parameter as the VM's value: an array of one value is that
+/// value ([`WorldDelivery::instance_message`]).
+fn parameter_value(value: ParameterValue) -> ScriptValue {
+    match value {
+        ParameterValue::Null => ScriptValue::Null,
+        ParameterValue::Bool(flag) => ScriptValue::Bool(flag),
+        ParameterValue::Integer(number) => ScriptValue::Integer(number),
+        ParameterValue::Float(number) => ScriptValue::Float(f64::from(number)),
+        ParameterValue::Asset(guid) => ScriptValue::Asset(guid),
+        ParameterValue::Vector([x, y, z]) => {
+            ScriptValue::Vector([f64::from(x), f64::from(y), f64::from(z)])
+        }
+        ParameterValue::Entity(entity) => ScriptValue::Entity(entity),
+        ParameterValue::Array(mut items) if items.len() == 1 => {
+            parameter_value(items.pop().expect("one item"))
+        }
+        ParameterValue::Array(items) => {
+            ScriptValue::Array(items.into_iter().map(parameter_value).collect())
+        }
+    }
 }
 
 #[cfg(test)]

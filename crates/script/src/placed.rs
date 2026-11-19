@@ -38,8 +38,8 @@ use crate::{
     target_tags::TargetTags,
     vm::{
         AuraChange, Component, DummyBot, GameMessage, InitFault, MAX_INIT_WORK, MapRays,
-        MessageEnd, Root, SeenBodies, Site, Snapshot, TargetCandidate, TargetTagEffect,
-        TrackedStat, Unknowns, World, bind_values, listed_relation,
+        MessageEnd, Root, ScopeChange, ScopeSource, SeenBodies, Site, Snapshot, TargetCandidate,
+        TargetTagEffect, TrackedStat, Unknowns, World, bind_values, listed_relation,
     },
     wire::{Value, Variables},
 };
@@ -199,6 +199,7 @@ struct Shared<'a> {
     destroyed: &'a mut Vec<u32>,
     ends: &'a mut Vec<MessageEnd>,
     tracked_stats: &'a mut Vec<TrackedStat>,
+    scopes: &'a mut Vec<ScopeChange>,
 }
 
 impl Shared<'_> {
@@ -226,12 +227,6 @@ impl World for EntityWorld<'_, '_> {
 
     fn map_rays(&self) -> Option<&dyn MapRays> {
         self.shared.map_rays
-    }
-
-    fn assumption(&self, class: &str) -> Option<&'static str> {
-        // As `PlayerWorld`: the tunable's authored value, not scaled for the
-        // entity.
-        (class == "STU_082FA44E").then_some("the tunable's authored value")
     }
 
     fn ruleset(&mut self, id: u32) -> Option<Value> {
@@ -270,7 +265,11 @@ impl World for EntityWorld<'_, '_> {
 
     /// `STU_A3DEF368` is the mode entity (the first entity with component
     /// 114, as [`crate::mode`] answers it): the Practice Range pad `26F8`
-    /// and console `265F` read ruleset 29450 through it.
+    /// and console `265F` read ruleset 29450 through it. `STU_6EA8533F`
+    /// is every player (the console's scope 126): the client walks a list
+    /// of the game's player entities (0x7FF789BEC4C0); the players'
+    /// controllers here, in the listed bodies' order (assumption: the
+    /// list's order and the AI players' place in it).
     fn native(&mut self, _site: Site, config: &Json) -> Option<Value> {
         match config.get("$")?.as_str()? {
             "STU_082FA44E" => self
@@ -280,6 +279,30 @@ impl World for EntityWorld<'_, '_> {
                 .value(config)
                 .map(Value::Float),
             "STU_A3DEF368" => Some(Value::Entity(GAME_MODE_ENTITY)),
+            "STU_6EA8533F" => {
+                let mut players = Vec::new();
+                for controller in self
+                    .shared
+                    .players
+                    .iter()
+                    .filter_map(|player| player.controller)
+                {
+                    if !players.contains(&Value::Entity(controller)) {
+                        players.push(Value::Entity(controller));
+                    }
+                }
+                Some(Value::Array(players))
+            }
+            _ => None,
+        }
+    }
+
+    fn assumption(&self, class: &str) -> Option<&'static str> {
+        match class {
+            // As `PlayerWorld`: the tunable's authored value, not scaled
+            // for the entity.
+            "STU_082FA44E" => Some("the tunable's authored value"),
+            "STU_6EA8533F" => Some("the players' controllers in the listed bodies' order"),
             _ => None,
         }
     }
@@ -488,6 +511,13 @@ impl World for EntityWorld<'_, '_> {
         true
     }
 
+    /// A scope state's instances on its targets go to the match, which
+    /// opens them in the targets' components.
+    fn change_scope(&mut self, _site: Site, change: ScopeChange) -> bool {
+        self.shared.scopes.push(change);
+        true
+    }
+
     /// A spawn room's own area (the match's map data).
     fn in_entity_volume(&self, _site: Site, entity: u32, point: [f64; 3]) -> Option<bool> {
         self.shared.volumes?.contains(entity, point)
@@ -516,6 +546,9 @@ pub struct MapEntityWorld {
     ends: Vec<MessageEnd>,
     /// The stats the spawned entities counted ([`World::track_stat`]).
     tracked_stats: Vec<TrackedStat>,
+    /// The scope instances the scope states opened or closed on their
+    /// targets ([`World::change_scope`]).
+    scopes: Vec<ScopeChange>,
     /// The player and body the next dummy bot gets, if the match gave one.
     next_dummy: Option<NextDummy>,
     /// The dummy bots made or removed since the match last looked.
@@ -556,6 +589,7 @@ impl MapEntityWorld {
             destroyed: Vec::new(),
             ends: Vec::new(),
             tracked_stats: Vec::new(),
+            scopes: Vec::new(),
             next_dummy: None,
             dummies: Vec::new(),
             entities: Vec::new(),
@@ -632,6 +666,7 @@ impl MapEntityWorld {
             destroyed: &mut self.destroyed,
             ends: &mut self.ends,
             tracked_stats: &mut self.tracked_stats,
+            scopes: &mut self.scopes,
             next_dummy: &mut self.next_dummy,
             dummies: &mut self.dummies,
         };
@@ -769,6 +804,7 @@ impl MapEntityWorld {
             destroyed: &mut self.destroyed,
             ends: &mut self.ends,
             tracked_stats: &mut self.tracked_stats,
+            scopes: &mut self.scopes,
             next_dummy: &mut self.next_dummy,
             dummies: &mut self.dummies,
         };
@@ -845,6 +881,7 @@ impl MapEntityWorld {
             destroyed: &mut self.destroyed,
             ends: &mut self.ends,
             tracked_stats: &mut self.tracked_stats,
+            scopes: &mut self.scopes,
             next_dummy: &mut self.next_dummy,
             dummies: &mut self.dummies,
         };
@@ -888,6 +925,26 @@ impl MapEntityWorld {
     /// match to credit to their targets' players.
     pub fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
         std::mem::take(&mut self.tracked_stats)
+    }
+
+    /// The scope instances the scripts' scope states opened or closed on
+    /// their targets since the last call, for the match to carry out in
+    /// the targets' components (`vm/scopes.rs`).
+    pub fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
+        std::mem::take(&mut self.scopes)
+    }
+
+    /// The match opened the scope instance `instance` on `target` for the
+    /// scope state `source`: that state's frame record names it.
+    pub fn scope_opened(&mut self, source: ScopeSource, target: u32, instance: u16) {
+        if let Some(component) = self
+            .entities
+            .iter_mut()
+            .find(|placed| placed.entity == source.entity)
+            .and_then(|placed| placed.component.as_mut())
+        {
+            component.scope_opened(source, target, instance);
+        }
     }
 
     /// The player and first body the next dummy bot the scripts make gets

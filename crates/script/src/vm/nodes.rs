@@ -958,6 +958,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             class if ASSUMED_PLAIN_STATES.contains(&class) => StateKind::Plain,
             class if ASSUMED_INERT_STATES.contains(&class) => StateKind::Plain,
             "STU_77E13026" => StateKind::HitList,
+            "STU_550D0C5C" => StateKind::Scope,
             "STUStatescriptStateWeaponVolley" => StateKind::WeaponVolley {
                 volleys: 1,
                 offset_ms: 0,
@@ -1089,6 +1090,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.register_tick(key, self.machine.now_ms);
             }
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
+            StateKind::Scope => self.begin_scope(key, node, depth)?,
             StateKind::Plain if node.class == "STU_160F2578" => {
                 if !self.write_tag_query(id, node)? {
                     return Ok(());

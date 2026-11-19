@@ -16,7 +16,10 @@
 //! command bit, in the client's order: bit -> logical button 0x40 11, 0x80
 //! 12, 0x01 20, 0x02 29, 0x08 35, 0x10 36, 0x20 37, 0x04 30, 0x800 31, 0x400
 //! 14, then the second byte 0x01 111, 0x02 112, 0x04 113, 0x08 114, 0x10 110,
-//! 0x20 116, 0x40 115; an action byte presses and releases its button.
+//! 0x20 116, 0x40 115; an action byte presses and releases its button, by
+//! the client's 46-entry table `0x7FF78BC278F0` (ClientInput.md): code 42
+//! is logical 81, the hero select key (H), which the Training Partner
+//! console `265F` takes too.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -56,7 +59,15 @@ pub fn button_edges(previous: u32, current: u32, action: u8) -> impl Iterator<It
         9 => Some(71),
         10..=15 => Some(81 + action),
         16 => Some(120),
-        17..=19 => Some(80 + action),
+        17..=28 => Some(80 + action),
+        29..=38 => Some(104 + action),
+        39 => Some(117),
+        40 => Some(118),
+        41 => Some(109),
+        42 => Some(81),
+        43 => Some(90),
+        44 => Some(2),
+        45 => Some(3),
         _ => None,
     };
     INPUTS
@@ -207,7 +218,11 @@ mod tests {
             ]
         );
         assert_eq!(collect(8, 8, 19), [(99, true), (99, false)]);
-        assert!(collect(0x004000, 0, 20).is_empty());
+        // The client's table `0x7FF78BC278F0` (ClientInput.md): 20 is 100,
+        // 42 the hero select key 81; it has 46 entries.
+        assert_eq!(collect(0x004000, 0, 20), [(100, true), (100, false)]);
+        assert_eq!(collect(0, 0, 42), [(81, true), (81, false)]);
+        assert!(collect(0x004000, 0, 46).is_empty());
     }
 
     #[test]

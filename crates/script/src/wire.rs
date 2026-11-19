@@ -453,6 +453,8 @@ pub struct Instance {
     pub creator: Option<u32>,
     /// Parent instance and raw state index.
     pub parent: Option<(u16, u16)>,
+    /// The scope state that opened it, for a scope instance.
+    pub scope: Option<ScopeDescriptor>,
     pub presence: BTreeMap<usize, Value>,
     pub variables: Variables,
     /// Owner entries contain the payload after the active bit. Remote entries
@@ -467,11 +469,26 @@ impl Instance {
             layout,
             creator: None,
             parent,
+            scope: None,
             presence: BTreeMap::new(),
             variables: Variables::new(),
             states: BTreeMap::new(),
         }
     }
+}
+
+/// A scope instance's link to the scope state that opened it on another
+/// entity (`STU_550D0C5C`, `vm/scopes.rs`): the scope's id (the state's
+/// `m_C41A9BE2.m_5AEA0A51`) and the state's entity, instance and raw index.
+/// The client keeps the id in the instance (`+8`, which picks the entries
+/// and the scope plug that run in it) and the state as the instance's
+/// parent reference (`+808`; `sub_7FF789C1F140`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScopeDescriptor {
+    pub scope: u32,
+    pub entity: u32,
+    pub instance: u16,
+    pub state: u16,
 }
 
 /// An instance descriptor, as the client reads it (0x7FF78991ADC0). The
@@ -480,12 +497,18 @@ impl Instance {
 /// without the bit the client takes the frame's own entity. It also keeps a
 /// predicted instance only when that one's `#27` is the same
 /// (0x7FF78991F2C7). So `creator` is the entity it was created with when
-/// that is another entity (an aura's applier), else none.
+/// that is another entity (an aura's applier), else none. After the parent
+/// comes the references bit: a scope id (w_var, the pending record's `+0xC`,
+/// which becomes the instance's `+8` at `0x7FF78991F3E6`), a count (w_u16)
+/// and per reference an entity id, then, when that is valid, its instance
+/// and raw state (two w_var), copied into the instance's parent references
+/// (`+808`, `0x7FF78991F41B`).
 pub(crate) fn write_descriptor(
     out: &mut BitWriter,
     graph: u16,
     creator: Option<u32>,
     parent: Option<(u16, u16)>,
+    scope: Option<ScopeDescriptor>,
 ) -> Result<(), WireError> {
     out.bits(u64::from(graph), 16)?;
     out.bit(creator.is_some());
@@ -498,7 +521,14 @@ pub(crate) fn write_descriptor(
         out.w_var(u32::from(parent));
         out.w_var(u32::from(state));
     }
-    out.bit(false); // no references
+    out.bit(scope.is_some());
+    if let Some(scope) = scope {
+        out.w_var(scope.scope);
+        out.w_u16(1);
+        out.entity_id(Some(scope.entity));
+        out.w_var(u32::from(scope.instance));
+        out.w_var(u32::from(scope.state));
+    }
     Ok(())
 }
 
@@ -554,6 +584,7 @@ fn full_frame(
             instance.layout.graph,
             instance.creator,
             instance.parent,
+            instance.scope,
         )?;
     }
     out.w_u16(0);
@@ -655,8 +686,16 @@ pub fn read_full_head(
         } else {
             None
         };
+        // A scope instance's references (scope id, count, then each
+        // entity and, for a valid one, its instance and state).
         if bits.bit()? {
-            return Err(WireError::InvalidValue);
+            bits.w_var()?;
+            for _ in 0..bits.w_u16()? {
+                if bits.entity_id()?.is_some() {
+                    bits.w_var()?;
+                    bits.w_var()?;
+                }
+            }
         }
         instances.push((id, graph, creator, parent));
     }
@@ -846,11 +885,19 @@ mod tests {
 
     /// Read in the client's order (0x7FF78991ADC0): graph, the creator bit
     /// and entity id (0x7FF789CC0F70: 2 type bits, then 8, 16 or 32 bits of
-    /// index), the flag, the parent, the references.
+    /// index), the flag, the parent, the references: a scope instance's
+    /// scope id, one reference and its entity, instance and state.
     #[test]
     fn a_descriptor_carries_a_creator_the_way_the_client_reads_it() {
         let mut out = BitWriter::new();
-        write_descriptor(&mut out, 0x0c72, Some(0xa000_0202), Some((1, 43))).unwrap();
+        write_descriptor(&mut out, 0x0c72, Some(0xa000_0202), Some((1, 43)), None).unwrap();
+        let scope = ScopeDescriptor {
+            scope: 12,
+            entity: 0x8000_010b,
+            instance: 1,
+            state: 1,
+        };
+        write_descriptor(&mut out, 0x265f, Some(0x8000_010b), None, Some(scope)).unwrap();
         let mut bits = BitReader::new(out.as_bytes());
         assert_eq!(bits.bits(16), Ok(0x0c72));
         assert_eq!(bits.bit(), Ok(true));
@@ -861,6 +908,14 @@ mod tests {
         assert_eq!(bits.bit(), Ok(true));
         assert_eq!((bits.w_var(), bits.w_var()), (Ok(1), Ok(43)));
         assert_eq!(bits.bit(), Ok(false));
+        assert_eq!(bits.bits(16), Ok(0x265f));
+        assert_eq!(bits.bit(), Ok(true));
+        assert_eq!(bits.entity_id(), Ok(Some(0x8000_010b)));
+        assert_eq!((bits.bit(), bits.bit()), (Ok(false), Ok(false)));
+        assert_eq!(bits.bit(), Ok(true));
+        assert_eq!((bits.w_var(), bits.w_u16()), (Ok(12), Ok(1)));
+        assert_eq!(bits.entity_id(), Ok(Some(0x8000_010b)));
+        assert_eq!((bits.w_var(), bits.w_var()), (Ok(1), Ok(1)));
         assert_eq!(bits.position(), out.bit_len());
     }
 

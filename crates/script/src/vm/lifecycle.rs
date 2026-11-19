@@ -118,6 +118,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             StateKind::Assist => self.end_assist(key, node),
             StateKind::ApplyAura => self.end_auras(key),
+            StateKind::Scope => self.end_scopes(key),
             StateKind::SendMessage => self.end_send_state(key, node)?,
             StateKind::StatTime => self.end_stat_time(key, node),
             _ => (),
@@ -251,7 +252,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                                 | StateKind::HealthPool { pool: Some(_) }
                                 | StateKind::TargetTag { effect: Some(_) }
                         )
-                        || (state.kind == StateKind::ApplyAura && !state.tracked.is_empty()))
+                        || (state.kind == StateKind::ApplyAura && !state.tracked.is_empty())
+                        || (state.kind == StateKind::Scope && !state.scopes.is_empty()))
                     .then_some((raw, state.kind))
                 })
                 .collect();
@@ -275,6 +277,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     self.finish_chase(key, 0)?;
                 } else if kind == StateKind::ApplyAura {
                     self.end_auras(key);
+                } else if kind == StateKind::Scope {
+                    self.end_scopes(key);
                 } else if matches!(kind, StateKind::Ability { .. }) {
                     self.unlink_ability_stack(key, 0)?;
                     self.finish_cooldown(key)?;

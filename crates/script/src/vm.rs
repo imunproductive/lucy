@@ -24,6 +24,7 @@ mod machine;
 mod nodes;
 mod play;
 mod rays;
+mod scopes;
 mod state_kinds;
 mod stats;
 mod statuses;
@@ -43,6 +44,7 @@ use std::{
 pub use auras::{AURA_APPLIED, AuraChange, AuraSource};
 pub use health::HealthChange;
 use indexmap::IndexMap;
+pub use scopes::{ScopeChange, ScopeHit, ScopeLink, ScopeSource};
 use serde_json::Value as Json;
 pub use statuses::{
     ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, BodyEffects, CombatMod, DAMAGE_DEALT,
@@ -406,6 +408,13 @@ pub fn listed_relation(
             .find(|body| body.entity == entity)
             .map_or_else(|| by_controller().map(|_| entity), |body| body.controller),
         EntityRelation::PossessedBody => by_controller().map(|body| body.entity),
+        // The controller, which the clients see possessing every player's
+        // body (as `PlayerWorld` answers its own; the same assumption for
+        // an AI hero's body). The Training Partner console's search `265F`
+        // rid1 filters on `STU_F7262B36(candidate).#23689`.
+        EntityRelation::CurrentPossessor => {
+            bodies.iter().find(|body| body.entity == entity)?.controller
+        }
         EntityRelation::Owner => {
             bodies
                 .iter()
@@ -866,6 +875,14 @@ pub trait World {
     fn change_aura(&mut self, _site: Site, _change: AuraChange) -> bool {
         false
     }
+
+    /// A scope state (`STU_550D0C5C`, `vm/scopes.rs`) opened a scope
+    /// instance on a target or closed it: the match hands it to the
+    /// target's component ([`Component::change_scope`]). False: this world
+    /// opens none, and the state has no effect.
+    fn change_scope(&mut self, _site: Site, _change: ScopeChange) -> bool {
+        false
+    }
 }
 
 /// A criteria a graph raised ([`World::criteria`]).
@@ -1131,6 +1148,9 @@ pub enum StateKind {
     /// TrackStatTime (`STU_441B50E4`, server-only): the seconds it ran go
     /// to its stats when it ends ([`World::track_stat`]).
     StatTime,
+    /// A per-target scope (`STU_550D0C5C`, `vm/scopes.rs`): its targets'
+    /// scope instances are [`State::scopes`].
+    Scope,
 }
 
 impl StateKind {
@@ -1178,6 +1198,8 @@ pub struct State {
     buffered_press: Option<BufferedPress>,
     linked_variable: Option<VarKey>,
     ability_stack: Option<VarKey>,
+    /// A scope state's targets and their instances (`vm/scopes.rs`).
+    pub scopes: Vec<ScopeHit>,
 }
 
 impl State {
@@ -1199,6 +1221,7 @@ impl State {
             buffered_press: None,
             linked_variable: None,
             ability_stack: None,
+            scopes: Vec::new(),
         }
     }
 }
@@ -1311,6 +1334,9 @@ pub struct Instance {
     pub start_ms: u64,
     pub variables: Variables,
     pub states: IndexMap<u16, State>,
+    /// A scope instance's link to the scope state that opened it on
+    /// another entity (`vm/scopes.rs`).
+    pub scope: Option<ScopeLink>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -2301,6 +2327,10 @@ struct Machine {
     /// The auras ApplyAura states elsewhere put on this body, by who put
     /// them there: their instances (`vm/auras.rs`).
     applied_auras: BTreeMap<AuraSource, u16>,
+    /// The scope instances scope states elsewhere opened here, by who
+    /// opened them: the instance and whether its state keeps it
+    /// (`vm/scopes.rs`).
+    scopes: BTreeMap<ScopeSource, (u16, bool)>,
 }
 
 struct Vm<'graph, 'world, 'machine, W> {
@@ -2370,6 +2400,30 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         variables: Variables,
         source: u32,
     ) -> Result<bool, InitFault> {
+        self.create_instance(id, graph, parent, variables, source, None)
+    }
+
+    /// A new scope instance ([`Self::create`] in a scope, `vm/scopes.rs`).
+    fn create_scoped(
+        &mut self,
+        id: u16,
+        graph: u32,
+        scope: Option<ScopeLink>,
+        source: u32,
+    ) -> Result<bool, InitFault> {
+        self.create_instance(id, graph, None, Variables::new(), source, scope)
+    }
+
+    /// Its entries of its scope (none: 0) queue at the current clock.
+    fn create_instance(
+        &mut self,
+        id: u16,
+        graph: u32,
+        parent: Option<(u16, u16)>,
+        variables: Variables,
+        source: u32,
+        scope: Option<ScopeLink>,
+    ) -> Result<bool, InitFault> {
         self.spend("instance creation")?;
         let Some(definition) = self.graphs.graph(graph) else {
             self.report(
@@ -2388,6 +2442,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         } else {
             self.machine.snapshot.entity
         };
+        let scope_id = scope.as_ref().map_or(0, |scope| scope.id);
         self.machine.next_id = self.machine.next_id.max(u32::from(id) + 1);
         self.machine.snapshot.instances.insert(
             id,
@@ -2398,13 +2453,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 start_ms: self.machine.now_ms,
                 variables,
                 states: IndexMap::new(),
+                scope,
             },
         );
         for position in definition.entries.iter().flatten() {
-            if definition
-                .node(*position)
-                .is_some_and(|node| !node.client_only && is_entry(node))
-            {
+            if definition.node(*position).is_some_and(|node| {
+                !node.client_only && is_entry(node) && scopes::entry_scope(node) == scope_id
+            }) {
                 self.post(id, Event::Entry(*position))?;
             }
         }

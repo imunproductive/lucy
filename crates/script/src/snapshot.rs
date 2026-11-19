@@ -241,6 +241,9 @@ struct ProjectedInstance {
     /// (the descriptor's creator, `wire::write_descriptor`).
     creator: Option<u32>,
     parent: Option<(u16, u16)>,
+    /// The scope state that opened it on another entity (a scope
+    /// instance, `vm/scopes.rs`).
+    scope: Option<wire::ScopeDescriptor>,
     variables: ProjectedVariables,
     states: BTreeMap<u16, ProjectedState>,
     events: Vec<ProjectedEvent>,
@@ -595,6 +598,12 @@ impl<'a> SnapshotEncoder<'a> {
                     graph: instance.graph,
                     creator: (instance.source != snapshot.entity).then_some(instance.source),
                     parent: instance.parent,
+                    scope: instance.scope.as_ref().map(|scope| wire::ScopeDescriptor {
+                        scope: scope.id,
+                        entity: scope.source.entity,
+                        instance: scope.source.instance,
+                        state: scope.source.state,
+                    }),
                     variables,
                     states,
                     events: if view == View::Owner {
@@ -770,6 +779,7 @@ impl<'a> SnapshotEncoder<'a> {
             let graph = self.graph(id, instance.graph)?;
             let mut wire = Instance::new(id, Layout::try_from(graph)?, instance.parent);
             wire.creator = instance.creator;
+            wire.scope = instance.scope;
             wire.variables = instance.variables.values.clone();
             for (slot, (_, var)) in graph.presence_vars().enumerate() {
                 if let Some(value) = var.0.and_then(|var| wire.variables.swap_remove(&var)) {
@@ -826,7 +836,13 @@ impl<'a> SnapshotEncoder<'a> {
             last = id;
             let graph =
                 u16::try_from(instance.graph).map_err(|_| WireError::GraphIndex(instance.graph))?;
-            wire::write_descriptor(&mut out, graph, instance.creator, instance.parent)?;
+            wire::write_descriptor(
+                &mut out,
+                graph,
+                instance.creator,
+                instance.parent,
+                instance.scope,
+            )?;
         }
         out.w_u16(0);
         let variables = &snapshot.variables;
@@ -1066,6 +1082,7 @@ impl<'a> SnapshotEncoder<'a> {
                 before.graph != next.graph
                     || before.creator != next.creator
                     || before.parent != next.parent
+                    || before.scope != next.scope
             }) {
                 return Err(SnapshotError::ReboundInstance(id));
             }
@@ -1219,7 +1236,13 @@ impl<'a> SnapshotEncoder<'a> {
                 if instance.descriptor {
                     let graph = u16::try_from(current.graph)
                         .map_err(|_| WireError::GraphIndex(current.graph))?;
-                    wire::write_descriptor(&mut body, graph, current.creator, current.parent)?;
+                    wire::write_descriptor(
+                        &mut body,
+                        graph,
+                        current.creator,
+                        current.parent,
+                        current.scope,
+                    )?;
                 }
             }
         }
@@ -1802,6 +1825,33 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
             }
             payload
         }
+        // A scope state's targets (`vm/scopes.rs`, `Write_STU_07AD90EE`
+        // 0x7FF789C56790): per target its value, the entity holding its
+        // instance (the target) and the instance once opened, its index,
+        // the keep flag and the bit every created hit sets (`+37`); the
+        // closing bit (`+0x3B4`) is cleared at the state's begin.
+        (StateKind::Scope, Some("hits")) => StatePayload::from([
+            (
+                "hits".into(),
+                Value::Array(
+                    state
+                        .scopes
+                        .iter()
+                        .enumerate()
+                        .map(|(index, hit)| {
+                            Value::Array(vec![
+                                Value::Entity(hit.target),
+                                hit.instance.map_or(Value::Null, |_| Value::Entity(hit.target)),
+                                Value::Integer(i64::from(hit.instance.unwrap_or(0))),
+                                Value::Integer(index as i64),
+                                Value::Bool(hit.keep),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            ("flag".into(), Value::Bool(false)),
+        ]),
         (StateKind::HitList, Some("hits")) => {
             StatePayload::from([("flag".into(), Value::Bool(false))])
         }

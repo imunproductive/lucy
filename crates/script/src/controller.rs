@@ -33,8 +33,8 @@ use crate::{
     expr::EntityRelation,
     graph::GraphStore,
     vm::{
-        Component, GameMessage, InitFault, MAX_INIT_WORK, Root, Site, Snapshot, StateKind,
-        TrackedStat, Unknowns, VoiceRequest, World,
+        Component, GameMessage, InitFault, MAX_INIT_WORK, Root, ScopeChange, Site, Snapshot,
+        StateKind, TrackedStat, Unknowns, VoiceRequest, World,
     },
     wire::{Value, Variables},
 };
@@ -400,6 +400,39 @@ impl ControllerScript {
     pub fn receive(&mut self, message: u64, parameters: Variables) -> Result<usize, InitFault> {
         self.component
             .receive_message(0, message, parameters, &mut self.world)
+    }
+
+    /// A game message the client sent one of the controller's instances
+    /// at `frame` (21616 for the controller with that instance: the
+    /// action `STU_79A131B4`, 0x7FF789814C20, names its host's entity and
+    /// its own instance): the instance's entries for it take it now.
+    /// Returns how many did.
+    pub fn receive_in_instance(
+        &mut self,
+        frame: u32,
+        instance: u16,
+        message: u64,
+        parameters: Variables,
+    ) -> Result<usize, InitFault> {
+        self.advance(frame)?;
+        let entries = self
+            .component
+            .queue_message(instance, message, parameters)?;
+        if entries != 0 {
+            self.component.run_now(&mut self.world)?;
+        }
+        Ok(entries)
+    }
+
+    /// Open or close a scope instance on the controller at `frame`
+    /// (`vm/scopes.rs`; the Training Partner console's scope 126).
+    pub fn change_scope(
+        &mut self,
+        frame: u32,
+        change: &ScopeChange,
+    ) -> Result<Option<u16>, InitFault> {
+        self.advance(frame)?;
+        self.component.change_scope(change, &mut self.world)
     }
 
     /// The client's hero select request (21616) at `frame`, to `288B`'s

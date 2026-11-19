@@ -68,7 +68,7 @@ use orpheus_script::{
     map_tags::MapTags,
     placed::{DummyChange, NextDummy},
     vitals::Vitals,
-    vm::{GameMessage, MapRays, MessageEnd, TargetCandidate, Unknowns},
+    vm::{GameMessage, MapRays, MessageEnd, ScopeChange, ScopeSource, TargetCandidate, Unknowns},
     wire::Variables,
 };
 use orpheus_wire::entity::{Component, EntityUpdate, Operation};
@@ -943,6 +943,18 @@ impl PreparedScene {
     /// call, for the match to make or remove.
     pub fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
         self.placed_scripts.take_dummy_changes()
+    }
+
+    /// The scope instances the placed scripts opened or closed on their
+    /// targets since the last call ([`PlacedScripts::take_scope_changes`]).
+    pub fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
+        self.placed_scripts.take_scope_changes()
+    }
+
+    /// The match opened a placed script's scope instance
+    /// ([`PlacedScripts::scope_opened`]).
+    pub fn scope_opened(&mut self, source: ScopeSource, target: u32, instance: u16) {
+        self.placed_scripts.scope_opened(source, target, instance);
     }
 
     /// The scene's entities that take game messages at world tick `tick`

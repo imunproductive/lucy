@@ -606,9 +606,7 @@ fn project(
         Family::Message => {
             fields.insert("stacked", Value::Bool(vm.flag("stacked")).into());
         }
-        Family::Hits => {
-            fields.insert("flag", Value::Bool(vm.flag("flag")).into());
-        }
+        Family::Hits => project_hits(&mut fields, &vm)?,
         Family::Flags13 if owner => {
             let value = vm.integer("value", 0)?;
             fields.insert("low", Value::Integer(value & 63).into());
@@ -719,6 +717,40 @@ fn project_ability(
             }
         }
     }
+    Ok(())
+}
+
+/// A scope state's targets (`snapshot.rs` builds the rows: target, host
+/// entity or null, instance, index, keep), as `Write_STU_07AD90EE`
+/// (0x7FF789C56790) writes them; melee's hit list (`STU_77E13026`) has
+/// none.
+fn project_hits(fields: &mut LayoutFields<'static>, vm: &Vm<'_>) -> Result<(), PayloadError> {
+    let hits = match vm.0.get("hits") {
+        None => &[][..],
+        Some(Value::Array(hits)) => hits.as_slice(),
+        _ => return Err(invalid_field("hits")),
+    };
+    let mut rows = Vec::with_capacity(hits.len());
+    for hit in hits {
+        let Value::Array(row) = hit else {
+            return Err(invalid_field("hits"));
+        };
+        let [target, host, instance, index, keep] = row.as_slice() else {
+            return Err(invalid_field("hits"));
+        };
+        rows.push(LayoutFields::from([
+            ("value", target.clone().into()),
+            ("entity", host.clone().into()),
+            ("extra", instance.clone().into()),
+            ("w", index.clone().into()),
+            ("a", keep.clone().into()),
+            ("b", Value::Bool(true).into()),
+        ]));
+    }
+    let count = u16::try_from(rows.len()).map_err(|_| invalid_field("hits"))?;
+    fields.insert("n", Value::Integer(i64::from(count)).into());
+    fields.insert("hits", FieldValue::Rows(rows));
+    fields.insert("flag", Value::Bool(vm.flag("flag")).into());
     Ok(())
 }
 
