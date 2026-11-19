@@ -1741,11 +1741,12 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
             | StateKind::StatTime,
             Some("none"),
         ) if codec.empty() => StatePayload::new(),
-        // The Grappling Hook cast (`STU_4BBC5D09`, writer `0x7FF789BA5C40`):
-        // the milliseconds since it began; the reader takes its start from it.
+        // The Grappling Hook cast (`STU_4BBC5D09`): its begin; an owner frame
+        // carries the milliseconds from it to the frame (`codecs.rs`
+        // `project_start`).
         (StateKind::GrappleCast, Some("start")) => StatePayload::from([(
-            "t".into(),
-            Value::Integer(i64::try_from(now_ms.saturating_sub(state.start_ms)).ok()?),
+            "start".into(),
+            Value::Integer(i64::try_from(state.start_ms).ok()?),
         )]),
         // The block's link field is the reference's absent link: Python
         // gave a plain state (the base `State.payload`) and Disable Button

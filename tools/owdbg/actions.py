@@ -20,7 +20,8 @@ at the first input sample after the server's '[MM] Match found', then after a fi
 (~20 s); with --actions-start login right after the login. Steps (`;` or newlines):
 
     wait S                     pause S seconds
-    tap BUTTON [S]             press for S seconds (default 0.06), then release
+    tap BUTTON [S]             press for S seconds (default 0.06), then release; in at least one
+                               input sample (a client sampling slower holds it to its next sample)
     hold BUTTON S              the same, any length (tap and hold block the script)
     press BUTTON / release BUTTON   keep held until released (does not block)
     fire [S]  jump  crouch [S]  melee  reload  interact  ultimate
@@ -673,7 +674,7 @@ class Actions:
         self.i = 0
         self.until = None  # the current step's end (elapsed)
         self.held = {}  # name -> bits (press/release)
-        self.timed = []  # [end, name, bits]
+        self.timed = []  # [end, name, bits, sampled]: held until `end` and at least one sample
         self.move = None  # (forward, right, end)
         self.actions = []  # action codes to send, one per input sample
         self.want_view = None  # (yaw16, pitch16) to set with set-view
@@ -773,6 +774,8 @@ class Actions:
             return  # back from set-view (the restored context hits this site again)
         self._tick()
         buttons, fwd, right = self._input()
+        for t in self.timed:
+            t[3] = True
         if self.foreground is None:
             if buttons:
                 old = struct.unpack("<I", self.dbg.read(c + SAMPLE_BUTTONS, 4))[0]
@@ -798,7 +801,7 @@ class Actions:
         buttons = 0
         for bits in self.held.values():
             buttons |= bits
-        for _, _, bits in self.timed:
+        for _, _, bits, _ in self.timed:
             buttons |= bits
         fwd, right = (self.move[0], self.move[1]) if self.move else (0, 0)
         return buttons, fwd, right
@@ -882,7 +885,7 @@ class Actions:
         if self.started is None or self.call is not None:
             return
         now = self.dbg.elapsed
-        self.timed = [t for t in self.timed if t[0] > now]
+        self.timed = [t for t in self.timed if t[0] > now or not t[3]]
         if self.move and self.move[2] <= now:
             self.move = None
         if self.track is not None:
@@ -921,7 +924,7 @@ class Actions:
             self.until = now + step[1]
         elif verb == "hold":
             _, name, bits, secs = step
-            self.timed.append([now + secs, name, bits])
+            self.timed.append([now + secs, name, bits, False])
             self.until = now + secs
             if bits & BUTTONS["jump"]:
                 self.jump_watch = {"end": now + 1.5, "ys": []}

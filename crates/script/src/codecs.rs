@@ -519,6 +519,7 @@ enum Family {
     Frames,
     Counter2,
     Pulser,
+    Start,
 }
 
 impl Family {
@@ -543,6 +544,7 @@ impl Family {
             "frames" => Self::Frames,
             "counter2" => Self::Counter2,
             "pulser" => Self::Pulser,
+            "start" => Self::Start,
             _ => return None,
         })
     }
@@ -626,6 +628,7 @@ fn project(
             fields.insert("fresh", Value::Bool(vm.flag("fresh")).into());
             fields.insert("count", Value::Integer(vm.integer("count", 0)?).into());
         }
+        Family::Start => project_start(&mut fields, &vm, mode)?,
     }
     Ok(fields)
 }
@@ -655,6 +658,29 @@ fn project_volley(
     fields.insert("has_volleys", Value::Bool(volleys != 1).into());
     fields.insert("volleys", Value::Integer(volleys).into());
     fields.insert("counter", Value::Integer(vm.integer("counter", 0)?).into());
+    Ok(())
+}
+
+/// Widowmaker's Grappling Hook cast (`STU_4BBC5D09`): in an owner frame,
+/// the milliseconds from its begin to the start of the frame's window, as
+/// its writer `0x7FF789BA5C40` gives them (the host's frame × frame
+/// length − the begin at `+72`); the reader `0x7FF789BA1150` takes the
+/// begin back from the frame's. Negative when the cast began inside the
+/// frame's window (a timer's end). Observers get nothing.
+fn project_start(
+    fields: &mut LayoutFields<'static>,
+    vm: &Vm<'_>,
+    mode: PayloadMode,
+) -> Result<(), PayloadError> {
+    if let PayloadMode::Owner { frame_time, .. } = mode {
+        let start = vm
+            .optional_int("start")?
+            .ok_or_else(|| invalid_field("start"))?;
+        let t = frame_time
+            .checked_sub(start)
+            .ok_or(PayloadError::TimeRange)?;
+        fields.insert("t", Value::Integer(t).into());
+    }
     Ok(())
 }
 
@@ -1065,9 +1091,21 @@ mod tests {
         assert!(!table.sendable("STU_2F07848F", false));
         let mut projected: Vec<_> = table.classes().filter(|codec| codec.projected()).collect();
         projected.sort_by(|left, right| left.hash.cmp(&right.hash));
-        assert_eq!(projected.len(), 580);
+        assert_eq!(projected.len(), 581);
         let samples = samples();
         assert_eq!(samples.len(), 19);
+        // Python's families; the Grappling Hook cast's `start` came later
+        // (`project_start`).
+        let (projected, later): (Vec<_>, Vec<_>) = projected
+            .into_iter()
+            .partition(|codec| samples.contains_key(codec.codec.as_deref().unwrap()));
+        assert_eq!(
+            later
+                .iter()
+                .map(|codec| codec.hash.as_str())
+                .collect::<Vec<_>>(),
+            ["4BBC5D09"]
+        );
         let modes = [
             PayloadMode::Owner {
                 full: false,

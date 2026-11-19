@@ -1426,6 +1426,105 @@ fn a_running_stec_state_that_leaves_the_projection_goes_out_off() {
     assert_ne!(next(&vanished), next(&running));
 }
 
+/// Widowmaker's Grappling Hook cast (`STU_4BBC5D09`, `005A` st0) goes out
+/// in her owner frames: the delta of its first frame lists it, with the
+/// milliseconds from its begin to the frame's window (`project_start`;
+/// negative in that first frame, since her 0.15 s wait ends inside a
+/// window). Left out, her client's rollback to a frame of the flight ended
+/// the cast it predicted and nothing began it again, so her pull waited for
+/// the server's `MoveTo`, an owner frame's round trip late
+/// (refs/reports/Grapple.md "DayFirstGrapple").
+#[test]
+fn the_grappling_hooks_cast_goes_out_in_owner_frames_with_its_begin() {
+    const HOOK: u16 = 4;
+    const CAST: u16 = 0;
+    let definition = graph(
+        0x005a,
+        vec![node(0, "STU_4BBC5D09", Some(CAST), json!({}))],
+        json!([0]),
+        json!([]),
+        json!([0]),
+        json!([]),
+    );
+    let graphs = GraphStore::from_json(
+        &serde_json::to_vec(&json!({
+            "version":1, "graphs":[definition], "bodies":{}, "missing":[]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let codecs = CodecTable::client();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    let mut snapshot = initialize(
+        &graphs,
+        ENTITY,
+        Variables::new(),
+        vec![Root::new(HOOK, 0x005a)],
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let idle = encoder.project(&snapshot, View::Owner).unwrap();
+    let (_, fixture) = fixture();
+    let mut cast = fixture.instances[&1].states[&0].clone();
+    // The press of frame 1031 began the 0.15 s wait at 16496: it ended, and
+    // began the cast, inside frame 1040's window (16640 to 16655).
+    cast.active = true;
+    cast.activation = 1;
+    cast.start_ms = 1031 * 16 + 150;
+    cast.kind = StateKind::GrappleCast;
+    snapshot.instances[&HOOK].states.insert(CAST, cast);
+    let flying = encoder.project(&snapshot, View::Owner).unwrap();
+    let payload = &flying.instances[&HOOK].states[&CAST].payload;
+    assert_eq!(
+        *payload,
+        StatePayload::from([("start".into(), Value::Integer(16646))])
+    );
+
+    // Owner frames: a sign bit and the size, frame × 16 − 16646; observers
+    // get nothing.
+    let codec = codecs.codec("STU_4BBC5D09").unwrap();
+    let owner = |frame: i64| {
+        let mode = PayloadMode::Owner {
+            full: false,
+            frame_time: frame * 16,
+            frame_ms: 16,
+        };
+        codec.payload(payload, mode).unwrap()
+    };
+    let signed = |negative: bool, size: u32| {
+        let mut out = BitWriter::new();
+        out.bit(negative);
+        out.w_var(size);
+        out
+    };
+    assert_eq!(owner(1040), signed(true, 6));
+    assert_eq!(owner(1045), signed(false, 74));
+    let observer = codec
+        .payload(payload, PayloadMode::Remote { full: false })
+        .unwrap();
+    assert_eq!(observer.bit_len(), 0);
+
+    // Listed in the frame it began, then the client keeps it while it flies.
+    let mut stream = BodyStream::new(ENTITY);
+    stream.create_arrived();
+    let baseline = encoder.queue_full(&mut stream, &idle).unwrap();
+    stream.arrived(baseline.last);
+    let mut send = |owner: &ProjectedSnapshot, kind| {
+        let chunk = encoder
+            .queue_delta(&mut stream, owner, kind, 16)
+            .unwrap()
+            .unwrap();
+        let listed = stream.sent(chunk.last).unwrap().changes.clone();
+        assert!(stream.arrived(chunk.last).advanced);
+        listed
+    };
+    let key = ChangeKey::State(HOOK, CAST);
+    assert!(!send(&idle, DeltaKind::InitialOwner(1040 - OWNER_SETTLE_FRAMES)).contains(&key));
+    assert!(send(&flying, DeltaKind::Correction(1040)).contains(&key));
+    assert!(!send(&flying, DeltaKind::Correction(1041)).contains(&key));
+}
+
 #[test]
 fn observer_delta_removes_an_instance_introduced_by_an_unacknowledged_chunk() {
     let (graphs, snapshot) = fixture();
