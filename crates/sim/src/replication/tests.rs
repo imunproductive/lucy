@@ -1162,6 +1162,70 @@ fn body_script_retries_frozen_initial_frames_and_ignores_old_generation_reports(
     assert!(world.queued.is_empty());
 }
 
+/// The owner delta of the client's own body goes first in its datagram: a
+/// queue the datagram can't take whole (here more records than it holds)
+/// leaves other records for the next tick, not the command frame his
+/// prediction is checked at (`WorldDelivery::ready`).
+#[test]
+fn the_owner_delta_goes_ahead_of_a_crowded_queue() {
+    let mut world = WorldDelivery::new(OWNER);
+    let id = avatar(1, 1);
+    world.started = Some(100);
+    activate_script(&mut world, id, 7, Arc::default());
+    world.push(record(id.entity, Delivery::CreateBody(id)));
+    world.push(record(OWNER, Delivery::Possession(id)));
+    let mut egress = GameEgress::default();
+    assert_eq!(transmit(&mut world, &mut egress, 100, 0).1.records.len(), 2);
+    transport_outcome(&mut world, &mut egress, 0, true);
+    // The full frame, in a datagram of frame 101.
+    assert_eq!(
+        transmit(&mut world, &mut egress, 101, 1).1.records,
+        [RecordSource::Queued(0)]
+    );
+    transport_outcome(&mut world, &mut egress, 1, true);
+    let mut mover = Mover::new(
+        MoverSettings::default(),
+        Arc::new(ContactWorld::new(Vec::new()).unwrap()),
+        [0.0; 3],
+        0,
+        0x18,
+    )
+    .unwrap();
+    let rays = TriangleIndex::new([]).unwrap();
+    mover
+        .step(&rays, forward(102), 0.016, |mover, command| {
+            world
+                .body_script
+                .as_mut()
+                .unwrap()
+                .advance(mover, command, BodyStep::Posed, None, false)
+                .unwrap();
+        })
+        .unwrap();
+    for i in 0..MAX_ENTITY_RECORDS {
+        world.push(Record::baseline(EntityUpdate {
+            entity: 0x8000_0100 + i as u32,
+            operation: Some(Operation::Destroy),
+            ..EntityUpdate::default()
+        }));
+    }
+    // The delta after command 102, queued behind them, goes first.
+    let sent = transmit(&mut world, &mut egress, 102, 2).1;
+    assert_eq!(sent.records.len(), MAX_ENTITY_RECORDS);
+    let carried = egress.acknowledge(3, 1);
+    assert!(matches!(
+        carried.packets[0].records[0].delivery,
+        Delivery::BodyScript { delta: true, .. }
+    ));
+    let [left] = world.queued.as_slice() else {
+        panic!("one record left");
+    };
+    assert_eq!(
+        left.update.entity,
+        0x8000_0100 + MAX_ENTITY_RECORDS as u32 - 1
+    );
+}
+
 fn read_ack(payload: &[u8]) -> u32 {
     let mut bits = BitReader::new(payload);
     bits.var_a().unwrap();

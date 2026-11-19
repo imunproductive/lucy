@@ -2644,13 +2644,25 @@ impl WorldDelivery {
         })
     }
 
+    /// The queued records a datagram may carry now, in the order it takes
+    /// them: queue order (a record follows its prerequisites), except the
+    /// owner delta of the client's own body, which goes first once his
+    /// possession arrived. It carries the command frame his prediction is
+    /// checked at, and the volleys that frame introduced
+    /// (`OwnerProjectiles::owner_sent`); a datagram over its budget drops
+    /// its last records, and the next tick's delta replaces an unsent one at
+    /// a later command frame. Queued last, it lost the datagram to the
+    /// Range's once-a-second full mode frame (about 940 bytes): a volley
+    /// shot at frame f was introduced at f + 1, so its ids of both frames
+    /// were confirmed (Echo's Tri-Shot came as six bolts).
     pub(crate) fn ready(&self) -> Vec<Ready<'_>> {
         let body = self.body.map(|body| body.id);
         let mut created = body.is_none_or(|id| self.created.contains(&id.entity));
         let mut bound = body == self.bound;
         let mut destroyed = HashSet::new();
         let mut creating = HashSet::new();
-        self.queued
+        let mut ready: Vec<_> = self
+            .queued
             .iter()
             .enumerate()
             .filter_map(|(index, record)| {
@@ -2709,7 +2721,15 @@ impl WorldDelivery {
                 }
                 Some(Ready { index, record })
             })
-            .collect()
+            .collect();
+        let own = ready.iter().position(|item| {
+            matches!(item.record.delivery,
+                Delivery::BodyScript { id, delta: true, .. } if self.bound == Some(id))
+        });
+        if let Some(own) = own {
+            ready[..=own].rotate_right(1);
+        }
+        ready
     }
 
     /// Retain blocked records and remove only the exact records selected by the
@@ -2743,13 +2763,19 @@ impl WorldDelivery {
         });
     }
 
+    /// The queue indexes of the records a datagram carried, in queue order
+    /// (as [`WorldDelivery::sent`] takes them; [`WorldDelivery::ready`] may
+    /// put one first).
     pub(crate) fn sent_indices(ready: &[Ready<'_>], sent: &[RecordSource]) -> Vec<usize> {
-        sent.iter()
+        let mut indexes: Vec<_> = sent
+            .iter()
             .filter_map(|source| match *source {
                 RecordSource::Queued(index) => Some(ready[index].index),
                 RecordSource::Movement(_) => None,
             })
-            .collect()
+            .collect();
+        indexes.sort_unstable();
+        indexes
     }
 
     pub fn send_frame<E>(

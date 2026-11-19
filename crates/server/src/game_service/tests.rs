@@ -4158,9 +4158,7 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
             next += u32::from(count);
         }
     };
-    // Two seconds for the join's traffic to settle (the server placeables'
-    // first frames follow their creates) before the shot.
-    let ready = server.now() + Duration::from_secs(2);
+    let ready = server.now() + Duration::from_secs(1);
     while server.now() < ready {
         command(&mut echo, 0);
         echo.pump(&schemas);
