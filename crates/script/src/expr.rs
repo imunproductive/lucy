@@ -247,6 +247,12 @@ pub trait Context {
         None
     }
 
+    /// The body (`m_gameplayEntity`) of `hero` (`STU_94AED9DC`); None: the
+    /// world can't tell.
+    fn hero_body(&mut self, _hero: u64) -> Option<u64> {
+        None
+    }
+
     /// Where a bound entity stands; None: the world doesn't know it.
     fn entity_position(&mut self, _entity: u32) -> Option<[f64; 3]> {
         None

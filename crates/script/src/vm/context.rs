@@ -216,6 +216,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.world.hero_role(self.site, hero)
     }
 
+    fn hero_body(&mut self, hero: u64) -> Option<u64> {
+        self.read_native = true;
+        self.world.hero_body(self.site, hero)
+    }
+
     fn entity_exists(&mut self, entity: u32) -> Option<bool> {
         self.read_native = true;
         // The script's own entity exists.

@@ -71,8 +71,8 @@ use orpheus_script::{
     vitals::{Death, Vitals},
     vm::{
         AssistLink, AuraChange, BodyEffects, DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage,
-        HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, RaisedCriteria, ScopeChange,
-        Snapshot, TargetCandidate, TrackedStat, VoiceRequest,
+        HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, ParentWrite, RaisedCriteria,
+        ScopeChange, ScopeSource, Snapshot, TargetCandidate, TrackedStat, VoiceRequest,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},

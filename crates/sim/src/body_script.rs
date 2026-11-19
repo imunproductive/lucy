@@ -43,8 +43,8 @@ use orpheus_script::{
     vitals::Vitals,
     vm::{
         AssistLink, AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays,
-        Motion, MoveRequest, RaisedCriteria, Root, ScopeChange, Snapshot, StateKind,
-        TargetCandidate, TrackedStat, Unknowns, VoiceRequest, World,
+        Motion, MoveRequest, ParentWrite, RaisedCriteria, Root, ScopeChange, ScopeSource, Snapshot,
+        StateKind, TargetCandidate, TrackedStat, Unknowns, VoiceRequest, World,
     },
     weapons::{HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},

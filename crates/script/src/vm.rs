@@ -567,6 +567,11 @@ pub trait World {
         None
     }
 
+    /// The body (`STUHero.m_gameplayEntity`) of `hero`; None: unknown.
+    fn hero_body(&self, _site: Site, _hero: u64) -> Option<u64> {
+        None
+    }
+
     fn has_target_tag(&self, _site: Site, _entity: u32, _tag: u64) -> Option<bool> {
         None
     }

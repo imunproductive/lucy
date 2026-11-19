@@ -38,8 +38,9 @@ use crate::{
     target_tags::TargetTags,
     vm::{
         AuraChange, Component, DummyBot, GameMessage, InitFault, MAX_INIT_WORK, MapRays,
-        MessageEnd, Root, ScopeChange, ScopeSource, SeenBodies, Site, Snapshot, TargetCandidate,
-        TargetTagEffect, TrackedStat, Unknowns, World, bind_values, listed_relation,
+        MessageEnd, ParentWrite, Root, ScopeChange, ScopeSource, SeenBodies, Site, Snapshot,
+        TargetCandidate, TargetTagEffect, TrackedStat, Unknowns, World, bind_values,
+        listed_relation,
     },
     wire::{Value, Variables},
 };

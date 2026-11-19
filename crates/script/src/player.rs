@@ -24,8 +24,8 @@ use crate::{
     vitals::{PoolKind, Vitals},
     vm::{
         AssistLink, AuraChange, BodyEffects, CombatMod, DummyBot, GameMessage, HealthChange,
-        MapRays, RaisedCriteria, SeenBodies, SeenBody, Site, TargetCandidate, TargetTagEffect,
-        TrackedStat, Unknowns, VoiceRequest, World,
+        MapRays, ParentWrite, RaisedCriteria, ScopeChange, SeenBodies, SeenBody, Site,
+        TargetCandidate, TargetTagEffect, TrackedStat, Unknowns, VoiceRequest, World,
     },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},

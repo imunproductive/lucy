@@ -367,4 +367,67 @@ impl<W: World> Vm<'_, '_, '_, W> {
             })
             .collect()
     }
+
+    /// `STU_D49BBD03` (`Action_STU_D49BBD03` 0x7FF789BC8A00): evaluate
+    /// `m_value` and set it into `m_out_Var` of each instance the
+    /// instance references (its parent references `+808`, a scope
+    /// instance's scope state; without one its creator's, `+864`), where
+    /// that instance is the authority's. The console's scope 12 sets its
+    /// `#940` to the picked hero so (`265F` rid53): the picker's default
+    /// (rid56 `parent1.#940`) and the console's shared `#940`. The
+    /// world sets it in the scope state's instance; the scope instance's
+    /// own copy of its parent's variables follows. An instance with no
+    /// scope (its creator's instance), an entity variable or a world that
+    /// sets none is an assumption: nothing is set.
+    pub(super) fn set_parent_variable(
+        &mut self,
+        id: u16,
+        node: &Node,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        let site = self.site(id, node);
+        let target = match expr::lvalue(field(&node.fields, "m_out_Var")) {
+            Ok(target) => target,
+            Err(error) => {
+                self.report(site, Issue::Expression(error));
+                return Ok(false);
+            }
+        };
+        let Some(value) = self.evaluate(id, node, field(&node.fields, "m_value"), None) else {
+            return Ok(false);
+        };
+        let source = self.machine.snapshot.instances[&id]
+            .scope
+            .as_ref()
+            .map(|scope| scope.source);
+        let set = match (target, source) {
+            (Some(variable), Some(source)) if variable.scope == expr::Scope::Instance => {
+                let write = ParentWrite {
+                    source,
+                    variable: variable.id,
+                    value: value.clone(),
+                };
+                let set = self.world.set_parent_variable(site, write);
+                if set {
+                    let scope = self
+                        .machine
+                        .snapshot
+                        .instances
+                        .get_mut(&id)
+                        .and_then(|item| item.scope.as_mut());
+                    if let Some(scope) = scope {
+                        scope.parent.insert(variable.id, value);
+                    }
+                }
+                set
+            }
+            (None, _) => true,
+            _ => false,
+        };
+        if !set {
+            self.assume(site, &node.class, "sets no parent instance's variable");
+        }
+        self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
+    }
 }

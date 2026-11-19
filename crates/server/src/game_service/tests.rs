@@ -2757,6 +2757,23 @@ fn the_range_console_puts_a_tracer_training_partner_on_its_pad() {
         "{feet:?}"
     );
     assert!((feet[1] - PAD[1]).abs() < 0.1, "{feet:?}");
+    // The partner's body is another player's to this client: any of its
+    // statescript comes as observer frames (H=0), never as owner frames
+    // (two seconds of datagrams).
+    for _ in 0..125 {
+        all[0].pump(&schemas);
+    }
+    for (_, records) in &all[0].datagrams {
+        for chunk in records
+            .iter()
+            .filter(|record| record.entity == partner)
+            .filter_map(|record| record.script.as_ref())
+        {
+            if chunk.first == 0 {
+                assert_eq!(chunk.bits().bits(2).unwrap(), 0, "an H=0 frame");
+            }
+        }
+    }
 }
 
 /// Team 0's first player (slot 0 of the room) runs out of his spawn room
