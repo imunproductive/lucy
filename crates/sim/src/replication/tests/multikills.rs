@@ -46,7 +46,13 @@ fn spawned_as(
     let mut world = WorldDelivery::new(entity);
     world.start(scene, &viewer, FIRST_TICK).unwrap();
     world.created.insert(entity);
-    world.present(scene, scene.mode_ui(), FIRST_TICK).unwrap();
+    world
+        .present(
+            scene,
+            crate::mode_view::ModeFrame::Full(scene.mode_ui()),
+            FIRST_TICK,
+        )
+        .unwrap();
     let hero = scene.heroes().get(hero).unwrap();
     world
         .switch(

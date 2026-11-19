@@ -1171,13 +1171,19 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         if record.entity & !0xFF == player_entity(1) {
             return;
         }
-        assert_eq!((script.first, script.span), (0, 1));
         if record.entity == GAME_MODE_ENTITY {
-            if !*mode {
+            // The whole frame first, then the graph's changes as deltas
+            // from the frame the client acknowledged
+            // (`orpheus_sim::mode_view`).
+            if *mode {
+                assert_ne!(script.first, 0, "a delta after the whole frame");
+            } else {
+                assert_eq!((script.first, script.span), (0, 1));
                 assert_range_mode_frame(assets.graphs(), script);
             }
             *mode = true;
         } else {
+            assert_eq!((script.first, script.span), (0, 1));
             assert_eq!(record.entity, CONTROLLER);
             let mut bits = script.bits();
             assert_eq!(bits.bits(3).unwrap(), 2);
@@ -5911,6 +5917,146 @@ fn practice_bots_run_their_scripts_for_a_client() {
                 )
         })
     }));
+    server.stop().unwrap();
+}
+
+/// The Practice Range's mode frames leave room for the movement records
+/// (`orpheus_sim::mode_view`): the first is whole (about 920 bytes), and
+/// once the bots stand in the world, every datagram for 5 s carries a
+/// movement record of every body that has one in the datagrams around it,
+/// and the mode frame's change of the tick as a delta of a few bytes.
+/// Before, the whole frame went once a second and took the place of 9 of
+/// the 16 movement records.
+#[test]
+#[ignore = "requires the derived 104319 data with its bot graph bundle"]
+fn the_range_mode_frames_leave_room_for_every_movement_record() {
+    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use orpheus_script::vm::Unknowns;
+    use orpheus_sim::scene_assets::SceneAssets;
+
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_bot_unknowns(Unknowns::Tolerate);
+    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let schemas = Arc::new(Schemas::game());
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
+    let ticket = server
+        .open_prepared_practice(MATCH, scene, player().remove(0), PlayerCard::default())
+        .unwrap();
+    let mut client = Client::new(&server, &ticket);
+    client.handshake();
+    let mut watcher = Watcher {
+        client,
+        owner: player_entity(0),
+        tick: 0,
+        sequences: HashSet::new(),
+        datagrams: Vec::new(),
+        ticks: Vec::new(),
+    };
+    pump_until(&mut [&mut watcher], &schemas, "the instance", |watchers| {
+        watchers[0]
+            .datagrams
+            .iter()
+            .any(|(messages, _)| messages.iter().any(|message| message.id == 20300))
+    });
+    let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+    let mut payload = BitWriter::new();
+    write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+    watcher.client.send(ACK, payload.into_bytes());
+    pump_until(&mut [&mut watcher], &schemas, "the world", |watchers| {
+        let watcher = &watchers[0];
+        watcher
+            .find(0, |record| {
+                record.entity == watcher.owner && record.script.is_some()
+            })
+            .is_some()
+    });
+    let owner = watcher.owner;
+    send_player_message(
+        &mut watcher.client,
+        &schemas,
+        owner,
+        1,
+        PICK_HERO,
+        SOLDIER.to_le_bytes().to_vec(),
+    );
+    // The body, the Range's first mode frame, and every bot moving.
+    pump_within(
+        &mut [&mut watcher],
+        &schemas,
+        "the body and the bots",
+        Duration::from_secs(20),
+        |watchers| {
+            let watcher = &watchers[0];
+            watcher.created(owner | 1).is_some()
+                && watcher
+                    .find(0, |record| {
+                        record.entity == GAME_MODE_ENTITY && record.script.is_some()
+                    })
+                    .is_some()
+                && watcher.datagrams.last().is_some_and(|(_, records)| {
+                    records.iter().filter(|record| record.movement).count() >= 15
+                })
+        },
+    );
+    let from = watcher.datagrams.len();
+    let until = watcher.client.now() + Duration::from_secs(5);
+    while watcher.client.now() < until {
+        watcher.pump(&schemas);
+    }
+    // The first mode frame is whole and lists what the graph runs.
+    let mode_chunks = |index: usize| -> Vec<&ReceivedChunk> {
+        watcher.datagrams[index]
+            .1
+            .iter()
+            .filter(|record| record.entity == GAME_MODE_ENTITY)
+            .filter_map(|record| record.script.as_ref())
+            .collect()
+    };
+    let full = watcher
+        .find(0, |record| {
+            record.entity == GAME_MODE_ENTITY && record.script.is_some()
+        })
+        .unwrap();
+    let [first] = mode_chunks(full)[..] else {
+        panic!("one mode frame")
+    };
+    assert_eq!(first.first, 0);
+    assert_range_mode_frame(assets.graphs(), first);
+    let moving = |index: usize| -> HashSet<u32> {
+        watcher.datagrams[index]
+            .1
+            .iter()
+            .filter(|record| record.movement)
+            .map(|record| record.entity)
+            .collect()
+    };
+    let mut dropped = Vec::new();
+    let mut frames = Vec::new();
+    for index in from + 1..watcher.datagrams.len() - 1 {
+        let around: HashSet<u32> = moving(index - 1)
+            .intersection(&moving(index + 1))
+            .copied()
+            .collect();
+        let missing = around.difference(&moving(index)).count();
+        if missing != 0 {
+            dropped.push((watcher.ticks[index], missing));
+        }
+        frames.extend(
+            mode_chunks(index)
+                .iter()
+                .map(|chunk| (chunk.first, chunk.width.div_ceil(8))),
+        );
+    }
+    assert!(dropped.is_empty(), "movement records left out: {dropped:?}");
+    // `0CBB` st58's timed ChaseVar (#19530e) changes the frame every tick:
+    // each change goes as a delta of a few bytes.
+    assert!(frames.len() > 250, "{frames:?}");
+    assert!(
+        frames
+            .iter()
+            .all(|&(first, bytes)| first != 0 && bytes <= 32),
+        "{frames:?}"
+    );
     server.stop().unwrap();
 }
 

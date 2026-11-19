@@ -125,6 +125,15 @@ impl Stream {
         }
     }
 
+    /// A stream of `entity` that goes on from chunk `last` of another one:
+    /// the client drops a chunk numbered at or below the last it applied.
+    pub fn after(entity: u32, last: u32) -> Self {
+        Self {
+            last,
+            ..Self::new(entity)
+        }
+    }
+
     pub fn delivered(&self) -> u32 {
         self.delivered
     }
@@ -315,6 +324,15 @@ impl<S> BodyStream<S> {
             latest_lost: None,
             initial_owner: None,
             full_frame: 0,
+        }
+    }
+
+    /// A stream of `entity` that goes on from chunk `last` of another one
+    /// (see [`Stream::after`]).
+    pub fn after(entity: u32, last: u32) -> Self {
+        Self {
+            last,
+            ..Self::new(entity)
         }
     }
 

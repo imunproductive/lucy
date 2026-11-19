@@ -598,7 +598,13 @@ fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input(
     );
     assert_eq!(world.command_ack(FIRST_TICK + 2), first);
     world.created.insert(owner);
-    world.present(&scene, scene.mode_ui(), FIRST_TICK).unwrap();
+    world
+        .present(
+            &scene,
+            crate::mode_view::ModeFrame::Full(scene.mode_ui()),
+            FIRST_TICK,
+        )
+        .unwrap();
     let hero = scene.heroes().get(SOLDIER).unwrap();
     world
         .switch(
@@ -1776,7 +1782,13 @@ fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
     let mut world = WorldDelivery::new(owner);
     world.start(&scene, &viewer, FIRST_TICK).unwrap();
     world.created.insert(owner);
-    world.present(&scene, scene.mode_ui(), FIRST_TICK).unwrap();
+    world
+        .present(
+            &scene,
+            crate::mode_view::ModeFrame::Full(scene.mode_ui()),
+            FIRST_TICK,
+        )
+        .unwrap();
     let general = |value| HeroSetting {
         hero: 0,
         setting: ALLIED_HEALTH_BARS,
