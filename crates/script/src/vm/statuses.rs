@@ -29,15 +29,30 @@
 //! client never computes a health change: its only use of the modifiers is
 //! a projectile's look (HealthAuras.md "Aura modifiers (2026-11-18)").
 //!
-//! - `m_F7872851` is the entity that holds the modifier, the instance's
-//!   owner when unset (the state's init 0x7FF789C37C30 keeps it at
-//!   `+0x248`; a value that evaluates to no entity holds it for nobody).
-//!   A modifier held for another entity (`#40` in Echo's `1544` st38, the
-//!   projectile's or pet's owner's body in `0D01`, `1909`, `25B4`) is
-//!   kept apart ([`BodyEffects::held_for_others`]) and the match adds it
-//!   to that entity's own. `#41` in Mercy's `006C`/`10DD` is the aura
-//!   entry's `m_FF703F20`, which the server leaves unset
-//!   (`vm/auras.rs`), so those hold theirs for nobody.
+//! - A modifier scales the health changes of the entity whose state holds
+//!   it. `m_F7872851` names the entity credited for what it changes, the
+//!   instance's owner when unset (the state's init 0x7FF789C37C30 keeps it
+//!   at `+0x248`; a value that names no entity credits no one). Each
+//!   change a modifier makes goes to that entity as [`MODIFIED`]
+//!   ([`Scaled::notices`]): Mercy's damage boost (`006C` st6 on the
+//!   boosted body, `10DD` st4 on a chained one) names `#41`, its aura
+//!   entry's applier (`vm/auras.rs`), and her weapon graph `006B` rid157
+//!   counts the boost's extra damage into `048A` and `048C`; Baptiste's
+//!   matrix (`1909` on the matrix entity) names his body, whose `1902`
+//!   rid63 counts the same two stats (the "Damage Amplified" both heroes
+//!   have: inference); Genji's Deflect (`03A3` st59, unset) is credited to
+//!   Genji, whose rid140 plays its feedback on `m_E9517777`'s `19C4`. A
+//!   holder that took the modifier would boost Mercy and Baptiste
+//!   themselves (HealthAuras.md, "Damage Boost's `#41`").
+//! - [`MODIFIED`]'s parameters, from its seven entries (`006B`, `03A3`,
+//!   `0B9E`, `0CF5`, `1761`, `1902`, `1D02`): `074D` the change the
+//!   modifier made (signed: `1902` counts only above 0, `1761` only below),
+//!   `005C` the change's other party (the target of a dealt kind's, the
+//!   attacker or healer of a taken kind's; `1902` tests it as an enemy),
+//!   `076A` `m_E9517777`. `0013` (`006B`, `0B9E`) is not sent: what it
+//!   carries is open. A modifier's part of a change is its addition, or
+//!   for a multiplier the change it makes to what the additions left
+//!   (assumption: the parts sum to the change).
 //! - `m_50530EAB` is the value; `m_41B10FF2` 1 multiplies by it, 0 adds it.
 //!   The modifiers of one kind combine as one plus the sum of the
 //!   additions, times each multiplier, never below 0 (assumption, as the
@@ -67,8 +82,7 @@
 //!   `m_5E6F1B8B`, a dealt kind's filter on the target, is set nowhere in
 //!   the data (`script query class StateCombatModFilter`: 0 of 34); a
 //!   modifier with one is left out.
-//! - Not read: `m_E9517777` (`03A3`'s `19C4`, an identifier the query
-//!   hands back) and `m_893AABFC` (the query doesn't read it).
+//! - Not read: `m_893AABFC` (the query doesn't read it).
 //!
 //! `STU_0DB9E66B` (31 nodes in 30 graphs, server-only: no registration of
 //! its own, codec `none`) is the assist credit, the graphs' form of the
@@ -130,9 +144,14 @@ pub struct CombatMod {
     pub exempt: Vec<u64>,
     /// The tags it adds to the event when it applies (`m_029060AC`).
     pub added: Vec<u64>,
-    /// The entity it is credited to (`m_F7872851`; the state's entity
-    /// when unset).
-    pub holder: u32,
+    /// The entity whose state holds it, which it scales the changes of.
+    pub owner: u32,
+    /// The entity credited for what it changes (`m_F7872851`; the owner
+    /// when unset; 0 when it names no entity), told by [`MODIFIED`].
+    pub credit: u32,
+    /// `m_E9517777` (`03A3` st59's `19C4`), handed to the credited
+    /// entity with each change; null when unset.
+    pub identifier: Value,
     /// `m_941C56C2`: an addition that counts toward [`REDUCTION_CAP`].
     pub capped: bool,
     /// Its filter on the event's other party (`m_6AA5D70F`), tested at
@@ -147,6 +166,65 @@ pub struct CombatMod {
 pub struct PartyFilter {
     pub instance: u16,
     pub state: u16,
+}
+
+/// The game message the entity a modifier credits takes for each change
+/// the modifier made ([`Scaled::notices`]).
+pub const MODIFIED: u64 = 0x0240_0000_0000_0d9a;
+/// [`MODIFIED`]'s change the modifier made (`074D.026`).
+const MODIFIED_CHANGE: u32 = 0x74d;
+/// [`MODIFIED`]'s other party of the change (`005C.026`).
+const MODIFIED_OTHER: u32 = 0x5c;
+/// [`MODIFIED`]'s `m_E9517777` (`076A.026`).
+const MODIFIED_IDENTIFIER: u32 = 0x76a;
+
+/// What the modifiers make of a health change ([`combat_scale`]): its
+/// scale and, per modifier that applied, its part of the change.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Scaled {
+    pub factor: f64,
+    /// Each applied modifier's owner, credited entity, `m_E9517777` and
+    /// part of the change per unit of the unscaled amount.
+    parts: Vec<(u32, u32, Value, f64)>,
+}
+
+impl Scaled {
+    /// No modifier applies.
+    pub const NONE: Self = Self {
+        factor: 1.0,
+        parts: Vec::new(),
+    };
+
+    /// `amount` scaled.
+    pub fn apply(&self, amount: f64) -> f64 {
+        amount * self.factor
+    }
+
+    /// The [`MODIFIED`] notices of a change of `amount` (unscaled) whose
+    /// other party is `other`: one from each applied modifier's owner to
+    /// the entity it credits, but for a part of 0 or no credited entity.
+    pub fn notices(&self, amount: f64, other: u32) -> impl Iterator<Item = GameMessage> + '_ {
+        self.parts
+            .iter()
+            .filter(move |&&(_, credit, _, part)| {
+                expr::valid_entity(credit) && part * amount != 0.0
+            })
+            .map(move |(owner, credit, identifier, part)| {
+                let mut parameters = Variables::from([
+                    (MODIFIED_CHANGE, Value::Float(part * amount)),
+                    (MODIFIED_OTHER, Value::Entity(other)),
+                ]);
+                if *identifier != Value::Null {
+                    parameters.insert(MODIFIED_IDENTIFIER, identifier.clone());
+                }
+                GameMessage {
+                    sender: *owner,
+                    target: *credit,
+                    message: MODIFIED,
+                    parameters,
+                }
+            })
+    }
 }
 
 /// The field of a taken kind's party filter.
@@ -229,9 +307,8 @@ impl<W: World> Vm<'_, '_, '_, W> {
     }
 
     /// The state's modifier, or why it has no effect: a form the server
-    /// doesn't apply (a dealt kind's filter on the target, `m_5E6F1B8B`;
-    /// a holder, `m_F7872851`, that names no entity) or a value it can't
-    /// evaluate.
+    /// doesn't apply (a dealt kind's filter on the target, `m_5E6F1B8B`)
+    /// or a value it can't evaluate.
     fn read_combat_mod(&mut self, key: StateKey, node: &Node) -> Result<CombatMod, &'static str> {
         let id = key.instance;
         let fields = &node.fields;
@@ -247,16 +324,23 @@ impl<W: World> Vm<'_, '_, '_, W> {
             state: key.raw,
         });
         let site = self.site(id, node);
-        let holder = match field(fields, "m_F7872851") {
+        // The client's init: an evaluated value's entity (none for a null
+        // value), the owner when unset or when it can't evaluate.
+        let credit = match field(fields, "m_F7872851") {
             Json::Null => site.entity,
-            holder => {
-                let holder = self
-                    .evaluate(id, node, holder, None)
-                    .ok_or("no effect (an unevaluated holder)")?;
-                expr::to_entity(&holder)
-                    .filter(|&holder| expr::valid_entity(holder))
-                    .ok_or("no effect (held for no entity)")?
-            }
+            credit => self
+                .evaluate(id, node, credit, None)
+                .map_or(site.entity, |credit| {
+                    expr::to_entity(&credit)
+                        .filter(|&credit| expr::valid_entity(credit))
+                        .unwrap_or(0)
+                }),
+        };
+        let identifier = match field(fields, "m_E9517777") {
+            Json::Null => Value::Null,
+            identifier => self
+                .evaluate(id, node, identifier, None)
+                .unwrap_or(Value::Null),
         };
         let value = self
             .evaluate(id, node, field(fields, "m_50530EAB"), None)
@@ -280,7 +364,9 @@ impl<W: World> Vm<'_, '_, '_, W> {
             required: tags("m_F60AA143"),
             exempt: tags("m_5CFFCBAE"),
             added: tags("m_029060AC"),
-            holder,
+            owner: site.entity,
+            credit,
+            identifier,
             capped,
             party,
         })
@@ -292,10 +378,8 @@ impl<W: World> Vm<'_, '_, '_, W> {
 #[derive(Debug, Default)]
 pub struct BodyEffects {
     statuses: Vec<(Site, i64)>,
-    /// The modifiers held for the body itself.
+    /// The modifiers its states hold.
     modifiers: Vec<(Site, CombatMod)>,
-    /// The modifiers its states hold for other entities.
-    lent: Vec<(Site, CombatMod)>,
     /// The assist credits and, for one whose state ended, when its linger
     /// ends.
     assists: Vec<(Site, AssistLink, Option<u64>)>,
@@ -316,21 +400,15 @@ impl BodyEffects {
         }
     }
 
-    /// [`World::combat_mod`]: the modifiers of the four kinds are kept,
-    /// apart when held for another entity than the state's.
+    /// [`World::combat_mod`]: the modifiers of the four kinds are kept.
     pub fn combat_mod(&mut self, site: Site, modifier: Option<CombatMod>) -> bool {
         self.modifiers.retain(|(held, _)| *held != site);
-        self.lent.retain(|(held, _)| *held != site);
         match modifier {
             Some(modifier)
                 if [DAMAGE_DEALT, DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN]
                     .contains(&modifier.kind) =>
             {
-                if modifier.holder == site.entity {
-                    self.modifiers.push((site, modifier));
-                } else {
-                    self.lent.push((site, modifier));
-                }
+                self.modifiers.push((site, modifier));
                 true
             }
             Some(_) => false,
@@ -374,16 +452,9 @@ impl BodyEffects {
         !self.statuses.is_empty()
     }
 
-    /// The modifiers held for the body now, in the order they came.
+    /// The modifiers its states hold now, in the order they came.
     pub fn modifiers(&self) -> impl Iterator<Item = &CombatMod> {
         self.modifiers.iter().map(|(_, modifier)| modifier)
-    }
-
-    /// The modifiers its states hold for other entities now
-    /// ([`CombatMod::holder`]), in the order they came, for the match to
-    /// add to theirs.
-    pub fn held_for_others(&self) -> impl Iterator<Item = &CombatMod> {
-        self.lent.iter().map(|(_, modifier)| modifier)
     }
 
     /// The party filters of the body's modifiers of `kind`, for the world
@@ -395,36 +466,28 @@ impl BodyEffects {
             .filter_map(|modifier| modifier.party)
     }
 
-    /// [`combat_scale`] of the body's modifiers then `held` (those other
-    /// entities hold for it), the party filters in `passed` passing.
-    pub fn scale(
-        &self,
-        kind: u64,
-        tags: &mut DamageTags,
-        held: &[CombatMod],
-        passed: &[PartyFilter],
-    ) -> f64 {
-        combat_scale(self.modifiers().chain(held), kind, tags, passed)
+    /// [`combat_scale`] of the body's modifiers, the party filters in
+    /// `passed` passing.
+    pub fn scale(&self, kind: u64, tags: &mut DamageTags, passed: &[PartyFilter]) -> Scaled {
+        combat_scale(self.modifiers(), kind, tags, passed)
     }
 }
 
-/// What `modifiers` scale a health change of `kind` with `tags` by (see the
+/// What `modifiers` make of a health change of `kind` with `tags` (see the
 /// module notes): of those of that kind whose required tags (if any) meet
 /// the tags, that leave none of them alone and whose party filter (if
 /// any) is in `passed`, in the order they came, one plus the additions
 /// (those marked `m_941C56C2` together reducing by at most
 /// [`REDUCTION_CAP`] unless one alone reduces by more), never below 0,
-/// times the multipliers. Each that applies adds its tags to `tags`.
+/// times the multipliers; with each one's part of the change. Each that
+/// applies adds its tags to `tags`.
 pub fn combat_scale<'a>(
     modifiers: impl IntoIterator<Item = &'a CombatMod>,
     kind: u64,
     tags: &mut DamageTags,
     passed: &[PartyFilter],
-) -> f64 {
-    let mut sum = 1.0;
-    let mut capped = 0.0;
-    let mut deepest = 0.0_f64;
-    let mut product = 1.0;
+) -> Scaled {
+    let mut applied: Vec<&CombatMod> = Vec::new();
     for modifier in modifiers
         .into_iter()
         .filter(|modifier| modifier.kind == kind)
@@ -442,20 +505,57 @@ pub fn combat_scale<'a>(
         {
             continue;
         }
-        if modifier.multiplies {
-            product *= modifier.value;
-        } else if modifier.capped {
-            capped += modifier.value;
-            deepest = deepest.min(modifier.value);
-        } else {
-            sum += modifier.value;
-        }
         for &tag in &modifier.added {
             tags.push(tag);
         }
+        applied.push(modifier);
     }
-    let capped = f64::max(capped, deepest.min(-REDUCTION_CAP));
-    f64::max(f64::max(sum + capped, 0.0) * product, 0.0)
+    let additions = || applied.iter().filter(|modifier| !modifier.multiplies);
+    let capped: f64 = additions()
+        .filter(|modifier| modifier.capped)
+        .map(|modifier| modifier.value)
+        .sum();
+    let deepest = additions()
+        .filter(|modifier| modifier.capped)
+        .fold(0.0_f64, |deepest, modifier| deepest.min(modifier.value));
+    let kept = f64::max(capped, deepest.min(-REDUCTION_CAP));
+    let added = additions()
+        .filter(|modifier| !modifier.capped)
+        .map(|modifier| modifier.value)
+        .sum::<f64>()
+        + kept;
+    let sum = f64::max(1.0 + added, 0.0);
+    // An addition's part is its value, the capped ones' cut to what the
+    // cap kept and all of them to what the floor at 0 kept; a multiplier's
+    // the change it makes to what came before it.
+    let ratio = |kept: f64, raw: f64| if raw == 0.0 { 0.0 } else { kept / raw };
+    let floor = ratio(sum - 1.0, added);
+    let cut = ratio(kept, capped);
+    let mut product = 1.0;
+    let parts = applied
+        .iter()
+        .map(|modifier| {
+            let part = if modifier.multiplies {
+                let part = sum * product * (modifier.value - 1.0);
+                product *= modifier.value;
+                part
+            } else if modifier.capped {
+                modifier.value * cut * floor
+            } else {
+                modifier.value * floor
+            };
+            (
+                modifier.owner,
+                modifier.credit,
+                modifier.identifier.clone(),
+                part,
+            )
+        })
+        .collect();
+    Scaled {
+        factor: f64::max(sum * product, 0.0),
+        parts,
+    }
 }
 
 #[cfg(test)]

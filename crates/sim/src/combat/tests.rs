@@ -474,7 +474,6 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
             tags: None,
             ai: None,
             dealt: Vec::new(),
-            held: Vec::new(),
         },
         history: TargetHistory::new(None),
     };
@@ -510,7 +509,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
         landed: Vec::new(),
         auras: Vec::new(),
         counted: Vec::new(),
-        held: Vec::new(),
+        modified: Vec::new(),
     };
     let bodies = |free_for_all, allies| -> Vec<u32> {
         combat
@@ -568,7 +567,6 @@ fn target_searches_see_the_players_then_the_bots() {
         tags: None,
         ai: None,
         dealt: Vec::new(),
-        held: Vec::new(),
     };
     combat.record_poses(&scene, &[player], 1000);
     let candidates = combat.target_candidates(&scene);
@@ -646,7 +644,6 @@ fn a_players_shot_on_another_player_carries_its_tags_and_way() {
         tags: None,
         ai: None,
         dealt: Vec::new(),
-        held: Vec::new(),
     };
     combat.record_poses(
         &scene,
@@ -807,7 +804,6 @@ fn the_biotic_rifle_heals_hurt_allies_and_damages_enemies() {
         tags: None,
         ai: None,
         dealt: Vec::new(),
-        held: Vec::new(),
     };
     combat.record_poses(&scene, &[player(true)], context.tick);
     assert!(fire(&mut combat, &mut scene).is_none());
@@ -859,9 +855,10 @@ fn the_biotic_rifle_heals_hurt_allies_and_damages_enemies() {
 /// at its launch (the client copies `0317`/`0319` into it at its creation,
 /// `sub_7FF789A32900`): Ana's dart launched under Nano Boost's +0.5
 /// (`0B9F` st19) deals 70 × 1.5 though the boost ended in flight, and one
-/// launched before the boost began deals 70. A modifier another body's
-/// graphs hold for the shooter (Mercy's damage boost, `006C` st6: +`#174`,
-/// 0.3 from rid16) counts as his own for his hitscan shot.
+/// launched before the boost began deals 70. Mercy's damage boost on the
+/// shooter (`006C` st6: +`#174`, 0.3 from rid16, credited to Mercy) makes
+/// his hitscan shot deal 91, and Mercy is told the 21 it added
+/// (`0D9A.025`, which her `006B` rid157 counts).
 #[test]
 #[ignore = "requires a derived 104319 Practice Range scene"]
 fn a_projectile_deals_with_the_modifiers_of_its_launch() {
@@ -888,18 +885,20 @@ fn a_projectile_deals_with_the_modifiers_of_its_launch() {
         .unwrap();
     let enemy_bot = scene.bots()[enemy].entity;
     let [x, y, z] = scene.bots()[enemy].position;
-    let boost = |holder, value| CombatMod {
+    let boost = |credit, value| CombatMod {
         kind: orpheus_script::vm::DAMAGE_DEALT,
         value,
         multiplies: false,
         required: Vec::new(),
         exempt: vec![0x0d80_0000_0000_3fce],
         added: Vec::new(),
-        holder,
+        owner: SHOOTER.source,
+        credit,
+        identifier: Value::Null,
         capped: false,
         party: None,
     };
-    let player = |body, dealt, held| PlayerTarget {
+    let player = |body, dealt| PlayerTarget {
         body,
         team: 0,
         pose: TargetPose {
@@ -915,10 +914,9 @@ fn a_projectile_deals_with_the_modifiers_of_its_launch() {
         tags: None,
         ai: None,
         dealt,
-        held,
     };
-    let nano = || player(SHOOTER.source, vec![boost(SHOOTER.source, 0.5)], Vec::new());
-    let plain = || player(SHOOTER.source, Vec::new(), Vec::new());
+    let nano = || player(SHOOTER.source, vec![boost(SHOOTER.source, 0.5)]);
+    let plain = || player(SHOOTER.source, Vec::new());
     let dart = ProjectileBallistics {
         speed: 125.0,
         lifetime: 0.8,
@@ -962,10 +960,10 @@ fn a_projectile_deals_with_the_modifiers_of_its_launch() {
     assert_eq!(fly(nano(), plain()), 105.0);
     assert_eq!(fly(plain(), nano()), 70.0);
 
-    // Mercy's graphs hold +0.3 for the shooter: his rifle shot deals 91.
+    // Mercy's boost on the shooter: his rifle shot deals 91.
     let mut combat = Combat::new(&scene);
-    let mercy = player(MERCY, Vec::new(), vec![boost(SHOOTER.source, 0.3)]);
-    combat.record_poses(&scene, &[plain(), mercy], context.tick);
+    let boosted = player(SHOOTER.source, vec![boost(MERCY, 0.3)]);
+    combat.record_poses(&scene, &[boosted], context.tick);
     let shot = PosedHitscan {
         source: SHOOTER.source,
         origin,
@@ -985,4 +983,17 @@ fn a_projectile_deals_with_the_modifiers_of_its_launch() {
         .unwrap()
         .unwrap();
     assert_eq!((hit.bot, hit.damage.unwrap().dealt), (enemy_bot, 91.0));
+    let [notice] = combat.take_messages().try_into().unwrap();
+    assert_eq!(
+        (notice.sender, notice.target, notice.message),
+        (SHOOTER.source, MERCY, orpheus_script::vm::MODIFIED)
+    );
+    let Some(&Value::Float(added)) = notice.parameters.get(&0x74d) else {
+        panic!("{notice:?}");
+    };
+    assert!((added - 21.0).abs() < 1e-9, "{added}");
+    assert_eq!(
+        notice.parameters.get(&0x5c),
+        Some(&Value::Entity(enemy_bot))
+    );
 }

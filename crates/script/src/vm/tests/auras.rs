@@ -97,6 +97,7 @@ fn an_apply_aura_puts_its_aura_on_each_listed_body_while_listed() {
         target,
         aura: AURA,
         instigator: SEARCHER,
+        creator: SEARCHER,
         parameters: vec![(PARAMETER, Value::Integer(7))],
     };
     let remove = |target| AuraChange::Remove { source, target };
@@ -195,6 +196,7 @@ fn a_body_runs_an_applied_aura_until_its_applier_takes_it_off() {
         target: ENEMY,
         aura: AURA,
         instigator: SEARCHER,
+        creator: SEARCHER,
         parameters: vec![(PARAMETER, Value::Integer(7))],
     };
     assert!(component.change_aura(&apply(1), &mut world).unwrap());

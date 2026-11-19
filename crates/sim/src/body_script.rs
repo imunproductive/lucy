@@ -41,8 +41,8 @@ use orpheus_script::{
     timeline::FRAME_MS,
     vitals::Vitals,
     vm::{
-        AssistLink, AuraChange, BodyEffects, CombatMod, Component, GameMessage, MAX_INIT_WORK,
-        MapRays, Motion, MoveRequest, RaisedCriteria, Root, Site, Snapshot, StateKind,
+        AssistLink, AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays,
+        Motion, MoveRequest, RaisedCriteria, Root, Scaled, Site, Snapshot, StateKind,
         TargetCandidate, TrackedStat, Unknowns, VoiceRequest, World,
     },
     weapons::{DamageTags, HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
@@ -533,20 +533,14 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     /// Its graphs' modifiers, their party filters tested on `other` by the
     /// body's VM (Deflect's `03A3` st59: the attacker in front of Genji).
-    fn combat_scale(
-        &mut self,
-        kind: u64,
-        tags: &mut DamageTags,
-        other: u32,
-        held: &[CombatMod],
-    ) -> f64 {
+    fn combat_scale(&mut self, kind: u64, tags: &mut DamageTags, other: u32) -> Scaled {
         let passed = self.component.passed_party_filters(
             &mut self.world,
             |world| &world.effects,
             kind,
             other,
         );
-        self.world.effects.scale(kind, tags, held, &passed)
+        self.world.effects.scale(kind, tags, &passed)
     }
 
     fn assists(&self) -> Vec<AssistLink> {

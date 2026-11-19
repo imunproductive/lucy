@@ -2099,7 +2099,6 @@ mod tests {
             tags: None,
             ai: None,
             dealt: Vec::new(),
-            held: Vec::new(),
         };
         // Yaw 0 looks along +z.
         let players = |frame: u32| {

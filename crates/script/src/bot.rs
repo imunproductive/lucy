@@ -20,8 +20,8 @@ use crate::{
     vitals::PoolKind,
     vm::{
         AiMoveRequest, AuraChange, BodyEffects, CombatMod, Component, HealthChange, InitFault,
-        MAX_INIT_WORK, MapRays, Motion, RaisedCriteria, SeenBodies, ShotEvent, Site, Snapshot,
-        TargetCandidate, TargetTagEffect, Unknowns, World, body_roots,
+        MAX_INIT_WORK, MapRays, Motion, RaisedCriteria, Scaled, SeenBodies, ShotEvent, Site,
+        Snapshot, TargetCandidate, TargetTagEffect, Unknowns, World, body_roots,
     },
     weapons::DamageTags,
     wire::{Value, Variables},
@@ -702,23 +702,17 @@ impl BotBody {
     }
 
     /// What a health change of `kind` with `tags` that `other` is the other
-    /// party of (its attacker or healer) is scaled by on the body
+    /// party of (its attacker or healer) becomes on the body
     /// ([`BodyEffects::scale`]): its states' modifiers, their party filters
-    /// tested on `other`, then `held` (other entities' for it).
-    pub fn combat_scale(
-        &mut self,
-        kind: u64,
-        tags: &mut DamageTags,
-        other: u32,
-        held: &[CombatMod],
-    ) -> f64 {
+    /// tested on `other`.
+    pub fn combat_scale(&mut self, kind: u64, tags: &mut DamageTags, other: u32) -> Scaled {
         let passed = self.component.passed_party_filters(
             &mut self.world,
             |world| &world.effects,
             kind,
             other,
         );
-        self.world.effects.scale(kind, tags, held, &passed)
+        self.world.effects.scale(kind, tags, &passed)
     }
 
     /// The tags the body's states add and suppress now, when a tag came or
@@ -1953,6 +1947,7 @@ mod tests {
                 target: ENTITY,
                 aura: BIOTIC_GRENADE,
                 instigator: ANA,
+                creator: ANA,
                 parameters: Vec::new(),
             };
             assert!(bot.change_aura(landed, &aura).unwrap());

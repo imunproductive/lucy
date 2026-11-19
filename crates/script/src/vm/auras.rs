@@ -19,12 +19,28 @@
 //! node 6: 60 damage, else an AI-scaled value; `0B99` node 7: 100
 //! healing; `STU_D3EB8D87` of `STU_DB742151` of `#27`).
 //!
+//! The entry's `m_FF703F20` takes the message's second entity (`+156`;
+//! the client's dispatch `0x7FF78AAA55F0` writes `+152` to `m_B60ABDA4`,
+//! `+156` to `m_FF703F20` and the host's vtable `+480` of `+156` to
+//! `m_44D0D060`). A message the client sends (SendGameMessage's execute
+//! `0x7FF789815F80`) has the sending entity at `+152` and at `+156` the
+//! action's `m_8B34E9C3`, else the sending instance's `#27`, else the
+//! sender (setters `0x7FF78AAB7E60`, `0x7FF78AAB7E30`; `#27` read by
+//! `0x7FF78AAA2E50`). The server's aura message is taken to follow the same
+//! rule: `+156` is the ApplyAura instance's `#27`, [`AuraChange::Apply`]'s
+//! `creator`. The graphs agree: Mercy's damage boost `006C` (on the
+//! beamed body, put there by her weapon `006B`) keeps `#40` and `#41` as
+//! Mercy; its Valkyrie chain `10DD` (put on a nearby ally by `006C`) has
+//! `#40` the beamed body (its beam starts there) and `#41` Mercy (`#1900e`,
+//! "boosted by", is `#40` in `006C` and `#41` in `10DD`); Nano Boost's
+//! `0B9F` credits Ana's stats `0413`/`0422` to `#41`. `m_44D0D060` (`#42`
+//! in `10DD`) stays unset: what the host's slot gives is open.
+//!
 //! Assumed, as nothing in the data says: the aura's own instance leaves the
 //! body after the aura's `m_7DAE8F10` seconds when that is above 0 (0.1 s
 //! for `0267`, enough to play its children), else when its graph exits; a
 //! second application adds a second instance (the children it plays
-//! replace the running ones, PlayScript policy 3); the entry's `m_FF703F20`
-//! (`#41`) stays unset.
+//! replace the running ones, PlayScript policy 3).
 //!
 //! ApplyAura (`STU_431F3FCC`, 59 nodes in 46 graphs) is server-only: no
 //! registration of its own (the client runs the base state, codec none)
@@ -72,6 +88,9 @@ pub enum AuraChange {
         /// The aura (`053` GUID).
         aura: u64,
         instigator: u32,
+        /// The entity the aura entry's `m_FF703F20` takes: the applying
+        /// instance's creator (`#27`), else the instigator.
+        creator: u32,
         /// The parameters (`0A4` GUID and value).
         parameters: Vec<(u64, Value)>,
     },
@@ -92,13 +111,14 @@ impl AuraChange {
 
 impl Component {
     /// Put the aura `aura` (a `053` GUID) on this body, dealt by
-    /// `instigator`, with the parameters an ApplyAura names (`0A4` GUID and
-    /// value). Returns the aura's instance; none when the bundle lacks the
-    /// aura or its graph.
+    /// `instigator` for `creator` ([`AuraChange::Apply`]), with the
+    /// parameters an ApplyAura names (`0A4` GUID and value). Returns the
+    /// aura's instance; none when the bundle lacks the aura or its graph.
     pub fn apply_aura(
         &mut self,
         aura: u64,
         instigator: u32,
+        creator: u32,
         parameters: &[(u64, Value)],
         world: &mut impl World,
     ) -> Result<Option<u16>, InitFault> {
@@ -122,7 +142,7 @@ impl Component {
                 let delay = (found.seconds * 1000.0).round() as u64;
                 vm.post_after(id, delay, Event::ExitInstance)?;
             }
-            vm.start_aura(id, instigator, parameters)?;
+            vm.start_aura(id, instigator, creator, parameters)?;
             vm.run()
         })?;
         Ok(created.then_some(id))
@@ -142,10 +162,11 @@ impl Component {
                 source,
                 aura,
                 instigator,
+                creator,
                 parameters,
                 ..
             } => {
-                let created = self.apply_aura(*aura, *instigator, parameters, world)?;
+                let created = self.apply_aura(*aura, *instigator, *creator, parameters, world)?;
                 if let (Some(source), Some(id)) = (source, created) {
                     self.machine.applied_auras.insert(*source, id);
                 }
@@ -169,12 +190,13 @@ impl Component {
 }
 
 impl<W: World> Vm<'_, '_, '_, W> {
-    /// Each "aura applied" entry of the new instance takes the instigator
-    /// and its parameters, then runs.
+    /// Each "aura applied" entry of the new instance takes the instigator,
+    /// the creator and its parameters, then runs.
     fn start_aura(
         &mut self,
         id: u16,
         instigator: u32,
+        creator: u32,
         parameters: &[(u64, Value)],
     ) -> Result<(), InitFault> {
         let graph = self.graph(id);
@@ -198,10 +220,19 @@ impl<W: World> Vm<'_, '_, '_, W> {
             if expr::valid_entity(instigator) {
                 self.bind_start_value(id, node, source, Value::Entity(instigator))?;
             }
-            if !field(&node.fields, "m_FF703F20").is_null() {
+            let creator = if expr::valid_entity(creator) {
+                creator
+            } else {
+                instigator
+            };
+            if expr::valid_entity(creator) {
+                let target = field(&node.fields, "m_FF703F20");
+                self.bind_start_value(id, node, target, Value::Entity(creator))?;
+            }
+            if !field(&node.fields, "m_44D0D060").is_null() {
                 self.assume(
                     self.site(id, node),
-                    "STUStatescriptEntryGameMessage m_FF703F20",
+                    "STUStatescriptEntryGameMessage m_44D0D060",
                     "unset",
                 );
             }
@@ -254,6 +285,10 @@ impl<W: World> Vm<'_, '_, '_, W> {
                     .and_then(|value| expr::to_entity(&value)),
             }
             .unwrap_or(source.entity);
+            let creator = match self.machine.value(VarKey::Instance(id, CREATOR), None) {
+                Value::Null => self.source_of(id),
+                written => expr::to_entity(&written).unwrap_or(0),
+            };
             if !field(&node.fields, "m_6D7701B7").is_null() {
                 self.assume(site, "STU_431F3FCC m_6D7701B7", "not read");
             }
@@ -274,6 +309,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
                         target,
                         aura,
                         instigator,
+                        creator,
                         parameters: parameters.clone(),
                     },
                 );

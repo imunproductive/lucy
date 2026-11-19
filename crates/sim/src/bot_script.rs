@@ -42,8 +42,8 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk},
     timeline::FRAME_MS,
     vm::{
-        AiMoveRequest, AuraChange, BodyEffects, CombatMod, GameMessage, HealthChange, MapRays,
-        MessageEnd, Motion, ShotEvent, Snapshot, TargetCandidate, Unknowns, combat_scale,
+        AiMoveRequest, AuraChange, BodyEffects, GameMessage, HealthChange, MapRays, MessageEnd,
+        Motion, Scaled, ShotEvent, Snapshot, TargetCandidate, Unknowns,
     },
     weapons::{DamageTags, HitDefinition, ProjectileBallistics, authored_number, ray_profile},
     wire::Value,
@@ -847,35 +847,24 @@ impl BotScripts {
     }
 
     /// What a health change of `kind` with `tags` on the bot `entity`, with
-    /// `other` its attacker or healer, is scaled by: its states' modifiers
-    /// (their party filters tested on `other`), then `held`, those other
-    /// entities hold for it (`BotBody::combat_scale`); `held` alone for a
-    /// bot without a script.
+    /// `other` its attacker or healer, becomes: its states' modifiers
+    /// (their party filters tested on `other`, `BotBody::combat_scale`);
+    /// none for a bot without a script.
     pub fn combat_scale(
         &mut self,
         entity: u32,
         kind: u64,
         tags: &mut DamageTags,
         other: u32,
-        held: &[CombatMod],
-    ) -> f64 {
+    ) -> Scaled {
         match self
             .slot(entity)
             .and_then(|slot| self.slots.get_mut(slot))
             .and_then(Option::as_mut)
         {
-            Some(script) => script.body.combat_scale(kind, tags, other, held),
-            None => combat_scale(held, kind, tags, &[]),
+            Some(script) => script.body.combat_scale(kind, tags, other),
+            None => Scaled::NONE,
         }
-    }
-
-    /// The modifiers the live bots' states hold for other entities
-    /// ([`BodyEffects::held_for_others`]).
-    pub fn held_for_others(&self) -> impl Iterator<Item = &CombatMod> {
-        self.slots
-            .iter()
-            .flatten()
-            .flat_map(|script| script.body.world().effects.held_for_others())
     }
 
     /// The live bots' graph events due by world tick `tick` (a hit's flinch

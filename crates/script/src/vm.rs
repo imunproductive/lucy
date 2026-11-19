@@ -46,8 +46,8 @@ use indexmap::IndexMap;
 use serde_json::Value as Json;
 pub use statuses::{
     ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, BodyEffects, CombatMod, DAMAGE_DEALT,
-    DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, INVULNERABLE, PHASED_OUT, PartyFilter,
-    REDUCTION_CAP, combat_scale,
+    DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, INVULNERABLE, MODIFIED, PHASED_OUT, PartyFilter,
+    REDUCTION_CAP, Scaled, combat_scale,
 };
 
 use crate::{

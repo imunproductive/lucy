@@ -2196,6 +2196,7 @@ fn the_biotic_field_aura_heals_the_body_through_its_own_graph() {
             target: spawn.entity,
             aura: 0x04a0_0000_0000_025f,
             instigator: FIELD,
+            creator: FIELD,
             parameters: vec![
                 (0x0a40_0000_0000_002a, Value::Float(35.0)),
                 (0x0a40_0000_0000_002b, Value::Integer(5)),
