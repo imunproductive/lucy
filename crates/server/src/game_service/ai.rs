@@ -473,6 +473,7 @@ impl State {
                 spawn_room: None,
                 support_tag_given: false,
                 support_tag_delivered: (false, orpheus_script::wire::Value::Null),
+                hold_to_sprint_delivered: orpheus_script::wire::Value::Null,
             })
             .collect();
         for (connection, peer) in &self.peers {
@@ -492,6 +493,7 @@ impl State {
                 117,
                 orpheus_content::hero_settings::ALLIED_HEALTH_BARS as u32,
             );
+            body.hold_to_sprint_delivered = peer.world.body_delivered(0x01cf, 117, 0x1ddc).1;
         }
         bodies
     }
@@ -584,4 +586,7 @@ pub(crate) struct BodyState {
     /// The last owner frame his client acknowledged: whether st117 runs in
     /// it, and its ALLIED HEALTH BARS variable (`#8336e`).
     pub support_tag_delivered: (bool, orpheus_script::wire::Value),
+    /// Its HOLD TO SPRINT variable (`#7644e`, Soldier: 76's `1DDC.01C`) in
+    /// that frame.
+    pub hold_to_sprint_delivered: orpheus_script::wire::Value,
 }

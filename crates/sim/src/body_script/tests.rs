@@ -2226,29 +2226,63 @@ fn zenyattas_harmony_orb_goes_to_the_ally_in_his_sights() {
 /// Angel ability as her graph `006E` starts: st23 (`#7780e ||` an AI
 /// possessor) takes its true branch, st22, the ability a press of
 /// ABILITY_1 toggles (`m_A5F1A77B`), as her client does at the default.
-/// With the setting null the server's st23 took st19, the ability held by
-/// the button (`m_A368407D`; Soldier: 76's `0255` st1 puts the sprint button
-/// there when HOLD TO SPRINT is on), so the server would end a flight that
-/// the client keeps flying after a tap.
+/// With the setting off (or null, as the server had it before) st23 takes
+/// st19, the ability held by the button (`m_A368407D`; Soldier: 76's `0255`
+/// st1 puts the sprint button there when HOLD TO SPRINT is on). A player who
+/// sent it off (21604) gets it as his body starts, as `WorldDelivery` gives
+/// it to a new body: st19, as his client.
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
-fn mercys_guardian_angel_starts_as_a_toggle_by_her_default_setting() {
+fn mercys_guardian_angel_toggles_or_holds_by_her_setting() {
+    use orpheus_content::hero_settings::HeroSetting;
+
     const MERCY: u64 = 0x02e0_0000_0000_0004;
+    const TOGGLE_GUARDIAN_ANGEL: u64 = 0x0d80_0000_0000_1e64;
+    let guardian_angel = |runtime: &PlayerBodyRuntime| {
+        let snapshot = runtime.snapshot().unwrap();
+        let instance = snapshot
+            .instances
+            .values()
+            .find(|instance| instance.graph == 0x006e)
+            .unwrap();
+        let active = |raw| instance.states.get(&raw).is_some_and(|state| state.active);
+        let switch = instance
+            .states
+            .get(&23)
+            .filter(|state| state.active)
+            .map(|state| state.kind);
+        (switch, active(22), active(19))
+    };
     let (mut runtime, spawn) = charge_body(MERCY, None);
     run_frames(&mut runtime, spawn, 2);
-    let snapshot = runtime.snapshot().unwrap();
-    let guardian_angel = snapshot
-        .instances
-        .values()
-        .find(|instance| instance.graph == 0x006e)
-        .unwrap();
-    let state = |raw| guardian_angel.states.get(&raw);
     assert_eq!(
-        state(23).map(|state| (state.active, &state.kind)),
-        Some((true, &orpheus_script::vm::StateKind::BooleanSwitch(true)))
+        guardian_angel(&runtime),
+        (
+            Some(orpheus_script::vm::StateKind::BooleanSwitch(true)),
+            true,
+            false
+        )
     );
-    assert!(state(22).is_some_and(|state| state.active));
-    assert!(state(19).is_none_or(|state| !state.active));
+
+    let mut settings = HeroSettings::default();
+    settings.replace(&[HeroSetting {
+        hero: MERCY,
+        setting: TOGGLE_GUARDIAN_ANGEL,
+        value: 0,
+    }]);
+    let (mut runtime, spawn) = charge_body(MERCY, None);
+    runtime
+        .set_hero_settings(&hero_setting_variables(&settings, MERCY))
+        .unwrap();
+    run_frames(&mut runtime, spawn, 2);
+    assert_eq!(
+        guardian_angel(&runtime),
+        (
+            Some(orpheus_script::vm::StateKind::BooleanSwitch(false)),
+            false,
+            true
+        )
+    );
 }
 
 /// The Biotic Field's aura `025F` heals the body it is on through the

@@ -7,29 +7,32 @@
 //! (`stu/data/types.txt`); the settings the lobby saves (22200, 20802 +0x78
 //! +0x0) hold the same entries, e.g. `{0, 0D80…1DE8, 0.08 as f64 bits}`. So
 //! an entry is: the hero it is for (0: every hero), the setting's
-//! `STUIdentifier`, its value. What the two booleans mean is not known.
+//! `STUIdentifier`, its value.
 //!
 //! A hero setting is an entity variable of the hero's body, whose id is the
 //! setting identifier's index: no graph writes it, and the graphs compare it
 //! with the setting's choices. `orpheus script query var 8336` gives
 //! "identifier 2090.01C", the ALLIED HEALTH BARS setting.
 //!
-//! What the client sends (seen in the game, 2026-11-11): one entry per
-//! setting that is not at its DEFAULT, for every hero, after it joins and
-//! after each change; at DEFAULT it sends an empty list. So each 21604 is
-//! the whole list, and a setting it leaves out is back at DEFAULT. An
-//! identifier setting's value is the chosen entry's `STUIdentifier` GUID.
-//! Only two settings come: ALLIED HEALTH BARS and SHOW FRIENDLY OUTLINES,
-//! the only two of `054/0126` with `m_84E9992A = 1` (every other one has 0),
-//! so that flag likely marks the settings the game server must know.
+//! What the client sends (its sender `0x7FF7895257B0`, after it joins and
+//! after each change; `D:/Work/Coding/refs/reports/HeroSettings.md`): its
+//! saved entries (the list 20802 gave it, which holds only settings away
+//! from their DEFAULT) for the every-hero settings of `054/0126` with
+//! `m_84E9992A = 1` (ALLIED HEALTH BARS and SHOW FRIENDLY OUTLINES; the
+//! others, such as the mouse sensitivity, only its own code reads) and for
+//! every hero-specific setting of every hero. It sends that list in parts of
+//! at most 4 entries, one 21604 each: `+0x90` marks the first part, `+0x91`
+//! the last; an empty list is one 21604 with both. So a list replaces the
+//! last one, and a setting it leaves out is back at DEFAULT ([`SentList`]).
+//! An identifier setting's value is the chosen entry's `STUIdentifier` GUID.
 //! Assumption: an entry with a hero GUID is that hero's own choice.
 //!
-//! Every other setting a graph node the server runs reads goes on the body
-//! at its default from the data ([`SCRIPT_SETTINGS`]): a null there can send
-//! a networked node down another branch than the client's (Ana's Nano Boost
-//! search found nobody with a cone of `10 × null`;
-//! `D:/Work/Coding/refs/reports/HeroSettings.md`). Assumption: retail's
-//! server used the defaults too, as no client sends these.
+//! So retail's game server got every setting its graphs read from the
+//! client: the 50 of [`SCRIPT_SETTINGS`] are the every-hero ALLIED HEALTH
+//! BARS and 49 hero-specific ones. A body starts with their defaults from
+//! the data, which the sent values replace: a null there can send a
+//! networked node down another branch than the client's (Ana's Nano Boost
+//! search found nobody with a cone of `10 × null`).
 
 use orpheus_wire::{jam::codec::Value, messages::Message};
 
@@ -58,8 +61,8 @@ pub const FRIENDLY_OUTLINES_OFF: u64 = 0x0d80_0000_0000_6bbb;
 pub const FRIENDLY_OUTLINES_OCCLUDED: u64 = 0x0d80_0000_0000_6bae;
 pub const FRIENDLY_OUTLINES_ALWAYS: u64 = 0x0d80_0000_0000_6baf;
 
-/// The settings the client sends (21604), which the server puts on the body
-/// as sent.
+/// The every-hero settings the client sends (21604, `m_84E9992A = 1`),
+/// which the server puts on the body as sent, null at DEFAULT.
 pub const SENT_SETTINGS: [u64; 2] = [ALLIED_HEALTH_BARS, FRIENDLY_OUTLINES];
 
 /// A hero setting's default (`m_default`), by its class in `054/0126`.
@@ -195,15 +198,29 @@ pub struct HeroSetting {
     pub value: u64,
 }
 
-/// The entries of a 21604; none for another message or a malformed one.
-pub fn read(message: &Message) -> Option<Vec<HeroSetting>> {
+/// One 21604: a part of the client's list.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SentPart {
+    pub entries: Vec<HeroSetting>,
+    /// `+0x90`: the list's first part.
+    pub first: bool,
+    /// `+0x91`: the list's last part.
+    pub last: bool,
+}
+
+/// The part a 21604 holds; none for another message or a malformed one.
+pub fn read(message: &Message) -> Option<SentPart> {
     if message.id != HERO_SETTINGS {
         return None;
     }
     let Value::Array(entries) = message.fields.get(&0x78)? else {
         return None;
     };
-    entries
+    let flag = |offset| match message.fields.get(&offset) {
+        Some(Value::Bool(flag)) => Some(*flag),
+        _ => None,
+    };
+    let entries = entries
         .iter()
         .map(|entry| {
             let Value::Struct(fields) = entry else {
@@ -219,7 +236,28 @@ pub fn read(message: &Message) -> Option<Vec<HeroSetting>> {
                 value: number(0x10)?,
             })
         })
-        .collect()
+        .collect::<Option<_>>()?;
+    Some(SentPart {
+        entries,
+        first: flag(0x90)?,
+        last: flag(0x91)?,
+    })
+}
+
+/// The list the client is sending, part by part.
+#[derive(Debug, Default)]
+pub struct SentList(Vec<HeroSetting>);
+
+impl SentList {
+    /// Take a part: the whole list once its last part came. A first part
+    /// starts a new list.
+    pub fn take(&mut self, part: SentPart) -> Option<Vec<HeroSetting>> {
+        if part.first {
+            self.0.clear();
+        }
+        self.0.extend(part.entries);
+        part.last.then(|| std::mem::take(&mut self.0))
+    }
 }
 
 /// A player's hero settings as his client last sent them.
@@ -227,8 +265,8 @@ pub fn read(message: &Message) -> Option<Vec<HeroSetting>> {
 pub struct HeroSettings(Vec<HeroSetting>);
 
 impl HeroSettings {
-    /// Take a 21604: it lists every setting that isn't at DEFAULT, so it
-    /// replaces what the client sent before.
+    /// Take the client's whole list: it lists every setting that isn't at
+    /// DEFAULT, so it replaces what the client sent before.
     pub fn replace(&mut self, entries: &[HeroSetting]) {
         self.0.clear();
         self.0.extend_from_slice(entries);
@@ -265,41 +303,52 @@ mod tests {
         ]))
     }
 
-    fn message(entries: Vec<Value>) -> Message {
+    fn message(entries: Vec<Value>, first: bool, last: bool) -> Message {
         Message {
             id: HERO_SETTINGS,
             fields: Fields::from([
                 (0x78, Value::Array(entries)),
-                (0x90, Value::Bool(false)),
-                (0x91, Value::Bool(false)),
+                (0x90, Value::Bool(first)),
+                (0x91, Value::Bool(last)),
             ]),
         }
     }
 
+    /// The client's sender (`0x7FF7895257B0`) sends its list in parts of at
+    /// most 4 entries, the first with `+0x90`, the last with `+0x91`, and an
+    /// empty list as one 21604 with both.
     #[test]
-    fn a_settings_message_gives_its_entries() {
-        let sent = message(vec![
-            entry(0, ALLIED_HEALTH_BARS, ALLIED_HEALTH_BARS_ALWAYS),
-            entry(SOLDIER, 0x0d80_0000_0000_1ddc, 1),
-        ]);
+    fn the_list_comes_in_parts_and_an_empty_list_in_one() {
+        let setting = |index: u64| HeroSetting {
+            hero: SOLDIER,
+            setting: 0x0d80_0000_0000_0000 | index,
+            value: 1,
+        };
+        let list: Vec<_> = (1..=6).map(setting).collect();
+        let part = |entries: &[HeroSetting], first, last| {
+            let entries = entries
+                .iter()
+                .map(|entry| self::entry(entry.hero, entry.setting, entry.value))
+                .collect();
+            read(&message(entries, first, last)).unwrap()
+        };
+        let mut sent = SentList::default();
+        assert_eq!(sent.take(part(&list[..4], true, false)), None);
+        assert_eq!(sent.take(part(&list[4..], false, true)), Some(list.clone()));
+        assert_eq!(sent.take(part(&[], true, true)), Some(Vec::new()));
+        // A first part starts over: what an unfinished list had goes.
+        assert_eq!(sent.take(part(&list[..4], true, false)), None);
         assert_eq!(
-            read(&sent),
-            Some(vec![
-                HeroSetting {
-                    hero: 0,
-                    setting: ALLIED_HEALTH_BARS,
-                    value: ALLIED_HEALTH_BARS_ALWAYS
-                },
-                HeroSetting {
-                    hero: SOLDIER,
-                    setting: 0x0d80_0000_0000_1ddc,
-                    value: 1
-                },
-            ])
+            sent.take(part(&list[4..], true, true)),
+            Some(list[4..].to_vec())
         );
-        assert_eq!(read(&message(Vec::new())), Some(Vec::new()));
-        let mut malformed = message(vec![Value::Unsigned(1)]);
+
+        let mut malformed = message(vec![Value::Unsigned(1)], true, true);
         assert_eq!(read(&malformed), None);
+        malformed = message(Vec::new(), true, true);
+        malformed.fields.remove(&0x91);
+        assert_eq!(read(&malformed), None);
+        malformed = message(Vec::new(), true, true);
         malformed.id = 21603;
         assert_eq!(read(&malformed), None);
     }

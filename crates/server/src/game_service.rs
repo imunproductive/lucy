@@ -999,6 +999,8 @@ struct Peer {
     /// The round trip the game last reported in its input record, as
     /// logged ([`LATENCY_STEP`]).
     reported_latency: Option<u16>,
+    /// The hero settings list the game is sending (21604 parts).
+    hero_settings: hero_settings::SentList,
 }
 
 /// A game's reported round trip is logged when it moves this far (ms) from
@@ -1270,6 +1272,7 @@ impl Peer {
             presented: false,
             ai: None,
             reported_latency: None,
+            hero_settings: hero_settings::SentList::default(),
         }
     }
 
@@ -2099,6 +2102,7 @@ impl State {
                 loading,
                 world,
                 reported_latency,
+                hero_settings: sent_settings,
                 ..
             } = peer;
             let incoming = ingress.receive(&self.schemas, &payload, |message| {
@@ -2122,8 +2126,9 @@ impl State {
                     MessageKind::HeroSettings => {
                         let name = &room.players[slot].info.name;
                         match hero_settings::read(&message) {
-                            Some(entries) => {
-                                let listed: Vec<_> = entries
+                            Some(part) => {
+                                let listed: Vec<_> = part
+                                    .entries
                                     .iter()
                                     .map(|entry| {
                                         format!(
@@ -2133,10 +2138,14 @@ impl State {
                                     })
                                     .collect();
                                 tracing::info!(
-                                    "[game] hero settings of {name} (hero/setting=value): {}",
+                                    "[game] hero settings of {name} (hero/setting=value; first {}, last {}): {}",
+                                    part.first,
+                                    part.last,
                                     listed.join(" ")
                                 );
-                                world.update_hero_settings(&entries);
+                                if let Some(entries) = sent_settings.take(part) {
+                                    world.update_hero_settings(&entries);
+                                }
                             }
                             None => tracing::info!(
                                 "[game] unreadable hero settings of {name}: {:?}",

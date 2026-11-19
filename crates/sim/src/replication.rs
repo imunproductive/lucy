@@ -1722,10 +1722,11 @@ pub struct WorldDelivery {
 
 /// The entity variables of a body's hero settings
 /// (`orpheus_content::hero_settings`): the setting identifier's index holds
-/// the client's value, else the default. That covers the settings the client
-/// sends (null at DEFAULT, which it sends as no entry) and the settings the
-/// body's graphs read on the server (the data's default; the client sends
-/// none of them but ALLIED HEALTH BARS). A value is encoded as the client
+/// the client's value, else the default. That covers the every-hero settings
+/// the client sends (null at DEFAULT, which it sends as no entry) and the
+/// settings the body's graphs read on the server (the data's default when
+/// the client sent none, as it sends only settings saved away from their
+/// DEFAULT). A value is encoded as the client
 /// keeps it (`0x7FF789B7F0F0` compares a saved entry with the default so): a
 /// float as the bits of an f64, a bool as 0 or 1, an identifier as its GUID.
 pub fn hero_setting_variables(settings: &HeroSettings, hero: u64) -> Variables {
