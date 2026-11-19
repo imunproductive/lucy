@@ -295,9 +295,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     /// model's: the animation's length on this body
     /// ([`World::animation_length`]) times `m_speedScalar` (1 without one).
     /// Then timer 1 follows `m_A3B86BB0` and, unless `m_154DBA91` is true,
-    /// the state finishes. An alias the data can't resolve, with no
-    /// authored length, never ends by itself (an assumption, as the Python
-    /// reference: docs/notes/behavior.md).
+    /// the state finishes. An alias the body's set lacks is 0 s long (the
+    /// client's lookup fails), so that state ends in the frame it began, as
+    /// the client's does (OwnerPrediction.md "DayFirstShot2"). An alias
+    /// whose length the data can't tell, with no authored length, never
+    /// ends by itself (an assumption, as the Python reference:
+    /// docs/notes/behavior.md).
     pub(super) fn arm_animation(
         &mut self,
         key: StateKey,

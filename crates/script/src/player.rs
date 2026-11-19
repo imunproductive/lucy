@@ -1236,6 +1236,96 @@ mod tests {
         assert_eq!(strength, None, "no flinch");
     }
 
+    /// The common graph `02C5` waits random(6, 12) s (st17), then plays the
+    /// idle fidget st19 (`StateAnim`, alias `0C8:043C`, no authored
+    /// length) and waits again when it finishes. Reaper's blend tree set
+    /// (`0007.021`) lists the alias at 4.77 s, so his st19 is active at the
+    /// end of 298 frames (its finish is due 4767 ms after the begin, and
+    /// 297 × 16 < 4767 ≤ 298 × 16), then the wait begins again.
+    /// Soldier: 76's set (`011C.021`) lacks it; the client's lookup
+    /// then gives the length 0 and its `Anim` state posts its timer and its
+    /// finish at the begin (`0x7FF789BD1E70`, OwnerPrediction.md
+    /// "DayFirstShot2"), so his st19 ends in the frame it began: never
+    /// active at a frame's end, and the wait runs again after it.
+    #[test]
+    #[ignore = "requires the derived 104319 statescript catalog"]
+    fn the_idle_fidget_ends_at_once_on_a_body_without_its_animation() {
+        use crate::vm::{Component, MAX_INIT_WORK};
+        use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
+
+        const FIRST: u32 = 1000;
+        const REAPER: u64 = 0x02e0_0000_0000_0002;
+        const FIDGET: u16 = 19;
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
+        // The frames (from the first) in which the fidget began, and the
+        // frame ends that found it active.
+        let fidgets = |hero: u64| {
+            let body = &graphs.bodies()[&graphs.hero_body(hero).unwrap()];
+            let mut world = PlayerWorld::new(
+                Arc::clone(&graphs),
+                CONTROLLER,
+                BODY,
+                0x0004_0001 | (0x80_0000 << 1),
+                PRACTICE_RANGE_MODE,
+                hero,
+            );
+            world.pool_types_known = true;
+            world.target_tags = body.target_tags.clone();
+            world.targets = Some(vec![self::body(BODY, Some(0), [0.0; 3])]);
+            let mut component = Component::start(
+                Arc::clone(&graphs),
+                BODY,
+                crate::vm::player_entity_variables(body, 200.0, 200.0),
+                crate::vm::player_roots(body, &graphs).unwrap(),
+                FIRST,
+                &mut world,
+                MAX_INIT_WORK,
+            )
+            .unwrap();
+            let mut began = Vec::new();
+            let mut active = Vec::new();
+            let mut activation = 0;
+            // 30 s: at least two waits of at most 12 s.
+            for frame in FIRST..FIRST + 1875 {
+                component.advance_frame(frame, &mut world).unwrap();
+                let snapshot = component.snapshot().unwrap();
+                let fidget = snapshot
+                    .instances
+                    .values()
+                    .find(|instance| instance.graph == 0x02c5)
+                    .unwrap()
+                    .states
+                    .get(&FIDGET);
+                let (begins, on) =
+                    fidget.map_or((0, false), |state| (state.activation, state.active));
+                if begins != activation {
+                    activation = begins;
+                    began.push(frame - FIRST);
+                }
+                if on {
+                    active.push(frame - FIRST);
+                }
+            }
+            let snapshot = component.snapshot().unwrap();
+            assert!(
+                snapshot.diagnostics.is_empty(),
+                "{:?}",
+                snapshot.diagnostics
+            );
+            (began, active)
+        };
+
+        let (began, active) = fidgets(REAPER);
+        assert!(began.len() >= 2, "{began:?}");
+        let first: Vec<u32> = (began[0]..began[0] + 298).collect();
+        assert_eq!(active[..298], first);
+        assert!(active[298] > began[0] + 298, "{active:?}");
+        let (began, active) = fidgets(SOLDIER);
+        assert!(began.len() >= 2, "{began:?}");
+        assert!(active.is_empty(), "{began:?} {active:?}");
+    }
+
     /// The hero's own lines from `01CA`. An elimination (`0093.025` with
     /// the final blow) of a Training Bot waits 0.7 s (the 44th 16 ms frame),
     /// then begins the server-only `VoiceStimulus` st46: his elimination

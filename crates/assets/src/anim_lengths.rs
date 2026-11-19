@@ -55,16 +55,24 @@
 //! answer, which also hides `any`) for a longer track; the same walk picks
 //! it. An `Anim` state writes it to its `m_EBEFB4A7` output.
 //!
+//! **An alias the set lacks.** The client's lookup (`BB8970`, from the
+//! `Anim` state's `CBFE20`) fails for it and gives the length 0, so the
+//! state's timer and finish fire at its begin (`CC1E70`); see
+//! `D:/Work/Coding/refs/reports/OwnerPrediction.md` "DayFirstShot2". The
+//! file therefore lists every alias of a readable set, with an empty entry
+//! when the walk gives nothing: an alias a listed set doesn't have is one
+//! it lacks, while an empty entry is one whose length can't be told.
+//!
 //! **The data.** The 38 hero and bot bodies name 33 sets. The common
-//! graph `02C5` (node 51) plays alias `0C8:043C` without a length: 21 of
-//! the sets list it, mostly as one leaf (Reaper's `0007.021`: 4.77 s), but
-//! Soldier: 76's `011C.021` doesn't, so on him that state still never
-//! ends (the server can't tell what the client does with an alias its
-//! set lacks). Every scalar these sets give is 0.
+//! graph `02C5` (node 51) plays alias `0C8:043C` without a length: 22 of
+//! the sets list it, 21 with a length, mostly as one leaf (Reaper's
+//! `0007.021`: 4.77 s), but Soldier: 76's `011C.021` doesn't, so on him
+//! that state ends at its begin. Every scalar these sets give is 0.
 //!
 //! The file: `{"bodies": {body: set}, "sets": {set: {alias: {"lengths":
 //! {category: seconds}, "scalars": {category: scalar | null}}}}}`, sorted,
-//! numbers as `f32`, empty maps left out, written without indentation
+//! numbers as `f32`, empty maps left out (an alias without either is `{}`),
+//! a set whose aliases can't be read left out, written without indentation
 //! (selectors that inherit list every category of the install: about
 //! 21,000 lengths over 33 sets).
 
@@ -485,50 +493,45 @@ fn category_key(category: u64) -> String {
 }
 
 /// The aliases of the set: each one's lengths and scalars (see the module
-/// notes).
+/// notes). Every alias the set lists has an entry, empty when the walk gives
+/// nothing, so an alias missing from a listed set is one the set lacks.
+/// None for a set whose aliases can't be read.
 fn set_table(
     set: &Asset,
     categories: &BTreeMap<u64, BTreeSet<u64>>,
-) -> Map<String, serde_json::Value> {
-    let mut table = Map::new();
-    let Some(root) = set.root() else {
-        return table;
-    };
+) -> Option<Map<String, serde_json::Value>> {
+    let root = set.root()?;
     let aliases = keys(Some(root), ALIASES);
     let items = items(root, ITEMS);
     if aliases.len() != items.len() {
-        return table;
+        return None;
     }
+    let mut table = Map::new();
     for (alias, item) in aliases.into_iter().zip(items) {
-        let Some(item) = set.resolve(item) else {
-            continue;
-        };
-        if alias >> 48 != 0x0C80 || alias & 0xFFFF_FFFF == 0 {
-            continue;
-        }
-        let lengths: Map<_, _> = records(set, item, categories, &Lengths { set })
-            .into_iter()
-            .map(|(category, seconds)| (category_key(category), float(f64::from(seconds))))
-            .collect();
-        let scalars: Map<_, _> = records(set, item, categories, &Scalars { set })
-            .into_iter()
-            .map(|(category, track)| {
-                let scalar = track.scalar().map_or(serde_json::Value::Null, float);
-                (category_key(category), scalar)
-            })
-            .collect();
         let mut entry = Map::new();
-        if !lengths.is_empty() {
-            entry.insert("lengths".into(), lengths.into());
+        let item = set.resolve(item);
+        if let Some(item) = item.filter(|_| alias >> 48 == 0x0C80 && alias & 0xFFFF_FFFF != 0) {
+            let lengths: Map<_, _> = records(set, item, categories, &Lengths { set })
+                .into_iter()
+                .map(|(category, seconds)| (category_key(category), float(f64::from(seconds))))
+                .collect();
+            let scalars: Map<_, _> = records(set, item, categories, &Scalars { set })
+                .into_iter()
+                .map(|(category, track)| {
+                    let scalar = track.scalar().map_or(serde_json::Value::Null, float);
+                    (category_key(category), scalar)
+                })
+                .collect();
+            if !lengths.is_empty() {
+                entry.insert("lengths".into(), lengths.into());
+            }
+            if !scalars.is_empty() {
+                entry.insert("scalars".into(), scalars.into());
+            }
         }
-        if !scalars.is_empty() {
-            entry.insert("scalars".into(), scalars.into());
-        }
-        if !entry.is_empty() {
-            table.insert(guid_hex(alias), entry.into());
-        }
+        table.insert(guid_hex(alias), entry.into());
     }
-    table
+    Some(table)
 }
 
 /// Every animation category of the install and the parent indexes it
@@ -603,7 +606,7 @@ pub(crate) fn derive(install: &Install, out: &Path) -> Result<Vec<Output>> {
         .collect();
     let sets_json: Map<_, _> = sets
         .into_iter()
-        .map(|(set, table)| (guid_hex(set), table.into()))
+        .filter_map(|(set, table)| Some((guid_hex(set), table?.into())))
         .collect();
     let file = json!({"bodies": bodies_json, "sets": sets_json});
     Ok(vec![Output {
@@ -669,8 +672,9 @@ mod tests {
 
     fn table(asset: &Asset, categories: &BTreeMap<u64, BTreeSet<u64>>) -> serde_json::Value {
         set_table(asset, categories)
+            .expect("a readable set")
             .remove(&guid_hex(ALIAS))
-            .unwrap_or_default()
+            .expect("the set lists the alias")
     }
 
     fn lengths(asset: &Asset) -> serde_json::Value {
@@ -698,9 +702,10 @@ mod tests {
             vec![record(9.0), record(2.5)],
         );
         assert_eq!(lengths(&asset), json!({"any": 2.5}));
-        // A loop of pass-through nodes gives nothing.
+        // A loop of pass-through nodes gives nothing, but the set still
+        // lists the alias.
         let asset = set(vec![pass(1), pass(0)], vec![record(2.5)]);
-        assert_eq!(table(&asset, &BTreeMap::new()), serde_json::Value::Null);
+        assert_eq!(table(&asset, &BTreeMap::new()), json!({}));
     }
 
     /// Embedded data runs its own game data, whose records it reads.
