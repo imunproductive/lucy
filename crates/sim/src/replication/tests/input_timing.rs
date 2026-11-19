@@ -313,9 +313,12 @@ fn a_tap_a_long_stall_repeated_still_fires_and_a_silent_body_goes_on() {
     // One shot each: 29 rounds left.
     assert_eq!(ammo(&client), ScriptValue::Integer(29));
     assert_eq!(ammo(&server), ammo(&client));
-    // 79 ran at the tick of 80; those of 81 to 84 waited and those of 85
-    // to 100 each repeated it: 16 frames more.
-    assert_eq!(server.body_script.as_ref().unwrap().frame, first + 79 + 16);
+    // The tick of 46 ran 41 and 42 and kept 4 in hand; 20 ticks of that
+    // surplus later one more ran (DRAIN_TICKS), so 3 were in hand after 79's. With
+    // the client silent they ran at the ticks of 80 to 82 (79 last); those
+    // of 83 to 86 waited and those of 87 to 100 each repeated 79's input:
+    // 14 frames more.
+    assert_eq!(server.body_script.as_ref().unwrap().frame, first + 79 + 14);
 }
 
 /// Widowmaker's Grappling Hook (`005A`) from the Range spawn: the press
