@@ -304,6 +304,7 @@ fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
         heal: false,
         tags: splash,
         direction: Some([0.0, 0.0, 1.0]),
+        from: None,
     };
     let on = HurtFeedback::default();
     let damage = damage_message(SHOOTER.source, 75.0, splash, hit.direction);

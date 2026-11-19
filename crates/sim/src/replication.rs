@@ -1542,6 +1542,9 @@ pub struct WorldDelivery {
     /// view turn (25008) waits for its possession to arrive
     /// ([`Self::take_spawn_view`]).
     spawn_view: Option<(BodyId, i32)>,
+    /// The hurt notices (25000) of the hits the current body took, for the
+    /// match to send ([`Self::take_hurt_notices`]).
+    hurt: Vec<CombatNotice>,
     /// The player's controller graph (`0C90`) in the VM, from the world's
     /// start: hero select (`288B`) takes his picks and opens, its snapshot
     /// is his controller frames, and it counts his multikills
@@ -1697,6 +1700,7 @@ impl WorldDelivery {
             shield: (false, 0),
             respawn_hero: None,
             spawn_view: None,
+            hurt: Vec::new(),
             controller_script: None,
             multikill_due: false,
             placement: None,
@@ -1822,6 +1826,7 @@ impl WorldDelivery {
         self.notices = SwitchNotices::default();
         self.spawn_room = None;
         self.spawn_view = None;
+        self.hurt.clear();
         self.controller_script = None;
         self.select_shown = None;
         self.keep_open = false;
@@ -3620,10 +3625,12 @@ impl WorldDelivery {
     }
 
     /// The messages of a hit [`Self::apply_damage`] applied to the current
-    /// body go to its script: the damage message (`0011.025`), and for a
-    /// killing hit the "died" message (003E.025, which pulses the kill
-    /// feed line), both naming `assists` (`03E7`: the assisters' bodies,
-    /// [`crate::combat::kill_credit`]).
+    /// body: the hurt notice (25000, [`CombatNotice::Hurt`]) for his
+    /// client's damage direction arc when another dealt it from a known
+    /// place ([`PlayerHit::from`]), then the body's script's: the damage
+    /// message (`0011.025`), and for a killing hit the "died" message
+    /// (003E.025, which pulses the kill feed line), both naming `assists`
+    /// (`03E7`: the assisters' bodies, [`crate::combat::kill_credit`]).
     pub fn send_hit_messages(
         &mut self,
         scene: &PreparedScene,
@@ -3631,6 +3638,14 @@ impl WorldDelivery {
         damage: &BodyDamage,
         assists: &[u32],
     ) {
+        if let Some(from) = hit.from.filter(|_| !self.headless) {
+            self.hurt.push(CombatNotice::Hurt {
+                victim: hit.body,
+                attacker: hit.shooter.source,
+                from: from.map(|axis| axis as f32),
+                dealt: damage.dealt,
+            });
+        }
         let Some(script) = self
             .body_script
             .as_mut()
@@ -3651,6 +3666,11 @@ impl WorldDelivery {
         if let Some(error) = failure {
             self.drop_failed_script(&error.to_string());
         }
+    }
+
+    /// The hurt notices of the hits since the last call, in order.
+    pub fn take_hurt_notices(&mut self) -> Vec<CombatNotice> {
+        std::mem::take(&mut self.hurt)
     }
 
     /// The players' sources (bodies) of the damage the body `body` took

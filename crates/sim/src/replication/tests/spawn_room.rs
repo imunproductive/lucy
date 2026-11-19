@@ -128,6 +128,7 @@ fn hit(body: u32, amount: f64) -> PlayerHit {
         heal: false,
         tags: orpheus_script::weapons::DamageTags::NONE,
         direction: None,
+        from: None,
     }
 }
 

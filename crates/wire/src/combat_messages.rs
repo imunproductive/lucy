@@ -37,12 +37,21 @@
 //!   checks (2026-11-16)"): `(0, sin θ/2, 0, cos θ/2)` turned the stored yaw
 //!   from 180° to +θ = 90°; Y is up and the yaw is the command's
 //!   (forward = `(sin yaw, 0, cos yaw)`).
+//! - 25000 `{i32 kind, entity, entity, vec3, vec3, vec3, u32[], f32, u32,
+//!   u16, u16, f32, u8, f32[], u64[], u8}` (Msg25000_Handler
+//!   0x7FF7895D39A0) queues a combat event on the local player's
+//!   component 51 (+0x4C0). The damage direction indicator
+//!   0x7FF78970A120 turns each event's source point (+0x9C) against the
+//!   camera into one of 8 arcs and raises it by the amount (+0xC0).
+//!   The event builder 0x7FF789B30550 reads 3 entries of +0xA8 and 2 of
+//!   +0xD8 whatever their counts (refs/reports/PlayerHurt.md, "DayHitArcs").
 
 use crate::{
     jam::codec::{Fields, Schemas, Value},
     messages::{self, ChannelError},
 };
 
+const HURT: u32 = 25000;
 const HIT: u32 = 25001;
 const DEATH: u32 = 25004;
 const ELIMINATION: u32 = 25005;
@@ -50,6 +59,9 @@ const VIEW: u32 = 25008;
 const VOICE: u32 = 27500;
 /// ClientInVoice's "no observer override" (+0x80).
 const NO_OBSERVER: u32 = 0xffff_ffff;
+/// 25000's kind (+0x78) for damage taken: the client's own damage event
+/// (0x7FF7894C0A60) uses it, its victim at +0x7C.
+const DAMAGE_TAKEN: u64 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CombatNotice {
@@ -85,13 +97,22 @@ pub enum CombatNotice {
     View {
         yaw: i32,
     },
+    /// 25000 to the client whose body `victim` took `dealt` from
+    /// `attacker`, who stood at `from` (world): its damage direction arc
+    /// and the hurt callbacks (kind 1 with `+0xD8[1] × dealt > 0`).
+    Hurt {
+        victim: u32,
+        attacker: u32,
+        from: [f32; 3],
+        dealt: f64,
+    },
 }
 
 impl CombatNotice {
     pub fn needs_mode_ui(self) -> bool {
         !matches!(
             self,
-            Self::Hit { .. } | Self::Voice { .. } | Self::View { .. }
+            Self::Hit { .. } | Self::Voice { .. } | Self::View { .. } | Self::Hurt { .. }
         )
     }
 
@@ -101,7 +122,7 @@ impl CombatNotice {
             Self::Death { source, killed_by } => killed_by.then_some(source),
             Self::Elimination { victim, .. } => Some(victim),
             Self::Voice { speaker, .. } => Some(speaker),
-            Self::View { .. } => None,
+            Self::View { .. } | Self::Hurt { .. } => None,
         }
     }
 
@@ -186,6 +207,48 @@ impl CombatNotice {
                             (12, Value::Float32(cos as f32)),
                         ])),
                     )]),
+                )
+            }
+            Self::Hurt {
+                victim,
+                attacker,
+                from,
+                dealt,
+            } => {
+                let vector = |[x, y, z]: [f32; 3]| {
+                    Value::Struct(Fields::from([
+                        (0, Value::Float32(x)),
+                        (4, Value::Float32(y)),
+                        (8, Value::Float32(z)),
+                    ]))
+                };
+                (
+                    HURT,
+                    Fields::from([
+                        (0x78, Value::Unsigned(DAMAGE_TAKEN)),
+                        (0x7c, entity(victim)),
+                        (0x80, entity(attacker)),
+                        // The hit's normal, and its point in the victim's
+                        // frame (the body's origin): the hit effect's,
+                        // which no contact set (+0xCA) asks for.
+                        (0x84, vector([0.0; 3])),
+                        (0x90, vector([0.0; 3])),
+                        (0x9c, vector(from)),
+                        (0xa8, Value::Array(vec![Value::Unsigned(0); 3])),
+                        (0xc0, Value::Float32(dealt as f32)),
+                        (0xc4, Value::Unsigned(0)),
+                        (0xc8, Value::Unsigned(0)),
+                        (0xca, Value::Unsigned(0)),
+                        (0xcc, Value::Float32(0.0)),
+                        (0xd0, Value::Unsigned(0)),
+                        // The builder's defaults (0x7FF7894BFCF0).
+                        (0xd8, Value::Array(vec![Value::Float32(1.0); 2])),
+                        // No damage tags: the indicator's settings for the
+                        // pool hit (0x7FF78954B990).
+                        (0xf0, Value::Array(Vec::new())),
+                        // Not predicted by the client (its component 80).
+                        (0x108, Value::Unsigned(0)),
+                    ]),
                 )
             }
         };
@@ -321,5 +384,45 @@ mod tests {
         let [x, y, z, w] = rotation(-32768);
         assert_eq!([x, y, z], [0.0, -1.0, 0.0]);
         assert!(w.abs() < 1e-7);
+    }
+
+    /// 25000 on ClientInCombat (channel 2, message 0) in the handler's
+    /// order (0x7FF7895D39A0): kind 1, the victim, the attacker, a zero
+    /// normal and local point, the attacker's world position, the three
+    /// u32 and two f32 (1.0, 1.0) the builder reads whatever the counts,
+    /// the amount, no tags and not predicted.
+    #[test]
+    fn a_hurt_notice_is_the_clients_damage_taken_event() {
+        let notice = CombatNotice::Hurt {
+            victim: 0xa000_0101,
+            attacker: 0xc000_1000,
+            from: [1.5, -2.0, 30.25],
+            dealt: 8.0,
+        };
+        assert_eq!(notice.required_identity(), None);
+        assert!(!notice.needs_mode_ui());
+        let expected: Vec<u8> = [
+            &[2, 0][..],
+            &[1, 0, 0, 0],                                        // +0x78 kind
+            &[0x01, 0x01, 0x00, 0xa0],                            // +0x7C victim
+            &[0x00, 0x10, 0x00, 0xc0],                            // +0x80 attacker
+            &[0; 12],                                             // +0x84 normal
+            &[0; 12],                                             // +0x90 point (victim's frame)
+            &[0, 0, 0xc0, 0x3f, 0, 0, 0, 0xc0, 0, 0, 0xf2, 0x41], // +0x9C
+            &[3, 0, 0, 0],                                        // +0xA8 count
+            &[0; 12],
+            &[0, 0, 0, 0x41], // +0xC0 amount
+            &[0; 4],          // +0xC4
+            &[0; 2],          // +0xC8
+            &[0; 2],          // +0xCA contact set
+            &[0; 4],          // +0xCC
+            &[0],             // +0xD0
+            &[2, 0, 0, 0],    // +0xD8 count
+            &[0, 0, 0x80, 0x3f, 0, 0, 0x80, 0x3f],
+            &[0, 0, 0, 0], // +0xF0 tags
+            &[0],          // +0x108 predicted
+        ]
+        .concat();
+        assert_eq!(notice.encode(&Schemas::game()).unwrap(), expected);
     }
 }
