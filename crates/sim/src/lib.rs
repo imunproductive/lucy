@@ -23,6 +23,7 @@ pub mod messages;
 pub mod mode_graph_values;
 pub mod mode_rules_data;
 pub mod mode_script;
+pub mod navigate;
 pub mod notices;
 pub mod objective_data;
 pub mod objectives;

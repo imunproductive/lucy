@@ -13,8 +13,13 @@
 //! count(#6947)` and asks its AI movement state (STU_ECAEE401, move-to
 //! 194D744E and face-to AB9B30EF on `#6947[#39]`) for the walk; the walk's
 //! end waits 1 s and asks for the next point. The walker takes that point
-//! ([`Bot::step`]) and reports the walk's end, which the match hands back to
-//! the script. Graph 0B92 alternates firing and waiting phases of 1.75 to
+//! ([`Bot::step`]) and walks to it over the map's navigation
+//! ([`crate::navigate`], the path query the AI heroes use too: around what
+//! stands between, checked with the bot's own capsule; its search shares
+//! the room's path work a tick, so a long one sets the bot off a few ticks
+//! later), and reports the walk's end, which the match hands back to the
+//! script. Graph 0B92
+//! alternates firing and waiting phases of 1.75 to
 //! 2.5 s within 0.4 m of spawn; its 0013.025 reset branch delays firing by
 //! 2.75 s. A bot's health is the body's override of 0033's #199 (Training
 //! Bots 200, Friendly Bots 225). The client's code for the AI's move-to,
@@ -71,6 +76,7 @@ use orpheus_physics::contact::math::{add, sub};
 use orpheus_physics::contact::world::ContactWorld;
 use orpheus_physics::mover::ground::{pogo, standing_body, standing_capsule, standing_origin};
 use orpheus_physics::mover::settings::MoverSettings;
+use orpheus_physics::nav::Navigation;
 use orpheus_physics::{
     collision::index::TriangleIndex,
     mover::{Mover, resting_spring, sample_movement_flags},
@@ -83,6 +89,7 @@ use orpheus_wire::entity::{Movement, NO_INPUT};
 use crate::{
     bot_animation::{AnimRequest, BodyRig, BotAnimation},
     hitboxes::HitShape,
+    navigate::{self, PathBudget, PathQuery},
     replication::start_motions,
 };
 
@@ -94,8 +101,7 @@ pub const BOT_RECORD_DELAY: u32 = 8;
 const PATROL: u64 = 0x0580_0000_0000_0000 | PATROL_GRAPH as u64;
 const FIRING: u64 = 0x0580_0000_0000_0b92;
 const ARRIVED: f64 = 0.05;
-const MAX_DETOUR_SAMPLES: usize = 64;
-const STEP_UP: f64 = 0.6;
+const STEP_UP: f64 = navigate::STEP;
 const DROP: f64 = 4.0;
 const MAX_SLOPE: f64 = 1.0;
 const FORWARD: f64 = 127.0;
@@ -313,8 +319,6 @@ fn planar_distance(a: [f64; 3], b: [f64; 3]) -> f64 {
     (a[0] - b[0]).hypot(a[2] - b[2])
 }
 
-type Detour = [Option<[f64; 3]>; 2];
-
 #[derive(Debug)]
 struct PatrolCollision {
     body: CharacterBody,
@@ -322,32 +326,15 @@ struct PatrolCollision {
 }
 
 impl PatrolCollision {
-    fn clear(&self, from: [f64; 3], to: [f64; 3]) -> bool {
-        self.body
-            .sweep(
-                standing_origin(from, self.lift),
-                standing_origin(to, self.lift),
-            )
-            .is_ok_and(|hit| hit.is_none())
-    }
-
-    fn supported(
+    /// Whether its capsule walks straight from one point to the other
+    /// ([`navigate::walkable`]).
+    fn walkable(
         &self,
         from: [f64; 3],
         to: [f64; 3],
-        floor_tolerance: f64,
-        ground: &mut impl FnMut(f64, f64, f64, f64) -> Option<f64>,
+        ground: &impl Fn(f64, f64, f64, f64) -> Option<f64>,
     ) -> bool {
-        let width = 2.0 * f64::from(self.body.radius());
-        let samples = (planar_distance(from, to) / width).ceil() as usize;
-        if samples == 0 || samples > MAX_DETOUR_SAMPLES || !self.clear(from, to) {
-            return false;
-        }
-        (0..=samples).all(|sample| {
-            let t = sample as f64 / samples as f64;
-            let [x, y, z] = std::array::from_fn(|axis| from[axis] + (to[axis] - from[axis]) * t);
-            ground(x, z, y + floor_tolerance, y - floor_tolerance).is_some()
-        })
+        navigate::walkable(&self.body, self.lift, ground, from, to)
     }
 
     fn advance(&mut self, from: [f64; 3], to: [f64; 3], dt: f64) -> [f64; 3] {
@@ -378,10 +365,14 @@ pub struct Bot {
     direction: [f64; 2],
     /// The point its script asked for when it last set off ([`Self::step`]).
     goal: Option<[f64; 3]>,
-    /// The point it walks to now: the goal or a detour's corner on the way.
+    /// The point it walks to now: the goal or a turn of its walk on the way.
     target: Option<[f64; 3]>,
     waypoints: VecDeque<[f64; 3]>,
     collision: Option<PatrolCollision>,
+    /// The map's navigation, which its walks follow ([`crate::navigate`]).
+    navigation: Option<Arc<Navigation>>,
+    /// The walk to its goal being searched for, until it sets off.
+    search: Option<PathQuery>,
     start: [f64; 3],
     keys: bool,
     turning: f64,
@@ -430,6 +421,8 @@ impl Bot {
             target: None,
             waypoints: VecDeque::new(),
             collision: None,
+            navigation: None,
+            search: None,
             start: spawn.position,
             keys: false,
             turning: 0.0,
@@ -481,6 +474,11 @@ impl Bot {
         });
     }
 
+    /// Walk over the map's navigation ([`Self::step`]).
+    pub(crate) fn attach_navigation(&mut self, navigation: Arc<Navigation>) {
+        self.navigation = Some(navigation);
+    }
+
     /// The overrides its patrol graph starts with, for a spawner that lists
     /// it ([`BotSpawn::route`]).
     pub fn patrol(&self) -> Option<Patrol<'_>> {
@@ -488,59 +486,6 @@ impl Bot {
             route: &self.spawn.route,
             index: self.spawn.initial_index,
         })
-    }
-
-    fn detour(
-        &self,
-        from: [f64; 3],
-        target: [f64; 3],
-        ground: &mut impl FnMut(f64, f64, f64, f64) -> Option<f64>,
-    ) -> Detour {
-        let Some(collision) = &self.collision else {
-            return [None; 2];
-        };
-        let same_floor = |point: [f64; 3]| (point[1] - from[1]).abs() <= ARRIVED;
-        let distance = planar_distance(from, target);
-        if distance <= ARRIVED || !same_floor(target) || collision.clear(from, target) {
-            return [None; 2];
-        }
-        let hint = self
-            .spawn
-            .route
-            .iter()
-            .copied()
-            .filter(|&point| {
-                same_floor(point)
-                    && planar_distance(from, point) > ARRIVED
-                    && planar_distance(point, target) > ARRIVED
-                    && collision.supported(from, point, STEP_UP, ground)
-                    && collision.supported(point, target, STEP_UP, ground)
-            })
-            .min_by(|&a, &b| {
-                let length = |point| planar_distance(from, point) + planar_distance(point, target);
-                length(a).total_cmp(&length(b))
-            });
-        if hint.is_some() {
-            return [hint, None];
-        }
-
-        // Try a body-width lane to either side. Each leg must fit the same
-        // capsule and stay supported by the same floor as ordinary movement.
-        let [x, _, z] = from;
-        let [tx, _, tz] = target;
-        let scale = 2.0 * f64::from(collision.body.radius()) / distance;
-        for sign in [1.0, -1.0] {
-            let offset = [(tz - z) * scale * sign, 0.0, (x - tx) * scale * sign];
-            let side = |point: [f64; 3]| std::array::from_fn(|axis| point[axis] + offset[axis]);
-            let [a, b] = [side(from), side(target)];
-            if collision.supported(from, a, ARRIVED, ground)
-                && collision.supported(a, b, ARRIVED, ground)
-                && collision.supported(b, target, ARRIVED, ground)
-            {
-                return [Some(a), Some(b)];
-            }
-        }
-        [None; 2]
     }
 
     /// A knockback (`push`, metres a second) throws the body: it leaves its
@@ -650,17 +595,20 @@ impl Bot {
 
     /// Walk to `goal`, the point its script asks for now
     /// ([`crate::bot_script::BotScripts::move_goal`]), through the ticks up
-    /// to `tick`: a new point sets it off from where it stands. The floor
+    /// to `tick`: a new point sets it off from where it stands, once its
+    /// walk there is found with the room's path work of `tick` (`paths`;
+    /// it stands until then). The floor
     /// provider can give a surface Y within the top and bottom probe bounds;
-    /// a missing surface uses the authored hint heights. A knocked body
-    /// flies instead ([`Self::fly`]); its walk goes on once it lands, with
-    /// no catch-up for the flight. The tick its walk ended (it stands still
-    /// on the point), for the script.
+    /// a missing surface uses the heights of the points it walks to. A
+    /// knocked body flies instead ([`Self::fly`]); its walk goes on once it
+    /// lands, with no catch-up for the flight. The tick its walk ended (it
+    /// stands still on the point), for the script.
     pub fn step(
         &mut self,
         tick: u32,
         goal: Option<[f64; 3]>,
-        mut ground: impl FnMut(f64, f64, f64, f64) -> Option<f64>,
+        ground: impl Fn(f64, f64, f64, f64) -> Option<f64>,
+        paths: &PathBudget,
     ) -> Option<u32> {
         if self.dead {
             return None;
@@ -680,26 +628,46 @@ impl Bot {
         let seconds = TICK_PERIOD.as_secs_f64();
         let mut ended = None;
         for at in tick - (ticks - 1)..=tick {
-            if self.tick(at, seconds, goal, &mut ground) {
+            if self.tick(at, seconds, goal, &ground, (paths, tick)) {
                 ended = Some(at);
             }
         }
         ended
     }
 
-    /// One tick of the walk; true when the walk ended in it.
+    /// One tick of the walk; true when the walk ended in it. `paths` is the
+    /// room's path work and the tick it is spent from.
     fn tick(
         &mut self,
         tick: u32,
         dt: f64,
         goal: Option<[f64; 3]>,
-        ground: &mut impl FnMut(f64, f64, f64, f64) -> Option<f64>,
+        ground: &impl Fn(f64, f64, f64, f64) -> Option<f64>,
+        paths: (&PathBudget, u32),
     ) -> bool {
         self.held = [0; 2];
         if goal != self.goal {
             self.goal = goal;
-            if let Some(goal) = goal {
-                self.set_off(goal, ground);
+            self.search = goal.map(|goal| PathQuery::new(self.walk_start(), goal));
+        }
+        if let (Some(search), Some(goal)) = (&mut self.search, self.goal) {
+            let collision = &self.collision;
+            let walk = search.advance(self.navigation.as_deref(), paths.0, paths.1, |a, b| {
+                collision
+                    .as_ref()
+                    .is_none_or(|collision| collision.walkable(a, b, ground))
+            });
+            match walk {
+                Some(walk) => {
+                    self.search = None;
+                    self.set_off(goal, walk);
+                }
+                // Waiting for its walk: it stands.
+                None if self.target.is_some() => {
+                    self.keys = false;
+                    self.stand();
+                }
+                None => {}
             }
         }
         let walking = self.target.is_some();
@@ -717,15 +685,10 @@ impl Bot {
         walking && self.target.is_none()
     }
 
-    /// Set off for `goal` from where it stands, around what blocks the
-    /// straight way ([`Self::detour`], from the route point it stands on).
-    fn set_off(
-        &mut self,
-        goal: [f64; 3],
-        ground: &mut impl FnMut(f64, f64, f64, f64) -> Option<f64>,
-    ) {
-        let from = self
-            .spawn
+    /// Where a walk sets off from: the route point it stands on, else where
+    /// it stands.
+    fn walk_start(&self) -> [f64; 3] {
+        self.spawn
             .route
             .iter()
             .copied()
@@ -733,10 +696,23 @@ impl Bot {
                 planar_distance(self.position, point) <= ARRIVED
                     && (self.position[1] - point[1]).abs() <= STEP_UP
             })
-            .unwrap_or(self.position);
-        let detour = self.detour(from, goal, ground);
+            .unwrap_or(self.position)
+    }
+
+    /// Set off for `goal` through the turns of `walk`, the map's navigation
+    /// walk there from [`Self::walk_start`], each line one its capsule walks
+    /// ([`crate::navigate`]); straight there without navigation or a walk.
+    /// It ends on the point asked for, wherever the walk's end snapped to.
+    fn set_off(&mut self, goal: [f64; 3], walk: Option<Vec<[f64; 3]>>) {
         self.waypoints.clear();
-        self.waypoints.extend(detour.into_iter().flatten());
+        self.waypoints.extend(walk.into_iter().flatten());
+        if self
+            .waypoints
+            .back()
+            .is_some_and(|&end| planar_distance(end, goal) <= ARRIVED)
+        {
+            self.waypoints.pop_back();
+        }
         self.waypoints.push_back(goal);
         self.target = self.waypoints.pop_front();
         self.start = self.position;
@@ -744,12 +720,7 @@ impl Bot {
         self.turning = 0.0;
     }
 
-    fn walk(
-        &mut self,
-        tick: u32,
-        dt: f64,
-        ground: &mut impl FnMut(f64, f64, f64, f64) -> Option<f64>,
-    ) {
+    fn walk(&mut self, tick: u32, dt: f64, ground: &impl Fn(f64, f64, f64, f64) -> Option<f64>) {
         let mut offset = self.to_target();
         let mut distance = offset[0].hypot(offset[1]);
         if distance <= ARRIVED {
@@ -783,7 +754,7 @@ impl Bot {
         self.advance(stride, distance, dt, ground);
     }
 
-    fn slide(&mut self, dt: f64, ground: &mut impl FnMut(f64, f64, f64, f64) -> Option<f64>) {
+    fn slide(&mut self, dt: f64, ground: &impl Fn(f64, f64, f64, f64) -> Option<f64>) {
         self.pace = (self.pace - self.walk.brake * dt).max(0.0);
         let [dx, dz] = self.to_target();
         let distance = dx.hypot(dz);
@@ -837,7 +808,7 @@ impl Bot {
         mut stride: f64,
         distance: f64,
         dt: f64,
-        ground: &mut impl FnMut(f64, f64, f64, f64) -> Option<f64>,
+        ground: &impl Fn(f64, f64, f64, f64) -> Option<f64>,
     ) -> f64 {
         let [x, y, z] = self.position;
         let [dx, dz] = self.direction;
@@ -878,7 +849,7 @@ impl Bot {
         x: f64,
         y: f64,
         z: f64,
-        ground: &mut impl FnMut(f64, f64, f64, f64) -> Option<f64>,
+        ground: &impl Fn(f64, f64, f64, f64) -> Option<f64>,
     ) -> f64 {
         if let Some(height) = ground(x, z, y + STEP_UP, y - DROP) {
             return height;
@@ -917,6 +888,7 @@ impl Bot {
         self.flight = None;
         self.keys = false;
         self.held = [0; 2];
+        self.search = None;
         self.stand();
     }
 
@@ -928,6 +900,7 @@ impl Bot {
                 .fresh_at(standing_origin(fresh.position, collision.lift)),
             lift: collision.lift,
         });
+        fresh.navigation = self.navigation.clone();
         fresh.records_from = Some(records_from);
         fresh.animation = self.animation.as_ref().map(BotAnimation::fresh);
         fresh

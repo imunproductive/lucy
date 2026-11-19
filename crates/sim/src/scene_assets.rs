@@ -33,6 +33,7 @@ use crate::{
     messages::Bots,
     mode_graph_values::ModeGraphValues,
     mode_rules_data::{ModeRules, ModeRulesData},
+    navigate::PathBudget,
     notices::switch_notices,
     objective_data::{MapObjectives, ObjectiveData},
     objectives::CaptureBox,
@@ -58,7 +59,7 @@ use orpheus_physics::{
     contact::cache::CapsulePose,
     contact::world::ContactWorld,
     mover::Mover,
-    mover::ground::NOT_GROUND,
+    mover::ground::{NOT_GROUND, pogo, standing_body},
     mover::settings::{MoverCatalog, MoverSettings},
     nav::{self, Navigation},
 };
@@ -231,6 +232,9 @@ pub struct PreparedScene {
     switch_notices: bool,
     /// The map's AI navigation, when the data has it (Practice vs AI).
     navigation: Option<Arc<Navigation>>,
+    /// The path work the room's walkers share a tick: its bots' walks
+    /// ([`Self::step_bots`]) and its AI heroes' ([`Self::path_budget`]).
+    paths: PathBudget,
     /// The rules of the mode's match flow.
     mode_rules: ModeRules,
     /// The mode graphs' values the match flow uses.
@@ -440,14 +444,18 @@ impl SceneAssets {
                 .map(Arc::new)
                 .map_err(invalid)?,
         );
-        if let Some(world) = &contacts {
-            for bot in bots.iter_mut().filter(|bot| !bot.spawn.route.is_empty()) {
+        let navigation = self.navigation(&map);
+        for bot in bots.iter_mut().filter(|bot| !bot.spawn.route.is_empty()) {
+            if let Some(world) = &contacts {
                 let category = mover_category(&map, bot.spawn.team);
                 bot.attach_collision(
                     self.movers.for_body(Some(bot.spawn.body)),
                     Arc::clone(world),
                     category,
                 );
+            }
+            if let Some(navigation) = &navigation {
+                bot.attach_navigation(Arc::clone(navigation));
             }
         }
         for bot in &mut bots {
@@ -480,7 +488,6 @@ impl SceneAssets {
             self.stats
                 .component(&PlayerStats::default(), map.mode_guid, None, None);
         let map_mode = map.mode_guid;
-        let navigation = self.navigation(&map);
         let mode_random = crate::scene::draw_mode_random();
         let mode_rules =
             self.mode_rules
@@ -558,6 +565,7 @@ impl SceneAssets {
             field_graphs: self.field_graphs.clone(),
             switch_notices: switch_notices(self.modes.get(map_mode)),
             navigation,
+            paths: PathBudget::default(),
             mode_rules,
             mode_graph_values: self.mode_graph_values,
             objectives,
@@ -1084,6 +1092,40 @@ impl PreparedScene {
         self.navigation.as_deref()
     }
 
+    /// The path work the room's walkers share this tick
+    /// ([`crate::navigate::PathBudget`]): the bots' walks take theirs first
+    /// ([`Self::step_bots`]), the AI heroes the rest.
+    pub fn path_budget(&self) -> &PathBudget {
+        &self.paths
+    }
+
+    /// Whether a hero body `body` (the movers' fallback body when none) of
+    /// team `team` walks straight from one floor point to another: its
+    /// standing capsule on the map's collision with the team's mask, and
+    /// floor under every step ([`crate::navigate::walkable`]); every walk,
+    /// without player collision. An AI hero's walks are made with it
+    /// ([`crate::ai::Senses::walkable`]).
+    pub fn walk_test(
+        &self,
+        body: Option<u64>,
+        team: u8,
+    ) -> impl Fn([f64; 3], [f64; 3]) -> bool + '_ {
+        let settings = self.movers.for_body(body);
+        let category = mover_category(&self.map, team);
+        let capsule = self.contacts.as_ref().map(|world| {
+            (
+                standing_body(settings, Arc::clone(world), [0.0; 3], category),
+                pogo(settings, false) as f32,
+            )
+        });
+        let ground = ground_height(self.ground.triangles(), category);
+        move |from, to| {
+            capsule.as_ref().is_none_or(|(capsule, lift)| {
+                crate::navigate::walkable(capsule, *lift, &ground, from, to)
+            })
+        }
+    }
+
     /// Whether nothing of the map's collision stands between two points,
     /// as a hitscan shot from one to the other sees it (an AI's line of
     /// sight): a shot of a volley that names no ray profile, as most
@@ -1123,6 +1165,7 @@ impl PreparedScene {
                 tick,
                 goal.map(|goal| goal.target),
                 ground_height(floor, mover_category(&self.map, bot.spawn.team)),
+                &self.paths,
             );
             if let (Some(goal), Some(ended)) = (goal, ended) {
                 self.bot_scripts.move_arrived(slot, bot.entity, goal, ended);

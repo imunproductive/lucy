@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use orpheus_content::{
     heroes::SOLDIER,
     maps::{MapCatalog, ObjectiveKind, SpawnChoice},
@@ -77,9 +79,9 @@ fn enemy(slot: usize, feet: [f64; 3]) -> Seen {
     }
 }
 
-/// New walks without a limit, for a controller alone in its room.
-fn unlimited() -> Cell<usize> {
-    Cell::new(usize::MAX)
+/// Path work without a limit, for a controller alone in its room.
+fn unlimited() -> PathBudget {
+    PathBudget::unlimited()
 }
 
 fn senses<'a>(
@@ -88,7 +90,7 @@ fn senses<'a>(
     others: &'a [Seen],
     goal: Goal,
     navigation: Option<&'a Navigation>,
-    paths: &'a Cell<usize>,
+    paths: &'a PathBudget,
     sight: &'a dyn Fn([f64; 3], [f64; 3]) -> bool,
 ) -> Senses<'a> {
     Senses {
@@ -104,6 +106,7 @@ fn senses<'a>(
         navigation,
         paths,
         sight,
+        walkable: &clear,
     }
 }
 
@@ -441,42 +444,59 @@ fn without_an_objective_an_ai_hunts_and_dead_it_idles() {
     assert_eq!((command.forward, command.right, command.buttons), (0, 0, 0));
 }
 
-/// A room's AIs share their new walks of a tick: with one left, the first
-/// AI to need a walk sets off and the second stands until the next tick.
+/// A room's AIs share the path work of a tick: with work for one walk, the
+/// first AI to need a walk sets off and the second stands until the next
+/// tick, when its search goes on.
 #[test]
 fn the_ais_of_a_room_take_turns_making_walks() {
     let nav = ring();
     let objective = [11.5, 0.35, 11.5];
     let start = [2.5, 0.35, 2.5];
+    // Each AI's cell (one AI on the team) and the work of its walk there.
+    let cell = from_nav(nav.free_cells(to_nav(objective), SPREAD, 1)[0]);
+    let probe = unlimited();
+    let walk = PathQuery::new(start, cell).advance(Some(&nav), &probe, 0, clear);
+    assert!(walk.is_some_and(|walk| walk.is_some()));
+    let paths = PathBudget::new(u32::MAX - probe.left(0));
     let mut first = AiController::new(Difficulty::Easy, 0, 1, 1);
     let mut second = AiController::new(Difficulty::Easy, 0, 1, 2);
     let moving = |command: Command| command.forward != 0 || command.right != 0;
     for (tick, expected) in [(0, [true, false]), (1, [true, true])] {
-        let paths = Cell::new(PATHS_PER_TICK);
         let goal = Goal::Objective(objective);
         let room = senses(tick, start, &[], goal, Some(&nav), &paths, &clear);
         let commands = [first.command(&room), second.command(&room)];
         assert_eq!(commands.map(moving), expected, "tick {tick}");
-        assert_eq!(paths.get(), 0);
+        assert_eq!(paths.left(tick), 0, "tick {tick}");
     }
 }
 
 /// A goal off the walkable cells (a hunted enemy on a ledge) ends its walk
 /// on the nearest cell: the AI stands there and makes no new walk while
-/// the goal stays, but one when it is pushed off the end of its walk.
+/// the goal stays (its walk tests asked once), but one when it is pushed
+/// off the end of its walk.
 #[test]
 fn a_walk_that_ends_short_of_its_goal_is_made_once() {
     let nav = ring();
     // 2 m past the ring's edge at x 16; the nearest cell's centre is
     // (15.5, 4.5). Out of sight, so the AI walks without shooting.
     let others = [enemy(4, [17.5, 0.35, 4.5])];
-    let paths = Cell::new(100);
+    let paths = unlimited();
+    let asked = Cell::new(0);
+    let counted = |_: [f64; 3], _: [f64; 3]| {
+        asked.set(asked.get() + 1);
+        true
+    };
     let mut ai = AiController::new(Difficulty::Easy, 0, 1, 4);
     let mut feet = [2.5, 0.35, 2.5];
     let mut standing = 0;
+    let mut first = 0;
     for tick in 0..1000 {
-        let now = senses(tick, feet, &others, Goal::Hunt, Some(&nav), &paths, &blind);
+        let mut now = senses(tick, feet, &others, Goal::Hunt, Some(&nav), &paths, &blind);
+        now.walkable = &counted;
         let command = ai.command(&now);
+        if tick == 0 {
+            first = asked.get();
+        }
         if command.forward == 0 && command.right == 0 {
             standing += 1;
         }
@@ -484,13 +504,15 @@ fn a_walk_that_ends_short_of_its_goal_is_made_once() {
     }
     assert!(flat_distance(feet, [15.5, 0.35, 4.5]) <= HOLD, "{feet:?}");
     assert!(standing > 500, "{standing}");
-    assert_eq!(paths.get(), 99);
+    assert!(first > 0);
+    assert_eq!(asked.get(), first);
     // Pushed 3 m back: a new walk to the same cell.
     feet[0] -= 3.0;
-    let now = senses(1000, feet, &others, Goal::Hunt, Some(&nav), &paths, &blind);
+    let mut now = senses(1000, feet, &others, Goal::Hunt, Some(&nav), &paths, &blind);
+    now.walkable = &counted;
     let command = ai.command(&now);
     assert!(walk(feet, &command)[0] > feet[0]);
-    assert_eq!(paths.get(), 98);
+    assert!(asked.get() > first);
 }
 
 /// Stuck is a second of its body's walking without progress, however far
@@ -555,11 +577,12 @@ fn a_team_gets_each_roster_hero_once() {
 
 /// An attacker walks from Temple of Anubis' attack spawn to its cell at
 /// point A over the map's navigation and collision: out of the spawn and
-/// down its stairs, and past the block on the way the navigation thinks
-/// clear (stuck there, it jumps and steps aside). Also when its body takes
-/// its commands 40 frames apart, as a server behind on its ticks has it
-/// (the frames between are its last input held): it overshoots its
-/// waypoints and walks on rather than turning back to them.
+/// down its stairs, and past the block on the way the navigation's cells
+/// think clear (its walks are checked with its capsule; stuck, it would jump
+/// and step aside). Also when its body takes its commands 40 frames apart,
+/// as a server behind on its ticks has it (the frames between are its last
+/// input held): it overshoots its waypoints and walks on rather than
+/// turning back to them.
 #[test]
 #[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR); builds Anubis' collision once"]
 fn an_attacker_walks_from_the_anubis_spawn_to_point_a() {
@@ -582,6 +605,7 @@ fn an_attacker_walks_from_the_anubis_spawn_to_point_a() {
     let rays = scene.movement_index();
     let dt = f64::from(RETAIL_QUANTA) / 1_000_000.0;
     let sight = |from, to| scene.line_of_sight(from, to);
+    let walkable = scene.walk_test(Some(body), 1);
     let paths = unlimited();
     for gap in [1, 40] {
         let mut mover = scene
@@ -607,6 +631,7 @@ fn an_attacker_walks_from_the_anubis_spawn_to_point_a() {
                 navigation: scene.navigation(),
                 paths: &paths,
                 sight: &sight,
+                walkable: &walkable,
             });
             if command.forward == 0 && command.right == 0 {
                 break feet;
@@ -621,4 +646,89 @@ fn an_attacker_walks_from_the_anubis_spawn_to_point_a() {
         let left = flat_distance(arrived, point_a);
         assert!(left < f64::from(SPREAD) + 3.0, "gap {gap}: {left} m from A");
     }
+}
+
+/// An AI hero walks round a wall to the point behind it: on Watchpoint:
+/// Gibraltar the objective nearest the first team's spawn is 8 m away in a
+/// straight line, which his capsule can't walk, and some 75 m round over
+/// the map's navigation. He gets to his cell beside it within 40 s (about
+/// 15: the 75 m at a run, and a stuck sidestep where the volumes and the
+/// collision disagree).
+#[test]
+#[ignore = "requires an Overwatch 1.74 install (ORPHEUS_GAME_DIR); builds Gibraltar's collision once"]
+fn an_ai_hero_walks_round_a_wall_to_the_point_behind_it() {
+    use crate::match_flow::ESCORT;
+    const GIBRALTAR: u64 = 0x0800_0000_0000_0184;
+    let runtime = orpheus_testkit::runtime_dir();
+    let assets = SceneAssets::load(&runtime)
+        .unwrap()
+        .with_collision_build(install_collision_build(orpheus_testkit::game_dir()));
+    let catalog = MapCatalog::load(runtime.join("data")).unwrap();
+    let map = catalog
+        .game_map(GIBRALTAR, ESCORT, "Escort", false, &[6, 6])
+        .unwrap();
+    let objectives: Vec<[f64; 3]> = map
+        .objectives
+        .iter()
+        .map(|objective| objective.position)
+        .collect();
+    let scene = assets.prepare(map).unwrap();
+    let body = scene.heroes().get(SOLDIER).unwrap().body;
+    let mut mover = scene
+        .player_spawn_mover(body, 0, 0, SpawnChoice::First)
+        .unwrap();
+    let spawn = mover.pose().position;
+    let goal = objectives
+        .into_iter()
+        .min_by(|a, b| flat_distance(spawn, *a).total_cmp(&flat_distance(spawn, *b)))
+        .unwrap();
+    let walkable = scene.walk_test(Some(body), 0);
+    let straight = flat_distance(spawn, goal);
+    assert!(straight < 10.0 && !walkable(spawn, goal), "{straight} m");
+    let around = crate::navigate::path(scene.navigation(), spawn, goal, &walkable).unwrap();
+    let length: f64 = std::iter::once(spawn)
+        .chain(around.iter().copied())
+        .collect::<Vec<_>>()
+        .windows(2)
+        .map(|pair| distance(pair[0], pair[1]))
+        .sum();
+    assert!(length > 5.0 * straight, "{length} m round");
+
+    let rays = scene.movement_index();
+    let dt = f64::from(RETAIL_QUANTA) / 1_000_000.0;
+    let sight = |from, to| scene.line_of_sight(from, to);
+    let paths = unlimited();
+    let mut ai = AiController::new(Difficulty::Easy, 0, 1, 1);
+    let mut frame = 0;
+    let arrived = loop {
+        frame += 1;
+        let feet = mover.pose().position;
+        assert!(frame < ticks(40.0), "at {feet:?} after 40 s");
+        let command = ai.command(&Senses {
+            tick: frame,
+            team: 0,
+            feet: Some(feet),
+            body: Some(1),
+            eye: 1.5,
+            health: 1.0,
+            others: &[],
+            goal: Goal::Objective(goal),
+            home: spawn,
+            navigation: scene.navigation(),
+            paths: &paths,
+            sight: &sight,
+            walkable: &walkable,
+        });
+        if command.forward == 0 && command.right == 0 {
+            break feet;
+        }
+        let mut poses = mover.pending_poses(command);
+        mover
+            .step_pending(rays, &mut poses, dt, usize::MAX, |_, _| {})
+            .unwrap();
+    };
+    // His cell is the walkable cell nearest the point (one AI on the
+    // team), reached within [`HOLD`].
+    let left = flat_distance(arrived, goal);
+    assert!(left < HOLD + 1.0, "{left} m from the point");
 }
