@@ -115,6 +115,7 @@ impl From<ModeValue> for Value {
         match value {
             ModeValue::Bool(value) => Self::Bool(value),
             ModeValue::Integer(value) => Self::Integer(value),
+            ModeValue::Float(value) => Self::Float(value),
             ModeValue::Asset(value) => Self::Asset(value),
         }
     }

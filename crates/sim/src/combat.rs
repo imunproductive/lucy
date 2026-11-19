@@ -584,6 +584,7 @@ impl Combat {
                 scene.shared_graphs(),
                 scene.field_graphs().to_vec(),
                 scene.map().mode_guid,
+                scene.map().ruleset,
                 scene.mode_random(),
                 Some(scene.map_rays()),
             ),

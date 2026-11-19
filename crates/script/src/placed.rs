@@ -186,6 +186,7 @@ pub trait EntityVolumes: Send + Sync {
 struct Shared<'a> {
     graphs: &'a GraphStore,
     mode: u64,
+    ruleset: u64,
     mode_random: f32,
     unknowns: Unknowns,
     players: &'a [TargetCandidate],
@@ -255,14 +256,14 @@ impl World for EntityWorld<'_, '_> {
         self.entity_position(site, entity).unwrap_or_default()
     }
 
-    /// The mode entity's variables are the mode's (as [`crate::mode`]).
+    /// The mode entity's variables are the game's (as [`crate::mode`]).
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
         if entity != GAME_MODE_ENTITY {
             return Value::Null;
         }
         self.shared
             .graphs
-            .mode_variables(self.shared.mode)
+            .mode_variables(self.shared.mode, self.shared.ruleset)
             .and_then(|variables| variables.get(&id))
             .copied()
             .map_or(Value::Null, Value::from)
@@ -498,6 +499,8 @@ impl World for EntityWorld<'_, '_> {
 pub struct MapEntityWorld {
     graphs: Arc<GraphStore>,
     mode: u64,
+    /// The game's ruleset ([`GraphStore::mode_variables`]); 0: none.
+    ruleset: u64,
     /// The match's mode entity value (`World::mode_random`).
     mode_random: f32,
     unknowns: Unknowns,
@@ -527,13 +530,16 @@ pub struct MapEntityWorld {
 impl MapEntityWorld {
     /// Start every placement that has graphs at `frame`, in order. A
     /// placement whose start faults keeps the fault and no component.
-    /// `map_tags`: the map's tagged placeables in this mode, if known;
+    /// `ruleset`: the game's ruleset, which sets the mode entity's
+    /// variables with `mode`; `map_tags`: the map's tagged placeables in
+    /// this mode, if known;
     /// `map_rays`: the map's collision, if known; `volumes`: the
     /// placeables' volumes, if known.
     #[allow(clippy::too_many_arguments)]
     pub fn start<'p>(
         graphs: Arc<GraphStore>,
         mode: u64,
+        ruleset: u64,
         mode_random: f32,
         unknowns: Unknowns,
         placements: impl IntoIterator<Item = Placement<'p>>,
@@ -545,6 +551,7 @@ impl MapEntityWorld {
         let mut world = Self {
             graphs,
             mode,
+            ruleset,
             mode_random,
             unknowns,
             players: Vec::new(),
@@ -621,6 +628,7 @@ impl MapEntityWorld {
         let mut shared = Shared {
             graphs: &self.graphs,
             mode: self.mode,
+            ruleset: self.ruleset,
             mode_random: self.mode_random,
             unknowns: self.unknowns,
             players: &self.players,
@@ -758,6 +766,7 @@ impl MapEntityWorld {
         let mut shared = Shared {
             graphs: &self.graphs,
             mode: self.mode,
+            ruleset: self.ruleset,
             mode_random: self.mode_random,
             unknowns: self.unknowns,
             players: &self.players,
@@ -834,6 +843,7 @@ impl MapEntityWorld {
         let mut shared = Shared {
             graphs: &self.graphs,
             mode: self.mode,
+            ruleset: self.ruleset,
             mode_random: self.mode_random,
             unknowns: self.unknowns,
             players: &self.players,
@@ -995,6 +1005,7 @@ mod tests {
         let world = MapEntityWorld::start(
             Arc::new(graphs),
             0,
+            0,
             0.0,
             Unknowns::Refuse,
             [Placement {
@@ -1076,6 +1087,7 @@ mod tests {
         }];
         let world = MapEntityWorld::start(
             Arc::new(graphs),
+            0,
             0,
             0.0,
             Unknowns::Refuse,
