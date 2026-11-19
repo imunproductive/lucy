@@ -30,8 +30,11 @@ pub struct Asset {
 pub struct Object {
     /// The class hash.
     pub class: u32,
-    /// Field hash and value, in the order the asset lists them.
+    /// Field hash and value: the fields the asset stores, in its order,
+    /// then the type table's defaults of the fields it leaves out.
     pub fields: Vec<(u32, Value)>,
+    /// How many of `fields` the asset stores (the first ones).
+    pub stored: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -65,6 +68,25 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl Object {
+    /// An object whose fields are all stored.
+    pub fn new(class: u32, fields: Vec<(u32, Value)>) -> Self {
+        let stored = fields.len();
+        Self {
+            class,
+            fields,
+            stored,
+        }
+    }
+
+    /// A field the asset stores, by hash (`None` when it is left at its
+    /// default).
+    pub fn stored(&self, hash: u32) -> Option<&Value> {
+        self.fields[..self.stored]
+            .iter()
+            .find(|(field, _)| *field == hash)
+            .map(|(_, value)| value)
+    }
+
     /// A field by name, through the type table.
     pub fn get(&self, name: &str) -> Option<&Value> {
         let hash = Types::get().field_named(self.class, name)?.hash;

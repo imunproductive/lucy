@@ -85,10 +85,7 @@ impl Reader<'_> {
     /// fields that bag lists.
     fn object(&mut self, class: u32) -> Result<Object, Error> {
         let bag = self.data.i32()?;
-        let mut object = Object {
-            class,
-            fields: Vec::new(),
-        };
+        let mut object = Object::new(class, Vec::new());
         if bag == -1 {
             self.defaults(&mut object);
             return Ok(object);
@@ -120,6 +117,7 @@ impl Reader<'_> {
     /// The fields the asset doesn't store, at their defaults, as DataTool
     /// shows them.
     fn defaults(&self, object: &mut Object) {
+        object.stored = object.fields.len();
         for field in self.types.fields(object.class) {
             if !object.fields.iter().any(|(hash, _)| *hash == field.hash) {
                 object.fields.push((field.hash, field.default.clone()));
