@@ -9,7 +9,7 @@ use std::{
 use serde_json::Value as Json;
 
 use crate::{
-    combat::{BodyCombat, PosedHitscan, PosedProjectile, PosedShot, TargetRewind},
+    combat::{BodyCombat, DeathCamera, PosedHitscan, PosedProjectile, PosedShot, TargetRewind},
     hitscan::aim_direction,
     instance::RETAIL_QUANTA,
     others::ObserverActivity,
@@ -33,7 +33,7 @@ use orpheus_physics::{
 use orpheus_script::{
     ai_definitions::AiControl,
     codecs::CodecTable,
-    expr::{team_from_filter, to_float},
+    expr::{EntityRelation, team_from_filter, to_float},
     graph::GraphStore,
     map_tags::MapTags,
     player::{MODE_OVERTIME, PlayerWorld},
@@ -42,7 +42,7 @@ use orpheus_script::{
     vitals::Vitals,
     vm::{
         AssistLink, AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays,
-        Motion, MoveRequest, RaisedCriteria, Root, Snapshot, StateKind, TargetCandidate,
+        Motion, MoveRequest, RaisedCriteria, Root, Site, Snapshot, StateKind, TargetCandidate,
         TrackedStat, Unknowns, VoiceRequest, World,
     },
     weapons::{HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
@@ -606,6 +606,26 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         let targets = self.world.targets.get_or_insert_with(Vec::new);
         targets.clear();
         targets.extend_from_slice(candidates);
+    }
+
+    /// The killer's possessor as the body's graphs would ask it
+    /// (`STU_DB742151`): its own controller (an AI hero's AI entity) for a
+    /// self-kill, else the controller the match lists for the killing body.
+    fn death_camera(&mut self, killer: u32) -> Option<DeathCamera> {
+        let site = Site {
+            entity: self.world.entity,
+            instance: 0,
+            graph: 0,
+            node: None,
+        };
+        let killer_controller = self
+            .world
+            .related_entity(site, EntityRelation::Controller, killer)
+            .unwrap_or(0);
+        Some(DeathCamera {
+            killer_controller,
+            position: self.world.position,
+        })
     }
 
     fn see_targets(&mut self, rewind: &TargetRewind<'_>, command: &Command) {

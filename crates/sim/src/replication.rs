@@ -15,8 +15,8 @@ use crate::{
     bot_script::{BotEvent, BotViewContext, BotViews, SeenDelivery, SeenRocket},
     bots::BOT_RECORD_DELAY,
     combat::{
-        BotReplacement, Combat, DEAD, PlayerHit, PlayerTarget, PosedProjectile, PosedShot,
-        RESPAWN_RETRY, TargetRewind, credits_damage, hit_messages,
+        BotReplacement, Combat, DEAD, DeathCamera, PlayerHit, PlayerTarget, PosedProjectile,
+        PosedShot, RESPAWN_RETRY, TargetRewind, credits_damage, hit_messages,
     },
     controller::ControllerFrame,
     egress::{
@@ -370,6 +370,13 @@ pub trait OwnerBodyRuntime: Send {
     /// The bodies the body's target searches can find from now on
     /// (`Combat::target_candidates`).
     fn set_target_candidates(&mut self, _candidates: &[TargetCandidate]) {}
+
+    /// The death layer's parameters of the death message for a kill by the
+    /// body `killer` ([`DeathCamera`]), as the body's world knows the
+    /// killer and the body; none: the body runs no script that reads them.
+    fn death_camera(&mut self, _killer: u32) -> Option<DeathCamera> {
+        None
+    }
 
     /// Where the player saw those bodies at `command`'s view, for the
     /// searches that rewind, before the body's script runs the command.
@@ -3700,11 +3707,16 @@ impl WorldDelivery {
         else {
             return;
         };
+        let camera = damage
+            .killed
+            .then(|| script.runtime.death_camera(hit.shooter.source))
+            .flatten();
         let messages = hit_messages(
             hit,
             damage.tags,
             damage.dealt,
             damage.killed.then_some(assists),
+            camera,
             scene.hurt_feedback(),
         );
         let failure = messages.into_iter().find_map(|(message, parameters)| {

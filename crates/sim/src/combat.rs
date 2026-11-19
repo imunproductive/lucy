@@ -91,6 +91,54 @@ const CRIT: u32 = 0x0095;
 const LOADOUT: u32 = 0x03e6;
 const ASSISTS: u32 = 0x03e7;
 
+/// `003E`'s death camera parameters, which only the death layer `01CB`
+/// (rid5) reads: the killer's controller `07A9` (#21709), whether the
+/// death takes a set camera `0234` (#4608e; `01D8`'s Play of the Game
+/// scoring skips such a death), that camera's point `0233` (#4609) and
+/// whether it frames the body instead `0232` (#4610)
+/// ([`DeathCamera`]).
+const KILLER_CONTROLLER: u32 = 0x07a9;
+const SET_CAMERA: u32 = 0x0234;
+const SET_CAMERA_POINT: u32 = 0x0233;
+const SET_CAMERA_ON_BODY: u32 = 0x0232;
+
+/// What a player's body's death layer `01CB` needs of its death besides
+/// the kill feed's fields (`refs/reports/DeathCam.md`, "Day (2026-11-19),
+/// DayDeathParams").
+///
+/// - `07A9` is the possessor of the killing body (its controller; an AI
+///   hero's AI entity), as the graphs that set #21709 themselves read it
+///   (`STU_F7262B36(#40)`: `0C72`, `0B99`, `0EE1`) and as the client's
+///   `STU_00707E1E` takes it (it reads the entity's component 44, which
+///   only a possessor has). `01CB` frames that controller's possessed body
+///   when the killer's body is gone (#21711, client-only st115/st120/st123)
+///   and tells it of the kill (rid224 `17D9` to `STU_0AC15F78(#21709)`).
+///   A self-kill (an environment kill too) names the body's own. 0: the
+///   world lists no such body.
+/// - `0234` false: no graph and no client code sends `003E` (`owsearch`:
+///   no use of `003E.025` or of the four parameter GUIDs), so which deaths
+///   retail gave the set camera (`01CB` st13: st14 at the body + 1 m, or
+///   st30 20 m above `0233`) is unknown; a kill and a self-kill take
+///   `01CB`'s own cameras (st36 at the killer, st14/st25 at the body).
+/// - `0233` the body's position at the death [assumption: the point st30
+///   looks down at], and `0232` false; both unread while `0234` is false.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeathCamera {
+    pub killer_controller: u32,
+    pub position: Vec3,
+}
+
+impl DeathCamera {
+    fn parameters(self) -> [(u32, Value); 4] {
+        [
+            (KILLER_CONTROLLER, Value::Entity(self.killer_controller)),
+            (SET_CAMERA, Value::Bool(false)),
+            (SET_CAMERA_POINT, Value::Vector(self.position)),
+            (SET_CAMERA_ON_BODY, Value::Bool(false)),
+        ]
+    }
+}
+
 /// Each mode's respawn time for heroes (combat.py `respawn_seconds`): the
 /// seconds its mode graph sends the player in 06FD.025, derived into
 /// `game_respawns_174.json` (0F4A and 0EC2 send 10, the Practice Range's
@@ -152,27 +200,29 @@ fn invalid(error: impl std::fmt::Display) -> io::Error {
 /// upstream sent neither 00BD nor 003D, and no assists. Assumption: the
 /// credited body is the killer itself (no turret or pet kills anyone
 /// here). Unsent and unknown: 006B, 0142 and 03E8 (`03ED`, 0DEA #9297).
+/// A player's body's message carries its death layer's parameters too
+/// (`camera`, [`DeathCamera`]); a bot's `0C18` reads none of them.
 pub fn death_message(
     killer: u32,
     critical: bool,
     loadout: Option<u64>,
     tags: DamageTags,
     assists: &[u32],
+    camera: Option<DeathCamera>,
 ) -> (u64, Variables) {
-    (
-        DIED,
-        Variables::from([
-            (KILLER, Value::Entity(killer)),
-            (CREDITED, Value::Entity(killer)),
-            (DAMAGE_TAGS, tags.to_value()),
-            (CRIT, Value::Bool(critical)),
-            (LOADOUT, loadout.map_or(Value::Null, Value::Asset)),
-            (
-                ASSISTS,
-                Value::Array(assists.iter().copied().map(Value::Entity).collect()),
-            ),
-        ]),
-    )
+    let mut parameters = Variables::from([
+        (KILLER, Value::Entity(killer)),
+        (CREDITED, Value::Entity(killer)),
+        (DAMAGE_TAGS, tags.to_value()),
+        (CRIT, Value::Bool(critical)),
+        (LOADOUT, loadout.map_or(Value::Null, Value::Asset)),
+        (
+            ASSISTS,
+            Value::Array(assists.iter().copied().map(Value::Entity).collect()),
+        ),
+    ]);
+    parameters.extend(camera.into_iter().flat_map(DeathCamera::parameters));
+    (DIED, parameters)
 }
 
 /// The damage message (`0011.025`, [`DAMAGED`]) a body's script takes for a
@@ -213,23 +263,28 @@ pub fn damage_message(
 /// `dealt` and, for a killing hit, the assisters' bodies (`kill`; none:
 /// the body lives; [`WorldDelivery::send_hit_messages`]), in order: its
 /// damage message ([`damage_message`]), then for a killing hit its death
-/// message ([`death_message`]). A killing hit's damage message also
-/// carries the kill's fields (the credited body `00BD`, crit `0095`,
-/// loadout `03E6`, assists `03E7`), as retail's damage event does: Echo's
-/// `1544` rid54 reads them from `0011.025` alone, not `003E.025`, and posts
-/// the kill feed line (`0765.025`) from them when a native flag (#33688e,
-/// no graph writes it) marks the blow as lethal
-/// (`refs/reports/PlayerHurt.md`, "Killing hit"). The live hurt feedback
-/// switch ([`HurtFeedback`]) holds the damage message back, or with the
-/// flinch off sends it without its tags; the death message is not switched.
+/// message ([`death_message`], with the death layer's `camera`). A
+/// killing hit's damage message also carries the kill's fields (the
+/// credited body `00BD`, crit `0095`, loadout `03E6`, assists `03E7`), as
+/// retail's damage event does: Echo's `1544` rid54 reads them from
+/// `0011.025` alone, not `003E.025`, and posts the kill feed line
+/// (`0765.025`) from them when a native flag (#33688e, no graph writes
+/// it) marks the blow as lethal (`refs/reports/PlayerHurt.md`, "Killing
+/// hit"). The live hurt feedback switch ([`HurtFeedback`]) holds the
+/// damage message back, or with the flinch off sends it without its tags;
+/// the death message is not switched.
 pub fn hit_messages(
     hit: &PlayerHit,
     tags: DamageTags,
     dealt: f64,
     kill: Option<&[u32]>,
+    camera: Option<DeathCamera>,
     feedback: HurtFeedback,
 ) -> Vec<(u64, Variables)> {
     let source = hit.shooter.source;
+    let death = |tags, camera| {
+        kill.map(|assists| death_message(source, hit.critical, hit.loadout, tags, assists, camera))
+    };
     let mut messages = Vec::new();
     if feedback.message {
         let flinch = if feedback.flinch {
@@ -238,20 +293,10 @@ pub fn hit_messages(
             DamageTags::NONE
         };
         let (message, mut parameters) = damage_message(source, dealt, flinch, hit.direction);
-        if let Some(assists) = kill {
-            parameters.extend(death_message(source, hit.critical, hit.loadout, flinch, assists).1);
-        }
+        parameters.extend(death(flinch, None).into_iter().flat_map(|(_, kill)| kill));
         messages.push((message, parameters));
     }
-    if let Some(assists) = kill {
-        messages.push(death_message(
-            source,
-            hit.critical,
-            hit.loadout,
-            tags,
-            assists,
-        ));
-    }
+    messages.extend(death(tags, camera));
     messages
 }
 
