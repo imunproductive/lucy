@@ -55,17 +55,40 @@ pub const RAY_PROFILES_FILE: &str = "game_ray_profiles_174.json";
 /// report `Grapple.md` "DayGrapple3").
 pub const DEFAULT_MAP_MASK: u16 = 0x0040;
 
-/// Each ray profile's map mask (`097`, `STU_8EFC337B` `m_category` packed):
-/// a map triangle or prop shape stops a shot or projectile of the profile
-/// when its mask shares a bit with it.
+/// Whether a shot or projectile whose volley names no ray profile meets
+/// the bodies: profile `0001` stores `m_0220680A` 9, so its rays test the
+/// bodies' hit shapes ([`RayProfiles::meets_bodies`]).
+pub const DEFAULT_MEETS_BODIES: bool = true;
+
+/// What a ray of each ray profile (`097`, `STU_8EFC337B`) meets
+/// (`orpheus_assets` `ray_profiles`):
+/// - the map: a map triangle or prop shape stops a shot or projectile of
+///   the profile when its mask shares a bit with the profile's map mask
+///   (`m_category` packed);
+/// - the living bodies, players' and bots', only when the profile has its
+///   rays test the bodies' hit shapes (`m_0220680A` bit 0). The client's
+///   query (`0x7FF789AFEEB0`) tests a body's model hit shapes, which carry
+///   no category, only then; otherwise it tests the model's bodies in the
+///   physics world against the profile's body mask (`m_CBCB2AB9` packed),
+///   and a living body has one there, a capsule of category 0x2000, which
+///   no profile's body mask holds. So such a ray passes every living body:
+///   Widowmaker's Grappling Hook (`0018`), Soldier: 76's Biotic Field
+///   (`011D`), Orisa's volleys `0CCB` (`012A`) and `0CF5` (`00F2`) and 23
+///   other profiles (refs report `WeaponRays.md` "Body masks").
 #[derive(Debug, Default)]
 pub struct RayProfiles {
-    masks: HashMap<u64, u16>,
+    profiles: HashMap<u64, RayProfile>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+struct RayProfile {
+    map: u16,
+    hit_shapes: bool,
 }
 
 #[derive(Deserialize)]
 struct RawRayProfiles {
-    profiles: HashMap<String, u16>,
+    profiles: HashMap<String, RayProfile>,
 }
 
 impl RayProfiles {
@@ -82,23 +105,34 @@ impl RayProfiles {
         })?;
         let raw: RawRayProfiles =
             serde_json::from_slice(&data).map_err(|error| invalid(error.to_string()))?;
-        let masks = raw
+        let profiles = raw
             .profiles
             .into_iter()
-            .map(|(guid, mask)| {
+            .map(|(guid, profile)| {
                 let guid = parse_guid(&guid).ok_or_else(|| invalid(format!("bad GUID {guid}")))?;
-                Ok((guid, mask))
+                Ok((guid, profile))
             })
             .collect::<io::Result<_>>()?;
-        Ok(Self { masks })
+        Ok(Self { profiles })
+    }
+
+    fn profile(&self, profile: Option<u64>) -> Option<&RayProfile> {
+        profile.and_then(|profile| self.profiles.get(&profile))
     }
 
     /// The map mask of a volley's profile: [`DEFAULT_MAP_MASK`] when it
     /// names none, or one the install lacks.
     pub fn map_mask(&self, profile: Option<u64>) -> u16 {
-        profile
-            .and_then(|profile| self.masks.get(&profile).copied())
-            .unwrap_or(DEFAULT_MAP_MASK)
+        self.profile(profile)
+            .map_or(DEFAULT_MAP_MASK, |profile| profile.map)
+    }
+
+    /// Whether a ray of a volley's profile meets the living bodies:
+    /// [`DEFAULT_MEETS_BODIES`] when it names none, or one the install
+    /// lacks.
+    pub fn meets_bodies(&self, profile: Option<u64>) -> bool {
+        self.profile(profile)
+            .map_or(DEFAULT_MEETS_BODIES, |profile| profile.hit_shapes)
     }
 }
 
@@ -138,6 +172,10 @@ impl MapRays for SceneRays {
             point: hit.point,
             normal: hit.normal,
         }))
+    }
+
+    fn meets_bodies(&self, profile: Option<u64>) -> bool {
+        self.profiles.meets_bodies(profile)
     }
 }
 

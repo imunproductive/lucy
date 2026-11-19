@@ -158,6 +158,25 @@ fn authored_pairs_look_up_the_first_matching_key_and_encode_as_typed_pairs() {
     assert_eq!(bits.bit_len(), 0);
 }
 
+/// A ray profile literal is its asset (what Moira's `10E4` rid67 stores in
+/// `#8518` for her orbs' `m_C1903771`); a GUID of another type is refused.
+#[test]
+fn a_ray_profile_literal_evaluates_to_its_asset() {
+    let mut literal = json!({
+        "$":"STU_20DB8AB5", "m_C1903771":"0x0690000000000120", "m_resourceKey":null,
+    });
+    let mut context = Vars::default();
+    assert_eq!(
+        evaluate(&literal, &mut context),
+        Ok(Value::Asset(0x0690_0000_0000_0120))
+    );
+    literal["m_C1903771"] = json!("0x0240000000000120");
+    assert_eq!(
+        evaluate(&literal, &mut context),
+        Err(EvalError::UnsupportedConfig("STU_20DB8AB5".into()))
+    );
+}
+
 #[test]
 fn fieldless_native_resource_evaluates_to_a_zero_asset() {
     let literal = json!({"$":"STU_ABB6C23E", "m_EE729DCB":0, "m_resourceKey":null});

@@ -880,7 +880,9 @@ impl Combat {
     }
 
     /// A shot along `ray` meets the map as its volley's ray profile says
-    /// ([`PreparedScene::hitscan_wall`]).
+    /// ([`PreparedScene::hitscan_wall`]), and the bodies only when the
+    /// profile's rays test their hit shapes
+    /// ([`PreparedScene::ray_meets_bodies`]).
     #[allow(clippy::too_many_arguments)]
     fn fire_hitscan(
         &mut self,
@@ -894,17 +896,23 @@ impl Combat {
     ) -> io::Result<Option<BotHit>> {
         let free_for_all = scene.map().free_for_all;
         let allies = ray.hit.allies;
-        let players: Vec<_> = self
-            .player_candidates(shooter, free_for_all, allies, |slot| {
+        let bodies = scene.ray_meets_bodies(ray_profile);
+        let players: Vec<_> = if bodies {
+            self.player_candidates(shooter, free_for_all, allies, |slot| {
                 slot.history.at(view, slot.target.pose.clone())
             })
-            .collect();
+            .collect()
+        } else {
+            Vec::new()
+        };
         let bots = scene
             .bots()
             .iter()
             .zip(&self.targets)
             .filter_map(|(bot, target)| {
-                if !eligible_bot(bot, target, shooter, free_for_all, allies) || !visible(bot.entity)
+                if !bodies
+                    || !eligible_bot(bot, target, shooter, free_for_all, allies)
+                    || !visible(bot.entity)
                 {
                     return None;
                 }
@@ -1254,6 +1262,13 @@ impl Combat {
                 .collect()
         });
         let ray_profile = flight.ray_profile();
+        // A profile that doesn't test the bodies' hit shapes flies through
+        // them (`PreparedScene::ray_meets_bodies`; an assumption: the
+        // client's projectiles were not seen to query by their volley's
+        // profile, refs report `WeaponRays.md` "Body masks").
+        if !scene.ray_meets_bodies(ray_profile) {
+            flight.pass_bodies();
+        }
         let step = flight
             .advance(context.tick, &candidates, |origin, direction, reach| {
                 scene.hitscan_wall(origin, direction, reach, ray_profile)

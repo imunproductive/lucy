@@ -47,6 +47,8 @@ pub struct ProjectileFlight {
     /// Its shooter's dealt modifiers at its launch, which its hits deal
     /// with ([`ProjectileFlight::launch`]); none before its first step.
     launched: Option<Vec<CombatMod>>,
+    /// Its sweep passes the bodies ([`ProjectileFlight::pass_bodies`]).
+    passes_bodies: bool,
 }
 
 /// A projectile that stuck: to a body (`entity`) at `offset` from its feet,
@@ -130,6 +132,7 @@ impl ProjectileFlight {
             exploded: false,
             struck: None,
             launched: None,
+            passes_bodies: false,
         })
     }
 
@@ -174,6 +177,13 @@ impl ProjectileFlight {
     /// The volley's ray profile, whose map mask the sweep meets the map with.
     pub fn ray_profile(&self) -> Option<u64> {
         self.ballistics.ray_profile
+    }
+
+    /// Its sweep passes the bodies: its ray profile meets none
+    /// (`hitscan::RayProfiles::meets_bodies`). Its explosion still reaches
+    /// them.
+    pub fn pass_bodies(&mut self) {
+        self.passes_bodies = true;
     }
 
     /// Advance the elapsed portion of a tick, even when it ends inside the
@@ -241,7 +251,7 @@ impl ProjectileFlight {
                     direction,
                     reach,
                     self.ballistics.radius,
-                    targets,
+                    if self.passes_bodies { &[] } else { targets },
                     wall,
                 )?
             } else {
@@ -666,7 +676,8 @@ mod tests {
 
     /// A Helix Rocket (radius 0.2 m) flying 0.6 m beside a body's axis
     /// strikes its capsule (radius 0.5) where the rocket's surface meets
-    /// it; as a point it would pass by. A wall stops its centre.
+    /// it; as a point it would pass by. A wall stops its centre. One whose
+    /// sweep passes the bodies flies through one to the wall behind it.
     #[test]
     fn a_projectile_meets_bodies_by_its_radius() {
         let targets = [(1, target(0.6, 3.0))];
@@ -704,6 +715,18 @@ mod tests {
         // The sphere would meet the capsule at 2.1, the wall stops its
         // centre at 2.0: only the splash reaches the body.
         assert_eq!(step.end.as_ref().unwrap().point, [0.0, 1.0, 2.0]);
+        assert_eq!(damage(&step), [(1, 80.0)]);
+
+        // Through the body on its axis to the wall 1 m behind it; the
+        // explosion there still reaches the body, 0.5 m from its surface.
+        let world = wall_at(4.0);
+        let mut passing =
+            ProjectileFlight::new(helix(), [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], Some(1000)).unwrap();
+        passing.pass_bodies();
+        let step = passing
+            .advance(1006, &[(1, target(0.0, 3.0))], cast(&world))
+            .unwrap();
+        assert_eq!(step.end.as_ref().unwrap().point, [0.0, 1.0, 4.0]);
         assert_eq!(damage(&step), [(1, 80.0)]);
     }
 

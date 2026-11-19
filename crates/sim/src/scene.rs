@@ -95,8 +95,10 @@
 //!   `0516`, moved by its `STUMirroredIdleAnimComponent`) has client shapes
 //!   of category 0x1000, picked from model data (`0x7FF78A9CC460`), and a
 //!   shot's world ray asks only for 0x81, so it never meets them. The shot's
-//!   entity query does: it keeps the weapon profile's whole body mask
-//!   (0x1FDF), accepts an entity whose moving bodies' categories overlap it
+//!   entity query does: it keeps the weapon profile's body mask (its
+//!   `m_CBCB2AB9`: `0x1081` for `0001`, measured `0x1883` in the query of
+//!   `0002`, both with 0x1000; `orpheus_assets` `ray_profiles`), accepts an
+//!   entity whose moving bodies' categories overlap it
 //!   (`0x7FF789B01DD0`) and tests those bodies (`0x7FF789B00C50`); but it
 //!   walks only group 0x10000. A placeable created from the map has
 //!   components 25 and 26 (the network create adds them), and the client

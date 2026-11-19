@@ -139,7 +139,7 @@ const BUILDERS: [(u8, u32, u32, u8); 3] = [
 
 /// An STUDominoFlags packed into a mask, each field given by `flag` (its hash
 /// to its value, `None` when the asset leaves it at its default).
-pub(crate) fn pack_flags(flag: impl Fn(u32) -> Option<bool>) -> u16 {
+fn pack_flags(flag: impl Fn(u32) -> Option<bool>) -> u16 {
     let mut mask = DEFAULT_MASK;
     for (field, bit) in FLAG_FIELDS.into_iter().zip(FLAG_BITS) {
         match flag(field) {
@@ -149,6 +149,22 @@ pub(crate) fn pack_flags(flag: impl Fn(u32) -> Option<bool>) -> u16 {
         }
     }
     mask
+}
+
+/// The bit of each STUDominoFlags field in the client's own packing
+/// (`0x7FF78A6B8FC0`; measured on the model meshes, refs report
+/// `WeaponRays.md`): [`FLAG_BITS`] with fields 0, 5 and 6 at bits 2, 13
+/// and 0.
+const CLIENT_FLAG_BITS: [u32; 13] = [2, 8, 12, 7, 6, 13, 0, 9, 1, 3, 4, 10, 11];
+
+/// An STUDominoFlags packed as the client packs it, each field given by
+/// `flag` (its hash to its value).
+pub(crate) fn pack_client_flags(flag: impl Fn(u32) -> bool) -> u16 {
+    FLAG_FIELDS
+        .into_iter()
+        .zip(CLIENT_FLAG_BITS)
+        .filter(|&(field, _)| flag(field))
+        .fold(0, |mask, (_, bit)| mask | 1 << bit)
 }
 
 /// A triangle record of chunk 0x11 and of model meshes: corners, wing
