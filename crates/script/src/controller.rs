@@ -739,9 +739,11 @@ mod tests {
     /// (rid22); a pick sets #13161e/#2114e (rid24) and the screen stays
     /// open until the picked hero's body lives (st95, a later frame); an
     /// open clears the pick; a dead player's pick closes at once (st95's
-    /// dead branch); without `may_pick` a pick is refused and st98 closes
-    /// the screen, and an open is refused (rid22). Every step projects to an
-    /// owner full frame.
+    /// dead branch); a hero he played before stays his to pick again (his
+    /// own `08BE` broadcast reaches his own `0C90`, whose hero limit
+    /// receiver st4 refuses it by its filter `param(9) != owner()`); without
+    /// `may_pick` a pick is refused and st98 closes the screen, and an open
+    /// is refused (rid22). Every step projects to an owner full frame.
     #[test]
     #[ignore = "requires the derived 104319 graph bundle"]
     fn client_requests_drive_hero_select_in_the_vm() {
@@ -800,6 +802,12 @@ mod tests {
         script.possessed(0x21, ANA);
         script
             .hero_select(90, HeroSelectRequest::OpenOrClose(true))
+            .unwrap();
+        let back = script.hero_select(92, HeroSelectRequest::Pick(SOLDIER));
+        assert_eq!(back.unwrap(), state(true, Some(SOLDIER)));
+        script.possessed(0x22, SOLDIER);
+        script
+            .hero_select(94, HeroSelectRequest::OpenOrClose(true))
             .unwrap();
         script.set_may_pick(false);
         let refused = script.hero_select(100, HeroSelectRequest::Pick(SOLDIER));

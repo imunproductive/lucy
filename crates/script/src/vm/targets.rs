@@ -1004,6 +1004,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             foreign_reads: Vec::new(),
             parameters: self.parameters.as_deref(),
             candidate: self.candidate.as_ref(),
+            sender: self.sender,
             watcher: None,
             read_native: false,
             natives: Vec::new(),
