@@ -192,7 +192,13 @@ fn a_client_gets_the_bots_frames_nameplates_death_and_respawn() {
 
     // The mode UI arrives: each bot's nameplate follows alone.
     tick += 1;
-    world.present(&scene, scene.mode_ui(), tick).unwrap();
+    world
+        .present(
+            &scene,
+            crate::mode_view::ModeFrame::Full(scene.mode_ui()),
+            tick,
+        )
+        .unwrap();
     deliver(&mut world);
     assert!(world.mode_ready());
     world.update_bots(&scene, &[], tick);

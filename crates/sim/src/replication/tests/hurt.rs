@@ -38,7 +38,13 @@ fn rockets(scene: &PreparedScene, hits: &[u32], ticks: u32) -> Reactions {
     let mut world = WorldDelivery::new(OWNER);
     world.start(scene, &viewer(&card), FIRST_TICK).unwrap();
     world.created.insert(OWNER);
-    world.present(scene, scene.mode_ui(), FIRST_TICK).unwrap();
+    world
+        .present(
+            scene,
+            crate::mode_view::ModeFrame::Full(scene.mode_ui()),
+            FIRST_TICK,
+        )
+        .unwrap();
     let hero = scene.heroes().get(SOLDIER).unwrap();
     world
         .switch(

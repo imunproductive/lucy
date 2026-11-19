@@ -24,6 +24,7 @@ use crate::{
         DeliveryReport, FrameRecords, GameEgress, PacketDelivery, RecordSource, SendError,
         SentFrame,
     },
+    mode_view::{ModeFrame, ModeView},
     notices::{NOTICE_GAP, Switch},
     others::{
         ObservedScript, ObserverActivity, OtherDelivery, Others, PlayerView, RemoteBody,
@@ -900,6 +901,10 @@ enum Delivery {
         close: bool,
         resend: bool,
     },
+    /// A chunk of the game mode entity's frames (`mode_view.rs`).
+    Mode {
+        last: u32,
+    },
     /// Another player's entity, body or statescript (others.rs).
     Other(OtherDelivery),
     /// A Biotic Field entity: its create, frames and destroy
@@ -1522,7 +1527,7 @@ pub struct WorldDelivery {
     started: Option<u32>,
     pub presentation_due: bool,
     controller: Stream,
-    mode: Stream,
+    mode: ModeView,
     /// What the last controller frame showed of hero select; a change sends
     /// the next ([`Self::send_hero_select`]).
     select_shown: Option<SelectShown>,
@@ -1742,7 +1747,7 @@ impl WorldDelivery {
             started: None,
             presentation_due: false,
             controller: Stream::new(owner),
-            mode: Stream::new(GAME_MODE_ENTITY),
+            mode: ModeView::new(),
             select_shown: None,
             keep_open: false,
             body: None,
@@ -2282,7 +2287,7 @@ impl WorldDelivery {
     }
 
     pub fn mode_ready(&self) -> bool {
-        self.mode.delivered() != 0
+        self.mode.arrived()
     }
 
     pub fn health_pending(&self, entity: u32) -> bool {
@@ -2478,6 +2483,7 @@ impl WorldDelivery {
             Delivery::Script {
                 last, close: true, ..
             } => last == self.controller.latest_data(),
+            Delivery::Mode { last } => self.mode.current(last),
             Delivery::CreateBody(id) => {
                 self.bodies.get(&id.entity) == Some(&(id.generation, Lifetime::Live))
             }
@@ -2575,6 +2581,11 @@ impl WorldDelivery {
                             retry.push(record);
                         }
                     }
+                    (arrived, Delivery::Mode { last }) => {
+                        if self.mode.delivered(last, arrived) {
+                            retry.push(record);
+                        }
+                    }
                     (false, Delivery::Script { resend: false, .. }) => {}
                     (false, _) => retry.push(record),
                     (true, Delivery::Baseline) => {
@@ -2653,11 +2664,8 @@ impl WorldDelivery {
                     (true, Delivery::Placed { last }) => {
                         self.placed_views.arrived(record.update.entity, last);
                     }
-                    (true, Delivery::Script { last, .. }) if record.update.entity == self.owner => {
-                        self.controller.arrived(last);
-                    }
                     (true, Delivery::Script { last, .. }) => {
-                        self.mode.arrived(last);
+                        self.controller.arrived(last);
                     }
                 }
             }
@@ -2687,8 +2695,8 @@ impl WorldDelivery {
             Delivery::DestroyBody(_) => "body destroy",
             Delivery::BodyScript { delta: false, .. } => "owner full frame",
             Delivery::Script { close: true, .. } => "controller frame (close)",
-            Delivery::Script { .. } if record.update.entity == self.owner => "controller frame",
-            Delivery::Script { .. } => "mode frame",
+            Delivery::Script { .. } => "controller frame",
+            Delivery::Mode { .. } => "mode frame",
             _ => return None,
         })
     }
@@ -2754,6 +2762,7 @@ impl WorldDelivery {
                         return None;
                     }
                     Delivery::Other(other) if !self.others.ready(other) => return None,
+                    Delivery::Mode { last } if !self.mode.current(last) => return None,
                     _ => {}
                 }
                 Some(Ready { index, record })
@@ -2780,6 +2789,7 @@ impl WorldDelivery {
                     let entity = self.queued[index].update.entity;
                     self.bot_views.sent(entity, last);
                 }
+                Delivery::Mode { last } => self.mode.sent(last),
                 _ => {}
             }
         }
@@ -3096,7 +3106,7 @@ impl WorldDelivery {
     pub fn present(
         &mut self,
         scene: &PreparedScene,
-        mode_frame: &orpheus_core::bits::BitWriter,
+        mode_frame: ModeFrame<'_>,
         tick: u32,
     ) -> io::Result<()> {
         if self.controller.latest_data() == 0 && self.created.contains(&self.owner) {
@@ -3104,14 +3114,10 @@ impl WorldDelivery {
         }
         // While heroes assemble the countdown frames are the mode entity's
         // first (combat.py `spawned`).
-        if self.mode.latest_data() == 0
-            && !self.assembling
-            && self.created.contains(&GAME_MODE_ENTITY)
-        {
-            let chunk = self.mode.full(mode_frame).map_err(invalid)?;
-            self.push(Record::script(chunk, false));
+        if !self.mode.started() && !self.assembling {
+            self.queue_mode_frame(mode_frame, tick)?;
         }
-        self.presentation_due = self.controller.latest_data() == 0 || self.mode.latest_data() == 0;
+        self.presentation_due = self.controller.latest_data() == 0 || !self.mode.started();
         Ok(())
     }
 
@@ -3140,15 +3146,21 @@ impl WorldDelivery {
         }
     }
 
-    /// A full frame of the game mode entity, such as the countdown; false
-    /// when the client has no mode entity yet (server.py `queue_mode_frame`).
-    pub fn queue_mode_frame(&mut self, frame: &orpheus_core::bits::BitWriter) -> io::Result<bool> {
+    /// The game mode entity's frame now, such as the countdown: whole when
+    /// hand-built, else what changed since the frame the client
+    /// acknowledged (`mode_view.rs`); false when the client has no mode
+    /// entity yet (server.py `queue_mode_frame`).
+    pub fn queue_mode_frame(&mut self, frame: ModeFrame<'_>, tick: u32) -> io::Result<bool> {
         if !self.created.contains(&GAME_MODE_ENTITY) {
             return Ok(false);
         }
-        let chunk = self.mode.full(frame).map_err(invalid)?;
-        self.push(Record::script(chunk, false));
-        self.remove_stale();
+        if let Some(chunk) = self.mode.queue(frame, tick).map_err(invalid)? {
+            self.push(Record {
+                update: chunk.update,
+                delivery: Delivery::Mode { last: chunk.last },
+            });
+            self.remove_stale();
+        }
         Ok(true)
     }
 

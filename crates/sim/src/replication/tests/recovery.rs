@@ -147,7 +147,13 @@ fn soldier(scene: &PreparedScene, viewer: &PlayerAppearance<'_>) -> WorldDeliver
     let mut world = WorldDelivery::new(OWNER).unbuffered();
     world.start(scene, viewer, FIRST_TICK).unwrap();
     world.created.insert(OWNER);
-    world.present(scene, scene.mode_ui(), FIRST_TICK).unwrap();
+    world
+        .present(
+            scene,
+            crate::mode_view::ModeFrame::Full(scene.mode_ui()),
+            FIRST_TICK,
+        )
+        .unwrap();
     world.queue_game_message(FIRST_TICK, Duration::ZERO, pick(SOLDIER));
     drain(&mut world, scene, viewer);
     assert_eq!(world.body.unwrap().hero, SOLDIER);
