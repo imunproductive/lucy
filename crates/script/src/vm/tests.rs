@@ -2326,6 +2326,91 @@ fn volley_spread_grows_each_shot_and_ticks_until_full() {
     assert_eq!(snapshot.instances[&1].variables[&231], Value::Float(1.0));
 }
 
+/// A volley's ammunition output is a volatile binding on the client
+/// (`0x7FF78AA83310` binds it with the flag `+0x29`), so a BooleanSwitch
+/// that reads it goes on the update list and re-checks its condition each
+/// update (`0x7FF78AA82AD0`, `0x7FF78AAA4C30`; update `0x7FF78AAA91D0`).
+/// Three shots at 10 a second leave the gun at 0, 100 and 200 ms, and the
+/// output reads `3 - (floor(t / 100) + 1)`. Frame 6's only update is at its
+/// window's end, 111 ms: 1 round, so `#53 < 2` turns true there. The finish
+/// timer at the last shot's time (200 ms, frame 12) ends the volley with
+/// the output and the value 1 ms later both 0, so nothing changes on the
+/// variable; the switch's own update right after sees the 0.
+#[test]
+fn switches_on_a_volleys_ammunition_follow_each_shot() {
+    let condition = |opcode: u8, constant: f64| {
+        json!({"$":"STU_919FD47C","m_expression":{
+            "m_opcodes":[8,0,6,0,opcode,0], "m_dynamicVars":[var(53, false)],
+            "m_D99EF254":[constant]
+        }})
+    };
+    let weapon = graph(
+        42,
+        vec![
+            node(
+                0,
+                "STUStatescriptEntry",
+                None,
+                json!({"m_outPlug":plug(
+                    &[(2,"m_beginPlug"),(3,"m_beginPlug"),(1,"m_beginPlug")],
+                    &[]
+                )}),
+            ),
+            node(
+                1,
+                "STUStatescriptStateWeaponVolley",
+                Some(0),
+                json!({
+                    "m_A17BE89B":3,
+                    "m_numShotsPerSecond":10,
+                    "m_24E351A4":var(53,false)
+                }),
+            ),
+            node(
+                2,
+                "STUStatescriptStateBooleanSwitch",
+                Some(1),
+                json!({"m_condition":condition(34, 2.0)}),
+            ),
+            node(
+                3,
+                "STUStatescriptStateBooleanSwitch",
+                Some(2),
+                json!({"m_condition":condition(37, 0.0)}),
+            ),
+        ],
+        json!([1, 2, 3]),
+        json!([0]),
+    );
+    let mut root = Root::new(1, 42);
+    root.variables.insert(53, Value::Integer(3));
+    let mut component = Component::start(
+        Arc::new(store(vec![weapon])),
+        42,
+        Variables::new(),
+        vec![root],
+        0,
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let mut low = Vec::new();
+    let mut empty = Vec::new();
+    for frame in 0..=14 {
+        component.advance_frame(frame, &mut EmptyWorld).unwrap();
+        let states = &component.snapshot().unwrap().instances[&1].states;
+        if states[&1].kind == StateKind::BooleanSwitch(true) {
+            low.push(frame);
+        }
+        if states[&2].kind == StateKind::BooleanSwitch(true) {
+            empty.push(frame);
+        }
+    }
+    assert!(!component.snapshot().unwrap().instances[&1].states[&0].active);
+    assert_eq!(low, (6..=14).collect::<Vec<_>>(), "#53 < 2");
+    assert_eq!(empty, (12..=14).collect::<Vec<_>>(), "#53 == 0");
+}
+
 #[test]
 #[ignore = "requires a derived 1.74 graph bundle"]
 fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
@@ -2578,6 +2663,103 @@ fn authored_soldier_rifle_holds_releases_and_reloads_on_the_reference_clock() {
     // The body is complete now, so the server-facing call answers; the loop
     // above already took every shot.
     assert_eq!(component.take_shots().map(|shots| shots.len()), Some(0));
+}
+
+/// Baptiste's Biotic Launcher `1932` with Automatic Reload on (`#20546e`,
+/// default true): held fire from frame 1030 (16480 ms) shoots 3-round bursts
+/// (st6: shots 100 ms apart, a burst every 580 ms), so the magazine's 45th
+/// round leaves at 16480 + 14 × 580 + 200 = 24800 ms, frame 1550, where the
+/// last burst ends. Its end sets the burst cooldown `#173` to 0.15 (rid59)
+/// and st7 chases it to 0 at 1/s: 24950 ms, in frame 1559's window. The
+/// reload switch st2 (`!#51 && #53 == 0 && #198 != 0 … && #20546e &&
+/// #173 == 0 && #31196`) re-checks each update while it reads the volley's
+/// ammunition, so it sees the empty magazine at the last shot, then watches
+/// `#173`, and its reload stack st18 begins in frame 1559. Before, it was
+/// checked last at the last burst's start (2 rounds, so `#173` was never
+/// read) and the magazine stayed empty. The reload refills the magazine and
+/// the held fire goes on.
+#[test]
+#[ignore = "requires a derived 1.74 graph bundle"]
+fn baptistes_automatic_reload_begins_after_the_magazines_last_burst() {
+    const BAPTISTE: u64 = 0x02e0_0000_0000_0221;
+    const BAPTISTE_BODY: u64 = 0x0400_0000_0000_29a6;
+    let data = orpheus_testkit::runtime_dir().join("data");
+    let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
+    let body = &graphs.bodies()[&BAPTISTE_BODY];
+    let mut world = PlayerWorld::new(
+        Arc::clone(&graphs),
+        0xa000_0100,
+        0xa000_0101,
+        TEAM_ONE,
+        PRACTICE_RANGE_MODE,
+        BAPTISTE,
+    );
+    world.pool_types_known = true;
+    world.target_tags = body.target_tags.clone();
+    let mut variables = player_entity_variables(body, 200.0, 200.0);
+    variables.insert(20546, Value::Bool(true));
+    let mut component = Component::start(
+        Arc::clone(&graphs),
+        0xa000_0101,
+        variables,
+        player_roots(body, &graphs).unwrap(),
+        999,
+        &mut world,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    component.advance_frame(999, &mut world).unwrap();
+    let launcher = *component
+        .snapshot()
+        .unwrap()
+        .instances
+        .iter()
+        .find(|(_, instance)| instance.graph == 0x1932)
+        .unwrap()
+        .0;
+    let ammo = Variable {
+        scope: Scope::Instance,
+        id: 53,
+    };
+    let mut shots = Vec::new();
+    let mut reload = None;
+    for frame in 1000..=1700 {
+        component
+            .advance_command(
+                Command {
+                    frame,
+                    buttons: u32::from(frame >= 1030),
+                    ..Command::default()
+                },
+                &mut world,
+            )
+            .unwrap();
+        shots.extend(std::mem::take(&mut component.machine.shots));
+        let snapshot = component.snapshot().unwrap();
+        let states = &snapshot.instances[&launcher].states;
+        if reload.is_none() && states.get(&18).is_some_and(|state| state.active) {
+            reload = Some(frame);
+        }
+        match frame {
+            1558 => assert_eq!(
+                component.resolved_variable(launcher, ammo),
+                Some(Value::Integer(0))
+            ),
+            1660 => assert_eq!(
+                component.resolved_variable(launcher, ammo),
+                Some(Value::Integer(45))
+            ),
+            _ => (),
+        }
+    }
+    assert_eq!(reload, Some(1559));
+    let times: Vec<_> = shots
+        .iter()
+        .map(|shot| (shot.time_ms, shot.activation, shot.ordinal))
+        .collect();
+    assert_eq!(times.len(), 48);
+    assert_eq!(times[44], (24800, 15, 2));
+    assert_eq!(times[45], (26680, 16, 0));
 }
 
 #[test]
