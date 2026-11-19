@@ -23,6 +23,7 @@ use crate::{
         MAX_INIT_WORK, MapRays, Motion, RaisedCriteria, SeenBodies, ShotEvent, Site, Snapshot,
         TargetCandidate, TargetTagEffect, Unknowns, World, body_roots,
     },
+    weapons::DamageTags,
     wire::{Value, Variables},
 };
 use orpheus_content::maps::{PRACTICE_RANGE_MODE, TUTORIAL_MODE};
@@ -698,6 +699,26 @@ impl BotBody {
 
     pub fn world(&self) -> &BotWorld {
         &self.world
+    }
+
+    /// What a health change of `kind` with `tags` that `other` is the other
+    /// party of (its attacker or healer) is scaled by on the body
+    /// ([`BodyEffects::scale`]): its states' modifiers, their party filters
+    /// tested on `other`, then `held` (other entities' for it).
+    pub fn combat_scale(
+        &mut self,
+        kind: u64,
+        tags: &mut DamageTags,
+        other: u32,
+        held: &[CombatMod],
+    ) -> f64 {
+        let passed = self.component.passed_party_filters(
+            &mut self.world,
+            |world| &world.effects,
+            kind,
+            other,
+        );
+        self.world.effects.scale(kind, tags, held, &passed)
     }
 
     /// The tags the body's states add and suppress now, when a tag came or

@@ -1158,6 +1158,12 @@ impl PreparedScene {
         &self.bot_scripts
     }
 
+    /// The bots' scripts, for what tests a bot's graphs at a hit (a combat
+    /// modifier's party filter, [`BotScripts::combat_scale`]).
+    pub(crate) fn bot_scripts_mut(&mut self) -> &mut BotScripts {
+        &mut self.bot_scripts
+    }
+
     /// The world waits until every bot that has a script has started it
     /// (match.py `_spawn_steps`: `not self._pending_bot_scripts`).
     pub fn bot_scripts_ready(&self) -> bool {
@@ -2050,6 +2056,7 @@ mod tests {
             tags: None,
             ai: None,
             dealt: Vec::new(),
+            held: Vec::new(),
         };
         // Yaw 0 looks along +z.
         let players = |frame: u32| {

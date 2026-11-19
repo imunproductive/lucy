@@ -5186,11 +5186,13 @@ fn a_modify_health_rate_applies_a_share_each_tick() {
     );
 }
 
-/// A body's world that keeps its statuses and modifiers.
+/// A body's world that keeps its statuses and modifiers, and knows where
+/// the entities it lists stand (its own body faces yaw 0, along +z).
 #[derive(Default)]
 struct Aurad {
     changes: Vec<HealthChange>,
     effects: BodyEffects,
+    positions: Vec<(u32, [f64; 3])>,
 }
 
 impl World for Aurad {
@@ -5205,6 +5207,17 @@ impl World for Aurad {
 
     fn combat_mod(&mut self, site: Site, modifier: Option<CombatMod>) -> bool {
         self.effects.combat_mod(site, modifier)
+    }
+
+    fn position(&mut self, entity: u32) -> [f64; 3] {
+        self.positions
+            .iter()
+            .find(|(listed, _)| *listed == entity)
+            .map_or([0.0; 3], |(_, position)| *position)
+    }
+
+    fn entity_facing(&self, site: Site, entity: u32) -> Option<[i32; 2]> {
+        (entity == site.entity).then_some([0, 0])
     }
 }
 
@@ -5301,7 +5314,8 @@ fn an_aura_runs_its_graph_on_the_body_until_its_instance_ends() {
         [(SEARCHER, ENEMY, 60.0, false)]
     );
     assert!(world.effects.invulnerable());
-    let healing = |effects: &BodyEffects| effects.scale(HEALING_TAKEN, &mut DamageTags::default());
+    let healing =
+        |effects: &BodyEffects| effects.scale(HEALING_TAKEN, &mut DamageTags::default(), &[], &[]);
     assert_eq!(healing(&world.effects), 0.0);
     // 4 s (250 frames of 16 ms) later the wait ends, the instance exits
     // and its states let go.
@@ -5479,7 +5493,10 @@ fn an_anim_outputs_its_scalar_while_it_runs() {
 /// modifiers after it (the client's CombatModFilter query, HealthAuras.md
 /// "Client tools pass (2026-11-16)"); of one kind, the additions sum before
 /// the multipliers scale them, whatever their order, and other kinds don't
-/// count.
+/// count. The additions marked `m_941C56C2` reduce by half at most
+/// together (Nano Boost's `0B9F` st18 -0.5 and Orisa's Fortify `0CF4` st4
+/// -0.4 take 50 %, not 90 %), unless one alone reduces by more; the others
+/// add after the cap (Discord's `0178` st8 +0.25).
 #[test]
 fn combat_modifiers_honour_tags_and_combine_by_kind() {
     const REQUIRED: u64 = 0x0d80_0000_0000_06f9;
@@ -5497,10 +5514,17 @@ fn combat_modifiers_honour_tags_and_combine_by_kind() {
         required: required.to_vec(),
         exempt: Vec::new(),
         added: added.to_vec(),
+        holder: 0xa000_0101,
+        capped: false,
+        party: None,
+    };
+    let reduction = |value| CombatMod {
+        capped: true,
+        ..modifier(DAMAGE_TAKEN, value, false, &[], &[])
     };
     let scale = |effects: &BodyEffects, kind, tags: &[u64]| {
         let mut tags = DamageTags::from_iter(tags.iter().copied());
-        effects.scale(kind, &mut tags)
+        effects.scale(kind, &mut tags, &[], &[])
     };
     let mut effects = BodyEffects::default();
     let halved = modifier(HEALING_TAKEN, 0.5, true, &[REQUIRED], &[]);
@@ -5515,18 +5539,227 @@ fn combat_modifiers_honour_tags_and_combine_by_kind() {
     let quartered = modifier(HEALING_TAKEN, 0.25, true, &[REQUIRED], &[ADDED]);
     assert!(effects.combat_mod(site(2), Some(quartered)));
     let mut tags = DamageTags::NONE;
-    assert_eq!(effects.scale(HEALING_TAKEN, &mut tags), 0.5);
+    assert_eq!(effects.scale(HEALING_TAKEN, &mut tags, &[], &[]), 0.5);
     assert_eq!(tags, DamageTags::from_iter([REQUIRED, ADDED]));
     // Damage taken: x0.5 before -0.5 is (1 - 0.5) x 0.5; the dealt +0.5
     // is the other kind's.
     let mut effects = BodyEffects::default();
     let multiplier = modifier(DAMAGE_TAKEN, 0.5, true, &[], &[]);
     assert!(effects.combat_mod(site(1), Some(multiplier)));
-    let reduction = modifier(DAMAGE_TAKEN, -0.5, false, &[], &[]);
-    assert!(effects.combat_mod(site(2), Some(reduction)));
+    assert!(effects.combat_mod(site(2), Some(reduction(-0.5))));
     let boost = modifier(DAMAGE_DEALT, 0.5, false, &[], &[]);
     assert!(effects.combat_mod(site(3), Some(boost)));
     assert_eq!(scale(&effects, DAMAGE_TAKEN, &[]), 0.25);
     assert_eq!(scale(&effects, DAMAGE_DEALT, &[]), 1.5);
     assert_eq!(scale(&effects, HEALING_DEALT, &[]), 1.0);
+    // The cap: -0.5 and -0.4 reduce by 0.5; Discord's +0.25 adds after it.
+    let mut effects = BodyEffects::default();
+    assert!(effects.combat_mod(site(1), Some(reduction(-0.5))));
+    assert!(effects.combat_mod(site(2), Some(reduction(-0.4))));
+    assert_eq!(scale(&effects, DAMAGE_TAKEN, &[]), 0.5);
+    let discord = modifier(DAMAGE_TAKEN, 0.25, false, &[], &[]);
+    assert!(effects.combat_mod(site(3), Some(discord)));
+    assert_eq!(scale(&effects, DAMAGE_TAKEN, &[]), 0.75);
+    // One reduction beyond the cap overrides it and the others.
+    let mut effects = BodyEffects::default();
+    assert!(effects.combat_mod(site(1), Some(reduction(-0.75))));
+    assert!(effects.combat_mod(site(2), Some(reduction(-0.4))));
+    assert_eq!(scale(&effects, DAMAGE_TAKEN, &[]), 0.25);
+}
+
+/// The derived bundle's hero graphs.
+fn hero_bundle() -> GraphStore {
+    let data = orpheus_testkit::runtime_dir().join("data");
+    GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap()
+}
+
+/// The data fields of `graph`'s `CombatModFilter` state `state` in the
+/// derived bundle, its plugs left out.
+fn real_modifier(graphs: &GraphStore, graph: u32, state: usize) -> Json {
+    const FIELDS: [&str; 12] = [
+        "m_F60AA143",
+        "m_5CFFCBAE",
+        "m_60703B1E",
+        "m_029060AC",
+        "m_50530EAB",
+        "m_5E6F1B8B",
+        "m_6AA5D70F",
+        "m_941C56C2",
+        "m_893AABFC",
+        "m_F7872851",
+        "m_E9517777",
+        "m_41B10FF2",
+    ];
+    let node = graphs.graph(graph).unwrap().state(state).unwrap();
+    assert_eq!(node.class, "STUStatescriptStateCombatModFilter");
+    let mut fields = node.fields.clone();
+    fields
+        .as_object_mut()
+        .unwrap()
+        .retain(|key, _| FIELDS.contains(&key.as_str()));
+    fields
+}
+
+/// SEARCHER's component with an aura on it (`053:0001`) whose graph 50
+/// holds `modifiers` (each a `CombatModFilter`'s fields) for 4 s, its
+/// instigator ENEMY in #40.
+fn holding(modifiers: Vec<Json>, world: &mut Aurad) -> Component {
+    const AURA: u64 = 0x0530_0000_0000_0001;
+    let applied = json!({"$":"STUConfigVarGameMessage","m_gameMessage":"0x024000000000000F"});
+    let count = modifiers.len() as u16;
+    let links: Vec<(u16, &str)> = (2..2 + count).map(|node| (node, "m_beginPlug")).collect();
+    let states: Vec<u16> = (1..=count).collect();
+    let mut nodes = vec![
+        node(
+            0,
+            "STUStatescriptEntryGameMessage",
+            None,
+            json!({"m_gameMessage":applied, "m_B60ABDA4":var(40, false),
+                "m_outPlug":plug(&[(1, "m_beginPlug")], &[])}),
+        ),
+        node(
+            1,
+            "STUStatescriptStateWait",
+            Some(0),
+            json!({"m_timeout":{"$":"STUConfigVarInt","m_value":4},
+                "m_subgraphPlug":plug(&links, &states)}),
+        ),
+    ];
+    for (index, fields) in (0..).zip(modifiers) {
+        nodes.push(node(
+            2 + index,
+            "STUStatescriptStateCombatModFilter",
+            Some(1 + index),
+            fields,
+        ));
+    }
+    let state_nodes: Vec<u16> = (1..2 + count).collect();
+    let aura_graph = graph(50, nodes, json!(state_nodes), json!([0]));
+    let idle = graph(
+        42,
+        vec![node(
+            0,
+            "STUStatescriptEntry",
+            None,
+            json!({"m_outPlug":plug(&[], &[])}),
+        )],
+        json!([]),
+        json!([0]),
+    );
+    let graphs = Arc::new(
+        GraphStore::from_json(
+            &serde_json::to_vec(&json!({
+                "version":1, "graphs":[idle, aura_graph], "bodies":{}, "missing":[],
+                "auras":{"0x0530000000000001":{"m_5A4051BC":"0x0580000000000032","m_7DAE8F10":4.5}}
+            }))
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    let mut component = Component::start(
+        graphs,
+        SEARCHER,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        0,
+        world,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    component
+        .apply_aura(AURA, ENEMY, &[], world)
+        .unwrap()
+        .unwrap();
+    component
+}
+
+/// Nano Boost's `0B9F` st18 (-0.5) and Orisa's Fortify `0CF4` st4 (-0.4),
+/// both marked `m_941C56C2`, as the derived bundle has them: together they
+/// halve the damage the body takes rather than cut it to a tenth, and
+/// Fortify alone takes 40 % off. Nano Boost's st19 (+0.5 dealt) is apart.
+#[test]
+#[ignore = "requires a derived 1.74 graph bundle"]
+fn nano_boost_and_fortify_together_reduce_damage_by_half() {
+    let graphs = hero_bundle();
+    let mut world = Aurad::default();
+    let modifiers = vec![
+        real_modifier(&graphs, 0x0b9f, 18),
+        real_modifier(&graphs, 0x0cf4, 4),
+        real_modifier(&graphs, 0x0b9f, 19),
+    ];
+    holding(modifiers, &mut world);
+    let held: Vec<_> = world.effects.modifiers().collect();
+    assert!(held.iter().all(|modifier| modifier.holder == SEARCHER));
+    let capped: Vec<_> = held.iter().map(|modifier| modifier.capped).collect();
+    assert_eq!(capped, [true, true, false]);
+    let scale =
+        |effects: &BodyEffects, kind| effects.scale(kind, &mut DamageTags::default(), &[], &[]);
+    assert_eq!(scale(&world.effects, DAMAGE_TAKEN), 0.5);
+    assert_eq!(scale(&world.effects, DAMAGE_DEALT), 1.5);
+    let mut world = Aurad::default();
+    holding(vec![real_modifier(&graphs, 0x0cf4, 4)], &mut world);
+    assert!((scale(&world.effects, DAMAGE_TAKEN) - 0.6).abs() < 1e-6);
+}
+
+/// Genji's Deflect `03A3` st59 (×0 for `03EF`/`0302`/`20EC`), as the
+/// derived bundle has it, with its party filter `dot(param(8) - owner(),
+/// STU_021D01CD(owner())) > 0`: the VM tests it with the attacker as
+/// `param(8)`, as the client's query 0x7FF789C375A0 binds it. A hit with
+/// one of those tags from an attacker in front of Genji (who faces +z)
+/// takes nothing; from behind, or without the tags, all of it.
+#[test]
+#[ignore = "requires a derived 1.74 graph bundle"]
+fn deflect_stops_only_the_hits_of_attackers_in_front() {
+    const FRONT: u32 = ENEMY;
+    const BEHIND: u32 = 0xa000_0401;
+    let graphs = hero_bundle();
+    let mut world = Aurad {
+        positions: vec![(FRONT, [1.0, 0.0, 5.0]), (BEHIND, [1.0, 0.0, -5.0])],
+        ..Aurad::default()
+    };
+    let component = holding(vec![real_modifier(&graphs, 0x03a3, 59)], &mut world);
+    let deflected = world.effects.modifiers().next().unwrap().required[0];
+    assert_eq!(deflected, 0x0d80_0000_0000_03ef);
+    let mut scale = |attacker, tags: &[u64]| {
+        let passed = component.passed_party_filters(
+            &mut world,
+            |world| &world.effects,
+            DAMAGE_TAKEN,
+            attacker,
+        );
+        let mut tags = DamageTags::from_iter(tags.iter().copied());
+        world.effects.scale(DAMAGE_TAKEN, &mut tags, &[], &passed)
+    };
+    assert_eq!(scale(FRONT, &[deflected]), 0.0);
+    assert_eq!(scale(BEHIND, &[deflected]), 1.0);
+    assert_eq!(scale(FRONT, &[]), 1.0);
+}
+
+/// A modifier names the entity it is held for (`m_F7872851`), as the
+/// derived bundle has them: Echo's `1544` st38 (+0 dealt, adding tag
+/// `7139`) names `#40`, here the aura's instigator, so the body keeps it
+/// apart for that entity (`BodyEffects::held_for_others`), not as its own;
+/// Mercy's `006C` st6 names `#41`, the aura entry's `m_FF703F20` the server
+/// leaves unset, so it is held for no one.
+#[test]
+#[ignore = "requires a derived 1.74 graph bundle"]
+fn a_modifier_is_held_for_the_entity_it_names() {
+    let graphs = hero_bundle();
+    let mut world = Aurad::default();
+    let modifiers = vec![
+        real_modifier(&graphs, 0x1544, 38),
+        real_modifier(&graphs, 0x006c, 6),
+    ];
+    holding(modifiers, &mut world);
+    assert_eq!(world.effects.modifiers().count(), 0);
+    let [lent] = world
+        .effects
+        .held_for_others()
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    assert_eq!(
+        (lent.holder, lent.kind, lent.value, lent.added.as_slice()),
+        (ENEMY, DAMAGE_DEALT, 0.0, [0x0d80_0000_0000_7139].as_slice())
+    );
 }

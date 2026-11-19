@@ -309,12 +309,18 @@ impl World for PlayerWorld {
             .map_or(Value::Null, Value::from)
     }
 
+    /// Where an entity in an expression's arithmetic stands: as
+    /// [`World::entity_position`] places it (Deflect's party filter,
+    /// `03A3` st59, subtracts Genji from the attacker); the origin when
+    /// unknown.
     fn position(&mut self, entity: u32) -> [f64; 3] {
         if entity == self.entity {
-            self.position
-        } else {
-            [0.0; 3]
+            return self.position;
         }
+        self.listed(entity)
+            .map(|body| body.feet)
+            .or_else(|| self.map_entity(entity).map(|placed| placed.position))
+            .unwrap_or([0.0; 3])
     }
 
     fn movement_sample(&self, site: Site) -> Option<u16> {

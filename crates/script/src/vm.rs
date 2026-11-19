@@ -46,7 +46,8 @@ use indexmap::IndexMap;
 use serde_json::Value as Json;
 pub use statuses::{
     ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, BodyEffects, CombatMod, DAMAGE_DEALT,
-    DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, INVULNERABLE, PHASED_OUT, combat_scale,
+    DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, INVULNERABLE, PHASED_OUT, PartyFilter,
+    REDUCTION_CAP, combat_scale,
 };
 
 use crate::{
@@ -1597,6 +1598,66 @@ impl Component {
         config: &Json,
         world: &mut impl World,
     ) -> Result<Value, EvalError> {
+        self.evaluate_in_state(instance, raw_state, None, world, |_, context| {
+            expr::evaluate(config, context)
+        })
+    }
+
+    /// Whether `candidate`, a health change's other party, passes the
+    /// party filter of the combat modifier `filter` names (`m_6AA5D70F`):
+    /// its masks and tags, then its condition evaluated with the candidate
+    /// as every parameter, as the client's query 0x7FF789C375A0 binds it
+    /// while it tests the filter (`vm/statuses.rs`). None: the state is
+    /// gone or the filter can't be answered.
+    pub fn passes_party_filter<W: World>(
+        &self,
+        filter: PartyFilter,
+        candidate: u32,
+        world: &mut W,
+    ) -> Option<bool> {
+        let bound = Value::Entity(candidate);
+        self.evaluate_in_state(
+            filter.instance,
+            filter.state,
+            Some(&bound),
+            world,
+            |node, context: &mut InstanceContext<'_, W>| {
+                let filter = field(&node.fields, statuses::PARTY_FILTER);
+                expr::passes_filter_as_candidate(filter, candidate, context)
+            },
+        )
+        .ok()
+    }
+
+    /// The party filters of the modifiers of `kind` that `effects` (in
+    /// `world`, which runs them) holds for its body that `other` passes
+    /// ([`Self::passes_party_filter`]; one the server can't answer
+    /// doesn't pass), for [`BodyEffects::scale`].
+    pub fn passed_party_filters<W: World>(
+        &self,
+        world: &mut W,
+        effects: impl Fn(&W) -> &BodyEffects,
+        kind: u64,
+        other: u32,
+    ) -> Vec<PartyFilter> {
+        let filters: Vec<PartyFilter> = effects(world).party_filters(kind).collect();
+        filters
+            .into_iter()
+            .filter(|&filter| self.passes_party_filter(filter, other, world) == Some(true))
+            .collect()
+    }
+
+    /// `evaluate` in a context of the state `raw_state` of `instance`, as a
+    /// read outside the VM's run (nothing is recorded); `candidate` answers
+    /// every parameter when set.
+    fn evaluate_in_state<W: World, T>(
+        &self,
+        instance: u16,
+        raw_state: u16,
+        candidate: Option<&Value>,
+        world: &mut W,
+        evaluate: impl FnOnce(&Node, &mut InstanceContext<'_, W>) -> Result<T, EvalError>,
+    ) -> Result<T, EvalError> {
         let snapshot = self
             .snapshot()
             .ok_or(EvalError::MalformedConfig("state source"))?;
@@ -1623,14 +1684,14 @@ impl Component {
             reads: Vec::new(),
             foreign_reads: Vec::new(),
             parameters: None,
-            candidate: None,
+            candidate,
             watcher: None,
             read_native: false,
             natives: Vec::new(),
             // A read outside the VM's run: nothing is recorded.
             assumed: Vec::new(),
         };
-        expr::evaluate(config, &mut context)
+        evaluate(node, &mut context)
     }
 
     pub fn resolved_variable(&self, instance: u16, variable: Variable) -> Option<Value> {

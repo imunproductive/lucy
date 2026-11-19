@@ -22,7 +22,10 @@
 use crate::hitscan::{Impact, TargetPose};
 use orpheus_core::tick::TICK_PERIOD;
 use orpheus_physics::{collision::index::IndexError, static_ray::Vec3};
-use orpheus_script::weapons::{DamageTags, HitDefinition, ProjectileBallistics};
+use orpheus_script::{
+    vm::CombatMod,
+    weapons::{DamageTags, HitDefinition, ProjectileBallistics},
+};
 
 pub struct ProjectileFlight {
     ballistics: ProjectileBallistics,
@@ -41,6 +44,9 @@ pub struct ProjectileFlight {
     /// It hurt an enemy (`Some`, whether critically), for its shooter's
     /// shot stats ([`ProjectileFlight::strike`]).
     struck: Option<bool>,
+    /// Its shooter's dealt modifiers at its launch, which its hits deal
+    /// with ([`ProjectileFlight::launch`]); none before its first step.
+    launched: Option<Vec<CombatMod>>,
 }
 
 /// A projectile that stuck: to a body (`entity`) at `offset` from its feet,
@@ -123,7 +129,25 @@ impl ProjectileFlight {
             ended: false,
             exploded: false,
             struck: None,
+            launched: None,
         })
+    }
+
+    /// Its shooter's dealt modifiers (`0317`, `0319`) as he held them at
+    /// its launch: the client copies them into a projectile at its
+    /// creation (`sub_7FF789A32900`, `refs/reports/HealthAuras.md` "Aura
+    /// modifiers"), so a boost that ends in flight still counts for its
+    /// hits, and one that begins doesn't. Kept once; later calls don't
+    /// change them.
+    pub fn launch(&mut self, modifiers: impl FnOnce() -> Vec<CombatMod>) {
+        if self.launched.is_none() {
+            self.launched = Some(modifiers());
+        }
+    }
+
+    /// The modifiers [`Self::launch`] kept.
+    pub fn launch_modifiers(&self) -> Option<&[CombatMod]> {
+        self.launched.as_deref()
     }
 
     /// Whether it does damage where it hits or explodes.

@@ -679,6 +679,7 @@ fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
         tags: None,
         ai: None,
         dealt: Vec::new(),
+        held: Vec::new(),
     };
     let mut combat = Combat::new(&scene);
     let mut hits = Vec::new();
@@ -781,6 +782,7 @@ fn nano_boost_halves_the_damage_a_bot_takes_and_boosts_what_it_deals() {
         tags: None,
         ai: None,
         dealt: Vec::new(),
+        held: Vec::new(),
     };
     let mut combat = Combat::new(&scene);
     combat.record_poses(&scene, std::slice::from_ref(&player), tick);
