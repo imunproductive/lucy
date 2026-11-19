@@ -89,6 +89,9 @@ pub struct Controller {
     entry: Layout,
     practice: bool,
     mode: u64,
+    /// The game's ruleset, which sets the mode entity's variables `0C90`
+    /// reads (`GraphStore::mode_variables`: the Range's hero limit #9548).
+    ruleset: u64,
     /// How the controller's script treats content the VM doesn't know
     /// (the players' setting), and its frames a state they can't write.
     unknowns: Unknowns,
@@ -112,7 +115,12 @@ pub struct ControllerFrame {
 }
 
 impl Controller {
-    pub fn load(graphs: &GraphStore, mode_guid: u64, codecs: Arc<CodecTable>) -> io::Result<Self> {
+    pub fn load(
+        graphs: &GraphStore,
+        mode_guid: u64,
+        ruleset: u64,
+        codecs: Arc<CodecTable>,
+    ) -> io::Result<Self> {
         for index in [
             PVP_CONTROLLER,
             HERO_SELECT_HOST,
@@ -125,6 +133,7 @@ impl Controller {
             entry: layout(graph(graphs, TEAM_ENTRY)?)?,
             practice: mode_guid == PRACTICE_RANGE_MODE,
             mode: mode_guid,
+            ruleset,
             unknowns: Unknowns::for_build(),
             codecs,
         })
@@ -153,6 +162,7 @@ impl Controller {
         tick: u32,
     ) -> Result<ControllerScript, InitFault> {
         let mut world = ControllerWorld::new(graphs, self.mode, entity, self.unknowns);
+        world.ruleset = self.ruleset;
         world.team = Some(i64::from(team));
         world.heroes = heroes;
         ControllerScript::start(world, PVP_CONTROLLER, tick)

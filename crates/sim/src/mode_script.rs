@@ -87,6 +87,7 @@ impl ModeRunner {
         // The team sizes are the game's, as the 20300/20301 game struct
         // sends them.
         let mut world = ModeWorld::new(Arc::clone(&graphs), mode, Unknowns::for_build());
+        world.ruleset = scene.map().ruleset;
         world.players = players;
         world.ready = true;
         world.team_sizes = crate::instance::team_entries(scene.map());

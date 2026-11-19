@@ -478,6 +478,7 @@ impl SceneAssets {
         let controller = Controller::load(
             &self.graphs,
             map.mode_guid,
+            map.ruleset,
             self.codecs
                 .clone()
                 .unwrap_or_else(|| Arc::new(CodecTable::client())),
@@ -531,6 +532,7 @@ impl SceneAssets {
         let placed_scripts = PlacedScripts::new(
             Arc::clone(&self.graphs),
             map_mode,
+            map.ruleset,
             mode_random,
             server_placeables.clone(),
             Arc::clone(&map_tags),
@@ -651,6 +653,7 @@ impl SceneAssets {
         let player_unknowns = self.player_unknowns;
         let ult_generation = self.ult_generation.clone();
         let mode = scene.map.mode_guid;
+        let ruleset = scene.map.ruleset;
         let mode_body = ModeBody {
             scripts: self
                 .modes
@@ -695,6 +698,7 @@ impl SceneAssets {
                         Arc::clone(&graphs),
                         codecs,
                         mode,
+                        ruleset,
                         hero,
                         pools.hero_pools(hero.guid),
                         on_fire,

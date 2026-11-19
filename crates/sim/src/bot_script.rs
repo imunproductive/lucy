@@ -151,6 +151,7 @@ pub struct BotScripts {
     codecs: Arc<CodecTable>,
     unknowns: Unknowns,
     mode: u64,
+    ruleset: u64,
     practice: bool,
     slots: Vec<Option<BotScript>>,
     /// The entity each slot's script was last prepared for.
@@ -199,6 +200,7 @@ impl BotScripts {
             codecs,
             unknowns,
             mode: map.mode_guid,
+            ruleset: map.ruleset,
             practice: map.map_guid == PRACTICE_RANGE_MAP && map.mode_guid == PRACTICE_RANGE_MODE,
             slots: bots.iter().map(|_| None).collect(),
             prepared: vec![None; bots.len()],
@@ -294,6 +296,7 @@ impl BotScripts {
             entity: bot.entity,
             frame: tick,
             mode: self.mode,
+            ruleset: self.ruleset,
             health: bot.spawn.health,
             firing_position: (bot.spawn.firing && self.practice).then_some(bot.position),
             patrol: bot.patrol(),

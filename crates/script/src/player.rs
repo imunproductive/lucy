@@ -68,6 +68,8 @@ pub struct PlayerWorld {
     pub speed_scale: Option<f64>,
     pub throttles: [i8; 2],
     pub mode: u64,
+    /// The game's ruleset ([`GraphStore::mode_variables`]); 0: none.
+    pub ruleset: u64,
     /// The match's value of the mode entity's component 114 field 9
     /// (`STU_B182C5C9`, which the mode body script `0C8E` reads); none:
     /// unknown.
@@ -303,7 +305,7 @@ impl World for PlayerWorld {
             return Value::Bool(true);
         }
         self.graphs
-            .mode_variables(self.mode)
+            .mode_variables(self.mode, self.ruleset)
             .and_then(|variables| variables.get(&id))
             .copied()
             .map_or(Value::Null, Value::from)
@@ -452,7 +454,11 @@ impl World for PlayerWorld {
         let known = entity == self.entity
             || (valid_entity(self.controller) && entity == self.controller)
             || self.ai.is_some_and(|ai| ai.entity == entity)
-            || (entity == GAME_MODE_ENTITY && self.graphs.mode_variables(self.mode).is_some())
+            || (entity == GAME_MODE_ENTITY
+                && self
+                    .graphs
+                    .mode_variables(self.mode, self.ruleset)
+                    .is_some())
             || self.listed(entity).is_some()
             || self.map_entity(entity).is_some();
         known.then_some(true)
@@ -638,7 +644,12 @@ impl World for PlayerWorld {
                 Some(Value::Vector([right, forward, 0.0]))
             }
             "STU_37F20D24" => Some(Value::Asset(self.mode)),
-            "STU_A3DEF368" if self.graphs.mode_variables(self.mode).is_some() => {
+            "STU_A3DEF368"
+                if self
+                    .graphs
+                    .mode_variables(self.mode, self.ruleset)
+                    .is_some() =>
+            {
                 Some(Value::Entity(GAME_MODE_ENTITY))
             }
             "STU_4A101787" => Some(Value::Bool(false)),
@@ -684,6 +695,7 @@ impl PlayerWorld {
             speed_scale: None,
             throttles: [0; 2],
             mode,
+            ruleset: 0,
             mode_random: None,
             mode_overtime: false,
             team_sizes: Vec::new(),

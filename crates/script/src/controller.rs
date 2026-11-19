@@ -118,6 +118,8 @@ const NO_OP_ACTIONS: &[(&str, &str)] = &[(
 pub struct ControllerWorld {
     pub graphs: Arc<GraphStore>,
     pub mode: u64,
+    /// The game's ruleset ([`GraphStore::mode_variables`]); 0: none.
+    pub ruleset: u64,
     /// The controller entity the graph runs on.
     pub entity: u32,
     /// The controller's team index (0 to 4).
@@ -158,6 +160,7 @@ impl ControllerWorld {
         Self {
             graphs,
             mode,
+            ruleset: 0,
             entity,
             team: None,
             heroes: Vec::new(),
@@ -215,8 +218,8 @@ impl World for ControllerWorld {
     }
 
     /// The mode entity's variables come from the bundle (`0C5`
-    /// `m_3CE93B76`), as in `ModeWorld`; of the possessed body the world
-    /// knows its dead flag #478e.
+    /// `m_3CE93B76` and the game ruleset's over them), as in `ModeWorld`; of
+    /// the possessed body the world knows its dead flag #478e.
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
         if self.body == Some(entity) && id == BODY_DEAD {
             return Value::Bool(self.body_dead);
@@ -225,7 +228,7 @@ impl World for ControllerWorld {
             return Value::Null;
         }
         self.graphs
-            .mode_variables(self.mode)
+            .mode_variables(self.mode, self.ruleset)
             .and_then(|variables| variables.get(&id))
             .copied()
             .map_or(Value::Null, Value::from)
@@ -726,24 +729,74 @@ mod tests {
     const SOLDIER: u64 = 0x02e0_0000_0000_006e;
     const CONTROLLER: u32 = 0x10;
 
+    /// `0C90` in `mode`, without a ruleset: the mode's own variables.
     fn start(mode: u64) -> ControllerScript {
+        start_in(mode, 0)
+    }
+
+    fn start_in(mode: u64, ruleset: u64) -> ControllerScript {
         let root = orpheus_testkit::runtime_dir();
-        let graphs = Arc::new(GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap());
+        // With the ruleset defaults, as the server loads the bundle: an
+        // unset mode variable reads its schema default (#9548 → `254E`).
+        let graphs = Arc::new(
+            GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap(),
+        );
         let mut world = ControllerWorld::new(graphs, mode, CONTROLLER, Unknowns::Refuse);
+        world.ruleset = ruleset;
         world.team = Some(0);
         world.heroes = vec![(SOLDIER, Some(orpheus_content::heroes::DAMAGE_ROLE))];
         ControllerScript::start(world, PVP_CONTROLLER, 1).unwrap()
     }
 
-    /// The client's 21616 to `288B` in the VM (Range): an open sets #2438e
-    /// (rid22); a pick sets #13161e/#2114e (rid24) and the screen stays
-    /// open until the picked hero's body lives (st95, a later frame); an
-    /// open clears the pick; a dead player's pick closes at once (st95's
-    /// dead branch); a hero he played before stays his to pick again (his
-    /// own `08BE` broadcast reaches his own `0C90`, whose hero limit
-    /// receiver st4 refuses it by its filter `param(9) != owner()`); without
-    /// `may_pick` a pick is refused and st98 closes the screen, and an open
-    /// is refused (rid22). Every step projects to an owner full frame.
+    /// The Practice Range's ruleset `0C0:34` sets the mode entity's hero
+    /// limit #9548 to `254D`, which `0C90` st47 (rid87, a Switch on
+    /// `ruleset(mode.#9548)`) has no case for: no hero limit state runs and
+    /// nothing stacks onto #8430e. Without the ruleset the mode schema
+    /// `0008`'s default `254E` takes case 1, st50 (a StateStack) stacks
+    /// `#8430e = 1` (then st9 `#8432 = #8430e`, HeroSelect st1's limit):
+    /// then the client kept the old hero's preview model next to the new
+    /// one in hero select after a switch (game check 2026-11-19,
+    /// `ControllerWorld.md`). The graphs load with the ruleset defaults
+    /// (`start_in`), as the server's do; without them st47 has no value to
+    /// switch on either.
+    #[test]
+    #[ignore = "requires the derived 104319 graph bundle"]
+    fn a_rulesets_9548_turns_the_hero_limit_off_or_keeps_it() {
+        const LIMIT_STATE: u32 = 8430;
+        // The stacked value of #8430e (entity scope: instance 0).
+        let limit = |mode, ruleset| {
+            let mut script = start_in(mode, ruleset);
+            script.advance(10).unwrap();
+            let snapshot = script.snapshot().unwrap();
+            assert!(snapshot.initialization_complete());
+            snapshot.resolved_bindings.get(&(0, LIMIT_STATE)).cloned()
+        };
+        assert_eq!(limit(RANGE, 0), Some(Value::Integer(1)));
+        assert_eq!(
+            limit(RANGE, orpheus_content::maps::PRACTICE_RANGE_RULESET),
+            None
+        );
+        // Escort under `0C0:CE` (9548 = `254E`, the hero limit kept) runs
+        // the hero limit states as the Range did without its ruleset;
+        // under `0C0:3C` "Payload - No Limits" (9548 = `254D`) they don't.
+        assert_eq!(
+            limit(ESCORT, 0x0fd0_0000_0000_00ce),
+            Some(Value::Integer(1))
+        );
+        assert_eq!(limit(ESCORT, 0x0fd0_0000_0000_003c), None);
+    }
+
+    /// The client's 21616 to `288B` in the VM (Range mode without its
+    /// ruleset, so the hero limit states run as in a PvP mode): an open
+    /// sets #2438e (rid22); a pick sets #13161e/#2114e (rid24) and the
+    /// screen stays open until the picked hero's body lives (st95, a later
+    /// frame); an open clears the pick; a dead player's pick closes at once
+    /// (st95's dead branch); a hero he played before stays his to pick
+    /// again (his own `08BE` broadcast reaches his own `0C90`, whose hero
+    /// limit receiver st4 refuses it by its filter `param(9) != owner()`);
+    /// without `may_pick` a pick is refused and st98 closes the screen, and
+    /// an open is refused (rid22). Every step projects to an owner full
+    /// frame.
     #[test]
     #[ignore = "requires the derived 104319 graph bundle"]
     fn client_requests_drive_hero_select_in_the_vm() {

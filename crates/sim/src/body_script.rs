@@ -134,6 +134,7 @@ pub struct PlayerBodyFactory {
     graphs: Arc<GraphStore>,
     codecs: Arc<CodecTable>,
     mode: u64,
+    ruleset: u64,
     hero: u64,
     roots: Vec<Root>,
     variables: Variables,
@@ -151,6 +152,7 @@ impl PlayerBodyFactory {
         graphs: Arc<GraphStore>,
         codecs: Arc<CodecTable>,
         mode: u64,
+        ruleset: u64,
         hero: &Hero,
         pools: Option<HealthPools>,
         controller_on_fire: bool,
@@ -180,6 +182,7 @@ impl PlayerBodyFactory {
             graphs,
             codecs,
             mode,
+            ruleset,
             hero: hero.guid,
             roots,
             variables,
@@ -249,6 +252,7 @@ impl PlayerBodyFactory {
             self.mode,
             self.hero,
         );
+        world.ruleset = self.ruleset;
         world.ai = spawn.ai;
         world.position = spawn.pose.position;
         world.mode_random = Some(spawn.mode_random);
@@ -904,6 +908,7 @@ pub fn fixture_body_factory() -> (PlayerBodyFactory, OwnerBodySpawn) {
         graphs,
         codecs,
         PRACTICE_RANGE_MODE,
+        orpheus_content::maps::PRACTICE_RANGE_RULESET,
         &hero,
         None,
         false,

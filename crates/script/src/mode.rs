@@ -62,10 +62,13 @@ const PLAYER_NATIVES: [&str; 3] = ["STU_A5B9EAAD", "STU_A90795E2", "STU_81A9AB10
 
 /// What the mode graph asks outside its own entity. The mode entity's
 /// variables are its own (the server writes them into the component);
-/// the bundle's mode variables (`0C5.m_3CE93B76`) answer the rest.
+/// the bundle's mode variables (`0C5.m_3CE93B76`, with the game ruleset's
+/// over them) answer the rest.
 pub struct ModeWorld {
     pub graphs: Arc<GraphStore>,
     pub mode: u64,
+    /// The game's ruleset ([`GraphStore::mode_variables`]); 0: none.
+    pub ruleset: u64,
     pub unknowns: Unknowns,
     /// The match's players (AI heroes too): the client counts a team's
     /// entities but those of definition `003:25CB` (`STU_A5B9EAAD`).
@@ -100,6 +103,7 @@ impl ModeWorld {
         Self {
             graphs,
             mode,
+            ruleset: 0,
             unknowns,
             players: Vec::new(),
             team_sizes: Vec::new(),
@@ -223,7 +227,7 @@ impl World for ModeWorld {
             return Value::Null;
         }
         self.graphs
-            .mode_variables(self.mode)
+            .mode_variables(self.mode, self.ruleset)
             .and_then(|variables| variables.get(&id))
             .copied()
             .map_or(Value::Null, Value::from)
@@ -354,14 +358,15 @@ impl ModeScript {
     /// Start `graph` as the mode entity's instance 1 at `frame`, against
     /// `world`.
     /// The mode entity's own variables start as its mode's
-    /// (`0C5.m_3CE93B76`, the bundle's `mode_variables`): the Practice
-    /// Range `005A`'s `#27534` true makes `13C0`'s #27536 false, the board
-    /// poster st6 and the open doors st18, where `0018`'s false takes the
-    /// training branch (st11, `0BD6`).
+    /// (`0C5.m_3CE93B76`, the bundle's `mode_variables`) with the game
+    /// ruleset's over them: the Practice Range `005A`'s `#27534` true makes
+    /// `13C0`'s #27536 false, the board poster st6 and the open doors st18,
+    /// where `0018`'s false takes the training branch (st11, `0BD6`); its
+    /// ruleset `0C0:34` sets the hero limit #9548 to `254D`.
     pub fn start(mut world: ModeWorld, graph: u32, frame: u32) -> Result<Self, InitFault> {
         let graphs = Arc::clone(&world.graphs);
         let variables: Variables = graphs
-            .mode_variables(world.mode)
+            .mode_variables(world.mode, world.ruleset)
             .into_iter()
             .flatten()
             .map(|(&id, &value)| (id, Value::from(value)))

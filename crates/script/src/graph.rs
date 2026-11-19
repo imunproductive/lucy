@@ -321,11 +321,20 @@ pub struct Body {
     pub target_tags: Option<BTreeSet<u64>>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ModeValue {
     Bool(bool),
     Integer(i64),
+    Float(f64),
     Asset(u64),
+}
+
+/// A game ruleset's (`0C0`) mode-level values as the bundle keeps them:
+/// the ruleset's mode and the values it sets.
+#[derive(Deserialize)]
+struct RulesetVariables {
+    mode: Value,
+    variables: BTreeMap<u32, Value>,
 }
 
 #[derive(Deserialize)]
@@ -337,6 +346,8 @@ struct Bundle {
     entities: BTreeMap<String, Body>,
     #[serde(default)]
     mode_variables: BTreeMap<String, BTreeMap<u32, Value>>,
+    #[serde(default)]
+    ruleset_variables: BTreeMap<String, RulesetVariables>,
     missing: Vec<u32>,
     #[serde(default)]
     auras: BTreeMap<String, Value>,
@@ -364,6 +375,9 @@ pub struct GraphStore {
     bodies: BTreeMap<u64, Body>,
     entities: BTreeMap<u64, Body>,
     mode_variables: BTreeMap<u64, BTreeMap<u32, ModeValue>>,
+    /// Each game ruleset's mode and the mode entity's variables in its
+    /// games: the mode's, with the ruleset's own values over them.
+    ruleset_variables: BTreeMap<u64, (u64, BTreeMap<u32, ModeValue>)>,
     /// The heroes' and modes' ruleset defaults, which the server loads
     /// beside the bundle; none until [`GraphStore::with_rulesets`].
     rulesets: Arc<Rulesets>,
@@ -428,20 +442,27 @@ impl GraphStore {
             })
             .collect();
         let aura_graphs = played_closure(&graphs, auras.values().filter_map(|aura| aura.graph));
+        let mode_variables: BTreeMap<u64, BTreeMap<u32, ModeValue>> =
+            keyed_by_guid(bundle.mode_variables)?
+                .into_iter()
+                .map(|(guid, values)| Ok((guid, mode_values(values)?)))
+                .collect::<io::Result<_>>()?;
+        let ruleset_variables = keyed_by_guid(bundle.ruleset_variables)?
+            .into_iter()
+            .map(|(guid, ruleset)| {
+                let mode = asset_guid(&ruleset.mode)
+                    .ok_or_else(|| invalid("a ruleset's mode must be a GUID"))?;
+                let mut variables = mode_variables.get(&mode).cloned().unwrap_or_default();
+                variables.extend(mode_values(ruleset.variables)?);
+                Ok((guid, (mode, variables)))
+            })
+            .collect::<io::Result<_>>()?;
         Ok(Self {
             graphs,
             bodies: keyed_by_guid(bundle.bodies)?,
             entities: keyed_by_guid(bundle.entities)?,
-            mode_variables: keyed_by_guid(bundle.mode_variables)?
-                .into_iter()
-                .map(|(guid, values)| {
-                    let values = values
-                        .into_iter()
-                        .map(|(var, value)| Ok((var, mode_value(&value)?)))
-                        .collect::<io::Result<_>>()?;
-                    Ok((guid, values))
-                })
-                .collect::<io::Result<_>>()?,
+            mode_variables,
+            ruleset_variables,
             rulesets: Arc::default(),
             tunables: Arc::default(),
             anim_lengths: Arc::default(),
@@ -578,8 +599,16 @@ impl GraphStore {
         &self.entities
     }
 
-    pub fn mode_variables(&self, mode: u64) -> Option<&BTreeMap<u32, ModeValue>> {
-        self.mode_variables.get(&mode)
+    /// The mode entity's variables at the start of a game of `mode` that
+    /// `ruleset` (a `0C0` GUID; 0: none) sets: the mode's own
+    /// (`0C5.m_3CE93B76`) with the ruleset's mode-level values over them
+    /// (`0C0` `m_gamemode.m_3CE93B76`: the Practice Range's `0C0:34` turns
+    /// the hero limit #9548 off). None: the bundle has none for the mode.
+    pub fn mode_variables(&self, mode: u64, ruleset: u64) -> Option<&BTreeMap<u32, ModeValue>> {
+        match self.ruleset_variables.get(&ruleset) {
+            Some((of, variables)) if *of == mode => Some(variables),
+            _ => self.mode_variables.get(&mode),
+        }
     }
 
     pub fn missing(&self) -> &[u32] {
@@ -725,12 +754,22 @@ fn keyed_by_guid<T>(records: BTreeMap<String, T>) -> io::Result<BTreeMap<u64, T>
         .collect()
 }
 
+fn mode_values(values: BTreeMap<u32, Value>) -> io::Result<BTreeMap<u32, ModeValue>> {
+    values
+        .into_iter()
+        .map(|(var, value)| Ok((var, mode_value(&value)?)))
+        .collect()
+}
+
 fn mode_value(value: &Value) -> io::Result<ModeValue> {
     if let Some(value) = value.as_bool() {
         return Ok(ModeValue::Bool(value));
     }
     if let Some(value) = value.as_i64() {
         return Ok(ModeValue::Integer(value));
+    }
+    if let Some(value) = value.as_f64() {
+        return Ok(ModeValue::Float(value));
     }
     asset_guid(value)
         .map(ModeValue::Asset)
@@ -883,13 +922,43 @@ mod tests {
             "Fixture"
         );
         assert_eq!(
-            store.mode_variables(0x0230_0000_0000_0018).unwrap(),
+            store.mode_variables(0x0230_0000_0000_0018, 0).unwrap(),
             &BTreeMap::from([
                 (1, ModeValue::Bool(false)),
                 (2, ModeValue::Integer(3)),
                 (3, ModeValue::Asset(0x0d80_0000_0000_195f)),
             ])
         );
+    }
+
+    /// A game ruleset's mode-level values (`0C0` `m_gamemode.m_3CE93B76`)
+    /// go over its mode's variables in its games: the Practice Range's
+    /// `0C0:34` sets the hero limit #9548 to `254D`. A game without a
+    /// ruleset, or of another mode, has the mode's own.
+    #[test]
+    fn a_rulesets_values_go_over_its_modes_variables() {
+        const MODE: u64 = 0x0230_0000_0000_0018;
+        const RULESET: u64 = 0x0fd0_0000_0000_0034;
+        let mut data = fixture();
+        data["ruleset_variables"] = json!({"0x0FD0000000000034": {
+            "mode": "0x0230000000000018",
+            "variables": {"2": 5, "9531": 0.3, "9548": "0x0D8000000000254D"}
+        }});
+        let store = GraphStore::from_json(&serde_json::to_vec(&data).unwrap()).unwrap();
+        let own = BTreeMap::from([
+            (1, ModeValue::Bool(false)),
+            (2, ModeValue::Integer(3)),
+            (3, ModeValue::Asset(0x0d80_0000_0000_195f)),
+        ]);
+        let mut ruled = own.clone();
+        ruled.extend([
+            (2, ModeValue::Integer(5)),
+            (9531, ModeValue::Float(0.3)),
+            (9548, ModeValue::Asset(0x0d80_0000_0000_254d)),
+        ]);
+        assert_eq!(store.mode_variables(MODE, RULESET), Some(&ruled));
+        assert_eq!(store.mode_variables(MODE, 0), Some(&own));
+        assert_eq!(store.mode_variables(0x0230_0000_0000_005a, RULESET), None);
     }
 
     #[test]

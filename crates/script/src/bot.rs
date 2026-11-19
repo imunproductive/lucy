@@ -149,6 +149,8 @@ pub struct BotWorld {
     /// The bot's body definition (`003`), which names its animation data.
     pub body: u64,
     pub mode: u64,
+    /// The game's ruleset ([`GraphStore::mode_variables`]).
+    pub ruleset: u64,
     /// The logical button each AI weapon slot holds (the body's
     /// `ai_weapon_buttons`).
     pub weapon_buttons: Vec<(i64, u8)>,
@@ -216,7 +218,7 @@ impl World for BotWorld {
             return Value::Null;
         }
         self.graphs
-            .mode_variables(self.mode)
+            .mode_variables(self.mode, self.ruleset)
             .and_then(|variables| variables.get(&id))
             .copied()
             .map_or(Value::Null, Value::from)
@@ -394,7 +396,12 @@ impl World for BotWorld {
             }
         }
         match class {
-            "STU_A3DEF368" if self.graphs.mode_variables(self.mode).is_some() => {
+            "STU_A3DEF368"
+                if self
+                    .graphs
+                    .mode_variables(self.mode, self.ruleset)
+                    .is_some() =>
+            {
                 Some(Value::Entity(GAME_MODE_ENTITY))
             }
             // See `assumption`.
@@ -533,6 +540,7 @@ pub struct BotSpawn<'a> {
     pub entity: u32,
     pub frame: u32,
     pub mode: u64,
+    pub ruleset: u64,
     pub health: f64,
     /// The firing placement's position; none for a bot without one.
     pub firing_position: Option<[f64; 3]>,
@@ -601,6 +609,7 @@ impl BotBody {
             hero: spawn.hero,
             body: spawn.body,
             mode: spawn.mode,
+            ruleset: spawn.ruleset,
             weapon_buttons,
             owner_position: spawn.firing_position.filter(|_| firing),
             targets: None,
@@ -1255,6 +1264,7 @@ mod tests {
             entity: ENTITY,
             frame: 100,
             mode: PRACTICE_RANGE_MODE,
+            ruleset: 0,
             health: 200.0,
             firing_position,
             patrol: None,
@@ -1391,6 +1401,7 @@ mod tests {
             hero: TRAINING_BOT,
             body: 0,
             mode: PRACTICE_RANGE_MODE,
+            ruleset: 0,
             weapon_buttons: vec![(0, 20)],
             owner_position: Some([1.0, 2.0, 3.0]),
             targets: None,

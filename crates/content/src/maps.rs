@@ -19,6 +19,11 @@ pub const PRACTICE_RANGE_MODE: u64 = 0x0230_0000_0000_005a;
 /// Python's Practice Range mode (`0018`), for the tests that compare our
 /// output with the Python reference's.
 pub const PYTHON_PRACTICE_RANGE_MODE: u64 = 0x0230_0000_0000_0018;
+/// The Practice Range's game ruleset (`0C0:34`, the only one of mode
+/// `005A`): it sets the hero limit #9548 (`0x254C`) to `254D`, which `0C90`
+/// st47 has no case for, over the mode schema `0008`'s `254E` (case 1, the
+/// hero limit states).
+pub const PRACTICE_RANGE_RULESET: u64 = 0x0FD0_0000_0000_0034;
 /// The Tutorial game mode (`TUTORIAL_MODE` in `content.py` of
 /// leafall903/ORPHEUS, commit c239a84).
 pub const TUTORIAL_MODE: u64 = 0x0230_0000_0000_0019;
@@ -45,6 +50,9 @@ pub struct GameMap {
     pub name: String,
     pub map_guid: u64,
     pub mode_guid: u64,
+    /// The game ruleset (`0C0`) the game plays, whose mode-level values
+    /// the mode entity carries over the mode's; 0: none, the mode's own.
+    pub ruleset: u64,
     pub placeables: Vec<u32>,
     pub spawns: Vec<Spawn>,
     pub mode_name: String,
@@ -138,6 +146,7 @@ impl GameMap {
             name: PRACTICE_RANGE_NAME.into(),
             map_guid: PRACTICE_RANGE_MAP,
             mode_guid: PRACTICE_RANGE_MODE,
+            ruleset: PRACTICE_RANGE_RULESET,
             placeables: vec![0x88, 0x22e, 0x234, 0x289],
             spawns: vec![Spawn {
                 team: None,
@@ -375,6 +384,7 @@ impl MapCatalog {
             name: name.clone(),
             map_guid: PRACTICE_RANGE_MAP,
             mode_guid: PRACTICE_RANGE_MODE,
+            ruleset: PRACTICE_RANGE_RULESET,
             placeables,
             spawns: vec![Spawn {
                 team: None,
@@ -415,6 +425,7 @@ impl MapCatalog {
             name: entry.name.clone()?,
             map_guid,
             mode_guid,
+            ruleset: 0,
             placeables: entry
                 .placeables_by_mode
                 .get(&mode_guid)
