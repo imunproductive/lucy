@@ -627,7 +627,8 @@ impl Combat {
     /// (`TrackTargets`): the players' bodies as recorded, then the bots, in
     /// slot order; no teams in a free-for-all. A player's body is his
     /// controller's (its id less the low byte); an AI hero's is his AI
-    /// entity's, an AI (component 92, which its definition declares); a
+    /// entity's, an AI (component 92, which its definition declares), and
+    /// his player's, whose controller the clients see possessing it; a
     /// bot's is its stand-in controller's (`scene::bot_controller_entity`),
     /// an AI too (component 92: the bot's AI definition possesses it). A
     /// player's body lists the Biotic Fields its controller owns.
@@ -640,6 +641,7 @@ impl Combat {
                 team: (!free_for_all).then_some(team),
                 dead,
                 controller,
+                player: None,
                 ai,
                 ai_control: None,
                 feet: pose.feet,
@@ -653,8 +655,10 @@ impl Combat {
             .iter()
             .map(|slot| {
                 let target = &slot.target;
-                let controller = target.ai.map_or(target.body & !0xff, |ai| ai.entity);
+                let player = target.body & !0xff;
+                let controller = target.ai.map_or(player, |ai| ai.entity);
                 TargetCandidate {
+                    player: Some(player),
                     ai_control: target.ai,
                     spawned: self.fields.owned_by(target.body),
                     ..candidate(

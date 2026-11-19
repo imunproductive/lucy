@@ -3452,6 +3452,28 @@ impl WorldDelivery {
             })
     }
 
+    /// Tests: the targets of the active scope state `state` of the current
+    /// body's instance of graph `graph`, each with the instance its frame
+    /// record names there (`orpheus_script` `vm/scopes.rs`).
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn body_scope_hits(&self, graph: u32, state: u16) -> Vec<(u32, Option<u16>)> {
+        let Some(snapshot) = self
+            .body_script
+            .as_ref()
+            .and_then(|script| script.runtime.snapshot())
+        else {
+            return Vec::new();
+        };
+        snapshot
+            .instances
+            .values()
+            .filter(|instance| instance.graph == graph)
+            .filter_map(|instance| instance.states.get(&state))
+            .filter(|state| state.active)
+            .flat_map(|state| state.scopes.iter().map(|hit| (hit.target, hit.instance)))
+            .collect()
+    }
+
     /// Tests: whether the client acknowledged an owner frame of the current
     /// body in which state `state` of its instance of graph `graph` runs
     /// (the owner stream's base), and the entity variable `variable` as

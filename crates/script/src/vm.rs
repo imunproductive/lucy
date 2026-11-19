@@ -245,6 +245,10 @@ pub struct TargetCandidate {
     /// a player's controller, an AI hero's AI entity, a training bot's
     /// stand-in controller; none when the match has none.
     pub controller: Option<u32>,
+    /// The player whose body it is: his controller, whose component 44
+    /// the clients see possessing it (a human's is also its `controller`;
+    /// an AI hero's is not, it is his AI entity); none for a training bot.
+    pub player: Option<u32>,
     /// Whether that controller is an AI (has component 92, which
     /// `STU_D3EB8D87` tests): a training bot's, whose body its AI
     /// definition possesses, and an AI hero's AI entity. Players'
@@ -389,8 +393,8 @@ impl TargetCandidate {
 }
 
 /// How `entity` relates, as far as the listed bodies tell: a listed body's
-/// controller; a listed controller is its own (it has component 44) and
-/// possesses its body; a spawned entity a body lists
+/// controller; a listed controller or player is its own (it has component
+/// 44) and possesses its body; a spawned entity a body lists
 /// ([`TargetCandidate::spawned`]) is owned by that body's controller.
 /// Assumption: the owner (component 72) of an entity the game spawns for
 /// a hero is his controller, as the Biotic Field's aura `0B3C` heals for
@@ -401,7 +405,11 @@ pub fn listed_relation(
     relation: EntityRelation,
     entity: u32,
 ) -> Option<u32> {
-    let by_controller = || bodies.iter().find(|body| body.controller == Some(entity));
+    let by_controller = || {
+        bodies
+            .iter()
+            .find(|body| body.controller == Some(entity) || body.player == Some(entity))
+    };
     match relation {
         EntityRelation::Controller => bodies
             .iter()

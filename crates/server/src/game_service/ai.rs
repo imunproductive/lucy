@@ -472,6 +472,8 @@ impl State {
                 picker: None,
                 console_button: false,
                 picker_raised: false,
+                spawn_effect: false,
+                spawn_scope: Vec::new(),
             })
             .collect();
         for (connection, peer) in &self.peers {
@@ -494,6 +496,8 @@ impl State {
             body.picker = peer.world.controller_scope_instance(126);
             body.console_button = peer.world.body_delivered(0x265f, 9, 25456).0;
             body.picker_raised = peer.world.body_delivered(0x265f, 17, 25456).0;
+            body.spawn_effect = peer.world.body_state_active(0x265f, 21);
+            body.spawn_scope = peer.world.body_scope_hits(0x265f, 20);
         }
         bodies
     }
@@ -596,4 +600,11 @@ pub(crate) struct BodyState {
     /// StateStack rid40 (st17), which stacks the picker's condition
     /// `#25456e` = true (the client reads it from that state's payload).
     pub picker_raised: bool,
+    /// His body runs the Training Partner console's scope 197 (`265F`
+    /// st21: the 2 s Wait with the spawn effect `1F3F.00D`).
+    pub spawn_effect: bool,
+    /// His body's scope 12 instance runs scope 197's state (`265F` st20):
+    /// its targets (the new partner's body) and the instance its frame
+    /// record names on each.
+    pub spawn_scope: Vec<(u32, Option<u16>)>,
 }

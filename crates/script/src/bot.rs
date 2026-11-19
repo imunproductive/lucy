@@ -1898,6 +1898,7 @@ mod tests {
                 team: Some(team),
                 dead: false,
                 controller: Some(entity & !0xff),
+                player: Some(entity & !0xff),
                 ai: false,
                 ai_control: None,
                 feet: [0.0; 3],

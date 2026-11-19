@@ -253,7 +253,11 @@ impl<W: World> Vm<'_, '_, '_, W> {
     }
 
     /// The scope state's tick: a scope for each target that came, none for
-    /// each that left (`0x7FF789C60F70`, `0x7FF789C60530`).
+    /// each that left (`0x7FF789C60F70`, `0x7FF789C60530`). A target whose
+    /// instance the match hasn't opened yet is asked for again each tick:
+    /// the match opens it once the target's player runs that entity, which
+    /// a dummy bot made this tick doesn't yet (the console's scope 197 on
+    /// a re-picked Training Partner); the client makes it at once.
     pub(super) fn refresh_scopes(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
         let id = key.instance;
         if self.instance_scope(id) == scope_id(node) {
@@ -268,11 +272,17 @@ impl<W: World> Vm<'_, '_, '_, W> {
             .map(|hit| hit.target)
             .filter(|target| !listed.contains(target))
             .collect();
+        let unopened: Vec<u32> = state
+            .scopes
+            .iter()
+            .filter(|hit| hit.instance.is_none() && listed.contains(&hit.target))
+            .map(|hit| hit.target)
+            .collect();
         let came: Vec<u32> = listed
             .into_iter()
             .filter(|&target| !state.scopes.iter().any(|hit| hit.target == target))
             .collect();
-        if left.is_empty() && came.is_empty() {
+        if left.is_empty() && came.is_empty() && unopened.is_empty() {
             return Ok(());
         }
         let site = self.site(id, node);
@@ -283,7 +293,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
                 .change_scope(site, ScopeChange::Close { source, target });
         }
         let mut opened = Vec::new();
-        if !came.is_empty() {
+        if !came.is_empty() || !unopened.is_empty() {
             let keep = match field(&node.fields, "m_4B7DF406") {
                 Json::Null => false,
                 config => self
@@ -299,7 +309,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
             let parent = self.instance_values(id);
             let creator = self.source_of(id);
             let graph = self.machine.snapshot.instances[&id].graph;
-            for &target in &came {
+            for &target in came.iter().chain(&unopened) {
                 taken &= self.world.change_scope(
                     site,
                     ScopeChange::Open {
@@ -312,12 +322,12 @@ impl<W: World> Vm<'_, '_, '_, W> {
                         parent: parent.clone(),
                     },
                 );
-                opened.push(ScopeHit {
-                    target,
-                    instance: None,
-                    keep,
-                });
             }
+            opened.extend(came.iter().map(|&target| ScopeHit {
+                target,
+                instance: None,
+                keep,
+            }));
         }
         if !taken {
             self.assume(site, &node.class, "no scopes (the world opens none)");

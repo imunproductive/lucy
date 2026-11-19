@@ -601,12 +601,11 @@ impl World for PlayerWorld {
             // requests the body makes of it (`STU_066B4605`) find none and
             // finish at once, as a human's do.
             EntityRelation::AiControlEntity if entity == self.entity => Some(0),
-            // Another body the match lists: the controller it gives, and no
-            // owner.
-            EntityRelation::Controller => self.listed(entity)?.controller,
+            // Another body the match lists: no owner.
             EntityRelation::Owner if self.listed(entity).is_some() => Some(0),
-            // The others the listed bodies tell: another controller's body,
-            // a spawned entity's owner.
+            // The others the listed bodies tell: another body's controller,
+            // another controller's or player's body, a spawned entity's
+            // owner.
             _ => crate::vm::listed_relation(self.targets.as_deref()?, relation, entity),
         }
     }
@@ -872,6 +871,7 @@ mod tests {
             team,
             dead: false,
             controller: Some(entity & !0xff),
+            player: Some(entity & !0xff),
             ai: false,
             ai_control: None,
             feet,

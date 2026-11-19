@@ -1,8 +1,8 @@
 //! Server-only actions on other entities: a team (`STU_0F647E55`), a
-//! removal (`STU_523EE38D`) and the dummy bots (`STU_FC3921B1`,
-//! `STU_C1561031`); the scene tag queries of a state (`STU_160F2578`) and
-//! an action (`STU_42578342`); the spawn picker (`STU_5E805B5A`); the
-//! shuffled picker (`STU_37072672`).
+//! removal (`STU_523EE38D`), the dummy bots (`STU_FC3921B1`,
+//! `STU_C1561031`) and a body's move (`STU_CFCE55DC`); the scene tag
+//! queries of a state (`STU_160F2578`) and an action (`STU_42578342`); the
+//! spawn picker (`STU_5E805B5A`); the shuffled picker (`STU_37072672`).
 //!
 //! Client research (1.74, `python tools/stu.py`): `STU_0F647E55`,
 //! `STU_523EE38D`, `STU_FC3921B1` and `STU_C1561031` register no action of their own. The client looks up the
@@ -152,6 +152,35 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             .remove_dummy_bot(site, expr::to_int(&team, -1), expr::to_int(&slot, -1))
         {
             self.assume(site, &node.class, "the world removes no dummy bot");
+        }
+        self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
+    }
+
+    /// `STU_CFCE55DC` (server-only: no registration of its own,
+    /// ControllerWorld.md): put the body `m_target` at `m_AF774F7D` facing
+    /// `m_E3779CD0` (strong guess from its uses: Reinhardt's Charge `007D`
+    /// carries its pinned enemy #536 so, rid94 and rid115; the controller
+    /// `0C90` rid181 its body to the spawn point #8370). With no target it
+    /// moves nothing: `007D`'s entry rid17 runs it at every start with
+    /// #536 unset. The server moves no other body yet, so a target is
+    /// refused, or left where it is in a release build (an assumption).
+    pub(super) fn move_body(
+        &mut self,
+        id: u16,
+        node: &Node,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        let Some(target) = self.evaluate(id, node, field(&node.fields, "m_target"), None) else {
+            return Ok(false);
+        };
+        if !entities(&target).is_empty() {
+            let site = self.site(id, node);
+            if !self.tolerates_unknowns() {
+                self.report(site, Issue::UnsupportedAction(node.class.clone()));
+                return Ok(false);
+            }
+            self.assume(site, &node.class, "moves no body");
         }
         self.follow(id, node, "m_outPlug", None, depth)?;
         Ok(true)

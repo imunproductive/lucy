@@ -2864,18 +2864,211 @@ fn practice_world<const N: usize>(
 #[ignore = "requires the derived 104319 data"]
 fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it() {
     use orpheus_content::heroes::ANA;
-    const TRACER: u64 = 0x02E0_0000_0000_0003;
-    const PAD: [f64; 3] = [34.24001, 1.9917264, 22.972233];
-    const CONSOLE: u32 = 0x8000_010B;
-    const CONSOLE_AT: [f32; 3] = [34.62, 1.99, 17.86];
-    const PICK: u64 = 0x0240_0000_0000_1213;
-    let on_pad = |feet: [f64; 3]| {
-        (feet[0] - PAD[0]).abs() < 1e-3
-            && (feet[2] - PAD[2]).abs() < 1e-3
-            && (feet[1] - PAD[1]).abs() < 0.1
+    let PartnerPick {
+        server,
+        schemas,
+        mut watcher,
+        mut frame,
+        yaw,
+        ..
+    } = pick_training_partner(
+        &orpheus_sim::scene_assets::SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap(),
+        ANA,
+    );
+    let tracer = player_entity(1) | 1;
+    let ana = player_entity(2) | 1;
+    let bodies = server.bodies(MATCH).unwrap();
+    let [me, tracer_seat, partner] = bodies.as_slice() else {
+        panic!("{bodies:?}");
     };
+    assert_eq!(tracer_seat.position, None, "{tracer_seat:?}");
+    assert!(partner.ai);
+    assert_eq!((partner.team, partner.hero), (1, Some(ANA)));
+    assert!(on_the_pad(partner.position.unwrap()), "{partner:?}");
+    // The picker closes (`1214` ends StateStack rid40).
+    let deadline = server.now() + Duration::from_secs(2);
+    while server.bodies(MATCH).unwrap()[0].picker_raised {
+        assert!(server.now() < deadline, "the picker closes: {me:?}");
+        send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
+        watcher.pump(&schemas);
+    }
+    assert!(
+        watcher
+            .find(0, |record| record.entity == CONSOLE
+                && record.script.is_some())
+            .is_some(),
+        "the console's frames (created {:?}, pad framed {:?}, placed framed {:?})",
+        watcher.created(CONSOLE),
+        watcher.find(0, |record| record.entity == 0x8000_024A
+            && record.script.is_some()),
+        watcher
+            .datagrams
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter(|record| record.entity >> 29 == 4 && record.script.is_some())
+            .map(|record| record.entity)
+            .collect::<std::collections::BTreeSet<_>>()
+    );
+    // The partners' bodies are another player's to this client: any of
+    // their statescript comes as observer frames (H=0), never as owner
+    // frames (two more seconds of datagrams).
+    for _ in 0..125 {
+        send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
+        watcher.pump(&schemas);
+    }
+    for (_, records) in &watcher.datagrams {
+        for chunk in records
+            .iter()
+            .filter(|record| [tracer, ana].contains(&record.entity))
+            .filter_map(|record| record.script.as_ref())
+        {
+            if chunk.first == 0 {
+                assert_eq!(chunk.bits().bits(2).unwrap(), 0, "an H=0 frame");
+            }
+        }
+    }
+}
+
+/// A Reinhardt picked at the console: his body comes once, with his hero's
+/// body definition (`0024.003`) and his script, and the console's scope 197
+/// (`265F` st20, on the picker's body, over `STU_00707E1E(#29454)`, the
+/// body the new partner's player possesses) opens its instance on it: the
+/// 2 s Wait st21 with the spawn effect `1F3F.00D` (st22). The partner's
+/// full frame lists that instance and the picker's frame record of st20
+/// names it, so the picker's client, which predicts his scope 12, makes
+/// none of its own there; it ends after the Wait and never opens again.
+/// Before (TrainingPartner.md "DayPartnerRein"), the AI partner's body was
+/// found by no player (its controller is his AI entity), st20 listed no
+/// target and the instance never opened on the server.
+#[test]
+#[ignore = "requires the derived 104319 data"]
+fn a_reinhardt_training_partner_comes_once_with_the_consoles_spawn_effect() {
+    use orpheus_core::tick::TICK_PERIOD;
     let assets =
         orpheus_sim::scene_assets::SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let reinhardt = assets.heroes().find_hero("Reinhardt").unwrap().clone();
+    let PartnerPick {
+        server,
+        schemas,
+        mut watcher,
+        mut frame,
+        yaw,
+        picked,
+    } = pick_training_partner(&assets, reinhardt.guid);
+    let partner = player_entity(2) | 1;
+    // The Wait's 2 s: the instance opens as the room routes its messages,
+    // before the tick's scripts run, on the clock of the tick before the
+    // one that first shows it; it ends at the first tick 2 s (125 ticks of
+    // 16 ms) after that, 124 ticks after it was first seen.
+    let wait = TICK_PERIOD * ((2.0 / TICK_PERIOD.as_secs_f64()).ceil() as u32 - 1);
+    let mut opened = None;
+    let mut spans = Vec::new();
+    // Ten seconds of the partner on the pad, a server tick at a time; the
+    // pick's tick had no instance yet.
+    assert!(!server.bodies(MATCH).unwrap()[2].spawn_effect);
+    for _ in 0..(10 * 1000 / TICK_PERIOD.as_millis()) {
+        send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
+        watcher.pump(&schemas);
+        let bodies = server.bodies(MATCH).unwrap();
+        assert!(bodies[2].scripted, "{:?}", bodies[2]);
+        match (opened, bodies[2].spawn_effect) {
+            (None, true) => opened = Some(server.now()),
+            (Some(begin), false) => {
+                spans.push((begin, server.now()));
+                opened = None;
+            }
+            _ => (),
+        }
+    }
+    assert_eq!(opened, None, "the spawn effect still runs");
+    let [(begin, end)] = spans[..] else {
+        panic!("the spawn effect ran {spans:?}");
+    };
+    assert_eq!(end - begin, wait);
+    // His record of st20 names the instance on the partner's body.
+    let bodies = server.bodies(MATCH).unwrap();
+    let [(target, Some(instance))] = bodies[0].spawn_scope[..] else {
+        panic!("{:?}", bodies[0].spawn_scope);
+    };
+    assert_eq!(target, partner);
+    // One create, of his body's definition, then one full frame: his
+    // graphs and the console's scope instance.
+    let records: Vec<&WorldRecord> = watcher.datagrams[picked..]
+        .iter()
+        .flat_map(|(_, records)| records)
+        .filter(|record| record.entity == partner)
+        .collect();
+    let creates: Vec<_> = records.iter().filter(|record| record.is_create()).collect();
+    let [create] = creates[..] else {
+        panic!("{} creates", creates.len());
+    };
+    assert_eq!(
+        create.definition.map(u64::from),
+        Some(reinhardt.body & 0xffff_ffff)
+    );
+    let fulls: Vec<_> = records
+        .iter()
+        .filter_map(|record| record.script.as_ref())
+        .filter(|chunk| chunk.first == 0)
+        .collect();
+    let [full] = fulls[..] else {
+        panic!("{} full frames", fulls.len());
+    };
+    let head = orpheus_script::wire::read_full_head(&full.data, |graph| {
+        assets
+            .graphs()
+            .graph(u32::from(graph))
+            .map(|graph| graph.header.states_bits)
+    })
+    .unwrap();
+    // Reinhardt's first graph `0033`, his Charge `007D`.
+    assert_eq!(head.instances[0].1, 0x0033);
+    assert_eq!(head.instances[1].1, 0x007d);
+    let scoped: Vec<u16> = head
+        .instances
+        .iter()
+        .filter(|&&(_, graph, ..)| graph == 0x265f)
+        .map(|&(id, ..)| id)
+        .collect();
+    assert_eq!(scoped, [instance]);
+}
+
+/// The Range's Training Partner console (`265F`).
+const CONSOLE: u32 = 0x8000_010B;
+
+/// A partner's feet on the console's pad `3992` (34.24, 1.99, 22.97): x
+/// and z within 1 mm, y within 0.1 m.
+fn on_the_pad(feet: [f64; 3]) -> bool {
+    const PAD: [f64; 3] = [34.24001, 1.9917264, 22.972233];
+    (feet[0] - PAD[0]).abs() < 1e-3
+        && (feet[2] - PAD[2]).abs() < 1e-3
+        && (feet[1] - PAD[1]).abs() < 0.1
+}
+
+/// A Range whose player picked a Training Partner at the console
+/// ([`pick_training_partner`]).
+struct PartnerPick {
+    server: Lockstep,
+    schemas: Arc<Schemas>,
+    watcher: Watcher,
+    /// His next command frame, and the yaw he stands at.
+    frame: u32,
+    yaw: i16,
+    /// The datagram that brought the new partner's create.
+    picked: usize,
+}
+
+/// A Range with one Soldier: 76, whose Tracer partner (room slot 1)
+/// stands on the pad; he walks to the console, presses H and picks `hero`
+/// as the picker does, until the Tracer's body is gone and the new
+/// partner's body (room slot 2) arrived.
+fn pick_training_partner(
+    assets: &orpheus_sim::scene_assets::SceneAssets,
+    hero: u64,
+) -> PartnerPick {
+    const TRACER: u64 = 0x02E0_0000_0000_0003;
+    const CONSOLE_AT: [f32; 3] = [34.62, 1.99, 17.86];
+    const PICK: u64 = 0x0240_0000_0000_1213;
     let spawn = GameMap::practice_range().spawn_point(0, 0).unwrap().0;
     // The navigation's walk from the spawn runs straight into a wall near
     // (48.5, 29.5): its straight legs test walkable cells, not the map's
@@ -2886,7 +3079,7 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
     // half a metre, from where the navigation finds another way.
     let mut walk = None;
     let (server, schemas, [mut watcher], _) =
-        practice_world([("player#1111", 0, "Soldier: 76")], &assets, |scene| {
+        practice_world([("player#1111", 0, "Soldier: 76")], assets, |scene| {
             let navigation = scene.navigation().unwrap();
             let chest = |point: [f32; 3]| {
                 [
@@ -2920,7 +3113,7 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
         });
     let waypoints = walk.unwrap();
     let tracer = player_entity(1) | 1;
-    let ana = player_entity(2) | 1;
+    let partner = player_entity(2) | 1;
     pump_until(
         &mut [&mut watcher],
         &schemas,
@@ -2933,7 +3126,7 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
     };
     assert!(dummy.ai);
     assert_eq!((dummy.team, dummy.hero), (1, Some(TRACER)));
-    assert!(on_pad(dummy.position.unwrap()), "{dummy:?}");
+    assert!(on_the_pad(dummy.position.unwrap()), "{dummy:?}");
     // The walk: towards the next waypoint not yet reached, until his feet
     // are within a metre of the console's (horizontally).
     let flat = |feet: [f64; 3], point: [f32; 3]| {
@@ -2983,13 +3176,13 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
         watcher.pump(&schemas);
     }
     // The pick, from his controller's scope 126 instance: `08E6` an array
-    // of Ana, `08E7` an array of true, then two entities
+    // of the hero, `08E7` an array of true, then two entities
     // (`orpheus_content::parameters` `parameter_rows_read_as_the_client_writes_them`).
     let picker = server.bodies(MATCH).unwrap()[0].picker.unwrap();
     let owner = watcher.owner;
     let mut blob = vec![0x00, 0x00, 0x00, 0x00, 0x02];
     blob.extend([0xc3, 0xe6, 0x08, 0x40, 0x0a, 0x0c, 0x01, 0xff, 0x04]);
-    blob.extend(ANA.to_le_bytes());
+    blob.extend(hero.to_le_bytes());
     blob.extend([0xc3, 0xe7, 0x08, 0x40, 0x0a, 0x0c, 0x01, 0xff, 0x01, 0x01]);
     blob.extend(owner.to_le_bytes());
     blob.extend(owner.to_le_bytes());
@@ -3003,7 +3196,7 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
         blob,
     );
     let deadline = server.now() + Duration::from_secs(5);
-    while watcher.created(ana).is_none()
+    while watcher.created(partner).is_none()
         || watcher
             .find(0, |record| {
                 record.entity == tracer && record.operation == Some(3)
@@ -3012,60 +3205,19 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
     {
         assert!(
             server.now() < deadline,
-            "the Tracer's destroy, Ana's create"
+            "the Tracer's destroy, the new partner's create"
         );
         send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
         watcher.pump(&schemas);
     }
-    let bodies = server.bodies(MATCH).unwrap();
-    let [me, tracer_seat, partner] = bodies.as_slice() else {
-        panic!("{bodies:?}");
-    };
-    assert_eq!(tracer_seat.position, None, "{tracer_seat:?}");
-    assert!(partner.ai);
-    assert_eq!((partner.team, partner.hero), (1, Some(ANA)));
-    assert!(on_pad(partner.position.unwrap()), "{partner:?}");
-    // The picker closes (`1214` ends StateStack rid40).
-    let deadline = server.now() + Duration::from_secs(2);
-    while server.bodies(MATCH).unwrap()[0].picker_raised {
-        assert!(server.now() < deadline, "the picker closes: {me:?}");
-        send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
-        watcher.pump(&schemas);
-    }
-    assert!(
-        watcher
-            .find(0, |record| record.entity == CONSOLE
-                && record.script.is_some())
-            .is_some(),
-        "the console's frames (created {:?}, pad framed {:?}, placed framed {:?})",
-        watcher.created(CONSOLE),
-        watcher.find(0, |record| record.entity == 0x8000_024A
-            && record.script.is_some()),
-        watcher
-            .datagrams
-            .iter()
-            .flat_map(|(_, records)| records)
-            .filter(|record| record.entity >> 29 == 4 && record.script.is_some())
-            .map(|record| record.entity)
-            .collect::<std::collections::BTreeSet<_>>()
-    );
-    // The partners' bodies are another player's to this client: any of
-    // their statescript comes as observer frames (H=0), never as owner
-    // frames (two more seconds of datagrams).
-    for _ in 0..125 {
-        send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
-        watcher.pump(&schemas);
-    }
-    for (_, records) in &watcher.datagrams {
-        for chunk in records
-            .iter()
-            .filter(|record| [tracer, ana].contains(&record.entity))
-            .filter_map(|record| record.script.as_ref())
-        {
-            if chunk.first == 0 {
-                assert_eq!(chunk.bits().bits(2).unwrap(), 0, "an H=0 frame");
-            }
-        }
+    let picked = watcher.created(partner).unwrap();
+    PartnerPick {
+        server,
+        schemas,
+        watcher,
+        frame,
+        yaw,
+        picked,
     }
 }
 
