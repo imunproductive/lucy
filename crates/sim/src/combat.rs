@@ -462,6 +462,9 @@ pub struct PlayerHit {
     /// shooter's feet to the body's, as the match last placed them, or from
     /// his own explosion to his body; none when that isn't known.
     pub direction: Option<Vec3>,
+    /// The environment's kill ([`Combat::environment_kill`]): the match
+    /// credits it to whoever last knocked the body ([`KnockCredit`]).
+    pub environment: bool,
 }
 
 /// An explosion's push on another player's body ([`Combat::take_player_pushes`]),
@@ -476,6 +479,9 @@ pub struct PlayerPush {
     pub body: u32,
     /// Metres a second added to the body's velocity.
     pub push: Vec3,
+    /// Whose explosion it was: the knock an environment kill credits
+    /// ([`KnockCredit`]).
+    pub by: Shooter,
 }
 
 #[derive(Clone)]
@@ -777,11 +783,13 @@ impl Combat {
     }
 
     /// The environment kills the player's body at `tick` (`map_areas`
-    /// module notes: it fell onto the map's catch floor): a hit on it of
-    /// [`ENVIRONMENT_DAMAGE`] that goes the way of any other, so the
-    /// victim gets "YOU DIED" (25004), his body the death message and his
-    /// board a death, and he respawns after the mode's time. Assumption:
-    /// the body is its own killer, as in a self-inflicted explosion.
+    /// module notes: it fell onto the map's catch floor, into a kill volume
+    /// or a lethal damage area): a hit on it of [`ENVIRONMENT_DAMAGE`] that
+    /// goes the way of any other, so the victim gets 25004, his body the
+    /// death message and his board a death, and he respawns after the
+    /// mode's time. The match credits it to whoever last knocked the body
+    /// ([`KnockCredit`], [`apply_player_hits`]); without one the body is its
+    /// own killer ("YOU DIED"), as in a self-inflicted explosion.
     pub fn environment_kill(&mut self, body: u32, team: u8, tick: u32) {
         self.player_hits.push(PlayerHit {
             body,
@@ -798,6 +806,7 @@ impl Combat {
             heal: false,
             tags: DamageTags::NONE,
             direction: None,
+            environment: true,
         });
     }
 
@@ -1021,6 +1030,7 @@ impl Combat {
                 heal: change.heal,
                 tags,
                 direction,
+                environment: false,
             });
             self.auras.extend(aura);
             return None;
@@ -1289,6 +1299,7 @@ impl Combat {
                     self.player_pushes.push(PlayerPush {
                         body: *entity,
                         push,
+                        by: shooter,
                     });
                 }
             }
@@ -1353,6 +1364,7 @@ impl Combat {
                 heal: false,
                 tags,
                 direction: Some(own.direction),
+                environment: false,
             });
         }
         Ok(step.end.map(|end| FlightEnd {
@@ -1462,6 +1474,7 @@ impl Combat {
                     heal,
                     tags,
                     direction,
+                    environment: false,
                 });
             }
             return None;
@@ -1725,9 +1738,80 @@ pub fn credits_damage(at: Duration, now: Duration) -> bool {
     now <= at + DAMAGE_CREDIT
 }
 
+/// How long a knockback credits the environment kill of the body it
+/// knocked ([`KnockCredit`]). The retail server's own rule; no graph or
+/// data names it. Assumption: 10 s, as players measured it in OW1 (KarQ,
+/// r/OverwatchUniversity 2019-08-24, "1 Environmental Kill Tip for Every
+/// Hero": "Wait 10 seconds" is one of four ways to cancel a knockback's
+/// credit; `refs/reports/StatCredit.md`).
+pub const KNOCKBACK_CREDIT: Duration = Duration::from_secs(10);
+
+/// Who an environment kill of a player's body credits: the last enemy
+/// whose explosion knocked it ([`PlayerPush`]), for [`KNOCKBACK_CREDIT`]
+/// after the knock, as the retail rule gives an environmental kill to the
+/// last player who applied crowd control (`refs/reports/RulesNotes.md`
+/// 146; damage alone doesn't). The other ways players measured to cancel
+/// it (KarQ, as [`KNOCKBACK_CREDIT`]): a jump, a landing on the ground,
+/// and the body's own knockback (its own explosion). Assumptions: a
+/// landing cancels it only once the tick's environment kills are dealt
+/// ([`Self::settle`]), as a fall ends by landing on the catch floor that
+/// kills; the explosions are the only knockbacks the server applies to a
+/// player's body.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct KnockCredit(Option<Knock>);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Knock {
+    body: u32,
+    by: Shooter,
+    at: Duration,
+    landed: bool,
+}
+
+impl KnockCredit {
+    /// Another's explosion (`by`) knocked `body` at `now`.
+    pub fn knocked(&mut self, body: u32, by: Shooter, now: Duration) {
+        self.0 = Some(Knock {
+            body,
+            by,
+            at: now,
+            landed: false,
+        });
+    }
+
+    /// The body's own explosion pushed it.
+    pub fn own_push(&mut self) {
+        self.0 = None;
+    }
+
+    /// The body's mover posed a frame that jumped or landed it.
+    pub fn posed(&mut self, landed: bool, jumped: bool) {
+        if jumped {
+            self.0 = None;
+        } else if let Some(knock) = self.0.as_mut().filter(|_| landed) {
+            knock.landed = true;
+        }
+    }
+
+    /// The tick's environment kills are dealt: a knock the body landed
+    /// from credits no later one.
+    pub fn settle(&mut self) {
+        if self.0.is_some_and(|knock| knock.landed) {
+            self.0 = None;
+        }
+    }
+
+    /// Who the environment's kill of `body` at `now` credits.
+    pub fn credit(&self, body: u32, now: Duration) -> Option<Shooter> {
+        self.0
+            .filter(|knock| knock.body == body && now <= knock.at + KNOCKBACK_CREDIT)
+            .map(|knock| knock.by)
+    }
+}
+
 /// Final Blows (`002B`): the career counter of the stat event 0
 /// (`m_primaryEvent`), the hero board's "Final Blows".
-const FINAL_BLOWS: u64 = 0x0860_0000_0000_002b;
+pub(crate) const FINAL_BLOWS: u64 = 0x0860_0000_0000_002b;
 /// Shots Fired (`0030`, stat event 9), Shots Hit (`0031`, event 10), Shots
 /// Missed (`05F2`, event 63) and Critical Hits (`03DE`, event 12):
 /// [`Combat::count_shot`].
@@ -1739,6 +1823,10 @@ const CRITICAL_HITS: u64 = 0x0860_0000_0000_03de;
 /// (`03DA`, event 48), on the support heroes' boards.
 const OFFENSIVE_ASSISTS: u64 = 0x0860_0000_0000_03d4;
 const DEFENSIVE_ASSISTS: u64 = 0x0860_0000_0000_03da;
+/// Environmental Kills (`0362`, stat event 49) and Environmental Deaths
+/// (`0365`, event 50): [`apply_player_hits`].
+pub(crate) const ENVIRONMENTAL_KILLS: u64 = 0x0860_0000_0000_0362;
+pub(crate) const ENVIRONMENTAL_DEATHS: u64 = 0x0860_0000_0000_0365;
 
 /// An assist a player earned on a kill ([`kill_credit`]).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1849,10 +1937,15 @@ pub fn kill_credit(
 /// and `0093.025` without the final blow flag, and for an assist its stat
 /// (Offensive or Defensive Assists), 25005 as an assist ("ASSIST", unless
 /// he has the elimination's) and a place in the death message's assists
-/// (`03E7`, the kill feed's assist icons). A heal of an ally (combat.py
-/// `_heal`, leafall903/ORPHEUS (MIT) commit c239a84) tells no one: a
-/// player healer's Healing Done and ultimate count what the pools took.
-/// Returns each player's notices, by slot.
+/// (`03E7`, the kill feed's assist icons). The environment's kill
+/// ([`PlayerHit::environment`]) is the kill of whoever last knocked the
+/// body ([`KnockCredit`]), counted as damage of the health it had left
+/// (`refs/reports/RulesNotes.md` 146: Hero Damage Done and ultimate charge,
+/// no hit marker, assumption), and with an Environmental Kill for a player
+/// who knocked it and an Environmental Death for the victim. A heal of an
+/// ally (combat.py `_heal`, leafall903/ORPHEUS (MIT) commit c239a84) tells
+/// no one: a player healer's Healing Done and ultimate count what the pools
+/// took. Returns each player's notices, by slot.
 pub fn apply_player_hits(
     scene: &PreparedScene,
     hits: Vec<PlayerHit>,
@@ -1862,7 +1955,7 @@ pub fn apply_player_hits(
 ) -> Vec<Vec<CombatNotice>> {
     let board = *scene.board_stats();
     let mut notices = vec![Vec::new(); players.len()];
-    for hit in hits {
+    for mut hit in hits {
         let Some(victim) = players.iter().position(|player| {
             player
                 .world
@@ -1890,6 +1983,14 @@ pub fn apply_player_hits(
                 credit_healing(scene, players, hit.shooter.source, target, given, &hit.tags);
             }
             continue;
+        }
+        if hit.environment
+            && let Some(by) = players[victim]
+                .world
+                .as_deref()
+                .and_then(|world| world.knocked_by(hit.body, now))
+        {
+            hit.shooter = by;
         }
         let Some(damage) = players[victim]
             .world
@@ -1937,7 +2038,7 @@ pub fn apply_player_hits(
                 false,
             );
         }
-        if let Some(shooter) = killer {
+        if let Some(shooter) = killer.filter(|_| !hit.environment) {
             notices[shooter].push(CombatNotice::Hit {
                 target: hit.body,
                 dealt: damage.dealt,
@@ -1945,12 +2046,20 @@ pub fn apply_player_hits(
                 killed: damage.killed,
                 shot_frame: hit.frame,
             });
+        }
+        if let Some(shooter) = killer {
             players[shooter].stats.add(board.hero_damage, damage.dealt);
         }
         if !damage.killed {
             continue;
         }
         players[victim].stats.add(board.deaths, 1.0);
+        if hit.environment {
+            players[victim].stats.add(ENVIRONMENTAL_DEATHS, 1.0);
+            if let Some(slot) = killer {
+                players[slot].stats.add(ENVIRONMENTAL_KILLS, 1.0);
+            }
+        }
         let eliminators = killer
             .map(|slot| (slot, true))
             .into_iter()
@@ -2047,15 +2156,28 @@ fn death_credit(
 
 /// The explosions' pushes on players' bodies ([`Combat::take_player_pushes`]),
 /// after their hits ([`apply_player_hits`]): each goes to the mover of the
-/// player whose body it is ([`WorldDelivery::knock`]).
-pub fn apply_player_pushes(pushes: Vec<PlayerPush>, players: &mut [CombatPlayer<'_>]) {
+/// player whose body it is ([`WorldDelivery::knock`]) at `now`, as the knock
+/// an environment kill credits ([`KnockCredit`]). First, with the tick's
+/// environment kills dealt, a knock its body landed from is forgotten
+/// ([`KnockCredit::settle`]).
+pub fn apply_player_pushes(
+    pushes: Vec<PlayerPush>,
+    players: &mut [CombatPlayer<'_>],
+    now: Duration,
+) {
+    for world in players
+        .iter_mut()
+        .filter_map(|player| player.world.as_deref_mut())
+    {
+        world.settle_knock();
+    }
     for push in pushes {
         let world = players
             .iter_mut()
             .filter_map(|player| player.world.as_deref_mut())
             .find(|world| world.current_body() == Some(push.body));
         if let Some(world) = world {
-            world.knock(push.body, push.push);
+            world.knock(push.body, push.push, push.by, now);
         }
     }
 }

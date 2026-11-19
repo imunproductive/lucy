@@ -15,8 +15,9 @@ use crate::{
     bot_script::{BotEvent, BotViewContext, BotViews, SeenDelivery, SeenRocket},
     bots::BOT_RECORD_DELAY,
     combat::{
-        BotReplacement, Combat, DEAD, DeathCamera, PlayerHit, PlayerTarget, PosedProjectile,
-        PosedShot, RESPAWN_RETRY, TargetRewind, credits_damage, hit_messages,
+        BotReplacement, Combat, DEAD, DeathCamera, KnockCredit, PlayerHit, PlayerTarget,
+        PosedProjectile, PosedShot, RESPAWN_RETRY, Shooter, TargetRewind, credits_damage,
+        hit_messages,
     },
     controller::ControllerFrame,
     egress::{
@@ -1574,6 +1575,9 @@ pub struct WorldDelivery {
     /// sources of damage, for the eliminations a death credits
     /// ([`Self::recent_attackers`]).
     attackers: Vec<Attack>,
+    /// The last knock of the player's body, for the environment kill it
+    /// credits ([`Self::knocked_by`]).
+    knocks: KnockCredit,
     /// The pools of a body that runs no script (combat.py `Vitals` from
     /// `pools.body_pools`).
     plain_vitals: Option<Vitals>,
@@ -1765,6 +1769,7 @@ impl WorldDelivery {
             target_candidates: Vec::new(),
             death: None,
             attackers: Vec::new(),
+            knocks: KnockCredit::default(),
             plain_vitals: None,
             body_health: 0,
             body_tags: None,
@@ -3935,20 +3940,33 @@ impl WorldDelivery {
     }
 
     /// Another's explosion pushes the player's living body `body`
-    /// ([`crate::combat::PlayerPush`]): `push` goes to his mover for its
-    /// next posed frame, as his own explosion's does
+    /// ([`crate::combat::PlayerPush`]) at `now`: `push` goes to his mover
+    /// for its next posed frame, as his own explosion's does
     /// ([`Self::advance_projectiles`]), and the owner corrections carry it
-    /// to his client, which predicts no push from another's explosion. Not
-    /// where it can't hurt him ([`Self::can_be_damaged`]: the spawn room,
-    /// whose status bit 0x4 also stops the client's own push, `scene`
-    /// module notes) nor on a body the hit killed.
-    pub fn knock(&mut self, body: u32, push: [f64; 3]) {
+    /// to his client, which predicts no push from another's explosion; `by`
+    /// has knocked the body ([`Self::knocked_by`]). Not where it can't hurt
+    /// him ([`Self::can_be_damaged`]: the spawn room, whose status bit 0x4
+    /// also stops the client's own push, `scene` module notes) nor on a body
+    /// the hit killed.
+    pub fn knock(&mut self, body: u32, push: [f64; 3], by: Shooter, now: Duration) {
         if self.current_body() != Some(body) || self.death.is_some() || !self.can_be_damaged() {
             return;
         }
         if let Some(mover) = &mut self.mover {
             mover.push(push);
+            self.knocks.knocked(body, by, now);
         }
+    }
+
+    /// Who last knocked the player's body `body` so that its environment
+    /// kill at `now` is theirs ([`KnockCredit`]).
+    pub fn knocked_by(&self, body: u32, now: Duration) -> Option<Shooter> {
+        self.knocks.credit(body, now)
+    }
+
+    /// The tick's environment kills are dealt ([`KnockCredit::settle`]).
+    pub fn settle_knock(&mut self) {
+        self.knocks.settle();
     }
 
     /// An aura comes on the player's living body (Biotic Grenade's
@@ -4436,12 +4454,14 @@ impl WorldDelivery {
         mut step: impl FnMut(u32, &mut ProjectileFlight) -> io::Result<Option<FlightEnd>>,
     ) -> io::Result<()> {
         // His own explosion pushes him only where it could hurt him
-        // ([`Self::can_be_damaged`]).
+        // ([`Self::can_be_damaged`]), and cancels the credit of another's
+        // knock ([`KnockCredit::own_push`]).
         let pushable = self.can_be_damaged();
         let Some(script) = &mut self.body_script else {
             return Ok(());
         };
         let mover = &mut self.mover;
+        let knocks = &mut self.knocks;
         let id = script.id;
         let mut deliveries = Vec::new();
         let projectiles = &mut script.projectiles;
@@ -4457,6 +4477,7 @@ impl WorldDelivery {
             ) = (&result, mover.as_mut().filter(|_| pushable))
             {
                 mover.push(*knockback);
+                knocks.own_push();
             }
             if let Some(token) = token.filter(|token| token.is_server()) {
                 let exploded = match &result {
@@ -4861,10 +4882,13 @@ impl WorldDelivery {
         }
         mover.set_peers(&self.blockers);
         let rays = scene.movement_index();
+        // A jump or a landing cancels another's knock ([`KnockCredit`]).
+        let knocks = &mut self.knocks;
         let stepped =
             mover.step_pending_with(&mut pending.poses, budget - used, |mover, command| {
                 let Some(script) = script.as_mut().filter(|_| failed.is_none()) else {
                     mover.step_pose_to(rays, command, dt, None)?;
+                    knocks.posed(mover.landed(), mover.jumped());
                     return Ok(());
                 };
                 // match.py `_step_body_pose`: one world-target state moves the
@@ -4886,6 +4910,7 @@ impl WorldDelivery {
                     key.zip(request.as_ref())
                         .map(|(key, request)| (key, &request.params)),
                 )?;
+                knocks.posed(mover.landed(), mover.jumped());
                 let ended = request.zip(outcome).map_or(Ok(()), |(request, end)| {
                     let arrived = end == MoveEnd::Arrived;
                     script.runtime.finish_move(request, arrived, command.frame)
