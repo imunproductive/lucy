@@ -747,21 +747,25 @@ mod tests {
     /// The Practice Range's ruleset `0C0:34` sets the mode entity's hero
     /// limit #9548 to `254D`, which `0C90` st47 (rid87, a Switch on
     /// `ruleset(mode.#9548)`) has no case for: no hero limit state runs and
-    /// #8430e stays unset. Without the ruleset the mode schema `0008`'s
-    /// `254E` takes case 1, st50 `#8430e = 1` (then st9 `#8432 = #8430e`,
-    /// HeroSelect st1's limit): then the client kept the old hero's preview
-    /// model next to the new one in hero select after a switch (game check
-    /// 2026-11-19, `ControllerWorld.md`).
+    /// nothing stacks onto #8430e. Without the ruleset the mode schema
+    /// `0008`'s default `254E` takes case 1, st50 (a StateStack) stacks
+    /// `#8430e = 1` (then st9 `#8432 = #8430e`, HeroSelect st1's limit):
+    /// then the client kept the old hero's preview model next to the new
+    /// one in hero select after a switch (game check 2026-11-19,
+    /// `ControllerWorld.md`). The graphs load with the ruleset defaults
+    /// (`start_in`), as the server's do; without them st47 has no value to
+    /// switch on either.
     #[test]
     #[ignore = "requires the derived 104319 graph bundle"]
-    fn the_range_ruleset_turns_the_hero_limit_off() {
+    fn a_rulesets_9548_turns_the_hero_limit_off_or_keeps_it() {
         const LIMIT_STATE: u32 = 8430;
-        let limit = |ruleset| {
-            let mut script = start_in(RANGE, ruleset);
+        // The stacked value of #8430e (entity scope: instance 0).
+        let limit = |mode, ruleset| {
+            let mut script = start_in(mode, ruleset);
             script.advance(10).unwrap();
             let snapshot = script.snapshot().unwrap();
             assert!(snapshot.initialization_complete());
-            snapshot.variables.get(&LIMIT_STATE).cloned()
+            snapshot.resolved_bindings.get(&(0, LIMIT_STATE)).cloned()
         };
         assert_eq!(limit(0), Some(Value::Integer(1)));
         assert_eq!(limit(orpheus_content::maps::PRACTICE_RANGE_RULESET), None);
