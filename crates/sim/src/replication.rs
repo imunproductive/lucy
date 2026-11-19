@@ -71,9 +71,9 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
     vm::{
-        AssistLink, AuraChange, BodyEffects, CombatMod, DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage,
-        HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, RaisedCriteria, Snapshot,
-        TargetCandidate, TrackedStat, VoiceRequest, combat_scale,
+        AssistLink, AuraChange, BodyEffects, DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage,
+        HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, RaisedCriteria, Scaled,
+        Snapshot, TargetCandidate, TrackedStat, VoiceRequest, combat_scale,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
@@ -320,19 +320,12 @@ pub trait OwnerBodyRuntime: Send {
     }
 
     /// What a health change of `kind` with `tags` on the body, with
-    /// `other` its attacker or healer, is scaled by
-    /// (`BodyEffects::scale`): the modifiers its states hold for it, then
-    /// `held` (other entities' for it). A runtime that can't test a party
-    /// filter on `other` leaves out the modifiers that have one.
-    fn combat_scale(
-        &mut self,
-        kind: u64,
-        tags: &mut DamageTags,
-        _other: u32,
-        held: &[CombatMod],
-    ) -> f64 {
+    /// `other` its attacker or healer, becomes (`BodyEffects::scale`): the
+    /// modifiers its states hold. A runtime that can't test a party filter
+    /// on `other` leaves out the modifiers that have one.
+    fn combat_scale(&mut self, kind: u64, tags: &mut DamageTags, _other: u32) -> Scaled {
         let own = self.effects().into_iter().flat_map(BodyEffects::modifiers);
-        combat_scale(own.chain(held), kind, tags, &[])
+        combat_scale(own, kind, tags, &[])
     }
 
     /// The assist credits the body's states hold now, the lingering ones
@@ -1718,6 +1711,9 @@ pub struct WorldDelivery {
     /// (`crate::announcer`). Whether a pulse waits for its controller frame.
     controller_script: Option<ControllerScript>,
     multikill_due: bool,
+    /// The notices of the changes his body's modifiers made to the hits on
+    /// it (`orpheus_script::vm::MODIFIED`), to go with its messages.
+    modified: Vec<GameMessage>,
     /// Where his bodies come into the world instead of a spawn point, and
     /// their facing (1/65536 turns): a dummy bot's ([`Self::place_bodies_at`]).
     placement: Option<([f64; 3], i32)>,
@@ -1871,6 +1867,7 @@ impl WorldDelivery {
             hurt: Vec::new(),
             controller_script: None,
             multikill_due: false,
+            modified: Vec::new(),
             placement: None,
         }
     }
@@ -3668,17 +3665,7 @@ impl WorldDelivery {
                     .cloned()
                     .collect()
             }),
-            held: self.held_for_others().cloned().collect(),
         })
-    }
-
-    /// The modifiers the current body's graphs hold for other entities
-    /// (`BodyEffects::held_for_others`: Mercy's damage boost `006C` st6
-    /// names its holder), which the room adds to theirs.
-    pub fn held_for_others(&self) -> impl Iterator<Item = &CombatMod> {
-        self.body_effects()
-            .into_iter()
-            .flat_map(BodyEffects::held_for_others)
     }
 
     /// Whether this client can name `entity` in a combat notice or a kill
@@ -3724,7 +3711,7 @@ impl WorldDelivery {
         tick: u32,
         now: Duration,
     ) -> Option<BodyDamage> {
-        let damage = self.apply_damage(scene, hit, tick, now, &[])?;
+        let damage = self.apply_damage(scene, hit, tick, now)?;
         self.send_hit_messages(scene, hit, &damage, &[]);
         Some(damage)
     }
@@ -3733,18 +3720,17 @@ impl WorldDelivery {
     /// pools take the hit, scaled by the damage-taken modifiers his graphs
     /// hold (`vm/statuses.rs`: Nano Boost's reduction; Deflect's ×0 for an
     /// attacker in front, its party filter tested on the hit's shooter),
-    /// then those other bodies' graphs hold for him (`held`), shields,
-    /// armour, health, and its script's health follows; a killing hit
-    /// makes it dead and sets its respawn after the mode's time. The hit's
-    /// source is kept as the body's attacker ([`Self::recent_attackers`]).
-    /// Its messages are [`Self::send_hit_messages`]'s.
+    /// shields, armour, health, and its script's health follows; a killing
+    /// hit makes it dead and sets its respawn after the mode's time. The
+    /// hit's source is kept as the body's attacker
+    /// ([`Self::recent_attackers`]). Its messages are
+    /// [`Self::send_hit_messages`]'s.
     pub fn apply_damage(
         &mut self,
         scene: &PreparedScene,
         hit: &PlayerHit,
         tick: u32,
         now: Duration,
-        held: &[CombatMod],
     ) -> Option<BodyDamage> {
         let body = self.body.filter(|body| body.id.entity == hit.body)?;
         if self.death.is_some() || hit.amount.is_nan() || hit.amount <= 0.0 {
@@ -3754,8 +3740,7 @@ impl WorldDelivery {
             return None;
         }
         let mut tags = hit.tags;
-        let amount =
-            hit.amount * self.taken_scale(DAMAGE_TAKEN, &mut tags, hit.shooter.source, held);
+        let amount = self.taken_scale(DAMAGE_TAKEN, &mut tags, hit.shooter.source, hit.amount);
         let death_tick = hit.world_tick.unwrap_or(tick);
         let source = Death {
             time: now.as_secs_f64(),
@@ -3895,9 +3880,8 @@ impl WorldDelivery {
     /// combat.py `heal_area` for the player's living body, the heal `hit`
     /// scaled by the healing modifiers his graphs hold for a heal with its
     /// tags (Biotic Grenade's anti-heal and heal boost, `vm/statuses.rs`;
-    /// party filters tested on the healer), then those other bodies'
-    /// graphs hold for him (`held`). Returns what the pools took.
-    pub fn heal_body(&mut self, scene: &PreparedScene, hit: &PlayerHit, held: &[CombatMod]) -> f64 {
+    /// party filters tested on the healer). Returns what the pools took.
+    pub fn heal_body(&mut self, scene: &PreparedScene, hit: &PlayerHit) -> f64 {
         let Some(current) = self.body.filter(|current| current.id.entity == hit.body) else {
             return 0.0;
         };
@@ -3905,8 +3889,7 @@ impl WorldDelivery {
             return 0.0;
         }
         let mut tags = hit.tags;
-        let amount =
-            hit.amount * self.taken_scale(HEALING_TAKEN, &mut tags, hit.shooter.source, held);
+        let amount = self.taken_scale(HEALING_TAKEN, &mut tags, hit.shooter.source, hit.amount);
         let mut failure = None;
         let given = match self
             .body_script
@@ -4018,25 +4001,22 @@ impl WorldDelivery {
             .and_then(|script| script.runtime.effects())
     }
 
-    /// What a health change of `kind` with `tags` on the current body, with
-    /// `other` its attacker or healer, is scaled by: its graphs' modifiers
-    /// (`OwnerBodyRuntime::combat_scale`), then `held`.
-    fn taken_scale(
-        &mut self,
-        kind: u64,
-        tags: &mut DamageTags,
-        other: u32,
-        held: &[CombatMod],
-    ) -> f64 {
+    /// A health change of `amount` of `kind` with `tags` on the current
+    /// body, with `other` its attacker or healer, as its graphs' modifiers
+    /// make it (`OwnerBodyRuntime::combat_scale`); their notices go out
+    /// with the body's messages ([`Self::take_messages`]).
+    fn taken_scale(&mut self, kind: u64, tags: &mut DamageTags, other: u32, amount: f64) -> f64 {
         let body = self.body;
-        match self
+        let scaled = match self
             .body_script
             .as_mut()
             .filter(|script| body.is_some_and(|body| script.id == body.id))
         {
-            Some(script) => script.runtime.combat_scale(kind, tags, other, held),
-            None => combat_scale(held, kind, tags, &[]),
-        }
+            Some(script) => script.runtime.combat_scale(kind, tags, other),
+            None => Scaled::NONE,
+        };
+        self.modified.extend(scaled.notices(amount, other));
+        scaled.apply(amount)
     }
 
     /// Whether a hit can hurt the current body: no invulnerable status
@@ -4277,11 +4257,12 @@ impl WorldDelivery {
     /// The game messages the player's graphs sent other entities since the
     /// last call, for the match to route ([`crate::messages`]): his current
     /// body's (match.py `queue_body_message`), while other clients get the
-    /// body (`_shown`), then his controller's (`0C90` st5/st21/st70's
-    /// `068E`, `070B`, `08BE` to every entity after a pick, `06FF` to the
-    /// mode).
+    /// body (`_shown`), the notices of its modifiers' changes, then his
+    /// controller's (`0C90` st5/st21/st70's `068E`, `070B`, `08BE` to
+    /// every entity after a pick, `06FF` to the mode).
     pub fn take_messages(&mut self) -> Vec<GameMessage> {
         let mut messages = self.take_body_messages();
+        messages.append(&mut self.modified);
         if let Some(controller) = &mut self.controller_script {
             messages.extend(controller.take_messages());
         }

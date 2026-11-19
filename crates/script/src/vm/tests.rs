@@ -5187,13 +5187,15 @@ fn a_modify_health_rate_applies_a_share_each_tick() {
     );
 }
 
-/// A body's world that keeps its statuses and modifiers, and knows where
-/// the entities it lists stand (its own body faces yaw 0, along +z).
+/// A body's world that keeps its statuses, modifiers and criteria, and
+/// knows where the entities it lists stand (its own body faces yaw 0,
+/// along +z).
 #[derive(Default)]
 struct Aurad {
     changes: Vec<HealthChange>,
     effects: BodyEffects,
     positions: Vec<(u32, [f64; 3])>,
+    criteria: Vec<RaisedCriteria>,
 }
 
 impl World for Aurad {
@@ -5219,6 +5221,10 @@ impl World for Aurad {
 
     fn entity_facing(&self, site: Site, entity: u32) -> Option<[i32; 2]> {
         (entity == site.entity).then_some([0, 0])
+    }
+
+    fn criteria(&mut self, _site: Site, raised: RaisedCriteria) {
+        self.criteria.push(raised);
     }
 }
 
@@ -5303,7 +5309,7 @@ fn an_aura_runs_its_graph_on_the_body_until_its_instance_ends() {
     )
     .unwrap();
     let id = component
-        .apply_aura(AURA, ENEMY, &[], &mut world)
+        .apply_aura(AURA, ENEMY, ENEMY, &[], &mut world)
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -5315,8 +5321,11 @@ fn an_aura_runs_its_graph_on_the_body_until_its_instance_ends() {
         [(SEARCHER, ENEMY, 60.0, false)]
     );
     assert!(world.effects.invulnerable());
-    let healing =
-        |effects: &BodyEffects| effects.scale(HEALING_TAKEN, &mut DamageTags::default(), &[], &[]);
+    let healing = |effects: &BodyEffects| {
+        effects
+            .scale(HEALING_TAKEN, &mut DamageTags::default(), &[])
+            .factor
+    };
     assert_eq!(healing(&world.effects), 0.0);
     // 4 s (250 frames of 16 ms) later the wait ends, the instance exits
     // and its states let go.
@@ -5497,7 +5506,9 @@ fn an_anim_outputs_its_scalar_while_it_runs() {
 /// count. The additions marked `m_941C56C2` reduce by half at most
 /// together (Nano Boost's `0B9F` st18 -0.5 and Orisa's Fortify `0CF4` st4
 /// -0.4 take 50 %, not 90 %), unless one alone reduces by more; the others
-/// add after the cap (Discord's `0178` st8 +0.25).
+/// add after the cap (Discord's `0178` st8 +0.25). Each modifier's notice
+/// carries its part of the change, the parts summing to the change, to
+/// the entity it credits.
 #[test]
 fn combat_modifiers_honour_tags_and_combine_by_kind() {
     const REQUIRED: u64 = 0x0d80_0000_0000_06f9;
@@ -5515,7 +5526,9 @@ fn combat_modifiers_honour_tags_and_combine_by_kind() {
         required: required.to_vec(),
         exempt: Vec::new(),
         added: added.to_vec(),
-        holder: 0xa000_0101,
+        owner: 0xa000_0101,
+        credit: 0xa000_0101,
+        identifier: Value::Null,
         capped: false,
         party: None,
     };
@@ -5523,10 +5536,11 @@ fn combat_modifiers_honour_tags_and_combine_by_kind() {
         capped: true,
         ..modifier(DAMAGE_TAKEN, value, false, &[], &[])
     };
-    let scale = |effects: &BodyEffects, kind, tags: &[u64]| {
+    let scaled = |effects: &BodyEffects, kind, tags: &[u64]| {
         let mut tags = DamageTags::from_iter(tags.iter().copied());
-        effects.scale(kind, &mut tags, &[], &[])
+        effects.scale(kind, &mut tags, &[])
     };
+    let scale = |effects: &BodyEffects, kind, tags: &[u64]| scaled(effects, kind, tags).factor;
     let mut effects = BodyEffects::default();
     let halved = modifier(HEALING_TAKEN, 0.5, true, &[REQUIRED], &[]);
     assert!(effects.combat_mod(site(1), Some(halved)));
@@ -5540,7 +5554,7 @@ fn combat_modifiers_honour_tags_and_combine_by_kind() {
     let quartered = modifier(HEALING_TAKEN, 0.25, true, &[REQUIRED], &[ADDED]);
     assert!(effects.combat_mod(site(2), Some(quartered)));
     let mut tags = DamageTags::NONE;
-    assert_eq!(effects.scale(HEALING_TAKEN, &mut tags, &[], &[]), 0.5);
+    assert_eq!(effects.scale(HEALING_TAKEN, &mut tags, &[]).factor, 0.5);
     assert_eq!(tags, DamageTags::from_iter([REQUIRED, ADDED]));
     // Damage taken: x0.5 before -0.5 is (1 - 0.5) x 0.5; the dealt +0.5
     // is the other kind's.
@@ -5561,6 +5575,38 @@ fn combat_modifiers_honour_tags_and_combine_by_kind() {
     let discord = modifier(DAMAGE_TAKEN, 0.25, false, &[], &[]);
     assert!(effects.combat_mod(site(3), Some(discord)));
     assert_eq!(scale(&effects, DAMAGE_TAKEN, &[]), 0.75);
+    // Of 100 taken, the reductions took 50 between them (-0.5 and -0.4 cut
+    // to 5/9 of their values), Discord added 25: each to its credited
+    // entity, from the body, with the attacker as the other party.
+    const ATTACKER: u32 = 0xa001_0101;
+    let notices: Vec<_> = scaled(&effects, DAMAGE_TAKEN, &[])
+        .notices(100.0, ATTACKER)
+        .collect();
+    let changes: Vec<f64> = notices
+        .iter()
+        .map(|notice| {
+            assert_eq!(
+                (notice.sender, notice.target, notice.message),
+                (0xa000_0101, 0xa000_0101, MODIFIED)
+            );
+            assert_eq!(notice.parameters.get(&0x5c), Some(&Value::Entity(ATTACKER)));
+            expr::to_float(&notice.parameters[&0x74d])
+        })
+        .collect();
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    assert!(close(changes[0], -50.0 * 5.0 / 9.0), "{changes:?}");
+    assert!(close(changes[1], -40.0 * 5.0 / 9.0), "{changes:?}");
+    assert!(close(changes[2], 25.0), "{changes:?}");
+    // A multiplier's part is what it changes of what came before it: x0.5
+    // of the 75 left.
+    let halved = modifier(DAMAGE_TAKEN, 0.5, true, &[], &[]);
+    assert!(effects.combat_mod(site(4), Some(halved)));
+    let changes: Vec<f64> = scaled(&effects, DAMAGE_TAKEN, &[])
+        .notices(100.0, ATTACKER)
+        .map(|notice| expr::to_float(&notice.parameters[&0x74d]))
+        .collect();
+    assert!(close(changes[3], -37.5), "{changes:?}");
+    assert!(close(changes.iter().sum(), -62.5), "{changes:?}");
     // One reduction beyond the cap overrides it and the others.
     let mut effects = BodyEffects::default();
     assert!(effects.combat_mod(site(1), Some(reduction(-0.75))));
@@ -5668,7 +5714,7 @@ fn holding(modifiers: Vec<Json>, world: &mut Aurad) -> Component {
     )
     .unwrap();
     component
-        .apply_aura(AURA, ENEMY, &[], world)
+        .apply_aura(AURA, ENEMY, ENEMY, &[], world)
         .unwrap()
         .unwrap();
     component
@@ -5690,11 +5736,11 @@ fn nano_boost_and_fortify_together_reduce_damage_by_half() {
     ];
     holding(modifiers, &mut world);
     let held: Vec<_> = world.effects.modifiers().collect();
-    assert!(held.iter().all(|modifier| modifier.holder == SEARCHER));
+    assert!(held.iter().all(|modifier| modifier.credit == SEARCHER));
     let capped: Vec<_> = held.iter().map(|modifier| modifier.capped).collect();
     assert_eq!(capped, [true, true, false]);
     let scale =
-        |effects: &BodyEffects, kind| effects.scale(kind, &mut DamageTags::default(), &[], &[]);
+        |effects: &BodyEffects, kind| effects.scale(kind, &mut DamageTags::default(), &[]).factor;
     assert_eq!(scale(&world.effects, DAMAGE_TAKEN), 0.5);
     assert_eq!(scale(&world.effects, DAMAGE_DEALT), 1.5);
     let mut world = Aurad::default();
@@ -5729,38 +5775,109 @@ fn deflect_stops_only_the_hits_of_attackers_in_front() {
             attacker,
         );
         let mut tags = DamageTags::from_iter(tags.iter().copied());
-        world.effects.scale(DAMAGE_TAKEN, &mut tags, &[], &passed)
+        world.effects.scale(DAMAGE_TAKEN, &mut tags, &passed).factor
     };
     assert_eq!(scale(FRONT, &[deflected]), 0.0);
     assert_eq!(scale(BEHIND, &[deflected]), 1.0);
     assert_eq!(scale(FRONT, &[]), 1.0);
 }
 
-/// A modifier names the entity it is held for (`m_F7872851`), as the
-/// derived bundle has them: Echo's `1544` st38 (+0 dealt, adding tag
-/// `7139`) names `#40`, here the aura's instigator, so the body keeps it
-/// apart for that entity (`BodyEffects::held_for_others`), not as its own;
-/// Mercy's `006C` st6 names `#41`, the aura entry's `m_FF703F20` the server
-/// leaves unset, so it is held for no one.
+/// A modifier is the body's own and credits the entity it names
+/// (`m_F7872851`), as the derived bundle has it: Echo's `1544` st38 (+0
+/// dealt, adding tag `7139`) names `#40`, here the aura's instigator.
 #[test]
 #[ignore = "requires a derived 1.74 graph bundle"]
-fn a_modifier_is_held_for_the_entity_it_names() {
+fn a_modifier_credits_the_entity_it_names() {
     let graphs = hero_bundle();
     let mut world = Aurad::default();
-    let modifiers = vec![
-        real_modifier(&graphs, 0x1544, 38),
-        real_modifier(&graphs, 0x006c, 6),
-    ];
-    holding(modifiers, &mut world);
-    assert_eq!(world.effects.modifiers().count(), 0);
-    let [lent] = world
+    holding(vec![real_modifier(&graphs, 0x1544, 38)], &mut world);
+    let [modifier] = world
         .effects
-        .held_for_others()
+        .modifiers()
         .collect::<Vec<_>>()
         .try_into()
         .unwrap();
     assert_eq!(
-        (lent.holder, lent.kind, lent.value, lent.added.as_slice()),
-        (ENEMY, DAMAGE_DEALT, 0.0, [0x0d80_0000_0000_7139].as_slice())
+        (
+            modifier.owner,
+            modifier.credit,
+            modifier.kind,
+            modifier.value,
+            modifier.added.as_slice()
+        ),
+        (
+            SEARCHER,
+            ENEMY,
+            DAMAGE_DEALT,
+            0.0,
+            [0x0d80_0000_0000_7139].as_slice()
+        )
     );
+}
+
+/// Mercy's Damage Boost on the derived bundle's graphs: her weapon `006B`
+/// st35 puts aura `0016` on the beamed body, whose graph `006C` takes the
+/// instigator into `#40` and the applier (the ApplyAura instance's `#27`)
+/// into `#41`. Its st6 (+`#174`, 0.3 from rid16) scales the damage the
+/// beamed body deals, credited to Mercy, and after 1 s its criteria `05CF`
+/// is heard by the body and Mercy (`#1839`: owner, then `#41`). Its
+/// Valkyrie chain `02CD` (`10DD`, put on another body by `006C` st11 with
+/// the beamed body as instigator) credits Mercy too.
+#[test]
+#[ignore = "requires a derived 1.74 graph bundle"]
+fn mercys_damage_boost_is_the_beamed_bodys_and_credits_mercy() {
+    const MERCY: u32 = 0xa000_0201;
+    const DAMAGE_BOOST: u64 = 0x04a0_0000_0000_0016;
+    const CHAIN: u64 = 0x04a0_0000_0000_02cd;
+    let graphs = Arc::new(hero_bundle());
+    assert_eq!(
+        graphs.aura(DAMAGE_BOOST).and_then(|aura| aura.graph),
+        Some(0x006c)
+    );
+    assert_eq!(graphs.aura(CHAIN).and_then(|aura| aura.graph), Some(0x10dd));
+    let boosted = |aura, instigator| {
+        let mut world = Aurad::default();
+        let mut component = Component::start(
+            Arc::clone(&graphs),
+            SEARCHER,
+            Variables::new(),
+            Vec::new(),
+            0,
+            &mut world,
+            MAX_INIT_WORK,
+        )
+        .unwrap();
+        component
+            .apply_aura(aura, instigator, MERCY, &[], &mut world)
+            .unwrap()
+            .unwrap();
+        for frame in 1..=64 {
+            component.advance_frame(frame, &mut world).unwrap();
+        }
+        world
+    };
+    for (aura, instigator) in [(DAMAGE_BOOST, MERCY), (CHAIN, ENEMY)] {
+        let world = boosted(aura, instigator);
+        // `#174` is the authored f32 0.3.
+        let mut tags = DamageTags::NONE;
+        let scaled = world.effects.scale(DAMAGE_DEALT, &mut tags, &[]);
+        assert!((scaled.apply(100.0) - 130.0).abs() < 1e-4, "{aura:X}");
+        let [notice] = scaled
+            .notices(100.0, ENEMY)
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            (notice.sender, notice.target, notice.message),
+            (SEARCHER, MERCY, MODIFIED)
+        );
+        assert!((expr::to_float(&notice.parameters[&0x74d]) - 30.0).abs() < 1e-4);
+        let heard: Vec<_> = world
+            .criteria
+            .iter()
+            .filter(|raised| raised.identifier == 0x0d80_0000_0000_05cf)
+            .map(|raised| raised.audience.clone())
+            .collect();
+        assert_eq!(heard, [Some(vec![SEARCHER, MERCY])], "{aura:X}");
+    }
 }

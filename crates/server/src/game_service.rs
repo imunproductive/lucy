@@ -2548,6 +2548,7 @@ impl State {
                 target: aura.body,
                 aura: aura.aura,
                 instigator: aura.instigator,
+                creator: aura.instigator,
                 parameters: Vec::new(),
             })
             .collect();
@@ -3073,10 +3074,11 @@ impl State {
     /// The game messages every room's entities sent since the last tick
     /// (`orpheus_sim::messages`): from the players' and AI heroes' bodies
     /// and controllers, the mode graph and the match flow in its place
-    /// (`Room::mail`), the placed scripts and the Biotic Fields, to the
-    /// entity each names or to every entity that runs graphs, the Training
-    /// Bots too. After the players' steps, so a pick's hero limit
-    /// broadcasts reach the other controllers in its tick.
+    /// (`Room::mail`), the placed scripts, the hits' modifier notices
+    /// (`Combat::take_messages`) and the Biotic Fields, to the entity each
+    /// names or to every entity that runs graphs, the Training Bots too.
+    /// After the players' steps, so a pick's hero limit broadcasts reach
+    /// the other controllers in its tick.
     fn route_messages(&mut self, tick: u32) {
         let mut dummies = Vec::new();
         for (&id, room) in &mut self.rooms {
@@ -3096,6 +3098,9 @@ impl State {
             messages.append(&mut room.mail);
             let (placed, mut ends) = world.scene.take_placed_messages();
             messages.extend(placed);
+            if let Some(combat) = &mut world.combat {
+                messages.extend(combat.take_messages());
+            }
             let mut fields = world.combat.as_mut().map(Combat::fields_mut);
             if let Some(fields) = &mut fields {
                 let (sent, ended) = fields.take_messages();
