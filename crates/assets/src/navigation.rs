@@ -39,12 +39,8 @@
 //! 0.35) / 4`: floors sit on the 0.35 m grid, a float error above or below),
 //! and every neighbour link is symmetric.
 //!
-//! Document 0 (`STU_3BC32A6E`, the AI cell data) is not decoded: its
-//! `m_cellData` lists `{u64 cell key, u64 hash, u32 index into
-//! m_cellBytes}`, the key packing grid coordinates as `(y + 0x80) << 24 |
-//! (z + 0x800) << 12 | (x + 0x800)`; each `m_cellBytes` entry is an opaque
-//! byte block (a table of 17 offsets into packed sub-blocks). The tactical
-//! volumes are enough to path over.
+//! Document 0 (`STU_3BC32A6E`, the AI cell data, the client's own path
+//! grids) is derived by [`crate::ai_cells`].
 
 use std::{io::Write, path::Path};
 

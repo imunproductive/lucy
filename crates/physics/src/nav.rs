@@ -15,17 +15,12 @@
 //! the goal, walkable voxel columns) follows the ow1-preservation project's
 //! notes (`docs/notes/related-projects.md`, "AI bots and navigation").
 //!
-//! The client's own path query (`0x7FF78A626BC0`, Widowmaker's ledge pull
-//! and the AI locomotion of component 88) searches the chunk's other
-//! document, the AI cell data (`STU_3BC32A6E`): 16 m cells keyed as that
-//! document's cell keys, each a sparse 64 × 64 × 64 voxel grid, with an A*
-//! whose estimate is 1000 × the Manhattan distance in its nodes
-//! (`D:/Work/Coding/refs/reports/Navigation.md`). That document isn't
-//! decoded, so the server paths over these volumes instead (assumption:
-//! the same walkable floor at 1 m instead of 0.25 m). Their heights are
-//! coarse (a layer is 1.4 m), so [`Navigation::path_with`] lets the caller
-//! test the steps between layers and the straight lines against the map's
-//! collision.
+//! The client's own path query (`0x7FF78A626BC0`) searches the chunk's
+//! other document, the AI cell data ([`crate::ai_cells`]); a navigation
+//! with those cells attached ([`Navigation::with_ai_cells`]) leaves its
+//! walks to them (`orpheus_sim::navigate`). The volumes' heights are coarse
+//! (a layer is 1.4 m), so [`Navigation::path_with`] lets the caller test the
+//! steps between layers and the straight lines against the map's collision.
 
 use std::{
     cmp::Ordering,
@@ -39,6 +34,8 @@ use std::{
 
 use flate2::read::GzDecoder;
 use serde::Deserialize;
+
+use crate::ai_cells::AiCells;
 
 pub type Vec3 = [f32; 3];
 /// A voxel: x and z in metres, y in layers of [`LAYER`] metres.
@@ -56,7 +53,7 @@ pub const SNAP: f32 = 4.0;
 /// can step to) costs on top of its length: walks keep a cell away from
 /// walls where there is room, so a body's capsule doesn't catch on the
 /// corners it turns (assumption; the client's step costs aren't decoded).
-const EDGE_COST: f32 = 1.0;
+pub(crate) const EDGE_COST: f32 = 1.0;
 /// How many times a walk is searched again without a step the caller
 /// refused ([`Navigation::path_with`]; assumption: enough to get round a
 /// railing or a corner the cells don't show, cheap enough for a tick).
@@ -75,7 +72,7 @@ const CHECKS: usize = 256;
 /// walk test (the caller's capsule check: 15–110 µs for the short steps
 /// between layers, most of them, the dearest in Gibraltar's first spawn;
 /// long lines up to 28 µs more a metre).
-const SETUP_WORK: u32 = 200;
+pub(crate) const SETUP_WORK: u32 = 200;
 const EXPAND_WORK: u32 = 7;
 const TURN_WORK: u32 = 1;
 const CHECK_WORK: u32 = 80;
@@ -227,6 +224,9 @@ pub struct Navigation {
     components: Vec<usize>,
     /// The volumes each walkable cell is walkable in, lowest index first.
     cells: FastMap<Cell, Vec<usize>>,
+    /// The map's AI cell data (the chunk's document 0), when attached: the
+    /// walks are searched over it ([`crate::ai_cells::WalkSearch`]).
+    ai_cells: Option<AiCells>,
 }
 
 #[derive(Deserialize)]
@@ -281,6 +281,7 @@ impl Navigation {
             volumes,
             portals: FastMap::default(),
             cells,
+            ai_cells: None,
         };
         for a in 0..navigation.volumes.len() {
             for &b in &navigation.volumes[a].neighbours {
@@ -292,6 +293,18 @@ impl Navigation {
             }
         }
         Ok(navigation)
+    }
+
+    /// Attach the map's AI cell data: walks are searched over it from then
+    /// on.
+    pub fn with_ai_cells(mut self, cells: AiCells) -> Self {
+        self.ai_cells = Some(cells);
+        self
+    }
+
+    /// The map's AI cell data, if attached.
+    pub fn ai_cells(&self) -> Option<&AiCells> {
+        self.ai_cells.as_ref()
     }
 
     pub fn volumes(&self) -> &[Volume] {
@@ -964,7 +977,7 @@ fn invalid(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Er
 /// are keyed by a few small integers, which SipHash made most of an A*
 /// step's cost.
 #[derive(Clone, Copy, Default)]
-struct FastHasher(u64);
+pub(crate) struct FastHasher(u64);
 
 impl FastHasher {
     fn add(&mut self, word: u64) {
@@ -1001,8 +1014,8 @@ impl Hasher for FastHasher {
     }
 }
 
-type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FastHasher>>;
-type FastSet<K> = HashSet<K, BuildHasherDefault<FastHasher>>;
+pub(crate) type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FastHasher>>;
+pub(crate) type FastSet<K> = HashSet<K, BuildHasherDefault<FastHasher>>;
 
 /// A path query run a bounded amount of work at a time: the search of
 /// [`Navigation::path_with`], kept between calls of [`Self::advance`], so a
@@ -1183,16 +1196,16 @@ struct CellSearch {
     expanding: Option<usize>,
 }
 
-fn spend(work: &mut u32, cost: u32) {
+pub(crate) fn spend(work: &mut u32, cost: u32) {
     *work = work.saturating_sub(cost);
 }
 
 /// A caller's walk test asked at most once per pair of points and at most
 /// [`CHECKS`] times in all, each asked while work is left.
-struct Checks<'a, F> {
-    test: F,
-    answers: &'a mut FastMap<[u32; 6], bool>,
-    work: &'a mut u32,
+pub(crate) struct Checks<'a, F> {
+    pub(crate) test: F,
+    pub(crate) answers: &'a mut FastMap<[u32; 6], bool>,
+    pub(crate) work: &'a mut u32,
 }
 
 impl<F: FnMut(Vec3, Vec3) -> bool> Checks<'_, F> {
@@ -1201,7 +1214,7 @@ impl<F: FnMut(Vec3, Vec3) -> bool> Checks<'_, F> {
     }
 
     /// The answer; `None` when it must be asked and no work is left.
-    fn ask(&mut self, a: Vec3, b: Vec3) -> Option<bool> {
+    pub(crate) fn ask(&mut self, a: Vec3, b: Vec3) -> Option<bool> {
         let key = [a[0], a[1], a[2], b[0], b[1], b[2]].map(f32::to_bits);
         if let Some(&answer) = self.answers.get(&key) {
             return Some(answer);

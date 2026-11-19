@@ -51,6 +51,7 @@ use orpheus_content::{
 };
 use orpheus_core::{bits::BitWriter, guid::parse_guid};
 use orpheus_physics::{
+    ai_cells::{self, AiCells},
     collision::cache::{
         MAGIC, RayCacheIdentity, VERSION, chunk_guid, read_movement_cache, read_ray_cache,
     },
@@ -629,11 +630,20 @@ impl SceneAssets {
         Ok(())
     }
 
-    /// The map's AI navigation; none when the data has no file for it, as
-    /// derivations before version 7 (`orpheus_physics::nav`).
+    /// The map's AI navigation, its AI cells attached (walks are searched
+    /// over them); none when the data has no file for it, as derivations
+    /// before version 7 (`orpheus_physics::nav`).
     fn navigation(&self, map: &GameMap) -> Option<Arc<Navigation>> {
         match Navigation::load(nav::file(&self.runtime, map.map_guid)) {
-            Ok(navigation) => Some(Arc::new(navigation)),
+            Ok(navigation) => Some(Arc::new(
+                match AiCells::load(ai_cells::file(&self.runtime, map.map_guid)) {
+                    Ok(cells) => navigation.with_ai_cells(cells),
+                    Err(error) => {
+                        eprintln!("{}: no AI cells ({error})", map.name);
+                        navigation
+                    }
+                },
+            )),
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => {
                 eprintln!("{}: no AI navigation ({error})", map.name);
