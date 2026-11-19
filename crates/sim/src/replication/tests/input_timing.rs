@@ -3,12 +3,12 @@
 //! command as the client makes it, frame by frame, as the client predicts.
 //! The server gets the commands through a network that delays, loses and
 //! repeats datagrams, each one carrying the client's redundant window, and
-//! runs them a tick at a time from its input buffer. While no tick finds
-//! the buffer dry, the server's state after each command frame, which its
-//! owner frame (CmFD) and its movement record name, equals the client's at
-//! that frame: the client has nothing to correct. When two datagrams in a
-//! row come late, a dry tick repeats the last input; the press it missed
-//! still runs, so the server fires as many shots as the client.
+//! runs them a tick at a time from its input buffer. The server's state
+//! after each command frame, which its owner frame (CmFD) and its movement
+//! record name, equals the client's at that frame: the client has nothing
+//! to correct. That holds when the client's datagrams stop for a while
+//! too: the ticks that find the buffer dry run nothing, and a press in the
+//! frames that came late runs at its own frame.
 
 use super::*;
 use orpheus_script::snapshot::{ProjectedSnapshot, View};
@@ -138,6 +138,9 @@ fn delivery(index: u32) -> (Option<u32>, bool) {
         // Late by a tick after a duplicate.
         60 => (Some(0), true),
         61 => (Some(1), false),
+        // A client stall of six frames (about 100 ms) over the press at
+        // 200: everything comes with 204's datagram.
+        198..=203 => (Some(204 - index), false),
         _ => (Some(0), false),
     }
 }
@@ -163,6 +166,7 @@ fn the_server_runs_each_frame_as_the_client_predicted_it_while_nothing_is_lost()
     let mut compared = 0;
     // The server runs a frame the tick after it came, the next in hand:
     // the last, a tick after the client's last.
+    let mut dry = Vec::new();
     for index in 0..=frames {
         let tick = FIRST_TICK + 1 + index;
         if index < frames {
@@ -196,7 +200,9 @@ fn the_server_runs_each_frame_as_the_client_predicted_it_while_nothing_is_lost()
         }
         in_flight.retain(|(due, _)| *due != tick);
         server.release_input(1);
-        assert_eq!(server.input.repeats, 0, "tick {tick}: the buffer ran dry");
+        if server.input.dry != 0 {
+            dry.push(index);
+        }
         // Each frame's state as it ends (a tick may run more than one).
         while server.has_input_work() {
             let before = server.body_script.as_ref().unwrap().frame;
@@ -218,6 +224,11 @@ fn the_server_runs_each_frame_as_the_client_predicted_it_while_nothing_is_lost()
             compared += 1;
         }
     }
+    // Only the stall dried the buffer: the tick of 198 ran 197, the one in
+    // hand; those of 199 to 203 found none and ran nothing; that of 204 got
+    // 198 to 204 and ran all but the last 4 (198 to 200, the press among
+    // them), so the press ran at its frame, as every frame compared above.
+    assert_eq!(dry, (199..=203).collect::<Vec<_>>());
     // Every frame ran on the server, in order, as the client ran it.
     assert_eq!(
         server.body_script.as_ref().unwrap().frame,
@@ -225,84 +236,6 @@ fn the_server_runs_each_frame_as_the_client_predicted_it_while_nothing_is_lost()
     );
     assert_eq!(compared, frames);
     assert_eq!(ammo(&server), ammo(&client));
-}
-
-/// Two datagrams late in a row: the second tick finds the buffer dry and
-/// repeats the last input (no fire) for the frame of a tap; the tap's
-/// press, when its command comes, runs with the next frame, so the server
-/// fires the shot the client fired. The ack stays at the client's newest
-/// command meanwhile, so the client keeps sending the frames the repeat
-/// stood in for.
-#[test]
-#[ignore = "requires a derived 104319 Practice Range pack"]
-fn a_tap_the_dry_buffer_missed_still_fires_once_its_command_comes() {
-    let scene = SceneAssets::load(orpheus_testkit::runtime_dir())
-        .unwrap()
-        .prepare(GameMap::practice_range())
-        .unwrap();
-    let card = PlayerCard::default();
-    let mut server = soldier(&scene, &card, true);
-    let mut client = soldier(&scene, &card, false);
-    let first = FIRST_TICK + 1;
-    let command = |index: u32, buttons: u32| Command {
-        frame: first + index,
-        buttons,
-        click: (buttons & SUBFRAME != 0).then_some(Click {
-            subframe: 40,
-            yaw: 0,
-            pitch: 0,
-        }),
-        ..Command::default()
-    };
-    // Frames 0 to 39 idle, a one-frame tap at 40, idle to 79. Datagrams 40
-    // and 41 come with 42: the tick of 40 runs 39, the one in hand; the
-    // tick of 41 finds the buffer dry and repeats 39's input for frame 40.
-    let mut late = Vec::new();
-    let mut repeated = None;
-    let mut sent = Vec::new();
-    // The tick after a command came runs it, the tick after the tap's
-    // repeat waits for the next in hand: 79 runs at the tick of 80.
-    for index in 0..=80 {
-        let tick = FIRST_TICK + 1 + index;
-        if index < 80 {
-            let buttons = if index == 40 { FIRE | SUBFRAME } else { 0 };
-            let made = command(index, buttons);
-            client.queue_commands(tick, &[made]);
-            run(&mut client, &scene, &card);
-            sent.push(made);
-            let window: Vec<_> = sent.iter().rev().take(WINDOW).rev().copied().collect();
-            if index == 40 || index == 41 {
-                late.push(window);
-            } else {
-                for window in late.drain(..) {
-                    server.queue_commands(tick, &window);
-                }
-                server.queue_commands(tick, &window);
-            }
-        }
-        server.release_input(1);
-        if server.input.repeats != 0 && repeated.is_none() {
-            // The tick that found the buffer dry ran a repeat of frame 39
-            // (no fire) for the tap's frame 40; the ack stays at 39.
-            repeated = Some((tick, server.input.admitted));
-            assert_eq!(server.command_ack(tick), first + 39);
-        }
-        run(&mut server, &scene, &card);
-    }
-    let (tick, frame) = repeated.expect("a dry tick");
-    assert_eq!(
-        (tick, frame),
-        (FIRST_TICK + 1 + 41, Some(first + 40)),
-        "the repeat"
-    );
-    // One shot each: 29 rounds left.
-    assert_eq!(ammo(&client), ScriptValue::Integer(29));
-    assert_eq!(ammo(&server), ammo(&client));
-    assert_eq!(
-        server.body_script.as_ref().unwrap().frame,
-        first + 79,
-        "every frame ran"
-    );
 }
 
 /// Widowmaker's Grappling Hook (`005A`) from the Range spawn: the press

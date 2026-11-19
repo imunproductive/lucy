@@ -16,7 +16,7 @@ use orpheus_script::{
     vm::{Component, EmptyWorld, MAX_INIT_WORK, Root},
 };
 use orpheus_wire::{
-    commands::FIRE,
+    commands::{FIRE, SUBFRAME},
     entity::{ComponentValue, MAX_ENTITY_RECORDS, Movement},
     jam::codec::{Fields, Value},
 };
@@ -494,11 +494,12 @@ fn the_input_buffer_runs_a_command_a_tick_with_the_next_in_hand() {
     assert_eq!(input.clock, CLOCK_SLOWER);
 }
 
-/// A dry tick repeats the client's last input for the next frame; the
-/// press or release the repeat missed runs with the next command, the ack
-/// staying at the client's newest command meanwhile.
+/// A dry tick runs nothing: the body waits for the client's next frame,
+/// the ack stays at the last frame run, and the client's clock goes four
+/// times as fast. The frames that come late run in order, each with its
+/// own buttons and click, as the client predicted them.
 #[test]
-fn a_dry_tick_repeats_the_last_input_and_the_late_command_keeps_its_press() {
+fn a_dry_tick_waits_and_the_late_commands_run_as_the_client_made_them() {
     let fire = |frame| Command {
         buttons: FIRE,
         ..forward(frame)
@@ -511,22 +512,23 @@ fn a_dry_tick_repeats_the_last_input_and_the_late_command_keeps_its_press() {
     world.release_input(1);
     assert_eq!(released(&mut world.input), [(100, 0)]);
     world.input.processed = Some(100);
-    // Nothing comes for two ticks: 101, in hand, runs; then 101's input
-    // again for 102, and the client's clock goes four times as fast. No
-    // body: nothing repeats, the clock is left alone.
+    // Nothing comes for three ticks: 101, in hand, runs; then none. No
+    // body: the clock is left alone; with one, it goes four times as fast.
     world.release_input(1);
     assert_eq!(released(&mut world.input), [(101, 0)]);
     world.input.processed = Some(101);
     world.release_input(1);
     assert!(released(&mut world.input).is_empty());
-    assert_eq!(world.input.clock, 0);
+    assert_eq!((world.input.clock, world.input.dry), (0, 0));
     world.input.release(1, true);
-    assert_eq!(released(&mut world.input), [(102, 0)]);
-    assert_eq!(world.input.clock, CLOCK_FASTER | CLOCK_STRONGER);
-    world.input.processed = Some(102);
+    assert!(released(&mut world.input).is_empty());
+    assert_eq!(
+        (world.input.clock, world.input.dry),
+        (CLOCK_FASTER | CLOCK_STRONGER, 1)
+    );
     assert_eq!(world.command_ack(103), 101);
     // 102 was a one-frame tap with its click: it comes with 103 and 104,
-    // and the press goes with 103.
+    // and runs as it was made, at its own frame.
     let tap = Command {
         buttons: FIRE | SUBFRAME,
         click: Some(orpheus_wire::commands::Click {
@@ -537,35 +539,35 @@ fn a_dry_tick_repeats_the_last_input_and_the_late_command_keeps_its_press() {
         ..forward(102)
     };
     world.queue_commands(104, &[forward(101), tap, forward(103), forward(104)]);
-    assert_eq!(world.command_ack(104), 102);
+    assert_eq!(world.command_ack(104), 101);
     world.input.release(1, true);
     let [InputWork::Command { command, .. }] = world.input.work.make_contiguous() else {
         panic!("one command");
     };
-    assert_eq!(
-        (command.frame, command.buttons, command.click),
-        (103, FIRE | SUBFRAME, tap.click)
-    );
+    assert_eq!(*command, tap);
+    assert_eq!(world.input.dry, 0);
     world.input.work.clear();
     world.input.release(1, true);
-    assert_eq!(released(&mut world.input), [(104, 0)]);
+    assert_eq!(released(&mut world.input), [(103, 0)]);
 
-    // Fire held, the repeat holds it; the late 107 released it and 108
-    // presses it again: 108 runs released, 109 presses.
+    // Fire held, then nothing for two ticks: the body waits with it held.
+    // The late 107 released it and 108 presses it again: each runs so.
     world.queue_commands(105, &[fire(105)]);
     world.input.release(1, true);
     world.queue_commands(106, &[fire(105), fire(106)]);
     world.input.release(1, true);
     world.input.release(1, true);
     world.input.release(1, true);
+    world.input.release(1, true);
     assert_eq!(
         released(&mut world.input),
-        [(105, FIRE), (106, FIRE), (107, FIRE)]
+        [(104, 0), (105, FIRE), (106, FIRE)]
     );
+    assert_eq!(world.input.dry, 2);
     world.queue_commands(109, &[fire(106), forward(107), fire(108), fire(109)]);
     world.input.release(1, true);
     world.input.release(1, true);
-    assert_eq!(released(&mut world.input), [(108, 0), (109, FIRE)]);
+    assert_eq!(released(&mut world.input), [(107, 0), (108, FIRE)]);
 }
 
 #[test]
