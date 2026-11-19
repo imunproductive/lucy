@@ -2523,7 +2523,13 @@ impl WorldDelivery {
                     (false, Delivery::Script { resend: false, .. }) => {}
                     (false, _) => retry.push(record),
                     (true, Delivery::Baseline) => {
-                        if matches!(record.update.operation, Some(Operation::Create(_))) {
+                        // A server placeable's create (`Operation::Placeable`)
+                        // counts too: its statescript frames wait for it
+                        // (`update_placed`).
+                        if matches!(
+                            record.update.operation,
+                            Some(Operation::Create(_) | Operation::Placeable(..))
+                        ) {
                             self.created.insert(record.update.entity);
                         }
                     }
@@ -3387,6 +3393,19 @@ impl WorldDelivery {
         if let Some(script) = &mut self.body_script {
             script.runtime.set_target_candidates(candidates);
         }
+    }
+
+    /// Tests: the player's controller's instance of scope `scope`
+    /// (`vm/scopes.rs`), the one a client's 21616 from it names (the
+    /// Training Partner console's scope 126, where its picker sends `1213`).
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn controller_scope_instance(&self, scope: u32) -> Option<u16> {
+        let snapshot = self.controller_script.as_ref()?.snapshot()?;
+        snapshot
+            .instances
+            .iter()
+            .find(|(_, instance)| instance.scope.as_ref().is_some_and(|link| link.id == scope))
+            .map(|(&id, _)| id)
     }
 
     /// Tests: whether state `state` of the current body's instance of graph

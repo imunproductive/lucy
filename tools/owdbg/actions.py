@@ -50,6 +50,8 @@ at the first input sample after the server's '[MM] Match found', then after a fi
                                time. Refused in the spawn room (invulnerable there): in the
                                Practice Range walk out first (`move forward 4`)
     screenshot [NAME]          PNG of the window into research/out/owdbg/
+    click X Y                  left click at (X, Y), fractions of the window's client width and
+                               height (posted to the window, no focus needed)
     position                   log our position and the bots'
     poke ADDRESS TYPE VALUE    write memory: TYPE u8/i8/u16/i16/u32/i32/u64/i64/f32/f64; an address
                                in the game image is an ORPHEUS VA (base 0x7FF788F10000), others as is
@@ -370,6 +372,11 @@ def parse(text):
             if not rest:
                 raise SystemExit("--actions: hero NAME")
             steps.append(("hero",) + _hero(" ".join(rest)))
+        elif verb == "click":
+            x, y = num(0), num(1)
+            if not (0 <= x <= 1 and 0 <= y <= 1):
+                raise SystemExit(f"--actions: {raw.strip()!r}: X and Y are fractions of the window (0-1)")
+            steps.append(("click", x, y))
         elif verb == "screenshot":
             steps.append(("screenshot", rest[0] if rest else None))
         elif verb == "position":
@@ -928,6 +935,16 @@ class Actions:
             self.hero_step = {"kind": "hero", "hero": step[1], "at": step[2], "phase": "open", "t": now}
         elif verb == "screenshot":
             self.screenshot(step[1])
+            self.until = now
+        elif verb == "click":
+            from .game import capture, post_click
+            hwnd = self.s.window()
+            if hwnd:
+                width, height, _ = capture(hwnd)
+                post_click(hwnd, int(width * step[1]), int(height * step[2]))
+                self.log(f"click at ({int(width * step[1])}, {int(height * step[2])})")
+            else:
+                self.log("click: no game window")
             self.until = now
         elif verb == "position":
             self.log_positions()

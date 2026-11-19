@@ -1883,20 +1883,12 @@ mod tests {
             let search = &field.states[&6];
             assert_eq!(search.kind, StateKind::TrackTargets);
             assert_eq!((search.active, search.activation), (false, 1));
-            // The client's line of sight (`m_95FFC3C5`) and rewind
-            // (`m_1C2A9945`) are what the search runs without.
-            assert!(snapshot.assumptions.iter().any(|item| {
-                (
-                    item.site.graph,
-                    item.site.node,
-                    item.class.as_str(),
-                    item.answer,
-                ) == (
-                    0x0257,
-                    Some(11),
-                    "STUStatescriptStateTrackTargets m_95FFC3C5",
-                    "no line-of-sight test",
-                )
+            // The client's line of sight (`m_95FFC3C5`) is cast against the
+            // map now (`vm/targets.rs`, 2026-11-19): the bodies in the open
+            // are seen by its 0.3-height ray, with no assumption.
+            assert!(!snapshot.assumptions.iter().any(|item| {
+                (item.site.graph, item.site.node, item.answer)
+                    == (0x0257, Some(11), "no line-of-sight test")
             }));
             field.variables.get(&FIELD_COUNT).cloned()
         };

@@ -398,7 +398,11 @@ fn condition(
         "H&full" => mode.owner && mode.full,
         _ => {
             if let Some(name) = test.strip_prefix("valid:") {
-                let entity = layout_integer(fields, name)?;
+                // No entity (null) is the invalid id, as `entity_id` writes it.
+                let entity = match fields.get(name) {
+                    Some(FieldValue::Scalar(Value::Null)) => 0,
+                    _ => layout_integer(fields, name)?,
+                };
                 entity != 0 && entity & 0x1fff_ffff != 0x1fff_ffff
             } else if let Some(name) = test.strip_prefix('!') {
                 !layout_truthy(fields.get(name))
@@ -924,6 +928,25 @@ mod tests {
             214,
             "1032547698badcfeb304000080fe900a08182e220060ffffff7f28",
         );
+    }
+
+    /// A row with no entity (null: a scope target with no instance yet,
+    /// `project_hits`) writes the invalid id and skips its `valid:entity`
+    /// branch, as one with entity 0 does.
+    #[test]
+    fn a_null_entity_is_the_invalid_id() {
+        let table = CodecTable::from_json(FIXTURE).unwrap();
+        let codec = table.codec("FixtureState").unwrap();
+        let encode = |entity: Value| {
+            let mut fields = fields();
+            let Some(FieldValue::Rows(rows)) = fields.get_mut("rows") else {
+                unreachable!("the fixture has rows");
+            };
+            rows[1].insert("entity", entity.into());
+            let out = codec.encode_layout(&fields, LayoutMode::default()).unwrap();
+            (out.bit_len(), out.as_bytes().to_vec())
+        };
+        assert_eq!(encode(Value::Null), encode(Value::Entity(0)));
     }
 
     #[test]

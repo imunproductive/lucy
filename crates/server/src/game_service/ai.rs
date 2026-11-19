@@ -469,6 +469,9 @@ impl State {
                 spawn_room: None,
                 support_tag_given: false,
                 support_tag_delivered: (false, orpheus_script::wire::Value::Null),
+                picker: None,
+                console_button: false,
+                picker_raised: false,
             })
             .collect();
         for (connection, peer) in &self.peers {
@@ -488,6 +491,9 @@ impl State {
                 117,
                 orpheus_content::hero_settings::ALLIED_HEALTH_BARS as u32,
             );
+            body.picker = peer.world.controller_scope_instance(126);
+            body.console_button = peer.world.body_delivered(0x265f, 9, 25456).0;
+            body.picker_raised = peer.world.body_delivered(0x265f, 17, 25456).0;
         }
         bodies
     }
@@ -580,4 +586,14 @@ pub(crate) struct BodyState {
     /// The last owner frame his client acknowledged: whether st117 runs in
     /// it, and its ALLIED HEALTH BARS variable (`#8336e`).
     pub support_tag_delivered: (bool, orpheus_script::wire::Value),
+    /// His controller's instance of the Training Partner console's scope
+    /// 126, where its picker sends `1213` from.
+    pub picker: Option<u16>,
+    /// The last owner frame his client acknowledged runs the Training
+    /// Partner console's scope 12 instance's H button (st9).
+    pub console_button: bool,
+    /// The last owner frame his client acknowledged runs the scope's
+    /// StateStack rid40 (st17), which stacks the picker's condition
+    /// `#25456e` = true (the client reads it from that state's payload).
+    pub picker_raised: bool,
 }

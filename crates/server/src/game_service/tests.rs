@@ -455,7 +455,13 @@ fn controller_shows(
         .iter()
         .map(|&(_, graph, _, _)| graph)
         .collect();
-    assert_eq!(instances, [0x0c90, 0x288a, 0x0215, 0x288b, 0x288d]);
+    // On the Practice Range the Training Partner console's scope 126
+    // (`265F`) opens on every controller once the console runs.
+    let scoped = instances.len() == 6 && instances[5] == 0x265f;
+    assert_eq!(
+        &instances[..instances.len() - usize::from(scoped)],
+        [0x0c90, 0x288a, 0x0215, 0x288b, 0x288d]
+    );
     Some((flag(2438), asset(13161).filter(|_| flag(2114)), asset(940)))
 }
 
@@ -831,6 +837,20 @@ fn aimed_batch(
     buttons: u32,
     forward: bool,
 ) -> Vec<u8> {
+    acting_batch(first, count, yaw, pitch, buttons, forward, 0)
+}
+
+/// [`aimed_batch`] with each command's action byte (`timeline.rs`: 42 is
+/// the hero select key, H).
+fn acting_batch(
+    first: u32,
+    count: u8,
+    yaw: i16,
+    pitch: i16,
+    buttons: u32,
+    forward: bool,
+    action: u8,
+) -> Vec<u8> {
     let mut input = BitWriter::new();
     input.bits(0, 24).unwrap(); // latency and key flags
     input.bits(u64::from(count), 8).unwrap();
@@ -844,7 +864,7 @@ fn aimed_batch(
     input.signed(i64::from(yaw), 16).unwrap();
     input.signed(i64::from(pitch), 16).unwrap();
     input.bits(u64::from(buttons), 24).unwrap();
-    input.bits(0, 8).unwrap(); // action
+    input.bits(u64::from(action), 8).unwrap();
     input.bits(0, 16).unwrap(); // extra
     for _ in 1..count {
         input.bit(false); // next consecutive frame
@@ -1162,13 +1182,15 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     let mut mode = false;
     let mut controller = false;
     // The mode's and the controller's first script chunks (the Training
-    // Partner's player, `player_entity(1)`, and his body have their own:
-    // not checked here).
+    // Partner's player, `player_entity(1)`, and his body have their own,
+    // as do the server placeables whose scripts run whole, once their
+    // creates arrived (`placed_script.rs`): not checked here).
     let first_script = |record: &WorldRecord, mode: &mut bool, controller: &mut bool| {
         let Some(script) = &record.script else {
             return;
         };
-        if record.entity & !0xFF == player_entity(1) {
+        let placeable = record.entity & 0xFFFF_F000 == 0x8000_0000;
+        if record.entity & !0xFF == player_entity(1) || placeable {
             return;
         }
         assert_eq!((script.first, script.span), (0, 1));
@@ -1267,6 +1289,20 @@ fn send_player_message(
     guid: u64,
     parameters: Vec<u8>,
 ) {
+    send_instance_message(client, schemas, owner, ordinal, guid, 3, parameters);
+}
+
+/// A 21616 `{owner, parameters, guid, instance}` as the client's
+/// `STU_79A131B4` sends it from its instance `instance` on `owner`.
+fn send_instance_message(
+    client: &mut Client,
+    schemas: &Schemas,
+    owner: u32,
+    ordinal: u32,
+    guid: u64,
+    instance: i64,
+    parameters: Vec<u8>,
+) {
     let fields = Fields::from([
         (
             0x78,
@@ -1274,7 +1310,7 @@ fn send_player_message(
         ),
         (0x80, Value::Blob(parameters)),
         (0xa8, Value::Unsigned(guid)),
-        (0xb0, Value::Signed(3)),
+        (0xb0, Value::Signed(instance)),
     ]);
     let message = encode(
         schemas,
@@ -2812,19 +2848,32 @@ fn practice_world<const N: usize>(
 /// slot (`ai.rs`), whose body stands still on the console's pad `3992`
 /// (34.24, 1.99, 22.97) facing the pad's way, and whose body the player's
 /// client gets.
+///
+/// Then the player walks from his spawn to the console (34.62, 1.99,
+/// 17.86) along the map's navigation: within its 1.75 m search his body
+/// gets the console's scope 12, whose H button (st9, action byte 42)
+/// raises the picker's condition `#25456e` in his owner frames. His client
+/// sends the pick as its picker's `STU_79A131B4` does: a 21616 to his
+/// controller's scope 126 instance with `1213` {`08E6` Ana, `08E7`
+/// true}. The console's chain (`1213` → `1214` on his body → remove red
+/// slot 0, make Ana there) destroys the Tracer's body and seats an Ana
+/// dummy, the room's next slot (2), on the pad, and the picker closes.
+/// The console sends its own frames; the partners' bodies come as
+/// another player's (observer frames only).
 #[test]
 #[ignore = "requires the derived 104319 data"]
-fn the_range_console_puts_a_tracer_training_partner_on_its_pad() {
+fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it() {
+    use orpheus_content::heroes::ANA;
     const TRACER: u64 = 0x02E0_0000_0000_0003;
     const PAD: [f64; 3] = [34.24001, 1.9917264, 22.972233];
     let (server, schemas, mut watchers, _) = practice_players([("player#1111", 0, "Soldier: 76")]);
     let partner = player_entity(1) | 1;
     let mut all: Vec<&mut Watcher> = watchers.iter_mut().collect();
     pump_until(
-        &mut all,
+        &mut [&mut watcher],
         &schemas,
         "the Training Partner's body",
-        |watchers| watchers[0].created(partner).is_some(),
+        |watchers| watchers[0].created(tracer).is_some(),
     );
     let bodies = server.bodies(MATCH).unwrap();
     let [_, dummy] = bodies.as_slice() else {
@@ -2837,17 +2886,17 @@ fn the_range_console_puts_a_tracer_training_partner_on_its_pad() {
         (feet[0] - PAD[0]).abs() < 1e-3 && (feet[2] - PAD[2]).abs() < 1e-3,
         "{feet:?}"
     );
-    assert!((feet[1] - PAD[1]).abs() < 0.1, "{feet:?}");
-    // The partner's body is another player's to this client: any of its
-    // statescript comes as observer frames (H=0), never as owner frames
-    // (two seconds of datagrams).
+    // The partners' bodies are another player's to this client: any of
+    // their statescript comes as observer frames (H=0), never as owner
+    // frames (two more seconds of datagrams).
     for _ in 0..125 {
-        all[0].pump(&schemas);
+        send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
+        watcher.pump(&schemas);
     }
-    for (_, records) in &all[0].datagrams {
+    for (_, records) in &watcher.datagrams {
         for chunk in records
             .iter()
-            .filter(|record| record.entity == partner)
+            .filter(|record| [tracer, ana].contains(&record.entity))
             .filter_map(|record| record.script.as_ref())
         {
             if chunk.first == 0 {
@@ -3946,7 +3995,9 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
             next += u32::from(count);
         }
     };
-    let ready = server.now() + Duration::from_secs(1);
+    // Two seconds for the join's traffic to settle (the server placeables'
+    // first frames follow their creates) before the shot.
+    let ready = server.now() + Duration::from_secs(2);
     while server.now() < ready {
         command(&mut echo, 0);
         echo.pump(&schemas);

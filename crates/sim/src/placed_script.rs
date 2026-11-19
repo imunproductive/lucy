@@ -639,6 +639,20 @@ mod tests {
         // One bot a player and body: the next needs new ones.
         range.advance(101);
         assert!(range.scene.take_dummy_changes().is_empty());
+        // With its dummy made, the console runs whole and has its frame.
+        let world = range.scene.placed_scripts().world().unwrap();
+        assert!(
+            world.entity(CONSOLE).unwrap().complete(),
+            "{:?}",
+            world.gaps()
+        );
+        assert!(
+            range
+                .scene
+                .placed_scripts()
+                .frames()
+                .any(|(entity, _)| entity == CONSOLE)
+        );
     }
 
     /// The console's scopes (`265F`, `vm/scopes.rs`): a living blue body
@@ -648,14 +662,42 @@ mod tests {
     /// plug to the LogicalButton st9 (button 81); the hero select key (H,
     /// action byte 42) there sets the body's `#25456e`, the picker's
     /// condition (StateStack rid40).
+    ///
+    /// Then the pick: the picker (client-only rid52 in scope 126) sends
+    /// `1213` {`08E6` hero, `08E7` true} to its own instance on the
+    /// controller (`STU_79A131B4` rid18; each parameter an array of one
+    /// value, which the server reads as that value: `replication.rs`
+    /// `parameter_value`). Entry rid22's filter passes for a hero he may
+    /// play (`STU_94AED9DC`/`STU_AFC074B3`), and it sends `1214` to
+    /// `STU_69DBE90D(owner())`, his body. There scope 12's entry rid24
+    /// (node 30 → rid41) ends the picker's StateStack rid40 and, `#2114`
+    /// true, sets `#940` = the pick (#13161), removes red slot 0's dummy
+    /// (`STU_C1561031`) and makes the picked hero's on the pad, with the
+    /// pad's position and facing the scope copied from the console
+    /// (`STU_FC3921B1` rid4), and writes `#940` into the console's own
+    /// instance (`STU_D49BBD03` rid53, `set_parent_variable`).
     #[test]
     #[ignore = "requires the derived 104319 data"]
-    fn the_range_console_opens_its_scopes_and_h_raises_the_picker() {
-        use orpheus_script::vm::{Component, EmptyWorld, Root, ScopeChange};
+    fn the_range_console_opens_its_scopes_and_a_pick_replaces_its_partner() {
+        use orpheus_content::{
+            heroes::{ANA, SOLDIER},
+            maps::PRACTICE_RANGE_MODE,
+        };
+        use orpheus_script::{
+            player::PlayerWorld,
+            vm::{Component, Root, ScopeChange},
+            wire::Value,
+        };
         use orpheus_wire::commands::Command;
         const CONSOLE: u32 = 0x8000_010B;
         const BODY: u32 = 0xA000_0101;
         const CONTROLLER: u32 = 0xA000_0100;
+        const PICK: u64 = 0x0240_0000_0000_1213;
+        const REPICK: u64 = 0x0240_0000_0000_1214;
+        let next = NextDummy {
+            player: 0xA000_0300,
+            body: 0xA000_0301,
+        };
         let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
         let mut range = Range::start(&assets, 100);
         range.advance(100);
@@ -692,7 +734,7 @@ mod tests {
             )
         };
         let gaps = range.scene.placed_scripts().world().unwrap().gaps();
-        let (Some(controller), Some(change)) = (opened(CONTROLLER), opened(BODY)) else {
+        let (Some(scope_126), Some(change)) = (opened(CONTROLLER), opened(BODY)) else {
             panic!("{changes:?} {gaps:?}");
         };
         let ScopeChange::Open {
@@ -701,9 +743,9 @@ mod tests {
             scope: 126,
             creator: CONSOLE,
             ..
-        } = controller
+        } = scope_126
         else {
-            panic!("{controller:?}");
+            panic!("{scope_126:?}");
         };
         assert_eq!((source.entity, source.state), (CONSOLE, 6));
         let ScopeChange::Open {
@@ -718,7 +760,14 @@ mod tests {
         };
         assert_eq!((source.entity, source.state), (CONSOLE, 1));
         // The body's side, its own component: the scope instance.
-        let mut world = EmptyWorld;
+        let mut world = PlayerWorld::new(
+            range.scene.shared_graphs(),
+            CONTROLLER,
+            BODY,
+            0,
+            PRACTICE_RANGE_MODE,
+            SOLDIER,
+        );
         let mut body = Component::start(
             range.scene.shared_graphs(),
             BODY,
