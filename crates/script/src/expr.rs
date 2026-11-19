@@ -1395,6 +1395,11 @@ impl Evaluator {
             // `m_277A4ECA` (`vm/auras.rs`).
             "STU_0E766B33" => literal_asset(config, class, "m_A76A8CF6", 0x04a0)
                 .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+            // A ray profile (`097`): what Sombra's, Moira's, Torbjörn's and
+            // Baptiste's graphs store in `#8518` by the owner's team for
+            // their volleys' `m_C1903771` (`weapons::ray_profile`).
+            "STU_20DB8AB5" => literal_asset(config, class, "m_C1903771", 0x0690)
+                .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
             "STU_ABB6C23E" => {
                 if !native_shape(config, class, Some("m_resourceKey"))
                     || fields.get("m_resourceKey") != Some(&Json::Null)

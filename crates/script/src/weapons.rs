@@ -343,10 +343,12 @@ pub struct ProjectileBallistics {
 const RAY_PROFILE_REFERENCE: &str = "STU_20DB8AB5";
 
 /// A weapon volley's ray profile (`m_C1903771`: a `097`, `STU_8EFC337B`),
-/// which says what map collision its shots and projectiles meet. None when
-/// it names none, as nearly every hitscan volley does, when its reference
-/// is empty (Junkrat's `09BA`), or when it is a variable (Sombra's `0C19`,
-/// Moira's `10E4`) that doesn't read as an asset.
+/// which says what map collision its shots and projectiles meet and whether
+/// they meet the bodies. A variable (Sombra's `0C19`, Moira's `10E4`,
+/// Torbjörn's `16C5`, Baptiste's `1761`: `#8518`, the owner's team's
+/// profile) reads as the asset it holds. None when it names none, as nearly
+/// every hitscan volley does, when its reference is empty (Junkrat's
+/// `09BA`), or when the variable holds no asset.
 pub fn ray_profile(
     node: &Node,
     mut evaluate: impl FnMut(&Json) -> Result<Value, EvalError>,
