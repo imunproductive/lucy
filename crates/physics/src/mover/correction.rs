@@ -234,6 +234,7 @@ mod tests {
                 spring_speed: 0.25,
                 fall: -0.125,
                 discontinuity: 0,
+                move_to: None,
             }));
             let correction = history.candidate(7010, true).unwrap().update();
             assert_eq!(correction.entity, ENTITY);
