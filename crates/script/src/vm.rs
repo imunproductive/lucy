@@ -444,7 +444,8 @@ pub struct MapHit {
     pub normal: [f64; 3],
 }
 
-/// The map's collision as a script's ray casts meet it (`vm/rays.rs`).
+/// The map's collision as a script's ray casts meet it (`vm/rays.rs`),
+/// and what each ray profile meets.
 pub trait MapRays: fmt::Debug + Send + Sync {
     /// The first map shape a ray from `origin` along unit `direction` meets
     /// within `reach`: the shapes that stop a ray of ray profile `profile`
@@ -457,6 +458,11 @@ pub trait MapRays: fmt::Debug + Send + Sync {
         reach: f64,
         profile: Option<u64>,
     ) -> Option<Option<MapHit>>;
+
+    /// Whether a ray of ray profile `profile` (none: the default profile)
+    /// meets the living bodies: only a profile whose rays test the bodies'
+    /// hit shapes does (`m_0220680A` bit 0).
+    fn meets_bodies(&self, profile: Option<u64>) -> bool;
 }
 
 /// External authored queries for this initialization. The caller owns mode,

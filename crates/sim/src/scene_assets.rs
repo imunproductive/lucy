@@ -1122,6 +1122,13 @@ impl PreparedScene {
             .map(|hit| hit.map(|hit| hit.distance))
     }
 
+    /// Whether a shot or a projectile's sweep of the volley's ray profile
+    /// meets the living bodies ([`RayProfiles::meets_bodies`]): one whose
+    /// profile doesn't test the bodies' hit shapes passes them all.
+    pub(crate) fn ray_meets_bodies(&self, profile: Option<u64>) -> bool {
+        self.ray_profiles.meets_bodies(profile)
+    }
+
     /// The map's AI navigation, if the data has it.
     pub fn navigation(&self) -> Option<&Navigation> {
         self.navigation.as_deref()
@@ -2273,7 +2280,9 @@ mod tests {
     /// pulled her client there (refs report `Grapple.md` "DayGrapple2").
     /// A shot without a profile takes `0001`, which stores no `m_category`
     /// either: its derived mask is `hitscan::DEFAULT_MAP_MASK`, and it passes the
-    /// clip as the hook does.
+    /// clip as the hook does. `0001`'s rays test the bodies' hit shapes
+    /// (`m_0220680A` 9, `hitscan::DEFAULT_MEETS_BODIES`); the hook's don't
+    /// (it stores none), so it passes the bodies too.
     #[test]
     #[ignore = "requires a derived 104319 Practice Range scene"]
     fn the_grappling_hook_and_profileless_shots_pass_the_range_spawns_player_clip() {
@@ -2284,6 +2293,11 @@ mod tests {
             assets.ray_profiles.map_mask(Some(SHOT_PROFILE)),
             crate::hitscan::DEFAULT_MAP_MASK
         );
+        assert_eq!(
+            assets.ray_profiles.meets_bodies(Some(SHOT_PROFILE)),
+            crate::hitscan::DEFAULT_MEETS_BODIES
+        );
+        assert!(!assets.ray_profiles.meets_bodies(Some(HOOK_PROFILE)));
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let origin = [54.565_429_687_5, 2.5, 42.147_460_937_5];
         let way = [0.0, 0.984_815_180_301_666_3, 0.173_606_216_901_201_22];

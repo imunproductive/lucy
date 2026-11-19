@@ -6,6 +6,9 @@ use std::sync::Mutex;
 use super::*;
 
 const PROFILE: u64 = 0x0690_0000_0000_0065;
+/// A profile whose rays don't test the bodies' hit shapes (`00A1`, which
+/// stores no `m_0220680A`): they pass every body.
+const PASSING: u64 = 0x0690_0000_0000_00A1;
 const TRACK_RAY: &str = "STUStatescriptStateTrackRay";
 
 /// A wall facing −x at `wall` (none: no wall), and the bodies.
@@ -64,6 +67,10 @@ impl MapRays for Range {
         });
         Some(hit)
     }
+
+    fn meets_bodies(&self, profile: Option<u64>) -> bool {
+        profile != Some(PASSING)
+    }
 }
 
 fn vec3(x: f64, y: f64, z: f64) -> Json {
@@ -72,9 +79,13 @@ fn vec3(x: f64, y: f64, z: f64) -> Json {
 
 /// Enemies only (`m_89831602` 1: no friendly body), and the ray profile.
 fn enemies() -> Json {
+    enemies_with(PROFILE)
+}
+
+fn enemies_with(profile: u64) -> Json {
     json!({"$":"STUConfigVarFilter","m_84065FD1":1,"m_1E14CCA8":0,"m_4EA686DB":16,
         "m_27CF71D5":0,"m_66747E7D":0,"m_89831602":1,"m_condition":null,
-        "m_C1903771":{"$":"STU_20DB8AB5","m_C1903771":format!("0x{PROFILE:016X}"),
+        "m_C1903771":{"$":"STU_20DB8AB5","m_C1903771":format!("0x{profile:016X}"),
             "m_resourceKey":null}})
 }
 
@@ -186,8 +197,9 @@ fn close(value: &Value, expected: [f64; 3]) -> bool {
 }
 
 /// The action meets the enemy's capsule before the wall, passing the
-/// caster and the ally its filter leaves out; with masks of zero it meets
-/// the wall, which has no entity. The filter's ray profile reaches the map.
+/// caster and the ally its filter leaves out; with masks of zero, or a ray
+/// profile that meets no body, it meets the wall, which has no entity. The
+/// filter's ray profile reaches the map.
 #[test]
 fn the_cast_action_meets_the_nearest_body_its_filter_passes_or_the_map() {
     let mut world = Range::new(Some(8.0));
@@ -210,6 +222,17 @@ fn the_cast_action_meets_the_nearest_body_its_filter_passes_or_the_map() {
     assert_eq!(values[..2], [Value::Bool(true), Value::Entity(0)]);
     assert!(close(&values[2], [8.0, 1.0, 0.0]), "{values:?}");
     assert_eq!(*world.profiles.lock().unwrap(), [None]);
+
+    // A ray of a profile that doesn't test the bodies' hit shapes passes
+    // the enemy its filter passes.
+    let mut world = Range::new(Some(8.0));
+    let component = start(
+        one_node("STU_08D6BA6E", false, cast_fields(enemies_with(PASSING))),
+        &mut world,
+    );
+    let values = outputs(&component, &[10, 11, 12, 13]);
+    assert_eq!(values[..2], [Value::Bool(true), Value::Entity(0)]);
+    assert!(close(&values[2], [8.0, 1.0, 0.0]), "{values:?}");
 
     // A miss writes the hit and the entity, not the point and normal.
     let mut world = Range::new(None);

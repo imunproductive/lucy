@@ -68,7 +68,12 @@
 //! default profile when unset) and the bodies the world lists, as the match
 //! places their capsules, that pass the filter's masks, relation words,
 //! condition and tag lists as a target search tests them (`vm/targets.rs`),
-//! the nearest first. A body the ray starts in is not hit. A radius grows
+//! the nearest first. The bodies only when the profile's rays test the
+//! bodies' hit shapes ([`MapRays::meets_bodies`]): the client's walk tests a
+//! body's hit shapes only then (`0x7FF789B01DD0`, `0x7FF789B00C50`), so the
+//! rays of `0018` (Widowmaker's Grappling Hook), `00A1`, `0016` and the
+//! other profiles without `m_0220680A` bit 0 pass every living body. A
+//! body the ray starts in is not hit. A radius grows
 //! the bodies' capsules; against the map the ray stays thin, where the
 //! client sweeps the radius through the whole query (`0x7FF789AFEEB0`'s
 //! `+0x1A0`). A hit on the map has no entity (the client gives the hit
@@ -311,16 +316,20 @@ impl<W: World> Vm<'_, '_, '_, W> {
         }
     }
 
-    /// The nearest thing the ray meets: the map or a body that passes.
+    /// The nearest thing the ray meets: the map or a body that passes (none
+    /// when the ray's profile meets no body).
     pub(super) fn cast(&mut self, id: u16, node: &Node, ray: &Ray) -> Result<Option<Hit>, RayGap> {
         let site = self.site(id, node);
-        let bodies = self.passing_bodies(site, &ray.filter)?;
-        let map = self
-            .world
-            .map_rays()
-            .ok_or(RayGap::NoMap)?
+        let map_rays = self.world.map_rays().ok_or(RayGap::NoMap)?;
+        let meets_bodies = map_rays.meets_bodies(ray.profile);
+        let map = map_rays
             .cast(ray.origin, ray.direction, ray.reach, ray.profile)
             .ok_or(RayGap::NoMap)?;
+        let bodies = if meets_bodies {
+            self.passing_bodies(site, &ray.filter)?
+        } else {
+            Vec::new()
+        };
         let reach = map.map_or(ray.reach, |hit| hit.distance);
         let mut met: Vec<(f64, [f64; 3], u32)> = bodies
             .iter()
