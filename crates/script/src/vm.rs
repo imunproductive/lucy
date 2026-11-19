@@ -479,6 +479,13 @@ pub trait World {
         None
     }
 
+    /// An action class this world runs as a no-op because the server does
+    /// its work itself, with the answer its assumption records; none runs
+    /// the VM's own rule.
+    fn no_op_action(&self, _class: &str) -> Option<&'static str> {
+        None
+    }
+
     fn ruleset(&mut self, _id: u32) -> Option<Value> {
         None
     }

@@ -12,18 +12,22 @@
 //! multikills ([`ControllerScript::eliminated`]), and [`HERO_SWITCHED`] on
 //! each hero switch (`0C90` rid220 keeps #4513/#4514/#4515 for its
 //! client-only Watch, the chat line; `288B` rid228 takes the new hero as
-//! the pick: [`ControllerScript::hero_switched`]). The graphs also take,
-//! and the server does not route yet (`docs/dev/loose-ends.md`): the
-//! client's hero select requests (21616 to `288B`: [`PICK_HERO`],
-//! [`OPEN_OR_CLOSE`]) and [`RESPAWN_HERE`] from the mode's `0C8F`.
+//! the pick: [`ControllerScript::hero_switched`]). The graphs also take
+//! the client's hero select requests (21616 to `288B`: [`PICK_HERO`],
+//! [`OPEN_OR_CLOSE`]) and, where the mode graph runs (the Practice Range's
+//! `13C0`), [`RESPAWN_HERE`] from its `0C8F`, its answer to a `0685`: the
+//! controller's own after a pick with no possessed body (st122), or the
+//! body's `0C8E` at its respawn countdown's end.
 //!
 //! What the graphs send other entities (`06FF` and `0685` to the mode, ...)
 //! waits in [`ControllerScript::take_messages`]; messages to the controller
 //! itself run at once (the VM's own routing).
 //!
-//! Not run (IDA, enabler 4): the body the controller spawns or revives,
-//! `0C90` st0 StateHero and node 4 `STU_621AF478` on `0687`; the server
-//! creates and possesses bodies in Rust (`replication.rs`).
+//! Not run (IDA, enabler 4): the body the controller spawns or revives.
+//! `0C90` st0 StateHero runs as a plain state, and node 4 `STU_621AF478`
+//! (revive the possessed body at `0687`'s spawn point) as an assumed no-op
+//! ([`NO_OP_ACTIONS`]): the server creates and possesses bodies in Rust
+//! (`replication.rs`), at a pick and at the respawn `0C8E`'s `0685` asks.
 
 use std::sync::Arc;
 
@@ -97,6 +101,18 @@ const ASSUMED: &[(&str, &str)] = &[
         "false: hero select opens on the mode's 0727",
     ),
 ];
+
+/// Actions of the controller's graphs whose work the server does in Rust.
+/// `STU_621AF478` (`0C90` node 4): revive the possessed body at `0687`'s
+/// spawn point #8370 with its heading, on the same hero (a hero change
+/// takes StateHero st0). Server-only (no registration of its own:
+/// `STUStatescriptAction`'s execute, `RespawnFacing.md`). The server makes
+/// a new body at each pick and respawn instead (`replication.rs`
+/// `respawn_due`), so the action does nothing here, as in a release build.
+const NO_OP_ACTIONS: &[(&str, &str)] = &[(
+    "STU_621AF478",
+    "no-op: the server makes the respawned body itself",
+)];
 
 /// What the controller graph asks outside its own entity.
 pub struct ControllerWorld {
@@ -184,6 +200,13 @@ impl World for ControllerWorld {
         ASSUMED
             .iter()
             .find(|(assumed, _)| *assumed == class)
+            .map(|&(_, answer)| answer)
+    }
+
+    fn no_op_action(&self, class: &str) -> Option<&'static str> {
+        NO_OP_ACTIONS
+            .iter()
+            .find(|(action, _)| *action == class)
             .map(|&(_, answer)| answer)
     }
 
@@ -783,6 +806,67 @@ mod tests {
         assert_eq!(refused.unwrap(), state(false, None));
         let closed = script.hero_select(110, HeroSelectRequest::OpenOrClose(true));
         assert_eq!(closed.unwrap(), state(false, None));
+        projects(&script);
+    }
+
+    /// The mode's respawn hand-off in the Practice Range: a pick with no
+    /// possessed body sends `0685` {`0221` the controller} to the mode
+    /// (`0C90` st122), and `13C0`'s `0C8F` answers with `0687` {`03A1` the
+    /// spawn point, `03D9` null}. #940e isn't the pick yet (rid3 true), so
+    /// #940e = #12511 and StateHero st0 begins (an assumed plain state). The
+    /// next `0687` (a respawn's) finds the same hero (rid3 false): rid61 →
+    /// node 4 revives the possessed body there (an assumed no-op), then
+    /// StateHero begins again. The server makes the body itself in both
+    /// cases, and the frames still project.
+    #[test]
+    #[ignore = "requires the derived 104319 graph bundle"]
+    fn the_mode_s_respawn_hand_off_runs_with_no_gap() {
+        use crate::codecs::CodecTable;
+        use crate::snapshot::{SnapshotEncoder, View};
+        let codecs = CodecTable::client();
+        let projects = |script: &ControllerScript| {
+            let snapshot = script.snapshot().unwrap();
+            assert!(
+                snapshot.initialization_complete(),
+                "{:?}",
+                snapshot.diagnostics
+            );
+            let encoder = SnapshotEncoder::new(script.graphs(), &codecs);
+            let projected = encoder.project(snapshot, View::Owner).unwrap();
+            encoder.owner_full(&projected, 1234, 16).unwrap();
+        };
+        let assumed = |script: &ControllerScript, class: &str| {
+            script
+                .snapshot()
+                .unwrap()
+                .assumptions
+                .iter()
+                .any(|assumption| assumption.class == class)
+        };
+        let mut script = start(RANGE);
+        script.advance(10).unwrap();
+        script
+            .hero_select(20, HeroSelectRequest::OpenOrClose(true))
+            .unwrap();
+        script
+            .hero_select(30, HeroSelectRequest::Pick(SOLDIER))
+            .unwrap();
+        let request = Variables::from([(0x221, Value::Entity(CONTROLLER))]);
+        assert!(script.take_messages().iter().any(|message| {
+            (
+                message.message & 0xffff,
+                message.target,
+                &message.parameters,
+            ) == (0x0685, GAME_MODE_ENTITY, &request)
+        }));
+        script.possessed(0x20, SOLDIER);
+        let spawn = Variables::from([(0x3a1, Value::Entity(0x8000_0254)), (0x3d9, Value::Null)]);
+        script.receive(RESPAWN_HERE, spawn.clone()).unwrap();
+        assert!(assumed(&script, "STUStatescriptStateHero"));
+        assert!(!assumed(&script, "STU_621AF478"));
+        projects(&script);
+        script.receive(RESPAWN_HERE, spawn).unwrap();
+        assert!(assumed(&script, "STU_621AF478"));
         projects(&script);
     }
 

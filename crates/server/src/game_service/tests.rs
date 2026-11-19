@@ -459,6 +459,94 @@ fn controller_shows(
     Some((flag(2438), asset(13161).filter(|_| flag(2114)), asset(940)))
 }
 
+/// The Practice Range's first mode frame: `13C0`'s full observer frame as
+/// the room runs the graph (`Room::first_mode_frame`, the graph's newest).
+/// It carries what opened the Tab board when it was built by hand
+/// (`scene::BOARD_POSTERS` before 2026-11-18: `13C0` with remote slot 4,
+/// the `06DF.025` poster st6, on and `0CB6` under st21, the frame upstream
+/// kjs saw open the board, `254fa913`), and the rest of the graph's tree.
+/// The layouts are `orpheus script query show 13C0` and `0CBB`.
+fn assert_range_mode_frame(graphs: &orpheus_script::graph::GraphStore, chunk: &ReceivedChunk) {
+    use orpheus_script::wire::{Value as ScriptValue, read_full_head, read_value};
+    let head = read_full_head(&chunk.data, |graph| {
+        graphs
+            .graph(u32::from(graph))
+            .map(|graph| graph.header.states_bits)
+    })
+    .expect("a full frame's head");
+    // An observer frame: no CmFD.
+    assert_eq!(head.command_frame, None);
+    // The instances (id, graph, creator, parent instance and state): the
+    // root `13C0`; its SubScripts `0CBB` (st5, the PvP modes' shared
+    // subgraph), `0CB6` (st21, the mode UI) and `0C8F` (st16, under
+    // st15's `06FD`); and `0CBB`'s `11A6` (st43), `03F2` (st44), `180A`
+    // (st45) and `1B4A` (st50).
+    assert_eq!(
+        head.instances,
+        [
+            (1, 0x13c0, None, None),
+            (2, 0x0cbb, None, Some((1, 5))),
+            (3, 0x0cb6, None, Some((1, 21))),
+            (4, 0x0c8f, None, Some((1, 16))),
+            (5, 0x11a6, None, Some((2, 43))),
+            (6, 0x03f2, None, Some((2, 44))),
+            (7, 0x180a, None, Some((2, 45))),
+            (8, 0x1b4a, None, Some((2, 50))),
+        ]
+    );
+    // Mode `005A`'s own variable (the mode's `m_3CE93B76`).
+    assert_eq!(head.variables.get(&27534), Some(&ScriptValue::Bool(true)));
+    // Then instance 1's sections. First its three presence slots (the sync
+    // vars with a presence bit), each a present bit, then the value and no
+    // Stack link: #27536 = !#27534 (st4's Stack) false, so st2 takes its
+    // false subgraph, the poster st6; #12581 true (st17's false subgraph,
+    // rid31); #375 none (st10's FilterArray, on st17's true subgraph, never
+    // begins).
+    let mut bits = BitReader::with_range(&chunk.data, head.end, chunk.width).unwrap();
+    for expected in [
+        Some(ScriptValue::Bool(false)),
+        Some(ScriptValue::Bool(true)),
+        None,
+    ] {
+        let value = bits.bit().unwrap().then(|| read_value(&mut bits).unwrap());
+        if value.is_some() {
+            assert!(!bits.bit().unwrap(), "a presence slot with a link");
+        }
+        assert_eq!(value, expected);
+    }
+    // No instance variables.
+    assert!(!bits.bit().unwrap());
+    // Its ten remote states, in `m_remoteSyncNodes` order. A running state
+    // is a present bit and its active bit, then its payload: a
+    // SendGameMessage (`STU_38EE1100`) its reply flag, off; a Stack nothing
+    // in an observer frame. A state left out is a bit 0: st0, the UX
+    // presenter `STU_62755D14` (an observer frame leaves presenters to the
+    // client); st8, `0702` on `0071`, which nobody sent; st12, #3179's
+    // Stack on st17's true subgraph.
+    let send = Some(1);
+    let stack = Some(0);
+    for (state, payload) in [
+        (0, None),
+        (1, send),  // `0727`: the controllers open hero select
+        (3, send),  // `0694`
+        (4, stack), // #27536
+        (6, send),  // `06DF.025`: the board poster
+        (8, None),
+        (9, send), // `0724`: the spawn rooms
+        (12, None),
+        (15, send), // `06FD`: the bodies' respawn seconds
+        (18, send), // `0702`: the doors open
+    ] {
+        assert_eq!(bits.bit().unwrap(), payload.is_some(), "13C0 st{state}");
+        if let Some(width) = payload {
+            assert!(bits.bit().unwrap(), "13C0 st{state} runs");
+            if width != 0 {
+                assert_eq!(bits.bits(width).unwrap(), 0, "13C0 st{state} payload");
+            }
+        }
+    }
+}
+
 impl WorldRecord {
     fn is_create(&self) -> bool {
         self.operation == Some(1)
@@ -1085,16 +1173,9 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         }
         assert_eq!((script.first, script.span), (0, 1));
         if record.entity == GAME_MODE_ENTITY {
-            // The Range's board frame (`scene::BOARD_POSTERS`, port 1b):
-            // `13C0` with its `06DF.025` poster on and `0CB6` under it,
-            // bit for bit the frame upstream kjs saw open the Tab board
-            // (`254fa913`). Python sent `0CB6` alone (`085b06000c`).
-            assert_eq!(
-                script.data,
-                [
-                    0x08, 0xe0, 0x09, 0x10, 0xb6, 0x0c, 0x14, 0xa0, 0x02, 0x00, 0x30, 0x00
-                ]
-            );
+            if !*mode {
+                assert_range_mode_frame(assets.graphs(), script);
+            }
             *mode = true;
         } else {
             assert_eq!(record.entity, CONTROLLER);
