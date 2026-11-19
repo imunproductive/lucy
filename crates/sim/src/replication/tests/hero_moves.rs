@@ -316,6 +316,99 @@ fn tracer_blink_stops_at_a_wall() {
     assert_eq!(tracer.charges(), 2);
 }
 
+/// The target of Widowmaker's grapple pull (`005A` st1, a `MoveTo` with
+/// `m_EA99616F`) is the free spot of a temporary character at the hook's
+/// destination (`0x7FF789C4A8A0`), as her client puts it. Recorded in the
+/// game (2026-11-19, owdbg probe of the kind-1 begin `0x7FF789B53CC0`,
+/// block `+0x20` target, `+0x30` destination, `+0x50` surface; refs
+/// report `Grapple.md` "DayGrapple2"): under the Range spawn's ceiling
+/// (the `0x1B9F` player clip at y 11.2633, normal down) the capsule is
+/// stopped 0.075 m below the destination, not 2 m (the goal, her height
+/// below it); at a wall it ends 0.08 m past the goal. The other three are
+/// from a later session (`Grapple.md` "DayGrapple3"): the `0x04C0`
+/// ceiling above the spawn, a ledge face, and a wall's top edge, where the
+/// capsule stands on the top only 0.06 m out.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn widowmakers_pull_targets_the_free_spot_her_client_finds() {
+    use orpheus_physics::mover::{MoveKey, MoveTo, Speed};
+    const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
+    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let body = scene.heroes().get(WIDOWMAKER).unwrap().body;
+    // Feet, destination, surface, the client's target (f32 as recorded).
+    let recorded: [[[f32; 3]; 4]; 5] = [
+        [
+            [54.565_43, 1.0, 42.147_46],
+            [54.565_43, 11.263_25, 43.692_272],
+            [0.0, -1.0, 0.0],
+            [54.565_43, 11.188_249, 43.692_272],
+        ],
+        [
+            [44.0, 1.0, 22.0],
+            [48.399_193, 2.726_54, 28.485_128],
+            [0.167_743, -0.0, 0.985_831],
+            [48.535_904, 1.726_54, 29.040_054],
+        ],
+        [
+            [54.565_43, 1.0, 42.147_46],
+            [54.565_43, 12.661_688, 43.938_793],
+            [0.0, -1.0, 0.0],
+            [54.565_43, 11.193_249, 43.938_793],
+        ],
+        [
+            [54.565_43, 2.171_875, 44.095_703],
+            [54.565_43, 4.130_847, 45.696_16],
+            [-0.167_74, 0.0, -0.985_831],
+            [54.479_885, 3.130_847, 45.193_398],
+        ],
+        [
+            [54.479_492, 2.162_109, 45.193_36],
+            [54.479_492, 6.476_256, 29.229_56],
+            [0.167_743, 0.0, 0.985_831],
+            [54.489_937, 6.420_997, 29.290_888],
+        ],
+    ];
+    for [feet, destination, surface, client] in recorded {
+        let feet = feet.map(f64::from);
+        let mut mover = scene.player_mover_at(body, 0, feet, 0).unwrap();
+        let pull = MoveTo {
+            destination: destination.map(f64::from),
+            surface: surface.map(f64::from),
+            free_spot: true,
+            speed: Speed::MetresPerSecond(20.0),
+            acceleration: 100.0,
+            slow_radius: 0.0,
+            lateral_seconds: 0.3,
+            stuck_distance: 1.0,
+            stuck_seconds: 0.3,
+            exit_horizontal: 0.0,
+            exit_vertical: 0.0,
+            exit_total: 0.0,
+            exit_on_end: false,
+            abort_past: true,
+        };
+        let key = MoveKey {
+            instance: 1,
+            raw_state: 1,
+            activation: 1,
+        };
+        let command = Command {
+            frame: 1,
+            ..Command::default()
+        };
+        mover
+            .step_pose_to(scene.movement_index(), command, DT, Some((key, &pull)))
+            .unwrap();
+        let target = mover.move_target().unwrap();
+        // Within a few f32 steps of the recorded values.
+        assert!(
+            (0..3).all(|axis| (target[axis] - f64::from(client[axis])).abs() < 2e-5),
+            "{target:?} vs the client's {client:?}"
+        );
+    }
+}
+
 /// Pharah's Jump Jet (graph `0027` node 1, `STU_FF3471E9`): the vertical
 /// velocity set to 0 and `(sin yaw, 2, cos yaw) * 10` added for one pose
 /// lift her off the ground well above a jump's 1 m, forward along her yaw;

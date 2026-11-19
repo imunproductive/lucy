@@ -15,8 +15,9 @@
 //! height), and with `m_EA99616F` the free spot a capsule of the body's
 //! size finds moving from the destination toward that point
 //! (`0x7FF789C4A8A0`: three moves of a capsule of a third, two thirds and
-//! the whole size, each from where the last stopped); without it the target
-//! is the destination itself.
+//! the whole size standing on the destination, each from where the last
+//! stopped, see `free_spot`); without it the target is the destination
+//! itself.
 //!
 //! While the behaviour runs (phases 1 and 3, mover `+0xDF4`), the mover's
 //! tick (`0x7FF789B4B1D0`) skips its ground probe and transitions (slot 8
@@ -59,11 +60,11 @@
 //! The state ends when its update sees phase 4 (finished) or 2 (aborted,
 //! `0x7FF789C425F0`).
 //!
-//! Assumptions: the client's mover position here is the feet; the free
-//! spot's capsule stands on the feet as the body's own does (the client's
-//! capsule height, `0x7FF7896AA3B0`, was not traced); the up the exit
-//! limits split by (mover `+0xB0`) is +y; a driven frame moves the capsule
-//! by the velocity alone, the pogo spring held.
+//! Assumptions: the client's mover position here is the feet; the body's
+//! scale (mover `+0xD5C`, which the stand-off and the free spot's capsule
+//! multiply by) is 1; the up the exit limits split by (mover `+0xB0`) is
+//! +y; a driven frame moves the capsule by the velocity alone, the pogo
+//! spring held.
 //!
 //! Not modelled: a destination entity or bone (the target moves with it),
 //! a moving platform under the body (`+152`), and the block's `+144`,
@@ -71,7 +72,7 @@
 //! `m_5E3A7FC5`, `m_6D6BA94D`), whose readers were not traced.
 
 use crate::{
-    contact::body::CharacterBody, contact::hull::HullContactError, contact::math::Vec3,
+    contact::body::CharacterBody, contact::cache::CapsulePose, contact::hull::HullContactError,
     mover::settings::MoverSettings,
 };
 
@@ -86,6 +87,9 @@ const FORWARD: [f64; 3] = [0.0, 0.0, 1.0];
 /// The state's begin aborts for a destination this close (squared) behind
 /// the target.
 const BEGIN_ABORT_SQUARED: f64 = 4.0;
+/// The rounds of each of the free spot's moves (`0x7FF789C4A8A0`: the
+/// request's `+0x2C`).
+const FREE_SPOT_ROUNDS: u32 = 5;
 
 /// The speed of a move: metres a second, or the seconds the move takes
 /// from where it begins (`m_5BEFF040` over 1.19e-4).
@@ -170,8 +174,6 @@ pub(super) struct Run {
 /// The body the mover drives: where it stands and how big it is.
 pub(super) struct Body<'a> {
     pub feet: [f64; 3],
-    /// The capsule's lowest point above the feet (pogo and spring).
-    pub lift: f64,
     pub body: &'a CharacterBody,
     pub base: &'a MoverSettings,
     pub crouched: bool,
@@ -224,6 +226,10 @@ impl Run {
     /// Whether the behaviour drives this frame.
     pub(super) fn drives(&self) -> bool {
         matches!(self.phase, Phase::Moving | Phase::Landing)
+    }
+
+    pub(super) fn target(&self) -> [f64; 3] {
+        self.target
     }
 
     /// The end the mover hasn't reported yet, once.
@@ -359,19 +365,34 @@ fn stand_off(surface: [f64; 3], base: &MoverSettings, crouched: bool) -> [f64; 3
     [x * reach, -((0.5 - y * 0.5) * height), z * reach]
 }
 
-/// `0x7FF789C4A8A0`: three moves of a growing capsule from the destination
-/// toward the goal; where the last one stops. The capsule stands on the
-/// feet as the body's own does (its lowest point the lift above them).
+/// `0x7FF789C4A8A0`: a temporary character (`0x7FF789CCAB30`) at the
+/// destination makes three moves (`0x7FF789CCABF0`) toward the goal, each
+/// from where the last stopped, with a capsule of a third, two thirds and
+/// the whole of the stance's size (`0x7FF789CCAC00`): its points (0, r)
+/// and (0, H - r) above the character's position, radius r, for the
+/// height H (`0x7FF7896AA3B0`, mover `+0x430`, crouched `+0x43C`) and
+/// radius r (`0x7FF789B53F40`, `+0x434`, crouched `+0x440`). The capsule's
+/// lowest point is the position itself: no pogo under it, as the body's
+/// own has. Each move takes up to 5 rounds, from a velocity of zero.
+/// Where the last move stops.
 fn free_spot(
     at: &Body<'_>,
     destination: [f64; 3],
     goal: [f64; 3],
 ) -> Result<[f64; 3], HullContactError> {
-    let lift =
-        |feet: [f64; 3]| -> Vec3 { [feet[0] as f32, (feet[1] + at.lift) as f32, feet[2] as f32] };
-    let pose = at.body.pose();
-    let mut probe = at.body.fresh_at(lift(destination));
-    let mut feet = destination;
+    let (height, radius) = if at.crouched {
+        (at.base.crouch_height, at.base.crouch_radius)
+    } else {
+        (at.base.stand_height, at.base.stand_radius)
+    };
+    let (height, radius) = (height as f32, radius as f32);
+    let goal = goal.map(|axis| axis as f32);
+    // Made at the whole size, then shrunk for the first move.
+    let mut probe = at.body.fresh(CapsulePose {
+        position: destination.map(|axis| axis as f32),
+        radius,
+        top: height - radius,
+    });
     for third in 1..=3 {
         let share = third as f32 / 3.0;
         probe.reshape(pose.radius * share, pose.top * share);
@@ -380,7 +401,7 @@ fn free_spot(
         let [x, y, z] = moved.position;
         feet = [f64::from(x), f64::from(y) - at.lift, f64::from(z)];
     }
-    Ok(feet)
+    Ok(probe.position().map(f64::from))
 }
 
 fn limit(vector: [f64; 3], most: f64) -> [f64; 3] {

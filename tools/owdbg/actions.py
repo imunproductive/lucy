@@ -251,6 +251,9 @@ def add_action_args(p):
                         "server and frees the game lock (default 5)")
     g.add_argument("--keep-running", action="store_true",
                    help="keep the game up after the script ends (until --duration or the game exits)")
+    g.add_argument("--body", type=lambda text: int(text, 16),
+                   help="our body's entity id (hex, e.g. A0000101) when the server's owner trace names more "
+                        "than one body (an AI player's); default: the latest it names")
 
 
 def prepare(args):
@@ -722,7 +725,13 @@ class Actions:
         self.log(f"script starts ({len(self.steps)} steps)")
 
     def _find_body(self):
-        """Our body: the latest `owner frame queued body=X` of the server's owner trace."""
+        """Our body: --body, else the latest `owner frame queued body=X` of the server's owner trace."""
+        pinned = getattr(self.args, "body", None)
+        if pinned is not None:
+            if self.body != pinned:
+                self.body = pinned
+                self.log(f"our body is entity {pinned:08X} (--body)")
+            return
         server = self.s.server
         if server is None or server.state is None:
             return

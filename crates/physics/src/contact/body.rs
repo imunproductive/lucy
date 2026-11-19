@@ -131,14 +131,16 @@ impl CharacterBody {
     }
 
     pub fn fresh_at(&self, position: Vec3) -> Self {
-        Self::new(
-            Arc::clone(&self.world),
-            CapsulePose {
-                position,
-                ..self.pose
-            },
-            self.category,
-        )
+        self.fresh(CapsulePose {
+            position,
+            ..self.pose
+        })
+    }
+
+    /// A new body in this one's world, of its mask, with the capsule
+    /// `pose` (a temporary character, `0x7FF789CCAB30`).
+    pub fn fresh(&self, pose: CapsulePose) -> Self {
+        Self::new(Arc::clone(&self.world), pose, self.category)
     }
 
     /// Query the same upright capsule and mask without changing its contact state.
@@ -267,26 +269,7 @@ impl CharacterBody {
             }
         }
         self.peers.clear();
-        self.budget = if passes_total > (rounds * 100).min(500) {
-            (self.budget / 2).max(1)
-        } else {
-            (self.budget * 2).min(MAX_ROUNDS)
-        };
-        self.planes.clear();
-        let mut touching = false;
-        for constraint in &self.constraints {
-            if constraint.impulse > 0.0 {
-                touching = true;
-                if constraint.impulse < f32::MAX {
-                    self.planes.push(constraint.plane);
-                }
-            }
-        }
-        Ok(BodyMove {
-            position: current,
-            planes: &self.planes,
-            touching,
-        })
+        Ok((current, passes_total))
     }
 
     fn move_proxy(&mut self, bounds: ContactBounds) {

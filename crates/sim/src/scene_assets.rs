@@ -2198,25 +2198,35 @@ mod tests {
     /// client's cast end wrote (54.5654, 12.6617, 43.9388) from this origin
     /// and way; the server, casting with `0x1FDF`, stopped at the clip and
     /// pulled her client there (refs report `Grapple.md` "DayGrapple2").
+    /// A shot without a profile takes `0001`, which stores no `m_category`
+    /// either: its derived mask is `hitscan::DEFAULT_MAP_MASK`, and it passes the
+    /// clip as the hook does.
     #[test]
     #[ignore = "requires a derived 104319 Practice Range scene"]
-    fn the_grappling_hook_passes_the_range_spawns_player_clip() {
+    fn the_grappling_hook_and_profileless_shots_pass_the_range_spawns_player_clip() {
         const HOOK_PROFILE: u64 = 0x0690_0000_0000_0018;
+        const SHOT_PROFILE: u64 = 0x0690_0000_0000_0001;
         let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        assert_eq!(
+            assets.ray_profiles.map_mask(Some(SHOT_PROFILE)),
+            crate::hitscan::DEFAULT_MAP_MASK
+        );
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
         let origin = [54.565_429_687_5, 2.5, 42.147_460_937_5];
         let way = [0.0, 0.984_815_180_301_666_3, 0.173_606_216_901_201_22];
-        let hook = scene
-            .map_rays()
-            .cast(origin, way, 20.0, Some(HOOK_PROFILE))
-            .unwrap()
-            .unwrap();
         let client = [54.5654, 12.6617, 43.9388];
-        assert!(
-            (0..3).all(|axis| (hook.point[axis] - client[axis]).abs() < 1e-3),
-            "{hook:?}"
-        );
-        // The clip is there, and stops a ray of the profiles' other mask.
+        for profile in [Some(HOOK_PROFILE), None] {
+            let hit = scene
+                .map_rays()
+                .cast(origin, way, 20.0, profile)
+                .unwrap()
+                .unwrap();
+            assert!(
+                (0..3).all(|axis| (hit.point[axis] - client[axis]).abs() < 1e-3),
+                "{profile:?}: {hit:?}"
+            );
+        }
+        // The clip is there, and stops a ray of the class defaults' mask.
         let clip = scene
             .rays
             .cast_ray(origin, way, 20.0, 0x1FDF)
