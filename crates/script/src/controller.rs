@@ -736,7 +736,11 @@ mod tests {
 
     fn start_in(mode: u64, ruleset: u64) -> ControllerScript {
         let root = orpheus_testkit::runtime_dir();
-        let graphs = Arc::new(GraphStore::load(root.join("data/game_graphs_174.json.gz")).unwrap());
+        // With the ruleset defaults, as the server loads the bundle: an
+        // unset mode variable reads its schema default (#9548 → `254E`).
+        let graphs = Arc::new(
+            GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap(),
+        );
         let mut world = ControllerWorld::new(graphs, mode, CONTROLLER, Unknowns::Refuse);
         world.ruleset = ruleset;
         world.team = Some(0);
@@ -767,8 +771,19 @@ mod tests {
             assert!(snapshot.initialization_complete());
             snapshot.resolved_bindings.get(&(0, LIMIT_STATE)).cloned()
         };
-        assert_eq!(limit(0), Some(Value::Integer(1)));
-        assert_eq!(limit(orpheus_content::maps::PRACTICE_RANGE_RULESET), None);
+        assert_eq!(limit(RANGE, 0), Some(Value::Integer(1)));
+        assert_eq!(
+            limit(RANGE, orpheus_content::maps::PRACTICE_RANGE_RULESET),
+            None
+        );
+        // Escort under `0C0:CE` (9548 = `254E`, the hero limit kept) runs
+        // the hero limit states as the Range did without its ruleset;
+        // under `0C0:3C` "Payload - No Limits" (9548 = `254D`) they don't.
+        assert_eq!(
+            limit(ESCORT, 0x0fd0_0000_0000_00ce),
+            Some(Value::Integer(1))
+        );
+        assert_eq!(limit(ESCORT, 0x0fd0_0000_0000_003c), None);
     }
 
     /// The client's 21616 to `288B` in the VM (Range mode without its
