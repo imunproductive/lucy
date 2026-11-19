@@ -3493,7 +3493,7 @@ fn move_to_exposes_only_a_fixed_target_while_active() {
             instance: 1,
             raw_state: 0,
             activation: 1,
-            params: orpheus_physics::mover::MoveTo {
+            params: orpheus_physics::mover::Behaviour::MoveTo(orpheus_physics::mover::MoveTo {
                 destination: [1.0, 2.0, -3.0],
                 surface: [0.0; 3],
                 free_spot: false,
@@ -3508,7 +3508,7 @@ fn move_to_exposes_only_a_fixed_target_while_active() {
                 exit_total: 10_000.0,
                 exit_on_end: false,
                 abort_past: false,
-            },
+            }),
         }]
     );
     message(&mut component, 1, &mut EmptyWorld);

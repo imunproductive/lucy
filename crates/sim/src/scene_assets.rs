@@ -789,6 +789,7 @@ impl PreparedScene {
             yaw,
             mover_category(&self.map, team),
         )
+        .map(|mover| mover.with_navigation(self.navigation.clone()))
         .map_err(invalid)
     }
 

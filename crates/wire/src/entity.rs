@@ -77,7 +77,8 @@
 //! floats (0x7FF789B71CE0). After the velocity come nine flag blocks, each
 //! a presence bit (0x7FF789B6C720 and its siblings, in this order: flags
 //! 0x10, 0x1000, 0x400000, 0x80, 0x40, 0x20, 0x40000, 0x100, 0x200); only
-//! [`MoveToRecord`] (flag [`MOVE_TO`]) is sent. A record's frame counts back
+//! [`MoveToRecord`] (flag [`MOVE_TO`]) and [`NavPathRecord`] (flag
+//! [`NAV_PATH`]) are sent. A record's frame counts back
 //! from its base (0x7FF789B76D00: the packet frame on ch3); a create's
 //! movement state counts back from a fixed base (0x7FF78969DD3C).
 
@@ -116,6 +117,14 @@ pub const NO_INPUT: u32 = u32::MAX;
 /// `MoveTo` move, set by its begin 0x7FF789B53CC0, cleared by its end
 /// 0x7FF789B539B0); its record is [`MoveToRecord`].
 pub const MOVE_TO: u32 = 0x10;
+/// The movement state's flag of a running mover behaviour of kind 10 (the
+/// path walk of Widowmaker's ledge pull `STU_1F5ED928`, set by its begin
+/// 0x7FF789B53DE0, cleared by its end 0x7FF789B53A40); its record is
+/// [`NavPathRecord`].
+pub const NAV_PATH: u32 = 0x20;
+/// The most points a [`NavPathRecord`] carries (a path in the query's
+/// window of 5 × 7 × 5 units keeps fewer turns than this).
+pub const NAV_PATH_POINTS: usize = 64;
 pub const CREATE_BASE: u32 = u32::MAX;
 /// A create's movement state counted back from [`CREATE_BASE`] by this many
 /// frames sits at frame 0, older than every movement record of the entity
@@ -473,6 +482,9 @@ pub struct Movement {
     /// The `MoveTo` move's record, present exactly while `flags` has
     /// [`MOVE_TO`].
     pub move_to: Option<MoveToRecord>,
+    /// The path walk's record, present exactly while `flags` has
+    /// [`NAV_PATH`].
+    pub nav_path: Option<NavPathRecord>,
 }
 
 /// What a running `MoveTo` move (mover behaviour of kind 1) keeps in the
@@ -494,6 +506,86 @@ pub struct MoveToRecord {
     pub still: u16,
     /// `+0xB4`: 1 moving, 2 blocked, 3 landing on its target, 4 arrived.
     pub phase: u8,
+}
+
+/// What a running path walk (mover behaviour of kind 10) keeps in the
+/// movement state, at `+0x110` (mover `+0xE50`). The owner's client compares
+/// it (0x7FF789B6D4B0: `state` not 0 on both sides and equal, `elapsed`,
+/// `seconds`, `cap` and the float at `+32` within 0.004, `+12` equal, the
+/// point at `+0` within 0.004 per axis, the same number of points each
+/// within 0.0035 m) and restores it with a correction. The reader
+/// (0x7FF789B6C800, after a presence bit and a bit that is 1 for no
+/// reference): 1 bit and 8 bits of `state`; `seconds` (`+36`), `elapsed`
+/// (`+40`) and `cap` (`+44`) each in 1/256 steps from 0 (0x7FF789B77260
+/// with scale 256: a bit, then widths 8, 10 and 24 each behind a bit, else
+/// 32); `+12` (0x7FF789B71B60: a bit, then an s8 behind a bit, else 32
+/// bits); the point at `+0` (0x7FF789B773D0: a bit, then three such
+/// steps); `+32` (0x7FF789B71860: a bit, then a raw float behind a bit);
+/// the count as `+12`; each point as three optional raw floats
+/// (0x7FF789B71CE0). Kind 10 leaves `+0`, `+12` and `+32` at 0 (its path
+/// set-up 0x7FF789B578B0 zeroes them); they belong to the other behaviour
+/// with this flag (vtable 0x7FF78B56A4B8).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NavPathRecord {
+    /// `+14`: 1 walking, 2 done (or no path).
+    pub state: u8,
+    /// `+36`: the seconds the walk takes (`m_710CF237`).
+    pub seconds: f32,
+    /// `+40`: the seconds walked.
+    pub elapsed: f32,
+    /// `+44`: the speed cap, the path's length over `seconds`.
+    pub cap: f32,
+    /// `+16`, `+24`: the polyline.
+    pub points: [[f32; 3]; NAV_PATH_POINTS],
+    pub count: u8,
+}
+
+impl Default for NavPathRecord {
+    fn default() -> Self {
+        Self {
+            state: 0,
+            seconds: 0.0,
+            elapsed: 0.0,
+            cap: 0.0,
+            points: [[0.0; 3]; NAV_PATH_POINTS],
+            count: 0,
+        }
+    }
+}
+
+fn write_nav_path(out: &mut BitWriter, record: &NavPathRecord) -> Result<(), BitError> {
+    let steps = |value: f32| (f64::from(value) * 256.0).round_ties_even() as i64;
+    out.bit(true);
+    out.bit(true); // Not against the reference state's record.
+    out.bit(record.state != 0);
+    if record.state != 0 {
+        out.bits(u64::from(record.state), 8)?;
+    }
+    for value in [record.seconds, record.elapsed, record.cap] {
+        delta(out, steps(value), &[8, 10, 24])?;
+    }
+    out.bit(false); // +12
+    out.bit(false); // The point at +0.
+    out.bit(false); // +32
+    let count = i64::from(record.count);
+    out.bit(count != 0);
+    if count != 0 {
+        out.bit(true);
+        out.signed(count, 8)?;
+    }
+    for point in &record.points[..usize::from(record.count)] {
+        let any = point.iter().any(|&axis| axis != 0.0);
+        out.bit(any);
+        if any {
+            for &axis in point {
+                out.bit(axis != 0.0);
+                if axis != 0.0 {
+                    out.f32(axis);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn write_move_to(out: &mut BitWriter, record: &MoveToRecord) -> Result<(), BitError> {
@@ -680,7 +772,12 @@ pub fn write_movement(
         Some(record) => write_move_to(out, record)?,
         None => out.bit(false),
     }
-    out.bits(0, 8)?; // The other eight flag blocks.
+    out.bits(0, 4)?; // Flags 0x1000, 0x400000, 0x80, 0x40.
+    match &state.nav_path {
+        Some(record) => write_nav_path(out, record)?,
+        None => out.bit(false),
+    }
+    out.bits(0, 3)?; // Flags 0x40000, 0x100, 0x200.
     out.bit(parent.is_some());
     if let Some(parent) = parent {
         out.bits(u64::from(parent), 32)?;

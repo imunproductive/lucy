@@ -335,7 +335,7 @@ fn tracer_blink_stops_at_a_wall() {
 #[test]
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
 fn widowmakers_pull_targets_the_free_spot_her_client_finds() {
-    use orpheus_physics::mover::{MoveKey, MoveTo, Speed};
+    use orpheus_physics::mover::{Behaviour, MoveKey, MoveTo, Speed};
     const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
@@ -402,7 +402,12 @@ fn widowmakers_pull_targets_the_free_spot_her_client_finds() {
             ..Command::default()
         };
         mover
-            .step_pose_to(scene.movement_index(), command, DT, Some((key, &pull)))
+            .step_pose_to(
+                scene.movement_index(),
+                command,
+                DT,
+                Some((key, &Behaviour::MoveTo(pull))),
+            )
             .unwrap();
         let target = mover.move_target().unwrap();
         // Within a few f32 steps of the recorded values.
@@ -427,7 +432,7 @@ struct Pulled {
 }
 
 fn pull_from_the_spawn(destination: [f64; 3], surface: [f64; 3], after: u32) -> Pulled {
-    use orpheus_physics::mover::{MoveKey, MoveTo, Speed};
+    use orpheus_physics::mover::{Behaviour, MoveKey, MoveTo, Speed};
     const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
@@ -436,7 +441,7 @@ fn pull_from_the_spawn(destination: [f64; 3], surface: [f64; 3], after: u32) -> 
     let mut mover = scene
         .player_mover_at(body, 0, [54.565_43, 1.0, 42.147_46], 0)
         .unwrap();
-    let pull = MoveTo {
+    let pull = Behaviour::MoveTo(MoveTo {
         destination,
         surface,
         free_spot: true,
@@ -451,7 +456,7 @@ fn pull_from_the_spawn(destination: [f64; 3], surface: [f64; 3], after: u32) -> 
         exit_total: 10_000.0,
         exit_on_end: false,
         abort_past: true,
-    };
+    });
     let key = MoveKey {
         instance: 1,
         raw_state: 1,
