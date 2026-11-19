@@ -1693,12 +1693,6 @@ mod tests {
             assumed,
             [
                 (0x01ca, Some(126), "STU_ED45C5E8", "no entities"),
-                (
-                    0x02c5,
-                    Some(51),
-                    "STUStatescriptStateAnim",
-                    "never ends by itself"
-                ),
                 (0x0255, Some(40), "STU_E9694EFD", "no-op"),
                 (
                     0x0043,
