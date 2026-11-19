@@ -622,7 +622,7 @@ mod tests {
     const ALIAS: u64 = 0x0C80_0000_0000_043C;
 
     fn object(class: u32, fields: Vec<(u32, Value)>) -> Option<Object> {
-        Some(Object { class, fields })
+        Some(Object::new(class, fields))
     }
 
     fn uints(values: &[u64]) -> Value {
@@ -630,10 +630,7 @@ mod tests {
     }
 
     fn record(seconds: f64) -> Value {
-        Value::Object(Object {
-            class: RECORD,
-            fields: vec![(SECONDS, Value::Float(seconds))],
-        })
+        Value::Object(Object::new(RECORD, vec![(SECONDS, Value::Float(seconds))]))
     }
 
     fn leaf(record: i64) -> Option<Object> {
@@ -651,10 +648,10 @@ mod tests {
                     (ALIASES, uints(&[ALIAS])),
                     (
                         ITEMS,
-                        Value::Array(vec![Value::Object(Object {
-                            class: 0xDDD1_8945,
-                            fields: vec![(GAME_DATA_FIELD, Value::Instance(1))],
-                        })]),
+                        Value::Array(vec![Value::Object(Object::new(
+                            0xDDD1_8945,
+                            vec![(GAME_DATA_FIELD, Value::Instance(1))],
+                        ))]),
                     ),
                 ],
             ),
@@ -818,16 +815,16 @@ mod tests {
             let floats =
                 |values: &[f64]| Value::Array(values.iter().map(|&v| Value::Float(v)).collect());
             let times: Vec<f64> = (0..values.len()).map(|t| t as f64).collect();
-            Value::Object(Object {
-                class: ROW,
-                fields: vec![(
+            Value::Object(Object::new(
+                ROW,
+                vec![(
                     TRACK_FIELD,
-                    Value::Object(Object {
-                        class: TRACK,
-                        fields: vec![(TIMES, floats(&times)), (VALUES, floats(values))],
-                    }),
+                    Value::Object(Object::new(
+                        TRACK,
+                        vec![(TIMES, floats(&times)), (VALUES, floats(values))],
+                    )),
                 )],
-            })
+            ))
         };
         let sampled = |row: i64| {
             object(

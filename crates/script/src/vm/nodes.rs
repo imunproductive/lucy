@@ -121,11 +121,14 @@ const ASSUMED_INERT_STATES: &[&str] = &[
 /// The player controller's native states (`0C90`): their client codec has
 /// no payload (reader 0x7ff78abf5640), and what they do on the server is
 /// unknown, so they run as plain states with an assumption. ForProbe
-/// (`0C90` st75/st76, server-only: values for native game code) and
-/// Reloader (`0C90` st106: on a native event it stores the possessed body's
-/// place and heading for StateHero and sends `0687` to itself; it never
-/// fires here). HeroSelect runs (`vm/hero_select.rs`).
-const ASSUMED_PLAIN_STATES: &[&str] = &["STU_0C3A5D53", "STU_AB09B113"];
+/// (`0C90` st75/st76, server-only: values for native game code), Reloader
+/// (`0C90` st106: on a native event it stores the possessed body's place
+/// and heading for StateHero and sends `0687` to itself; it never fires
+/// here) and StateHero (`0C90` st0, `13C1` st41: the controller's hero
+/// body at `0687`'s spawn point after a hero change; a generic state on the
+/// client, `RespawnFacing.md`; the server makes and possesses the body
+/// itself). HeroSelect runs (`vm/hero_select.rs`).
+const ASSUMED_PLAIN_STATES: &[&str] = &["STU_0C3A5D53", "STU_AB09B113", "STUStatescriptStateHero"];
 
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn follow(
@@ -421,6 +424,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 if matches!(class, "STU_7106C356" | "STUStatescriptActionEffect") {
                     self.record_frame_action(id, node);
                 }
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
+            class if self.world.no_op_action(class).is_some() => {
+                let answer = self.world.no_op_action(class).unwrap_or_default();
+                self.assume(self.site(id, node), class, answer);
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
@@ -850,6 +859,19 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptStateMoveTo" => StateKind::MoveTo,
             "STU_4BBC5D09" => StateKind::GrappleCast,
             "STU_1F5ED928" => StateKind::NavPath,
+            // The scoped heroes' zoom-in input flag (Widowmaker `001B`
+            // st103, Ana `0B94` st78, Ashe `14FC` st111; codec none). The
+            // client's begin puts the state on its instance's update list
+            // (`0x7FF78AA82DC0`); each frame its update (`0x7FF789808F70`)
+            // writes `m_9A86AC74` (`#27203e`/`#27204e`/`#27205e`, set by no
+            // graph, `&& #169 < 1.0`: the zoom is still coming in) as a byte
+            // into component 43 `+0x270`, and its end clears it
+            // (`0x7FF7897F64C0`). Only the client's own aim code reads that
+            // byte (`0x7FF789671DA0`, with the mouse look scale at `+0x274`
+            // that the input sampler applies); the server gets the commands
+            // it shaped. So it is a plain state here: its activity goes out
+            // in the owner frames, its value is the client's.
+            "STU_D1BF5FA6" => StateKind::Plain,
             // A beam effect from a hardpoint to an entity variable's point
             // (Widowmaker's hook rope, `005A` st7/st53; codec none): the
             // client's presentation alone.

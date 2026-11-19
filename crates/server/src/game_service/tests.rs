@@ -459,6 +459,94 @@ fn controller_shows(
     Some((flag(2438), asset(13161).filter(|_| flag(2114)), asset(940)))
 }
 
+/// The Practice Range's first mode frame: `13C0`'s full observer frame as
+/// the room runs the graph (`Room::first_mode_frame`, the graph's newest).
+/// It carries what opened the Tab board when it was built by hand
+/// (`scene::BOARD_POSTERS` before 2026-11-18: `13C0` with remote slot 4,
+/// the `06DF.025` poster st6, on and `0CB6` under st21, the frame upstream
+/// kjs saw open the board, `254fa913`), and the rest of the graph's tree.
+/// The layouts are `orpheus script query show 13C0` and `0CBB`.
+fn assert_range_mode_frame(graphs: &orpheus_script::graph::GraphStore, chunk: &ReceivedChunk) {
+    use orpheus_script::wire::{Value as ScriptValue, read_full_head, read_value};
+    let head = read_full_head(&chunk.data, |graph| {
+        graphs
+            .graph(u32::from(graph))
+            .map(|graph| graph.header.states_bits)
+    })
+    .expect("a full frame's head");
+    // An observer frame: no CmFD.
+    assert_eq!(head.command_frame, None);
+    // The instances (id, graph, creator, parent instance and state): the
+    // root `13C0`; its SubScripts `0CBB` (st5, the PvP modes' shared
+    // subgraph), `0CB6` (st21, the mode UI) and `0C8F` (st16, under
+    // st15's `06FD`); and `0CBB`'s `11A6` (st43), `03F2` (st44), `180A`
+    // (st45) and `1B4A` (st50).
+    assert_eq!(
+        head.instances,
+        [
+            (1, 0x13c0, None, None),
+            (2, 0x0cbb, None, Some((1, 5))),
+            (3, 0x0cb6, None, Some((1, 21))),
+            (4, 0x0c8f, None, Some((1, 16))),
+            (5, 0x11a6, None, Some((2, 43))),
+            (6, 0x03f2, None, Some((2, 44))),
+            (7, 0x180a, None, Some((2, 45))),
+            (8, 0x1b4a, None, Some((2, 50))),
+        ]
+    );
+    // Mode `005A`'s own variable (the mode's `m_3CE93B76`).
+    assert_eq!(head.variables.get(&27534), Some(&ScriptValue::Bool(true)));
+    // Then instance 1's sections. First its three presence slots (the sync
+    // vars with a presence bit), each a present bit, then the value and no
+    // Stack link: #27536 = !#27534 (st4's Stack) false, so st2 takes its
+    // false subgraph, the poster st6; #12581 true (st17's false subgraph,
+    // rid31); #375 none (st10's FilterArray, on st17's true subgraph, never
+    // begins).
+    let mut bits = BitReader::with_range(&chunk.data, head.end, chunk.width).unwrap();
+    for expected in [
+        Some(ScriptValue::Bool(false)),
+        Some(ScriptValue::Bool(true)),
+        None,
+    ] {
+        let value = bits.bit().unwrap().then(|| read_value(&mut bits).unwrap());
+        if value.is_some() {
+            assert!(!bits.bit().unwrap(), "a presence slot with a link");
+        }
+        assert_eq!(value, expected);
+    }
+    // No instance variables.
+    assert!(!bits.bit().unwrap());
+    // Its ten remote states, in `m_remoteSyncNodes` order. A running state
+    // is a present bit and its active bit, then its payload: a
+    // SendGameMessage (`STU_38EE1100`) its reply flag, off; a Stack nothing
+    // in an observer frame. A state left out is a bit 0: st0, the UX
+    // presenter `STU_62755D14` (an observer frame leaves presenters to the
+    // client); st8, `0702` on `0071`, which nobody sent; st12, #3179's
+    // Stack on st17's true subgraph.
+    let send = Some(1);
+    let stack = Some(0);
+    for (state, payload) in [
+        (0, None),
+        (1, send),  // `0727`: the controllers open hero select
+        (3, send),  // `0694`
+        (4, stack), // #27536
+        (6, send),  // `06DF.025`: the board poster
+        (8, None),
+        (9, send), // `0724`: the spawn rooms
+        (12, None),
+        (15, send), // `06FD`: the bodies' respawn seconds
+        (18, send), // `0702`: the doors open
+    ] {
+        assert_eq!(bits.bit().unwrap(), payload.is_some(), "13C0 st{state}");
+        if let Some(width) = payload {
+            assert!(bits.bit().unwrap(), "13C0 st{state} runs");
+            if width != 0 {
+                assert_eq!(bits.bits(width).unwrap(), 0, "13C0 st{state} payload");
+            }
+        }
+    }
+}
+
 impl WorldRecord {
     fn is_create(&self) -> bool {
         self.operation == Some(1)
@@ -1085,16 +1173,9 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         }
         assert_eq!((script.first, script.span), (0, 1));
         if record.entity == GAME_MODE_ENTITY {
-            // The Range's board frame (`scene::BOARD_POSTERS`, port 1b):
-            // `13C0` with its `06DF.025` poster on and `0CB6` under it,
-            // bit for bit the frame upstream kjs saw open the Tab board
-            // (`254fa913`). Python sent `0CB6` alone (`085b06000c`).
-            assert_eq!(
-                script.data,
-                [
-                    0x08, 0xe0, 0x09, 0x10, 0xb6, 0x0c, 0x14, 0xa0, 0x02, 0x00, 0x30, 0x00
-                ]
-            );
+            if !*mode {
+                assert_range_mode_frame(assets.graphs(), script);
+            }
             *mode = true;
         } else {
             assert_eq!(record.entity, CONTROLLER);
@@ -3947,13 +4028,11 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
-    use orpheus_script::vm::Unknowns;
     use orpheus_sim::scene_assets::SceneAssets;
     use orpheus_wire::commands::FIRE;
     const AHEAD: f64 = 8.0;
 
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-    assets.set_player_unknowns(Unknowns::Tolerate);
+    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     let mut aim = None;
     let (mut server, schemas, [mut ana, mut soldier], _) = practice_world(
         [("ana#1111", 0, "Ana"), ("soldier#2222", 1, "Soldier: 76")],
@@ -4115,6 +4194,127 @@ fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
         corrections += moves.len();
     }
     assert!(corrections > 0, "no correction of Ana's body");
+    server.stop().unwrap();
+}
+
+/// Ana's Biotic Grenade (ABILITY_2: `0B97` st0) through her real body
+/// script, which starts whole in debug builds (`STU_D1BF5FA6`). Her client
+/// doesn't shoot the volley itself (`m_45271E8C` 0), so the server flies it
+/// and shows it to her own client as to the others
+/// (`orpheus_sim::projectiles::ServerCopies`): the copy's create
+/// (`1426.003`), then the shot record naming it on her body, then its
+/// destroy when the server's flight bursts. She throws it at the enemy
+/// Soldier: 76 beside her once he has wounded her, so its 4 m ring takes
+/// them both: the aura (`053:0267`, graph `0C71`) plays the enemy aura
+/// `0C72` on his body (60 from Ana) and the ally aura `0B99` on hers
+/// (a heal of 100), each on its body's own graphs. His world answers
+/// `0C72` rid21's `STU_F7262B36(#40)` (Ana's body's possessor: her
+/// controller, `orpheus_script::vm::listed_relation`); unanswered, it
+/// stopped his whole script.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene"]
+fn anas_biotic_grenade_shows_to_her_own_client_and_its_aura_hurts_an_enemy_and_heals_her() {
+    use orpheus_wire::commands::FIRE;
+    /// `0B97` st4's button (36).
+    const ABILITY_2: u32 = 0x10;
+    const GRENADE: u32 = 0x1426;
+    const FULL: f32 = 200.0;
+
+    let (mut server, schemas, [mut ana, mut soldier], _) =
+        practice_players([("ana#1111", 0, "Ana"), ("soldier#2222", 1, "Soldier: 76")]);
+    let ana_body = ana.owner | 1;
+    let soldier_body = soldier.owner | 1;
+    let health = |watcher: &Watcher, body: u32| {
+        watcher
+            .datagrams
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter(|record| record.entity == body)
+            .filter_map(|record| record.base_health)
+            .next_back()
+    };
+    // The way from one body to the other (bodies: Ana's, the Soldier's).
+    let aim = |server: &Lockstep, from: usize, to: usize| {
+        let bodies = server.bodies(MATCH).unwrap();
+        let [from, to] = [from, to].map(|index| bodies[index].position.unwrap());
+        ((to[0] - from[0]).atan2(to[2] - from[2]) * 32768.0 / std::f64::consts::PI).round() as i32
+            as i16
+    };
+    let mut frames = [ana.tick + 1, soldier.tick + 1];
+    // Both play on (a body's graphs run at its client's command frames).
+    let idle = |watchers: [&mut Watcher; 2], frames: &mut [u32; 2], yaw: i16, pumps: usize| {
+        let [ana, soldier] = watchers;
+        for _ in 0..pumps {
+            send_input(ana, &mut frames[0], yaw, 0, 0, false);
+            send_input(soldier, &mut frames[1], 0, 0, 0, false);
+            ana.pump(&schemas);
+            soldier.pump(&schemas);
+        }
+    };
+
+    // The Soldier wounds Ana, aiming from where the two bodies stand (as
+    // enemies on one spawn point they push each other apart).
+    let deadline = server.now() + Duration::from_secs(10);
+    while !health(&ana, ana_body).is_some_and(|health| health < FULL) {
+        assert!(server.now() < deadline, "waiting for Ana's wound");
+        let toward = aim(&server, 1, 0);
+        send_input(&mut soldier, &mut frames[1], toward, 0, FIRE, false);
+        send_input(&mut ana, &mut frames[0], 0, 0, 0, false);
+        ana.pump(&schemas);
+        soldier.pump(&schemas);
+    }
+    idle([&mut ana, &mut soldier], &mut frames, 0, 30);
+    let wounded = health(&ana, ana_body).unwrap();
+    let unhurt = health(&soldier, soldier_body).unwrap_or(FULL);
+
+    // Ana throws at him.
+    let thrown = [&ana, &soldier].map(|watcher| watcher.datagrams.len());
+    let toward = aim(&server, 0, 1);
+    send_input(&mut ana, &mut frames[0], toward, 0, ABILITY_2, false);
+    let grenade = |watcher: &Watcher, from: usize| {
+        watcher.datagrams[from..]
+            .iter()
+            .flat_map(|(_, records)| records)
+            .find(|record| record.is_create() && record.definition == Some(GRENADE))
+            .map(|record| record.entity)
+    };
+    let gone = |watcher: &Watcher, from: usize| {
+        grenade(watcher, from).is_some_and(|entity| {
+            watcher
+                .find(from, |record| {
+                    record.entity == entity && record.operation == Some(3)
+                })
+                .is_some()
+        })
+    };
+    let deadline = server.now() + Duration::from_secs(10);
+    while !(gone(&ana, thrown[0]) && gone(&soldier, thrown[1])) {
+        assert!(server.now() < deadline, "waiting for the grenade's burst");
+        idle([&mut ana, &mut soldier], &mut frames, toward, 1);
+    }
+    idle([&mut ana, &mut soldier], &mut frames, toward, 30);
+
+    // Her own client: the create, the launch on her body, the destroy.
+    let copy = grenade(&ana, thrown[0]).unwrap();
+    let created = ana
+        .find(thrown[0], |record| {
+            record.entity == copy && record.is_create()
+        })
+        .unwrap();
+    let launched = ana
+        .find(created, |record| {
+            record.entity == ana_body && record.launches.contains(&copy)
+        })
+        .expect("the shot record naming her copy");
+    let destroyed = ana
+        .find(created, |record| {
+            record.entity == copy && record.operation == Some(3)
+        })
+        .unwrap();
+    assert!(created < launched && launched <= destroyed);
+    // The aura on both bodies' graphs.
+    assert_eq!(health(&soldier, soldier_body), Some(unhurt - 60.0));
+    assert_eq!(health(&ana, ana_body), Some((wounded + 100.0).min(FULL)));
     server.stop().unwrap();
 }
 

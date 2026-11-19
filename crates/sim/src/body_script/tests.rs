@@ -1624,9 +1624,11 @@ fn the_wheel_refuses_a_fourth_choice_until_a_count_expires() {
 /// #6034 (st32) and #6036 (st33), all in the owner frames; the observers get
 /// the countdown's remote state. On death it tells the mode its time (`08BB`,
 /// st41) and, when the count ends, that it can respawn (`0685`). The body
-/// refuses unknown content, as debug builds do: the hero's death path
-/// (`004B` st14 → the death layer `01CB`, whose kill cam test reads the
-/// server-only `STU_68F68CD7`) runs to the end.
+/// has the game's filter bits and refuses unknown content, as debug builds
+/// do: the hero's death path (`004B` st14 → the death layer `01CB`, whose
+/// kill cam test reads the server-only `STU_68F68CD7`) runs to the end,
+/// with the death message's camera parameters (`07A9`: the killer's
+/// controller, whose body `01CB` rid224 tells of the kill).
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
@@ -1647,7 +1649,7 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
     let spawn = OwnerBodySpawn {
         controller: 0xa000_0100,
         entity: 0xa000_0101,
-        body_filter: crate::scene::team_bit(0).unwrap(),
+        body_filter: crate::scene::body_filter(crate::scene::team_bit(0).unwrap(), false),
         slot: 0,
         frame: FIRST_TICK,
         pose: Movement {
@@ -1705,14 +1707,16 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
     assert!(alive.state(id, 1).is_none());
 
     // The killer is an enemy body the match lists (as the Training Bots
-    // are): the death layer asks whether he still exists (`01CB` rid43,
-    // `STU_E72F6348(#40)`).
+    // are), with its controller: the death layer asks whether he still
+    // exists (`01CB` rid43, `STU_E72F6348(#40)`) and tells his
+    // controller's body of the kill (rid224).
     let killer = 0xa000_0201;
+    let killer_controller = 0xa000_0200;
     runtime.set_target_candidates(&[TargetCandidate {
         entity: killer,
         team: Some(1),
         dead: false,
-        controller: None,
+        controller: Some(killer_controller),
         ai: true,
         ai_control: None,
         feet: [0.0, 0.0, 6.0],
@@ -1732,20 +1736,36 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
         },
     );
     runtime.health_changed().unwrap();
+    let camera = runtime.death_camera(killer);
+    assert_eq!(
+        camera,
+        Some(crate::combat::DeathCamera {
+            killer_controller,
+            position: spawn.pose.position,
+        })
+    );
     let (message, parameters) =
-        crate::combat::death_message(killer, false, None, Default::default(), &[]);
+        crate::combat::death_message(killer, false, None, Default::default(), &[], camera);
     runtime.receive_message(0, message, parameters).unwrap();
-    let to_mode = |runtime: &mut PlayerBodyRuntime| -> Vec<(u64, Variables)> {
-        runtime
+    let mut to_killer = Vec::new();
+    let mut to_mode = |runtime: &mut PlayerBodyRuntime, frame: u32| -> Vec<(u64, Variables)> {
+        let (mode, others): (Vec<_>, Vec<_>) = runtime
             .take_messages()
             .into_iter()
-            .filter(|message| message.target == GAME_MODE_ENTITY)
+            .partition(|message| message.target == GAME_MODE_ENTITY);
+        to_killer.extend(
+            others
+                .into_iter()
+                .filter(|message| message.target == killer)
+                .map(|message| (frame, message.message, message.parameters)),
+        );
+        mode.into_iter()
             .map(|message| (message.message, message.parameters))
             .collect()
     };
     // Its time to the mode (08BB, st41 on team 0).
     assert_eq!(
-        to_mode(&mut runtime),
+        to_mode(&mut runtime, 0),
         [(
             0x0240_0000_0000_08bb,
             Variables::from([(0xb7, Value::Float(3.0))])
@@ -1764,16 +1784,27 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
     // `!valueOr(mode.id(9541), true) || STU_68F68CD7(owner) || #11485`):
     // no graph writes the mode's #9541, `STU_68F68CD7` has no value (as on
     // the client) and #11485 is unset, so it takes the kill cam switch
-    // (st21), not the plain 3 s wait (st33).
-    let layer = runtime
-        .snapshot()
-        .unwrap()
+    // (st21), not the plain 3 s wait (st33). With the game's body filter
+    // (`{any 1, all 1}`) st21 is true: it times the kill cam (#2441 =
+    // min(10.5, 0.7 · 3) = 2.1 s). It shares the killer's controller (sync
+    // var #21709).
+    let snapshot = runtime.snapshot().unwrap();
+    let (&layer_id, layer) = snapshot
         .instances
-        .values()
-        .find(|instance| instance.graph == 0x01cb)
+        .iter()
+        .find(|(_, instance)| instance.graph == 0x01cb)
         .expect("the death layer");
     let active = |raw: u16| layer.states.get(&raw).is_some_and(|state| state.active);
     assert!(active(21) && !active(33));
+    assert_eq!(
+        dead.instance_variable(layer_id, 21709),
+        Some(&Value::Entity(killer_controller))
+    );
+    assert!(
+        matches!(layer.variables.get(&2441), Some(&Value::Float(seconds)) if (seconds - 2.1).abs() < 1e-6),
+        "{:?}",
+        layer.variables.get(&2441)
+    );
 
     // The count runs at 1 a second from the death's frame: 3000 ms is past
     // after 188 frames of 16 ms (187 make 2992 ms), when it sends `0685`
@@ -1785,7 +1816,7 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
             .component
             .advance_frame(FIRST_TICK + frame, &mut runtime.world)
             .unwrap();
-        assert!(to_mode(&mut runtime).is_empty(), "frame {frame}");
+        assert!(to_mode(&mut runtime, frame).is_empty(), "frame {frame}");
     }
     let counting = projected(&runtime, View::Owner);
     assert!(counting.state(id, 1).is_some());
@@ -1794,7 +1825,7 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
         .advance_frame(FIRST_TICK + 188, &mut runtime.world)
         .unwrap();
     assert_eq!(
-        to_mode(&mut runtime),
+        to_mode(&mut runtime, 188),
         [(
             0x0240_0000_0000_0685,
             Variables::from([
@@ -1806,18 +1837,30 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
     let done = projected(&runtime, View::Owner);
     assert!(done.state(id, 1).is_none() && done.state(id, 32).is_none());
     assert_eq!(done.instance_variable(id, 384), Some(&Value::Float(0.0)));
-    // The death layer ran its kill cam test and kept the body's script.
+    // Two frames after st21 began (st125), rid224 tells the killer's
+    // controller's body (`STU_0AC15F78(#21709)`) of the kill: `17D9` with
+    // the death's tags (#1605) and the credited body (#40).
+    assert_eq!(
+        to_killer,
+        [(
+            2,
+            0x0240_0000_0000_17d9,
+            Variables::from([
+                (0x3d, Value::Array(Vec::new())),
+                (0xbd, Value::Entity(killer))
+            ])
+        )]
+    );
+    // The kill cam stays off in the Range: 0.4 s after the death the layer
+    // aborts it (rid62: 2.6 s left < 5.4), so st2 never begins.
     let snapshot = runtime.snapshot().unwrap();
+    let layer = &snapshot.instances[&layer_id];
+    assert!(layer.states.get(&2).is_none_or(|state| !state.active));
+    // The death layer ran its kill cam test and kept the body's script.
     assert!(
         snapshot.diagnostics.is_empty(),
         "{:?}",
         snapshot.diagnostics
-    );
-    assert!(
-        snapshot
-            .instances
-            .values()
-            .any(|instance| instance.graph == 0x01cb)
     );
 }
 

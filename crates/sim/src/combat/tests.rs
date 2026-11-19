@@ -113,6 +113,7 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
                 critical: true,
                 loadout: None,
                 tags: shot.hit.tags,
+                dealt: 40.0,
                 tick: context.tick,
             })
         );
@@ -230,16 +231,22 @@ fn heroes_respawn_after_the_mode_time() {
 
 /// The kill feed line reads the killer, the credited body (00BD), the
 /// tags (003D), the crit, the loadout and the assisters' bodies (03E7)
-/// from the "died" message.
+/// from the "died" message; a player's body's death layer `01CB` its
+/// killer's controller (07A9) and the set camera's fields (0232-0234).
 #[test]
 fn the_died_message_names_the_killer_the_crit_the_loadout_and_the_tags() {
     let melee: DamageTags = [0x0d80_0000_0000_0302].into_iter().collect();
+    let camera = DeathCamera {
+        killer_controller: 0xa000_0200,
+        position: [1.0, 2.0, 3.0],
+    };
     let (message, parameters) = death_message(
         0xa000_0201,
         true,
         Some(0x0b90_0000_0000_008d),
         melee,
         &[0xa001_0201],
+        Some(camera),
     );
     assert_eq!(message, DIED);
     assert_eq!(parameters[&KILLER], Value::Entity(0xa000_0201));
@@ -254,10 +261,18 @@ fn the_died_message_names_the_killer_the_crit_the_loadout_and_the_tags() {
         parameters[&ASSISTS],
         Value::Array(vec![Value::Entity(0xa001_0201)])
     );
-    let plain = death_message(1, false, None, DamageTags::NONE, &[]).1;
+    assert_eq!(parameters[&KILLER_CONTROLLER], Value::Entity(0xa000_0200));
+    assert_eq!(parameters[&SET_CAMERA], Value::Bool(false));
+    assert_eq!(
+        parameters[&SET_CAMERA_POINT],
+        Value::Vector([1.0, 2.0, 3.0])
+    );
+    assert_eq!(parameters[&SET_CAMERA_ON_BODY], Value::Bool(false));
+    let plain = death_message(1, false, None, DamageTags::NONE, &[], None).1;
     assert_eq!(plain[&LOADOUT], Value::Null);
     assert_eq!(plain[&DAMAGE_TAGS], Value::Array(Vec::new()));
     assert_eq!(plain[&ASSISTS], Value::Array(Vec::new()));
+    assert!(!plain.contains_key(&KILLER_CONTROLLER) && !plain.contains_key(&SET_CAMERA));
 }
 
 /// A hit the body survives: its damage message carries the hit's tags, the
@@ -287,8 +302,9 @@ fn the_damage_message_carries_the_tags_the_attacker_and_the_way() {
 /// The messages a hit gives the body, in order: a hit it survives, its
 /// damage message; a killing hit, its damage message with the kill's
 /// fields (`1544` rid54 reads the credited body, crit, loadout and assists
-/// from `0011.025`), then the death message. The `.hurt off` switch holds
-/// back the damage message only.
+/// from `0011.025`), then the death message, which alone carries the death
+/// layer's camera fields. The `.hurt off` switch holds back the damage
+/// message only.
 #[test]
 fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
     let splash: DamageTags = [0x0d80_0000_0000_078d].into_iter().collect();
@@ -305,14 +321,18 @@ fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
         tags: splash,
         direction: Some([0.0, 0.0, 1.0]),
     };
+    let camera = Some(DeathCamera {
+        killer_controller: 0xa000_0100,
+        position: [0.0; 3],
+    });
     let on = HurtFeedback::default();
     let damage = damage_message(SHOOTER.source, 75.0, splash, hit.direction);
     assert_eq!(
-        hit_messages(&hit, hit.tags, 75.0, None, on),
+        hit_messages(&hit, hit.tags, 75.0, None, camera, on),
         std::slice::from_ref(&damage)
     );
 
-    let [(first, killing), died] = hit_messages(&hit, hit.tags, 75.0, Some(&[]), on)
+    let [(first, killing), died] = hit_messages(&hit, hit.tags, 75.0, Some(&[]), camera, on)
         .try_into()
         .unwrap();
     assert_eq!(first, DAMAGED);
@@ -323,17 +343,21 @@ fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
     assert_eq!(killing[&CRIT], Value::Bool(true));
     assert_eq!(killing[&LOADOUT], Value::Asset(0x0b90_0000_0000_008e));
     assert_eq!(killing[&ASSISTS], Value::Array(Vec::new()));
+    assert!(!killing.contains_key(&KILLER_CONTROLLER));
     assert_eq!(
         died,
-        death_message(SHOOTER.source, true, loadout, splash, &[])
+        death_message(SHOOTER.source, true, loadout, splash, &[], camera)
     );
 
     let off = HurtFeedback {
         message: false,
         ..on
     };
-    assert!(hit_messages(&hit, hit.tags, 75.0, None, off).is_empty());
-    assert_eq!(hit_messages(&hit, hit.tags, 75.0, Some(&[]), off), [died]);
+    assert!(hit_messages(&hit, hit.tags, 75.0, None, camera, off).is_empty());
+    assert_eq!(
+        hit_messages(&hit, hit.tags, 75.0, Some(&[]), camera, off),
+        [died]
+    );
 }
 
 /// A kill's credit (`kill_credit`): slot 0 kills slot 1. Damage within

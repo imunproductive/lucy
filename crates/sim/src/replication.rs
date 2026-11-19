@@ -15,8 +15,8 @@ use crate::{
     bot_script::{BotEvent, BotViewContext, BotViews, SeenDelivery, SeenRocket},
     bots::BOT_RECORD_DELAY,
     combat::{
-        BotReplacement, Combat, DEAD, PlayerHit, PlayerTarget, PosedProjectile, PosedShot,
-        RESPAWN_RETRY, TargetRewind, credits_damage, hit_messages,
+        BotReplacement, Combat, DEAD, DeathCamera, PlayerHit, PlayerTarget, PosedProjectile,
+        PosedShot, RESPAWN_RETRY, TargetRewind, credits_damage, hit_messages,
     },
     controller::ControllerFrame,
     egress::{
@@ -367,6 +367,13 @@ pub trait OwnerBodyRuntime: Send {
     /// (`Combat::target_candidates`).
     fn set_target_candidates(&mut self, _candidates: &[TargetCandidate]) {}
 
+    /// The death layer's parameters of the death message for a kill by the
+    /// body `killer` ([`DeathCamera`]), as the body's world knows the
+    /// killer and the body; none: the body runs no script that reads them.
+    fn death_camera(&mut self, _killer: u32) -> Option<DeathCamera> {
+        None
+    }
+
     /// Where the player saw those bodies at `command`'s view, for the
     /// searches that rewind, before the body's script runs the command.
     fn see_targets(&mut self, _rewind: &TargetRewind<'_>, _command: &Command) {}
@@ -415,6 +422,9 @@ struct BodyScript {
     fired: Vec<FiredProjectile>,
     /// The buttons of the last command traced (`orpheus::owner` at debug).
     traced_buttons: u32,
+    /// The active states (instance, graph, state, activation) at the last
+    /// frame traced (`orpheus::pose` at debug).
+    traced_states: BTreeSet<(u16, u32, u16, u16)>,
     /// The last command the body ran with a pose: the frames of a gap
     /// repeat it ([`ScriptGap`]).
     input: Option<Command>,
@@ -451,8 +461,66 @@ impl BodyScript {
             server_shots: 0,
             fired: Vec::new(),
             traced_buttons: 0,
+            traced_states: BTreeSet::new(),
             input: None,
         })
+    }
+
+    /// `orpheus::pose` at debug: the body's movement after a command frame,
+    /// and the states that began or ended in it (instance/graph/state#activation),
+    /// to compare with the client's prediction frame by frame.
+    fn trace_pose(&mut self, mover: &Mover, frame: u32) {
+        if !tracing::enabled!(target: "orpheus::pose", tracing::Level::DEBUG) {
+            return;
+        }
+        let active: BTreeSet<_> = self
+            .runtime
+            .snapshot()
+            .into_iter()
+            .flat_map(|snapshot| {
+                snapshot.instances.iter().flat_map(|(&id, instance)| {
+                    instance
+                        .states
+                        .iter()
+                        .filter(|(_, state)| state.active)
+                        .map(move |(&raw, state)| (id, instance.graph, raw, state.activation))
+                })
+            })
+            .collect();
+        let name = |&(id, graph, raw, activation): &(u16, u32, u16, u16)| {
+            format!("{id}/{graph:04X}/{raw}#{activation}")
+        };
+        let began: Vec<_> = active.difference(&self.traced_states).map(name).collect();
+        let ended: Vec<_> = self.traced_states.difference(&active).map(name).collect();
+        self.traced_states = active;
+        let pose = mover.pose();
+        // Widowmaker's Grappling Hook's outputs when a state changes: #59
+        // (the switch), #431 (hook point), #433 (way), #434 (normal), #435
+        // (hit).
+        let hook: Vec<_> = (!began.is_empty() || !ended.is_empty())
+            .then(|| self.runtime.snapshot())
+            .flatten()
+            .into_iter()
+            .flat_map(|snapshot| snapshot.instances.values())
+            .filter(|instance| instance.graph == 0x005a)
+            .flat_map(|instance| {
+                [59, 431, 433, 434, 435]
+                    .into_iter()
+                    .filter_map(|id| Some(format!("#{id}={:?}", instance.variables.get(&id)?)))
+            })
+            .collect();
+        tracing::debug!(
+            target: "orpheus::pose",
+            body = format_args!("{:08X}", self.id.entity),
+            frame,
+            position = ?pose.position,
+            velocity = ?pose.velocity,
+            flags = format_args!("{:#x}", pose.flags),
+            began = ?began,
+            ended = ?ended,
+            hook = ?hook,
+            "owner pose"
+        );
     }
 
     /// One frame of the body's script, its searches that rewind seeing the
@@ -488,6 +556,7 @@ impl BodyScript {
                     "command buttons changed"
                 );
             }
+            self.trace_pose(mover, command.frame);
         }
         if !self
             .runtime
@@ -3511,11 +3580,16 @@ impl WorldDelivery {
         else {
             return;
         };
+        let camera = damage
+            .killed
+            .then(|| script.runtime.death_camera(hit.shooter.source))
+            .flatten();
         let messages = hit_messages(
             hit,
             damage.tags,
             damage.dealt,
             damage.killed.then_some(assists),
+            camera,
             scene.hurt_feedback(),
         );
         let failure = messages.into_iter().find_map(|(message, parameters)| {

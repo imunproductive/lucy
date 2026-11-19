@@ -786,6 +786,7 @@ impl<'a> GraphView<'a> {
         static EMPTY: Object = Object {
             class: 0,
             fields: Vec::new(),
+            stored: 0,
         };
         let mut view = View::plain(asset);
         view.links = true;

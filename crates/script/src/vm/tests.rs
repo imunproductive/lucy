@@ -4450,6 +4450,23 @@ fn body(entity: u32, team: u8, feet: [f64; 3]) -> TargetCandidate {
     }
 }
 
+/// The listed bodies tell another body's current possessor
+/// (`STU_F7262B36`): its controller, as Biotic Grenade's enemy aura `0C72`
+/// rid21 asks of the thrower's body on the body it hit. A controller or an
+/// unlisted entity isn't a listed body.
+#[test]
+fn a_listed_bodys_current_possessor_is_its_controller() {
+    const CONTROLLER: u32 = 0xa000_0300;
+    let bodies = [TargetCandidate {
+        controller: Some(CONTROLLER),
+        ..body(ENEMY, 1, [0.0; 3])
+    }];
+    let possessor = |entity| listed_relation(&bodies, EntityRelation::CurrentPossessor, entity);
+    assert_eq!(possessor(ENEMY), Some(CONTROLLER));
+    assert_eq!(possessor(CONTROLLER), None);
+    assert_eq!(possessor(ALLY), None);
+}
+
 /// Soldier: 76's search when his Biotic Field lands (`0257` st6): a 10 m
 /// sphere a metre over his feet, allies (`m_66747E7D` 1) but not himself
 /// (`m_89831602` 4), living (`m_4EA686DB` 16) heroes (`m_84065FD1` 1); the

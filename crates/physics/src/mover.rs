@@ -211,6 +211,12 @@ impl Mover {
         self.posture.crouched()
     }
 
+    /// The target of the `MoveTo` move the body runs (the client's kind-1
+    /// block `+0x20`), if any.
+    pub fn move_target(&self) -> Option<[f64; 3]> {
+        self.move_to.as_ref().map(move_to::Run::target)
+    }
+
     /// The body's capsule where it stands now: its lowest point at the feet
     /// plus the lift (the pogo plus the spring offset), its stance's radius
     /// and segment. The client places another player's proxy so from his
@@ -465,7 +471,6 @@ impl Mover {
             *params,
             move_to::Body {
                 feet: self.pose.position,
-                lift: f64::from(self.lift()),
                 body: &self.body,
                 base: &self.base,
                 crouched: self.posture.crouched(),
