@@ -1186,6 +1186,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             sender: self.sender,
             watcher: None,
             read_native: false,
+            read_volatile: false,
             natives: Vec::new(),
             assumed: Vec::new(),
         };

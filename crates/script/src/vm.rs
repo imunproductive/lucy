@@ -1736,6 +1736,7 @@ impl Component {
             sender: None,
             watcher: None,
             read_native: false,
+            read_volatile: false,
             natives: Vec::new(),
             // A read outside the VM's run: nothing is recorded.
             assumed: Vec::new(),
@@ -3286,6 +3287,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             sender: self.sender,
             watcher,
             read_native: false,
+            read_volatile: false,
             natives: Vec::new(),
             assumed: Vec::new(),
         };
@@ -3296,7 +3298,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         };
         let reads = context.reads;
         let foreign_reads = context.foreign_reads;
-        let read_native = context.read_native;
+        // A native or a volatile binding read: the client re-runs the
+        // switches each update (BooleanSwitch begin `0x7FF78AA80090` sets
+        // the flag `+0x1B5` that puts a volatile reader on the update list,
+        // `0x7FF78AAA4C30`; its update re-checks the condition).
+        let polled = context.read_native || context.read_volatile;
         let natives = context.natives;
         for (class, answer) in context.assumed {
             self.assume(site, &class, answer);
@@ -3323,7 +3329,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             if let Some(start) = self
                 .state(watcher)
                 .filter(|state| {
-                    read_native
+                    polled
                         && matches!(
                             state.kind,
                             StateKind::BooleanSwitch(_)
@@ -3722,6 +3728,8 @@ struct InstanceContext<'a, W> {
     sender: Option<u32>,
     watcher: Option<StateKey>,
     read_native: bool,
+    /// A variable bound to a volatile output (a weapon volley's) was read.
+    read_volatile: bool,
     /// The native configs' classes read ([`Context::native`]).
     natives: Vec<String>,
     /// Native answers the world marked as assumptions, by config class.

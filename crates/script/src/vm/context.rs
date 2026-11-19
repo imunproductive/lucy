@@ -7,6 +7,17 @@ impl<W: World> InstanceContext<'_, W> {
         if !self.reads.contains(&key) {
             self.reads.push(key);
         }
+        // A volley's outputs are volatile bindings (StartFiring binds them
+        // with the flag `+0x29` set: `0x7FF78AA83310`/`0x7FF78AA831F0`
+        // argument 6), so the client's read of the variable puts the reader
+        // on its instance's update list (`0x7FF78AA82AD0`).
+        if self.machine.links.get(&key).is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| matches!(entry.output, LinkValue::Volley(_)))
+        }) {
+            self.read_volatile = true;
+        }
         let below = self.watcher.filter(|watcher| {
             self.machine
                 .snapshot
@@ -360,6 +371,7 @@ impl<W: World> Context for InstanceContext<'_, W> {
             sender: None,
             watcher: None,
             read_native: false,
+            read_volatile: false,
             natives: Vec::new(),
             assumed: Vec::new(),
         };
@@ -375,6 +387,7 @@ impl<W: World> Context for InstanceContext<'_, W> {
             }
         }
         self.read_native |= context.read_native;
+        self.read_volatile |= context.read_volatile;
         for class in context.natives {
             if !self.natives.contains(&class) {
                 self.natives.push(class);

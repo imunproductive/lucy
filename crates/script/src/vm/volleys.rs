@@ -5,7 +5,10 @@
 //! max shots); a finish timer (param 2) at the last shot's time and a
 //! minimum-shots timer (param 1). While active m_out_Ammo reads
 //! `max(0, ammo0 - perShot * (shots + 1))`; at the end the variable keeps the
-//! value one ms later (the +1 ms rule, 0x7FF78A07F310).
+//! value one ms later (the +1 ms rule, 0x7FF78A07F310). The outputs are
+//! volatile bindings (StartFiring 0x7FF789C6E160 binds all three with the
+//! flag `+0x29`): a switch that reads one re-checks each update instead of
+//! waiting for a change notice (`InstanceContext::read`).
 
 use super::*;
 
