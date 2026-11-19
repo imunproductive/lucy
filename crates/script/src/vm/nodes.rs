@@ -411,6 +411,22 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
+            // Restarts the `Anim` state whose handle `m_EDB2BD2A` holds
+            // (`vm/timers.rs`). Its bool `m_A9220BE5` (Zenyatta's `0176`,
+            // `02F3`) gates the overridden registration's execute
+            // (`0x7FF789BCB670`), not the client's (`0x7FF78981C830`), which
+            // the server follows. The run follows the out plug whatever the
+            // execute did (`0x7FF78AA7EBA0`).
+            "STU_6E18DEA0" => {
+                let target = field(&node.fields, "m_EDB2BD2A");
+                if !target.is_null()
+                    && let Some(target) = self.evaluate(id, node, target, caller)
+                {
+                    self.restart_animation(&target)?;
+                }
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
             "STUStatescriptActionSwitch" => self.action_switch(id, node, depth),
             "STU_CEBDAF17" => {
                 self.track_stat(id, node);

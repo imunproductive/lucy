@@ -29,6 +29,26 @@ enum AnimAlias {
     Unknown,
 }
 
+/// The kind of an `Anim` state's handle (`m_7CCEC4F0`): the client's play
+/// `0x7FF789BD5810` writes 3 in the handle's first word.
+const ANIMATION_HANDLE: u8 = 3;
+
+/// How an `Anim` state's timer runs.
+#[derive(Clone, Copy)]
+enum AnimationRun {
+    /// `m_37EE887D` is true: it arms no timer.
+    Untimed,
+    /// Its length is unknown: it never ends by itself (an assumption).
+    Endless,
+    /// Timer 1 after `delay_ms` (`seconds` long), then the finish unless
+    /// the client ends it (`m_154DBA91`).
+    Timed {
+        seconds: f32,
+        delay_ms: u64,
+        client_ends: bool,
+    },
+}
+
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn register_tick(&mut self, key: StateKey, start_ms: u64) {
         self.machine
@@ -304,7 +324,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     /// the client's does (OwnerPrediction.md "DayFirstShot2"). An alias
     /// whose length the data can't tell, with no authored length, never
     /// ends by itself (an assumption, as the Python reference:
-    /// docs/notes/behavior.md).
+    /// docs/notes/behavior.md). A state that plays (it has time left, or
+    /// no timer) stores its handle in `m_7CCEC4F0`: the client's play
+    /// `0x7FF789BD5810` writes `{3, instance, state, 0}` (a type 7 value,
+    /// `0x7FF78AAB4A10`), which `STU_6E18DEA0` reads to restart it
+    /// ([`Self::restart_animation`]).
     pub(super) fn arm_animation(
         &mut self,
         key: StateKey,
@@ -347,31 +371,70 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 )?;
             }
         }
-        let no_timer = field(&node.fields, "m_37EE887D");
-        if !no_timer.is_null() {
-            let Some(value) = self.evaluate(id, node, no_timer, None) else {
-                return Ok(());
-            };
-            if truthy(&value) {
-                return Ok(());
+        let Some(run) = self.animation_run(id, node, alias) else {
+            return Ok(());
+        };
+        let plays = match run {
+            AnimationRun::Untimed | AnimationRun::Endless => true,
+            AnimationRun::Timed { delay_ms, .. } => delay_ms > 0,
+        };
+        if plays {
+            match expr::lvalue(field(&node.fields, "m_7CCEC4F0")) {
+                Ok(Some(handle)) => self.write(
+                    source_key(id, handle),
+                    Value::Handle {
+                        kind: ANIMATION_HANDLE,
+                        instance: u32::from(id),
+                        state: key.raw,
+                        extra: 0,
+                    },
+                )?,
+                Ok(None) => (),
+                Err(error) => self.report(site, Issue::Expression(error)),
             }
+        }
+        self.arm_animation_timer(key, run)
+    }
+
+    /// Posts an `Anim` state's timer 1 and its finish.
+    fn arm_animation_timer(&mut self, key: StateKey, run: AnimationRun) -> Result<(), InitFault> {
+        if let AnimationRun::Timed {
+            delay_ms,
+            client_ends,
+            ..
+        } = run
+        {
+            self.post_after(key.instance, delay_ms, Event::Timer(key.raw, 1))?;
+            if !client_ends {
+                self.post_after(key.instance, delay_ms, Event::Finish(key.raw))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// How an `Anim` state's timer runs ([`Self::arm_animation`]); none
+    /// when an evaluation failed (reported).
+    fn animation_run(
+        &mut self,
+        id: u16,
+        node: &Node,
+        alias: Option<AnimAlias>,
+    ) -> Option<AnimationRun> {
+        let site = self.site(id, node);
+        let no_timer = field(&node.fields, "m_37EE887D");
+        if !no_timer.is_null() && truthy(&self.evaluate(id, node, no_timer, None)?) {
+            return Some(AnimationRun::Untimed);
         }
         let authored = field(&node.fields, "m_86701C3E");
         let mut seconds = if authored.is_null() {
             0.0
         } else {
-            let Some(value) = self.evaluate(id, node, authored, None) else {
-                return Ok(());
-            };
-            expr::to_float(&value)
+            expr::to_float(&self.evaluate(id, node, authored, None)?)
         };
         if seconds < MODEL_LENGTH_BELOW {
             let played = match alias {
                 Some(played) => played,
-                None => match self.animation_alias(id, node) {
-                    Some(played) => played,
-                    None => return Ok(()),
-                },
+                None => self.animation_alias(id, node)?,
             };
             let length = match played {
                 AnimAlias::Zero => Some(0.0),
@@ -386,40 +449,102 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     let speed = if speed.is_null() {
                         1.0
                     } else {
-                        let Some(value) = self.evaluate(id, node, speed, None) else {
-                            return Ok(());
-                        };
-                        expr::to_float(&value)
+                        expr::to_float(&self.evaluate(id, node, speed, None)?)
                     };
                     seconds = f64::from((length * speed) as f32);
                 }
                 None if authored.is_null() => {
                     self.assume(site, &node.class, "never ends by itself");
-                    return Ok(());
+                    return Some(AnimationRun::Endless);
                 }
                 None => (),
             }
         }
         let delay = ((seconds * 1000.0) as f32).round();
+        let seconds = seconds as f32;
         if !delay.is_finite() {
             self.report(site, Issue::UnsupportedField("animation duration"));
-            return Ok(());
+            return None;
         }
         let removes_self = field(&node.fields, "m_154DBA91");
-        let client_ends = if removes_self.is_null() {
-            false
-        } else {
-            let Some(value) = self.evaluate(id, node, removes_self, None) else {
-                return Ok(());
-            };
-            truthy(&value)
+        let client_ends =
+            !removes_self.is_null() && truthy(&self.evaluate(id, node, removes_self, None)?);
+        Some(AnimationRun::Timed {
+            seconds,
+            delay_ms: delay.max(0.0) as u64,
+            client_ends,
+        })
+    }
+
+    /// `STU_6E18DEA0` (execute `0x7FF78981C830`, the client's winning
+    /// registration; restart `0x7FF789BCEEE0`): restarts the `Anim` state
+    /// whose handle `target` is ([`Self::arm_animation`]) when it still
+    /// plays: begun over 1 ms ago and more than 1 ms before its end, which
+    /// its play put its length less 1/30 s after it began playing (none
+    /// without time to run), or at any time with its `m_2DEAE6A9`. The
+    /// restart takes the state's length again and arms its timer 1 that
+    /// far from now (with the finish, as its begin does); its begin plugs
+    /// don't run again. Anything else (no handle, another state, an ended
+    /// one) changes nothing.
+    pub(super) fn restart_animation(&mut self, target: &Value) -> Result<(), InitFault> {
+        let &Value::Handle {
+            instance, state, ..
+        } = target
+        else {
+            return Ok(());
         };
-        let delay_ms = delay.max(0.0) as u64;
-        self.post_after(id, delay_ms, Event::Timer(key.raw, 1))?;
-        if !client_ends {
-            self.post_after(id, delay_ms, Event::Finish(key.raw))?;
+        let Ok(instance) = u16::try_from(instance) else {
+            return Ok(());
+        };
+        let key = StateKey {
+            instance,
+            raw: state,
+        };
+        let Some(begun_ms) = self
+            .state(key)
+            .filter(|state| state.active && state.kind == StateKind::Anim)
+            .map(|state| state.start_ms)
+        else {
+            return Ok(());
+        };
+        let Some(node) = self.graph(instance).state(usize::from(state)) else {
+            return Ok(());
+        };
+        let looped = field(&node.fields, "m_2DEAE6A9");
+        let looped = !looped.is_null()
+            && self
+                .evaluate(instance, node, looped, None)
+                .is_some_and(|value| truthy(&value));
+        let Some(run) = self.animation_run(instance, node, None) else {
+            return Ok(());
+        };
+        let AnimationRun::Timed {
+            seconds, delay_ms, ..
+        } = run
+        else {
+            return Ok(());
+        };
+        let now = self.machine.now_ms;
+        let timer = self
+            .machine
+            .queues
+            .iter(instance)
+            .find_map(|(due_ms, event)| {
+                matches!(event, Event::Timer(raw, 1) if *raw == state).then_some(due_ms)
+            });
+        let end_ms = ((seconds - 1.0 / 30.0) * 1000.0).round();
+        let playing = timer.is_some_and(|due_ms| {
+            let end = due_ms.saturating_sub(delay_ms) as f64 + f64::from(end_ms);
+            now > begun_ms + 1 && end_ms > 0.0 && (now as f64) < end - 1.0
+        });
+        if !(playing || looped) || delay_ms == 0 {
+            return Ok(());
         }
-        Ok(())
+        self.machine.queues.retain(
+            instance,
+            |_, event| !matches!(event, Event::Timer(raw, 1) | Event::Finish(raw) if *raw == state),
+        );
+        self.arm_animation_timer(key, run)
     }
 
     pub(super) fn arm_frame_wait(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {

@@ -2536,6 +2536,110 @@ fn authored_helix_uses_its_six_second_cooldown_before_the_next_volley() {
     assert_eq!(knockback.at(3.5), None);
 }
 
+/// Moira's Biotic Orb (`10E4`): E, then the primary fire throws the
+/// healing orb (rid18 st10, `1E60.003`) and the secondary fire the
+/// damaging one (rid19 st11, `1E61.003`), each with the team's ray profile
+/// in `#8518`. On the way the ability's `STU_6E18DEA0` (rid74) reads the
+/// handle its Anim rid22 (st13) stores in `#12781`.
+#[test]
+#[ignore = "requires a derived 1.74 graph bundle"]
+fn authored_biotic_orb_throws_the_healing_or_the_damaging_orb() {
+    const MOIRA: u64 = 0x02e0_0000_0000_01a2;
+    const MOIRA_BODY: u64 = 0x0400_0000_0000_1c46;
+    let data = orpheus_testkit::runtime_dir().join("data");
+    let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
+    let body = &graphs.bodies()[&MOIRA_BODY];
+    for (fire, volley, orb) in [
+        (0x001, 10, 0x0400_0000_0000_1e60),
+        (0x002, 11, 0x0400_0000_0000_1e61),
+    ] {
+        let mut world = PlayerWorld::new(
+            Arc::clone(&graphs),
+            0xa000_0100,
+            0xa000_0101,
+            TEAM_ONE,
+            PRACTICE_RANGE_MODE,
+            MOIRA,
+        );
+        world.pool_types_known = true;
+        world.target_tags = body.target_tags.clone();
+        let mut component = Component::start(
+            Arc::clone(&graphs),
+            0xa000_0101,
+            player_entity_variables(body, 200.0, 200.0),
+            player_roots(body, &graphs).unwrap(),
+            1000,
+            &mut world,
+            MAX_INIT_WORK,
+        )
+        .unwrap();
+        component.advance_frame(1000, &mut world).unwrap();
+        let mut shots = Vec::new();
+        // E at 1010, the fire at 1020 (after the ability's 0.1 s wait).
+        for frame in 1001..=1040 {
+            let buttons = match frame {
+                1010 => 0x010,
+                1020 => fire,
+                _ => 0,
+            };
+            component
+                .advance_command(
+                    Command {
+                        frame,
+                        buttons,
+                        ..Command::default()
+                    },
+                    &mut world,
+                )
+                .unwrap();
+            shots.extend(std::mem::take(&mut component.machine.shots));
+        }
+        let snapshot = component.snapshot().unwrap();
+        let (&ability, _) = snapshot
+            .instances
+            .iter()
+            .find(|(_, instance)| instance.graph == 0x10e4)
+            .unwrap();
+        let gaps: Vec<_> = snapshot
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.site.graph == 0x10e4)
+            .collect();
+        assert!(gaps.is_empty(), "{gaps:?}");
+        let instance = |id| Variable {
+            scope: Scope::Instance,
+            id,
+        };
+        assert_eq!(
+            component.resolved_variable(ability, instance(12781)),
+            Some(Value::Handle {
+                kind: 3,
+                instance: u32::from(ability),
+                state: 13,
+                extra: 0
+            })
+        );
+        assert_eq!(
+            component.resolved_variable(ability, instance(8518)),
+            Some(Value::Asset(0x0690_0000_0000_0120))
+        );
+        let thrown: Vec<_> = shots
+            .iter()
+            .map(|shot| (shot.instance, shot.raw_state))
+            .collect();
+        assert_eq!(thrown, [(ability, volley)]);
+        let shot = &shots[0];
+        let node = component.shot_node(shot).unwrap();
+        let ballistics = crate::weapons::ProjectileBallistics::from_authored(node, |config| {
+            component.evaluate_shot_config(shot, config, &mut world)
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(ballistics.definition, Some(orb));
+        assert_eq!((ballistics.speed, ballistics.lifetime), (20.0, 7.0));
+    }
+}
+
 #[test]
 #[ignore = "requires a derived 1.74 graph bundle"]
 fn authored_soldier_rifle_holds_releases_and_reloads_on_the_reference_clock() {
@@ -5679,6 +5783,85 @@ fn an_anim_outputs_its_scalar_while_it_runs() {
     component.advance_frame(102, &mut Animations).unwrap();
     assert_eq!(active(component.snapshot().unwrap(), 1), Vec::<u16>::new());
     assert_eq!(component.resolved_variable(1, output), Some(Value::Null));
+}
+
+/// An `Anim` that plays stores its handle in `m_7CCEC4F0`, and
+/// `STU_6E18DEA0` with that handle restarts it while it plays (the
+/// client's `0x7FF78981C830` → `0x7FF789BCEEE0`): its timer and finish
+/// move to its length from the restart. Its play ends its length less
+/// 1/30 s after it began playing; a restart later than 1 ms before that
+/// changes nothing.
+#[test]
+fn the_restart_action_moves_a_playing_anims_end() {
+    let wait = |seconds: f64, action: u16| {
+        json!({
+            "m_timeout":{"$":"STUConfigVarFloat","m_value":seconds},
+            "m_onFinishedPlug":plug(&[(action,"m_inPlug")],&[]),
+        })
+    };
+    let restart = json!({"m_EDB2BD2A":var(7, false)});
+    let fixture = graph(
+        42,
+        vec![
+            entry(&[(1, "m_beginPlug"), (2, "m_beginPlug"), (4, "m_beginPlug")]),
+            node(
+                1,
+                "STUStatescriptStateAnim",
+                Some(0),
+                json!({"m_11E0A658":anim_alias(ANIMATED), "m_7CCEC4F0":var(7, false)}),
+            ),
+            node(2, "STUStatescriptStateWait", Some(1), wait(0.5, 3)),
+            node(3, "STU_6E18DEA0", None, restart.clone()),
+            node(4, "STUStatescriptStateWait", Some(2), wait(1.74, 5)),
+            node(5, "STU_6E18DEA0", None, restart),
+        ],
+        json!([1, 2, 4]),
+        json!([0]),
+    );
+    let mut component = Component::start(
+        Arc::new(store(vec![fixture])),
+        42,
+        Variables::new(),
+        vec![Root::new(1, 42)],
+        100,
+        &mut Animations,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let anim_end = |component: &Component| -> Vec<(u64, bool)> {
+        component.snapshot().unwrap().pending_timers[&1]
+            .iter()
+            .filter(|timer| timer.raw_state == 0)
+            .map(|timer| (timer.due_ms, timer.finish))
+            .collect()
+    };
+    let handle = Variable {
+        scope: Scope::Instance,
+        id: 7,
+    };
+    assert_eq!(
+        component.resolved_variable(1, handle),
+        Some(Value::Handle {
+            kind: 3,
+            instance: 1,
+            state: 0,
+            extra: 0
+        })
+    );
+    // Begun at 1600 ms, 1.25 s long.
+    assert_eq!(anim_end(&component), [(2850, false), (2850, true)]);
+    // The first restart: the wait due at 2100 ms ends in frame 132, at
+    // 2112 ms; the timer goes 1.25 s from then.
+    component.advance_frame(132, &mut Animations).unwrap();
+    assert_eq!(anim_end(&component), [(3362, false), (3362, true)]);
+    // The second, due at 3340 ms, runs in frame 209 (3344 ms), past the
+    // end of the play that began at 2112 ms: 2112 + 1250 - 33 = 3329 ms.
+    component.advance_frame(209, &mut Animations).unwrap();
+    assert_eq!(anim_end(&component), [(3362, false), (3362, true)]);
+    component.advance_frame(211, &mut Animations).unwrap();
+    let snapshot = component.snapshot().unwrap();
+    assert_eq!(active(snapshot, 1), Vec::<u16>::new());
+    assert!(snapshot.diagnostics.is_empty());
 }
 
 /// A modifier applies only to a change with one of its required tags
