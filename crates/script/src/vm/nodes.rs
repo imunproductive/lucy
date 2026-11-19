@@ -121,11 +121,14 @@ const ASSUMED_INERT_STATES: &[&str] = &[
 /// The player controller's native states (`0C90`): their client codec has
 /// no payload (reader 0x7ff78abf5640), and what they do on the server is
 /// unknown, so they run as plain states with an assumption. ForProbe
-/// (`0C90` st75/st76, server-only: values for native game code) and
-/// Reloader (`0C90` st106: on a native event it stores the possessed body's
-/// place and heading for StateHero and sends `0687` to itself; it never
-/// fires here). HeroSelect runs (`vm/hero_select.rs`).
-const ASSUMED_PLAIN_STATES: &[&str] = &["STU_0C3A5D53", "STU_AB09B113"];
+/// (`0C90` st75/st76, server-only: values for native game code), Reloader
+/// (`0C90` st106: on a native event it stores the possessed body's place
+/// and heading for StateHero and sends `0687` to itself; it never fires
+/// here) and StateHero (`0C90` st0, `13C1` st41: the controller's hero
+/// body at `0687`'s spawn point after a hero change; a generic state on the
+/// client, `RespawnFacing.md`; the server makes and possesses the body
+/// itself). HeroSelect runs (`vm/hero_select.rs`).
+const ASSUMED_PLAIN_STATES: &[&str] = &["STU_0C3A5D53", "STU_AB09B113", "STUStatescriptStateHero"];
 
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn follow(
@@ -422,6 +425,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 if matches!(class, "STU_7106C356" | "STUStatescriptActionEffect") {
                     self.record_frame_action(id, node);
                 }
+                self.follow(id, node, "m_outPlug", None, depth)?;
+                Ok(true)
+            }
+            class if self.world.no_op_action(class).is_some() => {
+                let answer = self.world.no_op_action(class).unwrap_or_default();
+                self.assume(self.site(id, node), class, answer);
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }

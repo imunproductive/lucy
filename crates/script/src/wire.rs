@@ -639,15 +639,18 @@ fn full_frame(
 /// CmFD (none for an observer's), the instances (id, graph, parent instance
 /// and raw state), the entity's variables and their Stack links (instance,
 /// raw state: [`bound_variable`]'s form, which names the state in its
-/// graph's `m_statesBitCount` bits). For tests and logs: a value of a kind
-/// other than bool, number, asset, entity or null, or a link with a path,
-/// priority form or re-resolution the writer never sends, is an error.
+/// graph's `m_statesBitCount` bits), and the bit where the instances'
+/// sections begin. For tests and logs: a value [`read_value`] can't read,
+/// or a link with a path, priority form or re-resolution the writer never
+/// sends, is an error.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FullHead {
     pub command_frame: Option<u32>,
     pub instances: Vec<ListedInstance>,
     pub variables: Variables,
     pub links: BTreeMap<u32, Vec<(u16, u16)>>,
+    /// The bit after the variables: the first instance's presence slots.
+    pub end: usize,
 }
 
 /// An instance a full frame lists: id, graph, creator (none: the frame's
@@ -707,33 +710,7 @@ pub fn read_full_head(
             if variable == 0 {
                 break;
             }
-            let value = match bits.bits(4)? {
-                0 => Value::Bool(bits.bit()?),
-                1 => Value::Integer(bits.signed(4)?),
-                2 => Value::Integer(bits.signed(8)?),
-                3 => Value::Integer(bits.signed(16)?),
-                4 => Value::Integer(bits.signed(32)?),
-                5 => Value::Float(bits.bits(4)? as f64),
-                6 => Value::Float(bits.signed(8)? as f64),
-                8 => Value::Float(f64::from(bits.f32()?)),
-                9 => {
-                    bits.bit()?;
-                    let kind = bits.bits(16)?;
-                    let index = if kind == 0 {
-                        0
-                    } else {
-                        u64::from(bits.w_var()?)
-                    };
-                    Value::Asset(kind << 48 | index)
-                }
-                13 => Value::Entity(if bits.bit()? {
-                    bits.bits(32)? as u32
-                } else {
-                    0
-                }),
-                15 if bits.bits(3)? == 3 => Value::Null,
-                _ => return Err(WireError::InvalidValue),
-            };
+            let value = read_value(&mut bits)?;
             let bound = read_links(&mut bits, &instances, &states_bits)?;
             if !bound.is_empty() {
                 links.insert(variable, bound);
@@ -746,6 +723,103 @@ pub fn read_full_head(
         instances,
         variables,
         links,
+        end: bits.position(),
+    })
+}
+
+/// A tagged value as [`write_value`] writes it, in either encoding. For
+/// tests and logs: a map's or pair array's untagged form, which the writer
+/// never sends, is an error.
+pub fn read_value(bits: &mut BitReader<'_>) -> Result<Value, WireError> {
+    let f32_value = |bits: &mut BitReader<'_>| bits.f32().map(f64::from);
+    Ok(match bits.bits(4)? {
+        0 => Value::Bool(bits.bit()?),
+        1 => Value::Integer(bits.signed(4)?),
+        2 => Value::Integer(bits.signed(8)?),
+        3 => Value::Integer(bits.signed(16)?),
+        4 => Value::Integer(bits.signed(32)?),
+        5 => Value::Float(bits.bits(4)? as f64),
+        6 => Value::Float(bits.signed(8)? as f64),
+        8 => Value::Float(f32_value(bits)?),
+        9 => {
+            bits.bit()?;
+            let kind = bits.bits(16)?;
+            let index = if kind == 0 {
+                0
+            } else {
+                u64::from(bits.w_var()?)
+            };
+            Value::Asset(kind << 48 | index)
+        }
+        12 => {
+            let present = [bits.bit()?, bits.bit()?, bits.bit()?];
+            let mut parts = [0.0; 3];
+            for (part, present) in parts.iter_mut().zip(present) {
+                if present {
+                    *part = f32_value(bits)?;
+                }
+            }
+            Value::Vector(parts)
+        }
+        13 => Value::Entity(if bits.bit()? {
+            bits.bits(32)? as u32
+        } else {
+            0
+        }),
+        14 => Value::Handle {
+            kind: bits.bits(3)? as u8,
+            instance: bits.w_var()?,
+            state: bits.w_u16()?,
+            extra: bits.w_u16()?,
+        },
+        15 => match bits.bits(3)? {
+            2 => {
+                let mut text = Vec::new();
+                loop {
+                    match bits.bits(8)? as u8 {
+                        0 => break,
+                        byte => text.push(byte),
+                    }
+                }
+                Value::String(String::from_utf8(text).map_err(|_| WireError::InvalidValue)?)
+            }
+            3 => Value::Null,
+            subtype @ (6 | 7) => {
+                let length = bits.w_u16()?;
+                let keyed = bits.bit()?;
+                // Every item tagged.
+                if length != 0 && bits.bit()? {
+                    return Err(WireError::InvalidValue);
+                }
+                match (subtype, keyed) {
+                    (6, false) => Value::Array(
+                        (0..length)
+                            .map(|_| read_value(bits))
+                            .collect::<Result<_, _>>()?,
+                    ),
+                    (6, true) => Value::Map(
+                        (0..length)
+                            .map(|index| {
+                                // Later pairs have a presence bit.
+                                if index != 0 && !bits.bit()? {
+                                    return Err(WireError::InvalidValue);
+                                }
+                                let key = Value::Integer(bits.bits(16)? as i64);
+                                Ok((key, read_value(bits)?))
+                            })
+                            .collect::<Result<_, _>>()?,
+                    ),
+                    (7, false) => Value::Pairs(
+                        (0..length)
+                            .map(|_| Ok((read_value(bits)?, read_value(bits)?)))
+                            .collect::<Result<_, WireError>>()?,
+                    ),
+                    _ => return Err(WireError::InvalidValue),
+                }
+            }
+            _ => return Err(WireError::InvalidValue),
+        },
+        _ => return Err(WireError::InvalidValue),
     })
 }
 
@@ -881,6 +955,25 @@ mod tests {
             379,
             "50d263861080080002008aac1f0100807f32a0008ed603000040df86df4baa6e8e0e00f85050c4060000fc0500000002",
         );
+        // The keyed and pair arrays, then every value read back.
+        let arrays = [
+            Value::Map(vec![
+                (Value::Integer(7), Value::Bool(true)),
+                (Value::Integer(300), Value::Array(Vec::new())),
+            ]),
+            Value::Pairs(vec![(
+                Value::Asset(0x0d60_0000_0000_0310),
+                Value::Integer(2),
+            )]),
+        ];
+        for value in &arrays {
+            write_value(&mut bits, value, ValueEncoding::Compact).unwrap();
+        }
+        let mut reader = BitReader::new(bits.as_bytes());
+        for value in values.iter().chain(&arrays) {
+            assert_eq!(read_value(&mut reader).as_ref(), Ok(value));
+        }
+        assert_eq!(reader.position(), bits.bit_len());
     }
 
     /// Read in the client's order (0x7FF78991ADC0): graph, the creator bit
