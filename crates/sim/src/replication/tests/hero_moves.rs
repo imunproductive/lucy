@@ -382,9 +382,9 @@ fn widowmakers_pull_targets_the_free_spot_her_client_finds() {
             lateral_seconds: 0.3,
             stuck_distance: 1.0,
             stuck_seconds: 0.3,
-            exit_horizontal: 0.0,
-            exit_vertical: 0.0,
-            exit_total: 0.0,
+            exit_horizontal: 10_000.0,
+            exit_vertical: 10_000.0,
+            exit_total: 10_000.0,
             exit_on_end: false,
             abort_past: true,
         };
@@ -407,6 +407,92 @@ fn widowmakers_pull_targets_the_free_spot_her_client_finds() {
             "{target:?} vs the client's {client:?}"
         );
     }
+}
+
+/// Widowmaker's pull at a wall face (`005A` st1 from the Range spawn, look
+/// 90° and 20° up), as her client ran it (2026-11-19, owdbg session C:
+/// the mover's velocity at each tick, `Grapple.md` "DayGrapple5"). The
+/// exit limits are unset (10000, nothing held), so the frame that would
+/// land on the target keeps the pull's velocity and runs into the wall,
+/// which turns it along the face; the feet end past the target, so the
+/// grapple's check after the move blocks it on that frame (slot 18
+/// `0x7FF789B573C0`). She leaves the wall rising at 8.8 m/s along it, the
+/// wall's top lip and the next wall turn her, and she lands 3.6 m along
+/// the wall, where her client rested.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn widowmakers_pull_at_a_wall_keeps_its_velocity_and_rests_where_her_client_did() {
+    use orpheus_physics::mover::{MoveEnd, MoveKey, MoveTo, Speed};
+    const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
+    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let body = scene.heroes().get(WIDOWMAKER).unwrap().body;
+    let rays = scene.movement_index();
+    let mut mover = scene
+        .player_mover_at(body, 0, [54.565_43, 1.0, 42.147_46], 0)
+        .unwrap();
+    // The kind-1 block her client began (destination `+0x30`, surface
+    // `+0x40`) and `005A` st1's numbers.
+    let pull = MoveTo {
+        destination: [60.397_644, 4.622_823, 42.147_46],
+        surface: [-0.985_831, 0.0, 0.167_742],
+        free_spot: true,
+        speed: Speed::MetresPerSecond(20.0),
+        acceleration: 100.0,
+        slow_radius: 0.0,
+        lateral_seconds: 0.3,
+        stuck_distance: 1.0,
+        stuck_seconds: 0.3,
+        exit_horizontal: 10_000.0,
+        exit_vertical: 10_000.0,
+        exit_total: 10_000.0,
+        exit_on_end: false,
+        abort_past: true,
+    };
+    let key = MoveKey {
+        instance: 1,
+        raw_state: 1,
+        activation: 1,
+    };
+    let command = |frame| Command {
+        frame,
+        ..Command::default()
+    };
+    let mut frame = 0;
+    let end = loop {
+        frame += 1;
+        let outcome = mover
+            .step_pose_to(rays, command(frame), DT, Some((key, &pull)))
+            .unwrap();
+        if let Some(end) = outcome {
+            break end;
+        }
+    };
+    // Her client's behaviour drove 19 ticks; the velocity its end (slot 5
+    // `0x7FF789B539B0`) found, f32 as recorded.
+    assert_eq!((frame, end), (19, MoveEnd::Blocked));
+    assert_eq!(
+        mover.pose().velocity,
+        [0.554_687_5, 8.826_171_875, 3.257_812_5]
+    );
+    let mut path = Vec::new();
+    for _ in 0..120 {
+        frame += 1;
+        mover.step_pose_to(rays, command(frame), DT, None).unwrap();
+        path.push(mover.pose().position);
+    }
+    // Two of her client's samples (component 4, the feet plus 1 m, as
+    // printed): past the wall's top lip, and past the next wall.
+    for sample in [[59.4990, 6.5518, 43.9248], [59.1377, 5.9805, 44.6191]] {
+        let feet = [sample[0], sample[1] - 1.0, sample[2]];
+        assert!(
+            path.iter()
+                .any(|at| (0..3).all(|axis| (at[axis] - feet[axis]).abs() < 1e-4)),
+            "{feet:?} not on {path:?}"
+        );
+    }
+    // Where her client rested (component 4 (58.128906, 2.0, 44.796875)).
+    assert_eq!(mover.pose().position, [58.128_906_25, 1.0, 44.796_875]);
 }
 
 /// Pharah's Jump Jet (graph `0027` node 1, `STU_FF3471E9`): the vertical

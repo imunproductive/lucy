@@ -40,16 +40,22 @@
 //!    or `N - n` is none);
 //! 4. the speed along the direction goes toward the speed by speed times
 //!    `m_717EAFE7` a second, eased within `m_187E2318` of the target toward
-//!    the exit speed; a frame that would reach the target lands on it
-//!    exactly, with the exit-limited rest of the velocity (phase 3,
-//!    `0x7FF789B590F0`);
+//!    the exit speed; a frame that would reach the target takes the
+//!    velocity that lands on it exactly plus the exit-limited rest (phase
+//!    3, `0x7FF789B590F0`): with the limits unset nothing is held, so the
+//!    body keeps its velocity and moves past the target unless the map
+//!    stops it;
 //! 5. Widowmaker's Grappling Hook only (`005A`, the block's `+153` tests the
-//!    script's graph): a direction against the one it began with blocks
-//!    (slot 12 `0x7FF789B573C0`).
+//!    script's graph): after the frame's move, in phase 1 or 3, a direction
+//!    from the feet to the target against the one it began with blocks
+//!    (slot 18 `0x7FF789B573C0`, which the mover's move `0x7FF789B4D9C0`
+//!    calls for every active behaviour once the capsule has moved).
 //!
 //! The exit limits (`0x7FF789B5D690`) hold the velocity's vertical part to
 //! `m_03B764BE`, its horizontal part to `m_C1E1F78C` and the whole to
-//! `m_6AC330A6`; an unset limit is 0. The behaviour's begin (slot 4
+//! `m_6AC330A6`; an unset limit is 10000 (the default the block's filler
+//! `0x7FF789C43A60` hands `0x7FF789806350` for these three,
+//! `dword_7FF78B5266EC`). The behaviour's begin (slot 4
 //! `0x7FF789B53CC0`) takes a body on the ground off it (`0x7FF789AD0370`)
 //! and sets the checkpoint to the feet; with `m_AE1CEDB5` its end (slot 5
 //! `0x7FF789B539B0`, when the state lets it go) holds the velocity to the
@@ -237,7 +243,7 @@ impl Run {
         self.unreported.take()
     }
 
-    /// Slots 11 and 12 for one frame: the velocity the body moves with.
+    /// Slot 11 for one frame: the velocity the body moves with.
     pub(super) fn step(&mut self, feet: [f64; 3], velocity: [f64; 3], dt: f64) -> [f64; 3] {
         let to_target = sub(self.target, feet);
         let direction = unit(to_target);
@@ -260,11 +266,18 @@ impl Run {
             }
         }
         let velocity = self.drop_lateral(velocity, direction, dt);
-        let velocity = self.drive(feet, velocity, direction, dt);
-        if self.params.abort_past && dot(self.direction, direction) < 0.0 {
+        self.drive(feet, velocity, direction, dt)
+    }
+
+    /// Slot 18 after the frame's move (`0x7FF789B573C0`): the grapple's
+    /// move blocks once the feet are past its target.
+    pub(super) fn after_move(&mut self, feet: [f64; 3]) {
+        if self.params.abort_past
+            && self.drives()
+            && dot(self.direction, unit(sub(self.target, feet))) < 0.0
+        {
             self.end(Phase::Blocked, MoveEnd::Blocked);
         }
-        velocity
     }
 
     fn arrive(&mut self, velocity: [f64; 3]) -> [f64; 3] {

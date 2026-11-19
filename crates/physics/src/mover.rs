@@ -486,7 +486,8 @@ impl Mover {
     /// A frame the move drives ([`move_to`]): its velocity, the velocity
     /// mods only on the frame it ends, and no gravity; the capsule moves by
     /// the velocity alone (the pogo spring is the behaviour's to skip), and
-    /// the velocity loses what goes into the contact planes.
+    /// the velocity loses what goes into the contact planes. The move's
+    /// check after the capsule moved (slot 18) ends the frame.
     fn drive(
         &mut self,
         rays: &TriangleIndex,
@@ -503,7 +504,6 @@ impl Mover {
                 changes,
             );
         }
-        let end = run.take_end();
         self.posture.fall = 0.0;
         let [x, y, z] = velocity.map(|axis| axis as f32);
         let dt = dt as f32;
@@ -512,7 +512,9 @@ impl Mover {
         let (position, touching) = (movement.position, movement.touching);
         self.place(rays, position, touching);
         self.pose.velocity = velocity.map(snap);
-        Ok(end)
+        let run = self.move_to.as_mut().expect("a driving move");
+        run.after_move(self.pose.position);
+        Ok(run.take_end())
     }
 
     /// The capsule's lowest point above the feet: the pogo plus the spring
@@ -699,6 +701,38 @@ mod tests {
         assert_eq!(outcomes.last(), Some(&Some(MoveEnd::Arrived)));
         assert_eq!(mover.pose().position, target);
         assert_eq!(mover.pose().velocity, [0.0; 3]);
+    }
+
+    /// With the exit limits unset (10000) the landing frame keeps the
+    /// velocity, so the body goes about 0.04 m past the target (positions
+    /// on the pose's grid): a grapple's move (`abort_past`) blocks on that
+    /// frame, after the move; another arrives the frame after and keeps
+    /// going.
+    #[test]
+    fn a_move_without_exit_limits_passes_its_target_and_a_grapple_blocks_there() {
+        let rays = TriangleIndex::new([]).unwrap();
+        let free = |abort_past| MoveTo {
+            exit_horizontal: 10_000.0,
+            exit_vertical: 10_000.0,
+            exit_total: 10_000.0,
+            abort_past,
+            ..move_to([1.0, 0.0, 0.0])
+        };
+        let mut grapple = mover_in(Vec::new());
+        let outcomes = drive(&mut grapple, &rays, &free(true));
+        assert_eq!(outcomes.len(), 13);
+        assert_eq!(outcomes.last(), Some(&Some(MoveEnd::Blocked)));
+        assert_eq!(grapple.pose().velocity, [5.0, 0.0, 0.0]);
+        let past = grapple.pose().position[0];
+        assert!((past - 1.04).abs() < 0.005, "{past}");
+
+        let mut other = mover_in(Vec::new());
+        let outcomes = drive(&mut other, &rays, &free(false));
+        assert_eq!(outcomes.len(), 14);
+        assert_eq!(outcomes.last(), Some(&Some(MoveEnd::Arrived)));
+        assert_eq!(other.pose().velocity, [5.0, 0.0, 0.0]);
+        let past = other.pose().position[0];
+        assert!((past - 1.12).abs() < 0.005, "{past}");
     }
 
     /// A body held within the stuck distance of its last checkpoint for the

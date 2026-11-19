@@ -149,8 +149,10 @@ fn clock_flags(depth: usize) -> u8 {
 /// send its own value now (`SnapshotEncoder` `project_variables`). Without corrections, any other difference between
 /// her client's body and the server's lasted until she died, and her shots
 /// left from the wrong place. Widowmaker stays out: the server runs her
-/// Grappling Hook (`005A`) but not its ledge pull (`STU_1F5ED928`, a
-/// navigation path), so a correction would pull her back. The other heroes stay out until the
+/// Grappling Hook (`005A`) as her client did in the recorded pulls, end
+/// included, but no session has checked her with corrections yet, and a
+/// ledge pull whose navigation path her client finds (`STU_1F5ED928`)
+/// would pull her back. The other heroes stay out until the
 /// server runs all of their movement (`docs/notes/behavior.md`, "Owner
 /// corrections").
 const CORRECTED_HEROES: [u64; 2] = [SOLDIER, ANA];

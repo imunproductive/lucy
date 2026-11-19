@@ -3485,7 +3485,8 @@ fn move_to_exposes_only_a_fixed_target_while_active() {
         )]))
     };
     let mut component = start(fixture(json!(0)), 100, &mut EmptyWorld);
-    // The block: the destination and the speed; every unset number is 0.
+    // The block: the destination and the speed; every unset number is 0 but
+    // the exit limits, 10000 (the client's block filler `0x7FF789C43A60`).
     assert_eq!(
         component.move_requests(),
         [MoveRequest {
@@ -3502,9 +3503,9 @@ fn move_to_exposes_only_a_fixed_target_while_active() {
                 lateral_seconds: 0.0,
                 stuck_distance: 0.0,
                 stuck_seconds: 0.0,
-                exit_horizontal: 0.0,
-                exit_vertical: 0.0,
-                exit_total: 0.0,
+                exit_horizontal: 10_000.0,
+                exit_vertical: 10_000.0,
+                exit_total: 10_000.0,
                 exit_on_end: false,
                 abort_past: false,
             },
