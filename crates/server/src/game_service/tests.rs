@@ -3182,46 +3182,31 @@ fn pick_training_partner(
     const CONSOLE_AT: [f32; 3] = [34.62, 1.99, 17.86];
     const PICK: u64 = 0x0240_0000_0000_1213;
     let spawn = GameMap::practice_range().spawn_point(0, 0).unwrap().0;
-    // The navigation's walk from the spawn runs straight into a wall near
-    // (48.5, 29.5): its straight legs test walkable cells, not the map's
-    // collision (`docs/dev/loose-ends.md`). So the walk goes leg by leg:
-    // from where he is, the navigation's next waypoint when the map's
-    // collision is clear 1.2 m above the floor up to it (above the steps),
-    // else the farthest clear point of that leg (in quarter metres) less
-    // half a metre, from where the navigation finds another way.
+    // The walk to the console: the server's own path query, its legs
+    // checked with Soldier: 76's standing capsule on the map's collision
+    // (`orpheus_sim::navigate`), as an AI hero's are.
     let mut walk = None;
     let (server, schemas, [mut watcher], _) =
         practice_world([("player#1111", 0, "Soldier: 76")], assets, |scene| {
-            let navigation = scene.navigation().unwrap();
-            let chest = |point: [f32; 3]| {
-                [
-                    f64::from(point[0]),
-                    f64::from(point[1]) + 1.2,
-                    f64::from(point[2]),
-                ]
-            };
-            let near =
-                |point: [f32; 3]| (point[0] - CONSOLE_AT[0]).hypot(point[2] - CONSOLE_AT[2]) < 1.0;
-            let mut waypoints = vec![spawn.map(|axis| axis as f32)];
-            while !near(waypoints[waypoints.len() - 1]) {
-                assert!(waypoints.len() < 20, "{waypoints:?}");
-                let at = waypoints[waypoints.len() - 1];
-                let next = navigation.path(at, CONSOLE_AT).unwrap().waypoints[1];
-                if scene.line_of_sight(chest(at), chest(next)) {
-                    waypoints.push(next);
-                    continue;
-                }
-                let along = |t: f32| [0, 1, 2].map(|axis| at[axis] + (next[axis] - at[axis]) * t);
-                let length = (next[0] - at[0]).hypot(next[2] - at[2]);
-                let steps = (length * 4.0).ceil() as u32;
-                let clear = (1..steps)
-                    .map(|step| step as f32 / steps as f32)
-                    .take_while(|&t| scene.line_of_sight(chest(at), chest(along(t))))
-                    .last()
-                    .unwrap_or_else(|| panic!("blocked at once to {next:?}: {waypoints:?}"));
-                waypoints.push(along(clear - 0.5 / length));
-            }
-            walk = Some(waypoints);
+            let body = scene
+                .heroes()
+                .get(orpheus_content::heroes::SOLDIER)
+                .unwrap()
+                .body;
+            let to = CONSOLE_AT.map(f64::from);
+            let path = orpheus_sim::navigate::path(
+                scene.navigation(),
+                spawn,
+                to,
+                scene.walk_test(Some(body), 0),
+            )
+            .unwrap();
+            walk = Some(
+                std::iter::once(spawn)
+                    .chain(path)
+                    .map(|point| point.map(|axis| axis as f32))
+                    .collect::<Vec<_>>(),
+            );
         });
     let waypoints = walk.unwrap();
     let tracer = player_entity(1) | 1;
