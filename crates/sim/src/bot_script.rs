@@ -42,10 +42,10 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk},
     timeline::FRAME_MS,
     vm::{
-        AiMoveRequest, AuraChange, BodyEffects, GameMessage, HealthChange, MapRays, MessageEnd,
-        Motion, ShotEvent, Snapshot, TargetCandidate, Unknowns,
+        AiMoveRequest, AuraChange, BodyEffects, CombatMod, GameMessage, HealthChange, MapRays,
+        MessageEnd, Motion, ShotEvent, Snapshot, TargetCandidate, Unknowns, combat_scale,
     },
-    weapons::{HitDefinition, ProjectileBallistics, authored_number, ray_profile},
+    weapons::{DamageTags, HitDefinition, ProjectileBallistics, authored_number, ray_profile},
     wire::Value,
 };
 use orpheus_wire::entity::{Component, EntityUpdate, MAX_PAYLOAD, frame};
@@ -151,6 +151,7 @@ pub struct BotScripts {
     codecs: Arc<CodecTable>,
     unknowns: Unknowns,
     mode: u64,
+    ruleset: u64,
     practice: bool,
     slots: Vec<Option<BotScript>>,
     /// The entity each slot's script was last prepared for.
@@ -199,6 +200,7 @@ impl BotScripts {
             codecs,
             unknowns,
             mode: map.mode_guid,
+            ruleset: map.ruleset,
             practice: map.map_guid == PRACTICE_RANGE_MAP && map.mode_guid == PRACTICE_RANGE_MODE,
             slots: bots.iter().map(|_| None).collect(),
             prepared: vec![None; bots.len()],
@@ -294,6 +296,7 @@ impl BotScripts {
             entity: bot.entity,
             frame: tick,
             mode: self.mode,
+            ruleset: self.ruleset,
             health: bot.spawn.health,
             firing_position: (bot.spawn.firing && self.practice).then_some(bot.position),
             patrol: bot.patrol(),
@@ -536,11 +539,14 @@ impl BotScripts {
         Ok(())
     }
 
-    /// combat.py `_bot_died`'s script part: the death message 003E.025
-    /// ([`death_message`]); every client registers the death, with the
-    /// script's immediate change if it made one. `death.tick` is the world
-    /// tick of the death.
-    pub(crate) fn died(&mut self, death: &BotDeath) {
+    /// combat.py `_bot_died`'s script part: the killing hit's damage
+    /// message `0011.025` with the kill's fields, then the death message
+    /// 003E.025 ([`death_message`]), as a player's body takes them
+    /// ([`crate::combat::hit_messages`]); the script's health is 0 for
+    /// both, as a player's pools are. Every client registers the death,
+    /// with the script's immediate change if it made one (one frame for
+    /// both messages). `death.tick` is the world tick of the death.
+    pub(crate) fn died(&mut self, death: &BotDeath, bots: &[Bot]) {
         let BotDeath {
             bot: entity,
             killer,
@@ -550,14 +556,22 @@ impl BotScripts {
         let Some(slot) = self.slot(entity) else {
             return;
         };
+        let direction = self.hit_direction(killer, slot, bots);
         let script = self.slots[slot].as_mut().expect("a running bot script");
         script.death = Some((tick, killer));
         // A Training Bot's death credits no assists (StatCredit.md "Open").
-        let (_, parameters) = death_message(killer, death.critical, death.loadout, death.tags, &[]);
-        let frame = tick.max(script.body.frame());
+        let (_, parameters) =
+            death_message(killer, death.critical, death.loadout, death.tags, &[], None);
+        let (_, mut damage) = damage_message(killer, death.dealt, death.tags, direction);
+        damage.extend(parameters.clone());
         let result = script
             .body
-            .die(frame, parameters)
+            .set_health(0.0)
+            .and_then(|()| script.body.take_damage(tick, damage))
+            .and_then(|_| {
+                let frame = tick.max(script.body.frame());
+                script.body.die(frame, parameters)
+            })
             .map_err(|error| error.to_string())
             .and_then(|took| {
                 if !took {
@@ -659,26 +673,12 @@ impl BotScripts {
     /// A hit the bot survived reaches its script: `0011.025` with the
     /// damage's tags, source, amount and direction
     /// ([`crate::combat::damage_message`]); the changed frame (its flinch)
-    /// goes to the clients as a live frame. The direction runs from the
-    /// attacker's feet to the bot's, as the match last placed them
-    /// (assumption; none when the attacker isn't found).
+    /// goes to the clients as a live frame.
     pub(crate) fn hurt(&mut self, entity: u32, damage: &BotDamage, bots: &[Bot]) {
         let Some(slot) = self.slot(entity) else {
             return;
         };
-        let feet = |entity: u32| {
-            self.targets
-                .iter()
-                .find(|candidate| candidate.entity == entity)
-                .map(|candidate| candidate.feet)
-                .or_else(|| {
-                    bots.iter()
-                        .find(|bot| bot.entity == entity)
-                        .map(|bot| bot.position)
-                })
-        };
-        let direction =
-            feet(damage.source).and_then(|from| damage_direction(from, bots[slot].position));
+        let direction = self.hit_direction(damage.source, slot, bots);
         let (_, parameters) = damage_message(damage.source, damage.dealt, damage.tags, direction);
         let script = self.slots[slot].as_mut().expect("a running bot script");
         let result = script
@@ -696,6 +696,22 @@ impl BotScripts {
             eprintln!("bot {entity:08X}'s body script failed on its damage ({reason})");
             self.slots[slot] = None;
         }
+    }
+
+    /// The way a hit from `source` travels to the bot in `slot`: from the
+    /// attacker's feet to the bot's, as the match last placed them
+    /// (assumption; none when the attacker isn't found).
+    fn hit_direction(&self, source: u32, slot: usize, bots: &[Bot]) -> Option<[f64; 3]> {
+        self.targets
+            .iter()
+            .find(|candidate| candidate.entity == source)
+            .map(|candidate| candidate.feet)
+            .or_else(|| {
+                bots.iter()
+                    .find(|bot| bot.entity == source)
+                    .map(|bot| bot.position)
+            })
+            .and_then(|from| damage_direction(from, bots[slot].position))
     }
 
     /// Whether a script runs the graphs of bot `entity` now.
@@ -831,6 +847,38 @@ impl BotScripts {
     pub fn effects(&self, entity: u32) -> Option<&BodyEffects> {
         let script = self.slots.get(self.slot(entity)?)?.as_ref()?;
         Some(&script.body.world().effects)
+    }
+
+    /// What a health change of `kind` with `tags` on the bot `entity`, with
+    /// `other` its attacker or healer, is scaled by: its states' modifiers
+    /// (their party filters tested on `other`), then `held`, those other
+    /// entities hold for it (`BotBody::combat_scale`); `held` alone for a
+    /// bot without a script.
+    pub fn combat_scale(
+        &mut self,
+        entity: u32,
+        kind: u64,
+        tags: &mut DamageTags,
+        other: u32,
+        held: &[CombatMod],
+    ) -> f64 {
+        match self
+            .slot(entity)
+            .and_then(|slot| self.slots.get_mut(slot))
+            .and_then(Option::as_mut)
+        {
+            Some(script) => script.body.combat_scale(kind, tags, other, held),
+            None => combat_scale(held, kind, tags, &[]),
+        }
+    }
+
+    /// The modifiers the live bots' states hold for other entities
+    /// ([`BodyEffects::held_for_others`]).
+    pub fn held_for_others(&self) -> impl Iterator<Item = &CombatMod> {
+        self.slots
+            .iter()
+            .flatten()
+            .flat_map(|script| script.body.world().effects.held_for_others())
     }
 
     /// The live bots' graph events due by world tick `tick` (a hit's flinch

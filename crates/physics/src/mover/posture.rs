@@ -45,6 +45,8 @@ pub struct Posture {
     pub air_ticks: u32,
     pub crouch_end: Option<u32>,
     landed: bool,
+    /// The last transition jumped (the jump from the ground).
+    jumped: bool,
     pub fall: f32,
     spring: Spring,
 }
@@ -66,9 +68,9 @@ pub struct PostureStep<'a> {
     pub probe: ProbeResult,
     pub dt: f64,
     pub aim_held: bool,
-    /// A world-target move drives this pose (`move_to` in `Mover.step_pose`,
-    /// `ow174/game/mover.py`): no jump, and the feet keep their height instead
-    /// of standing on the probed ground before the spring settles.
+    /// A dash or rewind drives this pose (`move_to` in `Mover.step_pose`,
+    /// `ow174/game/mover.py`): no jump, and the feet keep their height
+    /// instead of standing on the probed ground before the spring settles.
     pub driven: bool,
 }
 
@@ -91,6 +93,7 @@ impl Posture {
             air_ticks: 0,
             crouch_end: None,
             landed: false,
+            jumped: false,
             fall: 0.0,
             spring,
         }
@@ -106,6 +109,16 @@ impl Posture {
 
     pub fn crouched(&self) -> bool {
         self.flags & CROUCHED != 0
+    }
+
+    /// Whether the last transition landed the body (from a jump or a fall).
+    pub fn landed(&self) -> bool {
+        self.landed
+    }
+
+    /// Whether the last transition jumped it off the ground.
+    pub fn jumped(&self) -> bool {
+        self.jumped
     }
 
     pub fn spring_offset(&self) -> f32 {
@@ -157,21 +170,7 @@ impl Posture {
             .intent(CROUCH_INTENT, f64::from(u8::from(requested)))
             > 0.5;
         if crouch != was_crouched {
-            let (radius, segment) = capsule(step.base, crouch);
-            if resize(radius, segment + radius)? {
-                self.flags = (self.flags & !CROUCHED) | (u32::from(crouch) * CROUCHED);
-                if !crouch {
-                    self.crouch_end = Some(frame);
-                }
-                let difference = (step.base.crouch_pogo - step.base.stand_pogo) as f32;
-                if difference < 0.0 {
-                    let shift = if crouch { -difference } else { difference };
-                    let minimum = -pogo(step.base, crouch);
-                    self.spring.primary =
-                        minimum.max(f64::from(self.spring.primary + shift)) as f32;
-                    self.spring.secondary = self.spring.primary;
-                }
-            }
+            self.change_stance(crouch, frame, step.base, resize)?;
         }
         if self.flags & IN_AIR == 0 && !step.driven {
             if let Some(ground) = step.probe.ground {
@@ -188,9 +187,57 @@ impl Posture {
         Ok(())
     }
 
+    /// A frame a `MoveTo` move drives (mover behaviour kind 1, phases 1 and
+    /// 3): its slot 8 (0x7FF789B58F10) takes the place of the ground probe
+    /// and the transitions, so nothing lands, falls or counts air ticks;
+    /// it clears flag 0x80000 and stands the body up if it can
+    /// (0x7FF789B4C3D0 with 0). Its slot 10 (0x7FF789B58410) skips the
+    /// spring. The aim still sets the turn flag.
+    pub fn hold<E>(
+        &mut self,
+        frame: u32,
+        base: &MoverSettings,
+        aim_held: bool,
+        resize: impl FnOnce(f32, f32) -> Result<bool, E>,
+    ) -> Result<(), E> {
+        self.landed = false;
+        self.flags = (self.flags & !NOT_GROUND_UNDER) | (u32::from(aim_held) * TURN_HELD);
+        if self.crouched() {
+            self.change_stance(false, frame, base, resize)?;
+        }
+        Ok(())
+    }
+
+    /// 0x7FF789B4C3D0: the stance changes when its capsule fits; the
+    /// spring takes the difference of the pogo heights (0x7FF789B4C5DF).
+    fn change_stance<E>(
+        &mut self,
+        crouch: bool,
+        frame: u32,
+        base: &MoverSettings,
+        resize: impl FnOnce(f32, f32) -> Result<bool, E>,
+    ) -> Result<(), E> {
+        let (radius, segment) = capsule(base, crouch);
+        if resize(radius, segment + radius)? {
+            self.flags = (self.flags & !CROUCHED) | (u32::from(crouch) * CROUCHED);
+            if !crouch {
+                self.crouch_end = Some(frame);
+            }
+            let difference = (base.crouch_pogo - base.stand_pogo) as f32;
+            if difference < 0.0 {
+                let shift = if crouch { -difference } else { difference };
+                let minimum = -pogo(base, crouch);
+                self.spring.primary = minimum.max(f64::from(self.spring.primary + shift)) as f32;
+                self.spring.secondary = self.spring.primary;
+            }
+        }
+        Ok(())
+    }
+
     fn transition(&mut self, step: &PostureStep<'_>, velocity: &mut [f64; 3]) {
         let mut flags = self.flags;
         self.landed = false;
+        self.jumped = false;
         if flags & IN_AIR != 0 {
             let [x, y, z] = *velocity;
             let limit = step.mods.intent(LAND_LIMIT, LAND_SPEED);
@@ -221,6 +268,7 @@ impl Posture {
                 velocity[1] = step.values.jump_speed;
                 self.air_ticks = 0;
                 flags = (flags & !(FELL | REAL_JUMP)) | JUMPED | REAL_JUMP | JUMP_LATCH;
+                self.jumped = true;
             }
         } else if flags & IN_AIR == 0 {
             flags &= !JUMP_LATCH;

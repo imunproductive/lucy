@@ -31,24 +31,44 @@
 //!
 //! - `m_F7872851` is the entity that holds the modifier, the instance's
 //!   owner when unset (the state's init 0x7FF789C37C30 keeps it at
-//!   `+0x248`). The server keeps a modifier only on the body whose graph
-//!   runs the state; one held for another entity (`#41` in `006C` and
-//!   `10DD`, a projectile's owner in Baptiste's `1909`) is not applied.
+//!   `+0x248`; a value that evaluates to no entity holds it for nobody).
+//!   A modifier held for another entity (`#40` in Echo's `1544` st38, the
+//!   projectile's or pet's owner's body in `0D01`, `1909`, `25B4`) is
+//!   kept apart ([`BodyEffects::held_for_others`]) and the match adds it
+//!   to that entity's own. `#41` in Mercy's `006C`/`10DD` is the aura
+//!   entry's `m_FF703F20`, which the server leaves unset
+//!   (`vm/auras.rs`), so those hold theirs for nobody.
 //! - `m_50530EAB` is the value; `m_41B10FF2` 1 multiplies by it, 0 adds it.
 //!   The modifiers of one kind combine as one plus the sum of the
 //!   additions, times each multiplier, never below 0 (assumption, as the
 //!   public rule: amplifications and reductions add up, categories
-//!   multiply). The dealt kind acts on the attacker's hit (at the hit, not
-//!   at a projectile's launch), the taken kind on the body's.
+//!   multiply). `m_941C56C2`, true on the additive damage reductions alone
+//!   (Roadhog's `0240` st15 -0.5, Nano Boost's `0B9F` st18 -0.5, Orisa's
+//!   `0CF4` st4 -0.4, Bastion's `012F` st124 `#9959`), marks those that
+//!   count toward the reduction cap: together they reduce by at most
+//!   [`REDUCTION_CAP`], unless one alone reduces by more (assumption,
+//!   the public rule; the client has no code for it: the arithmetic is
+//!   server-only). The others add after the cap (Discord's `0178` st8
+//!   +0.25 taken). The dealt kind acts on the attacker's hit, at the hit
+//!   for a hitscan or a graph's change and as the projectile kept them at
+//!   its launch for a projectile (the client copies the shooter's `0317`
+//!   and `0319` into it at its creation, `sub_7FF789A32900`); the taken
+//!   kind on the body's.
 //! - Of the event's tags, one of `m_F60AA143` must be there when it lists
 //!   any, none of `m_5CFFCBAE` may be (`0C72`: `293E`), and `m_029060AC` are
 //!   added to them when it applies (a dealt one's for the target's taken
 //!   ones).
-//! - Not read: the party filters (a modifier with one is left out),
-//!   `m_941C56C2` (true on the additive reductions `0240`, `0B9F`, `0CF4`,
-//!   `012F`: strong guess, they count toward the 50 % reduction cap),
-//!   `m_E9517777` (`03A3`'s `19C4`, an identifier the query hands back) and
-//!   `m_893AABFC` (the query doesn't read it).
+//! - The party filter tests the event's other party (the query binds it
+//!   as its candidate parameter, `0A4:006E`): `m_6AA5D70F` of a taken
+//!   kind the attacker or healer, at the hit ([`PartyFilter`]; Genji's
+//!   Deflect `03A3` st59: ×0 for the tags `03EF`/`0302`/`20EC` from an
+//!   attacker in front of him; Mei's wall `0636` st5: ×0 from the maker's
+//!   allies). A filter the server can't answer leaves the modifier out.
+//!   `m_5E6F1B8B`, a dealt kind's filter on the target, is set nowhere in
+//!   the data (`script query class StateCombatModFilter`: 0 of 34); a
+//!   modifier with one is left out.
+//! - Not read: `m_E9517777` (`03A3`'s `19C4`, an identifier the query
+//!   hands back) and `m_893AABFC` (the query doesn't read it).
 //!
 //! `STU_0DB9E66B` (31 nodes in 30 graphs, server-only: no registration of
 //! its own, codec `none`) is the assist credit, the graphs' form of the
@@ -94,7 +114,7 @@ pub struct AssistLink {
     pub linger_ms: u64,
 }
 
-/// A combat modifier a `CombatModFilter` state holds on its body.
+/// A combat modifier a `CombatModFilter` state holds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CombatMod {
     /// What it scales (`m_60703B1E`, a `0D8` GUID).
@@ -110,7 +130,35 @@ pub struct CombatMod {
     pub exempt: Vec<u64>,
     /// The tags it adds to the event when it applies (`m_029060AC`).
     pub added: Vec<u64>,
+    /// The entity it is credited to (`m_F7872851`; the state's entity
+    /// when unset).
+    pub holder: u32,
+    /// `m_941C56C2`: an addition that counts toward [`REDUCTION_CAP`].
+    pub capped: bool,
+    /// Its filter on the event's other party (`m_6AA5D70F`), tested at
+    /// the event by the graph that runs it.
+    pub party: Option<PartyFilter>,
 }
+
+/// The state of a modifier with a party filter (`m_6AA5D70F`), which
+/// [`Component::passes_party_filter`] tests on a health change's other
+/// party: its instance and raw state on the entity that runs it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PartyFilter {
+    pub instance: u16,
+    pub state: u16,
+}
+
+/// The field of a taken kind's party filter.
+pub(super) const PARTY_FILTER: &str = "m_6AA5D70F";
+
+/// The most the additions marked `m_941C56C2` reduce by together: the
+/// public rule, "the combined total of general damage taken reduction
+/// effects is capped at 50%", a single larger one overriding it
+/// (https://overwatch.weirdgloop.org/w/Damage_modification). Assumption:
+/// neither the client (no code computes a health change) nor the data
+/// gives a value.
+pub const REDUCTION_CAP: f64 = 0.5;
 
 /// `m_60703B1E` of a modifier of the damage the body deals.
 pub const DAMAGE_DEALT: u64 = 0x0d80_0000_0000_0317;
@@ -168,7 +216,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
     pub(super) fn begin_combat_mod(&mut self, key: StateKey, node: &Node) {
         let id = key.instance;
         let site = self.site(id, node);
-        let modifier = match self.read_combat_mod(id, node) {
+        let modifier = match self.read_combat_mod(key, node) {
             Ok(modifier) => modifier,
             Err(form) => {
                 self.assume(site, &node.class, form);
@@ -181,28 +229,44 @@ impl<W: World> Vm<'_, '_, '_, W> {
     }
 
     /// The state's modifier, or why it has no effect: a form the server
-    /// doesn't apply (a filter on the event's other party, `m_6AA5D70F` or
-    /// `m_5E6F1B8B`; a holder, `m_F7872851`, other than the state's own
-    /// entity) or a value it can't evaluate.
-    fn read_combat_mod(&mut self, id: u16, node: &Node) -> Result<CombatMod, &'static str> {
+    /// doesn't apply (a dealt kind's filter on the target, `m_5E6F1B8B`;
+    /// a holder, `m_F7872851`, that names no entity) or a value it can't
+    /// evaluate.
+    fn read_combat_mod(&mut self, key: StateKey, node: &Node) -> Result<CombatMod, &'static str> {
+        let id = key.instance;
         let fields = &node.fields;
         let kind = asset_guid(field(fields, "m_60703B1E")).ok_or("no effect (no kind)")?;
-        if !field(fields, "m_6AA5D70F").is_null() || !field(fields, "m_5E6F1B8B").is_null() {
-            return Err("no effect (a party filter)");
+        // The client's query tests `m_6AA5D70F` for the taken kinds and
+        // `m_5E6F1B8B` for the dealt ones, each alone.
+        let taken = [DAMAGE_TAKEN, HEALING_TAKEN].contains(&kind);
+        if !taken && !field(fields, "m_5E6F1B8B").is_null() {
+            return Err("no effect (a filter on the target)");
         }
-        let holder = field(fields, "m_F7872851");
-        if !holder.is_null() {
-            let site = self.site(id, node);
-            let holder = self
-                .evaluate(id, node, holder, None)
-                .and_then(|holder| expr::to_entity(&holder));
-            if holder != Some(site.entity) {
-                return Err("no effect (held for another entity)");
+        let party = (taken && !field(fields, PARTY_FILTER).is_null()).then_some(PartyFilter {
+            instance: id,
+            state: key.raw,
+        });
+        let site = self.site(id, node);
+        let holder = match field(fields, "m_F7872851") {
+            Json::Null => site.entity,
+            holder => {
+                let holder = self
+                    .evaluate(id, node, holder, None)
+                    .ok_or("no effect (an unevaluated holder)")?;
+                expr::to_entity(&holder)
+                    .filter(|&holder| expr::valid_entity(holder))
+                    .ok_or("no effect (held for no entity)")?
             }
-        }
+        };
         let value = self
             .evaluate(id, node, field(fields, "m_50530EAB"), None)
             .ok_or("no effect (an unevaluated value)")?;
+        let capped = match field(fields, "m_941C56C2") {
+            Json::Null => false,
+            capped => self
+                .evaluate(id, node, capped, None)
+                .is_some_and(|capped| truthy(&capped)),
+        };
         let tags = |name| {
             array_field(fields, name)
                 .iter()
@@ -216,6 +280,9 @@ impl<W: World> Vm<'_, '_, '_, W> {
             required: tags("m_F60AA143"),
             exempt: tags("m_5CFFCBAE"),
             added: tags("m_029060AC"),
+            holder,
+            capped,
+            party,
         })
     }
 }
@@ -225,7 +292,10 @@ impl<W: World> Vm<'_, '_, '_, W> {
 #[derive(Debug, Default)]
 pub struct BodyEffects {
     statuses: Vec<(Site, i64)>,
+    /// The modifiers held for the body itself.
     modifiers: Vec<(Site, CombatMod)>,
+    /// The modifiers its states hold for other entities.
+    lent: Vec<(Site, CombatMod)>,
     /// The assist credits and, for one whose state ended, when its linger
     /// ends.
     assists: Vec<(Site, AssistLink, Option<u64>)>,
@@ -246,15 +316,21 @@ impl BodyEffects {
         }
     }
 
-    /// [`World::combat_mod`]: the modifiers of the four kinds are kept.
+    /// [`World::combat_mod`]: the modifiers of the four kinds are kept,
+    /// apart when held for another entity than the state's.
     pub fn combat_mod(&mut self, site: Site, modifier: Option<CombatMod>) -> bool {
         self.modifiers.retain(|(held, _)| *held != site);
+        self.lent.retain(|(held, _)| *held != site);
         match modifier {
             Some(modifier)
                 if [DAMAGE_DEALT, DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN]
                     .contains(&modifier.kind) =>
             {
-                self.modifiers.push((site, modifier));
+                if modifier.holder == site.entity {
+                    self.modifiers.push((site, modifier));
+                } else {
+                    self.lent.push((site, modifier));
+                }
                 true
             }
             Some(_) => false,
@@ -298,28 +374,56 @@ impl BodyEffects {
         !self.statuses.is_empty()
     }
 
-    /// The modifiers held now, in the order they came.
+    /// The modifiers held for the body now, in the order they came.
     pub fn modifiers(&self) -> impl Iterator<Item = &CombatMod> {
         self.modifiers.iter().map(|(_, modifier)| modifier)
     }
 
-    /// [`combat_scale`] of the body's modifiers.
-    pub fn scale(&self, kind: u64, tags: &mut DamageTags) -> f64 {
-        combat_scale(self.modifiers(), kind, tags)
+    /// The modifiers its states hold for other entities now
+    /// ([`CombatMod::holder`]), in the order they came, for the match to
+    /// add to theirs.
+    pub fn held_for_others(&self) -> impl Iterator<Item = &CombatMod> {
+        self.lent.iter().map(|(_, modifier)| modifier)
+    }
+
+    /// The party filters of the body's modifiers of `kind`, for the world
+    /// that runs them to test on the event's other party
+    /// ([`Component::passes_party_filter`]).
+    pub fn party_filters(&self, kind: u64) -> impl Iterator<Item = PartyFilter> + '_ {
+        self.modifiers()
+            .filter(move |modifier| modifier.kind == kind)
+            .filter_map(|modifier| modifier.party)
+    }
+
+    /// [`combat_scale`] of the body's modifiers then `held` (those other
+    /// entities hold for it), the party filters in `passed` passing.
+    pub fn scale(
+        &self,
+        kind: u64,
+        tags: &mut DamageTags,
+        held: &[CombatMod],
+        passed: &[PartyFilter],
+    ) -> f64 {
+        combat_scale(self.modifiers().chain(held), kind, tags, passed)
     }
 }
 
 /// What `modifiers` scale a health change of `kind` with `tags` by (see the
 /// module notes): of those of that kind whose required tags (if any) meet
-/// the tags and that leave none of them alone, in the order they came, one
-/// plus the additions, never below 0, times the multipliers. Each that
-/// applies adds its tags to `tags`.
+/// the tags, that leave none of them alone and whose party filter (if
+/// any) is in `passed`, in the order they came, one plus the additions
+/// (those marked `m_941C56C2` together reducing by at most
+/// [`REDUCTION_CAP`] unless one alone reduces by more), never below 0,
+/// times the multipliers. Each that applies adds its tags to `tags`.
 pub fn combat_scale<'a>(
     modifiers: impl IntoIterator<Item = &'a CombatMod>,
     kind: u64,
     tags: &mut DamageTags,
+    passed: &[PartyFilter],
 ) -> f64 {
     let mut sum = 1.0;
+    let mut capped = 0.0;
+    let mut deepest = 0.0_f64;
     let mut product = 1.0;
     for modifier in modifiers
         .into_iter()
@@ -330,11 +434,19 @@ pub fn combat_scale<'a>(
                 .required
                 .iter()
                 .any(|&tag| tags.iter().any(|held| held == tag));
-        if !required || tags.iter().any(|tag| modifier.exempt.contains(&tag)) {
+        if !required
+            || tags.iter().any(|tag| modifier.exempt.contains(&tag))
+            || modifier
+                .party
+                .is_some_and(|filter| !passed.contains(&filter))
+        {
             continue;
         }
         if modifier.multiplies {
             product *= modifier.value;
+        } else if modifier.capped {
+            capped += modifier.value;
+            deepest = deepest.min(modifier.value);
         } else {
             sum += modifier.value;
         }
@@ -342,7 +454,8 @@ pub fn combat_scale<'a>(
             tags.push(tag);
         }
     }
-    f64::max(f64::max(sum, 0.0) * product, 0.0)
+    let capped = f64::max(capped, deepest.min(-REDUCTION_CAP));
+    f64::max(f64::max(sum + capped, 0.0) * product, 0.0)
 }
 
 #[cfg(test)]

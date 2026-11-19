@@ -15,14 +15,16 @@ use crate::{
     bot_script::{BotEvent, BotViewContext, BotViews, SeenDelivery, SeenRocket},
     bots::BOT_RECORD_DELAY,
     combat::{
-        BotReplacement, Combat, DEAD, PlayerHit, PlayerTarget, PosedProjectile, PosedShot,
-        RESPAWN_RETRY, TargetRewind, credits_damage, hit_messages,
+        BotReplacement, Combat, DEAD, DeathCamera, KnockCredit, PlayerHit, PlayerTarget,
+        PosedProjectile, PosedShot, RESPAWN_RETRY, Shooter, TargetRewind, credits_damage,
+        hit_messages,
     },
     controller::ControllerFrame,
     egress::{
         DeliveryReport, FrameRecords, GameEgress, PacketDelivery, RecordSource, SendError,
         SentFrame,
     },
+    mode_view::{ModeFrame, ModeView},
     notices::{NOTICE_GAP, Switch},
     others::{
         ObservedScript, ObserverActivity, OtherDelivery, Others, PlayerView, RemoteBody,
@@ -47,14 +49,14 @@ use orpheus_content::{
         HeroSetting, HeroSettings, NANO_BOOST_SENSITIVITY, NANO_BOOST_SENSITIVITY_DEFAULT,
         SCRIPT_SETTINGS,
     },
-    heroes::{ANA, Hero, SOLDIER},
+    heroes::{ANA, Hero, SOLDIER, WIDOWMAKER},
     parameters::{ClientGameMessage, HeroSelectRequest, OPEN_OR_CLOSE, PICK_HERO, ParameterValue},
 };
 use orpheus_core::tick::{MAX_LEASE_FRAME, TICK_PERIOD};
 use orpheus_physics::{
     contact::cache::CapsulePose,
     mover::correction::CorrectionHistory,
-    mover::kinematics::{Poses, poses as kinematics_poses, repeated},
+    mover::kinematics::{Poses, neutral, poses as kinematics_poses, repeated},
     mover::modifiers::{Modifier, ModifierKey},
     mover::{MoveEnd, MoveKey, Mover},
 };
@@ -70,9 +72,10 @@ use orpheus_script::{
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
     vm::{
-        AssistLink, AuraChange, BodyEffects, DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage,
+        AssistLink, AuraChange, BodyEffects, CombatMod, DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage,
         HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, ParentWrite, RaisedCriteria,
         ScopeChange, ScopeSource, Snapshot, TargetCandidate, TrackedStat, VoiceRequest,
+        combat_scale,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
@@ -116,17 +119,33 @@ const MAX_BUFFERED: usize = 4;
 // the target for this many ticks in a row runs one command more, and one
 // below it while the client sends waits a tick (assumption).
 const DRAIN_TICKS: u32 = 20;
-// A dry buffer repeats the client's last input for at most this many ticks
-// in a row (assumption: a longer silence is not a late datagram, so the
-// body waits for the client's next command as it did before the buffer).
-const MAX_REPEATS: u32 = MAX_BUFFERED as u32;
+// A dry buffer waits this many ticks in a row for the client's next frame
+// before it repeats his last input. A datagram a few frames late, or lost
+// (the next carries every command since ack − 1), then runs its frames as
+// the client made them; 4 frames (64 ms) is the buffer retail allowed
+// before mid-2016. In the debugger runs of 2026-11-19 about half of the
+// dry spells were shorter (OwnerPrediction.md "DayLatePress"); a longer
+// silence is a client stall, and his body goes on with his last input for
+// the others (retail), for `MAX_REPEATS` frames.
+const MAX_WAIT: u32 = MAX_BUFFERED as u32;
+// Past the wait a dry tick repeats the client's last input for at most
+// this many frames since his last datagram with commands; later dry ticks
+// run a neutral frame (no button, no movement key, his aim), so a silent
+// body still simulates (gravity, a fall, its timers) but stops walking and
+// firing. Retail duplicated the last input to bridge the gap until the
+// client, told to run faster, refilled the buffer (GDC 2017, Ford 30:50,
+// GDC-Netcode.md §1): a short gap, not a client that stopped sending. Ford
+// gives no count; 4 frames (64 ms) is ours: the wait's length, and the cap
+// of the rule before the wait (4 repeats, then the body stood).
+const MAX_REPEATS: u32 = 4;
 
 /// The ch3 clock flags for `depth` commands in hand as a tick takes its
 /// own: they move the client's lead toward [`BUFFER_TARGET`] commands
 /// left waiting. Faster with fewer, four times as much again with none (a
-/// dry tick repeats the last input, and a press in the frame it stood in
-/// for runs late: the client's prediction of that frame is wrong);
-/// slower with more, four times as much again beyond [`MAX_BUFFERED`].
+/// dry tick waits for the client's frame, and past [`MAX_WAIT`] repeats
+/// his last input, after which a press in the frame it stood in for runs
+/// late); slower with more, four times as much again beyond
+/// [`MAX_BUFFERED`].
 fn clock_flags(depth: usize) -> u8 {
     match depth {
         0 => CLOCK_FASTER | CLOCK_STRONGER,
@@ -149,12 +168,19 @@ fn clock_flags(depth: usize) -> u8 {
 /// (inferred, not traced) counts twice: 1.3, a speed scalar below 0. They
 /// send its own value now (`SnapshotEncoder` `project_variables`). Without corrections, any other difference between
 /// her client's body and the server's lasted until she died, and her shots
-/// left from the wrong place. Widowmaker stays out: the server runs her
-/// Grappling Hook (`005A`) but not its ledge pull (`STU_1F5ED928`, a
-/// navigation path), so a correction would pull her back. The other heroes stay out until the
-/// server runs all of their movement (`docs/notes/behavior.md`, "Owner
-/// corrections").
-const CORRECTED_HEROES: [u64; 2] = [SOLDIER, ANA];
+/// left from the wrong place. Widowmaker is corrected since her movement
+/// state carries her Grappling Hook's pull (`005A` st1, a `MoveTo`): flag
+/// 0x10 and the pull's record, with its air ticks as the lateral count
+/// (`orpheus_physics::mover::move_to`). Before (2026-11-19, `Grapple.md`
+/// "DayGrapple6") each correction during a pull made her client's replay
+/// begin its mover behaviour again (`0x7FF789B53CC0`, about 30 times in
+/// one pull: checkpoint at the feet, lateral count 0) while the server's
+/// run kept its own, so her client drifted from the server's body (0.12 to
+/// 0.5 m) and was pulled back. A ledge pull whose navigation path her
+/// client finds (`STU_1F5ED928`) would still pull her back. The other
+/// heroes stay out until the server runs all of their movement
+/// (`docs/notes/behavior.md`, "Owner corrections").
+const CORRECTED_HEROES: [u64; 3] = [SOLDIER, ANA, WIDOWMAKER];
 
 /// `0013.025`: the entity is revived (the bots' reset, [`orpheus_script::bot::RESET`]).
 const REVIVED: u64 = orpheus_script::bot::RESET;
@@ -329,6 +355,22 @@ pub trait OwnerBodyRuntime: Send {
         None
     }
 
+    /// What a health change of `kind` with `tags` on the body, with
+    /// `other` its attacker or healer, is scaled by
+    /// (`BodyEffects::scale`): the modifiers its states hold for it, then
+    /// `held` (other entities' for it). A runtime that can't test a party
+    /// filter on `other` leaves out the modifiers that have one.
+    fn combat_scale(
+        &mut self,
+        kind: u64,
+        tags: &mut DamageTags,
+        _other: u32,
+        held: &[CombatMod],
+    ) -> f64 {
+        let own = self.effects().into_iter().flat_map(BodyEffects::modifiers);
+        combat_scale(own.chain(held), kind, tags, &[])
+    }
+
     /// The assist credits the body's states hold now, the lingering ones
     /// included (`orpheus_script::vm` [`AssistLink`]).
     fn assists(&self) -> Vec<AssistLink> {
@@ -406,6 +448,13 @@ pub trait OwnerBodyRuntime: Send {
     /// (`Combat::target_candidates`).
     fn set_target_candidates(&mut self, _candidates: &[TargetCandidate]) {}
 
+    /// The death layer's parameters of the death message for a kill by the
+    /// body `killer` ([`DeathCamera`]), as the body's world knows the
+    /// killer and the body; none: the body runs no script that reads them.
+    fn death_camera(&mut self, _killer: u32) -> Option<DeathCamera> {
+        None
+    }
+
     /// Where the player saw those bodies at `command`'s view, for the
     /// searches that rewind, before the body's script runs the command.
     fn see_targets(&mut self, _rewind: &TargetRewind<'_>, _command: &Command) {}
@@ -454,6 +503,9 @@ struct BodyScript {
     fired: Vec<FiredProjectile>,
     /// The buttons of the last command traced (`orpheus::owner` at debug).
     traced_buttons: u32,
+    /// The active states (instance, graph, state, activation) at the last
+    /// frame traced (`orpheus::pose` at debug).
+    traced_states: BTreeSet<(u16, u32, u16, u16)>,
     /// The last command the body ran with a pose: the frames of a gap
     /// repeat it ([`ScriptGap`]).
     input: Option<Command>,
@@ -490,8 +542,66 @@ impl BodyScript {
             server_shots: 0,
             fired: Vec::new(),
             traced_buttons: 0,
+            traced_states: BTreeSet::new(),
             input: None,
         })
+    }
+
+    /// `orpheus::pose` at debug: the body's movement after a command frame,
+    /// and the states that began or ended in it (instance/graph/state#activation),
+    /// to compare with the client's prediction frame by frame.
+    fn trace_pose(&mut self, mover: &Mover, frame: u32) {
+        if !tracing::enabled!(target: "orpheus::pose", tracing::Level::DEBUG) {
+            return;
+        }
+        let active: BTreeSet<_> = self
+            .runtime
+            .snapshot()
+            .into_iter()
+            .flat_map(|snapshot| {
+                snapshot.instances.iter().flat_map(|(&id, instance)| {
+                    instance
+                        .states
+                        .iter()
+                        .filter(|(_, state)| state.active)
+                        .map(move |(&raw, state)| (id, instance.graph, raw, state.activation))
+                })
+            })
+            .collect();
+        let name = |&(id, graph, raw, activation): &(u16, u32, u16, u16)| {
+            format!("{id}/{graph:04X}/{raw}#{activation}")
+        };
+        let began: Vec<_> = active.difference(&self.traced_states).map(name).collect();
+        let ended: Vec<_> = self.traced_states.difference(&active).map(name).collect();
+        self.traced_states = active;
+        let pose = mover.pose();
+        // Widowmaker's Grappling Hook's outputs when a state changes: #59
+        // (the switch), #431 (hook point), #433 (way), #434 (normal), #435
+        // (hit).
+        let hook: Vec<_> = (!began.is_empty() || !ended.is_empty())
+            .then(|| self.runtime.snapshot())
+            .flatten()
+            .into_iter()
+            .flat_map(|snapshot| snapshot.instances.values())
+            .filter(|instance| instance.graph == 0x005a)
+            .flat_map(|instance| {
+                [59, 431, 433, 434, 435]
+                    .into_iter()
+                    .filter_map(|id| Some(format!("#{id}={:?}", instance.variables.get(&id)?)))
+            })
+            .collect();
+        tracing::debug!(
+            target: "orpheus::pose",
+            body = format_args!("{:08X}", self.id.entity),
+            frame,
+            position = ?pose.position,
+            velocity = ?pose.velocity,
+            flags = format_args!("{:#x}", pose.flags),
+            began = ?began,
+            ended = ?ended,
+            hook = ?hook,
+            "owner pose"
+        );
     }
 
     /// One frame of the body's script, its searches that rewind seeing the
@@ -527,6 +637,7 @@ impl BodyScript {
                     "command buttons changed"
                 );
             }
+            self.trace_pose(mover, command.frame);
         }
         if !self
             .runtime
@@ -849,6 +960,10 @@ enum Delivery {
         close: bool,
         resend: bool,
     },
+    /// A chunk of the game mode entity's frames (`mode_view.rs`).
+    Mode {
+        last: u32,
+    },
     /// Another player's entity, body or statescript (others.rs).
     Other(OtherDelivery),
     /// A Biotic Field entity: its create, frames and destroy
@@ -1042,12 +1157,20 @@ struct LateInput {
 /// ([`InputQueue::release`]): one a tick, the next of the client's frames.
 /// Frames already run or admitted are dropped (the client's redundant
 /// window resends them); later ones wait. A tick that finds no command
-/// runs the client's last input again for the next frame (retail
-/// duplicates the last input); when the real command of that frame comes,
-/// the presses it had and the repeat lacked go with the next command run,
-/// so no press is lost. A game message keeps its place among the commands:
-/// it runs at the boundary before the first command released after it,
-/// the frame the next owner frame names.
+/// first waits for it, up to [`MAX_WAIT`] ticks in a row: the frame then
+/// runs with its own input when it comes, as the client predicted it. A
+/// longer silence runs the client's last input again for the next frame
+/// each tick (retail duplicates the last input), so his body goes on for
+/// the others, for at most [`MAX_REPEATS`] frames since his last datagram;
+/// then each dry tick runs a neutral frame, his aim with nothing held, so a
+/// silent body falls and its timers run but it neither walks nor fires.
+/// When the real command of a frame run so comes, the presses it had and
+/// the frame lacked go with the next command run, so no press is lost,
+/// though it runs a few frames after the client's (a misprediction the
+/// client's rollback shows as a volley begun twice,
+/// refs/reports/OwnerPrediction.md "DayLatePress"). A game message keeps
+/// its place among the commands: it runs at the boundary before the first
+/// command released after it, the frame the next owner frame names.
 #[derive(Default)]
 struct InputQueue {
     work: VecDeque<InputWork>,
@@ -1057,15 +1180,20 @@ struct InputQueue {
     /// the server a tick at a time.
     immediate: bool,
     first_admitted: Option<u32>,
-    /// The newest frame admitted: a client's command or a repeat.
+    /// The newest frame admitted: a client's command, a repeat or a
+    /// neutral frame.
     admitted: Option<u32>,
     processed: Option<u32>,
-    /// The client's newest command (late ones included): a dry tick
-    /// repeats it.
+    /// The client's newest command (late ones included): a dry tick past
+    /// the wait repeats it.
     last: Option<Command>,
     /// The buttons of the last command released.
     ran: u32,
-    /// Dry ticks in a row.
+    /// Ticks in a row that found no command while the client sends for a
+    /// live body: the waits, then the repeats and neutral frames.
+    dry: u32,
+    /// Frames repeated since the client's last datagram with commands, up
+    /// to [`MAX_REPEATS`].
     repeats: u32,
     /// Ticks in a row with more than [`BUFFER_TARGET`] commands left waiting.
     surplus: u32,
@@ -1110,6 +1238,9 @@ impl InputQueue {
         if self.closing || commands.is_empty() {
             return;
         }
+        // The client sends: a dry tick may repeat his newest input again,
+        // late ones included (he is behind the frames run, not silent).
+        self.repeats = 0;
         self.reconcile(commands);
         let (fresh, boundary) = command_prefix(self.admitted, tick, commands);
         for command in fresh {
@@ -1173,10 +1304,12 @@ impl InputQueue {
     /// before it. More when more than [`MAX_BUFFERED`] would wait, or when
     /// more than [`BUFFER_TARGET`] waited for [`DRAIN_TICKS`] ticks. None
     /// when no more than the target is in hand while the client sends (the
-    /// buffer grows by one). With no command in hand, the messages, then
-    /// the client's last input repeated for the next frame while his body
-    /// is in the world (`body`). Sets the clock flags the client's next
-    /// frames get ([`clock_flags`]).
+    /// buffer grows by one). With no command in hand, the messages, and
+    /// while the client sends for a live body (`body`) the dry tick waits
+    /// for his next frame, up to [`MAX_WAIT`] in a row; each later one
+    /// runs the next frame: his last input again, past [`MAX_REPEATS`]
+    /// such frames since his last datagram a neutral one ([`neutral`]).
+    /// Sets the clock flags the client's next frames get ([`clock_flags`]).
     fn release(&mut self, ticks: u32, body: bool) {
         self.clock = 0;
         if self.immediate || self.closing {
@@ -1184,16 +1317,36 @@ impl InputQueue {
         }
         let arrived = std::mem::take(&mut self.arrived);
         let depth = self.depth();
-        if body && self.last.is_some() {
+        let sending = body && self.last.is_some();
+        if sending {
             self.clock = clock_flags(depth);
         }
         if depth == 0 {
             self.surplus = 0;
             self.work.extend(self.buffer.drain(..));
-            self.repeat(ticks, body);
+            if sending {
+                if self.dry == 0 {
+                    tracing::debug!(
+                        target: "orpheus::input",
+                        frame = ?self.admitted.map(|frame| frame.wrapping_add(1)),
+                        "input buffer dry: the body waits for the client's next command"
+                    );
+                }
+                let waited = self.dry.max(MAX_WAIT);
+                self.dry = self.dry.saturating_add(ticks);
+                self.repeat(self.dry.saturating_sub(waited));
+            }
             return;
         }
-        self.repeats = 0;
+        if self.dry != 0 {
+            tracing::debug!(
+                target: "orpheus::input",
+                ticks = self.dry,
+                depth,
+                "input buffer refilled after dry ticks"
+            );
+            self.dry = 0;
+        }
         if depth <= BUFFER_TARGET && arrived && ticks == 1 {
             tracing::debug!(
                 target: "orpheus::input",
@@ -1237,12 +1390,14 @@ impl InputQueue {
         }
     }
 
-    /// A dry buffer: the client's last input again, for the next frames.
-    fn repeat(&mut self, ticks: u32, body: bool) {
-        let Some(last) = self.last.filter(|_| body) else {
+    /// A dry buffer past the wait: the next `count` frames, each the
+    /// client's last input again, or past [`MAX_REPEATS`] since his last
+    /// datagram a neutral frame.
+    fn repeat(&mut self, count: u32) {
+        let Some(last) = self.last else {
             return;
         };
-        for _ in 0..ticks.min(MAX_REPEATS.saturating_sub(self.repeats)) {
+        for _ in 0..count {
             let Some(frame) = self
                 .admitted
                 .map(|frame| frame.wrapping_add(1))
@@ -1250,14 +1405,24 @@ impl InputQueue {
             else {
                 return;
             };
-            let command = self.take_late(repeated(last, frame));
-            tracing::debug!(
-                target: "orpheus::input",
-                frame,
-                buttons = format_args!("{:#x}", command.buttons),
-                "input buffer dry: the last input repeated"
-            );
-            self.repeats += 1;
+            let command = if self.repeats < MAX_REPEATS {
+                self.repeats += 1;
+                let command = self.take_late(repeated(last, frame));
+                tracing::debug!(
+                    target: "orpheus::input",
+                    frame,
+                    buttons = format_args!("{:#x}", command.buttons),
+                    "input buffer dry: the last input repeated"
+                );
+                command
+            } else {
+                tracing::debug!(
+                    target: "orpheus::input",
+                    frame,
+                    "input buffer dry: a neutral frame"
+                );
+                self.take_late(neutral(last, frame))
+            };
             self.admitted = Some(frame);
             self.work.push_back(InputWork::Command {
                 command,
@@ -1317,7 +1482,7 @@ impl InputQueue {
         self.admitted = self.processed;
         self.last = None;
         self.ran = 0;
-        self.repeats = 0;
+        self.dry = 0;
         self.surplus = 0;
         self.arrived = false;
         self.late = LateInput::default();
@@ -1471,7 +1636,7 @@ pub struct WorldDelivery {
     started: Option<u32>,
     pub presentation_due: bool,
     controller: Stream,
-    mode: Stream,
+    mode: ModeView,
     /// What the last controller frame showed of hero select; a change sends
     /// the next ([`Self::send_hero_select`]).
     select_shown: Option<SelectShown>,
@@ -1524,6 +1689,9 @@ pub struct WorldDelivery {
     /// sources of damage, for the eliminations a death credits
     /// ([`Self::recent_attackers`]).
     attackers: Vec<Attack>,
+    /// The last knock of the player's body, for the environment kill it
+    /// credits ([`Self::knocked_by`]).
+    knocks: KnockCredit,
     /// The pools of a body that runs no script (combat.py `Vitals` from
     /// `pools.body_pools`).
     plain_vitals: Option<Vitals>,
@@ -1577,6 +1745,9 @@ pub struct WorldDelivery {
     /// view turn (25008) waits for its possession to arrive
     /// ([`Self::take_spawn_view`]).
     spawn_view: Option<(BodyId, i32)>,
+    /// The hurt notices (25000) of the hits the current body took, for the
+    /// match to send ([`Self::take_hurt_notices`]).
+    hurt: Vec<CombatNotice>,
     /// The player's controller graph (`0C90`) in the VM, from the world's
     /// start: hero select (`288B`) takes his picks and opens, its snapshot
     /// is his controller frames, and it counts his multikills
@@ -1688,7 +1859,7 @@ impl WorldDelivery {
             started: None,
             presentation_due: false,
             controller: Stream::new(owner),
-            mode: Stream::new(GAME_MODE_ENTITY),
+            mode: ModeView::new(),
             select_shown: None,
             keep_open: false,
             body: None,
@@ -1715,6 +1886,7 @@ impl WorldDelivery {
             target_candidates: Vec::new(),
             death: None,
             attackers: Vec::new(),
+            knocks: KnockCredit::default(),
             plain_vitals: None,
             body_health: 0,
             body_tags: None,
@@ -1732,6 +1904,7 @@ impl WorldDelivery {
             shield: (false, 0),
             respawn_hero: None,
             spawn_view: None,
+            hurt: Vec::new(),
             controller_script: None,
             multikill_due: false,
             placement: None,
@@ -1857,6 +2030,7 @@ impl WorldDelivery {
         self.notices = SwitchNotices::default();
         self.spawn_room = None;
         self.spawn_view = None;
+        self.hurt.clear();
         self.controller_script = None;
         self.select_shown = None;
         self.keep_open = false;
@@ -2227,7 +2401,7 @@ impl WorldDelivery {
     }
 
     pub fn mode_ready(&self) -> bool {
-        self.mode.delivered() != 0
+        self.mode.arrived()
     }
 
     pub fn health_pending(&self, entity: u32) -> bool {
@@ -2423,6 +2597,7 @@ impl WorldDelivery {
             Delivery::Script {
                 last, close: true, ..
             } => last == self.controller.latest_data(),
+            Delivery::Mode { last } => self.mode.current(last),
             Delivery::CreateBody(id) => {
                 self.bodies.get(&id.entity) == Some(&(id.generation, Lifetime::Live))
             }
@@ -2520,6 +2695,11 @@ impl WorldDelivery {
                             retry.push(record);
                         }
                     }
+                    (arrived, Delivery::Mode { last }) => {
+                        if self.mode.delivered(last, arrived) {
+                            retry.push(record);
+                        }
+                    }
                     (false, Delivery::Script { resend: false, .. }) => {}
                     (false, _) => retry.push(record),
                     (true, Delivery::Baseline) => {
@@ -2604,11 +2784,8 @@ impl WorldDelivery {
                     (true, Delivery::Placed { last }) => {
                         self.placed_views.arrived(record.update.entity, last);
                     }
-                    (true, Delivery::Script { last, .. }) if record.update.entity == self.owner => {
-                        self.controller.arrived(last);
-                    }
                     (true, Delivery::Script { last, .. }) => {
-                        self.mode.arrived(last);
+                        self.controller.arrived(last);
                     }
                 }
             }
@@ -2638,8 +2815,8 @@ impl WorldDelivery {
             Delivery::DestroyBody(_) => "body destroy",
             Delivery::BodyScript { delta: false, .. } => "owner full frame",
             Delivery::Script { close: true, .. } => "controller frame (close)",
-            Delivery::Script { .. } if record.update.entity == self.owner => "controller frame",
-            Delivery::Script { .. } => "mode frame",
+            Delivery::Script { .. } => "controller frame",
+            Delivery::Mode { .. } => "mode frame",
             _ => return None,
         })
     }
@@ -2717,6 +2894,7 @@ impl WorldDelivery {
                         return None;
                     }
                     Delivery::Other(other) if !self.others.ready(other) => return None,
+                    Delivery::Mode { last } if !self.mode.current(last) => return None,
                     _ => {}
                 }
                 Some(Ready { index, record })
@@ -2751,6 +2929,7 @@ impl WorldDelivery {
                     let entity = self.queued[index].update.entity;
                     self.bot_views.sent(entity, last);
                 }
+                Delivery::Mode { last } => self.mode.sent(last),
                 _ => {}
             }
         }
@@ -3074,7 +3253,7 @@ impl WorldDelivery {
     pub fn present(
         &mut self,
         scene: &PreparedScene,
-        mode_frame: &orpheus_core::bits::BitWriter,
+        mode_frame: ModeFrame<'_>,
         tick: u32,
     ) -> io::Result<()> {
         if self.controller.latest_data() == 0 && self.created.contains(&self.owner) {
@@ -3082,14 +3261,10 @@ impl WorldDelivery {
         }
         // While heroes assemble the countdown frames are the mode entity's
         // first (combat.py `spawned`).
-        if self.mode.latest_data() == 0
-            && !self.assembling
-            && self.created.contains(&GAME_MODE_ENTITY)
-        {
-            let chunk = self.mode.full(mode_frame).map_err(invalid)?;
-            self.push(Record::script(chunk, false));
+        if !self.mode.started() && !self.assembling {
+            self.queue_mode_frame(mode_frame, tick)?;
         }
-        self.presentation_due = self.controller.latest_data() == 0 || self.mode.latest_data() == 0;
+        self.presentation_due = self.controller.latest_data() == 0 || !self.mode.started();
         Ok(())
     }
 
@@ -3118,15 +3293,21 @@ impl WorldDelivery {
         }
     }
 
-    /// A full frame of the game mode entity, such as the countdown; false
-    /// when the client has no mode entity yet (server.py `queue_mode_frame`).
-    pub fn queue_mode_frame(&mut self, frame: &orpheus_core::bits::BitWriter) -> io::Result<bool> {
+    /// The game mode entity's frame now, such as the countdown: whole when
+    /// hand-built, else what changed since the frame the client
+    /// acknowledged (`mode_view.rs`); false when the client has no mode
+    /// entity yet (server.py `queue_mode_frame`).
+    pub fn queue_mode_frame(&mut self, frame: ModeFrame<'_>, tick: u32) -> io::Result<bool> {
         if !self.created.contains(&GAME_MODE_ENTITY) {
             return Ok(false);
         }
-        let chunk = self.mode.full(frame).map_err(invalid)?;
-        self.push(Record::script(chunk, false));
-        self.remove_stale();
+        if let Some(chunk) = self.mode.queue(frame, tick).map_err(invalid)? {
+            self.push(Record {
+                update: chunk.update,
+                delivery: Delivery::Mode { last: chunk.last },
+            });
+            self.remove_stale();
+        }
         Ok(true)
     }
 
@@ -3271,12 +3452,14 @@ impl WorldDelivery {
         }
     }
 
-    /// The ch3 ack: the last of the client's own command frames run. A
-    /// dry buffer's repeats run past them (`InputQueue::release`); the ack
-    /// stays at his newest, so the client, which keeps its commands from
-    /// ack − 1 on (`orpheus_physics::mover::correction` notes), still sends
-    /// the ones the repeats stood in for (`InputQueue::reconcile`). It is
-    /// never past the frame an owner frame names.
+    /// The ch3 ack: the last of the client's own command frames run (before
+    /// the first, the frame before the first admitted, at most `tick`). The
+    /// client keeps its commands from ack − 1 on
+    /// (`orpheus_physics::mover::correction` notes), so it resends those a
+    /// dry tick waits for. Repeats past the wait run beyond his newest; the
+    /// ack stays at his newest, so he still sends the frames they stood in
+    /// for (`InputQueue::reconcile`). It is never past the frame an owner
+    /// frame names.
     pub fn command_ack(&self, tick: u32) -> u32 {
         let processed = self.input.processed.unwrap_or_else(|| {
             self.input
@@ -3363,7 +3546,9 @@ impl WorldDelivery {
     }
 
     /// The input of `ticks` server ticks goes to work ([`InputQueue::release`]):
-    /// one command a tick, a repeat of the last input when none came.
+    /// one command a tick; none when none came (the body waits for it),
+    /// past [`MAX_WAIT`] dry ticks a repeat of the last input, past
+    /// [`MAX_REPEATS`] repeats a neutral frame.
     pub fn release_input(&mut self, ticks: u32) {
         let body = self.mover.is_some();
         self.input.release(ticks, body);
@@ -3591,7 +3776,17 @@ impl WorldDelivery {
                     .cloned()
                     .collect()
             }),
+            held: self.held_for_others().cloned().collect(),
         })
+    }
+
+    /// The modifiers the current body's graphs hold for other entities
+    /// (`BodyEffects::held_for_others`: Mercy's damage boost `006C` st6
+    /// names its holder), which the room adds to theirs.
+    pub fn held_for_others(&self) -> impl Iterator<Item = &CombatMod> {
+        self.body_effects()
+            .into_iter()
+            .flat_map(BodyEffects::held_for_others)
     }
 
     /// Whether this client can name `entity` in a combat notice or a kill
@@ -3637,24 +3832,27 @@ impl WorldDelivery {
         tick: u32,
         now: Duration,
     ) -> Option<BodyDamage> {
-        let damage = self.apply_damage(scene, hit, tick, now)?;
+        let damage = self.apply_damage(scene, hit, tick, now, &[])?;
         self.send_hit_messages(scene, hit, &damage, &[]);
         Some(damage)
     }
 
     /// combat.py `_damage` and `_died` for the player's current body: its
     /// pools take the hit, scaled by the damage-taken modifiers his graphs
-    /// hold (`vm/statuses.rs`: Nano Boost's reduction), shields, armour,
-    /// health, and its script's health follows; a killing hit makes it dead
-    /// and sets its respawn after the mode's time. The hit's source is kept
-    /// as the body's attacker ([`Self::recent_attackers`]). Its messages
-    /// are [`Self::send_hit_messages`]'s.
+    /// hold (`vm/statuses.rs`: Nano Boost's reduction; Deflect's ×0 for an
+    /// attacker in front, its party filter tested on the hit's shooter),
+    /// then those other bodies' graphs hold for him (`held`), shields,
+    /// armour, health, and its script's health follows; a killing hit
+    /// makes it dead and sets its respawn after the mode's time. The hit's
+    /// source is kept as the body's attacker ([`Self::recent_attackers`]).
+    /// Its messages are [`Self::send_hit_messages`]'s.
     pub fn apply_damage(
         &mut self,
         scene: &PreparedScene,
         hit: &PlayerHit,
         tick: u32,
         now: Duration,
+        held: &[CombatMod],
     ) -> Option<BodyDamage> {
         let body = self.body.filter(|body| body.id.entity == hit.body)?;
         if self.death.is_some() || hit.amount.is_nan() || hit.amount <= 0.0 {
@@ -3664,10 +3862,8 @@ impl WorldDelivery {
             return None;
         }
         let mut tags = hit.tags;
-        let amount = hit.amount
-            * self
-                .body_effects()
-                .map_or(1.0, |effects| effects.scale(DAMAGE_TAKEN, &mut tags));
+        let amount =
+            hit.amount * self.taken_scale(DAMAGE_TAKEN, &mut tags, hit.shooter.source, held);
         let death_tick = hit.world_tick.unwrap_or(tick);
         let source = Death {
             time: now.as_secs_f64(),
@@ -3727,10 +3923,12 @@ impl WorldDelivery {
     }
 
     /// The messages of a hit [`Self::apply_damage`] applied to the current
-    /// body go to its script: the damage message (`0011.025`), and for a
-    /// killing hit the "died" message (003E.025, which pulses the kill
-    /// feed line), both naming `assists` (`03E7`: the assisters' bodies,
-    /// [`crate::combat::kill_credit`]).
+    /// body: the hurt notice (25000, [`CombatNotice::Hurt`]) for his
+    /// client's damage direction arc when another dealt it from a known
+    /// place ([`PlayerHit::from`]), then the body's script's: the damage
+    /// message (`0011.025`), and for a killing hit the "died" message
+    /// (003E.025, which pulses the kill feed line), both naming `assists`
+    /// (`03E7`: the assisters' bodies, [`crate::combat::kill_credit`]).
     pub fn send_hit_messages(
         &mut self,
         scene: &PreparedScene,
@@ -3738,6 +3936,14 @@ impl WorldDelivery {
         damage: &BodyDamage,
         assists: &[u32],
     ) {
+        if let Some(from) = hit.from.filter(|_| !self.headless) {
+            self.hurt.push(CombatNotice::Hurt {
+                victim: hit.body,
+                attacker: hit.shooter.source,
+                from: from.map(|axis| axis as f32),
+                dealt: damage.dealt,
+            });
+        }
         let Some(script) = self
             .body_script
             .as_mut()
@@ -3745,11 +3951,16 @@ impl WorldDelivery {
         else {
             return;
         };
+        let camera = damage
+            .killed
+            .then(|| script.runtime.death_camera(hit.shooter.source))
+            .flatten();
         let messages = hit_messages(
             hit,
             damage.tags,
             damage.dealt,
             damage.killed.then_some(assists),
+            camera,
             scene.hurt_feedback(),
         );
         let failure = messages.into_iter().find_map(|(message, parameters)| {
@@ -3758,6 +3969,11 @@ impl WorldDelivery {
         if let Some(error) = failure {
             self.drop_failed_script(&error.to_string());
         }
+    }
+
+    /// The hurt notices of the hits since the last call, in order.
+    pub fn take_hurt_notices(&mut self) -> Vec<CombatNotice> {
+        std::mem::take(&mut self.hurt)
     }
 
     /// The players' sources (bodies) of the damage the body `body` took
@@ -3784,28 +4000,21 @@ impl WorldDelivery {
             .unwrap_or_default()
     }
 
-    /// combat.py `heal_area` for the player's living body, scaled by the
-    /// healing modifiers his graphs hold for a heal with `tags` (Biotic
-    /// Grenade's anti-heal and heal boost, `vm/statuses.rs`). Returns what
-    /// the pools took.
-    pub fn heal_body(
-        &mut self,
-        scene: &PreparedScene,
-        body: u32,
-        amount: f64,
-        tags: &DamageTags,
-    ) -> f64 {
-        let Some(current) = self.body.filter(|current| current.id.entity == body) else {
+    /// combat.py `heal_area` for the player's living body, the heal `hit`
+    /// scaled by the healing modifiers his graphs hold for a heal with its
+    /// tags (Biotic Grenade's anti-heal and heal boost, `vm/statuses.rs`;
+    /// party filters tested on the healer), then those other bodies'
+    /// graphs hold for him (`held`). Returns what the pools took.
+    pub fn heal_body(&mut self, scene: &PreparedScene, hit: &PlayerHit, held: &[CombatMod]) -> f64 {
+        let Some(current) = self.body.filter(|current| current.id.entity == hit.body) else {
             return 0.0;
         };
         if self.death.is_some() {
             return 0.0;
         }
-        let mut tags = *tags;
-        let amount = amount
-            * self
-                .body_effects()
-                .map_or(1.0, |effects| effects.scale(HEALING_TAKEN, &mut tags));
+        let mut tags = hit.tags;
+        let amount =
+            hit.amount * self.taken_scale(HEALING_TAKEN, &mut tags, hit.shooter.source, held);
         let mut failure = None;
         let given = match self
             .body_script
@@ -3917,6 +4126,27 @@ impl WorldDelivery {
             .and_then(|script| script.runtime.effects())
     }
 
+    /// What a health change of `kind` with `tags` on the current body, with
+    /// `other` its attacker or healer, is scaled by: its graphs' modifiers
+    /// (`OwnerBodyRuntime::combat_scale`), then `held`.
+    fn taken_scale(
+        &mut self,
+        kind: u64,
+        tags: &mut DamageTags,
+        other: u32,
+        held: &[CombatMod],
+    ) -> f64 {
+        let body = self.body;
+        match self
+            .body_script
+            .as_mut()
+            .filter(|script| body.is_some_and(|body| script.id == body.id))
+        {
+            Some(script) => script.runtime.combat_scale(kind, tags, other, held),
+            None => combat_scale(held, kind, tags, &[]),
+        }
+    }
+
     /// Whether a hit can hurt the current body: no invulnerable status
     /// (`STU_9028E035`) held by his graphs (the spawn room's is `0C8E`
     /// st11). An explosion pushes only a body it can hurt (the user's game
@@ -3927,20 +4157,33 @@ impl WorldDelivery {
     }
 
     /// Another's explosion pushes the player's living body `body`
-    /// ([`crate::combat::PlayerPush`]): `push` goes to his mover for its
-    /// next posed frame, as his own explosion's does
+    /// ([`crate::combat::PlayerPush`]) at `now`: `push` goes to his mover
+    /// for its next posed frame, as his own explosion's does
     /// ([`Self::advance_projectiles`]), and the owner corrections carry it
-    /// to his client, which predicts no push from another's explosion. Not
-    /// where it can't hurt him ([`Self::can_be_damaged`]: the spawn room,
-    /// whose status bit 0x4 also stops the client's own push, `scene`
-    /// module notes) nor on a body the hit killed.
-    pub fn knock(&mut self, body: u32, push: [f64; 3]) {
+    /// to his client, which predicts no push from another's explosion; `by`
+    /// has knocked the body ([`Self::knocked_by`]). Not where it can't hurt
+    /// him ([`Self::can_be_damaged`]: the spawn room, whose status bit 0x4
+    /// also stops the client's own push, `scene` module notes) nor on a body
+    /// the hit killed.
+    pub fn knock(&mut self, body: u32, push: [f64; 3], by: Shooter, now: Duration) {
         if self.current_body() != Some(body) || self.death.is_some() || !self.can_be_damaged() {
             return;
         }
         if let Some(mover) = &mut self.mover {
             mover.push(push);
+            self.knocks.knocked(body, by, now);
         }
+    }
+
+    /// Who last knocked the player's body `body` so that its environment
+    /// kill at `now` is theirs ([`KnockCredit`]).
+    pub fn knocked_by(&self, body: u32, now: Duration) -> Option<Shooter> {
+        self.knocks.credit(body, now)
+    }
+
+    /// The tick's environment kills are dealt ([`KnockCredit::settle`]).
+    pub fn settle_knock(&mut self) {
+        self.knocks.settle();
     }
 
     /// An aura comes on the player's living body (Biotic Grenade's
@@ -4538,12 +4781,14 @@ impl WorldDelivery {
         mut step: impl FnMut(u32, &mut ProjectileFlight) -> io::Result<Option<FlightEnd>>,
     ) -> io::Result<()> {
         // His own explosion pushes him only where it could hurt him
-        // ([`Self::can_be_damaged`]).
+        // ([`Self::can_be_damaged`]), and cancels the credit of another's
+        // knock ([`KnockCredit::own_push`]).
         let pushable = self.can_be_damaged();
         let Some(script) = &mut self.body_script else {
             return Ok(());
         };
         let mover = &mut self.mover;
+        let knocks = &mut self.knocks;
         let id = script.id;
         let mut deliveries = Vec::new();
         let projectiles = &mut script.projectiles;
@@ -4559,6 +4804,7 @@ impl WorldDelivery {
             ) = (&result, mover.as_mut().filter(|_| pushable))
             {
                 mover.push(*knockback);
+                knocks.own_push();
             }
             if let Some(token) = token.filter(|token| token.is_server()) {
                 let exploded = match &result {
@@ -4963,10 +5209,13 @@ impl WorldDelivery {
         }
         mover.set_peers(&self.blockers);
         let rays = scene.movement_index();
+        // A jump or a landing cancels another's knock ([`KnockCredit`]).
+        let knocks = &mut self.knocks;
         let stepped =
             mover.step_pending_with(&mut pending.poses, budget - used, |mover, command| {
                 let Some(script) = script.as_mut().filter(|_| failed.is_none()) else {
                     mover.step_pose_to(rays, command, dt, None)?;
+                    knocks.posed(mover.landed(), mover.jumped());
                     return Ok(());
                 };
                 // match.py `_step_body_pose`: one world-target state moves the
@@ -4988,6 +5237,7 @@ impl WorldDelivery {
                     key.zip(request.as_ref())
                         .map(|(key, request)| (key, &request.params)),
                 )?;
+                knocks.posed(mover.landed(), mover.jumped());
                 let ended = request.zip(outcome).map_or(Ok(()), |(request, end)| {
                     let arrived = end == MoveEnd::Arrived;
                     script.runtime.finish_move(request, arrived, command.frame)

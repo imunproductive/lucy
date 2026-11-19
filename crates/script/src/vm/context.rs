@@ -66,10 +66,14 @@ impl<W: World> Context for InstanceContext<'_, W> {
         if let Some(candidate) = self.candidate {
             return candidate.clone();
         }
-        self.parameters
-            .and_then(|parameters| parameters.get(&id))
-            .cloned()
-            .unwrap_or(Value::Null)
+        match self.sender {
+            Some(sender) if id == MESSAGE_SENDER => Value::Entity(sender),
+            _ => self
+                .parameters
+                .and_then(|parameters| parameters.get(&id))
+                .cloned()
+                .unwrap_or(Value::Null),
+        }
     }
 
     fn owner(&mut self) -> Value {
@@ -353,6 +357,7 @@ impl<W: World> Context for InstanceContext<'_, W> {
             foreign_reads: Vec::new(),
             parameters: None,
             candidate: None,
+            sender: None,
             watcher: None,
             read_native: false,
             natives: Vec::new(),

@@ -9,7 +9,7 @@ use std::{
 use serde_json::Value as Json;
 
 use crate::{
-    combat::{BodyCombat, PosedHitscan, PosedProjectile, PosedShot, TargetRewind},
+    combat::{BodyCombat, DeathCamera, PosedHitscan, PosedProjectile, PosedShot, TargetRewind},
     hitscan::aim_direction,
     instance::RETAIL_QUANTA,
     others::ObserverActivity,
@@ -33,7 +33,7 @@ use orpheus_physics::{
 use orpheus_script::{
     ai_definitions::AiControl,
     codecs::CodecTable,
-    expr::{team_from_filter, to_float},
+    expr::{EntityRelation, team_from_filter, to_float},
     graph::GraphStore,
     map_tags::MapTags,
     placed::{DummyChange, NextDummy},
@@ -42,11 +42,11 @@ use orpheus_script::{
     timeline::FRAME_MS,
     vitals::Vitals,
     vm::{
-        AssistLink, AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays,
-        Motion, MoveRequest, ParentWrite, RaisedCriteria, Root, ScopeChange, ScopeSource, Snapshot,
-        StateKind, TargetCandidate, TrackedStat, Unknowns, VoiceRequest, World,
+        AssistLink, AuraChange, BodyEffects, CombatMod, Component, GameMessage, MAX_INIT_WORK,
+        MapRays, Motion, MoveRequest, ParentWrite, RaisedCriteria, Root, ScopeChange, ScopeSource,
+        Site, Snapshot, StateKind, TargetCandidate, TrackedStat, Unknowns, VoiceRequest, World,
     },
-    weapons::{HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
+    weapons::{DamageTags, HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
 };
 use orpheus_wire::{
@@ -135,6 +135,7 @@ pub struct PlayerBodyFactory {
     graphs: Arc<GraphStore>,
     codecs: Arc<CodecTable>,
     mode: u64,
+    ruleset: u64,
     hero: u64,
     roots: Vec<Root>,
     variables: Variables,
@@ -152,6 +153,7 @@ impl PlayerBodyFactory {
         graphs: Arc<GraphStore>,
         codecs: Arc<CodecTable>,
         mode: u64,
+        ruleset: u64,
         hero: &Hero,
         pools: Option<HealthPools>,
         controller_on_fire: bool,
@@ -181,6 +183,7 @@ impl PlayerBodyFactory {
             graphs,
             codecs,
             mode,
+            ruleset,
             hero: hero.guid,
             roots,
             variables,
@@ -250,6 +253,7 @@ impl PlayerBodyFactory {
             self.mode,
             self.hero,
         );
+        world.ruleset = self.ruleset;
         world.ai = spawn.ai;
         world.position = spawn.pose.position;
         world.mode_random = Some(spawn.mode_random);
@@ -561,6 +565,24 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         Some(&self.world.effects)
     }
 
+    /// Its graphs' modifiers, their party filters tested on `other` by the
+    /// body's VM (Deflect's `03A3` st59: the attacker in front of Genji).
+    fn combat_scale(
+        &mut self,
+        kind: u64,
+        tags: &mut DamageTags,
+        other: u32,
+        held: &[CombatMod],
+    ) -> f64 {
+        let passed = self.component.passed_party_filters(
+            &mut self.world,
+            |world| &world.effects,
+            kind,
+            other,
+        );
+        self.world.effects.scale(kind, tags, held, &passed)
+    }
+
     fn assists(&self) -> Vec<AssistLink> {
         let now = self.component.now_ms();
         self.world.effects.assists(now).cloned().collect()
@@ -636,6 +658,26 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         let targets = self.world.targets.get_or_insert_with(Vec::new);
         targets.clear();
         targets.extend_from_slice(candidates);
+    }
+
+    /// The killer's possessor as the body's graphs would ask it
+    /// (`STU_DB742151`): its own controller (an AI hero's AI entity) for a
+    /// self-kill, else the controller the match lists for the killing body.
+    fn death_camera(&mut self, killer: u32) -> Option<DeathCamera> {
+        let site = Site {
+            entity: self.world.entity,
+            instance: 0,
+            graph: 0,
+            node: None,
+        };
+        let killer_controller = self
+            .world
+            .related_entity(site, EntityRelation::Controller, killer)
+            .unwrap_or(0);
+        Some(DeathCamera {
+            killer_controller,
+            position: self.world.position,
+        })
     }
 
     fn see_targets(&mut self, rewind: &TargetRewind<'_>, command: &Command) {
@@ -896,6 +938,7 @@ pub fn fixture_body_factory() -> (PlayerBodyFactory, OwnerBodySpawn) {
         graphs,
         codecs,
         PRACTICE_RANGE_MODE,
+        orpheus_content::maps::PRACTICE_RANGE_RULESET,
         &hero,
         None,
         false,

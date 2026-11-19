@@ -8,7 +8,8 @@
 //! reference (a GUID of type `01B` anywhere in a kept graph) and the initial
 //! graphs of every entity a kept weapon volley spawns (its projectile and
 //! what the projectile leaves where it lands). It also holds
-//! each mode's initial variables and each body's authored target tags. The
+//! each mode's initial variables, the mode-level values of the game
+//! rulesets that set any, and each body's authored target tags. The
 //! bot bundle adds the Practice Range bot bodies with their target tags and
 //! AI definitions (with the AI weapon buttons) and the graphs placed by the
 //! maps' AI spawners; its hero bodies have no target tags.
@@ -48,6 +49,7 @@ use crate::{Install, Output, Result, asset_error, guid_name, guid_type};
 const GRAPH: u16 = 0x01B;
 const ENTITY: u16 = 0x003;
 const MODE: u16 = 0x0C5;
+const RULESET: u16 = 0x0C0;
 const IDENTIFIER: u16 = 0x01C;
 const TARGET_TAG: u16 = 0x06C;
 /// Auras (`STU_76F2C784`): the graph an aura runs on the body it is on.
@@ -138,6 +140,7 @@ impl Bundle {
 fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
     let assets = Assets::new(install);
     let variables = mode_variables(install)?;
+    let ruleset_variables = ruleset_variables(install)?;
     let (ai_roots, bot_entities) = if bots {
         let spawners = out.join("data/ai_spawners_174.json");
         (
@@ -255,6 +258,7 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
         data.insert("entities".into(), Json::Object(entities));
     }
     data.insert("mode_variables".into(), Json::Object(variables));
+    data.insert("ruleset_variables".into(), Json::Object(ruleset_variables));
     Ok(Bundle(Json::Object(data)))
 }
 
@@ -786,6 +790,7 @@ impl<'a> GraphView<'a> {
         static EMPTY: Object = Object {
             class: 0,
             fields: Vec::new(),
+            stored: 0,
         };
         let mut view = View::plain(asset);
         view.links = true;
@@ -1284,10 +1289,7 @@ fn ai_weapon_buttons(assets: &Assets, asset: &Asset) -> Result<Map<String, Json>
 }
 
 /// Each game mode's (`0C5`) initial variables: its first table
-/// (`m_3CE93B76`) of identifier (`01C`, at most `FFFF`) and value pairs,
-/// keeping explicit empty modes. A value is an identifier
-/// (`STU_22BF1D21`), a boolean (`STU_43CA1D94`) or an integer
-/// (`STU_3ED2A372`).
+/// (`m_3CE93B76`, [`var_value_pairs`]), keeping explicit empty modes.
 fn mode_variables(install: &Install) -> Result<Map<String, Json>> {
     let mut modes = Map::new();
     for guid in install.guids(MODE) {
@@ -1297,66 +1299,121 @@ fn mode_variables(install: &Install) -> Result<Map<String, Json>> {
             .root()
             .filter(|root| class_name(root) == "STUGameMode")
             .ok_or_else(|| context("expected a STUGameMode root"))?;
-        let pairs = match field(root, "m_3CE93B76") {
-            None | Some(Value::Null) => &[][..],
-            Some(Value::Array(pairs)) => pairs.as_slice(),
-            Some(_) => return Err(context("invalid m_3CE93B76 array")),
-        };
-        let mut variables = Map::new();
-        for pair in pairs {
-            let pair = asset
-                .resolve(pair)
-                .filter(|pair| class_name(pair) == "STUGameModeVarValuePair")
-                .ok_or_else(|| context("invalid m_3CE93B76 pair"))?;
-            let key = identifier(field(pair, "m_3E783677"))
-                .ok_or_else(|| context("m_3E783677 must reference a .01C identifier"))?
-                & INDEX;
-            if key == 0 || key > 0xFFFF {
-                return Err(context(&format!(
-                    "mode variable identifier {key:X} is outside the entity variable range"
-                )));
-            }
-            let value = asset
-                .resolve(field(pair, "m_value").unwrap_or(&Value::Null))
-                .ok_or_else(|| context("unsupported mode variable value type missing"))?;
-            let number = || match field(value, "m_value") {
-                Some(Value::Int(number)) => Some(*number),
-                Some(Value::UInt(number)) => i64::try_from(*number).ok(),
-                _ => None,
-            };
-            let value = match class_name(value) {
-                "STU_22BF1D21" => guid_text(
-                    identifier(field(value, "m_value"))
-                        .ok_or_else(|| context("m_value must reference a .01C identifier"))?,
-                )
-                .into(),
-                "STU_43CA1D94" => match number() {
-                    Some(0) => false.into(),
-                    Some(1) => true.into(),
-                    _ => return Err(context("invalid STU_43CA1D94 m_value")),
-                },
-                "STU_3ED2A372" => match number() {
-                    Some(number) if i32::try_from(number).is_ok() => number.into(),
-                    _ => return Err(context("invalid STU_3ED2A372 m_value")),
-                },
-                other => {
-                    return Err(context(&format!(
-                        "unsupported mode variable value type {other}"
-                    )));
-                }
-            };
-            if variables.insert(key.to_string(), value).is_some() {
-                return Err(context(&format!(
-                    "duplicate mode variable identifier {key:X}"
-                )));
-            }
-        }
+        let variables = var_value_pairs(&asset, root, &context)?;
         modes.insert(guid_text(guid), Json::Object(variables));
     }
     if modes.is_empty() {
         return Err(asset_error("the install has no game modes"));
     }
     Ok(modes)
+}
+
+/// Each game ruleset's (`0C0`, `STUGameRuleset`) mode-level values: its
+/// game mode (`m_gamemode`, a `STUGameRulesetGameMode`) names the mode
+/// and holds the values its own `m_3CE93B76` table sets over the mode's
+/// ([`var_value_pairs`]). Only the rulesets that set any: the Practice
+/// Range's `0C0:34` sets `0x254C` (9548, the hero limit) to `254D`, where
+/// the mode's schema `0008` has `254E`. The team-level (`m_CF58324E`) and
+/// per-hero (`m_bodyVars`) values are not read.
+fn ruleset_variables(install: &Install) -> Result<Map<String, Json>> {
+    let mut rulesets = Map::new();
+    for guid in install.guids(RULESET) {
+        let asset = install.stu(guid)?;
+        let context = |reason: &str| asset_error(format!("{}: {reason}", guid_name(guid)));
+        let game = asset
+            .root()
+            .filter(|root| class_name(root) == "STUGameRuleset")
+            .and_then(|root| asset.resolve(field(root, "m_gamemode")?))
+            .filter(|game| class_name(game) == "STUGameRulesetGameMode")
+            .ok_or_else(|| context("expected a STUGameRuleset with its game mode"))?;
+        let mode = match field(game, "m_gamemode") {
+            Some(Value::Guid(mode)) if guid_type(*mode) == MODE => *mode,
+            _ => return Err(context("m_gamemode must reference a .0C5 game mode")),
+        };
+        let variables = var_value_pairs(&asset, game, &context)?;
+        if !variables.is_empty() {
+            rulesets.insert(
+                guid_text(guid),
+                json!({"mode": guid_text(mode), "variables": variables}),
+            );
+        }
+    }
+    Ok(rulesets)
+}
+
+/// `object`'s table `m_3CE93B76` of identifier (`01C`, at most `FFFF`) and
+/// value pairs (`STUGameModeVarValuePair`), as entity variables. A value
+/// is an identifier (`STU_22BF1D21`), a boolean (`STU_43CA1D94`), an
+/// integer (`STU_3ED2A372`) or a float (`STU_73715F2E`).
+fn var_value_pairs(
+    asset: &Asset,
+    object: &Object,
+    context: &dyn Fn(&str) -> crate::Error,
+) -> Result<Map<String, Json>> {
+    let pairs = match field(object, "m_3CE93B76") {
+        None | Some(Value::Null) => &[][..],
+        Some(Value::Array(pairs)) => pairs.as_slice(),
+        Some(_) => return Err(context("invalid m_3CE93B76 array")),
+    };
+    let mut variables = Map::new();
+    for pair in pairs {
+        let pair = asset
+            .resolve(pair)
+            .filter(|pair| class_name(pair) == "STUGameModeVarValuePair")
+            .ok_or_else(|| context("invalid m_3CE93B76 pair"))?;
+        let key = identifier(field(pair, "m_3E783677"))
+            .ok_or_else(|| context("m_3E783677 must reference a .01C identifier"))?
+            & INDEX;
+        if key == 0 || key > 0xFFFF {
+            return Err(context(&format!(
+                "mode variable identifier {key:X} is outside the entity variable range"
+            )));
+        }
+        let value = asset
+            .resolve(field(pair, "m_value").unwrap_or(&Value::Null))
+            .ok_or_else(|| context("unsupported mode variable value type missing"))?;
+        let number = || match field(value, "m_value") {
+            Some(Value::Int(number)) => Some(*number),
+            Some(Value::UInt(number)) => i64::try_from(*number).ok(),
+            _ => None,
+        };
+        let value = match class_name(value) {
+            "STU_22BF1D21" => guid_text(
+                identifier(field(value, "m_value"))
+                    .ok_or_else(|| context("m_value must reference a .01C identifier"))?,
+            )
+            .into(),
+            "STU_43CA1D94" => match number() {
+                Some(0) => false.into(),
+                Some(1) => true.into(),
+                _ => return Err(context("invalid STU_43CA1D94 m_value")),
+            },
+            "STU_3ED2A372" => match number() {
+                Some(number) if i32::try_from(number).is_ok() => number.into(),
+                _ => return Err(context("invalid STU_3ED2A372 m_value")),
+            },
+            "STU_73715F2E" => match field(value, "m_value") {
+                Some(Value::Float(number)) if number.is_finite() => {
+                    let single = Types::get()
+                        .field_named(value.class, "m_value")
+                        .is_some_and(|field| field.ty.kind == Kind::F32);
+                    float(single, *number)?
+                }
+                _ => return Err(context("invalid STU_73715F2E m_value")),
+            },
+            other => {
+                return Err(context(&format!(
+                    "unsupported mode variable value type {other}"
+                )));
+            }
+        };
+        if variables.insert(key.to_string(), value).is_some() {
+            return Err(context(&format!(
+                "duplicate mode variable identifier {key:X}"
+            )));
+        }
+    }
+    Ok(variables)
 }
 
 /// A `01C` identifier reference.

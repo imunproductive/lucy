@@ -56,12 +56,14 @@ impl SpawnedFields {
         graphs: Arc<GraphStore>,
         field_graphs: Vec<u32>,
         mode: u64,
+        ruleset: u64,
         mode_random: f32,
         map_rays: Option<Arc<dyn MapRays>>,
     ) -> Self {
         let world = MapEntityWorld::start(
             Arc::clone(&graphs),
             mode,
+            ruleset,
             mode_random,
             Unknowns::for_build(),
             [],
@@ -354,7 +356,7 @@ mod tests {
         const OPEN: u32 = 100;
         let data = orpheus_testkit::runtime_dir().join("data");
         let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
-        let mut fields = SpawnedFields::new(Arc::clone(&graphs), vec![0x0258], 0, 0.0, None);
+        let mut fields = SpawnedFields::new(Arc::clone(&graphs), vec![0x0258], 0, 0, 0.0, None);
         let shot = (
             BodyId {
                 entity: SOLDIER,

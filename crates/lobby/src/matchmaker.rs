@@ -31,6 +31,8 @@ const TEAMS: [&str; 2] = ["blue", "red"];
 /// One way a card is played: its game mode and the players each team takes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ruleset {
+    /// The game ruleset (`0C0`); 0: none known.
+    pub ruleset: u64,
     pub mode: u64,
     pub mode_name: String,
     /// Per team; free for all: one entry, the number of players.
@@ -41,6 +43,7 @@ pub struct Ruleset {
 impl Default for Ruleset {
     fn default() -> Self {
         Self {
+            ruleset: 0,
             mode: 0,
             mode_name: String::new(),
             team_sizes: vec![6, 6],
@@ -266,6 +269,7 @@ fn ruleset(item: &Json) -> io::Result<Ruleset> {
         if sizes.is_empty() { vec![6, 6] } else { sizes }
     };
     Ok(Ruleset {
+        ruleset: item.get("ruleset").map(hex).transpose()?.unwrap_or(0),
         mode: hex(item.get("mode").unwrap_or(&Json::Null))?,
         mode_name: item
             .get("mode_name")
@@ -644,7 +648,12 @@ pub fn map_choices<'a>(
                 ruleset.free_for_all,
                 &ruleset.team_sizes,
             );
-            if let Some(found) = found {
+            if let Some(mut found) = found {
+                // The card's ruleset sets the mode's values, unless the map
+                // plays a mode of its own (a forced Practice Range).
+                if found.mode_guid == ruleset.mode {
+                    found.ruleset = ruleset.ruleset;
+                }
                 choices.push((found, ruleset));
             }
         }

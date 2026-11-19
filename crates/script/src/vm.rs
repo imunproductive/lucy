@@ -48,7 +48,8 @@ pub use scopes::{ParentWrite, ScopeChange, ScopeHit, ScopeLink, ScopeSource};
 use serde_json::Value as Json;
 pub use statuses::{
     ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, BodyEffects, CombatMod, DAMAGE_DEALT,
-    DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, INVULNERABLE, PHASED_OUT, combat_scale,
+    DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, INVULNERABLE, PHASED_OUT, PartyFilter,
+    REDUCTION_CAP, combat_scale,
 };
 
 use crate::{
@@ -393,13 +394,19 @@ impl TargetCandidate {
 }
 
 /// How `entity` relates, as far as the listed bodies tell: a listed body's
-/// controller; a listed controller or player is its own (it has component
-/// 44) and possesses its body; a spawned entity a body lists
-/// ([`TargetCandidate::spawned`]) is owned by that body's controller.
+/// controller, which also possesses it now; a listed controller or player
+/// is its own (it has component 44) and possesses its body; a spawned
+/// entity a body lists ([`TargetCandidate::spawned`]) is owned by that
+/// body's controller.
 /// Assumption: the owner (component 72) of an entity the game spawns for
 /// a hero is his controller, as the Biotic Field's aura `0B3C` heals for
 /// `STU_0AC15F78(STU_F76C486C(#40))`, the body the field's owner
-/// possesses. None: the bodies don't tell.
+/// possesses. Assumption: another body's current possessor is its
+/// controller, as a player's world answers for its own body (Biotic
+/// Grenade's enemy aura `0C72` rid21 asks `STU_F7262B36(#40)` of the
+/// thrower's body on the body it hit; the same assumption for an AI
+/// hero's body: the Training Partner console's search `265F` rid1 filters
+/// on `STU_F7262B36(candidate).#23689`). None: the bodies don't tell.
 pub fn listed_relation(
     bodies: &[TargetCandidate],
     relation: EntityRelation,
@@ -415,14 +422,10 @@ pub fn listed_relation(
             .iter()
             .find(|body| body.entity == entity)
             .map_or_else(|| by_controller().map(|_| entity), |body| body.controller),
-        EntityRelation::PossessedBody => by_controller().map(|body| body.entity),
-        // The controller, which the clients see possessing every player's
-        // body (as `PlayerWorld` answers its own; the same assumption for
-        // an AI hero's body). The Training Partner console's search `265F`
-        // rid1 filters on `STU_F7262B36(candidate).#23689`.
         EntityRelation::CurrentPossessor => {
             bodies.iter().find(|body| body.entity == entity)?.controller
         }
+        EntityRelation::PossessedBody => by_controller().map(|body| body.entity),
         EntityRelation::Owner => {
             bodies
                 .iter()
@@ -1351,6 +1354,11 @@ impl ChasePayload {
 /// takes it from its descriptor (`wire::write_descriptor`; InstanceCreator.md).
 pub(crate) const CREATOR: u32 = 27;
 
+/// Parameter `0009.026`: a delivered message's sender (the dispatch's
+/// parameter source `sub_7FF78AAA32F0`, the message's `+152`), which
+/// message filters test (`0C90` st4/st8 `param(9) != owner()`).
+const MESSAGE_SENDER: u32 = 9;
+
 #[derive(Clone, Debug)]
 pub struct Instance {
     pub graph: u32,
@@ -1638,6 +1646,66 @@ impl Component {
         config: &Json,
         world: &mut impl World,
     ) -> Result<Value, EvalError> {
+        self.evaluate_in_state(instance, raw_state, None, world, |_, context| {
+            expr::evaluate(config, context)
+        })
+    }
+
+    /// Whether `candidate`, a health change's other party, passes the
+    /// party filter of the combat modifier `filter` names (`m_6AA5D70F`):
+    /// its masks and tags, then its condition evaluated with the candidate
+    /// as every parameter, as the client's query 0x7FF789C375A0 binds it
+    /// while it tests the filter (`vm/statuses.rs`). None: the state is
+    /// gone or the filter can't be answered.
+    pub fn passes_party_filter<W: World>(
+        &self,
+        filter: PartyFilter,
+        candidate: u32,
+        world: &mut W,
+    ) -> Option<bool> {
+        let bound = Value::Entity(candidate);
+        self.evaluate_in_state(
+            filter.instance,
+            filter.state,
+            Some(&bound),
+            world,
+            |node, context: &mut InstanceContext<'_, W>| {
+                let filter = field(&node.fields, statuses::PARTY_FILTER);
+                expr::passes_filter_as_candidate(filter, candidate, context)
+            },
+        )
+        .ok()
+    }
+
+    /// The party filters of the modifiers of `kind` that `effects` (in
+    /// `world`, which runs them) holds for its body that `other` passes
+    /// ([`Self::passes_party_filter`]; one the server can't answer
+    /// doesn't pass), for [`BodyEffects::scale`].
+    pub fn passed_party_filters<W: World>(
+        &self,
+        world: &mut W,
+        effects: impl Fn(&W) -> &BodyEffects,
+        kind: u64,
+        other: u32,
+    ) -> Vec<PartyFilter> {
+        let filters: Vec<PartyFilter> = effects(world).party_filters(kind).collect();
+        filters
+            .into_iter()
+            .filter(|&filter| self.passes_party_filter(filter, other, world) == Some(true))
+            .collect()
+    }
+
+    /// `evaluate` in a context of the state `raw_state` of `instance`, as a
+    /// read outside the VM's run (nothing is recorded); `candidate` answers
+    /// every parameter when set.
+    fn evaluate_in_state<W: World, T>(
+        &self,
+        instance: u16,
+        raw_state: u16,
+        candidate: Option<&Value>,
+        world: &mut W,
+        evaluate: impl FnOnce(&Node, &mut InstanceContext<'_, W>) -> Result<T, EvalError>,
+    ) -> Result<T, EvalError> {
         let snapshot = self
             .snapshot()
             .ok_or(EvalError::MalformedConfig("state source"))?;
@@ -1664,14 +1732,15 @@ impl Component {
             reads: Vec::new(),
             foreign_reads: Vec::new(),
             parameters: None,
-            candidate: None,
+            candidate,
+            sender: None,
             watcher: None,
             read_native: false,
             natives: Vec::new(),
             // A read outside the VM's run: nothing is recorded.
             assumed: Vec::new(),
         };
-        expr::evaluate(config, &mut context)
+        evaluate(node, &mut context)
     }
 
     pub fn resolved_variable(&self, instance: u16, variable: Variable) -> Option<Value> {
@@ -1807,10 +1876,24 @@ impl Component {
             .then_some(modifiers))
     }
 
-    /// Queue the authored entries of one instance at the current clock.
+    /// Queue the authored entries of one instance at the current clock,
+    /// for a message with no sender.
     pub fn queue_message(
         &mut self,
         instance: u16,
+        message: u64,
+        parameters: Variables,
+    ) -> Result<usize, InitFault> {
+        self.queue_message_from(instance, 0, message, parameters)
+    }
+
+    /// Queue the authored entries of one instance at the current clock,
+    /// for a message `sender` sent (its entries' filters test it:
+    /// [`Vm::message_filter_admits`]).
+    pub fn queue_message_from(
+        &mut self,
+        instance: u16,
+        sender: u32,
         message: u64,
         parameters: Variables,
     ) -> Result<usize, InitFault> {
@@ -1818,7 +1901,7 @@ impl Component {
             return Err(InitFault::Halted);
         }
         self.machine
-            .queue_entries(&self.graphs, Some(instance), 0, message, parameters)
+            .queue_entries(&self.graphs, Some(instance), sender, message, parameters)
     }
 
     pub fn run_now(&mut self, world: &mut impl World) -> Result<(), InitFault> {
@@ -2368,6 +2451,9 @@ struct Vm<'graph, 'world, 'machine, W> {
     parameters: Option<Arc<Variables>>,
     /// The value every parameter reads while `CycleIndex` tests a candidate.
     candidate: Option<Value>,
+    /// The sender of the message being delivered, when it is an entity:
+    /// parameter `0009` ([`MESSAGE_SENDER`]).
+    sender: Option<u32>,
     output_write_depth: usize,
 }
 
@@ -2383,6 +2469,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             machine,
             parameters: None,
             candidate: None,
+            sender: None,
             output_write_depth: 0,
         }
     }
@@ -2681,9 +2768,61 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             return Ok(());
         };
         self.parameters = Some(parameters);
+        self.sender = expr::valid_entity(sender).then_some(sender);
         let result = self.deliver_entry(id, node, sender);
         self.parameters = None;
+        self.sender = None;
         result
+    }
+
+    /// Parameter `id` of the message being delivered: `0009` is its
+    /// sender, whatever the message carries (the dispatch's parameter
+    /// source `sub_7FF78AAA32F0` answers it from the message's `+152`
+    /// before its own parameters), the others the message's.
+    fn message_parameter(&self, id: u32) -> Value {
+        match self.sender {
+            Some(sender) if id == MESSAGE_SENDER => Value::Entity(sender),
+            _ => self
+                .parameters
+                .as_deref()
+                .and_then(|parameters| parameters.get(&id))
+                .cloned()
+                .unwrap_or(Value::Null),
+        }
+    }
+
+    /// Whether a message entry's filter (`m_filter`) lets the message in.
+    /// The client tests the message's sender with
+    /// `ScriptHost_EntityPassesFilter` (an EntryGameMessage in the dispatch
+    /// `sub_7FF78AAA1D70`; a receiving state hands its filter to the held
+    /// message lookup `sub_7FF789CAAD40`); a message with no sender passes.
+    /// The condition reads the message's parameters and `0009`, its
+    /// sender: `0C90` st4/st8 keep only another player's `08BE` pick, so a
+    /// controller's own broadcast is not a teammate's pick; the Training
+    /// Partner pick's `1213` (`265F` rid22, sent by the client's
+    /// `STU_79A131B4` from its host, the controller) wants a hero
+    /// (`param(2278)`, `08E6`) with a body that the player may play
+    /// (`STU_94AED9DC`, `STU_AFC074B3`), `0C90` rid164/rid170 such heroes
+    /// too. Masks and tag lists on a message filter (`16C5` rid10 alone
+    /// among the entries the server runs) are not tested: taken, as an
+    /// assumption.
+    fn message_filter_admits(&mut self, id: u16, node: &Node) -> bool {
+        let filter = field(&node.fields, "m_filter");
+        if filter.is_null() || self.sender.is_none() {
+            return true;
+        }
+        if !filter_array::condition_only(filter) {
+            self.assume(
+                self.site(id, node),
+                &node.class,
+                "message filter masks and tags not tested: taken",
+            );
+        }
+        let condition = field(filter, "m_condition");
+        condition.is_null()
+            || self
+                .evaluate(id, node, condition, None)
+                .is_some_and(|admitted| expr::truthy(&admitted))
     }
 
     /// A game message entry takes its parameters and its sender: the
@@ -2712,6 +2851,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 );
                 return Ok(());
             }
+            if !self.message_filter_admits(id, node) {
+                return Ok(());
+            }
             self.exit_subgraph(id, node, "m_33DA5163", 1)?;
             // The sender now holds it ([`Self::release_message`]).
             let since_ms = self.machine.now_ms;
@@ -2724,7 +2866,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             ("m_452862E6", Some(key))
         } else {
-            if !self.entry_filter_passes(id, node) {
+            if !self.message_filter_admits(id, node) {
                 return Ok(());
             }
             ("m_outPlug", None)
@@ -2742,13 +2884,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     return Ok(());
                 }
             };
-            let key = parameter_id(field);
-            let value = self
-                .parameters
-                .as_deref()
-                .and_then(|params| params.get(&key))
-                .cloned()
-                .unwrap_or(Value::Null);
+            let value = self.message_parameter(parameter_id(field));
             self.write(target, value)?;
         }
         if expr::valid_entity(sender) {
@@ -2763,47 +2899,6 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
         self.follow(id, node, path.0, path.1, 0)?;
         Ok(())
-    }
-
-    /// Whether a message entry takes the message by its filter
-    /// (`m_filter`, 79 entries in the data; the client's entry pass
-    /// `0x7FF78AAA1D70` tests a message with a sender through its host's
-    /// filter test, vtable +0x150, `ScriptHost_EntityPassesFilter`). The
-    /// server evaluates the filter's condition with the message's
-    /// parameters as `param(n)`: the Training Partner pick's `1213` (`265F`
-    /// rid22) wants a hero (`param(2278)`, `08E6`) with a body that the
-    /// player may play, `0C90` rid164/rid170 such heroes too. A condition
-    /// it can't evaluate lets the message in; the masks (the sender's
-    /// kinds and relation) are not tested; each is an assumption.
-    fn entry_filter_passes(&mut self, id: u16, node: &Node) -> bool {
-        let filter = field(&node.fields, "m_filter");
-        if filter.is_null() {
-            return true;
-        }
-        let site = self.site(id, node);
-        let masks = expr::FilterMasks::words(filter);
-        if !masks.passes_none() || masks.relations() {
-            self.assume(
-                site,
-                &format!("{} m_filter masks", node.class),
-                "the sender is not tested",
-            );
-        }
-        let condition = field(filter, "m_condition");
-        if condition.is_null() {
-            return true;
-        }
-        match self.evaluate_quietly(id, node, condition) {
-            Some(value) => truthy(&value),
-            None => {
-                self.assume(
-                    site,
-                    &format!("{} m_filter.m_condition", node.class),
-                    "not evaluated: the entry takes the message",
-                );
-                true
-            }
-        }
     }
 
     /// A SendGameMessage action: the message goes once to the recipients
@@ -3187,6 +3282,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             foreign_reads: Vec::new(),
             parameters: self.parameters.as_deref(),
             candidate: self.candidate.as_ref(),
+            sender: self.sender,
             watcher,
             read_native: false,
             natives: Vec::new(),
@@ -3621,6 +3717,8 @@ struct InstanceContext<'a, W> {
     parameters: Option<&'a Variables>,
     /// Answers every parameter read when set: a `CycleIndex` candidate.
     candidate: Option<&'a Value>,
+    /// The delivered message's sender: parameter `0009`.
+    sender: Option<u32>,
     watcher: Option<StateKey>,
     read_native: bool,
     /// The native configs' classes read ([`Context::native`]).

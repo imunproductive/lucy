@@ -64,6 +64,8 @@ pub struct PlacedScripts {
     graphs: Arc<GraphStore>,
     codecs: CodecTable,
     mode: u64,
+    /// The game's ruleset (`GraphStore::mode_variables`).
+    ruleset: u64,
     /// The match's mode entity value ([`crate::scene::mode_create`]).
     mode_random: f32,
     placed: Vec<Arc<PlacedScript>>,
@@ -88,9 +90,11 @@ pub struct PlacedScripts {
 }
 
 impl PlacedScripts {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         graphs: Arc<GraphStore>,
         mode: u64,
+        ruleset: u64,
         mode_random: f32,
         placed: Vec<Arc<PlacedScript>>,
         map_tags: Arc<MapTags>,
@@ -101,6 +105,7 @@ impl PlacedScripts {
             graphs,
             codecs: CodecTable::client(),
             mode,
+            ruleset,
             mode_random,
             placed,
             map_tags,
@@ -143,6 +148,7 @@ impl PlacedScripts {
                 let world = self.world.insert(MapEntityWorld::start(
                     Arc::clone(&self.graphs),
                     self.mode,
+                    self.ruleset,
                     self.mode_random,
                     Unknowns::for_build(),
                     [],

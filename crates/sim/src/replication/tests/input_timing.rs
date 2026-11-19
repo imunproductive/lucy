@@ -3,17 +3,19 @@
 //! command as the client makes it, frame by frame, as the client predicts.
 //! The server gets the commands through a network that delays, loses and
 //! repeats datagrams, each one carrying the client's redundant window, and
-//! runs them a tick at a time from its input buffer. While no tick finds
-//! the buffer dry, the server's state after each command frame, which its
-//! owner frame (CmFD) and its movement record name, equals the client's at
-//! that frame: the client has nothing to correct. When two datagrams in a
-//! row come late, a dry tick repeats the last input; the press it missed
-//! still runs, so the server fires as many shots as the client.
+//! runs them a tick at a time from its input buffer. The server's state
+//! after each command frame, which its owner frame (CmFD) and its movement
+//! record name, equals the client's at that frame: the client has nothing
+//! to correct. That holds when the client's datagrams stop for a while
+//! too: the ticks that find the buffer dry run nothing, and a press in the
+//! frames that came late runs at its own frame. A client that stays
+//! silent past the wait gets his last input repeated a few frames, then
+//! neutral frames.
 
 use super::*;
 use orpheus_script::snapshot::{ProjectedSnapshot, View};
 use orpheus_wire::{
-    commands::{Click, Command, FIRE, SUBFRAME},
+    commands::{Click, Command, FIRE, JUMP, SUBFRAME},
     entity::Movement,
 };
 
@@ -138,6 +140,9 @@ fn delivery(index: u32) -> (Option<u32>, bool) {
         // Late by a tick after a duplicate.
         60 => (Some(0), true),
         61 => (Some(1), false),
+        // A client stall of five frames (80 ms) over the press at 200:
+        // everything comes with 203's datagram.
+        198..=202 => (Some(203 - index), false),
         _ => (Some(0), false),
     }
 }
@@ -163,6 +168,7 @@ fn the_server_runs_each_frame_as_the_client_predicted_it_while_nothing_is_lost()
     let mut compared = 0;
     // The server runs a frame the tick after it came, the next in hand:
     // the last, a tick after the client's last.
+    let mut dry = Vec::new();
     for index in 0..=frames {
         let tick = FIRST_TICK + 1 + index;
         if index < frames {
@@ -196,7 +202,9 @@ fn the_server_runs_each_frame_as_the_client_predicted_it_while_nothing_is_lost()
         }
         in_flight.retain(|(due, _)| *due != tick);
         server.release_input(1);
-        assert_eq!(server.input.repeats, 0, "tick {tick}: the buffer ran dry");
+        if server.input.dry != 0 {
+            dry.push(index);
+        }
         // Each frame's state as it ends (a tick may run more than one).
         while server.has_input_work() {
             let before = server.body_script.as_ref().unwrap().frame;
@@ -218,6 +226,12 @@ fn the_server_runs_each_frame_as_the_client_predicted_it_while_nothing_is_lost()
             compared += 1;
         }
     }
+    // Only the stall dried the buffer: the tick of 198 ran 197, the one in
+    // hand; those of 199 to 202 found none and waited (MAX_WAIT, 4); that
+    // of 203 got 198 to 203 and ran all but the last 4 (198, 199), and 200,
+    // the press, ran at the next, at its frame, as every frame compared
+    // above.
+    assert_eq!(dry, (199..=202).collect::<Vec<_>>());
     // Every frame ran on the server, in order, as the client ran it.
     assert_eq!(
         server.body_script.as_ref().unwrap().frame,
@@ -227,15 +241,15 @@ fn the_server_runs_each_frame_as_the_client_predicted_it_while_nothing_is_lost()
     assert_eq!(ammo(&server), ammo(&client));
 }
 
-/// Two datagrams late in a row: the second tick finds the buffer dry and
-/// repeats the last input (no fire) for the frame of a tap; the tap's
-/// press, when its command comes, runs with the next frame, so the server
-/// fires the shot the client fired. The ack stays at the client's newest
-/// command meanwhile, so the client keeps sending the frames the repeat
-/// stood in for.
+/// A stall longer than the wait: past `MAX_WAIT` dry ticks the server
+/// repeats the last input (no fire) each tick, for the frame of a tap too;
+/// the tap's press, when its command comes, runs with the next frame, so
+/// the server fires the shot the client fired. The ack stays at the
+/// client's newest command meanwhile, so the client keeps sending the
+/// frames the repeats stood in for.
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack"]
-fn a_tap_the_dry_buffer_missed_still_fires_once_its_command_comes() {
+fn a_tap_a_long_stall_repeated_still_fires() {
     let scene = SceneAssets::load(orpheus_testkit::runtime_dir())
         .unwrap()
         .prepare(GameMap::practice_range())
@@ -254,55 +268,171 @@ fn a_tap_the_dry_buffer_missed_still_fires_once_its_command_comes() {
         }),
         ..Command::default()
     };
-    // Frames 0 to 39 idle, a one-frame tap at 40, idle to 79. Datagrams 40
-    // and 41 come with 42: the tick of 40 runs 39, the one in hand; the
-    // tick of 41 finds the buffer dry and repeats 39's input for frame 40.
+    // Frames 0 to 39 idle, a one-frame tap at 40, idle to 79. Datagrams
+    // 37 to 45 come with 46: the tick of 37 runs 36, the one in hand; those
+    // of 38 to 41 wait; those of 42 to 45 repeat 36's input (`MAX_REPEATS`,
+    // 4) for frames 37 to 40, the tap's among them.
     let mut late = Vec::new();
-    let mut repeated = None;
+    let mut repeats = Vec::new();
     let mut sent = Vec::new();
-    // The tick after a command came runs it, the tick after the tap's
-    // repeat waits for the next in hand: 79 runs at the tick of 80.
-    for index in 0..=80 {
+    for index in 0..80 {
         let tick = FIRST_TICK + 1 + index;
-        if index < 80 {
-            let buttons = if index == 40 { FIRE | SUBFRAME } else { 0 };
-            let made = command(index, buttons);
-            client.queue_commands(tick, &[made]);
-            run(&mut client, &scene, &card);
-            sent.push(made);
-            let window: Vec<_> = sent.iter().rev().take(WINDOW).rev().copied().collect();
-            if index == 40 || index == 41 {
-                late.push(window);
-            } else {
-                for window in late.drain(..) {
-                    server.queue_commands(tick, &window);
-                }
+        let buttons = if index == 40 { FIRE | SUBFRAME } else { 0 };
+        let made = command(index, buttons);
+        client.queue_commands(tick, &[made]);
+        run(&mut client, &scene, &card);
+        sent.push(made);
+        let window: Vec<_> = sent.iter().rev().take(WINDOW).rev().copied().collect();
+        if (37..=45).contains(&index) {
+            late.push(window);
+        } else {
+            for window in late.drain(..) {
                 server.queue_commands(tick, &window);
             }
+            server.queue_commands(tick, &window);
         }
         server.release_input(1);
-        if server.input.repeats != 0 && repeated.is_none() {
-            // The tick that found the buffer dry ran a repeat of frame 39
-            // (no fire) for the tap's frame 40; the ack stays at 39.
-            repeated = Some((tick, server.input.admitted));
-            assert_eq!(server.command_ack(tick), first + 39);
+        // Ticks the clock asks the client to go four times as fast.
+        if server.input.dry != 0 {
+            assert_eq!(server.input.clock, CLOCK_FASTER | CLOCK_STRONGER);
+        }
+        if server.input.dry > MAX_WAIT {
+            repeats.push((index, server.input.admitted));
+            assert_eq!(server.command_ack(tick), first + 36);
         }
         run(&mut server, &scene, &card);
     }
-    let (tick, frame) = repeated.expect("a dry tick");
     assert_eq!(
-        (tick, frame),
-        (FIRST_TICK + 1 + 41, Some(first + 40)),
-        "the repeat"
+        repeats,
+        (42..=45)
+            .map(|index| (index, Some(first + index - 5)))
+            .collect::<Vec<_>>(),
+        "the repeats"
     );
     // One shot each: 29 rounds left.
     assert_eq!(ammo(&client), ScriptValue::Integer(29));
     assert_eq!(ammo(&server), ammo(&client));
+}
+
+/// A client that stops sending while his body walks, fires and jumps:
+/// past the wait the server repeats his last input for `MAX_REPEATS`
+/// frames, then runs a neutral frame each tick, his aim with nothing held.
+/// The body, in the air by then, goes on rising and falls to the ground
+/// (gravity runs every frame), but it no longer walks, jumps or fires.
+#[test]
+#[ignore = "requires a derived 104319 Practice Range pack"]
+fn a_silent_body_keeps_falling_but_holds_nothing_past_the_repeats() {
+    let scene = SceneAssets::load(orpheus_testkit::runtime_dir())
+        .unwrap()
+        .prepare(GameMap::practice_range())
+        .unwrap();
+    let card = PlayerCard::default();
+    let mut server = soldier(&scene, &card, true);
+    let first = FIRST_TICK + 1;
+    // Idle to 19, walking with fire held from 20, jump held too from 40;
+    // nothing after 44. In a steady stream the tick of 45 runs 44, the one
+    // in hand; those of 46 to 49 wait; those of 50 to 53 repeat 44's input
+    // for frames 45 to 48; from 54 each runs a neutral frame, 49 on.
+    let last = 44;
+    // Away from the spawn's facing, where a ledge stands.
+    let yaw = 33280;
+    let command = |index: u32| Command {
+        frame: first + index,
+        forward: if index >= 20 { 127 } else { 0 },
+        yaw,
+        buttons: if index >= 20 { FIRE } else { 0 } | if index >= 40 { JUMP } else { 0 },
+        ..Command::default()
+    };
+    let ticks = last + 100;
+    let mut sent = Vec::new();
+    let mut ran = Vec::new();
+    let mut ground = None;
+    let mut neutral = Vec::new();
+    let mut repeated_ammo = None;
+    for index in 0..=ticks {
+        let tick = FIRST_TICK + 1 + index;
+        if index <= last {
+            sent.push(command(index));
+            let window: Vec<_> = sent.iter().rev().take(WINDOW).rev().copied().collect();
+            server.queue_commands(tick, &window);
+        }
+        server.release_input(1);
+        ran.extend(server.input.work.iter().filter_map(|work| match work {
+            InputWork::Command { command, .. } if command.frame > first + last => Some(*command),
+            _ => None,
+        }));
+        run(&mut server, &scene, &card);
+        let (frame, _, pose) = state(&server);
+        if frame == first + 39 {
+            ground = Some(pose.position[1]);
+        }
+        if frame == first + last + MAX_REPEATS {
+            repeated_ammo = Some(ammo(&server));
+        }
+        if frame > first + last + MAX_REPEATS {
+            neutral.push(pose);
+        }
+    }
+    // One frame a tick from the tick of 50 on.
+    let frames = ticks - 49;
     assert_eq!(
         server.body_script.as_ref().unwrap().frame,
-        first + 79,
-        "every frame ran"
+        first + last + frames
     );
+    assert_eq!(ran.len() as u32, frames);
+    let (repeats, neutrals) = ran.split_at(MAX_REPEATS as usize);
+    for repeat in repeats {
+        assert_eq!(
+            *repeat,
+            Command {
+                frame: repeat.frame,
+                ..command(last)
+            }
+        );
+    }
+    for frame in neutrals {
+        assert_eq!(
+            *frame,
+            Command {
+                frame: frame.frame,
+                yaw,
+                ..Command::default()
+            }
+        );
+    }
+    // It fired until the repeats ended, and not after.
+    let ScriptValue::Integer(rounds) = repeated_ammo.unwrap() else {
+        panic!("the rifle's ammunition");
+    };
+    assert!(rounds < 30, "{rounds} rounds left");
+    assert_eq!(ammo(&server), ScriptValue::Integer(rounds));
+    // In the air at the first neutral frame; each later frame in the air
+    // goes up slower, then falls faster (gravity), and it lands where it
+    // jumped from and stands still: no throttle in any neutral frame.
+    let ground = ground.unwrap();
+    assert!(neutral[0].position[1] > ground + 0.1, "{neutral:?}");
+    let landed = neutral
+        .iter()
+        .position(|pose| (pose.position[1] - ground).abs() < 1e-3)
+        .expect("it lands");
+    let air = &neutral[..landed];
+    assert!(
+        air.windows(2)
+            .all(|pair| pair[1].velocity[1] < pair[0].velocity[1]),
+        "{neutral:?}"
+    );
+    let falling: Vec<_> = air.iter().filter(|pose| pose.velocity[1] < 0.0).collect();
+    assert!(falling.len() >= 10, "{neutral:?}");
+    assert!(
+        falling
+            .windows(2)
+            .all(|pair| pair[1].position[1] < pair[0].position[1]),
+        "{neutral:?}"
+    );
+    assert!(neutral.iter().all(|pose| pose.throttles == [0, 0]));
+    let end = neutral.last().unwrap();
+    assert!((end.position[1] - ground).abs() < 1e-3);
+    assert!(end.velocity[0].hypot(end.velocity[2]) < 1e-3, "{end:?}");
 }
 
 /// Widowmaker's Grappling Hook (`005A`) from the Range spawn: the press

@@ -35,23 +35,28 @@ pub const HOLD_INPUT_FRAMES: u32 = 32;
 
 /// The input of `frame` when its command is missing: `previous` held, as a
 /// reconstructed pose has it. One-shot actions and the sub-frame click never
-/// repeat; past [`HOLD_INPUT_FRAMES`] only the aim does.
+/// repeat; past [`HOLD_INPUT_FRAMES`] only the aim does ([`neutral`]).
 pub fn repeated(previous: Command, frame: u32) -> Command {
-    let source = if frame_distance(frame, previous.frame) <= HOLD_INPUT_FRAMES {
-        previous
-    } else {
-        Command {
-            yaw: previous.yaw,
-            pitch: previous.pitch,
-            ..Command::default()
-        }
-    };
+    if frame_distance(frame, previous.frame) > HOLD_INPUT_FRAMES {
+        return neutral(previous, frame);
+    }
     Command {
         frame,
-        buttons: source.buttons & !SUBFRAME,
+        buttons: previous.buttons & !SUBFRAME,
         action: 0,
         click: None,
-        ..source
+        ..previous
+    }
+}
+
+/// The input of `frame` with nothing held: no button, no movement key,
+/// `previous`'s aim.
+pub fn neutral(previous: Command, frame: u32) -> Command {
+    Command {
+        frame,
+        yaw: previous.yaw,
+        pitch: previous.pitch,
+        ..Command::default()
     }
 }
 

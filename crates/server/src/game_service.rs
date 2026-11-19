@@ -66,6 +66,7 @@ use orpheus_lobby::handoff::Handoff;
 use orpheus_script::{
     controller::HeroSelectRequest,
     mode::ModePlayer,
+    snapshot::ProjectedSnapshot,
     vm::{AuraChange, GameMessage, ScopeChange, TrackedStat},
     wire::chunk,
 };
@@ -85,6 +86,7 @@ use orpheus_sim::{
     match_flow::{FlowEvent, MatchFlow, Mode, Phase, Standing, Timers},
     messages::{HeldReach, Players, Recipients, deliver, deliver_held},
     mode_script::ModeRunner,
+    mode_view::ModeFrame,
     objectives::Participant,
     projectiles::FiredProjectile,
     replication::{Record, RoomPlayer, WorldDelivery, blockers, show_players},
@@ -784,14 +786,13 @@ struct Room {
     /// The tick the flow started: the first player came into the world,
     /// and the AI heroes with him.
     flow_tick: u32,
-    /// The mode entity's frame every client gets this tick, and when the
-    /// next is due.
+    /// The hand-built mode entity frame every client gets this tick, and
+    /// when the next is due.
     mode_frame: Option<orpheus_core::bits::BitWriter>,
     next_mode_frame: Duration,
-    /// The mode graph's newest frame while it drives the mode entity: a
-    /// client's first mode frame (`Room::first_mode_frame`), and what the
-    /// Range's next frame is compared with.
-    graph_frame: Option<orpheus_core::bits::BitWriter>,
+    /// The mode graph's observer frame while it drives the mode entity:
+    /// what each client's frames bring him (`orpheus_sim::mode_view`).
+    graph_frame: Option<Arc<ProjectedSnapshot>>,
     /// Hero select closed this tick: the heroes are assembled.
     assembled: bool,
     /// Its collision failed: it takes nobody more (match.py `ended`).
@@ -854,14 +855,25 @@ impl Room {
 
     /// The mode entity's first frame for a client: the mode graph's newest
     /// while it drives the mode entity, else the scene's hand-built one.
-    fn first_mode_frame<'a>(
-        &'a self,
-        scene: &'a PreparedScene,
-    ) -> &'a orpheus_core::bits::BitWriter {
-        match (&self.mode, &self.graph_frame) {
-            (Some(mode), Some(frame)) if mode.graph_driven() => frame,
-            _ => scene.mode_ui(),
+    fn first_mode_frame<'a>(&'a self, scene: &'a PreparedScene) -> ModeFrame<'a> {
+        self.graph_mode_frame()
+            .unwrap_or(ModeFrame::Full(scene.mode_ui()))
+    }
+
+    /// The mode entity's frame every client gets this tick: the hand-built
+    /// one when due, else the mode graph's while it drives the mode entity.
+    fn mode_frame_now(&self) -> Option<ModeFrame<'_>> {
+        match &self.mode_frame {
+            Some(frame) => Some(ModeFrame::Full(frame)),
+            None => self.graph_mode_frame(),
         }
+    }
+
+    fn graph_mode_frame(&self) -> Option<ModeFrame<'_>> {
+        Some(ModeFrame::Graph {
+            encoder: self.mode.as_ref()?.encoder()?,
+            projected: self.graph_frame.as_ref()?,
+        })
     }
 
     /// The Practice Range, which has no match flow, starts its mode graph
@@ -1034,6 +1046,20 @@ fn initial_controller(
         .map_err(invalid)
 }
 
+/// The mode graph's frame this tick, while it drives the mode entity: the
+/// `last` one while nothing in it changed, so each client's view sees it
+/// is the same (`orpheus_sim::mode_view`).
+fn graph_frame(
+    mode: &mut ModeRunner,
+    last: Option<Arc<ProjectedSnapshot>>,
+) -> Option<Arc<ProjectedSnapshot>> {
+    let projected = mode.project(last.as_deref())?;
+    Some(match last {
+        Some(last) if *last == projected => last,
+        _ => Arc::new(projected),
+    })
+}
+
 /// A scene the worker can open a world on, whose world baselines fit a
 /// datagram for every player (`teams` and `cards` in slot order).
 fn check_scene(
@@ -1104,8 +1130,9 @@ fn pick_message(entity: u32, hero: u64) -> Message {
     }
 }
 
-/// A hit on a bot reaches its script (combat.py `_damage`): the death
-/// message for a killing hit (`_bot_died`), else its new health
+/// A hit on a bot reaches its script (combat.py `_damage`): for a killing
+/// hit its damage message `0011.025` with the kill's fields, then the death
+/// message (`_bot_died`, [`PreparedScene::bot_died`]), else its new health
 /// (`_sync_body_health`) and, for damage, the damage message `0011.025`
 /// (its flinch and pain line).
 fn bot_hit_script(scene: &mut PreparedScene, hit: &BotHit) {
@@ -1454,8 +1481,8 @@ impl Peer {
         now: Duration,
         tick: u32,
     ) -> io::Result<()> {
-        if let (true, Some(frame)) = (self.presented, &room.mode_frame) {
-            self.world.queue_mode_frame(frame)?;
+        if let (true, Some(frame)) = (self.presented, room.mode_frame_now()) {
+            self.world.queue_mode_frame(frame, tick)?;
         }
         if let (true, Some(world)) = (room.assembled && self.presented, &room.world) {
             self.world.end_assemble(&world.scene, tick)?;
@@ -2455,7 +2482,7 @@ impl State {
                 })
                 .collect();
             let notices = apply_player_hits(scene, hits, &mut room, tick, now);
-            apply_player_pushes(pushes, &mut room);
+            apply_player_pushes(pushes, &mut room, now);
             notices
         };
         // The kills count for the match flow's score (Deathmatch, Team
@@ -2479,9 +2506,11 @@ impl State {
                 }
             }
         }
+        // Each victim's hurt notices (25000) first: a killing hit's goes
+        // before his death notice.
         for (peer, notices) in peers.into_iter().zip(notices) {
             if let Some(peer) = peer {
-                for notice in notices {
+                for notice in peer.world.take_hurt_notices().into_iter().chain(notices) {
                     peer.notice(notice);
                 }
             }
@@ -2851,26 +2880,16 @@ impl State {
                 })
                 .collect();
             // The Range (no match flow): its graph advances with the room,
-            // and its frame goes to every client when it changed, at most
-            // once a second as the PvP modes' (`MODE_FRAME_EVERY`): the
-            // frame is a full one, and `0CBB` st58's timed ChaseVar (#19530e
-            // toward 99999, the chase's state in the frame too) changes it
-            // every tick.
+            // and its frame goes to every client each tick, as what changed
+            // since the frame he acknowledged (`orpheus_sim::mode_view`):
+            // `0CBB` st58's timed ChaseVar (#19530e toward 99999) changes it
+            // every tick, and the whole frame (about 920 bytes) crowded the
+            // movement records out of the datagrams.
             if room.flow.is_none() {
-                if let (Some(mode), Some(world)) = (room.mode.as_mut(), room.world.as_ref()) {
+                if let (Some(mode), Some(_)) = (room.mode.as_mut(), room.world.as_ref()) {
                     let variables = orpheus_script::wire::Variables::new();
                     room.mail.extend(mode.advance(tick, &variables, players));
-                    if mode.graph_driven() && now >= room.next_mode_frame {
-                        room.next_mode_frame = now.saturating_add(MODE_FRAME_EVERY);
-                        match mode.frame(&world.scene, &variables) {
-                            Ok(frame) if room.graph_frame.as_ref() != Some(&frame) => {
-                                room.graph_frame = Some(frame.clone());
-                                room.mode_frame = Some(frame);
-                            }
-                            Ok(_) => {}
-                            Err(error) => tracing::warn!("[game] no game mode frame: {error}"),
-                        }
-                    }
+                    room.graph_frame = graph_frame(mode, room.graph_frame.take());
                 }
                 continue;
             }
@@ -2898,19 +2917,25 @@ impl State {
             let changed = events
                 .iter()
                 .any(|event| matches!(event, FlowEvent::Phase(_)));
-            if changed || now >= room.next_mode_frame {
-                if let Some(mode) = &room.mode {
-                    match mode.frame(&world.scene, &variables) {
-                        Ok(frame) => {
-                            if mode.graph_driven() {
-                                room.graph_frame = Some(frame.clone());
+            // A graph that drives the mode entity gives its frame each tick
+            // (`orpheus_sim::mode_view`); else the hand-built one goes once a
+            // second and at each phase.
+            match room.mode.as_mut() {
+                Some(mode) if mode.graph_driven() => {
+                    room.graph_frame = graph_frame(mode, room.graph_frame.take());
+                }
+                mode => {
+                    room.graph_frame = None;
+                    if changed || now >= room.next_mode_frame {
+                        if mode.is_some() {
+                            match world.scene.mode_frame(&variables) {
+                                Ok(frame) => room.mode_frame = Some(frame),
+                                Err(error) => tracing::warn!("[game] no game mode frame: {error}"),
                             }
-                            room.mode_frame = Some(frame);
                         }
-                        Err(error) => tracing::warn!("[game] no game mode frame: {error}"),
+                        room.next_mode_frame = now.saturating_add(MODE_FRAME_EVERY);
                     }
                 }
-                room.next_mode_frame = now.saturating_add(MODE_FRAME_EVERY);
             }
             room.assembled = was == Phase::Assemble && flow.phase() != Phase::Assemble;
             let mut respawn = None;

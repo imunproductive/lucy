@@ -2771,14 +2771,57 @@ impl Evaluator {
 /// filter's `m_condition` (`Filter_TestEntityCondition` 0x7FF78AA9D970,
 /// evaluated with the entity pushed as the candidate parameter); the
 /// evaluator doesn't bind one, so a set condition leaves an entity the
-/// masks and tag lists pass unanswered, while one they reject fails.
+/// masks and tag lists pass unanswered, while one they reject fails
+/// ([`passes_filter_as_candidate`] binds it).
 fn passes_filter(
     filter: &Json,
     masks: &FilterMasks,
     entity: u32,
     context: &mut impl Context,
 ) -> Result<bool, EvalError> {
+    match filter_facts(filter, masks, entity, context)? {
+        Some(false) => Ok(false),
+        Some(true) if child(filter, "m_condition").is_null() => Ok(true),
+        _ => Err(EvalError::UnsupportedConfig("STU_AC829876".into())),
+    }
+}
+
+/// Whether `entity` passes `filter`, its condition included, as the
+/// client's `ScriptHost_EntityPassesFilter` (0x7FF789C1DA20) tests it:
+/// `context` must answer every parameter with `entity`, the candidate
+/// `Filter_TestEntityCondition` pushes. A filter without a condition
+/// passes only on a known fact ([`passes_filter`]).
+pub(crate) fn passes_filter_as_candidate(
+    filter: &Json,
+    entity: u32,
+    context: &mut impl Context,
+) -> Result<bool, EvalError> {
     let unsupported = || EvalError::UnsupportedConfig("STU_AC829876".into());
+    let masks = FilterMasks::read(filter).ok_or_else(unsupported)?;
+    if !valid_entity(entity) {
+        return Ok(false);
+    }
+    let known = match filter_facts(filter, &masks, entity, context)? {
+        Some(false) => return Ok(false),
+        known => known,
+    };
+    let condition = child(filter, "m_condition");
+    if condition.is_null() {
+        return known.ok_or_else(unsupported);
+    }
+    Ok(truthy(&evaluate(condition, context)?))
+}
+
+/// The masks and tag lists of `filter` on `entity`: Some(false) rejects
+/// it, Some(true) passes it on a known fact, None passes it with nothing
+/// known about it. Unsupported when a fact they need is unknown and none
+/// rejects it.
+fn filter_facts(
+    filter: &Json,
+    masks: &FilterMasks,
+    entity: u32,
+    context: &mut impl Context,
+) -> Result<Option<bool>, EvalError> {
     let flags = context.entity_filter_flags(entity);
     let mut has_fact = flags.is_some();
     let mut unknown = masks.read_word() && flags.is_none();
@@ -2807,7 +2850,7 @@ fn passes_filter(
         (true, false)
     };
     if !unknown && !masks.passes(flags.unwrap_or(0), friendly, searcher) {
-        return Ok(false);
+        return Ok(Some(false));
     }
     // The client's filter tag test (0x7FF789C1EC70 → 0x7FF789CC2FD0, the
     // rule of 0x7FF789CC5310): any of `m_9C7BD8B8`, all of `m_B486603E`,
@@ -2820,14 +2863,14 @@ fn passes_filter(
         match check_tag_set(child(filter, field), condition, entity, context)? {
             TagCheck::Unused => (),
             TagCheck::Accept => has_fact = true,
-            TagCheck::Reject => return Ok(false),
+            TagCheck::Reject => return Ok(Some(false)),
             TagCheck::Unknown => unknown = true,
         }
     }
-    if unknown || !has_fact || !child(filter, "m_condition").is_null() {
-        return Err(unsupported());
+    if unknown {
+        return Err(EvalError::UnsupportedConfig("STU_AC829876".into()));
     }
-    Ok(true)
+    Ok(has_fact.then_some(true))
 }
 
 impl Evaluator {

@@ -9,7 +9,8 @@
 //! assumption, it stays: the flow's variables (none in the Range) and the
 //! match's players (`ModeScript::set_players`) are written into it each
 //! tick, it advances with the server frame, its observer frames are the
-//! mode entity's, and its messages go with every other entity's
+//! mode entity's (each client gets them as deltas, [`crate::mode_view`]),
+//! and its messages go with every other entity's
 //! ([`crate::messages`]), which routes it those sent to the mode entity or
 //! to every entity and gives every entity the broadcasts it holds
 //! ([`ModeRunner::held`]; in the Range `0724` for the spawn rooms, `06FD`
@@ -18,15 +19,14 @@
 //! once and the mode entity gets graph 0CB6's frame with the flow's
 //! variables, as the countdown did before (match.py `_send_countdown`).
 
-use std::{collections::BTreeMap, io, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use orpheus_content::maps::{PRACTICE_RANGE_MODE, PYTHON_PRACTICE_RANGE_MODE};
-use orpheus_core::bits::BitWriter;
 use orpheus_script::{
     codecs::CodecTable,
     graph::GraphStore,
     mode::{ModePlayer, ModeScript, ModeWorld},
-    snapshot::{SnapshotEncoder, View},
+    snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     vm::{GameMessage, InitFault, MessageEnd, Unknowns},
     wire::Variables,
 };
@@ -66,6 +66,8 @@ pub enum ModeRunner {
         script: Box<ModeScript>,
         graphs: Arc<GraphStore>,
         codecs: Arc<CodecTable>,
+        /// Its last projection failed (said once, [`Self::project`]).
+        unprojected: bool,
     },
     /// The hand-built frame, and why the graph doesn't drive it.
     HandBuilt { gaps: Gaps },
@@ -85,6 +87,7 @@ impl ModeRunner {
         // The team sizes are the game's, as the 20300/20301 game struct
         // sends them.
         let mut world = ModeWorld::new(Arc::clone(&graphs), mode, Unknowns::for_build());
+        world.ruleset = scene.map().ruleset;
         world.players = players;
         world.ready = true;
         world.team_sizes = crate::instance::team_entries(scene.map());
@@ -98,6 +101,7 @@ impl ModeRunner {
                 script: Box::new(script),
                 graphs,
                 codecs: Arc::new(CodecTable::client()),
+                unprojected: false,
             },
             Ok(script) => {
                 let gaps = script.gaps();
@@ -204,25 +208,54 @@ impl ModeRunner {
         };
     }
 
-    /// The mode entity's full frame now.
-    pub fn frame(&self, scene: &PreparedScene, variables: &Variables) -> io::Result<BitWriter> {
-        if let Self::Graph {
+    /// The mode entity's observer frame now, while the graph drives it,
+    /// with `previous`'s entity exclusions (`SnapshotEncoder::project_next`),
+    /// so each client gets the match's frames as deltas of his first one
+    /// (`crate::mode_view`). None while the graph doesn't drive it, or when
+    /// the frame can't be made (said once until it can again).
+    pub fn project(&mut self, previous: Option<&ProjectedSnapshot>) -> Option<ProjectedSnapshot> {
+        let Self::Graph {
             script,
             graphs,
             codecs,
+            unprojected,
         } = self
-        {
-            if let Some(snapshot) = script.snapshot() {
-                let encoder = SnapshotEncoder::new(graphs, codecs).with_unknowns(script.unknowns());
-                return encoder
-                    .project(snapshot, View::Observer)
-                    .and_then(|projected| encoder.full(&projected))
-                    .map_err(|error| {
-                        io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}"))
-                    });
+        else {
+            return None;
+        };
+        let snapshot = script.snapshot()?;
+        let encoder = SnapshotEncoder::new(graphs, codecs).with_unknowns(script.unknowns());
+        let projected = match previous {
+            Some(previous) => encoder.project_next(snapshot, previous),
+            None => encoder.project(snapshot, View::Observer),
+        };
+        match projected {
+            Ok(projected) => {
+                *unprojected = false;
+                Some(projected)
+            }
+            Err(error) => {
+                if !*unprojected {
+                    eprintln!("the mode graph's frame can't be made ({error:?})");
+                }
+                *unprojected = true;
+                None
             }
         }
-        scene.mode_frame(variables)
+    }
+
+    /// The encoder of the graph's frames, while it drives the mode entity.
+    pub fn encoder(&self) -> Option<SnapshotEncoder<'_>> {
+        let Self::Graph {
+            script,
+            graphs,
+            codecs,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        Some(SnapshotEncoder::new(graphs, codecs).with_unknowns(script.unknowns()))
     }
 }
 
@@ -259,6 +292,7 @@ mod tests {
             script,
             graphs,
             codecs,
+            ..
         } = &mode
         else {
             panic!("13C0 doesn't drive the Range: {:?}", mode.gaps());
@@ -301,10 +335,9 @@ mod tests {
             parameters(0x06fd),
             &Variables::from([(0x00b7, Value::Integer(3))])
         );
-        let frame = mode.frame(&scene, &Variables::new()).unwrap();
-        assert_ne!(
-            &frame,
-            scene.mode_ui(),
+        assert_eq!(
+            mode.project(None),
+            Some(projected),
             "the graph's frame, not the hand-built one"
         );
     }

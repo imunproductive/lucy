@@ -46,7 +46,13 @@ fn spawned_as(
     let mut world = WorldDelivery::new(entity);
     world.start(scene, &viewer, FIRST_TICK).unwrap();
     world.created.insert(entity);
-    world.present(scene, scene.mode_ui(), FIRST_TICK).unwrap();
+    world
+        .present(
+            scene,
+            crate::mode_view::ModeFrame::Full(scene.mode_ui()),
+            FIRST_TICK,
+        )
+        .unwrap();
     let hero = scene.heroes().get(hero).unwrap();
     world
         .switch(
@@ -126,6 +132,8 @@ fn a_second_kill_within_two_seconds_pulses_the_announcers_double_kill() {
             heal: false,
             tags: orpheus_script::weapons::DamageTags::NONE,
             direction: None,
+            environment: false,
+            from: None,
         };
         let [first_stats, second_stats, third_stats] = &mut stats;
         let [first_victim, second_victim] = &mut victims;

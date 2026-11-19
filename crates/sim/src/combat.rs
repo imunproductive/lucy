@@ -56,9 +56,9 @@ use orpheus_script::{
     bot::{DAMAGE_AMOUNT, DAMAGE_DIRECTION, DAMAGE_SOURCE, DAMAGE_TAGS, DAMAGED, DIED},
     vitals::{Death, Vitals},
     vm::{
-        ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, AuraChange, CombatMod, DAMAGE_DEALT,
-        DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, HealthChange, SeenBody, ShotEvent,
-        TargetCandidate, TrackedStat, combat_scale,
+        ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, AuraChange, BodyEffects, CombatMod,
+        DAMAGE_DEALT, DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, HealthChange, SeenBody,
+        ShotEvent, TargetCandidate, TrackedStat, combat_scale,
     },
     weapons::{AllyHits, DamageTags, HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
@@ -90,6 +90,54 @@ const CREDITED: u32 = 0x00bd;
 const CRIT: u32 = 0x0095;
 const LOADOUT: u32 = 0x03e6;
 const ASSISTS: u32 = 0x03e7;
+
+/// `003E`'s death camera parameters, which only the death layer `01CB`
+/// (rid5) reads: the killer's controller `07A9` (#21709), whether the
+/// death takes a set camera `0234` (#4608e; `01D8`'s Play of the Game
+/// scoring skips such a death), that camera's point `0233` (#4609) and
+/// whether it frames the body instead `0232` (#4610)
+/// ([`DeathCamera`]).
+const KILLER_CONTROLLER: u32 = 0x07a9;
+const SET_CAMERA: u32 = 0x0234;
+const SET_CAMERA_POINT: u32 = 0x0233;
+const SET_CAMERA_ON_BODY: u32 = 0x0232;
+
+/// What a player's body's death layer `01CB` needs of its death besides
+/// the kill feed's fields (`refs/reports/DeathCam.md`, "Day (2026-11-19),
+/// DayDeathParams").
+///
+/// - `07A9` is the possessor of the killing body (its controller; an AI
+///   hero's AI entity), as the graphs that set #21709 themselves read it
+///   (`STU_F7262B36(#40)`: `0C72`, `0B99`, `0EE1`) and as the client's
+///   `STU_00707E1E` takes it (it reads the entity's component 44, which
+///   only a possessor has). `01CB` frames that controller's possessed body
+///   when the killer's body is gone (#21711, client-only st115/st120/st123)
+///   and tells it of the kill (rid224 `17D9` to `STU_0AC15F78(#21709)`).
+///   A self-kill (an environment kill too) names the body's own. 0: the
+///   world lists no such body.
+/// - `0234` false: no graph and no client code sends `003E` (`owsearch`:
+///   no use of `003E.025` or of the four parameter GUIDs), so which deaths
+///   retail gave the set camera (`01CB` st13: st14 at the body + 1 m, or
+///   st30 20 m above `0233`) is unknown; a kill and a self-kill take
+///   `01CB`'s own cameras (st36 at the killer, st14/st25 at the body).
+/// - `0233` the body's position at the death [assumption: the point st30
+///   looks down at], and `0232` false; both unread while `0234` is false.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeathCamera {
+    pub killer_controller: u32,
+    pub position: Vec3,
+}
+
+impl DeathCamera {
+    fn parameters(self) -> [(u32, Value); 4] {
+        [
+            (KILLER_CONTROLLER, Value::Entity(self.killer_controller)),
+            (SET_CAMERA, Value::Bool(false)),
+            (SET_CAMERA_POINT, Value::Vector(self.position)),
+            (SET_CAMERA_ON_BODY, Value::Bool(false)),
+        ]
+    }
+}
 
 /// Each mode's respawn time for heroes (combat.py `respawn_seconds`): the
 /// seconds its mode graph sends the player in 06FD.025, derived into
@@ -152,27 +200,29 @@ fn invalid(error: impl std::fmt::Display) -> io::Error {
 /// upstream sent neither 00BD nor 003D, and no assists. Assumption: the
 /// credited body is the killer itself (no turret or pet kills anyone
 /// here). Unsent and unknown: 006B, 0142 and 03E8 (`03ED`, 0DEA #9297).
+/// A player's body's message carries its death layer's parameters too
+/// (`camera`, [`DeathCamera`]); a bot's `0C18` reads none of them.
 pub fn death_message(
     killer: u32,
     critical: bool,
     loadout: Option<u64>,
     tags: DamageTags,
     assists: &[u32],
+    camera: Option<DeathCamera>,
 ) -> (u64, Variables) {
-    (
-        DIED,
-        Variables::from([
-            (KILLER, Value::Entity(killer)),
-            (CREDITED, Value::Entity(killer)),
-            (DAMAGE_TAGS, tags.to_value()),
-            (CRIT, Value::Bool(critical)),
-            (LOADOUT, loadout.map_or(Value::Null, Value::Asset)),
-            (
-                ASSISTS,
-                Value::Array(assists.iter().copied().map(Value::Entity).collect()),
-            ),
-        ]),
-    )
+    let mut parameters = Variables::from([
+        (KILLER, Value::Entity(killer)),
+        (CREDITED, Value::Entity(killer)),
+        (DAMAGE_TAGS, tags.to_value()),
+        (CRIT, Value::Bool(critical)),
+        (LOADOUT, loadout.map_or(Value::Null, Value::Asset)),
+        (
+            ASSISTS,
+            Value::Array(assists.iter().copied().map(Value::Entity).collect()),
+        ),
+    ]);
+    parameters.extend(camera.into_iter().flat_map(DeathCamera::parameters));
+    (DIED, parameters)
 }
 
 /// The damage message (`0011.025`, [`DAMAGED`]) a body's script takes for a
@@ -213,23 +263,28 @@ pub fn damage_message(
 /// `dealt` and, for a killing hit, the assisters' bodies (`kill`; none:
 /// the body lives; [`WorldDelivery::send_hit_messages`]), in order: its
 /// damage message ([`damage_message`]), then for a killing hit its death
-/// message ([`death_message`]). A killing hit's damage message also
-/// carries the kill's fields (the credited body `00BD`, crit `0095`,
-/// loadout `03E6`, assists `03E7`), as retail's damage event does: Echo's
-/// `1544` rid54 reads them from `0011.025` alone, not `003E.025`, and posts
-/// the kill feed line (`0765.025`) from them when a native flag (#33688e,
-/// no graph writes it) marks the blow as lethal
-/// (`refs/reports/PlayerHurt.md`, "Killing hit"). The live hurt feedback
-/// switch ([`HurtFeedback`]) holds the damage message back, or with the
-/// flinch off sends it without its tags; the death message is not switched.
+/// message ([`death_message`], with the death layer's `camera`). A
+/// killing hit's damage message also carries the kill's fields (the
+/// credited body `00BD`, crit `0095`, loadout `03E6`, assists `03E7`), as
+/// retail's damage event does: Echo's `1544` rid54 reads them from
+/// `0011.025` alone, not `003E.025`, and posts the kill feed line
+/// (`0765.025`) from them when a native flag (#33688e, no graph writes
+/// it) marks the blow as lethal (`refs/reports/PlayerHurt.md`, "Killing
+/// hit"). The live hurt feedback switch ([`HurtFeedback`]) holds the
+/// damage message back, or with the flinch off sends it without its tags;
+/// the death message is not switched.
 pub fn hit_messages(
     hit: &PlayerHit,
     tags: DamageTags,
     dealt: f64,
     kill: Option<&[u32]>,
+    camera: Option<DeathCamera>,
     feedback: HurtFeedback,
 ) -> Vec<(u64, Variables)> {
     let source = hit.shooter.source;
+    let death = |tags, camera| {
+        kill.map(|assists| death_message(source, hit.critical, hit.loadout, tags, assists, camera))
+    };
     let mut messages = Vec::new();
     if feedback.message {
         let flinch = if feedback.flinch {
@@ -238,20 +293,10 @@ pub fn hit_messages(
             DamageTags::NONE
         };
         let (message, mut parameters) = damage_message(source, dealt, flinch, hit.direction);
-        if let Some(assists) = kill {
-            parameters.extend(death_message(source, hit.critical, hit.loadout, flinch, assists).1);
-        }
+        parameters.extend(death(flinch, None).into_iter().flat_map(|(_, kill)| kill));
         messages.push((message, parameters));
     }
-    if let Some(assists) = kill {
-        messages.push(death_message(
-            source,
-            hit.critical,
-            hit.loadout,
-            tags,
-            assists,
-        ));
-    }
+    messages.extend(death(tags, camera));
     messages
 }
 
@@ -354,6 +399,8 @@ pub struct BotDeath {
     pub loadout: Option<u64>,
     /// The killing hit's damage tags.
     pub tags: DamageTags,
+    /// What the killing hit dealt, for its damage message (`0011.025`).
+    pub dealt: f64,
     pub tick: u32,
 }
 
@@ -415,6 +462,14 @@ pub struct PlayerHit {
     /// shooter's feet to the body's, as the match last placed them, or from
     /// his own explosion to his body; none when that isn't known.
     pub direction: Option<Vec3>,
+    /// The environment's kill ([`Combat::environment_kill`]): the match
+    /// credits it to whoever last knocked the body ([`KnockCredit`]).
+    pub environment: bool,
+    /// Where the damage came from, for the victim's damage direction arc
+    /// (25000, [`CombatNotice::Hurt`]): another's feet as the match last
+    /// placed them; none for his own explosion (assumption: one's own
+    /// blow shows no arc) and when that isn't known.
+    pub from: Option<Vec3>,
 }
 
 /// An explosion's push on another player's body ([`Combat::take_player_pushes`]),
@@ -429,6 +484,9 @@ pub struct PlayerPush {
     pub body: u32,
     /// Metres a second added to the body's velocity.
     pub push: Vec3,
+    /// Whose explosion it was: the knock an environment kill credits
+    /// ([`KnockCredit`]).
+    pub by: Shooter,
 }
 
 #[derive(Clone)]
@@ -460,6 +518,9 @@ pub struct PlayerTarget {
     /// graphs hold now (`orpheus_script::vm::statuses`: Nano Boost's
     /// `0B9F` st19), for its hits.
     pub dealt: Vec<CombatMod>,
+    /// The modifiers its graphs hold for other entities
+    /// (`BodyEffects::held_for_others`), which the room adds to theirs.
+    pub held: Vec<CombatMod>,
 }
 
 struct Target {
@@ -553,6 +614,10 @@ pub struct Combat {
     /// The stats the room counted natively since the match last looked
     /// ([`Self::take_tracked_stats`]).
     counted: Vec<TrackedStat>,
+    /// The modifiers the bodies' graphs hold for other entities, as the
+    /// players' and bots' were when the poses were last recorded: each
+    /// counts for its holder's hits and for the hits on it.
+    held: Vec<CombatMod>,
 }
 
 /// An aura a hit put on a body ([`Combat::take_auras`]): the match puts it
@@ -584,6 +649,7 @@ impl Combat {
                 scene.shared_graphs(),
                 scene.field_graphs().to_vec(),
                 scene.map().mode_guid,
+                scene.map().ruleset,
                 scene.mode_random(),
                 Some(scene.map_rays()),
             ),
@@ -591,12 +657,15 @@ impl Combat {
             landed: Vec::new(),
             auras: Vec::new(),
             counted: Vec::new(),
+            held: Vec::new(),
         }
     }
 
     /// Keep where every body was this tick (combat.py `update`'s history):
     /// the players' current bodies, a new body with a history of its own
-    /// that refuses shots aimed before it existed, and the live bots.
+    /// that refuses shots aimed before it existed, and the live bots. The
+    /// modifiers the players' and bots' graphs hold for others are kept
+    /// with them.
     pub fn record_poses(&mut self, scene: &PreparedScene, players: &[PlayerTarget], tick: u32) {
         let mut previous = std::mem::take(&mut self.players);
         self.players = players
@@ -621,6 +690,14 @@ impl Combat {
                 target.history.record(tick, scene.bot_target(bot));
             }
         }
+        self.held.clear();
+        self.held.extend(
+            players
+                .iter()
+                .flat_map(|target| target.held.iter().cloned()),
+        );
+        self.held
+            .extend(scene.bot_scripts().held_for_others().cloned());
     }
 
     /// The bodies the statescript's target searches can find this tick
@@ -716,11 +793,13 @@ impl Combat {
     }
 
     /// The environment kills the player's body at `tick` (`map_areas`
-    /// module notes: it fell onto the map's catch floor): a hit on it of
-    /// [`ENVIRONMENT_DAMAGE`] that goes the way of any other, so the
-    /// victim gets "YOU DIED" (25004), his body the death message and his
-    /// board a death, and he respawns after the mode's time. Assumption:
-    /// the body is its own killer, as in a self-inflicted explosion.
+    /// module notes: it fell onto the map's catch floor, into a kill volume
+    /// or a lethal damage area): a hit on it of [`ENVIRONMENT_DAMAGE`] that
+    /// goes the way of any other, so the victim gets 25004, his body the
+    /// death message and his board a death, and he respawns after the
+    /// mode's time. The match credits it to whoever last knocked the body
+    /// ([`KnockCredit`], [`apply_player_hits`]); without one the body is its
+    /// own killer ("YOU DIED"), as in a self-inflicted explosion.
     pub fn environment_kill(&mut self, body: u32, team: u8, tick: u32) {
         self.player_hits.push(PlayerHit {
             body,
@@ -737,6 +816,8 @@ impl Combat {
             heal: false,
             tags: DamageTags::NONE,
             direction: None,
+            environment: true,
+            from: None,
         });
     }
 
@@ -861,7 +942,9 @@ impl Combat {
             .enemy_of(scene, shooter, impact.entity)
             .then_some(impact.critical);
         self.count_shot(shooter, struck);
-        Ok(self.apply_impact(scene, shooter, shot_frame, world_tick, context, &impact))
+        Ok(self.apply_impact(
+            scene, shooter, shot_frame, world_tick, context, &impact, None,
+        ))
     }
 
     /// A health change a body's graph made ([`HealthChange`]: quick melee
@@ -935,12 +1018,16 @@ impl Combat {
             if !takes {
                 return None;
             }
-            let direction = (!own)
-                .then(|| self.feet(scene, shooter.source))
-                .flatten()
-                .and_then(|from| damage_direction(from, slot.target.pose.feet));
-            let (amount, tags) =
-                self.dealt(scene, shooter, change.heal, change.amount, change.tags);
+            let from = (!own).then(|| self.feet(scene, shooter.source)).flatten();
+            let direction = from.and_then(|from| damage_direction(from, slot.target.pose.feet));
+            let (amount, tags) = self.dealt(
+                scene,
+                shooter,
+                change.heal,
+                change.amount,
+                change.tags,
+                None,
+            );
             self.player_hits.push(PlayerHit {
                 body: target,
                 shooter,
@@ -952,6 +1039,8 @@ impl Combat {
                 heal: change.heal,
                 tags,
                 direction,
+                environment: false,
+                from,
             });
             self.auras.extend(aura);
             return None;
@@ -968,7 +1057,7 @@ impl Combat {
             tags: change.tags,
             heal: if change.heal { change.amount } else { 0.0 },
         };
-        let hit = self.apply_bot_impact(scene, shooter, change.frame, None, context, &impact);
+        let hit = self.apply_bot_impact(scene, shooter, change.frame, None, context, &impact, None);
         if hit.is_some() {
             self.auras.extend(aura);
         }
@@ -998,8 +1087,10 @@ impl Combat {
 
     /// A hit of `amount` with `tags` as the shooter's dealt modifiers make
     /// it (`orpheus_script::vm::statuses`): a heal scaled by those of the
-    /// healing he gives, damage by those of the damage he deals, at the
-    /// hit; with the tags they added.
+    /// healing he gives, damage by those of the damage he deals, as he
+    /// holds them at the hit ([`Self::dealt_modifiers`]) or, for a
+    /// projectile's hit, as `launched` kept them at its launch; with the
+    /// tags they added.
     fn dealt(
         &self,
         scene: &PreparedScene,
@@ -1007,22 +1098,52 @@ impl Combat {
         heal: bool,
         amount: f64,
         mut tags: DamageTags,
+        launched: Option<&[CombatMod]>,
     ) -> (f64, DamageTags) {
         let kind = if heal { HEALING_DEALT } else { DAMAGE_DEALT };
-        let scale = if shooter.bot {
-            scene
-                .bot_scripts()
-                .effects(shooter.source)
-                .map_or(1.0, |effects| effects.scale(kind, &mut tags))
-        } else {
-            self.players
-                .iter()
-                .find(|slot| slot.target.body == shooter.source)
-                .map_or(1.0, |slot| {
-                    combat_scale(&slot.target.dealt, kind, &mut tags)
-                })
+        // A dealt kind has no party filter (`m_5E6F1B8B` is set nowhere).
+        let scale = match launched {
+            Some(launched) => combat_scale(launched, kind, &mut tags, &[]),
+            None => combat_scale(self.dealt_modifiers(scene, shooter), kind, &mut tags, &[]),
         };
         (amount * scale, tags)
+    }
+
+    /// The modifiers the shooter holds now: a bot's from its script, a
+    /// player's as [`PlayerTarget::dealt`] has them, then those other
+    /// entities' graphs hold for him ([`Self::record_poses`]).
+    fn dealt_modifiers<'a>(
+        &'a self,
+        scene: &'a PreparedScene,
+        shooter: Shooter,
+    ) -> impl Iterator<Item = &'a CombatMod> {
+        let source = shooter.source;
+        let bot = shooter
+            .bot
+            .then(|| scene.bot_scripts().effects(source))
+            .flatten()
+            .into_iter()
+            .flat_map(BodyEffects::modifiers);
+        let player = (!shooter.bot)
+            .then(|| self.players.iter().find(|slot| slot.target.body == source))
+            .flatten()
+            .into_iter()
+            .flat_map(|slot| &slot.target.dealt);
+        let held = self
+            .held
+            .iter()
+            .filter(move |modifier| modifier.holder == source);
+        bot.chain(player).chain(held)
+    }
+
+    /// The modifiers held for `entity` by other entities' graphs, for a
+    /// hit on it.
+    fn held_for(&self, entity: u32) -> Vec<CombatMod> {
+        self.held
+            .iter()
+            .filter(|modifier| modifier.holder == entity)
+            .cloned()
+            .collect()
     }
 
     /// The auras the hits put on bodies since the last call, in order.
@@ -1138,6 +1259,14 @@ impl Combat {
                 .filter(|(bot, target)| eligible_bot(bot, target, shooter, free_for_all, allies))
                 .map(|(bot, _)| (bot.entity, scene.bot_target(bot))),
         );
+        // Its first step is its launch: it keeps its shooter's dealt
+        // modifiers as they are now for all its hits.
+        flight.launch(|| {
+            self.dealt_modifiers(scene, shooter)
+                .filter(|modifier| [DAMAGE_DEALT, HEALING_DEALT].contains(&modifier.kind))
+                .cloned()
+                .collect()
+        });
         let ray_profile = flight.ray_profile();
         let step = flight
             .advance(context.tick, &candidates, |origin, direction, reach| {
@@ -1155,6 +1284,7 @@ impl Combat {
                 Some(context.tick),
                 context,
                 impact,
+                flight.launch_modifiers(),
             ));
         }
         if step.end.is_some() && flight.damaging() {
@@ -1179,6 +1309,7 @@ impl Combat {
                     self.player_pushes.push(PlayerPush {
                         body: *entity,
                         push,
+                        by: shooter,
                     });
                 }
             }
@@ -1230,7 +1361,8 @@ impl Combat {
             })
             .and_then(|slot| flight.own_blast(&slot.target.pose));
         if let Some(own) = own.filter(|own| own.damage > 0.0) {
-            let (amount, tags) = self.dealt(scene, shooter, false, own.damage, own.tags);
+            let launched = flight.launch_modifiers();
+            let (amount, tags) = self.dealt(scene, shooter, false, own.damage, own.tags, launched);
             self.player_hits.push(PlayerHit {
                 body: shooter.source,
                 shooter,
@@ -1242,6 +1374,8 @@ impl Combat {
                 heal: false,
                 tags,
                 direction: Some(own.direction),
+                environment: false,
+                from: None,
             });
         }
         Ok(step.end.map(|end| FlightEnd {
@@ -1315,6 +1449,8 @@ impl Combat {
     /// for the match. An ally of the shooter (the hits that strike allies
     /// alone reach one) takes the impact's heal instead (combat.py
     /// `_heal`, leafall903/ORPHEUS (MIT) commit c239a84), and no damage.
+    /// `launched`: a projectile's dealt modifiers ([`Self::dealt`]).
+    #[allow(clippy::too_many_arguments)]
     fn apply_impact(
         &mut self,
         scene: &mut PreparedScene,
@@ -1323,6 +1459,7 @@ impl Combat {
         world_tick: Option<u32>,
         context: ShotContext,
         impact: &Impact,
+        launched: Option<&[CombatMod]>,
     ) -> Option<BotHit> {
         let free_for_all = scene.map().free_for_all;
         if let Some(slot) = self
@@ -1332,10 +1469,9 @@ impl Combat {
         {
             let heal = !free_for_all && slot.target.team == shooter.team;
             let amount = if heal { impact.heal } else { impact.damage };
-            let direction = self
-                .feet(scene, shooter.source)
-                .and_then(|from| damage_direction(from, slot.target.pose.feet));
-            let (amount, tags) = self.dealt(scene, shooter, heal, amount, impact.tags);
+            let from = self.feet(scene, shooter.source);
+            let direction = from.and_then(|from| damage_direction(from, slot.target.pose.feet));
+            let (amount, tags) = self.dealt(scene, shooter, heal, amount, impact.tags, launched);
             if amount > 0.0 {
                 self.player_hits.push(PlayerHit {
                     body: impact.entity,
@@ -1348,11 +1484,15 @@ impl Combat {
                     heal,
                     tags,
                     direction,
+                    environment: false,
+                    from,
                 });
             }
             return None;
         }
-        self.apply_bot_impact(scene, shooter, shot_frame, world_tick, context, impact)
+        self.apply_bot_impact(
+            scene, shooter, shot_frame, world_tick, context, impact, launched,
+        )
     }
 
     /// Where a shooter's feet were as the match last placed them: a
@@ -1371,6 +1511,7 @@ impl Combat {
             })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_bot_impact(
         &mut self,
         scene: &mut PreparedScene,
@@ -1379,6 +1520,7 @@ impl Combat {
         world_tick: Option<u32>,
         context: ShotContext,
         impact: &Impact,
+        launched: Option<&[CombatMod]>,
     ) -> Option<BotHit> {
         // A Training Bot is back after the mode's respawn time, as a hero
         // (`game_respawns`: 3 s in the practice modes).
@@ -1392,14 +1534,26 @@ impl Combat {
                 .any(|bot| bot.entity == impact.entity && bot.spawn.team == shooter.team);
         // The shooter's dealt modifiers, then the bot's statuses and taken
         // modifiers (`vm/statuses.rs`): an invulnerable bot takes no
-        // damage, and its modifiers scale what it takes (Biotic Grenade's
-        // anti-heal and heal boost, Nano Boost's damage reduction).
+        // damage, and its modifiers (its graphs', their party filters
+        // tested on the shooter, and those others hold for it) scale what
+        // it takes (Biotic Grenade's anti-heal and heal boost, Nano Boost's
+        // damage reduction).
         let amount = if heal { impact.heal } else { impact.damage };
-        let (amount, mut tags) = self.dealt(scene, shooter, heal, amount, impact.tags);
-        let effects = scene.bot_scripts().effects(impact.entity);
-        let invulnerable = effects.is_some_and(|effects| effects.invulnerable());
+        let (amount, mut tags) = self.dealt(scene, shooter, heal, amount, impact.tags, launched);
+        let invulnerable = scene
+            .bot_scripts()
+            .effects(impact.entity)
+            .is_some_and(|effects| effects.invulnerable());
         let taken = if heal { HEALING_TAKEN } else { DAMAGE_TAKEN };
-        let amount = amount * effects.map_or(1.0, |effects| effects.scale(taken, &mut tags));
+        let held = self.held_for(impact.entity);
+        let amount = amount
+            * scene.bot_scripts_mut().combat_scale(
+                impact.entity,
+                taken,
+                &mut tags,
+                shooter.source,
+                &held,
+            );
         let plate = Arc::clone(scene.bot_plate());
         let (bot, target) = scene
             .bots_mut()
@@ -1473,6 +1627,7 @@ impl Combat {
                 critical: impact.critical,
                 loadout: impact.loadout,
                 tags,
+                dealt: result.dealt,
                 tick: death_tick,
             }),
             damage: (!result.killed).then_some(BotDamage {
@@ -1594,9 +1749,80 @@ pub fn credits_damage(at: Duration, now: Duration) -> bool {
     now <= at + DAMAGE_CREDIT
 }
 
+/// How long a knockback credits the environment kill of the body it
+/// knocked ([`KnockCredit`]). The retail server's own rule; no graph or
+/// data names it. Assumption: 10 s, as players measured it in OW1 (KarQ,
+/// r/OverwatchUniversity 2019-08-24, "1 Environmental Kill Tip for Every
+/// Hero": "Wait 10 seconds" is one of four ways to cancel a knockback's
+/// credit; `refs/reports/StatCredit.md`).
+pub const KNOCKBACK_CREDIT: Duration = Duration::from_secs(10);
+
+/// Who an environment kill of a player's body credits: the last enemy
+/// whose explosion knocked it ([`PlayerPush`]), for [`KNOCKBACK_CREDIT`]
+/// after the knock, as the retail rule gives an environmental kill to the
+/// last player who applied crowd control (`refs/reports/RulesNotes.md`
+/// 146; damage alone doesn't). The other ways players measured to cancel
+/// it (KarQ, as [`KNOCKBACK_CREDIT`]): a jump, a landing on the ground,
+/// and the body's own knockback (its own explosion). Assumptions: a
+/// landing cancels it only once the tick's environment kills are dealt
+/// ([`Self::settle`]), as a fall ends by landing on the catch floor that
+/// kills; the explosions are the only knockbacks the server applies to a
+/// player's body.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct KnockCredit(Option<Knock>);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Knock {
+    body: u32,
+    by: Shooter,
+    at: Duration,
+    landed: bool,
+}
+
+impl KnockCredit {
+    /// Another's explosion (`by`) knocked `body` at `now`.
+    pub fn knocked(&mut self, body: u32, by: Shooter, now: Duration) {
+        self.0 = Some(Knock {
+            body,
+            by,
+            at: now,
+            landed: false,
+        });
+    }
+
+    /// The body's own explosion pushed it.
+    pub fn own_push(&mut self) {
+        self.0 = None;
+    }
+
+    /// The body's mover posed a frame that jumped or landed it.
+    pub fn posed(&mut self, landed: bool, jumped: bool) {
+        if jumped {
+            self.0 = None;
+        } else if let Some(knock) = self.0.as_mut().filter(|_| landed) {
+            knock.landed = true;
+        }
+    }
+
+    /// The tick's environment kills are dealt: a knock the body landed
+    /// from credits no later one.
+    pub fn settle(&mut self) {
+        if self.0.is_some_and(|knock| knock.landed) {
+            self.0 = None;
+        }
+    }
+
+    /// Who the environment's kill of `body` at `now` credits.
+    pub fn credit(&self, body: u32, now: Duration) -> Option<Shooter> {
+        self.0
+            .filter(|knock| knock.body == body && now <= knock.at + KNOCKBACK_CREDIT)
+            .map(|knock| knock.by)
+    }
+}
+
 /// Final Blows (`002B`): the career counter of the stat event 0
 /// (`m_primaryEvent`), the hero board's "Final Blows".
-const FINAL_BLOWS: u64 = 0x0860_0000_0000_002b;
+pub(crate) const FINAL_BLOWS: u64 = 0x0860_0000_0000_002b;
 /// Shots Fired (`0030`, stat event 9), Shots Hit (`0031`, event 10), Shots
 /// Missed (`05F2`, event 63) and Critical Hits (`03DE`, event 12):
 /// [`Combat::count_shot`].
@@ -1608,6 +1834,10 @@ const CRITICAL_HITS: u64 = 0x0860_0000_0000_03de;
 /// (`03DA`, event 48), on the support heroes' boards.
 const OFFENSIVE_ASSISTS: u64 = 0x0860_0000_0000_03d4;
 const DEFENSIVE_ASSISTS: u64 = 0x0860_0000_0000_03da;
+/// Environmental Kills (`0362`, stat event 49) and Environmental Deaths
+/// (`0365`, event 50): [`apply_player_hits`].
+pub(crate) const ENVIRONMENTAL_KILLS: u64 = 0x0860_0000_0000_0362;
+pub(crate) const ENVIRONMENTAL_DEATHS: u64 = 0x0860_0000_0000_0365;
 
 /// An assist a player earned on a kill ([`kill_credit`]).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1718,10 +1948,15 @@ pub fn kill_credit(
 /// and `0093.025` without the final blow flag, and for an assist its stat
 /// (Offensive or Defensive Assists), 25005 as an assist ("ASSIST", unless
 /// he has the elimination's) and a place in the death message's assists
-/// (`03E7`, the kill feed's assist icons). A heal of an ally (combat.py
-/// `_heal`, leafall903/ORPHEUS (MIT) commit c239a84) tells no one: a
-/// player healer's Healing Done and ultimate count what the pools took.
-/// Returns each player's notices, by slot.
+/// (`03E7`, the kill feed's assist icons). The environment's kill
+/// ([`PlayerHit::environment`]) is the kill of whoever last knocked the
+/// body ([`KnockCredit`]), counted as damage of the health it had left
+/// (`refs/reports/RulesNotes.md` 146: Hero Damage Done and ultimate charge,
+/// no hit marker, assumption), and with an Environmental Kill for a player
+/// who knocked it and an Environmental Death for the victim. A heal of an
+/// ally (combat.py `_heal`, leafall903/ORPHEUS (MIT) commit c239a84) tells
+/// no one: a player healer's Healing Done and ultimate count what the pools
+/// took. Returns each player's notices, by slot.
 pub fn apply_player_hits(
     scene: &PreparedScene,
     hits: Vec<PlayerHit>,
@@ -1731,7 +1966,7 @@ pub fn apply_player_hits(
 ) -> Vec<Vec<CombatNotice>> {
     let board = *scene.board_stats();
     let mut notices = vec![Vec::new(); players.len()];
-    for hit in hits {
+    for mut hit in hits {
         let Some(victim) = players.iter().position(|player| {
             player
                 .world
@@ -1746,20 +1981,32 @@ pub fn apply_player_hits(
             .and_then(|world| world.current_hero())
             .and_then(|hero| scene.heroes().get(hero))
             .map(|hero| hero.body);
+        // What other bodies' graphs hold for the victim scales what he
+        // takes, after his own graphs' modifiers.
+        let held = held_for(scene, players, hit.body);
         if hit.heal {
-            let given = players[victim].world.as_deref_mut().map_or(0.0, |world| {
-                world.heal_body(scene, hit.body, hit.amount, &hit.tags)
-            });
+            let given = players[victim]
+                .world
+                .as_deref_mut()
+                .map_or(0.0, |world| world.heal_body(scene, &hit, &held));
             if !hit.shooter.bot {
                 let target = (hit.body, victim_body);
                 credit_healing(scene, players, hit.shooter.source, target, given, &hit.tags);
             }
             continue;
         }
+        if hit.environment
+            && let Some(by) = players[victim]
+                .world
+                .as_deref()
+                .and_then(|world| world.knocked_by(hit.body, now))
+        {
+            hit.shooter = by;
+        }
         let Some(damage) = players[victim]
             .world
             .as_deref_mut()
-            .and_then(|world| world.apply_damage(scene, &hit, tick, now))
+            .and_then(|world| world.apply_damage(scene, &hit, tick, now, &held))
         else {
             continue;
         };
@@ -1802,7 +2049,7 @@ pub fn apply_player_hits(
                 false,
             );
         }
-        if let Some(shooter) = killer {
+        if let Some(shooter) = killer.filter(|_| !hit.environment) {
             notices[shooter].push(CombatNotice::Hit {
                 target: hit.body,
                 dealt: damage.dealt,
@@ -1810,12 +2057,20 @@ pub fn apply_player_hits(
                 killed: damage.killed,
                 shot_frame: hit.frame,
             });
+        }
+        if let Some(shooter) = killer {
             players[shooter].stats.add(board.hero_damage, damage.dealt);
         }
         if !damage.killed {
             continue;
         }
         players[victim].stats.add(board.deaths, 1.0);
+        if hit.environment {
+            players[victim].stats.add(ENVIRONMENTAL_DEATHS, 1.0);
+            if let Some(slot) = killer {
+                players[slot].stats.add(ENVIRONMENTAL_KILLS, 1.0);
+            }
+        }
         let eliminators = killer
             .map(|slot| (slot, true))
             .into_iter()
@@ -1873,6 +2128,19 @@ pub fn apply_player_hits(
     notices
 }
 
+/// The modifiers other bodies' graphs hold for `body` now
+/// (`BodyEffects::held_for_others`): the players' and the bots'.
+fn held_for(scene: &PreparedScene, players: &[CombatPlayer<'_>], body: u32) -> Vec<CombatMod> {
+    players
+        .iter()
+        .filter_map(|player| player.world.as_deref())
+        .flat_map(WorldDelivery::held_for_others)
+        .chain(scene.bot_scripts().held_for_others())
+        .filter(|modifier| modifier.holder == body)
+        .cloned()
+        .collect()
+}
+
 /// [`kill_credit`] of a player's death: the victim's recent attackers and
 /// every player's assist credits, as their worlds hold them.
 fn death_credit(
@@ -1899,15 +2167,28 @@ fn death_credit(
 
 /// The explosions' pushes on players' bodies ([`Combat::take_player_pushes`]),
 /// after their hits ([`apply_player_hits`]): each goes to the mover of the
-/// player whose body it is ([`WorldDelivery::knock`]).
-pub fn apply_player_pushes(pushes: Vec<PlayerPush>, players: &mut [CombatPlayer<'_>]) {
+/// player whose body it is ([`WorldDelivery::knock`]) at `now`, as the knock
+/// an environment kill credits ([`KnockCredit`]). First, with the tick's
+/// environment kills dealt, a knock its body landed from is forgotten
+/// ([`KnockCredit::settle`]).
+pub fn apply_player_pushes(
+    pushes: Vec<PlayerPush>,
+    players: &mut [CombatPlayer<'_>],
+    now: Duration,
+) {
+    for world in players
+        .iter_mut()
+        .filter_map(|player| player.world.as_deref_mut())
+    {
+        world.settle_knock();
+    }
     for push in pushes {
         let world = players
             .iter_mut()
             .filter_map(|player| player.world.as_deref_mut())
             .find(|world| world.current_body() == Some(push.body));
         if let Some(world) = world {
-            world.knock(push.body, push.push);
+            world.knock(push.body, push.push, push.by, now);
         }
     }
 }

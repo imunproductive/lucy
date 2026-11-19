@@ -7,7 +7,8 @@
 
 use super::*;
 use crate::combat::{
-    Combat, CombatPlayer, ENVIRONMENT_DAMAGE, Shooter, ShotContext, apply_player_hits,
+    Combat, CombatPlayer, ENVIRONMENT_DAMAGE, ENVIRONMENTAL_DEATHS, ENVIRONMENTAL_KILLS,
+    FINAL_BLOWS, Shooter, ShotContext, apply_player_hits,
 };
 use crate::map_areas::room_message;
 use crate::messages::{HeldReach, Players, deliver_held};
@@ -49,7 +50,13 @@ fn spawned(scene: &PreparedScene, viewer: &PlayerAppearance<'_>) -> WorldDeliver
     let mut world = WorldDelivery::new(OWNER);
     world.start(scene, viewer, FIRST_TICK).unwrap();
     world.created.insert(OWNER);
-    world.present(scene, scene.mode_ui(), FIRST_TICK).unwrap();
+    world
+        .present(
+            scene,
+            crate::mode_view::ModeFrame::Full(scene.mode_ui()),
+            FIRST_TICK,
+        )
+        .unwrap();
     let hero = scene.heroes().get(SOLDIER).unwrap();
     world
         .switch(
@@ -128,6 +135,8 @@ fn hit(body: u32, amount: f64) -> PlayerHit {
         heal: false,
         tags: orpheus_script::weapons::DamageTags::NONE,
         direction: None,
+        environment: false,
+        from: None,
     }
 }
 
@@ -519,7 +528,7 @@ fn blasted(
         context.tick,
         Duration::ZERO,
     );
-    apply_player_pushes(combat.take_player_pushes(), &mut players);
+    apply_player_pushes(combat.take_player_pushes(), &mut players, Duration::ZERO);
     rise(world, scene, viewer, tick, floor)
 }
 
@@ -695,6 +704,116 @@ fn a_fall_onto_the_catch_floor_kills_and_respawns_after_the_delay() {
         said,
         [(world.current_body().unwrap(), 0x0ee0_0000_0000_002c, None)]
     );
+}
+
+/// An enemy's Helix Rocket throws the body up (`blasted`); once it has
+/// landed on the range, the knock credits no later fall (the tick's
+/// environment kills dealt, `apply_player_pushes` forgets it). A second
+/// rocket throws it up again, and before it lands it falls onto the pit
+/// floor: the environment's kill is the enemy's (`KnockCredit`). The victim
+/// gets "YOU WERE KILLED BY" naming the enemy's body, which his body's death
+/// names too (the "died" message's killer, the kill feed line's `03E9`),
+/// and an Environmental Death; the enemy gets the elimination with its final
+/// blow, an Environmental Kill and the health the body had left as damage
+/// done.
+#[test]
+#[ignore = "requires a derived 104319 Practice Range pack"]
+fn a_fall_after_an_enemys_knock_is_the_enemys_kill() {
+    const ENEMY: u32 = 0xa000_0200;
+    let mut scene = scene();
+    let card = PlayerCard::default();
+    let viewer = viewer(&card);
+    let mut world = spawned(&scene, &viewer);
+    let outside = outside(&scene);
+    place(&mut world, &scene, outside, 0);
+    world.area_step(&scene, &viewer);
+    assert_eq!(world.in_spawn_room(), Some(false));
+    let body = world.current_body().unwrap();
+    let mut tick = FIRST_TICK;
+    let now = Duration::from_secs(5);
+    let lifted = blasted(&mut world, &mut scene, &viewer, &mut tick);
+    assert!(lifted > 1.0, "{lifted} m up on the range");
+    assert_eq!(
+        world.knocked_by(body, now).map(|by| by.source),
+        Some(ENEMY | 1)
+    );
+    // Each tick ends with the pushes, which first forget a knock the body
+    // landed from.
+    let settle = |world: &mut WorldDelivery| {
+        crate::combat::apply_player_pushes(
+            Vec::new(),
+            &mut [CombatPlayer {
+                entity: OWNER,
+                world: Some(world),
+                stats: &mut PlayerStats::default(),
+            }],
+            now,
+        );
+    };
+    let floor = world.mover.as_ref().unwrap().pose().position[1];
+    for _ in 0..5 {
+        rise(&mut world, &scene, &viewer, &mut tick, floor);
+    }
+    settle(&mut world);
+    assert_eq!(world.knocked_by(body, now), None, "it landed");
+
+    place(&mut world, &scene, outside, 0);
+    blasted(&mut world, &mut scene, &viewer, &mut tick);
+    settle(&mut world);
+    assert!(world.knocked_by(body, now).is_some(), "still in the air");
+    let left = world
+        .body_script
+        .as_ref()
+        .and_then(|script| script.runtime.vitals())
+        .unwrap()
+        .total();
+    assert!(left > 0.0 && world.health_share().unwrap() < 1.0, "{left}");
+    // Feet on the pit floor, where a fall out of the range ends.
+    place(&mut world, &scene, [95.0, -11.0, 10.0], 0);
+    let mut combat = Combat::new(&scene);
+    combat.environment_kill(body, 0, tick);
+    let (mut stats, mut enemy_stats) = (PlayerStats::default(), PlayerStats::default());
+    let notices = apply_player_hits(
+        &scene,
+        combat.take_player_hits(),
+        &mut [
+            CombatPlayer {
+                entity: OWNER,
+                world: Some(&mut world),
+                stats: &mut stats,
+            },
+            CombatPlayer {
+                entity: ENEMY,
+                world: None,
+                stats: &mut enemy_stats,
+            },
+        ],
+        tick,
+        now,
+    );
+    assert_eq!(
+        notices[0],
+        [CombatNotice::Death {
+            source: ENEMY | 1,
+            killed_by: true
+        }]
+    );
+    assert_eq!(
+        notices[1],
+        [CombatNotice::Elimination {
+            killer: ENEMY | 1,
+            victim: body,
+            assist: false
+        }]
+    );
+    assert_eq!(world.death.map(|death| death.killer), Some(ENEMY | 1));
+    let board = *scene.board_stats();
+    assert_eq!(stats.value(board.deaths), 1.0);
+    assert_eq!(stats.value(ENVIRONMENTAL_DEATHS), 1.0);
+    for stat in [board.eliminations, FINAL_BLOWS, ENVIRONMENTAL_KILLS] {
+        assert_eq!(enemy_stats.value(stat), 1.0, "{stat:#x}");
+    }
+    assert_eq!(enemy_stats.value(board.hero_damage), left);
 }
 
 /// Watchpoint: Gibraltar has no damage areas and no catch floor: a body that

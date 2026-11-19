@@ -113,6 +113,7 @@ fn repeated_rifle_hits_retire_and_respawn_only_the_hit_bot() {
                 critical: true,
                 loadout: None,
                 tags: shot.hit.tags,
+                dealt: 40.0,
                 tick: context.tick,
             })
         );
@@ -230,16 +231,22 @@ fn heroes_respawn_after_the_mode_time() {
 
 /// The kill feed line reads the killer, the credited body (00BD), the
 /// tags (003D), the crit, the loadout and the assisters' bodies (03E7)
-/// from the "died" message.
+/// from the "died" message; a player's body's death layer `01CB` its
+/// killer's controller (07A9) and the set camera's fields (0232-0234).
 #[test]
 fn the_died_message_names_the_killer_the_crit_the_loadout_and_the_tags() {
     let melee: DamageTags = [0x0d80_0000_0000_0302].into_iter().collect();
+    let camera = DeathCamera {
+        killer_controller: 0xa000_0200,
+        position: [1.0, 2.0, 3.0],
+    };
     let (message, parameters) = death_message(
         0xa000_0201,
         true,
         Some(0x0b90_0000_0000_008d),
         melee,
         &[0xa001_0201],
+        Some(camera),
     );
     assert_eq!(message, DIED);
     assert_eq!(parameters[&KILLER], Value::Entity(0xa000_0201));
@@ -254,10 +261,18 @@ fn the_died_message_names_the_killer_the_crit_the_loadout_and_the_tags() {
         parameters[&ASSISTS],
         Value::Array(vec![Value::Entity(0xa001_0201)])
     );
-    let plain = death_message(1, false, None, DamageTags::NONE, &[]).1;
+    assert_eq!(parameters[&KILLER_CONTROLLER], Value::Entity(0xa000_0200));
+    assert_eq!(parameters[&SET_CAMERA], Value::Bool(false));
+    assert_eq!(
+        parameters[&SET_CAMERA_POINT],
+        Value::Vector([1.0, 2.0, 3.0])
+    );
+    assert_eq!(parameters[&SET_CAMERA_ON_BODY], Value::Bool(false));
+    let plain = death_message(1, false, None, DamageTags::NONE, &[], None).1;
     assert_eq!(plain[&LOADOUT], Value::Null);
     assert_eq!(plain[&DAMAGE_TAGS], Value::Array(Vec::new()));
     assert_eq!(plain[&ASSISTS], Value::Array(Vec::new()));
+    assert!(!plain.contains_key(&KILLER_CONTROLLER) && !plain.contains_key(&SET_CAMERA));
 }
 
 /// A hit the body survives: its damage message carries the hit's tags, the
@@ -287,8 +302,9 @@ fn the_damage_message_carries_the_tags_the_attacker_and_the_way() {
 /// The messages a hit gives the body, in order: a hit it survives, its
 /// damage message; a killing hit, its damage message with the kill's
 /// fields (`1544` rid54 reads the credited body, crit, loadout and assists
-/// from `0011.025`), then the death message. The `.hurt off` switch holds
-/// back the damage message only.
+/// from `0011.025`), then the death message, which alone carries the death
+/// layer's camera fields. The `.hurt off` switch holds back the damage
+/// message only.
 #[test]
 fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
     let splash: DamageTags = [0x0d80_0000_0000_078d].into_iter().collect();
@@ -304,15 +320,21 @@ fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
         heal: false,
         tags: splash,
         direction: Some([0.0, 0.0, 1.0]),
+        environment: false,
+        from: None,
     };
+    let camera = Some(DeathCamera {
+        killer_controller: 0xa000_0100,
+        position: [0.0; 3],
+    });
     let on = HurtFeedback::default();
     let damage = damage_message(SHOOTER.source, 75.0, splash, hit.direction);
     assert_eq!(
-        hit_messages(&hit, hit.tags, 75.0, None, on),
+        hit_messages(&hit, hit.tags, 75.0, None, camera, on),
         std::slice::from_ref(&damage)
     );
 
-    let [(first, killing), died] = hit_messages(&hit, hit.tags, 75.0, Some(&[]), on)
+    let [(first, killing), died] = hit_messages(&hit, hit.tags, 75.0, Some(&[]), camera, on)
         .try_into()
         .unwrap();
     assert_eq!(first, DAMAGED);
@@ -323,17 +345,21 @@ fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
     assert_eq!(killing[&CRIT], Value::Bool(true));
     assert_eq!(killing[&LOADOUT], Value::Asset(0x0b90_0000_0000_008e));
     assert_eq!(killing[&ASSISTS], Value::Array(Vec::new()));
+    assert!(!killing.contains_key(&KILLER_CONTROLLER));
     assert_eq!(
         died,
-        death_message(SHOOTER.source, true, loadout, splash, &[])
+        death_message(SHOOTER.source, true, loadout, splash, &[], camera)
     );
 
     let off = HurtFeedback {
         message: false,
         ..on
     };
-    assert!(hit_messages(&hit, hit.tags, 75.0, None, off).is_empty());
-    assert_eq!(hit_messages(&hit, hit.tags, 75.0, Some(&[]), off), [died]);
+    assert!(hit_messages(&hit, hit.tags, 75.0, None, camera, off).is_empty());
+    assert_eq!(
+        hit_messages(&hit, hit.tags, 75.0, Some(&[]), camera, off),
+        [died]
+    );
 }
 
 /// A kill's credit (`kill_credit`): slot 0 kills slot 1. Damage within
@@ -386,6 +412,49 @@ fn a_kill_credits_recent_damagers_and_the_assist_states_assisters() {
     );
 }
 
+/// An environment kill credits the last enemy knock of the body for 10 s
+/// (`KNOCKBACK_CREDIT`, KarQ's measure) and no other body's; a later knock
+/// takes it over; the body's own explosion, a jump, or a landing it lives
+/// through (forgotten once the tick's environment kills are dealt) cancels
+/// it, while the landing that kills (the catch floor) still credits it.
+#[test]
+fn an_environment_kill_credits_the_last_knock_until_a_jump_or_a_landing() {
+    const BODY: u32 = 0xa000_0201;
+    let other = Shooter {
+        source: 0xa000_0301,
+        ..SHOOTER
+    };
+    let at = Duration::from_secs(20);
+    let mut credit = KnockCredit::default();
+    assert_eq!(credit.credit(BODY, at), None, "no knock");
+    credit.knocked(BODY, SHOOTER, at);
+    assert_eq!(credit.credit(BODY, at + KNOCKBACK_CREDIT), Some(SHOOTER));
+    let late = at + KNOCKBACK_CREDIT + Duration::from_millis(1);
+    assert_eq!(credit.credit(BODY, late), None, "past 10 s");
+    assert_eq!(credit.credit(BODY | 0x02, at), None, "another body");
+    credit.posed(false, false);
+    credit.settle();
+    assert_eq!(credit.credit(BODY, at), Some(SHOOTER), "still in the air");
+    credit.knocked(BODY, other, at);
+    assert_eq!(credit.credit(BODY, at), Some(other), "the last knock");
+
+    credit.posed(true, false);
+    assert_eq!(
+        credit.credit(BODY, at),
+        Some(other),
+        "the landing that kills"
+    );
+    credit.settle();
+    assert_eq!(credit.credit(BODY, at), None, "a landing he lived through");
+
+    credit.knocked(BODY, SHOOTER, at);
+    credit.posed(false, true);
+    assert_eq!(credit.credit(BODY, at), None, "a jump");
+    credit.knocked(BODY, SHOOTER, at);
+    credit.own_push();
+    assert_eq!(credit.credit(BODY, at), None, "his own explosion");
+}
+
 #[test]
 fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
     let target = |body, team, dead, hurt| PlayerSlot {
@@ -405,6 +474,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
             tags: None,
             ai: None,
             dealt: Vec::new(),
+            held: Vec::new(),
         },
         history: TargetHistory::new(None),
     };
@@ -433,6 +503,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
             ),
             Vec::new(),
             0,
+            0,
             0.0,
             None,
         ),
@@ -440,6 +511,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
         landed: Vec::new(),
         auras: Vec::new(),
         counted: Vec::new(),
+        held: Vec::new(),
     };
     let bodies = |free_for_all, allies| -> Vec<u32> {
         combat
@@ -497,6 +569,7 @@ fn target_searches_see_the_players_then_the_bots() {
         tags: None,
         ai: None,
         dealt: Vec::new(),
+        held: Vec::new(),
     };
     combat.record_poses(&scene, &[player], 1000);
     let candidates = combat.target_candidates(&scene);
@@ -575,6 +648,7 @@ fn a_players_shot_on_another_player_carries_its_tags_and_way() {
         tags: None,
         ai: None,
         dealt: Vec::new(),
+        held: Vec::new(),
     };
     combat.record_poses(
         &scene,
@@ -735,6 +809,7 @@ fn the_biotic_rifle_heals_hurt_allies_and_damages_enemies() {
         tags: None,
         ai: None,
         dealt: Vec::new(),
+        held: Vec::new(),
     };
     combat.record_poses(&scene, &[player(true)], context.tick);
     assert!(fire(&mut combat, &mut scene).is_none());
@@ -780,4 +855,136 @@ fn the_biotic_rifle_heals_hurt_allies_and_damages_enemies() {
         (hit.bot, hit.healed, hit.remaining, hit.notices),
         (friendly_bot, 50.0, full, [None, None])
     );
+}
+
+/// A projectile deals with its shooter's dealt modifiers as he held them
+/// at its launch (the client copies `0317`/`0319` into it at its creation,
+/// `sub_7FF789A32900`): Ana's dart launched under Nano Boost's +0.5
+/// (`0B9F` st19) deals 70 × 1.5 though the boost ended in flight, and one
+/// launched before the boost began deals 70. A modifier another body's
+/// graphs hold for the shooter (Mercy's damage boost, `006C` st6: +`#174`,
+/// 0.3 from rid16) counts as his own for his hitscan shot.
+#[test]
+#[ignore = "requires a derived 104319 Practice Range scene"]
+fn a_projectile_deals_with_the_modifiers_of_its_launch() {
+    use crate::projectile_flight::ProjectileFlight;
+    use orpheus_script::vm::CombatMod;
+
+    const DART: HitDefinition = HitDefinition {
+        amount: 70.0,
+        loadout: Some(0x0b90_0000_0000_00e3),
+        critical: 1.0,
+        falloff: None,
+        allies: AllyHits::Hurt,
+        tags: DamageTags::NONE,
+    };
+    const MERCY: u32 = 0xa000_0201;
+    let mut scene = SceneAssets::load(orpheus_testkit::runtime_dir())
+        .unwrap()
+        .prepare(GameMap::practice_range())
+        .unwrap();
+    let enemy = scene
+        .bots()
+        .iter()
+        .position(|bot| bot.spawn.team == 1)
+        .unwrap();
+    let enemy_bot = scene.bots()[enemy].entity;
+    let [x, y, z] = scene.bots()[enemy].position;
+    let boost = |holder, value| CombatMod {
+        kind: orpheus_script::vm::DAMAGE_DEALT,
+        value,
+        multiplies: false,
+        required: Vec::new(),
+        exempt: vec![0x0d80_0000_0000_3fce],
+        added: Vec::new(),
+        holder,
+        capped: false,
+        party: None,
+    };
+    let player = |body, dealt, held| PlayerTarget {
+        body,
+        team: 0,
+        pose: TargetPose {
+            feet: [x - 20.0, y, z + 10.0],
+            height: 1.8,
+            radius: 0.4,
+            eye: 1.55,
+            yaw: 0.0,
+            shapes: None,
+        },
+        dead: false,
+        hurt: false,
+        tags: None,
+        ai: None,
+        dealt,
+        held,
+    };
+    let nano = || player(SHOOTER.source, vec![boost(SHOOTER.source, 0.5)], Vec::new());
+    let plain = || player(SHOOTER.source, Vec::new(), Vec::new());
+    let dart = ProjectileBallistics {
+        speed: 125.0,
+        lifetime: 0.8,
+        definition: None,
+        direct: Some(DART),
+        blast: None,
+        radius: 0.0,
+        gravity: 0.0,
+        fuse: None,
+        unmodelled: Vec::new(),
+        ray_profile: None,
+    };
+    let context = ShotContext {
+        quanta: RETAIL_QUANTA,
+        tick: 1000,
+        now: Duration::from_secs(4),
+    };
+    let origin = [x - 8.0, y + 1.2, z];
+    // Launched as `launch`, then flown as `flown` until it hits the bot.
+    let mut fly = |launch: PlayerTarget, flown: PlayerTarget| {
+        let mut combat = Combat::new(&scene);
+        combat.record_poses(&scene, &[launch], context.tick);
+        let mut flight =
+            ProjectileFlight::new(dart.clone(), origin, [1.0, 0.0, 0.0], Some(context.tick))
+                .unwrap();
+        let mut hits = Vec::new();
+        for tick in context.tick + 1..context.tick + 20 {
+            let context = ShotContext { tick, ..context };
+            let end = combat
+                .step_projectile(&mut scene, SHOOTER, &mut flight, context, &mut hits)
+                .unwrap();
+            if end.is_some() {
+                break;
+            }
+            combat.record_poses(&scene, std::slice::from_ref(&flown), tick);
+        }
+        let [hit] = hits.try_into().ok().unwrap();
+        assert_eq!(hit.bot, enemy_bot);
+        hit.damage.unwrap().dealt
+    };
+    assert_eq!(fly(nano(), plain()), 105.0);
+    assert_eq!(fly(plain(), nano()), 70.0);
+
+    // Mercy's graphs hold +0.3 for the shooter: his rifle shot deals 91.
+    let mut combat = Combat::new(&scene);
+    let mercy = player(MERCY, Vec::new(), vec![boost(SHOOTER.source, 0.3)]);
+    combat.record_poses(&scene, &[plain(), mercy], context.tick);
+    let shot = PosedHitscan {
+        source: SHOOTER.source,
+        origin,
+        command: Command {
+            frame: context.tick,
+            yaw: 16384,
+            ..Command::default()
+        },
+        direction: [1.0, 0.0, 0.0],
+        shot_frame: 999,
+        reach: 100.0,
+        hit: DART,
+        ray_profile: None,
+    };
+    let hit = combat
+        .hitscan(&mut scene, shot, SHOOTER, context, |_| true)
+        .unwrap()
+        .unwrap();
+    assert_eq!((hit.bot, hit.damage.unwrap().dealt), (enemy_bot, 91.0));
 }

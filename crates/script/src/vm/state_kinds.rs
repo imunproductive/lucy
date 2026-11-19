@@ -16,6 +16,12 @@
 
 use super::*;
 
+/// A `MoveTo`'s exit limit the node leaves unset (`m_C1E1F78C`,
+/// `m_03B764BE`, `m_6AC330A6`): the client's block filler
+/// `0x7FF789C43A60` hands 10000 (`dword_7FF78B5266EC`), so the velocity is
+/// not held.
+const UNSET_EXIT_LIMIT: f64 = 10_000.0;
+
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     pub(super) fn has_no_ai_control_target(&mut self, id: u16, node: &Node) -> bool {
         let site = self.site(id, node);
@@ -619,6 +625,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 _ => None,
             },
         };
+        // An unset number is the client's default for it (the block filler
+        // `0x7FF789C43A60` hands its float reader `0x7FF789806350` 0, or
+        // [`UNSET_EXIT_LIMIT`]).
         let numbers = [
             ("m_5BEFF040", 0.0),
             ("m_speed", 0.0),
@@ -627,9 +636,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             ("m_7F3716A6", 0.0),
             ("m_86EA271E", 0.0),
             ("m_725EB364", 0.0),
-            ("m_C1E1F78C", 0.0),
-            ("m_03B764BE", 0.0),
-            ("m_6AC330A6", 0.0),
+            ("m_C1E1F78C", UNSET_EXIT_LIMIT),
+            ("m_03B764BE", UNSET_EXIT_LIMIT),
+            ("m_6AC330A6", UNSET_EXIT_LIMIT),
         ]
         .map(|(name, unset)| self.move_number(id, node, name, unset));
         let (

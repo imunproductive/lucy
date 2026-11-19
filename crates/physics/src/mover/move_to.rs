@@ -15,15 +15,17 @@
 //! height), and with `m_EA99616F` the free spot a capsule of the body's
 //! size finds moving from the destination toward that point
 //! (`0x7FF789C4A8A0`: three moves of a capsule of a third, two thirds and
-//! the whole size, each from where the last stopped); without it the target
-//! is the destination itself.
+//! the whole size standing on the destination, each from where the last
+//! stopped, see `free_spot`); without it the target is the destination
+//! itself.
 //!
 //! While the behaviour runs (phases 1 and 3, mover `+0xDF4`), the mover's
 //! tick (`0x7FF789B4B1D0`) skips its ground probe and transitions (slot 8
-//! `0x7FF789B58F10`), the pogo spring (slot 10 `0x7FF789B58410`), its
-//! velocity integration with gravity (slot 11 `0x7FF789B52F30`) and the
-//! velocity mods 32..35 (slot 13 `0x7FF789B533B0`); slot 11 sets the
-//! velocity instead:
+//! `0x7FF789B58F10`, which only clears flag 0x80000 and stands the body up
+//! if it can, `0x7FF789B4C3D0(mover, 0)`), the pogo spring (slot 10
+//! `0x7FF789B58410`), its velocity integration with gravity (slot 11
+//! `0x7FF789B52F30`) and the velocity mods 32..35 (slot 13
+//! `0x7FF789B533B0`); slot 11 sets the velocity instead:
 //!
 //! 1. the direction to the target from the feet (`0x7FF789B59A50`; none
 //!    gives +z);
@@ -36,42 +38,66 @@
 //! 3. the velocity across the direction goes over `m_7F3716A6` seconds, the
 //!    same share of what is left each frame (`0x7FF789B5ADE0`: frame `n` of
 //!    `N = m_7F3716A6 / dt` takes `1 / (N - n)` of it; all of it when `N`
-//!    or `N - n` is none);
+//!    or `N - n` is none); `n` is the movement state's air ticks
+//!    (`+0x10`, mover `+0xD50`), which the begin sets to 0 and this counts
+//!    up (the skipped transitions don't);
 //! 4. the speed along the direction goes toward the speed by speed times
 //!    `m_717EAFE7` a second, eased within `m_187E2318` of the target toward
-//!    the exit speed; a frame that would reach the target lands on it
-//!    exactly, with the exit-limited rest of the velocity (phase 3,
-//!    `0x7FF789B590F0`);
+//!    the exit speed; a frame that would reach the target takes the
+//!    velocity that lands on it exactly plus the exit-limited rest (phase
+//!    3, `0x7FF789B590F0`): with the limits unset nothing is held, so the
+//!    body keeps its velocity and moves past the target unless the map
+//!    stops it;
 //! 5. Widowmaker's Grappling Hook only (`005A`, the block's `+153` tests the
-//!    script's graph): a direction against the one it began with blocks
-//!    (slot 12 `0x7FF789B573C0`).
+//!    script's graph): after the frame's move, in phase 1 or 3, a direction
+//!    from the feet to the target against the one it began with blocks
+//!    (slot 18 `0x7FF789B573C0`, which the mover's move `0x7FF789B4D9C0`
+//!    calls for every active behaviour once the capsule has moved).
 //!
 //! The exit limits (`0x7FF789B5D690`) hold the velocity's vertical part to
 //! `m_03B764BE`, its horizontal part to `m_C1E1F78C` and the whole to
-//! `m_6AC330A6`; an unset limit is 0. The behaviour's begin (slot 4
-//! `0x7FF789B53CC0`) takes a body on the ground off it (`0x7FF789AD0370`)
-//! and sets the checkpoint to the feet; with `m_AE1CEDB5` its end (slot 5
-//! `0x7FF789B539B0`, when the state lets it go) holds the velocity to the
-//! exit limits. A frame that ends the behaviour runs the velocity mods
-//! after it; later frames move as usual until the state ends. The state's
-//! begin aborts at once when the target is behind the body as seen from
-//! the destination and the destination is within 2 m (`0x7FF789C41BC0`).
-//! The state ends when its update sees phase 4 (finished) or 2 (aborted,
-//! `0x7FF789C425F0`).
+//! `m_6AC330A6`; an unset limit is 10000 (the default the block's filler
+//! `0x7FF789C43A60` hands `0x7FF789806350` for these three,
+//! `dword_7FF78B5266EC`). The behaviour's begin (slot 4
+//! `0x7FF789B53CC0`) sets the movement state's flag 0x10 ([`MOVE_TO`]),
+//! phase 1, the checkpoint to the feet, takes a body on the ground off it
+//! (`0x7FF789AD0370`) and sets the air ticks to 0; with `m_AE1CEDB5` its
+//! end (slot 5 `0x7FF789B539B0`, when the state lets it go) holds the
+//! velocity to the exit limits; the end clears flag 0x10 and the phase. A
+//! frame that ends the behaviour runs the velocity mods after it; later
+//! frames move as usual until the state ends. The state's begin aborts at
+//! once, handing the mover nothing, when the target is behind the body as
+//! seen from the destination and the destination is within 2 m
+//! (`0x7FF789C41BC0`). The state ends when its update sees phase 4
+//! (finished) or 2 (aborted, `0x7FF789C425F0`).
 //!
-//! Assumptions: the client's mover position here is the feet; the free
-//! spot's capsule stands on the feet as the body's own does (the client's
-//! capsule height, `0x7FF7896AA3B0`, was not traced); the up the exit
-//! limits split by (mover `+0xB0`) is +y; a driven frame moves the capsule
-//! by the velocity alone, the pogo spring held.
+//! The mover's tick begins each queued behaviour whose frames it is in
+//! unless the state already has the behaviour's flag (`0x7FF789B4C9D0` →
+//! `0x7FF789B53C70`), and ends it once past them if the state has it. So
+//! the owner's client keeps a running move across a correction only when
+//! the corrected state carries flag 0x10 and the record (checkpoint, its
+//! frames, phase: [`MoveToRecord`]) with the air ticks: without them its
+//! replay begins the move again from the feet, with the lateral share and
+//! the stuck time from 0, and goes out of step with the server's run.
+//!
+//! Assumptions: the client's mover position here is the feet; the body's
+//! scale (mover `+0xD5C`, which the stand-off and the free spot's capsule
+//! multiply by) is 1; the up the exit limits split by (mover `+0xB0`) is
+//! +y; a driven frame moves the capsule by the velocity alone, the pogo
+//! spring held.
 //!
 //! Not modelled: a destination entity or bone (the target moves with it),
-//! a moving platform under the body (`+152`), and the block's `+144`,
-//! `+148`..`+150` and `+154` (`m_1866524C`, `m_B769BC47`, `m_000B044B`,
-//! `m_5E3A7FC5`, `m_6D6BA94D`), whose readers were not traced.
+//! a moving platform under the body, the block's `+152` (the begin takes
+//! the mover's running record instead of starting over: slot 57 sets it
+//! with the record when the state's `+448` is set and the mover has flag
+//! 0x10; `+448` not traced), and the block's `+144`, `+148`..`+150` and
+//! `+154` (`m_1866524C`, `m_B769BC47`, `m_000B044B`, `m_5E3A7FC5`,
+//! `m_6D6BA94D`; with `+154` slot 10 sets the spring offset and speed to 0).
+
+use orpheus_wire::entity::{MOVE_TO, MoveToRecord};
 
 use crate::{
-    contact::body::CharacterBody, contact::hull::HullContactError, contact::math::Vec3,
+    contact::body::CharacterBody, contact::cache::CapsulePose, contact::hull::HullContactError,
     mover::settings::MoverSettings,
 };
 
@@ -86,6 +112,9 @@ const FORWARD: [f64; 3] = [0.0, 0.0, 1.0];
 /// The state's begin aborts for a destination this close (squared) behind
 /// the target.
 const BEGIN_ABORT_SQUARED: f64 = 4.0;
+/// The rounds of each of the free spot's moves (`0x7FF789C4A8A0`: the
+/// request's `+0x2C`).
+const FREE_SPOT_ROUNDS: u32 = 5;
 
 /// The speed of a move: metres a second, or the seconds the move takes
 /// from where it begins (`m_5BEFF040` over 1.19e-4).
@@ -156,13 +185,14 @@ enum Phase {
 pub(super) struct Run {
     pub(super) key: MoveKey,
     params: MoveTo,
+    /// The state's begin handed the mover the behaviour: it didn't abort.
+    submitted: bool,
     target: [f64; 3],
     direction: [f64; 3],
     speed: f64,
     phase: Phase,
     checkpoint: [f64; 3],
     still_frames: u32,
-    lateral_frames: u32,
     /// The end not yet reported.
     unreported: Option<MoveEnd>,
 }
@@ -170,8 +200,6 @@ pub(super) struct Run {
 /// The body the mover drives: where it stands and how big it is.
 pub(super) struct Body<'a> {
     pub feet: [f64; 3],
-    /// The capsule's lowest point above the feet (pogo and spring).
-    pub lift: f64,
     pub body: &'a CharacterBody,
     pub base: &'a MoverSettings,
     pub crouched: bool,
@@ -206,6 +234,7 @@ impl Run {
         Ok(Self {
             key,
             params,
+            submitted: !behind,
             target,
             direction: unit(to_target),
             speed,
@@ -216,7 +245,6 @@ impl Run {
             },
             checkpoint: at.feet,
             still_frames: 0,
-            lateral_frames: 0,
             unreported: behind.then_some(MoveEnd::Blocked),
         })
     }
@@ -226,13 +254,45 @@ impl Run {
         matches!(self.phase, Phase::Moving | Phase::Landing)
     }
 
+    pub(super) fn target(&self) -> [f64; 3] {
+        self.target
+    }
+
+    /// What the movement state keeps of the behaviour while the mover runs
+    /// it (flag [`MOVE_TO`]): none when the state's begin aborted.
+    pub(super) fn record(&self) -> Option<MoveToRecord> {
+        self.submitted.then_some(MoveToRecord {
+            checkpoint: self.checkpoint,
+            still: self.still_frames as u16,
+            phase: match self.phase {
+                Phase::Moving => 1,
+                Phase::Blocked => 2,
+                Phase::Landing => 3,
+                Phase::Arrived => 4,
+            },
+        })
+    }
+
+    /// The movement state's flag of the behaviour, as [`Run::record`].
+    pub(super) fn flag(&self) -> u32 {
+        if self.submitted { MOVE_TO } else { 0 }
+    }
+
     /// The end the mover hasn't reported yet, once.
     pub(super) fn take_end(&mut self) -> Option<MoveEnd> {
         self.unreported.take()
     }
 
-    /// Slots 11 and 12 for one frame: the velocity the body moves with.
-    pub(super) fn step(&mut self, feet: [f64; 3], velocity: [f64; 3], dt: f64) -> [f64; 3] {
+    /// Slot 11 for one frame: the velocity the body moves with. `lateral`
+    /// is the movement state's air ticks, the frames the lateral share has
+    /// run.
+    pub(super) fn step(
+        &mut self,
+        feet: [f64; 3],
+        velocity: [f64; 3],
+        lateral: &mut u32,
+        dt: f64,
+    ) -> [f64; 3] {
         let to_target = sub(self.target, feet);
         let direction = unit(to_target);
         let near = squared(to_target);
@@ -253,12 +313,19 @@ impl Run {
                 return velocity;
             }
         }
-        let velocity = self.drop_lateral(velocity, direction, dt);
-        let velocity = self.drive(feet, velocity, direction, dt);
-        if self.params.abort_past && dot(self.direction, direction) < 0.0 {
+        let velocity = self.drop_lateral(velocity, direction, lateral, dt);
+        self.drive(feet, velocity, direction, dt)
+    }
+
+    /// Slot 18 after the frame's move (`0x7FF789B573C0`): the grapple's
+    /// move blocks once the feet are past its target.
+    pub(super) fn after_move(&mut self, feet: [f64; 3]) {
+        if self.params.abort_past
+            && self.drives()
+            && dot(self.direction, unit(sub(self.target, feet))) < 0.0
+        {
             self.end(Phase::Blocked, MoveEnd::Blocked);
         }
-        velocity
     }
 
     fn arrive(&mut self, velocity: [f64; 3]) -> [f64; 3] {
@@ -271,19 +338,26 @@ impl Run {
         self.unreported = Some(end);
     }
 
-    /// `0x7FF789B5ADE0`.
-    fn drop_lateral(&mut self, velocity: [f64; 3], direction: [f64; 3], dt: f64) -> [f64; 3] {
+    /// `0x7FF789B5ADE0`: the frame's share of the velocity across
+    /// `direction` comes off, and the frame counts in `frames_done`.
+    fn drop_lateral(
+        &self,
+        velocity: [f64; 3],
+        direction: [f64; 3],
+        frames_done: &mut u32,
+        dt: f64,
+    ) -> [f64; 3] {
         let along = dot(velocity, direction);
         let mut lateral = sub(velocity, scale(direction, along));
         let frames = self.params.lateral_seconds / dt;
         if frames > TINY {
             let share = 1.0 / frames;
-            let done = share * f64::from(self.lateral_frames);
+            let done = share * f64::from(*frames_done);
             if 1.0 - done > TINY {
                 lateral = scale(lateral, share / (1.0 - done));
             }
         }
-        self.lateral_frames += 1;
+        *frames_done += 1;
         sub(velocity, lateral)
     }
 
@@ -359,28 +433,41 @@ fn stand_off(surface: [f64; 3], base: &MoverSettings, crouched: bool) -> [f64; 3
     [x * reach, -((0.5 - y * 0.5) * height), z * reach]
 }
 
-/// `0x7FF789C4A8A0`: three moves of a growing capsule from the destination
-/// toward the goal; where the last one stops. The capsule stands on the
-/// feet as the body's own does (its lowest point the lift above them).
+/// `0x7FF789C4A8A0`: a temporary character (`0x7FF789CCAB30`) at the
+/// destination makes three moves (`0x7FF789CCABF0`) toward the goal, each
+/// from where the last stopped, with a capsule of a third, two thirds and
+/// the whole of the stance's size (`0x7FF789CCAC00`): its points (0, r)
+/// and (0, H - r) above the character's position, radius r, for the
+/// height H (`0x7FF7896AA3B0`, mover `+0x430`, crouched `+0x43C`) and
+/// radius r (`0x7FF789B53F40`, `+0x434`, crouched `+0x440`). The capsule's
+/// lowest point is the position itself: no pogo under it, as the body's
+/// own has. Each move takes up to 5 rounds, from a velocity of zero.
+/// Where the last move stops.
 fn free_spot(
     at: &Body<'_>,
     destination: [f64; 3],
     goal: [f64; 3],
 ) -> Result<[f64; 3], HullContactError> {
-    let lift =
-        |feet: [f64; 3]| -> Vec3 { [feet[0] as f32, (feet[1] + at.lift) as f32, feet[2] as f32] };
-    let pose = at.body.pose();
-    let mut probe = at.body.fresh_at(lift(destination));
-    let mut feet = destination;
+    let (height, radius) = if at.crouched {
+        (at.base.crouch_height, at.base.crouch_radius)
+    } else {
+        (at.base.stand_height, at.base.stand_radius)
+    };
+    let (height, radius) = (height as f32, radius as f32);
+    let goal = goal.map(|axis| axis as f32);
+    // Made at the whole size, then shrunk for the first move.
+    let mut probe = at.body.fresh(CapsulePose {
+        position: destination.map(|axis| axis as f32),
+        radius,
+        top: height - radius,
+    });
     for third in 1..=3 {
-        let share = third as f32 / 3.0;
-        probe.reshape(pose.radius * share, pose.top * share);
-        let wanted = sub(goal, feet);
-        let moved = probe.move_capsule(wanted.map(|axis| axis as f32), 0.0)?;
-        let [x, y, z] = moved.position;
-        feet = [f64::from(x), f64::from(y) - at.lift, f64::from(z)];
+        let share = third as f32 * (1.0 / 3.0);
+        probe.reshape(radius * share, (height - radius) * share);
+        let from = probe.position();
+        probe.move_fixed(std::array::from_fn(|k| goal[k] - from[k]), FREE_SPOT_ROUNDS)?;
     }
-    Ok(feet)
+    Ok(probe.position().map(f64::from))
 }
 
 fn limit(vector: [f64; 3], most: f64) -> [f64; 3] {

@@ -1193,13 +1193,19 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         if record.entity & !0xFF == player_entity(1) || placeable {
             return;
         }
-        assert_eq!((script.first, script.span), (0, 1));
         if record.entity == GAME_MODE_ENTITY {
-            if !*mode {
+            // The whole frame first, then the graph's changes as deltas
+            // from the frame the client acknowledged
+            // (`orpheus_sim::mode_view`).
+            if *mode {
+                assert_ne!(script.first, 0, "a delta after the whole frame");
+            } else {
+                assert_eq!((script.first, script.span), (0, 1));
                 assert_range_mode_frame(assets.graphs(), script);
             }
             *mode = true;
         } else {
+            assert_eq!((script.first, script.span), (0, 1));
             assert_eq!(record.entity, CONTROLLER);
             let mut bits = script.bits();
             assert_eq!(bits.bits(3).unwrap(), 2);
@@ -1619,17 +1625,14 @@ fn exercise_hero_selection(
         let packet = client.receive();
         assert!(client.window.accept(packet.seq));
         let records = world_records(schemas, &packet);
-        // The owner's body may move by a correction in any datagram, now
-        // that one goes every tick (see `await_input`); a movement-only
-        // record of it is no part of the reopen.
+        // The owner's body runs a frame every tick, this silent client's
+        // too (past the input buffer's wait and repeats, neutral frames:
+        // `InputQueue`), so its movement (a correction goes every tick, see
+        // `await_input`) and its owner frame may come in any datagram, the
+        // reopen's too; neither is part of the reopen.
         let records: Vec<_> = records
             .into_iter()
-            .filter(|record| {
-                !(record.entity == FIRST
-                    && record.movement
-                    && record.operation.is_none()
-                    && record.script.is_none())
-            })
+            .filter(|record| !(record.entity == FIRST && record.operation.is_none()))
             .collect();
         // The close of the pick (st95) may come first.
         let closed = records.iter().any(|record| {
@@ -2840,6 +2843,115 @@ fn practice_world<const N: usize>(
         }
     }
     (server, schemas, watchers, spawns)
+}
+
+/// A hero change in the Practice Range and back (the user's report of
+/// 2026-11-19, release a043c3c): Soldier: 76 (the first pick), reopen,
+/// Tracer, reopen, Soldier: 76. Each pick replaces the body (the old one
+/// destroyed), the reopened screen shows the hero he plays (#940e) and no
+/// pick, and the first hero is his to pick again. Since the Range's mode
+/// `13C0` runs, its ruleset puts the controller's hero limit receiver
+/// `0C90` st4 on, and the controller's own `08BE` broadcast reached it
+/// (the VM didn't test message filters): his first hero became a
+/// teammate's (#10476), and the pick back was refused.
+#[test]
+#[ignore = "requires the derived 104319 data"]
+fn practice_range_hero_switch_and_back() {
+    use orpheus_content::{
+        heroes::SOLDIER,
+        parameters::{OPEN_OR_CLOSE, PICK_HERO},
+    };
+    let assets =
+        orpheus_sim::scene_assets::SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let tracer = assets.heroes().find_hero("Tracer").unwrap().guid;
+    let (mut server, schemas, [mut player], _) =
+        practice_world([("player#1111", 0, "Soldier: 76")], &assets, |_| {});
+    let owner = player.owner;
+    let mut open = vec![1, 1];
+    open.extend(owner.to_le_bytes());
+    open.extend(owner.to_le_bytes());
+    let mut ordinal = 2;
+    // Sends the request, then takes datagrams until `done` holds of those
+    // from the first after it on.
+    let mut request = |player: &mut Watcher,
+                       what: &str,
+                       guid: u64,
+                       parameters: Vec<u8>,
+                       done: &dyn Fn(&Watcher, usize) -> bool| {
+        let from = player.datagrams.len();
+        send_player_message(
+            &mut player.client,
+            &schemas,
+            owner,
+            ordinal,
+            guid,
+            parameters,
+        );
+        ordinal += 1;
+        let deadline = player.client.now() + Duration::from_secs(2);
+        while !done(player, from) {
+            assert!(player.client.now() < deadline, "waiting for {what}");
+            player.pump(&schemas);
+        }
+    };
+    // A controller frame from `from` on shows (open, pick, #940e).
+    let shows = |player: &Watcher, from: usize, shown: (bool, Option<u64>, Option<u64>)| {
+        player
+            .find(from, |record| {
+                record.entity == owner
+                    && record
+                        .script
+                        .as_ref()
+                        .and_then(|script| controller_shows(assets.graphs(), script))
+                        == Some(shown)
+            })
+            .is_some()
+    };
+    // The pick of `hero` from `from` on: body `new` made, `old` destroyed,
+    // the screen closed on him.
+    let switched = |player: &Watcher, from: usize, hero: u64, old: u32, new: u32| {
+        player
+            .find(from, |record| record.entity == new && record.is_create())
+            .is_some()
+            && player
+                .find(from, |record| {
+                    record.entity == old && record.operation == Some(3)
+                })
+                .is_some()
+            && shows(player, from, (false, Some(hero), Some(hero)))
+    };
+    let reopened =
+        |hero| move |player: &Watcher, from: usize| shows(player, from, (true, None, Some(hero)));
+    request(
+        &mut player,
+        "the reopen",
+        OPEN_OR_CLOSE,
+        open.clone(),
+        &reopened(SOLDIER),
+    );
+    request(
+        &mut player,
+        "Tracer",
+        PICK_HERO,
+        tracer.to_le_bytes().to_vec(),
+        &|player, from| switched(player, from, tracer, owner | 1, owner | 2),
+    );
+    // He plays Tracer: the reopened screen says so.
+    request(
+        &mut player,
+        "the second reopen",
+        OPEN_OR_CLOSE,
+        open,
+        &reopened(tracer),
+    );
+    request(
+        &mut player,
+        "Soldier: 76 again",
+        PICK_HERO,
+        SOLDIER.to_le_bytes().to_vec(),
+        &|player, from| switched(player, from, SOLDIER, owner | 2, owner | 3),
+    );
+    server.stop().unwrap();
 }
 
 /// The Practice Range's Training Partner console `265F` makes its default
@@ -4409,13 +4521,11 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
-    use orpheus_script::vm::Unknowns;
     use orpheus_sim::scene_assets::SceneAssets;
     use orpheus_wire::commands::FIRE;
     const AHEAD: f64 = 8.0;
 
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-    assets.set_player_unknowns(Unknowns::Tolerate);
+    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     let mut aim = None;
     let (mut server, schemas, [mut ana, mut soldier], _) = practice_world(
         [("ana#1111", 0, "Ana"), ("soldier#2222", 1, "Soldier: 76")],
@@ -4577,6 +4687,127 @@ fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
         corrections += moves.len();
     }
     assert!(corrections > 0, "no correction of Ana's body");
+    server.stop().unwrap();
+}
+
+/// Ana's Biotic Grenade (ABILITY_2: `0B97` st0) through her real body
+/// script, which starts whole in debug builds (`STU_D1BF5FA6`). Her client
+/// doesn't shoot the volley itself (`m_45271E8C` 0), so the server flies it
+/// and shows it to her own client as to the others
+/// (`orpheus_sim::projectiles::ServerCopies`): the copy's create
+/// (`1426.003`), then the shot record naming it on her body, then its
+/// destroy when the server's flight bursts. She throws it at the enemy
+/// Soldier: 76 beside her once he has wounded her, so its 4 m ring takes
+/// them both: the aura (`053:0267`, graph `0C71`) plays the enemy aura
+/// `0C72` on his body (60 from Ana) and the ally aura `0B99` on hers
+/// (a heal of 100), each on its body's own graphs. His world answers
+/// `0C72` rid21's `STU_F7262B36(#40)` (Ana's body's possessor: her
+/// controller, `orpheus_script::vm::listed_relation`); unanswered, it
+/// stopped his whole script.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene"]
+fn anas_biotic_grenade_shows_to_her_own_client_and_its_aura_hurts_an_enemy_and_heals_her() {
+    use orpheus_wire::commands::FIRE;
+    /// `0B97` st4's button (36).
+    const ABILITY_2: u32 = 0x10;
+    const GRENADE: u32 = 0x1426;
+    const FULL: f32 = 200.0;
+
+    let (mut server, schemas, [mut ana, mut soldier], _) =
+        practice_players([("ana#1111", 0, "Ana"), ("soldier#2222", 1, "Soldier: 76")]);
+    let ana_body = ana.owner | 1;
+    let soldier_body = soldier.owner | 1;
+    let health = |watcher: &Watcher, body: u32| {
+        watcher
+            .datagrams
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter(|record| record.entity == body)
+            .filter_map(|record| record.base_health)
+            .next_back()
+    };
+    // The way from one body to the other (bodies: Ana's, the Soldier's).
+    let aim = |server: &Lockstep, from: usize, to: usize| {
+        let bodies = server.bodies(MATCH).unwrap();
+        let [from, to] = [from, to].map(|index| bodies[index].position.unwrap());
+        ((to[0] - from[0]).atan2(to[2] - from[2]) * 32768.0 / std::f64::consts::PI).round() as i32
+            as i16
+    };
+    let mut frames = [ana.tick + 1, soldier.tick + 1];
+    // Both play on (a body's graphs run at its client's command frames).
+    let idle = |watchers: [&mut Watcher; 2], frames: &mut [u32; 2], yaw: i16, pumps: usize| {
+        let [ana, soldier] = watchers;
+        for _ in 0..pumps {
+            send_input(ana, &mut frames[0], yaw, 0, 0, false);
+            send_input(soldier, &mut frames[1], 0, 0, 0, false);
+            ana.pump(&schemas);
+            soldier.pump(&schemas);
+        }
+    };
+
+    // The Soldier wounds Ana, aiming from where the two bodies stand (as
+    // enemies on one spawn point they push each other apart).
+    let deadline = server.now() + Duration::from_secs(10);
+    while !health(&ana, ana_body).is_some_and(|health| health < FULL) {
+        assert!(server.now() < deadline, "waiting for Ana's wound");
+        let toward = aim(&server, 1, 0);
+        send_input(&mut soldier, &mut frames[1], toward, 0, FIRE, false);
+        send_input(&mut ana, &mut frames[0], 0, 0, 0, false);
+        ana.pump(&schemas);
+        soldier.pump(&schemas);
+    }
+    idle([&mut ana, &mut soldier], &mut frames, 0, 30);
+    let wounded = health(&ana, ana_body).unwrap();
+    let unhurt = health(&soldier, soldier_body).unwrap_or(FULL);
+
+    // Ana throws at him.
+    let thrown = [&ana, &soldier].map(|watcher| watcher.datagrams.len());
+    let toward = aim(&server, 0, 1);
+    send_input(&mut ana, &mut frames[0], toward, 0, ABILITY_2, false);
+    let grenade = |watcher: &Watcher, from: usize| {
+        watcher.datagrams[from..]
+            .iter()
+            .flat_map(|(_, records)| records)
+            .find(|record| record.is_create() && record.definition == Some(GRENADE))
+            .map(|record| record.entity)
+    };
+    let gone = |watcher: &Watcher, from: usize| {
+        grenade(watcher, from).is_some_and(|entity| {
+            watcher
+                .find(from, |record| {
+                    record.entity == entity && record.operation == Some(3)
+                })
+                .is_some()
+        })
+    };
+    let deadline = server.now() + Duration::from_secs(10);
+    while !(gone(&ana, thrown[0]) && gone(&soldier, thrown[1])) {
+        assert!(server.now() < deadline, "waiting for the grenade's burst");
+        idle([&mut ana, &mut soldier], &mut frames, toward, 1);
+    }
+    idle([&mut ana, &mut soldier], &mut frames, toward, 30);
+
+    // Her own client: the create, the launch on her body, the destroy.
+    let copy = grenade(&ana, thrown[0]).unwrap();
+    let created = ana
+        .find(thrown[0], |record| {
+            record.entity == copy && record.is_create()
+        })
+        .unwrap();
+    let launched = ana
+        .find(created, |record| {
+            record.entity == ana_body && record.launches.contains(&copy)
+        })
+        .expect("the shot record naming her copy");
+    let destroyed = ana
+        .find(created, |record| {
+            record.entity == copy && record.operation == Some(3)
+        })
+        .unwrap();
+    assert!(created < launched && launched <= destroyed);
+    // The aura on both bodies' graphs.
+    assert_eq!(health(&soldier, soldier_body), Some(unhurt - 60.0));
+    assert_eq!(health(&ana, ana_body), Some((wounded + 100.0).min(FULL)));
     server.stop().unwrap();
 }
 
@@ -6067,6 +6298,146 @@ fn practice_bots_run_their_scripts_for_a_client() {
     server.stop().unwrap();
 }
 
+/// The Practice Range's mode frames leave room for the movement records
+/// (`orpheus_sim::mode_view`): the first is whole (about 920 bytes), and
+/// once the bots stand in the world, every datagram for 5 s carries a
+/// movement record of every body that has one in the datagrams around it,
+/// and the mode frame's change of the tick as a delta of a few bytes.
+/// Before, the whole frame went once a second and took the place of 9 of
+/// the 16 movement records.
+#[test]
+#[ignore = "requires the derived 104319 data with its bot graph bundle"]
+fn the_range_mode_frames_leave_room_for_every_movement_record() {
+    use orpheus_content::{heroes::SOLDIER, parameters::PICK_HERO};
+    use orpheus_script::vm::Unknowns;
+    use orpheus_sim::scene_assets::SceneAssets;
+
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_bot_unknowns(Unknowns::Tolerate);
+    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let schemas = Arc::new(Schemas::game());
+    let mut server = Lockstep::new(Arc::clone(&schemas)).unwrap();
+    let ticket = server
+        .open_prepared_practice(MATCH, scene, player().remove(0), PlayerCard::default())
+        .unwrap();
+    let mut client = Client::new(&server, &ticket);
+    client.handshake();
+    let mut watcher = Watcher {
+        client,
+        owner: player_entity(0),
+        tick: 0,
+        sequences: HashSet::new(),
+        datagrams: Vec::new(),
+        ticks: Vec::new(),
+    };
+    pump_until(&mut [&mut watcher], &schemas, "the instance", |watchers| {
+        watchers[0]
+            .datagrams
+            .iter()
+            .any(|(messages, _)| messages.iter().any(|message| message.id == 20300))
+    });
+    let loaded = encode(&schemas, 21602, &Fields::new()).unwrap();
+    let mut payload = BitWriter::new();
+    write_channel(&mut payload, &[(0, loaded)], &[]).unwrap();
+    watcher.client.send(ACK, payload.into_bytes());
+    pump_until(&mut [&mut watcher], &schemas, "the world", |watchers| {
+        let watcher = &watchers[0];
+        watcher
+            .find(0, |record| {
+                record.entity == watcher.owner && record.script.is_some()
+            })
+            .is_some()
+    });
+    let owner = watcher.owner;
+    send_player_message(
+        &mut watcher.client,
+        &schemas,
+        owner,
+        1,
+        PICK_HERO,
+        SOLDIER.to_le_bytes().to_vec(),
+    );
+    // The body, the Range's first mode frame, and every bot moving.
+    pump_within(
+        &mut [&mut watcher],
+        &schemas,
+        "the body and the bots",
+        Duration::from_secs(20),
+        |watchers| {
+            let watcher = &watchers[0];
+            watcher.created(owner | 1).is_some()
+                && watcher
+                    .find(0, |record| {
+                        record.entity == GAME_MODE_ENTITY && record.script.is_some()
+                    })
+                    .is_some()
+                && watcher.datagrams.last().is_some_and(|(_, records)| {
+                    records.iter().filter(|record| record.movement).count() >= 15
+                })
+        },
+    );
+    let from = watcher.datagrams.len();
+    let until = watcher.client.now() + Duration::from_secs(5);
+    while watcher.client.now() < until {
+        watcher.pump(&schemas);
+    }
+    // The first mode frame is whole and lists what the graph runs.
+    let mode_chunks = |index: usize| -> Vec<&ReceivedChunk> {
+        watcher.datagrams[index]
+            .1
+            .iter()
+            .filter(|record| record.entity == GAME_MODE_ENTITY)
+            .filter_map(|record| record.script.as_ref())
+            .collect()
+    };
+    let full = watcher
+        .find(0, |record| {
+            record.entity == GAME_MODE_ENTITY && record.script.is_some()
+        })
+        .unwrap();
+    let [first] = mode_chunks(full)[..] else {
+        panic!("one mode frame")
+    };
+    assert_eq!(first.first, 0);
+    assert_range_mode_frame(assets.graphs(), first);
+    let moving = |index: usize| -> HashSet<u32> {
+        watcher.datagrams[index]
+            .1
+            .iter()
+            .filter(|record| record.movement)
+            .map(|record| record.entity)
+            .collect()
+    };
+    let mut dropped = Vec::new();
+    let mut frames = Vec::new();
+    for index in from + 1..watcher.datagrams.len() - 1 {
+        let around: HashSet<u32> = moving(index - 1)
+            .intersection(&moving(index + 1))
+            .copied()
+            .collect();
+        let missing = around.difference(&moving(index)).count();
+        if missing != 0 {
+            dropped.push((watcher.ticks[index], missing));
+        }
+        frames.extend(
+            mode_chunks(index)
+                .iter()
+                .map(|chunk| (chunk.first, chunk.width.div_ceil(8))),
+        );
+    }
+    assert!(dropped.is_empty(), "movement records left out: {dropped:?}");
+    // `0CBB` st58's timed ChaseVar (#19530e) changes the frame every tick:
+    // each change goes as a delta of a few bytes.
+    assert!(frames.len() > 250, "{frames:?}");
+    assert!(
+        frames
+            .iter()
+            .all(|&(first, bytes)| first != 0 && bytes <= 32),
+        "{frames:?}"
+    );
+    server.stop().unwrap();
+}
+
 /// combat.py `_bot_weapons`: a firing training bot's script fires its
 /// rockets along its yaw, and they damage the player in front of it, once
 /// he ran out of his spawn room (where he is invulnerable); the hit he
@@ -6215,6 +6586,30 @@ fn a_firing_practice_bot_shoots_the_player() {
         .filter(|record| record.entity == body)
         .find_map(|record| record.base_health.filter(|health| *health < 200.0));
     assert_eq!(health, Some(192.0));
+    // His client's damage direction arc: the hurt notice (25000) of the
+    // hit, damage taken (kind 1) by his body from the bot standing where it
+    // was placed, for those 8.
+    let notice = watcher
+        .datagrams
+        .iter()
+        .flat_map(|(messages, _)| messages)
+        .find(|message| message.id == 25000)
+        .expect("the hurt notice");
+    let place = Value::Struct(Fields::from([
+        (0, Value::Float32((x - 4.0) as f32)),
+        (4, Value::Float32(y as f32)),
+        (8, Value::Float32(z as f32)),
+    ]));
+    assert_eq!(
+        [0x78, 0x7c, 0x80, 0x9c, 0xc0].map(|at| notice.fields[&at].clone()),
+        [
+            Value::Signed(1),
+            body_id(body),
+            body_id(shooter),
+            place,
+            Value::Float32(8.0),
+        ]
+    );
     // projectiles.py `_show_others` for the bot: the client gets a rocket
     // entity of the bot's projectile definition (1476), the bot's shot record
     // naming it once its create arrived (server.py `retain_bot_volley`

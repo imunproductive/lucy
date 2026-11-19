@@ -245,8 +245,9 @@ fn ana_and_widowmaker_walk_at_35_percent_once_fully_zoomed() {
         (ANA, 1065, 5.857421875, (0x0B94, 23, 35)),
         (WIDOWMAKER, 1070, 6.140625, (0x001B, 7, 27)),
     ] {
-        // Their graphs still have gaps: tolerated, as release builds do.
-        let mut body = Sprinter::of(hero, Unknowns::Tolerate);
+        // Their owner scripts start whole (their zoom-in flag
+        // `STU_D1BF5FA6` runs): a gap would refuse them.
+        let mut body = Sprinter::of(hero, Unknowns::Refuse);
         let mut speeds = Vec::new();
         for frame in 1030..1155 {
             let scoped = (1050..1150).contains(&frame);

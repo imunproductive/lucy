@@ -33,6 +33,7 @@ use crate::{
     messages::Bots,
     mode_graph_values::ModeGraphValues,
     mode_rules_data::{ModeRules, ModeRulesData},
+    navigate::PathBudget,
     notices::switch_notices,
     objective_data::{MapObjectives, ObjectiveData},
     objectives::CaptureBox,
@@ -58,7 +59,7 @@ use orpheus_physics::{
     contact::cache::CapsulePose,
     contact::world::ContactWorld,
     mover::Mover,
-    mover::ground::NOT_GROUND,
+    mover::ground::{NOT_GROUND, pogo, standing_body},
     mover::settings::{MoverCatalog, MoverSettings},
     nav::{self, Navigation},
 };
@@ -234,6 +235,9 @@ pub struct PreparedScene {
     switch_notices: bool,
     /// The map's AI navigation, when the data has it (Practice vs AI).
     navigation: Option<Arc<Navigation>>,
+    /// The path work the room's walkers share a tick: its bots' walks
+    /// ([`Self::step_bots`]) and its AI heroes' ([`Self::path_budget`]).
+    paths: PathBudget,
     /// The rules of the mode's match flow.
     mode_rules: ModeRules,
     /// The mode graphs' values the match flow uses.
@@ -443,14 +447,18 @@ impl SceneAssets {
                 .map(Arc::new)
                 .map_err(invalid)?,
         );
-        if let Some(world) = &contacts {
-            for bot in bots.iter_mut().filter(|bot| !bot.spawn.route.is_empty()) {
+        let navigation = self.navigation(&map);
+        for bot in bots.iter_mut().filter(|bot| !bot.spawn.route.is_empty()) {
+            if let Some(world) = &contacts {
                 let category = mover_category(&map, bot.spawn.team);
                 bot.attach_collision(
                     self.movers.for_body(Some(bot.spawn.body)),
                     Arc::clone(world),
                     category,
                 );
+            }
+            if let Some(navigation) = &navigation {
+                bot.attach_navigation(Arc::clone(navigation));
             }
         }
         for bot in &mut bots {
@@ -473,6 +481,7 @@ impl SceneAssets {
         let controller = Controller::load(
             &self.graphs,
             map.mode_guid,
+            map.ruleset,
             self.codecs
                 .clone()
                 .unwrap_or_else(|| Arc::new(CodecTable::client())),
@@ -483,7 +492,6 @@ impl SceneAssets {
             self.stats
                 .component(&PlayerStats::default(), map.mode_guid, None, None);
         let map_mode = map.mode_guid;
-        let navigation = self.navigation(&map);
         let mode_random = crate::scene::draw_mode_random();
         let mode_rules =
             self.mode_rules
@@ -527,6 +535,7 @@ impl SceneAssets {
         let placed_scripts = PlacedScripts::new(
             Arc::clone(&self.graphs),
             map_mode,
+            map.ruleset,
             mode_random,
             server_placeables.clone(),
             Arc::clone(&map_tags),
@@ -561,6 +570,7 @@ impl SceneAssets {
             field_graphs: self.field_graphs.clone(),
             switch_notices: switch_notices(self.modes.get(map_mode)),
             navigation,
+            paths: PathBudget::default(),
             mode_rules,
             mode_graph_values: self.mode_graph_values,
             objectives,
@@ -646,6 +656,7 @@ impl SceneAssets {
         let player_unknowns = self.player_unknowns;
         let ult_generation = self.ult_generation.clone();
         let mode = scene.map.mode_guid;
+        let ruleset = scene.map.ruleset;
         let mode_body = ModeBody {
             scripts: self
                 .modes
@@ -690,6 +701,7 @@ impl SceneAssets {
                         Arc::clone(&graphs),
                         codecs,
                         mode,
+                        ruleset,
                         hero,
                         pools.hero_pools(hero.guid),
                         on_fire,
@@ -1105,6 +1117,40 @@ impl PreparedScene {
         self.navigation.as_deref()
     }
 
+    /// The path work the room's walkers share this tick
+    /// ([`crate::navigate::PathBudget`]): the bots' walks take theirs first
+    /// ([`Self::step_bots`]), the AI heroes the rest.
+    pub fn path_budget(&self) -> &PathBudget {
+        &self.paths
+    }
+
+    /// Whether a hero body `body` (the movers' fallback body when none) of
+    /// team `team` walks straight from one floor point to another: its
+    /// standing capsule on the map's collision with the team's mask, and
+    /// floor under every step ([`crate::navigate::walkable`]); every walk,
+    /// without player collision. An AI hero's walks are made with it
+    /// ([`crate::ai::Senses::walkable`]).
+    pub fn walk_test(
+        &self,
+        body: Option<u64>,
+        team: u8,
+    ) -> impl Fn([f64; 3], [f64; 3]) -> bool + '_ {
+        let settings = self.movers.for_body(body);
+        let category = mover_category(&self.map, team);
+        let capsule = self.contacts.as_ref().map(|world| {
+            (
+                standing_body(settings, Arc::clone(world), [0.0; 3], category),
+                pogo(settings, false) as f32,
+            )
+        });
+        let ground = ground_height(self.ground.triangles(), category);
+        move |from, to| {
+            capsule.as_ref().is_none_or(|(capsule, lift)| {
+                crate::navigate::walkable(capsule, *lift, &ground, from, to)
+            })
+        }
+    }
+
     /// Whether nothing of the map's collision stands between two points,
     /// as a hitscan shot from one to the other sees it (an AI's line of
     /// sight): a shot of a volley that names no ray profile, as most
@@ -1144,6 +1190,7 @@ impl PreparedScene {
                 tick,
                 goal.map(|goal| goal.target),
                 ground_height(floor, mover_category(&self.map, bot.spawn.team)),
+                &self.paths,
             );
             if let (Some(goal), Some(ended)) = (goal, ended) {
                 self.bot_scripts.move_arrived(slot, bot.entity, goal, ended);
@@ -1179,6 +1226,12 @@ impl PreparedScene {
         &self.bot_scripts
     }
 
+    /// The bots' scripts, for what tests a bot's graphs at a hit (a combat
+    /// modifier's party filter, [`BotScripts::combat_scale`]).
+    pub(crate) fn bot_scripts_mut(&mut self) -> &mut BotScripts {
+        &mut self.bot_scripts
+    }
+
     /// The world waits until every bot that has a script has started it
     /// (match.py `_spawn_steps`: `not self._pending_bot_scripts`).
     pub fn bot_scripts_ready(&self) -> bool {
@@ -1197,9 +1250,10 @@ impl PreparedScene {
         self.bot_scripts.set_target_candidates(candidates);
     }
 
-    /// A bot was killed: its script's death message (combat.py `_bot_died`).
+    /// A bot was killed: its script's killing hit and death messages
+    /// (combat.py `_bot_died`).
     pub fn bot_died(&mut self, death: &BotDeath) {
-        self.bot_scripts.died(death);
+        self.bot_scripts.died(death, &self.bots);
     }
 
     /// A bot's pools after a hit it survived or a heal (combat.py
@@ -1714,12 +1768,6 @@ mod tests {
             assumed,
             [
                 (0x01ca, Some(126), "STU_ED45C5E8", "no entities"),
-                (
-                    0x02c5,
-                    Some(51),
-                    "STUStatescriptStateAnim",
-                    "never ends by itself"
-                ),
                 (0x0255, Some(40), "STU_E9694EFD", "no-op"),
                 (
                     0x0043,
@@ -2064,6 +2112,7 @@ mod tests {
             tags: None,
             ai: None,
             dealt: Vec::new(),
+            held: Vec::new(),
         };
         // Yaw 0 looks along +z.
         let players = |frame: u32| {
@@ -2203,5 +2252,51 @@ mod tests {
             .cast_ray(origin, back, 3.0, MOVER_CATEGORY)
             .unwrap();
         assert!(movement.is_none(), "{movement:?}");
+    }
+
+    /// Widowmaker's Grappling Hook (`005A` st0, ray profile `0018.097`,
+    /// map mask `0x0040` as the client loads it) cast straight up the
+    /// Practice Range spawn passes the `0x1B9F` plane at y 11.2633 (a
+    /// player clip: it stops her body, not the hook) and meets the `0x04C0`
+    /// ceiling at y 12.6617. Measured in the game (2026-11-19): the
+    /// client's cast end wrote (54.5654, 12.6617, 43.9388) from this origin
+    /// and way; the server, casting with `0x1FDF`, stopped at the clip and
+    /// pulled her client there (refs report `Grapple.md` "DayGrapple2").
+    /// A shot without a profile takes `0001`, which stores no `m_category`
+    /// either: its derived mask is `hitscan::DEFAULT_MAP_MASK`, and it passes the
+    /// clip as the hook does.
+    #[test]
+    #[ignore = "requires a derived 104319 Practice Range scene"]
+    fn the_grappling_hook_and_profileless_shots_pass_the_range_spawns_player_clip() {
+        const HOOK_PROFILE: u64 = 0x0690_0000_0000_0018;
+        const SHOT_PROFILE: u64 = 0x0690_0000_0000_0001;
+        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        assert_eq!(
+            assets.ray_profiles.map_mask(Some(SHOT_PROFILE)),
+            crate::hitscan::DEFAULT_MAP_MASK
+        );
+        let scene = assets.prepare(GameMap::practice_range()).unwrap();
+        let origin = [54.565_429_687_5, 2.5, 42.147_460_937_5];
+        let way = [0.0, 0.984_815_180_301_666_3, 0.173_606_216_901_201_22];
+        let client = [54.5654, 12.6617, 43.9388];
+        for profile in [Some(HOOK_PROFILE), None] {
+            let hit = scene
+                .map_rays()
+                .cast(origin, way, 20.0, profile)
+                .unwrap()
+                .unwrap();
+            assert!(
+                (0..3).all(|axis| (hit.point[axis] - client[axis]).abs() < 1e-3),
+                "{profile:?}: {hit:?}"
+            );
+        }
+        // The clip is there, and stops a ray of the class defaults' mask.
+        let clip = scene
+            .rays
+            .cast_ray(origin, way, 20.0, 0x1FDF)
+            .unwrap()
+            .unwrap();
+        assert_eq!(clip.mask, 0x1B9F);
+        assert!((clip.point[1] - 11.2633).abs() < 1e-3, "{clip:?}");
     }
 }

@@ -55,6 +55,9 @@ at the first input sample after the server's '[MM] Match found', then after a fi
     click X Y                  left click at (X, Y), fractions of the window's client width and
                                height (posted to the window, no focus needed)
     position                   log our position and the bots'
+    trace S                    for S seconds (the script goes on meanwhile), log at every input
+                               sample the newest command frame in component 59's ring and our
+                               body's component 4 position: the client's prediction, frame by frame
     poke ADDRESS TYPE VALUE    write memory: TYPE u8/i8/u16/i16/u32/i32/u64/i64/f32/f64; an address
                                in the game image is an ORPHEUS VA (base 0x7FF788F10000), others as is
 
@@ -88,6 +91,7 @@ SAMPLE_YAW, SAMPLE_PITCH = 0x1042, 0x1044  # i16 angles of the sample being buil
 SAMPLE_RIGHT, SAMPLE_FORWARD = 0x104B, 0x104C  # i8 throttles
 SAMPLE_BUTTONS = 0x1050  # u32 command bits
 VIEW_YAW, VIEW_PITCH = 0x107A, 0x107C  # i16, the stored view the next sample starts from
+COMMAND_RING, COMMAND_RECORD, COMMAND_SLOTS = 0xB60, 36, 32  # {u32 frame; 28 bytes} (ClientInput.md)
 
 ENTITY_ID = 0xB0
 COMP4_POSITION = 0x160
@@ -388,6 +392,8 @@ def parse(text):
             steps.append(("screenshot", rest[0] if rest else None))
         elif verb == "position":
             steps.append(("position",))
+        elif verb == "trace":
+            steps.append(("trace", num(0)))
         elif verb == "key":
             if not rest:
                 raise SystemExit("--actions: key N (a logical button) or key CHORD (alt+`, enter, ...)")
@@ -681,6 +687,7 @@ class Actions:
         self.body = None  # our body's entity id (server owner trace)
         self._log_off = {}
         self.jump_watch = None
+        self.trace_until = None  # `trace S`: log frame and position at every sample until then
         self.hero_step = None
         self.done = False
         self._scan_wait = None
@@ -776,6 +783,8 @@ class Actions:
                 code = self.actions.pop(0)
                 self.dbg.write(c + SAMPLE_ACTION, bytes([code]))
                 self.log(f"action byte {code} (logical button {ACTION_BUTTONS[code - 1]}) in one sample")
+        if self.trace_until is not None:
+            self._trace(c)
         if self.lock_view is not None:
             self.dbg.write(c + SAMPLE_YAW, struct.pack("<hh", *self.lock_view))
         if self.want_view is not None:
@@ -963,6 +972,9 @@ class Actions:
             else:
                 self.log("click: no game window")
             self.until = now
+        elif verb == "trace":
+            self.trace_until = now + step[1]
+            self.until = now
         elif verb == "position":
             self.log_positions()
             self.until = now
@@ -1052,6 +1064,18 @@ class Actions:
         yaw, pitch = aim_angles(eye, (p[0], p[1] + self.CHEST, p[2]))
         if self.lock_view is None or abs(wrap16(yaw - self.lock_view[0])) > 20 or abs(pitch - self.lock_view[1]) > 20:
             self.turn_to(yaw, pitch)
+
+    def _trace(self, c):
+        """One `trace` line: the newest command frame in the ring and our body's position."""
+        if self.dbg.elapsed >= self.trace_until:
+            self.trace_until = None
+            self.log("trace ends")
+            return
+        ring = self.dbg.read(c + COMMAND_RING, COMMAND_RECORD * COMMAND_SLOTS)
+        frame = max(struct.unpack_from("<I", ring, COMMAND_RECORD * i)[0] for i in range(COMMAND_SLOTS))
+        p = self.positions.position(self.body) if self.body is not None else None
+        at = f"({p[0]:.4f}, {p[1]:.4f}, {p[2]:.4f})" if p else "None"
+        self.log(f"trace frame={frame} position={at} view={self.view()}")
 
     def log_positions(self):
         eye = self._eye()

@@ -96,6 +96,7 @@ pub fn remote_movement(pose: Movement, tick: u32, gravity: f64) -> Movement {
         gravity,
         spring: pose.spring,
         spring_speed: pose.spring_speed,
+        move_to: pose.move_to,
         ..Movement::default()
     }
 }
@@ -232,6 +233,7 @@ mod tests {
             fall: 0.25,
             // A create starts the body's counter at 0.
             discontinuity: 3,
+            move_to: None,
         };
         let pose = owner_pose(source);
         assert_eq!(

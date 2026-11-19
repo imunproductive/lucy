@@ -5,7 +5,7 @@
 use super::*;
 use crate::combat::Shooter;
 use crate::hurt_feedback::HurtFeedback;
-use orpheus_wire::commands::Command;
+use orpheus_wire::{combat_messages::CombatNotice, commands::Command};
 
 const OWNER: u32 = 0xa000_0100;
 /// `02C5`'s networked knockback anim.
@@ -38,7 +38,13 @@ fn rockets(scene: &PreparedScene, hits: &[u32], ticks: u32) -> Reactions {
     let mut world = WorldDelivery::new(OWNER);
     world.start(scene, &viewer(&card), FIRST_TICK).unwrap();
     world.created.insert(OWNER);
-    world.present(scene, scene.mode_ui(), FIRST_TICK).unwrap();
+    world
+        .present(
+            scene,
+            crate::mode_view::ModeFrame::Full(scene.mode_ui()),
+            FIRST_TICK,
+        )
+        .unwrap();
     let hero = scene.heroes().get(SOLDIER).unwrap();
     world
         .switch(
@@ -98,11 +104,24 @@ fn rockets(scene: &PreparedScene, hits: &[u32], ticks: u32) -> Reactions {
                 heal: false,
                 tags: explosion,
                 direction: Some([0.0, 0.0, -1.0]),
+                environment: false,
+                from: Some(bot.position),
             };
             let damage = world
                 .damage_body(scene, &hit, tick, Duration::ZERO)
                 .unwrap();
             assert_eq!((damage.dealt, damage.killed), (30.0, false));
+            // His client's damage direction arc, whatever the switch: the
+            // bot's place and the damage.
+            assert_eq!(
+                world.take_hurt_notices(),
+                [CombatNotice::Hurt {
+                    victim: body,
+                    attacker: bot.entity,
+                    from: bot.position.map(|axis| axis as f32),
+                    dealt: 30.0,
+                }]
+            );
         }
         voices.extend(
             world

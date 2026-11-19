@@ -11,6 +11,7 @@ use orpheus_core::guid::parse_guid;
 
 pub const SOLDIER: u64 = 0x02e0_0000_0000_006e;
 pub const ANA: u64 = 0x02e0_0000_0000_013b;
+pub const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
 /// The role identifiers (`084E.01C`, `0850.01C`, `0851.01C`): the hero's
 /// role (hero `+0x58`) and the competitive role queue's.
 pub const DAMAGE_ROLE: u64 = 0x0d80_0000_0000_084e;
