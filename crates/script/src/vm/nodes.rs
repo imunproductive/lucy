@@ -1076,7 +1076,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::DisableButton { .. } => self.begin_disable_button(key, node, depth)?,
             StateKind::AiFire { .. } => self.begin_ai_fire(key, node)?,
             StateKind::MoveTo => self.begin_move_to(key, node),
-            StateKind::GrappleCast => self.begin_grapple(key, node)?,
+            StateKind::GrappleCast => self.begin_grapple(key, node, depth)?,
             StateKind::NavPath => self.begin_nav_path(key, node)?,
             StateKind::AiMove => self.resolve_ai_move(key, node),
             StateKind::Rewind => self.begin_rewind(key, node)?,

@@ -138,6 +138,26 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         self.sync_stack(target, depth)
     }
 
+    /// A state's end releases the outputs still bound to it
+    /// ([`LinkValue::Output`]): each variable keeps its own value.
+    pub(super) fn unlink_outputs(&mut self, key: StateKey, depth: usize) -> Result<(), InitFault> {
+        let targets: Vec<_> = self
+            .machine
+            .links
+            .iter()
+            .filter(|(_, entries)| {
+                entries.iter().any(|entry| {
+                    entry.state == key && matches!(entry.output, LinkValue::Output { .. })
+                })
+            })
+            .map(|(&target, _)| target)
+            .collect();
+        for target in targets {
+            self.remove_link(key, target, None, depth)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn unlink_output(
         &mut self,
         key: StateKey,

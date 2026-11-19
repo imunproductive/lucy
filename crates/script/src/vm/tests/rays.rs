@@ -46,6 +46,11 @@ impl World for Range {
     fn map_rays(&self) -> Option<&dyn MapRays> {
         Some(self)
     }
+
+    /// The searcher's eye, 1.5 m over its feet, looking along +x.
+    fn eye(&self, _site: Site, _entity: u32) -> Option<([f64; 3], [i32; 2])> {
+        Some(([0.0, 1.5, 0.0], [16384, 0]))
+    }
 }
 
 impl MapRays for Range {
@@ -570,4 +575,70 @@ fn a_ray_enters_a_capsule_at_its_surface() {
         capsule.ray_hit([-5.0, 1.0, 0.0], [1.0, 0.0, 0.0], 4.0, 0.0),
         None
     );
+}
+
+/// The Grappling Hook's cast (`STU_4BBC5D09`) binds its start (#431, slot
+/// 0) and hardpoint's point (#432, slot 1) to itself while it flies, as the
+/// client's begin does; the owner frames carry the bindings, so the
+/// client's own end can write the hit through them. A hit releases both
+/// with the hit point; a miss leaves the start when the state ends.
+#[test]
+fn the_grappling_hooks_cast_binds_its_start_until_its_end() {
+    let float = |value: f64| json!({"$":"STUConfigVarFloat","m_value":value});
+    let fields = json!({
+        "m_5ED803CF":var(431, false), "m_F2F8606D":var(432, false),
+        "m_64801077":var(433, false), "m_D7A2A03B":var(434, false),
+        "m_9E1A7C58":var(435, false), "m_1FFD7AC0":var(38, false),
+        "m_86CF0002":var(8695, false), "m_EA134F86":var(1219, false),
+        "m_58B4C4D7":var(1220, false), "m_9169D109":var(1221, false),
+        "m_66B658A5":map_only(), "m_speed":float(40.0), "m_2AFC083F":float(20.0),
+    });
+    let bound = |component: &Component| {
+        let snapshot = component.snapshot().unwrap();
+        [431, 432].map(|id| snapshot.bindings.get(&(1, id)).cloned())
+    };
+    let binding = |slot| {
+        Some(vec![StackBinding {
+            instance: 1,
+            raw_state: 0,
+            priority: LINK_PRIORITY,
+            slot,
+        }])
+    };
+    let eye = [0.0, 1.5, 0.0];
+
+    // A wall 4 m ahead: the hook, 40 m/s, updated at each window's last
+    // millisecond, reaches it in frame 6 (111 ms: 4.44 m).
+    let mut world = Range::new(Some(4.0));
+    let mut component = start(one_node("STU_4BBC5D09", true, fields.clone()), &mut world);
+    assert_eq!(bound(&component), [binding(0), binding(1)]);
+    let values = outputs(&component, &[431, 432]);
+    assert!(values.iter().all(|value| close(value, eye)), "{values:?}");
+    for frame in 1..6 {
+        component.advance_frame(frame, &mut world).unwrap();
+        assert_eq!(bound(&component), [binding(0), binding(1)], "frame {frame}");
+    }
+    component.advance_frame(6, &mut world).unwrap();
+    assert_eq!(bound(&component), [None, None]);
+    let values = outputs(&component, &[431, 432, 435]);
+    assert!(close(&values[0], [4.0, 1.5, 0.0]), "{values:?}");
+    assert!(close(&values[1], [4.0, 1.5, 0.0]), "{values:?}");
+    assert_eq!(values[2], Value::Bool(true));
+
+    // No wall: the hook misses at its 20 m in frame 31 (511 ms: 20.44 m),
+    // and the state's end leaves the start.
+    let mut world = Range::new(None);
+    let mut component = start(one_node("STU_4BBC5D09", true, fields), &mut world);
+    for frame in 1..31 {
+        component.advance_frame(frame, &mut world).unwrap();
+    }
+    assert_eq!(bound(&component), [binding(0), binding(1)]);
+    component.advance_frame(31, &mut world).unwrap();
+    assert_eq!(bound(&component), [None, None]);
+    let values = outputs(&component, &[431, 432, 435]);
+    assert!(
+        values[..2].iter().all(|value| close(value, eye)),
+        "{values:?}"
+    );
+    assert_eq!(values[2], Value::Bool(false));
 }
