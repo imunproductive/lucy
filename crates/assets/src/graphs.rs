@@ -258,6 +258,7 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
         data.insert("entities".into(), Json::Object(entities));
     }
     data.insert("mode_variables".into(), Json::Object(variables));
+    data.insert("ruleset_variables".into(), Json::Object(ruleset_variables));
     Ok(Bundle(Json::Object(data)))
 }
 
