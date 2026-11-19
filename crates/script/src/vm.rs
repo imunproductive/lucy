@@ -1314,6 +1314,11 @@ impl ChasePayload {
 /// takes it from its descriptor (`wire::write_descriptor`; InstanceCreator.md).
 pub(crate) const CREATOR: u32 = 27;
 
+/// Parameter `0009.026`: a delivered message's sender (the dispatch's
+/// parameter source `sub_7FF78AAA32F0`, the message's `+152`), which
+/// message filters test (`0C90` st4/st8 `param(9) != owner()`).
+const MESSAGE_SENDER: u32 = 9;
+
 #[derive(Clone, Debug)]
 pub struct Instance {
     pub graph: u32,
@@ -1685,6 +1690,7 @@ impl Component {
             foreign_reads: Vec::new(),
             parameters: None,
             candidate,
+            sender: None,
             watcher: None,
             read_native: false,
             natives: Vec::new(),
@@ -2384,6 +2390,9 @@ struct Vm<'graph, 'world, 'machine, W> {
     parameters: Option<Arc<Variables>>,
     /// The value every parameter reads while `CycleIndex` tests a candidate.
     candidate: Option<Value>,
+    /// The sender of the message being delivered, when it is an entity:
+    /// parameter `0009` ([`MESSAGE_SENDER`]).
+    sender: Option<u32>,
     output_write_depth: usize,
 }
 
@@ -2399,6 +2408,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             machine,
             parameters: None,
             candidate: None,
+            sender: None,
             output_write_depth: 0,
         }
     }
@@ -2672,9 +2682,56 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             return Ok(());
         };
         self.parameters = Some(parameters);
+        self.sender = expr::valid_entity(sender).then_some(sender);
         let result = self.deliver_entry(id, node, sender);
         self.parameters = None;
+        self.sender = None;
         result
+    }
+
+    /// Parameter `id` of the message being delivered: `0009` is its
+    /// sender, whatever the message carries (the dispatch's parameter
+    /// source `sub_7FF78AAA32F0` answers it from the message's `+152`
+    /// before its own parameters), the others the message's.
+    fn message_parameter(&self, id: u32) -> Value {
+        match self.sender {
+            Some(sender) if id == MESSAGE_SENDER => Value::Entity(sender),
+            _ => self
+                .parameters
+                .as_deref()
+                .and_then(|parameters| parameters.get(&id))
+                .cloned()
+                .unwrap_or(Value::Null),
+        }
+    }
+
+    /// Whether a message entry's filter (`m_filter`) lets the message in.
+    /// The client tests the message's sender with
+    /// `ScriptHost_EntityPassesFilter` (an EntryGameMessage in the dispatch
+    /// `sub_7FF78AAA1D70`; a receiving state hands its filter to the held
+    /// message lookup `sub_7FF789CAAD40`); a message with no sender passes.
+    /// The condition reads the message's parameters and `0009`, its
+    /// sender: `0C90` st4/st8 keep only another player's `08BE` pick, so a
+    /// controller's own broadcast is not a teammate's pick. Masks and tag
+    /// lists on a message filter (`16C5` rid10 alone among the entries the
+    /// server runs) are not tested: taken, as an assumption.
+    fn message_filter_admits(&mut self, id: u16, node: &Node) -> bool {
+        let filter = field(&node.fields, "m_filter");
+        if filter.is_null() || self.sender.is_none() {
+            return true;
+        }
+        if !filter_array::condition_only(filter) {
+            self.assume(
+                self.site(id, node),
+                &node.class,
+                "message filter masks and tags not tested: taken",
+            );
+        }
+        let condition = field(filter, "m_condition");
+        condition.is_null()
+            || self
+                .evaluate(id, node, condition, None)
+                .is_some_and(|admitted| expr::truthy(&admitted))
     }
 
     /// A game message entry takes its parameters and its sender: the
@@ -2703,6 +2760,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 );
                 return Ok(());
             }
+            if !self.message_filter_admits(id, node) {
+                return Ok(());
+            }
             self.exit_subgraph(id, node, "m_33DA5163", 1)?;
             // The sender now holds it ([`Self::release_message`]).
             let since_ms = self.machine.now_ms;
@@ -2715,6 +2775,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             ("m_452862E6", Some(key))
         } else {
+            if !self.message_filter_admits(id, node) {
+                return Ok(());
+            }
             ("m_outPlug", None)
         };
         let site = self.site(id, node);
@@ -2730,13 +2793,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     return Ok(());
                 }
             };
-            let key = parameter_id(field);
-            let value = self
-                .parameters
-                .as_deref()
-                .and_then(|params| params.get(&key))
-                .cloned()
-                .unwrap_or(Value::Null);
+            let value = self.message_parameter(parameter_id(field));
             self.write(target, value)?;
         }
         if expr::valid_entity(sender) {
@@ -3134,6 +3191,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             foreign_reads: Vec::new(),
             parameters: self.parameters.as_deref(),
             candidate: self.candidate.as_ref(),
+            sender: self.sender,
             watcher,
             read_native: false,
             natives: Vec::new(),
@@ -3568,6 +3626,8 @@ struct InstanceContext<'a, W> {
     parameters: Option<&'a Variables>,
     /// Answers every parameter read when set: a `CycleIndex` candidate.
     candidate: Option<&'a Value>,
+    /// The delivered message's sender: parameter `0009`.
+    sender: Option<u32>,
     watcher: Option<StateKey>,
     read_native: bool,
     /// The native configs' classes read ([`Context::native`]).

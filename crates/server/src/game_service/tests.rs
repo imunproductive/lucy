@@ -2806,6 +2806,115 @@ fn practice_world<const N: usize>(
     (server, schemas, watchers, spawns)
 }
 
+/// A hero change in the Practice Range and back (the user's report of
+/// 2026-11-19, release a043c3c): Soldier: 76 (the first pick), reopen,
+/// Tracer, reopen, Soldier: 76. Each pick replaces the body (the old one
+/// destroyed), the reopened screen shows the hero he plays (#940e) and no
+/// pick, and the first hero is his to pick again. Since the Range's mode
+/// `13C0` runs, its ruleset puts the controller's hero limit receiver
+/// `0C90` st4 on, and the controller's own `08BE` broadcast reached it
+/// (the VM didn't test message filters): his first hero became a
+/// teammate's (#10476), and the pick back was refused.
+#[test]
+#[ignore = "requires the derived 104319 data"]
+fn practice_range_hero_switch_and_back() {
+    use orpheus_content::{
+        heroes::SOLDIER,
+        parameters::{OPEN_OR_CLOSE, PICK_HERO},
+    };
+    let assets =
+        orpheus_sim::scene_assets::SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let tracer = assets.heroes().find_hero("Tracer").unwrap().guid;
+    let (mut server, schemas, [mut player], _) =
+        practice_world([("player#1111", 0, "Soldier: 76")], &assets, |_| {});
+    let owner = player.owner;
+    let mut open = vec![1, 1];
+    open.extend(owner.to_le_bytes());
+    open.extend(owner.to_le_bytes());
+    let mut ordinal = 2;
+    // Sends the request, then takes datagrams until `done` holds of those
+    // from the first after it on.
+    let mut request = |player: &mut Watcher,
+                       what: &str,
+                       guid: u64,
+                       parameters: Vec<u8>,
+                       done: &dyn Fn(&Watcher, usize) -> bool| {
+        let from = player.datagrams.len();
+        send_player_message(
+            &mut player.client,
+            &schemas,
+            owner,
+            ordinal,
+            guid,
+            parameters,
+        );
+        ordinal += 1;
+        let deadline = player.client.now() + Duration::from_secs(2);
+        while !done(player, from) {
+            assert!(player.client.now() < deadline, "waiting for {what}");
+            player.pump(&schemas);
+        }
+    };
+    // A controller frame from `from` on shows (open, pick, #940e).
+    let shows = |player: &Watcher, from: usize, shown: (bool, Option<u64>, Option<u64>)| {
+        player
+            .find(from, |record| {
+                record.entity == owner
+                    && record
+                        .script
+                        .as_ref()
+                        .and_then(|script| controller_shows(assets.graphs(), script))
+                        == Some(shown)
+            })
+            .is_some()
+    };
+    // The pick of `hero` from `from` on: body `new` made, `old` destroyed,
+    // the screen closed on him.
+    let switched = |player: &Watcher, from: usize, hero: u64, old: u32, new: u32| {
+        player
+            .find(from, |record| record.entity == new && record.is_create())
+            .is_some()
+            && player
+                .find(from, |record| {
+                    record.entity == old && record.operation == Some(3)
+                })
+                .is_some()
+            && shows(player, from, (false, Some(hero), Some(hero)))
+    };
+    let reopened =
+        |hero| move |player: &Watcher, from: usize| shows(player, from, (true, None, Some(hero)));
+    request(
+        &mut player,
+        "the reopen",
+        OPEN_OR_CLOSE,
+        open.clone(),
+        &reopened(SOLDIER),
+    );
+    request(
+        &mut player,
+        "Tracer",
+        PICK_HERO,
+        tracer.to_le_bytes().to_vec(),
+        &|player, from| switched(player, from, tracer, owner | 1, owner | 2),
+    );
+    // He plays Tracer: the reopened screen says so.
+    request(
+        &mut player,
+        "the second reopen",
+        OPEN_OR_CLOSE,
+        open,
+        &reopened(tracer),
+    );
+    request(
+        &mut player,
+        "Soldier: 76 again",
+        PICK_HERO,
+        SOLDIER.to_le_bytes().to_vec(),
+        &|player, from| switched(player, from, SOLDIER, owner | 2, owner | 3),
+    );
+    server.stop().unwrap();
+}
+
 /// The Practice Range's Training Partner console `265F` makes its default
 /// partner at its start (`STU_FC3921B1`, `orpheus_sim::placed_script`): a
 /// Tracer (`0003.075`) on the red team, an AI player in the room's next

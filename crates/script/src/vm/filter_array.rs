@@ -53,6 +53,23 @@ pub(super) fn is_runnable_filter_array(node: &Node) -> bool {
         && node.links("m_A70DB860").next().is_none()
 }
 
+/// The any-of team mask that names every team: the client then asks
+/// nothing of the entity's teams (`ScriptHost_EntityPassesFilter`).
+const ANY_TEAM: u64 = 0x3FFF_FFFF;
+
+/// Whether a filter tests nothing but its condition: no team, relation or
+/// tag rule, and an any-of team mask of none or [`ANY_TEAM`].
+pub(super) fn condition_only(filter: &Json) -> bool {
+    filter.as_object().is_some_and(|fields| {
+        fields.iter().all(|(key, value)| match key.as_str() {
+            "$" | "m_condition" => true,
+            "m_84065FD1" => matches!(value.as_u64(), Some(0 | ANY_TEAM)),
+            key if FLAG_WORDS.contains(&key) || key == "m_EE729DCB" => value.as_u64() == Some(0),
+            _ => value.is_null() || value.as_array().is_some_and(Vec::is_empty),
+        })
+    })
+}
+
 impl<W: World> Vm<'_, '_, '_, W> {
     /// Filter the source again and write the output if it changed.
     pub(super) fn refresh_filter_array(&mut self, key: StateKey) -> Result<(), InitFault> {
