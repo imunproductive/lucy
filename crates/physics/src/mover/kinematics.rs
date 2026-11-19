@@ -166,6 +166,11 @@ impl MotionInput {
             forward,
         }
     }
+
+    /// The forward throttle under mods 17 and 18 (-1..1).
+    pub(crate) fn forward(&self) -> f64 {
+        self.forward
+    }
 }
 
 /// Radians back to s16 turn units, rounded half away from zero.

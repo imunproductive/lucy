@@ -17,36 +17,38 @@
 //! velocity step (slot 11 `0x7FF789B53130`), each tick:
 //!
 //! 1. The first tick builds the path (slot 19 `0x7FF789B5EC50`):
-//!    [`ledge_path`] from the block's position to its point, then, when it
-//!    has more than one point, eight probes down along its last way
-//!    ([`Walk::ledge`]); with no path the record's state is 2 and the tick
-//!    moves as usual. The path set-up (`0x7FF789B578B0`): state 1, the
-//!    seconds, 0 walked, the cap = the path's length over the seconds (100
-//!    for 0.004 s or less).
+//!    [`ledge_path`] from the block's position to its point; with no path
+//!    the record's state is 2 and the tick moves as usual. The path set-up
+//!    (`0x7FF789B578B0`): state 1, the seconds, 0 walked, the cap = the
+//!    path's length over the seconds (100 for 0.004 s or less). The build's
+//!    ledge probes (eight rays down from the path's end, whose hit becomes
+//!    a last point) run only for a body with component 86
+//!    (`STU_15971773`, the AI's); a player's Widowmaker has none (her
+//!    client never cast them, `Grapple.md` "DayLedgePull2").
 //! 2. A walking tick (`0x7FF789B53FD0`) adds the tick's seconds to the
 //!    walked ones and takes the point that far along the path in proportion
 //!    (the last point at the end; a path of one point is done at once); the
 //!    state is 2 once the walk is done. The velocity is the way from the
-//!    feet to that point over the tick, held to the cap (a quarter of it on
-//!    the last tick when the jump speed is 0 or less).
+//!    feet to that point over the tick, held to the cap; on the last tick
+//!    to a quarter of it unless she pushes forward (the step's `+132`: the
+//!    tick's forward throttle after mods 17 and 18, which the velocity step
+//!    `0x7FF789B49FA0` and `0x7FF789B43960` put there; the session's done
+//!    tick without input moved at 3.1855 m/s, a quarter of 12.742).
 //! 3. A tick of a done walk keeps the velocity as it is.
 //!
 //! Every value is float32 in the client's order of operations
 //! (`rsqrtss` estimates correctly rounded, then the client's Newton step).
 //!
-//! Assumptions: the block's position is the feet (to be checked in the
-//! game); the probes' map mask is the mover's category (the client's query
-//! takes `0x7FF789ADAA70`'s 8/16/24 from component 25's team bits, the same
-//! as the server's mover categories) and the probes count only map
-//! triangles; the probe's "start inside" flag (`v93 & 1`) is never set;
-//! the body has component 86 (the probes run only then); no platform under
+//! The block's position is the feet (her client's `+32` at the build was
+//! her server's feet, `Grapple.md` "DayLedgePull2"). Assumptions: an AI
+//! player's Widowmaker body has no component 86 either (the AI's
+//! components are on the AI entity that possesses it); no platform under
 //! the body (the velocity is set in world space).
 
 use orpheus_wire::entity::{NAV_PATH, NAV_PATH_POINTS, NavPathRecord};
 
 use crate::{
-    ai_cells::{AiCells, VOXEL_HEIGHT, ledge_path},
-    collision::index::TriangleIndex,
+    ai_cells::{AiCells, ledge_path},
     mover::{MoveEnd, MoveKey},
 };
 
@@ -84,15 +86,6 @@ pub(super) enum Velocity {
     Set([f64; 3]),
     /// The tick keeps the velocity it has (the walk is done).
     Keep,
-}
-
-/// What the path build needs of the body and its world.
-pub(super) struct Ground<'a> {
-    pub cells: Option<&'a AiCells>,
-    pub rays: &'a TriangleIndex,
-    pub category: u16,
-    /// Degrees (`STUCharacterMoverComponent` `+0x40`).
-    pub max_slope: f64,
 }
 
 impl Walk {
@@ -142,12 +135,13 @@ impl Walk {
         })
     }
 
-    /// Slot 11 `0x7FF789B53130` for one tick.
+    /// Slot 11 `0x7FF789B53130` for one tick; `cells` the map's AI cells
+    /// the path build searches, `forward` the tick's forward throttle.
     pub(super) fn step(
         &mut self,
-        ground: &Ground<'_>,
+        cells: Option<&AiCells>,
         feet: [f64; 3],
-        jump_speed: f64,
+        forward: f64,
         dt: f64,
     ) -> Velocity {
         let dt = dt as f32;
@@ -155,7 +149,7 @@ impl Walk {
             if self.state == 2 {
                 return Velocity::Keep;
             }
-            if !self.build(ground) {
+            if !self.build(cells) {
                 self.state = 2;
                 return Velocity::Default;
             }
@@ -165,7 +159,7 @@ impl Walk {
         let feet = feet.map(|axis| axis as f32);
         let way: Vec3 = std::array::from_fn(|axis| (target[axis] - feet[axis]) / dt);
         let mut cap = self.cap;
-        if done && jump_speed as f32 <= 0.0 {
+        if done && forward as f32 <= 0.0 {
             cap *= 0.25;
         }
         let squared = (way[1] * way[1] + way[0] * way[0]) + way[2] * way[2];
@@ -179,21 +173,15 @@ impl Walk {
         Velocity::Set(velocity.map(f64::from))
     }
 
-    /// `0x7FF789B5EC50`: the path, the ledge probes, the set-up
-    /// (`0x7FF789B578B0`). False when there is no path.
-    fn build(&mut self, ground: &Ground<'_>) -> bool {
-        let Some(cells) = ground.cells else {
+    /// `0x7FF789B5EC50`: the path and the set-up (`0x7FF789B578B0`). False
+    /// when there is no path.
+    fn build(&mut self, cells: Option<&AiCells>) -> bool {
+        let Some(cells) = cells else {
             return false;
         };
-        let path = ledge_path(cells, self.from, self.to);
-        let Ok(mut points) = path.path else {
+        let Ok(points) = ledge_path(cells, self.from, self.to).path else {
             return false;
         };
-        if points.len() > 1
-            && let Some(point) = self.ledge(ground, &points)
-        {
-            points.push(point);
-        }
         self.points = points;
         self.elapsed = 0.0;
         self.cap = if self.seconds <= 0.004 {
@@ -203,57 +191,6 @@ impl Walk {
         };
         self.state = 1;
         true
-    }
-
-    /// The ledge probes: eight rays 2.5 voxels down, from a quarter metre
-    /// before the path's end along its last way (the first point to the
-    /// last, flat; else the one before the last to the last), 0.1 m apart;
-    /// a hit on ground no steeper than the body's slope limit counts, any
-    /// other hit starts the count again, and three in a row (or the last
-    /// counted hit after the eight) add that hit's point to the path.
-    fn ledge(&self, ground: &Ground<'_>, points: &[Vec3]) -> Option<Vec3> {
-        let last = *points.last()?;
-        let flat = |from: Vec3| -> Option<Vec3> {
-            let way = [last[0] - from[0], 0.0, last[2] - from[2]];
-            let squared = (way[0] * way[0] + way[1] * way[1]) + way[2] * way[2];
-            if squared < TINY_SQUARED {
-                return None;
-            }
-            let r = estimate(squared);
-            let factor = (3.0 - (r * r) * squared) * (0.5 * r);
-            (factor * squared > 0.0).then(|| way.map(|axis| axis * factor))
-        };
-        let way = flat(points[0]).or_else(|| flat(points[points.len() - 2]))?;
-        let slope = (ground.max_slope as f32 * 0.017_453_292).clamp(0.0, 1.570_784_4);
-        let steepest = f64::from(slope).cos() as f32;
-        let drop = VOXEL_HEIGHT * 2.5;
-        let mut from: Vec3 = std::array::from_fn(|axis| last[axis] - 0.25 * way[axis]);
-        let (mut run, mut found) = (0, None);
-        for _ in 0..8 {
-            let hit = ground
-                .rays
-                .cast_ray(
-                    from.map(f64::from),
-                    [0.0, -1.0, 0.0],
-                    f64::from(drop),
-                    ground.category,
-                )
-                .ok()
-                .flatten();
-            if let Some(hit) = hit {
-                if hit.normal[1] as f32 <= steepest {
-                    run = 0;
-                } else {
-                    run += 1;
-                    found = Some(hit.point.map(|axis| axis as f32));
-                    if run >= 3 {
-                        break;
-                    }
-                }
-            }
-            from = std::array::from_fn(|axis| from[axis] + 0.1 * way[axis]);
-        }
-        found
     }
 
     /// `0x7FF789B53FD0`: the point the walk has reached after this tick and

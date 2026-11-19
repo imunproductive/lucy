@@ -451,17 +451,7 @@ impl Mover {
             let ground = self.posture.ground();
             let walked = self.walk.as_mut().map(|walk| {
                 let cells = self.navigation.as_deref().and_then(Navigation::ai_cells);
-                walk.step(
-                    &path_walk::Ground {
-                        cells,
-                        rays,
-                        category: self.category,
-                        max_slope: self.base.max_slope,
-                    },
-                    self.pose.position,
-                    settings.jump_speed,
-                    dt,
-                )
+                walk.step(cells, self.pose.position, input.forward(), dt)
             });
             // Kind 10's slot 11 replaces the velocity step (gravity
             // included) while it walks or has walked.
