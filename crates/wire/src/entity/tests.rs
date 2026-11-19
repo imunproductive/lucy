@@ -43,6 +43,7 @@ fn moving() -> Movement {
         fall: -3.5,
         discontinuity: 0,
         move_to: None,
+        nav_path: None,
     }
 }
 
@@ -197,6 +198,73 @@ fn a_move_to_record_is_the_first_flag_block_after_the_velocity() {
     assert!(bits.bit().unwrap());
     assert_eq!(bits.bits(16).unwrap(), 3);
     // Then the other eight blocks and the rest, as without the record.
+    for _ in at + 1..plain.bit_len() {
+        assert_eq!(bits.bit().unwrap(), rest.bit().unwrap());
+    }
+}
+
+/// A running path walk's record goes as the sixth flag block (flag 0x20,
+/// 0x7FF789B6C800): present, no reference, the state in 8 bits, the seconds,
+/// the seconds walked and the cap in 1/256 steps (8, 10 or 24 bits behind
+/// width bits), `+12`, `+0` and `+32` absent, the count as an s8, each point
+/// as optional raw floats.
+#[test]
+fn a_path_walk_record_is_the_sixth_flag_block() {
+    let still = Movement {
+        position: [1.0, 2.0, 3.0],
+        flags: NAV_PATH,
+        ..Movement::default()
+    };
+    let mut walk = NavPathRecord {
+        state: 1,
+        seconds: 0.2,
+        elapsed: 0.016,
+        cap: 12.5,
+        count: 2,
+        ..NavPathRecord::default()
+    };
+    walk.points[0] = [54.5, 6.75, 29.0];
+    walk.points[1] = [54.5, 0.0, 28.25];
+    let walking = Movement {
+        nav_path: Some(walk),
+        ..still
+    };
+    let plain = movement_record(&still, None).unwrap();
+    let record = movement_record(&walking, None).unwrap();
+    let mut bits = BitReader::new(record.as_bytes());
+    let mut rest = BitReader::new(plain.as_bytes());
+    bits.advance(12).unwrap();
+    rest.advance(12).unwrap();
+    // Everything up to the block's presence bit is the same.
+    let at = (12..plain.bit_len())
+        .find(|_| bits.bit().unwrap() != rest.bit().unwrap())
+        .unwrap();
+    assert!(bits.bit().unwrap(), "no reference");
+    assert!(bits.bit().unwrap());
+    assert_eq!(bits.bits(8).unwrap(), 1);
+    // 0.2 s is 51 steps, 0.016 s 4, the cap 3200 (past 10 bits).
+    for steps in [51, 4] {
+        assert!(bits.bit().unwrap() && bits.bit().unwrap());
+        assert_eq!(bits.bits(8).unwrap(), steps);
+    }
+    assert!(bits.bit().unwrap() && !bits.bit().unwrap() && !bits.bit().unwrap());
+    assert!(bits.bit().unwrap());
+    assert_eq!(bits.bits(24).unwrap(), 3200);
+    assert!(!bits.bit().unwrap() && !bits.bit().unwrap() && !bits.bit().unwrap());
+    assert!(bits.bit().unwrap() && bits.bit().unwrap());
+    assert_eq!(bits.bits(8).unwrap(), 2);
+    assert!(bits.bit().unwrap());
+    for axis in [54.5, 6.75, 29.0] {
+        assert!(bits.bit().unwrap());
+        assert_eq!(bits.f32().unwrap(), axis);
+    }
+    assert!(bits.bit().unwrap());
+    assert!(bits.bit().unwrap());
+    assert_eq!(bits.f32().unwrap(), 54.5);
+    assert!(!bits.bit().unwrap());
+    assert!(bits.bit().unwrap());
+    assert_eq!(bits.f32().unwrap(), 28.25);
+    // Then the last three blocks and the rest, as without the record.
     for _ in at + 1..plain.bit_len() {
         assert_eq!(bits.bit().unwrap(), rest.bit().unwrap());
     }

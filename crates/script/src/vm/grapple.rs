@@ -45,17 +45,13 @@
 //! `STU_1F5ED928` (the pull's last 0.2 s, a child of the mover behaviour
 //! base `STU_1C2FB897`): its begin (`0x7FF789C407D0`) hands the mover a
 //! behaviour of kind 10 (slot 55; vtable `0x7FF78B56A568`) with the body's
-//! feet, the point `m_03AD31B9` and the seconds `m_710CF237` (slot 56
-//! `0x7FF789C39370`). On its first frame the behaviour asks the level's
-//! navigation for a path from the feet to the point (`0x7FF789B5EC50` →
-//! `0x7FF78A626BC0`, over component 1 `+0x250`) and walks it in those
-//! seconds (`0x7FF789B53130`, `0x7FF789B53FD0`); with no path it is done
-//! at once. The state finishes on the update that sees the behaviour done
-//! (slot 14 `0x7FF789C390C0`: mover `+0xE5E` is 2). The server has no such
-//! path query: the path fails, so the state finishes the frame after its
-//! begin and the body moves as usual meanwhile. When the client finds a
-//! path (a hook point at a ledge's top) it walks the body up onto it and
-//! the server doesn't.
+//! position, the point `m_03AD31B9` and the seconds `m_710CF237` (slot 56
+//! `0x7FF789C39370`): `orpheus_physics::mover::path_walk`, which asks the
+//! client's path query for a way through the air from the feet to the point
+//! and walks the body along it in those seconds (a hook at a ledge's top
+//! walks her up onto it). The state finishes on the update that sees the
+//! walk done or no path found (slot 14 `0x7FF789C390C0`: the record's
+//! state is 2), which the mover reports as the move's end.
 
 use super::{
     rays::{Hit, RayGap},
@@ -277,15 +273,32 @@ impl<W: World> Vm<'_, '_, '_, W> {
         Some((eye, expr::aim(facing)))
     }
 
-    /// `STU_1F5ED928`'s begin: the path fails at the mover's next frame, and
-    /// the state's update after it finishes it.
+    /// `STU_1F5ED928`'s begin: the walk it hands the mover. A point or
+    /// seconds that aren't a vector and a number hand nothing (the state
+    /// then runs until its parent ends it).
     pub(super) fn begin_nav_path(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
-        self.assume(
-            self.site(key.instance, node),
-            PATH,
-            "finds no navigation path: finishes the next frame",
-        );
-        self.post_after(key.instance, FRAME_MS, Event::Finish(key.raw))
+        let id = key.instance;
+        self.machine.movements.remove(&key);
+        let point = self.evaluate(id, node, field(&node.fields, "m_03AD31B9"), None);
+        let seconds = match field(&node.fields, "m_710CF237") {
+            Json::Null => Some(0.0),
+            config => self.config_number(id, node, config),
+        };
+        match (point, seconds) {
+            (Some(Value::Vector(point)), Some(seconds))
+                if point.iter().all(|axis| axis.is_finite()) =>
+            {
+                self.machine
+                    .movements
+                    .insert(key, Behaviour::PathWalk(PathWalk { point, seconds }));
+            }
+            _ => self.assume(
+                self.site(id, node),
+                PATH,
+                "hands the mover nothing (no point or seconds)",
+            ),
+        }
+        Ok(())
     }
 }
 

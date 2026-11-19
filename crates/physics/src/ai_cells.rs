@@ -77,6 +77,9 @@ pub const VOXEL: f32 = 0.25;
 pub const VOXEL_HEIGHT: f32 = 1433.0 / 4096.0;
 /// Voxels per cell side.
 const SIDE: i32 = 64;
+/// A cell's width (x, z) and height.
+const CELL: f32 = VOXEL * SIDE as f32;
+const CELL_HEIGHT: f32 = VOXEL_HEIGHT * SIDE as f32;
 const MAGIC: &[u8; 8] = b"ORPHAIC1";
 const HEADER: usize = 160;
 
@@ -196,15 +199,15 @@ impl Voxel {
     }
 
     /// The point the client gives a voxel (`0x7FF78A61A7E0` without bounds):
-    /// the middle of its floor, 4 mm up.
+    /// the middle of its floor, 4 mm up, in the client's order of operations
+    /// (the offset in the cell first, then the cell's corner).
     pub fn floor(self) -> Vec3 {
-        let corner = |index: i32, bias: i32, size: f32| {
-            ((index >> 6) - bias) as f32 * (size * SIDE as f32) + (index & 63) as f32 * size
-        };
+        let corner = |index: i32, bias: i32, size: f32| ((index >> 6) - bias) as f32 * size;
+        let local = |index: i32, size: f32| (index & 63) as f32 * size;
         [
-            corner(self.x, 2048, VOXEL) + VOXEL * 0.5,
-            corner(self.y, 128, VOXEL_HEIGHT) + 0.004,
-            corner(self.z, 2048, VOXEL) + VOXEL * 0.5,
+            (local(self.x, VOXEL) + VOXEL * 0.5) + corner(self.x, 2048, CELL),
+            (local(self.y, VOXEL_HEIGHT) + 0.004) + corner(self.y, 128, CELL_HEIGHT),
+            (local(self.z, VOXEL) + VOXEL * 0.5) + corner(self.z, 2048, CELL),
         ]
     }
 
@@ -465,6 +468,11 @@ impl AiCells {
 
     fn block(&self, key: u32) -> Option<&Block> {
         self.cells.get(&key).map(|&block| &self.blocks[block])
+    }
+
+    /// Whether the map has the cell with this key.
+    pub fn has_cell(&self, key: u32) -> bool {
+        self.cells.contains_key(&key)
     }
 
     /// Where `graph` holds `voxel`, `None` when it doesn't.
@@ -787,9 +795,13 @@ fn invalid(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Er
     io::Error::new(io::ErrorKind::InvalidData, error)
 }
 
+mod ledge;
 mod query;
 mod walk;
 
+pub use ledge::{
+    LedgePath, Refusal, START_SEARCH, ledge_path, lift, lift_goal, mode_one, polyline,
+};
 pub use query::{End, Step, client_path};
 pub use walk::WalkSearch;
 

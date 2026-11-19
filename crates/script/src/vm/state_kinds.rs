@@ -676,7 +676,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
         self.machine.movements.insert(
             key,
-            MoveTo {
+            Behaviour::MoveTo(MoveTo {
                 destination,
                 surface,
                 free_spot,
@@ -695,7 +695,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 exit_total,
                 exit_on_end,
                 abort_past: site.graph == grapple::GRAPPLING_HOOK,
-            },
+            }),
         );
     }
 

@@ -234,6 +234,7 @@ mod tests {
             // A create starts the body's counter at 0.
             discontinuity: 3,
             move_to: None,
+            nav_path: None,
         };
         let pose = owner_pose(source);
         assert_eq!(

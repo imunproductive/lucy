@@ -63,6 +63,7 @@ pub mod kinematics;
 pub mod modifiers;
 mod motion;
 pub mod move_to;
+pub mod path_walk;
 #[cfg(test)]
 mod ported_tests;
 pub(crate) mod posture;
@@ -88,12 +89,23 @@ use crate::{
         CROUCHED, FELL, IN_AIR, JUMPED, NOT_GROUND_UNDER, Posture, PostureStep, TOUCHING, snap,
     },
     mover::settings::MoverSettings,
+    nav::Navigation,
 };
 pub use move_to::{MoveEnd, MoveKey, MoveTo, Speed};
 use orpheus_wire::{
     commands::Command,
     entity::{Movement, NO_INPUT, POSITION_UNITS},
 };
+pub use path_walk::PathWalk;
+
+/// What a state of the body's graphs hands the mover while it runs: a
+/// `MoveTo`'s move ([`move_to`], kind 1) or a path walk ([`path_walk`],
+/// kind 10).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Behaviour {
+    MoveTo(MoveTo),
+    PathWalk(PathWalk),
+}
 
 const ABYSS: f64 = 100.0;
 const EPSILON: f64 = 1.1754943508222875e-36;
@@ -146,6 +158,10 @@ pub struct Mover {
     pose: Movement,
     /// The `MoveTo` move the body's graphs run ([`move_to`]).
     move_to: Option<move_to::Run>,
+    /// The path walk the body's graphs run ([`path_walk`]).
+    walk: Option<path_walk::Walk>,
+    /// The map's navigation, whose AI cells a path walk searches.
+    navigation: Option<Arc<Navigation>>,
     /// A dash or rewind the body's graphs started ([`motion`]).
     motion: Option<motion::Motion>,
     /// Recent feet positions for a rewind.
@@ -188,6 +204,8 @@ impl Mover {
                 ..Movement::default()
             },
             move_to: None,
+            walk: None,
+            navigation: None,
             motion: None,
             history: motion::History::with_capacity(motion::HISTORY),
             push: None,
@@ -195,6 +213,13 @@ impl Mover {
             velocity_changes: Vec::new(),
             speed_scale: 1.0,
         })
+    }
+
+    /// The map's navigation, whose AI cells the body's path walks search
+    /// ([`path_walk`]); without it a walk finds no path.
+    pub fn with_navigation(mut self, navigation: Option<Arc<Navigation>>) -> Self {
+        self.navigation = navigation;
+        self
     }
 
     pub fn pose(&self) -> Movement {
@@ -351,23 +376,24 @@ impl Mover {
     }
 
     /// One posed frame (`Mover.step_pose` in `ow174/game/mover.py`). With
-    /// `move_to` (a `MoveTo` state's move, [`move_to`]) the body's velocity
-    /// goes toward the move's target instead of following the input; a new
-    /// key begins a new move, none drops the running one. The result is the
-    /// move's end at the frame it ends (`None` while it runs, and on frames
-    /// after its end before the state lets it go). A dash or rewind the
-    /// body's graphs started ([`Mover::dash`], [`Mover::rewind`]) takes the
-    /// pose before either.
+    /// `behaviour` (a state's [`Behaviour`]) a `MoveTo` drives the body's
+    /// velocity toward its target instead of following the input, a path
+    /// walk sets it along its path; a new key begins a new behaviour, none
+    /// drops the running one. The result is the behaviour's end at the
+    /// frame it ends (`None` while it runs, and on frames after its end
+    /// before the state lets it go). A dash or rewind the body's graphs
+    /// started ([`Mover::dash`], [`Mover::rewind`]) takes the pose before
+    /// either.
     pub fn step_pose_to(
         &mut self,
         rays: &TriangleIndex,
         command: Command,
         dt: f64,
-        move_to: Option<(MoveKey, &MoveTo)>,
+        behaviour: Option<(MoveKey, &Behaviour)>,
     ) -> Result<Option<MoveEnd>, HullContactError> {
         let rewinding = self.rewinding();
         self.take_push();
-        self.begin_move(move_to)?;
+        self.begin_move(behaviour)?;
         let driven = self.move_to.as_ref().is_some_and(move_to::Run::drives);
         let once = std::mem::take(&mut self.once);
         let mut changes = std::mem::take(&mut self.velocity_changes);
@@ -423,18 +449,31 @@ impl Mover {
             self.drive(rays, &active, &settings, &changes, dt)?
         } else {
             let ground = self.posture.ground();
-            let before = VelocityStep {
-                base: &self.base,
-                settings: &settings,
-                input,
-                ground,
-                crouched: self.posture.crouched(),
-                dt,
-            }
-            .advance(self.pose.velocity);
+            let walked = self.walk.as_mut().map(|walk| {
+                let cells = self.navigation.as_deref().and_then(Navigation::ai_cells);
+                walk.step(cells, self.pose.position, input.forward(), dt)
+            });
+            // Kind 10's slot 11 replaces the velocity step (gravity
+            // included) while it walks or has walked.
+            let (before, stepped) = match walked {
+                Some(path_walk::Velocity::Set(velocity)) => (velocity, false),
+                Some(path_walk::Velocity::Keep) => (self.pose.velocity, false),
+                None | Some(path_walk::Velocity::Default) => (
+                    VelocityStep {
+                        base: &self.base,
+                        settings: &settings,
+                        input,
+                        ground,
+                        crouched: self.posture.crouched(),
+                        dt,
+                    }
+                    .advance(self.pose.velocity),
+                    true,
+                ),
+            };
             let velocity =
                 change_velocity(active.limit_velocity(before, settings.jump_speed), &changes);
-            if ground != Ground::Standing {
+            if stepped && ground != Ground::Standing {
                 self.posture.apply_fall(settings.gravity_scale, dt);
             }
             if narrow(velocity[1] - before[1]) > TAKE_OFF {
@@ -443,7 +482,10 @@ impl Mover {
             let grounded = self.posture.ground() == Ground::Standing;
             let vertical = self.move_body(rays, velocity, normal, grounded, dt)?;
             self.posture.finish_fall(settings.gravity_scale, vertical);
-            self.move_to.as_mut().and_then(move_to::Run::take_end)
+            match self.walk.as_mut() {
+                Some(walk) => walk.take_end(),
+                None => self.move_to.as_mut().and_then(move_to::Run::take_end),
+            }
         };
         if !self.rewinding() {
             self.record_history();
@@ -461,8 +503,11 @@ impl Mover {
         self.pose.throttles = input.throttles;
         self.pose.yaw = input.yaw;
         self.pose.pitch = i32::from(input.pitch);
-        self.pose.flags = self.posture.flags | self.move_to.as_ref().map_or(0, move_to::Run::flag);
+        self.pose.flags = self.posture.flags
+            | self.move_to.as_ref().map_or(0, move_to::Run::flag)
+            | self.walk.as_ref().map_or(0, path_walk::Walk::flag);
         self.pose.move_to = self.move_to.as_ref().and_then(move_to::Run::record);
+        self.pose.nav_path = self.walk.as_ref().map(path_walk::Walk::record);
         self.pose.air_ticks = self.posture.air_ticks;
         self.pose.crouch_frame = self.posture.crouch_end;
         self.pose.gravity = settings.gravity_scale;
@@ -472,39 +517,55 @@ impl Mover {
         Ok(outcome)
     }
 
-    /// The move the state hands over this frame: a new key begins it (its
-    /// begin takes a body on the ground off it and sets the air ticks, its
-    /// lateral count, to 0), none lets it go.
-    fn begin_move(&mut self, request: Option<(MoveKey, &MoveTo)>) -> Result<(), HullContactError> {
-        if let Some(run) = self
-            .move_to
-            .take_if(|run| request.is_none_or(|(key, _)| run.key != key))
-        {
+    /// The behaviour the state hands over this frame: a new key begins it
+    /// (its begin takes a body on the ground off it and sets the air ticks,
+    /// a `MoveTo`'s lateral count, to 0), none lets it go.
+    fn begin_move(
+        &mut self,
+        request: Option<(MoveKey, &Behaviour)>,
+    ) -> Result<(), HullContactError> {
+        let running = |key: MoveKey, walk: bool| match request {
+            Some((requested, Behaviour::MoveTo(_))) => !walk && requested == key,
+            Some((requested, Behaviour::PathWalk(_))) => walk && requested == key,
+            None => false,
+        };
+        if let Some(run) = self.move_to.take_if(|run| !running(run.key, false)) {
             self.pose.velocity = run.let_go(self.pose.velocity).map(snap);
         }
-        let Some((key, params)) = request else {
+        // Kind 10's end (slot 5 `0x7FF789B53A40`) only clears its flag and
+        // record.
+        self.walk.take_if(|walk| !running(walk.key, true));
+        let Some((key, behaviour)) = request else {
             return Ok(());
         };
-        if self.move_to.is_some() {
-            return Ok(());
-        }
-        let run = move_to::Run::start(
-            key,
-            *params,
-            move_to::Body {
-                feet: self.pose.position,
-                body: &self.body,
-                base: &self.base,
-                crouched: self.posture.crouched(),
-            },
-        )?;
-        if run.drives() {
+        let begins = match behaviour {
+            Behaviour::MoveTo(params) if self.move_to.is_none() => {
+                let run = move_to::Run::start(
+                    key,
+                    *params,
+                    move_to::Body {
+                        feet: self.pose.position,
+                        body: &self.body,
+                        base: &self.base,
+                        crouched: self.posture.crouched(),
+                    },
+                )?;
+                let drives = run.drives();
+                self.move_to = Some(run);
+                drives
+            }
+            Behaviour::PathWalk(params) if self.walk.is_none() => {
+                self.walk = Some(path_walk::Walk::start(key, *params, self.pose.position));
+                true
+            }
+            _ => false,
+        };
+        if begins {
             if self.posture.flags & IN_AIR == 0 {
                 self.posture.take_off();
             }
             self.posture.air_ticks = 0;
         }
-        self.move_to = Some(run);
         Ok(())
     }
 
@@ -709,7 +770,12 @@ mod tests {
         let mut outcomes = Vec::new();
         for frame in 1..=100 {
             let outcome = mover
-                .step_pose_to(rays, idle(frame), 0.016, Some((MOVE, params)))
+                .step_pose_to(
+                    rays,
+                    idle(frame),
+                    0.016,
+                    Some((MOVE, &Behaviour::MoveTo(*params))),
+                )
                 .unwrap();
             outcomes.push(outcome);
             if outcome.is_some() {
@@ -802,7 +868,12 @@ mod tests {
         let mut across = Vec::new();
         for frame in 1..=4 {
             mover
-                .step_pose_to(&rays, idle(frame), 0.016, Some((MOVE, &params)))
+                .step_pose_to(
+                    &rays,
+                    idle(frame),
+                    0.016,
+                    Some((MOVE, &Behaviour::MoveTo(params))),
+                )
                 .unwrap();
             across.push(mover.pose().velocity[2]);
         }
@@ -815,7 +886,7 @@ mod tests {
     fn a_new_key_begins_a_move_and_none_lets_it_go() {
         let rays = TriangleIndex::new([]).unwrap();
         let mut mover = mover_in(Vec::new());
-        let params = move_to([0.0, 0.0, 5.0]);
+        let params = Behaviour::MoveTo(move_to([0.0, 0.0, 5.0]));
         mover
             .step_pose_to(&rays, idle(1), 0.016, Some((MOVE, &params)))
             .unwrap();
@@ -843,7 +914,7 @@ mod tests {
             mover
                 .step_pending_with(&mut pending, usize::MAX, |mover, command| {
                     frames.push(command.frame);
-                    let params = move_to([1.0, 0.0, 0.0]);
+                    let params = Behaviour::MoveTo(move_to([1.0, 0.0, 0.0]));
                     mover
                         .step_pose_to(&rays, command, 0.016, Some((MOVE, &params)))
                         .map(drop)

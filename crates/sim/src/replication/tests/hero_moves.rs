@@ -335,7 +335,7 @@ fn tracer_blink_stops_at_a_wall() {
 #[test]
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
 fn widowmakers_pull_targets_the_free_spot_her_client_finds() {
-    use orpheus_physics::mover::{MoveKey, MoveTo, Speed};
+    use orpheus_physics::mover::{Behaviour, MoveKey, MoveTo, Speed};
     const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
@@ -402,7 +402,12 @@ fn widowmakers_pull_targets_the_free_spot_her_client_finds() {
             ..Command::default()
         };
         mover
-            .step_pose_to(scene.movement_index(), command, DT, Some((key, &pull)))
+            .step_pose_to(
+                scene.movement_index(),
+                command,
+                DT,
+                Some((key, &Behaviour::MoveTo(pull))),
+            )
             .unwrap();
         let target = mover.move_target().unwrap();
         // Within a few f32 steps of the recorded values.
@@ -415,19 +420,28 @@ fn widowmakers_pull_targets_the_free_spot_her_client_finds() {
 
 /// Widowmaker's pull from the Range spawn with the kind-1 block her client
 /// began (destination `+0x30`, surface `+0x40`, `005A` st1's numbers), then
-/// `after` frames without it: how many frames it drove, how it ended, and
-/// the movement state (as a correction carries it) on every frame.
+/// with `walk` the ledge pull `005A` case 2 hands the mover from the next
+/// frame (`STU_1F5ED928` st30: the hook point, 0.2 s) until the mover
+/// reports it done, then `after` frames without either: how many frames
+/// the pull drove, how it ended, how many the walk took, and the movement
+/// state (as a correction carries it) on every frame.
 struct Pulled {
     mover: orpheus_physics::mover::Mover,
     driven: u32,
     end: orpheus_physics::mover::MoveEnd,
     velocity: [f64; 3],
+    walked: u32,
     path: Vec<[f64; 3]>,
     poses: Vec<Movement>,
 }
 
-fn pull_from_the_spawn(destination: [f64; 3], surface: [f64; 3], after: u32) -> Pulled {
-    use orpheus_physics::mover::{MoveKey, MoveTo, Speed};
+fn pull_from_the_spawn(
+    destination: [f64; 3],
+    surface: [f64; 3],
+    walk: Option<[f64; 3]>,
+    after: u32,
+) -> Pulled {
+    use orpheus_physics::mover::{Behaviour, MoveKey, MoveTo, PathWalk, Speed};
     const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
@@ -436,7 +450,7 @@ fn pull_from_the_spawn(destination: [f64; 3], surface: [f64; 3], after: u32) -> 
     let mut mover = scene
         .player_mover_at(body, 0, [54.565_43, 1.0, 42.147_46], 0)
         .unwrap();
-    let pull = MoveTo {
+    let pull = Behaviour::MoveTo(MoveTo {
         destination,
         surface,
         free_spot: true,
@@ -451,10 +465,10 @@ fn pull_from_the_spawn(destination: [f64; 3], surface: [f64; 3], after: u32) -> 
         exit_total: 10_000.0,
         exit_on_end: false,
         abort_past: true,
-    };
-    let key = MoveKey {
+    });
+    let key = |raw_state| MoveKey {
         instance: 1,
-        raw_state: 1,
+        raw_state,
         activation: 1,
     };
     let command = |frame| Command {
@@ -463,17 +477,27 @@ fn pull_from_the_spawn(destination: [f64; 3], surface: [f64; 3], after: u32) -> 
     };
     let mut poses = Vec::new();
     let mut frame = 0;
-    let end = loop {
+    let mut run = |mover: &mut orpheus_physics::mover::Mover,
+                   behaviour: Option<(MoveKey, &Behaviour)>| loop {
         frame += 1;
         let outcome = mover
-            .step_pose_to(rays, command(frame), DT, Some((key, &pull)))
+            .step_pose_to(rays, command(frame), DT, behaviour)
             .unwrap();
         poses.push(mover.pose());
         if let Some(end) = outcome {
-            break end;
+            break (end, frame);
         }
     };
-    let (driven, velocity) = (frame, mover.pose().velocity);
+    let (end, driven) = run(&mut mover, Some((key(1), &pull)));
+    let velocity = mover.pose().velocity;
+    let walked = walk.map_or(0, |point| {
+        let walk = Behaviour::PathWalk(PathWalk {
+            point,
+            seconds: f64::from(0.2_f32),
+        });
+        run(&mut mover, Some((key(30), &walk))).1 - driven
+    });
+    let mut frame = driven + walked;
     for _ in 0..after {
         frame += 1;
         mover.step_pose_to(rays, command(frame), DT, None).unwrap();
@@ -484,6 +508,7 @@ fn pull_from_the_spawn(destination: [f64; 3], surface: [f64; 3], after: u32) -> 
         driven,
         end,
         velocity,
+        walked,
         path: poses.iter().map(|pose| pose.position).collect(),
         poses,
     }
@@ -519,6 +544,7 @@ fn widowmakers_pull_at_a_wall_keeps_its_velocity_and_rests_where_her_client_did(
     let pulled = pull_from_the_spawn(
         [60.397_644, 4.622_823, 42.147_46],
         [-0.985_831, 0.0, 0.167_742],
+        None,
         120,
     );
     // Her client's behaviour drove 19 ticks; the velocity its end (slot 5
@@ -581,6 +607,7 @@ fn widowmakers_pull_at_a_wall_top_holds_against_the_lip_and_rests_where_her_clie
     let pulled = pull_from_the_spawn(
         [54.565_43, 6.425_825, 27.435_92],
         [0.167_743, -3.113_021e-7, 0.985_831],
+        None,
         240,
     );
     assert_eq!((pulled.driven, pulled.end), (69, MoveEnd::Blocked));
@@ -596,6 +623,91 @@ fn widowmakers_pull_at_a_wall_top_holds_against_the_lip_and_rests_where_her_clie
     assert_eq!(
         pulled.mover.pose().position,
         [55.086_914_062_5, 1.0, 30.386_718_75]
+    );
+}
+
+/// Widowmaker's grapple to a ledge's face just under its top (`005A` from
+/// the Range spawn, yaw −30°, 14° up), then the ledge pull (`005A` case 2,
+/// `STU_1F5ED928` st30, mover behaviour kind 10), as her client ran them
+/// (2026-11-19, owdbg session `ledge3`, `Grapple.md` "DayLedgePull2"). The
+/// pull stops under the lip; the walk starts from her feet there, and her
+/// client's path build (`0x7FF789B5EC50`, set-up `0x7FF789B578B0`) found
+/// three points, the last in the air over the ledge; with no component 86
+/// on her body it cast no ledge probes. Over 0.2 s she walks up along it,
+/// each tick's velocity her client's to the bit; the last tick, without
+/// forward input, moves at a quarter of the cap (path length / 0.2 s), so
+/// she drifts over the top, lands on it and rests where her client rested.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn widowmakers_ledge_pull_walks_her_onto_the_ledge_where_her_client_did() {
+    use orpheus_physics::mover::MoveEnd;
+    use orpheus_wire::entity::NAV_PATH;
+    // The hook point (her client's walk block `+0x30`) and its normal.
+    let hook = [52.531_166, 3.514_61, 45.671_169];
+    let pulled = pull_from_the_spawn(hook, [0.986_533, 0.0, -0.163_562], Some(hook), 60);
+    // The velocity her client's kind-1 end (slot 5 `0x7FF789B539B0`)
+    // found: the pull blocked under the lip.
+    assert_eq!((pulled.driven, pulled.end), (13, MoveEnd::Blocked));
+    assert_eq!(pulled.velocity, [0.0, 7.630_859_375, 0.0]);
+    // Her feet when the walk began: her client's block `+0x20`.
+    let start = pulled.poses[12].position;
+    assert_eq!(start, [53.045_898_437_5, 2.596_679_687_5, 45.623_046_875]);
+    // The velocity after each tick of the walk (kind 10's slot 11
+    // `0x7FF789B53130` read it at the next tick, its end at the last).
+    let client = [
+        [0.483_398_437_5, 7.932_617_187_5, -2.868_164_062_5],
+        [-0.039_062_5, 8.107_421_875, -2.378_906_25],
+        [-0.472_656_25, 8.206_054_687_5, -1.954_101_562_5],
+        [-0.830_078_125, 8.255_859_375, -1.593_75],
+        [-1.119_140_625, 8.273_437_5, -1.294_921_875],
+        [-1.362_304_687_5, 8.271_484_375, -1.051_757_812_5],
+        [-1.587_890_625, 8.268_554_687_5, -0.700_195_312_5],
+        [-1.829_101_562_5, 8.248_046_875, -0.043_945_312_5],
+        [-2.019_531_25, 8.188_476_562_5, 0.506_835_937_5],
+        [-2.168_945_312_5, 8.110_351_562_5, 0.953_125],
+        [-2.279_296_875, 8.030_273_437_5, 1.304_687_5],
+        [-2.374_023_437_5, 7.950_195_312_5, 1.594_726_562_5],
+        [-0.602_539_062_5, 1.978_515_625, 0.430_664_062_5],
+    ];
+    assert_eq!(pulled.walked, 13);
+    let walk = &pulled.poses[13..26];
+    for (tick, (pose, velocity)) in walk.iter().zip(client).enumerate() {
+        assert_eq!(pose.velocity, velocity, "tick {tick}");
+        assert_eq!(pose.flags & !TOUCHING, FELL | NAV_PATH, "tick {tick}");
+        let record = pose.nav_path.unwrap();
+        assert_eq!(record.state, if tick < 12 { 1 } else { 2 }, "tick {tick}");
+    }
+    // Her client's polyline: the lifted start, a turn, and a point in the
+    // air over the ledge (no ledge probe point); the cap is the path's
+    // length over 0.2 s, 8.448872 on her client (an ulp apart: the
+    // `rsqrtss` estimate in the lengths differs between CPUs).
+    let record = walk[0].nav_path.unwrap();
+    assert_eq!(
+        &record.points[..usize::from(record.count)],
+        [
+            [53.125, 3.152_681_6, 45.375],
+            [52.875, 4.023_315_4, 45.375],
+            [52.625, 4.723_022_5, 45.625],
+        ]
+    );
+    assert!((record.cap - 8.448_872).abs() <= 1e-6, "{}", record.cap);
+    // The frame after, the state let it go: the end cleared the flag.
+    let after = pulled.poses[26];
+    assert_eq!((after.flags & NAV_PATH, after.nav_path), (0, None));
+    // Her client's samples: up the walk, over the top, touching down.
+    assert_on_path(
+        &pulled.path,
+        &[
+            [53.0312, 4.1162, 45.4824],
+            [52.9053, 4.7764, 45.4414],
+            [52.7275, 5.2891, 45.5508],
+            [52.6006, 4.9434, 45.6396],
+        ],
+    );
+    // Where her client rested (component 4 (52.6006, 4.9492, 45.6396)).
+    assert_eq!(
+        pulled.mover.pose().position,
+        [52.600_585_937_5, 3.949_218_75, 45.639_648_437_5]
     );
 }
 
