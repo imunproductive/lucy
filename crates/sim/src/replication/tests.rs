@@ -1837,6 +1837,57 @@ fn hero_settings_reach_the_bodys_graphs_as_entity_variables() {
     assert!(!world.script_failed);
 }
 
+/// A body's hero settings are the data's defaults until the client sends a
+/// value, read as the client keeps it (`0x7FF789B7F0F0`): Ana's NANO BOOST
+/// SENSITIVITY as the bits of an f64, Soldier: 76's HOLD TO SPRINT as 1. A
+/// hero's body holds only his own settings and every hero's, and a sent
+/// setting at DEFAULT is null.
+#[test]
+fn hero_settings_are_the_sent_values_else_the_defaults() {
+    use orpheus_content::{
+        hero_settings::{ALLIED_HEALTH_BARS, HeroSetting, HeroSettings},
+        heroes::ANA,
+    };
+    use orpheus_script::wire::Value as ScriptValue;
+
+    const NANO_BOOST_SENSITIVITY: u64 = 0x0d80_0000_0000_2582;
+    const HOLD_TO_SPRINT: u64 = 0x0d80_0000_0000_1ddc;
+    let defaults = HeroSettings::default();
+    let ana = hero_setting_variables(&defaults, ANA);
+    assert_eq!(ana.get(&0x2582), Some(&ScriptValue::Float(1.0)));
+    assert_eq!(
+        ana.get(&(ALLIED_HEALTH_BARS as u32)),
+        Some(&ScriptValue::Null)
+    );
+    assert_eq!(ana.get(&0x1ddc), None, "Soldier: 76's own setting");
+    assert_eq!(
+        hero_setting_variables(&defaults, SOLDIER).get(&0x1ddc),
+        Some(&ScriptValue::Bool(false))
+    );
+
+    let mut sent = HeroSettings::default();
+    sent.replace(&[
+        HeroSetting {
+            hero: ANA,
+            setting: NANO_BOOST_SENSITIVITY,
+            value: 0.5f64.to_bits(),
+        },
+        HeroSetting {
+            hero: SOLDIER,
+            setting: HOLD_TO_SPRINT,
+            value: 1,
+        },
+    ]);
+    assert_eq!(
+        hero_setting_variables(&sent, ANA).get(&0x2582),
+        Some(&ScriptValue::Float(0.5))
+    );
+    assert_eq!(
+        hero_setting_variables(&sent, SOLDIER).get(&0x1ddc),
+        Some(&ScriptValue::Bool(true))
+    );
+}
+
 /// The stock body graph `01CF` turns ALLIED HEALTH BARS into target tag
 /// `0042`, which the nameplate `0D24` asks of the local view for an ally's
 /// health bar (`#17553`): ALWAYS gives it to Soldier: 76 (st116 → st117), on
@@ -2052,6 +2103,130 @@ fn allied_health_bars_give_or_take_the_support_tag_of_the_body() {
         "back to DEFAULT"
     );
     assert!(!world.script_failed);
+}
+
+/// The hero settings a body starts with (`hero_setting_defaults`, from
+/// `orpheus_content::hero_settings::SCRIPT_SETTINGS`) are every setting of
+/// the data (`054/0126`) that a node the server runs (not client-only)
+/// reads, with the data's hero and default. A setting a networked node reads
+/// that the table lacked would be null on the server, and the node could
+/// take another branch than the client's. A read is a variable
+/// (`STUConfigVarDynamic`) in a node's fields, without the lists that name
+/// variables to sync rather than read them: ClientOnlySharedVars
+/// (`STU_9D7BF987`) and the remote sync lists (`m_BF5B22B7`, `m_8BF03679`).
+#[test]
+#[ignore = "requires the 1.74 install and the derived 104319 statescript catalog"]
+fn the_script_settings_are_the_hero_settings_server_nodes_read() {
+    use std::collections::BTreeSet;
+
+    use orpheus_content::hero_settings::{SCRIPT_SETTINGS, ScriptSetting, SettingDefault};
+    use orpheus_stu::{Asset, Object, Value as Stu};
+    use serde_json::Value as Json;
+
+    const INDEX: u64 = 0xffff_ffff_ffff;
+    const HERO: u64 = 0x02e0_0000_0000_0000;
+    const IDENTIFIER: u64 = 0x0d80_0000_0000_0000;
+    fn reads(value: &Json, found: &mut BTreeSet<u64>) {
+        match value {
+            Json::Object(fields) => {
+                if fields.get("$").and_then(Json::as_str) == Some("STUConfigVarDynamic")
+                    && let Some(id) = fields.get("m_identifier").and_then(Json::as_u64)
+                {
+                    found.insert(id);
+                }
+                fields.values().for_each(|value| reads(value, found));
+            }
+            Json::Array(values) => values.iter().for_each(|value| reads(value, found)),
+            _ => {}
+        }
+    }
+    fn objects<'a>(asset: &'a Asset, object: &'a Object, name: &str) -> Vec<&'a Object> {
+        match object.get(name) {
+            Some(Stu::Array(values)) => values
+                .iter()
+                .map(|value| asset.resolve(value).unwrap())
+                .collect(),
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+
+    let install = orpheus_assets::Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
+    let guid = install
+        .guids(0x054)
+        .into_iter()
+        .find(|guid| guid & INDEX == 0x126)
+        .unwrap();
+    let asset = install.stu(guid).unwrap();
+    let reference = |object: &Object, name: &str| match object.get(name) {
+        Some(Stu::Guid(guid)) => guid & INDEX,
+        _ => 0,
+    };
+    let setting = |hero: u64, object: &Object| {
+        let default = object.get("m_default");
+        let default = match (object.class_name(), default) {
+            (Some("STUHeroSettingBool"), Some(Stu::Int(value))) => {
+                SettingDefault::Bool(*value != 0)
+            }
+            (Some("STUHeroSettingBool"), Some(Stu::UInt(value))) => {
+                SettingDefault::Bool(*value != 0)
+            }
+            (Some("STUHeroSettingFloat"), Some(Stu::Float(value))) => {
+                SettingDefault::Float(*value as f32)
+            }
+            (Some("STUHeroSettingIdentifier"), _) => SettingDefault::Identifier(
+                Some(reference(object, "m_default"))
+                    .filter(|&index| index != 0)
+                    .map(|index| IDENTIFIER | index),
+            ),
+            (class, default) => panic!("{class:?} with the default {default:?}"),
+        };
+        ScriptSetting {
+            hero: if hero == 0 { 0 } else { HERO | hero },
+            setting: IDENTIFIER | reference(object, "m_identifier"),
+            default,
+        }
+    };
+    let root = asset.root().unwrap();
+    let mut data: Vec<_> = objects(&asset, root, "m_142A3CA9")
+        .into_iter()
+        .map(|object| setting(0, object))
+        .collect();
+    for hero in objects(&asset, root, "m_heroSpecificSettings") {
+        let index = reference(hero, "m_hero");
+        data.extend(
+            objects(&asset, hero, "m_settings")
+                .into_iter()
+                .map(|object| setting(index, object)),
+        );
+    }
+    assert_eq!(data.len(), 91, "the settings of 054/0126");
+
+    let graphs =
+        GraphStore::load(orpheus_testkit::runtime_dir().join("data/game_graphs_174.json.gz"))
+            .unwrap();
+    let mut read = BTreeSet::new();
+    for index in graphs.graph_indexes() {
+        let nodes = graphs.graph(index).unwrap().nodes.iter();
+        for node in nodes.filter(|node| !node.client_only && node.class != "STU_9D7BF987") {
+            let Json::Object(fields) = &node.fields else {
+                continue;
+            };
+            for (name, value) in fields {
+                if name != "m_BF5B22B7" && name != "m_8BF03679" {
+                    reads(value, &mut read);
+                }
+            }
+        }
+    }
+    let key = |setting: &ScriptSetting| (setting.hero, setting.setting);
+    let mut expected: Vec<_> = data
+        .into_iter()
+        .filter(|setting| read.contains(&(setting.setting & INDEX)))
+        .collect();
+    expected.sort_by_key(key);
+    let mut table = SCRIPT_SETTINGS.to_vec();
+    table.sort_by_key(key);
+    assert_eq!(table, expected);
 }
 
 mod hero_moves;

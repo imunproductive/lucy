@@ -18,11 +18,11 @@ use crate::{
         ProjectileLeases, local_prediction, predicted_sync, projectiles_per_shot,
         spawned_definitions,
     },
-    replication::{BodyStep, OwnerBodyRuntime, RESPAWN_READY},
+    replication::{BodyStep, OwnerBodyRuntime, RESPAWN_READY, hero_setting_variables},
     scene::target_tags_component,
     weapon_spread::{ring_directions, shot_direction},
 };
-use orpheus_content::heroes::Hero;
+use orpheus_content::{hero_settings::HeroSettings, heroes::Hero};
 #[cfg(any(test, feature = "fixtures"))]
 use orpheus_content::{heroes::SOLDIER, maps::PRACTICE_RANGE_MODE};
 use orpheus_core::guid::parse_guid;
@@ -177,6 +177,13 @@ impl PlayerBodyFactory {
         variables.extend(ult_generation.unwrap_or_else(|| {
             orpheus_script::ultimate::generation_variables(graphs.rulesets(), hero.guid, mode)
         }));
+        // The hero settings its graphs read, at their defaults; what the
+        // client sent replaces them once the body runs (`WorldDelivery`).
+        variables.extend(
+            hero_setting_variables(&HeroSettings::default(), hero.guid)
+                .into_iter()
+                .filter(|(_, value)| *value != Value::Null),
+        );
         let target_tags = body.target_tags.clone();
         let mut factory = Self {
             graphs,

@@ -933,6 +933,7 @@ dependencies = [
  "orpheus-core",
  "orpheus-physics",
  "orpheus-script",
+ "orpheus-stu",
  "orpheus-testkit",
  "orpheus-wire",
  "serde",
