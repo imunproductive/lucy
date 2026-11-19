@@ -102,6 +102,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             StateKind::GrappleCast => {
                 self.machine.grapples.remove(&key);
+                self.unlink_outputs(key, depth + 1)?;
             }
             StateKind::AiMove => {
                 self.machine.ai_moves.remove(&key);
@@ -253,8 +254,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                                 | StateKind::TargetTag { effect: Some(_) }
                         )
                         || (state.kind == StateKind::ApplyAura && !state.tracked.is_empty())
-                        || (state.kind == StateKind::Scope && !state.scopes.is_empty()))
-                    .then_some((raw, state.kind))
+                        || (state.kind == StateKind::Scope && !state.scopes.is_empty())
+                        || (state.active && state.kind == StateKind::GrappleCast))
+                        .then_some((raw, state.kind))
                 })
                 .collect();
             for (raw, kind) in outputs {
@@ -279,6 +281,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     self.end_auras(key);
                 } else if kind == StateKind::Scope {
                     self.end_scopes(key);
+                } else if kind == StateKind::GrappleCast {
+                    self.unlink_outputs(key, 0)?;
                 } else if matches!(kind, StateKind::Ability { .. }) {
                     self.unlink_ability_stack(key, 0)?;
                     self.finish_cooldown(key)?;

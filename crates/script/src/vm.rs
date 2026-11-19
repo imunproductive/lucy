@@ -2246,6 +2246,13 @@ enum LinkValue {
     Chase,
     Cooldown,
     AbilityStack,
+    /// A state's output bound to its variable (the Grappling Hook cast's
+    /// `#431` and `#432`, `vm/grapple.rs`): the client keeps the value in the
+    /// variable and the binding with this slot.
+    Output {
+        slot: u8,
+        value: Value,
+    },
 }
 
 struct VariableLink {

@@ -16,7 +16,10 @@
 //!   (#1221), `m_58B4C4D7` (#1220) and `m_EA134F86` (#1219): a cone search
 //!   of `m_3D5CAF44` degrees (`10 * #9585e`, a hero setting no client sets
 //!   by default) and `m_7B36ED50` metres (`0x7FF789B68FF0`). Then it runs
-//!   its update once.
+//!   its update once. #431 and #432 are its bound outputs: the begin binds
+//!   them to the state (`0x7FF78AA83570` → `0x7FF78AA83430`: the value into
+//!   the variable, then the binding `0x7FF78AAB2B80` with slot 0 and 1,
+//!   priority 0, at or above).
 //! - Its update (slot 14 `0x7FF789BA3AB0`, once a frame) casts from #431
 //!   along #433 for the range (`m_2C40C158` when #1221 holds, else
 //!   `m_2AFC083F`) with filter `m_66B658A5`, and again from the view now to
@@ -26,11 +29,21 @@
 //!   on the first cast's outcome. The hit counts when the hit object's
 //!   entity passes `m_6F7A45D9` (`0x7FF789BB8730`; none passes).
 //! - Its end (slot 24 `0x7FF789BA35C0`; not for the end codes 5 to 7 a
-//!   teardown uses) writes the hit into `m_5ED803CF` and `m_F2F8606D`,
-//!   its normal into `m_D7A2A03B` (#434) and `m_13BE2D3D`, the world point
-//!   into `m_835453C7`, the hit entity and bone into `m_1FFD7AC0` (#38) and
-//!   `m_86CF0002` (#8695) (entity-local when the entity has component 1)
-//!   and true into `m_9E1A7C58` (#435); a miss only writes false there.
+//!   teardown uses) writes the hit into `m_5ED803CF` and `m_F2F8606D`
+//!   through their bindings (`0x7FF78AA848F0`: the value, then the
+//!   binding's release; a variable no longer bound to the state is not
+//!   written), its normal into `m_D7A2A03B` (#434) and `m_13BE2D3D`, the
+//!   world point into `m_835453C7`, the hit entity and bone into
+//!   `m_1FFD7AC0` (#38) and `m_86CF0002` (#8695) (entity-local when the
+//!   entity has component 1) and true into `m_9E1A7C58` (#435); a miss only
+//!   writes false there. The state's end releases what is still bound.
+//!
+//! The owner frames carry #431 and #432 with their bindings: a frame that
+//! listed them without (as the server sent them before) unbound the cast on
+//! the client, so its own end left #431 at the start, at her eye, and
+//! `005A` rid100 (`dist(#1175, #431) >= 2`, #1175 her feet) took the miss
+//! branch: the pull began only with the server's `MoveTo` an owner frame's
+//! round trip later (`refs/reports/Grapple.md`, "DayFirstGrapple2").
 //!
 //! What the server does (assumptions, recorded): the view is the body's
 //! eye (its feet and eye height) looking along its command's yaw and pitch;
@@ -67,6 +80,9 @@ const PATH: &str = "STU_1F5ED928";
 /// The fields the server reads for the hook's start from the view; any
 /// other way of starting it is not modelled.
 const START_FIELDS: [&str; 4] = ["m_D750D816", "m_F0F18008", "m_705D6A01", "m_794A5BCA"];
+/// The cast's bound outputs and their slots: the hook's start (#431) and
+/// the hardpoint's point (#432).
+const OUTPUTS: [(&str, u8); 2] = [("m_5ED803CF", 0), ("m_F2F8606D", 1)];
 
 /// A running cast: where it started and what it met.
 #[derive(Clone, Debug)]
@@ -79,7 +95,12 @@ pub(super) struct Cast {
 
 impl<W: World> Vm<'_, '_, '_, W> {
     /// The cast's begin.
-    pub(super) fn begin_grapple(&mut self, key: StateKey, node: &Node) -> Result<(), InitFault> {
+    pub(super) fn begin_grapple(
+        &mut self,
+        key: StateKey,
+        node: &Node,
+        depth: usize,
+    ) -> Result<(), InitFault> {
         let id = key.instance;
         let site = self.site(id, node);
         if let Some(name) = START_FIELDS
@@ -104,9 +125,10 @@ impl<W: World> Vm<'_, '_, '_, W> {
             );
         }
         self.assume(site, CAST, "the hook flies from the eye, one cast a frame");
+        for (name, slot) in OUTPUTS {
+            self.bind_output(key, node, name, slot, Value::Vector(origin), depth)?;
+        }
         for (name, value) in [
-            ("m_5ED803CF", Value::Vector(origin)),
-            ("m_F2F8606D", Value::Vector(origin)),
             ("m_64801077", Value::Vector(direction)),
             ("m_EA134F86", Value::Vector([0.0; 3])),
             ("m_58B4C4D7", Value::Vector([0.0; 3])),
@@ -124,11 +146,51 @@ impl<W: World> Vm<'_, '_, '_, W> {
             },
         );
         self.register_tick(key, self.machine.now_ms);
-        self.tick_grapple(key)
+        self.tick_grapple(key, depth)
+    }
+
+    /// `0x7FF78AA83430`: the value into the variable `name` names, then
+    /// the variable bound to the state with `slot`.
+    fn bind_output(
+        &mut self,
+        key: StateKey,
+        node: &Node,
+        name: &str,
+        slot: u8,
+        value: Value,
+        depth: usize,
+    ) -> Result<(), InitFault> {
+        let Some(target) = self.output_key(key.instance, node, name) else {
+            return Ok(());
+        };
+        let old = self.machine.value(target, None);
+        self.set_base(target, value.clone());
+        self.insert_link(
+            target,
+            VariableLink {
+                state: key,
+                priority: LINK_PRIORITY,
+                output: LinkValue::Output { slot, value },
+                stack: false,
+            },
+            depth,
+        )?;
+        self.notify_value(target, &old, None)
+    }
+
+    /// The variable an output field names.
+    fn output_key(&mut self, id: u16, node: &Node, name: &str) -> Option<VarKey> {
+        match expr::lvalue(field(&node.fields, name)) {
+            Ok(target) => target.map(|target| source_key(id, target)),
+            Err(error) => {
+                self.report(self.site(id, node), Issue::Expression(error));
+                None
+            }
+        }
     }
 
     /// The cast's update: the hook flies on, or the cast ends on what it met.
-    pub(super) fn tick_grapple(&mut self, key: StateKey) -> Result<(), InitFault> {
+    pub(super) fn tick_grapple(&mut self, key: StateKey, depth: usize) -> Result<(), InitFault> {
         let Some(mut cast) = self.machine.grapples.get(&key).cloned() else {
             return Ok(());
         };
@@ -197,7 +259,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
             Some(hit) if self.hook_holds(id, node, hit)? => Some(hit),
             _ => None,
         };
-        self.write_hook(id, node, hit)?;
+        self.write_hook(key, node, hit, depth)?;
         self.machine.grapples.remove(&key);
         self.clear_tick(key);
         self.post(id, Event::Finish(key.raw))
@@ -247,15 +309,27 @@ impl<W: World> Vm<'_, '_, '_, W> {
         }
     }
 
-    /// The end's outputs.
-    fn write_hook(&mut self, id: u16, node: &Node, hit: Option<Hit>) -> Result<(), InitFault> {
+    /// The end's outputs: a hit goes into the bound outputs as their
+    /// bindings are released (`0x7FF78AA848F0`), then into the rest.
+    fn write_hook(
+        &mut self,
+        key: StateKey,
+        node: &Node,
+        hit: Option<Hit>,
+        depth: usize,
+    ) -> Result<(), InitFault> {
+        let id = key.instance;
         let Some(hit) = hit else {
             return self.put(id, node, "m_9E1A7C58", Value::Bool(false));
         };
+        let point = Value::Vector(hit.point);
+        for (name, _) in OUTPUTS {
+            if let Some(target) = self.output_key(id, node, name) {
+                self.remove_link(key, target, Some(point.clone()), depth)?;
+            }
+        }
         for (name, value) in [
-            ("m_5ED803CF", Value::Vector(hit.point)),
-            ("m_835453C7", Value::Vector(hit.point)),
-            ("m_F2F8606D", Value::Vector(hit.point)),
+            ("m_835453C7", point),
             ("m_9E1A7C58", Value::Bool(true)),
             ("m_D7A2A03B", Value::Vector(hit.normal)),
             ("m_13BE2D3D", Value::Vector(hit.normal)),

@@ -100,17 +100,25 @@ impl Machine {
             };
             let Some(top) = entries.last() else { continue };
             // A chase's link is a binding of its variable on the client too
-            // (its begin binds the variable, `0x7FF78AAAF430`); a frame that
-            // lists the variable without it unbinds the chase there
-            // (`0x7FF78AAB78A0` → `0x7FF78AAB7420` takes the frame's list).
+            // (its begin binds the variable, `0x7FF78AAAF430`), as are a
+            // state's bound outputs; a frame that lists the variable without
+            // it unbinds the state there (`0x7FF78AAB78A0` → `0x7FF78AAB7420`
+            // takes the frame's list).
             let bindings: Vec<_> = entries
                 .iter()
-                .filter(|entry| entry.stack || matches!(entry.output, LinkValue::Chase))
+                .filter(|entry| {
+                    entry.stack
+                        || matches!(entry.output, LinkValue::Chase | LinkValue::Output { .. })
+                })
                 .map(|entry| StackBinding {
                     instance: entry.state.instance,
                     raw_state: entry.state.raw,
                     priority: entry.priority,
-                    slot: u8::from(matches!(entry.output, LinkValue::AbilityStack)),
+                    slot: match entry.output {
+                        LinkValue::AbilityStack => 1,
+                        LinkValue::Output { slot, .. } => slot,
+                        _ => 0,
+                    },
                 })
                 .collect();
             if !bindings.is_empty() {
@@ -205,6 +213,7 @@ impl Machine {
                     .remaining(self.now_ms),
             ),
             LinkValue::AbilityStack => Value::Bool(true),
+            LinkValue::Output { value, .. } => value.clone(),
         }
     }
 

@@ -749,6 +749,7 @@ impl<'a> SnapshotEncoder<'a> {
                         (state.kind, binding.slot),
                         (StateKind::Stack { .. } | StateKind::ChaseVar, 0)
                             | (StateKind::Ability { .. }, 1)
+                            | (StateKind::GrappleCast, 0 | 1)
                     )
             }) {
                 return Err(invalid());

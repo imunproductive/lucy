@@ -1433,7 +1433,11 @@ fn a_running_stec_state_that_leaves_the_projection_goes_out_off() {
 /// window). Left out, her client's rollback to a frame of the flight ended
 /// the cast it predicted and nothing began it again, so her pull waited for
 /// the server's `MoveTo`, an owner frame's round trip late
-/// (refs/reports/Grapple.md "DayFirstGrapple").
+/// (refs/reports/Grapple.md "DayFirstGrapple"). Its start (#431) and
+/// hardpoint's point (#432) go out with their bindings to it (slots 0 and
+/// 1): a frame listing them without unbound her cast, so its own end could
+/// not write the hit and her client took the miss branch
+/// ("DayFirstGrapple2").
 #[test]
 fn the_grappling_hooks_cast_goes_out_in_owner_frames_with_its_begin() {
     const HOOK: u16 = 4;
@@ -1474,7 +1478,46 @@ fn the_grappling_hooks_cast_goes_out_in_owner_frames_with_its_begin() {
     cast.start_ms = 1031 * 16 + 150;
     cast.kind = StateKind::GrappleCast;
     snapshot.instances[&HOOK].states.insert(CAST, cast);
+    let eye = Value::Vector([54.5654296875, 2.5, 42.1474609375]);
+    for (variable, slot) in [(431, 0), (432, 1)] {
+        snapshot.instances[&HOOK]
+            .variables
+            .insert(variable, eye.clone());
+        snapshot.bindings.insert(
+            (HOOK, variable),
+            vec![crate::vm::StackBinding {
+                instance: HOOK,
+                raw_state: CAST,
+                slot,
+                priority: crate::expr::StackPriority {
+                    level: 0,
+                    above_equals: true,
+                },
+            }],
+        );
+        snapshot
+            .resolved_bindings
+            .insert((HOOK, variable), eye.clone());
+    }
     let flying = encoder.project(&snapshot, View::Owner).unwrap();
+    let variables = &flying.instances[&HOOK].variables;
+    for (variable, slot) in [(431, 0), (432, 1)] {
+        assert_eq!(variables.values[&variable], eye);
+        let links = &variables.bindings[&variable];
+        assert_eq!(links.len(), 1, "#{variable}");
+        let link = &links[0];
+        assert_eq!(
+            (
+                link.instance,
+                link.state,
+                link.slot,
+                link.priority,
+                link.above
+            ),
+            (HOOK, CAST, slot, 0, true),
+            "#{variable}"
+        );
+    }
     let payload = &flying.instances[&HOOK].states[&CAST].payload;
     assert_eq!(
         *payload,
