@@ -67,7 +67,7 @@ use orpheus_script::{
     controller::HeroSelectRequest,
     mode::ModePlayer,
     snapshot::ProjectedSnapshot,
-    vm::{AuraChange, GameMessage, TrackedStat},
+    vm::{AuraChange, GameMessage, ScopeChange, TrackedStat},
     wire::chunk,
 };
 use orpheus_sim::{
@@ -1026,14 +1026,9 @@ fn initial_controller(
     team: u8,
     tick: u32,
 ) -> io::Result<orpheus_core::bits::BitWriter> {
-    let heroes = scene
-        .heroes()
-        .heroes()
-        .map(|hero| (hero.guid, hero.role_guid()))
-        .collect();
     let controller = scene.controller();
     let mut script = controller
-        .start_script(scene.shared_graphs(), entity, team, heroes, tick)
+        .start_script(scene.shared_graphs(), entity, team, scene.heroes(), tick)
         .map_err(invalid)?;
     script
         .hero_select(tick, HeroSelectRequest::OpenOrClose(true))
@@ -3081,6 +3076,7 @@ impl State {
     /// the other controllers in its tick.
     fn route_messages(&mut self, tick: u32) {
         let mut dummies = Vec::new();
+        let mut scopes = Vec::new();
         for (&id, room) in &mut self.rooms {
             let next = room.next_dummy();
             let Some(world) = &mut room.world else {
@@ -3093,6 +3089,11 @@ impl State {
                 .flatten()
                 .map(|peer| &mut peer.world)
                 .collect();
+            // The Training Partner console's scope 12 on a player's body
+            // makes the re-picked dummy there (`265F` node 30).
+            for world in &mut worlds {
+                world.set_next_dummy(Some(next));
+            }
             let mut players = Players::new(&mut worlds, tick);
             let mut messages = players.take_messages();
             messages.append(&mut room.mail);
@@ -3121,10 +3122,72 @@ impl State {
             }
             deliver_held(&held, &mut room.held_reach, &mut recipients);
             deliver(messages, ends, &mut recipients);
-            dummies.push((id, world.scene.take_dummy_changes()));
+            let mut changes = world.scene.take_dummy_changes();
+            drop(players);
+            let mut opened = Vec::new();
+            let mut writes = Vec::new();
+            for player in &mut worlds {
+                changes.extend(player.take_dummy_changes());
+                opened.extend(player.take_scope_changes());
+                writes.extend(player.take_parent_writes());
+            }
+            // A body's scope instance sets its console's variables
+            // (`STU_D49BBD03`: the console's `#940` on a re-pick).
+            for write in &writes {
+                world.scene.set_parent_variable(write);
+            }
+            dummies.push((id, changes));
+            scopes.push((id, opened));
         }
         for (id, changes) in dummies {
             self.change_dummies(id, changes);
+        }
+        // The players' bodies' scope states (the console's scope 197 from
+        // its scope 12 on a body, on the dummy a re-pick made), after the
+        // dummies came.
+        for (id, changes) in scopes {
+            self.change_scopes(id, tick, changes);
+        }
+    }
+
+    /// The scope instances of the placed scripts' and the players' bodies'
+    /// scope states (`orpheus_script` `vm/scopes.rs`: the Training Partner
+    /// console's scope 12 on the bodies near it, scope 126 on every
+    /// controller, scope 197 from a body's scope 12 on a re-picked dummy)
+    /// open or close in the target's player's scripts; an opened one goes
+    /// back to its scope state for its frame record. A target no player
+    /// runs gets none.
+    fn change_scopes(&mut self, id: MatchId, tick: u32, changes: Vec<ScopeChange>) {
+        let Some(room) = self.rooms.get_mut(&id) else {
+            return;
+        };
+        let Some(world) = &mut room.world else {
+            return;
+        };
+        let mut peers = room_peers(&mut self.peers, &self.seats, id, room.players.len());
+        for change in changes {
+            let target = change.target();
+            let Some(player) = peers
+                .iter_mut()
+                .flatten()
+                .find(|peer| peer.world.runs(target))
+            else {
+                continue;
+            };
+            let (Some(instance), ScopeChange::Open { source, .. }) =
+                (player.world.change_scope(tick, &change), &change)
+            else {
+                continue;
+            };
+            if world.scene.placed_scripts().runs(source.entity) {
+                world.scene.scope_opened(*source, target, instance);
+            } else if let Some(owner) = peers
+                .iter_mut()
+                .flatten()
+                .find(|peer| peer.world.runs(source.entity))
+            {
+                owner.world.scope_opened(*source, target, instance);
+            }
         }
     }
 
@@ -3204,6 +3267,7 @@ impl State {
             }
             self.update_combat(tick, now);
             let mut dummies = Vec::new();
+            let mut scopes = Vec::new();
             for (&id, room) in &mut self.rooms {
                 room.begin_mode_without_flow(tick);
                 let next = room.next_dummy();
@@ -3232,6 +3296,7 @@ impl State {
                     world.scene.set_next_dummy(Some(next));
                     world.scene.advance_placed(tick, &holds);
                     dummies.push((id, world.scene.take_dummy_changes()));
+                    scopes.push((id, world.scene.take_scope_changes()));
                     bot_voices.insert(id, world.scene.take_bot_voices());
                     if let Some(combat) = &mut world.combat {
                         if let Ok(replacements) = combat.respawn_due(&mut world.scene, tick, now) {
@@ -3246,6 +3311,9 @@ impl State {
             }
             for (id, changes) in dummies {
                 self.change_dummies(id, changes);
+            }
+            for (id, changes) in scopes {
+                self.change_scopes(id, tick, changes);
             }
         }
         // match.py `update`: the countdown (now the match flow) runs before

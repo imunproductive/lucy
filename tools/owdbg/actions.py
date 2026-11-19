@@ -26,6 +26,8 @@ at the first input sample after the server's '[MM] Match found', then after a fi
     fire [S]  jump  crouch [S]  melee  reload  interact  ultimate
     ability 1|2                Shift / E
     move DIR S                 DIR forward|back|left|right (or forward-left, ...), S seconds
+    walk X Z [S]               walk forward, turned toward the map point (X, Z) from our body's position,
+                               until within 0.6 m of it (horizontally), at most S seconds (default 20)
     look YAW [PITCH]           absolute view, degrees (yaw: forward = (sin, 0, cos); pitch + down)
     turn DYAW [DPITCH]         relative view, degrees
     aim-at-bot [N]             turn to the nearest enemy Training Bot about level with us (N: entity
@@ -50,6 +52,8 @@ at the first input sample after the server's '[MM] Match found', then after a fi
                                time. Refused in the spawn room (invulnerable there): in the
                                Practice Range walk out first (`move forward 4`)
     screenshot [NAME]          PNG of the window into research/out/owdbg/
+    click X Y                  left click at (X, Y), fractions of the window's client width and
+                               height (posted to the window, no focus needed)
     position                   log our position and the bots'
     trace S                    for S seconds (the script goes on meanwhile), log at every input
                                sample the newest command frame in component 59's ring and our
@@ -377,6 +381,13 @@ def parse(text):
             if not rest:
                 raise SystemExit("--actions: hero NAME")
             steps.append(("hero",) + _hero(" ".join(rest)))
+        elif verb == "walk":
+            steps.append(("walk", num(0), num(1), num(2, 20.0)))
+        elif verb == "click":
+            x, y = num(0), num(1)
+            if not (0 <= x <= 1 and 0 <= y <= 1):
+                raise SystemExit(f"--actions: {raw.strip()!r}: X and Y are fractions of the window (0-1)")
+            steps.append(("click", x, y))
         elif verb == "screenshot":
             steps.append(("screenshot", rest[0] if rest else None))
         elif verb == "position":
@@ -645,6 +656,7 @@ class Actions:
     TAP = 0.06
     EYE = 0.65  # the eye above a body's component 4 position (about 1 m above the feet)
     CHEST = 0.15  # the aim point above a bot's component 4 position
+    WALK_NEAR = 0.6  # `walk` ends this close to its point (horizontally)
 
     def __init__(self, s, args, range_entry=None):
         self.s, self.args, self.dbg = s, args, s.dbg
@@ -942,10 +954,23 @@ class Actions:
                 self.until = None
                 self.hero_step = {"kind": "aim", "slot": step[1], "end": now + 30}
                 return
+        elif verb == "walk":
+            self.track = None
+            self.hero_step = {"kind": "walk", "x": step[1], "z": step[2], "end": now + step[3]}
         elif verb == "hero":
             self.hero_step = {"kind": "hero", "hero": step[1], "at": step[2], "phase": "open", "t": now}
         elif verb == "screenshot":
             self.screenshot(step[1])
+            self.until = now
+        elif verb == "click":
+            from .game import capture, post_click
+            hwnd = self.s.window()
+            if hwnd:
+                width, height, _ = capture(hwnd)
+                post_click(hwnd, int(width * step[1]), int(height * step[2]))
+                self.log(f"click at ({int(width * step[1])}, {int(height * step[2])})")
+            else:
+                self.log("click: no game window")
             self.until = now
         elif verb == "trace":
             self.trace_until = now + step[1]
@@ -1084,6 +1109,8 @@ class Actions:
                 self.log("aim-at-bot: no bot found; skipped")
                 return True
             return False
+        if st["kind"] == "walk":
+            return self._walk(st, now)
         from .game import capture, post_click
         from .msg import RangeEntry
         hwnd = self.s.window()
@@ -1132,6 +1159,34 @@ class Actions:
                 return True
             return False
         return True
+
+    def _walk(self, st, now):
+        """One tick of `walk X Z`: forward, the view turned toward (X, Z) from our body's position,
+        until within WALK_NEAR of it (horizontally) or the step's time is up. True when over."""
+        p = self.positions.position(self.body) if self.body is not None else None
+        if p is None:
+            if now > st["end"]:
+                self.log("walk: no position of our body (scan or server trace missing); skipped")
+                self.move = None
+                return True
+            if not self.positions.busy and not (self.body and self.positions.known(self.body)):
+                self.positions.rescan(min_gap=5)
+            return False
+        dx, dz = st["x"] - p[0], st["z"] - p[2]
+        distance = math.hypot(dx, dz)
+        if distance < self.WALK_NEAR or now > st["end"]:
+            self.move = None
+            self.log(f"walk: {'reached' if distance < self.WALK_NEAR else 'gave up'} ({st['x']:.2f}, {st['z']:.2f}) "
+                     f"at ({p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f}), {distance:.2f} m off")
+            return True
+        yaw = wrap16(math.atan2(dx, dz) * UNITS)
+        if self.lock_view is None or abs(wrap16(yaw - self.lock_view[0])) > 300:
+            self.turn_to(yaw, 0)
+        # Throttle only once the view points the way (within ~10 degrees).
+        view = self.view()
+        ahead = view is not None and abs(wrap16(view[0] - yaw)) < 1800
+        self.move = (127, 0, now + 0.2) if ahead else None
+        return False
 
     def _work(self, fn):
         """Run fn on a worker thread (it sleeps between messages or waits for HTTP); the step

@@ -50,7 +50,7 @@ use orpheus_content::{
         SCRIPT_SETTINGS,
     },
     heroes::{ANA, Hero, SOLDIER, WIDOWMAKER},
-    parameters::{ClientGameMessage, HeroSelectRequest},
+    parameters::{ClientGameMessage, HeroSelectRequest, OPEN_OR_CLOSE, PICK_HERO, ParameterValue},
 };
 use orpheus_core::tick::{MAX_LEASE_FRAME, TICK_PERIOD};
 use orpheus_physics::{
@@ -67,13 +67,15 @@ use orpheus_script::{
     ai_definitions::AiControl,
     graph::GraphStore,
     mode::EVERY_ENTITY,
+    placed::{DummyChange, NextDummy},
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
     vm::{
         AssistLink, AuraChange, BodyEffects, DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage,
-        HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, RaisedCriteria, Scaled,
-        Snapshot, TargetCandidate, TrackedStat, VoiceRequest, combat_scale,
+        HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, ParentWrite, RaisedCriteria,
+        Scaled, ScopeChange, ScopeSource, Snapshot, TargetCandidate, TrackedStat, VoiceRequest,
+        combat_scale,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
@@ -311,6 +313,40 @@ pub trait OwnerBodyRuntime: Send {
     /// The aura changes the body's ApplyAura states made since the last
     /// call, for the match to hand to their targets.
     fn take_aura_changes(&mut self) -> Vec<AuraChange> {
+        Vec::new()
+    }
+
+    /// A scope instance opened or closed on the body (`vm/scopes.rs` in
+    /// `orpheus_script`; the Training Partner console's scope 12): the
+    /// instance opened.
+    fn change_scope(&mut self, _change: &ScopeChange) -> io::Result<Option<u16>> {
+        Ok(None)
+    }
+
+    /// The scope instances the body's scope states opened or closed on
+    /// their targets since the last call (the console's scope 197 from
+    /// scope 12, on a re-picked dummy), for the match.
+    fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
+        Vec::new()
+    }
+
+    /// The match opened the scope instance `instance` on `target` for the
+    /// body's scope state `source`.
+    fn scope_opened(&mut self, _source: ScopeSource, _target: u32, _instance: u16) {}
+
+    /// The variables the body's scope instances set in their scope states'
+    /// instances since the last call (`STU_D49BBD03`), for the match.
+    fn take_parent_writes(&mut self) -> Vec<ParentWrite> {
+        Vec::new()
+    }
+
+    /// The player and body the next dummy bot the body's graphs make gets
+    /// (the console's scope 12 on a re-pick); none: they make none.
+    fn set_next_dummy(&mut self, _next: Option<NextDummy>) {}
+
+    /// The dummy bots the body's graphs made or removed since the last
+    /// call, for the match.
+    fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
         Vec::new()
     }
 
@@ -2664,7 +2700,13 @@ impl WorldDelivery {
                     (false, Delivery::Script { resend: false, .. }) => {}
                     (false, _) => retry.push(record),
                     (true, Delivery::Baseline) => {
-                        if matches!(record.update.operation, Some(Operation::Create(_))) {
+                        // A server placeable's create (`Operation::Placeable`)
+                        // counts too: its statescript frames wait for it
+                        // (`update_placed`).
+                        if matches!(
+                            record.update.operation,
+                            Some(Operation::Create(_) | Operation::Placeable(..))
+                        ) {
                             self.created.insert(record.update.entity);
                         }
                     }
@@ -2776,13 +2818,25 @@ impl WorldDelivery {
         })
     }
 
+    /// The queued records a datagram may carry now, in the order it takes
+    /// them: queue order (a record follows its prerequisites), except the
+    /// owner delta of the client's own body, which goes first once his
+    /// possession arrived. It carries the command frame his prediction is
+    /// checked at, and the volleys that frame introduced
+    /// (`OwnerProjectiles::owner_sent`); a datagram over its budget drops
+    /// its last records, and the next tick's delta replaces an unsent one at
+    /// a later command frame. Queued last, it lost the datagram to the
+    /// Range's once-a-second full mode frame (about 940 bytes): a volley
+    /// shot at frame f was introduced at f + 1, so its ids of both frames
+    /// were confirmed (Echo's Tri-Shot came as six bolts).
     pub(crate) fn ready(&self) -> Vec<Ready<'_>> {
         let body = self.body.map(|body| body.id);
         let mut created = body.is_none_or(|id| self.created.contains(&id.entity));
         let mut bound = body == self.bound;
         let mut destroyed = HashSet::new();
         let mut creating = HashSet::new();
-        self.queued
+        let mut ready: Vec<_> = self
+            .queued
             .iter()
             .enumerate()
             .filter_map(|(index, record)| {
@@ -2842,7 +2896,15 @@ impl WorldDelivery {
                 }
                 Some(Ready { index, record })
             })
-            .collect()
+            .collect();
+        let own = ready.iter().position(|item| {
+            matches!(item.record.delivery,
+                Delivery::BodyScript { id, delta: true, .. } if self.bound == Some(id))
+        });
+        if let Some(own) = own {
+            ready[..=own].rotate_right(1);
+        }
+        ready
     }
 
     /// Retain blocked records and remove only the exact records selected by the
@@ -2877,13 +2939,19 @@ impl WorldDelivery {
         });
     }
 
+    /// The queue indexes of the records a datagram carried, in queue order
+    /// (as [`WorldDelivery::sent`] takes them; [`WorldDelivery::ready`] may
+    /// put one first).
     pub(crate) fn sent_indices(ready: &[Ready<'_>], sent: &[RecordSource]) -> Vec<usize> {
-        sent.iter()
+        let mut indexes: Vec<_> = sent
+            .iter()
             .filter_map(|source| match *source {
                 RecordSource::Queued(index) => Some(ready[index].index),
                 RecordSource::Movement(_) => None,
             })
-            .collect()
+            .collect();
+        indexes.sort_unstable();
+        indexes
     }
 
     pub fn send_frame<E>(
@@ -3149,14 +3217,15 @@ impl WorldDelivery {
         self.started = Some(tick);
         // The player's controller graph runs from the world's start: hero
         // select, the multikills.
-        let heroes = scene
-            .heroes()
-            .heroes()
-            .map(|hero| (hero.guid, hero.role_guid()))
-            .collect();
         self.controller_script = scene
             .controller()
-            .start_script(scene.shared_graphs(), self.owner, viewer.team, heroes, tick)
+            .start_script(
+                scene.shared_graphs(),
+                self.owner,
+                viewer.team,
+                scene.heroes(),
+                tick,
+            )
             .map_err(|error| {
                 eprintln!(
                     "controller script of {:08X} can't start ({error})",
@@ -3281,6 +3350,10 @@ impl WorldDelivery {
             return Ok(());
         };
         if message.entity != self.owner {
+            return Ok(());
+        }
+        if !matches!(message.guid, PICK_HERO | OPEN_OR_CLOSE) {
+            self.instance_message(tick, message);
             return Ok(());
         }
         let request = message.hero_select(scene.heroes());
@@ -3530,6 +3603,19 @@ impl WorldDelivery {
         }
     }
 
+    /// Tests: the player's controller's instance of scope `scope`
+    /// (`vm/scopes.rs`), the one a client's 21616 from it names (the
+    /// Training Partner console's scope 126, where its picker sends `1213`).
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn controller_scope_instance(&self, scope: u32) -> Option<u16> {
+        let snapshot = self.controller_script.as_ref()?.snapshot()?;
+        snapshot
+            .instances
+            .iter()
+            .find(|(_, instance)| instance.scope.as_ref().is_some_and(|link| link.id == scope))
+            .map(|(&id, _)| id)
+    }
+
     /// Tests: whether state `state` of the current body's instance of graph
     /// `graph` is active.
     #[cfg(any(test, feature = "fixtures"))]
@@ -3546,6 +3632,28 @@ impl WorldDelivery {
                             .is_some_and(|state| state.active)
                 })
             })
+    }
+
+    /// Tests: the targets of the active scope state `state` of the current
+    /// body's instance of graph `graph`, each with the instance its frame
+    /// record names there (`orpheus_script` `vm/scopes.rs`).
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn body_scope_hits(&self, graph: u32, state: u16) -> Vec<(u32, Option<u16>)> {
+        let Some(snapshot) = self
+            .body_script
+            .as_ref()
+            .and_then(|script| script.runtime.snapshot())
+        else {
+            return Vec::new();
+        };
+        snapshot
+            .instances
+            .values()
+            .filter(|instance| instance.graph == graph)
+            .filter_map(|instance| instance.states.get(&state))
+            .filter(|state| state.active)
+            .flat_map(|state| state.scopes.iter().map(|hit| (hit.target, hit.instance)))
+            .collect()
     }
 
     /// Tests: whether the client acknowledged an owner frame of the current
@@ -4074,6 +4182,116 @@ impl WorldDelivery {
             .and_then(|script| script.runtime.change_aura(change).err());
         if let Some(error) = failure {
             self.drop_failed_script(&error.to_string());
+        }
+    }
+
+    /// A scope instance a scope state elsewhere (the Training Partner
+    /// console's `265F`: scope 12 on the player's body, scope 126 on his
+    /// controller) opens or closes on this player's body or controller at
+    /// `tick` (`orpheus_script` `vm/scopes.rs`): the instance opened. A
+    /// failure stops that script.
+    pub fn change_scope(&mut self, tick: u32, change: &ScopeChange) -> Option<u16> {
+        let target = change.target();
+        if self.takes_body_message(target) {
+            let script = self.body_script.as_mut()?;
+            return match script.runtime.change_scope(change) {
+                Ok(opened) => opened,
+                Err(error) => {
+                    self.drop_failed_script(&error.to_string());
+                    None
+                }
+            };
+        }
+        self.controller_script
+            .as_ref()
+            .filter(|script| script.entity() == target)?;
+        self.advance_controller(tick);
+        let script = self.controller_script.as_mut()?;
+        match script.change_scope(tick, change) {
+            Ok(opened) => opened,
+            Err(error) => {
+                eprintln!("controller script of {:08X} stopped ({error})", self.owner);
+                self.controller_script = None;
+                None
+            }
+        }
+    }
+
+    /// The player and body the next dummy bot the current body's graphs
+    /// make gets (the console's scope 12 there, on a re-pick).
+    pub fn set_next_dummy(&mut self, next: Option<NextDummy>) {
+        if let Some(script) = &mut self.body_script {
+            script.runtime.set_next_dummy(next);
+        }
+    }
+
+    /// The dummy bots the current body's graphs made or removed since the
+    /// last call, for the match.
+    pub fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
+        self.body_script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.runtime.take_dummy_changes())
+    }
+
+    /// The scope instances the current body's scope states opened or
+    /// closed on their targets since the last call (the Training Partner
+    /// console's scope 197 on a re-picked dummy), for the match.
+    pub fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
+        self.body_script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.runtime.take_scope_changes())
+    }
+
+    /// The match opened the scope instance `instance` on `target` for the
+    /// scope state `source` of this player's current body.
+    pub fn scope_opened(&mut self, source: ScopeSource, target: u32, instance: u16) {
+        if let Some(script) = &mut self.body_script {
+            script.runtime.scope_opened(source, target, instance);
+        }
+    }
+
+    /// The variables the current body's scope instances set in their scope
+    /// states' instances since the last call (the console's `#940` on a
+    /// re-pick), for the match.
+    pub fn take_parent_writes(&mut self) -> Vec<ParentWrite> {
+        self.body_script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.runtime.take_parent_writes())
+    }
+
+    /// A 21616 for the player's controller with a message other than hero
+    /// select's: what the controller's instance named there sends (the
+    /// action `STU_79A131B4`, 0x7FF789814C20, writes its host's entity and
+    /// its own instance; the Training Partner picker's `1213` from the
+    /// console's scope 126 there). Its parameters (`Parameters::rows`)
+    /// go to the instance's entries; a parameter the client sends as an
+    /// array of one value is that value, as the server's own sends carry
+    /// it. A blob the server can't read is dropped.
+    fn instance_message(&mut self, tick: u32, message: ClientGameMessage<'_>) {
+        let Ok(instance) = u16::try_from(message.instance) else {
+            return;
+        };
+        let Some(rows) = message.parameters.rows() else {
+            tracing::debug!(
+                target: "orpheus::join",
+                tick,
+                guid = format_args!("{:016X}", message.guid),
+                "game message with unread parameters"
+            );
+            return;
+        };
+        let parameters = rows
+            .into_iter()
+            .map(|(key, value)| (u32::from(key as u16), parameter_value(value)))
+            .collect();
+        self.advance_controller(tick);
+        let owner = self.owner;
+        let Some(script) = &mut self.controller_script else {
+            return;
+        };
+        if let Err(error) = script.receive_in_instance(tick, instance, message.guid, parameters) {
+            eprintln!("controller script of {owner:08X} stopped ({error})");
+            self.controller_script = None;
         }
     }
 
@@ -5398,6 +5616,28 @@ pub(crate) fn start_motions(mover: &mut Mover, motions: Vec<Motion>, dt: f64) {
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+}
+
+/// A 21616 parameter as the VM's value: an array of one value is that
+/// value ([`WorldDelivery::instance_message`]).
+fn parameter_value(value: ParameterValue) -> ScriptValue {
+    match value {
+        ParameterValue::Null => ScriptValue::Null,
+        ParameterValue::Bool(flag) => ScriptValue::Bool(flag),
+        ParameterValue::Integer(number) => ScriptValue::Integer(number),
+        ParameterValue::Float(number) => ScriptValue::Float(f64::from(number)),
+        ParameterValue::Asset(guid) => ScriptValue::Asset(guid),
+        ParameterValue::Vector([x, y, z]) => {
+            ScriptValue::Vector([f64::from(x), f64::from(y), f64::from(z)])
+        }
+        ParameterValue::Entity(entity) => ScriptValue::Entity(entity),
+        ParameterValue::Array(mut items) if items.len() == 1 => {
+            parameter_value(items.pop().expect("one item"))
+        }
+        ParameterValue::Array(items) => {
+            ScriptValue::Array(items.into_iter().map(parameter_value).collect())
+        }
+    }
 }
 
 #[cfg(test)]

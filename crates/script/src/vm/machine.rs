@@ -62,6 +62,7 @@ impl Machine {
             hero_selects: BTreeMap::new(),
             motions: Vec::new(),
             applied_auras: BTreeMap::new(),
+            scopes: BTreeMap::new(),
         })
     }
 
@@ -134,6 +135,8 @@ impl Machine {
                 continue;
             }
             let graph = graphs.graph(item.graph).expect("registered graph");
+            // An entry runs in the instances of its scope (`vm/scopes.rs`).
+            let scope = item.scope.as_ref().map_or(0, |scope| scope.id);
             entries.extend(
                 graph
                     .nodes
@@ -144,7 +147,8 @@ impl Machine {
                                 .field("m_gameMessage.m_gameMessage")
                                 .and_then(asset_guid)
                                 == Some(message)
-                            && (is_message_entry(node)
+                            && ((is_message_entry(node)
+                                && super::scopes::entry_scope(node) == scope)
                                 || (node.is_state()
                                     && node.state.is_some_and(|raw| {
                                         item.states.get(&raw).is_some_and(|state| state.active)

@@ -398,7 +398,11 @@ fn condition(
         "H&full" => mode.owner && mode.full,
         _ => {
             if let Some(name) = test.strip_prefix("valid:") {
-                let entity = layout_integer(fields, name)?;
+                // No entity (null) is the invalid id, as `entity_id` writes it.
+                let entity = match fields.get(name) {
+                    Some(FieldValue::Scalar(Value::Null)) => 0,
+                    _ => layout_integer(fields, name)?,
+                };
                 entity != 0 && entity & 0x1fff_ffff != 0x1fff_ffff
             } else if let Some(name) = test.strip_prefix('!') {
                 !layout_truthy(fields.get(name))
@@ -606,9 +610,7 @@ fn project(
         Family::Message => {
             fields.insert("stacked", Value::Bool(vm.flag("stacked")).into());
         }
-        Family::Hits => {
-            fields.insert("flag", Value::Bool(vm.flag("flag")).into());
-        }
+        Family::Hits => project_hits(&mut fields, &vm)?,
         Family::Flags13 if owner => {
             let value = vm.integer("value", 0)?;
             fields.insert("low", Value::Integer(value & 63).into());
@@ -719,6 +721,40 @@ fn project_ability(
             }
         }
     }
+    Ok(())
+}
+
+/// A scope state's targets (`snapshot.rs` builds the rows: target, host
+/// entity or null, instance, index, keep), as `Write_STU_07AD90EE`
+/// (0x7FF789C56790) writes them; melee's hit list (`STU_77E13026`) has
+/// none.
+fn project_hits(fields: &mut LayoutFields<'static>, vm: &Vm<'_>) -> Result<(), PayloadError> {
+    let hits = match vm.0.get("hits") {
+        None => &[][..],
+        Some(Value::Array(hits)) => hits.as_slice(),
+        _ => return Err(invalid_field("hits")),
+    };
+    let mut rows = Vec::with_capacity(hits.len());
+    for hit in hits {
+        let Value::Array(row) = hit else {
+            return Err(invalid_field("hits"));
+        };
+        let [target, host, instance, index, keep] = row.as_slice() else {
+            return Err(invalid_field("hits"));
+        };
+        rows.push(LayoutFields::from([
+            ("value", target.clone().into()),
+            ("entity", host.clone().into()),
+            ("extra", instance.clone().into()),
+            ("w", index.clone().into()),
+            ("a", keep.clone().into()),
+            ("b", Value::Bool(true).into()),
+        ]));
+    }
+    let count = u16::try_from(rows.len()).map_err(|_| invalid_field("hits"))?;
+    fields.insert("n", Value::Integer(i64::from(count)).into());
+    fields.insert("hits", FieldValue::Rows(rows));
+    fields.insert("flag", Value::Bool(vm.flag("flag")).into());
     Ok(())
 }
 
@@ -892,6 +928,25 @@ mod tests {
             214,
             "1032547698badcfeb304000080fe900a08182e220060ffffff7f28",
         );
+    }
+
+    /// A row with no entity (null: a scope target with no instance yet,
+    /// `project_hits`) writes the invalid id and skips its `valid:entity`
+    /// branch, as one with entity 0 does.
+    #[test]
+    fn a_null_entity_is_the_invalid_id() {
+        let table = CodecTable::from_json(FIXTURE).unwrap();
+        let codec = table.codec("FixtureState").unwrap();
+        let encode = |entity: Value| {
+            let mut fields = fields();
+            let Some(FieldValue::Rows(rows)) = fields.get_mut("rows") else {
+                unreachable!("the fixture has rows");
+            };
+            rows[1].insert("entity", entity.into());
+            let out = codec.encode_layout(&fields, LayoutMode::default()).unwrap();
+            (out.bit_len(), out.as_bytes().to_vec())
+        };
+        assert_eq!(encode(Value::Null), encode(Value::Entity(0)));
     }
 
     #[test]

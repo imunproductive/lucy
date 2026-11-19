@@ -129,12 +129,34 @@
 //!   reads it only then); 0 keeps them in the order found. Others are not
 //!   modelled (find nothing). With a scoring it changes nothing.
 //! - `m_95FFC3C5`: a line-of-sight test of each new body (and, with
-//!   `m_32AFE9AA`, the found ones): rays from `m_D59188D5` (else the
-//!   centre) through the collision of `m_3D667CE3`'s profile (else
-//!   `0690.002D`) to 0.3 and 0.6 of the body's height (or its hardpoints
-//!   `0DC0.0001`/`0DC0.01CD`); `m_8D13DD07` adds a sweep first and
-//!   `m_2F5FAF65` two rays to the sides. Not modelled: a search with it is
-//!   an assumption ("no line-of-sight test"), as are its inputs.
+//!   `m_32AFE9AA`, the found ones), `0x7FF789BB3570` (its arguments from
+//!   the search `0x7FF789BBE3B0`): a body is seen when one of its rays
+//!   meets nothing of the map (the scene query `0x7FF789C707F0` →
+//!   `0x7FF789AFEEB0` with a filter of zero masks: the map's collision of
+//!   the ray profile, a hit on the body itself not counting). The rays go
+//!   from `m_D59188D5` (else the centre) through the profile of
+//!   `m_3D667CE3` (its `m_C1903771`, else `002D.097`,
+//!   `0x0690_0000_0000_002D`), in this order, to the body where the
+//!   searcher's player saw it (`m_1C2A9945`):
+//!   1. for a body that isn't dead (no health component, or
+//!      `0x7FF789ADBF00`: maximum health set and health 0), its model's
+//!      hardpoint `0DC0.0001`, when the model has it;
+//!   2. the point 0.3 of its height up its axis;
+//!   3. its model's hardpoint `0DC0.01CD`, else the point 0.6 up;
+//!   4. with `m_2F5FAF65`, the two points 0.45 up and half its radius to
+//!      each side of the ray to point 2 (the side is up × that ray).
+//!
+//!   `m_8D13DD07` first sweeps from the origin to point 2 (`0x7FF78AA64A40`
+//!   with `0x7FF789B9D4B0`); anything it meets hides the body. A body with
+//!   component 128 takes `0x7FF789CA8EC0` in place of rays 2-4 (no body
+//!   the server lists has it [inference: its one factory, no hero data
+//!   class]). The fields that override the point or add hardpoint lists
+//!   (`m_48837057`, `m_294660A6`, `m_229DD034`, `m_BA6C9F75`,
+//!   `m_9E1426F6`, `m_E8474EE8`, `m_C1B724B2`, `m_47AB1887`) are among
+//!   those a search can't run with. The server has no hardpoints, so it
+//!   casts rays 2, 0.6 up and 4: a body ray 2 sees is seen as the client
+//!   sees it; any other answer is an assumption naming the hardpoints, as
+//!   is a seen body of a search with a sweep, or a world with no map.
 //! - `m_1C2A9945`: when the searcher has a player (component 43 → 29; a
 //!   projectile through its shooter, component 50), bodies are tested
 //!   where that player saw them, rewound (`0x7FF789CBB340`,
@@ -157,12 +179,12 @@
 //! rooms' `0D62` st0 and st3 (a 100 m sphere around the room's own
 //! placeable, whole: no assumption), `0257` st6 and Reinhardt's `0095`
 //! st18, both counting allies within 10 m for a criteria, the Biotic
-//! Field's `0258` st0, quick melee's `0043` st5 and the aimed ally cones
-//! (Nano Boost's `0B9E` st6; the line of sight assumed in all but the
-//! first). Any other set field (sweep origins, other scorings, the output
-//! `m_CEE20F6F` that SetVars read) or an offset the server can't evaluate
-//! leaves the search finding nothing, recorded as an assumption naming the
-//! field.
+//! Field's `0258` st0, quick melee's `0043` st5, the aimed ally cones
+//! (Nano Boost's `0B9E` st6) and the Training Partner console's `265F`
+//! rid1 (the players within 1.75 m of it, in sight). Any other set field
+//! (the output `m_CEE20F6F` that SetVars read, other scorings) or an
+//! offset the server can't evaluate leaves the search finding nothing,
+//! recorded as an assumption naming the field.
 //!
 //! Assumed, as nothing in the data says: a body counts when its capsule
 //! (as the match places it, or where the searcher's player saw it) comes
@@ -225,9 +247,22 @@ const FREE_FOR_ALL_TEAM: u8 = 4;
 const BODY_KINDS: u64 = 0x1_0041;
 const DEAD: u64 = 0x10;
 
-/// Fields the client reads that the server runs the search without, each
-/// an assumption when set (see the module notes).
-const ASSUMED: &[(&str, &str)] = &[("m_95FFC3C5", "no line-of-sight test")];
+/// The line of sight (see the module notes): the switch, its origin, the
+/// filter whose ray profile it casts with, the sweep before the rays and
+/// the two rays to the sides.
+const SIGHT: &str = "m_95FFC3C5";
+const SIGHT_ORIGIN: &str = "m_D59188D5";
+const SIGHT_FILTER: &str = "m_3D667CE3";
+const SIGHT_SWEEP: &str = "m_8D13DD07";
+const SIGHT_SIDES: &str = "m_2F5FAF65";
+/// The ray profile of a line of sight whose filter names none
+/// (`002D.097`, `0x7FF789BB3570`).
+const SIGHT_PROFILE: u64 = 0x0690_0000_0000_002D;
+/// The shares of a body's height its rays aim at: ray 2, ray 3 without the
+/// hardpoint, and the side rays.
+const SIGHT_LOW: f64 = 0.3;
+const SIGHT_HIGH: f64 = 0.6;
+const SIGHT_SIDE: f64 = 0.45;
 
 /// `m_1C2A9945`: the bodies where the searcher's player saw them.
 const REWIND: &str = "m_1C2A9945";
@@ -317,6 +352,67 @@ impl Found {
             .iter()
             .find(|(scored, _)| *scored == entity)
             .map_or(UNSCORED, |(_, score)| *score)
+    }
+}
+
+/// A line of sight's rays as evaluated now (see the module notes).
+struct Sight {
+    origin: [f64; 3],
+    profile: u64,
+    sides: bool,
+}
+
+/// What a line of sight says of one body.
+enum Sighting {
+    /// Ray 2 sees it: the client sees it too.
+    Seen,
+    /// Another ray sees it, or none does; the client's hardpoint rays could
+    /// answer otherwise.
+    Guessed(bool),
+}
+
+impl Sight {
+    /// Whether `body` is in sight; None: the map can't answer.
+    fn sees(&self, map: &dyn MapRays, body: &TargetCandidate) -> Option<Sighting> {
+        let [x, y, z] = body.feet;
+        let up = |share: f64| [x, y + body.height * share, z];
+        let low = up(SIGHT_LOW);
+        if self.clear(map, low)? {
+            return Some(Sighting::Seen);
+        }
+        if self.clear(map, up(SIGHT_HIGH))? {
+            return Some(Sighting::Guessed(true));
+        }
+        if self.sides {
+            // Up × the ray to point 2, of unit length; along x without one.
+            let [ahead_x, _, ahead_z] = sub(low, self.origin);
+            let length = (ahead_x * ahead_x + ahead_z * ahead_z).sqrt();
+            let side = if length > 0.0 {
+                [ahead_z / length, 0.0, -ahead_x / length]
+            } else {
+                [1.0, 0.0, 0.0]
+            };
+            let middle = up(SIGHT_SIDE);
+            let half = body.radius * 0.5;
+            if self.clear(map, along(middle, side, half))?
+                || self.clear(map, along(middle, side, -half))?
+            {
+                return Some(Sighting::Guessed(true));
+            }
+        }
+        Some(Sighting::Guessed(false))
+    }
+
+    /// Whether the ray from the origin to `point` meets nothing of the map.
+    fn clear(&self, map: &dyn MapRays, point: [f64; 3]) -> Option<bool> {
+        let offset = sub(point, self.origin);
+        let reach = dot(offset, offset).sqrt();
+        if reach < 1e-6 {
+            return Some(true);
+        }
+        let direction = offset.map(|value| value / reach);
+        let hit = map.cast(self.origin, direction, reach, Some(self.profile))?;
+        Some(hit.is_none_or(|hit| hit.distance >= reach))
     }
 }
 
@@ -479,11 +575,6 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 return Ok(false);
             }
         };
-        for (name, answer) in ASSUMED {
-            if is_set(field(&node.fields, name)) {
-                self.assume(site, &format!("{CLASS} {name}"), answer);
-            }
-        }
         // The client takes the bodies found before from the found output
         // itself (none without it), keeps them unless `m_32AFE9AA` tests
         // them again, and appends up to the limit's count of new ones (best
@@ -622,6 +713,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 entities.push(candidate.entity);
             }
         }
+        if is_set(field(&node.fields, SIGHT)) {
+            entities = self.in_sight(id, node, centre, &bodies, entities);
+        }
         let mut found = Found {
             entities,
             scores: Vec::new(),
@@ -649,6 +743,91 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             found.entities = ranked;
         }
         Ok((found, search.limit))
+    }
+
+    /// The bodies of `found` (all of `bodies`) the searcher sees, in order
+    /// (`m_95FFC3C5`, see the module notes); each answer the client could
+    /// give otherwise is an assumption. Without a line of sight the server
+    /// can cast (an origin it can't evaluate, a profile it can't read, no
+    /// map) it sees them all, also an assumption.
+    fn in_sight(
+        &mut self,
+        id: u16,
+        node: &Node,
+        centre: [f64; 3],
+        bodies: &[TargetCandidate],
+        found: Vec<u32>,
+    ) -> Vec<u32> {
+        if found.is_empty() {
+            return found;
+        }
+        let site = self.site(id, node);
+        let sight = match self.sight(id, node, centre) {
+            Ok(sight) => sight,
+            Err(name) => {
+                self.assume(site, &format!("{CLASS} {name}"), "no line-of-sight test");
+                return found;
+            }
+        };
+        let Some(map) = self.world.map_rays() else {
+            self.assume(site, &format!("{CLASS} {SIGHT}"), "no line-of-sight test");
+            return found;
+        };
+        let sweep = is_set(field(&node.fields, SIGHT_SWEEP));
+        let mut seen = Vec::new();
+        let mut assumed = Vec::new();
+        for entity in found {
+            let body = bodies
+                .iter()
+                .find(|body| body.entity == entity)
+                .expect("a found body is listed");
+            let visible = match sight.sees(map, body) {
+                None => {
+                    assumed.push((SIGHT, "no line-of-sight test"));
+                    true
+                }
+                Some(Sighting::Seen) => true,
+                Some(Sighting::Guessed(visible)) => {
+                    assumed.push((
+                        "m_95FFC3C5 hardpoints",
+                        "rays to 0.3 and 0.6 of the height, no hardpoint 0DC0.0001/01CD",
+                    ));
+                    visible
+                }
+            };
+            if visible {
+                if sweep {
+                    assumed.push((SIGHT_SWEEP, "no sweep before the rays"));
+                }
+                seen.push(entity);
+            }
+        }
+        for (name, answer) in assumed {
+            self.assume(site, &format!("{CLASS} {name}"), answer);
+        }
+        seen
+    }
+
+    /// The line of sight's origin, ray profile and side rays, or the field
+    /// the server can't evaluate.
+    fn sight(&mut self, id: u16, node: &Node, centre: [f64; 3]) -> Result<Sight, &'static str> {
+        let fields = &node.fields;
+        let origin = match field(fields, SIGHT_ORIGIN) {
+            Json::Null => centre,
+            config => match self.evaluate_quietly(id, node, config) {
+                Some(Value::Vector(origin)) => origin,
+                _ => return Err(SIGHT_ORIGIN),
+            },
+        };
+        let profile = match field(fields, SIGHT_FILTER) {
+            Json::Null => None,
+            filter => super::rays::profile(filter).map_err(|_| SIGHT_FILTER)?,
+        };
+        Ok(Sight {
+            origin,
+            profile: profile.unwrap_or(SIGHT_PROFILE),
+            sides: is_set(field(fields, SIGHT_SIDES)),
+        })
     }
 
     /// Whether `entity` passes the parts of a filter the client tests after

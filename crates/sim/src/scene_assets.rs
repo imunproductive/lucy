@@ -70,7 +70,10 @@ use orpheus_script::{
     map_tags::MapTags,
     placed::{DummyChange, NextDummy},
     vitals::Vitals,
-    vm::{GameMessage, MapRays, MessageEnd, TargetCandidate, Unknowns},
+    vm::{
+        GameMessage, MapRays, MessageEnd, ParentWrite, ScopeChange, ScopeSource, TargetCandidate,
+        Unknowns,
+    },
     wire::Variables,
 };
 use orpheus_wire::entity::{Component, EntityUpdate, Operation};
@@ -965,6 +968,24 @@ impl PreparedScene {
     /// call, for the match to make or remove.
     pub fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
         self.placed_scripts.take_dummy_changes()
+    }
+
+    /// The scope instances the placed scripts opened or closed on their
+    /// targets since the last call ([`PlacedScripts::take_scope_changes`]).
+    pub fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
+        self.placed_scripts.take_scope_changes()
+    }
+
+    /// The match opened a placed script's scope instance
+    /// ([`PlacedScripts::scope_opened`]).
+    pub fn scope_opened(&mut self, source: ScopeSource, target: u32, instance: u16) {
+        self.placed_scripts.scope_opened(source, target, instance);
+    }
+
+    /// A player's scope instance set a variable of a placed script's scope
+    /// state's instance ([`PlacedScripts::set_parent_variable`]).
+    pub fn set_parent_variable(&mut self, write: &ParentWrite) {
+        self.placed_scripts.set_parent_variable(write);
     }
 
     /// The scene's entities that take game messages at world tick `tick`
@@ -1875,6 +1896,7 @@ mod tests {
             team: Some(team),
             dead: false,
             controller: None,
+            player: None,
             ai: false,
             ai_control: None,
             feet: [x + dx, y, z],
@@ -1920,20 +1942,12 @@ mod tests {
             let search = &field.states[&6];
             assert_eq!(search.kind, StateKind::TrackTargets);
             assert_eq!((search.active, search.activation), (false, 1));
-            // The client's line of sight (`m_95FFC3C5`) and rewind
-            // (`m_1C2A9945`) are what the search runs without.
-            assert!(snapshot.assumptions.iter().any(|item| {
-                (
-                    item.site.graph,
-                    item.site.node,
-                    item.class.as_str(),
-                    item.answer,
-                ) == (
-                    0x0257,
-                    Some(11),
-                    "STUStatescriptStateTrackTargets m_95FFC3C5",
-                    "no line-of-sight test",
-                )
+            // The client's line of sight (`m_95FFC3C5`) is cast against the
+            // map now (`vm/targets.rs`, 2026-11-19): the bodies in the open
+            // are seen by its 0.3-height ray, with no assumption.
+            assert!(!snapshot.assumptions.iter().any(|item| {
+                (item.site.graph, item.site.node, item.answer)
+                    == (0x0257, Some(11), "no line-of-sight test")
             }));
             field.variables.get(&FIELD_COUNT).cloned()
         };
@@ -1987,6 +2001,7 @@ mod tests {
             team: Some(team),
             dead: false,
             controller: None,
+            player: None,
             ai: false,
             ai_control: None,
             feet: [x + dx, y, z + dz],

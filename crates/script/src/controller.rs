@@ -37,8 +37,8 @@ use crate::{
     expr::EntityRelation,
     graph::GraphStore,
     vm::{
-        Component, GameMessage, InitFault, MAX_INIT_WORK, Root, Site, Snapshot, StateKind,
-        TrackedStat, Unknowns, VoiceRequest, World,
+        Component, GameMessage, InitFault, MAX_INIT_WORK, Root, ScopeChange, Site, Snapshot,
+        StateKind, TrackedStat, Unknowns, VoiceRequest, World,
     },
     wire::{Value, Variables},
 };
@@ -100,7 +100,23 @@ const ASSUMED: &[(&str, &str)] = &[
         "STU_A89D860A",
         "false: hero select opens on the mode's 0727",
     ),
+    // `265F` rid22's filter (the Training Partner pick `1213` in the
+    // console's scope 126) and `0C90` rid3/rid164/rid170: the client's
+    // array evaluate (slot 5 `0x7FF789C01160`) lists what its host's
+    // entity's vtable +624 gives, which the server can't read. Answered:
+    // the heroes the controller may play, the list `STU_1AAB4B4F` gives.
+    ("STU_AFC074B3", "the heroes the controller may play"),
 ];
+
+/// A hero a controller may play.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayableHero {
+    pub hero: u64,
+    /// Its role identifier (`STU_BE1161C0`).
+    pub role: Option<u64>,
+    /// Its body's entity definition (`m_gameplayEntity`, `STU_94AED9DC`).
+    pub body: u64,
+}
 
 /// Actions of the controller's graphs whose work the server does in Rust.
 /// `STU_621AF478` (`0C90` node 4): revive the possessed body at `0687`'s
@@ -126,8 +142,8 @@ pub struct ControllerWorld {
     pub team: Option<i64>,
     /// The heroes this controller may play (`STU_1AAB4B4F`, sent to the
     /// mode in `06FF`; `STU_9AE5FC4C` tests a hero against it, then the
-    /// HeroSelect limits), each with its role identifier.
-    pub heroes: Vec<(u64, Option<u64>)>,
+    /// HeroSelect limits).
+    pub heroes: Vec<PlayableHero>,
     /// The body the controller possesses; none before the first spawn.
     pub body: Option<u32>,
     /// The hero in the controller's own component 75 (the last
@@ -174,6 +190,20 @@ impl ControllerWorld {
             voices: Vec::new(),
             tracked_stats: Vec::new(),
         }
+    }
+
+    /// The heroes the controller may play, as an array of hero assets.
+    fn hero_list(&self) -> Value {
+        Value::Array(
+            self.heroes
+                .iter()
+                .map(|listed| Value::Asset(listed.hero))
+                .collect(),
+        )
+    }
+
+    fn playable(&self, hero: u64) -> Option<&PlayableHero> {
+        self.heroes.iter().find(|listed| listed.hero == hero)
     }
 
     fn owner(&self, config: &Json, operand: &str) -> bool {
@@ -241,12 +271,8 @@ impl World for ControllerWorld {
             "STU_082FA44E" => self.graphs.tunables().value(config).map(Value::Float),
             // GetGameMode.
             "STU_37F20D24" => Some(Value::Asset(self.mode)),
-            "STU_1AAB4B4F" if self.owner(config, "m_controller") => Some(Value::Array(
-                self.heroes
-                    .iter()
-                    .map(|&(hero, _)| Value::Asset(hero))
-                    .collect(),
-            )),
+            "STU_1AAB4B4F" if self.owner(config, "m_controller") => Some(self.hero_list()),
+            "STU_AFC074B3" => Some(self.hero_list()),
             "STU_E4C6AAB4" if self.owner(config, "m_F3E612FD") => Some(Value::Bool(self.may_pick)),
             "STU_A89D860A" => Some(Value::Bool(false)),
             // AIIsPathFollowing: a human controller follows no AI path.
@@ -286,14 +312,17 @@ impl World for ControllerWorld {
     }
 
     fn hero_available(&self, _site: Site, controller: u32, hero: u64) -> Option<bool> {
-        (controller == self.entity).then(|| self.heroes.iter().any(|&(listed, _)| listed == hero))
+        (controller == self.entity).then(|| self.heroes.iter().any(|listed| listed.hero == hero))
     }
 
     fn hero_role(&self, _site: Site, hero: u64) -> Option<u64> {
-        self.heroes
-            .iter()
-            .find(|&&(listed, _)| listed == hero)
-            .and_then(|&(_, role)| role)
+        self.playable(hero)?.role
+    }
+
+    /// A hero this controller may play has his body; the server knows no
+    /// other's.
+    fn hero_body(&self, _site: Site, hero: u64) -> Option<u64> {
+        Some(self.playable(hero)?.body)
     }
 
     /// The one tag the server knows the controller lacks: `04CE`, which
@@ -426,6 +455,42 @@ impl ControllerScript {
     pub fn receive(&mut self, message: u64, parameters: Variables) -> Result<usize, InitFault> {
         self.component
             .receive_message(0, message, parameters, &mut self.world)
+    }
+
+    /// A game message the client sent one of the controller's instances
+    /// at `frame` (21616 for the controller with that instance: the
+    /// action `STU_79A131B4`, 0x7FF789814C20, names its host's entity and
+    /// its own instance): the instance's entries for it take it now, with
+    /// the controller as its sender, so their filters test it (the Training
+    /// Partner pick `1213`, `265F` rid22). Assumption: the client's message
+    /// carries its host, the controller, as its sender (`+152`).
+    /// Returns how many did.
+    pub fn receive_in_instance(
+        &mut self,
+        frame: u32,
+        instance: u16,
+        message: u64,
+        parameters: Variables,
+    ) -> Result<usize, InitFault> {
+        self.advance(frame)?;
+        let entries =
+            self.component
+                .queue_message_from(instance, self.world.entity, message, parameters)?;
+        if entries != 0 {
+            self.component.run_now(&mut self.world)?;
+        }
+        Ok(entries)
+    }
+
+    /// Open or close a scope instance on the controller at `frame`
+    /// (`vm/scopes.rs`; the Training Partner console's scope 126).
+    pub fn change_scope(
+        &mut self,
+        frame: u32,
+        change: &ScopeChange,
+    ) -> Result<Option<u16>, InitFault> {
+        self.advance(frame)?;
+        self.component.change_scope(change, &mut self.world)
     }
 
     /// The client's hero select request (21616) at `frame`, to `288B`'s
@@ -744,8 +809,22 @@ mod tests {
         let mut world = ControllerWorld::new(graphs, mode, CONTROLLER, Unknowns::Refuse);
         world.ruleset = ruleset;
         world.team = Some(0);
-        world.heroes = vec![(SOLDIER, Some(orpheus_content::heroes::DAMAGE_ROLE))];
+        world.heroes = vec![playable(SOLDIER)];
         ControllerScript::start(world, PVP_CONTROLLER, 1).unwrap()
+    }
+
+    /// `hero` as the catalog lists him.
+    fn playable(hero: u64) -> PlayableHero {
+        let root = orpheus_testkit::runtime_dir();
+        let catalog =
+            orpheus_content::heroes::HeroCatalog::load(root.join("data/game_heroes_174.json"))
+                .unwrap();
+        let listed = catalog.get(hero).unwrap();
+        PlayableHero {
+            hero,
+            role: listed.role_guid(),
+            body: listed.body,
+        }
     }
 
     /// The Practice Range's ruleset `0C0:34` sets the mode entity's hero
@@ -802,7 +881,7 @@ mod tests {
     fn client_requests_drive_hero_select_in_the_vm() {
         use crate::codecs::CodecTable;
         use crate::snapshot::{SnapshotEncoder, View};
-        use orpheus_content::heroes::{ANA, DAMAGE_ROLE, SUPPORT_ROLE};
+        use orpheus_content::heroes::{ANA, DAMAGE_ROLE};
         let state = |open, pick| Some(HeroSelectState { open, pick });
         let codecs = CodecTable::client();
         let projects = |script: &ControllerScript| {
@@ -818,7 +897,7 @@ mod tests {
             encoder.owner_full(&projected, 1234, 16).unwrap();
         };
         let mut script = start(RANGE);
-        script.world.heroes.push((ANA, Some(SUPPORT_ROLE)));
+        script.world.heroes.push(playable(ANA));
         script.advance(10).unwrap();
         assert_eq!(script.hero_select_state(), state(false, None));
         projects(&script);

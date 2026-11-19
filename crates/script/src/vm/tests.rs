@@ -4440,6 +4440,7 @@ fn body(entity: u32, team: u8, feet: [f64; 3]) -> TargetCandidate {
         team: Some(team),
         dead: false,
         controller: None,
+        player: None,
         ai: false,
         ai_control: None,
         feet,

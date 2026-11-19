@@ -42,7 +42,10 @@ use orpheus_script::{
     placed::{DummyChange, EntityVolumes, MapEntityWorld, NextDummy},
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{ScriptChunk, Stream, StreamError},
-    vm::{GameMessage, MapRays, MessageEnd, TargetCandidate, Unknowns},
+    vm::{
+        GameMessage, MapRays, MessageEnd, ParentWrite, ScopeChange, ScopeSource, TargetCandidate,
+        Unknowns,
+    },
 };
 use orpheus_wire::entity::GAME_MODE_ENTITY;
 
@@ -301,6 +304,42 @@ impl PlacedScripts {
         self.dummies.extend(changes);
     }
 
+    /// The scope instances the running scripts' scope states opened or
+    /// closed on their targets since the last call (the Training Partner
+    /// console's scopes on the players' bodies and controllers), for the
+    /// match to carry out in the targets' components.
+    pub fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
+        let Some(world) = &mut self.world else {
+            return Vec::new();
+        };
+        let mut changes = world.take_scope_changes();
+        changes.retain(|change| {
+            let source = match change {
+                ScopeChange::Open { source, .. } | ScopeChange::Close { source, .. } => source,
+            };
+            world
+                .entity(source.entity)
+                .is_some_and(|placed| placed.running())
+        });
+        changes
+    }
+
+    /// The match opened the scope instance `instance` on `target` for the
+    /// scope state `source`.
+    pub fn scope_opened(&mut self, source: ScopeSource, target: u32, instance: u16) {
+        if let Some(world) = &mut self.world {
+            world.scope_opened(source, target, instance);
+        }
+    }
+
+    /// A scope instance on a player's body set a variable of its placed
+    /// scope state's instance (`STU_D49BBD03`).
+    pub fn set_parent_variable(&mut self, write: &ParentWrite) {
+        if let Some(world) = &mut self.world {
+            world.set_parent_variable(write);
+        }
+    }
+
     /// Whether a running script runs the placed entity `entity`.
     pub fn runs(&self, entity: u32) -> bool {
         self.world
@@ -552,7 +591,8 @@ mod tests {
     /// true in `0060.0C6`), so the pad keeps itself (`26F8`), and asks for
     /// its default partner: it removes the dummy bot in red slot 0
     /// (`STU_C1561031`, rid34) and makes a Tracer (`0003.075`, rid36's
-    /// #940) there (`STU_FC3921B1`, rid35), whose body goes to #29454.
+    /// #940) there (`STU_FC3921B1`, rid35), whose player (his controller)
+    /// goes to #29454.
     /// The facing is the pad's rotation (x y z w) `[0, 0.9528117, 0,
     /// 0.3035622]` turned +z, (2wy, 0, 1 − 2y²) = (0.578470, 0, −0.815704),
     /// as 1/65536 turns (`World::entity_facing`), within 1e-4.
@@ -600,11 +640,258 @@ mod tests {
             .find_map(|instance| instance.variables.get(&29454));
         assert_eq!(
             partner,
-            Some(&orpheus_script::wire::Value::Entity(next.body))
+            Some(&orpheus_script::wire::Value::Entity(next.player))
         );
         // One bot a player and body: the next needs new ones.
         range.advance(101);
         assert!(range.scene.take_dummy_changes().is_empty());
+        // With its dummy made, the console runs whole and has its frame.
+        let world = range.scene.placed_scripts().world().unwrap();
+        assert!(
+            world.entity(CONSOLE).unwrap().complete(),
+            "{:?}",
+            world.gaps()
+        );
+        assert!(
+            range
+                .scene
+                .placed_scripts()
+                .frames()
+                .any(|(entity, _)| entity == CONSOLE)
+        );
+    }
+
+    /// The console's scopes (`265F`, `vm/scopes.rs`): a living blue body
+    /// a metre from the console gets scope 12 (rid2 st1) and its
+    /// controller scope 126 (rid20 st6), both created with the console.
+    /// On the body the scope instance begins st1, which follows its scope
+    /// plug to the LogicalButton st9 (button 81); the hero select key (H,
+    /// action byte 42) there sets the body's `#25456e`, the picker's
+    /// condition (StateStack rid40).
+    ///
+    /// Then the pick: the picker (client-only rid52 in scope 126) sends
+    /// `1213` {`08E6` hero, `08E7` true} to its own instance on the
+    /// controller (`STU_79A131B4` rid18; each parameter an array of one
+    /// value, which the server reads as that value: `replication.rs`
+    /// `parameter_value`). Entry rid22's filter passes for a hero he may
+    /// play (`STU_94AED9DC`/`STU_AFC074B3`), and it sends `1214` to
+    /// `STU_69DBE90D(owner())`, his body. There scope 12's entry rid24
+    /// (node 30 → rid41) ends the picker's StateStack rid40 and, `#2114`
+    /// true, sets `#940` = the pick (#13161), removes red slot 0's dummy
+    /// (`STU_C1561031`) and makes the picked hero's on the pad, with the
+    /// pad's position and facing the scope copied from the console
+    /// (`STU_FC3921B1` rid4), and writes `#940` into the console's own
+    /// instance (`STU_D49BBD03` rid53, `set_parent_variable`).
+    #[test]
+    #[ignore = "requires the derived 104319 data"]
+    fn the_range_console_opens_its_scopes_and_a_pick_replaces_its_partner() {
+        use orpheus_content::{
+            heroes::{ANA, SOLDIER},
+            maps::PRACTICE_RANGE_MODE,
+        };
+        use orpheus_script::{
+            player::PlayerWorld,
+            vm::{Component, Root, ScopeChange},
+            wire::Value,
+        };
+        use orpheus_wire::commands::Command;
+        const CONSOLE: u32 = 0x8000_010B;
+        const BODY: u32 = 0xA000_0101;
+        const CONTROLLER: u32 = 0xA000_0100;
+        const PICK: u64 = 0x0240_0000_0000_1213;
+        const REPICK: u64 = 0x0240_0000_0000_1214;
+        let next = NextDummy {
+            player: 0xA000_0300,
+            body: 0xA000_0301,
+        };
+        let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+        let mut range = Range::start(&assets, 100);
+        range.advance(100);
+        let console = range
+            .scene
+            .placed_scripts()
+            .world()
+            .unwrap()
+            .entity(CONSOLE)
+            .unwrap();
+        let [x, y, z] = console.position;
+        range.scene.set_placed_target_candidates(&[TargetCandidate {
+            entity: BODY,
+            team: Some(0),
+            dead: false,
+            controller: Some(CONTROLLER),
+            player: Some(CONTROLLER),
+            ai: false,
+            ai_control: None,
+            feet: [x + 1.0, y, z],
+            height: 2.0,
+            radius: 0.4,
+            yaw: 0.0,
+            tags: None,
+            spawned: Vec::new(),
+        }]);
+        range.scene.take_scope_changes();
+        for tick in 101..=112 {
+            range.advance(tick);
+        }
+        let changes = range.scene.take_scope_changes();
+        let opened = |target: u32| {
+            changes.iter().find(
+                |change| matches!(change, ScopeChange::Open { target: to, .. } if *to == target),
+            )
+        };
+        let gaps = range.scene.placed_scripts().world().unwrap().gaps();
+        let (Some(scope_126), Some(change)) = (opened(CONTROLLER), opened(BODY)) else {
+            panic!("{changes:?} {gaps:?}");
+        };
+        let ScopeChange::Open {
+            source,
+            graph: 0x265f,
+            scope: 126,
+            creator: CONSOLE,
+            ..
+        } = scope_126
+        else {
+            panic!("{scope_126:?}");
+        };
+        assert_eq!((source.entity, source.state), (CONSOLE, 6));
+        let ScopeChange::Open {
+            source,
+            graph: 0x265f,
+            scope: 12,
+            creator: CONSOLE,
+            ..
+        } = change
+        else {
+            panic!("{change:?}");
+        };
+        assert_eq!((source.entity, source.state), (CONSOLE, 1));
+        // The body's side, its own component: the scope instance.
+        let mut world = PlayerWorld::new(
+            range.scene.shared_graphs(),
+            CONTROLLER,
+            BODY,
+            0,
+            PRACTICE_RANGE_MODE,
+            SOLDIER,
+        );
+        let mut body = Component::start(
+            range.scene.shared_graphs(),
+            BODY,
+            Variables::new(),
+            Vec::<Root>::new(),
+            112,
+            &mut world,
+            orpheus_script::vm::MAX_INIT_WORK,
+        )
+        .unwrap();
+        let id = body.change_scope(change, &mut world).unwrap().unwrap();
+        let snapshot = body.snapshot().unwrap();
+        let instance = &snapshot.instances[&id];
+        assert_eq!(instance.scope.as_ref().map(|scope| scope.id), Some(12));
+        assert!(
+            instance.states.get(&9).is_some_and(|state| state.active),
+            "{:?} {:?}",
+            instance.states.keys().collect::<Vec<_>>(),
+            snapshot.diagnostics
+        );
+        body.advance_command(
+            Command {
+                frame: 113,
+                action: 42,
+                ..Command::default()
+            },
+            &mut world,
+        )
+        .unwrap();
+        let stacked = |body: &Component| {
+            let snapshot = body.snapshot().unwrap();
+            let raised = snapshot
+                .resolved_bindings
+                .get(&(0, 25456))
+                .or_else(|| snapshot.variables.get(&25456))
+                .cloned();
+            let active = snapshot.instances[&id]
+                .states
+                .get(&17)
+                .is_some_and(|state| state.active);
+            (active, raised)
+        };
+        // The StateStack rid40 (st17) stacks it.
+        assert_eq!(stacked(&body), (true, Some(Value::Bool(true))));
+        // The controller's side: `0C90` with scope 126, possessing the body.
+        let mut controller = range
+            .scene
+            .controller()
+            .start_script(
+                range.scene.shared_graphs(),
+                CONTROLLER,
+                0,
+                range.scene.heroes(),
+                112,
+            )
+            .unwrap();
+        controller.possessed(BODY, SOLDIER);
+        let picker = controller.change_scope(113, scope_126).unwrap().unwrap();
+        controller.take_messages();
+        let pick = Variables::from([(0x08e6, Value::Asset(ANA)), (0x08e7, Value::Bool(true))]);
+        assert_eq!(
+            controller
+                .receive_in_instance(114, picker, PICK, pick)
+                .unwrap(),
+            1
+        );
+        let messages = controller.take_messages();
+        let repick: Vec<_> = messages
+            .iter()
+            .filter(|message| message.message == REPICK)
+            .collect();
+        let [repick] = repick.as_slice() else {
+            panic!("{messages:?}");
+        };
+        assert_eq!(repick.target, BODY);
+        world.next_dummy = Some(next);
+        assert_eq!(
+            body.receive_message(CONTROLLER, REPICK, repick.parameters.clone(), &mut world)
+                .unwrap(),
+            1
+        );
+        let changes = world.take_dummy_changes();
+        let [
+            DummyChange::Remove { team: 1, slot: 0 },
+            DummyChange::Create { dummy, next: made },
+        ] = changes.as_slice()
+        else {
+            panic!("{changes:?} {:?}", body.snapshot().unwrap().diagnostics);
+        };
+        assert_eq!(*made, next);
+        assert_eq!((dummy.hero, dummy.team, dummy.slot), (ANA, 1, 0));
+        assert_eq!(dummy.position, [34.24001, 1.9917264, 22.972233]);
+        assert!(!stacked(&body).0, "the picker closes");
+        let writes = world.take_parent_writes();
+        let [write] = writes.as_slice() else {
+            panic!("{writes:?}");
+        };
+        assert_eq!(
+            (write.source.entity, write.variable, &write.value),
+            (CONSOLE, 940, &Value::Asset(ANA))
+        );
+        range.scene.set_parent_variable(write);
+        let console = range
+            .scene
+            .placed_scripts()
+            .world()
+            .unwrap()
+            .entity(CONSOLE)
+            .unwrap()
+            .snapshot()
+            .unwrap();
+        assert!(
+            console
+                .instances
+                .values()
+                .any(|instance| instance.variables.get(&940) == Some(&Value::Asset(ANA)))
+        );
     }
 
     /// The Practice Range's spawn room `0D62` (126) takes `13C0`'s `0724`
@@ -645,6 +932,7 @@ mod tests {
             team: Some(team),
             dead,
             controller: None,
+            player: None,
             ai: false,
             ai_control: None,
             feet,

@@ -34,11 +34,24 @@ impl<W: World> Context for InstanceContext<'_, W> {
         value
     }
 
+    /// A scope instance (`vm/scopes.rs`) has no parent here: its first
+    /// level is the scope state's instance on another entity, read as it
+    /// was when the scope opened.
     fn parent_variable(&mut self, levels: u8, variable: Variable) -> Value {
         let mut id = self.site.instance;
-        for _ in 0..levels {
-            let Some((parent, _)) = self.machine.snapshot.instances[&id].parent else {
-                return Value::Null;
+        for level in 0..levels {
+            let instance = &self.machine.snapshot.instances[&id];
+            let Some((parent, _)) = instance.parent else {
+                return match &instance.scope {
+                    Some(scope) if level + 1 == levels && variable.scope == Scope::Instance => {
+                        scope
+                            .parent
+                            .get(&variable.id)
+                            .cloned()
+                            .unwrap_or(Value::Null)
+                    }
+                    _ => Value::Null,
+                };
             };
             id = parent;
         }
@@ -205,6 +218,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
     fn hero_role(&mut self, hero: u64) -> Option<u64> {
         self.read_native = true;
         self.world.hero_role(self.site, hero)
+    }
+
+    fn hero_body(&mut self, hero: u64) -> Option<u64> {
+        self.read_native = true;
+        self.world.hero_body(self.site, hero)
     }
 
     fn entity_exists(&mut self, entity: u32) -> Option<bool> {

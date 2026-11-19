@@ -579,6 +579,7 @@ fn target_searches_see_the_players_then_the_bots() {
             team: Some(1),
             dead: true,
             controller: Some(SHOOTER.source & !0xff),
+            player: Some(SHOOTER.source & !0xff),
             ai: false,
             ai_control: None,
             feet: pose.feet,

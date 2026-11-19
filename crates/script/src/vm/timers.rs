@@ -117,6 +117,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                         let node = self.graph(id).state(usize::from(raw)).expect("aura");
                         self.refresh_auras(key, node)?;
                     }
+                    Some(StateKind::Scope) => {
+                        let node = self.graph(id).state(usize::from(raw)).expect("scope");
+                        self.refresh_scopes(key, node)?;
+                    }
                     Some(StateKind::SendMessage) => {
                         let node = self.graph(id).state(usize::from(raw)).expect("sender");
                         self.refresh_send_state(key, node)?;

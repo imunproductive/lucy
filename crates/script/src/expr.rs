@@ -247,6 +247,12 @@ pub trait Context {
         None
     }
 
+    /// The body (`m_gameplayEntity`) of `hero` (`STU_94AED9DC`); None: the
+    /// world can't tell.
+    fn hero_body(&mut self, _hero: u64) -> Option<u64> {
+        None
+    }
+
     /// Where a bound entity stands; None: the world doesn't know it.
     fn entity_position(&mut self, _entity: u32) -> Option<[f64; 3]> {
         None
@@ -1715,6 +1721,25 @@ impl Evaluator {
                     _ => return Err(EvalError::UnsupportedConfig(class.into())),
                 }
             }
+            // A hero's body (`265F`'s pick filters rid17/rid22, `25B4` rid3):
+            // `Eval_STU_94AED9DC` 0x7FF789BF7B80 loads `m_hero`'s asset and,
+            // for a hero (`STU_7C3457DC`), answers the GUID of its
+            // `m_gameplayEntity` (`+0x20`, the GUID at `+0x28`); else no
+            // value.
+            "STU_94AED9DC"
+                if native_fields(config, &["m_hero", "m_resourceKey"])
+                    && child(config, "m_resourceKey").is_null() =>
+            {
+                match self.config(child(config, "m_hero"), context, nested)? {
+                    Value::Asset(hero) if hero != 0 => Value::Asset(
+                        context
+                            .hero_body(hero)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    ),
+                    Value::Null | Value::Asset(0) => Value::Null,
+                    _ => return Err(EvalError::UnsupportedConfig(class.into())),
+                }
+            }
             // An entity's health total as f32 (CEB6C0; `SceneWorld.native`
             // in leafall903/ORPHEUS, commit c239a84). No entity fails: null
             // here, as for the empty config list.
@@ -2208,6 +2233,58 @@ impl Evaluator {
                         }
                         _ => return Err(unsupported()),
                     }
+                }
+            }
+            // The body a controller possesses: `Eval_STU_00707E1E`
+            // (0x7FF789BF7660) takes the entity's component 44 (a
+            // controller's) and answers its possessed entity
+            // (`sub_7FF789AE4A90`); an entity without one answers none.
+            // `STU_69DBE90D` (0x7FF789C02EE0, a list) answers the same
+            // entity, then the controller's other one (`sub_7FF789AE56F0`)
+            // when that differs, none without component 44. The console
+            // `265F` sends `1214` from a player's scope 126 (on his
+            // controller) to `STU_69DBE90D(owner())`, which its scope 12 (on
+            // his body) takes, and reads `STU_00707E1E(owner()).#25456`,
+            // which scope 12 writes on the body. Assumption: the second
+            // entity is the body as well (the server's controllers possess
+            // their body and view it).
+            "STU_00707E1E" | "STU_69DBE90D"
+                if native_shape(
+                    config,
+                    class,
+                    Some(if class == "STU_00707E1E" {
+                        "m_00903303"
+                    } else {
+                        "m_entity"
+                    }),
+                ) =>
+            {
+                let operand = if class == "STU_00707E1E" {
+                    "m_00903303"
+                } else {
+                    "m_entity"
+                };
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let entity = to_entity(&self.config(child(config, operand), context, nested)?)
+                    .filter(|&entity| valid_entity(entity));
+                let body = match entity {
+                    Some(entity)
+                        if context.related_entity(EntityRelation::Controller, entity)
+                            == Some(entity) =>
+                    {
+                        Some(
+                            context
+                                .related_entity(EntityRelation::PossessedBody, entity)
+                                .ok_or_else(unsupported)?,
+                        )
+                    }
+                    _ => None,
+                }
+                .filter(|&body| valid_entity(body));
+                if class == "STU_00707E1E" {
+                    Value::Entity(body.unwrap_or(0))
+                } else {
+                    Value::Array(body.map(Value::Entity).into_iter().collect())
                 }
             }
             // "`m_target` is not an enemy of `m_source`", as the client's

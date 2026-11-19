@@ -400,9 +400,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.follow(id, node, "m_outPlug", None, depth)?;
                 Ok(true)
             }
+            "STU_D49BBD03" => self.set_parent_variable(id, node, depth),
             "STU_523EE38D" => self.destroy_entity(id, node, depth),
             "STU_FC3921B1" => self.create_dummy_bot(id, node, depth),
             "STU_C1561031" => self.remove_dummy_bot(id, node, depth),
+            "STU_CFCE55DC" => self.move_body(id, node, depth),
             "STU_A1DF3B2D" => self.related_entities(id, node, depth),
             "STU_08D6BA6E" => {
                 self.cast_action(id, node)?;
@@ -980,6 +982,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             class if ASSUMED_PLAIN_STATES.contains(&class) => StateKind::Plain,
             class if ASSUMED_INERT_STATES.contains(&class) => StateKind::Plain,
             "STU_77E13026" => StateKind::HitList,
+            "STU_550D0C5C" => StateKind::Scope,
             "STUStatescriptStateWeaponVolley" => StateKind::WeaponVolley {
                 volleys: 1,
                 offset_ms: 0,
@@ -1111,6 +1114,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.register_tick(key, self.machine.now_ms);
             }
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
+            StateKind::Scope => self.begin_scope(key, node, depth)?,
             StateKind::Plain if node.class == "STU_160F2578" => {
                 if !self.write_tag_query(id, node)? {
                     return Ok(());

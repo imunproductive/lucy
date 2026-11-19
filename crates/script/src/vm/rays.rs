@@ -632,7 +632,7 @@ fn hit_entity(hit: Option<&Hit>) -> Value {
 }
 
 /// The filter's ray profile (`m_C1903771`, `STU_20DB8AB5`): None when unset.
-fn profile(filter: &Json) -> Result<Option<u64>, RayGap> {
+pub(super) fn profile(filter: &Json) -> Result<Option<u64>, RayGap> {
     let config = field(filter, PROFILE);
     if config.is_null() {
         return Ok(None);

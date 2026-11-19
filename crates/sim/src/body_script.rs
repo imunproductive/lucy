@@ -36,14 +36,15 @@ use orpheus_script::{
     expr::{EntityRelation, team_from_filter, to_float},
     graph::GraphStore,
     map_tags::MapTags,
+    placed::{DummyChange, NextDummy},
     player::{MODE_OVERTIME, PlayerWorld},
     snapshot::{SnapshotEncoder, View},
     timeline::FRAME_MS,
     vitals::Vitals,
     vm::{
         AssistLink, AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays,
-        Motion, MoveRequest, RaisedCriteria, Root, Scaled, Site, Snapshot, StateKind,
-        TargetCandidate, TrackedStat, Unknowns, VoiceRequest, World,
+        Motion, MoveRequest, ParentWrite, RaisedCriteria, Root, Scaled, ScopeChange, ScopeSource,
+        Site, Snapshot, StateKind, TargetCandidate, TrackedStat, Unknowns, VoiceRequest, World,
     },
     weapons::{DamageTags, HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
@@ -529,6 +530,35 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
 
     fn take_aura_changes(&mut self) -> Vec<AuraChange> {
         self.world.take_aura_changes()
+    }
+
+    fn change_scope(&mut self, change: &ScopeChange) -> io::Result<Option<u16>> {
+        let opened = self
+            .component
+            .change_scope(change, &mut self.world)
+            .map_err(unsupported)?;
+        self.log_assumptions();
+        Ok(opened)
+    }
+
+    fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
+        self.world.take_scope_changes()
+    }
+
+    fn scope_opened(&mut self, source: ScopeSource, target: u32, instance: u16) {
+        self.component.scope_opened(source, target, instance);
+    }
+
+    fn take_parent_writes(&mut self) -> Vec<ParentWrite> {
+        self.world.take_parent_writes()
+    }
+
+    fn set_next_dummy(&mut self, next: Option<NextDummy>) {
+        self.world.next_dummy = next;
+    }
+
+    fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
+        self.world.take_dummy_changes()
     }
 
     fn effects(&self) -> Option<&BodyEffects> {

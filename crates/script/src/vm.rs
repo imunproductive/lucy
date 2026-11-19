@@ -24,6 +24,7 @@ mod machine;
 mod nodes;
 mod play;
 mod rays;
+mod scopes;
 mod state_kinds;
 mod stats;
 mod statuses;
@@ -43,6 +44,7 @@ use std::{
 pub use auras::{AURA_APPLIED, AuraChange, AuraSource};
 pub use health::HealthChange;
 use indexmap::IndexMap;
+pub use scopes::{ParentWrite, ScopeChange, ScopeHit, ScopeLink, ScopeSource};
 use serde_json::Value as Json;
 pub use statuses::{
     ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, BodyEffects, CombatMod, DAMAGE_DEALT,
@@ -244,6 +246,10 @@ pub struct TargetCandidate {
     /// a player's controller, an AI hero's AI entity, a training bot's
     /// stand-in controller; none when the match has none.
     pub controller: Option<u32>,
+    /// The player whose body it is: his controller, whose component 44
+    /// the clients see possessing it (a human's is also its `controller`;
+    /// an AI hero's is not, it is his AI entity); none for a training bot.
+    pub player: Option<u32>,
     /// Whether that controller is an AI (has component 92, which
     /// `STU_D3EB8D87` tests): a training bot's, whose body its AI
     /// definition possesses, and an AI hero's AI entity. Players'
@@ -388,22 +394,29 @@ impl TargetCandidate {
 }
 
 /// How `entity` relates, as far as the listed bodies tell: a listed body's
-/// controller, which also possesses it now; a listed controller is its own
-/// (it has component 44) and possesses its body; a spawned entity a body
-/// lists ([`TargetCandidate::spawned`]) is owned by that body's controller.
+/// controller, which also possesses it now; a listed controller or player
+/// is its own (it has component 44) and possesses its body; a spawned
+/// entity a body lists ([`TargetCandidate::spawned`]) is owned by that
+/// body's controller.
 /// Assumption: the owner (component 72) of an entity the game spawns for
 /// a hero is his controller, as the Biotic Field's aura `0B3C` heals for
 /// `STU_0AC15F78(STU_F76C486C(#40))`, the body the field's owner
 /// possesses. Assumption: another body's current possessor is its
 /// controller, as a player's world answers for its own body (Biotic
 /// Grenade's enemy aura `0C72` rid21 asks `STU_F7262B36(#40)` of the
-/// thrower's body on the body it hit). None: the bodies don't tell.
+/// thrower's body on the body it hit; the same assumption for an AI
+/// hero's body: the Training Partner console's search `265F` rid1 filters
+/// on `STU_F7262B36(candidate).#23689`). None: the bodies don't tell.
 pub fn listed_relation(
     bodies: &[TargetCandidate],
     relation: EntityRelation,
     entity: u32,
 ) -> Option<u32> {
-    let by_controller = || bodies.iter().find(|body| body.controller == Some(entity));
+    let by_controller = || {
+        bodies
+            .iter()
+            .find(|body| body.controller == Some(entity) || body.player == Some(entity))
+    };
     match relation {
         EntityRelation::Controller => bodies
             .iter()
@@ -569,6 +582,11 @@ pub trait World {
     /// The role identifier (`084E.01C` damage, `0850.01C` tank, `0851.01C`
     /// support; the hero's `+0x58`) of `hero`; None: unknown.
     fn hero_role(&self, _site: Site, _hero: u64) -> Option<u64> {
+        None
+    }
+
+    /// The body (`STUHero.m_gameplayEntity`) of `hero`; None: unknown.
+    fn hero_body(&self, _site: Site, _hero: u64) -> Option<u64> {
         None
     }
 
@@ -880,6 +898,22 @@ pub trait World {
     fn change_aura(&mut self, _site: Site, _change: AuraChange) -> bool {
         false
     }
+
+    /// A scope state (`STU_550D0C5C`, `vm/scopes.rs`) opened a scope
+    /// instance on a target or closed it: the match hands it to the
+    /// target's component ([`Component::change_scope`]). False: this world
+    /// opens none, and the state has no effect.
+    fn change_scope(&mut self, _site: Site, _change: ScopeChange) -> bool {
+        false
+    }
+
+    /// A scope instance set a variable of its scope state's instance on
+    /// another entity (`STU_D49BBD03`): the match sets it there
+    /// ([`Component::set_instance_variable`]). False: this world sets
+    /// none.
+    fn set_parent_variable(&mut self, _site: Site, _write: ParentWrite) -> bool {
+        false
+    }
 }
 
 /// A criteria a graph raised ([`World::criteria`]).
@@ -1145,6 +1179,9 @@ pub enum StateKind {
     /// TrackStatTime (`STU_441B50E4`, server-only): the seconds it ran go
     /// to its stats when it ends ([`World::track_stat`]).
     StatTime,
+    /// A per-target scope (`STU_550D0C5C`, `vm/scopes.rs`): its targets'
+    /// scope instances are [`State::scopes`].
+    Scope,
 }
 
 impl StateKind {
@@ -1192,6 +1229,8 @@ pub struct State {
     buffered_press: Option<BufferedPress>,
     linked_variable: Option<VarKey>,
     ability_stack: Option<VarKey>,
+    /// A scope state's targets and their instances (`vm/scopes.rs`).
+    pub scopes: Vec<ScopeHit>,
 }
 
 impl State {
@@ -1213,6 +1252,7 @@ impl State {
             buffered_press: None,
             linked_variable: None,
             ability_stack: None,
+            scopes: Vec::new(),
         }
     }
 }
@@ -1330,6 +1370,9 @@ pub struct Instance {
     pub start_ms: u64,
     pub variables: Variables,
     pub states: IndexMap<u16, State>,
+    /// A scope instance's link to the scope state that opened it on
+    /// another entity (`vm/scopes.rs`).
+    pub scope: Option<ScopeLink>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -1833,10 +1876,24 @@ impl Component {
             .then_some(modifiers))
     }
 
-    /// Queue the authored entries of one instance at the current clock.
+    /// Queue the authored entries of one instance at the current clock,
+    /// for a message with no sender.
     pub fn queue_message(
         &mut self,
         instance: u16,
+        message: u64,
+        parameters: Variables,
+    ) -> Result<usize, InitFault> {
+        self.queue_message_from(instance, 0, message, parameters)
+    }
+
+    /// Queue the authored entries of one instance at the current clock,
+    /// for a message `sender` sent (its entries' filters test it:
+    /// [`Vm::message_filter_admits`]).
+    pub fn queue_message_from(
+        &mut self,
+        instance: u16,
+        sender: u32,
         message: u64,
         parameters: Variables,
     ) -> Result<usize, InitFault> {
@@ -1844,7 +1901,7 @@ impl Component {
             return Err(InitFault::Halted);
         }
         self.machine
-            .queue_entries(&self.graphs, Some(instance), 0, message, parameters)
+            .queue_entries(&self.graphs, Some(instance), sender, message, parameters)
     }
 
     pub fn run_now(&mut self, world: &mut impl World) -> Result<(), InitFault> {
@@ -2381,6 +2438,10 @@ struct Machine {
     /// The auras ApplyAura states elsewhere put on this body, by who put
     /// them there: their instances (`vm/auras.rs`).
     applied_auras: BTreeMap<AuraSource, u16>,
+    /// The scope instances scope states elsewhere opened here, by who
+    /// opened them: the instance and whether its state keeps it
+    /// (`vm/scopes.rs`).
+    scopes: BTreeMap<ScopeSource, (u16, bool)>,
 }
 
 struct Vm<'graph, 'world, 'machine, W> {
@@ -2454,6 +2515,30 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         variables: Variables,
         source: u32,
     ) -> Result<bool, InitFault> {
+        self.create_instance(id, graph, parent, variables, source, None)
+    }
+
+    /// A new scope instance ([`Self::create`] in a scope, `vm/scopes.rs`).
+    fn create_scoped(
+        &mut self,
+        id: u16,
+        graph: u32,
+        scope: Option<ScopeLink>,
+        source: u32,
+    ) -> Result<bool, InitFault> {
+        self.create_instance(id, graph, None, Variables::new(), source, scope)
+    }
+
+    /// Its entries of its scope (none: 0) queue at the current clock.
+    fn create_instance(
+        &mut self,
+        id: u16,
+        graph: u32,
+        parent: Option<(u16, u16)>,
+        variables: Variables,
+        source: u32,
+        scope: Option<ScopeLink>,
+    ) -> Result<bool, InitFault> {
         self.spend("instance creation")?;
         let Some(definition) = self.graphs.graph(graph) else {
             self.report(
@@ -2472,6 +2557,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         } else {
             self.machine.snapshot.entity
         };
+        let scope_id = scope.as_ref().map_or(0, |scope| scope.id);
         self.machine.next_id = self.machine.next_id.max(u32::from(id) + 1);
         self.machine.snapshot.instances.insert(
             id,
@@ -2482,13 +2568,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 start_ms: self.machine.now_ms,
                 variables,
                 states: IndexMap::new(),
+                scope,
             },
         );
         for position in definition.entries.iter().flatten() {
-            if definition
-                .node(*position)
-                .is_some_and(|node| !node.client_only && is_entry(node))
-            {
+            if definition.node(*position).is_some_and(|node| {
+                !node.client_only && is_entry(node) && scopes::entry_scope(node) == scope_id
+            }) {
                 self.post(id, Event::Entry(*position))?;
             }
         }
@@ -2712,9 +2798,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     /// message lookup `sub_7FF789CAAD40`); a message with no sender passes.
     /// The condition reads the message's parameters and `0009`, its
     /// sender: `0C90` st4/st8 keep only another player's `08BE` pick, so a
-    /// controller's own broadcast is not a teammate's pick. Masks and tag
-    /// lists on a message filter (`16C5` rid10 alone among the entries the
-    /// server runs) are not tested: taken, as an assumption.
+    /// controller's own broadcast is not a teammate's pick; the Training
+    /// Partner pick's `1213` (`265F` rid22, sent by the client's
+    /// `STU_79A131B4` from its host, the controller) wants a hero
+    /// (`param(2278)`, `08E6`) with a body that the player may play
+    /// (`STU_94AED9DC`, `STU_AFC074B3`), `0C90` rid164/rid170 such heroes
+    /// too. Masks and tag lists on a message filter (`16C5` rid10 alone
+    /// among the entries the server runs) are not tested: taken, as an
+    /// assumption.
     fn message_filter_admits(&mut self, id: u16, node: &Node) -> bool {
         let filter = field(&node.fields, "m_filter");
         if filter.is_null() || self.sender.is_none() {

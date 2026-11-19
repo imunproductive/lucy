@@ -880,6 +880,7 @@ fn a_bots_target_tags_go_out_as_its_component_76() {
         team: Some(team),
         dead: false,
         controller: Some(entity & !0xff),
+        player: Some(entity & !0xff),
         ai: false,
         ai_control: None,
         feet,

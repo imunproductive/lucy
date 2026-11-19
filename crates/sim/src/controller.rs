@@ -50,13 +50,13 @@
 
 use std::{io, sync::Arc};
 
-use orpheus_content::maps::PRACTICE_RANGE_MODE;
+use orpheus_content::{heroes::HeroCatalog, maps::PRACTICE_RANGE_MODE};
 use orpheus_core::bits::BitWriter;
 use orpheus_script::{
     codecs::CodecTable,
     controller::{
         ControllerScript, ControllerWorld, HERO_SELECT_SCREEN, HeroSwitch, MULTIKILLS,
-        PVP_CONTROLLER,
+        PVP_CONTROLLER, PlayableHero,
     },
     graph::{Graph, GraphStore},
     snapshot::{SnapshotEncoder, SnapshotError, View},
@@ -152,19 +152,26 @@ impl Controller {
 
     /// Start `0C90` on the player's controller entity `entity` at world
     /// tick `tick` ([`orpheus_script::controller`]): the player of team
-    /// `team` who may play `heroes` (each with its role identifier).
+    /// `team` who may play the catalog's `heroes`.
     pub fn start_script(
         &self,
         graphs: Arc<GraphStore>,
         entity: u32,
         team: u8,
-        heroes: Vec<(u64, Option<u64>)>,
+        heroes: &HeroCatalog,
         tick: u32,
     ) -> Result<ControllerScript, InitFault> {
         let mut world = ControllerWorld::new(graphs, self.mode, entity, self.unknowns);
         world.ruleset = self.ruleset;
         world.team = Some(i64::from(team));
-        world.heroes = heroes;
+        world.heroes = heroes
+            .heroes()
+            .map(|hero| PlayableHero {
+                hero: hero.guid,
+                role: hero.role_guid(),
+                body: hero.body,
+            })
+            .collect();
         ControllerScript::start(world, PVP_CONTROLLER, tick)
     }
 
