@@ -1583,17 +1583,14 @@ fn exercise_hero_selection(
         let packet = client.receive();
         assert!(client.window.accept(packet.seq));
         let records = world_records(schemas, &packet);
-        // The owner's body may move by a correction in any datagram, now
-        // that one goes every tick (see `await_input`); a movement-only
-        // record of it is no part of the reopen.
+        // The owner's body runs a frame every tick, this silent client's
+        // too (past the input buffer's wait and repeats, neutral frames:
+        // `InputQueue`), so its movement (a correction goes every tick, see
+        // `await_input`) and its owner frame may come in any datagram, the
+        // reopen's too; neither is part of the reopen.
         let records: Vec<_> = records
             .into_iter()
-            .filter(|record| {
-                !(record.entity == FIRST
-                    && record.movement
-                    && record.operation.is_none()
-                    && record.script.is_none())
-            })
+            .filter(|record| !(record.entity == FIRST && record.operation.is_none()))
             .collect();
         // The close of the pick (st95) may come first.
         let closed = records.iter().any(|record| {
