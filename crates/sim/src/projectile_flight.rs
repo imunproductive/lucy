@@ -17,7 +17,14 @@
 //! as a sphere of its volley's radius ([`ProjectileBallistics::radius`],
 //! 0.2 m for Helix Rockets) and surfaces as a point; the reference swept
 //! points. An explosion also hurts and pushes its own shooter
-//! ([`ProjectileFlight::own_blast`]).
+//! ([`ProjectileFlight::own_blast`]). A projectile with a bounce block
+//! (`orpheus_script::weapons::Bounce`: Moira's Biotic Orbs, Junkrat's
+//! grenades) bounces off the map's surfaces as the client's does: its
+//! velocity's part into the surface turns back, scaled by the
+//! restitution, and it flies the rest of the tick from 1 mm off the
+//! surface (the client's least push, `0x7FF789C87B80`; assumption: the
+//! push it gives a projectile with a collision radius isn't modelled). A
+//! bounce off a body isn't modelled: a body ends it, as before.
 
 use crate::hitscan::{Impact, TargetPose};
 use orpheus_core::tick::TICK_PERIOD;
@@ -27,11 +34,30 @@ use orpheus_script::{
     weapons::{DamageTags, HitDefinition, ProjectileBallistics},
 };
 
+/// Where a sweep meets the map: how far along it, and the surface's
+/// normal.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WallHit {
+    pub distance: f64,
+    pub normal: Vec3,
+}
+
+/// How far a bounce puts the projectile off the surface (the client's
+/// least push, 0.001 m).
+const BOUNCE_PUSH: f64 = 0.001;
+/// The most bounces in one piece of a tick's flight (a projectile wedged
+/// in a corner stops bouncing there for the tick).
+const MAX_BOUNCES_A_PIECE: usize = 8;
+
 pub struct ProjectileFlight {
     ballistics: ProjectileBallistics,
     position: Vec3,
-    /// The launch direction (a unit vector).
+    /// Where it flies (a unit vector): the launch direction, then the
+    /// direction its last bounce left along.
     direction: Vec3,
+    /// Its speed along `direction`, m/s: the volley's, then its last
+    /// bounce's.
+    speed: f64,
     /// The downward speed gravity added so far, m/s.
     fall: f64,
     remaining: f64,
@@ -49,6 +75,8 @@ pub struct ProjectileFlight {
     launched: Option<Vec<CombatMod>>,
     /// Its sweep passes the bodies ([`ProjectileFlight::pass_bodies`]).
     passes_bodies: bool,
+    /// The surfaces it bounced off so far.
+    bounces: u32,
 }
 
 /// A projectile that stuck: to a body (`entity`) at `offset` from its feet,
@@ -121,6 +149,7 @@ impl ProjectileFlight {
         }
         Some(Self {
             remaining: ballistics.lifetime,
+            speed: ballistics.speed,
             ballistics,
             position,
             direction,
@@ -133,6 +162,7 @@ impl ProjectileFlight {
             struck: None,
             launched: None,
             passes_bodies: false,
+            bounces: 0,
         })
     }
 
@@ -193,7 +223,7 @@ impl ProjectileFlight {
         &mut self,
         tick: u32,
         targets: &[(u32, TargetPose)],
-        mut wall: impl FnMut(Vec3, Vec3, f64) -> Result<Option<f64>, IndexError>,
+        mut wall: impl FnMut(Vec3, Vec3, f64) -> Result<Option<WallHit>, IndexError>,
     ) -> Result<FlightStep, IndexError> {
         let mut step = FlightStep::default();
         if self.ended {
@@ -219,11 +249,11 @@ impl ProjectileFlight {
         &mut self,
         time: f64,
         targets: &[(u32, TargetPose)],
-        wall: &mut impl FnMut(Vec3, Vec3, f64) -> Result<Option<f64>, IndexError>,
+        wall: &mut impl FnMut(Vec3, Vec3, f64) -> Result<Option<WallHit>, IndexError>,
         step: &mut FlightStep,
     ) -> Result<f64, IndexError> {
         let duration = time.min(self.remaining);
-        let (speed, gravity) = (self.ballistics.speed, self.ballistics.gravity);
+        let gravity = self.ballistics.gravity;
         // A straight flight sweeps the whole duration at once (combat.py
         // `_fly`); an arc a chord of at most one tick at a time.
         let pieces = if gravity == 0.0 {
@@ -234,50 +264,113 @@ impl ProjectileFlight {
         let piece = duration / f64::from(pieces);
         let mut flown = 0.0;
         for _ in 0..pieces {
-            let (direction, reach) = if gravity == 0.0 {
-                (self.direction, speed * piece)
-            } else {
-                let mut chord = self.direction.map(|part| part * speed * piece);
-                chord[1] -= (self.fall + 0.5 * gravity * piece) * piece;
-                let length = chord.iter().map(|part| part * part).sum::<f64>().sqrt();
-                (
-                    chord.map(|part| part / length.max(f64::MIN_POSITIVE)),
-                    length,
-                )
-            };
-            let hit = if reach > 0.0 {
-                closest(
-                    self.position,
-                    direction,
-                    reach,
-                    self.ballistics.radius,
-                    if self.passes_bodies { &[] } else { targets },
-                    wall,
-                )?
-            } else {
-                None
-            };
-            let (distance, seconds) = match hit {
-                Some((distance, _)) if gravity == 0.0 => (distance, distance / speed),
-                Some((distance, _)) => (distance, piece * distance / reach),
-                None => (reach, piece),
-            };
-            for (position, direction) in self.position.iter_mut().zip(direction) {
-                *position += direction * distance;
-            }
-            self.fall += gravity * seconds;
-            self.travelled += seconds;
-            self.remaining -= seconds;
-            flown += seconds;
-            if let Some((distance, target)) = hit {
-                self.hit(distance, target, targets, step);
-                return Ok((time - flown).max(0.0));
+            // A bounce flies the rest of the piece from where it bounced.
+            let mut left = piece;
+            for _ in 0..=MAX_BOUNCES_A_PIECE {
+                let (direction, reach) = self.chord(left);
+                let hit = if reach > 0.0 {
+                    closest(
+                        self.position,
+                        direction,
+                        reach,
+                        self.ballistics.radius,
+                        if self.passes_bodies { &[] } else { targets },
+                        wall,
+                    )?
+                } else {
+                    None
+                };
+                let (distance, seconds) = match hit {
+                    Some((distance, _)) if gravity == 0.0 => (distance, distance / self.speed),
+                    Some((distance, _)) => (distance, left * distance / reach),
+                    None => (reach, left),
+                };
+                for (position, direction) in self.position.iter_mut().zip(direction) {
+                    *position += direction * distance;
+                }
+                self.fall += gravity * seconds;
+                self.travelled += seconds;
+                self.remaining -= seconds;
+                flown += seconds;
+                left -= seconds;
+                match hit {
+                    None => break,
+                    Some((_, Met::Surface(normal))) if self.bounce(normal, direction) => {}
+                    Some((distance, met)) => {
+                        let struck = match met {
+                            Met::Body(entity, entered) => Some((entity, entered)),
+                            Met::Surface(_) => None,
+                        };
+                        self.hit(distance, struck, targets, step);
+                        return Ok((time - flown).max(0.0));
+                    }
+                }
+                if left <= 0.0 {
+                    break;
+                }
             }
         }
         if self.remaining <= 0.0 {
             step.end = Some(self.finish());
         }
         Ok(0.0)
+    }
+
+    /// The straight sweep of its next `seconds`: along its flight, or the
+    /// chord of its arc; its direction and length.
+    fn chord(&self, seconds: f64) -> (Vec3, f64) {
+        let gravity = self.ballistics.gravity;
+        if gravity == 0.0 {
+            return (self.direction, self.speed * seconds);
+        }
+        let mut chord = self.direction.map(|part| part * self.speed * seconds);
+        chord[1] -= (self.fall + 0.5 * gravity * seconds) * seconds;
+        let length = chord.iter().map(|part| part * part).sum::<f64>().sqrt();
+        (
+            chord.map(|part| part / length.max(f64::MIN_POSITIVE)),
+            length,
+        )
+    }
+
+    /// It met a surface of `normal` flying along `along` (where it is now):
+    /// whether it bounces off (`Bounce::flies_on`). A bounce turns its
+    /// velocity's part into the surface back, scaled by the restitution
+    /// (`0x7FF789C87B80`: `v − (1 + e)(v·n)n`), and puts it 1 mm off the
+    /// surface; the hit that doesn't bounce ends it there.
+    fn bounce(&mut self, normal: Vec3, along: Vec3) -> bool {
+        let Some(bounce) = self.ballistics.bounce else {
+            return false;
+        };
+        // The surface's side toward the projectile.
+        let normal = if dot(normal, along) > 0.0 {
+            normal.map(|part| -part)
+        } else {
+            normal
+        };
+        self.bounces += 1;
+        if !bounce.flies_on(bounce.surface(normal), self.bounces) {
+            return false;
+        }
+        let mut velocity = self.direction.map(|part| part * self.speed);
+        velocity[1] -= self.fall;
+        let into = dot(velocity, normal);
+        if into < 0.0 {
+            let scale = (1.0 + bounce.restitution) * into;
+            for (part, normal) in velocity.iter_mut().zip(normal) {
+                *part -= scale * normal;
+            }
+        }
+        let speed = dot(velocity, velocity).sqrt();
+        if !(speed.is_finite() && speed > 0.0) {
+            return false;
+        }
+        self.speed = speed;
+        self.direction = velocity.map(|part| part / speed);
+        self.fall = 0.0;
+        for (position, normal) in self.position.iter_mut().zip(normal) {
+            *position += BOUNCE_PUSH * normal;
+        }
+        true
     }
 
     /// What it hit `distance` into this sweep (the body and how it entered
@@ -461,32 +554,44 @@ impl ProjectileFlight {
 /// A body a sweep struck, and how it entered it ([`TargetPose::entry`]).
 type Struck = (u32, Option<bool>);
 
-/// The closest body or surface along a sweep: its distance, and the body
-/// it struck. Bodies meet a sphere of radius `size`, surfaces its centre.
+/// What a sweep met first: a body and how it entered it, or a surface of
+/// the map and its normal.
+#[derive(Clone, Copy, Debug)]
+enum Met {
+    Body(u32, Option<bool>),
+    Surface(Vec3),
+}
+
+/// The closest body or surface along a sweep: its distance, and what it
+/// met. Bodies meet a sphere of radius `size`, surfaces its centre.
 fn closest(
     origin: Vec3,
     direction: Vec3,
     reach: f64,
     size: f64,
     targets: &[(u32, TargetPose)],
-    wall: &mut impl FnMut(Vec3, Vec3, f64) -> Result<Option<f64>, IndexError>,
-) -> Result<Option<(f64, Option<Struck>)>, IndexError> {
+    wall: &mut impl FnMut(Vec3, Vec3, f64) -> Result<Option<WallHit>, IndexError>,
+) -> Result<Option<(f64, Met)>, IndexError> {
     let mut closest = None;
     for (entity, target) in targets {
         if let Some((distance, entered)) = target.entry(origin, direction, reach, size) {
             if closest.is_none_or(|(best, _)| distance < best) {
-                closest = Some((distance, Some((*entity, entered))));
+                closest = Some((distance, Met::Body(*entity, entered)));
             }
         }
     }
-    if let Some(distance) =
-        wall(origin, direction, reach)?.filter(|distance| (0.0..=reach).contains(distance))
+    if let Some(hit) =
+        wall(origin, direction, reach)?.filter(|hit| (0.0..=reach).contains(&hit.distance))
     {
-        if closest.is_none_or(|(best, _)| distance < best) {
-            closest = Some((distance, None));
+        if closest.is_none_or(|(best, _)| hit.distance < best) {
+            closest = Some((hit.distance, Met::Surface(hit.normal)));
         }
     }
     Ok(closest)
+}
+
+fn dot(a: Vec3, b: Vec3) -> f64 {
+    a.iter().zip(b).map(|(a, b)| a * b).sum()
 }
 
 fn pose_of(targets: &[(u32, TargetPose)], entity: u32) -> Option<&TargetPose> {
@@ -541,6 +646,7 @@ mod tests {
             radius: 0.0,
             gravity: 0.0,
             fuse: None,
+            bounce: None,
             unmodelled: Vec::new(),
             ray_profile: None,
         }
@@ -565,6 +671,7 @@ mod tests {
             radius: 0.0,
             gravity,
             fuse: Some(STICK_FUSE),
+            bounce: None,
             unmodelled: Vec::new(),
             ray_profile: None,
         }
@@ -581,7 +688,7 @@ mod tests {
         }
     }
 
-    fn no_wall(_: Vec3, _: Vec3, _: f64) -> Result<Option<f64>, IndexError> {
+    fn no_wall(_: Vec3, _: Vec3, _: f64) -> Result<Option<WallHit>, IndexError> {
         Ok(None)
     }
 
@@ -629,11 +736,14 @@ mod tests {
 
     fn cast(
         world: &TriangleIndex,
-    ) -> impl FnMut(Vec3, Vec3, f64) -> Result<Option<f64>, IndexError> + '_ {
+    ) -> impl FnMut(Vec3, Vec3, f64) -> Result<Option<WallHit>, IndexError> + '_ {
         |origin, direction, reach| {
-            world
-                .cast_ray(origin, direction, reach, 0x18)
-                .map(|hit| hit.map(|hit| hit.distance))
+            world.cast_ray(origin, direction, reach, 0x18).map(|hit| {
+                hit.map(|hit| WallHit {
+                    distance: hit.distance,
+                    normal: hit.normal,
+                })
+            })
         }
     }
 
@@ -761,6 +871,74 @@ mod tests {
         let end = step.end.as_ref().unwrap();
         assert_eq!((end.point[2], end.travelled), (0.5, 0.01));
         assert!(step.impacts.is_empty());
+    }
+
+    /// Moira's Biotic Orb (`10E4` rid19: 20 m/s, 99 bounces off every kind
+    /// of surface, restitution 1) fired at a wall 2 m ahead comes back at
+    /// full speed: 10 ticks (0.16 s) fly 2 m to the wall, then 1.2 m back
+    /// from 1 mm off it. A block whose floors don't bounce (Sombra's
+    /// Translocator `0C19` st5) ends on the floor; one with no bounces left
+    /// ends at the wall.
+    #[test]
+    fn a_bouncing_projectile_comes_back_off_the_wall() {
+        use orpheus_script::weapons::Bounce;
+        let orb = |bounce| ProjectileBallistics {
+            speed: 20.0,
+            lifetime: 7.0,
+            definition: Some(0x0400_0000_0000_1e61),
+            direct: None,
+            blast: None,
+            radius: 0.0,
+            gravity: 0.0,
+            fuse: None,
+            bounce: Some(bounce),
+            unmodelled: Vec::new(),
+            ray_profile: None,
+        };
+        let moira = Bounce {
+            count: 99,
+            bounces: [true; 3],
+            ends: [false; 3],
+            restitution: 1.0,
+            ceiling: -std::f64::consts::FRAC_1_SQRT_2,
+            floor: std::f64::consts::FRAC_1_SQRT_2,
+        };
+        let wall = wall_at(2.0);
+        let mut flight =
+            ProjectileFlight::new(orb(moira), [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], Some(1000))
+                .unwrap();
+        assert_eq!(
+            flight.advance(1010, &[], cast(&wall)).unwrap(),
+            FlightStep::default()
+        );
+        assert!(
+            (flight.position[2] - (2.0 - 0.001 - 1.2)).abs() < 1e-6,
+            "{:?}",
+            flight.position
+        );
+        assert!((flight.direction[2] + 1.0).abs() < 1e-12);
+        assert!((flight.speed - 20.0).abs() < 1e-9);
+
+        let translocator = Bounce {
+            bounces: [true, true, false],
+            ..moira
+        };
+        let mut flight = ProjectileFlight::new(
+            orb(translocator),
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            Some(1000),
+        )
+        .unwrap();
+        let end = flight.advance(1010, &[], cast(&floor())).unwrap().end;
+        assert!(end.unwrap().point[1].abs() < 1e-6);
+
+        let spent = Bounce { count: 0, ..moira };
+        let mut flight =
+            ProjectileFlight::new(orb(spent), [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], Some(1000))
+                .unwrap();
+        let end = flight.advance(1010, &[], cast(&wall)).unwrap().end;
+        assert!((end.unwrap().point[2] - 2.0).abs() < 1e-6);
     }
 
     /// A Helix Rocket fired straight down from the eye bursts on the floor
@@ -1071,6 +1249,7 @@ mod tests {
             radius: 0.0,
             gravity: 0.0,
             fuse: None,
+            bounce: None,
             unmodelled: Vec::new(),
             ray_profile: None,
         };

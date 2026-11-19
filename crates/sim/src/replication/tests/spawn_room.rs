@@ -391,6 +391,7 @@ fn lift(
         radius: 0.0,
         gravity: 0.0,
         fuse: None,
+        bounce: None,
         unmodelled: Vec::new(),
         ray_profile: None,
     };
@@ -488,6 +489,7 @@ fn blasted(
         radius: 0.0,
         gravity: 0.0,
         fuse: None,
+        bounce: None,
         unmodelled: Vec::new(),
         ray_profile: None,
     };

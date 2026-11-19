@@ -42,7 +42,9 @@ use crate::{
     hitscan::{HitscanShot, Impact, TargetHistory, TargetPose, ViewFrame},
     hurt_feedback::HurtFeedback,
     projectile_flight::{FlightEnd, ProjectileFlight},
-    projectiles::{FieldDeliver, FieldIds, FiredProjectile, ProjectileEvent, SeenIds, ShotKey},
+    projectiles::{
+        FIELD_ENTITY, FieldDeliver, FieldIds, FiredProjectile, ProjectileEvent, SeenIds, ShotKey,
+    },
     replication::WorldDelivery,
     scene::{bot_controller_entity, bot_controller_link, bot_create, bot_filter},
     scene_assets::PreparedScene,
@@ -644,7 +646,11 @@ impl Combat {
             field_ids: FieldIds::default(),
             fields: SpawnedFields::new(
                 scene.shared_graphs(),
-                scene.field_graphs().to_vec(),
+                scene
+                    .spawn_graphs()
+                    .get(&FIELD_ENTITY)
+                    .cloned()
+                    .unwrap_or_default(),
                 scene.map().mode_guid,
                 scene.map().ruleset,
                 scene.mode_random(),
@@ -1271,7 +1277,7 @@ impl Combat {
         }
         let step = flight
             .advance(context.tick, &candidates, |origin, direction, reach| {
-                scene.hitscan_wall(origin, direction, reach, ray_profile)
+                scene.projectile_wall(origin, direction, reach, ray_profile)
             })
             .map_err(io::Error::other)?;
         for impact in &step.impacts {
