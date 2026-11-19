@@ -901,7 +901,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // base state); the `STU_ECAEE401` above them reads them
             // (`resolve_ai_move`). Data holders here.
             "STU_194D744E" | "STU_2C18F116" | "STU_AB9B30EF" => StateKind::Plain,
-            "STU_41B3FC2B" => StateKind::Rewind,
+            "STU_41B3FC2B" => StateKind::Rewind {
+                end_ms: 0,
+                frames: 0,
+            },
             "STU_D74D4F47" => StateKind::WaitFrames { target: 0 },
             "STU_91EF24A9" => StateKind::AiCandidate { selected: false },
             "STUStatescriptStateLogicalButton" => StateKind::LogicalButton { down: false },
@@ -1079,7 +1082,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::GrappleCast => self.begin_grapple(key, node, depth)?,
             StateKind::NavPath => self.begin_nav_path(key, node)?,
             StateKind::AiMove => self.resolve_ai_move(key, node),
-            StateKind::Rewind => self.begin_rewind(key, node)?,
+            StateKind::Rewind { .. } => self.begin_rewind(key, node)?,
             StateKind::WaitFrames { .. } => self.arm_frame_wait(key, node)?,
             StateKind::AiCandidate { .. } => {
                 let site = self.site(id, node);

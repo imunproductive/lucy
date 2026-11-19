@@ -133,9 +133,25 @@ pub struct CodecTable {
 }
 
 impl CodecTable {
-    /// The client's codec table.
+    /// The client's codec table. A debug build refuses a table with a
+    /// verified layout whose codec has no projection (`Family`): an active
+    /// state of that class could never be sent (a release build leaves it
+    /// out of frames and logs it once, `snapshot.rs`).
     pub fn client() -> Self {
-        Self::from_json(orpheus_fixed::STATESCRIPT_CODECS).expect("the embedded codec table parses")
+        let table = Self::from_json(orpheus_fixed::STATESCRIPT_CODECS)
+            .expect("the embedded codec table parses");
+        if cfg!(debug_assertions) {
+            let missing: Vec<_> = table
+                .classes()
+                .filter(|codec| codec.verified() && !codec.projected())
+                .map(|codec| (&codec.hash, &codec.codec))
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "client codecs with no payload family: {missing:?}"
+            );
+        }
+        table
     }
 
     pub fn from_json(text: &str) -> io::Result<Self> {
@@ -520,6 +536,19 @@ enum Family {
     Counter2,
     Pulser,
     Start,
+    Rewind,
+    TwoVectors,
+    Shockwave,
+    ValueSlot,
+    BlockU8,
+    BlockU16,
+    StackCounter,
+    Bit,
+    VarFlag,
+    OptionalVar,
+    Placement,
+    LinkedTarget,
+    Blink,
 }
 
 impl Family {
@@ -545,6 +574,19 @@ impl Family {
             "counter2" => Self::Counter2,
             "pulser" => Self::Pulser,
             "start" => Self::Start,
+            "time16+s64" => Self::Rewind,
+            "two_vectors+s64" => Self::TwoVectors,
+            "shockwave" => Self::Shockwave,
+            "value_slot" => Self::ValueSlot,
+            "none+u8" => Self::BlockU8,
+            "none+u16" => Self::BlockU16,
+            "stack_counter" => Self::StackCounter,
+            "bit" => Self::Bit,
+            "239B1E64" => Self::VarFlag,
+            "63B7ADFD" => Self::OptionalVar,
+            "861D9015" => Self::Placement,
+            "linked_target" => Self::LinkedTarget,
+            "blink" => Self::Blink,
             _ => return None,
         })
     }
@@ -576,6 +618,42 @@ impl Vm<'_> {
             value_float(value).ok_or_else(|| invalid_field(name))
         })
     }
+
+    /// An unsigned integer up to `max` (0 when absent).
+    fn unsigned(&self, name: &str, max: u32) -> Result<u32, PayloadError> {
+        u32::try_from(self.integer(name, 0)?)
+            .ok()
+            .filter(|value| *value <= max)
+            .ok_or_else(|| invalid_field(name))
+    }
+
+    /// A vector (zero when absent).
+    fn vector(&self, name: &str) -> Result<[f32; 3], PayloadError> {
+        match self.0.get(name) {
+            None | Some(Value::Null) => Ok([0.0; 3]),
+            Some(Value::Vector(parts)) => Ok(parts.map(|part| part as f32)),
+            Some(_) => Err(invalid_field(name)),
+        }
+    }
+
+    /// The 32 bits the client keeps for a value: a float's bits, or an
+    /// unsigned integer (0 when absent).
+    fn raw32(&self, name: &str) -> Result<i64, PayloadError> {
+        match self.0.get(name) {
+            Some(Value::Float(value)) => Ok(i64::from((*value as f32).to_bits())),
+            _ => Ok(i64::from(self.unsigned(name, u32::MAX)?)),
+        }
+    }
+
+    /// An entity id, 0 for none (null).
+    fn entity(&self, name: &str) -> Result<u32, PayloadError> {
+        self.unsigned(name, u32::MAX)
+    }
+}
+
+/// Whether `entity` is an entity the client's `valid` test accepts.
+fn valid_entity(entity: u32) -> bool {
+    entity != 0 && entity & 0x1fff_ffff != 0x1fff_ffff
 }
 
 fn project(
@@ -629,8 +707,255 @@ fn project(
             fields.insert("count", Value::Integer(vm.integer("count", 0)?).into());
         }
         Family::Start => project_start(&mut fields, &vm, mode)?,
+        Family::Rewind => project_rewind(&mut fields, &vm)?,
+        Family::TwoVectors => project_two_vectors(&mut fields, &vm)?,
+        Family::Shockwave => project_shockwave(&mut fields, &vm)?,
+        // ScaleTime (`STU_2F07848F`, StEC; `Write_STU_2F07848F`
+        // 0x7FF789B97600): the state's active flag, then the value it keeps
+        // for that side (`+0x1C8` while on, `+0x1CC` while off).
+        Family::ValueSlot => {
+            let active = vm.flag("active");
+            let value = vm.raw32(if active { "on" } else { "off" })?;
+            fields.insert("which", Value::Bool(active).into());
+            fields.insert("value", Value::Integer(value).into());
+        }
+        // The property block's only sent field (`statescript_codecs.json`
+        // `block`); the class reader is the base nullsub. `STU_43DB06B1`
+        // and `STU_4C96470A` set their byte to 0 in their begin and to 1
+        // from another slot (0x7FF7897F9990, 0x7FF7897F8AC0).
+        Family::BlockU8 => {
+            let value = vm.unsigned("value", u8::MAX.into())?;
+            fields.insert("m_B4802CE3", Value::Integer(value.into()).into());
+        }
+        Family::BlockU16 => {
+            let value = vm.unsigned("value", u16::MAX.into())?;
+            fields.insert("m_AE2D8911", Value::Integer(value.into()).into());
+        }
+        // `Write_STU_491F6FF1` 0x7FF78AAA6E90: the stack's two bits in owner
+        // frames, then its activation counter (`+0x44`) as a w_u16.
+        Family::StackCounter => {
+            if owner {
+                fields.insert("top", Value::Bool(vm.flag("top")).into());
+                fields.insert("under", Value::Bool(vm.flag("under")).into());
+            }
+            let counter = vm.integer("counter", 0)? & 0xffff;
+            fields.insert("counter", Value::Integer(counter).into());
+        }
+        // `STU_4BD2E886` (a UX presenter): the reader 0x7FF7899E7050 keeps
+        // the bit at `+0x470`; the client has no writer.
+        Family::Bit => {
+            fields.insert("value", Value::Bool(vm.flag("value")).into());
+        }
+        // `Write_STU_239B1E64` 0x7FF78AAADF40: a var_b (`+0x1C0`), a bit
+        // (`+0x1C4`).
+        Family::VarFlag => {
+            let value = vm.unsigned("value", u32::MAX)?;
+            fields.insert("value", Value::Integer(value.into()).into());
+            fields.insert("flag", Value::Bool(vm.flag("flag")).into());
+        }
+        // `Write_STU_63B7ADFD` 0x7FF789C557F0: a value (`+0x1D8`) sent only
+        // when not 0, after a bit (`+0x1DF`).
+        Family::OptionalVar => {
+            let value = vm.unsigned("value", u32::MAX)?;
+            fields.insert("a", Value::Bool(value != 0).into());
+            fields.insert("b", Value::Bool(vm.flag("flag")).into());
+            fields.insert("value", Value::Integer(value.into()).into());
+        }
+        Family::Placement => project_placement(&mut fields, &vm)?,
+        Family::LinkedTarget if owner && mode.layout().full => {
+            project_linked_target(&mut fields, &vm)?;
+        }
+        // The link alone (an absent link, as for `link`).
+        Family::LinkedTarget => {}
+        // Tracer's Blink effect (`STU_99B885B8`, `Write_STU_99B885B8`
+        // 0x7FF789BA5C20): observers only, the blink's 32-bit id
+        // (`+0x1C0`); their reader 0x7FF7897F77D0 keeps the ids it has
+        // seen (`+0x1C8`, sorted) and plays each new one.
+        Family::Blink => {
+            fields.insert("value", Value::Integer(vm.raw32("id")?).into());
+        }
     }
     Ok(fields)
+}
+
+/// Recall's rewind (`STU_41B3FC2B`, owner and observer frames alike):
+/// - the property block's s64 `m_0007BF47`, the host time (ms) the rewind
+///   ends: the client's begin (0x7FF7897FD090) sets it to its begin time +
+///   `m_FAF3B2D3` seconds × 1000 rounded, and its reader
+///   (`Read_STU_41B3FC2B` 0x7FF7897FEEF0) re-arms the state's finish (event
+///   2) at it (`0x7FF78AA81470`);
+/// - 16 bits, frames: the reader keeps `frames × 16000 / 10^6` seconds
+///   (`0x7FF78BC26B30` = 16000, the frame in µs) at `+0x970`, which only
+///   the begin reads: the length of history it copies into the recorder it
+///   rewinds along (0x7FF789ABF230). The client has no writer (the base
+///   nullsub).
+fn project_rewind(fields: &mut LayoutFields<'static>, vm: &Vm<'_>) -> Result<(), PayloadError> {
+    fields.insert("m_0007BF47", Value::Integer(vm.integer("end", 0)?).into());
+    let frames = vm.unsigned("frames", u16::MAX.into())?;
+    fields.insert("time", Value::Integer(frames.into()).into());
+    Ok(())
+}
+
+/// `STU_746F8777` (`Write_STU_746F8777` 0x7FF789B97E10): the property
+/// block's s64 `m_0007BF47`, a due time (ms) its reader 0x7FF7897F4520
+/// arms event 3 at (at least half its `+0x1F4` seconds away); a bit
+/// (`+0x1FB`); a bit the writer always sets; then two vectors, `+0x1D0`
+/// and `+0x1C0`, as six f32.
+fn project_two_vectors(
+    fields: &mut LayoutFields<'static>,
+    vm: &Vm<'_>,
+) -> Result<(), PayloadError> {
+    fields.insert("m_0007BF47", Value::Integer(vm.integer("end", 0)?).into());
+    fields.insert("a", Value::Bool(vm.flag("flag")).into());
+    fields.insert("b", Value::Bool(true).into());
+    let [first, second] = [vm.vector("first")?, vm.vector("second")?];
+    let rows = first
+        .into_iter()
+        .chain(second)
+        .map(|part| LayoutFields::from([("x", Value::Float(part.into()).into())]))
+        .collect();
+    fields.insert("v", FieldValue::Rows(rows));
+    Ok(())
+}
+
+/// Shockwave (`STU_01D67FA0`, `Write_STU_01D67FA0` 0x7FF789BA5C90): when
+/// its list (`m_B3B10C9E`, 8-byte records) has a record, a bit, the count,
+/// each record's u16 at +4 (w_u16), its 16 bits at +6 and its 32 bits at
+/// +0, then the block's f32 `m_6A79BD98`; an empty list is a 0 bit alone.
+/// Payload: `items` as `[a, b, c]` rows (+4, +6, +0), `m_6A79BD98`.
+fn project_shockwave(fields: &mut LayoutFields<'static>, vm: &Vm<'_>) -> Result<(), PayloadError> {
+    let items = match vm.0.get("items") {
+        None => &[][..],
+        Some(Value::Array(items)) => items.as_slice(),
+        _ => return Err(invalid_field("items")),
+    };
+    fields.insert("has_list", Value::Bool(!items.is_empty()).into());
+    if items.is_empty() {
+        return Ok(());
+    }
+    let mut rows = Vec::with_capacity(items.len());
+    for item in items {
+        let Value::Array(row) = item else {
+            return Err(invalid_field("items"));
+        };
+        let [a, b, c] = row.as_slice() else {
+            return Err(invalid_field("items"));
+        };
+        rows.push(LayoutFields::from([
+            ("a", a.clone().into()),
+            ("b", b.clone().into()),
+            ("c", c.clone().into()),
+        ]));
+    }
+    let count = u16::try_from(rows.len()).map_err(|_| invalid_field("items"))?;
+    fields.insert("n", Value::Integer(count.into()).into());
+    fields.insert("items", FieldValue::Rows(rows));
+    let f = vm.float("m_6A79BD98", 0.0)?;
+    fields.insert("f", Value::Float(f).into());
+    Ok(())
+}
+
+/// The spray placement (`STU_861D9015`, `Write_STU_861D9015`
+/// 0x7FF789C1FAA0): when placed (`+0x1F8`), a direction (`+0x1C0`) as two
+/// 16-bit angles ([`direction16`]), a position (`+0x1D0`) as three f32, a
+/// second direction (`+0x1E0`), then an optional entity (`+0x1F0`) with an
+/// optional var_b (`+0x1F4`, sent when not 0) and a bit (`+0x1F9`).
+fn project_placement(fields: &mut LayoutFields<'static>, vm: &Vm<'_>) -> Result<(), PayloadError> {
+    let placed = vm.flag("placed");
+    fields.insert("a", Value::Bool(placed).into());
+    if !placed {
+        return Ok(());
+    }
+    let (v0, v1) = direction16(vm.vector("direction")?);
+    let [x, y, z] = vm.vector("position")?;
+    let (v5, v6) = direction16(vm.vector("second_direction")?);
+    for (name, value) in [
+        ("v0", u32::from(v0)),
+        ("v1", u32::from(v1)),
+        ("v2", x.to_bits()),
+        ("v3", y.to_bits()),
+        ("v4", z.to_bits()),
+        ("v5", u32::from(v5)),
+        ("v6", u32::from(v6)),
+    ] {
+        fields.insert(name, Value::Integer(value.into()).into());
+    }
+    let entity = vm.entity("entity")?;
+    let extra = vm.unsigned("extra", u32::MAX)?;
+    fields.insert("has_entity", Value::Bool(valid_entity(entity)).into());
+    fields.insert("entity", Value::Integer(entity.into()).into());
+    fields.insert("has_extra", Value::Bool(extra != 0).into());
+    fields.insert("extra", Value::Integer(extra.into()).into());
+    fields.insert("g", Value::Bool(vm.flag("flag")).into());
+    Ok(())
+}
+
+/// A unit direction as the client's two 16-bit angles (0x7FF789CC1050;
+/// read back by 0x7FF789CC1360): the yaw `atan2(x, z)` × 32768/π and the
+/// pitch `asin(y)` × 65536/π, each rounded half away from zero, + 0x8000
+/// and kept within 0..=0xFFFF.
+fn direction16([x, y, z]: [f32; 3]) -> (u16, u16) {
+    const STEEP: f32 = 0.999_845_5;
+    let quantize = |angle: f32| {
+        let rounded = if angle >= 0.0 {
+            angle + 0.5
+        } else {
+            angle - 0.5
+        };
+        (rounded as i32 + 0x8000).clamp(0, 0xffff) as u16
+    };
+    let yaw = if x == 0.0 && z == 0.0 {
+        0.0
+    } else {
+        x.atan2(z)
+    };
+    let pitch = if y > STEEP {
+        std::f32::consts::FRAC_PI_2
+    } else if y < -STEEP {
+        -std::f32::consts::FRAC_PI_2
+    } else {
+        y.asin()
+    };
+    (quantize(yaw * 10_430.378), quantize(pitch * 20_860.756))
+}
+
+/// What `Write_STU_9935FBC8` (0x7FF789B98260) compares each of its seven
+/// floats (`+0x1EC` to `+0x204`) with: a float equal to its default is a 0
+/// bit, any other a 1 bit and the f32 (0x7FF789BB61F0).
+const LINKED_TARGET_DEFAULTS: [f32; 7] =
+    [0.0, 0.0, -174_532.9, -174_532.9, 174_532.9, 174_532.9, 0.0];
+
+/// `STU_9935FBC8` in an owner's full frame, after its link: an entity
+/// (`+0x1E8`) only when valid and with bit 31 set, then the seven floats
+/// (`values`, missing ones at their defaults).
+fn project_linked_target(
+    fields: &mut LayoutFields<'static>,
+    vm: &Vm<'_>,
+) -> Result<(), PayloadError> {
+    let entity = vm.entity("entity")?;
+    let has_entity = valid_entity(entity) && entity & 0x8000_0000 != 0;
+    fields.insert("has_entity", Value::Bool(has_entity).into());
+    fields.insert("entity", Value::Integer(entity.into()).into());
+    let values = match vm.0.get("values") {
+        None => &[][..],
+        Some(Value::Array(values)) if values.len() <= LINKED_TARGET_DEFAULTS.len() => {
+            values.as_slice()
+        }
+        _ => return Err(invalid_field("values")),
+    };
+    let mut rows = Vec::with_capacity(LINKED_TARGET_DEFAULTS.len());
+    for (index, default) in LINKED_TARGET_DEFAULTS.into_iter().enumerate() {
+        let value = match values.get(index) {
+            None => default,
+            Some(value) => value_float(value).ok_or_else(|| invalid_field("values"))? as f32,
+        };
+        rows.push(LayoutFields::from([
+            ("set", Value::Bool(value != default).into()),
+            ("value", Value::Float(value.into()).into()),
+        ]));
+    }
+    fields.insert("values", FieldValue::Rows(rows));
+    Ok(())
 }
 
 fn project_volley(
@@ -1088,14 +1413,17 @@ mod tests {
             595
         );
         assert_eq!(table.classes().filter(|codec| codec.stec()).count(), 4);
-        assert!(!table.sendable("STU_2F07848F", false));
+        // ScaleTime (StEC) carries its payload while off too: sendable once
+        // its family (`value_slot`) exists.
+        assert!(table.sendable("STU_2F07848F", false));
         let mut projected: Vec<_> = table.classes().filter(|codec| codec.projected()).collect();
         projected.sort_by(|left, right| left.hash.cmp(&right.hash));
-        assert_eq!(projected.len(), 581);
+        // Every verified class (`CodecTable::client`).
+        assert_eq!(projected.len(), 595);
         let samples = samples();
         assert_eq!(samples.len(), 19);
-        // Python's families; the Grappling Hook cast's `start` came later
-        // (`project_start`).
+        // Python's families; the others came later, each with its own test
+        // below (`project_start` and the families after it).
         let (projected, later): (Vec<_>, Vec<_>) = projected
             .into_iter()
             .partition(|codec| samples.contains_key(codec.codec.as_deref().unwrap()));
@@ -1104,7 +1432,11 @@ mod tests {
                 .iter()
                 .map(|codec| codec.hash.as_str())
                 .collect::<Vec<_>>(),
-            ["4BBC5D09"]
+            [
+                "01D67FA0", "239B1E64", "2F07848F", "41B3FC2B", "43DB06B1", "491F6FF1", "4A67370F",
+                "4BBC5D09", "4BD2E886", "4C96470A", "63B7ADFD", "746F8777", "861D9015", "9935FBC8",
+                "99B885B8"
+            ]
         );
         let modes = [
             PayloadMode::Owner {
@@ -1138,6 +1470,241 @@ mod tests {
         assert_eq!(
             format!("{:x}", digest.finalize()),
             "ae1a884a29f5614e9448c6a06b61c926b78be7010558bdb9d6211b47924ab98b"
+        );
+    }
+
+    // The families after Python's, each against the client's writer (or,
+    // without one, its reader): the expected bits are written in the
+    // writer's order.
+
+    const OWNER: PayloadMode = PayloadMode::Owner {
+        full: false,
+        frame_time: 16000,
+        frame_ms: 16,
+    };
+    const OWNER_FULL: PayloadMode = PayloadMode::Owner {
+        full: true,
+        frame_time: 16000,
+        frame_ms: 16,
+    };
+    const REMOTE: PayloadMode = PayloadMode::Remote { full: true };
+
+    fn encode(class: &str, payload: serde_json::Value, mode: PayloadMode) -> BitWriter {
+        static TABLE: std::sync::LazyLock<CodecTable> =
+            std::sync::LazyLock::new(CodecTable::client);
+        let payload = payload
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(key, value)| (key.clone(), sample_value(value)))
+            .collect();
+        TABLE.codec(class).unwrap().payload(&payload, mode).unwrap()
+    }
+
+    fn written(write: impl FnOnce(&mut BitWriter)) -> BitWriter {
+        let mut out = BitWriter::new();
+        write(&mut out);
+        out
+    }
+
+    /// Recall's rewind: its end (the block's s64), then the frames of
+    /// history in 16 bits, for the owner and observers alike.
+    #[test]
+    fn recalls_rewind_writes_its_end_then_its_frames_of_history() {
+        let payload = json!({"end": 124_442, "frames": 188});
+        let expected = written(|out| {
+            out.bits(124_442, 64).unwrap();
+            out.bits(188, 16).unwrap();
+        });
+        for mode in [OWNER, REMOTE] {
+            assert_eq!(encode("STU_41B3FC2B", payload.clone(), mode), expected);
+        }
+    }
+
+    #[test]
+    fn two_vectors_write_their_due_time_flag_and_six_floats() {
+        let payload = json!({
+            "end": 20000, "flag": true,
+            "first": {"vector": [1.0, 2.0, 3.0]}, "second": {"vector": [-1.0, 0.5, 0.25]}
+        });
+        let expected = written(|out| {
+            out.bits(20000, 64).unwrap();
+            out.bit(true);
+            out.bit(true); // always set by the writer
+            for part in [1.0, 2.0, 3.0, -1.0, 0.5, 0.25] {
+                out.f32(part);
+            }
+        });
+        assert_eq!(encode("STU_746F8777", payload, OWNER), expected);
+    }
+
+    #[test]
+    fn a_shockwave_writes_its_records_and_speed_or_a_zero_bit() {
+        let payload = json!({"items": [[300, -2, 0xA000_0101_u32], [5, 7, 9]], "m_6A79BD98": 12.5});
+        let expected = written(|out| {
+            out.bit(true);
+            out.w_u16(2);
+            out.w_u16(300);
+            out.bits(0xfffe, 16).unwrap();
+            out.bits(0xA000_0101, 32).unwrap();
+            out.w_u16(5);
+            out.bits(7, 16).unwrap();
+            out.bits(9, 32).unwrap();
+            out.f32(12.5);
+        });
+        assert_eq!(encode("STU_01D67FA0", payload, REMOTE), expected);
+        let empty = encode("STU_01D67FA0", json!({"m_6A79BD98": 12.5}), REMOTE);
+        assert_eq!(empty, written(|out| out.bit(false)));
+    }
+
+    #[test]
+    fn scale_time_writes_the_value_of_its_side() {
+        let payload = |active| json!({"active": active, "on": 0.5, "off": 1.0});
+        for (active, value) in [(true, 0.5_f32), (false, 1.0)] {
+            let expected = written(|out| {
+                out.bit(active);
+                out.bits(value.to_bits().into(), 32).unwrap();
+            });
+            assert_eq!(encode("STU_2F07848F", payload(active), REMOTE), expected);
+        }
+    }
+
+    #[test]
+    fn block_fields_write_their_byte_or_short() {
+        for class in ["STU_43DB06B1", "STU_4C96470A"] {
+            let out = encode(class, json!({"value": 1}), OWNER);
+            assert_eq!(out, written(|out| out.bits(1, 8).unwrap()));
+        }
+        let out = encode("STU_4A67370F", json!({"value": 65535}), REMOTE);
+        assert_eq!(out, written(|out| out.bits(0xffff, 16).unwrap()));
+    }
+
+    #[test]
+    fn a_counted_stack_writes_its_bits_to_the_owner_and_its_counter_to_all() {
+        let payload = json!({"top": true, "under": false, "counter": 70000});
+        // The activation counter is 16 bits: 70000 is 4464.
+        let owner = written(|out| {
+            out.bit(true);
+            out.bit(false);
+            out.w_u16(4464);
+        });
+        assert_eq!(encode("STU_491F6FF1", payload.clone(), OWNER), owner);
+        let observer = written(|out| out.w_u16(4464));
+        assert_eq!(encode("STU_491F6FF1", payload, REMOTE), observer);
+    }
+
+    #[test]
+    fn one_bit_states_write_their_bit() {
+        let out = encode("STU_4BD2E886", json!({"value": true}), REMOTE);
+        assert_eq!(out, written(|out| out.bit(true)));
+    }
+
+    #[test]
+    fn var_flag_writes_a_var_b_then_its_flag() {
+        let out = encode("STU_239B1E64", json!({"value": 70000, "flag": true}), OWNER);
+        let expected = written(|out| {
+            out.var_b(70000);
+            out.bit(true);
+        });
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn an_optional_var_writes_its_value_only_when_not_zero() {
+        let out = encode("STU_63B7ADFD", json!({"value": 300, "flag": true}), OWNER);
+        let expected = written(|out| {
+            out.bit(true);
+            out.bit(true);
+            out.var_b(300);
+        });
+        assert_eq!(out, expected);
+        let zero = encode("STU_63B7ADFD", json!({"value": 0, "flag": true}), OWNER);
+        assert_eq!(zero, written(|out| out.bit(false)));
+    }
+
+    /// The client's angles (0x7FF789CC1050): yaw `atan2(x, z)`, pitch
+    /// `asin(y)`, each scaled to 16 bits around 0x8000; a pitch past
+    /// ±0.9998455 is ±π/2 (clamped to 0xFFFF at the top).
+    #[test]
+    fn a_placement_writes_its_directions_as_angles() {
+        assert_eq!(direction16([0.0, 0.0, 1.0]), (0x8000, 0x8000));
+        assert_eq!(direction16([1.0, 0.0, 0.0]), (0xc000, 0x8000));
+        assert_eq!(direction16([0.0, 0.0, -1.0]), (0xffff, 0x8000));
+        assert_eq!(direction16([0.0, 1.0, 0.0]), (0x8000, 0xffff));
+        assert_eq!(direction16([0.0, -1.0, 0.0]), (0x8000, 0));
+        let payload = json!({
+            "placed": true,
+            "direction": {"vector": [0.0, 0.0, 1.0]},
+            "position": {"vector": [10.5, -2.0, 3.25]},
+            "second_direction": {"vector": [1.0, 0.0, 0.0]},
+            "entity": 0xA000_0101_u32, "extra": 70000, "flag": true
+        });
+        let expected = written(|out| {
+            out.bit(true);
+            out.bits(0x8000, 16).unwrap();
+            out.bits(0x8000, 16).unwrap();
+            for part in [10.5_f32, -2.0, 3.25] {
+                out.bits(part.to_bits().into(), 32).unwrap();
+            }
+            out.bits(0xc000, 16).unwrap();
+            out.bits(0x8000, 16).unwrap();
+            out.bit(true);
+            out.entity_id(Some(0xA000_0101));
+            out.bit(true);
+            out.var_b(70000);
+            out.bit(true);
+        });
+        assert_eq!(encode("STU_861D9015", payload, REMOTE), expected);
+        let unplaced = encode("STU_861D9015", json!({"placed": false}), REMOTE);
+        assert_eq!(unplaced, written(|out| out.bit(false)));
+    }
+
+    /// After its (absent) link, only an owner's full frame carries the
+    /// entity (when bit 31 is set) and the seven floats, each a 0 bit when
+    /// it equals the writer's default.
+    #[test]
+    fn a_linked_target_writes_its_entity_and_changed_floats_in_full_owner_frames() {
+        let payload =
+            |entity: u32| json!({"entity": entity, "values": [0.0, 1.5, -174_532.9, 0.0]});
+        let expected = |entity: Option<u32>| {
+            written(|out| {
+                out.bit(false); // link
+                out.bit(entity.is_some());
+                if entity.is_some() {
+                    out.entity_id(entity);
+                }
+                out.bit(false);
+                out.bit(true);
+                out.f32(1.5);
+                out.bit(false);
+                out.bit(true); // 0 is not the default -174532.9
+                out.f32(0.0);
+                for _ in 4..7 {
+                    out.bit(false);
+                }
+            })
+        };
+        assert_eq!(
+            encode("STU_9935FBC8", payload(0xA000_0101), OWNER_FULL),
+            expected(Some(0xA000_0101))
+        );
+        assert_eq!(
+            encode("STU_9935FBC8", payload(0x2000_0101), OWNER_FULL),
+            expected(None)
+        );
+        for mode in [OWNER, REMOTE] {
+            let out = encode("STU_9935FBC8", payload(0xA000_0101), mode);
+            assert_eq!(out, written(|out| out.bit(false)));
+        }
+    }
+
+    #[test]
+    fn a_blink_effect_sends_its_id_to_observers_only() {
+        let out = encode("STU_99B885B8", json!({"id": 77}), REMOTE);
+        assert_eq!(out, written(|out| out.bits(77, 32).unwrap()));
+        assert_eq!(
+            encode("STU_99B885B8", json!({"id": 77}), OWNER).bit_len(),
+            0
         );
     }
 }

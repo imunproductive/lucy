@@ -570,6 +570,7 @@ impl<'a> SnapshotEncoder<'a> {
                     .and_then(|codec| state_payload(state, codec, snapshot.now_ms))
                 else {
                     if self.unknowns == Unknowns::Tolerate {
+                        log_left_out(&node.class, codec, state.kind);
                         continue;
                     }
                     return Err(SnapshotError::UnsupportedState {
@@ -1711,6 +1712,34 @@ fn presenter(node: &Node) -> bool {
 /// (`ClientOnlyPulser.FRESH_MS` in `ow174/game/script/nodes.py`).
 const PULSE_FRESH_MS: u64 = 500;
 
+/// A release build leaves an active state out of frames when it can't
+/// write its payload ([`Unknowns::Tolerate`]): the client never runs it, or
+/// ends the copy it predicted at its next rollback past the begin. So the
+/// gap is logged, once per class and server run.
+fn log_left_out(class: &str, codec: Option<&Codec>, kind: StateKind) {
+    use std::{
+        collections::HashSet,
+        sync::{LazyLock, Mutex},
+    };
+    static LOGGED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+    let mut logged = LOGGED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !logged.insert(class.to_owned()) {
+        return;
+    }
+    let name = codec
+        .and_then(|codec| codec.codec.as_deref())
+        .unwrap_or("-");
+    let reason = match codec {
+        None => "the client's codec table has no such class".to_owned(),
+        Some(codec) if !codec.verified() => format!("codec {name} has no verified layout"),
+        Some(codec) if !codec.projected() => format!("codec {name} has no payload family"),
+        Some(_) => format!("no payload of codec {name} for the VM's {kind:?}"),
+    };
+    eprintln!("statescript state {class} left out of frames: {reason}");
+}
+
 fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePayload> {
     Some(match (state.kind, codec.codec.as_deref()) {
         (
@@ -1791,18 +1820,11 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
         (StateKind::WaitFrames { target }, Some("frames")) => {
             StatePayload::from([("target".into(), Value::Integer(i64::from(target)))])
         }
-        // Recall's rewind: a 64-bit block field and a 16-bit reading
-        // ow1-preservation calls duration-like (`HANDOFF.md:634-640`); their
-        // meaning is unverified. Assumed: the field is zero and the reading
-        // is the milliseconds since the state began.
-        (StateKind::Rewind, Some("time16+s64")) => StatePayload::from([
-            ("m_0007BF47".into(), Value::Integer(0)),
-            (
-                "time".into(),
-                Value::Integer(i64::from(
-                    u16::try_from(now_ms.saturating_sub(state.start_ms)).unwrap_or(u16::MAX),
-                )),
-            ),
+        // Recall's rewind (`codecs.rs` `project_rewind`): its end (the
+        // VM's finish time) and the frames of history it rewinds along.
+        (StateKind::Rewind { end_ms, frames }, Some("time16+s64")) => StatePayload::from([
+            ("end".into(), Value::Integer(i64::try_from(end_ms).ok()?)),
+            ("frames".into(), Value::Integer(i64::from(frames))),
         ]),
         (StateKind::LogicalButton { .. }, Some("button")) => StatePayload::from([(
             "counter".into(),

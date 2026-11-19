@@ -1180,8 +1180,12 @@ pub enum StateKind {
     /// for the server's walker, in [`Component::ai_move_requests`].
     AiMove,
     /// Recall's rewind (`STU_41B3FC2B`): finishes after its duration; its
-    /// begin and end are [`Motion`]s for the mover.
-    Rewind,
+    /// begin and end are [`Motion`]s for the mover. Its frames carry when it
+    /// ends (ms) and the frames of history it rewinds along.
+    Rewind {
+        end_ms: u64,
+        frames: u16,
+    },
     /// TrackStatTime (`STU_441B50E4`, server-only): the seconds it ran go
     /// to its stats when it ends ([`World::track_stat`]).
     StatTime,
