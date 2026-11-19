@@ -45,10 +45,7 @@ use crate::{
     voice_lines::{VoiceLine, VoiceState, delay_ticks, is_death_cry},
 };
 use orpheus_content::{
-    hero_settings::{
-        HeroSetting, HeroSettings, NANO_BOOST_SENSITIVITY, NANO_BOOST_SENSITIVITY_DEFAULT,
-        SCRIPT_SETTINGS,
-    },
+    hero_settings::{HeroSetting, HeroSettings, SENT_SETTINGS, SettingDefault, script_settings},
     heroes::{ANA, Hero, SOLDIER, WIDOWMAKER},
     parameters::{ClientGameMessage, HeroSelectRequest, OPEN_OR_CLOSE, PICK_HERO, ParameterValue},
 };
@@ -1755,29 +1752,35 @@ pub struct WorldDelivery {
     placement: Option<([f64; 3], i32)>,
 }
 
-/// The entity variables of the hero settings the client sends
+/// The entity variables of a body's hero settings
 /// (`orpheus_content::hero_settings`): the setting identifier's index holds
-/// the chosen entry's identifier, or nothing (null) at DEFAULT, which the
-/// client sends as no entry. Ana's body also holds her NANO BOOST
-/// SENSITIVITY at its default, which no client sends.
+/// the client's value, else the default. That covers the every-hero settings
+/// the client sends (null at DEFAULT, which it sends as no entry) and the
+/// settings the body's graphs read on the server (the data's default when
+/// the client sent none, as it sends only settings saved away from their
+/// DEFAULT). A value is encoded as the client
+/// keeps it (`0x7FF789B7F0F0` compares a saved entry with the default so): a
+/// float as the bits of an f64, a bool as 0 or 1, an identifier as its GUID.
 pub fn hero_setting_variables(settings: &HeroSettings, hero: u64) -> Variables {
-    let mut variables: Variables = SCRIPT_SETTINGS
+    let sent = SENT_SETTINGS
         .iter()
-        .map(|&setting| {
-            let value = match settings.value(hero, setting) {
-                None | Some(0) => ScriptValue::Null,
-                Some(value) => ScriptValue::Asset(value),
+        .map(|&setting| (setting, SettingDefault::Identifier(None)));
+    let read = script_settings(hero).map(|setting| (setting.setting, setting.default));
+    sent.chain(read)
+        .map(|(setting, default)| {
+            let value = match (default, settings.value(hero, setting)) {
+                (SettingDefault::Bool(_), Some(value)) => ScriptValue::Bool(value != 0),
+                (SettingDefault::Bool(value), None) => ScriptValue::Bool(value),
+                (SettingDefault::Float(_), Some(bits)) => ScriptValue::Float(f64::from_bits(bits)),
+                (SettingDefault::Float(value), None) => ScriptValue::Float(f64::from(value)),
+                (SettingDefault::Identifier(_), Some(0))
+                | (SettingDefault::Identifier(None), None) => ScriptValue::Null,
+                (SettingDefault::Identifier(_), Some(value))
+                | (SettingDefault::Identifier(Some(value)), None) => ScriptValue::Asset(value),
             };
             (setting as u32, value)
         })
-        .collect();
-    if hero == ANA {
-        variables.insert(
-            NANO_BOOST_SENSITIVITY as u32,
-            ScriptValue::Float(NANO_BOOST_SENSITIVITY_DEFAULT),
-        );
-    }
-    variables
+        .collect()
 }
 
 /// A body's death (combat.py `Vitals.death_tick`, `killer`) and when it
@@ -5339,8 +5342,10 @@ impl WorldDelivery {
             .flatten()
             .and_then(|mut runtime| {
                 runtime.set_target_candidates(&self.target_candidates);
+                // The body starts with the defaults; what the client sent
+                // replaces them.
                 let settings = hero_setting_variables(&self.hero_settings, hero.guid);
-                if settings.values().any(|value| *value != ScriptValue::Null) {
+                if settings != hero_setting_variables(&HeroSettings::default(), hero.guid) {
                     runtime.set_hero_settings(&settings).ok()?;
                 }
                 Some(runtime)

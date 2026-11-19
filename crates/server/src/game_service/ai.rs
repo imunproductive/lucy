@@ -478,6 +478,7 @@ impl State {
                 picker_raised: false,
                 spawn_effect: false,
                 spawn_scope: Vec::new(),
+                hold_to_sprint_delivered: orpheus_script::wire::Value::Null,
             })
             .collect();
         for (connection, peer) in &self.peers {
@@ -502,6 +503,7 @@ impl State {
             body.picker_raised = peer.world.body_delivered(0x265f, 17, 25456).0;
             body.spawn_effect = peer.world.body_state_active(0x265f, 21);
             body.spawn_scope = peer.world.body_scope_hits(0x265f, 20);
+            body.hold_to_sprint_delivered = peer.world.body_delivered(0x01cf, 117, 0x1ddc).1;
         }
         bodies
     }
@@ -594,6 +596,9 @@ pub(crate) struct BodyState {
     /// The last owner frame his client acknowledged: whether st117 runs in
     /// it, and its ALLIED HEALTH BARS variable (`#8336e`).
     pub support_tag_delivered: (bool, orpheus_script::wire::Value),
+    /// Its HOLD TO SPRINT variable (`#7644e`, Soldier: 76's `1DDC.01C`) in
+    /// that frame.
+    pub hold_to_sprint_delivered: orpheus_script::wire::Value,
     /// His controller's instance of the Training Partner console's scope
     /// 126, where its picker sends `1213` from.
     pub picker: Option<u16>,

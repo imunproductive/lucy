@@ -25,6 +25,7 @@ fixtures = []
 [dev-dependencies]
 orpheus-assets.workspace = true
 orpheus-physics = { workspace = true, features = ["fixtures"] }
+orpheus-stu.workspace = true
 orpheus-testkit.workspace = true
 sha2.workspace = true
 tempfile.workspace = true

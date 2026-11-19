@@ -2064,9 +2064,10 @@ fn the_charge_graph_charges_d_va_and_fills_on_its_ruleset_key() {
 /// with a full meter (the ruleset key `32E0`), ABILITY_3 (command bit 0x20,
 /// logical button 37) begins st0's ability; st6 searches a 10° cone
 /// (`10 × #9602e`, the hero setting NANO BOOST SENSITIVITY at its default
-/// 1, `orpheus_content::hero_settings`) 40 m along her aim from her eye for
-/// the ally nearest her crosshair; rid80 takes him into `#8070`, and after
-/// st11's 0.13 s st12 puts the aura `0269` on him (its graph `0B9F` is
+/// 1, which her body starts with: `orpheus_content::hero_settings`) 40 m
+/// along her aim from her eye for the ally nearest her crosshair; rid80
+/// takes him into `#8070`, and after st11's 0.13 s st12 puts the aura
+/// `0269` on him (its graph `0B9F` is
 /// `nano_boost_halves_the_damage_a_bot_takes_and_boosts_what_it_deals`).
 /// The cone holds two allies: the one 0.3 m beside her aim at 20 m covers
 /// her crosshair and wins over the nearer one 0.6 m aside at 10 m (the
@@ -2077,8 +2078,7 @@ fn the_charge_graph_charges_d_va_and_fills_on_its_ruleset_key() {
 #[test]
 #[ignore = "requires the derived 104319 statescript catalog"]
 fn anas_ultimate_puts_nano_boost_on_the_ally_in_her_sights() {
-    use crate::replication::hero_setting_variables;
-    use orpheus_content::{hero_settings::HeroSettings, heroes::ANA};
+    use orpheus_content::heroes::ANA;
     use orpheus_script::vm::AuraChange;
 
     const NANO_BOOST: u64 = 0x04a0_0000_0000_0269;
@@ -2089,32 +2089,14 @@ fn anas_ultimate_puts_nano_boost_on_the_ally_in_her_sights() {
     const ENEMY: u32 = 0xa000_0401;
     let full = Variables::from([(13024, Value::Bool(true))]);
     let (mut runtime, spawn) = hero_body(ANA, Some(full), None);
-    runtime
-        .set_hero_settings(&hero_setting_variables(&HeroSettings::default(), ANA))
-        .unwrap();
     let [x, y, z] = spawn.pose.position;
-    let body = |entity, team, controller, feet| TargetCandidate {
-        entity,
-        team: Some(team),
-        dead: false,
-        controller: Some(controller),
-        player: Some(controller),
-        ai: false,
-        ai_control: None,
-        feet,
-        height: 1.8,
-        radius: 0.4,
-        yaw: 0.0,
-        tags: None,
-        spawned: Vec::new(),
-    };
     // She looks along +z (yaw 0, level).
     runtime.set_target_candidates(&[
-        body(spawn.entity, 0, spawn.controller, spawn.pose.position),
-        body(ENEMY, 1, 0xa000_0400, [x, y, z + 5.0]),
-        body(WIDE_ALLY, 0, 0xa000_0500, [x + 2.0, y, z + 10.0]),
-        body(NEAR_ALLY, 0, 0xa000_0300, [x + 0.6, y, z + 10.0]),
-        body(FAR_ALLY, 0, 0xa000_0200, [x + 0.3, y, z + 20.0]),
+        standing(spawn.entity, 0, spawn.controller, spawn.pose.position),
+        standing(ENEMY, 1, 0xa000_0400, [x, y, z + 5.0]),
+        standing(WIDE_ALLY, 0, 0xa000_0500, [x + 2.0, y, z + 10.0]),
+        standing(NEAR_ALLY, 0, 0xa000_0300, [x + 0.6, y, z + 10.0]),
+        standing(FAR_ALLY, 0, 0xa000_0200, [x + 0.3, y, z + 20.0]),
     ]);
     let mover = Mover::new(
         MoverSettings::default(),
@@ -2157,6 +2139,152 @@ fn anas_ultimate_puts_nano_boost_on_the_ally_in_her_sights() {
         [(FAR_ALLY, NANO_BOOST)],
         "assumptions: {:#?}",
         runtime.snapshot().unwrap().assumptions
+    );
+}
+
+/// A standing body in a body's target search.
+fn standing(entity: u32, team: u8, controller: u32, feet: [f64; 3]) -> TargetCandidate {
+    TargetCandidate {
+        entity,
+        team: Some(team),
+        dead: false,
+        controller: Some(controller),
+        player: Some(controller),
+        ai: false,
+        ai_control: None,
+        feet,
+        height: 1.8,
+        radius: 0.4,
+        yaw: 0.0,
+        tags: None,
+        spawned: Vec::new(),
+    }
+}
+
+/// Zenyatta's Orb of Harmony through his own graph `02F3`, as Ana's Nano
+/// Boost: ABILITY_1 (command bit 0x08, logical button 35, as
+/// `STU_D3685C04` is false) goes down in st1, st14 searches a 10° cone
+/// (`10 × #9596e`, ORB OF HARMONY SENSITIVITY at its default 1, which his
+/// body starts with) for the ally nearest his crosshair, and rid23 makes
+/// him the orb's target `#1606`, which st9's chase flies the orb to. With
+/// the setting null the cone was `10 × null` and found nobody, so the
+/// server's orb stayed home while the client's flew.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn zenyattas_harmony_orb_goes_to_the_ally_in_his_sights() {
+    const ZENYATTA: u64 = 0x02e0_0000_0000_0020;
+    const ABILITY_1: u32 = 0x08;
+    const ALLY: u32 = 0xa000_0201;
+    const WIDE_ALLY: u32 = 0xa000_0301;
+    let (mut runtime, spawn) = charge_body(ZENYATTA, None);
+    let [x, y, z] = spawn.pose.position;
+    // He looks along +z; the wide ally is 11° off his aim, out of the 5°
+    // half-angle.
+    runtime.set_target_candidates(&[
+        standing(spawn.entity, 0, spawn.controller, spawn.pose.position),
+        standing(WIDE_ALLY, 0, 0xa000_0300, [x + 2.0, y, z + 10.0]),
+        standing(ALLY, 0, 0xa000_0200, [x + 0.3, y, z + 15.0]),
+    ]);
+    let mover = Mover::new(
+        MoverSettings::default(),
+        Arc::new(ContactWorld::new(Vec::new()).unwrap()),
+        spawn.pose.position,
+        0,
+        0x18,
+    )
+    .unwrap();
+    for frame in spawn.frame + 1..=spawn.frame + 60 {
+        let buttons = if frame == spawn.frame + 30 {
+            ABILITY_1
+        } else {
+            0
+        };
+        runtime
+            .advance(
+                Command {
+                    frame,
+                    buttons,
+                    ..Command::default()
+                },
+                &mover,
+                BodyStep::Posed,
+            )
+            .unwrap();
+    }
+    let snapshot = runtime.snapshot().unwrap();
+    let harmony = snapshot
+        .instances
+        .values()
+        .find(|instance| instance.graph == 0x02f3)
+        .unwrap();
+    assert_eq!(
+        harmony.variables.get(&1606),
+        Some(&Value::Entity(ALLY)),
+        "assumptions: {:#?}",
+        snapshot.assumptions
+    );
+}
+
+/// Mercy's TOGGLE GUARDIAN ANGEL (`#7780e`, default on) picks her Guardian
+/// Angel ability as her graph `006E` starts: st23 (`#7780e ||` an AI
+/// possessor) takes its true branch, st22, the ability a press of
+/// ABILITY_1 toggles (`m_A5F1A77B`), as her client does at the default.
+/// With the setting off (or null, as the server had it before) st23 takes
+/// st19, the ability held by the button (`m_A368407D`; Soldier: 76's `0255`
+/// st1 puts the sprint button there when HOLD TO SPRINT is on). A player who
+/// sent it off (21604) gets it as his body starts, as `WorldDelivery` gives
+/// it to a new body: st19, as his client.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn mercys_guardian_angel_toggles_or_holds_by_her_setting() {
+    use orpheus_content::hero_settings::HeroSetting;
+
+    const MERCY: u64 = 0x02e0_0000_0000_0004;
+    const TOGGLE_GUARDIAN_ANGEL: u64 = 0x0d80_0000_0000_1e64;
+    let guardian_angel = |runtime: &PlayerBodyRuntime| {
+        let snapshot = runtime.snapshot().unwrap();
+        let instance = snapshot
+            .instances
+            .values()
+            .find(|instance| instance.graph == 0x006e)
+            .unwrap();
+        let active = |raw| instance.states.get(&raw).is_some_and(|state| state.active);
+        let switch = instance
+            .states
+            .get(&23)
+            .filter(|state| state.active)
+            .map(|state| state.kind);
+        (switch, active(22), active(19))
+    };
+    let (mut runtime, spawn) = charge_body(MERCY, None);
+    run_frames(&mut runtime, spawn, 2);
+    assert_eq!(
+        guardian_angel(&runtime),
+        (
+            Some(orpheus_script::vm::StateKind::BooleanSwitch(true)),
+            true,
+            false
+        )
+    );
+
+    let mut settings = HeroSettings::default();
+    settings.replace(&[HeroSetting {
+        hero: MERCY,
+        setting: TOGGLE_GUARDIAN_ANGEL,
+        value: 0,
+    }]);
+    let (mut runtime, spawn) = charge_body(MERCY, None);
+    runtime
+        .set_hero_settings(&hero_setting_variables(&settings, MERCY))
+        .unwrap();
+    run_frames(&mut runtime, spawn, 2);
+    assert_eq!(
+        guardian_angel(&runtime),
+        (
+            Some(orpheus_script::vm::StateKind::BooleanSwitch(false)),
+            false,
+            true
+        )
     );
 }
 
