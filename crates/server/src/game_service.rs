@@ -2485,9 +2485,11 @@ impl State {
                 }
             }
         }
+        // Each victim's hurt notices (25000) first: a killing hit's goes
+        // before his death notice.
         for (peer, notices) in peers.into_iter().zip(notices) {
             if let Some(peer) = peer {
-                for notice in notices {
+                for notice in peer.world.take_hurt_notices().into_iter().chain(notices) {
                     peer.notice(notice);
                 }
             }

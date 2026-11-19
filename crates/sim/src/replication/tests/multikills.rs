@@ -127,6 +127,7 @@ fn a_second_kill_within_two_seconds_pulses_the_announcers_double_kill() {
             tags: orpheus_script::weapons::DamageTags::NONE,
             direction: None,
             environment: false,
+            from: None,
         };
         let [first_stats, second_stats, third_stats] = &mut stats;
         let [first_victim, second_victim] = &mut victims;

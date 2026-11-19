@@ -321,6 +321,7 @@ fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
         tags: splash,
         direction: Some([0.0, 0.0, 1.0]),
         environment: false,
+        from: None,
     };
     let camera = Some(DeathCamera {
         killer_controller: 0xa000_0100,

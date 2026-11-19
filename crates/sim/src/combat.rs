@@ -465,6 +465,11 @@ pub struct PlayerHit {
     /// The environment's kill ([`Combat::environment_kill`]): the match
     /// credits it to whoever last knocked the body ([`KnockCredit`]).
     pub environment: bool,
+    /// Where the damage came from, for the victim's damage direction arc
+    /// (25000, [`CombatNotice::Hurt`]): another's feet as the match last
+    /// placed them; none for his own explosion (assumption: one's own
+    /// blow shows no arc) and when that isn't known.
+    pub from: Option<Vec3>,
 }
 
 /// An explosion's push on another player's body ([`Combat::take_player_pushes`]),
@@ -807,6 +812,7 @@ impl Combat {
             tags: DamageTags::NONE,
             direction: None,
             environment: true,
+            from: None,
         });
     }
 
@@ -1007,10 +1013,8 @@ impl Combat {
             if !takes {
                 return None;
             }
-            let direction = (!own)
-                .then(|| self.feet(scene, shooter.source))
-                .flatten()
-                .and_then(|from| damage_direction(from, slot.target.pose.feet));
+            let from = (!own).then(|| self.feet(scene, shooter.source)).flatten();
+            let direction = from.and_then(|from| damage_direction(from, slot.target.pose.feet));
             let (amount, tags) = self.dealt(
                 scene,
                 shooter,
@@ -1031,6 +1035,7 @@ impl Combat {
                 tags,
                 direction,
                 environment: false,
+                from,
             });
             self.auras.extend(aura);
             return None;
@@ -1365,6 +1370,7 @@ impl Combat {
                 tags,
                 direction: Some(own.direction),
                 environment: false,
+                from: None,
             });
         }
         Ok(step.end.map(|end| FlightEnd {
@@ -1458,9 +1464,8 @@ impl Combat {
         {
             let heal = !free_for_all && slot.target.team == shooter.team;
             let amount = if heal { impact.heal } else { impact.damage };
-            let direction = self
-                .feet(scene, shooter.source)
-                .and_then(|from| damage_direction(from, slot.target.pose.feet));
+            let from = self.feet(scene, shooter.source);
+            let direction = from.and_then(|from| damage_direction(from, slot.target.pose.feet));
             let (amount, tags) = self.dealt(scene, shooter, heal, amount, impact.tags, launched);
             if amount > 0.0 {
                 self.player_hits.push(PlayerHit {
@@ -1475,6 +1480,7 @@ impl Combat {
                     tags,
                     direction,
                     environment: false,
+                    from,
                 });
             }
             return None;

@@ -5953,6 +5953,30 @@ fn a_firing_practice_bot_shoots_the_player() {
         .filter(|record| record.entity == body)
         .find_map(|record| record.base_health.filter(|health| *health < 200.0));
     assert_eq!(health, Some(192.0));
+    // His client's damage direction arc: the hurt notice (25000) of the
+    // hit, damage taken (kind 1) by his body from the bot standing where it
+    // was placed, for those 8.
+    let notice = watcher
+        .datagrams
+        .iter()
+        .flat_map(|(messages, _)| messages)
+        .find(|message| message.id == 25000)
+        .expect("the hurt notice");
+    let place = Value::Struct(Fields::from([
+        (0, Value::Float32((x - 4.0) as f32)),
+        (4, Value::Float32(y as f32)),
+        (8, Value::Float32(z as f32)),
+    ]));
+    assert_eq!(
+        [0x78, 0x7c, 0x80, 0x9c, 0xc0].map(|at| notice.fields[&at].clone()),
+        [
+            Value::Signed(1),
+            body_id(body),
+            body_id(shooter),
+            place,
+            Value::Float32(8.0),
+        ]
+    );
     // projectiles.py `_show_others` for the bot: the client gets a rocket
     // entity of the bot's projectile definition (1476), the bot's shot record
     // naming it once its create arrived (server.py `retain_bot_volley`
