@@ -59,6 +59,11 @@ const EDGE_COST: f32 = 1.0;
 /// refused ([`Navigation::path_with`]; assumption: enough to get round a
 /// railing or a corner the cells don't show, cheap enough for a tick).
 const REPLANS: usize = 8;
+/// The most different steps and lines one path asks the caller about
+/// ([`Navigation::path_with`]); past it the cells alone decide. Bounds a
+/// path's time where steps keep failing (a capsule test costs tens of
+/// microseconds; assumption: enough for the walks the tests make).
+const CHECKS: usize = 256;
 
 /// A map's navigation file under the runtime folder.
 pub fn file(runtime: &Path, map_guid: u64) -> PathBuf {
@@ -204,6 +209,8 @@ pub struct Navigation {
     portals: HashMap<(usize, usize), Vec3>,
     /// The connected group of each volume (the lowest volume index in it).
     components: Vec<usize>,
+    /// The volumes each walkable cell is walkable in.
+    cells: HashMap<Cell, Vec<usize>>,
 }
 
 #[derive(Deserialize)]
@@ -247,10 +254,17 @@ impl Navigation {
                 return Err(invalid(format!("volume {index} has a bad link")));
             }
         }
+        let mut cells: HashMap<Cell, Vec<usize>> = HashMap::new();
+        for (index, volume) in volumes.iter().enumerate() {
+            for cell in volume.cells() {
+                cells.entry(cell).or_default().push(index);
+            }
+        }
         let mut navigation = Self {
             components: components(&volumes),
             volumes,
             portals: HashMap::new(),
+            cells,
         };
         for a in 0..navigation.volumes.len() {
             for &b in &navigation.volumes[a].neighbours {
@@ -400,7 +414,8 @@ impl Navigation {
     /// refuses (a railing or a wall's corner inside the cells) is taken out
     /// and the A* runs again, at most [`REPLANS`] times, then as often over
     /// the route's volumes and those linked to them; the first walk is kept
-    /// when none passes. The first and last waypoints are the points
+    /// when none passes. `walkable` is asked once per pair of points and at
+    /// most [`CHECKS`] times a path. The first and last waypoints are the points
     /// themselves on the floor when they stand on walkable cells, the
     /// snapped cells' centres otherwise. `None` when either point is off the
     /// map's walkable cells or no route joins them.
@@ -408,7 +423,7 @@ impl Navigation {
         &self,
         from: Vec3,
         to: Vec3,
-        mut walkable: impl FnMut(Vec3, Vec3) -> bool,
+        walkable: impl FnMut(Vec3, Vec3) -> bool,
     ) -> Option<Walk> {
         let start = self.nearest(from, SNAP)?;
         let goal = self.nearest(to, SNAP)?;
@@ -424,15 +439,19 @@ impl Navigation {
         let ends = [end(from, start), end(to, goal)];
         // The route's volumes, then those and their linked ones: a way round
         // what the route's cells can't pass may lead through a volume beside.
-        let narrow = route.volumes.clone();
+        let mut narrow = vec![false; self.volumes.len()];
+        for &volume in &route.volumes {
+            narrow[volume] = true;
+        }
         let mut wide = narrow.clone();
-        for &volume in &narrow {
+        for &volume in &route.volumes {
             for &next in &self.volumes[volume].neighbours {
-                if !wide.contains(&next) {
-                    wide.push(next);
-                }
+                wide[next] = true;
             }
         }
+        // Each pair asked once; past `CHECKS` answers the cells alone decide.
+        let mut walkable = Checked::new(walkable);
+        let mut walkable = |a: Vec3, b: Vec3| walkable.ask(a, b);
         let mut waypoints = None;
         for corridor in [&narrow, &wide] {
             let mut blocked = HashSet::new();
@@ -465,7 +484,7 @@ impl Navigation {
     /// cells `walkable` refuses, if any.
     fn turns(
         &self,
-        corridor: &[usize],
+        corridor: &[bool],
         cells: &[Cell],
         [first, last]: [Vec3; 2],
         walkable: &mut impl FnMut(Vec3, Vec3) -> bool,
@@ -596,17 +615,19 @@ impl Navigation {
         a == b || self.volumes[a].neighbours.contains(&b)
     }
 
-    /// The route volumes that have a cell walkable.
-    fn owners<'a>(&'a self, corridor: &'a [usize], cell: Cell) -> impl Iterator<Item = usize> + 'a {
-        corridor
-            .iter()
+    /// The route volumes (`corridor[volume]`) that have a cell walkable.
+    fn owners<'a>(&'a self, corridor: &'a [bool], cell: Cell) -> impl Iterator<Item = usize> + 'a {
+        self.cells
+            .get(&cell)
+            .into_iter()
+            .flatten()
             .copied()
-            .filter(move |&volume| self.volumes[volume].walkable(cell))
+            .filter(move |&volume| corridor[volume])
     }
 
     /// The floor centre of a cell of the route, in the first volume that has
     /// it.
-    fn centre_in(&self, corridor: &[usize], cell: Cell) -> Vec3 {
+    fn centre_in(&self, corridor: &[bool], cell: Cell) -> Vec3 {
         let volume = self
             .owners(corridor, cell)
             .next()
@@ -618,7 +639,7 @@ impl Navigation {
     /// diagonally, up to a layer up or down): both walkable in route volumes
     /// that are the same or linked, and for a diagonal step both corners
     /// open.
-    fn passable(&self, corridor: &[usize], from: Cell, to: Cell) -> bool {
+    fn passable(&self, corridor: &[bool], from: Cell, to: Cell) -> bool {
         let linked = self
             .owners(corridor, from)
             .any(|a| self.owners(corridor, to).any(|b| self.linked(a, b)));
@@ -638,7 +659,7 @@ impl Navigation {
 
     /// Whether a cell is a step from a wall or an edge: one of its eight
     /// neighbours is no cell a body can step to (a wall's corner counts).
-    fn edge(&self, corridor: &[usize], cell: Cell) -> bool {
+    fn edge(&self, corridor: &[bool], cell: Cell) -> bool {
         (-1..=1).any(|dx| {
             (-1..=1).any(|dz| {
                 (dx, dz) != (0, 0)
@@ -654,7 +675,7 @@ impl Navigation {
     /// in `blocked`).
     fn walk_cells(
         &self,
-        corridor: &[usize],
+        corridor: &[bool],
         start: Cell,
         goal: Cell,
         walkable: &mut impl FnMut(Vec3, Vec3) -> bool,
@@ -666,6 +687,7 @@ impl Navigation {
         let mut cost = vec![0.0f32];
         let mut previous = vec![usize::MAX];
         let mut closed = vec![false];
+        let mut edges: HashMap<Cell, bool> = HashMap::new();
         let mut open = BinaryHeap::from([Open {
             estimate: distance(self.centre_in(corridor, start), goal_centre),
             node: 0,
@@ -697,7 +719,10 @@ impl Navigation {
                         if dl != 0 && !walkable(centre, next_centre) {
                             continue;
                         }
-                        let edge = if self.edge(corridor, next) {
+                        let edge = if *edges
+                            .entry(next)
+                            .or_insert_with(|| self.edge(corridor, next))
+                        {
                             EDGE_COST
                         } else {
                             0.0
@@ -739,7 +764,7 @@ impl Navigation {
     /// column it passes through (through a corner exactly, a diagonal step),
     /// each entered at the layer (the one below, the same or the one above)
     /// nearest the line's height there.
-    fn clear(&self, corridor: &[usize], from: Cell, to: Cell) -> bool {
+    fn clear(&self, corridor: &[bool], from: Cell, to: Cell) -> bool {
         let (dx, dz) = (to[0] - from[0], to[2] - from[2]);
         let (nx, nz) = (dx.abs(), dz.abs());
         let (sx, sz) = (dx.signum(), dz.signum());
@@ -834,6 +859,35 @@ fn midpoint(a: Vec3, b: Vec3) -> Vec3 {
 
 fn invalid(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
+}
+
+/// A caller's walk test asked at most once per pair of points and at most
+/// [`CHECKS`] times in all.
+struct Checked<F> {
+    test: F,
+    answers: HashMap<[u32; 6], bool>,
+}
+
+impl<F: FnMut(Vec3, Vec3) -> bool> Checked<F> {
+    fn new(test: F) -> Self {
+        Self {
+            test,
+            answers: HashMap::new(),
+        }
+    }
+
+    fn ask(&mut self, a: Vec3, b: Vec3) -> bool {
+        let key = [a[0], a[1], a[2], b[0], b[1], b[2]].map(f32::to_bits);
+        if let Some(&answer) = self.answers.get(&key) {
+            return answer;
+        }
+        if self.answers.len() >= CHECKS {
+            return true;
+        }
+        let answer = (self.test)(a, b);
+        self.answers.insert(key, answer);
+        answer
+    }
 }
 
 #[cfg(test)]
