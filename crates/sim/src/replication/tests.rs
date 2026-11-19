@@ -570,6 +570,53 @@ fn a_dry_tick_waits_and_the_late_commands_run_as_the_client_made_them() {
     assert_eq!(released(&mut world.input), [(107, 0), (108, FIRE)]);
 }
 
+/// Past `MAX_WAIT` dry ticks the client's last input runs again for the
+/// next frame each tick, as long as he is silent, so his body goes on
+/// (fire held here); the clock asks for four times as fast all along.
+/// When his commands come, those of repeated frames are late: a release
+/// and a press they had go with the next command run.
+#[test]
+fn past_the_wait_a_dry_tick_repeats_the_last_input_and_late_edges_still_run() {
+    let fire = |frame| Command {
+        buttons: FIRE,
+        ..forward(frame)
+    };
+    let mut input = InputQueue::default();
+    input.commands(100, &[fire(100)]);
+    input.release(1, true);
+    input.commands(101, &[fire(100), fire(101)]);
+    input.release(1, true);
+    input.release(1, true);
+    assert_eq!(released(&mut input), [(100, FIRE), (101, FIRE)]);
+    for tick in 1..=10 {
+        input.release(1, true);
+        assert_eq!(
+            input.clock,
+            CLOCK_FASTER | CLOCK_STRONGER,
+            "dry tick {tick}"
+        );
+        let expected: Vec<_> = if tick <= MAX_WAIT {
+            Vec::new()
+        } else {
+            vec![(101 + tick - MAX_WAIT, FIRE)]
+        };
+        assert_eq!(released(&mut input), expected, "dry tick {tick}");
+    }
+    // Ticks the clock skipped repeat a frame each.
+    input.release(2, true);
+    assert_eq!(released_frames(&mut input), [108, 109]);
+    // The client is back: 104 released fire and 105 pressed it again; 110
+    // and 111 are new. 110 runs released (the repeats held fire), 111
+    // presses it.
+    let mut commands: Vec<_> = (102..=111).map(fire).collect();
+    commands[2] = forward(104);
+    input.commands(112, &commands);
+    input.release(1, true);
+    input.release(1, true);
+    assert_eq!(released(&mut input), [(110, 0), (111, FIRE)]);
+    assert_eq!(input.dry, 0);
+}
+
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
 fn native_world_resumes_a_gap_before_switching_the_body_and_acknowledging_input() {
