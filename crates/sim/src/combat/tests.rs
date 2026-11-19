@@ -304,6 +304,7 @@ fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
         heal: false,
         tags: splash,
         direction: Some([0.0, 0.0, 1.0]),
+        environment: false,
     };
     let on = HurtFeedback::default();
     let damage = damage_message(SHOOTER.source, 75.0, splash, hit.direction);
@@ -384,6 +385,49 @@ fn a_kill_credits_recent_damagers_and_the_assist_states_assisters() {
             assists: vec![(4, Assist::Defensive), (5, Assist::Defensive)],
         }
     );
+}
+
+/// An environment kill credits the last enemy knock of the body for 10 s
+/// (`KNOCKBACK_CREDIT`, KarQ's measure) and no other body's; a later knock
+/// takes it over; the body's own explosion, a jump, or a landing it lives
+/// through (forgotten once the tick's environment kills are dealt) cancels
+/// it, while the landing that kills (the catch floor) still credits it.
+#[test]
+fn an_environment_kill_credits_the_last_knock_until_a_jump_or_a_landing() {
+    const BODY: u32 = 0xa000_0201;
+    let other = Shooter {
+        source: 0xa000_0301,
+        ..SHOOTER
+    };
+    let at = Duration::from_secs(20);
+    let mut credit = KnockCredit::default();
+    assert_eq!(credit.credit(BODY, at), None, "no knock");
+    credit.knocked(BODY, SHOOTER, at);
+    assert_eq!(credit.credit(BODY, at + KNOCKBACK_CREDIT), Some(SHOOTER));
+    let late = at + KNOCKBACK_CREDIT + Duration::from_millis(1);
+    assert_eq!(credit.credit(BODY, late), None, "past 10 s");
+    assert_eq!(credit.credit(BODY | 0x02, at), None, "another body");
+    credit.posed(false, false);
+    credit.settle();
+    assert_eq!(credit.credit(BODY, at), Some(SHOOTER), "still in the air");
+    credit.knocked(BODY, other, at);
+    assert_eq!(credit.credit(BODY, at), Some(other), "the last knock");
+
+    credit.posed(true, false);
+    assert_eq!(
+        credit.credit(BODY, at),
+        Some(other),
+        "the landing that kills"
+    );
+    credit.settle();
+    assert_eq!(credit.credit(BODY, at), None, "a landing he lived through");
+
+    credit.knocked(BODY, SHOOTER, at);
+    credit.posed(false, true);
+    assert_eq!(credit.credit(BODY, at), None, "a jump");
+    credit.knocked(BODY, SHOOTER, at);
+    credit.own_push();
+    assert_eq!(credit.credit(BODY, at), None, "his own explosion");
 }
 
 #[test]

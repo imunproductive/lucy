@@ -2460,7 +2460,7 @@ impl State {
                 })
                 .collect();
             let notices = apply_player_hits(scene, hits, &mut room, tick, now);
-            apply_player_pushes(pushes, &mut room);
+            apply_player_pushes(pushes, &mut room, now);
             notices
         };
         // The kills count for the match flow's score (Deathmatch, Team

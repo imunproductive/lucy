@@ -45,6 +45,8 @@ pub struct Posture {
     pub air_ticks: u32,
     pub crouch_end: Option<u32>,
     landed: bool,
+    /// The last transition jumped (the jump from the ground).
+    jumped: bool,
     pub fall: f32,
     spring: Spring,
 }
@@ -91,6 +93,7 @@ impl Posture {
             air_ticks: 0,
             crouch_end: None,
             landed: false,
+            jumped: false,
             fall: 0.0,
             spring,
         }
@@ -106,6 +109,16 @@ impl Posture {
 
     pub fn crouched(&self) -> bool {
         self.flags & CROUCHED != 0
+    }
+
+    /// Whether the last transition landed the body (from a jump or a fall).
+    pub fn landed(&self) -> bool {
+        self.landed
+    }
+
+    /// Whether the last transition jumped it off the ground.
+    pub fn jumped(&self) -> bool {
+        self.jumped
     }
 
     pub fn spring_offset(&self) -> f32 {
@@ -191,6 +204,7 @@ impl Posture {
     fn transition(&mut self, step: &PostureStep<'_>, velocity: &mut [f64; 3]) {
         let mut flags = self.flags;
         self.landed = false;
+        self.jumped = false;
         if flags & IN_AIR != 0 {
             let [x, y, z] = *velocity;
             let limit = step.mods.intent(LAND_LIMIT, LAND_SPEED);
@@ -221,6 +235,7 @@ impl Posture {
                 velocity[1] = step.values.jump_speed;
                 self.air_ticks = 0;
                 flags = (flags & !(FELL | REAL_JUMP)) | JUMPED | REAL_JUMP | JUMP_LATCH;
+                self.jumped = true;
             }
         } else if flags & IN_AIR == 0 {
             flags &= !JUMP_LATCH;

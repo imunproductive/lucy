@@ -211,6 +211,16 @@ impl Mover {
         self.posture.crouched()
     }
 
+    /// Whether its last pose landed it on the ground, from a jump or a fall.
+    pub fn landed(&self) -> bool {
+        self.posture.landed()
+    }
+
+    /// Whether its last pose jumped it off the ground (the jump button).
+    pub fn jumped(&self) -> bool {
+        self.posture.jumped()
+    }
+
     /// The body's capsule where it stands now: its lowest point at the feet
     /// plus the lift (the pogo plus the spring offset), its stance's radius
     /// and segment. The client places another player's proxy so from his
