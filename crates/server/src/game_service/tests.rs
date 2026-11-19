@@ -4028,13 +4028,11 @@ fn echos_tri_shot_confirms_and_releases_each_bolt_under_the_lease() {
 #[test]
 #[ignore = "requires a prepared 104319 Practice Range scene"]
 fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
-    use orpheus_script::vm::Unknowns;
     use orpheus_sim::scene_assets::SceneAssets;
     use orpheus_wire::commands::FIRE;
     const AHEAD: f64 = 8.0;
 
-    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-    assets.set_player_unknowns(Unknowns::Tolerate);
+    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     let mut aim = None;
     let (mut server, schemas, [mut ana, mut soldier], _) = practice_world(
         [("ana#1111", 0, "Ana"), ("soldier#2222", 1, "Soldier: 76")],
@@ -4196,6 +4194,127 @@ fn anas_rifle_heals_a_hurt_friendly_bot_and_damages_an_enemy() {
         corrections += moves.len();
     }
     assert!(corrections > 0, "no correction of Ana's body");
+    server.stop().unwrap();
+}
+
+/// Ana's Biotic Grenade (ABILITY_2: `0B97` st0) through her real body
+/// script, which starts whole in debug builds (`STU_D1BF5FA6`). Her client
+/// doesn't shoot the volley itself (`m_45271E8C` 0), so the server flies it
+/// and shows it to her own client as to the others
+/// (`orpheus_sim::projectiles::ServerCopies`): the copy's create
+/// (`1426.003`), then the shot record naming it on her body, then its
+/// destroy when the server's flight bursts. She throws it at the enemy
+/// Soldier: 76 beside her once he has wounded her, so its 4 m ring takes
+/// them both: the aura (`053:0267`, graph `0C71`) plays the enemy aura
+/// `0C72` on his body (60 from Ana) and the ally aura `0B99` on hers
+/// (a heal of 100), each on its body's own graphs. His world answers
+/// `0C72` rid21's `STU_F7262B36(#40)` (Ana's body's possessor: her
+/// controller, `orpheus_script::vm::listed_relation`); unanswered, it
+/// stopped his whole script.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene"]
+fn anas_biotic_grenade_shows_to_her_own_client_and_its_aura_hurts_an_enemy_and_heals_her() {
+    use orpheus_wire::commands::FIRE;
+    /// `0B97` st4's button (36).
+    const ABILITY_2: u32 = 0x10;
+    const GRENADE: u32 = 0x1426;
+    const FULL: f32 = 200.0;
+
+    let (mut server, schemas, [mut ana, mut soldier], _) =
+        practice_players([("ana#1111", 0, "Ana"), ("soldier#2222", 1, "Soldier: 76")]);
+    let ana_body = ana.owner | 1;
+    let soldier_body = soldier.owner | 1;
+    let health = |watcher: &Watcher, body: u32| {
+        watcher
+            .datagrams
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter(|record| record.entity == body)
+            .filter_map(|record| record.base_health)
+            .next_back()
+    };
+    // The way from one body to the other (bodies: Ana's, the Soldier's).
+    let aim = |server: &Lockstep, from: usize, to: usize| {
+        let bodies = server.bodies(MATCH).unwrap();
+        let [from, to] = [from, to].map(|index| bodies[index].position.unwrap());
+        ((to[0] - from[0]).atan2(to[2] - from[2]) * 32768.0 / std::f64::consts::PI).round() as i32
+            as i16
+    };
+    let mut frames = [ana.tick + 1, soldier.tick + 1];
+    // Both play on (a body's graphs run at its client's command frames).
+    let idle = |watchers: [&mut Watcher; 2], frames: &mut [u32; 2], yaw: i16, pumps: usize| {
+        let [ana, soldier] = watchers;
+        for _ in 0..pumps {
+            send_input(ana, &mut frames[0], yaw, 0, 0, false);
+            send_input(soldier, &mut frames[1], 0, 0, 0, false);
+            ana.pump(&schemas);
+            soldier.pump(&schemas);
+        }
+    };
+
+    // The Soldier wounds Ana, aiming from where the two bodies stand (as
+    // enemies on one spawn point they push each other apart).
+    let deadline = server.now() + Duration::from_secs(10);
+    while !health(&ana, ana_body).is_some_and(|health| health < FULL) {
+        assert!(server.now() < deadline, "waiting for Ana's wound");
+        let toward = aim(&server, 1, 0);
+        send_input(&mut soldier, &mut frames[1], toward, 0, FIRE, false);
+        send_input(&mut ana, &mut frames[0], 0, 0, 0, false);
+        ana.pump(&schemas);
+        soldier.pump(&schemas);
+    }
+    idle([&mut ana, &mut soldier], &mut frames, 0, 30);
+    let wounded = health(&ana, ana_body).unwrap();
+    let unhurt = health(&soldier, soldier_body).unwrap_or(FULL);
+
+    // Ana throws at him.
+    let thrown = [&ana, &soldier].map(|watcher| watcher.datagrams.len());
+    let toward = aim(&server, 0, 1);
+    send_input(&mut ana, &mut frames[0], toward, 0, ABILITY_2, false);
+    let grenade = |watcher: &Watcher, from: usize| {
+        watcher.datagrams[from..]
+            .iter()
+            .flat_map(|(_, records)| records)
+            .find(|record| record.is_create() && record.definition == Some(GRENADE))
+            .map(|record| record.entity)
+    };
+    let gone = |watcher: &Watcher, from: usize| {
+        grenade(watcher, from).is_some_and(|entity| {
+            watcher
+                .find(from, |record| {
+                    record.entity == entity && record.operation == Some(3)
+                })
+                .is_some()
+        })
+    };
+    let deadline = server.now() + Duration::from_secs(10);
+    while !(gone(&ana, thrown[0]) && gone(&soldier, thrown[1])) {
+        assert!(server.now() < deadline, "waiting for the grenade's burst");
+        idle([&mut ana, &mut soldier], &mut frames, toward, 1);
+    }
+    idle([&mut ana, &mut soldier], &mut frames, toward, 30);
+
+    // Her own client: the create, the launch on her body, the destroy.
+    let copy = grenade(&ana, thrown[0]).unwrap();
+    let created = ana
+        .find(thrown[0], |record| {
+            record.entity == copy && record.is_create()
+        })
+        .unwrap();
+    let launched = ana
+        .find(created, |record| {
+            record.entity == ana_body && record.launches.contains(&copy)
+        })
+        .expect("the shot record naming her copy");
+    let destroyed = ana
+        .find(created, |record| {
+            record.entity == copy && record.operation == Some(3)
+        })
+        .unwrap();
+    assert!(created < launched && launched <= destroyed);
+    // The aura on both bodies' graphs.
+    assert_eq!(health(&soldier, soldier_body), Some(unhurt - 60.0));
+    assert_eq!(health(&ana, ana_body), Some((wounded + 100.0).min(FULL)));
     server.stop().unwrap();
 }
 

@@ -1176,9 +1176,10 @@ impl PreparedScene {
         self.bot_scripts.set_target_candidates(candidates);
     }
 
-    /// A bot was killed: its script's death message (combat.py `_bot_died`).
+    /// A bot was killed: its script's killing hit and death messages
+    /// (combat.py `_bot_died`).
     pub fn bot_died(&mut self, death: &BotDeath) {
-        self.bot_scripts.died(death);
+        self.bot_scripts.died(death, &self.bots);
     }
 
     /// A bot's pools after a hit it survived or a heal (combat.py
