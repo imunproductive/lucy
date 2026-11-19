@@ -132,6 +132,14 @@ pub struct PlayerWorld {
     pub next_dummy: Option<NextDummy>,
     /// The dummy bots the body's graphs made or removed, for the match.
     dummies: Vec<DummyChange>,
+    /// The scope instances the body's scope states opened or closed on
+    /// their targets (the Training Partner console's scope 197, from its
+    /// scope 12 here, on the dummy a re-pick made), for the match.
+    scopes: Vec<ScopeChange>,
+    /// The variables the body's scope instances set in their scope states'
+    /// instances (`STU_D49BBD03`: the console's `#940` on a re-pick), for
+    /// the match.
+    parent_writes: Vec<ParentWrite>,
     /// The statuses and combat modifiers its states hold.
     pub effects: BodyEffects,
 }
@@ -290,15 +298,30 @@ impl World for PlayerWorld {
 
     /// A dummy bot gets the player and body the match gave
     /// ([`Self::next_dummy`]), one a run; the match makes it (as
-    /// `placed.rs` does for the map's scripts).
+    /// `placed.rs` does for the map's scripts). The graph gets his player
+    /// entity, his controller.
     fn create_dummy_bot(&mut self, _site: Site, dummy: DummyBot) -> Option<u32> {
         let next = self.next_dummy.take()?;
         self.dummies.push(DummyChange::Create { dummy, next });
-        Some(next.body)
+        Some(next.player)
     }
 
     fn remove_dummy_bot(&mut self, _site: Site, team: i64, slot: i64) -> bool {
         self.dummies.push(DummyChange::Remove { team, slot });
+        true
+    }
+
+    /// A scope state's instances on its targets go to the match, which
+    /// opens them in the targets' components (as `placed.rs`).
+    fn change_scope(&mut self, _site: Site, change: ScopeChange) -> bool {
+        self.scopes.push(change);
+        true
+    }
+
+    /// A scope instance's write to its scope state's instance goes to the
+    /// match, which sets it there.
+    fn set_parent_variable(&mut self, _site: Site, write: ParentWrite) -> bool {
+        self.parent_writes.push(write);
         true
     }
 
@@ -723,6 +746,8 @@ impl PlayerWorld {
             tracked_stats: Vec::new(),
             next_dummy: None,
             dummies: Vec::new(),
+            scopes: Vec::new(),
+            parent_writes: Vec::new(),
             effects: BodyEffects::default(),
         }
     }
@@ -754,6 +779,19 @@ impl PlayerWorld {
     /// call, in order, for the match to make or remove.
     pub fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
         std::mem::take(&mut self.dummies)
+    }
+
+    /// The scope instances the body's scope states opened or closed since
+    /// the last call, in order, for the match to carry out in the targets'
+    /// components.
+    pub fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
+        std::mem::take(&mut self.scopes)
+    }
+
+    /// The variables the body's scope instances set in their scope states'
+    /// instances since the last call, in order, for the match to set.
+    pub fn take_parent_writes(&mut self) -> Vec<ParentWrite> {
+        std::mem::take(&mut self.parent_writes)
     }
 
     /// The game messages the body sent other entities since the last call,

@@ -106,6 +106,17 @@ impl ScopeChange {
     }
 }
 
+/// A variable a scope instance sets in the scope state's instance on
+/// another entity (`STU_D49BBD03`, [`World::set_parent_variable`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParentWrite {
+    /// The scope state whose instance takes it.
+    pub source: ScopeSource,
+    /// The instance variable.
+    pub variable: u32,
+    pub value: Value,
+}
+
 /// The scope id of a scope state: its scope plug's `m_5AEA0A51`.
 pub(super) fn scope_id(node: &Node) -> u32 {
     node.field("m_C41A9BE2.m_5AEA0A51")

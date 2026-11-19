@@ -297,6 +297,23 @@ pub trait OwnerBodyRuntime: Send {
         Ok(None)
     }
 
+    /// The scope instances the body's scope states opened or closed on
+    /// their targets since the last call (the console's scope 197 from
+    /// scope 12, on a re-picked dummy), for the match.
+    fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
+        Vec::new()
+    }
+
+    /// The match opened the scope instance `instance` on `target` for the
+    /// body's scope state `source`.
+    fn scope_opened(&mut self, _source: ScopeSource, _target: u32, _instance: u16) {}
+
+    /// The variables the body's scope instances set in their scope states'
+    /// instances since the last call (`STU_D49BBD03`), for the match.
+    fn take_parent_writes(&mut self) -> Vec<ParentWrite> {
+        Vec::new()
+    }
+
     /// The player and body the next dummy bot the body's graphs make gets
     /// (the console's scope 12 on a re-pick); none: they make none.
     fn set_next_dummy(&mut self, _next: Option<NextDummy>) {}
@@ -2992,14 +3009,15 @@ impl WorldDelivery {
         self.started = Some(tick);
         // The player's controller graph runs from the world's start: hero
         // select, the multikills.
-        let heroes = scene
-            .heroes()
-            .heroes()
-            .map(|hero| (hero.guid, hero.role_guid()))
-            .collect();
         self.controller_script = scene
             .controller()
-            .start_script(scene.shared_graphs(), self.owner, viewer.team, heroes, tick)
+            .start_script(
+                scene.shared_graphs(),
+                self.owner,
+                viewer.team,
+                scene.heroes(),
+                tick,
+            )
             .map_err(|error| {
                 eprintln!(
                     "controller script of {:08X} can't start ({error})",
@@ -3923,6 +3941,32 @@ impl WorldDelivery {
         self.body_script
             .as_mut()
             .map_or_else(Vec::new, |script| script.runtime.take_dummy_changes())
+    }
+
+    /// The scope instances the current body's scope states opened or
+    /// closed on their targets since the last call (the Training Partner
+    /// console's scope 197 on a re-picked dummy), for the match.
+    pub fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
+        self.body_script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.runtime.take_scope_changes())
+    }
+
+    /// The match opened the scope instance `instance` on `target` for the
+    /// scope state `source` of this player's current body.
+    pub fn scope_opened(&mut self, source: ScopeSource, target: u32, instance: u16) {
+        if let Some(script) = &mut self.body_script {
+            script.runtime.scope_opened(source, target, instance);
+        }
+    }
+
+    /// The variables the current body's scope instances set in their scope
+    /// states' instances since the last call (the console's `#940` on a
+    /// re-pick), for the match.
+    pub fn take_parent_writes(&mut self) -> Vec<ParentWrite> {
+        self.body_script
+            .as_mut()
+            .map_or_else(Vec::new, |script| script.runtime.take_parent_writes())
     }
 
     /// A 21616 for the player's controller with a message other than hero

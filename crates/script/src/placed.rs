@@ -266,10 +266,12 @@ impl World for EntityWorld<'_, '_> {
     /// `STU_A3DEF368` is the mode entity (the first entity with component
     /// 114, as [`crate::mode`] answers it): the Practice Range pad `26F8`
     /// and console `265F` read ruleset 29450 through it. `STU_6EA8533F`
-    /// is every player (the console's scope 126): the client walks a list
-    /// of the game's player entities (0x7FF789BEC4C0); the players'
-    /// controllers here, in the listed bodies' order (assumption: the
-    /// list's order and the AI players' place in it).
+    /// is every player (the console's scope 126): the client
+    /// (0x7FF789BEC4C0, its list from `0x7FF7895BC390`) walks the pool of
+    /// component 74, the player component of the players' controllers,
+    /// AI players' too: the controllers of the listed bodies, in their
+    /// order (the room's slots; the pool's order is its entities' creation
+    /// order [inference], and orders only the scope state's frame record).
     fn native(&mut self, _site: Site, config: &Json) -> Option<Value> {
         match config.get("$")?.as_str()? {
             "STU_082FA44E" => self
@@ -302,7 +304,6 @@ impl World for EntityWorld<'_, '_> {
             // As `PlayerWorld`: the tunable's authored value, not scaled
             // for the entity.
             "STU_082FA44E" => Some("the tunable's authored value"),
-            "STU_6EA8533F" => Some("the players' controllers in the listed bodies' order"),
             _ => None,
         }
     }
@@ -478,12 +479,15 @@ impl World for EntityWorld<'_, '_> {
 
     /// A dummy bot gets the player and body the match gave
     /// ([`MapEntityWorld::set_next_dummy`]), one a run; the match makes it.
+    /// The graph gets his player entity, his controller: the console's
+    /// scope 197 (`265F` rid46) runs on `STU_00707E1E(#29454)`, the body
+    /// a controller possesses (TrainingPartner.md, "Day (2026-11-19)").
     fn create_dummy_bot(&mut self, _site: Site, dummy: DummyBot) -> Option<u32> {
         let next = self.shared.next_dummy.take()?;
         self.shared
             .dummies
             .push(DummyChange::Create { dummy, next });
-        Some(next.body)
+        Some(next.player)
     }
 
     fn remove_dummy_bot(&mut self, _site: Site, team: i64, slot: i64) -> bool {
@@ -945,6 +949,23 @@ impl MapEntityWorld {
         {
             component.scope_opened(source, target, instance);
         }
+    }
+
+    /// A scope instance on another entity set a variable of its scope
+    /// state's instance here (`STU_D49BBD03`: the console's `#940` from a
+    /// re-pick in its scope 12): the instance takes it now.
+    pub fn set_parent_variable(&mut self, write: &ParentWrite) {
+        self.run_scripts(
+            |entity| entity == write.source.entity,
+            |component, world| {
+                component.set_instance_variable(
+                    write.source.instance,
+                    write.variable,
+                    write.value.clone(),
+                    world,
+                )
+            },
+        );
     }
 
     /// The player and first body the next dummy bot the scripts make gets

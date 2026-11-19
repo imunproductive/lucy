@@ -42,7 +42,10 @@ use orpheus_script::{
     placed::{DummyChange, EntityVolumes, MapEntityWorld, NextDummy},
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     stream::{ScriptChunk, Stream, StreamError},
-    vm::{GameMessage, MapRays, MessageEnd, ScopeChange, ScopeSource, TargetCandidate, Unknowns},
+    vm::{
+        GameMessage, MapRays, MessageEnd, ParentWrite, ScopeChange, ScopeSource, TargetCandidate,
+        Unknowns,
+    },
 };
 use orpheus_wire::entity::GAME_MODE_ENTITY;
 
@@ -323,6 +326,14 @@ impl PlacedScripts {
         }
     }
 
+    /// A scope instance on a player's body set a variable of its placed
+    /// scope state's instance (`STU_D49BBD03`).
+    pub fn set_parent_variable(&mut self, write: &ParentWrite) {
+        if let Some(world) = &mut self.world {
+            world.set_parent_variable(write);
+        }
+    }
+
     /// Whether a running script runs the placed entity `entity`.
     pub fn runs(&self, entity: u32) -> bool {
         self.world
@@ -574,7 +585,8 @@ mod tests {
     /// true in `0060.0C6`), so the pad keeps itself (`26F8`), and asks for
     /// its default partner: it removes the dummy bot in red slot 0
     /// (`STU_C1561031`, rid34) and makes a Tracer (`0003.075`, rid36's
-    /// #940) there (`STU_FC3921B1`, rid35), whose body goes to #29454.
+    /// #940) there (`STU_FC3921B1`, rid35), whose player (his controller)
+    /// goes to #29454.
     /// The facing is the pad's rotation (x y z w) `[0, 0.9528117, 0,
     /// 0.3035622]` turned +z, (2wy, 0, 1 − 2y²) = (0.578470, 0, −0.815704),
     /// as 1/65536 turns (`World::entity_facing`), within 1e-4.
@@ -622,7 +634,7 @@ mod tests {
             .find_map(|instance| instance.variables.get(&29454));
         assert_eq!(
             partner,
-            Some(&orpheus_script::wire::Value::Entity(next.body))
+            Some(&orpheus_script::wire::Value::Entity(next.player))
         );
         // One bot a player and body: the next needs new ones.
         range.advance(101);

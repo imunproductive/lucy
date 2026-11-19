@@ -1715,6 +1715,25 @@ impl Evaluator {
                     _ => return Err(EvalError::UnsupportedConfig(class.into())),
                 }
             }
+            // A hero's body (`265F`'s pick filters rid17/rid22, `25B4` rid3):
+            // `Eval_STU_94AED9DC` 0x7FF789BF7B80 loads `m_hero`'s asset and,
+            // for a hero (`STU_7C3457DC`), answers the GUID of its
+            // `m_gameplayEntity` (`+0x20`, the GUID at `+0x28`); else no
+            // value.
+            "STU_94AED9DC"
+                if native_fields(config, &["m_hero", "m_resourceKey"])
+                    && child(config, "m_resourceKey").is_null() =>
+            {
+                match self.config(child(config, "m_hero"), context, nested)? {
+                    Value::Asset(hero) if hero != 0 => Value::Asset(
+                        context
+                            .hero_body(hero)
+                            .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+                    ),
+                    Value::Null | Value::Asset(0) => Value::Null,
+                    _ => return Err(EvalError::UnsupportedConfig(class.into())),
+                }
+            }
             // An entity's health total as f32 (CEB6C0; `SceneWorld.native`
             // in leafall903/ORPHEUS, commit c239a84). No entity fails: null
             // here, as for the empty config list.

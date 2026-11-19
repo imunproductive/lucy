@@ -68,7 +68,10 @@ use orpheus_script::{
     map_tags::MapTags,
     placed::{DummyChange, NextDummy},
     vitals::Vitals,
-    vm::{GameMessage, MapRays, MessageEnd, ScopeChange, ScopeSource, TargetCandidate, Unknowns},
+    vm::{
+        GameMessage, MapRays, MessageEnd, ParentWrite, ScopeChange, ScopeSource, TargetCandidate,
+        Unknowns,
+    },
     wire::Variables,
 };
 use orpheus_wire::entity::{Component, EntityUpdate, Operation};
@@ -955,6 +958,12 @@ impl PreparedScene {
     /// ([`PlacedScripts::scope_opened`]).
     pub fn scope_opened(&mut self, source: ScopeSource, target: u32, instance: u16) {
         self.placed_scripts.scope_opened(source, target, instance);
+    }
+
+    /// A player's scope instance set a variable of a placed script's scope
+    /// state's instance ([`PlacedScripts::set_parent_variable`]).
+    pub fn set_parent_variable(&mut self, write: &ParentWrite) {
+        self.placed_scripts.set_parent_variable(write);
     }
 
     /// The scene's entities that take game messages at world tick `tick`

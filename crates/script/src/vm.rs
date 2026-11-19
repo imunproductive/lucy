@@ -44,7 +44,7 @@ use std::{
 pub use auras::{AURA_APPLIED, AuraChange, AuraSource};
 pub use health::HealthChange;
 use indexmap::IndexMap;
-pub use scopes::{ScopeChange, ScopeHit, ScopeLink, ScopeSource};
+pub use scopes::{ParentWrite, ScopeChange, ScopeHit, ScopeLink, ScopeSource};
 use serde_json::Value as Json;
 pub use statuses::{
     ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, BodyEffects, CombatMod, DAMAGE_DEALT,
@@ -881,6 +881,14 @@ pub trait World {
     /// target's component ([`Component::change_scope`]). False: this world
     /// opens none, and the state has no effect.
     fn change_scope(&mut self, _site: Site, _change: ScopeChange) -> bool {
+        false
+    }
+
+    /// A scope instance set a variable of its scope state's instance on
+    /// another entity (`STU_D49BBD03`): the match sets it there
+    /// ([`Component::set_instance_variable`]). False: this world sets
+    /// none.
+    fn set_parent_variable(&mut self, _site: Site, _write: ParentWrite) -> bool {
         false
     }
 }
@@ -2696,6 +2704,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             ("m_452862E6", Some(key))
         } else {
+            if !self.entry_filter_passes(id, node) {
+                return Ok(());
+            }
             ("m_outPlug", None)
         };
         let site = self.site(id, node);
@@ -2732,6 +2743,47 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         }
         self.follow(id, node, path.0, path.1, 0)?;
         Ok(())
+    }
+
+    /// Whether a message entry takes the message by its filter
+    /// (`m_filter`, 79 entries in the data; the client's entry pass
+    /// `0x7FF78AAA1D70` tests a message with a sender through its host's
+    /// filter test, vtable +0x150, `ScriptHost_EntityPassesFilter`). The
+    /// server evaluates the filter's condition with the message's
+    /// parameters as `param(n)`: the Training Partner pick's `1213` (`265F`
+    /// rid22) wants a hero (`param(2278)`, `08E6`) with a body that the
+    /// player may play, `0C90` rid164/rid170 such heroes too. A condition
+    /// it can't evaluate lets the message in; the masks (the sender's
+    /// kinds and relation) are not tested; each is an assumption.
+    fn entry_filter_passes(&mut self, id: u16, node: &Node) -> bool {
+        let filter = field(&node.fields, "m_filter");
+        if filter.is_null() {
+            return true;
+        }
+        let site = self.site(id, node);
+        let masks = expr::FilterMasks::words(filter);
+        if !masks.passes_none() || masks.relations() {
+            self.assume(
+                site,
+                &format!("{} m_filter masks", node.class),
+                "the sender is not tested",
+            );
+        }
+        let condition = field(filter, "m_condition");
+        if condition.is_null() {
+            return true;
+        }
+        match self.evaluate_quietly(id, node, condition) {
+            Some(value) => truthy(&value),
+            None => {
+                self.assume(
+                    site,
+                    &format!("{} m_filter.m_condition", node.class),
+                    "not evaluated: the entry takes the message",
+                );
+                true
+            }
+        }
     }
 
     /// A SendGameMessage action: the message goes once to the recipients

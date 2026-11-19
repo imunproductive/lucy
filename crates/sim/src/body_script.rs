@@ -537,6 +537,18 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         Ok(opened)
     }
 
+    fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
+        self.world.take_scope_changes()
+    }
+
+    fn scope_opened(&mut self, source: ScopeSource, target: u32, instance: u16) {
+        self.component.scope_opened(source, target, instance);
+    }
+
+    fn take_parent_writes(&mut self) -> Vec<ParentWrite> {
+        self.world.take_parent_writes()
+    }
+
     fn set_next_dummy(&mut self, next: Option<NextDummy>) {
         self.world.next_dummy = next;
     }
