@@ -2866,9 +2866,61 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
     use orpheus_content::heroes::ANA;
     const TRACER: u64 = 0x02E0_0000_0000_0003;
     const PAD: [f64; 3] = [34.24001, 1.9917264, 22.972233];
-    let (server, schemas, mut watchers, _) = practice_players([("player#1111", 0, "Soldier: 76")]);
-    let partner = player_entity(1) | 1;
-    let mut all: Vec<&mut Watcher> = watchers.iter_mut().collect();
+    const CONSOLE: u32 = 0x8000_010B;
+    const CONSOLE_AT: [f32; 3] = [34.62, 1.99, 17.86];
+    const PICK: u64 = 0x0240_0000_0000_1213;
+    let on_pad = |feet: [f64; 3]| {
+        (feet[0] - PAD[0]).abs() < 1e-3
+            && (feet[2] - PAD[2]).abs() < 1e-3
+            && (feet[1] - PAD[1]).abs() < 0.1
+    };
+    let assets =
+        orpheus_sim::scene_assets::SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let spawn = GameMap::practice_range().spawn_point(0, 0).unwrap().0;
+    // The navigation's walk from the spawn runs straight into a wall near
+    // (48.5, 29.5): its straight legs test walkable cells, not the map's
+    // collision (`docs/dev/loose-ends.md`). So the walk goes leg by leg:
+    // from where he is, the navigation's next waypoint when the map's
+    // collision is clear 1.2 m above the floor up to it (above the steps),
+    // else the farthest clear point of that leg (in quarter metres) less
+    // half a metre, from where the navigation finds another way.
+    let mut walk = None;
+    let (server, schemas, [mut watcher], _) =
+        practice_world([("player#1111", 0, "Soldier: 76")], &assets, |scene| {
+            let navigation = scene.navigation().unwrap();
+            let chest = |point: [f32; 3]| {
+                [
+                    f64::from(point[0]),
+                    f64::from(point[1]) + 1.2,
+                    f64::from(point[2]),
+                ]
+            };
+            let near =
+                |point: [f32; 3]| (point[0] - CONSOLE_AT[0]).hypot(point[2] - CONSOLE_AT[2]) < 1.0;
+            let mut waypoints = vec![spawn.map(|axis| axis as f32)];
+            while !near(waypoints[waypoints.len() - 1]) {
+                assert!(waypoints.len() < 20, "{waypoints:?}");
+                let at = waypoints[waypoints.len() - 1];
+                let next = navigation.path(at, CONSOLE_AT).unwrap().waypoints[1];
+                if scene.line_of_sight(chest(at), chest(next)) {
+                    waypoints.push(next);
+                    continue;
+                }
+                let along = |t: f32| [0, 1, 2].map(|axis| at[axis] + (next[axis] - at[axis]) * t);
+                let length = (next[0] - at[0]).hypot(next[2] - at[2]);
+                let steps = (length * 4.0).ceil() as u32;
+                let clear = (1..steps)
+                    .map(|step| step as f32 / steps as f32)
+                    .take_while(|&t| scene.line_of_sight(chest(at), chest(along(t))))
+                    .last()
+                    .unwrap_or_else(|| panic!("blocked at once to {next:?}: {waypoints:?}"));
+                waypoints.push(along(clear - 0.5 / length));
+            }
+            walk = Some(waypoints);
+        });
+    let waypoints = walk.unwrap();
+    let tracer = player_entity(1) | 1;
+    let ana = player_entity(2) | 1;
     pump_until(
         &mut [&mut watcher],
         &schemas,
@@ -2881,10 +2933,121 @@ fn the_range_console_puts_a_training_partner_on_its_pad_and_a_pick_replaces_it()
     };
     assert!(dummy.ai);
     assert_eq!((dummy.team, dummy.hero), (1, Some(TRACER)));
-    let feet = dummy.position.unwrap();
+    assert!(on_pad(dummy.position.unwrap()), "{dummy:?}");
+    // The walk: towards the next waypoint not yet reached, until his feet
+    // are within a metre of the console's (horizontally).
+    let flat = |feet: [f64; 3], point: [f32; 3]| {
+        (feet[0] - f64::from(point[0])).hypot(feet[2] - f64::from(point[2]))
+    };
+    let yaw_to = |feet: [f64; 3], point: [f32; 3]| {
+        let degrees = (f64::from(point[0]) - feet[0])
+            .atan2(f64::from(point[2]) - feet[2])
+            .to_degrees();
+        (degrees * 65536.0 / 360.0).round() as i32 as i16
+    };
+    let mut frame = watcher.tick + 1;
+    let mut next = 1;
+    let deadline = server.now() + Duration::from_secs(30);
+    let yaw = loop {
+        let feet = server.bodies(MATCH).unwrap()[0].position.unwrap();
+        while next + 1 < waypoints.len() && flat(feet, waypoints[next]) < 0.5 {
+            next += 1;
+        }
+        let yaw = yaw_to(feet, waypoints[next]);
+        if flat(feet, CONSOLE_AT) < 1.0 {
+            break yaw;
+        }
+        assert!(
+            server.now() < deadline,
+            "walking to the console: {feet:?}, waypoint {next} of {waypoints:?}"
+        );
+        send_input(&mut watcher, &mut frame, yaw, 0, 0, true);
+        watcher.pump(&schemas);
+    };
+    // He stands; his owner frames carry the console's scope 12 instance.
+    let deadline = server.now() + Duration::from_secs(5);
+    while !server.bodies(MATCH).unwrap()[0].console_button {
+        assert!(server.now() < deadline, "the console's scope on his body");
+        send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
+        watcher.pump(&schemas);
+    }
+    // H: one command with the hero select key's action byte.
+    watcher
+        .client
+        .send(ACK, acting_batch(frame, 1, yaw, 0, 0, false, 42));
+    frame += 1;
+    let deadline = server.now() + Duration::from_secs(3);
+    while !server.bodies(MATCH).unwrap()[0].picker_raised {
+        assert!(server.now() < deadline, "the picker's condition");
+        send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
+        watcher.pump(&schemas);
+    }
+    // The pick, from his controller's scope 126 instance: `08E6` an array
+    // of Ana, `08E7` an array of true, then two entities
+    // (`orpheus_content::parameters` `parameter_rows_read_as_the_client_writes_them`).
+    let picker = server.bodies(MATCH).unwrap()[0].picker.unwrap();
+    let owner = watcher.owner;
+    let mut blob = vec![0x00, 0x00, 0x00, 0x00, 0x02];
+    blob.extend([0xc3, 0xe6, 0x08, 0x40, 0x0a, 0x0c, 0x01, 0xff, 0x04]);
+    blob.extend(ANA.to_le_bytes());
+    blob.extend([0xc3, 0xe7, 0x08, 0x40, 0x0a, 0x0c, 0x01, 0xff, 0x01, 0x01]);
+    blob.extend(owner.to_le_bytes());
+    blob.extend(owner.to_le_bytes());
+    send_instance_message(
+        &mut watcher.client,
+        &schemas,
+        owner,
+        2,
+        PICK,
+        i64::from(picker),
+        blob,
+    );
+    let deadline = server.now() + Duration::from_secs(5);
+    while watcher.created(ana).is_none()
+        || watcher
+            .find(0, |record| {
+                record.entity == tracer && record.operation == Some(3)
+            })
+            .is_none()
+    {
+        assert!(
+            server.now() < deadline,
+            "the Tracer's destroy, Ana's create"
+        );
+        send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
+        watcher.pump(&schemas);
+    }
+    let bodies = server.bodies(MATCH).unwrap();
+    let [me, tracer_seat, partner] = bodies.as_slice() else {
+        panic!("{bodies:?}");
+    };
+    assert_eq!(tracer_seat.position, None, "{tracer_seat:?}");
+    assert!(partner.ai);
+    assert_eq!((partner.team, partner.hero), (1, Some(ANA)));
+    assert!(on_pad(partner.position.unwrap()), "{partner:?}");
+    // The picker closes (`1214` ends StateStack rid40).
+    let deadline = server.now() + Duration::from_secs(2);
+    while server.bodies(MATCH).unwrap()[0].picker_raised {
+        assert!(server.now() < deadline, "the picker closes: {me:?}");
+        send_input(&mut watcher, &mut frame, yaw, 0, 0, false);
+        watcher.pump(&schemas);
+    }
     assert!(
-        (feet[0] - PAD[0]).abs() < 1e-3 && (feet[2] - PAD[2]).abs() < 1e-3,
-        "{feet:?}"
+        watcher
+            .find(0, |record| record.entity == CONSOLE
+                && record.script.is_some())
+            .is_some(),
+        "the console's frames (created {:?}, pad framed {:?}, placed framed {:?})",
+        watcher.created(CONSOLE),
+        watcher.find(0, |record| record.entity == 0x8000_024A
+            && record.script.is_some()),
+        watcher
+            .datagrams
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter(|record| record.entity >> 29 == 4 && record.script.is_some())
+            .map(|record| record.entity)
+            .collect::<std::collections::BTreeSet<_>>()
     );
     // The partners' bodies are another player's to this client: any of
     // their statescript comes as observer frames (H=0), never as owner

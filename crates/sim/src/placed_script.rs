@@ -797,12 +797,94 @@ mod tests {
             &mut world,
         )
         .unwrap();
-        let snapshot = body.snapshot().unwrap();
-        let raised = snapshot
-            .resolved_bindings
-            .get(&(0, 25456))
-            .or_else(|| snapshot.variables.get(&25456));
-        assert_eq!(raised, Some(&orpheus_script::wire::Value::Bool(true)));
+        let stacked = |body: &Component| {
+            let snapshot = body.snapshot().unwrap();
+            let raised = snapshot
+                .resolved_bindings
+                .get(&(0, 25456))
+                .or_else(|| snapshot.variables.get(&25456))
+                .cloned();
+            let active = snapshot.instances[&id]
+                .states
+                .get(&17)
+                .is_some_and(|state| state.active);
+            (active, raised)
+        };
+        // The StateStack rid40 (st17) stacks it.
+        assert_eq!(stacked(&body), (true, Some(Value::Bool(true))));
+        // The controller's side: `0C90` with scope 126, possessing the body.
+        let mut controller = range
+            .scene
+            .controller()
+            .start_script(
+                range.scene.shared_graphs(),
+                CONTROLLER,
+                0,
+                range.scene.heroes(),
+                112,
+            )
+            .unwrap();
+        controller.possessed(BODY, SOLDIER);
+        let picker = controller.change_scope(113, scope_126).unwrap().unwrap();
+        controller.take_messages();
+        let pick = Variables::from([(0x08e6, Value::Asset(ANA)), (0x08e7, Value::Bool(true))]);
+        assert_eq!(
+            controller
+                .receive_in_instance(114, picker, PICK, pick)
+                .unwrap(),
+            1
+        );
+        let messages = controller.take_messages();
+        let repick: Vec<_> = messages
+            .iter()
+            .filter(|message| message.message == REPICK)
+            .collect();
+        let [repick] = repick.as_slice() else {
+            panic!("{messages:?}");
+        };
+        assert_eq!(repick.target, BODY);
+        world.next_dummy = Some(next);
+        assert_eq!(
+            body.receive_message(CONTROLLER, REPICK, repick.parameters.clone(), &mut world)
+                .unwrap(),
+            1
+        );
+        let changes = world.take_dummy_changes();
+        let [
+            DummyChange::Remove { team: 1, slot: 0 },
+            DummyChange::Create { dummy, next: made },
+        ] = changes.as_slice()
+        else {
+            panic!("{changes:?} {:?}", body.snapshot().unwrap().diagnostics);
+        };
+        assert_eq!(*made, next);
+        assert_eq!((dummy.hero, dummy.team, dummy.slot), (ANA, 1, 0));
+        assert_eq!(dummy.position, [34.24001, 1.9917264, 22.972233]);
+        assert!(!stacked(&body).0, "the picker closes");
+        let writes = world.take_parent_writes();
+        let [write] = writes.as_slice() else {
+            panic!("{writes:?}");
+        };
+        assert_eq!(
+            (write.source.entity, write.variable, &write.value),
+            (CONSOLE, 940, &Value::Asset(ANA))
+        );
+        range.scene.set_parent_variable(write);
+        let console = range
+            .scene
+            .placed_scripts()
+            .world()
+            .unwrap()
+            .entity(CONSOLE)
+            .unwrap()
+            .snapshot()
+            .unwrap();
+        assert!(
+            console
+                .instances
+                .values()
+                .any(|instance| instance.variables.get(&940) == Some(&Value::Asset(ANA)))
+        );
     }
 
     /// The Practice Range's spawn room `0D62` (126) takes `13C0`'s `0724`
