@@ -7,7 +7,7 @@
 
 use super::*;
 use orpheus_script::{vm::Unknowns, wire::Value as ScriptValue};
-use orpheus_wire::commands::Command;
+use orpheus_wire::{commands::Command, entity::MOVE_TO};
 
 const TRACER: u64 = 0x02e0_0000_0000_0003;
 const PHARAH: u64 = 0x02e0_0000_0000_0008;
@@ -16,6 +16,10 @@ const ECHO: u64 = 0x02e0_0000_0000_0206;
 const BLINK: u32 = 0x08;
 const RECALL: u32 = 0x10;
 const DT: f64 = FRAME_MS as f64 / 1000.0;
+/// The movement state's flags "fell" (taken off without a jump) and "the
+/// last move touched something".
+const FELL: u32 = 0x8;
+const TOUCHING: u32 = 0x2_0000;
 
 struct Player {
     scene: PreparedScene,
@@ -412,13 +416,14 @@ fn widowmakers_pull_targets_the_free_spot_her_client_finds() {
 /// Widowmaker's pull from the Range spawn with the kind-1 block her client
 /// began (destination `+0x30`, surface `+0x40`, `005A` st1's numbers), then
 /// `after` frames without it: how many frames it drove, how it ended, and
-/// the feet on every frame.
+/// the movement state (as a correction carries it) on every frame.
 struct Pulled {
     mover: orpheus_physics::mover::Mover,
     driven: u32,
     end: orpheus_physics::mover::MoveEnd,
     velocity: [f64; 3],
     path: Vec<[f64; 3]>,
+    poses: Vec<Movement>,
 }
 
 fn pull_from_the_spawn(destination: [f64; 3], surface: [f64; 3], after: u32) -> Pulled {
@@ -456,14 +461,14 @@ fn pull_from_the_spawn(destination: [f64; 3], surface: [f64; 3], after: u32) -> 
         frame,
         ..Command::default()
     };
-    let mut path = Vec::new();
+    let mut poses = Vec::new();
     let mut frame = 0;
     let end = loop {
         frame += 1;
         let outcome = mover
             .step_pose_to(rays, command(frame), DT, Some((key, &pull)))
             .unwrap();
-        path.push(mover.pose().position);
+        poses.push(mover.pose());
         if let Some(end) = outcome {
             break end;
         }
@@ -472,14 +477,15 @@ fn pull_from_the_spawn(destination: [f64; 3], surface: [f64; 3], after: u32) -> 
     for _ in 0..after {
         frame += 1;
         mover.step_pose_to(rays, command(frame), DT, None).unwrap();
-        path.push(mover.pose().position);
+        poses.push(mover.pose());
     }
     Pulled {
         mover,
         driven,
         end,
         velocity,
-        path,
+        path: poses.iter().map(|pose| pose.position).collect(),
+        poses,
     }
 }
 
@@ -519,6 +525,31 @@ fn widowmakers_pull_at_a_wall_keeps_its_velocity_and_rests_where_her_client_did(
     // `0x7FF789B539B0`) found, f32 as recorded.
     assert_eq!((pulled.driven, pulled.end), (19, MoveEnd::Blocked));
     assert_eq!(pulled.velocity, [0.554_687_5, 8.826_171_875, 3.257_812_5]);
+    // The movement state her client's tick had on each of those frames
+    // (flags 0x18 in session C): the begin took her off the ground and set
+    // the air ticks to 0, and only the lateral share counts them while the
+    // move drives (no transitions: she neither lands nor counts air ticks
+    // otherwise); the move's record holds its phase and the checkpoint,
+    // which starts at her feet (the first frame's check counts one frame
+    // there). A correction that carries these lets her client's replay go
+    // on with the same move instead of beginning it again.
+    let spawn = [54.565_429_687_5, 1.0, 42.147_460_937_5];
+    let driven = &pulled.poses[..19];
+    for (frame, pose) in (1..).zip(driven) {
+        assert_eq!(pose.flags & !TOUCHING, FELL | MOVE_TO, "frame {frame}");
+        assert_eq!(pose.air_ticks, frame, "frame {frame}");
+        let record = pose.move_to.unwrap();
+        assert_eq!(
+            record.phase,
+            if frame < 19 { 1 } else { 2 },
+            "frame {frame}"
+        );
+    }
+    let first = driven[0].move_to.unwrap();
+    assert_eq!((first.checkpoint, first.still), (spawn, 1));
+    // The frame after, the state let it go: the end cleared the flag.
+    let after = pulled.poses[19];
+    assert_eq!((after.flags & MOVE_TO, after.move_to), (0, None));
     // Past the wall's top lip, and past the next wall.
     assert_on_path(
         &pulled.path,

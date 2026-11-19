@@ -21,10 +21,11 @@
 //!
 //! While the behaviour runs (phases 1 and 3, mover `+0xDF4`), the mover's
 //! tick (`0x7FF789B4B1D0`) skips its ground probe and transitions (slot 8
-//! `0x7FF789B58F10`), the pogo spring (slot 10 `0x7FF789B58410`), its
-//! velocity integration with gravity (slot 11 `0x7FF789B52F30`) and the
-//! velocity mods 32..35 (slot 13 `0x7FF789B533B0`); slot 11 sets the
-//! velocity instead:
+//! `0x7FF789B58F10`, which only clears flag 0x80000 and stands the body up
+//! if it can, `0x7FF789B4C3D0(mover, 0)`), the pogo spring (slot 10
+//! `0x7FF789B58410`), its velocity integration with gravity (slot 11
+//! `0x7FF789B52F30`) and the velocity mods 32..35 (slot 13
+//! `0x7FF789B533B0`); slot 11 sets the velocity instead:
 //!
 //! 1. the direction to the target from the feet (`0x7FF789B59A50`; none
 //!    gives +z);
@@ -37,7 +38,9 @@
 //! 3. the velocity across the direction goes over `m_7F3716A6` seconds, the
 //!    same share of what is left each frame (`0x7FF789B5ADE0`: frame `n` of
 //!    `N = m_7F3716A6 / dt` takes `1 / (N - n)` of it; all of it when `N`
-//!    or `N - n` is none);
+//!    or `N - n` is none); `n` is the movement state's air ticks
+//!    (`+0x10`, mover `+0xD50`), which the begin sets to 0 and this counts
+//!    up (the skipped transitions don't);
 //! 4. the speed along the direction goes toward the speed by speed times
 //!    `m_717EAFE7` a second, eased within `m_187E2318` of the target toward
 //!    the exit speed; a frame that would reach the target takes the
@@ -56,15 +59,26 @@
 //! `m_6AC330A6`; an unset limit is 10000 (the default the block's filler
 //! `0x7FF789C43A60` hands `0x7FF789806350` for these three,
 //! `dword_7FF78B5266EC`). The behaviour's begin (slot 4
-//! `0x7FF789B53CC0`) takes a body on the ground off it (`0x7FF789AD0370`)
-//! and sets the checkpoint to the feet; with `m_AE1CEDB5` its end (slot 5
-//! `0x7FF789B539B0`, when the state lets it go) holds the velocity to the
-//! exit limits. A frame that ends the behaviour runs the velocity mods
-//! after it; later frames move as usual until the state ends. The state's
-//! begin aborts at once when the target is behind the body as seen from
-//! the destination and the destination is within 2 m (`0x7FF789C41BC0`).
-//! The state ends when its update sees phase 4 (finished) or 2 (aborted,
-//! `0x7FF789C425F0`).
+//! `0x7FF789B53CC0`) sets the movement state's flag 0x10 ([`MOVE_TO`]),
+//! phase 1, the checkpoint to the feet, takes a body on the ground off it
+//! (`0x7FF789AD0370`) and sets the air ticks to 0; with `m_AE1CEDB5` its
+//! end (slot 5 `0x7FF789B539B0`, when the state lets it go) holds the
+//! velocity to the exit limits; the end clears flag 0x10 and the phase. A
+//! frame that ends the behaviour runs the velocity mods after it; later
+//! frames move as usual until the state ends. The state's begin aborts at
+//! once, handing the mover nothing, when the target is behind the body as
+//! seen from the destination and the destination is within 2 m
+//! (`0x7FF789C41BC0`). The state ends when its update sees phase 4
+//! (finished) or 2 (aborted, `0x7FF789C425F0`).
+//!
+//! The mover's tick begins each queued behaviour whose frames it is in
+//! unless the state already has the behaviour's flag (`0x7FF789B4C9D0` →
+//! `0x7FF789B53C70`), and ends it once past them if the state has it. So
+//! the owner's client keeps a running move across a correction only when
+//! the corrected state carries flag 0x10 and the record (checkpoint, its
+//! frames, phase: [`MoveToRecord`]) with the air ticks: without them its
+//! replay begins the move again from the feet, with the lateral share and
+//! the stuck time from 0, and goes out of step with the server's run.
 //!
 //! Assumptions: the client's mover position here is the feet; the body's
 //! scale (mover `+0xD5C`, which the stand-off and the free spot's capsule
@@ -73,9 +87,14 @@
 //! spring held.
 //!
 //! Not modelled: a destination entity or bone (the target moves with it),
-//! a moving platform under the body (`+152`), and the block's `+144`,
-//! `+148`..`+150` and `+154` (`m_1866524C`, `m_B769BC47`, `m_000B044B`,
-//! `m_5E3A7FC5`, `m_6D6BA94D`), whose readers were not traced.
+//! a moving platform under the body, the block's `+152` (the begin takes
+//! the mover's running record instead of starting over: slot 57 sets it
+//! with the record when the state's `+448` is set and the mover has flag
+//! 0x10; `+448` not traced), and the block's `+144`, `+148`..`+150` and
+//! `+154` (`m_1866524C`, `m_B769BC47`, `m_000B044B`, `m_5E3A7FC5`,
+//! `m_6D6BA94D`; with `+154` slot 10 sets the spring offset and speed to 0).
+
+use orpheus_wire::entity::{MOVE_TO, MoveToRecord};
 
 use crate::{
     contact::body::CharacterBody, contact::cache::CapsulePose, contact::hull::HullContactError,
@@ -166,13 +185,14 @@ enum Phase {
 pub(super) struct Run {
     pub(super) key: MoveKey,
     params: MoveTo,
+    /// The state's begin handed the mover the behaviour: it didn't abort.
+    submitted: bool,
     target: [f64; 3],
     direction: [f64; 3],
     speed: f64,
     phase: Phase,
     checkpoint: [f64; 3],
     still_frames: u32,
-    lateral_frames: u32,
     /// The end not yet reported.
     unreported: Option<MoveEnd>,
 }
@@ -214,6 +234,7 @@ impl Run {
         Ok(Self {
             key,
             params,
+            submitted: !behind,
             target,
             direction: unit(to_target),
             speed,
@@ -224,7 +245,6 @@ impl Run {
             },
             checkpoint: at.feet,
             still_frames: 0,
-            lateral_frames: 0,
             unreported: behind.then_some(MoveEnd::Blocked),
         })
     }
@@ -238,13 +258,41 @@ impl Run {
         self.target
     }
 
+    /// What the movement state keeps of the behaviour while the mover runs
+    /// it (flag [`MOVE_TO`]): none when the state's begin aborted.
+    pub(super) fn record(&self) -> Option<MoveToRecord> {
+        self.submitted.then_some(MoveToRecord {
+            checkpoint: self.checkpoint,
+            still: self.still_frames as u16,
+            phase: match self.phase {
+                Phase::Moving => 1,
+                Phase::Blocked => 2,
+                Phase::Landing => 3,
+                Phase::Arrived => 4,
+            },
+        })
+    }
+
+    /// The movement state's flag of the behaviour, as [`Run::record`].
+    pub(super) fn flag(&self) -> u32 {
+        if self.submitted { MOVE_TO } else { 0 }
+    }
+
     /// The end the mover hasn't reported yet, once.
     pub(super) fn take_end(&mut self) -> Option<MoveEnd> {
         self.unreported.take()
     }
 
-    /// Slot 11 for one frame: the velocity the body moves with.
-    pub(super) fn step(&mut self, feet: [f64; 3], velocity: [f64; 3], dt: f64) -> [f64; 3] {
+    /// Slot 11 for one frame: the velocity the body moves with. `lateral`
+    /// is the movement state's air ticks, the frames the lateral share has
+    /// run.
+    pub(super) fn step(
+        &mut self,
+        feet: [f64; 3],
+        velocity: [f64; 3],
+        lateral: &mut u32,
+        dt: f64,
+    ) -> [f64; 3] {
         let to_target = sub(self.target, feet);
         let direction = unit(to_target);
         let near = squared(to_target);
@@ -265,7 +313,7 @@ impl Run {
                 return velocity;
             }
         }
-        let velocity = self.drop_lateral(velocity, direction, dt);
+        let velocity = self.drop_lateral(velocity, direction, lateral, dt);
         self.drive(feet, velocity, direction, dt)
     }
 
@@ -290,19 +338,26 @@ impl Run {
         self.unreported = Some(end);
     }
 
-    /// `0x7FF789B5ADE0`.
-    fn drop_lateral(&mut self, velocity: [f64; 3], direction: [f64; 3], dt: f64) -> [f64; 3] {
+    /// `0x7FF789B5ADE0`: the frame's share of the velocity across
+    /// `direction` comes off, and the frame counts in `frames_done`.
+    fn drop_lateral(
+        &self,
+        velocity: [f64; 3],
+        direction: [f64; 3],
+        frames_done: &mut u32,
+        dt: f64,
+    ) -> [f64; 3] {
         let along = dot(velocity, direction);
         let mut lateral = sub(velocity, scale(direction, along));
         let frames = self.params.lateral_seconds / dt;
         if frames > TINY {
             let share = 1.0 / frames;
-            let done = share * f64::from(self.lateral_frames);
+            let done = share * f64::from(*frames_done);
             if 1.0 - done > TINY {
                 lateral = scale(lateral, share / (1.0 - done));
             }
         }
-        self.lateral_frames += 1;
+        *frames_done += 1;
         sub(velocity, lateral)
     }
 

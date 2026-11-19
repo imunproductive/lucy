@@ -74,9 +74,12 @@
 //! (0x7FF789B71C50). Spring offsets +52/+56 are the reference's steps plus a
 //! signed delta (0x7FF789B770B0); +60 spring speed; +0x360 parent entity,
 //! +0x364 its scene-node matrix; +56, +384 and +832 are three optional raw
-//! floats (0x7FF789B71CE0). A record's frame counts back from its base
-//! (0x7FF789B76D00: the packet frame on ch3); a create's movement state counts
-//! back from a fixed base (0x7FF78969DD3C).
+//! floats (0x7FF789B71CE0). After the velocity come nine flag blocks, each
+//! a presence bit (0x7FF789B6C720 and its siblings, in this order: flags
+//! 0x10, 0x1000, 0x400000, 0x80, 0x40, 0x20, 0x40000, 0x100, 0x200); only
+//! [`MoveToRecord`] (flag [`MOVE_TO`]) is sent. A record's frame counts back
+//! from its base (0x7FF789B76D00: the packet frame on ch3); a create's
+//! movement state counts back from a fixed base (0x7FF78969DD3C).
 
 use std::{borrow::Borrow, error::Error, fmt};
 
@@ -109,6 +112,10 @@ pub const ARMOUR_POOL: usize = 1;
 pub const SHIELDS_POOL: usize = 2;
 
 pub const NO_INPUT: u32 = u32::MAX;
+/// The movement state's flag of a running mover behaviour of kind 1 (a
+/// `MoveTo` move, set by its begin 0x7FF789B53CC0, cleared by its end
+/// 0x7FF789B539B0); its record is [`MoveToRecord`].
+pub const MOVE_TO: u32 = 0x10;
 pub const CREATE_BASE: u32 = u32::MAX;
 /// A create's movement state counted back from [`CREATE_BASE`] by this many
 /// frames sits at frame 0, older than every movement record of the entity
@@ -463,6 +470,55 @@ pub struct Movement {
     /// is, without replay (`orpheus_physics::mover::correction`). A create
     /// starts the body at 0.
     pub discontinuity: u32,
+    /// The `MoveTo` move's record, present exactly while `flags` has
+    /// [`MOVE_TO`].
+    pub move_to: Option<MoveToRecord>,
+}
+
+/// What a running `MoveTo` move (mover behaviour of kind 1) keeps in the
+/// movement state, at `+0xA0` (mover `+0xDE0`). The owner's client compares
+/// it exactly (0x7FF789B6D470: the checkpoint's three axes, `still`, and a
+/// phase that is not 0 on both sides) and restores it with a correction; a
+/// state without [`MOVE_TO`] makes the replay's first tick begin the
+/// behaviour again (0x7FF789B53C70), which starts it over from the feet.
+/// The reader (0x7FF789B702F0, after a presence bit and a bit that is 1 for
+/// no reference): 1 bit and 8 bits of phase, the checkpoint as three
+/// optional raw floats (0x7FF789B71CE0), 1 bit and 16 bits of `still`; an
+/// absent part is 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MoveToRecord {
+    /// `+0xA0`: the feet where the move last got `m_86EA271E` farther
+    /// (its begin's feet at first).
+    pub checkpoint: [f64; 3],
+    /// `+0xB0`: the frames since then.
+    pub still: u16,
+    /// `+0xB4`: 1 moving, 2 blocked, 3 landing on its target, 4 arrived.
+    pub phase: u8,
+}
+
+fn write_move_to(out: &mut BitWriter, record: &MoveToRecord) -> Result<(), BitError> {
+    out.bit(true);
+    out.bit(true); // Not against the reference state's record.
+    out.bit(record.phase != 0);
+    if record.phase != 0 {
+        out.bits(u64::from(record.phase), 8)?;
+    }
+    let checkpoint = record.checkpoint.map(|axis| axis as f32);
+    let any = checkpoint.iter().any(|&axis| axis != 0.0);
+    out.bit(any);
+    if any {
+        for axis in checkpoint {
+            out.bit(axis != 0.0);
+            if axis != 0.0 {
+                out.f32(axis);
+            }
+        }
+    }
+    out.bit(record.still != 0);
+    if record.still != 0 {
+        out.bits(u64::from(record.still), 16)?;
+    }
+    Ok(())
 }
 
 fn quantize(value: f64) -> Result<i64, WorldError> {
@@ -620,7 +676,11 @@ pub fn write_movement(
             }
         }
     }
-    out.bits(0, 9)?;
+    match &state.move_to {
+        Some(record) => write_move_to(out, record)?,
+        None => out.bit(false),
+    }
+    out.bits(0, 8)?; // The other eight flag blocks.
     out.bit(parent.is_some());
     if let Some(parent) = parent {
         out.bits(u64::from(parent), 32)?;

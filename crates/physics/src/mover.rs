@@ -367,36 +367,46 @@ impl Mover {
         let settings = active.settings(&self.base);
         self.speed_scale = active.speed_scale();
         let input = MotionInput::new(&command, &active);
-        let probe = self.probe.probe(
-            rays,
-            self.body.world(),
-            &settings,
-            ProbePose {
-                feet: self.pose.position,
-                velocity: self.pose.velocity,
-                spring: self.posture.spring_offset(),
-                crouched: self.posture.crouched(),
-                airborne: self.posture.ground() != Ground::Standing,
-            },
-            dt,
-            self.category,
-        )?;
-        self.posture.advance(
-            PostureStep {
-                command: &command,
-                base: &self.base,
-                values: &settings,
-                mods: &active,
-                probe,
+        let normal = if driven {
+            // Kind 1's slot 8: no ground probe and no transitions, the up
+            // as the ground's normal; slot 10: no spring.
+            self.posture
+                .hold(command.frame, &self.base, input.aim_held, |radius, top| {
+                    self.body.try_resize(radius, top)
+                })?;
+            [0.0, 1.0, 0.0]
+        } else {
+            let probe = self.probe.probe(
+                rays,
+                self.body.world(),
+                &settings,
+                ProbePose {
+                    feet: self.pose.position,
+                    velocity: self.pose.velocity,
+                    spring: self.posture.spring_offset(),
+                    crouched: self.posture.crouched(),
+                    airborne: self.posture.ground() != Ground::Standing,
+                },
                 dt,
-                aim_held: input.aim_held,
-                driven: driven || rewinding,
-            },
-            &mut self.pose.position,
-            &mut self.pose.velocity,
-            |radius, top| self.body.try_resize(radius, top),
-        )?;
-        let normal = probe.ground.map_or([0.0, 1.0, 0.0], |hit| hit.normal);
+                self.category,
+            )?;
+            self.posture.advance(
+                PostureStep {
+                    command: &command,
+                    base: &self.base,
+                    values: &settings,
+                    mods: &active,
+                    probe,
+                    dt,
+                    aim_held: input.aim_held,
+                    driven: rewinding,
+                },
+                &mut self.pose.position,
+                &mut self.pose.velocity,
+                |radius, top| self.body.try_resize(radius, top),
+            )?;
+            probe.ground.map_or([0.0, 1.0, 0.0], |hit| hit.normal)
+        };
         let outcome = if self.step_motion(rays, normal, dt)? {
             None
         } else if driven {
@@ -441,7 +451,8 @@ impl Mover {
         self.pose.throttles = input.throttles;
         self.pose.yaw = input.yaw;
         self.pose.pitch = i32::from(input.pitch);
-        self.pose.flags = self.posture.flags;
+        self.pose.flags = self.posture.flags | self.move_to.as_ref().map_or(0, move_to::Run::flag);
+        self.pose.move_to = self.move_to.as_ref().and_then(move_to::Run::record);
         self.pose.air_ticks = self.posture.air_ticks;
         self.pose.crouch_frame = self.posture.crouch_end;
         self.pose.gravity = settings.gravity_scale;
@@ -452,7 +463,8 @@ impl Mover {
     }
 
     /// The move the state hands over this frame: a new key begins it (its
-    /// begin takes a body on the ground off it), none lets it go.
+    /// begin takes a body on the ground off it and sets the air ticks, its
+    /// lateral count, to 0), none lets it go.
     fn begin_move(&mut self, request: Option<(MoveKey, &MoveTo)>) -> Result<(), HullContactError> {
         if let Some(run) = self
             .move_to
@@ -476,8 +488,11 @@ impl Mover {
                 crouched: self.posture.crouched(),
             },
         )?;
-        if run.drives() && self.posture.flags & IN_AIR == 0 {
-            self.posture.take_off();
+        if run.drives() {
+            if self.posture.flags & IN_AIR == 0 {
+                self.posture.take_off();
+            }
+            self.posture.air_ticks = 0;
         }
         self.move_to = Some(run);
         Ok(())
@@ -487,7 +502,8 @@ impl Mover {
     /// mods only on the frame it ends, and no gravity; the capsule moves by
     /// the velocity alone (the pogo spring is the behaviour's to skip), and
     /// the velocity loses what goes into the contact planes. The move's
-    /// check after the capsule moved (slot 18) ends the frame.
+    /// check after the capsule moved (slot 18) ends the frame, and gravity's
+    /// part of the velocity follows the new velocity (0x7FF789B4F530).
     fn drive(
         &mut self,
         rays: &TriangleIndex,
@@ -497,20 +513,26 @@ impl Mover {
         dt: f64,
     ) -> Result<Option<MoveEnd>, HullContactError> {
         let run = self.move_to.as_mut().expect("a driving move");
-        let mut velocity = run.step(self.pose.position, self.pose.velocity, dt);
+        let mut velocity = run.step(
+            self.pose.position,
+            self.pose.velocity,
+            &mut self.posture.air_ticks,
+            dt,
+        );
         if !run.drives() {
             velocity = change_velocity(
                 active.limit_velocity(velocity, settings.jump_speed),
                 changes,
             );
         }
-        self.posture.fall = 0.0;
         let [x, y, z] = velocity.map(|axis| axis as f32);
         let dt = dt as f32;
         let movement = self.body.move_capsule([x * dt, y * dt, z * dt], dt)?;
         let velocity = clip_velocity([x, y, z], movement.planes).map(f64::from);
         let (position, touching) = (movement.position, movement.touching);
         self.place(rays, position, touching);
+        self.posture
+            .finish_fall(settings.gravity_scale, velocity[1]);
         self.pose.velocity = velocity.map(snap);
         let run = self.move_to.as_mut().expect("a driving move");
         run.after_move(self.pose.position);

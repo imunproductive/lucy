@@ -47,7 +47,7 @@ use orpheus_content::{
         HeroSetting, HeroSettings, NANO_BOOST_SENSITIVITY, NANO_BOOST_SENSITIVITY_DEFAULT,
         SCRIPT_SETTINGS,
     },
-    heroes::{ANA, Hero, SOLDIER},
+    heroes::{ANA, Hero, SOLDIER, WIDOWMAKER},
     parameters::{ClientGameMessage, HeroSelectRequest},
 };
 use orpheus_core::tick::{MAX_LEASE_FRAME, TICK_PERIOD};
@@ -148,19 +148,19 @@ fn clock_flags(depth: usize) -> u8 {
 /// (inferred, not traced) counts twice: 1.3, a speed scalar below 0. They
 /// send its own value now (`SnapshotEncoder` `project_variables`). Without corrections, any other difference between
 /// her client's body and the server's lasted until she died, and her shots
-/// left from the wrong place. Widowmaker stays out: the server runs her
-/// Grappling Hook (`005A`) as her client did in the recorded pulls, end
-/// included, but a session with her corrected (2026-11-19, `Grapple.md`
-/// "DayGrapple6") snapped her client: each correction during a pull
-/// begins her client's mover behaviour again (`0x7FF789B53CC0`, about 30
-/// times in one pull; its begin sets the checkpoint to the feet and the
-/// lateral counter to 0) while the server's run keeps its own, so her client drifts from
-/// the server's body (0.12 to 0.5 m) and is pulled back; and a ledge pull
-/// whose navigation path her client finds (`STU_1F5ED928`) would pull
-/// her back. The other heroes stay out until the
-/// server runs all of their movement (`docs/notes/behavior.md`, "Owner
-/// corrections").
-const CORRECTED_HEROES: [u64; 2] = [SOLDIER, ANA];
+/// left from the wrong place. Widowmaker is corrected since her movement
+/// state carries her Grappling Hook's pull (`005A` st1, a `MoveTo`): flag
+/// 0x10 and the pull's record, with its air ticks as the lateral count
+/// (`orpheus_physics::mover::move_to`). Before (2026-11-19, `Grapple.md`
+/// "DayGrapple6") each correction during a pull made her client's replay
+/// begin its mover behaviour again (`0x7FF789B53CC0`, about 30 times in
+/// one pull: checkpoint at the feet, lateral count 0) while the server's
+/// run kept its own, so her client drifted from the server's body (0.12 to
+/// 0.5 m) and was pulled back. A ledge pull whose navigation path her
+/// client finds (`STU_1F5ED928`) would still pull her back. The other
+/// heroes stay out until the server runs all of their movement
+/// (`docs/notes/behavior.md`, "Owner corrections").
+const CORRECTED_HEROES: [u64; 3] = [SOLDIER, ANA, WIDOWMAKER];
 
 /// `0013.025`: the entity is revived (the bots' reset, [`orpheus_script::bot::RESET`]).
 const REVIVED: u64 = orpheus_script::bot::RESET;

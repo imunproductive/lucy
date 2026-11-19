@@ -42,6 +42,7 @@ fn moving() -> Movement {
         spring_speed: 1.625,
         fall: -3.5,
         discontinuity: 0,
+        move_to: None,
     }
 }
 
@@ -141,6 +142,62 @@ fn discontinuity_counter_follows_the_frame_as_raw_32_bits() {
     let mut rest = BitReader::new(plain.as_bytes());
     rest.advance(17).unwrap();
     for _ in 17..plain.bit_len() {
+        assert_eq!(bits.bit().unwrap(), rest.bit().unwrap());
+    }
+}
+
+/// A running `MoveTo` move's record goes as the first of the nine flag
+/// blocks after the velocity (0x7FF789B6C720): present, no reference, the
+/// phase in 8 bits, the checkpoint's axes as raw floats (an axis of 0 left
+/// out), `still` in 16 bits (0 left out).
+#[test]
+fn a_move_to_record_is_the_first_flag_block_after_the_velocity() {
+    let still = Movement {
+        position: [1.0, 2.0, 3.0],
+        ..Movement::default()
+    };
+    let pulled = Movement {
+        flags: MOVE_TO,
+        move_to: Some(MoveToRecord {
+            checkpoint: [54.5654296875, 0.0, -42.25],
+            still: 3,
+            phase: 1,
+        }),
+        ..still
+    };
+    let plain = movement_record(
+        &Movement {
+            flags: MOVE_TO,
+            ..still
+        },
+        None,
+    )
+    .unwrap();
+    let record = movement_record(&pulled, None).unwrap();
+    // Phase 1 + 8, checkpoint 1 + 33 + 1 + 33, still 1 + 16, and the
+    // block's absolute bit.
+    assert_eq!(record.bit_len(), plain.bit_len() + 1 + 9 + 68 + 17);
+    let mut bits = BitReader::new(record.as_bytes());
+    let mut rest = BitReader::new(plain.as_bytes());
+    bits.advance(12).unwrap();
+    rest.advance(12).unwrap();
+    // Everything up to the block's presence bit is the same.
+    let at = (12..plain.bit_len())
+        .find(|_| bits.bit().unwrap() != rest.bit().unwrap())
+        .unwrap();
+    assert!(bits.bit().unwrap(), "no reference");
+    assert!(bits.bit().unwrap());
+    assert_eq!(bits.bits(8).unwrap(), 1);
+    assert!(bits.bit().unwrap());
+    assert!(bits.bit().unwrap());
+    assert_eq!(bits.f32().unwrap(), 54.565_43);
+    assert!(!bits.bit().unwrap());
+    assert!(bits.bit().unwrap());
+    assert_eq!(bits.f32().unwrap(), -42.25);
+    assert!(bits.bit().unwrap());
+    assert_eq!(bits.bits(16).unwrap(), 3);
+    // Then the other eight blocks and the rest, as without the record.
+    for _ in at + 1..plain.bit_len() {
         assert_eq!(bits.bit().unwrap(), rest.bit().unwrap());
     }
 }
