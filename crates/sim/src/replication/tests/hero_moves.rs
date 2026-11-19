@@ -409,20 +409,20 @@ fn widowmakers_pull_targets_the_free_spot_her_client_finds() {
     }
 }
 
-/// Widowmaker's pull at a wall face (`005A` st1 from the Range spawn, look
-/// 90° and 20° up), as her client ran it (2026-11-19, owdbg session C:
-/// the mover's velocity at each tick, `Grapple.md` "DayGrapple5"). The
-/// exit limits are unset (10000, nothing held), so the frame that would
-/// land on the target keeps the pull's velocity and runs into the wall,
-/// which turns it along the face; the feet end past the target, so the
-/// grapple's check after the move blocks it on that frame (slot 18
-/// `0x7FF789B573C0`). She leaves the wall rising at 8.8 m/s along it, the
-/// wall's top lip and the next wall turn her, and she lands 3.6 m along
-/// the wall, where her client rested.
-#[test]
-#[ignore = "requires the derived 104319 data and the Practice Range collision"]
-fn widowmakers_pull_at_a_wall_keeps_its_velocity_and_rests_where_her_client_did() {
-    use orpheus_physics::mover::{MoveEnd, MoveKey, MoveTo, Speed};
+/// Widowmaker's pull from the Range spawn with the kind-1 block her client
+/// began (destination `+0x30`, surface `+0x40`, `005A` st1's numbers), then
+/// `after` frames without it: how many frames it drove, how it ended, and
+/// the feet on every frame.
+struct Pulled {
+    mover: orpheus_physics::mover::Mover,
+    driven: u32,
+    end: orpheus_physics::mover::MoveEnd,
+    velocity: [f64; 3],
+    path: Vec<[f64; 3]>,
+}
+
+fn pull_from_the_spawn(destination: [f64; 3], surface: [f64; 3], after: u32) -> Pulled {
+    use orpheus_physics::mover::{MoveKey, MoveTo, Speed};
     const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
     let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     let scene = assets.prepare(GameMap::practice_range()).unwrap();
@@ -431,18 +431,16 @@ fn widowmakers_pull_at_a_wall_keeps_its_velocity_and_rests_where_her_client_did(
     let mut mover = scene
         .player_mover_at(body, 0, [54.565_43, 1.0, 42.147_46], 0)
         .unwrap();
-    // The kind-1 block her client began (destination `+0x30`, surface
-    // `+0x40`) and `005A` st1's numbers.
     let pull = MoveTo {
-        destination: [60.397_644, 4.622_823, 42.147_46],
-        surface: [-0.985_831, 0.0, 0.167_742],
+        destination,
+        surface,
         free_spot: true,
         speed: Speed::MetresPerSecond(20.0),
         acceleration: 100.0,
         slow_radius: 0.0,
-        lateral_seconds: 0.3,
+        lateral_seconds: f64::from(0.3_f32),
         stuck_distance: 1.0,
-        stuck_seconds: 0.3,
+        stuck_seconds: f64::from(0.3_f32),
         exit_horizontal: 10_000.0,
         exit_vertical: 10_000.0,
         exit_total: 10_000.0,
@@ -458,32 +456,37 @@ fn widowmakers_pull_at_a_wall_keeps_its_velocity_and_rests_where_her_client_did(
         frame,
         ..Command::default()
     };
+    let mut path = Vec::new();
     let mut frame = 0;
     let end = loop {
         frame += 1;
         let outcome = mover
             .step_pose_to(rays, command(frame), DT, Some((key, &pull)))
             .unwrap();
+        path.push(mover.pose().position);
         if let Some(end) = outcome {
             break end;
         }
     };
-    // Her client's behaviour drove 19 ticks; the velocity its end (slot 5
-    // `0x7FF789B539B0`) found, f32 as recorded.
-    assert_eq!((frame, end), (19, MoveEnd::Blocked));
-    assert_eq!(
-        mover.pose().velocity,
-        [0.554_687_5, 8.826_171_875, 3.257_812_5]
-    );
-    let mut path = Vec::new();
-    for _ in 0..120 {
+    let (driven, velocity) = (frame, mover.pose().velocity);
+    for _ in 0..after {
         frame += 1;
         mover.step_pose_to(rays, command(frame), DT, None).unwrap();
         path.push(mover.pose().position);
     }
-    // Two of her client's samples (component 4, the feet plus 1 m, as
-    // printed): past the wall's top lip, and past the next wall.
-    for sample in [[59.4990, 6.5518, 43.9248], [59.1377, 5.9805, 44.6191]] {
+    Pulled {
+        mover,
+        driven,
+        end,
+        velocity,
+        path,
+    }
+}
+
+/// Each of her client's samples (component 4, the feet plus 1 m, as
+/// printed) is a frame of `path`.
+fn assert_on_path(path: &[[f64; 3]], samples: &[[f64; 3]]) {
+    for sample in samples {
         let feet = [sample[0], sample[1] - 1.0, sample[2]];
         assert!(
             path.iter()
@@ -491,8 +494,78 @@ fn widowmakers_pull_at_a_wall_keeps_its_velocity_and_rests_where_her_client_did(
             "{feet:?} not on {path:?}"
         );
     }
+}
+
+/// Widowmaker's pull at a wall face (`005A` st1 from the Range spawn, look
+/// 90° and 20° up), as her client ran it (2026-11-19, owdbg session C:
+/// the mover's velocity at each tick, `Grapple.md` "DayGrapple5"). The
+/// exit limits are unset (10000, nothing held), so the frame that would
+/// land on the target keeps the pull's velocity and runs into the wall,
+/// which turns it along the face; the feet end past the target, so the
+/// grapple's check after the move blocks it on that frame (slot 18
+/// `0x7FF789B573C0`). She leaves the wall rising at 8.8 m/s along it, the
+/// wall's top lip and the next wall turn her, and she lands 3.6 m along
+/// the wall, where her client rested.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn widowmakers_pull_at_a_wall_keeps_its_velocity_and_rests_where_her_client_did() {
+    use orpheus_physics::mover::MoveEnd;
+    let pulled = pull_from_the_spawn(
+        [60.397_644, 4.622_823, 42.147_46],
+        [-0.985_831, 0.0, 0.167_742],
+        120,
+    );
+    // Her client's behaviour drove 19 ticks; the velocity its end (slot 5
+    // `0x7FF789B539B0`) found, f32 as recorded.
+    assert_eq!((pulled.driven, pulled.end), (19, MoveEnd::Blocked));
+    assert_eq!(pulled.velocity, [0.554_687_5, 8.826_171_875, 3.257_812_5]);
+    // Past the wall's top lip, and past the next wall.
+    assert_on_path(
+        &pulled.path,
+        &[[59.4990, 6.5518, 43.9248], [59.1377, 5.9805, 44.6191]],
+    );
     // Where her client rested (component 4 (58.128906, 2.0, 44.796875)).
-    assert_eq!(mover.pose().position, [58.128_906_25, 1.0, 44.796_875]);
+    assert_eq!(
+        pulled.mover.pose().position,
+        [58.128_906_25, 1.0, 44.796_875]
+    );
+}
+
+/// Widowmaker's pull at a wall's top (`005A` st1 from the Range spawn,
+/// yaw 180°, pitch16 −2720), as her client ran it (2026-11-19, owdbg
+/// sessions `grapple6a` and `grapple6b`, `Grapple.md` "DayGrapple6"). The
+/// hook meets the wall's face below its top; the free spot lies behind a
+/// solid lip at z 29.2 that her capsule meets on the way, which turns the
+/// pull up and along the lip. She rises to the target's height against it
+/// and stays within 1 m of her last checkpoint: 0.3 s later (19 frames of
+/// 16 ms) and more than 1 m from the target the move blocks, on the 69th
+/// driven frame as the server ran it in `grapple6b`, with the velocity her
+/// client's mover had there (its end, slot 5 `0x7FF789B539B0`). Her
+/// client's path passes the lip and the top, and she rests where it
+/// rested.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn widowmakers_pull_at_a_wall_top_holds_against_the_lip_and_rests_where_her_client_did() {
+    use orpheus_physics::mover::MoveEnd;
+    let pulled = pull_from_the_spawn(
+        [54.565_43, 6.425_825, 27.435_92],
+        [0.167_743, -3.113_021e-7, 0.985_831],
+        240,
+    );
+    assert_eq!((pulled.driven, pulled.end), (69, MoveEnd::Blocked));
+    assert_eq!(
+        pulled.velocity,
+        [0.030_273_437_5, 0.024_414_062_5, -0.004_882_812_5]
+    );
+    // At the lip and held at the top.
+    assert_on_path(
+        &pulled.path,
+        &[[54.7559, 7.2910, 29.6943], [54.9424, 7.7344, 29.6631]],
+    );
+    assert_eq!(
+        pulled.mover.pose().position,
+        [55.086_914_062_5, 1.0, 30.386_718_75]
+    );
 }
 
 /// Pharah's Jump Jet (graph `0027` node 1, `STU_FF3471E9`): the vertical

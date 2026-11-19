@@ -455,6 +455,7 @@ class RangeEntry:
                 self.s.log(f"[range] t={t:.0f}s server: match found (Practice Range); waiting for hero select")
                 self.at, self.state = t + 120, "select"
             elif t >= self.at:
+                self.snap_screen()
                 if self.tries >= 2:
                     self.s.log("[range] no match after 2 tries: enter the Practice Range by hand")
                     self.state = "done"
@@ -479,3 +480,17 @@ class RangeEntry:
             elif t >= self.at:
                 self.s.log("[range] hero select not recognized; pick a hero by hand if needed")
                 self.state = "done"
+
+    def snap_screen(self):
+        """The window as it was when no match came (what the clicks met), for the log."""
+        from .game import out_path, screenshot
+        hwnd = self.s.window()
+        if not hwnd:
+            return
+        path = out_path("range-nomatch", ".png")
+        try:
+            screenshot(hwnd, path)
+        except (RuntimeError, ImportError, OSError) as error:
+            self.s.log(f"[range] no screenshot: {error}")
+            return
+        self.s.log(f"[range] screen without a match: {path}")

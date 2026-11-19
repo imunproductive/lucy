@@ -150,9 +150,14 @@ fn clock_flags(depth: usize) -> u8 {
 /// her client's body and the server's lasted until she died, and her shots
 /// left from the wrong place. Widowmaker stays out: the server runs her
 /// Grappling Hook (`005A`) as her client did in the recorded pulls, end
-/// included, but no session has checked her with corrections yet, and a
-/// ledge pull whose navigation path her client finds (`STU_1F5ED928`)
-/// would pull her back. The other heroes stay out until the
+/// included, but a session with her corrected (2026-11-19, `Grapple.md`
+/// "DayGrapple6") snapped her client: each correction during a pull
+/// begins her client's mover behaviour again (`0x7FF789B53CC0`, about 30
+/// times in one pull; its begin sets the checkpoint to the feet and the
+/// lateral counter to 0) while the server's run keeps its own, so her client drifts from
+/// the server's body (0.12 to 0.5 m) and is pulled back; and a ledge pull
+/// whose navigation path her client finds (`STU_1F5ED928`) would pull
+/// her back. The other heroes stay out until the
 /// server runs all of their movement (`docs/notes/behavior.md`, "Owner
 /// corrections").
 const CORRECTED_HEROES: [u64; 2] = [SOLDIER, ANA];
