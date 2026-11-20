@@ -796,3 +796,92 @@ fn echos_ground_ray_meets_the_floor_she_stands_on() {
         snapshot.assumptions
     );
 }
+
+const DOOMFIST: u64 = 0x02e0_0000_0000_012f;
+
+impl Player {
+    /// Whether the owner gets his body's records now, and whether a pose
+    /// of the last frame waits to go to him.
+    fn records(&self) -> (bool, bool) {
+        let script = self.world.body_script.as_ref().unwrap();
+        let history = script.corrections.as_ref().unwrap();
+        (
+            script.runtime.owner_needs_records(),
+            history.candidate(self.frame, true).is_some(),
+        )
+    }
+
+    /// Graph `0D06`'s state `raw` (Rocket Punch) is on.
+    fn punch_state(&self, raw: u16) -> bool {
+        self.snapshot()
+            .instances
+            .values()
+            .filter(|instance| instance.graph == 0x0d06)
+            .any(|instance| instance.states.get(&raw).is_some_and(|state| state.active))
+    }
+}
+
+/// Rocket Punch (graph `0D06`) on the server: the charge (st11) while
+/// secondary fire is held, then at the release the dash, a server-only
+/// MovementMod (st42: forward throttle 1 at 8.18 times the run speed,
+/// 45 m/s) along the facing at the release (`STU_09F9B1FE`, #2083) however
+/// the view turns, with the registration st67 (`STU_4773DA56`) on. His
+/// client predicts none of the dash and draws his view from the records
+/// meanwhile, so he gets them from the charge to 250 ms after the punch,
+/// and not before or after.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_rocket_punch_dashes_along_its_release_facing_with_records_to_its_owner() {
+    let mut doomfist = Player::spawn(DOOMFIST);
+    let (open, _) = open_and_walled(&doomfist.scene);
+    assert_eq!(doomfist.records(), (false, false));
+    let hold = |doomfist: &mut Player, buttons, yaw| {
+        doomfist.step(Command {
+            yaw,
+            buttons,
+            ..Command::default()
+        });
+    };
+    // Half a second of charge (more than its least 0.2 s, #9273).
+    for _ in 0..32 {
+        hold(&mut doomfist, orpheus_wire::commands::SECONDARY, open);
+        assert!(doomfist.punch_state(11), "charging");
+        assert_eq!(doomfist.records(), (true, true));
+    }
+    let start = doomfist.position();
+    // Released, then the view turns a quarter turn at once.
+    let turned = open + 16384;
+    hold(&mut doomfist, 0, open);
+    assert!(
+        doomfist.punch_state(42) && doomfist.punch_state(67),
+        "dashing"
+    );
+    for _ in 0..6 {
+        hold(&mut doomfist, 0, turned);
+        assert_eq!(doomfist.records(), (true, true));
+    }
+    let moved = horizontal(start, doomfist.position());
+    // 6 frames of the dash at up to 45 m/s (its first frame accelerates).
+    assert!(moved > 3.0 && moved <= 6.0 * 45.0 * DT + 0.01, "{moved}");
+    let [dx, _, dz] = std::array::from_fn(|axis| doomfist.position()[axis] - start[axis]);
+    let facing = f64::from(open) * std::f64::consts::TAU / 65536.0;
+    let off = (dx.atan2(dz) - facing + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+        - std::f64::consts::PI;
+    assert!(off.abs() < 0.01, "the dash turned by {off} rad");
+    let mut last = None;
+    for _ in 0..90 {
+        hold(&mut doomfist, 0, turned);
+        if doomfist.records().0 {
+            last = Some(doomfist.frame);
+        }
+    }
+    let last = last.expect("records through the dash");
+    assert!(
+        !doomfist.punch_state(42) && !doomfist.punch_state(11),
+        "the punch ended"
+    );
+    // The window closed 250 ms (16 frames) after the last frame that needed
+    // records: no pose waits for him.
+    assert!(doomfist.frame > last + 16);
+    assert_eq!(doomfist.records(), (false, false));
+}

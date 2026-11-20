@@ -267,7 +267,7 @@ mod tests {
             panic!("projectile create")
         };
         check(
-            &orpheus_wire::entity::create(0, &definition).unwrap(),
+            &orpheus_wire::entity::create(0, &definition, 0).unwrap(),
             350,
             "b21c030000000000801e31000000000000000000000000000000000000e00f0000e00f0000e00f0000e00f00",
         );
@@ -390,7 +390,7 @@ mod tests {
                 panic!("field create")
             };
             check(
-                &orpheus_wire::entity::create(0, &definition).unwrap(),
+                &orpheus_wire::entity::create(0, &definition, 0).unwrap(),
                 bits,
                 expected,
             );

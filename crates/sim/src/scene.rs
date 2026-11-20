@@ -199,8 +199,9 @@ use orpheus_script::{
 };
 use orpheus_wire::{
     entity::{
-        Component, ComponentValue, Create, EntityUpdate, FRAME_ZERO_BACK, GAME_MODE_ENTITY,
-        Movement, Operation, PLAYER_PATH, SkinTheme, WITH_PARTICIPANT, WITH_SCALE, WITH_TRANSFORM,
+        Component, ComponentValue, Create, CreateFrame, EntityUpdate, FRAME_ZERO_BACK,
+        GAME_MODE_ENTITY, Movement, Operation, PLAYER_PATH, SkinTheme, WITH_PARTICIPANT,
+        WITH_SCALE, WITH_TRANSFORM,
     },
     jam::codec::Fields,
 };
