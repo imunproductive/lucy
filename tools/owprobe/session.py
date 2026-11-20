@@ -1,6 +1,6 @@
 """A game session for the probe: `orpheus play --probe` on a temporary copy of the state folder (never the user's
 own), the decrypted debug build as the game, the login and, on request, the way into the Practice Range by
-clicks (owdbg's RangeEntry positions). One game at a time: it takes the agents' game lock (TEAM_LOCK, owner.txt)
+clicks (owdbg's RangeEntry positions). One game at a time: it takes the agents' game lock (tools/gamelock.py)
 and owdbg's machine-wide byte lock, and at its end stops the game, then the server, and releases both.
 
     with Session(enter_range=True, hero="Soldier") as s:
@@ -21,8 +21,6 @@ from tools.owdbg.game import STATE_ITEMS, USER_STATE, _GameLock, capture, find_w
 
 from .client import Probe
 from .screenshot import screenshot
-
-TEAM_LOCK = Path(os.environ.get("ORPHEUS_GAME_LOCK", "D:/Temp/orpheus-game.lock"))
 
 
 def _pids_of(image):
@@ -82,7 +80,7 @@ class Session:
         (default the user's %APPDATA%/orpheus, read only); a cache from another code version is derived again
         on the first start (minutes, before the game starts). rust_log: the server's RUST_LOG, e.g.
         `info,orpheus::pose=debug` for the per-frame poses `compare` reads from `state/play.log`. team_lock: take
-        the agents' game lock (TEAM_LOCK, a folder with owner.txt naming `owner`) for the session and release it
+        the agents' game lock (`tools/gamelock.py`, in turn, as `owner`) for the session and release it
         at its end; False when the caller holds it already."""
         self.seed_state = Path(seed_state) if seed_state else USER_STATE
         self.rust_log = rust_log
@@ -127,34 +125,22 @@ class Session:
         return False
 
     def _take_team_lock(self):
-        """The agents' game lock: mkdir TEAM_LOCK, owner.txt with the owner and the time; waits while another
-        holds it, saying who."""
-        told = None
-        while True:
-            try:
-                TEAM_LOCK.mkdir(parents=False)
-                break
-            except FileExistsError:
-                try:
-                    holder = (TEAM_LOCK / "owner.txt").read_text(encoding="utf-8").strip()
-                except OSError:
-                    holder = "?"
-                if holder != told:
-                    self.log(f"[owprobe] waiting for the game lock {TEAM_LOCK} (held by: {holder})")
-                    told = holder
-                time.sleep(30)
+        """The agents' game lock, taken in turn (`tools/gamelock.py acquire`: a queue, stale-lock takeover)."""
+        import argparse
+        from tools import gamelock
+        self.log(f"[owprobe] queueing for the game lock as {self.owner} (tools/gamelock.py)")
+        gamelock.acquire(argparse.Namespace(name=self.owner, stale=25))
         self._team_locked = True
-        (TEAM_LOCK / "owner.txt").write_text(f"{self.owner} {time.strftime('%Y-%m-%dT%H:%M:%S')} owprobe session "
-                                             f"(PID {os.getpid()})\n", encoding="utf-8")
 
     def _release_team_lock(self):
         if not self._team_locked:
             return
+        import argparse
+        from tools import gamelock
         try:
-            (TEAM_LOCK / "owner.txt").unlink(missing_ok=True)
-            TEAM_LOCK.rmdir()
-        except OSError as error:
-            self.log(f"[owprobe] could not release {TEAM_LOCK}: {error}")
+            gamelock.release(argparse.Namespace(name=self.owner))
+        except SystemExit as error:
+            self.log(f"[owprobe] could not release the game lock: {error}")
         self._team_locked = False
 
     def elapsed(self):
@@ -165,6 +151,14 @@ class Session:
             raise RuntimeError(f"{self.orpheus} is missing (set ORPHEUS_BIN; owprobe.dll must be next to it)")
         if not (self.orpheus.parent / "owprobe.dll").is_file():
             raise RuntimeError(f"owprobe.dll is not next to {self.orpheus}: cargo build --release -p orpheus-probe")
+        # A game the previous lock holder closed can take a while to exit, and orpheus play refuses to start
+        # beside it: wait for it (it is not this session's to kill).
+        self._earlier = set(_pids_of(self.game.name))
+        end = time.monotonic() + 120
+        while self._earlier and time.monotonic() < end:
+            self.log(f"[owprobe] waiting for an earlier game to exit: {sorted(self._earlier)}")
+            time.sleep(5)
+            self._earlier = set(_pids_of(self.game.name))
         self.state = Path(tempfile.mkdtemp(prefix="owprobe-orpheus-"))
         for item in STATE_ITEMS:
             src = self.seed_state / item
@@ -218,7 +212,7 @@ class Session:
                 pass
             self.probe = None
         if self.proc is not None or self.pid:
-            pids = set(_pids_of(self.game.name))
+            pids = set(_pids_of(self.game.name)) - getattr(self, "_earlier", set())
             if self.pid:
                 pids.add(self.pid)
             started = time.monotonic()
