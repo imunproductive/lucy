@@ -13,6 +13,8 @@ use orpheus_launcher::game::{
 use crate::settings::Settings;
 
 pub const RELAY_DLL: &str = "owwfd_relay.dll";
+/// The client probe `--probe` loads (crates/probe).
+pub const PROBE_DLL: &str = "owprobe.dll";
 
 /// The game to start without asking, checked to be build 104319: the
 /// configured one, the one picked last time or an unpacked copy in the
@@ -109,7 +111,12 @@ fn pick_game() -> io::Result<PathBuf> {
 
 /// The relay built next to this executable.
 pub fn relay_dll() -> io::Result<PathBuf> {
-    let path = env::current_exe()?.with_file_name(RELAY_DLL);
+    built_dll(RELAY_DLL)
+}
+
+/// A DLL built next to this executable.
+fn built_dll(name: &str) -> io::Result<PathBuf> {
+    let path = env::current_exe()?.with_file_name(name);
     if path.is_file() {
         Ok(path)
     } else {
@@ -121,6 +128,22 @@ pub fn relay_dll() -> io::Result<PathBuf> {
             ),
         ))
     }
+}
+
+/// The client probe for `--probe PORT`, built next to this executable.
+#[cfg(windows)]
+pub fn probe_setup(
+    settings: &Settings,
+    port: Option<u16>,
+) -> io::Result<Option<orpheus_launcher::process::ProbeSetup>> {
+    port.map(|port| {
+        Ok(orpheus_launcher::process::ProbeSetup {
+            dll: built_dll(PROBE_DLL)?,
+            port,
+            log: settings.logs().join("probe.log"),
+        })
+    })
+    .transpose()
 }
 
 /// The `--tank_Locale` to pass, if any.
@@ -168,7 +191,7 @@ mod client {
     use orpheus_server::platform::LocalGames;
     use tracing::{error, info};
 
-    use super::{game, locale, relay_dll};
+    use super::{game, locale, probe_setup, relay_dll};
     use crate::{
         banner,
         serve::{self, Hosting},
@@ -179,10 +202,17 @@ mod client {
 
     /// The retail game with the relay, on a server for this PC (`play`) or
     /// for other PCs too (`host`). A second game can be started from the
-    /// dashboard; the server stops when the first game closes.
-    pub fn retail(settings: &Settings, hosting: Hosting, timeout: Duration) -> io::Result<()> {
+    /// dashboard; the server stops when the first game closes. `probe`: the
+    /// port of the client probe to load into the first game.
+    pub fn retail(
+        settings: &Settings,
+        hosting: Hosting,
+        timeout: Duration,
+        probe: Option<u16>,
+    ) -> io::Result<()> {
         let game = game(settings)?;
         let relay = relay_dll()?;
+        let probe = probe_setup(settings, probe)?;
         close_running_copy(&game)?;
         let logs = settings.logs();
         let games = Arc::new(RetailGames::new(GameSetup {
@@ -195,6 +225,7 @@ mod client {
             relay_log: logs.join("relay.log"),
             timeout,
             extra_arguments: settings.game_args.clone(),
+            probe,
         }));
         let game_host = hosting.game_host.clone();
         let mut server = serve::start(
@@ -301,6 +332,9 @@ mod client {
             "[+] Relay loaded into Overwatch (PID {}) at {:#X}{playing}.",
             started.pid, started.base
         );
+        if let Some(probe) = started.probe {
+            info!("[+] Client probe loaded at {probe:#X} (tools/owprobe).");
+        }
     }
 
     /// The dashboard's view of the games started here.
