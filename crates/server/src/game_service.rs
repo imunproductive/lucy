@@ -61,14 +61,11 @@ use orpheus_content::{
     parameters::{CLIENT_GAME_MESSAGE, PICK_HERO},
     stats::{BRONZE, GOLD, Medals, PlayerStats, SILVER, StatsCatalog},
 };
-use orpheus_core::tick::FIRST_TICK;
 use orpheus_lobby::handoff::Handoff;
 use orpheus_script::{
-    controller::HeroSelectRequest,
     mode::ModePlayer,
     snapshot::ProjectedSnapshot,
     vm::{AuraChange, GameMessage, ScopeChange, TrackedStat},
-    wire::chunk,
 };
 use orpheus_sim::{
     ai::{Difficulty, Random},
@@ -79,7 +76,6 @@ use orpheus_sim::{
         apply_player_hits, apply_player_pushes, deliver_projectiles, finish_bot_rockets,
         show_bot_rockets, show_fired,
     },
-    controller::ControllerFrame,
     egress::GameEgress,
     hurt_feedback::HurtFeedback,
     instance::{FREE_FOR_ALL_TEAM, Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
@@ -1076,35 +1072,6 @@ struct CombatUi {
     last_hit_frame: u32,
 }
 
-/// The first controller frame a player of `team` gets, hero select open
-/// with the skin selector, projected from a controller script started for
-/// the size check (its frames are the script's: `orpheus_sim::controller`).
-fn initial_controller(
-    scene: &PreparedScene,
-    entity: u32,
-    team: u8,
-    tick: u32,
-) -> io::Result<orpheus_core::bits::BitWriter> {
-    let controller = scene.controller();
-    let mut script = controller
-        .start_script(scene.shared_graphs(), entity, team, scene.heroes(), tick)
-        .map_err(invalid)?;
-    script
-        .hero_select(tick, HeroSelectRequest::OpenOrClose(true))
-        .map_err(invalid)?;
-    controller
-        .controller_frame(
-            &script,
-            tick,
-            ControllerFrame {
-                skins: true,
-                hide_assemble: true,
-                ..ControllerFrame::default()
-            },
-        )
-        .map_err(invalid)
-}
-
 /// The placeables the mode entity's graphs removed (`0CBB` st34: the
 /// health packs, when the ruleset turns them off), out of the scene.
 fn take_placeable_removals(mode: &mut ModeRunner, scene: &mut PreparedScene) {
@@ -1129,8 +1096,10 @@ fn graph_frame(
     })
 }
 
-/// A scene the worker can open a world on, whose world baselines fit a
-/// datagram for every player (`teams` and `cards` in slot order).
+/// A scene the worker can open a world on, whose world creates fit a
+/// datagram for every player (`teams` and `cards` in slot order). A
+/// statescript chunk too big for one goes in parts
+/// (`orpheus_sim::replication`).
 fn check_scene(
     scene: &PreparedScene,
     map: &GameMap,
@@ -1154,28 +1123,14 @@ fn check_scene(
             room: SpawnChoice::First,
             card,
         };
-        let creates = scene.initial_world(&viewer)?;
-        let controller = initial_controller(scene, viewer.entity, team, FIRST_TICK)?;
-        let scripts = [
-            script_record(viewer.entity, &controller)?,
-            script_record(GAME_MODE_ENTITY, scene.mode_ui())?,
-        ];
-        for record in creates.iter().chain(&scripts) {
-            let packet = frame(u32::MAX, u32::MAX, 0, &[], &[], &[record]).map_err(invalid)?;
+        for record in scene.initial_world(&viewer)? {
+            let packet = frame(u32::MAX, u32::MAX, 0, &[], &[], &[&record]).map_err(invalid)?;
             if packet.len() > MAX_PAYLOAD {
                 return Err(invalid("a world baseline exceeds the game datagram budget"));
             }
         }
     }
     Ok(())
-}
-
-fn script_record(entity: u32, payload: &orpheus_core::bits::BitWriter) -> io::Result<EntityUpdate> {
-    Ok(EntityUpdate {
-        entity,
-        chunk: Some(chunk(payload, 0, 1).map_err(invalid)?),
-        ..EntityUpdate::default()
-    })
 }
 
 fn player_entity(slot: usize) -> u32 {

@@ -17,9 +17,10 @@
 //! itself). A spawned entity has an owner (its hero's controller), puts
 //! auras on the bodies ([`MapEntityWorld::take_auras`]) and removes itself
 //! (`STU_523EE38D`), which ends its graphs, so its ApplyAura takes its
-//! auras off ([`MapEntityWorld::take_destroyed`]). Assumption: the map's
-//! own placeables do neither yet (their auras and removals have no client
-//! side here).
+//! auras off ([`MapEntityWorld::take_destroyed`]). A map placeable removes
+//! itself the same way (a health pack whose ruleset turns packs off).
+//! Assumption: the map's own placeables put no auras on bodies yet (their
+//! auras have no client side here).
 //!
 //! A script can make and remove dummy bots (`STU_FC3921B1`,
 //! `STU_C1561031`: the Practice Range's Training Partner console `265F`):
@@ -523,9 +524,10 @@ impl World for EntityWorld<'_, '_> {
         true
     }
 
-    /// A spawned entity removes itself.
+    /// An entity removes itself: a spawned one (the Biotic Field), or a
+    /// map placeable (a health pack the ruleset turns off, `0046` rid31).
     fn destroy_entity(&mut self, _site: Site, entity: u32) -> bool {
-        if self.owner.is_none() || entity != self.entity {
+        if entity != self.entity {
             return false;
         }
         if !self.shared.destroyed.contains(&entity) {

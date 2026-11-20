@@ -62,13 +62,13 @@ use orpheus_script::{
     codecs::{Codec, CodecTable},
     graph::GraphStore,
     snapshot::{ProjectedSnapshot, ProjectionCache, SnapshotEncoder, View},
-    stream::{BodyStream, DeltaKind, ScriptChunk, Stream},
+    stream::{BodyStream, DeltaKind, Stream},
     vitals::Vitals,
     vm::{Revision, Snapshot},
     wire::WireError,
 };
 use orpheus_wire::{
-    entity::{Component, EntityUpdate, MAX_PAYLOAD, Movement, Operation, SkinTheme, frame},
+    entity::{Component, EntityUpdate, Movement, Operation, SkinTheme},
     jam::codec::Fields,
     messages::Message,
 };
@@ -1041,18 +1041,7 @@ impl Others {
                 )
             })
         };
-        let chunk: Result<Option<ScriptChunk>, String> = chunk.map_err(|error| error.to_string());
-        match chunk.and_then(|chunk| {
-            let Some(chunk) = chunk else {
-                return Ok(None);
-            };
-            let packet = frame(u32::MAX, u32::MAX, 0, &[], &[], &[&chunk.update])
-                .map_err(|error| error.to_string())?;
-            if packet.len() > MAX_PAYLOAD {
-                return Err("chunk exceeds the game datagram budget".into());
-            }
-            Ok(Some(chunk))
-        }) {
+        match chunk {
             Ok(Some(chunk)) => {
                 watch.sent = script.activity.clone();
                 watch.next_lazy = tick.saturating_add(LAZY_TICKS);

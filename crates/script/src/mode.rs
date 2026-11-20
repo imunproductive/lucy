@@ -1035,6 +1035,25 @@ impl ModeScript {
         messages
     }
 
+    /// The messages of [`Self::take_messages`] to the entities `to`
+    /// names; the others stay for the match. The Workshop's host gives
+    /// its actions' messages to the players in the step that sent them:
+    /// Stop Chasing Player Variable `1CCE` sends `0DCF` to the player's
+    /// `1CCF` before the rule's next action sets the variable, and Chase
+    /// `1CCC` sends it before it plays the new `1CCF`.
+    pub fn take_messages_to(&mut self, to: impl Fn(u32) -> bool) -> Vec<GameMessage> {
+        let (mut taken, routed) = std::mem::take(&mut self.routed)
+            .into_iter()
+            .partition(|message| to(message.target));
+        self.routed = routed;
+        let (sent, outbox): (Vec<_>, _) = std::mem::take(&mut self.world.outbox)
+            .into_iter()
+            .partition(|message| to(message.target));
+        self.world.outbox = outbox;
+        taken.extend(sent);
+        taken
+    }
+
     /// The messages the graphs sent the mode entity itself since the last
     /// call (its own entries took them too).
     pub fn take_own_messages(&mut self) -> Vec<GameMessage> {

@@ -48,7 +48,7 @@ use orpheus_script::{
     weapons::{DamageTags, HitDefinition, ProjectileBallistics, authored_number, ray_profile},
     wire::Value,
 };
-use orpheus_wire::entity::{Component, EntityUpdate, MAX_PAYLOAD, frame};
+use orpheus_wire::entity::{Component, EntityUpdate};
 
 /// How long a dead bot's death script runs: `int(BOT_RESPAWN / TICK)`
 /// frames, 3 s of 16 ms frames rounded down (combat.py `_advance_bot_death`).
@@ -1473,15 +1473,7 @@ impl Flush<'_, '_> {
         let chunk = self
             .encoder
             .queue_full(&mut stream, chosen.projected())
-            .map_err(|error| error.to_string())
-            .and_then(|chunk| {
-                let packet = frame(u32::MAX, u32::MAX, 0, &[], &[], &[&chunk.update])
-                    .map_err(|error| error.to_string())?;
-                if packet.len() > MAX_PAYLOAD {
-                    return Err("its first frame exceeds the game datagram budget".into());
-                }
-                Ok(chunk)
-            });
+            .map_err(|error| error.to_string());
         match chunk {
             Ok(chunk) => {
                 self.out.push(chunk);

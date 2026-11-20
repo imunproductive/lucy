@@ -1049,9 +1049,17 @@ impl PreparedScene {
     /// Start the server placeables' scripts at the first call, give the
     /// spawn rooms `holds` (none where the mode graph sends its `0724`
     /// itself; else [`Self::room_holds`]) the mode's message, then advance
-    /// them to `tick`.
+    /// them to `tick`. A placeable that removed itself (a health pack the
+    /// ruleset turns off, `0046`) goes as [`Self::remove_placeables`]'
+    /// do.
     pub fn advance_placed(&mut self, tick: u32, holds: &[(u32, Option<u8>)]) {
         self.placed_scripts.advance(tick, holds);
+        let removed = self.placed_scripts.take_removed();
+        if !removed.is_empty() {
+            self.server_placeables
+                .retain(|placed| !removed.contains(&placed.entity()));
+            self.removed_placeables.extend(removed);
+        }
     }
 
     /// The placed scripts' game messages and message ends since the last

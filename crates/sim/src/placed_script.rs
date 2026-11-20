@@ -86,6 +86,8 @@ pub struct PlacedScripts {
     next_dummy: Option<NextDummy>,
     /// The running scripts' dummy bot changes for the match to carry out.
     dummies: Vec<DummyChange>,
+    /// The placeables that removed themselves, for the scene to drop.
+    removed: Vec<u32>,
     gaps_logged: bool,
 }
 
@@ -118,6 +120,7 @@ impl PlacedScripts {
             frames: BTreeMap::new(),
             next_dummy: None,
             dummies: Vec::new(),
+            removed: Vec::new(),
             gaps_logged: false,
         }
     }
@@ -194,6 +197,18 @@ impl PlacedScripts {
         self.ends
             .extend(ends.into_iter().filter(|end| running(world, end.sender)));
         self.take_dummies();
+        // The placeables that removed themselves (a health pack the
+        // ruleset turns off): their graphs ended, and they send no more.
+        let destroyed = self
+            .world
+            .as_mut()
+            .map(MapEntityWorld::take_destroyed)
+            .unwrap_or_default();
+        for entity in destroyed {
+            self.placed.retain(|placed| placed.entity() != entity);
+            self.frames.remove(&entity);
+            self.removed.push(entity);
+        }
         let world = self.world.as_mut().expect("started above");
         if !self.gaps_logged {
             self.gaps_logged = true;
@@ -391,6 +406,11 @@ impl PlacedScripts {
         if let Some(world) = &mut self.world {
             world.remove(entity);
         }
+    }
+
+    /// The placeables that removed themselves since the last call.
+    pub fn take_removed(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.removed)
     }
 }
 

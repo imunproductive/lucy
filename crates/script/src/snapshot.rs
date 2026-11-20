@@ -2020,7 +2020,11 @@ fn state_payload(
             | StateKind::HeroSelect
             // TrackStatTime: the client's reader is a nullsub
             // (`0x7FF78ABF5640`, `statescript_codecs.json`).
-            | StateKind::StatTime,
+            | StateKind::StatTime
+            // A ray cast (`STUStatescriptStateRayCast`, codec none: the
+            // client casts its own; Seismic Slam's landing ray, `0B27`
+            // st8); its hit goes in its output variable.
+            | StateKind::Ray,
             Some("none"),
         ) if codec.empty() => StatePayload::new(),
         // The Grappling Hook cast (`STU_4BBC5D09`): its begin; an owner frame

@@ -342,9 +342,15 @@ impl<W: World> Vm<'_, '_, '_, W> {
     /// state begins: Chase Player Variable's `1CCF` chases `[14, 8 #18734,
     /// 72]`, Workshop variable `#18734` of the entity it runs on. None:
     /// no opcode 72 names one, or it is another entity's (reported).
-    pub(super) fn workshop_output(&mut self, id: u16, node: &Node, target: &Json) -> Option<VarKey> {
-        let (entity, variable) =
-            self.evaluate_with(id, node, |context| expr::workshop_reference(target, context))??;
+    pub(super) fn workshop_output(
+        &mut self,
+        id: u16,
+        node: &Node,
+        target: &Json,
+    ) -> Option<VarKey> {
+        let (entity, variable) = self.evaluate_with(id, node, |context| {
+            expr::workshop_reference(target, context)
+        })??;
         if expr::to_entity(&entity) != Some(self.machine.snapshot.entity) {
             self.report(
                 self.site(id, node),

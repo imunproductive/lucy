@@ -274,13 +274,16 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     .or_else(|| play::server_played_graph(graph, node.pos))
                 {
                     self.play_script(id, node, played)?;
-                } else if self.graphs.is_aura_graph(graph) || self.graphs.is_workshop_action(graph)
+                } else if self.graphs.is_aura_graph(graph)
+                    || self.graphs.is_workshop_action(graph)
+                    || play::HEALTH_PACKS.contains(&graph)
                 {
                     // An aura's graph plays its effect on the body
                     // (`vm/auras.rs`: `0C71` plays `0B99` or `0C72`); a
                     // Workshop action its helper on its targets (Chase
                     // Player Variable At Rate `1CCC` plays `1CCF` on each
-                    // player's controller, `vm/workshop.rs`).
+                    // player's controller, `vm/workshop.rs`); a health
+                    // pack `0046` on itself ([`play::HEALTH_PACKS`]).
                     let played = node
                         .field("m_script.m_graph")
                         .and_then(asset_guid)

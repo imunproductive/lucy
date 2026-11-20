@@ -29,6 +29,15 @@ use super::*;
 /// retail server's credit for assists was its own.
 pub const ATTACKER_LIST: ((u32, u16), u32) = ((0x01cf, 201), 0x1901);
 
+/// A health pack's script, `0216` (big: 250 health, 15 s) or `0217`
+/// (small: 75, 10 s), the server placeables `0FC2`/`0FC3` start: its one
+/// PlayScript plays `0046` on the pack itself, which heals and respawns
+/// it, and one server frame after it starts (rid28 WaitForServerFrames 1)
+/// reads the ruleset's "Spawn Health Packs" (`#9542`, rid29): Disabled,
+/// or Determined By Mode with the mode's `#9664` set, removes the pack
+/// (rid31 `STU_523EE38D` on `owner()`).
+pub const HEALTH_PACKS: [u32; 2] = [0x0216, 0x0217];
+
 /// The graph a server PlayScript node (not the wheel's) plays, if it is one.
 pub(super) fn server_played_graph(graph: u32, node: u16) -> Option<u32> {
     let (site, played) = ATTACKER_LIST;

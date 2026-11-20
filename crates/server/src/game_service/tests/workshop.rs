@@ -186,17 +186,20 @@ fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
                     .is_some_and(|chunk| chunk.part.is_some())),
         "no mode frame in parts"
     );
-    // C32S2's "Spawn Health Packs: Disabled" (#9542e): `0CBB` st34
-    // (`STU_A3DC6A25`) removed the map's health packs, the placeables with
-    // identifier 2 `2AB0.01C` (game_map_areas: 375, 381, 391, 456, 510,
-    // 614, 738, 751 and 771, definitions `1C89`, `1C8A`, `1C92`), before
-    // the world reached the client; the other server placeables came.
-    for pack in [375, 381, 391, 456, 510, 614, 738, 751, 771] {
+    // C32S2's "Spawn Health Packs: Disabled" (#9542e): each of Hanamura's
+    // 18 health packs (server placeables `0FC2`/`0FC3`, game_map_areas)
+    // plays `0046` on itself (`0216`/`0217`), which removes the pack one
+    // server frame after it starts (rid28-31, `STU_523EE38D`), before the
+    // world reached the client; the other server placeables came (456, a
+    // `20C9`).
+    for pack in [
+        182, 205, 243, 266, 278, 312, 391, 396, 409, 431, 604, 653, 748, 780, 810, 891, 920, 1050,
+    ] {
         assert!(
             watcher.created(0x8000_0000 | pack).is_none(),
             "health pack {pack}"
         );
     }
-    assert!(watcher.created(0x8000_0000 | 265).is_some());
+    assert!(watcher.created(0x8000_0000 | 456).is_some());
     server.stop().unwrap();
 }

@@ -215,10 +215,13 @@ fn viewer(card: &PlayerCard) -> PlayerAppearance<'_> {
     }
 }
 
+/// A Workshop number: False and True are 0 and 1 (Reset sets RunState to
+/// False).
 fn number(value: &ScriptValue) -> f64 {
     match value {
         ScriptValue::Float(value) => *value,
         ScriptValue::Integer(value) => *value as f64,
+        ScriptValue::Bool(value) => f64::from(u8::from(*value)),
         ScriptValue::Null => 0.0,
         other => panic!("{other:?}"),
     }
@@ -287,8 +290,10 @@ fn dpk_archive_c32s2_resets_the_player_to_the_first_checkpoint_with_his_hud() {
 /// The run's timer: leaving the first checkpoint in the air starts it
 /// ("Timer Start": RunState 1, Chase Player Variable At Rate `1CCC` playing
 /// `1CCF` on the controller, RunTime up 1 a second); landing outside the
-/// checkpoint fails it ("CP Clear / Fail" → CP Fail → Reset): back at the
-/// checkpoint, RunTime 0 and no longer moving.
+/// checkpoint fails it in the tick it lands ("CP Clear / Fail", on Is On
+/// Ground → CP Fail → Reset): back at the checkpoint, the chase stopped
+/// (Stop Chasing `1CCE`'s `0DCF` ends the controller's `1CCF`), RunTime 0
+/// and no longer moving.
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and the DPK archive (just test-dpk <install> <archive>)"]
 fn dpk_archive_c32s2_times_the_run_and_resets_it_on_a_fall() {
@@ -297,6 +302,7 @@ fn dpk_archive_c32s2_times_the_run_and_resets_it_on_a_fall() {
     let (centre, radius) = parkour.first_checkpoint();
     parkour.place([centre[0] + radius + 2.0, centre[1] + 12.0, centre[2]]);
     let mut started = None;
+    let mut airborne = None;
     let mut ticks = 0;
     // A mover just put somewhere reads as grounded until it first moves:
     // the fall is seen from the first tick on.
@@ -304,27 +310,27 @@ fn dpk_archive_c32s2_times_the_run_and_resets_it_on_a_fall() {
         parkour.tick();
         ticks += 1;
         assert!(ticks < 300, "never lands");
-        if started.is_none() && number(&parkour.player_variable("RunState")) == 1.0 {
-            started = Some(parkour.frame);
-        }
         if parkour.on_ground() {
             break;
         }
+        if started.is_none() && number(&parkour.player_variable("RunState")) == 1.0 {
+            started = Some(parkour.frame);
+        }
+        airborne = Some((parkour.frame, number(&parkour.player_variable("RunTime"))));
     }
-    let Some(started) = started else {
+    let (Some(started), Some((last, time))) = (started, airborne) else {
         let gaps = parkour.mode.script_mut().unwrap().gaps();
         panic!(
             "the timer didn't start in the air ({ticks} ticks, RunState {:?}, gaps {gaps:?})",
             parkour.player_variable("RunState")
         );
     };
-    let time = number(&parkour.player_variable("RunTime"));
-    let expected = f64::from(parkour.frame - started) * 0.016;
+    // The last tick in the air, before the landing's reset.
+    let expected = f64::from(last - started) * 0.016;
     assert!(
         (time - expected).abs() <= 0.05,
         "RunTime {time} after {expected} s"
     );
-    // Landed outside: the next ticks fail the checkpoint and reset.
     parkour.run(0.5);
     assert!(distance(parkour.feet(), centre) <= radius + 0.5);
     assert_eq!(number(&parkour.player_variable("RunTime")), 0.0);

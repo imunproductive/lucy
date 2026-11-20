@@ -2,6 +2,7 @@ use super::*;
 use lockstep::{Client, Lockstep};
 use orpheus_content::maps::PRACTICE_RANGE_MAP;
 use orpheus_core::bits::{BitReader, BitWriter};
+use orpheus_core::tick::FIRST_TICK;
 use orpheus_wire::{
     link::{FIN, KIND_CONTROL, SYN},
     messages::{read_channel, write_channel},

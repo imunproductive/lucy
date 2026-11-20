@@ -15,7 +15,10 @@
 //! as big) goes as parts, each a record of its own: the first with the
 //! record's other fields, the rest with their share of the chunk alone. A
 //! lost part alone goes again while the record would; the record counts as
-//! arrived once every part did.
+//! arrived once every part did. While a chunk is in parts, the entity's
+//! later chunks wait: the client applies a chunk whose first number is at
+//! most one past the last it applied, so a delta from the acknowledged
+//! frame would go ahead of the joined chunk, which then took it back.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -38,7 +41,7 @@ pub(crate) struct Part {
 
 /// What a part's datagram outcome means for its record.
 pub(super) enum PartOutcome {
-    /// It arrived; another part hasn't yet.
+    /// It arrived; another part hasn't yet (or the record was given up).
     Waiting,
     /// It arrived, the last of its parts: the record arrived (its first
     /// part, which carries the record's other fields).
@@ -57,6 +60,21 @@ struct Chunk {
 pub(super) struct Parts {
     next: u64,
     chunks: HashMap<u64, Chunk>,
+}
+
+/// Per entity, its oldest chunk on its way in parts ([`Parts::holding`]).
+pub(super) struct Holding(HashMap<u32, u64>);
+
+impl Holding {
+    /// Whether `record` waits: it carries a chunk of an entity that has an
+    /// older one in parts on its way.
+    pub(super) fn holds(&self, record: &Record) -> bool {
+        record.update.chunk.is_some()
+            && self
+                .0
+                .get(&record.update.entity)
+                .is_some_and(|&chunk| record.part.is_none_or(|part| part.chunk != chunk))
+    }
 }
 
 impl Parts {
@@ -78,26 +96,26 @@ impl Parts {
         let Record {
             update, delivery, ..
         } = record;
+        let EntityUpdate {
+            entity,
+            operation,
+            movement,
+            ch2,
+            ..
+        } = update;
+        let mut first = Some((operation, movement, ch2));
         let records: Vec<_> = (0..)
             .zip(parts)
             .map(|(number, part)| {
-                let update = if number == 0 {
-                    EntityUpdate {
-                        entity: update.entity,
-                        operation: update.operation.clone(),
-                        movement: update.movement.clone(),
-                        chunk: Some(part),
-                        ch2: update.ch2.clone(),
-                    }
-                } else {
-                    EntityUpdate {
-                        entity: update.entity,
-                        chunk: Some(part),
-                        ..EntityUpdate::default()
-                    }
-                };
+                let (operation, movement, ch2) = first.take().unwrap_or_default();
                 Arc::new(Record {
-                    update,
+                    update: EntityUpdate {
+                        entity,
+                        operation,
+                        movement,
+                        chunk: Some(part),
+                        ch2,
+                    },
                     delivery,
                     part: Some(Part { chunk, number }),
                 })
@@ -140,17 +158,26 @@ impl Parts {
         self.chunks.remove(&part.chunk);
     }
 
-    /// The first part of each record on its way in parts.
-    pub(super) fn records(&self) -> impl Iterator<Item = (Part, &Arc<Record>)> {
-        self.chunks.iter().map(|(&chunk, item)| {
-            (
-                Part {
-                    chunk,
-                    number: 0,
-                },
-                &item.first,
-            )
-        })
+    /// Keeps the records in parts that are `current` (a newer chunk
+    /// replaced the others before they went, or an acknowledged one
+    /// covers them).
+    pub(super) fn retain(&mut self, current: impl Fn(&Record) -> bool) {
+        self.chunks.retain(|_, chunk| current(&chunk.first));
+    }
+
+    /// Each entity's oldest chunk in parts whose record is `current`.
+    pub(super) fn holding(&self, current: impl Fn(&Record) -> bool) -> Holding {
+        let mut oldest = HashMap::new();
+        for (&chunk, item) in &self.chunks {
+            if !current(&item.first) {
+                continue;
+            }
+            oldest
+                .entry(item.first.update.entity)
+                .and_modify(|old: &mut u64| *old = (*old).min(chunk))
+                .or_insert(chunk);
+        }
+        Holding(oldest)
     }
 
     pub(super) fn clear(&mut self) {

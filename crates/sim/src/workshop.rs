@@ -14,8 +14,9 @@
 //!   `229A` the value's `01C` GUID, `4932` its parameters), on the server
 //!   and on each client alike. The engine evaluates each parameter, and
 //!   [`parameter`] sends it as a tree the clients evaluate to the same
-//!   value: a constant inside Number (`4876`, whose `1B4A` config is its
-//!   parameter 0), a string as Custom String (`5C14`) with its values, the
+//!   value: Null as Null (`4E63`), a constant inside Number (`4876`, whose
+//!   `1B4A` config is its parameter 0), a string as Custom String (`5C14`)
+//!   with its values, the
 //!   parts each client renders itself as their own values (Input Binding
 //!   String, the icon strings), a custom colour as Custom Color. A
 //!   parameter that names Local Player, which each client evaluates to
@@ -32,10 +33,11 @@
 //!   what was written, so a variable reads back as the engine wrote it
 //!   (a string, a team) until a graph changes it.
 //! - **The world.** Each player's position, aim, buttons, ground and life
-//!   come from his body ([`WorldDelivery::workshop_view`]); the scope
-//!   instances the actions open on the players (Teleport) and the graphs
-//!   they play there (Chase Player Variable's `1CCF`) go to their
-//!   controllers.
+//!   come from his body ([`WorkshopView`]); his body's death fires Player
+//!   Died. The scope instances the actions open on the players
+//!   (Teleport), the messages they send them (Stop Chasing's `0DCF`, in
+//!   the step that sent them) and the graphs they play there (Chase
+//!   Player Variable's `1CCF`) go to their controllers.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -53,7 +55,11 @@ use orpheus_workshop::{
     Catalog, Engine, Logic,
     catalog::{Id, ParamKind},
     eval::ids,
-    host::{ActionCall, ActionHandle, Actions, Activity, Param, RayHit, Variables, World},
+    host::{
+        ActionCall, ActionHandle, Actions, Activity, Context, GameEvent, Param, RayHit, Variables,
+        World,
+    },
+    logic::events,
     value::{Color, EntityId, Text, Value},
 };
 
@@ -151,6 +157,8 @@ pub struct WorkshopRun {
     next_handle: ActionHandle,
     globals: HashMap<u8, Stored>,
     players: HashMap<(EntityId, u8), Stored>,
+    /// Whether each player's body was alive at the last step.
+    alive: HashMap<EntityId, bool>,
 }
 
 impl WorkshopRun {
@@ -163,6 +171,7 @@ impl WorkshopRun {
             next_handle: 0,
             globals: HashMap::new(),
             players: HashMap::new(),
+            alive: HashMap::new(),
         }
     }
 
@@ -190,6 +199,7 @@ impl WorkshopRun {
             player.world.advance_controller_to(tick);
         }
         let views = views(scene, players);
+        self.fire_deaths(players, &views);
         let mut host = Host {
             tick,
             scene,
@@ -210,6 +220,29 @@ impl WorkshopRun {
         host.route();
         host.actions
             .retain(|_, running| host.script.action_alive(running.action));
+    }
+
+    /// Player Died for each player whose body was alive at the last step
+    /// and is dead now: Event Player and Victim the player. Assumption:
+    /// no Attacker, and Event Was Environment false (the kill's credit
+    /// doesn't reach the engine yet).
+    fn fire_deaths(&mut self, players: &[WorkshopPlayer<'_>], views: &[Option<WorkshopView>]) {
+        for (player, view) in players.iter().zip(views) {
+            let Some(view) = view else {
+                continue;
+            };
+            let was = self.alive.insert(player.controller, view.alive);
+            if was == Some(true) && !view.alive {
+                self.engine.fire(GameEvent {
+                    kind: events::PLAYER_DIED,
+                    context: Context {
+                        event_player: Some(player.controller),
+                        victim: Some(player.controller),
+                        ..Context::default()
+                    },
+                });
+            }
+        }
     }
 }
 
@@ -247,10 +280,10 @@ impl Host<'_, '_> {
     }
 
     /// The scope instances the action graphs opened or closed on the
-    /// players (Teleport's), the graphs they played there (Chase Player
-    /// Variable's `1CCF`) and the player variables they set, to the
-    /// players' controllers; an opened scope instance goes back to its
-    /// scope state.
+    /// players (Teleport's), the messages they sent them (Stop Chasing's
+    /// `0DCF`), the graphs they played there (Chase Player Variable's
+    /// `1CCF`) and the player variables they set, to the players'
+    /// controllers; an opened scope instance goes back to its scope state.
     fn route(&mut self) {
         for change in self.script.take_scope_changes() {
             let target = change.target();
@@ -265,6 +298,26 @@ impl Host<'_, '_> {
                 (player.world.change_scope(self.tick, &change), &change)
             {
                 self.script.scope_opened(*source, target, instance);
+            }
+        }
+        // The messages to the players first: Chase `1CCC` stops the old
+        // `1CCF` (`0DCF`) before it plays the new one.
+        let teams: Vec<(u32, i64)> = self
+            .players
+            .iter()
+            .map(|player| (player.controller, i64::from(player.team)))
+            .collect();
+        let players = &*self.players;
+        let messages = self
+            .script
+            .take_messages_to(|target| players.iter().any(|player| player.world.runs(target)));
+        for message in messages {
+            if let Some(player) = self
+                .players
+                .iter_mut()
+                .find(|player| player.world.runs(message.target))
+            {
+                player.world.receive_message(self.tick, &teams, &message);
             }
         }
         for request in self.script.take_play_requests() {
@@ -430,10 +483,12 @@ fn parameter(catalog: &Catalog, kind: Option<ParamKind>, param: &Param) -> Wire 
 }
 
 /// A value as a Workshop value tree the clients evaluate to it: a string
-/// or a custom colour as their own values ([`text`]), anything else
-/// inside Number.
+/// or a custom colour as their own values ([`text`]), Null as Null
+/// (`4E63`; inside Number a client read it as 0, and Create HUD Text's
+/// Null header showed "0"), anything else inside Number.
 fn tree(catalog: &Catalog, value: &Value) -> Wire {
     match value {
+        Value::Null => workshop_tree(identifier(ids::NULL), Vec::new()),
         Value::Text(value) => text(catalog, value),
         Value::Color(Color::Rgba(rgba)) => custom_color(rgba),
         value => workshop_tree(identifier(ids::NUMBER), vec![plain(catalog, value)]),

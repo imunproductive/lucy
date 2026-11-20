@@ -85,11 +85,12 @@ use orpheus_wire::{
     commands::{Command, CommandQueue, FRAME_HALF, SUBFRAME, frame_distance},
     entity::{
         CLOCK_FASTER, CLOCK_SLOWER, CLOCK_STRONGER, Component as WorldComponent, Create,
-        EntityUpdate, GAME_MODE_ENTITY, MAX_PAYLOAD, Movement, Operation, SkinTheme, frame,
+        EntityUpdate, GAME_MODE_ENTITY, Movement, Operation, SkinTheme,
     },
     link::delivery,
     messages::Message,
 };
+use parts::{Part, PartOutcome, Parts};
 
 pub(crate) const BODY_REUSE_DELAY: Duration = Duration::from_secs(30);
 // Resource bound for this worker. The reference keeps 64 predicted states and
@@ -902,14 +903,6 @@ impl BodyScript {
             };
             (chunk, Some(kind))
         };
-        // An individual chunk that cannot fit alone needs fragmentation.
-        // Fail this VM closed so it cannot hold up other entity records.
-        let packet = frame(u32::MAX, u32::MAX, 0, &[], &[], &[&chunk.update]).map_err(invalid)?;
-        if packet.len() > MAX_PAYLOAD {
-            return Err(invalid(
-                "body script chunk exceeds the game datagram budget",
-            ));
-        }
         let last = chunk.last;
         let replaced = kind.and_then(|kind| {
             self.unsent_delta.replace((last, kind)).map(|(last, _)| {
@@ -923,20 +916,20 @@ impl BodyScript {
             chunk = last,
             kind = ?kind,
             processed = self.frame,
-            bytes = packet.len(),
+            bytes = chunk.update.chunk.as_ref().map_or(0, |chunk| chunk.as_bytes().len()),
             replaced = ?replaced,
             volleys = %self.volleys(),
             keys = ?self.stream.pending().find(|&(number, ..)| number == last).map(|(.., keys)| keys),
             "owner frame queued"
         );
-        let record = Record {
-            update: chunk.update,
-            delivery: Delivery::BodyScript {
+        let record = Record::new(
+            chunk.update,
+            Delivery::BodyScript {
                 id: self.id,
                 last,
                 delta: kind.is_some(),
             },
-        };
+        );
         Ok(Some((record, replaced)))
     }
 
@@ -1042,11 +1035,9 @@ enum Delivery {
         close: bool,
         resend: bool,
     },
-    /// A chunk of the game mode entity's frames (`mode_view.rs`), whole or
-    /// its part `part`.
+    /// A chunk of the game mode entity's frames (`mode_view.rs`).
     Mode {
         last: u32,
-        part: Option<u16>,
     },
     /// Another player's entity, body or statescript (others.rs).
     Other(OtherDelivery),
@@ -1068,8 +1059,9 @@ enum Delivery {
         last: u32,
     },
     /// The create (false) or destroy (true) of an entity the mode entity's
-    /// graphs made ([`WorldDelivery::update_mode_entities`]); its frames go
-    /// as a placeable's ([`Self::Placed`]).
+    /// graphs made ([`WorldDelivery::update_mode_entities`]), whose frames
+    /// go as a placeable's ([`Self::Placed`]); or the destroy of a server
+    /// placeable that went ([`WorldDelivery::update_placed`]).
     ModeEntity {
         destroy: bool,
     },
@@ -1112,25 +1104,32 @@ enum BotLifetime {
 pub struct Record {
     update: EntityUpdate,
     delivery: Delivery,
+    /// The record's part, when its chunk goes in parts (`parts.rs`).
+    part: Option<Part>,
 }
 
 impl Record {
-    pub(crate) fn baseline(update: EntityUpdate) -> Self {
+    fn new(update: EntityUpdate, delivery: Delivery) -> Self {
         Self {
             update,
-            delivery: Delivery::Baseline,
+            delivery,
+            part: None,
         }
     }
 
+    pub(crate) fn baseline(update: EntityUpdate) -> Self {
+        Self::new(update, Delivery::Baseline)
+    }
+
     fn script(chunk: ScriptChunk, close: bool) -> Self {
-        Self {
-            update: chunk.update,
-            delivery: Delivery::Script {
+        Self::new(
+            chunk.update,
+            Delivery::Script {
                 last: chunk.last,
                 close,
                 resend: chunk.resend,
             },
-        }
+        )
     }
 }
 
@@ -1711,6 +1710,8 @@ struct SelectShown {
 pub struct WorldDelivery {
     owner: u32,
     queued: Vec<Arc<Record>>,
+    /// The queued records in parts (`parts.rs`).
+    parts: Parts,
     created: HashSet<u32>,
     bots: HashMap<u32, BotLifetime>,
     /// Each live bot's way onto this client's screen (`bot_shown`).
@@ -1963,6 +1964,7 @@ impl WorldDelivery {
         Self {
             owner,
             queued: Vec::new(),
+            parts: Parts::default(),
             created: HashSet::new(),
             bots: HashMap::new(),
             bot_sights: HashMap::new(),
@@ -2122,6 +2124,7 @@ impl WorldDelivery {
 
     pub fn clear(&mut self) {
         self.queued.clear();
+        self.parts.clear();
         self.created.clear();
         self.bots.clear();
         self.bot_sights.clear();
@@ -2232,10 +2235,7 @@ impl WorldDelivery {
     /// reliable channel.
     fn apply_shown(&mut self, output: ShowOutput) -> Vec<Message> {
         for (update, delivery) in output.records {
-            self.push(Record {
-                update,
-                delivery: Delivery::Other(delivery),
-            });
+            self.push(Record::new(update, Delivery::Other(delivery)));
         }
         self.notices.waiting.extend(output.switches);
         self.remove_stale();
@@ -2500,8 +2500,14 @@ impl WorldDelivery {
         }
     }
 
+    /// Queues `record`: whole, or in parts when its chunk is too big for a
+    /// datagram (`parts.rs`).
     fn push(&mut self, record: Record) {
-        self.queued.push(Arc::new(record));
+        let entity = record.update.entity;
+        match self.parts.split(record) {
+            Ok(records) => self.queued.extend(records),
+            Err(error) => eprintln!("a record of {entity:08X} not sent ({error})"),
+        }
     }
 
     pub fn world_started(&self) -> bool {
@@ -2571,10 +2577,7 @@ impl WorldDelivery {
         let revision = self.health_revision;
         self.health_updates.insert(entity, revision);
         self.remove_stale();
-        self.push(Record {
-            update,
-            delivery: Delivery::Health { revision },
-        });
+        self.push(Record::new(update, Delivery::Health { revision }));
     }
 
     /// The current body's or a live bot's target tags at `revision` for
@@ -2591,20 +2594,22 @@ impl WorldDelivery {
         }
         self.tag_updates.insert(entity, revision);
         self.remove_stale();
-        self.push(Record {
-            update: EntityUpdate {
+        self.push(Record::new(
+            EntityUpdate {
                 entity,
                 operation: Some(Operation::Update(vec![tags])),
                 ..EntityUpdate::default()
             },
-            delivery: Delivery::Tags { revision },
-        });
+            Delivery::Tags { revision },
+        ));
     }
 
     /// The server placeables' frames this client doesn't have yet, for the
-    /// placeables whose create arrived (placed_script.rs). A placeable a
-    /// mode graph removed gets no more frames, and its create no more
-    /// sends.
+    /// placeables whose create arrived (placed_script.rs). A removed
+    /// placeable (a mode graph's `STU_A3DC6A25`, or a health pack's own
+    /// `STU_523EE38D`) gets no more frames, and its create no more sends;
+    /// a client that has it gets its destroy (the client runs no
+    /// `STU_523EE38D`).
     pub fn update_placed(&mut self, scene: &PreparedScene) {
         if self.started.is_none() {
             return;
@@ -2614,6 +2619,17 @@ impl WorldDelivery {
             if self.removed_placed.insert(entity) {
                 self.placed_views.forget(entity);
                 removed = true;
+                if self.created.remove(&entity) {
+                    self.mode_entity_destroys.insert(entity);
+                    self.push(Record::new(
+                        EntityUpdate {
+                            entity,
+                            operation: Some(Operation::Destroy),
+                            ..EntityUpdate::default()
+                        },
+                        Delivery::ModeEntity { destroy: true },
+                    ));
+                }
             }
         }
         if removed {
@@ -2631,10 +2647,10 @@ impl WorldDelivery {
             }
         };
         for chunk in chunks {
-            self.push(Record {
-                update: chunk.update,
-                delivery: Delivery::Placed { last: chunk.last },
-            });
+            self.push(Record::new(
+                chunk.update,
+                Delivery::Placed { last: chunk.last },
+            ));
         }
     }
 
@@ -2660,14 +2676,14 @@ impl WorldDelivery {
             self.placed_views.forget(entity);
             self.mode_entity_destroys.insert(entity);
             self.remove_stale();
-            self.push(Record {
-                update: EntityUpdate {
+            self.push(Record::new(
+                EntityUpdate {
                     entity,
                     operation: Some(Operation::Destroy),
                     ..EntityUpdate::default()
                 },
-                delivery: Delivery::ModeEntity { destroy: true },
-            });
+                Delivery::ModeEntity { destroy: true },
+            ));
         }
         for made in mode.created() {
             let entity = made.entity.entity;
@@ -2677,14 +2693,14 @@ impl WorldDelivery {
             self.mode_entity_destroys.remove(&entity);
             let mut create = Create::new(made.entity.definition, Vec::new());
             create.position = made.entity.position.map(|part| part as f32);
-            self.push(Record {
-                update: EntityUpdate {
+            self.push(Record::new(
+                EntityUpdate {
                     entity,
                     operation: Some(Operation::Create(Box::new(create))),
                     ..EntityUpdate::default()
                 },
-                delivery: Delivery::ModeEntity { destroy: false },
-            });
+                Delivery::ModeEntity { destroy: false },
+            ));
         }
         let created = |entity| self.created.contains(&entity);
         let frames = mode
@@ -2698,10 +2714,10 @@ impl WorldDelivery {
             }
         };
         for chunk in chunks {
-            self.push(Record {
-                update: chunk.update,
-                delivery: Delivery::Placed { last: chunk.last },
-            });
+            self.push(Record::new(
+                chunk.update,
+                Delivery::Placed { last: chunk.last },
+            ));
         }
     }
 
@@ -2738,10 +2754,10 @@ impl WorldDelivery {
         }
         self.bot_views = views;
         for chunk in chunks {
-            self.push(Record {
-                update: chunk.update,
-                delivery: Delivery::BotFrames { last: chunk.last },
-            });
+            self.push(Record::new(
+                chunk.update,
+                Delivery::BotFrames { last: chunk.last },
+            ));
         }
         for entity in live {
             let Some((revision, tags)) = scene.bot_scripts().tags(entity) else {
@@ -2788,27 +2804,30 @@ impl WorldDelivery {
         self.tag_updates.remove(&old);
         self.bot_tags.remove(&old);
         self.remove_stale();
-        self.push(Record {
-            update: EntityUpdate {
+        self.push(Record::new(
+            EntityUpdate {
                 entity: old,
                 operation: Some(Operation::Destroy),
                 ..EntityUpdate::default()
             },
-            delivery: Delivery::BotDestroy,
-        });
-        self.push(Record {
-            update: replacement.created,
-            delivery: Delivery::BotCreate { after: Some(old) },
-        });
+            Delivery::BotDestroy,
+        ));
+        self.push(Record::new(
+            replacement.created,
+            Delivery::BotCreate { after: Some(old) },
+        ));
         if let Some(link) = replacement.link {
-            self.push(Record {
-                update: link,
-                delivery: Delivery::BotLink { body: new },
-            });
+            self.push(Record::new(link, Delivery::BotLink { body: new }));
         }
     }
 
     fn current(&self, record: &Record) -> bool {
+        record.part.is_none_or(|part| self.parts.current(part)) && self.delivery_current(record)
+    }
+
+    /// Whether `record`'s delivery still has to reach the client, its
+    /// parts aside.
+    fn delivery_current(&self, record: &Record) -> bool {
         let entity = record.update.entity;
         match record.delivery {
             Delivery::Baseline => !self.removed_placed.contains(&entity),
@@ -2869,6 +2888,14 @@ impl WorldDelivery {
                 if !self.current(&record) {
                     continue;
                 }
+                let (record, lost_part) = match record.part {
+                    None => (record, None),
+                    Some(part) => match self.parts.delivered(part, packet.arrived) {
+                        PartOutcome::Waiting => continue,
+                        PartOutcome::Arrived(first) => (first, None),
+                        PartOutcome::Lost => (record, Some(part)),
+                    },
+                };
                 if let Some(kind) = traced.then(|| self.join_kind(&record)).flatten() {
                     tracing::debug!(
                         target: "orpheus::join",
@@ -2879,6 +2906,7 @@ impl WorldDelivery {
                         "record acknowledged"
                     );
                 }
+                let retried = retry.len();
                 match (packet.arrived, record.delivery) {
                     (arrived, Delivery::BodyScript { last, .. }) => {
                         let script = self.body_script.as_mut().expect("current body stream");
@@ -2926,8 +2954,8 @@ impl WorldDelivery {
                             retry.push(record);
                         }
                     }
-                    (arrived, Delivery::Mode { last, part }) => {
-                        if self.mode.delivered(last, part, arrived) {
+                    (arrived, Delivery::Mode { last }) => {
+                        if self.mode.delivered(last, arrived) {
                             retry.push(record);
                         }
                     }
@@ -2995,10 +3023,9 @@ impl WorldDelivery {
                     (true, Delivery::Field(FieldDelivery::Create)) => {
                         // projectiles.py `FieldArrived`: the field's frame.
                         match self.fields.created(record.update.entity) {
-                            Ok(Some((update, field))) => self.push(Record {
-                                update,
-                                delivery: Delivery::Field(field),
-                            }),
+                            Ok(Some((update, field))) => {
+                                self.push(Record::new(update, Delivery::Field(field)))
+                            }
                             Ok(None) => {}
                             Err(error) => eprintln!(
                                 "Biotic Field {:08X}'s frame failed ({error})",
@@ -3025,6 +3052,10 @@ impl WorldDelivery {
                         self.controller.arrived(last);
                     }
                 }
+                // A lost part that won't go again: nor will its record.
+                if let Some(part) = lost_part.filter(|_| retry.len() == retried) {
+                    self.parts.give_up(part);
+                }
             }
         }
         if !retry.is_empty() {
@@ -3038,6 +3069,9 @@ impl WorldDelivery {
         let mut queued = std::mem::take(&mut self.queued);
         queued.retain(|record| self.current(record));
         self.queued = queued;
+        let mut parts = std::mem::take(&mut self.parts);
+        parts.retain(|first| self.delivery_current(first));
+        self.parts = parts;
     }
 
     /// The records a player's body, view and HUD depend on, named for the
@@ -3075,11 +3109,17 @@ impl WorldDelivery {
         let mut bound = body == self.bound;
         let mut destroyed = HashSet::new();
         let mut creating = HashSet::new();
+        let holding = self.parts.holding(|first| self.delivery_current(first));
         let mut ready: Vec<_> = self
             .queued
             .iter()
             .enumerate()
             .filter_map(|(index, record)| {
+                if record.part.is_some_and(|part| !self.parts.current(part))
+                    || holding.holds(record)
+                {
+                    return None;
+                }
                 match record.delivery {
                     Delivery::BotDestroy => {
                         destroyed.insert(record.update.entity);
@@ -3463,10 +3503,7 @@ impl WorldDelivery {
         }));
         for update in records {
             if self.bots.contains_key(&update.entity) {
-                self.push(Record {
-                    update,
-                    delivery: Delivery::BotCreate { after: None },
-                });
+                self.push(Record::new(update, Delivery::BotCreate { after: None }));
             } else {
                 self.push(Record::baseline(update));
             }
@@ -3576,15 +3613,8 @@ impl WorldDelivery {
             return Ok(false);
         }
         if let Some(chunk) = self.mode.queue(frame, tick).map_err(invalid)? {
-            for (update, part) in chunk.records {
-                self.push(Record {
-                    update,
-                    delivery: Delivery::Mode {
-                        last: chunk.last,
-                        part,
-                    },
-                });
-            }
+            let last = chunk.last;
+            self.push(Record::new(chunk.update, Delivery::Mode { last }));
             self.remove_stale();
         }
         Ok(true)
@@ -4348,10 +4378,10 @@ impl WorldDelivery {
         if inside != self.spawn_flag.0 {
             let revision = self.spawn_flag.1 + 1;
             self.spawn_flag = (inside, revision);
-            self.push(Record {
-                update: crate::scene::spawn_room_flag(self.owner, inside),
-                delivery: Delivery::SpawnFlag { revision },
-            });
+            self.push(Record::new(
+                crate::scene::spawn_room_flag(self.owner, inside),
+                Delivery::SpawnFlag { revision },
+            ));
             self.remove_stale();
         }
     }
@@ -4371,14 +4401,14 @@ impl WorldDelivery {
         let revision = self.shield.1 + 1;
         self.shield = (shielded, revision);
         let bits = body_filter(body.team_bit, false) | if shielded { SHIELDED } else { 0 };
-        self.push(Record {
-            update: EntityUpdate {
+        self.push(Record::new(
+            EntityUpdate {
                 entity: body.id.entity,
                 operation: Some(Operation::Update(vec![filter_component(bits)])),
                 ..EntityUpdate::default()
             },
-            delivery: Delivery::Filter { revision },
-        });
+            Delivery::Filter { revision },
+        ));
         self.remove_stale();
     }
 
@@ -5139,16 +5169,16 @@ impl WorldDelivery {
         }
         self.board.next = now.saturating_add(STATS_EVERY);
         self.board.revision += 1;
-        self.push(Record {
-            update: EntityUpdate {
+        self.push(Record::new(
+            EntityUpdate {
                 entity: self.owner,
                 operation: Some(Operation::Update(vec![values.clone()])),
                 ..EntityUpdate::default()
             },
-            delivery: Delivery::Board {
+            Delivery::Board {
                 revision: self.board.revision,
             },
-        });
+        ));
         self.board.sent = Some(values);
         self.remove_stale();
     }
@@ -5255,18 +5285,12 @@ impl WorldDelivery {
         if let Some(script) = own {
             let has_base = script.stream.base().is_some();
             for (update, delivery) in self.server_copies.show(fired, has_base, tick, next_id) {
-                self.push(Record {
-                    update,
-                    delivery: Delivery::ServerSeen(delivery),
-                });
+                self.push(Record::new(update, Delivery::ServerSeen(delivery)));
             }
             return;
         }
         for (update, delivery) in self.others.show_projectile(fired, tick, next_id) {
-            self.push(Record {
-                update,
-                delivery: Delivery::Other(delivery),
-            });
+            self.push(Record::new(update, Delivery::Other(delivery)));
         }
     }
 
@@ -5381,26 +5405,17 @@ impl WorldDelivery {
     pub(crate) fn advance_observed(&mut self, tick: u32) {
         let records = self.others.advance_projectiles(tick);
         for (update, delivery) in records {
-            self.push(Record {
-                update,
-                delivery: Delivery::Other(delivery),
-            });
+            self.push(Record::new(update, Delivery::Other(delivery)));
         }
         for (update, delivery) in self.bot_views.advance_rockets(tick) {
-            self.push(Record {
-                update,
-                delivery: Delivery::BotSeen(delivery),
-            });
+            self.push(Record::new(update, Delivery::BotSeen(delivery)));
         }
         let source = self
             .body_script
             .as_ref()
             .map(|script| (script.id, script.stream.base().map(|(_, base)| base)));
         for (update, delivery) in self.server_copies.advance(tick, source) {
-            self.push(Record {
-                update,
-                delivery: Delivery::ServerSeen(delivery),
-            });
+            self.push(Record::new(update, Delivery::ServerSeen(delivery)));
         }
         self.remove_stale();
     }
@@ -5416,10 +5431,7 @@ impl WorldDelivery {
             return;
         }
         for (update, delivery) in self.bot_views.show_rocket(rocket, tick, next_id) {
-            self.push(Record {
-                update,
-                delivery: Delivery::BotSeen(delivery),
-            });
+            self.push(Record::new(update, Delivery::BotSeen(delivery)));
         }
     }
 
@@ -5438,10 +5450,7 @@ impl WorldDelivery {
             return;
         }
         for (update, delivery) in self.fields.deliver(field, ids) {
-            self.push(Record {
-                update,
-                delivery: Delivery::Field(delivery),
-            });
+            self.push(Record::new(update, Delivery::Field(delivery)));
         }
     }
 
@@ -5451,10 +5460,7 @@ impl WorldDelivery {
         match self.fields.refresh(shot, frame) {
             Ok(records) => {
                 for (update, delivery) in records {
-                    self.push(Record {
-                        update,
-                        delivery: Delivery::Field(delivery),
-                    });
+                    self.push(Record::new(update, Delivery::Field(delivery)));
                 }
             }
             Err(error) => eprintln!("a Biotic Field frame failed ({error})"),
@@ -5483,10 +5489,7 @@ impl WorldDelivery {
             return;
         }
         for (update, delivery) in records {
-            self.push(Record {
-                update,
-                delivery: Delivery::Field(delivery),
-            });
+            self.push(Record::new(update, Delivery::Field(delivery)));
         }
         self.remove_stale();
     }
@@ -5511,7 +5514,7 @@ impl WorldDelivery {
                     Delivery::ProjectileDestroy { id, token }
                 }
             };
-            self.push(Record { update, delivery });
+            self.push(Record::new(update, delivery));
         }
         self.remove_stale();
         Ok(())
@@ -5919,18 +5922,15 @@ impl WorldDelivery {
                 Some(Ok(None)) | None => {}
             }
         }
-        self.push(Record {
-            update: create,
-            delivery: Delivery::CreateBody(id),
-        });
-        self.push(Record {
-            update: EntityUpdate {
+        self.push(Record::new(create, Delivery::CreateBody(id)));
+        self.push(Record::new(
+            EntityUpdate {
                 entity: self.owner,
                 operation: Some(Operation::Update(possession.components().into())),
                 ..EntityUpdate::default()
             },
-            delivery: Delivery::Possession(id),
-        });
+            Delivery::Possession(id),
+        ));
         if let Some(old) = old {
             self.retire_body(old.id);
         }
@@ -5958,14 +5958,14 @@ impl WorldDelivery {
         self.tag_updates.remove(&id.entity);
         self.bodies
             .insert(id.entity, (id.generation, Lifetime::Retiring));
-        self.push(Record {
-            update: EntityUpdate {
+        self.push(Record::new(
+            EntityUpdate {
                 entity: id.entity,
                 operation: Some(Operation::Destroy),
                 ..EntityUpdate::default()
             },
-            delivery: Delivery::DestroyBody(id),
-        });
+            Delivery::DestroyBody(id),
+        ));
     }
 
     /// A full controller frame projected from the controller script
@@ -6103,5 +6103,6 @@ fn parameter_value(value: ParameterValue) -> ScriptValue {
     }
 }
 
+mod parts;
 #[cfg(test)]
 mod tests;
