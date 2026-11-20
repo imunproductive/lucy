@@ -319,6 +319,11 @@ impl Server {
     pub fn game_addr(&self) -> Option<SocketAddr> {
         self.game_addr
     }
+    /// The game service, for a test to look at its matches.
+    #[cfg(test)]
+    pub(crate) fn game_service(&self) -> Option<&GameService> {
+        self.game.as_deref()
+    }
     /// The local Battle.net's port the game dials, when it runs.
     pub fn stall_addr(&self) -> Option<SocketAddr> {
         self.bnet.as_ref().map(BnetService::stall_addr)

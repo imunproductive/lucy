@@ -137,9 +137,13 @@ fn change_roles(peer: &mut Peer<'_, '_>, _: Fields) -> io::Result<()> {
 }
 
 /// 24000: a create-game request. Kind 2 with flags 4 is the Practice Range;
-/// it carries a creation kind, not a mode GUID.
+/// kind 1 a custom game (`custom_game.rs`). It carries a creation kind, not
+/// a mode GUID.
 fn create_game(peer: &mut Peer<'_, '_>, fields: Fields) -> io::Result<()> {
     let request = (GAME_REQUEST, CREATE_GAME, fields);
+    if let Some(name) = orpheus_lobby::custom_game::create_request(&request) {
+        return super::custom_game::create(peer, name);
+    }
     if !is_request(&request) {
         tracing::info!("[MM] Unknown create-game request: {:?}", request.2);
         return Ok(());

@@ -28,6 +28,7 @@
 //! party work goes through [`Parties`] once the state lock is released, since
 //! the social state reads the queue fields back from here.
 
+mod custom;
 mod game;
 pub(crate) mod parties;
 #[cfg(test)]
@@ -106,6 +107,8 @@ struct State {
     clock_blocked: bool,
     /// The lobby's clock at the last sweep.
     last_sweep: Option<Duration>,
+    /// The custom game lobby of each host, by account.
+    custom: HashMap<u32, custom::CustomGame>,
 }
 
 struct Online {
@@ -314,6 +317,7 @@ impl Matchmaker {
     pub(crate) fn logout(&self, lobby: &Lobby, account: &Arc<Account>) {
         self.with(lobby, |ctx| {
             ctx.state.online.remove(&account.account_lo);
+            ctx.state.custom.remove(&account.account_lo);
             let party = ctx
                 .state
                 .tickets
