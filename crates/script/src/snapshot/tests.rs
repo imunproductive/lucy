@@ -136,7 +136,6 @@ fn fixture() -> (GraphStore, Snapshot) {
         (7, Value::Asset(0x0580_0000_0000_0042)),
         (55, Value::Integer(-12)),
         (253, Value::Float(200.0)),
-        (420, Value::Integer(666)),
     ]);
     let mut root = Root::new(1, 42);
     root.variables.extend([
@@ -1790,24 +1789,26 @@ fn a_delta_lists_a_variable_that_went_from_unset_to_false_or_zero() {
     assert_eq!(listed, [2, 5, 1821]);
 }
 
+/// A graph's server-only list (`m_9CEC6985`, here #420) leaves its
+/// instance's variable out of frames, not the entity variable of the same
+/// identifier: 104319's lists name instance variables only, and `01D8`'s
+/// #417 left out Doomfist's airborne flag #417e (refs report
+/// `Doomfist.md` §13). The owner's health (#253) stays out.
 #[test]
-fn later_snapshots_keep_initial_entity_scope_exclusions_after_graph_removal() {
+fn a_graphs_server_only_variables_leave_out_its_instance_variables_only() {
     let (graphs, mut snapshot) = fixture();
+    snapshot.variables.insert(420, Value::Integer(666));
     let codecs = CodecTable::from_json(CODECS).unwrap();
     let encoder = SnapshotEncoder::new(&graphs, &codecs);
-    let initial = encoder.project(&snapshot, View::Observer).unwrap();
-    snapshot.instances.clear();
-    let next = encoder.project_next(&snapshot, &initial).unwrap();
-    assert!(!next.variables.values.contains_key(&420));
-    assert!(!next.variables.values.contains_key(&OWNER_HEALTH));
-    assert!(
-        encoder
-            .project(&snapshot, View::Observer)
-            .unwrap()
-            .variables
-            .values
-            .contains_key(&420)
-    );
+    for view in [View::Owner, View::Observer] {
+        let projected = encoder.project(&snapshot, view).unwrap();
+        assert_eq!(
+            projected.variables.values.get(&420),
+            Some(&Value::Integer(666))
+        );
+        assert!(!projected.variables.values.contains_key(&OWNER_HEALTH));
+        assert!(!projected.instances[&1].variables.values.contains_key(&420));
+    }
 }
 
 #[test]

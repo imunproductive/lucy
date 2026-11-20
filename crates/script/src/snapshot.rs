@@ -48,7 +48,6 @@ pub enum View {
 pub struct ProjectedSnapshot {
     entity: u32,
     view: View,
-    entity_exclusions: BTreeSet<u32>,
     variables: ProjectedVariables,
     /// Each shared with the projections it didn't change in
     /// ([`SnapshotEncoder::project_cached`]).
@@ -61,16 +60,15 @@ pub struct ProjectedSnapshot {
 }
 
 /// A projection and what it was made from
-/// ([`SnapshotEncoder::project_cached`]): the snapshot's revision, the
-/// entity exclusions it kept, and the clock readings it holds for, from
-/// the snapshot's clock then to the first time a pulse goes stale or a
-/// wheel action runs out; and the same for each instance.
+/// ([`SnapshotEncoder::project_cached`]): the snapshot's revision and the
+/// clock readings it holds for, from the snapshot's clock then to the
+/// first time a pulse goes stale or a wheel action runs out; and the same
+/// for each instance.
 #[derive(Debug)]
 pub struct ProjectionCache {
     revision: Revision,
     made_ms: u64,
     fresh_until_ms: u64,
-    frozen: Option<BTreeSet<u32>>,
     projected: ProjectedSnapshot,
     instances: BTreeMap<u16, InstanceStamp>,
 }
@@ -623,11 +621,10 @@ impl<'a> SnapshotEncoder<'a> {
         snapshot: &Snapshot,
         view: View,
     ) -> Result<ProjectedSnapshot, SnapshotError> {
-        self.project_with_exclusions(snapshot, view, None, &mut 0, None)
+        self.project_with(snapshot, view, &mut 0, None)
     }
 
-    /// A later projection keeps the initial graph tree's entity exclusions.
-    /// Per-instance exclusions still follow each instance's own definition.
+    /// A later projection of the stream `baseline` started.
     pub fn project_next(
         &self,
         snapshot: &Snapshot,
@@ -636,13 +633,7 @@ impl<'a> SnapshotEncoder<'a> {
         if snapshot.entity != baseline.entity {
             return Err(SnapshotError::DifferentStream);
         }
-        self.project_with_exclusions(
-            snapshot,
-            baseline.view,
-            Some(&baseline.entity_exclusions),
-            &mut 0,
-            None,
-        )
+        self.project_with(snapshot, baseline.view, &mut 0, None)
     }
 
     /// [`Self::project`] (no `baseline`) or [`Self::project_next`], kept in
@@ -665,13 +656,11 @@ impl<'a> SnapshotEncoder<'a> {
         {
             return Err(SnapshotError::DifferentStream);
         }
-        let frozen = baseline.map(|baseline| &baseline.entity_exclusions);
         let reusable = cache.as_ref().is_some_and(|kept| {
             kept.revision == snapshot.revision()
                 && kept.made_ms <= snapshot.now_ms
                 && snapshot.now_ms <= kept.fresh_until_ms
                 && kept.projected.view == view
-                && kept.frozen.as_ref() == frozen
         });
         if !reusable {
             let kept = cache.take().filter(|kept| {
@@ -679,10 +668,9 @@ impl<'a> SnapshotEncoder<'a> {
             });
             let mut fresh_until_ms = u64::MAX;
             let mut instances = BTreeMap::new();
-            let projected = self.project_with_exclusions(
+            let projected = self.project_with(
                 snapshot,
                 view,
-                frozen,
                 &mut fresh_until_ms,
                 Some((kept.as_ref(), &mut instances)),
             )?;
@@ -690,7 +678,6 @@ impl<'a> SnapshotEncoder<'a> {
                 revision: snapshot.revision(),
                 made_ms: snapshot.now_ms,
                 fresh_until_ms,
-                frozen: frozen.cloned(),
                 projected,
                 instances,
             });
@@ -704,11 +691,10 @@ impl<'a> SnapshotEncoder<'a> {
     /// lifetime, each of which runs out once. With `stamps`, an instance of
     /// the kept projection that still holds is shared, not made again, and
     /// each instance's stamp is recorded.
-    fn project_with_exclusions(
+    fn project_with(
         &self,
         snapshot: &Snapshot,
         view: View,
-        frozen: Option<&BTreeSet<u32>>,
         fresh_until_ms: &mut u64,
         mut stamps: Option<(Option<&ProjectionCache>, &mut BTreeMap<u16, InstanceStamp>)>,
     ) -> Result<ProjectedSnapshot, SnapshotError> {
@@ -719,19 +705,21 @@ impl<'a> SnapshotEncoder<'a> {
                 first: format!("{:?}", snapshot.diagnostics.first()),
             });
         }
-        let mut entity_exclusions = frozen
-            .cloned()
-            .unwrap_or_else(|| BTreeSet::from([OWNER_HEALTH]));
         let mut instances = BTreeMap::new();
         for (&id, instance) in &snapshot.instances {
             if self.hidden.contains(&id) {
                 continue;
             }
             let graph = self.graph(id, instance.graph)?;
+            // A graph's server-only list (`m_9CEC6985`) names its own
+            // instance variables: across the 104319 graphs every listed
+            // identifier a node writes is written with instance scope, and
+            // none as an entity variable. Leaving the entity variable of
+            // the same identifier out of frames lost it on the owner's
+            // client: `01D8` lists its #417, so Doomfist's client reset
+            // the airborne flag #417e at every record and took the
+            // grounded slam in the air (refs report `Doomfist.md` §13).
             let exclusions = graph.server_only_variables();
-            if frozen.is_none() {
-                entity_exclusions.extend(exclusions);
-            }
             if let Some((kept, stamps)) = &mut stamps {
                 if let Some((projected, stamp)) =
                     kept.and_then(|kept| kept.instance(id, instance.revision(), snapshot))
@@ -838,14 +826,18 @@ impl<'a> SnapshotEncoder<'a> {
                 }),
             );
         }
-        let variables =
-            self.project_variables(snapshot, 0, &snapshot.variables, &entity_exclusions, view)?;
+        let variables = self.project_variables(
+            snapshot,
+            0,
+            &snapshot.variables,
+            &BTreeSet::from([OWNER_HEALTH]),
+            view,
+        )?;
         let actions = self.project_actions(snapshot, &instances, fresh_until_ms)?;
         Ok(ProjectedSnapshot {
             entity: snapshot.entity,
             view,
             variables,
-            entity_exclusions,
             instances,
             actions,
             action_serial: snapshot
@@ -1192,11 +1184,7 @@ impl<'a> SnapshotEncoder<'a> {
             DeltaKind::Observer { .. } => View::Observer,
             DeltaKind::InitialOwner(_) | DeltaKind::Correction(_) => View::Owner,
         };
-        if base.entity != snapshot.entity
-            || base.view != view
-            || snapshot.view != view
-            || base.entity_exclusions != snapshot.entity_exclusions
-        {
+        if base.entity != snapshot.entity || base.view != view || snapshot.view != view {
             return Err(SnapshotError::DifferentStream);
         }
         if matches!(kind, DeltaKind::Correction(_))
