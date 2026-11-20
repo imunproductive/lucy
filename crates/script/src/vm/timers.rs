@@ -154,6 +154,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                         self.refresh_send_state(key, node)?;
                     }
                     Some(StateKind::WeaponVolley { .. }) => self.tick_volley(key)?,
+                    Some(StateKind::PickupSearch { .. }) => {
+                        let node = self.graph(id).state(usize::from(raw)).expect("search");
+                        self.search_pickup(key, node, false)?;
+                    }
                     _ => (),
                 }
             }
@@ -214,8 +218,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     }
 
     /// `WaitForServerFrames` finishes after the count of its integer config
-    /// (one frame without one). The Python reference takes one server frame
-    /// as one 16 ms command frame, which is unverified.
+    /// (`m_3016B9A1`; one frame without one) of the server's own frames.
+    /// The client never counts them (`python tools/stu.py STU_E3CEF6B9`:
+    /// begin, update and end are the base state's no-ops, codec `none`;
+    /// its own slots 52/53 only name the abort and finished plugs): the
+    /// server's frames end it. A server frame is the server's simulation
+    /// step, the 16 ms command frame both sides share (GDC-Netcode.md §1,
+    /// [Ford ~24:00]), which is this server's tick.
     pub(super) fn arm_server_frames(
         &mut self,
         key: StateKey,
@@ -239,11 +248,6 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             None => 1,
         };
-        self.assume(
-            self.site(id, node),
-            &node.class,
-            "a server frame is a command frame",
-        );
         let delay = u64::try_from(count.max(0))
             .unwrap_or_default()
             .saturating_mul(FRAME_MS);

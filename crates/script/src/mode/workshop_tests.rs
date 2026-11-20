@@ -151,9 +151,9 @@ fn variable_actions_are_done_at_once() {
 }
 
 /// Wait `1370` is done when its timer runs out (0.5 s: the frame that
-/// starts after 500 ms). Its one gap is the VM's own assumption for the
-/// one server frame its `STU_E3CEF6B9` (WaitForServerFrames) waits: a
-/// server frame is a 16 ms command frame (`vm/timers.rs`).
+/// starts after 500 ms), with no gap: its `STU_E3CEF6B9`
+/// (WaitForServerFrames) waits one server frame, the server's 16 ms
+/// tick (`vm/timers.rs`).
 #[test]
 #[ignore = "requires the derived 104319 graph bundle"]
 fn a_wait_is_done_when_its_time_is_up() {
@@ -175,10 +175,7 @@ fn a_wait_is_done_when_its_time_is_up() {
     // The timer runs out within the frame `elapsed` after the start began.
     let frame = crate::timeline::FRAME_MS;
     assert!((500 - frame + 1..=500).contains(&elapsed), "{elapsed} ms");
-    assert_eq!(
-        script.gaps(),
-        BTreeMap::from([((WAIT, "STU_E3CEF6B9".to_owned()), 1)])
-    );
+    assert_eq!(script.gaps(), BTreeMap::new());
 }
 
 /// The flow actions report their result: Skip If with a true condition

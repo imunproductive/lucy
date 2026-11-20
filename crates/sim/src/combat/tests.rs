@@ -341,6 +341,7 @@ fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
         environment: false,
         from: None,
         source: None,
+        health_pack: false,
     };
     let camera = Some(DeathCamera {
         killer_controller: 0xa000_0100,

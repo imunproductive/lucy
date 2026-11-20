@@ -1116,6 +1116,18 @@ impl PreparedScene {
         self.placed_scripts.set_target_candidates(candidates);
     }
 
+    /// The pickups the server placeables hold now (the health packs), for
+    /// the bodies' searches ([`PlacedScripts::pickups`]).
+    pub fn pickups(&self) -> Vec<orpheus_script::vm::Pickup> {
+        self.placed_scripts.pickups()
+    }
+
+    /// The health changes the server placeables made since the last call
+    /// (a health pack's heal), for the match's health code.
+    pub fn take_placed_health_changes(&mut self) -> Vec<orpheus_script::vm::HealthChange> {
+        self.placed_scripts.take_health_changes()
+    }
+
     /// The statescript graphs, for runs outside the scene (the mode graph).
     pub fn shared_graphs(&self) -> Arc<GraphStore> {
         Arc::clone(&self.graphs)

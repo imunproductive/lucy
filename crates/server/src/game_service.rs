@@ -2570,11 +2570,14 @@ impl State {
     }
 
     /// The hits on players' bodies of a room (combat.py `_damage`, `_died`).
+    /// What they did between the players goes to the room's Workshop rules
+    /// (`WorkshopRun::player_events`).
     fn resolve_player_hits(&mut self, id: MatchId, tick: u32, now: Duration) {
         let Some(Room {
             players,
             world,
             flow,
+            workshop,
             ..
         }) = self.rooms.get_mut(&id)
         else {
@@ -2601,8 +2604,11 @@ impl State {
                     stats: &mut player.stats,
                 })
                 .collect();
-            let notices = apply_player_hits(scene, hits, &mut room, tick, now);
-            apply_player_pushes(pushes, &mut room, now);
+            let (notices, mut events) = apply_player_hits(scene, hits, &mut room, tick, now);
+            events.extend(apply_player_pushes(pushes, &mut room, now));
+            if let Some(run) = workshop.as_mut().and_then(|workshop| workshop.run.as_mut()) {
+                run.player_events(&events);
+            }
             notices
         };
         // The kills count for the match flow's score (Deathmatch, Team
@@ -2690,7 +2696,11 @@ impl State {
             now,
         };
         let mut struck: Vec<(Option<u32>, BotHit)> = Vec::new();
-        for change in world.scene.take_bot_health_changes() {
+        // The bots' graphs' changes, and the server placeables' (a health
+        // pack heals the body that walked onto it, `0046` st0).
+        let mut changes = world.scene.take_bot_health_changes();
+        changes.extend(world.scene.take_placed_health_changes());
+        for change in changes {
             let shooter = self
                 .seats
                 .iter()
@@ -2744,11 +2754,14 @@ impl State {
                 let candidates = combat.target_candidates(&world.scene);
                 world.scene.set_bot_target_candidates(&candidates);
                 world.scene.set_placed_target_candidates(&candidates);
+                // The health packs the bodies' searches find (`0033` st11).
+                let pickups = world.scene.pickups();
                 for peer in room_peers(&mut self.peers, &self.seats, id, players.len())
                     .into_iter()
                     .flatten()
                 {
                     peer.world.set_target_candidates(&candidates);
+                    peer.world.set_pickups(&pickups);
                 }
                 let context = ShotContext {
                     quanta: RETAIL_QUANTA,

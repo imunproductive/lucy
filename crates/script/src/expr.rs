@@ -1801,6 +1801,11 @@ impl Evaluator<'_> {
             // their volleys' `m_C1903771` (`weapons::ray_profile`).
             "STU_20DB8AB5" => literal_asset(config, class, "m_C1903771", 0x0690)
                 .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+            // An entity definition (`003`): the health packs' `0216`/`0217`
+            // pass their visual (`005F`/`0060`) to `0046` as #1206, which
+            // its StateCreateEntity makes (`vm/entities.rs`).
+            "STU_8556841E" => literal_asset(config, class, "m_entityDef", 0x0400)
+                .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
             "STU_ABB6C23E" => {
                 if !native_shape(config, class, Some("m_resourceKey"))
                     || fields.get("m_resourceKey") != Some(&Json::Null)
@@ -2052,6 +2057,12 @@ impl Evaluator<'_> {
             // c239a84, `CONFIG_EVALUATION.txt`).
             "STU_BD6CC023" if native_shape(config, class, Some("m_6CE7A900")) => {
                 Value::Integer(i64::from(integer(child(config, "m_6CE7A900"))? as i32))
+            }
+            // The pickup kind (`vm/pickups.rs`): the same evaluate
+            // (0x7FF78AA960F0, shared by 30 classes) reads its enum at +0x10
+            // as a signed 32-bit integer (`python tools/stu.py STU_B9BE2BE1`).
+            "STU_B9BE2BE1" if native_shape(config, class, Some("m_1A69E234")) => {
+                Value::Integer(i64::from(integer(child(config, "m_1A69E234"))? as i32))
             }
             // The scalar read (+20, 1B77980) of a config list takes only its
             // first config, failure included (`play._scalar` in

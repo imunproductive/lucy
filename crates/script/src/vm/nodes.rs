@@ -299,7 +299,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     // Workshop action its helper on its targets (Chase
                     // Player Variable At Rate `1CCC` plays `1CCF` on each
                     // player's controller, `vm/workshop.rs`); a health
-                    // pack `0046` on itself ([`play::HEALTH_PACKS`]).
+                    // pack `0046` on itself and `0046` its visual's `0EB9`
+                    // ([`play::HEALTH_PACKS`]).
                     let played = node
                         .field("m_script.m_graph")
                         .and_then(asset_guid)
@@ -1074,22 +1075,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 );
                 StateKind::Plain
             }
-            // `STU_87621906` (server-only, `0033` st11 alone): while a living
-            // hero body is hurt (st10) it writes an entity into
-            // `m_0E739B87` (#1195), which `0033` then sends `0643.025`
-            // every 0.5 s when that entity's #6396 is on a team or is the
-            // body; `m_1A69E234` is `STU_B9BE2BE1` 0 and `m_05140BC3` the
-            // owner. Which entity it picks is not derivable (no client
-            // code): it writes none, as the release build's plain state
-            // did, so `0643` goes nowhere.
-            "STU_87621906" => {
-                self.assume(
-                    self.site(id, node),
-                    &node.class,
-                    "plain state (server-only, picks no entity)",
-                );
-                StateKind::Plain
-            }
+            // The pickup pair (server-only, `vm/pickups.rs`): the health
+            // pack's pickup `0046` st5 and the hurt body's search `0033`
+            // st11 for the pickup it touches.
+            "STU_913C09E4" => StateKind::Pickup,
+            "STU_87621906" => StateKind::PickupSearch { found: None },
+            "STUStatescriptStateCreateEntity" => StateKind::CreateEntity { entity: None },
             // A wait the server ends (`begin_server_wait`, `end_wind_up`).
             "STU_54FEB21C" => StateKind::Plain,
             class if ASSUMED_PLAIN_STATES.contains(&class) => StateKind::Plain,
@@ -1231,6 +1222,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
             StateKind::Scope => self.begin_scope(key, node, depth)?,
+            StateKind::CreateEntity { .. } => self.begin_create_entity(key, node)?,
+            StateKind::Pickup => self.begin_pickup(key, node),
+            StateKind::PickupSearch { .. } => {
+                self.search_pickup(key, node, true)?;
+                self.register_tick(key, self.machine.now_ms);
+            }
             StateKind::Plain if node.class == "STU_160F2578" => {
                 if !self.write_tag_query(id, node)? {
                     return Ok(());

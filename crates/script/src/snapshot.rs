@@ -2060,7 +2060,13 @@ fn state_payload(
             // st79/st80 were the server's values a round trip late
             // (`refs/reports/Doomfist.md` §15).
             | StateKind::Ray
-            | StateKind::WallCheck,
+            | StateKind::WallCheck
+            // StateCreateEntity (record #1699, reader nullsub): the entity
+            // it made goes to the clients as an entity of its own.
+            | StateKind::CreateEntity { .. }
+            // The pickup pair (server-only, the base state's reader).
+            | StateKind::Pickup
+            | StateKind::PickupSearch { .. },
             Some("none"),
         ) if codec.empty() => StatePayload::new(),
         // The landing search (`0B27` st6, `vm/landing.rs`): its block's
