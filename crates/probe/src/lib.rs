@@ -97,6 +97,10 @@ pub mod client {
     pub const HOST_IN_COMP47: u64 = 0xD0;
     pub const HOST_INSTANCES: u64 = 0x8;
     pub const HOST_COUNT: u64 = 0x10;
+    /// The host's entity variables (`#Ne`): a variable store of the same
+    /// layout at `[host+0x1F0]` (`0x7FF78AAB3A00` reads `[[instance
+    /// store+8]+0x1F0]`; the store's `+8` is the host, `0x7FF78AAB2620`).
+    pub const HOST_ENTITY_VARIABLES: u64 = 0x1F0;
     /// An instance: its id, variable store, state array (indexed by the
     /// graph's state index, made on first use, `0x7FF78AAA1460`) and graph.
     pub const INSTANCE_ID: u64 = 0x18;
@@ -109,8 +113,13 @@ pub mod client {
     /// The variable store: 16 buckets `{entries, u32 count}` of 32 bytes
     /// from `+0x20` by `index & 0xF`, 16-byte entries `{u16 index, variable}`;
     /// a variable's own value at `+0x50` (Grapple.md "DayFirstGrapple2").
+    /// A variable with bindings (their count at `+0x48`, a StateStack's or a
+    /// ChaseVar's) has its value at `+0x60`, worked out from the bindings
+    /// when it is read (`0x7FF78AAB70B0`).
     pub const VARIABLE_BUCKETS: u64 = 0x20;
     pub const VARIABLE_VALUE: u64 = 0x50;
+    pub const VARIABLE_BINDINGS: u64 = 0x48;
+    pub const VARIABLE_BOUND_VALUE: u64 = 0x60;
 
     /// Component 59: the sample being built and the stored view.
     pub const SAMPLE_YAW: u64 = 0x1042;
