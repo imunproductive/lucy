@@ -402,6 +402,11 @@ impl PlacedViews {
         self.views.clear();
     }
 
+    /// The entity went: a later one with its id starts a new stream.
+    pub(crate) fn forget(&mut self, entity: u32) {
+        self.views.remove(&entity);
+    }
+
     /// The chunks of the frames this client doesn't have yet, for the
     /// placeables whose create it holds.
     pub(crate) fn update<'a>(

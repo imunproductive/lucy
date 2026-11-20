@@ -300,7 +300,23 @@ impl<W: World> Vm<'_, '_, '_, W> {
                     .evaluate(id, node, config, Some(key))
                     .is_some_and(|value| truthy(&value)),
             };
-            if !field(&node.fields, "m_DED58406").is_null()
+            // The reuse flag (`m_DED58406`, `+0x110`): slot 57
+            // `0x7FF789C512E0` evaluates it as a bool, false when unset
+            // (`sub_7FF7898060F0(state, config, 0)`); true looks on the
+            // target's host for a live instance of the state's graph and
+            // scope id (`+8` = `+944`, flags `+792 & 0x104` clear) and takes
+            // it instead of creating one. False is what the VM does; true
+            // (21 of the bundle's 54 uses) is not. The index outputs
+            // `m_42BA09E3` (`+0x118`, written with the reused instance's
+            // count + 1) and `m_339A63DB` (`+0x100`) are unset in every
+            // use.
+            let reuse = match field(&node.fields, "m_DED58406") {
+                Json::Null => false,
+                config => self
+                    .evaluate(id, node, config, Some(key))
+                    .is_none_or(|value| truthy(&value)),
+            };
+            if reuse
                 || !field(&node.fields, "m_42BA09E3").is_null()
                 || !field(&node.fields, "m_339A63DB").is_null()
             {

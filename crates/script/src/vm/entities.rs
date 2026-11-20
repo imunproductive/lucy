@@ -75,6 +75,101 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(true)
     }
 
+    /// `STUStatescriptActionCreateEntity` (`STU_72C9C62F`, execute
+    /// `Action_STU_72C9C62F` 0x7FF7897FA4C0): make an entity of definition
+    /// `m_entityDef` (an `STU_8556841E`) at `m_position` and write it to
+    /// `m_E95B313B`. The client makes it itself only for an instance it
+    /// runs on its own (`instance+0x318` bit 3 clear) or a client-only
+    /// node (`sub_7FF789809ED0`), or predicts it with `m_294B652A`
+    /// (`sub_7FF78980A1C0`); an instance the server's frames made leaves
+    /// it to the server, which makes it for every client. The world makes
+    /// it ([`World::create_entity`]). Read: the definition, the position
+    /// and the output, all the Workshop's Create Effect `1CE8` and Create
+    /// Icon `1AB1` set (`m_51AB9D21` is 5 and the three flags 0 in all 17
+    /// uses of the bundle); any other field (a team, a facing: `0D44`,
+    /// `1061`, `116F`, `15AE`, `23B0`) or the prediction flag is refused.
+    pub(super) fn create_entity(
+        &mut self,
+        id: u16,
+        node: &Node,
+        depth: usize,
+    ) -> Result<bool, InitFault> {
+        /// The action's other config fields (`python tools/stu.py
+        /// STUStatescriptActionCreateEntity`).
+        const UNREAD: [&str; 18] = [
+            "m_F7621CAB",
+            "m_40AF7E2D",
+            "m_1C558638",
+            "m_EC1E473E",
+            "m_3E3E203A",
+            "m_888BCD8B",
+            "m_3EBF988B",
+            "m_AA26E7DD",
+            "m_A1A715A6",
+            "m_D7F85181",
+            "m_246C47AF",
+            "m_F8E56B94",
+            "m_A3A50DF2",
+            "m_DE3B4F01",
+            "m_373DBF32",
+            "m_E2BF1226",
+            "m_0FDD45BB",
+            "m_481C68E7",
+        ];
+        let site = self.site(id, node);
+        let unread = UNREAD
+            .iter()
+            .any(|name| !field(&node.fields, name).is_null())
+            || field(&node.fields, "m_294B652A").as_i64() != Some(0);
+        let definition = field(&node.fields, "m_entityDef");
+        let definition = (definition.get("$").and_then(Json::as_str) == Some("STU_8556841E"))
+            .then(|| definition.get("m_entityDef").and_then(asset_guid))
+            .flatten();
+        let (false, Some(definition)) = (unread, definition) else {
+            self.report(
+                site,
+                Issue::UnsupportedField("STUStatescriptActionCreateEntity fields"),
+            );
+            return Ok(false);
+        };
+        let position = match field(&node.fields, "m_position") {
+            Json::Null => None,
+            config => match self.evaluate(id, node, config, None) {
+                Some(Value::Vector(position)) => Some(position),
+                Some(_) => {
+                    self.report(
+                        site,
+                        Issue::UnsupportedField("STUStatescriptActionCreateEntity position"),
+                    );
+                    return Ok(false);
+                }
+                None => return Ok(false),
+            },
+        };
+        let target = match expr::lvalue(field(&node.fields, "m_E95B313B")) {
+            Ok(target) => target.map(|target| source_key(id, target)),
+            Err(error) => {
+                self.report(site, Issue::Expression(error));
+                return Ok(false);
+            }
+        };
+        let Some(entity) = self.world.create_entity(
+            site,
+            EntityCreation {
+                definition,
+                position,
+            },
+        ) else {
+            self.report(site, Issue::UnsupportedAction(node.class.clone()));
+            return Ok(false);
+        };
+        if let Some(target) = target {
+            self.write(target, Value::Entity(entity))?;
+        }
+        self.follow(id, node, "m_outPlug", None, depth)?;
+        Ok(true)
+    }
+
     /// `STU_FC3921B1` (server-only: the base action's run on the client):
     /// ask the world for a dummy bot of hero `m_heroGUID` in team
     /// `m_67465E75`'s slot `m_slot`, standing at `m_06B5A4F1` and facing

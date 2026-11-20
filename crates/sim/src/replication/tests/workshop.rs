@@ -20,6 +20,10 @@ use orpheus_workshop::{Catalog, Logic, parse};
 const DOOMFIST: u64 = 0x02e0_0000_0000_012f;
 const CREATE_HUD_TEXT: u32 = 0x1d8a;
 const CREATE_EFFECT: u32 = 0x1ce8;
+/// Create Effect's entity (`1CE8` rid6 `STUStatescriptActionCreateEntity`)
+/// and its scope there (st13).
+const EFFECT_ENTITY: u64 = 0x0400_0000_0000_304a;
+const EFFECT_SCOPE: u32 = 35;
 /// Create HUD Text's scope on the mode entity (`1D8A` st36).
 const HUD_TEXT_SCOPE: u32 = 31;
 
@@ -253,7 +257,31 @@ fn dpk_archive_c32s2_resets_the_player_to_the_first_checkpoint_with_his_hud() {
         .count();
     assert!(scopes >= 6, "{scopes} HUD texts");
     assert!(!parkour.instances(CREATE_EFFECT).is_empty());
-    assert!(parkour.mode.project(None).is_some());
+    let gaps = parkour.mode.script_mut().unwrap().gaps();
+    assert!(parkour.mode.project(None).is_some(), "{gaps:?}");
+    // The ring: Create Effect made a `304A`, opened its scope 35 there
+    // (`1CE8` st13, the presenters), and its frame can be sent.
+    let rings: Vec<u32> = parkour
+        .mode
+        .created()
+        .filter(|made| made.entity.definition == EFFECT_ENTITY && made.frame().is_some())
+        .map(|made| made.entity.entity)
+        .collect();
+    let script = parkour.mode.script_mut().unwrap();
+    assert!(
+        rings.iter().any(|&ring| {
+            script
+                .created_script(ring)
+                .and_then(|placed| placed.snapshot())
+                .is_some_and(|snapshot| {
+                    snapshot.instances.values().any(|instance| {
+                        instance.graph == CREATE_EFFECT
+                            && instance.scope.as_ref().map(|scope| scope.id) == Some(EFFECT_SCOPE)
+                    })
+                })
+        }),
+        "no ring among {rings:08X?}"
+    );
 }
 
 /// The run's timer: leaving the first checkpoint in the air starts it
@@ -270,15 +298,26 @@ fn dpk_archive_c32s2_times_the_run_and_resets_it_on_a_fall() {
     parkour.place([centre[0] + radius + 2.0, centre[1] + 12.0, centre[2]]);
     let mut started = None;
     let mut ticks = 0;
-    while !parkour.on_ground() {
+    // A mover just put somewhere reads as grounded until it first moves:
+    // the fall is seen from the first tick on.
+    loop {
         parkour.tick();
         ticks += 1;
         assert!(ticks < 300, "never lands");
         if started.is_none() && number(&parkour.player_variable("RunState")) == 1.0 {
             started = Some(parkour.frame);
         }
+        if parkour.on_ground() {
+            break;
+        }
     }
-    let started = started.expect("the timer started in the air");
+    let Some(started) = started else {
+        let gaps = parkour.mode.script_mut().unwrap().gaps();
+        panic!(
+            "the timer didn't start in the air ({ticks} ticks, RunState {:?}, gaps {gaps:?})",
+            parkour.player_variable("RunState")
+        );
+    };
     let time = number(&parkour.player_variable("RunTime"));
     let expected = f64::from(parkour.frame - started) * 0.016;
     assert!(
