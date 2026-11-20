@@ -2322,7 +2322,13 @@ impl State {
             self.deliver_bot_hits(id, shooter, hits);
             self.resolve_player_hits(id, tick, now);
         }
-        self.peers.values().any(|peer| peer.world.has_input_work())
+        self.input_waits()
+    }
+
+    /// Input in hand that [`State::advance_input`] runs: the next pass of
+    /// the loop runs at once.
+    fn input_waits(&self) -> bool {
+        !self.clock.draining() && self.peers.values().any(|peer| peer.world.has_input_work())
     }
 
     /// projectiles.py `_show_others`: the other clients of the room see the
@@ -3602,8 +3608,10 @@ impl GameLoop {
 
     /// One pass of the loop: a batch of requests, a batch of datagrams if
     /// the socket is readable, the queued input, then the tick if it is
-    /// due. `clock` reads the time since the loop started; the real loop
-    /// (`run`) reads the wall clock, the tests a virtual one (`lockstep.rs`).
+    /// due. The input the tick gave (the AI players' commands, `drive_ai`)
+    /// makes the pass busy, so they run in the next pass, at once. `clock`
+    /// reads the time since the loop started; the real loop (`run`) reads
+    /// the wall clock, the tests a virtual one (`lockstep.rs`).
     fn pass(
         &mut self,
         socket: &impl Transport,
@@ -3654,9 +3662,13 @@ impl GameLoop {
         } else {
             None
         };
-        let input_ready = self.state.advance_input(now);
+        let mut input_ready = self.state.advance_input(now);
         if let Some(missed) = due {
             self.state.tick(socket, now, missed);
+            // An AI player's command runs right after the tick that gave
+            // it, before whatever comes in next: not when the next
+            // datagram, request or tick wakes the loop.
+            input_ready = self.state.input_waits();
         }
         Ok(Pass {
             handled,
