@@ -16,8 +16,10 @@ fmt-check:
 lint:
     cargo clippy --workspace --all-targets --locked -- -D warnings
 
+# Tests run with cargo-nextest (.config/nextest.toml): every crate's tests in one pool, each in its own
+# process; then the doc tests, which nextest doesn't run.
 test:
-    cargo test --workspace --locked
+    cargo nextest run --workspace --locked -j $env:RUST_TEST_THREADS; $units = $LASTEXITCODE; cargo test --workspace --locked --doc; exit [Math]::Max($units, $LASTEXITCODE)
 
 dashboard-test:
     node --test web/tests/test_dashboard_client.mjs
@@ -35,15 +37,20 @@ export RUST_TEST_THREADS := CARGO_BUILD_JOBS
 
 # Ignored tests that read an Overwatch 1.74 install or the game data derived from it, without the slow group; then the serial_ tests, one at a time.
 test-game game:
-    cargo build -p orpheus-relay --locked; $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo test --workspace --exclude orpheus-launcher --locked --profile gametest --no-fail-fast -- --ignored --skip datatool --skip matches_the_pack --skip slow_ --skip serial_; $parallel = $LASTEXITCODE; cargo test --workspace --exclude orpheus-launcher --locked --profile gametest --no-fail-fast -- --ignored serial_ --skip slow_ --test-threads=1; exit [Math]::Max($parallel, $LASTEXITCODE)
+    cargo build -p orpheus-relay --locked; $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo nextest run --workspace --exclude orpheus-launcher --locked --cargo-profile gametest --run-ignored only -j $env:RUST_TEST_THREADS -E 'not (test(/datatool/) | test(/matches_the_pack/) | test(/(^|::)slow_/) | test(/(^|::)serial_/))'; $parallel = $LASTEXITCODE; cargo nextest run --workspace --exclude orpheus-launcher --locked --cargo-profile gametest --run-ignored only -j 1 -E 'test(/(^|::)serial_/) & not test(/(^|::)slow_/)'; exit [Math]::Max($parallel, $LASTEXITCODE)
 
 # The game-install tests that play a whole match or run over a minute: their names start with slow_.
 test-slow game:
-    $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo test --workspace --exclude orpheus-launcher --locked --profile gametest --no-fail-fast -- --ignored slow_
+    $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo nextest run --workspace --exclude orpheus-launcher --locked --cargo-profile gametest --run-ignored only -j $env:RUST_TEST_THREADS -E 'test(/(^|::)slow_/)'
 
 # The game-install tests of one crate whose names contain the filter (while working on a feature).
 test-named game crate filter profile="dev":
-    $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo test -p {{crate}} --locked --profile {{profile}} -- --ignored {{filter}}
+    $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo nextest run -p {{crate}} --locked --cargo-profile {{profile}} --run-ignored only -j $env:RUST_TEST_THREADS {{filter}}
+
+# The tests of the crates a change can affect (tools/affected.py), game-install tests included: an
+# agent's own check before reporting. Merges run `test` and `test-game`.
+test-affected game:
+    cargo build -p orpheus-relay --locked; $env:ORPHEUS_GAME_DIR = '{{game}}'; $crates = (python tools/affected.py --cargo-args) -split ' '; if ($crates.Count -lt 2) { 'no crate affected'; exit 0 }; cargo nextest run @crates --locked --run-ignored all -j $env:RUST_TEST_THREADS -E 'not (test(/datatool/) | test(/matches_the_pack/) | test(/(^|::)slow_/) | test(/(^|::)serial_/))'
 
 # Ignored tests that derive the runtime pack's files from an install and compare them with the pack.
 test-assets game runtime:

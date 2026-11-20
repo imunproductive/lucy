@@ -1,0 +1,16 @@
+# cargo-nextest settings (docs/dev/testing.md). Nextest runs every test of every crate
+# in one pool, each test in its own process, instead of one crate after another.
+
+[profile.default]
+fail-fast = false
+# Report a test as slow after a minute: a game-install test that runs this long
+# belongs in the slow group (its name starts with slow_; AGENTS.md "Tests").
+slow-timeout = { period = "60s" }
+status-level = "fail"
+final-status-level = "slow"
+
+# Per-test times of every run, for comparisons with the baseline
+# (target/nextest/default/junit.xml).
+[profile.default.junit]
+path = "junit.xml"
+store-success-output = false

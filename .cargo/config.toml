@@ -1,0 +1,5 @@
+# Cranelift (Cargo.toml `profile.dev`) can't unwind on Windows, so a test build
+# aborts on a panic. With this, libtest runs each test in its own process and still
+# reports a failing test as failed instead of ending the run.
+[unstable]
+panic-abort-tests = true

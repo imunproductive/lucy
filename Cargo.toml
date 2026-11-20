@@ -1,3 +1,7 @@
+# Debug builds and tests compile with Cranelift (`profile.dev` below), which needs
+# the nightly toolchain that rust-toolchain.toml pins.
+cargo-features = ["codegen-backend"]
+
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/*"]
@@ -55,23 +59,38 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 windows-sys = "0.61.2"
 
+# Debug builds and tests (dev, and test, which inherits it) use Cranelift: after a
+# change to orpheus-script a test build took 314 s with LLVM and 35 s with Cranelift
+# (2026-11-20, docs/dev/testing.md "Build speed"). Its code runs about 1.5 times
+# slower than LLVM's. Release and gametest (which inherits release) keep LLVM.
+# Cranelift can't unwind on Windows, so a debug build aborts on a panic, and each
+# test runs in its own process (`panic-abort-tests`, .cargo/config.toml).
+[profile.dev]
+codegen-backend = "cranelift"
+
 # Deriving the game data from the install in a debug build (the first server
-# start, the game-tier tests) would take far longer without optimization.
+# start, the game-tier tests) would take far longer without optimization, so
+# these three keep LLVM at full optimization.
 [profile.dev.package.orpheus-assets]
 opt-level = 3
+codegen-backend = "llvm"
 
 [profile.dev.package.orpheus-casc]
 opt-level = 3
+codegen-backend = "llvm"
 
 [profile.dev.package.orpheus-stu]
 opt-level = 3
+codegen-backend = "llvm"
 
 # A debug server runs every body's statescript, mover and replication each
 # tick: unoptimized, a Practice vs AI match's twelve bodies take about as
 # long as the ticks they simulate, and a server that falls behind leaves
 # the AI heroes standing (their commands come far apart, and a body holds
 # an input for 32 frames only). Some optimization keeps the debug server
-# and its game-tier tests at real time; debug assertions stay on.
+# and its game-tier tests at real time; debug assertions stay on. These three
+# are the most edited crates, so they use Cranelift, whose code is slower; play
+# and the long test runs use release or gametest.
 [profile.dev.package.orpheus-script]
 opt-level = 1
 
@@ -81,8 +100,15 @@ opt-level = 1
 [profile.dev.package.orpheus-sim]
 opt-level = 1
 
+# Dependencies are built once per target folder: LLVM at full optimization.
 [profile.dev.package."*"]
 opt-level = 3
+codegen-backend = "llvm"
+
+# The relay DLL runs inside the game and catches panics at its hooks
+# (`catch_unwind`), which needs unwinding: LLVM.
+[profile.dev.package.orpheus-relay]
+codegen-backend = "llvm"
 
 # The game-install tests (`just test-game`, `just test-slow`, `just test-named … gametest`)
 # run whole matches and hero graphs, which a debug build runs two to three times

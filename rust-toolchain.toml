@@ -1,0 +1,7 @@
+# Cranelift for debug builds (Cargo.toml `profile.dev`) is nightly-only. The pin
+# keeps every checkout on the same compiler; move it forward on purpose
+# (docs/dev/testing.md "Build speed").
+[toolchain]
+channel = "nightly-2026-11-20"
+components = ["rustfmt", "clippy", "rustc-codegen-cranelift-preview"]
+profile = "minimal"
