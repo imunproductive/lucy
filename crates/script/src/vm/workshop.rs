@@ -338,6 +338,23 @@ impl<W: World> Vm<'_, '_, '_, W> {
         }
     }
 
+    /// A state output that names a Workshop variable with opcode 72, as the
+    /// state begins: Chase Player Variable's `1CCF` chases `[14, 8 #18734,
+    /// 72]`, Workshop variable `#18734` of the entity it runs on. None:
+    /// no opcode 72 names one, or it is another entity's (reported).
+    pub(super) fn workshop_output(&mut self, id: u16, node: &Node, target: &Json) -> Option<VarKey> {
+        let (entity, variable) =
+            self.evaluate_with(id, node, |context| expr::workshop_reference(target, context))??;
+        if expr::to_entity(&entity) != Some(self.machine.snapshot.entity) {
+            self.report(
+                self.site(id, node),
+                Issue::UnsupportedField("another entity's Workshop variable as an output"),
+            );
+            return None;
+        }
+        Some(VarKey::Entity(variable))
+    }
+
     /// `STU_0BDBC7B2`: set a variable of the entity `m_entity`. On another
     /// entity the world sets it ([`World::set_entity_variable`]).
     pub(super) fn set_variable_of(
