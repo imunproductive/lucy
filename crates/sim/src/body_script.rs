@@ -490,6 +490,12 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         self.modifiers.as_ref()
     }
 
+    fn owner_needs_records(&self) -> bool {
+        self.component.snapshot().is_some_and(|snapshot| {
+            crate::replication::server_shows_owner_movement(snapshot, &self.world.graphs)
+        })
+    }
+
     fn projectile_leases(&self) -> Option<&ProjectileLeases> {
         (!self.leases.blocks().is_empty()).then_some(&self.leases)
     }

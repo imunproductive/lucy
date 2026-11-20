@@ -66,7 +66,9 @@ use crate::{
 };
 use orpheus_physics::mover::{
     Behaviour, MoveTo, PathWalk, Speed,
-    modifiers::{Modifier, ModifierKey, Operation, VectorOperation, VelocityElement},
+    modifiers::{
+        MOVE_HEADING, Modifier, ModifierKey, Operation, VectorOperation, VelocityElement, heading,
+    },
 };
 use orpheus_wire::{commands::Command, entity::MAX_MOVEMENT_AXIS};
 
@@ -1209,6 +1211,13 @@ impl StateKind {
                 | Self::FilterArray
                 | Self::HeroSelect
         )
+    }
+
+    /// An ability state whose ability runs: started by its button and not
+    /// stopped yet (an ability state is on for as long as the hero can use
+    /// it).
+    pub fn runs_ability(self) -> bool {
+        matches!(self, Self::Ability { flags } if flags & (ABILITY_RUNNING | ABILITY_PUSHED) != 0)
     }
 }
 
