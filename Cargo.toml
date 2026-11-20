@@ -104,9 +104,12 @@ opt-level = 1
 opt-level = 3
 codegen-backend = "llvm"
 
-# The relay DLL runs inside the game and catches panics at its hooks
+# The relay and probe DLLs run inside the game and catch panics at their hooks
 # (`catch_unwind`), which needs unwinding: LLVM.
 [profile.dev.package.orpheus-relay]
+codegen-backend = "llvm"
+
+[profile.dev.package.orpheus-probe]
 codegen-backend = "llvm"
 
 # The game-install tests (`just test-game`, `just test-slow`, `just test-named … gametest`)

@@ -490,6 +490,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "iced-x86"
+version = "1.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c23ad4d19dca41180e835ef6fbd2c1ee655777eca086ad80dd517e0513322879"
+dependencies = [
+ "lazy_static",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -813,6 +822,15 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+]
+
+[[package]]
+name = "orpheus-probe"
+version = "0.0.0"
+dependencies = [
+ "iced-x86",
+ "serde_json",
+ "windows-sys",
 ]
 
 [[package]]

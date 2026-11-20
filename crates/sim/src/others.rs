@@ -45,9 +45,10 @@ use std::{
 use crate::{
     body::{BodyCreate, BodyView, body_create, remote_movement},
     notices::{Switch, card_message, card_record, joined_message, left_message},
+    placed_script::PlacedFrame,
     pools::PoolCatalog,
     projectiles::{
-        DELIVERY_GRACE, FiredProjectile, ObservedOut, ObservedProjectile, ProjectileToken,
+        DELIVERY_GRACE, FiredProjectile, ObservedOut, ObservedProjectile, ProjectileToken, ShotKey,
     },
     replication::{BODY_REUSE_DELAY, BodyId, Lifetime, kill_feed_fresh},
     scene::{
@@ -352,6 +353,14 @@ pub(crate) enum OtherDelivery {
     SeenDestroy {
         serial: u64,
     },
+    /// A server projectile's copy: chunk `last` of its entity's graph frame
+    /// `frame` ([`crate::spawned`]), current while that frame is the
+    /// latest.
+    SeenFrame {
+        serial: u64,
+        last: u32,
+        frame: u64,
+    },
 }
 
 /// Another player's controller entity on this client (match.py ShownController).
@@ -483,6 +492,9 @@ impl Others {
             OtherDelivery::SeenDestroy { serial } => {
                 self.observed_destroys.get(&entity) == Some(&serial)
             }
+            OtherDelivery::SeenFrame { serial, frame, .. } => self
+                .observed(serial)
+                .is_some_and(|observed| observed.projectile.frame_current(frame)),
         }
     }
 
@@ -586,6 +598,11 @@ impl Others {
             }
             OtherDelivery::SeenDestroy { .. } => {
                 self.observed_destroys.remove(&entity);
+            }
+            OtherDelivery::SeenFrame { serial, last, .. } => {
+                if let Some(observed) = self.observed_mut(serial) {
+                    observed.projectile.frame_arrived(last);
+                }
             }
             OtherDelivery::Body(id) => {
                 if let Some(seen) = self.seen.get_mut(&id.entity) {
@@ -726,6 +743,19 @@ impl Others {
         }
     }
 
+    /// The server's latest frame of the graphs of another player's server
+    /// projectile ([`crate::spawned`]): its copy sends it once its create
+    /// arrived, and again as it changes.
+    pub(crate) fn set_projectile_frame(&mut self, (body, token): ShotKey, frame: &PlacedFrame) {
+        for observed in self
+            .observed
+            .iter_mut()
+            .filter(|observed| observed.body == body && observed.token == token)
+        {
+            observed.projectile.set_frame(frame);
+        }
+    }
+
     /// `_ObservedProjectile.advance` for this client's projectiles, in the
     /// order they were fired: the create once the shooter's stream has a
     /// baseline, the launch once the create arrived and the acknowledged
@@ -764,6 +794,23 @@ impl Others {
                     ObservedOut::Done => {
                         done.insert(serial);
                     }
+                }
+            }
+            if !done.contains(&serial) {
+                match item.projectile.take_frame() {
+                    Ok(Some((update, last, frame))) => records.push((
+                        update,
+                        OtherDelivery::SeenFrame {
+                            serial,
+                            last,
+                            frame,
+                        },
+                    )),
+                    Ok(None) => {}
+                    Err(error) => eprintln!(
+                        "server projectile {:08X}'s frame failed ({error})",
+                        item.projectile.entity()
+                    ),
                 }
             }
         }
@@ -1420,6 +1467,7 @@ mod tests {
                     OtherDelivery::SeenCreate { .. } => "projectile",
                     OtherDelivery::SeenLaunch { .. } => "launch",
                     OtherDelivery::SeenDestroy { .. } => "projectile destroy",
+                    OtherDelivery::SeenFrame { .. } => "projectile frame",
                 };
                 (update.entity, kind)
             })

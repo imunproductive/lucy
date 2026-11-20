@@ -175,3 +175,36 @@ pub fn run(args: &QueryArgs, data: &Path) -> io::Result<()> {
     }
     out.flush()
 }
+
+/// `work` of each item, in order, on the PC's threads: the bundle's 661
+/// graphs take seconds on one thread in a debug build.
+fn par_map<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let run = || {
+        let mut done = Vec::new();
+        loop {
+            let number = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some(item) = items.get(number) else {
+                return done;
+            };
+            done.push((number, work(item)));
+        }
+    };
+    let threads = std::thread::available_parallelism().map_or(1, usize::from);
+    let mut done = std::thread::scope(|scope| {
+        let helpers: Vec<_> = (1..threads.min(items.len()))
+            .map(|_| scope.spawn(run))
+            .collect();
+        let mut done = run();
+        for helper in helpers {
+            done.extend(
+                helper
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            );
+        }
+        done
+    });
+    done.sort_unstable_by_key(|&(number, _)| number);
+    done.into_iter().map(|(_, result)| result).collect()
+}

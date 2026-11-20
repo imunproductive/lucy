@@ -1004,6 +1004,15 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.assume(self.site(id, node), class, "plain state");
                 StateKind::Plain
             }
+            // The Biotic Orbs' `10FF` rid10 and `1100` rid8, while the orb
+            // has targets: the client's begin sets its component 50
+            // `+0x3AC` to `m_67E8FF48` (0.275) and its end back to 1
+            // (`0x7FF789C6C7D0`, `0x7FF789C6CAA0`; BioticOrb.md §2, §4, §6),
+            // a replicated field no client code was found to read: the
+            // projectile's speed scale, as an assumption (the orb slows
+            // while it tethers a body). The world flies the projectile at
+            // that scale (`World::set_projectile_speed`).
+            "STU_D3F71FCF" => StateKind::ProjectileSpeed,
             // TrackStatTime: the seconds it runs go to its stats
             // (`vm/stats.rs`).
             "STU_441B50E4" => StateKind::StatTime,
@@ -1161,6 +1170,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::Ray => self.begin_ray(key, node)?,
             StateKind::ModifyHealth { .. } => self.begin_modify_health(key, node)?,
             StateKind::Status => self.begin_status(key, node),
+            StateKind::ProjectileSpeed => self.begin_projectile_speed(key, node),
             StateKind::CombatMod => self.begin_combat_mod(key, node),
             StateKind::Assist => self.begin_assist(key, node),
             StateKind::ApplyAura => {

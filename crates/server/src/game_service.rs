@@ -2488,10 +2488,18 @@ impl State {
                     if let CombatNotice::Hit { dealt, .. } = notice {
                         peer.world
                             .dealt(&graphs, hit.bot, body, *dealt, &hit.tags, false);
+                        if let Some(source) = hit.source {
+                            peer.world
+                                .source_dealt(source, hit.bot, *dealt, &hit.tags, false);
+                        }
                     }
                 }
                 peer.world
                     .dealt(&graphs, hit.bot, body, hit.healed, &hit.tags, true);
+                if let Some(source) = hit.source {
+                    peer.world
+                        .source_dealt(source, hit.bot, hit.healed, &hit.tags, true);
+                }
             }
         }
         let scene = self
@@ -3209,9 +3217,9 @@ impl State {
             if let Some(combat) = &mut world.combat {
                 messages.extend(combat.take_messages());
             }
-            let mut fields = world.combat.as_mut().map(Combat::fields_mut);
-            if let Some(fields) = &mut fields {
-                let (sent, ended) = fields.take_messages();
+            let mut spawned = world.combat.as_mut().map(Combat::spawned_mut);
+            if let Some(spawned) = &mut spawned {
+                let (sent, ended) = spawned.take_messages();
                 messages.extend(sent);
                 ends.extend(ended);
             }
@@ -3221,8 +3229,8 @@ impl State {
                 .map_or_else(Vec::new, |mode| mode.held().to_vec());
             let (mut bots, placed) = world.scene.message_recipients(tick);
             let mut recipients: Vec<&mut dyn Recipients> = vec![&mut players, &mut bots, placed];
-            if let Some(fields) = fields {
-                recipients.push(fields);
+            if let Some(spawned) = spawned {
+                recipients.push(spawned);
             }
             if let Some(mode) = &mut room.mode {
                 recipients.push(mode);

@@ -1835,11 +1835,15 @@ impl SeenRocket {
 
 /// A record of a bot rocket's copy on one client: its create and the bot's
 /// shot record, current while the copy lives; its destroy until it arrived.
+/// A server projectile's copy (`projectiles::ServerCopies`) takes them too,
+/// and its entity's graph frames: chunk `last` of frame `frame`, current
+/// while that frame is the latest.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SeenDelivery {
     Create { serial: u64 },
     Launch { serial: u64 },
     Destroy { serial: u64 },
+    Frame { serial: u64, last: u32, frame: u64 },
 }
 
 /// One bot rocket on one client (`_ObservedProjectile` with `npc=True`).
@@ -1971,6 +1975,8 @@ impl BotViews {
                 self.seen.iter().any(|copy| copy.serial == serial)
             }
             SeenDelivery::Destroy { serial } => self.seen_destroys.get(&entity) == Some(&serial),
+            // A bot's rocket runs no graphs of its own.
+            SeenDelivery::Frame { .. } => false,
         }
     }
 
@@ -1997,6 +2003,7 @@ impl BotViews {
             SeenDelivery::Destroy { .. } => {
                 self.seen_destroys.remove(&entity);
             }
+            SeenDelivery::Frame { .. } => {}
         }
         false
     }

@@ -63,11 +63,16 @@ pub fn system_locale() -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-/// PIDs of running `Overwatch.exe`: this copy of the game, and any other copy.
+/// PIDs of running copies of the game's executable (`Overwatch.exe`, or a
+/// decrypted copy such as `Overwatch.debug.exe`): this copy, and any other.
 pub fn running_copies(game: &Path) -> io::Result<(Vec<u32>, Vec<u32>)> {
     let wanted = normalized(game);
+    let name = game
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(GAME_EXE);
     let (mut ours, mut others) = (Vec::new(), Vec::new());
-    for pid in processes_named(GAME_EXE)? {
+    for pid in processes_named(name)? {
         if image_path(pid).is_some_and(|path| normalized(&path) == wanted) {
             ours.push(pid);
         } else {
@@ -112,11 +117,25 @@ pub fn close_running_copy(game: &Path, patience: Duration) -> io::Result<()> {
 /// variables in the game's environment.
 pub const RELAY_LOG_VARIABLE: &str = "ORPHEUS_RELAY_LOG";
 pub const RELAY_PORT_VARIABLE: &str = "ORPHEUS_RELAY_PORT";
+/// The probe reads its port and log file from these.
+pub const PROBE_PORT_VARIABLE: &str = "ORPHEUS_PROBE_PORT";
+pub const PROBE_LOG_VARIABLE: &str = "ORPHEUS_PROBE_LOG";
 
 /// Where the relay in a started game logs and sends the plaintext.
 pub struct RelaySetup<'a> {
     pub log: &'a Path,
     pub rpc_port: u16,
+    /// The probe to load after the relay, if any.
+    pub probe: Option<&'a ProbeSetup>,
+}
+
+/// `owprobe.dll`, the client probe `tools/owprobe` talks to on
+/// `127.0.0.1:port` (docs/dev/client-tools.md).
+#[derive(Clone, Debug)]
+pub struct ProbeSetup {
+    pub dll: PathBuf,
+    pub port: u16,
+    pub log: PathBuf,
 }
 
 /// Start the game in its folder, appending its output to `log`. A game in
@@ -137,6 +156,11 @@ pub fn start_game(
         command
             .env(RELAY_LOG_VARIABLE, relay.log)
             .env(RELAY_PORT_VARIABLE, relay.rpc_port.to_string());
+        if let Some(probe) = relay.probe {
+            command
+                .env(PROBE_LOG_VARIABLE, &probe.log)
+                .env(PROBE_PORT_VARIABLE, probe.port.to_string());
+        }
     }
     command
         .current_dir(game.parent().unwrap_or(Path::new(".")))

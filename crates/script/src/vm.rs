@@ -274,10 +274,26 @@ pub struct TargetCandidate {
     /// tag its own graphs add or suppress (only the player's own body
     /// knows those).
     pub tags: Option<Arc<BTreeSet<u64>>>,
+    /// Its pools' health and their maximum, every kind together: what
+    /// `STU_32E6E4D8` and `STU_7D7D2470` read of it from another entity's
+    /// graph (the healing Biotic Orb `10FF` st0 finds only hurt allies).
+    /// None: unknown.
+    pub health: Option<[f64; 2]>,
     /// The spawned entities the match runs whose owner is its controller
     /// (its Biotic Fields: [`crate::placed::MapEntityWorld::spawn`]), for
-    /// the owner relation.
-    pub spawned: Vec<u32>,
+    /// the owner relation, and the projectiles among them that this body
+    /// shot (its Biotic Orbs), for the shooter relation.
+    pub spawned: Vec<OwnedEntity>,
+}
+
+/// A spawned entity a listed body's controller owns
+/// ([`TargetCandidate::spawned`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OwnedEntity {
+    pub entity: u32,
+    /// A projectile the body shot (component 50, whose `+0x18` names the
+    /// body); else an entity it left (the Biotic Field).
+    pub projectile: bool,
 }
 
 /// Where a listed body was as the searcher's player saw it, rewound to his
@@ -399,7 +415,9 @@ impl TargetCandidate {
 /// controller, which also possesses it now; a listed controller or player
 /// is its own (it has component 44) and possesses its body; a spawned
 /// entity a body lists ([`TargetCandidate::spawned`]) is owned by that
-/// body's controller.
+/// body's controller, and a projectile among them was shot by that body,
+/// while a listed body, controller or spawned entity that isn't a
+/// projectile has no shooter (no component 50).
 /// Assumption: the owner (component 72) of an entity the game spawns for
 /// a hero is his controller, as the Biotic Field's aura `0B3C` heals for
 /// `STU_0AC15F78(STU_F76C486C(#40))`, the body the field's owner
@@ -419,6 +437,14 @@ pub fn listed_relation(
             .iter()
             .find(|body| body.controller == Some(entity) || body.player == Some(entity))
     };
+    let owner_of = || {
+        bodies.iter().find_map(|body| {
+            body.spawned
+                .iter()
+                .find(|owned| owned.entity == entity)
+                .map(|owned| (body, owned.projectile))
+        })
+    };
     match relation {
         EntityRelation::Controller => bodies
             .iter()
@@ -428,12 +454,17 @@ pub fn listed_relation(
             bodies.iter().find(|body| body.entity == entity)?.controller
         }
         EntityRelation::PossessedBody => by_controller().map(|body| body.entity),
-        EntityRelation::Owner => {
-            bodies
-                .iter()
-                .find(|body| body.spawned.contains(&entity))?
-                .controller
-        }
+        EntityRelation::Owner => owner_of()?.0.controller,
+        EntityRelation::Shooter => match owner_of() {
+            Some((body, true)) => Some(body.entity),
+            Some((_, false)) => Some(0),
+            None if bodies.iter().any(|body| body.entity == entity)
+                || by_controller().is_some() =>
+            {
+                Some(0)
+            }
+            None => None,
+        },
         _ => None,
     }
 }
@@ -560,6 +591,26 @@ pub trait World {
     /// A missing kind reads the total across all pools.
     fn body_health(&self, _site: Site, _kind: Option<PoolKind>, _maximum: bool) -> Option<f64> {
         None
+    }
+
+    /// Another body's health or its maximum, every kind together: a listed
+    /// body's ([`TargetCandidate::health`]). None: unknown, or a pool kind.
+    fn listed_health(
+        &self,
+        site: Site,
+        entity: u32,
+        kind: Option<PoolKind>,
+        maximum: bool,
+    ) -> Option<f64> {
+        if kind.is_some() {
+            return None;
+        }
+        let [current, most] = self
+            .target_candidates(site)?
+            .iter()
+            .find(|body| body.entity == entity)?
+            .health?;
+        Some(if maximum { most } else { current })
     }
 
     fn add_health_pool(
@@ -886,6 +937,13 @@ pub trait World {
         false
     }
 
+    /// A projectile's speed scale state (`STU_D3F71FCF`) began with its
+    /// scale (Some) or ended (None, back to 1). False: this entity is no
+    /// projectile the world flies.
+    fn set_projectile_speed(&mut self, _site: Site, _scale: Option<f64>) -> bool {
+        false
+    }
+
     /// A `CombatModFilter` state began with its modifier (Some) or ended
     /// (None). False: this world keeps none.
     fn combat_mod(&mut self, _site: Site, _modifier: Option<CombatMod>) -> bool {
@@ -1174,6 +1232,9 @@ pub enum StateKind {
     },
     /// A status on the body while active (`STU_9028E035`, `vm/statuses.rs`).
     Status,
+    /// A projectile's speed scale while active (`STU_D3F71FCF`,
+    /// `vm/statuses.rs`).
+    ProjectileSpeed,
     /// A combat modifier on the body while active (`CombatModFilter`).
     CombatMod,
     /// An assist credit while active, and for its linger after
@@ -2127,6 +2188,18 @@ impl Component {
     /// When the next queued event is due.
     pub fn next_due_ms(&self) -> Option<u64> {
         self.machine.queues.next_due()
+    }
+
+    /// Whether a health change state runs (`STUStatescriptStateModifyHealth`,
+    /// `vm/health.rs`: an aura's rate, the damaging Biotic Orb's `1101`):
+    /// the client applies it at every frame.
+    pub fn changes_health(&self) -> bool {
+        self.machine
+            .snapshot
+            .instances
+            .values()
+            .flat_map(|instance| instance.states.values())
+            .any(|state| state.active && matches!(state.kind, StateKind::ModifyHealth { .. }))
     }
 
     /// The active mover behaviour states' requests, for the mover.

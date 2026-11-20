@@ -30,7 +30,7 @@ use orpheus_script::{
 
 use crate::{
     bot_script::BotScripts, mode_script::ModeRunner, placed_script::PlacedScripts,
-    replication::WorldDelivery, spawned::SpawnedFields,
+    replication::WorldDelivery, spawned::SpawnedEntities,
 };
 
 /// The room's messages per tick (match.py `MAX_BODY_MESSAGES`).
@@ -264,9 +264,9 @@ impl Recipients for PlacedScripts {
     }
 }
 
-impl Recipients for SpawnedFields {
+impl Recipients for SpawnedEntities {
     fn runs(&self, entity: u32) -> bool {
-        SpawnedFields::runs(self, entity)
+        SpawnedEntities::runs(self, entity)
     }
 
     fn receive(&mut self, message: &GameMessage) {
@@ -278,7 +278,7 @@ impl Recipients for SpawnedFields {
     }
 
     fn entities(&self) -> Vec<u32> {
-        SpawnedFields::entities(self)
+        SpawnedEntities::entities(self)
     }
 }
 

@@ -16,7 +16,7 @@ use std::{
 
 use crate::{
     network::connection_owner,
-    process::{RelaySetup, inject_when_ready_with, start_game},
+    process::{ProbeSetup, RelaySetup, inject, inject_when_ready_with, start_game},
 };
 
 /// A second game must not take the screen from the first in exclusive
@@ -41,6 +41,9 @@ pub struct GameSetup {
     /// More arguments for the game, after the ones above (`orpheus play --
     /// ...`).
     pub extra_arguments: Vec<String>,
+    /// `owprobe.dll` for the first game (`orpheus play --probe`); a second
+    /// game gets none (the port is the first one's).
+    pub probe: Option<ProbeSetup>,
 }
 
 /// A started game with the relay loaded.
@@ -48,6 +51,8 @@ pub struct Started {
     pub pid: u32,
     /// The relay's base address in the game.
     pub base: usize,
+    /// The probe's base address, when it was asked for.
+    pub probe: Option<usize>,
 }
 
 type SecondGame = (Arc<Mutex<Child>>, String);
@@ -70,8 +75,15 @@ impl RetailGames {
     pub fn start(&self) -> io::Result<(Child, Started)> {
         let mut child = self.spawn(false)?;
         let pid = child.id();
-        match self.inject(pid, || child.try_wait()) {
-            Ok(base) => Ok((child, Started { pid, base })),
+        let injected = self.inject(pid, || child.try_wait()).and_then(|base| {
+            let probe = match &self.setup.probe {
+                Some(probe) => Some(inject(&probe.dll, pid, self.setup.timeout)?),
+                None => None,
+            };
+            Ok((base, probe))
+        });
+        match injected {
+            Ok((base, probe)) => Ok((child, Started { pid, base, probe })),
             Err(error) => {
                 // Without the relay the game waits at its login screen forever.
                 let _ = child.kill();
@@ -92,7 +104,11 @@ impl RetailGames {
             .insert(pid, (Arc::clone(&child), account.to_owned()));
         let exited = || child.lock().expect("second game").try_wait();
         match self.inject(pid, exited) {
-            Ok(base) => Ok(Started { pid, base }),
+            Ok(base) => Ok(Started {
+                pid,
+                base,
+                probe: None,
+            }),
             Err(error) => {
                 let _ = child.lock().expect("second game").kill();
                 Err(error)
@@ -141,6 +157,7 @@ impl RetailGames {
             Some(RelaySetup {
                 log: &setup.relay_log,
                 rpc_port: setup.rpc_port,
+                probe: setup.probe.as_ref().filter(|_| !second),
             }),
         )
     }

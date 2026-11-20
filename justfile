@@ -50,7 +50,7 @@ test-named game crate filter profile="dev":
 # The tests of the crates a change can affect (tools/affected.py), game-install tests included: an
 # agent's own check before reporting. Merges run `test` and `test-game`.
 test-affected game:
-    cargo build -p orpheus-relay --locked; $env:ORPHEUS_GAME_DIR = '{{game}}'; $crates = (python tools/affected.py --cargo-args) -split ' '; if ($crates.Count -lt 2) { 'no crate affected'; exit 0 }; cargo nextest run @crates --locked --run-ignored all -j $env:RUST_TEST_THREADS -E 'not (test(/datatool/) | test(/matches_the_pack/) | test(/dpk_archive/) | test(/(^|::)slow_/) | test(/(^|::)serial_/))'
+    cargo build -p orpheus-relay -p orpheus-probe --locked; $env:ORPHEUS_GAME_DIR = '{{game}}'; $crates = (python tools/affected.py --cargo-args) -split ' '; if ($crates.Count -lt 2) { 'no crate affected'; exit 0 }; cargo nextest run @crates --locked --run-ignored all -j $env:RUST_TEST_THREADS -E 'not (test(/datatool/) | test(/matches_the_pack/) | test(/dpk_archive/) | test(/(^|::)slow_/) | test(/(^|::)serial_/))'
 
 # Ignored tests that derive the runtime pack's files from an install and compare them with the pack.
 test-assets game runtime:
@@ -65,6 +65,6 @@ test-datatool game dump:
 test-dpk game archive:
     $env:ORPHEUS_GAME_DIR = '{{game}}'; $env:ORPHEUS_DPK_ARCHIVE = '{{archive}}'; cargo nextest run -p orpheus-workshop -p orpheus-sim --locked --cargo-profile gametest --run-ignored only -j $env:RUST_TEST_THREADS dpk_archive
 
-# Windows-only tests that load the relay DLL into a stand-in process.
+# Windows-only tests that load the relay and probe DLLs into a stand-in process.
 test-windows:
-    cargo build -p orpheus-relay --locked; cargo test -p orpheus-launcher --locked -- --ignored
+    cargo build -p orpheus-relay -p orpheus-probe --locked; cargo test -p orpheus-launcher --locked -- --ignored
