@@ -433,6 +433,23 @@ fn controller_shows(
     graphs: &orpheus_script::graph::GraphStore,
     chunk: &ReceivedChunk,
 ) -> Option<(bool, Option<u64>, Option<u64>)> {
+    let (shown, instances) = controller_head(graphs, chunk)?;
+    // On the Practice Range the Training Partner console's scope 126
+    // (`265F`) opens on every controller once the console runs.
+    let scoped = instances.len() == 6 && instances[5] == 0x265f;
+    assert_eq!(
+        &instances[..instances.len() - usize::from(scoped)],
+        [0x0c90, 0x288a, 0x0215, 0x288b, 0x288d]
+    );
+    Some(shown)
+}
+
+/// [`controller_shows`]'s reading of a full owner controller frame, with
+/// the graphs of the instances it lists.
+fn controller_head(
+    graphs: &orpheus_script::graph::GraphStore,
+    chunk: &ReceivedChunk,
+) -> Option<((bool, Option<u64>, Option<u64>), Vec<u16>)> {
     use orpheus_script::wire::{Value as ScriptValue, read_full_head};
     if chunk.first != 0 {
         return None;
@@ -450,19 +467,15 @@ fn controller_shows(
         _ => None,
     };
     assert_eq!(flag(2438), flag(31435), "#31435 follows #2438");
-    let instances: Vec<_> = head
+    let instances = head
         .instances
         .iter()
         .map(|&(_, graph, _, _)| graph)
         .collect();
-    // On the Practice Range the Training Partner console's scope 126
-    // (`265F`) opens on every controller once the console runs.
-    let scoped = instances.len() == 6 && instances[5] == 0x265f;
-    assert_eq!(
-        &instances[..instances.len() - usize::from(scoped)],
-        [0x0c90, 0x288a, 0x0215, 0x288b, 0x288d]
-    );
-    Some((flag(2438), asset(13161).filter(|_| flag(2114)), asset(940)))
+    Some((
+        (flag(2438), asset(13161).filter(|_| flag(2114)), asset(940)),
+        instances,
+    ))
 }
 
 /// The Practice Range's first mode frame: `13C0`'s full observer frame as

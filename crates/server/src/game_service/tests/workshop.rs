@@ -137,6 +137,38 @@ fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
                 .is_some()
     });
     let owner = watcher.owner;
+    // The owner's newest controller frame: what it shows of hero select
+    // (open, the pick, the hero he plays; `controller_shows`). Besides the
+    // hero select tree, the controller carries the Workshop actions' player
+    // scopes (`STU_550D0C5C`) the rules opened on him.
+    let select = |watcher: &Watcher| {
+        watcher
+            .datagrams
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter(|record| record.entity == watcher.owner)
+            .filter_map(|record| record.script.as_ref())
+            .filter_map(|chunk| controller_head(assets.graphs(), chunk))
+            .inspect(|(_, instances)| {
+                assert_eq!(instances[..5], [0x0c90, 0x288a, 0x0215, 0x288b, 0x288d]);
+            })
+            .map(|(shown, _)| shown)
+            .last()
+    };
+    // Rule "Match time": Set Match Time(1) at 0.25 s, again 1.1 s later,
+    // then Set Match Time(3600) after another 1.1 s: Assemble ends at
+    // about 1.25 s, Setup at 2.35 s, and the Round runs from then on. The
+    // player hasn't picked: hero select stays open for him, as in retail
+    // for a player with no hero in any phase.
+    let world = watcher.client.now();
+    pump_within(
+        &mut [&mut watcher],
+        &schemas,
+        "the round",
+        Duration::from_secs(5),
+        |watchers| watchers[0].client.now() >= world + Duration::from_secs(4),
+    );
+    assert_eq!(select(&watcher), Some((true, None, None)));
     send_player_message(
         &mut watcher.client,
         &schemas,
@@ -145,8 +177,10 @@ fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
         PICK_HERO,
         DOOMFIST.to_le_bytes().to_vec(),
     );
+    // His body comes, and hero select closes once it lives (`288B` st95).
     pump_until(&mut [&mut watcher], &schemas, "Doomfist", |watchers| {
         watchers[0].created(owner | 1).is_some()
+            && select(watchers[0]) == Some((false, Some(DOOMFIST), Some(DOOMFIST)))
     });
     // "Player HUD" waits at most 2 + 2 s before its texts.
     let graphs = assets.graphs();

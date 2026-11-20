@@ -32,8 +32,9 @@ fn open_or_close(open: bool) -> Message {
     request(OPEN_OR_CLOSE, parameters)
 }
 
-/// In the Practice Range: hero select is open from the start (the server's
-/// open to `288B`); a pick of Soldier: 76 gives him his body with the screen
+/// In the Practice Range: hero select is open from the start (`13C0`'s
+/// `0727`, which the room gives the controller: `0C90` st28 → `0738` →
+/// `288B` st134); a pick of Soldier: 76 gives him his body with the screen
 /// still open, and the next tick `288B` closes it (st95: the picked hero's
 /// body lives), each in a controller frame. H opens it again and clears the
 /// pick; a pick of Ana switches; a close closes. Outside the spawn room an
@@ -54,6 +55,18 @@ fn h_opens_a_pick_switches_and_288b_closes() {
     };
     let mut world = WorldDelivery::new(PLAYER);
     world.start(&scene, &viewer, FIRST_TICK).unwrap();
+    let mode = crate::mode_script::ModeRunner::start(&scene, FIRST_TICK, Vec::new());
+    assert!(mode.graph_driven(), "{:?}", mode.gaps());
+    let held = crate::mode_script::held(Some(&mode));
+    {
+        let mut worlds = [&mut world];
+        let mut players = crate::messages::Players::new(&mut worlds, FIRST_TICK);
+        crate::messages::deliver_held(
+            &held,
+            &mut crate::messages::HeldReach::default(),
+            &mut [&mut players],
+        );
+    }
     world.created.insert(PLAYER);
     world
         .present(

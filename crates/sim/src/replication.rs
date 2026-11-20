@@ -3426,12 +3426,9 @@ impl WorldDelivery {
             };
             self.receive_controller_message(tick, &[], &message);
         }
-        // Hero select opens at the start: nothing in `288B` opens it then
-        // (only the client-only rid21 and rid226 after a body goes away
-        // send `1360`), so the server sends the open itself, as the
-        // client's H would (stand-in: the mode or the client opens it in
-        // retail; not found).
-        self.select_request(tick, SelectRequest::OpenOrClose(true));
+        // Hero select opens on the mode's `0727`, which the room holds to
+        // every entity (`crate::mode_script::held`): `0C90` st28 → `0738`
+        // → `288B` st134 keeps it open while the player has no body.
         // The player's create sends the spawn room flag set.
         self.spawn_flag = (true, self.spawn_flag.1 + 1);
         Ok(())

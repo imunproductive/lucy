@@ -6,7 +6,9 @@ Component 47 (vtable 0x7FF78B521F68) is an entity's statescript component; its h
 0x7FF78B53E740, constructors 0x7FF7898AAE60 -> 0x7FF789C235D0 -> 0x7FF78AAA0800): +0x10 host, +0x18 u16 id,
 +0x98 variable store, +0xA0 its states by graph state index (+0xA8 count; a state is made on its first use,
 0x7FF78AAA1460), +0x1E8 graph GUID, +0x318 flags (8: made by the network, 0x400, 0x800). A state: +0x40 flags
-(bit 0 while it runs), +0x70 its index, +0x78 its instance.
+(bit 0 while it runs), +0x70 its index, +0x78 its instance. The variable store [+0x98]: 16 buckets {entries, u32
+count} of 32 bytes from +0x20 by id & 0xF, 16-byte entries {u16 id, variable}, a variable's value at +0x50 (16
+bytes, its type at +0xC; crates/probe `layout::script_value`).
 
 The frame sampler records chosen graphs every frame (`trace --script 0D06`); `name_scripts` names what it recorded:
 each state by its class (from its vtable, through the index) and each variable by statescript_names.json.
@@ -76,6 +78,55 @@ def states(p: Probe, instance):
         out.append({"index": index, "address": state, "vtable": vtable, "orpheus_vtable": p.orpheus(vtable),
                     "flags": int.from_bytes(head[STATE_FLAGS:STATE_FLAGS + 4], "little")})
     return out
+
+
+VARIABLE_STORE, VARIABLE_BUCKETS, BUCKET_BYTES, VARIABLE_VALUE = 0x98, 0x20, 32, 0x50
+
+
+def script_value(raw):
+    """A variable's 16-byte value as the probe's sampler gives it: bool, int, float, [x, y, z], {"entity": id},
+    None (type 0xFF), else {"type", "hex"}."""
+    kind = int.from_bytes(raw[0xC:0x10], "little")
+    if kind == 1:
+        return raw[0] != 0
+    if kind == 2:
+        return struct.unpack_from("<i", raw)[0]
+    if kind == 3:
+        return struct.unpack_from("<f", raw)[0]
+    if kind == 6:
+        return list(struct.unpack_from("<3f", raw))
+    if kind == 0xA:
+        return {"entity": int.from_bytes(raw[:4], "little")}
+    if kind == 0xFF:
+        return None
+    return {"type": kind, "hex": raw[:12].hex()}
+
+
+def variables(p: Probe, instance, wanted=None):
+    """{id: value} of an instance's variables: all, or those whose ids are in `wanted`."""
+    store = p.read_u64(instance + VARIABLE_STORE)
+    out = {}
+    if not store:
+        return out
+    buckets = sorted({v & 0xF for v in wanted}) if wanted is not None else range(16)
+    for bucket in buckets:
+        entries, count = struct.unpack("<QI", p.read(store + VARIABLE_BUCKETS + BUCKET_BYTES * bucket, 12))
+        if not entries or not 0 < count <= 4096:
+            continue
+        table = p.read(entries, 16 * count)
+        for at in range(0, len(table), 16):
+            ident = int.from_bytes(table[at:at + 2], "little")
+            variable = int.from_bytes(table[at + 8:at + 16], "little")
+            if variable and (wanted is None or ident in wanted):
+                out[ident] = script_value(p.read(variable + VARIABLE_VALUE, 16))
+    return out
+
+
+def find_instances(p: Probe, graph, entity_id=None):
+    """[{address, id, graph, guid, flags, host, entity}] of the live instances of a graph ('288B'), on every
+    entity or one."""
+    return [dict(inst, entity=h["id"]) for h in hosts(p, entity_id) for inst in instances(p, h["host"])
+            if inst["graph"] == graph]
 
 
 @lru_cache(maxsize=None)

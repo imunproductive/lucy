@@ -80,7 +80,7 @@ use orpheus_sim::{
         show_bot_rockets, show_fired,
     },
     controller::ControllerFrame,
-    egress::GameEgress,
+    egress::{GameEgress, SendError},
     hurt_feedback::HurtFeedback,
     instance::{FREE_FOR_ALL_TEAM, Instance, Member, RETAIL_QUANTA, TOURNAMENT_QUANTA, ownership},
     match_flow::{FlowEvent, MatchFlow, Mode, Phase, Standing, Timers},
@@ -1052,6 +1052,9 @@ struct Peer {
     reported_latency: Option<u16>,
     /// The hero settings list the game is sending (21604 parts).
     hero_settings: hero_settings::SentList,
+    /// Why the last frame couldn't be sent, as logged: a record that never
+    /// fits or encodes stops every frame after it.
+    send_failure: Option<String>,
 }
 
 /// A game's reported round trip is logged when it moves this far (ms) from
@@ -1319,6 +1322,7 @@ impl Peer {
             ai: None,
             reported_latency: None,
             hero_settings: hero_settings::SentList::default(),
+            send_failure: None,
         }
     }
 
@@ -1442,7 +1446,9 @@ impl Peer {
     }
 
     /// This tick's frame over the peer's link: the queued reliable messages
-    /// and world records, with these movements.
+    /// and world records, with these movements. A frame that can't be made
+    /// (a record that doesn't encode or fit) is logged when its reason
+    /// changes.
     fn send_frame(
         &mut self,
         links: &mut GameConnections,
@@ -1452,7 +1458,7 @@ impl Peer {
         movements: Vec<EntityUpdate>,
         reliable_only: bool,
     ) {
-        let _ = self.world.send_frame(
+        let sent = self.world.send_frame(
             tick,
             movements,
             reliable_only,
@@ -1471,6 +1477,19 @@ impl Peer {
                 send(socket, outgoing)
             },
         );
+        let failure = match sent {
+            Err(SendError::Select(error)) => Some(error.to_string()),
+            _ => None,
+        };
+        if failure.is_some() && failure != self.send_failure {
+            tracing::warn!(
+                connection,
+                tick,
+                error = failure.as_deref().unwrap_or_default(),
+                "the game frame can't be made; no records go until it can"
+            );
+        }
+        self.send_failure = failure;
     }
 
     /// The due spawn steps; true when this one put the player in the world.
@@ -3239,10 +3258,7 @@ impl State {
                 messages.extend(sent);
                 ends.extend(ended);
             }
-            let held = room
-                .mode
-                .as_ref()
-                .map_or_else(Vec::new, |mode| mode.held().to_vec());
+            let held = orpheus_sim::mode_script::held(room.mode.as_ref());
             let (mut bots, placed) = world.scene.message_recipients(tick);
             let mut recipients: Vec<&mut dyn Recipients> = vec![&mut players, &mut bots, placed];
             if let Some(spawned) = spawned {
