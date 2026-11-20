@@ -7,10 +7,16 @@
 
 use super::*;
 use orpheus_script::{
+    snapshot::{ProjectedSnapshot, View},
+    stream::{BodyStream, ChangeKey, DeltaKind, OWNER_SETTLE_FRAMES},
     vm::{State, StateKind, Unknowns},
     wire::Value as ScriptValue,
 };
-use orpheus_wire::{commands::Command, entity::MOVE_TO};
+use orpheus_wire::{
+    commands::{Command, JUMP},
+    entity::MOVE_TO,
+};
+use std::collections::BTreeSet;
 
 const TRACER: u64 = 0x02e0_0000_0000_0003;
 const PHARAH: u64 = 0x02e0_0000_0000_0008;
@@ -51,6 +57,38 @@ impl Player {
         let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
         assets.set_player_unknowns(Unknowns::Tolerate);
         let scene = assets.prepare(GameMap::practice_range()).unwrap();
+        Self::spawn_on(hero, scene, world)
+    }
+
+    /// `hero` picked on Hanamura's Assault (C32S2's map, the install's
+    /// collision), his feet put at `feet` facing `yaw`, standing for a
+    /// second.
+    fn on_hanamura(hero: u64, feet: [f64; 3], yaw: i32) -> Self {
+        const HANAMURA: u64 = 0x0800_0000_0000_0165;
+        let runtime = orpheus_testkit::runtime_dir();
+        let mut assets = SceneAssets::load(&runtime).unwrap().with_collision_build(
+            crate::scene_assets::install_collision_build(orpheus_testkit::game_dir()),
+        );
+        assets.set_player_unknowns(Unknowns::Tolerate);
+        let map = orpheus_content::maps::MapCatalog::load(runtime.join("data"))
+            .unwrap()
+            .game_map(
+                HANAMURA,
+                crate::match_flow::ASSAULT,
+                "Assault",
+                false,
+                &[6, 6],
+            )
+            .unwrap();
+        let scene = assets.prepare(map).unwrap();
+        let mut player = Self::spawn_on(hero, scene, WorldDelivery::new(OWNER).unbuffered());
+        let body = player.scene.heroes().get(hero).unwrap().body;
+        player.world.mover = Some(player.scene.player_mover_at(body, 0, feet, yaw).unwrap());
+        player.idle(60, yaw);
+        player
+    }
+
+    fn spawn_on(hero: u64, scene: PreparedScene, world: WorldDelivery) -> Self {
         let mut player = Self {
             scene,
             world,
@@ -852,6 +890,170 @@ impl Player {
     fn grounded(&self) -> bool {
         self.world.mover.as_ref().unwrap().pose().flags & FELL == 0
     }
+
+    /// The id of the first instance of `graph`.
+    fn instance_of(&self, graph: u32) -> u16 {
+        *self
+            .snapshot()
+            .instances
+            .iter()
+            .find(|(_, instance)| instance.graph == graph)
+            .unwrap()
+            .0
+    }
+
+    /// His statescript as his owner frames project it now.
+    fn owner_projection(&self) -> ProjectedSnapshot {
+        let runtime = &self.world.body_script.as_ref().unwrap().runtime;
+        runtime
+            .encoder()
+            .project(runtime.snapshot().unwrap(), View::Owner)
+            .unwrap()
+    }
+}
+
+/// His owner frames as `queue_delta` makes them, each one acknowledged at
+/// once.
+struct OwnerChunks(BodyStream<ProjectedSnapshot>);
+
+impl OwnerChunks {
+    /// The full owner frame and the initial delta, acknowledged.
+    fn start(player: &Player) -> Self {
+        let runtime = &player.world.body_script.as_ref().unwrap().runtime;
+        let encoder = runtime.encoder();
+        let mut stream = BodyStream::new(OWNER | 1);
+        stream.create_arrived();
+        let full = encoder
+            .queue_full(&mut stream, &player.owner_projection())
+            .unwrap();
+        stream.arrived(full.last);
+        let mut chunks = Self(stream);
+        chunks.queue(player, DeltaKind::InitialOwner(player.frame));
+        chunks
+    }
+
+    /// The keys of the correction his last frame makes go; none when
+    /// nothing his client holds changed.
+    fn correction(&mut self, player: &Player) -> Option<BTreeSet<ChangeKey>> {
+        self.queue(
+            player,
+            DeltaKind::Correction(player.frame + OWNER_SETTLE_FRAMES),
+        )
+    }
+
+    fn queue(&mut self, player: &Player, kind: DeltaKind) -> Option<BTreeSet<ChangeKey>> {
+        let runtime = &player.world.body_script.as_ref().unwrap().runtime;
+        let chunk = runtime
+            .encoder()
+            .queue_delta(
+                &mut self.0,
+                &player.owner_projection(),
+                kind,
+                runtime.frame_ms(),
+            )
+            .unwrap()?;
+        let keys = self.0.sent(chunk.last).unwrap().changes.clone();
+        assert!(self.0.arrived(chunk.last).advanced);
+        Some(keys)
+    }
+}
+
+/// C32S2's checkpoint 10 on Hanamura as game session s3 played it
+/// (`D:/Temp/df7/s3/cp10_slam`, `refs/reports/Doomfist.md` §14-15): from his
+/// feet at (5.106, 7.810, 7.769) facing 80.7° (view 14692) and looking 15°
+/// down (2731), a jump walking forward for 19 frames (7512-7530), 13
+/// frames of nothing, then E for one frame (7544). His ground ray (`0B27`
+/// st8) misses from 7534, so st7 begins the landing search st6 (with st5
+/// and st66, the preview). The press (st63 sets `#1321`) opens the search's
+/// gate; it finds the point and the transition `#1627 && #1321` begins the
+/// flight (st31, st9) in the press's own frame, and st31's begin aborts the
+/// button state st64 before the release (7545) can stop the ability. His
+/// owner frames carry the ray and the search: left out, his client never
+/// ran them, waited a round trip for the server's point, and its st64
+/// stopped the tapped slam (its flight showed 3 frames late, after the
+/// server's chunk rolled it back). The flight's chase of `#10472e` (st17,
+/// toward the variable `#10471e`, so it steps each frame on both sides)
+/// makes no correction go: in s3 one went every frame of the flight.
+#[test]
+#[ignore = "requires the derived 104319 data and the install (Hanamura's collision)"]
+fn doomfists_tapped_airborne_slam_flies_from_the_press_frame() {
+    const FEET: [f64; 3] = [5.106_445_312_5, 7.809_570_312_5, 7.768_554_687_5];
+    let view = Command {
+        yaw: 14692,
+        pitch: 2731,
+        ..Command::default()
+    };
+    let mut doomfist = Player::on_hanamura(DOOMFIST, FEET, view.yaw);
+    assert_eq!(doomfist.position(), FEET);
+    // s3's server poses (`orpheus::pose`, frames 7512 on); his client's
+    // own prediction matched them to the millimetre until the press.
+    for frame in 7512..=7531 {
+        doomfist.step(Command {
+            forward: if frame > 7512 { 127 } else { 0 },
+            buttons: if frame < 7531 { JUMP } else { 0 },
+            ..view
+        });
+    }
+    let mut preview = None;
+    for frame in 7532..=7543 {
+        doomfist.step(view);
+        if preview.is_none() && doomfist.graph_state(0x0b27, 6) {
+            preview = Some(frame);
+        }
+    }
+    assert_eq!(preview, Some(7534));
+    assert_eq!(
+        doomfist.position(),
+        [7.032_226_562_5, 8.515_625, 8.083_007_812_5]
+    );
+    let slam = doomfist.instance_of(0x0b27);
+    let owner = doomfist.owner_projection();
+    assert!(
+        owner.state(slam, 6).is_some(),
+        "the landing search goes out"
+    );
+    assert!(owner.state(slam, 8).is_some(), "the ground ray goes out");
+    let mut chunks = OwnerChunks::start(&doomfist);
+    // 7544: the press begins the flight.
+    doomfist.step(Command {
+        buttons: ABILITY_2,
+        ..view
+    });
+    assert!(doomfist.graph_state(0x0b27, 9), "the flight begins");
+    assert!(!doomfist.graph_state(0x0b27, 64), "st31 aborted st64");
+    assert!(doomfist.graph_state(0x0b27, 17), "the chase runs");
+    let flight = chunks.correction(&doomfist).expect("the press's chunk");
+    assert!(flight.contains(&ChangeKey::State(slam, 9)), "{flight:?}");
+    // 7545: his first move toward the point.
+    doomfist.step(view);
+    assert_eq!(
+        doomfist.velocity(),
+        [23.116_210_937_5, -8.732_421_875, 3.791_992_187_5]
+    );
+    assert_eq!(
+        doomfist.position(),
+        [7.487_304_687_5, 8.324_218_75, 8.157_226_562_5]
+    );
+    // The flight's other changes: 0.15 s after the search ended (st65,
+    // 120 704 + 150 ms, in frame 7553) the preview's entity st5 ends, and
+    // at 7556 the ground ray (3 m down from 0.25 m above his feet) meets the
+    // ground (#2413).
+    let mut corrections = Vec::new();
+    for frame in 7545..7560 {
+        assert!(doomfist.graph_state(0x0b27, 17), "frame {frame}");
+        if let Some(keys) = chunks.correction(&doomfist) {
+            corrections.push((frame, keys));
+        }
+        doomfist.step(view);
+    }
+    let [(7553, ended), (7556, hit)] = &corrections[..] else {
+        panic!("{corrections:?}");
+    };
+    assert!(
+        ended.contains(&ChangeKey::State(slam, 5)) && ended.contains(&ChangeKey::State(slam, 65)),
+        "{ended:?}"
+    );
+    assert!(hit.contains(&ChangeKey::Variable(slam, 2413)), "{hit:?}");
 }
 
 /// Rocket Punch (graph `0D06`) on the server: the charge (st11) while
@@ -1143,7 +1345,10 @@ fn doomfists_airborne_slam_flies_at_the_ground_ahead_and_stops_at_a_step_edge() 
                 .collect::<Vec<_>>()
         );
     };
-    flying.expect("the MoveTo began");
+    // The first press (frame 1) opens the search's gate, and its point
+    // begins the flight in that frame (the game's frames:
+    // `doomfists_tapped_airborne_slam_flies_from_the_press_frame`).
+    assert_eq!(flying, Some(1), "the flight begins in the press's frame");
     // The point is ground below where he pressed and ahead of the spawn.
     assert!(point[1] < above[1] - 1.0, "{above:?} -> {point:?}");
     assert!(horizontal(start, point) > 3.0, "{start:?} -> {point:?}");
