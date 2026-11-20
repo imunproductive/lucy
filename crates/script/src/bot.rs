@@ -321,8 +321,11 @@ impl World for BotWorld {
     /// The patrol is written for the AI entity that possesses the body: it
     /// reads the body as `STU_0AC15F78(owner())` (the health test of its
     /// BooleanSwitch). Here it runs on the body itself, which is that body.
-    /// Otherwise as the base world: a listed body's controller, which also
-    /// possesses it now ([`crate::vm::listed_relation`]).
+    /// Otherwise as the base world ([`crate::vm::listed_relation`]): a
+    /// listed body's controller, which also possesses it now; a spawned
+    /// entity's owner, and a projectile's shooter (the damaging Biotic
+    /// Orb's aura `1101` on a bot names its instigator
+    /// `STU_2B2E2F6D(#40, 0)`, the body that threw the orb).
     fn related_entity(&mut self, site: Site, relation: EntityRelation, entity: u32) -> Option<u32> {
         match relation {
             EntityRelation::PossessedBody
@@ -330,13 +333,7 @@ impl World for BotWorld {
             {
                 Some(entity)
             }
-            EntityRelation::Controller | EntityRelation::CurrentPossessor => {
-                self.target_candidates(site)?
-                    .iter()
-                    .find(|body| body.entity == entity)?
-                    .controller
-            }
-            _ => None,
+            _ => crate::vm::listed_relation(self.target_candidates(site)?, relation, entity),
         }
     }
 
@@ -951,14 +948,18 @@ impl BotBody {
         std::mem::take(&mut self.world.aura_changes)
     }
 
-    /// Whether a graph event of the live body is due by the end of `frame`
-    /// (its waits after a hit), so the frame has something to run.
+    /// Whether the live body has something to run by the end of `frame`: a
+    /// graph event due (its waits after a hit), or a health change that
+    /// applies each frame (an aura's rate: the damaging Biotic Orb's
+    /// `1101`). Other per-frame states don't make it run: an idle bot runs
+    /// only for its events, which its hit reactions' timing depends on.
     pub fn due_by(&self, frame: u32) -> bool {
         !self.component.owner_dead()
-            && self
-                .component
-                .next_due_ms()
-                .is_some_and(|due| due / crate::timeline::FRAME_MS <= u64::from(frame))
+            && (self.component.changes_health()
+                || self
+                    .component
+                    .next_due_ms()
+                    .is_some_and(|due| due / crate::timeline::FRAME_MS <= u64::from(frame)))
     }
 
     /// The criteria the body raised on itself since the last call, in order
@@ -1950,6 +1951,7 @@ mod tests {
                 radius: 0.4,
                 yaw: 0.0,
                 tags: None,
+                health: None,
                 spawned: Vec::new(),
             };
             bot.set_target_candidates(&[body(ENTITY, 1), body(ANA, thrower_team)]);

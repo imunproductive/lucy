@@ -106,6 +106,7 @@ fn rockets(scene: &PreparedScene, hits: &[u32], ticks: u32) -> Reactions {
                 direction: Some([0.0, 0.0, -1.0]),
                 environment: false,
                 from: Some(bot.position),
+                source: None,
             };
             let damage = world
                 .damage_body(scene, &hit, tick, Duration::ZERO)
