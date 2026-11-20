@@ -239,7 +239,7 @@ fn networked_for_code_state_keeps_its_subgraph_lifetime() {
         .unwrap();
         let snapshot = component.snapshot().unwrap();
         let states = &snapshot.instances[&1].states;
-        if server_only || flags != 0 {
+        if server_only {
             assert!(states.is_empty());
             assert!(matches!(
                 snapshot.diagnostics.as_slice(),
@@ -252,6 +252,20 @@ fn networked_for_code_state_keeps_its_subgraph_lifetime() {
         assert!(states[&0].active && states[&1].active);
         assert_eq!(states[&0].kind, StateKind::Plain);
         assert!(!snapshot.variables.contains_key(&0x42));
+        // The transport form (`0CBB`'s phase rows) runs as the plain one,
+        // with its transport step recorded as not run.
+        assert_eq!(
+            snapshot
+                .assumptions
+                .iter()
+                .map(|assumption| assumption.class.as_str())
+                .collect::<Vec<_>>(),
+            if flags == 1 {
+                vec!["STU_CD46AF93"]
+            } else {
+                Vec::new()
+            }
+        );
         component
             .queue_message(1, 0x0240_0000_0000_0003, Variables::new())
             .unwrap();
