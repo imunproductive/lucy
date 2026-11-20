@@ -4957,6 +4957,20 @@ impl WorldDelivery {
         }
     }
 
+    /// The graphs of the server projectile `shot` give it this speed scale
+    /// ([`crate::spawned`]): its flight flies at it from its next step.
+    pub(crate) fn set_server_flight_speed(&mut self, (body, token): ShotKey, scale: f64) {
+        if let Some(script) = self.body_script.as_mut().filter(|script| script.id == body) {
+            for (_, flight) in script
+                .flights
+                .iter_mut()
+                .filter(|(flown, _)| *flown == Some(token))
+            {
+                flight.set_speed_scale(scale);
+            }
+        }
+    }
+
     /// The skin theme of the player's body (match.py `Player.skin`).
     pub(crate) fn skin(&self) -> SkinTheme {
         self.body.map(|body| body.skin).unwrap_or_default()
@@ -5000,6 +5014,15 @@ impl WorldDelivery {
         self.others
             .finish_server_projectile(body, token, tick, exploded);
         self.server_copies.finish(body, token, tick, exploded);
+    }
+
+    /// The graphs of a server projectile's entity have a frame
+    /// ([`crate::spawned`]: a Biotic Orb's): this client's copy of it,
+    /// another player's or its own, sends it once its create arrived
+    /// ([`Self::advance_observed`]).
+    pub(crate) fn refresh_server_projectile(&mut self, shot: ShotKey, frame: &PlacedFrame) {
+        self.others.set_projectile_frame(shot, frame);
+        self.server_copies.set_frame(shot, frame);
     }
 
     /// `_ObservedProjectile.advance` for this client's copies.

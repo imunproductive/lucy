@@ -935,6 +935,13 @@ pub trait World {
         false
     }
 
+    /// A projectile's speed scale state (`STU_D3F71FCF`) began with its
+    /// scale (Some) or ended (None, back to 1). False: this entity is no
+    /// projectile the world flies.
+    fn set_projectile_speed(&mut self, _site: Site, _scale: Option<f64>) -> bool {
+        false
+    }
+
     /// A `CombatModFilter` state began with its modifier (Some) or ended
     /// (None). False: this world keeps none.
     fn combat_mod(&mut self, _site: Site, _modifier: Option<CombatMod>) -> bool {
@@ -1179,6 +1186,9 @@ pub enum StateKind {
     },
     /// A status on the body while active (`STU_9028E035`, `vm/statuses.rs`).
     Status,
+    /// A projectile's speed scale while active (`STU_D3F71FCF`,
+    /// `vm/statuses.rs`).
+    ProjectileSpeed,
     /// A combat modifier on the body while active (`CombatModFilter`).
     CombatMod,
     /// An assist credit while active, and for its linger after
@@ -2132,6 +2142,16 @@ impl Component {
     /// When the next queued event is due.
     pub fn next_due_ms(&self) -> Option<u64> {
         self.machine.queues.next_due()
+    }
+
+    /// Whether a state runs each frame (a health rate, a target search):
+    /// the client runs it at every frame, so the frames must not be
+    /// skipped.
+    pub fn ticking(&self) -> bool {
+        self.machine
+            .ticking
+            .values()
+            .any(|states| !states.is_empty())
     }
 
     /// The active mover behaviour states' requests, for the mover.

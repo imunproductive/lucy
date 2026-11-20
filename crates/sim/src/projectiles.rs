@@ -1203,6 +1203,20 @@ pub struct ObservedProjectile {
     /// bot's frames until the launch arrives (`activation`, server.py
     /// `retain_bot_volley`).
     held: Option<ProjectedState>,
+    /// The server's frame of the projectile entity's graphs, for a server
+    /// projectile whose entity runs them ([`crate::spawned`]: a Biotic
+    /// Orb's `1100`).
+    script: Option<CopyScript>,
+}
+
+/// A server projectile's graph frame on one client's copy: the copy's
+/// statescript stream, the latest frame and the serial of the frame that
+/// went last.
+#[derive(Debug)]
+struct CopyScript {
+    stream: Stream,
+    frame: PlacedFrame,
+    sent: Option<u64>,
 }
 
 impl ObservedProjectile {
@@ -1260,6 +1274,7 @@ impl ObservedProjectile {
             explode: false,
             release_at: projectile_wire::HIDDEN_POSITION,
             held: None,
+            script: None,
         })
     }
 
@@ -1364,6 +1379,64 @@ impl ObservedProjectile {
         self.finish(tick, exploded.is_some(), false);
         if let Some(point) = exploded {
             self.release_at = point;
+        }
+    }
+
+    /// The server's latest frame of the projectile entity's graphs (a
+    /// Biotic Orb's, [`crate::spawned`]); [`Self::take_frame`] sends it.
+    pub(crate) fn set_frame(&mut self, frame: &PlacedFrame) {
+        match &mut self.script {
+            Some(script) => {
+                if script.frame.serial != frame.serial {
+                    script.frame = frame.clone();
+                }
+            }
+            None => {
+                self.script = Some(CopyScript {
+                    stream: Stream::new(self.entity),
+                    frame: frame.clone(),
+                    sent: None,
+                })
+            }
+        }
+    }
+
+    /// The latest frame as a full chunk on the copy, once its create
+    /// arrived and until its shot ends, when that frame hasn't gone yet:
+    /// the record, its chunk and the frame's serial. As for a Biotic
+    /// Field's copy (`FieldCopies`), the client begins the graph's remote
+    /// states only from these frames: the orb's `STU_D3F71FCF` (`1100`
+    /// rid8, `10FF` rid10, remote 1) while it has targets.
+    pub(crate) fn take_frame(&mut self) -> io::Result<Option<(EntityUpdate, u32, u64)>> {
+        if !self.creation_arrived || self.finished {
+            return Ok(None);
+        }
+        let Some(script) = self
+            .script
+            .as_mut()
+            .filter(|script| script.sent != Some(script.frame.serial))
+        else {
+            return Ok(None);
+        };
+        let chunk = script
+            .stream
+            .full(&script.frame.bits)
+            .map_err(io::Error::other)?;
+        script.sent = Some(script.frame.serial);
+        Ok(Some((chunk.update, chunk.last, script.frame.serial)))
+    }
+
+    /// Whether the frame of serial `frame` is still the latest.
+    pub(crate) fn frame_current(&self, frame: u64) -> bool {
+        self.script
+            .as_ref()
+            .is_some_and(|script| script.frame.serial == frame)
+    }
+
+    /// The chunk `last` of the copy's frames arrived.
+    pub(crate) fn frame_arrived(&mut self, last: u32) {
+        if let Some(script) = &mut self.script {
+            script.stream.arrived(last);
         }
     }
 
@@ -1529,6 +1602,19 @@ impl ServerCopies {
         }
     }
 
+    /// The server's latest frame of the graphs of `shot`'s projectile
+    /// entity ([`crate::spawned`]): its copies send it once their create
+    /// arrived, and again as it changes.
+    pub(crate) fn set_frame(&mut self, (body, token): ShotKey, frame: &PlacedFrame) {
+        for copy in self
+            .copies
+            .iter_mut()
+            .filter(|copy| copy.body == body && copy.token == token)
+        {
+            copy.projectile.set_frame(frame);
+        }
+    }
+
     /// `_ObservedProjectile.advance` for each copy, its source the body
     /// whose script runs now with its acknowledged owner frame: a copy of
     /// another (an earlier life's) body ends.
@@ -1568,6 +1654,25 @@ impl ServerCopies {
                     ObservedOut::Done => keep = false,
                 }
             }
+            if keep {
+                match copy.projectile.take_frame() {
+                    Ok(Some((update, last, frame))) => {
+                        records.push((
+                            update,
+                            SeenDelivery::Frame {
+                                serial,
+                                last,
+                                frame,
+                            },
+                        ));
+                    }
+                    Ok(None) => {}
+                    Err(error) => eprintln!(
+                        "server projectile {:08X}'s frame failed ({error})",
+                        copy.projectile.entity()
+                    ),
+                }
+            }
             keep
         });
         records
@@ -1579,6 +1684,10 @@ impl ServerCopies {
                 self.copies.iter().any(|copy| copy.serial == serial)
             }
             SeenDelivery::Destroy { serial } => self.destroys.get(&entity) == Some(&serial),
+            SeenDelivery::Frame { serial, frame, .. } => self
+                .copies
+                .iter()
+                .any(|copy| copy.serial == serial && copy.projectile.frame_current(frame)),
         }
     }
 
@@ -1599,6 +1708,11 @@ impl ServerCopies {
             }
             SeenDelivery::Destroy { .. } => {
                 self.destroys.remove(&entity);
+            }
+            SeenDelivery::Frame { serial, last, .. } => {
+                if let Some(copy) = self.copies.iter_mut().find(|copy| copy.serial == serial) {
+                    copy.projectile.frame_arrived(last);
+                }
             }
         }
         false
@@ -2359,5 +2473,82 @@ mod tests {
             ..field
         };
         assert_eq!(copies.deliver(&next, &mut ids)[0].0.entity, FIELD_FIRST + 1);
+    }
+
+    /// A server projectile whose entity runs graphs (a Biotic Orb,
+    /// `crate::spawned`): its shooter's copy takes the graph's latest frame
+    /// once the copy's create arrived, again when the frame changes (an
+    /// older one lost is not sent again), and none once its flight ended.
+    #[test]
+    fn a_server_projectile_copy_takes_its_entitys_frames() {
+        let frame = |serial, bits: u64| {
+            let mut writer = BitWriter::new();
+            writer.bits(bits, 3).unwrap();
+            PlacedFrame {
+                serial,
+                bits: Arc::new(writer),
+            }
+        };
+        let body = BodyId {
+            entity: BODY,
+            generation: 1,
+        };
+        let token = ProjectileToken::server(1);
+        let fired = FiredProjectile {
+            body,
+            token,
+            shot: shot(1000),
+            definition: HELIX,
+            volleys: 0x101,
+            origin: [1.0, 2.0, 3.0],
+            direction: [0.0, 0.0, 1.0],
+            bound: 100,
+        };
+        let frames = |records: Vec<(EntityUpdate, SeenDelivery)>| -> Vec<_> {
+            records
+                .into_iter()
+                .filter(|(_, delivery)| matches!(delivery, SeenDelivery::Frame { .. }))
+                .collect()
+        };
+        let mut copies = ServerCopies::default();
+        let [(_, create)] = copies.show(&fired, true, 1000, || SEEN_FIRST)[..] else {
+            panic!("one create");
+        };
+        let source = Some((body, None));
+        copies.set_frame((body, token), &frame(1, 0b101));
+        copies.set_frame((body, token), &frame(2, 0b001));
+        assert!(frames(copies.advance(1001, source)).is_empty());
+
+        assert!(!copies.delivered(create, SEEN_FIRST, true));
+        let mut stream = Stream::new(SEEN_FIRST);
+        let latest = SeenDelivery::Frame {
+            serial: 1,
+            last: 1,
+            frame: 2,
+        };
+        assert_eq!(
+            frames(copies.advance(1002, source)),
+            [(stream.full(&frame(2, 0b001).bits).unwrap().update, latest)]
+        );
+        copies.set_frame((body, token), &frame(2, 0b001));
+        assert!(frames(copies.advance(1003, source)).is_empty());
+        assert!(copies.current(latest, SEEN_FIRST));
+
+        copies.set_frame((body, token), &frame(3, 0b011));
+        assert!(!copies.delivered(latest, SEEN_FIRST, false));
+        let newer = SeenDelivery::Frame {
+            serial: 1,
+            last: 2,
+            frame: 3,
+        };
+        assert_eq!(
+            frames(copies.advance(1004, source)),
+            [(stream.full(&frame(3, 0b011).bits).unwrap().update, newer)]
+        );
+        assert!(!copies.delivered(newer, SEEN_FIRST, true));
+
+        copies.finish(body, token, 1005, None);
+        copies.set_frame((body, token), &frame(4, 0b111));
+        assert!(frames(copies.advance(1005, source)).is_empty());
     }
 }

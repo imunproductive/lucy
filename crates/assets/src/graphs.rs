@@ -12,7 +12,10 @@
 //! rulesets that set any, and each body's authored target tags. The
 //! bot bundle adds the Practice Range bot bodies with their target tags and
 //! AI definitions (with the AI weapon buttons) and the graphs placed by the
-//! maps' AI spawners; its hero bodies have no target tags.
+//! maps' AI spawners; its hero bodies have no target tags. It keeps the
+//! volley-spawned graphs too, and so the auras they apply: a bot runs the
+//! auras put on it from this bundle (the Biotic Orbs' `02D5` → `1101`,
+//! applied by the orb's `1100`).
 //!
 //! Per graph it keeps what a runtime needs and drops the editor layout
 //! (positions, comments, display names, colours). The file format is
@@ -233,9 +236,7 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
         let record = graph.record(index)?;
         queue.extend(graph.graph_refs());
         queue.extend(aura_graphs(&assets, &record, &mut auras)?);
-        if !bots {
-            queue.extend(spawned_graphs(&assets, &record, &mut spawned)?);
-        }
+        queue.extend(spawned_graphs(&assets, &record, &mut spawned)?);
         graphs.insert(index, record);
     }
 

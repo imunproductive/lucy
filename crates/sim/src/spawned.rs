@@ -25,12 +25,17 @@
 //! by its shooter's controller and shot by his body (component 50,
 //! `STU_2B2E2F6D`), and moves with its flight each tick. Its graph searches
 //! the bodies around it and puts its aura on them (the orbs' `02A1.053` and
-//! `02D5.053`, whose graphs heal or hurt the body through its own
-//! ModifyHealth with the orb as the change's source); what they dealt comes
-//! back to it as the source's healing done or damage dealt
-//! (`WorldDelivery::dealt`), and once its pool is spent it removes itself,
-//! which ends the flight. A flight that ends first (its lifetime, its last
-//! bounce) removes it.
+//! `02D5.053`, whose graphs `1102`/`1101` heal or hurt the body through its
+//! own ModifyHealth, a player's or a bot's, with the orb as the change's
+//! source); what they dealt comes back to it as the source's healing done
+//! or damage dealt (`WorldDelivery::dealt`), and once its pool is spent it
+//! removes itself, which ends the flight. A flight that ends first (its
+//! lifetime, its last bounce) removes it. Its observer frame goes to every
+//! client's copy of the projectile (`ObservedProjectile::set_frame`): the
+//! client begins the orbs' remote speed state `STU_D3F71FCF` only from it.
+//! That state's scale (0.275 while the orb has targets) also slows the
+//! server's flight ([`SpawnedEntities::flight_speeds`]; assumption, its
+//! client reader is not known).
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -353,6 +358,28 @@ impl SpawnedEntities {
         field.frame.as_ref().map(|(_, frame)| frame)
     }
 
+    /// The latest frame of each server projectile whose graphs run, for
+    /// its copies (`ObservedProjectile::set_frame`).
+    pub(crate) fn flight_frames(&self) -> impl Iterator<Item = (ShotKey, &PlacedFrame)> {
+        self.spawned
+            .iter()
+            .filter(|spawned| spawned.projectile)
+            .filter_map(|spawned| Some((spawned.shot, &spawned.frame.as_ref()?.1)))
+    }
+
+    /// The speed scale each server projectile's graphs give it now
+    /// (`STU_D3F71FCF`: a Biotic Orb flies at 0.275 while it has targets),
+    /// for its flight.
+    pub(crate) fn flight_speeds(&self) -> impl Iterator<Item = (ShotKey, f64)> + '_ {
+        self.spawned
+            .iter()
+            .filter(|spawned| spawned.projectile)
+            .filter_map(|spawned| {
+                let placed = self.world.entity(spawned.entity)?;
+                Some((spawned.shot, placed.speed_scale()))
+            })
+    }
+
     /// Project each running entity's observer frame; a new one when it
     /// changed. Unlike a map placeable's, a spawned entity with
     /// assumptions still sends its frame (the clients show nothing of a
@@ -592,26 +619,43 @@ mod tests {
         assert!(fields.owned_by(SOLDIER).is_empty());
     }
 
-    /// Moira's damaging Biotic Orb (`1E61.003`) on its graph `1100` as its
-    /// flight carries it: spawned where the flight is, it puts its aura
-    /// `02D5` (`002A` = 50 a second) on the enemy within 4 m at once, the
-    /// orb itself the applier; it counts the damage dealt (`0012.025`) it
-    /// takes against its pool of 200 × `#12619` (Moira's ruleset default,
-    /// 1.0, read through its shooter `STU_2B2E2F6D`), and at 200 it removes
-    /// itself, which ends its flight, and tells its shooter (`060E.025`).
-    #[test]
-    #[ignore = "requires the derived 104319 data"]
-    fn the_damaging_orb_hurts_the_enemy_near_it_until_its_pool_is_spent() {
+    /// One of Moira's Biotic Orbs, for [`orb_spends_its_pool`].
+    struct Orb {
+        definition: u64,
+        graph: u32,
+        /// The other body's team: Moira's (1) for the healing orb.
+        team: u8,
+        aura: u64,
+        rate: Value,
+        heal: bool,
+        /// The 50s its pool takes.
+        pool: usize,
+        /// Its speed scale state `STU_D3F71FCF`.
+        slow: u16,
+    }
+
+    /// A Biotic Orb on its graph as its flight carries it 1 m above Moira:
+    /// spawned where the flight is, it puts its aura (`002A` its rate a
+    /// second) on the other body 2 m away at once (the healing orb only on
+    /// a hurt ally), the orb itself the applier. With a target, its
+    /// BooleanSwitch on `#375` begins `STU_D3F71FCF(0.275)`: its frame
+    /// (which the clients' copies of the orb take, as the client begins
+    /// this remote state only from the server's frames) holds it, and its
+    /// flight slows to 0.275. It counts what its aura dealt (`0012.025`
+    /// damage dealt, `0044.025` healing done) against its pool of 200 or
+    /// 300 × `#12619`/`#12618` (Moira's ruleset defaults, 1.0, read through
+    /// its shooter `STU_2B2E2F6D`), and once it is spent it removes itself,
+    /// which ends its flight, and tells its shooter (`060E.025`).
+    fn orb_spends_its_pool(orb: Orb) {
         use orpheus_content::maps::{PRACTICE_RANGE_MODE, PRACTICE_RANGE_RULESET};
         const MOIRA: u32 = 0x1000_0010;
         const MOIRA_HERO: u64 = 0x02e0_0000_0000_01a2;
-        const ENEMY: u32 = 0x1000_0210;
-        const DAMAGE_ORB: u64 = 0x0400_0000_0000_1e61;
+        const OTHER: u32 = 0x1000_0210;
         const ORB: u32 = 0xa00f_0000;
         const ORB_DONE: u64 = 0x0240_0000_0000_060e;
         let data = orpheus_testkit::runtime_dir().join("data");
         let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
-        let spawn_graphs = Arc::new(SpawnGraphs::from([(DAMAGE_ORB, vec![0x1100])]));
+        let spawn_graphs = Arc::new(SpawnGraphs::from([(orb.definition, vec![orb.graph])]));
         let mut spawned = SpawnedEntities::new(
             Arc::clone(&graphs),
             Vec::new(),
@@ -631,14 +675,15 @@ mod tests {
         let candidates = |spawned: &SpawnedEntities| {
             let mut moira = body(MOIRA, 1, [0.0; 3]);
             moira.spawned = spawned.owned_by(MOIRA);
-            let mut enemy = body(ENEMY, 2, [2.0, 0.0, 0.0]);
-            enemy.health = Some([200.0, 200.0]);
-            vec![moira, enemy]
+            moira.health = Some([200.0, 200.0]);
+            let mut other = body(OTHER, orb.team, [2.0, 0.0, 0.0]);
+            other.health = Some([100.0, 200.0]);
+            vec![moira, other]
         };
         let flight = [ServerFlight {
             shot,
             hero: MOIRA_HERO,
-            definition: DAMAGE_ORB,
+            definition: orb.definition,
             position: [0.0, 1.0, 0.0],
         }];
         spawned.advance(100, candidates(&spawned), [], &flight, || ORB);
@@ -662,17 +707,21 @@ mod tests {
         else {
             panic!("one aura: {auras:?}");
         };
+        assert_eq!((*target, *aura, *instigator), (OTHER, orb.aura, ORB));
+        assert_eq!(parameters, &[(0x0a40_0000_0000_002a, orb.rate)]);
+        let frame = &spawned.spawned[0].frame.as_ref().unwrap().0;
+        assert!(frame.state(1, orb.slow).is_some());
         assert_eq!(
-            (*target, *aura, *instigator),
-            (ENEMY, 0x04a0_0000_0000_02d5, ORB)
+            spawned.flight_speeds().collect::<Vec<_>>(),
+            [(shot, f64::from(0.275_f32))]
         );
-        assert_eq!(parameters, &[(0x0a40_0000_0000_002a, Value::Integer(50))]);
-        for (tick, dealt) in (101..).zip([50.0; 4]) {
+        let last = 100 + orb.pool as u32;
+        for tick in 101..=last {
             let (message, parameters) = orpheus_script::ultimate::dealt_message(
-                ENEMY,
-                dealt,
+                OTHER,
+                50.0,
                 &orpheus_script::weapons::DamageTags::NONE,
-                false,
+                orb.heal,
             );
             spawned.receive_message(&GameMessage {
                 sender: ORB,
@@ -683,7 +732,7 @@ mod tests {
             spawned.advance(tick, candidates(&spawned), [], &flight, || ORB);
             let (messages, _) = spawned.take_messages();
             let ended = spawned.take_ended_flights();
-            if tick < 104 {
+            if tick < last {
                 assert!(messages.is_empty() && ended.is_empty(), "{tick}");
                 continue;
             }
@@ -694,5 +743,41 @@ mod tests {
             assert_eq!((done.message, done.target), (ORB_DONE, MOIRA));
         }
         assert!(spawned.owned_by(MOIRA).is_empty());
+    }
+
+    /// The damaging orb (`1E61.003`, graph `1100`): `02D5` (50 a second)
+    /// on the enemy within 4 m, a pool of 200 (four 50s), `STU_D3F71FCF`
+    /// st3.
+    #[test]
+    #[ignore = "requires the derived 104319 data"]
+    fn the_damaging_orb_hurts_the_enemy_near_it_until_its_pool_is_spent() {
+        orb_spends_its_pool(Orb {
+            definition: 0x0400_0000_0000_1e61,
+            graph: 0x1100,
+            team: 2,
+            aura: 0x04a0_0000_0000_02d5,
+            rate: Value::Integer(50),
+            heal: false,
+            pool: 4,
+            slow: 3,
+        });
+    }
+
+    /// The healing orb (`1E60.003`, graph `10FF`): `02A1` (65 a second) on
+    /// the hurt ally within 5 m, a pool of 300 (six 50s), `STU_D3F71FCF`
+    /// st4.
+    #[test]
+    #[ignore = "requires the derived 104319 data"]
+    fn the_healing_orb_heals_the_hurt_ally_near_it_until_its_pool_is_spent() {
+        orb_spends_its_pool(Orb {
+            definition: 0x0400_0000_0000_1e60,
+            graph: 0x10ff,
+            team: 1,
+            aura: 0x04a0_0000_0000_02a1,
+            rate: Value::Integer(65),
+            heal: true,
+            pool: 6,
+            slow: 4,
+        });
     }
 }

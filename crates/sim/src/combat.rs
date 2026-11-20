@@ -2410,6 +2410,16 @@ pub fn deliver_projectiles(
             world.finish_server_projectile(body, token, tick, None);
         }
     }
+    for (shot, frame) in combat.spawned.flight_frames() {
+        for world in worlds.iter_mut().flatten() {
+            world.refresh_server_projectile(shot, frame);
+        }
+    }
+    for (shot, scale) in combat.spawned.flight_speeds() {
+        for world in worlds.iter_mut().flatten() {
+            world.set_server_flight_speed(shot, scale);
+        }
+    }
     for (owner, skin, shot, feet, parents) in delivers {
         let Some(frame) = combat.spawned.frame(shot) else {
             continue;

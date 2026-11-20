@@ -2369,6 +2369,83 @@ fn the_biotic_field_aura_heals_the_body_through_its_own_graph() {
     );
 }
 
+/// Moira's healing Biotic Orb puts `02A1.053` (`002A` = 65) on a hurt ally,
+/// the orb its instigator; the ally's body runs the aura's graph `1102`,
+/// whose ModifyHealth heals it by `#499` = 65 a second, dealt by Moira
+/// (`STU_2B2E2F6D(#40, 0)`, the orb's shooter, read from her listed orb)
+/// with the orb as its source (`m_7B93233C` = `#40`), which counts it
+/// against its pool. 125 frames (2 s) heal 130.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn the_healing_orbs_aura_heals_an_ally_for_its_thrower() {
+    use orpheus_script::vm::{AuraChange, AuraSource, OwnedEntity};
+
+    const MOIRA: u32 = 0xa000_0201;
+    const ORB: u32 = 0xa00f_0000;
+    let (mut runtime, spawn) = charge_body(SOLDIER, None);
+    let body = |entity: u32, controller: u32, spawned| TargetCandidate {
+        entity,
+        team: Some(0),
+        dead: false,
+        controller: Some(controller),
+        player: Some(controller),
+        ai: false,
+        ai_control: None,
+        feet: [0.0; 3],
+        height: 1.8,
+        radius: 0.4,
+        yaw: 0.0,
+        tags: None,
+        health: None,
+        spawned,
+    };
+    runtime.set_target_candidates(&[
+        body(spawn.entity, spawn.controller, Vec::new()),
+        body(
+            MOIRA,
+            MOIRA & !0xff,
+            vec![OwnedEntity {
+                entity: ORB,
+                projectile: true,
+            }],
+        ),
+    ]);
+    let source = AuraSource {
+        entity: ORB,
+        instance: 1,
+        state: 1,
+        activation: 1,
+    };
+    runtime
+        .change_aura(&AuraChange::Apply {
+            source: Some(source),
+            target: spawn.entity,
+            aura: 0x04a0_0000_0000_02a1,
+            instigator: ORB,
+            creator: ORB,
+            parameters: vec![(0x0a40_0000_0000_002a, Value::Integer(65))],
+        })
+        .unwrap();
+    run_frames(&mut runtime, spawn, 125);
+    runtime
+        .change_aura(&AuraChange::Remove {
+            source,
+            target: spawn.entity,
+        })
+        .unwrap();
+    let changes = runtime.world.take_health_changes();
+    assert!(!changes.is_empty());
+    for change in &changes {
+        assert_eq!(
+            (change.heal, change.target, change.instigator, change.source),
+            (true, spawn.entity, MOIRA, Some(ORB)),
+            "{change:?}"
+        );
+    }
+    let healed: f64 = changes.iter().map(|change| change.amount).sum();
+    assert!((healed - 130.0).abs() < 1e-9, "healed {healed}");
+}
+
 /// An AI hero's weapons deal his AI profile's damage, as their graphs are
 /// written: Soldier: 76's volleys (`0254`) amount to
 /// `STU_D3EB8D87(STU_DB742151(owner)) ? STU_4049CF77(parameter, fallback) :

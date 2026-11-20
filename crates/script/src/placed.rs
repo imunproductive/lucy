@@ -157,6 +157,8 @@ pub struct PlacedEntity {
     owner: Option<u32>,
     /// A spawned projectile's shooter ([`Spawn::shooter`]).
     shooter: Option<ProjectileShooter>,
+    /// A spawned projectile's speed scale (`STU_D3F71FCF`); 1 otherwise.
+    speed_scale: f64,
 }
 
 impl PlacedEntity {
@@ -191,6 +193,13 @@ impl PlacedEntity {
     /// 4); None: its script gave none.
     pub fn team(&self) -> Option<i64> {
         self.team
+    }
+
+    /// A spawned projectile's speed scale: what a speed scale state of its
+    /// graphs holds (`STU_D3F71FCF`, the Biotic Orbs' 0.275 while they have
+    /// targets), else 1.
+    pub fn speed_scale(&self) -> f64 {
+        self.speed_scale
     }
 }
 
@@ -240,6 +249,7 @@ struct EntityWorld<'a, 'b> {
     target_tags: &'b mut TargetTags,
     owner: Option<u32>,
     shooter: Option<ProjectileShooter>,
+    speed_scale: &'b mut f64,
 }
 
 impl World for EntityWorld<'_, '_> {
@@ -505,6 +515,16 @@ impl World for EntityWorld<'_, '_> {
         true
     }
 
+    /// A spawned projectile's speed scale state: the match flies it at
+    /// that scale ([`PlacedEntity::speed_scale`]).
+    fn set_projectile_speed(&mut self, site: Site, scale: Option<f64>) -> bool {
+        if site.entity != self.entity || self.shooter.is_none() {
+            return false;
+        }
+        *self.speed_scale = scale.filter(|scale| scale.is_finite()).unwrap_or(1.0);
+        true
+    }
+
     /// A spawned entity removes itself.
     fn destroy_entity(&mut self, _site: Site, entity: u32) -> bool {
         if self.owner.is_none() || entity != self.entity {
@@ -704,6 +724,7 @@ impl MapEntityWorld {
                     target_tags: TargetTags::default(),
                     owner,
                     shooter,
+                    speed_scale: 1.0,
                 });
                 return;
             }
@@ -730,6 +751,7 @@ impl MapEntityWorld {
         };
         let mut team = None;
         let mut target_tags = TargetTags::default();
+        let mut speed_scale = 1.0;
         let mut entity_world = EntityWorld {
             shared: &mut shared,
             entity,
@@ -738,6 +760,7 @@ impl MapEntityWorld {
             target_tags: &mut target_tags,
             owner,
             shooter,
+            speed_scale: &mut speed_scale,
         };
         let started = Component::start(
             Arc::clone(&self.graphs),
@@ -765,6 +788,7 @@ impl MapEntityWorld {
             target_tags,
             owner,
             shooter,
+            speed_scale,
         });
         self.end_destroyed();
     }
@@ -898,6 +922,7 @@ impl MapEntityWorld {
                 target_tags: &mut placed.target_tags,
                 owner: placed.owner,
                 shooter: placed.shooter,
+                speed_scale: &mut placed.speed_scale,
             };
             if let Err(error) = run(component, &mut world) {
                 placed.fault = Some(error.to_string());
@@ -970,6 +995,7 @@ impl MapEntityWorld {
             target_tags: &mut placed.target_tags,
             owner: placed.owner,
             shooter: placed.shooter,
+            speed_scale: &mut placed.speed_scale,
         };
         for id in instances {
             // An instance that faults on its end leaves the rest to end.
