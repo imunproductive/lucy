@@ -295,6 +295,8 @@ pub struct PreparedScene {
     /// the loading screen doesn't wait for, created after the player and
     /// the mode, with their script data.
     server_placeables: Vec<Arc<PlacedScript>>,
+    /// The server placeables a mode graph removed ([`Self::remove_placeables`]).
+    removed_placeables: Vec<u32>,
     /// The map's entities with target tags in this mode, which the scene
     /// tag queries find (`map_areas::MapAreaData::map_tags`).
     map_tags: Arc<MapTags>,
@@ -648,6 +650,7 @@ impl SceneAssets {
             mode_random,
             placed_scripts,
             server_placeables,
+            removed_placeables: Vec::new(),
             map_tags,
             body_tags: Arc::clone(&scripts.body_tags),
         };
@@ -1011,6 +1014,29 @@ impl PreparedScene {
     /// The server placeables' scripts.
     pub fn placed_scripts(&self) -> &PlacedScripts {
         &self.placed_scripts
+    }
+
+    /// Remove the server placeables whose identifier 2 is `identifier`, as
+    /// a mode graph's `STU_A3DC6A25` does (`0CBB` st34: the health packs,
+    /// `2AB0.01C`, when the ruleset turns them off): their scripts end, a
+    /// client whose world starts later doesn't get them, and each client's
+    /// delivery drops what it hasn't sent of them
+    /// ([`Self::removed_placeables`]). A client that holds one already
+    /// removes it itself when it runs the state.
+    pub fn remove_placeables(&mut self, identifier: u64) {
+        let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.server_placeables)
+            .into_iter()
+            .partition(|placed| placed.second_identifier == Some(identifier));
+        self.server_placeables = kept;
+        for placed in gone {
+            self.placed_scripts.remove(placed.entity());
+            self.removed_placeables.push(placed.entity());
+        }
+    }
+
+    /// The server placeables removed so far ([`Self::remove_placeables`]).
+    pub fn removed_placeables(&self) -> &[u32] {
+        &self.removed_placeables
     }
 
     /// The spawn rooms the mode holds now the mode's message for, in the

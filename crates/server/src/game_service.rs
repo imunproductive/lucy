@@ -3425,6 +3425,14 @@ impl State {
                         })
                     };
                     world.scene.set_next_dummy(Some(next));
+                    // The placeables the mode entity's graphs removed (`0CBB`
+                    // st34: the health packs, when the ruleset turns them
+                    // off) go before their scripts run again.
+                    if let Some(script) = room.mode.as_mut().and_then(ModeRunner::script_mut) {
+                        for identifier in script.take_placeable_removals() {
+                            world.scene.remove_placeables(identifier);
+                        }
+                    }
                     world.scene.advance_placed(tick, &holds);
                     dummies.push((id, world.scene.take_dummy_changes()));
                     scopes.push((id, world.scene.take_scope_changes()));

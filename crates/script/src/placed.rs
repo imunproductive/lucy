@@ -964,13 +964,14 @@ impl MapEntityWorld {
         self.end_destroyed();
     }
 
-    /// Remove a spawned entity the match ends (its owner's body went): its
+    /// Remove an entity the match ends (a spawned one whose owner's body
+    /// went, a placed one a mode graph removed, `STU_A3DC6A25`): its
     /// graphs end, as when it removes itself. False: no such entity.
     pub fn remove(&mut self, entity: u32) -> bool {
         let Some(index) = self
             .entities
             .iter()
-            .position(|placed| placed.entity == entity && placed.owner.is_some())
+            .position(|placed| placed.entity == entity)
         else {
             return false;
         };

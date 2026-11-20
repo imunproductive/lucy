@@ -140,6 +140,9 @@ pub struct ModeWorld {
     /// The graphs the graphs played on other entities, until the match
     /// takes them ([`ModeScript::take_play_requests`]).
     plays: Vec<PlayRequest>,
+    /// The identifiers 2 whose map placeables the graphs removed, until
+    /// the match takes them ([`ModeScript::take_placeable_removals`]).
+    placeable_removals: Vec<u64>,
     outbox: Vec<GameMessage>,
     /// The messages the graphs sent the mode entity itself, until the match
     /// takes them ([`ModeScript::take_own_messages`]).
@@ -173,6 +176,7 @@ impl ModeWorld {
             variable_writes: Vec::new(),
             scope_changes: Vec::new(),
             plays: Vec::new(),
+            placeable_removals: Vec::new(),
             outbox: Vec::new(),
             own: Vec::new(),
             held: Vec::new(),
@@ -332,6 +336,12 @@ impl World for ModeWorld {
     /// Played on a player (Chase Variable's `1CCF`), by the match.
     fn play_script(&mut self, _site: Site, request: PlayRequest) -> bool {
         self.plays.push(request);
+        true
+    }
+
+    /// `0CBB` st34 removing the health packs, by the match.
+    fn remove_placeables(&mut self, _site: Site, identifier: u64) -> bool {
+        self.placeable_removals.push(identifier);
         true
     }
 
@@ -741,6 +751,12 @@ impl ModeScript {
     /// scripts ([`crate::controller::ControllerScript::play_script`]).
     pub fn take_play_requests(&mut self) -> Vec<PlayRequest> {
         std::mem::take(&mut self.world.plays)
+    }
+
+    /// The identifiers 2 whose map placeables the graphs removed since the
+    /// last call (`STU_A3DC6A25`), for the match to remove.
+    pub fn take_placeable_removals(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.world.placeable_removals)
     }
 
     /// The match opened a scope instance of a scope state here (the mode

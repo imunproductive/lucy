@@ -777,6 +777,12 @@ pub trait World {
         false
     }
 
+    /// Remove every map placeable whose identifier 2 is `identifier`
+    /// (`STU_A3DC6A25`, `vm/entities.rs`). False: this world removes none.
+    fn remove_placeables(&mut self, _site: Site, _identifier: u64) -> bool {
+        false
+    }
+
     /// Create a dummy bot (`STU_FC3921B1`): a hero body no player plays;
     /// the entity it gets. None: this world creates none.
     fn create_dummy_bot(&mut self, _site: Site, _dummy: DummyBot) -> Option<u32> {

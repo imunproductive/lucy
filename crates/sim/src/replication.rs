@@ -1705,6 +1705,10 @@ pub struct WorldDelivery {
     bot_views: BotViews,
     /// The server placeables' statescript on this client.
     placed_views: PlacedViews,
+    /// The server placeables a mode graph removed
+    /// ([`PreparedScene::remove_placeables`]): their creates not sent yet
+    /// go no more.
+    removed_placed: HashSet<u32>,
     /// The entities the mode entity's graphs made that this client is
     /// given (their create queued), and those whose destroy hasn't arrived.
     mode_entities: HashSet<u32>,
@@ -1928,6 +1932,7 @@ impl WorldDelivery {
             retained_elsewhere: HashSet::new(),
             bot_views: BotViews::default(),
             placed_views: PlacedViews::default(),
+            removed_placed: HashSet::new(),
             mode_entities: HashSet::new(),
             mode_entity_destroys: HashSet::new(),
             target_candidates: Vec::new(),
@@ -2075,6 +2080,7 @@ impl WorldDelivery {
         self.others.clear();
         self.bot_views.clear();
         self.placed_views.clear();
+        self.removed_placed.clear();
         self.mode_entities.clear();
         self.mode_entity_destroys.clear();
         self.target_candidates.clear();
@@ -2531,10 +2537,22 @@ impl WorldDelivery {
     }
 
     /// The server placeables' frames this client doesn't have yet, for the
-    /// placeables whose create arrived (placed_script.rs).
+    /// placeables whose create arrived (placed_script.rs). A placeable a
+    /// mode graph removed gets no more frames, and its create no more
+    /// sends.
     pub fn update_placed(&mut self, scene: &PreparedScene) {
         if self.started.is_none() {
             return;
+        }
+        let mut removed = false;
+        for &entity in scene.removed_placeables() {
+            if self.removed_placed.insert(entity) {
+                self.placed_views.forget(entity);
+                removed = true;
+            }
+        }
+        if removed {
+            self.remove_stale();
         }
         let created = |entity| self.created.contains(&entity);
         let chunks = match self
@@ -2728,7 +2746,8 @@ impl WorldDelivery {
     fn current(&self, record: &Record) -> bool {
         let entity = record.update.entity;
         match record.delivery {
-            Delivery::Baseline | Delivery::Script { close: false, .. } => true,
+            Delivery::Baseline => !self.removed_placed.contains(&entity),
+            Delivery::Script { close: false, .. } => true,
             Delivery::BotCreate { .. } => self.bots.get(&entity) == Some(&BotLifetime::Live),
             Delivery::BotLink { body } => self.bots.get(&body) == Some(&BotLifetime::Live),
             Delivery::BotDestroy => self.bots.get(&entity) == Some(&BotLifetime::Retiring),

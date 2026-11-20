@@ -12,12 +12,23 @@
 //! (refs/reports/OwnerPrediction.md, "Day (2026-11-17)", DayJoin). So a
 //! tick's change costs a few bytes, where the Range's whole `13C0` frame
 //! is about 920 (refs/reports/ModeGraphGaps.md, "DayModeFrame").
+//!
+//! A chunk goes whole in one datagram, and the client has no way to put
+//! one together from pieces (none found; `docs/notes/protocol.md`). A
+//! graph frame whose chunk would be bigger than [`MAX_CHUNK_BYTES`] (a
+//! Workshop match's: its rules' global variables and action instances on
+//! the mode entity) goes in steps: a full frame with each of its parts
+//! (entity variables, then instances, parents first) that still fits,
+//! then, once the client acknowledged each, a delta with more, until the
+//! client has it all ([`ProjectedSnapshot::parts_from`]). A part too big
+//! for any chunk (C32S2's biggest global arrays) never goes: how retail
+//! sent one is not known.
 
 use std::sync::Arc;
 
 use orpheus_core::bits::BitWriter;
 use orpheus_script::{
-    snapshot::{ProjectedSnapshot, SnapshotEncoder, SnapshotError},
+    snapshot::{FramePart, ProjectedSnapshot, SnapshotEncoder, SnapshotError},
     stream::{BodyStream, DeltaKind, ScriptChunk, Stream},
     timeline::FRAME_MS,
 };
@@ -27,6 +38,14 @@ use orpheus_wire::entity::GAME_MODE_ENTITY;
 /// goes again after this many ticks (a lost delta isn't sent again by
 /// itself), as another body's frame of values only (`others.rs`).
 const RESEND_TICKS: u32 = 8;
+
+/// The biggest graph chunk payload that goes as it is: a record must fit
+/// one datagram by itself (`orpheus_wire::entity::MAX_PAYLOAD`, 1230
+/// bytes) beside the frame's header, its own header and the tick's
+/// reliable messages, or nothing after it in the queue goes
+/// (`select_frame`'s "fragmentation required"). The Range's whole `13C0`
+/// frame (about 920 bytes) is under it.
+pub(crate) const MAX_CHUNK_BYTES: usize = 1024;
 
 /// The mode entity's frame now.
 pub enum ModeFrame<'a> {
@@ -54,6 +73,11 @@ pub(crate) struct ModeView {
     queued: Option<(Arc<ProjectedSnapshot>, u32)>,
     /// The newest graph delta not sent yet: a newer one replaces it.
     unsent: Option<u32>,
+    /// A step of a frame too big for one chunk is on its way: the next
+    /// waits until the client acknowledged it.
+    staging: bool,
+    /// The parts too big for any chunk were reported.
+    oversized_logged: bool,
 }
 
 impl ModeView {
@@ -63,6 +87,8 @@ impl ModeView {
             arrived: false,
             queued: None,
             unsent: None,
+            staging: false,
+            oversized_logged: false,
         }
     }
 
@@ -91,6 +117,7 @@ impl ModeView {
                     self.chunks = Chunks::Full(Stream::after(GAME_MODE_ENTITY, stream.last()));
                     self.queued = None;
                     self.unsent = None;
+                    self.staging = false;
                 }
                 let Chunks::Full(stream) = &mut self.chunks else {
                     unreachable!("a stream of full frames")
@@ -111,8 +138,20 @@ impl ModeView {
                     if stream.pending().next().is_some() {
                         return Ok(None); // the full frame is on its way
                     }
-                    self.queued = Some((Arc::clone(projected), tick.saturating_add(RESEND_TICKS)));
-                    return encoder.queue_full(stream, projected).map(Some);
+                    let step = fitting(projected, None, |step| {
+                        Ok(encoder.full(step)?.as_bytes().len())
+                    })?;
+                    let step = stage(&mut self.staging, &mut self.oversized_logged, step);
+                    self.queued = match step {
+                        Some(_) => None,
+                        None => Some((Arc::clone(projected), tick.saturating_add(RESEND_TICKS))),
+                    };
+                    return encoder
+                        .queue_full(stream, step.as_ref().unwrap_or(&**projected))
+                        .map(Some);
+                }
+                if self.staging && stream.pending().next().is_some() {
+                    return Ok(None); // the last step is on its way
                 }
                 if self
                     .queued
@@ -121,10 +160,24 @@ impl ModeView {
                 {
                     return Ok(None);
                 }
-                self.queued = Some((Arc::clone(projected), tick.saturating_add(RESEND_TICKS)));
+                let base = stream.base().map(|(_, base)| base);
+                let step = match fitting(projected, base, |step| {
+                    Ok(encoder
+                        .observer_delta_bytes(stream, step, FRAME_MS as u32)?
+                        .unwrap_or(0))
+                }) {
+                    // Only parts too big for any chunk are left.
+                    Err(SnapshotError::OversizedPart { .. }) if self.staging => return Ok(None),
+                    step => step?,
+                };
+                let step = stage(&mut self.staging, &mut self.oversized_logged, step);
+                self.queued = match step {
+                    Some(_) => None,
+                    None => Some((Arc::clone(projected), tick.saturating_add(RESEND_TICKS))),
+                };
                 let Some(chunk) = encoder.queue_delta(
                     stream,
-                    projected,
+                    step.as_ref().unwrap_or(&**projected),
                     DeltaKind::Observer { resend: false },
                     FRAME_MS as u32,
                 )?
@@ -171,6 +224,71 @@ impl ModeView {
                 false
             }
             Chunks::Graph(stream) => stream.lost(last).retry,
+        }
+    }
+}
+
+/// The step [`fitting`] chose, if any; staging while one goes; the parts
+/// too big for any chunk reported once.
+fn stage(
+    staging: &mut bool,
+    logged: &mut bool,
+    step: Option<(ProjectedSnapshot, Vec<FramePart>)>,
+) -> Option<ProjectedSnapshot> {
+    *staging = step.is_some();
+    let (step, left) = step?;
+    if !*logged && !left.is_empty() {
+        *logged = true;
+        eprintln!(
+            "the mode entity's frame goes in steps; parts that don't fit a chunk yet: {left:?}"
+        );
+    }
+    Some(step)
+}
+
+/// None when `projected`'s chunk from `base` (none: a full frame) fits
+/// [`MAX_CHUNK_BYTES`] (`bytes` measures one); else the step toward it
+/// that takes each of its parts in order that still fits, and the parts
+/// that don't (a part too big for any chunk never goes; an instance whose
+/// parent didn't go waits for it).
+fn fitting(
+    projected: &ProjectedSnapshot,
+    base: Option<&ProjectedSnapshot>,
+    bytes: impl Fn(&ProjectedSnapshot) -> Result<usize, SnapshotError>,
+) -> Result<Option<(ProjectedSnapshot, Vec<FramePart>)>, SnapshotError> {
+    if bytes(projected)? <= MAX_CHUNK_BYTES {
+        return Ok(None);
+    }
+    let mut taken = Vec::new();
+    let mut left = Vec::new();
+    let mut step = None;
+    for part in projected.parts_from(base) {
+        let orphan = match part {
+            FramePart::Instance(id) => projected
+                .instance(id)
+                .and_then(|(_, parent)| parent)
+                .is_some_and(|(parent, _)| left.contains(&FramePart::Instance(parent))),
+            FramePart::Variable(_) => false,
+        };
+        if !orphan {
+            taken.push(part);
+            let candidate = projected.with_parts(base, &taken);
+            if bytes(&candidate)? <= MAX_CHUNK_BYTES {
+                step = Some(candidate);
+                continue;
+            }
+            taken.pop();
+        }
+        left.push(part);
+    }
+    match step {
+        Some(step) => Ok(Some((step, left))),
+        None => {
+            let part = left[0];
+            Err(SnapshotError::OversizedPart {
+                part,
+                bytes: bytes(&projected.with_parts(base, &[part]))?,
+            })
         }
     }
 }

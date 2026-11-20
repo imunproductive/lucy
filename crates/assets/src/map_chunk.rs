@@ -107,6 +107,9 @@ pub(crate) struct Entity<'a> {
     pub index: usize,
     pub definition: u64,
     pub identifier: u64,
+    /// Identifier 2: what `STU_A3DC6A25` compares (the client's
+    /// `sub_7FF78990C1B0` reads the placeable's body `+16`).
+    pub second_identifier: u64,
     pub translation: [f32; 3],
     pub scale: [f32; 3],
     pub rotation: [f32; 4],
@@ -149,6 +152,7 @@ impl<'a> Entity<'a> {
             index,
             definition: u64_at(data, body),
             identifier: u64_at(data, body + 8),
+            second_identifier: u64_at(data, body + 16),
             translation,
             scale,
             rotation,

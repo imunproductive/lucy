@@ -381,6 +381,17 @@ impl PlacedScripts {
             .iter()
             .map(|(&entity, (_, frame))| (entity, frame))
     }
+
+    /// The placed entity `entity` goes (a mode graph removed it,
+    /// `STU_A3DC6A25`): its graphs end, or never start, and it sends no
+    /// more frames.
+    pub fn remove(&mut self, entity: u32) {
+        self.placed.retain(|placed| placed.entity() != entity);
+        self.frames.remove(&entity);
+        if let Some(world) = &mut self.world {
+            world.remove(entity);
+        }
+    }
 }
 
 /// One placeable's script stream on one client.

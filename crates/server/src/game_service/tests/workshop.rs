@@ -47,7 +47,8 @@ fn listed_graphs(graphs: &orpheus_script::graph::GraphStore, chunk: &ReceivedChu
 /// The player picks Doomfist, the only hero C32S2 allows, and the rules
 /// run against him: "Player HUD" creates his HUD texts, each a Create HUD
 /// Text `1D8A` instance on the mode entity (its scope 31) that the
-/// mode entity's frames carry to his game.
+/// mode entity's frames carry to his game. The ruleset's health packs are
+/// off, so the map's never reach him.
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and the DPK archive (just test-dpk <install> <archive>)"]
 fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
@@ -165,5 +166,17 @@ fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
                 .any(|chunk| listed_graphs(graphs, chunk).contains(&CREATE_HUD_TEXT))
         },
     );
+    // C32S2's "Spawn Health Packs: Disabled" (#9542e): `0CBB` st34
+    // (`STU_A3DC6A25`) removed the map's health packs, the placeables with
+    // identifier 2 `2AB0.01C` (game_map_areas: 375, 381, 391, 456, 510,
+    // 614, 738, 751 and 771, definitions `1C89`, `1C8A`, `1C92`), before
+    // the world reached the client; the other server placeables came.
+    for pack in [375, 381, 391, 456, 510, 614, 738, 751, 771] {
+        assert!(
+            watcher.created(0x8000_0000 | pack).is_none(),
+            "health pack {pack}"
+        );
+    }
+    assert!(watcher.created(0x8000_0000 | 265).is_some());
     server.stop().unwrap();
 }
