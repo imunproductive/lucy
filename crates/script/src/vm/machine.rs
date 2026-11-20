@@ -26,7 +26,7 @@ impl Machine {
             snapshot: TrackedSnapshot::new(Snapshot {
                 entity,
                 variables,
-                instances: IndexMap::new(),
+                instances: Instances::default(),
                 pending_timers: IndexMap::new(),
                 bindings: IndexMap::new(),
                 resolved_bindings: IndexMap::new(),
@@ -131,14 +131,31 @@ impl Machine {
             }
             resolved_bindings.insert(key, self.link_value(top));
         }
+        // A changed output moves its instance's revision on too (owner 0,
+        // the entity, has none).
+        let mut changed = Vec::new();
         if !same_entries(
             &self.snapshot.pending_timers,
             &pending_timers,
             PartialEq::eq,
         ) {
+            changed_owners(
+                &self.snapshot.pending_timers,
+                &pending_timers,
+                |&id| id,
+                PartialEq::eq,
+                &mut changed,
+            );
             self.snapshot.pending_timers = pending_timers;
         }
         if !same_entries(&self.snapshot.bindings, &bindings, PartialEq::eq) {
+            changed_owners(
+                &self.snapshot.bindings,
+                &bindings,
+                |&(owner, _)| owner,
+                PartialEq::eq,
+                &mut changed,
+            );
             self.snapshot.bindings = bindings;
         }
         if !same_entries(
@@ -146,7 +163,19 @@ impl Machine {
             &resolved_bindings,
             Value::identical,
         ) {
+            changed_owners(
+                &self.snapshot.resolved_bindings,
+                &resolved_bindings,
+                |&(owner, _)| owner,
+                Value::identical,
+                &mut changed,
+            );
             self.snapshot.resolved_bindings = resolved_bindings;
+        }
+        for owner in changed {
+            if owner != 0 {
+                self.snapshot.instances.touch(owner);
+            }
         }
     }
 
@@ -259,4 +288,21 @@ fn same_entries<K: PartialEq, V>(
         && a.iter()
             .zip(b)
             .all(|((ak, av), (bk, bv))| ak == bk && same(av, bv))
+}
+
+/// The owners of the entries that differ between `a` and `b` (either
+/// order), into `out`.
+fn changed_owners<K: Eq + std::hash::Hash, V>(
+    a: &IndexMap<K, V>,
+    b: &IndexMap<K, V>,
+    owner: impl Fn(&K) -> u16,
+    same: impl Fn(&V, &V) -> bool,
+    out: &mut Vec<u16>,
+) {
+    for (key, value) in b {
+        if a.get(key).is_none_or(|was| !same(was, value)) {
+            out.push(owner(key));
+        }
+    }
+    out.extend(a.keys().filter(|key| !b.contains_key(*key)).map(owner));
 }

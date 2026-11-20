@@ -196,18 +196,23 @@ impl Component {
         let parameters = Value::Array(parameters);
         self.set_instance_variable(instance, ACTION_PARAMETERS, parameters.clone(), world)?;
         let entity = self.machine.snapshot.entity;
+        let instances = &mut self.machine.snapshot.instances;
         let mut children = Vec::new();
-        for (&id, item) in &mut self.machine.snapshot.instances {
-            let scoped = item
-                .scope
-                .as_mut()
-                .filter(|scope| scope.source.entity == entity && scope.source.instance == instance);
-            let opened = scoped.is_some();
-            if let Some(scope) = scoped {
-                scope.parent.insert(ACTION_PARAMETERS, parameters.clone());
+        let mut opened = Vec::new();
+        for (&id, item) in &*instances {
+            let scoped = item.scope.as_ref().is_some_and(|scope| {
+                scope.source.entity == entity && scope.source.instance == instance
+            });
+            if scoped {
+                opened.push(id);
             }
-            if opened || item.parent.is_some_and(|(parent, _)| parent == instance) {
+            if scoped || item.parent.is_some_and(|(parent, _)| parent == instance) {
                 children.push(id);
+            }
+        }
+        for id in opened {
+            if let Some(scope) = instances[&id].scope.as_mut() {
+                scope.parent.insert(ACTION_PARAMETERS, parameters.clone());
             }
         }
         self.run(world, |vm| {

@@ -1016,3 +1016,63 @@ fn an_ai_parameter_reads_the_ai_s_profile_else_its_fallback() {
         Err(EvalError::UnsupportedConfig("STU_4049CF77".into()))
     );
 }
+
+#[test]
+fn compiled_configs_evaluate_as_their_json_does() {
+    let variables = [variable(1, Scope::Instance), variable(2, Scope::Entity)];
+    let native = json!({"$": "STU_37F20D24"});
+    let literal = json!({"$": "STUConfigVarInt", "m_value": 5});
+    // Config pushes of a literal, a variable, a nested expression and a
+    // native, a variable read and a branch.
+    let inner = expression(json!([8, 0, 6, 0, 23, 0]), &variables, &[0.5], &[]);
+    let outer = expression(
+        json!([14, 0, 14, 1, 23, 14, 3, 23, 9, 1, 23, 4, 2, 14, 2, 0]),
+        &variables,
+        &[],
+        &[literal.clone(), variables[0].clone(), native.clone(), inner],
+    );
+    let fields = json!({
+        "outer": outer,
+        "list": [literal, variables[1].clone(), native],
+        "vector": {"$": "STUConfigVarVec3", "m_value": {"X": 1.0, "Y": 2.0, "Z": 0.1}},
+        "unknown_opcode": expression(json!([59]), &[], &[], &[]),
+        "bad_jump": expression(json!([8, 0, 5, 9, 0]), &variables, &[], &[]),
+        "bad_table": expression(json!([6, 3, 0]), &[], &[], &[]),
+        "bad_tables": {"$": "STU_919FD47C", "m_configVars": 3},
+    });
+    let table = ConfigTable::of(&fields);
+    let mut configs = Vec::new();
+    for value in fields.as_object().unwrap().values() {
+        match value {
+            Json::Array(items) => configs.extend(items),
+            config => configs.push(config),
+        }
+    }
+    for config in configs {
+        let context = || Vars {
+            instance: BTreeMap::from([(1, Value::Float(2.0))]),
+            entity: BTreeMap::from([(2, Value::Integer(3))]),
+            ..Vars::default()
+        };
+        let (mut json, mut compiled) = (context(), context());
+        let expected = evaluate(config, &mut json);
+        assert_eq!(
+            evaluate_in(config, &table, &mut compiled),
+            expected,
+            "{config}"
+        );
+        assert_eq!(compiled.reads, json.reads, "{config}");
+    }
+    let outer = &fields["outer"];
+    assert!(matches!(table.get(outer), Some(Config::Expression(_))));
+    assert!(matches!(
+        table.get(&outer["m_configVars"][0]),
+        Some(Config::Value(Value::Integer(5)))
+    ));
+    assert!(matches!(
+        table.get(&fields["list"][1]),
+        Some(Config::Dynamic(_))
+    ));
+    assert!(table.get(&fields["list"][2]).is_none());
+    assert!(table.get(&fields["bad_tables"]).is_none());
+}
