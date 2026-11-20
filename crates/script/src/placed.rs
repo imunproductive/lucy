@@ -68,6 +68,23 @@ pub struct Spawn<'a> {
     pub position: [f64; 3],
     /// Its owner (component 72): the hero's controller.
     pub owner: u32,
+    /// The body that shot it, when it is a projectile (component 50
+    /// `+0x18`, [`EntityRelation::Shooter`]); none for an entity a
+    /// projectile left (the Biotic Field).
+    pub shooter: Option<ProjectileShooter>,
+}
+
+/// The body that shot a spawned projectile, and its hero.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectileShooter {
+    pub body: u32,
+    /// The hero (`075`) whose ruleset defaults the projectile's graphs
+    /// read besides the mode's: a GetGameRulesetValue of its shooter's
+    /// member (the Biotic Orbs' `STU_2B2E2F6D(self).#12618`/`#12619`, 1.0
+    /// in Moira's schema `0A3…003B`) falls back to the key's default, as
+    /// the shooter's body's own graphs read it (assumption: the client's
+    /// default for an entity's member is that entity's hero's).
+    pub hero: u64,
 }
 
 /// The player and first body the next dummy bot gets
@@ -138,6 +155,8 @@ pub struct PlacedEntity {
     target_tags: TargetTags,
     /// A spawned entity's owner ([`Spawn::owner`]).
     owner: Option<u32>,
+    /// A spawned projectile's shooter ([`Spawn::shooter`]).
+    shooter: Option<ProjectileShooter>,
 }
 
 impl PlacedEntity {
@@ -220,6 +239,7 @@ struct EntityWorld<'a, 'b> {
     team: &'b mut Option<i64>,
     target_tags: &'b mut TargetTags,
     owner: Option<u32>,
+    shooter: Option<ProjectileShooter>,
 }
 
 impl World for EntityWorld<'_, '_> {
@@ -231,11 +251,14 @@ impl World for EntityWorld<'_, '_> {
         self.shared.map_rays
     }
 
+    /// The mode's ruleset defaults; a spawned projectile's also its
+    /// shooter's hero's ([`ProjectileShooter::hero`]).
     fn ruleset(&mut self, id: u32) -> Option<Value> {
+        let hero = self.shooter.map_or(0, |shooter| shooter.hero);
         self.shared
             .graphs
             .rulesets()
-            .default(id, 0, self.shared.mode)
+            .default(id, hero, self.shared.mode)
     }
 
     fn mode_random(&self) -> Option<f64> {
@@ -444,8 +467,9 @@ impl World for EntityWorld<'_, '_> {
         true
     }
 
-    /// A spawned entity's owner is its hero's controller; the others,
-    /// what the listed bodies tell.
+    /// A spawned entity's owner is its hero's controller, a spawned
+    /// projectile's shooter the body that shot it (a map placeable, a
+    /// spawned field: none); the others, what the listed bodies tell.
     fn related_entity(
         &mut self,
         _site: Site,
@@ -454,8 +478,21 @@ impl World for EntityWorld<'_, '_> {
     ) -> Option<u32> {
         match relation {
             EntityRelation::Owner if entity == self.entity => self.owner,
+            EntityRelation::Shooter if entity == self.entity => {
+                Some(self.shooter.map_or(0, |shooter| shooter.body))
+            }
             _ => listed_relation(self.shared.players, relation, entity),
         }
+    }
+
+    /// A listed body's word, as the target searches take it
+    /// ([`TargetCandidate::filter_word`]).
+    fn entity_filter_flags(&self, _site: Site, entity: u32) -> Option<u64> {
+        self.shared
+            .players
+            .iter()
+            .find(|player| player.entity == entity)
+            .map(TargetCandidate::filter_word)
     }
 
     /// A spawned entity's ApplyAura puts its auras on the bodies through
@@ -616,7 +653,7 @@ impl MapEntityWorld {
     pub fn place<'p>(&mut self, placements: impl IntoIterator<Item = Placement<'p>>) {
         for placement in placements {
             let roots = placed_roots(&self.graphs, &placement);
-            self.start_entity(placement.entity, placement.position, roots, None);
+            self.start_entity(placement.entity, placement.position, roots, None, None);
         }
     }
 
@@ -635,7 +672,13 @@ impl MapEntityWorld {
             .zip(spawn.graphs)
             .map(|(id, &graph)| Root::new(id, graph))
             .collect();
-        self.start_entity(spawn.entity, spawn.position, Ok(roots), Some(spawn.owner));
+        self.start_entity(
+            spawn.entity,
+            spawn.position,
+            Ok(roots),
+            Some(spawn.owner),
+            spawn.shooter,
+        );
         true
     }
 
@@ -646,6 +689,7 @@ impl MapEntityWorld {
         position: [f64; 3],
         roots: Result<Vec<Root>, InitFault>,
         owner: Option<u32>,
+        shooter: Option<ProjectileShooter>,
     ) {
         let roots = match roots {
             Ok(roots) if roots.is_empty() => return,
@@ -659,6 +703,7 @@ impl MapEntityWorld {
                     team: None,
                     target_tags: TargetTags::default(),
                     owner,
+                    shooter,
                 });
                 return;
             }
@@ -692,6 +737,7 @@ impl MapEntityWorld {
             team: &mut team,
             target_tags: &mut target_tags,
             owner,
+            shooter,
         };
         let started = Component::start(
             Arc::clone(&self.graphs),
@@ -718,8 +764,23 @@ impl MapEntityWorld {
             team,
             target_tags,
             owner,
+            shooter,
         });
         self.end_destroyed();
+    }
+
+    /// A spawned entity moves to `position` (a projectile in flight): its
+    /// graphs see it there from their next run. False: no such entity.
+    pub fn set_position(&mut self, entity: u32, position: [f64; 3]) -> bool {
+        let Some(placed) = self
+            .entities
+            .iter_mut()
+            .find(|placed| placed.entity == entity && placed.owner.is_some())
+        else {
+            return false;
+        };
+        placed.position = position;
+        true
     }
 
     pub fn unknowns(&self) -> Unknowns {
@@ -836,6 +897,7 @@ impl MapEntityWorld {
                 team: &mut placed.team,
                 target_tags: &mut placed.target_tags,
                 owner: placed.owner,
+                shooter: placed.shooter,
             };
             if let Err(error) = run(component, &mut world) {
                 placed.fault = Some(error.to_string());
@@ -907,6 +969,7 @@ impl MapEntityWorld {
             team: &mut placed.team,
             target_tags: &mut placed.target_tags,
             owner: placed.owner,
+            shooter: placed.shooter,
         };
         for id in instances {
             // An instance that faults on its end leaves the rest to end.

@@ -681,7 +681,7 @@ fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
             shapes: None,
         },
         dead: false,
-        hurt: false,
+        health: None,
         tags: None,
         ai: None,
         dealt: Vec::new(),
@@ -784,7 +784,7 @@ fn nano_boost_halves_the_damage_a_bot_takes_and_boosts_what_it_deals() {
             shapes: None,
         },
         dead: false,
-        hurt: false,
+        health: None,
         tags: None,
         ai: None,
         dealt: Vec::new(),
@@ -805,6 +805,7 @@ fn nano_boost_halves_the_damage_a_bot_takes_and_boosts_what_it_deals() {
                 node: None,
             },
             instigator,
+            source: None,
             target,
             amount: 40.0,
             heal: false,
@@ -888,6 +889,7 @@ fn a_bots_target_tags_go_out_as_its_component_76() {
         radius: 0.4,
         yaw: 0.0,
         tags: None,
+        health: None,
         spawned: Vec::new(),
     };
     let candidates = [body(target, 1, bot.position), body(ANA, 0, [0.0; 3])];

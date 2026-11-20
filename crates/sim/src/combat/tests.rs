@@ -340,6 +340,7 @@ fn a_killing_hit_sends_its_damage_message_before_the_death_message() {
         direction: Some([0.0, 0.0, 1.0]),
         environment: false,
         from: None,
+        source: None,
     };
     let camera = Some(DeathCamera {
         killer_controller: 0xa000_0100,
@@ -488,7 +489,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
                 shapes: None,
             },
             dead,
-            hurt,
+            health: Some([if hurt { 100.0 } else { 200.0 }, 200.0]),
             tags: None,
             ai: None,
             dealt: Vec::new(),
@@ -511,7 +512,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
         next_bot: BOT_ENTITY,
         seen_ids: SeenIds::new(),
         field_ids: FieldIds::default(),
-        fields: SpawnedFields::new(
+        spawned: SpawnedEntities::new(
             Arc::new(
                 orpheus_script::graph::GraphStore::from_json(
                     br#"{"version": 1, "graphs": [], "bodies": {}, "missing": []}"#,
@@ -519,6 +520,7 @@ fn shooters_hit_other_teams_and_everyone_in_a_free_for_all() {
                 .unwrap(),
             ),
             Vec::new(),
+            Arc::default(),
             0,
             0,
             0.0,
@@ -582,7 +584,7 @@ fn target_searches_see_the_players_then_the_bots() {
         team: 1,
         pose: pose.clone(),
         dead: true,
-        hurt: false,
+        health: None,
         tags: None,
         ai: None,
         dealt: Vec::new(),
@@ -605,6 +607,7 @@ fn target_searches_see_the_players_then_the_bots() {
             radius: pose.radius,
             yaw: pose.yaw,
             tags: None,
+            health: None,
             spawned: Vec::new(),
         }
     );
@@ -660,7 +663,7 @@ fn a_players_shot_on_another_player_carries_its_tags_and_way() {
             shapes: None,
         },
         dead: false,
-        hurt: false,
+        health: None,
         tags: None,
         ai: None,
         dealt: Vec::new(),
@@ -820,7 +823,7 @@ fn the_biotic_rifle_heals_hurt_allies_and_damages_enemies() {
             shapes: None,
         },
         dead: false,
-        hurt,
+        health: Some([if hurt { 100.0 } else { 200.0 }, 200.0]),
         tags: None,
         ai: None,
         dealt: Vec::new(),
@@ -931,7 +934,7 @@ fn a_projectile_deals_with_the_modifiers_of_its_launch() {
             shapes: None,
         },
         dead: false,
-        hurt: false,
+        health: None,
         tags: None,
         ai: None,
         dealt,

@@ -682,8 +682,9 @@ fn secondary_volley_uses_authored_projectile_and_owner_lease() {
 }
 
 /// combat.py `_shoot`: a projectile volley the owner's client doesn't shoot
-/// under a lease (not predicted) flies for its damage alone, or not at all
-/// without damage; an arc, an aim id and a sticky collision config fly
+/// under a lease (not predicted) flies as a server projectile, with its
+/// damage or without (beyond Python: Moira's healing orb, whose entity's
+/// graph does its work); an arc, an aim id and a sticky collision config fly
 /// leased with the volley's gravity and the fuse; a motion the flight
 /// doesn't model flies as if it weren't there; a volley of several
 /// projectiles a shot flies one along the aim, leased with as many ids a
@@ -723,10 +724,11 @@ fn projectile_volleys_fly_leased_for_damage_alone_or_not_at_all() {
     let mut fields = fixture_projectile_fields(40.0);
     fields["m_45271E8C"] = json!(false);
     let unpredicted = shoot(fields.clone()).expect("the damage flies");
-    assert!(!unpredicted.leased);
+    assert!(!unpredicted.leased && unpredicted.server_shown);
     fields["m_D2D11CE9"]["m_modifyHealth"]["m_amount"] = json!(0.0);
     fields["m_6396149F"]["m_modifyHealth"]["m_amount"] = json!(0.0);
-    assert!(shoot(fields).is_none(), "nothing flies without damage");
+    let harmless = shoot(fields).expect("a server projectile flies without damage");
+    assert!(harmless.server_shown && !harmless.ballistics.damaging());
 
     let mut fields = fixture_projectile_fields(5.0);
     fields["m_projectileMotions"] =
@@ -1726,6 +1728,7 @@ fn a_dead_body_counts_its_respawn_down_in_the_mode_body_script() {
         radius: 0.4,
         yaw: 0.0,
         tags: Some(Arc::new(BTreeSet::new())),
+        health: None,
         spawned: Vec::new(),
     }]);
     let total = runtime.vitals().unwrap().total();
@@ -2012,6 +2015,7 @@ fn the_charge_graph_charges_soldier_s_ultimate() {
         radius: 0.4,
         yaw: 0.0,
         tags: None,
+        health: None,
         spawned: Vec::new(),
     };
     runtime.set_target_candidates(&[body(ENEMY, 1), body(ALLY, 0)]);
@@ -2157,6 +2161,7 @@ fn standing(entity: u32, team: u8, controller: u32, feet: [f64; 3]) -> TargetCan
         radius: 0.4,
         yaw: 0.0,
         tags: None,
+        health: None,
         spawned: Vec::new(),
     }
 }
@@ -2316,7 +2321,11 @@ fn the_biotic_field_aura_heals_the_body_through_its_own_graph() {
         radius: 0.4,
         yaw: 0.0,
         tags: None,
-        spawned: vec![FIELD],
+        health: None,
+        spawned: vec![orpheus_script::vm::OwnedEntity {
+            entity: FIELD,
+            projectile: false,
+        }],
     }]);
     let source = AuraSource {
         entity: FIELD,

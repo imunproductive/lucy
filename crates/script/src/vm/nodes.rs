@@ -964,6 +964,18 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.assume(self.site(id, node), class, "plain state");
                 StateKind::Plain
             }
+            // The Biotic Orbs' `10FF` rid10 and `1100` rid8, while the orb
+            // has targets: the client's begin sets its component 50
+            // `+0x3AC` to `m_67E8FF48` (0.275) and its end back to 1
+            // (`0x7FF789C6C7D0`, `0x7FF789C6CAA0`; BioticOrb.md §2, §4), a
+            // replicated field nothing was seen to read (the orb's speed
+            // scale is a guess). The server's orb flies on at its speed, as
+            // the clients' copies do (they take no frame of the orb's
+            // graph): a plain state, as an assumption.
+            class @ "STU_D3F71FCF" => {
+                self.assume(self.site(id, node), class, "plain state");
+                StateKind::Plain
+            }
             // TrackStatTime: the seconds it runs go to its stats
             // (`vm/stats.rs`).
             "STU_441B50E4" => StateKind::StatTime,

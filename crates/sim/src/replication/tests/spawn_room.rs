@@ -137,6 +137,7 @@ fn hit(body: u32, amount: f64) -> PlayerHit {
         direction: None,
         environment: false,
         from: None,
+        source: None,
     }
 }
 

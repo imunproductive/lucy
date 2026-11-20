@@ -199,6 +199,17 @@ impl ProjectileFlight {
         self.struck
     }
 
+    /// Where it is now.
+    pub fn position(&self) -> Vec3 {
+        self.position
+    }
+
+    /// Its entity definition (`m_projectileEntity`), if the volley names
+    /// one.
+    pub fn definition(&self) -> Option<u64> {
+        self.ballistics.definition
+    }
+
     /// The direct hit of the projectile, if it has one.
     pub fn direct(&self) -> Option<HitDefinition> {
         self.ballistics.direct

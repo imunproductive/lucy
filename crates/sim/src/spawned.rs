@@ -1,5 +1,8 @@
-//! The Biotic Fields the players' canisters leave, each run on its own
-//! graphs in the server's spawned-entity world (`orpheus_script::placed`).
+//! The entities the players' shots make during the match, each run on its
+//! own graphs in the server's spawned-entity world
+//! (`orpheus_script::placed`): the Biotic Fields their canisters leave,
+//! and the server projectiles whose entity starts graphs (Moira's Biotic
+//! Orbs).
 //!
 //! When a field opens (`ProjectileEvent::FieldOpened`) the room spawns
 //! `03DC.003` where the shooter stood, owned by his controller; its initial
@@ -14,6 +17,20 @@
 //!
 //! The field stands where the shooter's feet were when he fired
 //! (projectiles.py `Shot.where`; assumption: the canister lands there).
+//!
+//! A server projectile ([`ServerFlight`]: one the shooter's client doesn't
+//! shoot itself, `PosedProjectile::server_shown`) whose entity definition
+//! starts graphs (`game_spawns_174.json`: the healing orb `1E60.003` starts
+//! `10FF`, the damaging `1E61.003` `1100`) is spawned where it leaves, owned
+//! by its shooter's controller and shot by his body (component 50,
+//! `STU_2B2E2F6D`), and moves with its flight each tick. Its graph searches
+//! the bodies around it and puts its aura on them (the orbs' `02A1.053` and
+//! `02D5.053`, whose graphs heal or hurt the body through its own
+//! ModifyHealth with the orb as the change's source); what they dealt comes
+//! back to it as the source's healing done or damage dealt
+//! (`WorldDelivery::dealt`), and once its pool is spent it removes itself,
+//! which ends the flight. A flight that ends first (its lifetime, its last
+//! bounce) removes it.
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -21,9 +38,12 @@ use orpheus_script::{
     codecs::CodecTable,
     graph::GraphStore,
     mode::EVERY_ENTITY,
-    placed::{MapEntityWorld, Spawn},
+    placed::{MapEntityWorld, ProjectileShooter, Spawn},
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
-    vm::{AuraChange, GameMessage, MapRays, MessageEnd, TargetCandidate, TrackedStat, Unknowns},
+    vm::{
+        AuraChange, GameMessage, MapRays, MessageEnd, OwnedEntity, TargetCandidate, TrackedStat,
+        Unknowns,
+    },
 };
 
 use crate::{placed_script::PlacedFrame, projectiles::ShotKey};
@@ -31,36 +51,59 @@ use crate::{placed_script::PlacedFrame, projectiles::ShotKey};
 /// The initial graphs of each entity the game spawns during the match, by
 /// entity definition (`game_spawns_174.json`: the Biotic Field `03DC`
 /// starts `0258`; the projectile entities' too, the Biotic Orbs `1E60`
-/// `10FF` and `1E61` `1100`, which the server doesn't run yet).
+/// `10FF` and `1E61` `1100`).
 pub type SpawnGraphs = BTreeMap<u64, Vec<u32>>;
 
-/// One field the room runs.
-struct Field {
+/// A server projectile in flight this tick
+/// (`WorldDelivery::server_flights`): its shot, its shooter's hero, its
+/// entity definition and where it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ServerFlight {
+    pub shot: ShotKey,
+    pub hero: u64,
+    pub definition: u64,
+    pub position: [f64; 3],
+}
+
+/// One entity the room runs.
+struct Spawned {
     shot: ShotKey,
     entity: u32,
+    /// A projectile in flight (a Biotic Orb), not an entity a shot left
+    /// (a Biotic Field).
+    projectile: bool,
     /// Its frame: the projection it was made from and the frame.
     frame: Option<(ProjectedSnapshot, PlacedFrame)>,
 }
 
-/// One room's Biotic Fields.
-pub struct SpawnedFields {
+/// One room's spawned entities.
+pub struct SpawnedEntities {
     graphs: Arc<GraphStore>,
     codecs: CodecTable,
     /// The field's initial graphs (`0258`).
     field_graphs: Vec<u32>,
+    /// Every spawned entity's initial graphs, by definition: the server
+    /// projectiles' are looked up here.
+    spawn_graphs: Arc<SpawnGraphs>,
     world: MapEntityWorld,
-    fields: Vec<Field>,
-    /// A field's gaps were logged (once a room).
+    spawned: Vec<Spawned>,
+    /// An entity's gaps were logged (once a room).
     gaps_logged: bool,
+    /// The server projectiles whose graphs didn't start (logged once).
+    failed: Vec<ShotKey>,
     /// The shots whose fields removed themselves since the room last
     /// looked.
     ended: Vec<ShotKey>,
+    /// The server projectiles that removed themselves since the room last
+    /// looked.
+    ended_flights: Vec<ShotKey>,
 }
 
-impl SpawnedFields {
+impl SpawnedEntities {
     pub fn new(
         graphs: Arc<GraphStore>,
         field_graphs: Vec<u32>,
+        spawn_graphs: Arc<SpawnGraphs>,
         mode: u64,
         ruleset: u64,
         mode_random: f32,
@@ -82,77 +125,152 @@ impl SpawnedFields {
             graphs,
             codecs: CodecTable::client(),
             field_graphs,
+            spawn_graphs,
             world,
-            fields: Vec::new(),
-            ended: Vec::new(),
+            spawned: Vec::new(),
             gaps_logged: false,
+            failed: Vec::new(),
+            ended: Vec::new(),
+            ended_flights: Vec::new(),
         }
     }
 
-    /// The field entities a body's controller owns, for the target
-    /// candidates ([`TargetCandidate::spawned`]).
-    pub fn owned_by(&self, body: u32) -> Vec<u32> {
-        self.fields
+    /// The entities a body's controller owns, for the target candidates
+    /// ([`TargetCandidate::spawned`]): its fields, and the projectiles the
+    /// body shot.
+    pub fn owned_by(&self, body: u32) -> Vec<OwnedEntity> {
+        self.spawned
             .iter()
-            .filter(|field| field.shot.0.entity == body)
-            .map(|field| field.entity)
+            .filter(|spawned| spawned.shot.0.entity == body)
+            .map(|spawned| OwnedEntity {
+                entity: spawned.entity,
+                projectile: spawned.projectile,
+            })
             .collect()
     }
 
-    /// One update at `tick`: the running fields' graphs advance with the
-    /// bodies as `candidates` lists them, then the fields that opened
-    /// start (`opened`: the shot, the field's entity and where it stands),
-    /// and every field's frame is projected.
+    /// One update at `tick`: the server projectiles move to where their
+    /// `flights` are (those no longer in flight go), the running graphs
+    /// advance with the bodies as `candidates` lists them, then the fields
+    /// that opened start (`opened`: the shot, the field's entity and where
+    /// it stands), and so do the new flights whose entity starts graphs,
+    /// each with an entity of `next_id`; every field's frame is projected.
     pub(crate) fn advance(
         &mut self,
         tick: u32,
         candidates: Vec<TargetCandidate>,
         opened: impl IntoIterator<Item = (ShotKey, u32, [f64; 3])>,
+        flights: &[ServerFlight],
+        mut next_id: impl FnMut() -> u32,
     ) {
+        // An entity that removed itself since (its message entry, between
+        // the room's updates) is gone from the world already; it ends with
+        // the destroyed below.
+        let world = &mut self.world;
+        self.spawned.retain(|spawned| {
+            if !spawned.projectile {
+                return true;
+            }
+            match flights.iter().find(|flight| flight.shot == spawned.shot) {
+                Some(flight) => {
+                    world.set_position(spawned.entity, flight.position);
+                    true
+                }
+                None => {
+                    world.remove(spawned.entity);
+                    false
+                }
+            }
+        });
+        self.failed
+            .retain(|shot| flights.iter().any(|flight| flight.shot == *shot));
         self.world.set_players(candidates);
         self.world.advance(tick);
+        let field_graphs = self.field_graphs.clone();
         for (shot, entity, position) in opened {
-            let spawned = self.world.spawn(Spawn {
-                entity,
-                graphs: &self.field_graphs,
-                position,
-                owner: shot.0.entity & !0xff,
-            });
-            if spawned {
-                self.fields.push(Field {
-                    shot,
-                    entity,
-                    frame: None,
-                });
-            } else {
-                eprintln!(
-                    "the Biotic Field's graphs {:04X?} don't start",
-                    self.field_graphs
-                );
+            if !self.start(shot, entity, &field_graphs, position, None) {
+                eprintln!("the Biotic Field's graphs {field_graphs:04X?} don't start");
                 self.ended.push(shot);
             }
         }
+        for flight in flights {
+            let known = self
+                .spawned
+                .iter()
+                .any(|spawned| spawned.shot == flight.shot);
+            if known || self.failed.contains(&flight.shot) {
+                continue;
+            }
+            let Some(graphs) = self.spawn_graphs.get(&flight.definition).cloned() else {
+                continue;
+            };
+            let shooter = ProjectileShooter {
+                body: flight.shot.0.entity,
+                hero: flight.hero,
+            };
+            let entity = next_id();
+            if !self.start(flight.shot, entity, &graphs, flight.position, Some(shooter)) {
+                eprintln!(
+                    "the projectile entity {:016X}'s graphs {graphs:04X?} don't start",
+                    flight.definition
+                );
+                self.failed.push(flight.shot);
+            }
+        }
         let destroyed = self.world.take_destroyed();
-        let ended = &mut self.ended;
-        self.fields.retain(|field| {
-            let gone = destroyed.contains(&field.entity);
+        let (ended, ended_flights) = (&mut self.ended, &mut self.ended_flights);
+        self.spawned.retain(|spawned| {
+            let gone = destroyed.contains(&spawned.entity);
             if gone {
-                ended.push(field.shot);
+                if spawned.projectile {
+                    ended_flights.push(spawned.shot);
+                } else {
+                    ended.push(spawned.shot);
+                }
             }
             !gone
         });
         self.project();
     }
 
+    /// Spawn `entity` of `shot` on `graphs` at `position`, owned by the
+    /// shooter's controller; a projectile with its `shooter`.
+    /// False: its graphs don't start.
+    fn start(
+        &mut self,
+        shot: ShotKey,
+        entity: u32,
+        graphs: &[u32],
+        position: [f64; 3],
+        shooter: Option<ProjectileShooter>,
+    ) -> bool {
+        let started = self.world.spawn(Spawn {
+            entity,
+            graphs,
+            position,
+            owner: shot.0.entity & !0xff,
+            shooter,
+        });
+        if started {
+            self.spawned.push(Spawned {
+                shot,
+                entity,
+                projectile: shooter.is_some(),
+                frame: None,
+            });
+        }
+        started
+    }
+
     /// The fields of the shots that no longer run (their owner's body
     /// went) end: their graphs end and take their auras off.
     pub(crate) fn end_unless(&mut self, live: &[ShotKey]) {
         let world = &mut self.world;
-        self.fields.retain(|field| {
-            if live.contains(&field.shot) {
+        self.spawned.retain(|spawned| {
+            if spawned.projectile || live.contains(&spawned.shot) {
                 return true;
             }
-            world.remove(field.entity);
+            world.remove(spawned.entity);
             false
         });
     }
@@ -162,33 +280,40 @@ impl SpawnedFields {
         std::mem::take(&mut self.ended)
     }
 
-    /// The auras the fields put on bodies or took off.
+    /// The server projectiles that removed themselves since the last call
+    /// (a Biotic Orb whose pool is spent): their flights end.
+    pub(crate) fn take_ended_flights(&mut self) -> Vec<ShotKey> {
+        std::mem::take(&mut self.ended_flights)
+    }
+
+    /// The auras the entities put on bodies or took off.
     pub fn take_auras(&mut self) -> Vec<AuraChange> {
         self.world.take_auras()
     }
 
-    /// The fields' game messages and message ends since the last call
-    /// (`0258` st8's `0EEB.025` to its owner's player entity), for the
-    /// match to route ([`crate::messages`]).
+    /// The entities' game messages and message ends since the last call
+    /// (`0258` st8's `0EEB.025` to its owner's player entity, a Biotic
+    /// Orb's `060E.025` to its shooter), for the match to route
+    /// ([`crate::messages`]).
     pub fn take_messages(&mut self) -> (Vec<GameMessage>, Vec<MessageEnd>) {
         (self.world.take_messages(), self.world.take_message_ends())
     }
 
-    /// The stats the fields' graphs counted since the last call (`0258`
+    /// The stats the entities' graphs counted since the last call (`0258`
     /// rid14 counts "Biotic Fields Deployed" `035C` for its owner's player
     /// entity), for the match's stat tables.
     pub fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
         self.world.take_tracked_stats()
     }
 
-    /// Whether a field's running graphs are entity `entity`'s.
+    /// Whether a spawned entity's running graphs are entity `entity`'s.
     pub fn runs(&self, entity: u32) -> bool {
         self.world
             .entity(entity)
             .is_some_and(|placed| placed.running())
     }
 
-    /// The fields whose graphs run now.
+    /// The spawned entities whose graphs run now.
     pub fn entities(&self) -> Vec<u32> {
         self.world
             .entities()
@@ -198,8 +323,8 @@ impl SpawnedFields {
             .collect()
     }
 
-    /// A game message to the field it names, or to every field but its
-    /// sender ([`EVERY_ENTITY`]): their entries run now.
+    /// A game message to the spawned entity it names, or to every one but
+    /// its sender ([`EVERY_ENTITY`]): their entries run now.
     pub fn receive_message(&mut self, message: &GameMessage) {
         if message.target == EVERY_ENTITY {
             self.world
@@ -214,32 +339,35 @@ impl SpawnedFields {
         }
     }
 
-    /// A persistent sender let its message to the field `end.target` go.
+    /// A persistent sender let its message to the entity `end.target` go.
     pub fn end_message(&mut self, end: &MessageEnd) {
         self.world.end_message(end.target, end.sender, end.message);
     }
 
     /// A field's latest frame; none while its graph doesn't run.
     pub(crate) fn frame(&self, shot: ShotKey) -> Option<&PlacedFrame> {
-        let field = self.fields.iter().find(|field| field.shot == shot)?;
+        let field = self
+            .spawned
+            .iter()
+            .find(|spawned| spawned.shot == shot && !spawned.projectile)?;
         field.frame.as_ref().map(|(_, frame)| frame)
     }
 
-    /// Project each running field's observer frame; a new one when it
-    /// changed. Unlike a map placeable's, a field with assumptions still
-    /// sends its frame (the clients show nothing of a field without one):
-    /// they are logged once a room. Today's: the TrackTargets' line of
-    /// sight (`m_3D667CE3`) and ApplyAura's lifetime.
+    /// Project each running entity's observer frame; a new one when it
+    /// changed. Unlike a map placeable's, a spawned entity with
+    /// assumptions still sends its frame (the clients show nothing of a
+    /// field without one): they are logged once a room. Today's: the
+    /// TrackTargets' line of sight (`m_3D667CE3`) and ApplyAura's lifetime.
     fn project(&mut self) {
         let encoder =
             SnapshotEncoder::new(&self.graphs, &self.codecs).with_unknowns(self.world.unknowns());
-        for field in &mut self.fields {
+        for field in &mut self.spawned {
             let Some(placed) = self.world.entity(field.entity) else {
                 continue;
             };
             if !placed.complete() && !std::mem::replace(&mut self.gaps_logged, true) {
                 eprintln!(
-                    "the Biotic Field {:08X} runs with gaps: {:?}",
+                    "the spawned entity {:08X} runs with gaps: {:?}",
                     field.entity,
                     gaps(placed)
                 );
@@ -255,7 +383,7 @@ impl SpawnedFields {
                 Ok(projected) => projected,
                 Err(error) => {
                     eprintln!(
-                        "the Biotic Field {:08X}'s frame does not project ({error:?})",
+                        "the spawned entity {:08X}'s frame does not project ({error:?})",
                         field.entity
                     );
                     field.frame = None;
@@ -283,7 +411,7 @@ impl SpawnedFields {
                 }
                 Err(error) => {
                     eprintln!(
-                        "the Biotic Field {:08X}'s frame does not encode ({error:?})",
+                        "the spawned entity {:08X}'s frame does not encode ({error:?})",
                         field.entity
                     );
                     field.frame = None;
@@ -293,7 +421,7 @@ impl SpawnedFields {
     }
 }
 
-/// What kept a field's graph from completing.
+/// What kept a spawned entity's graph from completing.
 fn gaps(placed: &orpheus_script::placed::PlacedEntity) -> BTreeMap<String, usize> {
     let mut gaps = BTreeMap::new();
     if let Some(fault) = placed.fault() {
@@ -334,6 +462,7 @@ mod tests {
             radius: 0.4,
             yaw: 0.0,
             tags: None,
+            health: None,
             spawned: Vec::new(),
         }
     }
@@ -362,7 +491,15 @@ mod tests {
         const OPEN: u32 = 100;
         let data = orpheus_testkit::runtime_dir().join("data");
         let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
-        let mut fields = SpawnedFields::new(Arc::clone(&graphs), vec![0x0258], 0, 0, 0.0, None);
+        let mut fields = SpawnedEntities::new(
+            Arc::clone(&graphs),
+            vec![0x0258],
+            Arc::default(),
+            0,
+            0,
+            0.0,
+            None,
+        );
         let shot = (
             BodyId {
                 entity: SOLDIER,
@@ -370,7 +507,7 @@ mod tests {
             },
             ProjectileToken::server(1),
         );
-        let candidates = |fields: &SpawnedFields| {
+        let candidates = |fields: &SpawnedEntities| {
             let mut soldier = body(SOLDIER, 1, [0.0; 3]);
             soldier.spawned = fields.owned_by(SOLDIER);
             vec![
@@ -380,7 +517,13 @@ mod tests {
                 body(0x1000_0310, 1, [8.0, 0.0, 0.0]),
             ]
         };
-        fields.advance(OPEN, candidates(&fields), [(shot, FIELD_FIRST, [0.0; 3])]);
+        fields.advance(
+            OPEN,
+            candidates(&fields),
+            [(shot, FIELD_FIRST, [0.0; 3])],
+            &[],
+            || unreachable!("no flight"),
+        );
         let source = AuraSource {
             entity: FIELD_FIRST,
             instance: 1,
@@ -407,8 +550,8 @@ mod tests {
                 targets: vec![SOLDIER & !0xff],
             }]
         );
-        let projected = |fields: &SpawnedFields| fields.fields[0].frame.clone().unwrap().0;
-        let states = |fields: &SpawnedFields| -> Vec<u16> {
+        let projected = |fields: &SpawnedEntities| fields.spawned[0].frame.clone().unwrap().0;
+        let states = |fields: &SpawnedEntities| -> Vec<u16> {
             let projected = projected(fields);
             assert_eq!(projected.instance(1), Some((0x0258, None)));
             (0..64)
@@ -427,7 +570,9 @@ mod tests {
         let mut changed = Vec::new();
         let mut ended = None;
         for tick in OPEN + 1..OPEN + 400 {
-            fields.advance(tick, candidates(&fields), []);
+            fields.advance(tick, candidates(&fields), [], &[], || {
+                unreachable!("no flight")
+            });
             let serial = fields.frame(shot).map(|frame| frame.serial);
             if serial.is_some_and(|serial| serial > 1 + changed.len() as u64) {
                 assert_eq!(states(&fields), [2, 3, 8], "{tick}");
@@ -445,5 +590,109 @@ mod tests {
         assert_eq!(changed, [281]);
         assert_eq!(ended, Some(312));
         assert!(fields.owned_by(SOLDIER).is_empty());
+    }
+
+    /// Moira's damaging Biotic Orb (`1E61.003`) on its graph `1100` as its
+    /// flight carries it: spawned where the flight is, it puts its aura
+    /// `02D5` (`002A` = 50 a second) on the enemy within 4 m at once, the
+    /// orb itself the applier; it counts the damage dealt (`0012.025`) it
+    /// takes against its pool of 200 × `#12619` (Moira's ruleset default,
+    /// 1.0, read through its shooter `STU_2B2E2F6D`), and at 200 it removes
+    /// itself, which ends its flight, and tells its shooter (`060E.025`).
+    #[test]
+    #[ignore = "requires the derived 104319 data"]
+    fn the_damaging_orb_hurts_the_enemy_near_it_until_its_pool_is_spent() {
+        use orpheus_content::maps::{PRACTICE_RANGE_MODE, PRACTICE_RANGE_RULESET};
+        const MOIRA: u32 = 0x1000_0010;
+        const MOIRA_HERO: u64 = 0x02e0_0000_0000_01a2;
+        const ENEMY: u32 = 0x1000_0210;
+        const DAMAGE_ORB: u64 = 0x0400_0000_0000_1e61;
+        const ORB: u32 = 0xa00f_0000;
+        const ORB_DONE: u64 = 0x0240_0000_0000_060e;
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz").unwrap());
+        let spawn_graphs = Arc::new(SpawnGraphs::from([(DAMAGE_ORB, vec![0x1100])]));
+        let mut spawned = SpawnedEntities::new(
+            Arc::clone(&graphs),
+            Vec::new(),
+            spawn_graphs,
+            PRACTICE_RANGE_MODE,
+            PRACTICE_RANGE_RULESET,
+            0.0,
+            None,
+        );
+        let shot = (
+            BodyId {
+                entity: MOIRA,
+                generation: 1,
+            },
+            ProjectileToken::server(1),
+        );
+        let candidates = |spawned: &SpawnedEntities| {
+            let mut moira = body(MOIRA, 1, [0.0; 3]);
+            moira.spawned = spawned.owned_by(MOIRA);
+            let mut enemy = body(ENEMY, 2, [2.0, 0.0, 0.0]);
+            enemy.health = Some([200.0, 200.0]);
+            vec![moira, enemy]
+        };
+        let flight = [ServerFlight {
+            shot,
+            hero: MOIRA_HERO,
+            definition: DAMAGE_ORB,
+            position: [0.0, 1.0, 0.0],
+        }];
+        spawned.advance(100, candidates(&spawned), [], &flight, || ORB);
+        assert_eq!(
+            spawned.owned_by(MOIRA),
+            [OwnedEntity {
+                entity: ORB,
+                projectile: true
+            }]
+        );
+        let auras = spawned.take_auras();
+        let [
+            AuraChange::Apply {
+                target,
+                aura,
+                instigator,
+                parameters,
+                ..
+            },
+        ] = auras.as_slice()
+        else {
+            panic!("one aura: {auras:?}");
+        };
+        assert_eq!(
+            (*target, *aura, *instigator),
+            (ENEMY, 0x04a0_0000_0000_02d5, ORB)
+        );
+        assert_eq!(parameters, &[(0x0a40_0000_0000_002a, Value::Integer(50))]);
+        for (tick, dealt) in (101..).zip([50.0; 4]) {
+            let (message, parameters) = orpheus_script::ultimate::dealt_message(
+                ENEMY,
+                dealt,
+                &orpheus_script::weapons::DamageTags::NONE,
+                false,
+            );
+            spawned.receive_message(&GameMessage {
+                sender: ORB,
+                target: ORB,
+                message,
+                parameters,
+            });
+            spawned.advance(tick, candidates(&spawned), [], &flight, || ORB);
+            let (messages, _) = spawned.take_messages();
+            let ended = spawned.take_ended_flights();
+            if tick < 104 {
+                assert!(messages.is_empty() && ended.is_empty(), "{tick}");
+                continue;
+            }
+            assert_eq!(ended, [shot]);
+            let [done] = messages.as_slice() else {
+                panic!("{messages:?}");
+            };
+            assert_eq!((done.message, done.target), (ORB_DONE, MOIRA));
+        }
+        assert!(spawned.owned_by(MOIRA).is_empty());
     }
 }
