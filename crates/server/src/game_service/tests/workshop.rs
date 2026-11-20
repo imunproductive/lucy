@@ -47,7 +47,8 @@ fn listed_graphs(graphs: &orpheus_script::graph::GraphStore, chunk: &ReceivedChu
 /// The player picks Doomfist, the only hero C32S2 allows, and the rules
 /// run against him: "Player HUD" creates his HUD texts, each a Create HUD
 /// Text `1D8A` instance on the mode entity (its scope 31) that the
-/// mode entity's frames carry to his game.
+/// mode entity's frames carry to his game. The ruleset's health packs are
+/// off, so the map's never reach him.
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and the DPK archive (just test-dpk <install> <archive>)"]
 fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
@@ -182,22 +183,54 @@ fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
         watchers[0].created(owner | 1).is_some()
             && select(watchers[0]) == Some((false, Some(DOOMFIST), Some(DOOMFIST)))
     });
-    // "Player HUD" waits at most 2 + 2 s before its texts.
+    // "Player HUD" waits at most 2 + 2 s before its texts. The mode
+    // entity's frame (the rules' global arrays and actions, about 10 KB)
+    // comes in parts the client joins (`orpheus_sim::mode_view`).
     let graphs = assets.graphs();
+    let mode_chunks = |watcher: &Watcher| {
+        joined_chunks(
+            watcher
+                .datagrams
+                .iter()
+                .flat_map(|(_, records)| records)
+                .filter(|record| record.entity == GAME_MODE_ENTITY)
+                .filter_map(|record| record.script.as_ref()),
+        )
+    };
     pump_within(
         &mut [&mut watcher],
         &schemas,
         "a HUD text on the mode entity",
         Duration::from_secs(15),
         |watchers| {
-            watchers[0]
-                .datagrams
+            mode_chunks(&*watchers[0])
                 .iter()
-                .flat_map(|(_, records)| records)
-                .filter(|record| record.entity == GAME_MODE_ENTITY)
-                .filter_map(|record| record.script.as_ref())
                 .any(|chunk| listed_graphs(graphs, chunk).contains(&CREATE_HUD_TEXT))
         },
     );
+    assert!(
+        watcher
+            .datagrams
+            .iter()
+            .flat_map(|(_, records)| records)
+            .any(|record| record.entity == GAME_MODE_ENTITY
+                && record
+                    .script
+                    .as_ref()
+                    .is_some_and(|chunk| chunk.part.is_some())),
+        "no mode frame in parts"
+    );
+    // C32S2's "Spawn Health Packs: Disabled" (#9542e): `0CBB` st34
+    // (`STU_A3DC6A25`) removed the map's health packs, the placeables with
+    // identifier 2 `2AB0.01C` (game_map_areas: 375, 381, 391, 456, 510,
+    // 614, 738, 751 and 771, definitions `1C89`, `1C8A`, `1C92`), before
+    // the world reached the client; the other server placeables came.
+    for pack in [375, 381, 391, 456, 510, 614, 738, 751, 771] {
+        assert!(
+            watcher.created(0x8000_0000 | pack).is_none(),
+            "health pack {pack}"
+        );
+    }
+    assert!(watcher.created(0x8000_0000 | 265).is_some());
     server.stop().unwrap();
 }

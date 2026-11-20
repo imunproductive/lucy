@@ -339,6 +339,32 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(true)
     }
 
+    /// `STU_A3DC6A25` at its begin (`sub_7FF78990C1B0`, its only own slot):
+    /// every entity of the scene made from an entity placeable (type 9)
+    /// whose identifier 2 (the placeable's body `+16`) is the identifier
+    /// `m_44E07E6E` goes (`sub_7FF78A73C890`, with its children). `0CBB`
+    /// st34 so removes the health packs (`2AB0.01C`) when the ruleset's
+    /// Spawn Health Packs (#9542e) says so. The client runs the state too
+    /// and removes its own placeables so (the packs' pads). False: the
+    /// identifier failed to evaluate (reported).
+    pub(super) fn remove_placeables(&mut self, id: u16, node: &Node) -> Result<bool, InitFault> {
+        let Some(identifier) = self.evaluate(id, node, field(&node.fields, "m_44E07E6E"), None)
+        else {
+            return Ok(false);
+        };
+        let site = self.site(id, node);
+        let removed = match identifier {
+            Value::Asset(identifier) => self.world.remove_placeables(site, identifier),
+            // No identifier: no placeable has identifier 2 of 0 to remove.
+            Value::Null => true,
+            _ => false,
+        };
+        if !removed {
+            self.assume(site, &node.class, "the world removes no placeable");
+        }
+        Ok(true)
+    }
+
     /// The entities of the scene tag query that a state (`STU_160F2578`,
     /// once after its begin, 0x7FF789C4FE60) or an action
     /// (`STU_42578342`, 0x7FF789CB8EC0; both through 0x7FF789CC3850) makes

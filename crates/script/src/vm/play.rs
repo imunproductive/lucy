@@ -4,11 +4,12 @@
 //! Ported from leafall903/ORPHEUS (MIT): `play.resolve_request`,
 //! `play_queue.Queue` and `Instance.start_entries` (906E49..9070D0,
 //! 64D2C0/64CD10, 1B95950), `BodyWorld.play_script` and
-//! `BodyWorld.replicate_wheel_event` in `driver.py`. Only the wheel's own
+//! `BodyWorld.replicate_wheel_event` in `driver.py`. The wheel's own
 //! self-targeted PlayScript nodes ([`wheel::PLAY_SCRIPTS`]), the aura
-//! graphs' (`vm/auras.rs`) and the hero body's attacker list
-//! ([`ATTACKER_LIST`]) run; every other PlayScript stays a no-op, as in the
-//! Python reference.
+//! graphs' (`vm/auras.rs`), the hero body's attacker list
+//! ([`ATTACKER_LIST`]) and the Workshop's actions' (Chase Variable `1CCC`
+//! playing `1CCF` on a player, [`World::play_script`]) run; every other
+//! PlayScript stays a no-op, as in the Python reference.
 //!
 //! A request needs a target that is the body itself. Its parameters are
 //! always arrays (1BA7C60). Policy (`m_AA4DE426`) 0 keeps a running instance
@@ -147,7 +148,12 @@ impl<W: World> Vm<'_, '_, '_, W> {
     }
 
     /// `Instance.start_entries`: bind each start entry's named parameters,
-    /// then queue it.
+    /// then queue it. A parameter of one item binds as the item, as the
+    /// client's binder does (`sub_7FF78AAA5950` copies each parameter and
+    /// `sub_7FF789E78020` replaces a plain array of one by its item): the
+    /// Workshop's Chase Variable `1CCF` reads its rate and destination
+    /// (`#2316`, `#13151`) with `STU_77B0987E`, which takes only a value
+    /// tree, not an array holding one.
     fn start_entries(
         &mut self,
         id: u16,
@@ -172,7 +178,11 @@ impl<W: World> Vm<'_, '_, '_, W> {
                         && !field(row, "m_out_Var").is_null()
                 });
                 if let Some(row) = row {
-                    self.bind_start_value(id, entry, field(row, "m_out_Var"), value.clone())?;
+                    let value = match value {
+                        Value::Array(items) if items.len() == 1 => items[0].clone(),
+                        value => value.clone(),
+                    };
+                    self.bind_start_value(id, entry, field(row, "m_out_Var"), value)?;
                 }
             }
             let source = field(&entry.fields, "m_B60ABDA4");

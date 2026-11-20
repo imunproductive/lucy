@@ -18,6 +18,7 @@ mod flow;
 mod grapple;
 mod health;
 mod hero_select;
+mod landing;
 mod lifecycle;
 mod links;
 mod machine;
@@ -32,6 +33,7 @@ mod switches;
 mod targets;
 mod timers;
 mod volleys;
+mod walls;
 mod workshop;
 
 use std::{
@@ -68,7 +70,9 @@ use crate::{
 };
 use orpheus_physics::mover::{
     Behaviour, MoveTo, PathWalk, Speed,
-    modifiers::{Modifier, ModifierKey, Operation, VectorOperation, VelocityElement},
+    modifiers::{
+        MOVE_HEADING, Modifier, ModifierKey, Operation, VectorOperation, VelocityElement, heading,
+    },
 };
 use orpheus_wire::{commands::Command, entity::MAX_MOVEMENT_AXIS};
 
@@ -496,6 +500,10 @@ pub trait MapRays: fmt::Debug + Send + Sync {
     /// meets the living bodies: only a profile whose rays test the bodies'
     /// hit shapes does (`m_0220680A` bit 0).
     fn meets_bodies(&self, profile: Option<u64>) -> bool;
+
+    /// The map's collision categories a cast of ray profile `profile` (none:
+    /// the default profile) meets.
+    fn map_mask(&self, profile: Option<u64>) -> u16;
 }
 
 /// External authored queries for this initialization. The caller owns mode,
@@ -742,6 +750,40 @@ pub trait World {
         None
     }
 
+    /// The radius of `entity`'s mover capsule in its stance now
+    /// (`STU_F7FD94F9`). None: unknown here.
+    fn body_radius(&self, _site: Site, _entity: u32) -> Option<f64> {
+        None
+    }
+
+    /// How far the walls turn a move of `entity`'s body along the flat
+    /// unit `direction` for `distance`, as the cosine of the angle (1: free,
+    /// 0: stopped) a wall check's trial move finds (`STU_FBFF5DE7`,
+    /// [`orpheus_physics::mover::trial`]). None: unknown here.
+    fn trial_turn(
+        &mut self,
+        _site: Site,
+        _entity: u32,
+        _direction: [f64; 3],
+        _distance: f64,
+    ) -> Option<f64> {
+        None
+    }
+
+    /// Where a placement selector's landing search from `entity`'s eye
+    /// lands, its casts meeting the map as ray profile `profile` does
+    /// (`STU_4C96470A`, [`orpheus_physics::mover::landing`]): Some(None)
+    /// when it finds no ground. None: unknown here.
+    fn landing_point(
+        &mut self,
+        _site: Site,
+        _entity: u32,
+        _search: &orpheus_physics::mover::landing::LandingSearch,
+        _profile: Option<u64>,
+    ) -> Option<Option<[f64; 3]>> {
+        None
+    }
+
     /// Whether the match's map lists game mode `mode` among its supported
     /// modes (`STU_02514B6A.m_supportedGamemodes`, `STU_16753B11`). None:
     /// unknown here.
@@ -774,6 +816,12 @@ pub trait World {
     /// Remove `entity` from the match (`STU_523EE38D`). False: this world
     /// can't.
     fn destroy_entity(&mut self, _site: Site, _entity: u32) -> bool {
+        false
+    }
+
+    /// Remove every map placeable whose identifier 2 is `identifier`
+    /// (`STU_A3DC6A25`, `vm/entities.rs`). False: this world removes none.
+    fn remove_placeables(&mut self, _site: Site, _identifier: u64) -> bool {
         false
     }
 
@@ -1248,6 +1296,12 @@ pub enum StateKind {
     /// casts at its begin and each tick and writes its outputs. Forms the
     /// server can't run write nothing.
     Ray,
+    /// A wall check (`STU_FBFF5DE7`, `vm/walls.rs`): a trial move of the
+    /// body each tick, its output true when a wall turns it.
+    WallCheck,
+    /// A placement selector's landing search (`STU_4C96470A`,
+    /// `vm/landing.rs`): it searches each tick while its gate holds.
+    Landing,
     /// A health change (`vm/health.rs`): a rate keeps when it last applied
     /// its share.
     ModifyHealth {
@@ -1339,6 +1393,13 @@ impl StateKind {
                 | Self::FilterArray
                 | Self::HeroSelect
         )
+    }
+
+    /// An ability state whose ability runs: started by its button and not
+    /// stopped yet (an ability state is on for as long as the hero can use
+    /// it).
+    pub fn runs_ability(self) -> bool {
+        matches!(self, Self::Ability { flags } if flags & (ABILITY_RUNNING | ABILITY_PUSHED) != 0)
     }
 }
 
@@ -3765,10 +3826,24 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             } else if !changed {
                 continue;
             }
-            self.state_mut(watcher)
-                .expect("active watcher")
-                .pending_change = true;
-            self.post(watcher.instance, Event::Changed(watcher.raw))?;
+            // A state that re-evaluates its own fields takes the change
+            // (slot 25); any other dependent read the change in its
+            // transitions and tries them again (event kind 2): the
+            // client's dependents walk `0x7FF78AA9ED40` → `0x7FF78AA82630`
+            // → `0x7FF78AA81220`.
+            if state.kind.updates_on_change()
+                || matches!(state.kind, StateKind::HealthPool { pool: Some(_) })
+            {
+                self.state_mut(watcher)
+                    .expect("active watcher")
+                    .pending_change = true;
+                self.post(watcher.instance, Event::Changed(watcher.raw))?;
+            } else if !state.pending_check {
+                self.state_mut(watcher)
+                    .expect("active watcher")
+                    .pending_check = true;
+                self.post(watcher.instance, Event::Check(watcher.raw))?;
+            }
         }
         Ok(())
     }

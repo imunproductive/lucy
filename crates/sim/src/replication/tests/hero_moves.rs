@@ -796,3 +796,447 @@ fn echos_ground_ray_meets_the_floor_she_stands_on() {
         snapshot.assumptions
     );
 }
+
+const DOOMFIST: u64 = 0x02e0_0000_0000_012f;
+const ABILITY_1: u32 = 0x08;
+const ABILITY_2: u32 = 0x10;
+
+/// The angle (radians, -π..π) from the heading `yaw` to the flat move
+/// (`dx`, `dz`).
+fn off_heading(dx: f64, dz: f64, yaw: i32) -> f64 {
+    let facing = f64::from(yaw) * std::f64::consts::TAU / 65536.0;
+    (dx.atan2(dz) - facing + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+        - std::f64::consts::PI
+}
+
+impl Player {
+    /// Whether the owner gets his body's records now, and whether a pose
+    /// of the last frame waits to go to him.
+    fn records(&self) -> (bool, bool) {
+        let script = self.world.body_script.as_ref().unwrap();
+        let history = script.corrections.as_ref().unwrap();
+        (
+            script.runtime.owner_needs_records(),
+            history.candidate(self.frame, true).is_some(),
+        )
+    }
+
+    /// Graph `0D06`'s state `raw` (Rocket Punch) is on.
+    fn punch_state(&self, raw: u16) -> bool {
+        self.graph_state(0x0d06, raw)
+    }
+
+    /// State `raw` of an instance of `graph` is on.
+    fn graph_state(&self, graph: u32, raw: u16) -> bool {
+        self.snapshot()
+            .instances
+            .values()
+            .filter(|instance| instance.graph == graph)
+            .any(|instance| instance.states.get(&raw).is_some_and(|state| state.active))
+    }
+
+    /// Instance variable `var` of the first instance of `graph`.
+    fn graph_variable(&self, graph: u32, var: u32) -> Option<&ScriptValue> {
+        self.snapshot()
+            .instances
+            .values()
+            .find(|instance| instance.graph == graph)?
+            .variables
+            .get(&var)
+    }
+
+    fn velocity(&self) -> [f64; 3] {
+        self.world.mover.as_ref().unwrap().pose().velocity
+    }
+
+    fn grounded(&self) -> bool {
+        self.world.mover.as_ref().unwrap().pose().flags & FELL == 0
+    }
+}
+
+/// Rocket Punch (graph `0D06`) on the server: the charge (st11) while
+/// secondary fire is held, then at the release the dash, a server-only
+/// MovementMod (st42: forward throttle 1 at 8.18 times the run speed,
+/// 45 m/s) along the facing at the release (`STU_09F9B1FE`, #2083) however
+/// the view turns, with the registration st67 (`STU_4773DA56`) on. His
+/// client predicts none of the dash and draws his view from the records
+/// meanwhile, so he gets them from the charge to 250 ms after the punch,
+/// and not before or after.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_rocket_punch_dashes_along_its_release_facing_with_records_to_its_owner() {
+    let mut doomfist = Player::spawn(DOOMFIST);
+    let (open, _) = open_and_walled(&doomfist.scene);
+    assert_eq!(doomfist.records(), (false, false));
+    let hold = |doomfist: &mut Player, buttons, yaw| {
+        doomfist.step(Command {
+            yaw,
+            buttons,
+            ..Command::default()
+        });
+    };
+    // Half a second of charge (more than its least 0.2 s, #9273).
+    for _ in 0..32 {
+        hold(&mut doomfist, orpheus_wire::commands::SECONDARY, open);
+        assert!(doomfist.punch_state(11), "charging");
+        assert_eq!(doomfist.records(), (true, true));
+    }
+    let start = doomfist.position();
+    // Released, then the view turns a quarter turn at once.
+    let turned = open + 16384;
+    hold(&mut doomfist, 0, open);
+    assert!(
+        doomfist.punch_state(42) && doomfist.punch_state(67),
+        "dashing"
+    );
+    for _ in 0..6 {
+        hold(&mut doomfist, 0, turned);
+        assert_eq!(doomfist.records(), (true, true));
+    }
+    let moved = horizontal(start, doomfist.position());
+    // Game session s3 (D:/Temp/df5, `refs/reports/Doomfist.md` §12), the
+    // punch released at frame 11967: its first dash frame moved 0.4033 m
+    // ((-4.246, -24.840) m/s), each later one 0.7202 m (45.0 m/s, the
+    // (-0.1211, -0.7100) m steps of the 1/1024 m grid): 4.0044 m in all
+    // after 6 frames. Here the heading differs, and each frame's feet snap
+    // to the grid on each axis (up to 0.49 mm), so 6 frames may differ by
+    // up to 6 × 0.69 mm.
+    assert!((moved - 4.0044).abs() < 0.0042, "{moved}");
+    let [dx, _, dz] = std::array::from_fn(|axis| doomfist.position()[axis] - start[axis]);
+    let off = off_heading(dx, dz, open);
+    assert!(off.abs() < 0.01, "the dash turned by {off} rad");
+    let mut last = None;
+    for _ in 0..90 {
+        hold(&mut doomfist, 0, turned);
+        if doomfist.records().0 {
+            last = Some(doomfist.frame);
+        }
+    }
+    let last = last.expect("records through the dash");
+    assert!(
+        !doomfist.punch_state(42) && !doomfist.punch_state(11),
+        "the punch ended"
+    );
+    // The window closed 250 ms (16 frames) after the last frame that needed
+    // records: no pose waits for him.
+    assert!(doomfist.frame > last + 16);
+    assert_eq!(doomfist.records(), (false, false));
+}
+
+/// A Rocket Punch into a wall ends there: the wall check (`0D06` st7,
+/// `STU_FBFF5DE7`) finds the trial move ahead stopped once the dash meets
+/// the wall, its server-only rays (st79/st80) hit, and the dash (st42)
+/// gives way to the impact (st9) at the frame the body stopped, where it
+/// stays.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_rocket_punch_ends_at_a_wall_with_the_impact() {
+    let mut doomfist = Player::spawn(DOOMFIST);
+    let (_, walled) = open_and_walled(&doomfist.scene);
+    let hold = |doomfist: &mut Player, buttons| {
+        doomfist.step(Command {
+            yaw: walled,
+            buttons,
+            ..Command::default()
+        });
+    };
+    // A full charge (1.4 s): the dash would go well past the wall.
+    for _ in 0..90 {
+        hold(&mut doomfist, orpheus_wire::commands::SECONDARY);
+    }
+    let start = doomfist.position();
+    hold(&mut doomfist, 0);
+    assert!(doomfist.punch_state(42), "dashing");
+    let mut stopped = None;
+    let mut impact = None;
+    let mut last = doomfist.position();
+    for frame in 0..60 {
+        hold(&mut doomfist, 0);
+        let now = doomfist.position();
+        if stopped.is_none() && frame > 0 && horizontal(last, now) < 0.3 {
+            stopped = Some(frame);
+        }
+        if impact.is_none() && doomfist.punch_state(9) {
+            impact = Some(frame);
+            assert!(!doomfist.punch_state(42), "the dash ended with the impact");
+        }
+        last = now;
+    }
+    let (stopped, impact) = (
+        stopped.expect("the wall stops him"),
+        impact.expect("an impact"),
+    );
+    assert!(
+        impact <= stopped + 1,
+        "impact at {impact}, stopped at {stopped}"
+    );
+    let moved = horizontal(start, doomfist.position());
+    assert!(moved < 6.0, "{moved}");
+}
+
+/// Seismic Slam on the ground (graph `0B27`, ABILITY_2): the leap (`rid67`
+/// on channel 1: `STU_0762B33A` of the facing, here the flat facing raised
+/// by 0.3, times 19 m/s) under 1.5 × gravity (st1), the landing (#59 = 3,
+/// st58) and 0.1 s after it the end of st37 (`STU_54FEB21C`, a wait the
+/// server ends) that brings the shockwave (st44) and the end of the ability,
+/// so Rising Uppercut lifts him after it (before, the slam never ended and
+/// blocked his other abilities).
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_grounded_slam_leaps_lands_and_ends() {
+    let mut doomfist = Player::spawn(DOOMFIST);
+    let (open, _) = open_and_walled(&doomfist.scene);
+    let start = doomfist.position();
+    // The press, then the leap's first frame.
+    doomfist.press(ABILITY_2, open);
+    let [vx, vy, vz] = doomfist.velocity();
+    let flat = vx.hypot(vz);
+    assert!((flat.hypot(vy) - 19.0).abs() < 0.01, "{vx} {vy} {vz}");
+    assert!((vy / flat - 0.3).abs() < 1e-3, "{vx} {vy} {vz}");
+    assert!(off_heading(vx, vz, open).abs() < 0.01, "{vx} {vz}");
+    let mut landed = None;
+    let mut shockwave = None;
+    let mut moved = 0.0;
+    for frame in 1..=64 {
+        doomfist.idle(1, open);
+        if landed.is_none() && doomfist.grounded() {
+            landed = Some(frame);
+            moved = horizontal(start, doomfist.position());
+        }
+        if shockwave.is_none() && doomfist.graph_state(0x0b27, 44) {
+            shockwave = Some(frame);
+        }
+    }
+    // Game session s4 (D:/Temp/df5, `refs/reports/Doomfist.md` §12; the
+    // client's state after each command tick, equal to the server's to the
+    // millimetre): the press at frame 7819 from (54.580, 1.0, 42.235)
+    // facing 157.5°, the leap's first frame 7820 (`press` runs both, so the
+    // loop's frame k is 7820 + k), the landing at 7847 at (57.292, 1.010,
+    // 35.683), 7.0918 m away on the same flat floor, and the shockwave
+    // (st44) at 7855.
+    let landed = landed.expect("he lands");
+    assert_eq!(landed, 27);
+    assert!((moved - 7.0918).abs() < 0.002, "{moved}");
+    assert_eq!(shockwave, Some(landed + 8));
+    doomfist.press(ABILITY_1, open);
+    let rises: Vec<f64> = (0..20)
+        .map(|_| {
+            doomfist.idle(1, open);
+            doomfist.velocity()[1]
+        })
+        .collect();
+    // The game (s4, frames 9790-9796): 40 m/s up (`rid8`), less 0.28 m/s of
+    // gravity a frame for the 0.1 s of st11, then a fifth of it (`rid14`).
+    let rise = rises
+        .iter()
+        .position(|&vy| vy == 40.0)
+        .unwrap_or_else(|| panic!("Rising Uppercut after the slam: {rises:?}"));
+    let expected = [40.0, 39.72, 39.44, 39.16, 38.88, 38.60, 7.66];
+    for (got, want) in rises[rise..].iter().zip(expected) {
+        assert!((got - want).abs() < 0.005, "{:?}", &rises[rise..]);
+    }
+}
+
+/// The punch jump: a jump pressed at least 0.1 s into Rocket Punch's dash
+/// (st63, then the jump button st62 sets #11432) ends the dash (st5) and
+/// launches him (`rid112` adds the facing × 25 and 5 up on channel 1 to
+/// what the dash leaves him). All of it is server-only (st42's end plug),
+/// so his client shows it from the records.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_punch_jump_launches_him_out_of_the_dash() {
+    let mut doomfist = Player::spawn(DOOMFIST);
+    let (open, _) = open_and_walled(&doomfist.scene);
+    let hold = |doomfist: &mut Player, buttons| {
+        doomfist.step(Command {
+            yaw: open,
+            buttons,
+            ..Command::default()
+        });
+    };
+    // Game session s3 (D:/Temp/df5, `refs/reports/Doomfist.md` §12): a
+    // 0.6 s charge (37 frames), the release at frame 11967 (here the first
+    // frame without the button), the jump 9 frames later at 11976.
+    for _ in 0..37 {
+        hold(&mut doomfist, orpheus_wire::commands::SECONDARY);
+    }
+    for _ in 0..9 {
+        hold(&mut doomfist, 0);
+        assert!(doomfist.punch_state(42), "dashing");
+    }
+    hold(&mut doomfist, orpheus_wire::commands::JUMP);
+    assert!(!doomfist.punch_state(42), "the jump ends the dash");
+    // 11976: the jump's own frame still dashes at 45 m/s, 3.2 m/s up.
+    let [vx, vy, vz] = doomfist.velocity();
+    assert!((vx.hypot(vz) - 45.0).abs() < 0.01, "{vx} {vy} {vz}");
+    assert!((vy - 3.2002).abs() < 0.001, "{vx} {vy} {vz}");
+    // 11977: (-5.2217, 5.3994, -30.5439) m/s, 30.987 m/s along the facing.
+    hold(&mut doomfist, 0);
+    let [vx, vy, vz] = doomfist.velocity();
+    assert!((vx.hypot(vz) - 30.987).abs() < 0.002, "{vx} {vy} {vz}");
+    assert!((vy - 5.3994).abs() < 0.001, "{vx} {vy} {vz}");
+    assert!(off_heading(vx, vz, open).abs() < 0.01, "{vx} {vz}");
+}
+
+/// Seismic Slam in the air (`0B27`): while he is more than 3 m above the
+/// ground (st8's ray finds none) st7 runs the selector st6
+/// (`STU_4C96470A`), the slam's target preview. The press (`#59` = 2, st63
+/// sets `#1321`) makes it search the ground along his view from his eye
+/// and write the point (`#431`) and its validity (`#1627`); the transition
+/// `#1627 && #1321` then begins the `MoveTo` st9, which flies him at the
+/// point. Rising Uppercut lifts him first; the slam is pressed as soon as
+/// it is allowed, looking 33° down at the open floor ahead. The point is
+/// at the edge of a step, and the straight flight to it meets the edge:
+/// the move stops there (`m_725EB364`'s 0.1 s without 0.5 m of progress,
+/// farther than 0.5 m from the point) and aborts (st54), as both his
+/// client's flight and the server's did at a step edge in game session s4
+/// (`refs/reports/Doomfist.md` §12: the server's blocked 0.68 m from the
+/// point at frame 8851, his client's own flight touched the same edge at
+/// 8852; st54 began on both).
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_airborne_slam_flies_at_the_ground_ahead_and_stops_at_a_step_edge() {
+    let mut doomfist = Player::spawn(DOOMFIST);
+    let (open, _) = open_and_walled(&doomfist.scene);
+    let start = doomfist.position();
+    let down = Command {
+        yaw: open,
+        pitch: 6000,
+        ..Command::default()
+    };
+    doomfist.press(ABILITY_1, open);
+    let mut previewing = None;
+    for frame in 0..60 {
+        doomfist.step(down);
+        if doomfist.graph_state(0x0b27, 6) {
+            previewing = Some((frame, doomfist.position()));
+            break;
+        }
+    }
+    let (shown, above) = previewing.expect("the airborne slam's preview began");
+    assert!(above[1] > start[1] + 2.5, "preview at {shown}, {above:?}");
+    let mut flying = None;
+    let mut aborted = false;
+    for frame in 1..=90 {
+        let buttons = if flying.is_none() && frame % 2 == 1 {
+            ABILITY_2
+        } else {
+            0
+        };
+        doomfist.step(Command { buttons, ..down });
+        if flying.is_none() && doomfist.graph_state(0x0b27, 9) {
+            flying = Some(frame);
+        }
+        aborted |= doomfist.graph_state(0x0b27, 54);
+    }
+    let Some(ScriptValue::Vector(point)) = doomfist.graph_variable(0x0b27, 431).cloned() else {
+        panic!(
+            "no landing point: {:?} #1627 {:?} #1321 {:?} {:?}",
+            doomfist.graph_variable(0x0b27, 431),
+            doomfist.graph_variable(0x0b27, 1627),
+            doomfist.graph_variable(0x0b27, 1321),
+            doomfist
+                .snapshot()
+                .assumptions
+                .iter()
+                .filter(|assumption| format!("{assumption:?}").contains("4C96470A"))
+                .collect::<Vec<_>>()
+        );
+    };
+    flying.expect("the MoveTo began");
+    // The point is ground below where he pressed and ahead of the spawn.
+    assert!(point[1] < above[1] - 1.0, "{above:?} -> {point:?}");
+    assert!(horizontal(start, point) > 3.0, "{start:?} -> {point:?}");
+    assert!(aborted, "the flight stops at the step's edge");
+}
+
+/// The airborne slam's flight (`0B27` st9's `MoveTo`: 25 m/s, acceleration
+/// 100, lateral time 0, 0.5 m in 0.1 s or stuck, exit limit 0 held at the
+/// end) as Doomfist's client flew it in game session s4
+/// (`refs/reports/Doomfist.md` §12; the client's movement state after each
+/// command tick, mover `+0x10B0`): from his feet at frame 8830 toward the
+/// point his landing search picked, 0.5269 m a move along the line, until
+/// the capsule met the edge of the step beside the point (8852, its 21st
+/// move: his states labelled 8840 and 8842 are one move apart) and came to
+/// rest in the corner at 8853, 0.68 m from the point (the server's flight
+/// stopped at the same spot to the millimetre).
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_airborne_slam_flight_stops_at_the_step_edge_where_his_client_did() {
+    use orpheus_physics::mover::{Behaviour, MoveEnd, MoveKey, MoveTo, Speed};
+    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let body = scene.heroes().get(DOOMFIST).unwrap().body;
+    let rays = scene.movement_index();
+    let mut mover = scene
+        .player_mover_at(body, 0, [55.400_390_625, 6.972_656_25, 38.931_640_625], 0)
+        .unwrap();
+    let flight = Behaviour::MoveTo(MoveTo {
+        destination: [
+            58.414_775_848_388_67,
+            1.944_159_269_332_885_7,
+            31.884_201_049_804_688,
+        ],
+        surface: [0.0; 3],
+        free_spot: false,
+        speed: Speed::MetresPerSecond(25.0),
+        acceleration: 100.0,
+        slow_radius: 0.0,
+        lateral_seconds: 0.0,
+        stuck_distance: 0.5,
+        stuck_seconds: f64::from(0.1_f32),
+        exit_horizontal: 10_000.0,
+        exit_vertical: 10_000.0,
+        exit_total: 0.0,
+        exit_on_end: true,
+        abort_past: false,
+    });
+    let key = MoveKey {
+        instance: 1,
+        raw_state: 9,
+        activation: 1,
+    };
+    // The client's feet after his first, 8th, 15th, 20th and 21st move
+    // (frames 8831, 8838, 8846, 8851 and 8852).
+    let client: [(usize, [f64; 3]); 5] = [
+        (0, [55.532_226_562_5, 6.752_929_687_5, 38.624_023_437_5]),
+        (7, [56.455_078_125, 5.214_843_75, 36.470_703_125]),
+        (14, [57.375_976_562_5, 3.677_734_375, 34.317_382_812_5]),
+        (19, [58.033_203_125, 2.582_031_25, 32.779_296_875]),
+        (20, [58.037_109_375, 2.461_914_062_5, 32.481_445_312_5]),
+    ];
+    // Where it came to rest (8853 on).
+    let corner = [57.996_093_75, 2.364_257_812_5, 32.235_351_562_5];
+    let mut feet = Vec::new();
+    let mut end = None;
+    for frame in 1..=40 {
+        let command = Command {
+            frame,
+            ..Command::default()
+        };
+        end = mover
+            .step_pose_to(rays, command, DT, Some((key, &flight)))
+            .unwrap();
+        feet.push(mover.pose().position);
+        if end.is_some() {
+            break;
+        }
+    }
+    for (index, at) in client {
+        let distance = (0..3)
+            .map(|axis| (feet[index][axis] - at[axis]).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        assert!(
+            distance < 0.01,
+            "frame {index}: {:?} vs {at:?}",
+            feet[index]
+        );
+    }
+    assert_eq!(end, Some(MoveEnd::Blocked), "{feet:?}");
+    let rest = *feet.last().unwrap();
+    assert!(
+        (0..3).all(|axis| (rest[axis] - corner[axis]).abs() < 0.01),
+        "{rest:?} vs {corner:?}"
+    );
+}

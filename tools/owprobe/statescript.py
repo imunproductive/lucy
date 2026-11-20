@@ -8,7 +8,8 @@ Component 47 (vtable 0x7FF78B521F68) is an entity's statescript component; its h
 0x7FF78AAA1460), +0x1E8 graph GUID, +0x318 flags (8: made by the network, 0x400, 0x800). A state: +0x40 flags
 (bit 0 while it runs), +0x70 its index, +0x78 its instance. The variable store [+0x98]: 16 buckets {entries, u32
 count} of 32 bytes from +0x20 by id & 0xF, 16-byte entries {u16 id, variable}, a variable's value at +0x50 (16
-bytes, its type at +0xC; crates/probe `layout::script_value`).
+bytes, its type at +0xC; crates/probe `layout::script_value`), or at +0x60 while it has bindings (+0x48). The
+entity variables (#Ne) of the host's entity: a store of the same layout at [host+0x1F0] (`entity_vars`).
 
 The frame sampler records chosen graphs every frame (`trace --script 0D06`); `name_scripts` names what it recorded:
 each state by its class (from its vtable, through the index) and each variable by statescript_names.json.
@@ -81,6 +82,8 @@ def states(p: Probe, instance):
 
 
 VARIABLE_STORE, VARIABLE_BUCKETS, BUCKET_BYTES, VARIABLE_VALUE = 0x98, 0x20, 32, 0x50
+VARIABLE_BINDINGS, VARIABLE_BOUND_VALUE = 0x48, 0x60
+HOST_ENTITY_VARIABLES = 0x1F0
 
 
 def script_value(raw):
@@ -102,9 +105,10 @@ def script_value(raw):
     return {"type": kind, "hex": raw[:12].hex()}
 
 
-def variables(p: Probe, instance, wanted=None):
-    """{id: value} of an instance's variables: all, or those whose ids are in `wanted`."""
-    store = p.read_u64(instance + VARIABLE_STORE)
+def store_variables(p: Probe, store, wanted=None):
+    """{id: value} of a variable store's variables: all, or those whose ids are in `wanted`. A variable with
+    bindings (a StateStack's, a ChaseVar's: their count at +0x48) has its value at +0x60, worked out from the
+    bindings each time the client reads it (0x7FF78AAB70B0); this gives the last one."""
     out = {}
     if not store:
         return out
@@ -118,8 +122,41 @@ def variables(p: Probe, instance, wanted=None):
             ident = int.from_bytes(table[at:at + 2], "little")
             variable = int.from_bytes(table[at + 8:at + 16], "little")
             if variable and (wanted is None or ident in wanted):
-                out[ident] = script_value(p.read(variable + VARIABLE_VALUE, 16))
+                bound = p.read_u32(variable + VARIABLE_BINDINGS) != 0
+                out[ident] = script_value(p.read(variable + (VARIABLE_BOUND_VALUE if bound else VARIABLE_VALUE),
+                                                 16))
     return out
+
+
+def variables(p: Probe, instance, wanted=None):
+    """{id: value} of an instance's variables: all, or those whose ids are in `wanted`."""
+    return store_variables(p, p.read_u64(instance + VARIABLE_STORE), wanted)
+
+
+def host_entity_variables(p: Probe, host, wanted=None):
+    """{id: value} of the entity variables (#Ne) of a statescript host's entity: the store at [host+0x1F0]
+    (0x7FF78AAB3A00 reads it as [[instance store+8]+0x1F0]; a store's +8 is its instance's host)."""
+    return store_variables(p, p.read_u64(host + HOST_ENTITY_VARIABLES), wanted)
+
+
+def entity_vars(p: Probe, entity, wanted=None):
+    """{id: value} of an entity's entity variables (#Ne): `entity` an id, 'player' (the local player, A0000100 in
+    the Range) or 'body' (the body he possesses); `wanted` ids or all. {} for an entity without component 47.
+    Finds the host with a component scan (about 2.4 s)."""
+    entity = resolve_entity(p, entity)
+    found = hosts(p, entity)
+    return host_entity_variables(p, found[0]["host"], wanted) if found else {}
+
+
+def resolve_entity(p: Probe, entity):
+    """An entity id from an int, hex text ('A0000100'), 'player' or 'body'."""
+    if entity in ("player", "body"):
+        info = p.info()
+        ident = info.get("entity_id") if entity == "player" else info.get("body")
+        if not ident:
+            raise ValueError(f"no {entity} entity yet (the body needs the frame sampler: sampler(every=0))")
+        return ident
+    return entity if isinstance(entity, int) else int(entity, 16)
 
 
 def find_instances(p: Probe, graph, entity_id=None):
@@ -182,7 +219,7 @@ def name_scripts(p: Probe, scripts):
             if inst["graph"] == graph and inst["id"] == instance:
                 names = {s["index"]: state_class(s["orpheus_vtable"]) for s in states(p, inst["address"])}
                 variables = {v: variable_name(v) for s in scripts if (s["entity"], s["graph"], s["instance"]) ==
-                             (entity, graph, instance) for v in s.get("vars", {})}
+                             (entity, graph, instance) for v in [*s.get("vars", {}), *s.get("entity_vars", {})]}
                 out[(entity, graph, instance)] = {"states": names,
                                                   "vars": {k: v for k, v in variables.items() if v}}
     return out

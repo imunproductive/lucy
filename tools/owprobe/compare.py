@@ -2,8 +2,10 @@
 
 Server: the `orpheus::pose` debug trace (`RUST_LOG=info,orpheus::pose=debug`; one `owner pose` line per command
 frame a body ran: frame, position (feet), velocity, movement flags, the states that began and ended). Client: an
-owprobe trace (`trace --corrections`): each frame sample's mover state (component 31 +0xD40: the frame it was
-simulated to, feet, velocity, flags) and the hits of the correction hooks.
+owprobe trace (`trace --corrections`): each frame sample's mover state (component 31's copy at +0x10B0 of the state
+after the last command frame's tick: the frame it was simulated to, feet, velocity, flags) and the hits of the
+correction hooks. A command frame whose tick and the next one ran between two rendered frames has no sample: it
+is left out (the report counts them).
 
     python -m tools.owprobe compare --server play.log --trace trace.jsonl [--body A0000101] [--out diff.jsonl]
 
@@ -129,7 +131,10 @@ def report(server, trace, body=None, threshold=0.01, out=None, log=print):
         log(f"no common frames (server body {body}); check the server log has orpheus::pose lines")
         return rows
     scores = best_offset(server, trace, body)
-    log(f"body {body}: {len(rows)} common command frames {rows[0]['frame']}..{rows[-1]['frame']}; mean distance "
+    sampled = {r["frame"] for r in rows}
+    skipped = sum(1 for f in range(rows[0]["frame"], rows[-1]["frame"] + 1) if f not in sampled)
+    log(f"body {body}: {len(rows)} common command frames {rows[0]['frame']}..{rows[-1]['frame']} ({skipped} "
+        f"without a client sample or server pose, left out); mean distance "
         f"by client->server frame offset: " + ", ".join(f"{o:+d}: {m:.4f} m ({n})" for o, (m, n) in scores.items()))
     worst = max(rows, key=lambda r: r["distance"])
     log(f"max distance {worst['distance']:.4f} m at frame {worst['frame']}; "

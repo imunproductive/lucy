@@ -118,7 +118,7 @@ its damage areas: every entity placeable with STUECDamageAreaInstanceData whose 
 area of the map, its first identifier (a placeable with one exists only in the modes that list it), \
 its damage (m_B81F7395) and its boxes; its server placeables: every entity placeable with client id 0 \
 whose definition (003) has neither component 0x737C5C41 nor 0xCA1FB0B8 (those are on the loading \
-list), with its definition and its first identifier; its tagged entities: every entity placeable on \
+list), with its definition, its first identifier and its second identifier (body +16); its tagged entities: every entity placeable on \
 the loading list or with client id 0 that has target tags (STUTargetTagInstanceData.m_targetTags, then \
 its definition's STUTargetTagComponent.m_targetTags, each once), with its first identifier, \
 position and rotation x y z w; its kill volumes: the boxes the triangles of the \
@@ -366,7 +366,9 @@ fn damage_areas(chunks: &[(u64, Vec<u8>)], base: usize, entities: &[Placed<'_>])
 }
 
 /// The server-owned placeables of a map that are not on the loading list,
-/// in placeable order, each with its definition.
+/// in placeable order, each with its definition and its second identifier
+/// when it has one (`STU_A3DC6A25` removes the placeables of one: the
+/// health packs' `2AB0.01C`).
 fn server_placeables(
     install: &Install,
     components: &mut Components,
@@ -392,6 +394,12 @@ fn server_placeables(
                 "definition".into(),
                 json!(guid_hex(placed.entity.definition)),
             );
+            if placed.entity.second_identifier != 0 {
+                entry.insert(
+                    "second_identifier".into(),
+                    json!(guid_hex(placed.entity.second_identifier)),
+                );
+            }
             entry.insert(
                 "position".into(),
                 json!(placed.entity.translation.map(short)),

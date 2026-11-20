@@ -4,9 +4,14 @@
 
 use serde_json::{Value, json};
 
-/// Component 31 (the mover): its movement state (the one an owner
-/// correction restores, `0x7FF789B73E00`; Grapple.md "DayGrapple7").
-pub const MOVEMENT_STATE: u64 = 0xD40;
+/// Component 31 (the mover): the copy of its movement state the frame loop
+/// takes after each command frame's tick (`0x7FF789B7E988` copies `+0xD40`,
+/// the state an owner correction restores, to `+0x10B0`). `+0xD40` itself
+/// is the render-time state: between command frames the render prediction
+/// `0x7FF789712B00` ticks it one frame ahead, so it is often partly the next
+/// frame (Doomfist.md §12). The copy holds whole frames; the sampler skips a
+/// frame when two ticks run between two rendered frames.
+pub const MOVEMENT_TICKED: u64 = 0x10B0;
 /// Bytes of the movement state the sampler reads.
 pub const MOVEMENT_BYTES: usize = 0xA0;
 /// Movement flags of a body in the air: jumped, fell, no ground under it

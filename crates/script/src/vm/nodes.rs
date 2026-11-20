@@ -114,7 +114,7 @@ const ASSUMED_NO_OPS: &[&str] = &[
     "STU_5EAA04BB",
 ];
 
-/// Melee's states (graph 0043): knockback and four unnamed ones. The client
+/// Melee's states (graph 0043): knockback and three unnamed ones. The client
 /// reads them as on/off only ("none" codec); the server doesn't run their
 /// effect yet, like the Python VM.
 const ASSUMED_INERT_STATES: &[&str] = &[
@@ -122,7 +122,6 @@ const ASSUMED_INERT_STATES: &[&str] = &[
     "STU_0A6BE10E",
     "STUStatescriptStatePhysicsExplosion",
     "STU_B5C87F3D",
-    "STU_54FEB21C",
 ];
 
 /// The player controller's native states (`0C90`): their client codec has
@@ -275,9 +274,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     .or_else(|| play::server_played_graph(graph, node.pos))
                 {
                     self.play_script(id, node, played)?;
-                } else if self.graphs.is_aura_graph(graph) {
+                } else if self.graphs.is_aura_graph(graph) || self.graphs.is_workshop_action(graph)
+                {
                     // An aura's graph plays its effect on the body
-                    // (`vm/auras.rs`: `0C71` plays `0B99` or `0C72`).
+                    // (`vm/auras.rs`: `0C71` plays `0B99` or `0C72`); a
+                    // Workshop action its helper on its targets (Chase
+                    // Player Variable At Rate `1CCC` plays `1CCF` on each
+                    // player's controller, `vm/workshop.rs`).
                     let played = node
                         .field("m_script.m_graph")
                         .and_then(asset_guid)
@@ -864,10 +867,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // doesn't have: a plain state, as Python ran it, that its frames
             // carry for the client to run.
             "STU_75D1C308" => StateKind::Plain,
-            // The scene tag query state, the spawn picker and the shuffled
-            // picker run the base lifecycle; their work is `vm/entities.rs`
-            // (codec `none`).
-            "STU_160F2578" | "STU_5E805B5A" | "STU_37072672" => StateKind::Plain,
+            // The scene tag query state, the spawn picker, the shuffled
+            // picker and the placeable remover run the base lifecycle; their
+            // work is `vm/entities.rs` (codec `none`).
+            "STU_160F2578" | "STU_5E805B5A" | "STU_37072672" | "STU_A3DC6A25" => {
+                StateKind::Plain
+            }
             // The aim speed (`STU_3716E1D4`): its own begin, end and update
             // (0x7FF7897F6390, 0x7FF7897F63E0, 0x7FF7897F6410) only call
             // 0x7FF789808820, which scales the pose rates of the entity's
@@ -977,6 +982,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_2F4E2E3F" => StateKind::Watch,
             "STUStatescriptStateTrackTargets" => StateKind::TrackTargets,
             "STUStatescriptStateRayCast" | "STUStatescriptStateTrackRay" => StateKind::Ray,
+            "STU_FBFF5DE7" => StateKind::WallCheck,
+            "STU_4C96470A" => StateKind::Landing,
             "STU_0A6BE10E" if filter_array::is_runnable_filter_array(node) => {
                 StateKind::FilterArray
             }
@@ -1056,6 +1063,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 );
                 StateKind::Plain
             }
+            // A wait the server ends (`begin_server_wait`, `end_wind_up`).
+            "STU_54FEB21C" => StateKind::Plain,
             class if ASSUMED_PLAIN_STATES.contains(&class) => StateKind::Plain,
             class if ASSUMED_INERT_STATES.contains(&class) => StateKind::Plain,
             "STU_77E13026" => StateKind::HitList,
@@ -1177,6 +1186,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::WeaponVolley { .. } => self.begin_volley(key, node, depth)?,
             StateKind::TrackTargets => self.begin_track_targets(key, node)?,
             StateKind::Ray => self.begin_ray(key, node)?,
+            StateKind::WallCheck => self.begin_wall_check(key, node)?,
+            StateKind::Landing => self.begin_landing(key, node)?,
             StateKind::ModifyHealth { .. } => self.begin_modify_health(key, node)?,
             StateKind::Status => self.begin_status(key, node),
             StateKind::ProjectileSpeed => self.begin_projectile_speed(key, node),
@@ -1203,6 +1214,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     return Ok(());
                 }
             }
+            StateKind::Plain if node.class == "STU_A3DC6A25" => {
+                if !self.remove_placeables(id, node)? {
+                    return Ok(());
+                }
+            }
             // The client's own run finishes the state once its line has
             // played (`0x7FF789C54090` keeps the line's end at `+488` and
             // then calls `0x7FF78AA812E0`); a state left on would ignore the
@@ -1215,6 +1231,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             StateKind::Plain if node.class == "STU_54FEB21C" && is_server_ended(node) => {
                 self.end_wind_up(key, node)?;
+            }
+            StateKind::Plain if node.class == "STU_54FEB21C" => {
+                self.begin_server_wait(key, node)?;
             }
             StateKind::Plain if ASSUMED_PLAIN_STATES.contains(&node.class.as_str()) => {
                 self.assume(self.site(id, node), &node.class, "plain state");

@@ -640,6 +640,11 @@ pub struct GraphStore {
     /// The aura graphs and the graphs they play (`PlayScript`), whose
     /// PlayScript actions the server runs.
     aura_graphs: BTreeSet<u32>,
+    /// The Workshop's action graphs: the 211 that hold its server-only
+    /// done node `STU_1E93FE1F` (`refs/reports/Workshop.md` §2), whose
+    /// PlayScript actions the server runs (Chase Variable `1CCC` plays
+    /// `1CCF` on each target player).
+    workshop_actions: BTreeSet<u32>,
     /// The Workshop's values (`054/0162`) as the client evaluates them:
     /// `1B4A`'s state `STU_25CBEFB0`, `m_108E51DD`, each value's `01C`
     /// identifier with its config ([`GraphStore::workshop_value`]).
@@ -704,6 +709,11 @@ impl GraphStore {
             .get(&WORKSHOP_VALUES_GRAPH)
             .map(|graph| workshop_values(graph))
             .unwrap_or_default();
+        let workshop_actions = graphs
+            .iter()
+            .filter(|(_, graph)| graph.nodes.iter().any(|node| node.class == "STU_1E93FE1F"))
+            .map(|(&index, _)| index)
+            .collect();
         Ok(Self {
             graphs,
             bodies: keyed_by_guid(bundle.bodies)?,
@@ -718,6 +728,7 @@ impl GraphStore {
             missing: bundle.missing,
             auras,
             aura_graphs,
+            workshop_actions,
             workshop_values,
         })
     }
@@ -730,6 +741,11 @@ impl GraphStore {
     /// Whether `graph` runs as an aura or is played by one.
     pub fn is_aura_graph(&self, graph: u32) -> bool {
         self.aura_graphs.contains(&graph)
+    }
+
+    /// Whether `graph` is one of the Workshop's actions.
+    pub fn is_workshop_action(&self, graph: u32) -> bool {
+        self.workshop_actions.contains(&graph)
     }
 
     /// The config the client evaluates for Workshop value `value` (its

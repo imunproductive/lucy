@@ -414,6 +414,8 @@ fn first_pool(components: &[DecodedComponent]) -> Option<f32> {
 struct ReceivedChunk {
     first: u32,
     span: u32,
+    /// A part's number and whether it is the last (`mode_view.rs`).
+    part: Option<(u16, bool)>,
     width: usize,
     data: Vec<u8>,
 }
@@ -422,6 +424,44 @@ impl ReceivedChunk {
     fn bits(&self) -> BitReader<'_> {
         BitReader::with_range(&self.data, 0, self.width).unwrap()
     }
+}
+
+/// The whole chunks among `chunks` (one entity's, in arrival order): each
+/// whole one, and each chunk in parts once its parts up to the last are
+/// all there, joined as the client's joiner does (`0x7FF78991FE30`).
+fn joined_chunks<'a>(chunks: impl IntoIterator<Item = &'a ReceivedChunk>) -> Vec<ReceivedChunk> {
+    let mut parts: HashMap<(u32, u32), std::collections::BTreeMap<u16, &ReceivedChunk>> =
+        HashMap::new();
+    let mut whole = Vec::new();
+    for chunk in chunks {
+        let Some((number, _)) = chunk.part else {
+            whole.push(chunk.clone());
+            continue;
+        };
+        let held = parts.entry((chunk.first, chunk.span)).or_default();
+        held.insert(number, chunk);
+        let Some((&last, _)) = held
+            .iter()
+            .find(|(_, part)| part.part.is_some_and(|(_, last)| last))
+        else {
+            continue;
+        };
+        if (0..=last).all(|number| held.contains_key(&number)) {
+            let mut data = BitWriter::new();
+            for part in held.values() {
+                data.raw_bits(&part.data, part.width).unwrap();
+            }
+            whole.push(ReceivedChunk {
+                first: chunk.first,
+                span: chunk.span,
+                part: None,
+                width: data.bit_len(),
+                data: data.into_bytes(),
+            });
+            parts.remove(&(chunk.first, chunk.span));
+        }
+    }
+    whole
 }
 
 /// What a full owner controller frame shows (its head: the controller
@@ -606,11 +646,15 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
                 assert!(!reader.bit().unwrap());
                 let first = reader.w_u32().unwrap();
                 let span = reader.w_var().unwrap();
-                assert!(!reader.bit().unwrap());
+                let part = reader
+                    .bit()
+                    .unwrap()
+                    .then(|| (reader.w_u16().unwrap(), reader.bit().unwrap()));
                 let width = reader.w_var().unwrap() as usize;
                 record.script = Some(ReceivedChunk {
                     first,
                     span,
+                    part,
                     width,
                     data: reader.raw_bits(width).unwrap(),
                 });
@@ -2379,19 +2423,24 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     // The shooter's create of it carries its movement state at frame 0,
     // below every record of it that follows, so his client's sphere
     // history of it (`0x7FF789B80F70`) appends them; the target's own
-    // create keeps the default frame (`orpheus_sim::body::body_create`).
+    // create puts it 18 frames past its datagram's frame, ahead of his
+    // client's command frames and below the records that follow
+    // (`orpheus_sim::body::body_create`).
     assert_eq!(create.create_frame, Some(0));
-    let own = target
+    let own_index = target
         .find(0, |record| {
             record.entity == target_body && record.is_create()
         })
         .unwrap();
-    let own = target.datagrams[own]
+    let own = target.datagrams[own_index]
         .1
         .iter()
         .find(|record| record.entity == target_body && record.is_create())
         .unwrap();
-    assert_eq!(own.create_frame, Some(0xffff_fffe));
+    assert_eq!(
+        own.create_frame,
+        Some(target.ticks[own_index] + orpheus_sim::body::OWN_CREATE_LEAD)
+    );
     let dead = |watcher: &Watcher| {
         watcher
             .find(0, |record| {
