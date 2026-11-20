@@ -3,17 +3,39 @@
 //! `orpheus_lobby::custom_game`; the research in
 //! `refs/reports/CustomGames.md`.
 
-use std::{io, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    io,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use orpheus_content::maps::GameMap;
 use orpheus_lobby::{
     accounts::Account,
-    custom_game::{self, CustomSettings, Upload},
+    custom_game::{self, CustomMatch, CustomSettings, RulesetValue, Upload},
     transport::LobbyMessage,
 };
+use orpheus_script::graph::ModeValue;
 use orpheus_wire::jam::codec::Fields;
 
 use super::{Ctx, Lobby, Matchmaker, Parties, Party, Ticket, rules};
+
+/// The ruleset ids of custom games' matches: `0C0` GUIDs no asset has
+/// (the shipped `0C0` indexes are below 0x100), one per match.
+const MATCH_RULESETS: u64 = 0x0fd0_8000_0000_0000;
+static NEXT_RULESET: AtomicU64 = AtomicU64::new(1);
+
+fn mode_value(value: RulesetValue) -> ModeValue {
+    match value {
+        RulesetValue::Bool(value) => ModeValue::Bool(value),
+        RulesetValue::Integer(value) => ModeValue::Integer(value),
+        RulesetValue::Float(value) => ModeValue::Float(f64::from(value)),
+        RulesetValue::Asset(value) => ModeValue::Asset(value),
+    }
+}
 
 /// A host's custom game lobby.
 pub(super) struct CustomGame {
@@ -127,7 +149,7 @@ impl Ctx<'_> {
             tracing::warn!("[CG] Start before the settings came");
             return;
         };
-        let Some(map) = self.custom_game_map(&settings) else {
+        let Some(mut map) = self.custom_game_map(&settings) else {
             tracing::warn!(
                 "[CG] No map of the settings ({:X?}) plays in a known mode",
                 settings.maps()
@@ -143,14 +165,44 @@ impl Ctx<'_> {
         let Some(entry) = self.entry(account, &ticket, 0, 0) else {
             return;
         };
+        let workshop = match settings.workshop_block(&self.lobby.schemas) {
+            Ok(workshop) => workshop,
+            Err(error) => {
+                tracing::warn!("[CG] The Workshop does not encode: {error}");
+                return;
+            }
+        };
+        // The match's own ruleset: the settings' values of its mode and
+        // map, read before the schema defaults (`GraphStore::ruleset_value`)
+        // and over the mode entity's variables.
+        let values: BTreeMap<u32, ModeValue> = settings
+            .ruleset_values(map.map_guid, map.mode_guid)
+            .into_iter()
+            .map(|(key, value)| (key, mode_value(value)))
+            .collect();
+        map.ruleset = MATCH_RULESETS | NEXT_RULESET.fetch_add(1, Ordering::Relaxed);
+        let lobby = self.lobby;
+        let graphs = lobby.assets.graphs();
+        graphs.add_match_ruleset(map.ruleset, map.mode_guid, values.clone());
         tracing::info!(
-            "[CG] {} starts {} ({}), teams {:?}",
+            "[CG] {} starts {} ({}), teams {:?}, ruleset values {values:?}",
             account.name,
             map.name,
             map.mode_name,
             map.team_sizes
         );
-        self.start(map, vec![entry], false, 0, &[], None);
+        let ruleset = map.ruleset;
+        if !self.start(map, vec![entry], false, 0, &[], None) {
+            graphs.remove_match_ruleset(ruleset);
+            return;
+        }
+        let id = self.state.rooms.last().expect("the started room").id;
+        let custom = Arc::new(CustomMatch { settings, workshop });
+        if let Some(game) = self.lobby.game.as_deref()
+            && let Err(error) = game.attach_custom_game(id, custom)
+        {
+            tracing::warn!("[CG] The game service did not take the settings: {error}");
+        }
     }
 
     /// The match a custom game plays: the first of its maps that the

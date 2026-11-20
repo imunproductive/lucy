@@ -168,7 +168,8 @@ impl World for PlayerWorld {
     }
 
     fn ruleset(&mut self, id: u32) -> Option<Value> {
-        self.graphs.rulesets().default(id, self.hero, self.mode)
+        self.graphs
+            .ruleset_value(id, self.hero, self.mode, self.ruleset)
     }
 
     fn mode_random(&self) -> Option<f64> {
@@ -350,8 +351,7 @@ impl World for PlayerWorld {
         }
         self.graphs
             .mode_variables(self.mode, self.ruleset)
-            .and_then(|variables| variables.get(&id))
-            .copied()
+            .and_then(|variables| variables.get(&id).copied())
             .map_or(Value::Null, Value::from)
     }
 

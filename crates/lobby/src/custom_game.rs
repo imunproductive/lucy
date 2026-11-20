@@ -19,7 +19,7 @@
 //! - The seats are the match lobby's (53000 type 1 CUSTOM_GAME, 53001,
 //!   53002); 24018, the lobby command, needs 53001's settings id.
 
-use std::io;
+use std::{collections::BTreeMap, io};
 
 use crate::{
     handoff::GAME_REQUEST,
@@ -28,7 +28,7 @@ use crate::{
     transport::LobbyMessage,
 };
 use orpheus_wire::jam::codec::{
-    Fields, Value,
+    Fields, Schemas, Value,
     Value::{Array, Bool, Struct, Unsigned},
     id16,
 };
@@ -71,6 +71,13 @@ const ENTRY_MAP: u32 = 0x138;
 /// it, `orpheus_sim::instance`), the teams.
 const BLOCK: u32 = 0x0;
 const BLOCK_MODE: u32 = 0xb0;
+/// `+0xA8`: the other u64 the Workshop report names the game mode
+/// (`refs/reports/Workshop.md` §3.1); the game struct's mode is `+0xB0`.
+const BLOCK_MODE_A8: u32 = 0xa8;
+/// A block's `{u32 value, u16 key, u8 kind}` lists: `masterVars`,
+/// `globalAdminVars` (`CGGameRuleset`).
+const MASTER_VARS: u32 = 0xd8;
+const ADMIN_VARS: u32 = 0xf0;
 const BLOCK_TEAMS: u32 = 0xc0;
 const TEAM_NUMBER: u32 = 0x60;
 const TEAM_SIZE: u32 = 0x61;
@@ -230,6 +237,120 @@ impl CustomSettings {
     pub fn update(&self) -> Vec<LobbyMessage> {
         self.transfer(SETTINGS_UPDATE, Fields::new(), [SETTINGS, EXTRA, MORE])
     }
+
+    /// The ruleset values a match of `mode` on `map` plays with: the
+    /// `{u32 value, u16 key, u8 kind}` pairs (`masterVars` `+0xD8`, then
+    /// `globalAdminVars` `+0xF0`) of the mode blocks of `mode` (`+0xB0` or
+    /// `+0xA8`), then of the map entries of `map` over them. The key is the
+    /// `01C` ruleset key and the value is read by its type as the client's
+    /// own lookup reads it (`0x7FF789356650`: bool `value != 0`, int, float
+    /// bits, `01C` index); the kind byte is taken to be that type, 1 to 4
+    /// (an inference, `CustomGames.md` §2). Other kinds are left out.
+    pub fn ruleset_values(&self, map: u64, mode: u64) -> BTreeMap<u32, RulesetValue> {
+        let modes = self.chunk_values(ChunkKind::Mode).filter(|block| {
+            [BLOCK_MODE, BLOCK_MODE_A8]
+                .iter()
+                .any(|offset| block.get(offset).and_then(unsigned) == Some(mode))
+        });
+        let maps = self
+            .chunk_values(ChunkKind::Map)
+            .filter(|entry| entry.get(&ENTRY_MAP).and_then(unsigned) == Some(map))
+            .filter_map(|entry| match entry.get(&BLOCK) {
+                Some(Struct(block)) => Some(block),
+                _ => None,
+            });
+        let mut values = BTreeMap::new();
+        for block in modes.chain(maps) {
+            for list in [MASTER_VARS, ADMIN_VARS] {
+                let Some(Array(pairs)) = block.get(&list) else {
+                    continue;
+                };
+                for pair in pairs {
+                    if let Struct(pair) = pair
+                        && let Some((key, value)) = ruleset_pair(pair)
+                    {
+                        values.insert(key, value);
+                    }
+                }
+            }
+        }
+        values
+    }
+
+    /// The Workshop as the client sent it, JAM-encoded again from the
+    /// decoded upload (the encoding is the same bytes): the settings header
+    /// (24008, whose settings `+0x30` is the logic, `PBCGLogic`) and each
+    /// Workshop item (24012), all with "more" false.
+    pub fn workshop_block(&self, schemas: &Schemas) -> io::Result<WorkshopBlock> {
+        let encode = |id: u32, fields: &Fields| {
+            schemas
+                .encode(GAME_REQUEST, id, fields)
+                .map_err(|error| invalid(format!("{id}: {error}")))
+        };
+        let header = Fields::from([
+            (SETTINGS, Struct(self.settings.clone())),
+            (EXTRA, Struct(self.extra.clone())),
+            (MORE, Bool(false)),
+        ]);
+        let rules = self
+            .chunks
+            .iter()
+            .filter(|chunk| chunk.kind == ChunkKind::Workshop)
+            .map(|chunk| {
+                let mut fields = chunk.fields.clone();
+                fields.insert(ChunkKind::Workshop.more(), Bool(false));
+                encode(UPLOAD[ChunkKind::Workshop.index() as usize], &fields)
+            })
+            .collect::<io::Result<_>>()?;
+        Ok(WorkshopBlock {
+            header: encode(UPLOAD[0], &header)?,
+            rules,
+        })
+    }
+}
+
+/// A ruleset value of the custom settings, typed as the client reads it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RulesetValue {
+    Bool(bool),
+    Integer(i64),
+    Float(f32),
+    /// A `01C` identifier (an enum choice), as a packed GUID.
+    Asset(u64),
+}
+
+/// The packed GUID type bits of a `01C` identifier (`254D.01C` is
+/// `0x0D8000000000254D`).
+const IDENTIFIER_GUID: u64 = 0x0d80_0000_0000_0000;
+
+fn ruleset_pair(pair: &Fields) -> Option<(u32, RulesetValue)> {
+    let value = u32::try_from(pair.get(&0).and_then(unsigned)?).ok()?;
+    let key = u32::try_from(pair.get(&4).and_then(unsigned)?).ok()?;
+    let value = match pair.get(&6).and_then(unsigned)? {
+        1 => RulesetValue::Bool(value != 0),
+        2 => RulesetValue::Integer(i64::from(value as i32)),
+        3 => RulesetValue::Float(f32::from_bits(value)),
+        4 => RulesetValue::Asset(IDENTIFIER_GUID | u64::from(value)),
+        _ => return None,
+    };
+    Some((key, value))
+}
+
+/// A custom game's Workshop, raw, for the Workshop engine to decode.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WorkshopBlock {
+    /// The settings header's JAM body (24008).
+    pub header: Vec<u8>,
+    /// Each Workshop item's JAM body (24012), in upload order.
+    pub rules: Vec<Vec<u8>>,
+}
+
+/// What a custom game's match carries: the settings as uploaded and its
+/// Workshop, raw.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomMatch {
+    pub settings: CustomSettings,
+    pub workshop: WorkshopBlock,
 }
 
 /// The Workshop part of the settings, as uploaded.
@@ -452,6 +573,24 @@ mod tests {
             entry.insert(BLOCK, Struct(block(0, &[(0, 12), (1, 0)])));
             entry
         };
+        // The Assault block's masterVars: a float of 0 (key 9531), an
+        // int of 12 (key 2) and a pair of an unknown kind.
+        let pair = |value: u32, key: u64, kind: u64| {
+            Struct(Fields::from([
+                (0, Unsigned(u64::from(value))),
+                (4, Unsigned(key)),
+                (6, Unsigned(kind)),
+            ]))
+        };
+        let mut assault = block(0x0230_0000_0000_0014, &[]);
+        assault.insert(
+            MASTER_VARS,
+            Array(vec![
+                pair(0.0f32.to_bits(), 9531, 3),
+                pair(12, 2, 2),
+                pair(1, 9539, 9),
+            ]),
+        );
         let messages = [
             (
                 24008,
@@ -469,10 +608,7 @@ mod tests {
             ),
             (
                 24010,
-                Fields::from([
-                    (0x78, Struct(block(0x0230_0000_0000_0014, &[]))),
-                    (0x1b0, Bool(true)),
-                ]),
+                Fields::from([(0x78, Struct(assault)), (0x1b0, Bool(true))]),
             ),
             (
                 24012,
@@ -507,6 +643,27 @@ mod tests {
         let workshop = settings.workshop();
         assert!(!workshop.is_empty());
         assert_eq!(workshop.items.len(), 1);
+        assert_eq!(
+            settings.ruleset_values(0x0800_0000_0000_0010, 0x0230_0000_0000_0014),
+            BTreeMap::from([
+                (2, RulesetValue::Integer(12)),
+                (9531, RulesetValue::Float(0.0)),
+            ])
+        );
+        assert!(settings.ruleset_values(0, 0x0230_0000_0000_0010).is_empty());
+        // The raw Workshop: the header and the one item, which decode
+        // back to what came.
+        let schemas = Schemas::lobby();
+        let block = settings.workshop_block(&schemas).unwrap();
+        assert_eq!(block.rules.len(), 1);
+        let item = schemas
+            .decode(GAME_REQUEST, 24012, &block.rules[0], true)
+            .unwrap();
+        assert_eq!(item[&0x1cc], Value::Signed(7));
+        let header = schemas
+            .decode(GAME_REQUEST, 24008, &block.header, true)
+            .unwrap();
+        assert_eq!(header[&SETTINGS], Struct(settings.settings.clone()));
         assert!(
             upload_state.push(24009, Fields::new()).is_err(),
             "a chunk after the upload ended has no header"

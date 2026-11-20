@@ -234,8 +234,7 @@ impl World for EntityWorld<'_, '_> {
     fn ruleset(&mut self, id: u32) -> Option<Value> {
         self.shared
             .graphs
-            .rulesets()
-            .default(id, 0, self.shared.mode)
+            .ruleset_value(id, 0, self.shared.mode, self.shared.ruleset)
     }
 
     fn mode_random(&self) -> Option<f64> {
@@ -260,8 +259,7 @@ impl World for EntityWorld<'_, '_> {
         self.shared
             .graphs
             .mode_variables(self.shared.mode, self.shared.ruleset)
-            .and_then(|variables| variables.get(&id))
-            .copied()
+            .and_then(|variables| variables.get(&id).copied())
             .map_or(Value::Null, Value::from)
     }
 

@@ -1940,9 +1940,16 @@ impl Ctx<'_> {
                 cards.push(card);
             }
         }
-        self.state
-            .rooms
-            .retain(|room| room.seats.iter().any(|seat| !seat.gone));
+        // A room nobody is in is over; a custom game's match ruleset goes
+        // with it (`custom.rs`; a no-op for the others).
+        let graphs = self.lobby.assets.graphs();
+        self.state.rooms.retain(|room| {
+            let on = room.seats.iter().any(|seat| !seat.gone);
+            if !on {
+                graphs.remove_match_ruleset(room.map.ruleset);
+            }
+            on
+        });
         for card in cards {
             self.retry(Some(card));
         }

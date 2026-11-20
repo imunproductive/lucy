@@ -244,7 +244,7 @@ impl World for ControllerWorld {
     }
 
     fn ruleset(&mut self, id: u32) -> Option<Value> {
-        self.graphs.rulesets().default(id, 0, self.mode)
+        self.graphs.ruleset_value(id, 0, self.mode, self.ruleset)
     }
 
     /// The mode entity's variables come from the bundle (`0C5`
@@ -259,8 +259,7 @@ impl World for ControllerWorld {
         }
         self.graphs
             .mode_variables(self.mode, self.ruleset)
-            .and_then(|variables| variables.get(&id))
-            .copied()
+            .and_then(|variables| variables.get(&id).copied())
             .map_or(Value::Null, Value::from)
     }
 

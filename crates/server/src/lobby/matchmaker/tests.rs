@@ -218,8 +218,8 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
 /// upload (24008 header, a Hanamura entry with teams of 12 and 0, an
 /// Assault block); the host gets his lobby (23304-23306 echoing the upload,
 /// then the match lobby 53000 type 1, 53001, 53002), a later upload comes
-/// back as 23312, and Start (24018 3) opens Hanamura and hands the host's
-/// game off.
+/// back as 23312, and Start (24018 3) opens Hanamura, with the custom
+/// game's settings and Workshop, and hands the host's game off.
 #[test]
 #[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
 fn a_host_creates_a_custom_game_and_starts_it() {
@@ -334,6 +334,7 @@ fn a_host_creates_a_custom_game_and_starts_it() {
     client.send(GAME_REQUEST, 24008, header(false));
     assert_eq!(custom(&client)[entered..], [23312]);
 
+    // The settings Start plays: Hanamura and one Workshop item.
     client.send(GAME_REQUEST, 24008, header(true));
     client.send(
         GAME_REQUEST,
@@ -343,8 +344,13 @@ fn a_host_creates_a_custom_game_and_starts_it() {
                 0x78,
                 Value::Struct(Fields::from([(0x138, Value::Unsigned(HANAMURA))])),
             ),
-            (0x1b8, Value::Bool(false)),
+            (0x1b8, Value::Bool(true)),
         ]),
+    );
+    client.send(
+        GAME_REQUEST,
+        24012,
+        Fields::from([(0x1cc, Value::Signed(0)), (0x1d1, Value::Bool(false))]),
     );
     client.send(
         GAME_REQUEST,
@@ -360,6 +366,8 @@ fn a_host_creates_a_custom_game_and_starts_it() {
     };
     assert_eq!(game.map, "Hanamura");
     assert_eq!(game.players.len(), 1);
+    // The match carries the custom game's Workshop.
+    assert_eq!(game.workshop_items, Some(1));
     client.close();
     server.stop().unwrap();
 }
