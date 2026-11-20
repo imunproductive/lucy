@@ -118,6 +118,26 @@ impl Api<'_> {
         Ok(json!({"message": format!("Matches load {name} when their queue's modes allow it.")}))
     }
 
+    /// The Workshop script players go into from the menu (`--workshop`):
+    /// its file, or none (empty). A player already in the menu goes at his
+    /// next login.
+    pub fn set_workshop(&self, data: &Map<String, Json>) -> ApiResult {
+        let lobby = self.lobby()?;
+        let path = data
+            .get("path")
+            .and_then(Json::as_str)
+            .map(|path| path.trim().trim_matches('"'))
+            .filter(|path| !path.is_empty());
+        lobby
+            .matchmaker
+            .set_workshop(path.map(std::path::Path::new))
+            .map_err(|error| ApiError::new(400, error.to_string()))?;
+        Ok(json!({"message": match path {
+            Some(path) => format!("Players go into the match of {path} from the menu."),
+            None => "No Workshop script: players stay in the menu.".to_owned(),
+        }}))
+    }
+
     pub fn end_matches(&self) -> ApiResult {
         let lobby = self
             .lobby

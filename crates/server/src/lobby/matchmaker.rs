@@ -36,12 +36,13 @@ mod ported_tests;
 mod results;
 #[cfg(test)]
 mod tests;
+mod workshop;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
     time::Duration,
 };
 
@@ -76,6 +77,10 @@ pub(crate) struct Matchmaker {
     /// Where the dashboard's settings per card are kept (Python
     /// `paths.matchmaking`).
     modes_path: PathBuf,
+    /// The runtime `data` folder, for what loads when first needed.
+    data: PathBuf,
+    /// The Workshop catalog, loaded the first time a Workshop is read.
+    catalog: OnceLock<Arc<orpheus_workshop::Catalog>>,
     state: Mutex<State>,
 }
 
@@ -109,6 +114,12 @@ struct State {
     last_sweep: Option<Duration>,
     /// The custom game lobby of each host, by account.
     custom: HashMap<u32, custom::CustomGame>,
+    /// The Workshop script every player goes into from the menu
+    /// (`--workshop`, the dashboard).
+    workshop: Option<Arc<workshop::WorkshopScript>>,
+    /// Players who reached the menu and go into the Workshop match at
+    /// the deadline: the lobby session and the deadline, by account.
+    workshop_due: HashMap<u32, ([u64; 2], Duration)>,
 }
 
 struct Online {
@@ -255,6 +266,8 @@ impl Matchmaker {
             practice: maps.practice_range()?,
             maps,
             modes_path,
+            data: data.to_owned(),
+            catalog: OnceLock::new(),
             state: Mutex::new(State {
                 minimum_players,
                 test_ai,
@@ -318,6 +331,7 @@ impl Matchmaker {
         self.with(lobby, |ctx| {
             ctx.state.online.remove(&account.account_lo);
             ctx.state.custom.remove(&account.account_lo);
+            ctx.state.workshop_due.remove(&account.account_lo);
             let party = ctx
                 .state
                 .tickets
@@ -348,6 +362,9 @@ impl Matchmaker {
         let lobby = peer.lobby;
         let account_lo = peer.login.account.account_lo;
         let session = peer.login.identity.session;
+        // Into the Workshop match from the menu (`--workshop`), before the
+        // 20600s due now: its own comes at once.
+        self.workshop_tick(lobby, &peer.login.account, session)?;
         let now = lobby.clock.now();
         let (going, retry) = self.with(lobby, |ctx| {
             let mut due = Vec::new();

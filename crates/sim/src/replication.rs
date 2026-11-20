@@ -190,6 +190,10 @@ pub const RESPAWN_READY: u64 = 0x0240_0000_0000_0685;
 /// `002D.025` {`0029` an identifier}: the game's identifier, which `01C7`
 /// rid32 keeps in #59 and tests for #1928e.
 const GAME_IDENTIFIER: u64 = 0x0240_0000_0000_002d;
+/// `080D.025` to a player's controller: the heroes he may pick, in
+/// `0458.026` (`0C90` st65 → #10489).
+const ALLOWED_HEROES: u64 = 0x0240_0000_0000_080d;
+const ALLOWED_HEROES_LIST: u32 = 0x0458;
 
 /// Whether a living body of team `other` blocks the moves of a body of
 /// `team` (the server's mover then takes its capsule,
@@ -3251,6 +3255,26 @@ impl WorldDelivery {
                 );
             })
             .ok();
+        // A custom game's hero pool: `0C90` st65 takes `080D` {`0458`: the
+        // heroes} into #10489, the list HeroSelect allows (`m_8B103ADE`;
+        // the client refuses a hero outside it, `sub_7FF789CB0C70`), as
+        // the Workshop's Set Player Allowed Heroes and `0F2F` send it.
+        let pool = &scene.map().hero_pool;
+        if !pool.is_empty() {
+            let message = GameMessage {
+                sender: GAME_MODE_ENTITY,
+                target: self
+                    .controller_script
+                    .as_ref()
+                    .map_or(0, ControllerScript::entity),
+                message: ALLOWED_HEROES,
+                parameters: Variables::from([(
+                    ALLOWED_HEROES_LIST,
+                    ScriptValue::Array(pool.iter().map(|&hero| ScriptValue::Asset(hero)).collect()),
+                )]),
+            };
+            self.receive_controller_message(tick, &[], &message);
+        }
         // Hero select opens at the start: nothing in `288B` opens it then
         // (only the client-only rid21 and rid226 after a body goes away
         // send `1360`), so the server sends the open itself, as the

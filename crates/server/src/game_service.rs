@@ -62,7 +62,7 @@ use orpheus_content::{
     stats::{BRONZE, GOLD, Medals, PlayerStats, SILVER, StatsCatalog},
 };
 use orpheus_core::tick::FIRST_TICK;
-use orpheus_lobby::{custom_game::CustomMatch, handoff::Handoff};
+use orpheus_lobby::handoff::Handoff;
 use orpheus_script::{
     controller::HeroSelectRequest,
     mode::ModePlayer,
@@ -148,9 +148,9 @@ pub struct MatchSnapshot {
     /// (match.py `waiting_for_players`).
     pub waiting: bool,
     pub players: Vec<PlayerSnapshot>,
-    /// A custom game's match: how many Workshop items (24012) it carries
-    /// for the Workshop engine; `None` for every other match.
-    pub workshop_items: Option<usize>,
+    /// A Workshop match (a custom game, or `--workshop`): how many rules
+    /// its script has for the Workshop engine; `None` for every other match.
+    pub workshop_rules: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -326,11 +326,10 @@ enum Request {
     Snapshot {
         reply: mpsc::SyncSender<Vec<MatchSnapshot>>,
     },
-    /// A custom game's settings and Workshop for the match that just
-    /// opened.
-    Custom {
+    /// The Workshop script of the match that just opened.
+    Workshop {
         id: MatchId,
-        game: Arc<CustomMatch>,
+        logic: Arc<orpheus_workshop::Logic>,
         reply: mpsc::SyncSender<bool>,
     },
     /// The matches that ended since the last call, oldest first.
@@ -587,11 +586,15 @@ impl GameService {
         self.request(|reply| Request::Snapshot { reply })
     }
 
-    /// Give a match that just opened its custom game: the settings as the
-    /// host uploaded them and the Workshop, raw, for the Workshop engine.
+    /// Give a match that just opened (before its scene is ready: right
+    /// after `open_world`) its Workshop script, for the Workshop engine.
     /// False when the match is gone.
-    pub fn attach_custom_game(&self, id: MatchId, game: Arc<CustomMatch>) -> io::Result<bool> {
-        self.request(|reply| Request::Custom { id, game, reply })
+    pub fn attach_workshop(
+        &self,
+        id: MatchId,
+        logic: Arc<orpheus_workshop::Logic>,
+    ) -> io::Result<bool> {
+        self.request(|reply| Request::Workshop { id, logic, reply })
     }
 
     /// The matches that ended by their rules since the last call, oldest
@@ -820,8 +823,8 @@ struct Room {
     ai: Option<Difficulty>,
     /// Its dummy bots (`ai.rs`): the Practice Range's Training Partner.
     dummies: Vec<ai::DummySeat>,
-    /// A custom game's settings and Workshop (`attach_custom_game`).
-    custom: Option<Arc<CustomMatch>>,
+    /// Its Workshop script (`attach_workshop`).
+    workshop: Option<Arc<orpheus_workshop::Logic>>,
 }
 
 impl Room {
@@ -845,7 +848,7 @@ impl Room {
             started: Instant::now(),
             ai: None,
             dummies: Vec::new(),
-            custom: None,
+            workshop: None,
         };
         room.add(players);
         room
@@ -1738,10 +1741,7 @@ impl State {
                 id,
                 map: room.map.name.clone(),
                 mode: room.map.mode_name.clone(),
-                workshop_items: room
-                    .custom
-                    .as_ref()
-                    .map(|custom| custom.workshop.rules.len()),
+                workshop_rules: room.workshop.as_ref().map(|logic| logic.rules.len()),
                 waiting: room
                     .flow
                     .as_ref()
@@ -1802,11 +1802,11 @@ impl State {
             Request::Snapshot { reply } => {
                 let _ = reply.send(self.snapshot());
             }
-            Request::Custom { id, game, reply } => {
+            Request::Workshop { id, logic, reply } => {
                 let room = self.rooms.get_mut(&id);
                 let found = room.is_some();
                 if let Some(room) = room {
-                    room.custom = Some(game);
+                    room.workshop = Some(logic);
                 }
                 let _ = reply.send(found);
             }

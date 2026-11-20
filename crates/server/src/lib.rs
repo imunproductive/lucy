@@ -11,3 +11,4 @@ mod lobby;
 pub mod platform;
 pub mod practice;
 pub mod server;
+pub mod workshop_match;

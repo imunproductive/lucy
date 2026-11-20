@@ -28,7 +28,7 @@ use crate::{
     transport::LobbyMessage,
 };
 use orpheus_wire::jam::codec::{
-    Fields, Schemas, Value,
+    Fields, Value,
     Value::{Array, Bool, Struct, Unsigned},
     id16,
 };
@@ -276,37 +276,6 @@ impl CustomSettings {
         }
         values
     }
-
-    /// The Workshop as the client sent it, JAM-encoded again from the
-    /// decoded upload (the encoding is the same bytes): the settings header
-    /// (24008, whose settings `+0x30` is the logic, `PBCGLogic`) and each
-    /// Workshop item (24012), all with "more" false.
-    pub fn workshop_block(&self, schemas: &Schemas) -> io::Result<WorkshopBlock> {
-        let encode = |id: u32, fields: &Fields| {
-            schemas
-                .encode(GAME_REQUEST, id, fields)
-                .map_err(|error| invalid(format!("{id}: {error}")))
-        };
-        let header = Fields::from([
-            (SETTINGS, Struct(self.settings.clone())),
-            (EXTRA, Struct(self.extra.clone())),
-            (MORE, Bool(false)),
-        ]);
-        let rules = self
-            .chunks
-            .iter()
-            .filter(|chunk| chunk.kind == ChunkKind::Workshop)
-            .map(|chunk| {
-                let mut fields = chunk.fields.clone();
-                fields.insert(ChunkKind::Workshop.more(), Bool(false));
-                encode(UPLOAD[ChunkKind::Workshop.index() as usize], &fields)
-            })
-            .collect::<io::Result<_>>()?;
-        Ok(WorkshopBlock {
-            header: encode(UPLOAD[0], &header)?,
-            rules,
-        })
-    }
 }
 
 /// A ruleset value of the custom settings, typed as the client reads it.
@@ -334,23 +303,6 @@ fn ruleset_pair(pair: &Fields) -> Option<(u32, RulesetValue)> {
         _ => return None,
     };
     Some((key, value))
-}
-
-/// A custom game's Workshop, raw, for the Workshop engine to decode.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct WorkshopBlock {
-    /// The settings header's JAM body (24008).
-    pub header: Vec<u8>,
-    /// Each Workshop item's JAM body (24012), in upload order.
-    pub rules: Vec<Vec<u8>>,
-}
-
-/// What a custom game's match carries: the settings as uploaded and its
-/// Workshop, raw.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CustomMatch {
-    pub settings: CustomSettings,
-    pub workshop: WorkshopBlock,
 }
 
 /// The Workshop part of the settings, as uploaded.
@@ -651,19 +603,6 @@ mod tests {
             ])
         );
         assert!(settings.ruleset_values(0, 0x0230_0000_0000_0010).is_empty());
-        // The raw Workshop: the header and the one item, which decode
-        // back to what came.
-        let schemas = Schemas::lobby();
-        let block = settings.workshop_block(&schemas).unwrap();
-        assert_eq!(block.rules.len(), 1);
-        let item = schemas
-            .decode(GAME_REQUEST, 24012, &block.rules[0], true)
-            .unwrap();
-        assert_eq!(item[&0x1cc], Value::Signed(7));
-        let header = schemas
-            .decode(GAME_REQUEST, 24008, &block.header, true)
-            .unwrap();
-        assert_eq!(header[&SETTINGS], Struct(settings.settings.clone()));
         assert!(
             upload_state.push(24009, Fields::new()).is_err(),
             "a chunk after the upload ended has no header"

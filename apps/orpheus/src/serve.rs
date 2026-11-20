@@ -70,6 +70,7 @@ pub fn start(settings: &Settings, hosting: Hosting) -> io::Result<Server> {
     config.test_ai = settings.test_ai;
     config.template = settings.template.clone();
     config.dev_console = settings.dev_console;
+    config.workshop = settings.workshop.clone();
     Server::start(config)
 }
 

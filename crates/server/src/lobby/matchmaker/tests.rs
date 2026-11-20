@@ -334,7 +334,8 @@ fn a_host_creates_a_custom_game_and_starts_it() {
     client.send(GAME_REQUEST, 24008, header(false));
     assert_eq!(custom(&client)[entered..], [23312]);
 
-    // The settings Start plays: Hanamura and one Workshop item.
+    // The settings Start plays: Hanamura and one Workshop rule (an empty
+    // rule, array selector 0).
     client.send(GAME_REQUEST, 24008, header(true));
     client.send(
         GAME_REQUEST,
@@ -350,7 +351,15 @@ fn a_host_creates_a_custom_game_and_starts_it() {
     client.send(
         GAME_REQUEST,
         24012,
-        Fields::from([(0x1cc, Value::Signed(0)), (0x1d1, Value::Bool(false))]),
+        Fields::from([
+            (
+                0x78,
+                Value::Struct(Fields::from([(0x30, Value::Struct(Fields::new()))])),
+            ),
+            (0x1cc, Value::Signed(0)),
+            (0x1d0, Value::Unsigned(0)),
+            (0x1d1, Value::Bool(false)),
+        ]),
     );
     client.send(
         GAME_REQUEST,
@@ -366,8 +375,8 @@ fn a_host_creates_a_custom_game_and_starts_it() {
     };
     assert_eq!(game.map, "Hanamura");
     assert_eq!(game.players.len(), 1);
-    // The match carries the custom game's Workshop.
-    assert_eq!(game.workshop_items, Some(1));
+    // The match carries the custom game's Workshop, decoded.
+    assert_eq!(game.workshop_rules, Some(1));
     client.close();
     server.stop().unwrap();
 }

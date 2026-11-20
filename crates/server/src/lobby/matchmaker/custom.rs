@@ -15,7 +15,7 @@ use std::{
 use orpheus_content::maps::GameMap;
 use orpheus_lobby::{
     accounts::Account,
-    custom_game::{self, CustomMatch, CustomSettings, RulesetValue, Upload},
+    custom_game::{self, CustomSettings, RulesetValue, Upload},
     transport::LobbyMessage,
 };
 use orpheus_script::graph::ModeValue;
@@ -149,13 +149,54 @@ impl Ctx<'_> {
             tracing::warn!("[CG] Start before the settings came");
             return;
         };
-        let Some(mut map) = self.custom_game_map(&settings) else {
+        let Some(mut map) = self.custom_map(&settings.maps(), &settings.modes(), true) else {
             tracing::warn!(
                 "[CG] No map of the settings ({:X?}) plays in a known mode",
                 settings.maps()
             );
             return;
         };
+        if let Some(sizes) = settings.team_sizes(map.map_guid, map.mode_guid) {
+            map.team_sizes = sizes;
+        }
+        let workshop = settings.workshop();
+        let logic = self.mm.catalog().and_then(|catalog| {
+            orpheus_workshop::decode(&workshop.block, &workshop.items, &catalog)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
+        });
+        let logic = match logic {
+            Ok(logic) => logic,
+            Err(error) => {
+                tracing::warn!("[CG] The Workshop does not decode: {error}");
+                return;
+            }
+        };
+        // The settings' values of its mode and map.
+        let values = settings
+            .ruleset_values(map.map_guid, map.mode_guid)
+            .into_iter()
+            .map(|(key, value)| (key, mode_value(value)))
+            .collect();
+        self.start_custom(account, party, map, values, Arc::new(logic));
+    }
+
+    /// Open a custom match for its host, alone in team 1: `map` with a
+    /// ruleset of its own, whose `values` its graphs read before the schema
+    /// defaults (`GraphStore::ruleset_value`) and over the mode entity's
+    /// variables, and its Workshop `logic` for the Workshop engine.
+    pub(super) fn start_custom(
+        &mut self,
+        account: &Arc<Account>,
+        party: &Party,
+        mut map: GameMap,
+        values: BTreeMap<u32, ModeValue>,
+        logic: Arc<orpheus_workshop::Logic>,
+    ) -> bool {
+        if map.team_sizes.first().is_none_or(|&size| size == 0) {
+            // The host plays in team 1.
+            map.team_sizes.resize(map.team_sizes.len().max(1), 0);
+            map.team_sizes[0] = 1;
+        }
         let ticket = Ticket {
             party: party.clone(),
             key: Fields::new(),
@@ -163,64 +204,52 @@ impl Ctx<'_> {
             members: Vec::new(),
         };
         let Some(entry) = self.entry(account, &ticket, 0, 0) else {
-            return;
+            return false;
         };
-        let workshop = match settings.workshop_block(&self.lobby.schemas) {
-            Ok(workshop) => workshop,
-            Err(error) => {
-                tracing::warn!("[CG] The Workshop does not encode: {error}");
-                return;
-            }
-        };
-        // The match's own ruleset: the settings' values of its mode and
-        // map, read before the schema defaults (`GraphStore::ruleset_value`)
-        // and over the mode entity's variables.
-        let values: BTreeMap<u32, ModeValue> = settings
-            .ruleset_values(map.map_guid, map.mode_guid)
-            .into_iter()
-            .map(|(key, value)| (key, mode_value(value)))
-            .collect();
         map.ruleset = MATCH_RULESETS | NEXT_RULESET.fetch_add(1, Ordering::Relaxed);
-        let lobby = self.lobby;
-        let graphs = lobby.assets.graphs();
+        let graphs = self.lobby.assets.graphs();
         graphs.add_match_ruleset(map.ruleset, map.mode_guid, values.clone());
         tracing::info!(
-            "[CG] {} starts {} ({}), teams {:?}, ruleset values {values:?}",
+            "[CG] {} starts {} ({}), teams {:?}, {} Workshop rules, ruleset values {values:?}",
             account.name,
             map.name,
             map.mode_name,
-            map.team_sizes
+            map.team_sizes,
+            logic.rules.len()
         );
         let ruleset = map.ruleset;
         if !self.start(map, vec![entry], false, 0, &[], None) {
             graphs.remove_match_ruleset(ruleset);
-            return;
+            return false;
         }
         let id = self.state.rooms.last().expect("the started room").id;
-        let custom = Arc::new(CustomMatch { settings, workshop });
         if let Some(game) = self.lobby.game.as_deref()
-            && let Err(error) = game.attach_custom_game(id, custom)
+            && let Err(error) = game.attach_workshop(id, logic)
         {
-            tracing::warn!("[CG] The game service did not take the settings: {error}");
+            tracing::warn!("[CG] The game service did not take the Workshop: {error}");
         }
+        true
     }
 
-    /// The match a custom game plays: the first of its maps that the
-    /// catalog plays in a mode the queue rules know, preferring the modes
-    /// its settings name; no 0C0 ruleset (the mode's own values); the
-    /// team sizes of its settings when they have them, the host's place
-    /// kept.
-    fn custom_game_map(&self, settings: &CustomSettings) -> Option<GameMap> {
-        let preferred = settings.modes();
+    /// The first of `maps` that the catalog plays in one of `modes` (in
+    /// that order) that the queue rules know, or with `any_mode` in any
+    /// such mode after them; no `0C0` ruleset (the mode's own values).
+    pub(super) fn custom_map(
+        &self,
+        maps: &[u64],
+        modes: &[u64],
+        any_mode: bool,
+    ) -> Option<GameMap> {
         let mut rulesets: Vec<_> = self
             .mm
             .rules
             .values()
             .flat_map(|rules| rules.rulesets.iter())
+            .filter(|ruleset| any_mode || modes.contains(&ruleset.mode))
             .collect();
         rulesets.sort_by_key(|ruleset| {
             (
-                preferred
+                modes
                     .iter()
                     .position(|&mode| mode == ruleset.mode)
                     .unwrap_or(usize::MAX),
@@ -229,21 +258,13 @@ impl Ctx<'_> {
             )
         });
         rulesets.dedup_by_key(|ruleset| ruleset.mode);
-        for map in settings.maps() {
+        for &map in maps {
             let maps = [(map, Vec::new())];
             for ruleset in &rulesets {
                 let found =
                     rules::map_choices(&self.mm.maps, &maps, std::slice::from_ref(*ruleset));
                 if let Some((mut found, _)) = found.into_iter().next() {
                     found.ruleset = 0;
-                    if let Some(sizes) = settings.team_sizes(map, found.mode_guid) {
-                        found.team_sizes = sizes;
-                    }
-                    if found.team_sizes.first().is_none_or(|&size| size == 0) {
-                        // The host plays in team 0.
-                        found.team_sizes.resize(found.team_sizes.len().max(1), 0);
-                        found.team_sizes[0] = 1;
-                    }
                     return Some(found);
                 }
             }

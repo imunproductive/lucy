@@ -49,6 +49,7 @@ pub(crate) const MODULE: Module = Module {
 
 fn login(peer: &mut Peer<'_, '_>) -> io::Result<()> {
     peer.lobby.matchmaker.login(peer.login);
+    peer.lobby.matchmaker.workshop_login(peer.lobby, peer.login);
     Ok(())
 }
 
