@@ -299,7 +299,7 @@ fn handle(probe: &'static Probe, request: &Value) -> Result<Value, String> {
             let hook = game::ensure_frame_hook(probe)?;
             let mut state = probe.game.state.lock().map_err(|_| "state lock")?;
             if let Some(body) = request.get("body") {
-                let body = number(body).ok_or("body: an entity id (0: the player's + 1)")?;
+                let body = number(body).ok_or("body: an entity id (0: the possessed one)")?;
                 probe.game.body.store(body as u32, Ordering::Relaxed);
             }
             if let Some(every) = request.get("every") {
@@ -308,9 +308,20 @@ fn handle(probe: &'static Probe, request: &Value) -> Result<Value, String> {
             if request.get("reads").is_some() {
                 state.reads = exprs(request, "reads")?;
             }
+            if let Some(camera) = request.get("camera") {
+                state.camera = camera.as_bool().ok_or("camera: true or false")?;
+            }
+            if request.get("scripts").is_some() {
+                state.watches = strings(request, "scripts")
+                    .iter()
+                    .map(|text| game::Watch::parse(text))
+                    .collect::<Result<_, _>>()?;
+            }
             Ok(json!({
-                "hook": hook, "every": state.every,
+                "hook": hook, "every": state.every, "camera": state.camera,
                 "reads": state.reads.iter().map(|r| r.text.clone()).collect::<Vec<_>>(),
+                "scripts": state.watches.iter().map(game::Watch::text).collect::<Vec<_>>(),
+                "body": probe.game.body.load(Ordering::Relaxed),
             }))
         }
         "frame" => {
@@ -395,6 +406,8 @@ fn info(probe: &Probe) -> Value {
         "entity": game.entity.load(Ordering::Relaxed),
         "entity_id": game::entity_id(game.entity.load(Ordering::Relaxed)),
         "comp4": game.comp4.load(Ordering::Relaxed),
+        "comp31": game.comp31.load(Ordering::Relaxed),
+        "body": game.state.lock().ok().and_then(|state| state.last.as_ref().map(|s| s.body_id)),
         "frame_hook": game.frame_hook.lock().ok().and_then(|hook| *hook),
         "records": probe.ring.lock().map(|ring| ring.last()).unwrap_or(0),
         "orpheus_base": crate::ORPHEUS_BASE,
