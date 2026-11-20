@@ -12,3 +12,8 @@
 *.key binary
 crates/fixed/data/* linguist-generated=true
 crates/stu/data/types.txt linguist-generated=true
+# Every branch appends entries to these two notes, so plain merges conflicted on
+# nearly every integration. A union merge keeps both sides' lines; the integrator
+# checks the merged file for an entry that both sides rewrote (it then appears twice).
+docs/dev/loose-ends.md merge=union
+docs/notes/behavior.md merge=union

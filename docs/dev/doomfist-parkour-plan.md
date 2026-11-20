@@ -28,3 +28,4 @@ Phases 2 and 4 don't depend on unknown 1 and run alongside it; phase 3 starts wh
 ## Status
 
 - 2026-11-20: plan written; phase 1 research started (agents WorkshopClient, CustomLobby, DoomfistMoves).
+- 2026-11-20: unknown 1 answered (`refs/reports/Workshop.md`, WorkshopClient): the client runs no rules; every Workshop action is a statescript graph (054 `0155` `m_graph`, params in `#18739`, done via server-only `STU_1E93FE1F`); retail's server ran a native rule engine around them. So: a Rust rule engine (`crates/workshop`: catalog, typed logic from the `PBCGLogic` binary and from Workshop text, events/conditions/control flow/values) that starts the action graphs in the VM. Phase 3 started: WorkshopModel (crate, parser, decoder, engine), WorkshopVM (the 241 Workshop graphs in the bundle, action graphs runnable with their server-only nodes).
