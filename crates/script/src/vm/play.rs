@@ -38,7 +38,11 @@ pub const ATTACKER_LIST: ((u32, u16), u32) = ((0x01cf, 201), 0x1901);
 /// (rid31 `STU_523EE38D` on `owner()`). `0046` itself plays `0EB9` (rid37)
 /// on the visual its StateCreateEntity st15 made (#38) while the pack is
 /// up (`vm/pickups.rs`).
-pub const HEALTH_PACKS: [u32; 3] = [0x0216, 0x0217, 0x0046];
+pub const HEALTH_PACKS: [u32; 3] = [0x0216, 0x0217, HEALTH_PACK];
+
+/// The health pack graph `0046`: its ModifyHealth st0 is the pack's heal
+/// (the Workshop's Event Was Health Pack, `orpheus_sim::combat`).
+pub const HEALTH_PACK: u32 = 0x0046;
 
 /// The graph a server PlayScript node (not the wheel's) plays, if it is one.
 pub(super) fn server_played_graph(graph: u32, node: u16) -> Option<u32> {

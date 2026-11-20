@@ -2535,11 +2535,14 @@ impl State {
     }
 
     /// The hits on players' bodies of a room (combat.py `_damage`, `_died`).
+    /// What they did between the players goes to the room's Workshop rules
+    /// (`WorkshopRun::player_events`).
     fn resolve_player_hits(&mut self, id: MatchId, tick: u32, now: Duration) {
         let Some(Room {
             players,
             world,
             flow,
+            workshop,
             ..
         }) = self.rooms.get_mut(&id)
         else {
@@ -2566,8 +2569,11 @@ impl State {
                     stats: &mut player.stats,
                 })
                 .collect();
-            let notices = apply_player_hits(scene, hits, &mut room, tick, now);
-            apply_player_pushes(pushes, &mut room, now);
+            let (notices, mut events) = apply_player_hits(scene, hits, &mut room, tick, now);
+            events.extend(apply_player_pushes(pushes, &mut room, now));
+            if let Some(run) = workshop.as_mut().and_then(|workshop| workshop.run.as_mut()) {
+                run.player_events(&events);
+            }
             notices
         };
         // The kills count for the match flow's score (Deathmatch, Team

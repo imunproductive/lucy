@@ -1902,7 +1902,7 @@ fn hero_body(
     let spawn = OwnerBodySpawn {
         controller: 0xa000_0100,
         entity: 0xa000_0101,
-        body_filter: crate::scene::team_bit(0).unwrap(),
+        body_filter: crate::scene::body_filter(crate::scene::team_bit(0).unwrap(), false),
         slot: 0,
         frame: FIRST_TICK,
         pose: Movement {

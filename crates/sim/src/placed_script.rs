@@ -759,13 +759,22 @@ mod tests {
             health: None,
             spawned: Vec::new(),
         }]);
+        // The server routes a tick's messages after the placeables ran
+        // that tick (`GameService::tick`: `advance_placed`, then
+        // `route_messages`), so the ask lands in the last frame they ran.
+        tick -= 1;
+        let taken = tick;
         let ask = GameMessage {
             sender: BODY,
             target: pack,
             message: TOUCH,
             parameters: Variables::new(),
         };
-        range.scene.message_recipients(tick).1.receive_message(&ask);
+        range
+            .scene
+            .message_recipients(taken)
+            .1
+            .receive_message(&ask);
         let heals = range.scene.take_placed_health_changes();
         let [heal] = heals.as_slice() else {
             panic!("{heals:?}");
@@ -783,9 +792,12 @@ mod tests {
         };
         assert!(!up(&range));
         assert_eq!(visual(&range), None);
-        range.scene.message_recipients(tick).1.receive_message(&ask);
+        range
+            .scene
+            .message_recipients(taken)
+            .1
+            .receive_message(&ask);
         assert!(range.scene.take_placed_health_changes().is_empty());
-        let taken = tick;
         while !up(&range) {
             tick += 1;
             assert!(tick < taken + 2000, "the pack never came back");

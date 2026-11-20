@@ -49,6 +49,7 @@ pub use auras::{AURA_APPLIED, AuraChange, AuraSource};
 pub use health::HealthChange;
 use indexmap::IndexMap;
 pub use pickups::Pickup;
+pub use play::HEALTH_PACK;
 pub use scopes::{ParentWrite, ScopeChange, ScopeHit, ScopeLink, ScopeSource};
 use serde_json::Value as Json;
 pub use statuses::{
@@ -56,6 +57,7 @@ pub use statuses::{
     DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, INVULNERABLE, MODIFIED, PHASED_OUT, PartyFilter,
     REDUCTION_CAP, Scaled, combat_scale,
 };
+pub(crate) use targets::DEAD as DEAD_FILTER_BIT;
 pub use workshop::{ACTION_PARAMETERS, ActionOutcome, RuleTest};
 
 use crate::{

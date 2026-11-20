@@ -482,10 +482,19 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 expr::to_float(&value)
             };
             if rate > 0.0 {
-                let per_ms = (rate * f64::from(0.001_f32)) as f32;
-                let distance = (f64::from(per_ms) * elapsed as f64) as f32;
-                let step = f64::from((f64::from(distance) + expr::EPSILON) as f32);
-                (next.current, next.reached) = chase_step(next.current, destination, step);
+                // The client's step (`0x7FF78AAAFAB0`, from the per-frame
+                // update `0x7FF78AAB1050` and the read `0x7FF78AAAEC80`):
+                // `f32(f32(dt) * 0.001) * rate`; it arrives when the
+                // distance left is at most the step plus a float's epsilon,
+                // and else moves by the step alone.
+                let seconds = (f64::from(elapsed as f32) * 0.001) as f32;
+                let step = f64::from(seconds * rate as f32);
+                (next.current, next.reached) =
+                    if chase_distance(&next.current, &destination) > step + expr::EPSILON {
+                        (chase_step(next.current, destination, step).0, false)
+                    } else {
+                        (destination, true)
+                    };
             }
         }
         let reached = next.reached;

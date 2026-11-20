@@ -260,8 +260,8 @@ struct Outputs {
     dummies: Vec<DummyChange>,
     /// The entities the graphs made that haven't started yet, and those
     /// that run ([`MapEntityWorld::made`]).
+    unstarted: Vec<MadeEntity>,
     made: Vec<MadeEntity>,
-    started: Vec<MadeEntity>,
     /// The next id of [`MADE_FIRST`]'s span to try.
     next_made: u32,
     /// The pickups the pickup states hold ([`World::set_pickup`]).
@@ -276,9 +276,9 @@ struct Outputs {
 impl Outputs {
     /// An entity the graphs made, started or not.
     fn made_entity(&self, entity: u32) -> Option<&MadeEntity> {
-        self.started
+        self.made
             .iter()
-            .chain(&self.made)
+            .chain(&self.unstarted)
             .find(|made| made.entity == entity)
     }
 }
@@ -634,9 +634,9 @@ impl World for EntityWorld<'_, '_> {
             return false;
         }
         let out = &mut *self.shared.out;
-        if let Some(index) = out.made.iter().position(|made| made.entity == entity) {
+        if let Some(index) = out.unstarted.iter().position(|made| made.entity == entity) {
             // Not started yet: it never will.
-            out.made.remove(index);
+            out.unstarted.remove(index);
         } else if !out.destroyed.contains(&entity) {
             out.destroyed.push(entity);
         }
@@ -733,7 +733,7 @@ impl World for EntityWorld<'_, '_> {
             .map(|step| MADE_FIRST + out.next_made.wrapping_add(step) % MADE_SPAN)
             .find(|&entity| out.made_entity(entity).is_none())?;
         out.next_made = (entity - MADE_FIRST + 1) % MADE_SPAN;
-        out.made.push(MadeEntity {
+        out.unstarted.push(MadeEntity {
             entity,
             definition: creation.definition,
             position: creation.position.unwrap_or(self.position),
@@ -1018,14 +1018,14 @@ impl MapEntityWorld {
     /// the graphs played on them play there.
     fn settle(&mut self) {
         for _ in 0..SETTLE_ROUNDS {
-            let made = std::mem::take(&mut self.out.made);
+            let made = std::mem::take(&mut self.out.unstarted);
             let plays = std::mem::take(&mut self.out.plays);
             if made.is_empty() && plays.is_empty() {
                 return;
             }
             for made in made {
                 let roots = self.definition_roots(made.definition);
-                self.out.started.push(made);
+                self.out.made.push(made);
                 self.start_entity(made.entity, made.position, roots, Some(made.maker), None);
             }
             for request in plays {
@@ -1066,7 +1066,7 @@ impl MapEntityWorld {
     /// The entities the graphs made that run now ([`Self::make_entities`]),
     /// for the match to create on its clients.
     pub fn made(&self) -> &[MadeEntity] {
-        &self.out.started
+        &self.out.made
     }
 
     /// The pickups the pickup states hold now (`STU_913C09E4`), for the
@@ -1217,7 +1217,7 @@ impl MapEntityWorld {
 
     fn end_entity(&mut self, index: usize) {
         let mut placed = self.entities.remove(index);
-        self.out.started.retain(|made| made.entity != placed.entity);
+        self.out.made.retain(|made| made.entity != placed.entity);
         self.out
             .plays
             .retain(|request| request.target != placed.entity);

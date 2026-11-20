@@ -4515,15 +4515,17 @@ impl WorldDelivery {
     /// has knocked the body ([`Self::knocked_by`]). Not where it can't hurt
     /// him ([`Self::can_be_damaged`]: the spawn room, whose status bit 0x4
     /// also stops the client's own push, `scene` module notes) nor on a body
-    /// the hit killed.
-    pub fn knock(&mut self, body: u32, push: [f64; 3], by: Shooter, now: Duration) {
+    /// the hit killed. Whether it pushed the body.
+    pub fn knock(&mut self, body: u32, push: [f64; 3], by: Shooter, now: Duration) -> bool {
         if self.current_body() != Some(body) || self.death.is_some() || !self.can_be_damaged() {
-            return;
+            return false;
         }
-        if let Some(mover) = &mut self.mover {
-            mover.push(push);
-            self.knocks.knocked(body, by, now);
-        }
+        let Some(mover) = &mut self.mover else {
+            return false;
+        };
+        mover.push(push);
+        self.knocks.knocked(body, by, now);
+        true
     }
 
     /// Who last knocked the player's body `body` so that its environment

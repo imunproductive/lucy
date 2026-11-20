@@ -1228,14 +1228,19 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     let mut controller = false;
     // The mode's and the controller's first script chunks (the Training
     // Partner's player, `player_entity(1)`, and his body have their own,
-    // as do the server placeables whose scripts run whole, once their
-    // creates arrived (`placed_script.rs`): not checked here).
+    // as do the server placeables whose scripts run whole and the
+    // entities their graphs make (the health packs' visuals, running
+    // `0EB9`), once their creates arrived (`placed_script.rs`): not
+    // checked here).
     let first_script = |record: &WorldRecord, mode: &mut bool, controller: &mut bool| {
         let Some(script) = &record.script else {
             return;
         };
         let placeable = record.entity & 0xFFFF_F000 == 0x8000_0000;
-        if record.entity & !0xFF == player_entity(1) || placeable {
+        let made = (orpheus_script::placed::MADE_FIRST
+            ..orpheus_script::placed::MADE_FIRST + orpheus_script::placed::MADE_SPAN)
+            .contains(&record.entity);
+        if record.entity & !0xFF == player_entity(1) || placeable || made {
             return;
         }
         if record.entity == GAME_MODE_ENTITY {
@@ -1261,10 +1266,12 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     // The rest of the world follows, with no script whose create the
     // client hasn't acknowledged: 4 placeables, the player, the mode, the
     // map's 26 server placeables (`game_map_areas` `server_placeables`),
-    // 15 bots and their 15 stand-in controllers, and the Training Partner
-    // the console `265F` makes (his player and body, `ai.rs`):
-    // 4 + 2 + 26 + 15 + 15 + 2 = 64.
-    while creates.len() < 64 {
+    // 15 bots and their 15 stand-in controllers, the Training Partner
+    // the console `265F` makes (his player and body, `ai.rs`), and the
+    // visuals of the Range's 4 health packs (`0046` st15
+    // StateCreateEntity, made by the server's instance of the pack):
+    // 4 + 2 + 26 + 15 + 15 + 2 + 4 = 68.
+    while creates.len() < 68 {
         let frame = client.receive();
         assert!(client.window.accept(frame.seq));
         let records = world_records(&schemas, &frame);
@@ -1281,7 +1288,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         }
         assert!(client.now() < deadline, "waiting for the rest of the world");
     }
-    assert_eq!(creates.len(), 64);
+    assert_eq!(creates.len(), 68);
 
     // Even after the retransmission, a script stays behind its create ACK.
     let withheld = client.receive();

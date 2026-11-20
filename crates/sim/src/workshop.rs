@@ -34,7 +34,9 @@
 //!   (a string, a team) until a graph changes it.
 //! - **The world.** Each player's position, aim, buttons, ground and life
 //!   come from his body ([`WorkshopView`]); his body's death fires Player
-//!   Died. The scope instances the actions open on the players
+//!   Died, and the match's hits, heals and pushes between the players the
+//!   other player events ([`WorkshopRun::player_events`]). The scope
+//!   instances the actions open on the players
 //!   (Teleport), the messages they send them (Stop Chasing's `0DCF`, in
 //!   the step that sent them) and the graphs they play there (Chase
 //!   Player Variable's `1CCF`) go to their controllers.
@@ -63,7 +65,10 @@ use orpheus_workshop::{
     value::{Color, EntityId, Text, Value},
 };
 
-use crate::{mode_script::ModeRunner, replication::WorldDelivery, scene_assets::PreparedScene};
+use crate::{
+    combat::PlayerEvent, mode_script::ModeRunner, replication::WorldDelivery,
+    scene_assets::PreparedScene,
+};
 
 /// The `01C` GUID of Workshop identifier `id` (a value, an enum value).
 fn identifier(id: Id) -> u64 {
@@ -159,6 +164,9 @@ pub struct WorkshopRun {
     players: HashMap<(EntityId, u8), Stored>,
     /// Whether each player's body was alive at the last step.
     alive: HashMap<EntityId, bool>,
+    /// The context of each player's death the combat reported since the
+    /// last step ([`Self::player_events`]), for his Player Died.
+    kills: HashMap<EntityId, Context>,
 }
 
 impl WorkshopRun {
@@ -172,12 +180,129 @@ impl WorkshopRun {
             globals: HashMap::new(),
             players: HashMap::new(),
             alive: HashMap::new(),
+            kills: HashMap::new(),
         }
     }
 
     /// The engine, for its faults and what it doesn't evaluate.
     pub fn engine(&self) -> &Engine {
         &self.engine
+    }
+
+    /// What the tick's hits and pushes did between the players
+    /// ([`PlayerEvent`]), before the tick's [`Self::step`]: Player Dealt
+    /// and Took Damage, Player Dealt Final Blow and Earned Elimination,
+    /// Player Dealt and Received Healing, Player Dealt and Received
+    /// Knockback, each with its context. A killing blow's context waits
+    /// for the victim's Player Died ([`Self::fire_deaths`]).
+    ///
+    /// - Attacker is the player [`PlayerEvent::Damage`] names: the victim
+    ///   for his own blow and for a fall nobody knocked him into, as the
+    ///   death camera takes it (`combat::DeathCamera`); DPK scripts test
+    ///   `Attacker != Event Player` in Player Died for "killed by
+    ///   another" (`DoomfistRolloutsKingsRow_1_0_0`). A bot's or a
+    ///   placeable's blow fires no Player Dealt Damage, and its Attacker
+    ///   is Null.
+    /// - Assumption: a health pack's heal is the healee's own (Healer =
+    ///   Healee), since Event Was Health Pack belongs to Player Dealt
+    ///   Healing as well as Received; another placeable's or a bot's heal
+    ///   fires only Player Received Healing, with no Healer.
+    /// - Not known on the server: Event Ability (the hit doesn't say which
+    ///   ability dealt it; Null), and knockback that isn't an explosion's
+    ///   push between players (a graph's knockback rings).
+    pub fn player_events(&mut self, happened: &[PlayerEvent]) {
+        for event in happened {
+            match *event {
+                PlayerEvent::Damage {
+                    attacker,
+                    victim,
+                    dealt,
+                    critical,
+                    environment,
+                    direction,
+                    killed,
+                } => {
+                    let context = Context {
+                        attacker,
+                        victim: Some(victim),
+                        event_damage: dealt,
+                        event_was_critical_hit: critical,
+                        event_was_environment: environment,
+                        event_direction: direction.unwrap_or_default(),
+                        ..Context::default()
+                    };
+                    if let Some(attacker) = attacker {
+                        self.fire(events::PLAYER_DEALT_DAMAGE, attacker, &context);
+                    }
+                    self.fire(events::PLAYER_TOOK_DAMAGE, victim, &context);
+                    if killed {
+                        self.kills.insert(victim, context);
+                    }
+                }
+                PlayerEvent::Elimination {
+                    player,
+                    victim,
+                    final_blow,
+                } => {
+                    let mut context = self.kills.get(&victim).cloned().unwrap_or_default();
+                    context.attacker = Some(player);
+                    context.victim = Some(victim);
+                    if final_blow {
+                        self.fire(events::PLAYER_DEALT_FINAL_BLOW, player, &context);
+                    }
+                    self.fire(events::PLAYER_EARNED_ELIMINATION, player, &context);
+                }
+                PlayerEvent::Heal {
+                    healer,
+                    healee,
+                    healed,
+                    health_pack,
+                } => {
+                    let healer = if health_pack { Some(healee) } else { healer };
+                    let context = Context {
+                        healer,
+                        healee: Some(healee),
+                        event_healing: healed,
+                        event_was_health_pack: health_pack,
+                        ..Context::default()
+                    };
+                    if let Some(healer) = healer {
+                        self.fire(events::PLAYER_DEALT_HEALING, healer, &context);
+                    }
+                    self.fire(events::PLAYER_RECEIVED_HEALING, healee, &context);
+                }
+                PlayerEvent::Knockback {
+                    attacker,
+                    victim,
+                    push,
+                } => {
+                    let length = push.iter().map(|axis| axis * axis).sum::<f64>().sqrt();
+                    let context = Context {
+                        attacker: Some(attacker),
+                        victim: Some(victim),
+                        event_direction: if length > 0.0 {
+                            push.map(|axis| axis / length)
+                        } else {
+                            [0.0; 3]
+                        },
+                        ..Context::default()
+                    };
+                    self.fire(events::PLAYER_DEALT_KNOCKBACK, attacker, &context);
+                    self.fire(events::PLAYER_RECEIVED_KNOCKBACK, victim, &context);
+                }
+            }
+        }
+    }
+
+    /// Event `kind` for `player`, in `context`.
+    fn fire(&mut self, kind: u8, player: EntityId, context: &Context) {
+        self.engine.fire(GameEvent {
+            kind,
+            context: Context {
+                event_player: Some(player),
+                ..context.clone()
+            },
+        });
     }
 
     /// One server tick at `tick`, after the mode entity's: the rules run,
@@ -191,6 +316,7 @@ impl WorkshopRun {
         mode: &mut ModeRunner,
         players: &mut [WorkshopPlayer<'_>],
     ) {
+        let kills = std::mem::take(&mut self.kills);
         let Some(script) = mode.script_mut() else {
             return;
         };
@@ -199,7 +325,7 @@ impl WorkshopRun {
             player.world.advance_controller_to(tick);
         }
         let views = views(scene, players);
-        self.fire_deaths(players, &views);
+        self.fire_deaths(players, &views, kills);
         let mut host = Host {
             tick,
             scene,
@@ -223,24 +349,30 @@ impl WorkshopRun {
     }
 
     /// Player Died for each player whose body was alive at the last step
-    /// and is dead now: Event Player and Victim the player. Assumption:
-    /// no Attacker, and Event Was Environment false (the kill's credit
-    /// doesn't reach the engine yet).
-    fn fire_deaths(&mut self, players: &[WorkshopPlayer<'_>], views: &[Option<WorkshopView>]) {
+    /// and is dead now: Event Player and Victim the player, the rest from
+    /// the blow that killed him ([`Self::player_events`]). A death no
+    /// blow reported has no Attacker.
+    fn fire_deaths(
+        &mut self,
+        players: &[WorkshopPlayer<'_>],
+        views: &[Option<WorkshopView>],
+        mut kills: HashMap<EntityId, Context>,
+    ) {
         for (player, view) in players.iter().zip(views) {
             let Some(view) = view else {
                 continue;
             };
             let was = self.alive.insert(player.controller, view.alive);
             if was == Some(true) && !view.alive {
-                self.engine.fire(GameEvent {
-                    kind: events::PLAYER_DIED,
-                    context: Context {
-                        event_player: Some(player.controller),
+                let context = kills.remove(&player.controller).unwrap_or_default();
+                self.fire(
+                    events::PLAYER_DIED,
+                    player.controller,
+                    &Context {
                         victim: Some(player.controller),
-                        ..Context::default()
+                        ..context
                     },
-                });
+                );
             }
         }
     }

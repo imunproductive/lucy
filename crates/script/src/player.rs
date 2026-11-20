@@ -23,9 +23,10 @@ use crate::{
     target_tags::{TargetTagLists, TargetTags},
     vitals::{PoolKind, Vitals},
     vm::{
-        AssistLink, AuraChange, BodyEffects, CombatMod, DummyBot, GameMessage, HealthChange,
-        MapRays, ParentWrite, Pickup, RaisedCriteria, ScopeChange, SeenBodies, SeenBody, Site,
-        TargetCandidate, TargetTagEffect, TrackedStat, Unknowns, VoiceRequest, World,
+        AssistLink, AuraChange, BodyEffects, CombatMod, DEAD_FILTER_BIT, DummyBot, GameMessage,
+        HealthChange, MapRays, ParentWrite, Pickup, RaisedCriteria, ScopeChange, SeenBodies,
+        SeenBody, Site, TargetCandidate, TargetTagEffect, TrackedStat, Unknowns, VoiceRequest,
+        World,
     },
     wheel::{Cosmetic, Cosmetics},
     wire::{Value, Variables},
@@ -505,14 +506,21 @@ impl World for PlayerWorld {
             && self.target_tag_effects.set(effect, active)
     }
 
-    /// The body's own word, else a listed body's as the target searches
-    /// take it ([`TargetCandidate::filter_word`]).
+    /// The body's own word (with [`DEAD_FILTER_BIT`] once its vitals
+    /// died, as the client's component 25 word gets it), else a listed
+    /// body's as the target searches take it
+    /// ([`TargetCandidate::filter_word`]).
     fn entity_filter_flags(&self, site: Site, entity: u32) -> Option<u64> {
         if !self.is_player_site(site) {
             return None;
         }
         if entity == self.entity {
-            return Some(self.body_filter);
+            let dead = if self.vitals.death().is_some() {
+                DEAD_FILTER_BIT
+            } else {
+                0
+            };
+            return Some(self.body_filter | dead);
         }
         self.listed(entity).map(TargetCandidate::filter_word)
     }
