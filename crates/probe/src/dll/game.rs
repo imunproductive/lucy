@@ -1,24 +1,42 @@
 //! The frame sampler: a hook in the client's input sampler, once per
 //! rendered frame on the client's main thread. It writes the script's input
-//! into the sample, runs queued calls, and records the local body.
+//! into the sample, runs queued calls, and records the local player's body:
+//! its position, its mover's movement state, the camera and the watched
+//! statescript instances.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{
         Condvar, Mutex,
         atomic::{AtomicU32, AtomicU64, Ordering},
     },
     thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
+
+use serde_json::{Map, Value, json};
 
 use super::{Probe, call, hook, mem};
 use crate::{
     client::*,
     expr::Expr,
     input::{Sample, Script, view_quaternion},
+    layout::{CAMERA_MATRIX_TABLE, Camera, MOVEMENT_BYTES, MOVEMENT_STATE, Movement, script_value},
     ring::{Event, FrameSample},
 };
+
+/// The components the scanner finds by their vtables: (component id,
+/// vtable as an ORPHEUS VA).
+const SCANNED: [(u8, u64); 4] = [
+    (4, COMP4_VTABLE),
+    (31, COMP31_VTABLE),
+    (44, COMP44_VTABLE),
+    (47, COMP47_VTABLE),
+];
+
+/// How long a component the sampler needs and the last scan did not find
+/// waits before it asks for another scan (each takes seconds of a core).
+const RESCAN: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 pub struct Game {
@@ -26,40 +44,125 @@ pub struct Game {
     /// Input samples seen.
     pub frames: AtomicU64,
     /// The local player's component 59, its entity (the player, whose
-    /// component 59 it is) and its body's component 4 (for the read
-    /// expressions' `c59`, `ent`, `c4`).
+    /// component 59 it is), its body's component 4 and 31 (for the read
+    /// expressions' `c59`, `ent`, `c4`, `c31`).
     pub comp59: AtomicU64,
     pub entity: AtomicU64,
     pub comp4: AtomicU64,
-    /// The body's entity id: set by `sampler {"body"}`, else 0 for the
-    /// player's id + 1 (player A0000100, body A0000101 in the Practice Range).
+    pub comp31: AtomicU64,
+    /// The body's entity id: set by `sampler {"body"}`, else 0 for the one
+    /// the player possesses (its component 44).
     pub body: AtomicU32,
-    /// The body id whose component 4 the scanner looks for (0: none).
-    scan: Mutex<u32>,
+    /// What the last scan found: (component id, owner entity id) → component.
+    found: Mutex<HashMap<(u8, u32), u64>>,
+    /// A scan is wanted.
+    scan: Mutex<bool>,
     scan_wake: Condvar,
     pub frame_hook: Mutex<Option<u32>>,
 }
 
-#[derive(Default)]
+/// A statescript graph whose instances the sampler records each frame.
+#[derive(Clone, Debug)]
+pub struct Watch {
+    /// On the player entity (else on the body).
+    pub player: bool,
+    /// The graph's id (the low 16 bits of its GUID, `0D06`).
+    pub graph: u16,
+    /// Variables to read (none: all the instance has).
+    pub variables: Option<Vec<u16>>,
+}
+
+impl Watch {
+    /// `0D06`, `player:0C90`, `0D06:2083,11432` (graph, then variables).
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let (player, rest) = match text.strip_prefix("player:") {
+            Some(rest) => (true, rest),
+            None => (false, text.strip_prefix("body:").unwrap_or(text)),
+        };
+        let (graph, variables) = match rest.split_once(':') {
+            Some((graph, variables)) => (graph, Some(variables)),
+            None => (rest, None),
+        };
+        let graph = u16::from_str_radix(graph.trim(), 16)
+            .map_err(|_| format!("{text:?}: the graph is 4 hex digits (0D06)"))?;
+        let variables = variables
+            .map(|list| {
+                list.split(',')
+                    .map(|id| {
+                        id.trim()
+                            .trim_start_matches('#')
+                            .parse::<u16>()
+                            .map_err(|_| format!("{text:?}: variables are decimal ids"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?;
+        Ok(Self {
+            player,
+            graph,
+            variables,
+        })
+    }
+
+    pub fn text(&self) -> String {
+        let mut text = format!(
+            "{}{:04X}",
+            if self.player { "player:" } else { "" },
+            self.graph
+        );
+        if let Some(variables) = &self.variables {
+            let list: Vec<String> = variables.iter().map(u16::to_string).collect();
+            text += &format!(":{}", list.join(","));
+        }
+        text
+    }
+}
+
 pub struct State {
     /// Record a frame sample every `every` input samples (0: none).
     pub every: u64,
     pub reads: Vec<Expr>,
+    /// Read the camera each recorded frame.
+    pub camera: bool,
+    pub watches: Vec<Watch>,
     pub script: Script,
     pub calls: VecDeque<call::Request>,
     pub last: Option<FrameSample>,
     /// Where the position last changed, for the velocity.
     moved: Option<(Instant, [f32; 3])>,
     velocity: Option<[f32; 3]>,
+    /// When the sampler last asked for a scan for a missing component.
+    asked: HashMap<(u8, u32), Instant>,
+    /// The last camera error, logged once.
+    camera_error: Option<String>,
 }
 
-/// `c59`, `ent`, `c4` in read expressions.
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            every: 0,
+            reads: Vec::new(),
+            camera: true,
+            watches: Vec::new(),
+            script: Script::default(),
+            calls: VecDeque::new(),
+            last: None,
+            moved: None,
+            velocity: None,
+            asked: HashMap::new(),
+            camera_error: None,
+        }
+    }
+}
+
+/// `c59`, `ent`, `c4`, `c31` in read expressions.
 pub fn base_name(probe: &Probe, name: &str) -> Option<u64> {
     let game = &probe.game;
     let value = match name {
         "c59" => game.comp59.load(Ordering::Relaxed),
         "ent" => game.entity.load(Ordering::Relaxed),
         "c4" => game.comp4.load(Ordering::Relaxed),
+        "c31" => game.comp31.load(Ordering::Relaxed),
         _ => return None,
     };
     (value != 0).then_some(value)
@@ -100,12 +203,6 @@ pub fn entity_id(entity: u64) -> Option<u32> {
     mem::read_u32(entity + ENTITY_ID)
 }
 
-fn comp4_of(probe: &Probe, comp4: u64, body: u32) -> bool {
-    comp4 != 0
-        && mem::read_u64(comp4) == Some(probe.runtime(COMP4_VTABLE))
-        && owner(probe, comp4).and_then(entity_id) == Some(body)
-}
-
 /// Components with vtable `vtable` and their owners: (component, entity,
 /// entity id). A destroyed component keeps its vtable but loses its owner.
 pub fn components(probe: &Probe, vtable: u64, max: usize) -> Vec<(u64, u64, u32)> {
@@ -118,50 +215,93 @@ pub fn components(probe: &Probe, vtable: u64, max: usize) -> Vec<(u64, u64, u32)
         .collect()
 }
 
-/// The thread that finds the local body's component 4 (a heap scan of a
-/// few seconds) whenever the frame sampler asks.
+/// The thread that finds the components the sampler needs (a heap scan of
+/// a few seconds) whenever it asks.
 pub fn start_scanner(probe: &'static Probe) {
     let _ = thread::Builder::new()
         .name("owprobe-scan".into())
         .spawn(move || {
             let game = &probe.game;
+            let vtables: Vec<u64> = SCANNED
+                .iter()
+                .map(|&(_, vtable)| probe.runtime(vtable))
+                .collect();
             loop {
-                let body = {
+                {
                     let Ok(mut wanted) = game.scan.lock() else {
                         return;
                     };
-                    while *wanted == 0 {
+                    while !*wanted {
                         wanted = match game.scan_wake.wait(wanted) {
                             Ok(guard) => guard,
                             Err(_) => return,
                         };
                     }
-                    *wanted
-                };
+                    *wanted = false;
+                }
                 let started = Instant::now();
-                let vtable = probe.runtime(COMP4_VTABLE);
-                let found = components(probe, vtable, 1 << 16)
-                    .into_iter()
-                    .filter(|&(_, _, id)| id == body)
-                    .map(|(component, _, _)| component)
-                    .next_back();
-                if let Some(comp4) = found {
-                    game.comp4.store(comp4, Ordering::Relaxed);
+                let mut found = HashMap::new();
+                for (component, vtable) in mem::scan_values(&mem::heap_regions(), &vtables, 1 << 20)
+                {
+                    let Some(id) = owner(probe, component).and_then(entity_id) else {
+                        continue;
+                    };
+                    let kind = SCANNED[vtables.iter().position(|&v| v == vtable).unwrap_or(0)].0;
+                    // The newest of several (a destroyed one keeps its owner
+                    // until reused) is a guess; the sampler checks each frame.
+                    found.insert((kind, id), component);
                 }
                 probe.log(&format!(
-                    "component 4 of body {body:08X}: {} in {:.1} s",
-                    found.map_or("not found".into(), |c| format!("{c:#X}")),
+                    "scan: {} components in {:.1} s",
+                    found.len(),
                     started.elapsed().as_secs_f32()
                 ));
-                if let Ok(mut wanted) = game.scan.lock() {
-                    if *wanted == body {
-                        *wanted = 0;
-                    }
+                if let Ok(mut map) = game.found.lock() {
+                    *map = found;
                 }
-                // Not again at once when the body has none yet.
-                thread::sleep(std::time::Duration::from_secs(2));
+                // Not again at once when something is still missing.
+                thread::sleep(Duration::from_secs(2));
             }
         });
+}
+
+/// Component `kind` of entity `id`, from the last scan when it is still
+/// that entity's; else a scan is asked for (at most every [`RESCAN`] for the
+/// same one).
+fn component(probe: &Probe, state: &mut State, kind: u8, id: u32) -> u64 {
+    let game = &probe.game;
+    if id == 0 || id == u32::MAX {
+        return 0;
+    }
+    let vtable = SCANNED
+        .iter()
+        .find(|&&(k, _)| k == kind)
+        .map_or(0, |&(_, vtable)| probe.runtime(vtable));
+    let cached = game
+        .found
+        .lock()
+        .ok()
+        .and_then(|map| map.get(&(kind, id)).copied());
+    if let Some(component) = cached {
+        if mem::read_u64(component) == Some(vtable)
+            && owner(probe, component).and_then(entity_id) == Some(id)
+        {
+            return component;
+        }
+    }
+    let now = Instant::now();
+    let due = state
+        .asked
+        .get(&(kind, id))
+        .is_none_or(|&at| now.duration_since(at) >= RESCAN);
+    if due {
+        state.asked.insert((kind, id), now);
+        if let Ok(mut wanted) = game.scan.lock() {
+            *wanted = true;
+            game.scan_wake.notify_one();
+        }
+    }
+    0
 }
 
 /// One input sample (the frame hook's handler).
@@ -172,24 +312,25 @@ pub fn on_frame(probe: &Probe, regs: &mut hook::Regs) {
     game.comp59.store(comp59, Ordering::Relaxed);
     let entity = owner(probe, comp59).unwrap_or(0);
     game.entity.store(entity, Ordering::Relaxed);
-    let body = match game.body.load(Ordering::Relaxed) {
-        0 => entity_id(entity).map_or(0, |id| id.wrapping_add(1)),
-        body => body,
+    let player_id = if entity != 0 {
+        entity_id(entity).unwrap_or(0)
+    } else {
+        0
     };
-    let mut comp4 = game.comp4.load(Ordering::Relaxed);
-    if entity != 0 && !comp4_of(probe, comp4, body) {
-        comp4 = 0;
-        game.comp4.store(0, Ordering::Relaxed);
-        if let Ok(mut wanted) = game.scan.lock() {
-            if *wanted != body {
-                *wanted = body;
-                game.scan_wake.notify_one();
-            }
-        }
-    }
     let Ok(mut state) = game.state.lock() else {
         return;
     };
+    let body_id = match game.body.load(Ordering::Relaxed) {
+        0 => match component(probe, &mut state, 44, player_id) {
+            0 => 0,
+            comp44 => mem::read_u32(comp44 + POSSESSED).unwrap_or(0),
+        },
+        body => body,
+    };
+    let comp4 = component(probe, &mut state, 4, body_id);
+    game.comp4.store(comp4, Ordering::Relaxed);
+    let comp31 = component(probe, &mut state, 31, body_id);
+    game.comp31.store(comp31, Ordering::Relaxed);
     let now_ms = probe.started.elapsed().as_millis() as u64;
     if state.script.active() {
         let view = mem::read_i16_pair(comp59 + VIEW_YAW).unwrap_or([0, 0]);
@@ -220,27 +361,65 @@ pub fn on_frame(probe: &Probe, regs: &mut hook::Regs) {
         }
     }
     let record = state.every > 0 && index % state.every == 0;
+    let mover = (comp31 != 0)
+        .then(|| {
+            let mut bytes = [0u8; MOVEMENT_BYTES];
+            mem::read(comp31 + MOVEMENT_STATE, &mut bytes).then(|| Movement::parse(&bytes))?
+        })
+        .flatten();
     let mut sample = FrameSample {
         index,
         frame: ring_frame(comp59),
         comp59,
-        entity,
-        entity_id: body,
+        player: entity,
+        player_id,
+        body_id,
         comp4,
+        comp31,
         position,
         velocity: state.velocity,
+        mover,
+        camera: None,
         view: mem::read_i16_pair(comp59 + VIEW_YAW).unwrap_or([0, 0]),
         buttons: mem::read_u32(comp59 + SAMPLE_BUTTONS).unwrap_or(0),
         forward: read_i8(comp59 + SAMPLE_FORWARD),
         right: read_i8(comp59 + SAMPLE_RIGHT),
         action: read_i8(comp59 + SAMPLE_ACTION) as u8,
+        scripts: Vec::new(),
         reads: Vec::new(),
     };
+    if record && state.camera && entity != 0 {
+        match camera(probe, entity) {
+            Ok(camera) => {
+                sample.camera = Some(camera);
+                state.camera_error = None;
+            }
+            Err(error) => {
+                if state.camera_error.as_ref() != Some(&error) {
+                    probe.log(&format!("camera: {error}"));
+                    state.camera_error = Some(error);
+                }
+            }
+        }
+    }
+    if record && !state.watches.is_empty() {
+        let watches = state.watches.clone();
+        for watch in &watches {
+            let id = if watch.player { player_id } else { body_id };
+            let comp47 = component(probe, &mut state, 47, id);
+            if comp47 != 0 {
+                sample
+                    .scripts
+                    .extend(script_samples(comp47 + HOST_IN_COMP47, id, watch));
+            }
+        }
+    }
     if record && !state.reads.is_empty() {
         let names = |name: &str| match name {
             "c59" => Some(comp59),
             "ent" => (entity != 0).then_some(entity),
             "c4" => (comp4 != 0).then_some(comp4),
+            "c31" => (comp31 != 0).then_some(comp31),
             "base" => Some(probe.base),
             _ => regs.get(name),
         };
@@ -254,6 +433,148 @@ pub fn on_frame(probe: &Probe, regs: &mut hook::Regs) {
         probe.record(Event::Frame(Box::new(sample.clone())));
     }
     state.last = Some(sample);
+}
+
+/// The camera's world matrix: the camera object from the world's camera
+/// system, its matrix decrypted with the key the client's own decryptor
+/// gives (called through the in-image gadget, which its caller check needs).
+fn camera(probe: &Probe, entity: u64) -> Result<Camera, String> {
+    let world = mem::read_u64(entity + ENTITY_WORLD).ok_or("no world")? ^ WORLD_KEY;
+    let key = mem::read_u64(probe.runtime(SYSTEMS_KEY_GLOBAL)).ok_or("no systems key")?;
+    let systems =
+        mem::read_u64(world + WORLD_SYSTEMS).ok_or("no systems")? ^ SYSTEMS_KEY.wrapping_sub(key);
+    let system = mem::read_u64(systems + 8 * CAMERA_SYSTEM).ok_or("no camera system")?;
+    let gadget = call::gadget(probe).ok_or("no call gadget (the image is not writable)")?;
+    let callers = probe.runtime(DECRYPT_CALLERS);
+    let low = mem::read_u64(callers).ok_or("no decryptor caller range")?;
+    let size = mem::read_u32(callers + 8).ok_or("no decryptor caller range")?;
+    if !(low..low + u64::from(size)).contains(&gadget) {
+        return Err(format!(
+            "the call gadget {gadget:#X} is outside the decryptors' caller range {low:#X}+{size:#X}"
+        ));
+    }
+    let mut arguments = [0u64; call::MAX_ARGUMENTS];
+    arguments[0] = system;
+    let (camera, _) = call::call_here(probe, probe.runtime(CAMERA_GET), arguments)?;
+    if camera == 0 {
+        return Err("no camera".into());
+    }
+    arguments[0] = mem::read_u64(camera + CAMERA_SEED).ok_or("no camera key seed")?;
+    let (key, _) = call::call_here(probe, probe.runtime(CAMERA_KEY), arguments)?;
+    let mut bytes = [0u8; 64];
+    if !mem::read(camera + CAMERA_MATRIX, &mut bytes) {
+        return Err("the camera matrix is not readable".into());
+    }
+    let words: [u64; 8] = std::array::from_fn(|index| {
+        u64::from_le_bytes(bytes[8 * index..8 * index + 8].try_into().expect("8 bytes"))
+    });
+    Ok(Camera::from_matrix(crate::layout::decrypt_words(
+        words,
+        key,
+        &CAMERA_MATRIX_TABLE,
+    )))
+}
+
+fn read_u64s(address: u64, count: usize) -> Option<Vec<u64>> {
+    let mut bytes = vec![0u8; count * 8];
+    mem::read(address, &mut bytes).then(|| {
+        bytes
+            .chunks_exact(8)
+            .map(|word| u64::from_le_bytes(word.try_into().expect("8 bytes")))
+            .collect()
+    })
+}
+
+/// The instances of the watched graph on a statescript host: their running
+/// states (the state array's indices whose state has flag bit 0) and their
+/// variables.
+fn script_samples(host: u64, entity: u32, watch: &Watch) -> Vec<Value> {
+    let mut samples = Vec::new();
+    let count = mem::read_u32(host + HOST_COUNT).unwrap_or(0) as usize;
+    let Some(instances) = mem::read_u64(host + HOST_INSTANCES)
+        .filter(|_| count <= 1024)
+        .and_then(|array| read_u64s(array, count))
+    else {
+        return samples;
+    };
+    for instance in instances {
+        let mut head = [0u8; INSTANCE_GRAPH as usize + 8];
+        if !mem::read(instance, &mut head) {
+            continue;
+        }
+        let word = |at: u64| {
+            u64::from_le_bytes(
+                head[at as usize..at as usize + 8]
+                    .try_into()
+                    .expect("8 bytes"),
+            )
+        };
+        if word(INSTANCE_GRAPH) & 0xFFFF != u64::from(watch.graph) {
+            continue;
+        }
+        let id = word(INSTANCE_ID) as u16;
+        let states = (word(INSTANCE_STATE_COUNT) as u32) as usize;
+        let running: Vec<usize> = read_u64s(word(INSTANCE_STATES), states.min(4096))
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .filter(|&(_, state)| {
+                state != 0 && mem::read_u32(state + STATE_FLAGS).is_some_and(|flags| flags & 1 != 0)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        samples.push(json!({
+            "entity": entity,
+            "graph": format!("{:04X}", watch.graph),
+            "instance": id,
+            "states": running,
+            "vars": variables(word(INSTANCE_VARIABLES), watch.variables.as_deref()),
+        }));
+    }
+    samples
+}
+
+/// An instance's variables (`{"2083": value}`), all or the given ones.
+fn variables(store: u64, wanted: Option<&[u16]>) -> Value {
+    let mut out = Map::new();
+    if store == 0 {
+        return Value::Object(out);
+    }
+    let buckets: Vec<u64> = match wanted {
+        Some(ids) => {
+            let mut buckets: Vec<u64> = ids.iter().map(|&id| u64::from(id & 0xF)).collect();
+            buckets.sort_unstable();
+            buckets.dedup();
+            buckets
+        }
+        None => (0..16).collect(),
+    };
+    for bucket in buckets {
+        let at = store + VARIABLE_BUCKETS + 32 * bucket;
+        let (Some(entries), Some(count)) = (mem::read_u64(at), mem::read_u32(at + 8)) else {
+            continue;
+        };
+        let count = count as usize;
+        if entries == 0 || count > 4096 {
+            continue;
+        }
+        let mut table = vec![0u8; count * 16];
+        if !mem::read(entries, &mut table) {
+            continue;
+        }
+        for entry in table.chunks_exact(16) {
+            let id = u16::from_le_bytes([entry[0], entry[1]]);
+            if wanted.is_some_and(|ids| !ids.contains(&id)) {
+                continue;
+            }
+            let variable = u64::from_le_bytes(entry[8..16].try_into().expect("8 bytes"));
+            let mut value = [0u8; 16];
+            if variable != 0 && mem::read(variable + VARIABLE_VALUE, &mut value) {
+                out.insert(id.to_string(), script_value(&value));
+            }
+        }
+    }
+    Value::Object(out)
 }
 
 fn read_i8(address: u64) -> i8 {
