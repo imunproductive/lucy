@@ -1640,24 +1640,27 @@ fn recalls_rewind_goes_out_with_its_end_and_history() {
         *payload
     );
 
-    // Listed in the frame it began, then the client keeps it.
+    // Listed in the frame it began, then the client keeps it: the next
+    // correction has nothing to change, so none goes.
     let mut stream = BodyStream::new(ENTITY);
     stream.create_arrived();
     let baseline = encoder.queue_full(&mut stream, &idle).unwrap();
     stream.arrived(baseline.last);
     let mut send = |owner: &ProjectedSnapshot, kind| {
-        let chunk = encoder
-            .queue_delta(&mut stream, owner, kind, 16)
-            .unwrap()
-            .unwrap();
+        let chunk = encoder.queue_delta(&mut stream, owner, kind, 16).unwrap()?;
         let listed = stream.sent(chunk.last).unwrap().changes.clone();
         assert!(stream.arrived(chunk.last).advanced);
-        listed
+        Some(listed)
     };
     let key = ChangeKey::State(RECALL, REWIND);
-    assert!(!send(&idle, DeltaKind::InitialOwner(1031 - OWNER_SETTLE_FRAMES)).contains(&key));
-    assert!(send(&rewinding, DeltaKind::Correction(1031)).contains(&key));
-    assert!(!send(&rewinding, DeltaKind::Correction(1032)).contains(&key));
+    let initial = send(&idle, DeltaKind::InitialOwner(1031 - OWNER_SETTLE_FRAMES)).unwrap();
+    assert!(!initial.contains(&key));
+    assert!(
+        send(&rewinding, DeltaKind::Correction(1031))
+            .unwrap()
+            .contains(&key)
+    );
+    assert_eq!(send(&rewinding, DeltaKind::Correction(1032)), None);
 }
 
 #[test]
