@@ -1538,6 +1538,11 @@ impl Peer {
         if let (true, Some(frame)) = (self.presented, room.mode_frame_now()) {
             self.world.queue_mode_frame(frame, tick)?;
         }
+        // The entities the mode entity's graphs made (the Workshop's
+        // effects and icons), after the mode frame that names them.
+        if let (true, Some(mode)) = (self.presented, room.mode.as_ref()) {
+            self.world.update_mode_entities(mode);
+        }
         if let (true, Some(world)) = (room.assembled && self.presented, &room.world) {
             self.world.end_assemble(&world.scene, tick)?;
         }

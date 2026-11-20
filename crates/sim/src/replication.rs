@@ -24,6 +24,7 @@ use crate::{
         DeliveryReport, FrameRecords, GameEgress, PacketDelivery, RecordSource, SendError,
         SentFrame,
     },
+    mode_script::ModeRunner,
     mode_view::{ModeFrame, ModeView},
     notices::{NOTICE_GAP, Switch},
     others::{
@@ -83,8 +84,8 @@ use orpheus_wire::{
     combat_messages::CombatNotice,
     commands::{Command, CommandQueue, FRAME_HALF, SUBFRAME, frame_distance},
     entity::{
-        CLOCK_FASTER, CLOCK_SLOWER, CLOCK_STRONGER, Component as WorldComponent, EntityUpdate,
-        GAME_MODE_ENTITY, MAX_PAYLOAD, Movement, Operation, SkinTheme, frame,
+        CLOCK_FASTER, CLOCK_SLOWER, CLOCK_STRONGER, Component as WorldComponent, Create,
+        EntityUpdate, GAME_MODE_ENTITY, MAX_PAYLOAD, Movement, Operation, SkinTheme, frame,
     },
     link::delivery,
     messages::Message,
@@ -1001,6 +1002,12 @@ enum Delivery {
     Placed {
         last: u32,
     },
+    /// The create (false) or destroy (true) of an entity the mode entity's
+    /// graphs made ([`WorldDelivery::update_mode_entities`]); its frames go
+    /// as a placeable's ([`Self::Placed`]).
+    ModeEntity {
+        destroy: bool,
+    },
     /// A respawned bot's stand-in controller now controls `body`, its new
     /// body (`scene.rs` `bot_controller_link`): it goes with or after the
     /// body's create, and a newer respawn's link supersedes it.
@@ -1698,6 +1705,10 @@ pub struct WorldDelivery {
     bot_views: BotViews,
     /// The server placeables' statescript on this client.
     placed_views: PlacedViews,
+    /// The entities the mode entity's graphs made that this client is
+    /// given (their create queued), and those whose destroy hasn't arrived.
+    mode_entities: HashSet<u32>,
+    mode_entity_destroys: HashSet<u32>,
     /// The bodies the target searches can find, as the match last placed
     /// them; a new body starts with them.
     target_candidates: Vec<TargetCandidate>,
@@ -1917,6 +1928,8 @@ impl WorldDelivery {
             retained_elsewhere: HashSet::new(),
             bot_views: BotViews::default(),
             placed_views: PlacedViews::default(),
+            mode_entities: HashSet::new(),
+            mode_entity_destroys: HashSet::new(),
             target_candidates: Vec::new(),
             death: None,
             attackers: Vec::new(),
@@ -2062,6 +2075,8 @@ impl WorldDelivery {
         self.others.clear();
         self.bot_views.clear();
         self.placed_views.clear();
+        self.mode_entities.clear();
+        self.mode_entity_destroys.clear();
         self.target_candidates.clear();
         self.notices = SwitchNotices::default();
         self.spawn_room = None;
@@ -2540,6 +2555,73 @@ impl WorldDelivery {
         }
     }
 
+    /// The entities the mode entity's graphs made (the Workshop's effects
+    /// and icons, [`ModeRunner::created`]) on this client, once its world
+    /// started: a create for each new one (its definition where the graph
+    /// put it), its frames once the create arrived and whenever they
+    /// change (as a server placeable's, on the entity's own stream), a
+    /// destroy for each that went.
+    pub fn update_mode_entities(&mut self, mode: &ModeRunner) {
+        if !self.world_started() {
+            return;
+        }
+        let gone: Vec<u32> = self
+            .mode_entities
+            .iter()
+            .copied()
+            .filter(|&entity| !mode.created().any(|made| made.entity.entity == entity))
+            .collect();
+        for entity in gone {
+            self.mode_entities.remove(&entity);
+            self.created.remove(&entity);
+            self.placed_views.forget(entity);
+            self.mode_entity_destroys.insert(entity);
+            self.remove_stale();
+            self.push(Record {
+                update: EntityUpdate {
+                    entity,
+                    operation: Some(Operation::Destroy),
+                    ..EntityUpdate::default()
+                },
+                delivery: Delivery::ModeEntity { destroy: true },
+            });
+        }
+        for made in mode.created() {
+            let entity = made.entity.entity;
+            if !self.mode_entities.insert(entity) {
+                continue;
+            }
+            self.mode_entity_destroys.remove(&entity);
+            let mut create = Create::new(made.entity.definition, Vec::new());
+            create.position = made.entity.position.map(|part| part as f32);
+            self.push(Record {
+                update: EntityUpdate {
+                    entity,
+                    operation: Some(Operation::Create(Box::new(create))),
+                    ..EntityUpdate::default()
+                },
+                delivery: Delivery::ModeEntity { destroy: false },
+            });
+        }
+        let created = |entity| self.created.contains(&entity);
+        let frames = mode
+            .created()
+            .filter_map(|made| Some((made.entity.entity, made.frame()?)));
+        let chunks = match self.placed_views.update(frames, created) {
+            Ok(chunks) => chunks,
+            Err(error) => {
+                eprintln!("a made entity's frame failed ({error})");
+                return;
+            }
+        };
+        for chunk in chunks {
+            self.push(Record {
+                update: chunk.update,
+                delivery: Delivery::Placed { last: chunk.last },
+            });
+        }
+    }
+
     /// The training bots' statescript on this client this tick: new bot
     /// lifetimes' first frames, the room's live and death frames, what this
     /// client's ACKs made due and the practice nameplates
@@ -2687,6 +2769,8 @@ impl WorldDelivery {
             Delivery::BotSeen(seen) => self.bot_views.seen_current(seen, entity),
             Delivery::ServerSeen(seen) => self.server_copies.current(seen, entity),
             Delivery::Placed { last } => self.placed_views.current(entity, last),
+            Delivery::ModeEntity { destroy: false } => self.mode_entities.contains(&entity),
+            Delivery::ModeEntity { destroy: true } => self.mode_entity_destroys.contains(&entity),
         }
     }
 
@@ -2846,6 +2930,12 @@ impl WorldDelivery {
                     }
                     (true, Delivery::Placed { last }) => {
                         self.placed_views.arrived(record.update.entity, last);
+                    }
+                    (true, Delivery::ModeEntity { destroy: false }) => {
+                        self.created.insert(record.update.entity);
+                    }
+                    (true, Delivery::ModeEntity { destroy: true }) => {
+                        self.mode_entity_destroys.remove(&record.update.entity);
                     }
                     (true, Delivery::Script { last, .. }) => {
                         self.controller.arrived(last);

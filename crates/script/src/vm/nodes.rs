@@ -410,6 +410,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_D49BBD03" => self.set_parent_variable(id, node, depth),
             "STU_523EE38D" => self.destroy_entity(id, node, depth),
             "STU_FC3921B1" => self.create_dummy_bot(id, node, depth),
+            "STUStatescriptActionCreateEntity" => self.create_entity(id, node, depth),
             "STU_C1561031" => self.remove_dummy_bot(id, node, depth),
             "STU_CFCE55DC" => self.move_body(id, node, depth),
             "STU_1E93FE1F" | "STU_DC325C52" | "STU_ADAFD7FF" | "STU_99ED4486" => {

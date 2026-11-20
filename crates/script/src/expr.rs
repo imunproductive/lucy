@@ -35,6 +35,9 @@ use compiled::{Config, Program};
 pub const EPSILON: f64 = 1.192_092_895_507_812_5e-5;
 const MAX_CONFIG_DEPTH: usize = 64;
 pub const MAX_EXPRESSION_STEPS: usize = 4096;
+/// The parameter a mapped array's expression reads its item's index as
+/// (`STU_6C846FF5`; the item is every other).
+const MAPPED_INDEX: u32 = 12;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Scope {
@@ -353,6 +356,12 @@ pub trait Context {
     /// ([`GraphStore::workshop_value`](crate::graph::GraphStore::workshop_value));
     /// None: unknown.
     fn workshop_value(&mut self, _value: u64) -> Option<Json> {
+        None
+    }
+
+    /// The id of the instance whose config is evaluated; None: not an
+    /// instance's.
+    fn instance_id(&mut self) -> Option<u16> {
         None
     }
 
@@ -1317,6 +1326,9 @@ struct Evaluator<'t> {
     /// The parameters of the Workshop values being evaluated, innermost
     /// last ([`Self::workshop_tree`]).
     workshop_parameters: Vec<Vec<Value>>,
+    /// The items of the mapped arrays being evaluated, innermost last, with
+    /// their index (`STU_6C846FF5`): parameter reads take them.
+    mapped: Vec<(i64, Value)>,
 }
 
 impl<'t> Evaluator<'t> {
@@ -1327,6 +1339,7 @@ impl<'t> Evaluator<'t> {
             table,
             reference: None,
             workshop_parameters: Vec::new(),
+            mapped: Vec::new(),
         }
     }
 
@@ -1680,6 +1693,68 @@ impl Evaluator<'_> {
             // server gives its `m_value` (assumption: the server evaluates
             // it again on its reevaluation, Workshop.md §8).
             "STU_70757664" => return self.config(value, context, nested),
+            // An instance's id (`Eval_STU_5F94FAF9` 0x7FF789BEFEA0): with a
+            // graph `m_E153523C` and `m_entity`, that graph's instance on
+            // the entity's component 47 (refused: unset in all 23 uses);
+            // without, the evaluating instance. It gives the instance's
+            // vtable +248, `sub_7FF7898AC7E0`: the i16 at `+24`, which the
+            // constructor `sub_7FF78AAA0800` sets from the id the host
+            // creates it with (`sub_7FF789887F20` a3), as an integer.
+            // Start Forcing Player Position `292F` keeps it in `#16797`.
+            "STU_5F94FAF9" => {
+                if !child(config, "m_E153523C").is_null() || !child(config, "m_entity").is_null() {
+                    return Err(EvalError::UnsupportedConfig(class.into()));
+                }
+                let id = context
+                    .instance_id()
+                    .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
+                Value::Integer(i64::from(id as i16))
+            }
+            // A filtered array (slot 5 `sub_7FF78AA8A300`): the items of
+            // `m_814F8EC3` (a non-array as one) for which `m_condition`,
+            // evaluated with the same frame {index, item, output} as a
+            // mapped array's (`+1272`), is true, in order. Set Player
+            // Allowed Heroes `1D57` keeps the heroes of All Heroes its
+            // parameter lists (parameter 142, the item).
+            "STU_951CAB4C" => {
+                let items =
+                    into_array(self.config(child(config, "m_814F8EC3"), context, nested)?);
+                let mut kept = Vec::new();
+                for (index, item) in (0..).zip(items) {
+                    self.mapped.push((index, item));
+                    let pass = self.config(child(config, "m_condition"), context, nested);
+                    let (_, item) = self.mapped.pop().expect("pushed above");
+                    if truthy(&pass?) {
+                        kept.push(item);
+                    }
+                }
+                Value::Array(kept)
+            }
+            // A mapped array (slot 5 `sub_7FF78AA89DD0`): each item of
+            // `m_814F8EC3` (a non-array as one) is replaced by
+            // `m_260A4690` evaluated with a frame {index, item, output}
+            // pushed on the context's stack (`+1272`). `m_5CB50308`, which
+            // would run first for each item, is unset in all its uses
+            // (refused). Its uses read the item as parameter 142 (Cancel
+            // Primary Action `2736` maps its players to their bodies, the
+            // scope's targets) and the index as parameter 12 (`288B` st193:
+            // `#3437[param 12]`); any other parameter reads the item, as a
+            // FilterArray's candidate is read (`vm/filter_array.rs`).
+            "STU_6C846FF5" => {
+                if !child(config, "m_5CB50308").is_null() {
+                    return Err(EvalError::UnsupportedConfig(class.into()));
+                }
+                let items =
+                    into_array(self.config(child(config, "m_814F8EC3"), context, nested)?);
+                let mut mapped = Vec::with_capacity(items.len());
+                for (index, item) in (0..).zip(items) {
+                    self.mapped.push((index, item));
+                    let value = self.config(child(config, "m_260A4690"), context, nested);
+                    self.mapped.pop();
+                    mapped.push(value?);
+                }
+                Value::Array(mapped)
+            }
             "STU_919FD47C" | "STUConfigVarExpression" => {
                 return self.expression(&Program::compile(config)?, config, context, nested);
             }
@@ -3332,7 +3407,14 @@ impl Evaluator<'_> {
                         context.parent_variable(arg, variable)
                     })
                 }
-                13 => context.parameter(step.parameter()?),
+                13 => {
+                    let id = step.parameter()?;
+                    match self.mapped.last() {
+                        Some(&(index, _)) if id == MAPPED_INDEX => Value::Integer(index),
+                        Some((_, item)) => item.clone(),
+                        None => context.parameter(id),
+                    }
+                }
                 14 => {
                     let configs = *configs.get_or_insert_with(|| {
                         array_field(config, "m_configVars")

@@ -171,6 +171,10 @@ impl<W: World> Context for InstanceContext<'_, W> {
         Some(value)
     }
 
+    fn instance_id(&mut self) -> Option<u16> {
+        Some(self.site.instance)
+    }
+
     fn tolerate_unknown(&mut self, what: &str) -> bool {
         if self.world.unknowns() != Unknowns::Tolerate {
             return false;

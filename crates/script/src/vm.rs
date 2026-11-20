@@ -1008,6 +1008,13 @@ pub trait World {
     fn play_script(&mut self, _site: Site, _request: PlayRequest) -> bool {
         false
     }
+
+    /// `STUStatescriptActionCreateEntity` made an entity
+    /// (`vm/entities.rs`): the world gives it an id, starts its script and
+    /// tells the clients. None: this world makes none.
+    fn create_entity(&mut self, _site: Site, _creation: EntityCreation) -> Option<u32> {
+        None
+    }
 }
 
 /// A graph played on another entity ([`World::play_script`]): its target,
@@ -1021,6 +1028,16 @@ pub struct PlayRequest {
     pub policy: i64,
     /// The entity that played it (the start entries' caller).
     pub caller: u32,
+}
+
+/// An entity a graph made ([`World::create_entity`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EntityCreation {
+    /// Its entity definition (`003`).
+    pub definition: u64,
+    /// Where the action put it (`m_position`); none: where it didn't say
+    /// (all the Workshop's Create Effect and Create Icon).
+    pub position: Option<[f64; 3]>,
 }
 
 /// A criteria a graph raised ([`World::criteria`]).

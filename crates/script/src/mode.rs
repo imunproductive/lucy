@@ -14,9 +14,11 @@ use serde_json::Value as Json;
 use crate::{
     graph::GraphStore,
     map_tags::MapTags,
+    placed::{Gaps, MapEntityWorld, PlacedEntity},
     vm::{
-        ACTION_PARAMETERS, ActionOutcome, Component, GameMessage, InitFault, MAX_INIT_WORK,
-        MapRays, PlayRequest, Root, ScopeChange, Site, Snapshot, Unknowns, World,
+        ACTION_PARAMETERS, ActionOutcome, Component, EntityCreation, GameMessage, InitFault,
+        MAX_INIT_WORK, MapRays, PlayRequest, Root, ScopeChange, ScopeSource, Site, Snapshot,
+        Unknowns, World,
     },
     wire::{Value, Variables},
 };
@@ -27,6 +29,32 @@ use orpheus_wire::entity::GAME_MODE_ENTITY;
 /// it to every entity that runs graphs on the server but the sender, whose
 /// own instances took it when it was sent (`orpheus_sim::messages`).
 pub const EVERY_ENTITY: u32 = 0;
+
+/// The ids of the entities the mode entity's graphs make
+/// ([`ModeScript::created`]): `CREATED_FIRST + n % CREATED_SPAN`, past the
+/// Biotic Fields' and the seen projectiles' spans
+/// (`orpheus_sim::projectiles`, `0xA008_0000` and `0xA00C_0000`). Retail's
+/// ids are the server's own choice.
+pub const CREATED_FIRST: u32 = 0xa010_0000;
+pub const CREATED_SPAN: u32 = 0x0004_0000;
+
+/// An entity the mode entity's graphs made (`STUStatescriptActionCreateEntity`:
+/// the Workshop's Create Effect `1CE8` and Create Icon `1AB1`), as the
+/// clients get it: the server creates it for every client and sends its
+/// frames ([`ModeScript::created`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CreatedEntity {
+    pub entity: u32,
+    /// Its entity definition (`003`): `304A` for an effect, `304B` for an
+    /// icon.
+    pub definition: u64,
+    pub position: [f64; 3],
+}
+
+/// How many rounds [`ModeScript::settle`] hands things on in one run
+/// between the mode entity and the entities it made, at most: an effect's
+/// begin and its first messages take two.
+const SETTLE_ROUNDS: usize = 16;
 
 /// The game struct's team byte that stands for any team (`STU_A5B9EAAD`'s
 /// fallback entry).
@@ -94,6 +122,10 @@ pub struct ModeWorld {
     pub map_tags: Option<Arc<MapTags>>,
     /// The map's collision the graph's ray casts meet; none: no map.
     pub map_rays: Option<Arc<dyn MapRays>>,
+    /// The heroes of the game, in the catalog's order, as All Heroes
+    /// (`STU_AFC074B3`) lists them, with their bodies' entity definitions
+    /// (`m_gameplayEntity`, `STU_94AED9DC`); none: unknown.
+    pub heroes: Option<Vec<(u64, u64)>>,
     /// Other entities' variables as the mode entity's graphs know them:
     /// the server's ([`ModeScript::set_foreign_variable`]) and the graphs'
     /// own writes (a Workshop action's player variables, `STU_0BDBC7B2`).
@@ -113,6 +145,12 @@ pub struct ModeWorld {
     /// takes them ([`ModeScript::take_own_messages`]).
     own: Vec<GameMessage>,
     held: Vec<GameMessage>,
+    /// The entities the graphs made that [`ModeScript`] hasn't started
+    /// yet, and those it runs.
+    made: Vec<CreatedEntity>,
+    created: Vec<CreatedEntity>,
+    /// The next id to try ([`CREATED_FIRST`]).
+    next_created: u32,
 }
 
 impl ModeWorld {
@@ -130,6 +168,7 @@ impl ModeWorld {
             map_modes: None,
             map_tags: None,
             map_rays: None,
+            heroes: None,
             foreign: BTreeMap::new(),
             variable_writes: Vec::new(),
             scope_changes: Vec::new(),
@@ -137,6 +176,9 @@ impl ModeWorld {
             outbox: Vec::new(),
             own: Vec::new(),
             held: Vec::new(),
+            made: Vec::new(),
+            created: Vec::new(),
+            next_created: 0,
         }
     }
 
@@ -153,6 +195,14 @@ impl ModeWorld {
         self.players
             .iter()
             .find(|player| player.controller == entity || player.body == Some(entity))
+    }
+
+    /// An entity the graphs made, started or not.
+    fn made_entity(&self, entity: u32) -> Option<&CreatedEntity> {
+        self.created
+            .iter()
+            .chain(&self.made)
+            .find(|created| created.entity == entity)
     }
 
     /// The game messages the graph sent other entities, for the match to
@@ -175,6 +225,7 @@ impl World for ModeWorld {
             "STU_082FA44E" => Some("the tunable's authored value"),
             "STU_81A9AB10" => Some("the server's own start condition (server-only)"),
             "STU_21A5BB52" => Some("false (server-only)"),
+            "STU_AFC074B3" => Some("the game's heroes"),
             "STU_A90795E2" => Some("the team's players (server-only)"),
             _ => None,
         }
@@ -228,11 +279,12 @@ impl World for ModeWorld {
         Some(placed.tags.contains(&tag))
     }
 
-    /// The mode entity, the players' controllers and bodies and the map's
-    /// tagged placeables exist.
+    /// The mode entity, the players' controllers and bodies, the map's
+    /// tagged placeables and the entities the graphs made exist.
     fn entity_exists(&self, _site: Site, entity: u32) -> Option<bool> {
         let known = entity == GAME_MODE_ENTITY
             || self.player_of(entity).is_some()
+            || self.made_entity(entity).is_some()
             || self
                 .map_tags
                 .as_ref()
@@ -241,6 +293,9 @@ impl World for ModeWorld {
     }
 
     fn entity_position(&self, _site: Site, entity: u32) -> Option<[f64; 3]> {
+        if let Some(made) = self.made_entity(entity) {
+            return Some(made.position);
+        }
         Some(self.map_tags.as_ref()?.get(entity)?.position)
     }
 
@@ -280,6 +335,25 @@ impl World for ModeWorld {
         true
     }
 
+    /// The next free id of [`CREATED_FIRST`]'s span; [`ModeScript`] starts
+    /// the entity after the run. With no position it stands where its
+    /// maker does: the mode entity, which the server creates at the origin
+    /// (`orpheus_sim::scene::mode_create`) [assumption: the client's
+    /// `sub_7FF789809ED0` with no position was not traced]. None when the
+    /// span is full.
+    fn create_entity(&mut self, _site: Site, creation: EntityCreation) -> Option<u32> {
+        let entity = (0..CREATED_SPAN)
+            .map(|step| CREATED_FIRST + self.next_created.wrapping_add(step) % CREATED_SPAN)
+            .find(|&entity| self.made_entity(entity).is_none())?;
+        self.next_created = (entity - CREATED_FIRST + 1) % CREATED_SPAN;
+        self.made.push(CreatedEntity {
+            entity,
+            definition: creation.definition,
+            position: creation.position.unwrap_or_default(),
+        });
+        Some(entity)
+    }
+
     /// `STU_A3DEF368` is the first entity with component 114, the mode
     /// entity itself (ow1-preservation: getter 0xcdd340). `STU_082FA44E`
     /// reads a tunable's authored value, as `PlayerWorld` does.
@@ -317,6 +391,14 @@ impl World for ModeWorld {
     /// less it in AI heroes, `0D44` holds a count to it, and Elimination
     /// (`0D0B` rid181) gives the round to team 0 when it has players and
     /// team 1 none. The server answers [`ModeWorld::players`]' count.
+    ///
+    /// `STU_AFC074B3` is the Workshop's All Heroes (`1B4A` `53C9`; Set
+    /// Player Allowed Heroes `1D57` and Preload Hero `1D3B` read it): the
+    /// client's array evaluate (slot 5 `0x7FF789C01160`) copies the hero
+    /// list its host's game object gives (vtable +624), sorted
+    /// (`sub_7FF789C1CA20`), which the server can't read. Answered: the
+    /// game's heroes ([`ModeWorld::heroes`]), as the controller's graphs
+    /// get the heroes the player may play (`controller.rs`).
     fn native(&mut self, _site: Site, config: &Json) -> Option<Value> {
         let literal_team = |field: &str| {
             let team = config.get(field)?;
@@ -339,8 +421,23 @@ impl World for ModeWorld {
             )),
             "STU_81A9AB10" => Some(Value::Bool(self.ready)),
             "STU_21A5BB52" => Some(Value::Bool(false)),
+            "STU_AFC074B3" => Some(Value::Array(
+                self.heroes
+                    .as_ref()?
+                    .iter()
+                    .map(|&(hero, _)| Value::Asset(hero))
+                    .collect(),
+            )),
             _ => None,
         }
+    }
+
+    fn hero_body(&self, _site: Site, hero: u64) -> Option<u64> {
+        let heroes = self.heroes.as_ref()?;
+        heroes
+            .iter()
+            .find(|&&(listed, _)| listed == hero)
+            .map(|&(_, body)| body)
     }
 
     fn send_message(
@@ -405,6 +502,23 @@ impl World for ModeWorld {
     }
 }
 
+/// The world of the entities the mode entity's graphs make: the match's
+/// mode, ruleset, map and collision, as the mode entity's own.
+fn created_world(world: &ModeWorld, frame: u32) -> MapEntityWorld {
+    MapEntityWorld::start(
+        Arc::clone(&world.graphs),
+        world.mode,
+        world.ruleset,
+        world.mode_random.unwrap_or_default(),
+        world.unknowns,
+        [],
+        world.map_tags.clone(),
+        world.map_rays.clone(),
+        None,
+        frame,
+    )
+}
+
 /// The mode graph running on the mode entity.
 pub struct ModeScript {
     component: Component,
@@ -413,6 +527,11 @@ pub struct ModeScript {
     /// The Workshop actions started here that may still need retiring
     /// ([`Self::settle`]).
     actions: Vec<WorkshopAction>,
+    /// The scripts of the entities the graphs made ([`CreatedEntity`]).
+    entities: MapEntityWorld,
+    /// The messages [`Self::settle`] handed on to the match
+    /// ([`Self::take_messages`]).
+    routed: Vec<GameMessage>,
 }
 
 /// A Workshop action graph started on the mode entity
@@ -464,10 +583,12 @@ impl ModeScript {
         )?;
         component.advance_frame(frame, &mut world)?;
         let mut script = Self {
+            entities: created_world(&world, frame),
             component,
             world,
             frame,
             actions: Vec::new(),
+            routed: Vec::new(),
         };
         script.settle()?;
         Ok(script)
@@ -487,12 +608,16 @@ impl ModeScript {
             &mut world,
             MAX_INIT_WORK,
         )?;
-        Ok(Self {
+        let mut script = Self {
+            entities: created_world(&world, frame),
             component,
             world,
             frame,
             actions: Vec::new(),
-        })
+            routed: Vec::new(),
+        };
+        script.settle()?;
+        Ok(script)
     }
 
     /// Start a Workshop action's graph (`054/0155` `m_graph`) on the mode
@@ -618,40 +743,68 @@ impl ModeScript {
         std::mem::take(&mut self.world.plays)
     }
 
-    /// The match opened a scope instance of this entity's scope state on
-    /// `target` ([`Self::take_scope_changes`]).
-    pub fn scope_opened(&mut self, source: crate::vm::ScopeSource, target: u32, instance: u16) {
-        self.component.scope_opened(source, target, instance);
+    /// The match opened a scope instance of a scope state here (the mode
+    /// entity's, or an entity's it made) on `target`
+    /// ([`Self::take_scope_changes`]).
+    pub fn scope_opened(&mut self, source: ScopeSource, target: u32, instance: u16) {
+        if source.entity == GAME_MODE_ENTITY {
+            self.component.scope_opened(source, target, instance);
+        } else {
+            self.entities.scope_opened(source, target, instance);
+        }
     }
 
-    /// After each run: open and close the scopes the graphs' scope states
-    /// asked for on the mode entity itself, and retire each Workshop action
-    /// that reported its result and has nothing left to do (no work
-    /// [`Component::instance_busy`] counts, no networked action the frames
-    /// still carry, [`crate::snapshot::ACTION_LIFETIME_MS`]): the engine
-    /// started it for its result, and a finished instance would stay in the
-    /// mode entity's frames for good, since its ClientOnlySharedVars state
-    /// never ends (assumption: retail's lifetime is not known).
+    /// The entities the graphs made that are still there, for the match
+    /// to create on every client with their frames
+    /// ([`Self::created_script`]).
+    pub fn created(&self) -> &[CreatedEntity] {
+        &self.world.created
+    }
+
+    /// The script of an entity the graphs made.
+    pub fn created_script(&self, entity: u32) -> Option<&PlacedEntity> {
+        self.entities.entity(entity)
+    }
+
+    /// After each run, until nothing is left to hand on (at most
+    /// [`SETTLE_ROUNDS`] rounds; what is left waits for the next run):
+    ///
+    /// - the entities the graphs made start ([`MapEntityWorld::create`]);
+    /// - the scopes the scope states here asked for open and close on the
+    ///   mode entity itself and on the entities it made; those on other
+    ///   entities wait for the match ([`Self::take_scope_changes`]);
+    /// - the messages between the mode entity and the entities it made go
+    ///   to them (Destroy Effect `1CE9` sends `0DF6` to the effect, Destroy
+    ///   All Effects `1CEA` to every entity); the rest wait for the match
+    ///   ([`Self::take_messages`]);
+    /// - the entities that removed themselves (`STU_523EE38D`: the effect's
+    ///   scope 35 on `0DF6`) go.
+    ///
+    /// Then each Workshop action that reported its result and has nothing
+    /// left to do retires (no work [`Component::instance_busy`] counts, no
+    /// scope instance it opened on an entity it made still up, no
+    /// networked action the frames still carry,
+    /// [`crate::snapshot::ACTION_LIFETIME_MS`]): the engine started it for
+    /// its result, and a finished instance would stay in the mode entity's
+    /// frames for good, since its ClientOnlySharedVars state never ends
+    /// (assumption: retail's lifetime is not known).
     fn settle(&mut self) -> Result<(), InitFault> {
-        loop {
-            let (own, others): (Vec<_>, Vec<_>) = std::mem::take(&mut self.world.scope_changes)
-                .into_iter()
-                .partition(|change| change.target() == GAME_MODE_ENTITY);
-            self.world.scope_changes = others;
-            if own.is_empty() {
-                break;
-            }
-            for change in own {
-                let opened = self.component.change_scope(&change, &mut self.world)?;
-                if let (Some(instance), ScopeChange::Open { source, target, .. }) =
-                    (opened, &change)
-                {
-                    self.component.scope_opened(*source, *target, instance);
-                }
-            }
-        }
+        self.hand_on()?;
         let now = self.component.now_ms();
         let mut retired = Vec::new();
+        let entities = &self.entities;
+        let scoped = |instance: u16| {
+            entities.entities().iter().any(|placed| {
+                placed.snapshot().is_some_and(|snapshot| {
+                    snapshot.instances.values().any(|item| {
+                        item.scope.as_ref().is_some_and(|scope| {
+                            scope.source.entity == GAME_MODE_ENTITY
+                                && scope.source.instance == instance
+                        })
+                    })
+                })
+            })
+        };
         self.actions.retain(|&action| {
             if !self
                 .component
@@ -664,6 +817,7 @@ impl ModeScript {
                 .action_outcome(action.instance, action.start_ms)
                 .is_some()
                 && !self.component.instance_busy(action.instance)
+                && !scoped(action.instance)
                 && self
                     .component
                     .last_frame_action(action.instance, action.start_ms)
@@ -675,8 +829,112 @@ impl ModeScript {
             }
             !done
         });
+        if retired.is_empty() {
+            return Ok(());
+        }
         for instance in retired {
             self.component.destroy_instance(instance, &mut self.world)?;
+        }
+        self.hand_on()
+    }
+
+    /// [`Self::settle`]'s first part: the made entities, scopes and
+    /// messages handed on.
+    fn hand_on(&mut self) -> Result<(), InitFault> {
+        for _ in 0..SETTLE_ROUNDS {
+            let mut moved = false;
+            for made in std::mem::take(&mut self.world.made) {
+                self.entities.create(
+                    made.entity,
+                    made.definition,
+                    made.position,
+                    GAME_MODE_ENTITY,
+                );
+                self.world.created.push(made);
+                moved = true;
+            }
+            let mut changes = std::mem::take(&mut self.world.scope_changes);
+            changes.extend(self.entities.take_scope_changes());
+            for change in changes {
+                let target = change.target();
+                let opened = if target == GAME_MODE_ENTITY {
+                    self.component.change_scope(&change, &mut self.world)?
+                } else if self.world.made_entity(target).is_some() {
+                    self.entities.change_scope(&change)
+                } else {
+                    self.world.scope_changes.push(change);
+                    continue;
+                };
+                moved = true;
+                if let (Some(instance), ScopeChange::Open { source, target, .. }) =
+                    (opened, &change)
+                {
+                    self.scope_opened(*source, *target, instance);
+                }
+            }
+            for message in std::mem::take(&mut self.world.outbox) {
+                if self.world.made_entity(message.target).is_some() {
+                    self.entities.receive_message(
+                        message.target,
+                        message.sender,
+                        message.message,
+                        &message.parameters,
+                    );
+                    moved = true;
+                    continue;
+                }
+                if message.target == EVERY_ENTITY {
+                    self.entities.receive_everywhere(
+                        message.sender,
+                        message.message,
+                        &message.parameters,
+                    );
+                    moved = true;
+                }
+                self.routed.push(message);
+            }
+            for message in self.entities.take_messages() {
+                if message.target == GAME_MODE_ENTITY || message.target == EVERY_ENTITY {
+                    self.component.receive_message(
+                        message.sender,
+                        message.message,
+                        message.parameters.clone(),
+                        &mut self.world,
+                    )?;
+                    moved = true;
+                }
+                if message.target == EVERY_ENTITY {
+                    self.entities.receive_everywhere(
+                        message.sender,
+                        message.message,
+                        &message.parameters,
+                    );
+                } else if self.world.made_entity(message.target).is_some() {
+                    self.entities.receive_message(
+                        message.target,
+                        message.sender,
+                        message.message,
+                        &message.parameters,
+                    );
+                    moved = true;
+                    continue;
+                }
+                if message.target != GAME_MODE_ENTITY {
+                    self.routed.push(message);
+                }
+            }
+            // Their persistent sends end nowhere, as the mode entity's own
+            // but its held broadcasts (`ModeWorld::end_message`).
+            self.entities.take_message_ends();
+            for entity in self.entities.take_destroyed() {
+                self.world
+                    .created
+                    .retain(|created| created.entity != entity);
+                moved = true;
+            }
+            if !moved {
+                break;
+            }
         }
         Ok(())
     }
@@ -698,9 +956,10 @@ impl ModeScript {
     }
 
     /// The classes the VM refused or answered by assumption, with how
-    /// often, by graph: what keeps the graph from driving the match.
-    pub fn gaps(&self) -> BTreeMap<(u32, String), usize> {
-        let mut gaps = BTreeMap::new();
+    /// often, by graph: what keeps the graph from driving the match; the
+    /// entities' it made with them ([`MapEntityWorld::gaps`]).
+    pub fn gaps(&self) -> Gaps {
+        let mut gaps = self.entities.gaps();
         let Some(snapshot) = self.snapshot() else {
             return gaps;
         };
@@ -747,12 +1006,17 @@ impl ModeScript {
         }
         self.frame = frame;
         self.component.advance_frame(frame, &mut self.world)?;
+        self.entities.advance(frame);
         self.settle()?;
         Ok(true)
     }
 
+    /// The messages the graphs sent the match's other entities (an entity
+    /// the mode entity made gets its own in [`Self::settle`]).
     pub fn take_messages(&mut self) -> Vec<GameMessage> {
-        self.world.take_messages()
+        let mut messages = std::mem::take(&mut self.routed);
+        messages.append(&mut self.world.take_messages());
+        messages
     }
 
     /// The messages the graphs sent the mode entity itself since the last

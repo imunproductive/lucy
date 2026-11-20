@@ -671,8 +671,43 @@ impl MapEntityWorld {
     pub fn place<'p>(&mut self, placements: impl IntoIterator<Item = Placement<'p>>) {
         for placement in placements {
             let roots = placed_roots(&self.graphs, &placement);
+            if roots.as_ref().is_ok_and(Vec::is_empty) {
+                continue;
+            }
             self.start_entity(placement.entity, placement.position, roots, None, None);
         }
+    }
+
+    /// An entity a graph made ([`crate::vm::World::create_entity`]), owned
+    /// by `owner`, the entity whose graph made it: it starts its
+    /// definition's graphs, if any, at once, and hosts the scope instances
+    /// other entities open on it (the Workshop's Create Effect `1CE8`
+    /// opens its scope 35 on the `304A` it made, whose definition has a
+    /// statescript component with no graphs; [`Self::change_scope`]). It
+    /// removes itself as a spawned entity does (`STU_523EE38D`).
+    pub fn create(&mut self, entity: u32, definition: u64, position: [f64; 3], owner: u32) {
+        let roots = match self.graphs.entity_body(definition) {
+            Some(body) => crate::vm::body_roots(body),
+            None => Ok(Vec::new()),
+        };
+        self.start_entity(entity, position, roots, Some(owner), None);
+    }
+
+    /// A scope instance another entity's scope state opened or closed on
+    /// one of these entities: its script opens or closes it now. The
+    /// instance it opened, for the scope state's frame record; none for a
+    /// close or an entity not here.
+    pub fn change_scope(&mut self, change: &ScopeChange) -> Option<u16> {
+        let target = change.target();
+        let mut opened = None;
+        self.run_scripts(
+            |entity| entity == target,
+            |component, world| {
+                opened = component.change_scope(change, world)?;
+                Ok(())
+            },
+        );
+        opened
     }
 
     /// Spawn an entity at the current frame: it starts its initial graphs
@@ -710,7 +745,6 @@ impl MapEntityWorld {
         shooter: Option<ProjectileShooter>,
     ) {
         let roots = match roots {
-            Ok(roots) if roots.is_empty() => return,
             Ok(roots) => roots,
             Err(error) => {
                 self.entities.push(PlacedEntity {
