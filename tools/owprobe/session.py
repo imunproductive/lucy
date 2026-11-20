@@ -68,20 +68,30 @@ LOBBY_PORT = 3724
 TRAINING = (0.0789, 0.2974)
 PRACTICE_RANGE = (0.5, 0.5)
 SELECT = (0.5, 0.935)
-SELECT_PIXEL = (0.47, 0.935)
 LOGIN_PIXEL = (0.44, 0.88)
+
+# Hero select is on screen while #1962 of the local player's `288B` is on: its st66 sets it to
+# `#31435e && !#7265e && !STU_EE3E3594()` and st92 presents the screen 008C.05A under it
+# (`orpheus script query show 288B`). Only the local player's controller runs 288B. #1962 is a StateStack's
+# output, so its value is the bound one (statescript.store_variables); checked in the Range 2026-11-20: true
+# while the screen shows, false once the pick closes it (ClientProbe.md "ProbeDll3").
+HERO_SELECT_GRAPH = "288B"
+SCREEN_SHOWN = 1962
+# The player's entity variables after a pick: #2114e on once the pick is locked in, #940e the hero.
+PICKED, PICKED_HERO = 2114, 940
 
 
 class Session:
     def __init__(self, orpheus=None, game=None, port=None, enter_range=False, hero=None, account="Researcher",
                  keep_state=False, log=None, game_args=(), timeout=300.0, seed_state=None, rust_log=None,
-                 team_lock=True, owner=None):
+                 team_lock=True, owner=None, play_args=()):
         """seed_state: the state folder whose cache (derived game data) and profiles the temp state copies
         (default the user's %APPDATA%/orpheus, read only); a cache from another code version is derived again
         on the first start (minutes, before the game starts). rust_log: the server's RUST_LOG, e.g.
         `info,orpheus::pose=debug` for the per-frame poses `compare` reads from `state/play.log`. team_lock: take
         the agents' game lock (`tools/gamelock.py`, in turn, as `owner`) for the session and release it
-        at its end; False when the caller holds it already."""
+        at its end; False when the caller holds it already. play_args: more `orpheus play` options, e.g.
+        ("--workshop", FILE)."""
         self.seed_state = Path(seed_state) if seed_state else USER_STATE
         self.rust_log = rust_log
         self.team_lock = team_lock
@@ -96,6 +106,8 @@ class Session:
         self.keep_state = keep_state
         self.log = log or (lambda message: print(message, flush=True))
         self.game_args = list(game_args)
+        self.play_args = list(play_args)
+        self._hero_select = None
         self.timeout = timeout
         self.proc = None
         self.job = None
@@ -167,8 +179,8 @@ class Session:
             elif src.is_file():
                 shutil.copy2(src, self.state / item)
         cmd = [str(self.orpheus), "--state", str(self.state), "play", "--game", str(self.game), "--account",
-               self.account, "--locale", "enUS", "--probe", str(self.port), "--timeout", "120", "--",
-               "--tank_NoFullScreen=1", *self.game_args]
+               self.account, "--locale", "enUS", "--probe", str(self.port), "--timeout", "120", *self.play_args,
+               "--", "--tank_NoFullScreen=1", *self.game_args]
         self.log(f"[owprobe] {' '.join(cmd)}")
         self.out = open(self.state / "play.log", "wb")
         env = dict(os.environ)
@@ -300,20 +312,41 @@ class Session:
             time.sleep(1)
         raise RuntimeError("no login within the timeout")
 
-    def select_visible(self):
-        px = self.pixel(SELECT_PIXEL)
-        if not px:
-            return False
-        r, g, b = px
-        return r > 180 and 0.65 * r < g < 0.85 * r and b < 0.5 * r
+    def _hero_select_instance(self):
+        """The local player's screen `288B` instance (cached while it lives), or None."""
+        from . import statescript as ss
+        p = self.probe
+        inst = self._hero_select
+        if inst is None or p.read_u64(inst["address"] + ss.INSTANCE_GRAPH) != inst["guid"]:
+            found = ss.find_instances(p, HERO_SELECT_GRAPH)
+            inst = self._hero_select = min(found, key=lambda i: i["id"]) if found else None
+        return inst
+
+    def hero_select_shown(self):
+        """Whether the client shows hero select (`SCREEN_SHOWN` of its `288B`), read from its memory; False
+        while it has no 288B. The screen's 288B is the first (lowest id, the network's) of the local player's;
+        the others are its team list entries (st127 makes one per teammate's `134F`, ids from 65535 down)."""
+        from . import statescript as ss
+        inst = self._hero_select_instance()
+        return bool(inst) and ss.variables(self.probe, inst["address"], {SCREEN_SHOWN}).get(SCREEN_SHOWN) is True
+
+    def picked_hero(self):
+        """The hero the client has locked in (its `#940e`, a hero GUID such as 0x02E000000000012F), once its
+        `#2114e` is on (288B rid114 on the server's `06E4`, rid237 when `#940e == #13161e`; st47 turns it off
+        while hero select is open); else None."""
+        from . import statescript as ss
+        inst = self._hero_select_instance()
+        if not inst:
+            return None
+        values = ss.host_entity_variables(self.probe, inst["host"], {PICKED, PICKED_HERO})
+        hero = values.get(PICKED_HERO)
+        if values.get(PICKED) is not True or not isinstance(hero, dict) or hero.get("type") != 4:
+            return None
+        return int.from_bytes(bytes.fromhex(hero["hex"])[:8], "little")
 
     def enter_practice_range(self):
         """Main menu TRAINING > PRACTICE RANGE, hero select (the hero, SELECT), then waits for input samples
         and our body's position from the frame sampler."""
-        hero_at = None
-        if self.hero:
-            from tools.owdbg.actions import _hero
-            hero_at = _hero(self.hero)[1]
         server = ""
         for attempt in range(2):
             time.sleep(25 if attempt == 0 else 5)
@@ -333,26 +366,14 @@ class Session:
         else:
             raise RuntimeError("the Practice Range did not start")
         self.log(f"[owprobe] t={self.elapsed():.0f}s match found; hero select")
-        self.probe.sampler(every=0)
-        end = time.monotonic() + 120
-        clicked_hero, selects, picked = False, 0, None
-        while time.monotonic() < end:
-            if self.probe.info().get("body"):
-                break
-            if self.select_visible():
-                if hero_at and not clicked_hero:
-                    self.click(hero_at, f"{self.hero}'s portrait")
-                    clicked_hero, picked = True, time.monotonic()
-                elif selects < 6:
-                    self.click(SELECT, "SELECT")
-                    selects += 1
-            elif clicked_hero and not selects and time.monotonic() - picked > 8:
-                # The button can hide behind the picked hero's card: press it where it was.
-                self.click(SELECT, "SELECT (not seen)")
-                selects += 1
-            time.sleep(2)
-        # The body the player possesses (component 44, from the probe's component scan) with its mover.
-        end = time.monotonic() + 120
+        if not self.pick_hero():
+            shot = self.state / "no-pick.png"
+            screenshot(self.pid, shot)
+            raise RuntimeError(f"hero select: no pick taken; see {shot}")
+        # The body the player possesses (component 44, from the probe's component scan) with its mover. The
+        # client makes the player's component 44 late: 100-115 s after the pick in the Range (2026-11-20), while
+        # it already shows the body.
+        end = time.monotonic() + 240
         while time.monotonic() < end:
             info = self.probe.info()
             if info["frames"] and info.get("body") and info["comp31"]:
@@ -363,6 +384,35 @@ class Session:
         shot = self.state / "no-body.png"
         screenshot(self.pid, shot)
         raise RuntimeError(f"no possessed body with a mover after hero select (frames {info['frames']}); see {shot}")
+
+    def pick_hero(self, hero=None, timeout=60.0):
+        """Hero select: waits for it, clicks the hero's portrait (`hero` or the session's; none keeps the one
+        shown), then SELECT, until the client has locked a hero in and closed the screen (`picked_hero`).
+        Returns that hero's GUID, None on the timeout. It also turns the frame sampler on (no recording), which
+        finds the body later."""
+        hero = hero or self.hero
+        hero_at = None
+        if hero:
+            from tools.owdbg.actions import _hero
+            hero_at = _hero(hero)[1]
+        self.probe.sampler(every=0)
+        end = time.monotonic() + timeout
+        clicked_hero, selects = False, 0
+        while time.monotonic() < end:
+            shown = self.hero_select_shown()
+            picked = None if shown else self.picked_hero()
+            if picked:
+                self.log(f"[owprobe] t={self.elapsed():.0f}s picked hero {picked:016X}")
+                return picked
+            if shown:
+                if hero_at and not clicked_hero:
+                    self.click(hero_at, f"{hero}'s portrait")
+                    clicked_hero = True
+                elif selects < 6:
+                    self.click(SELECT, "SELECT")
+                    selects += 1
+            time.sleep(1.5)
+        return None
 
     def server_log_matches(self, pattern):
         return re.findall(pattern, (self.state / "play.log").read_text("utf-8", "replace"))

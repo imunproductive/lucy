@@ -21,7 +21,9 @@ use crate::{
     client::*,
     expr::Expr,
     input::{Sample, Script, view_quaternion},
-    layout::{CAMERA_MATRIX_TABLE, Camera, MOVEMENT_BYTES, MOVEMENT_STATE, Movement, script_value},
+    layout::{
+        CAMERA_MATRIX_TABLE, Camera, MOVEMENT_BYTES, MOVEMENT_TICKED, Movement, script_value,
+    },
     ring::{Event, FrameSample},
 };
 
@@ -70,37 +72,46 @@ pub struct Watch {
     pub graph: u16,
     /// Variables to read (none: all the instance has).
     pub variables: Option<Vec<u16>>,
+    /// Entity variables (`#Ne`) of the instance's entity to read.
+    pub entity_variables: Vec<u16>,
 }
 
 impl Watch {
-    /// `0D06`, `player:0C90`, `0D06:2083,11432` (graph, then variables).
+    /// `0D06`, `player:0C90`, `0D06:2083,11432` (graph, then variables),
+    /// `player:288B:1962,31435e` (`e`: an entity variable).
     pub fn parse(text: &str) -> Result<Self, String> {
         let (player, rest) = match text.strip_prefix("player:") {
             Some(rest) => (true, rest),
             None => (false, text.strip_prefix("body:").unwrap_or(text)),
         };
-        let (graph, variables) = match rest.split_once(':') {
-            Some((graph, variables)) => (graph, Some(variables)),
+        let (graph, list) = match rest.split_once(':') {
+            Some((graph, list)) => (graph, Some(list)),
             None => (rest, None),
         };
         let graph = u16::from_str_radix(graph.trim(), 16)
             .map_err(|_| format!("{text:?}: the graph is 4 hex digits (0D06)"))?;
-        let variables = variables
-            .map(|list| {
-                list.split(',')
-                    .map(|id| {
-                        id.trim()
-                            .trim_start_matches('#')
-                            .parse::<u16>()
-                            .map_err(|_| format!("{text:?}: variables are decimal ids"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()?;
+        let mut variables = list.map(|_| Vec::new());
+        let mut entity_variables = Vec::new();
+        for id in list.into_iter().flat_map(|list| list.split(',')) {
+            let id = id.trim().trim_start_matches('#');
+            let (id, entity) = match id.strip_suffix('e') {
+                Some(id) => (id, true),
+                None => (id, false),
+            };
+            let id = id
+                .parse::<u16>()
+                .map_err(|_| format!("{text:?}: variables are decimal ids (2083, 31435e)"))?;
+            if entity {
+                entity_variables.push(id);
+            } else if let Some(variables) = &mut variables {
+                variables.push(id);
+            }
+        }
         Ok(Self {
             player,
             graph,
             variables,
+            entity_variables,
         })
     }
 
@@ -111,7 +122,11 @@ impl Watch {
             self.graph
         );
         if let Some(variables) = &self.variables {
-            let list: Vec<String> = variables.iter().map(u16::to_string).collect();
+            let list: Vec<String> = variables
+                .iter()
+                .map(u16::to_string)
+                .chain(self.entity_variables.iter().map(|id| format!("{id}e")))
+                .collect();
             text += &format!(":{}", list.join(","));
         }
         text
@@ -364,7 +379,7 @@ pub fn on_frame(probe: &Probe, regs: &mut hook::Regs) {
     let mover = (comp31 != 0)
         .then(|| {
             let mut bytes = [0u8; MOVEMENT_BYTES];
-            mem::read(comp31 + MOVEMENT_STATE, &mut bytes).then(|| Movement::parse(&bytes))?
+            mem::read(comp31 + MOVEMENT_TICKED, &mut bytes).then(|| Movement::parse(&bytes))?
         })
         .flatten();
     let mut sample = FrameSample {
@@ -486,8 +501,8 @@ fn read_u64s(address: u64, count: usize) -> Option<Vec<u64>> {
 }
 
 /// The instances of the watched graph on a statescript host: their running
-/// states (the state array's indices whose state has flag bit 0) and their
-/// variables.
+/// states (the state array's indices whose state has flag bit 0), their
+/// variables and the watch's entity variables of the host's entity.
 fn script_samples(host: u64, entity: u32, watch: &Watch) -> Vec<Value> {
     let mut samples = Vec::new();
     let count = mem::read_u32(host + HOST_COUNT).unwrap_or(0) as usize;
@@ -497,6 +512,12 @@ fn script_samples(host: u64, entity: u32, watch: &Watch) -> Vec<Value> {
     else {
         return samples;
     };
+    let entity_variables = (!watch.entity_variables.is_empty()).then(|| {
+        variables(
+            mem::read_u64(host + HOST_ENTITY_VARIABLES).unwrap_or(0),
+            Some(&watch.entity_variables),
+        )
+    });
     for instance in instances {
         let mut head = [0u8; INSTANCE_GRAPH as usize + 8];
         if !mem::read(instance, &mut head) {
@@ -523,18 +544,25 @@ fn script_samples(host: u64, entity: u32, watch: &Watch) -> Vec<Value> {
             })
             .map(|(index, _)| index)
             .collect();
-        samples.push(json!({
+        let mut sample = json!({
             "entity": entity,
             "graph": format!("{:04X}", watch.graph),
             "instance": id,
             "states": running,
             "vars": variables(word(INSTANCE_VARIABLES), watch.variables.as_deref()),
-        }));
+        });
+        if let Some(entity_variables) = &entity_variables {
+            sample["entity_vars"] = entity_variables.clone();
+        }
+        samples.push(sample);
     }
     samples
 }
 
-/// An instance's variables (`{"2083": value}`), all or the given ones.
+/// A variable store's variables (`{"2083": value}`), all or the given ones: an
+/// instance's (`INSTANCE_VARIABLES`) or an entity's (`HOST_ENTITY_VARIABLES`).
+/// A bound variable's value is the one its bindings gave when it was last
+/// read.
 fn variables(store: u64, wanted: Option<&[u16]>) -> Value {
     let mut out = Map::new();
     if store == 0 {
@@ -568,8 +596,17 @@ fn variables(store: u64, wanted: Option<&[u16]>) -> Value {
                 continue;
             }
             let variable = u64::from_le_bytes(entry[8..16].try_into().expect("8 bytes"));
+            if variable == 0 {
+                continue;
+            }
+            let bound = mem::read_u32(variable + VARIABLE_BINDINGS).is_some_and(|n| n != 0);
+            let at = if bound {
+                VARIABLE_BOUND_VALUE
+            } else {
+                VARIABLE_VALUE
+            };
             let mut value = [0u8; 16];
-            if variable != 0 && mem::read(variable + VARIABLE_VALUE, &mut value) {
+            if mem::read(variable + at, &mut value) {
                 out.insert(id.to_string(), script_value(&value));
             }
         }
