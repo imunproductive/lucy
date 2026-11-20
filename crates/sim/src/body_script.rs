@@ -62,6 +62,8 @@ const OWNER_HEALTH: u32 = 253;
 const DEAD_FLAG: u32 = orpheus_script::bot::DEAD_FLAG;
 const HUD_HEALTH: u32 = 1732;
 const HUD_MAX_HEALTH: u32 = 1737;
+/// The native that answers the body's move-speed scale.
+const SPEED_SCALE: &str = "STU_ED807E07";
 
 /// The map a player body's scripts meet: its collision for their ray casts
 /// and its tagged placeables for their tag queries.
@@ -437,7 +439,9 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         }
         let pose = mover.pose();
         self.world.position = pose.position;
-        self.world.speed_scale = Some(mover.speed_scale());
+        let speed_scale = Some(mover.speed_scale());
+        let speed_changed = self.world.speed_scale != speed_scale;
+        self.world.speed_scale = speed_scale;
         self.world.trial = Some(mover.trial());
         self.world.eye_height = Some(self.combat.eyes.height(mover.crouched()));
         // Its own body, as the target searches see it, stands where it moved.
@@ -454,6 +458,16 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         // Command gaps and timer advances retain the last movement record.
         if step == BodyStep::Posed {
             self.world.movement = pose;
+        }
+        // The client's speed-scale native (`Eval_STU_ED807E07`
+        // 0x7FF789BE3570) makes the state that evaluates it a dependent of
+        // the mover (kind 17, `0x7FF789AEBA60`): a stack of it takes the
+        // new scale when the mover's changes (Rocket Punch `#9339`, its wall
+        // check's distance, during the dash).
+        if speed_changed {
+            self.component
+                .natives_changed(&[SPEED_SCALE], &mut self.world)
+                .map_err(unsupported)?;
         }
         if step == BodyStep::UnposedTimer {
             self.component

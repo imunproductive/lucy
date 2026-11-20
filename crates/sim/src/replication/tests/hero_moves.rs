@@ -798,6 +798,16 @@ fn echos_ground_ray_meets_the_floor_she_stands_on() {
 }
 
 const DOOMFIST: u64 = 0x02e0_0000_0000_012f;
+const ABILITY_1: u32 = 0x08;
+const ABILITY_2: u32 = 0x10;
+
+/// The angle (radians, -π..π) from the heading `yaw` to the flat move
+/// (`dx`, `dz`).
+fn off_heading(dx: f64, dz: f64, yaw: i32) -> f64 {
+    let facing = f64::from(yaw) * std::f64::consts::TAU / 65536.0;
+    (dx.atan2(dz) - facing + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+        - std::f64::consts::PI
+}
 
 impl Player {
     /// Whether the owner gets his body's records now, and whether a pose
@@ -813,11 +823,24 @@ impl Player {
 
     /// Graph `0D06`'s state `raw` (Rocket Punch) is on.
     fn punch_state(&self, raw: u16) -> bool {
+        self.graph_state(0x0d06, raw)
+    }
+
+    /// State `raw` of an instance of `graph` is on.
+    fn graph_state(&self, graph: u32, raw: u16) -> bool {
         self.snapshot()
             .instances
             .values()
-            .filter(|instance| instance.graph == 0x0d06)
+            .filter(|instance| instance.graph == graph)
             .any(|instance| instance.states.get(&raw).is_some_and(|state| state.active))
+    }
+
+    fn velocity(&self) -> [f64; 3] {
+        self.world.mover.as_ref().unwrap().pose().velocity
+    }
+
+    fn grounded(&self) -> bool {
+        self.world.mover.as_ref().unwrap().pose().flags & FELL == 0
     }
 }
 
@@ -864,9 +887,7 @@ fn doomfists_rocket_punch_dashes_along_its_release_facing_with_records_to_its_ow
     // 6 frames of the dash at up to 45 m/s (its first frame accelerates).
     assert!(moved > 3.0 && moved <= 6.0 * 45.0 * DT + 0.01, "{moved}");
     let [dx, _, dz] = std::array::from_fn(|axis| doomfist.position()[axis] - start[axis]);
-    let facing = f64::from(open) * std::f64::consts::TAU / 65536.0;
-    let off = (dx.atan2(dz) - facing + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
-        - std::f64::consts::PI;
+    let off = off_heading(dx, dz, open);
     assert!(off.abs() < 0.01, "the dash turned by {off} rad");
     let mut last = None;
     for _ in 0..90 {
@@ -935,4 +956,99 @@ fn doomfists_rocket_punch_ends_at_a_wall_with_the_impact() {
     );
     let moved = horizontal(start, doomfist.position());
     assert!(moved < 6.0, "{moved}");
+}
+
+/// Seismic Slam on the ground (graph `0B27`, ABILITY_2): the leap (`rid67`
+/// on channel 1: `STU_0762B33A` of the facing, here the flat facing raised
+/// by 0.3, times 19 m/s) under 1.5 × gravity (st1), the landing (#59 = 3,
+/// st58) and 0.1 s after it the end of st37 (`STU_54FEB21C`, a wait the
+/// server ends) that brings the shockwave (st44) and the end of the ability,
+/// so Rising Uppercut lifts him after it (before, the slam never ended and
+/// blocked his other abilities).
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_grounded_slam_leaps_lands_and_ends() {
+    let mut doomfist = Player::spawn(DOOMFIST);
+    let (open, _) = open_and_walled(&doomfist.scene);
+    let start = doomfist.position();
+    // The press, then the leap's first frame.
+    doomfist.press(ABILITY_2, open);
+    let [vx, vy, vz] = doomfist.velocity();
+    let flat = vx.hypot(vz);
+    assert!((flat.hypot(vy) - 19.0).abs() < 0.01, "{vx} {vy} {vz}");
+    assert!((vy / flat - 0.3).abs() < 1e-3, "{vx} {vy} {vz}");
+    assert!(off_heading(vx, vz, open).abs() < 0.01, "{vx} {vz}");
+    let mut landed = None;
+    let mut shockwave = None;
+    for frame in 1..=64 {
+        doomfist.idle(1, open);
+        if landed.is_none() && doomfist.grounded() {
+            landed = Some(frame);
+        }
+        if shockwave.is_none() && doomfist.graph_state(0x0b27, 44) {
+            shockwave = Some(frame);
+        }
+    }
+    let landed = landed.expect("he lands");
+    // About 0.4 s up and down under 1.5 × gravity.
+    assert!((20..=40).contains(&landed), "landed at {landed}");
+    assert!(horizontal(start, doomfist.position()) > 6.0);
+    let shockwave = shockwave.expect("the slam hits");
+    // st45's 0.1 s (7 frames) after the landing state, then st37 ends.
+    assert!(
+        (landed..=landed + 12).contains(&shockwave),
+        "landed at {landed}, shockwave at {shockwave}"
+    );
+    doomfist.press(ABILITY_1, open);
+    let mut rise: f64 = 0.0;
+    for _ in 0..20 {
+        doomfist.idle(1, open);
+        rise = rise.max(doomfist.velocity()[1]);
+    }
+    assert!(rise > 39.0, "Rising Uppercut after the slam: {rise}");
+}
+
+/// The punch jump: a jump pressed at least 0.1 s into Rocket Punch's dash
+/// (st63, then the jump button st62 sets #11432) ends the dash (st5) and
+/// launches him (`rid112` adds the facing × 25 and 5 up on channel 1): he
+/// leaves the ground and gets further than the same punch without it.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_punch_jump_launches_him_out_of_the_dash() {
+    let reach = |jump: bool| {
+        let mut doomfist = Player::spawn(DOOMFIST);
+        let (open, _) = open_and_walled(&doomfist.scene);
+        let hold = |doomfist: &mut Player, buttons| {
+            doomfist.step(Command {
+                yaw: open,
+                buttons,
+                ..Command::default()
+            });
+        };
+        // 0.2 s of charge, the least (#9273).
+        for _ in 0..14 {
+            hold(&mut doomfist, orpheus_wire::commands::SECONDARY);
+        }
+        let start = doomfist.position();
+        // 8 frames (0.125 s) into the dash.
+        for _ in 0..8 {
+            hold(&mut doomfist, 0);
+            assert!(doomfist.punch_state(42), "dashing");
+        }
+        let mut height: f64 = 0.0;
+        if jump {
+            hold(&mut doomfist, orpheus_wire::commands::JUMP);
+            assert!(!doomfist.punch_state(42), "the jump ends the dash");
+        }
+        for _ in 0..40 {
+            hold(&mut doomfist, 0);
+            height = height.max(doomfist.position()[1] - start[1]);
+        }
+        (horizontal(start, doomfist.position()), height)
+    };
+    let (plain, plain_height) = reach(false);
+    let (jumped, height) = reach(true);
+    assert!(plain_height < 0.01, "{plain_height}");
+    assert!(height > 0.3, "{height}");
+    assert!(jumped > plain + 1.5, "{plain} -> {jumped}");
 }

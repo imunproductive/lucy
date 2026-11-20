@@ -51,7 +51,7 @@ use mio::{Events, Interest, Poll, Token, Waker, net::UdpSocket};
 
 use crate::{
     clock::{GameClock, Step, next_tick_after},
-    connection::{GameConnections, MAX_CONNECTION_ID, Outgoing, Received, SILENCE_TIME},
+    connection::{GameConnections, MAX_CONNECTION_ID, Outgoing, Received, SILENCE_TIME, Timeout},
     ingress::{GameIngress, MapReadiness, MapReadyStep, MessageKind, WorldReadiness, pong},
 };
 use orpheus_content::{
@@ -2030,6 +2030,19 @@ impl State {
         self.homeward.insert(connection, peer);
     }
 
+    /// Logs why a seated player's link ends (a silent drop once looked
+    /// like a stopped match).
+    fn report_leave(&self, connection: u32, why: &str) {
+        let Some(&(id, slot)) = self.seats.get(&connection) else {
+            return;
+        };
+        tracing::info!(
+            "[game] match {:04X}: {} left: {why}",
+            id[0] & 0xFFFF,
+            self.rooms[&id].players[slot].info.name
+        );
+    }
+
     fn retire(&mut self, connection: u32) {
         self.homeward.remove(&connection);
         self.peers.shift_remove(&connection);
@@ -2076,6 +2089,7 @@ impl State {
             let _ = send(socket, control);
         }
         if received.closed {
+            self.report_leave(connection, "his game closed its link");
             self.retire(connection);
             return;
         }
@@ -3267,6 +3281,13 @@ impl State {
             }
         };
         for expired in self.links.expire(now, force) {
+            let why = match expired.reason {
+                Timeout::Handoff => "his game did not connect in time",
+                Timeout::Silence => "nothing from his game for 10 s",
+                Timeout::LeaveGrace => "his game did not close its link after the leave",
+                Timeout::Drain => "the server is draining",
+            };
+            self.report_leave(expired.connection, why);
             self.retire(expired.connection);
         }
         let mut spawned = HashMap::new();

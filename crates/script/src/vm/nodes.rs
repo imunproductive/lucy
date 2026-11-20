@@ -107,7 +107,7 @@ const ASSUMED_NO_OPS: &[&str] = &[
     "STU_5EAA04BB",
 ];
 
-/// Melee's states (graph 0043): knockback and four unnamed ones. The client
+/// Melee's states (graph 0043): knockback and three unnamed ones. The client
 /// reads them as on/off only ("none" codec); the server doesn't run their
 /// effect yet, like the Python VM.
 const ASSUMED_INERT_STATES: &[&str] = &[
@@ -115,7 +115,6 @@ const ASSUMED_INERT_STATES: &[&str] = &[
     "STU_0A6BE10E",
     "STUStatescriptStatePhysicsExplosion",
     "STU_B5C87F3D",
-    "STU_54FEB21C",
 ];
 
 /// The player controller's native states (`0C90`): their client codec has
@@ -1008,6 +1007,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 );
                 StateKind::Plain
             }
+            // A wait the server ends (`begin_server_wait`, `end_wind_up`).
+            "STU_54FEB21C" => StateKind::Plain,
             class if ASSUMED_PLAIN_STATES.contains(&class) => StateKind::Plain,
             class if ASSUMED_INERT_STATES.contains(&class) => StateKind::Plain,
             "STU_77E13026" => StateKind::HitList,
@@ -1168,6 +1169,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             StateKind::Plain if node.class == "STU_54FEB21C" && is_server_ended(node) => {
                 self.end_wind_up(key, node)?;
+            }
+            StateKind::Plain if node.class == "STU_54FEB21C" => {
+                self.begin_server_wait(key, node)?;
             }
             StateKind::Plain if ASSUMED_PLAIN_STATES.contains(&node.class.as_str()) => {
                 self.assume(self.site(id, node), &node.class, "plain state");
