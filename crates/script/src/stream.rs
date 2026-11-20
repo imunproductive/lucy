@@ -371,6 +371,23 @@ impl<S> BodyStream<S> {
             .or(self.latest_lost.as_ref())
     }
 
+    /// What the owner's client holds once the chunks already queued arrive:
+    /// the newest queued chunk's snapshot, else the acknowledged one. Each
+    /// chunk is cumulative from the acknowledged frame, so the newest covers
+    /// every older one still in flight.
+    pub fn expected(&self) -> Option<&S> {
+        self.pending
+            .get(&self.last)
+            .map(|item| &item.snapshot)
+            .or(self.base.as_ref())
+    }
+
+    /// The newest owner delta was lost and nothing went after it: its
+    /// changes reach the client only in a new one ([`Self::lost`]).
+    pub fn resend_due(&self) -> bool {
+        self.latest_lost.is_some()
+    }
+
     pub fn touched(&self) -> BTreeSet<ChangeKey> {
         self.lost_keys
             .keys()

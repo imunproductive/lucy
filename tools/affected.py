@@ -76,6 +76,8 @@ def main() -> None:
     parser.add_argument("--base", default="main")
     parser.add_argument("--cargo-args", action="store_true")
     args = parser.parse_args()
+    # LF even on Windows: bash callers split the output on newlines.
+    sys.stdout.reconfigure(newline="\n")
     folders, dependents = workspace()
     crates = sorted(affected(changed_files(args.base), folders, dependents))
     if args.cargo_args:
