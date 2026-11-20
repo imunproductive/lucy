@@ -931,7 +931,7 @@ impl Room {
     /// The players are in a PvP world: the flow starts with "assemble your
     /// team", and the mode graph once to see whether it can drive the mode
     /// entity (`mode_script.rs`).
-    fn begin_flow(&mut self, scene: &PreparedScene, timers: Timers, now: Duration, tick: u32) {
+    fn begin_flow(&mut self, scene: &mut PreparedScene, timers: Timers, now: Duration, tick: u32) {
         if self.flow.is_some() {
             return;
         }
@@ -986,7 +986,13 @@ impl Room {
             ));
             Some(mode)
         });
-        self.mode = Some(workshop.unwrap_or_else(|| ModeRunner::start(scene, tick, Vec::new())));
+        let mode = self
+            .mode
+            .insert(workshop.unwrap_or_else(|| ModeRunner::start(scene, tick, Vec::new())));
+        // The mode graph removes placeables as it starts (`0CBB` st34, the
+        // health packs): before the world that just started reaches the
+        // client, so their creates never go.
+        take_placeable_removals(mode, scene);
         self.flow_at = now;
         self.flow_tick = tick;
         self.next_mode_frame = now;
@@ -1097,6 +1103,16 @@ fn initial_controller(
             },
         )
         .map_err(invalid)
+}
+
+/// The placeables the mode entity's graphs removed (`0CBB` st34: the
+/// health packs, when the ruleset turns them off), out of the scene.
+fn take_placeable_removals(mode: &mut ModeRunner, scene: &mut PreparedScene) {
+    if let Some(script) = mode.script_mut() {
+        for identifier in script.take_placeable_removals() {
+            scene.remove_placeables(identifier);
+        }
+    }
 }
 
 /// The mode graph's frame this tick, while it drives the mode entity: the
@@ -1548,9 +1564,9 @@ impl Peer {
         }
         self.world.set_assembling(room.assembling());
         let spawned = self.advance_loading(schemas, room, slot, now, tick)?;
-        if let Some(world) = room.world.take() {
+        if let Some(mut world) = room.world.take() {
             if spawned && !world.scene.controller().practice() {
-                room.begin_flow(&world.scene, timers, now, tick);
+                room.begin_flow(&mut world.scene, timers, now, tick);
             }
             room.world = Some(world);
         }
@@ -3455,10 +3471,8 @@ impl State {
                     // The placeables the mode entity's graphs removed (`0CBB`
                     // st34: the health packs, when the ruleset turns them
                     // off) go before their scripts run again.
-                    if let Some(script) = room.mode.as_mut().and_then(ModeRunner::script_mut) {
-                        for identifier in script.take_placeable_removals() {
-                            world.scene.remove_placeables(identifier);
-                        }
+                    if let Some(mode) = room.mode.as_mut() {
+                        take_placeable_removals(mode, &mut world.scene);
                     }
                     world.scene.advance_placed(tick, &holds);
                     dummies.push((id, world.scene.take_dummy_changes()));

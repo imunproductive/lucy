@@ -1042,9 +1042,11 @@ enum Delivery {
         close: bool,
         resend: bool,
     },
-    /// A chunk of the game mode entity's frames (`mode_view.rs`).
+    /// A chunk of the game mode entity's frames (`mode_view.rs`), whole or
+    /// its part `part`.
     Mode {
         last: u32,
+        part: Option<u16>,
     },
     /// Another player's entity, body or statescript (others.rs).
     Other(OtherDelivery),
@@ -2824,7 +2826,7 @@ impl WorldDelivery {
             Delivery::Script {
                 last, close: true, ..
             } => last == self.controller.latest_data(),
-            Delivery::Mode { last } => self.mode.current(last),
+            Delivery::Mode { last, .. } => self.mode.current(last),
             Delivery::CreateBody(id) => {
                 self.bodies.get(&id.entity) == Some(&(id.generation, Lifetime::Live))
             }
@@ -2924,8 +2926,8 @@ impl WorldDelivery {
                             retry.push(record);
                         }
                     }
-                    (arrived, Delivery::Mode { last }) => {
-                        if self.mode.delivered(last, arrived) {
+                    (arrived, Delivery::Mode { last, part }) => {
+                        if self.mode.delivered(last, part, arrived) {
                             retry.push(record);
                         }
                     }
@@ -3129,7 +3131,7 @@ impl WorldDelivery {
                         return None;
                     }
                     Delivery::Other(other) if !self.others.ready(other) => return None,
-                    Delivery::Mode { last } if !self.mode.current(last) => return None,
+                    Delivery::Mode { last, .. } if !self.mode.current(last) => return None,
                     _ => {}
                 }
                 Some(Ready { index, record })
@@ -3164,7 +3166,7 @@ impl WorldDelivery {
                     let entity = self.queued[index].update.entity;
                     self.bot_views.sent(entity, last);
                 }
-                Delivery::Mode { last } => self.mode.sent(last),
+                Delivery::Mode { last, .. } => self.mode.sent(last),
                 _ => {}
             }
         }
@@ -3574,10 +3576,15 @@ impl WorldDelivery {
             return Ok(false);
         }
         if let Some(chunk) = self.mode.queue(frame, tick).map_err(invalid)? {
-            self.push(Record {
-                update: chunk.update,
-                delivery: Delivery::Mode { last: chunk.last },
-            });
+            for (update, part) in chunk.records {
+                self.push(Record {
+                    update,
+                    delivery: Delivery::Mode {
+                        last: chunk.last,
+                        part,
+                    },
+                });
+            }
             self.remove_stale();
         }
         Ok(true)

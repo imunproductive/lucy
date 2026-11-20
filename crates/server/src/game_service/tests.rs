@@ -414,6 +414,8 @@ fn first_pool(components: &[DecodedComponent]) -> Option<f32> {
 struct ReceivedChunk {
     first: u32,
     span: u32,
+    /// A part's number and whether it is the last (`mode_view.rs`).
+    part: Option<(u16, bool)>,
     width: usize,
     data: Vec<u8>,
 }
@@ -422,6 +424,44 @@ impl ReceivedChunk {
     fn bits(&self) -> BitReader<'_> {
         BitReader::with_range(&self.data, 0, self.width).unwrap()
     }
+}
+
+/// The whole chunks among `chunks` (one entity's, in arrival order): each
+/// whole one, and each chunk in parts once its parts up to the last are
+/// all there, joined as the client's joiner does (`0x7FF78991FE30`).
+fn joined_chunks<'a>(chunks: impl IntoIterator<Item = &'a ReceivedChunk>) -> Vec<ReceivedChunk> {
+    let mut parts: HashMap<(u32, u32), std::collections::BTreeMap<u16, &ReceivedChunk>> =
+        HashMap::new();
+    let mut whole = Vec::new();
+    for chunk in chunks {
+        let Some((number, _)) = chunk.part else {
+            whole.push(chunk.clone());
+            continue;
+        };
+        let held = parts.entry((chunk.first, chunk.span)).or_default();
+        held.insert(number, chunk);
+        let Some((&last, _)) = held
+            .iter()
+            .find(|(_, part)| part.part.is_some_and(|(_, last)| last))
+        else {
+            continue;
+        };
+        if (0..=last).all(|number| held.contains_key(&number)) {
+            let mut data = BitWriter::new();
+            for part in held.values() {
+                data.raw_bits(&part.data, part.width).unwrap();
+            }
+            whole.push(ReceivedChunk {
+                first: chunk.first,
+                span: chunk.span,
+                part: None,
+                width: data.bit_len(),
+                data: data.into_bytes(),
+            });
+            parts.remove(&(chunk.first, chunk.span));
+        }
+    }
+    whole
 }
 
 /// What a full owner controller frame shows (its head: the controller
@@ -593,11 +633,15 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
                 assert!(!reader.bit().unwrap());
                 let first = reader.w_u32().unwrap();
                 let span = reader.w_var().unwrap();
-                assert!(!reader.bit().unwrap());
+                let part = reader
+                    .bit()
+                    .unwrap()
+                    .then(|| (reader.w_u16().unwrap(), reader.bit().unwrap()));
                 let width = reader.w_var().unwrap() as usize;
                 record.script = Some(ReceivedChunk {
                     first,
                     span,
+                    part,
                     width,
                     data: reader.raw_bits(width).unwrap(),
                 });

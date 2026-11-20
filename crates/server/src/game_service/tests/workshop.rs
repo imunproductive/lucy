@@ -149,22 +149,42 @@ fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
     pump_until(&mut [&mut watcher], &schemas, "Doomfist", |watchers| {
         watchers[0].created(owner | 1).is_some()
     });
-    // "Player HUD" waits at most 2 + 2 s before its texts.
+    // "Player HUD" waits at most 2 + 2 s before its texts. The mode
+    // entity's frame (the rules' global arrays and actions, about 10 KB)
+    // comes in parts the client joins (`orpheus_sim::mode_view`).
     let graphs = assets.graphs();
+    let mode_chunks = |watcher: &Watcher| {
+        joined_chunks(
+            watcher
+                .datagrams
+                .iter()
+                .flat_map(|(_, records)| records)
+                .filter(|record| record.entity == GAME_MODE_ENTITY)
+                .filter_map(|record| record.script.as_ref()),
+        )
+    };
     pump_within(
         &mut [&mut watcher],
         &schemas,
         "a HUD text on the mode entity",
         Duration::from_secs(15),
         |watchers| {
-            watchers[0]
-                .datagrams
+            mode_chunks(&*watchers[0])
                 .iter()
-                .flat_map(|(_, records)| records)
-                .filter(|record| record.entity == GAME_MODE_ENTITY)
-                .filter_map(|record| record.script.as_ref())
                 .any(|chunk| listed_graphs(graphs, chunk).contains(&CREATE_HUD_TEXT))
         },
+    );
+    assert!(
+        watcher
+            .datagrams
+            .iter()
+            .flat_map(|(_, records)| records)
+            .any(|record| record.entity == GAME_MODE_ENTITY
+                && record
+                    .script
+                    .as_ref()
+                    .is_some_and(|chunk| chunk.part.is_some())),
+        "no mode frame in parts"
     );
     // C32S2's "Spawn Health Packs: Disabled" (#9542e): `0CBB` st34
     // (`STU_A3DC6A25`) removed the map's health packs, the placeables with

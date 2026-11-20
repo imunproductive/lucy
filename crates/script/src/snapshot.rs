@@ -44,14 +44,6 @@ pub enum View {
     Observer,
 }
 
-/// A part of a frame that a frame too big for one chunk sends by itself
-/// ([`ProjectedSnapshot::parts_from`]): an entity variable or an instance.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FramePart {
-    Variable(u32),
-    Instance(u16),
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProjectedSnapshot {
     entity: u32,
@@ -248,98 +240,6 @@ impl ProjectedSnapshot {
 
     pub fn has_instance(&self, id: u16) -> bool {
         self.instances.contains_key(&id)
-    }
-
-    /// The parts this projection changes from `base` (none: from an empty
-    /// frame), in the order a frame too big for one chunk takes them
-    /// ([`Self::with_parts`]): the instances `base` has and this doesn't,
-    /// the entity variables by id, then the instances, each after its
-    /// parent.
-    pub fn parts_from(&self, base: Option<&Self>) -> Vec<FramePart> {
-        let based = |id: u16| base.and_then(|base| base.instances.get(&id));
-        let mut parts: Vec<FramePart> = base
-            .into_iter()
-            .flat_map(|base| base.instances.keys())
-            .filter(|id| !self.instances.contains_key(id))
-            .map(|&id| FramePart::Instance(id))
-            .collect();
-        let variables = &self.variables;
-        let base_variables = base.map(|base| &base.variables);
-        let mut ids: BTreeSet<u32> = variables.values.keys().copied().collect();
-        ids.extend(variables.bindings.keys().copied());
-        if let Some(base) = base_variables {
-            ids.extend(base.values.keys().copied());
-            ids.extend(base.bindings.keys().copied());
-        }
-        parts.extend(
-            ids.into_iter()
-                .filter(|id| {
-                    base_variables.is_none_or(|base| {
-                        base.values.get(id) != variables.values.get(id)
-                            || base.bindings.get(id) != variables.bindings.get(id)
-                    })
-                })
-                .map(FramePart::Variable),
-        );
-        let depth = |mut id: u16| {
-            let mut depth = 0usize;
-            while let Some((parent, _)) = self.instances.get(&id).and_then(|item| item.parent) {
-                depth += 1;
-                id = parent;
-                if depth > self.instances.len() {
-                    break;
-                }
-            }
-            depth
-        };
-        let mut changed: Vec<(usize, u16)> = self
-            .instances
-            .iter()
-            .filter(|&(&id, instance)| {
-                based(id).is_none_or(|old| !Arc::ptr_eq(old, instance) && old != instance)
-            })
-            .map(|(&id, _)| (depth(id), id))
-            .collect();
-        changed.sort_unstable();
-        parts.extend(changed.into_iter().map(|(_, id)| FramePart::Instance(id)));
-        parts
-    }
-
-    /// `base` (none: an empty frame) with `parts` of this projection: a
-    /// step toward it.
-    pub fn with_parts(&self, base: Option<&Self>, parts: &[FramePart]) -> Self {
-        let mut step = match base {
-            Some(base) => Self {
-                actions: self.actions.clone(),
-                action_serial: self.action_serial,
-                ..base.clone()
-            },
-            None => Self {
-                variables: ProjectedVariables::default(),
-                instances: BTreeMap::new(),
-                ..self.clone()
-            },
-        };
-        for &part in parts {
-            match part {
-                FramePart::Variable(id) => {
-                    step.variables
-                        .set(id, self.variables.values.get(&id).cloned());
-                    if let Some(links) = self.variables.bindings.get(&id) {
-                        step.variables.bindings.insert(id, links.clone());
-                    }
-                }
-                FramePart::Instance(id) => match self.instances.get(&id) {
-                    Some(instance) => {
-                        step.instances.insert(id, Arc::clone(instance));
-                    }
-                    None => {
-                        step.instances.remove(&id);
-                    }
-                },
-            }
-        }
-        step
     }
 }
 
@@ -585,12 +485,6 @@ pub enum SnapshotError {
         source: PayloadError,
     },
     DifferentStream,
-    /// One part of a frame (an entity variable or an instance) needs a
-    /// chunk bigger than a datagram takes by itself.
-    OversizedPart {
-        part: FramePart,
-        bytes: usize,
-    },
     ReboundInstance(u16),
     FrameTime,
     Wire(WireError),
@@ -650,12 +544,6 @@ impl fmt::Display for SnapshotError {
             Self::DifferentStream => f.write_str(
                 "statescript baseline belongs to a different body, view or variable scope",
             ),
-            Self::OversizedPart { part, bytes } => {
-                write!(
-                    f,
-                    "statescript frame part {part:?} alone takes {bytes} bytes"
-                )
-            }
             Self::ReboundInstance(id) => {
                 write!(f, "statescript instance {id} changed its definition")
             }
@@ -1299,37 +1187,6 @@ impl<'a> SnapshotEncoder<'a> {
         kind: DeltaKind,
         frame_ms: u32,
     ) -> Result<Option<ScriptChunk>, SnapshotError> {
-        let Some((frame, delivered, keys)) =
-            self.prepare_delta(stream, snapshot, kind, frame_ms)?
-        else {
-            return Ok(None);
-        };
-        Ok(Some(stream.delta(&frame, delivered, keys, kind)?))
-    }
-
-    /// The bytes of the observer delta [`Self::queue_delta`] would queue
-    /// now; None: it would queue none.
-    pub fn observer_delta_bytes(
-        &self,
-        stream: &BodyStream<ProjectedSnapshot>,
-        snapshot: &ProjectedSnapshot,
-        frame_ms: u32,
-    ) -> Result<Option<usize>, SnapshotError> {
-        let kind = DeltaKind::Observer { resend: false };
-        Ok(self
-            .prepare_delta(stream, snapshot, kind, frame_ms)?
-            .map(|(frame, _, _)| frame.as_bytes().len()))
-    }
-
-    /// [`Self::queue_delta`]'s payload, the projection it delivers and its
-    /// change keys, without queueing it.
-    fn prepare_delta(
-        &self,
-        stream: &BodyStream<ProjectedSnapshot>,
-        snapshot: &ProjectedSnapshot,
-        kind: DeltaKind,
-        frame_ms: u32,
-    ) -> Result<Option<(BitWriter, ProjectedSnapshot, BTreeSet<ChangeKey>)>, SnapshotError> {
         let (_, base) = stream.base().ok_or(StreamError::BaselinePending)?;
         let view = match kind {
             DeltaKind::Observer { .. } => View::Observer,
@@ -1397,7 +1254,7 @@ impl<'a> SnapshotEncoder<'a> {
         let mut delivered = snapshot.clone();
         delivered.action_serial = action.map_or(base.action_serial, |(_, action)| action.serial);
         let frame = self.delta_frame(snapshot, &delta, kind, frame_ms, action)?;
-        Ok(Some((frame, delivered, delta.keys)))
+        Ok(Some(stream.delta(&frame, delivered, delta.keys, kind)?))
     }
 
     /// Whether the owner's projection differs from what his client holds
