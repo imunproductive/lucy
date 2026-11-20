@@ -148,7 +148,9 @@ fn variable_actions_are_done_at_once() {
 }
 
 /// Wait `1370` is done when its timer runs out (0.5 s: the frame that
-/// starts after 500 ms).
+/// starts after 500 ms). Its one gap is the VM's own assumption for the
+/// one server frame its `STU_E3CEF6B9` (WaitForServerFrames) waits: a
+/// server frame is a 16 ms command frame (`vm/timers.rs`).
 #[test]
 #[ignore = "requires the derived 104319 graph bundle"]
 fn a_wait_is_done_when_its_time_is_up() {
@@ -170,7 +172,10 @@ fn a_wait_is_done_when_its_time_is_up() {
     // The timer runs out within the frame `elapsed` after the start began.
     let frame = crate::timeline::FRAME_MS;
     assert!((500 - frame + 1..=500).contains(&elapsed), "{elapsed} ms");
-    assert_complete(&script);
+    assert_eq!(
+        script.gaps(),
+        BTreeMap::from([((WAIT, "STU_E3CEF6B9".to_owned()), 1)])
+    );
 }
 
 /// The flow actions report their result: Skip If with a true condition
@@ -274,7 +279,11 @@ fn hud_text_stays_up_until_destroyed() {
     script.advance(2).unwrap();
     let instances = &script.snapshot().unwrap().instances;
     assert!(!instances.contains_key(&scope));
-    assert!(!instances.contains_key(&create.instance));
+    assert!(
+        !instances.contains_key(&create.instance),
+        "{:?}",
+        instances[&create.instance]
+    );
     assert_complete(&script);
 }
 
@@ -314,12 +323,11 @@ fn small_message_reaches_its_target_in_the_frames() {
     for frame in 2..2 + frames as u32 {
         script.advance(frame).unwrap();
     }
+    let instances = &script.snapshot().unwrap().instances;
     assert!(
-        !script
-            .snapshot()
-            .unwrap()
-            .instances
-            .contains_key(&message.instance)
+        !instances.contains_key(&message.instance),
+        "{:?}",
+        instances[&message.instance]
     );
 }
 
