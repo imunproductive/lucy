@@ -2980,6 +2980,10 @@ impl State {
                     let variables = orpheus_script::wire::Variables::new();
                     room.mail.extend(mode.advance(tick, &variables, players));
                     room.graph_frame = graph_frame(mode, room.graph_frame.take());
+                    // No flow stands in for the graph's own entries here.
+                    if let Some(script) = mode.script_mut() {
+                        script.take_own_messages();
+                    }
                 }
                 continue;
             }
@@ -3004,14 +3008,6 @@ impl State {
                 .mode
                 .as_mut()
                 .map_or_else(Vec::new, |mode| mode.advance(tick, &variables, players));
-            // The flow stands in for the mode graph's entries (the
-            // Workshop's Set Match Time).
-            for message in messages
-                .iter()
-                .filter(|message| message.target == GAME_MODE_ENTITY)
-            {
-                flow.receive(message.message, &message.parameters);
-            }
             // The Workshop's rules after the mode entity's frame, against
             // the players in the world.
             if let (Some(run), Some(mode)) = (
@@ -3037,6 +3033,13 @@ impl State {
                     })
                     .collect();
                 run.step(tick, &world.scene, mode, &mut players);
+            }
+            // The flow stands in for the mode graph's entries: what the
+            // mode entity's graphs sent it (the Workshop's Set Match Time).
+            if let Some(script) = room.mode.as_mut().and_then(ModeRunner::script_mut) {
+                for message in script.take_own_messages() {
+                    flow.receive(message.message, &message.parameters);
+                }
             }
             let changed = events
                 .iter()

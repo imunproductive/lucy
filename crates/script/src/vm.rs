@@ -869,6 +869,12 @@ pub trait World {
         false
     }
 
+    /// A game message the script sent its own entity, which the VM's own
+    /// entries took ([`Machine::queue_entries`]); a world that stands in
+    /// for other receivers on that entity (the match flow in place of the
+    /// mode graph) may look at it.
+    fn observe_own_message(&mut self, _source: Site, _message: u64, _parameters: &Variables) {}
+
     /// Deliver a game message to every entity of the world but the sender
     /// (a `STU_38EE1100` target `STU_1D719351` with `m_6A8DB059` set; the
     /// sender's own instances get it from the VM). False: this world can't
@@ -3488,6 +3494,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         for &entity in entities {
             self.spend("game message routing")?;
             if entity == site.entity {
+                self.world.observe_own_message(site, message, &parameters);
                 self.machine.queue_entries(
                     self.graphs,
                     None,
