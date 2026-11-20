@@ -68,6 +68,7 @@ pub mod path_walk;
 mod ported_tests;
 pub(crate) mod posture;
 pub mod settings;
+pub mod trial;
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -258,6 +259,12 @@ impl Mover {
     /// records (`Posture::spring_steps`).
     pub fn capsule(&self) -> CapsulePose {
         self.body.pose()
+    }
+
+    /// The body as its statescript's wall checks move it on trial
+    /// ([`trial::TrialMove`]).
+    pub fn trial(&self) -> trial::TrialMove {
+        trial::TrialMove::new(self.body.shared_world(), self.body.pose(), self.category)
     }
 
     /// The other characters that block the body's moves from now on

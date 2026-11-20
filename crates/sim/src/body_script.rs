@@ -438,6 +438,7 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         let pose = mover.pose();
         self.world.position = pose.position;
         self.world.speed_scale = Some(mover.speed_scale());
+        self.world.trial = Some(mover.trial());
         self.world.eye_height = Some(self.combat.eyes.height(mover.crouched()));
         // Its own body, as the target searches see it, stands where it moved.
         let entity = self.world.entity;

@@ -928,6 +928,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_2F4E2E3F" => StateKind::Watch,
             "STUStatescriptStateTrackTargets" => StateKind::TrackTargets,
             "STUStatescriptStateRayCast" | "STUStatescriptStateTrackRay" => StateKind::Ray,
+            "STU_FBFF5DE7" => StateKind::WallCheck,
             "STU_0A6BE10E" if filter_array::is_runnable_filter_array(node) => {
                 StateKind::FilterArray
             }
@@ -1119,6 +1120,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::WeaponVolley { .. } => self.begin_volley(key, node, depth)?,
             StateKind::TrackTargets => self.begin_track_targets(key, node)?,
             StateKind::Ray => self.begin_ray(key, node)?,
+            StateKind::WallCheck => self.begin_wall_check(key, node)?,
             StateKind::ModifyHealth { .. } => self.begin_modify_health(key, node)?,
             StateKind::Status => self.begin_status(key, node),
             StateKind::CombatMod => self.begin_combat_mod(key, node),

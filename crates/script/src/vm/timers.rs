@@ -128,6 +128,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                         let node = self.graph(id).state(usize::from(raw)).expect("ray");
                         self.update_ray(key, node)?;
                     }
+                    Some(StateKind::WallCheck) => {
+                        let node = self.graph(id).state(usize::from(raw)).expect("wall check");
+                        self.update_wall_check(key, node)?;
+                    }
                     Some(StateKind::GrappleCast) => self.tick_grapple(key, 0)?,
                     Some(StateKind::ModifyHealth { last_ms }) => {
                         let node = self.graph(id).state(usize::from(raw)).expect("health");

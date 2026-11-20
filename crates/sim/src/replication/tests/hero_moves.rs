@@ -885,3 +885,54 @@ fn doomfists_rocket_punch_dashes_along_its_release_facing_with_records_to_its_ow
     assert!(doomfist.frame > last + 16);
     assert_eq!(doomfist.records(), (false, false));
 }
+
+/// A Rocket Punch into a wall ends there: the wall check (`0D06` st7,
+/// `STU_FBFF5DE7`) finds the trial move ahead stopped once the dash meets
+/// the wall, its server-only rays (st79/st80) hit, and the dash (st42)
+/// gives way to the impact (st9) at the frame the body stopped, where it
+/// stays.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_rocket_punch_ends_at_a_wall_with_the_impact() {
+    let mut doomfist = Player::spawn(DOOMFIST);
+    let (_, walled) = open_and_walled(&doomfist.scene);
+    let hold = |doomfist: &mut Player, buttons| {
+        doomfist.step(Command {
+            yaw: walled,
+            buttons,
+            ..Command::default()
+        });
+    };
+    // A full charge (1.4 s): the dash would go well past the wall.
+    for _ in 0..90 {
+        hold(&mut doomfist, orpheus_wire::commands::SECONDARY);
+    }
+    let start = doomfist.position();
+    hold(&mut doomfist, 0);
+    assert!(doomfist.punch_state(42), "dashing");
+    let mut stopped = None;
+    let mut impact = None;
+    let mut last = doomfist.position();
+    for frame in 0..60 {
+        hold(&mut doomfist, 0);
+        let now = doomfist.position();
+        if stopped.is_none() && frame > 0 && horizontal(last, now) < 0.3 {
+            stopped = Some(frame);
+        }
+        if impact.is_none() && doomfist.punch_state(9) {
+            impact = Some(frame);
+            assert!(!doomfist.punch_state(42), "the dash ended with the impact");
+        }
+        last = now;
+    }
+    let (stopped, impact) = (
+        stopped.expect("the wall stops him"),
+        impact.expect("an impact"),
+    );
+    assert!(
+        impact <= stopped + 1,
+        "impact at {impact}, stopped at {stopped}"
+    );
+    let moved = horizontal(start, doomfist.position());
+    assert!(moved < 6.0, "{moved}");
+}

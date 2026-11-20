@@ -32,6 +32,7 @@ mod switches;
 mod targets;
 mod timers;
 mod volleys;
+mod walls;
 
 use std::{
     cell::Cell,
@@ -691,6 +692,26 @@ pub trait World {
         None
     }
 
+    /// The radius of `entity`'s mover capsule in its stance now
+    /// (`STU_F7FD94F9`). None: unknown here.
+    fn body_radius(&self, _site: Site, _entity: u32) -> Option<f64> {
+        None
+    }
+
+    /// How far the walls turn a move of `entity`'s body along the flat
+    /// unit `direction` for `distance`, as the cosine of the angle (1: free,
+    /// 0: stopped) a wall check's trial move finds (`STU_FBFF5DE7`,
+    /// [`orpheus_physics::mover::trial`]). None: unknown here.
+    fn trial_turn(
+        &mut self,
+        _site: Site,
+        _entity: u32,
+        _direction: [f64; 3],
+        _distance: f64,
+    ) -> Option<f64> {
+        None
+    }
+
     /// Whether the match's map lists game mode `mode` among its supported
     /// modes (`STU_02514B6A.m_supportedGamemodes`, `STU_16753B11`). None:
     /// unknown here.
@@ -1123,6 +1144,9 @@ pub enum StateKind {
     /// casts at its begin and each tick and writes its outputs. Forms the
     /// server can't run write nothing.
     Ray,
+    /// A wall check (`STU_FBFF5DE7`, `vm/walls.rs`): a trial move of the
+    /// body each tick, its output true when a wall turns it.
+    WallCheck,
     /// A health change (`vm/health.rs`): a rate keeps when it last applied
     /// its share.
     ModifyHealth {
@@ -3534,10 +3558,24 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             } else if !changed {
                 continue;
             }
-            self.state_mut(watcher)
-                .expect("active watcher")
-                .pending_change = true;
-            self.post(watcher.instance, Event::Changed(watcher.raw))?;
+            // A state that re-evaluates its own fields takes the change
+            // (slot 25); any other dependent read the change in its
+            // transitions and tries them again (event kind 2): the
+            // client's dependents walk `0x7FF78AA9ED40` → `0x7FF78AA82630`
+            // → `0x7FF78AA81220`.
+            if state.kind.updates_on_change()
+                || matches!(state.kind, StateKind::HealthPool { pool: Some(_) })
+            {
+                self.state_mut(watcher)
+                    .expect("active watcher")
+                    .pending_change = true;
+                self.post(watcher.instance, Event::Changed(watcher.raw))?;
+            } else if !state.pending_check {
+                self.state_mut(watcher)
+                    .expect("active watcher")
+                    .pending_check = true;
+                self.post(watcher.instance, Event::Check(watcher.raw))?;
+            }
         }
         Ok(())
     }

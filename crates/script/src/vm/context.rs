@@ -265,6 +265,11 @@ impl<W: World> Context for InstanceContext<'_, W> {
         self.world.speed_scale(self.site, entity)
     }
 
+    fn body_radius(&mut self, entity: u32) -> Option<f64> {
+        self.read_native = true;
+        self.world.body_radius(self.site, entity)
+    }
+
     fn map_ray(
         &mut self,
         origin: [f64; 3],
