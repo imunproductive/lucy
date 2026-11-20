@@ -83,6 +83,7 @@ impl Parkour {
         let players = vec![ModePlayer {
             controller: OWNER,
             body: world.current_body(),
+            hero: world.current_hero(),
             team: 0,
         }];
         let mode = ModeRunner::workshop(&scene, FIRST_TICK, players).expect("a Workshop host");
@@ -117,6 +118,7 @@ impl Parkour {
         let players = vec![ModePlayer {
             controller: OWNER,
             body: self.world.current_body(),
+            hero: self.world.current_hero(),
             team: 0,
         }];
         self.mode.advance(self.frame, &Variables::new(), players);

@@ -4485,10 +4485,20 @@ fn filter_array_keeps_its_output_the_candidates_that_pass() {
             }),
         )
     };
+    // A tag the client's refilter (0x7FF78AAAE450) tests a candidate other
+    // than an entity without: only the condition.
+    let mut tag_and_above_one = above_one.clone();
+    tag_and_above_one["m_9C7BD8B8"] = tag(TAG);
     let fixture = graph(
         42,
         vec![
-            entry(&[(1, "m_beginPlug"), (2, "m_beginPlug"), (3, "m_beginPlug")]),
+            entry(&[
+                (1, "m_beginPlug"),
+                (2, "m_beginPlug"),
+                (3, "m_beginPlug"),
+                (4, "m_beginPlug"),
+                (5, "m_beginPlug"),
+            ]),
             filter_array(1, 0, var(90, true), filter(0, above_one), 91),
             // `0F4A` st88: the rooms of a tag (`STU_EB216A0B`) that carry
             // another.
@@ -4501,8 +4511,19 @@ fn filter_array_keeps_its_output_the_candidates_that_pass() {
             ),
             // A filter on entity flags (melee `0043` st63) stays inert.
             filter_array(3, 2, var(90, true), filter(128, json!({})), 93),
+            // `0F4A` rid280: a tag still unset lists no tag (the list
+            // builder 0x7FF789CC2C10 leaves a null one out), and an empty
+            // any-of list passes every entity.
+            filter_array(
+                4,
+                3,
+                json!({"$":"STU_EB216A0B","m_9C7BD8B8":tag(ROOM)}),
+                filter(0, json!({"m_9C7BD8B8":var(94, false)})),
+                95,
+            ),
+            filter_array(5, 4, var(90, true), filter(0, tag_and_above_one), 96),
         ],
-        json!([1, 2, 3]),
+        json!([1, 2, 3, 4, 5]),
         json!([0]),
     );
     let graphs = Arc::new(store(vec![fixture]));
@@ -4521,6 +4542,11 @@ fn filter_array_keeps_its_output_the_candidates_that_pass() {
         Value::Array(vec![Value::Entity(ENTITIES[1])])
     );
     assert!(!snapshot.variables.contains_key(&93));
+    assert_eq!(
+        snapshot.variables[&95],
+        Value::Array(ENTITIES.into_iter().map(Value::Entity).collect())
+    );
+    assert_eq!(snapshot.variables[&96], numbers(&[2, 3]));
     assert_eq!(
         snapshot
             .assumptions

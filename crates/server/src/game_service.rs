@@ -2974,6 +2974,7 @@ impl State {
                 .map(|&(connection, slot)| ModePlayer {
                     controller: room.players[slot].entity,
                     body: self.peers[&connection].world.current_body(),
+                    hero: self.peers[&connection].world.current_hero(),
                     team: if room.map.free_for_all {
                         i64::from(FREE_FOR_ALL_TEAM)
                     } else {

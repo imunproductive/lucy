@@ -11,13 +11,16 @@
 //! condition does (the authored conditions read it as parameter 8 or 142).
 //! The server runs the forms it can answer: no filter; or a filter whose
 //! flag words are all zero, with a condition (`m_condition`, true keeps the
-//! candidate) and a required target tag (`m_9C7BD8B8`: an entity candidate
-//! that carries it). The tag reading is inferred from `0F4A` nodes 303 and
-//! 304, which split the objective's spawn rooms (#11023) by its two tags
-//! into #12738 and #12739, the rooms `0724` and `072F` go to; it is not read
-//! in the client. Other forms (filters on entity flags, `m_17A88AEF`, the
-//! byte `m_C485751C`, the change plug `m_A70DB860`) stay inert with an
-//! assumption ([`ASSUMED_INERT_STATES`](super::nodes)).
+//! candidate) and an any-of target tag (`m_9C7BD8B8`). The client's
+//! refilter (0x7FF78AAAE450) tests an entity candidate with
+//! `ScriptHost_EntityPassesFilter` (host slot `+0x150`), whose tag test
+//! (0x7FF789C1EC70 → 0x7FF789CC2FD0) keeps an entity carrying any tag of
+//! the list, and every entity when the list is empty: its builder
+//! (0x7FF789CC2C10) leaves out a null tag, as `0F4A` rid280's
+//! `#20031.id(10550)` is while the objective is unset. Any other candidate
+//! meets only the condition. Other forms (filters on entity flags,
+//! `m_17A88AEF`, the byte `m_C485751C`, the change plug `m_A70DB860`) stay
+//! inert with an assumption ([`ASSUMED_INERT_STATES`](super::nodes)).
 
 use super::*;
 
@@ -129,22 +132,23 @@ impl<W: World> Vm<'_, '_, '_, W> {
         tag: &Json,
         candidate: &Value,
     ) -> Option<bool> {
-        if !tag.is_null() {
+        if !tag.is_null()
+            && let Value::Entity(entity) = *candidate
+        {
             let site = self.site(id, node);
-            let tag = match self.evaluate(id, node, tag, Some(key))? {
-                Value::Asset(tag) if tag >> 48 == crate::graph::TARGET_TAG_TYPE => tag,
-                _ => {
-                    self.report(site, Issue::UnsupportedField("array filter target tag"));
-                    return None;
+            match self.evaluate(id, node, tag, Some(key))? {
+                Value::Null => {}
+                Value::Asset(tag) if tag >> 48 == crate::graph::TARGET_TAG_TYPE => {
+                    match self.world.has_target_tag(site, entity, tag) {
+                        Some(false) => return Some(false),
+                        Some(true) => {}
+                        None => {
+                            self.report(site, Issue::UnsupportedField("array filter target tag"));
+                            return None;
+                        }
+                    }
                 }
-            };
-            let Value::Entity(entity) = *candidate else {
-                return Some(false);
-            };
-            match self.world.has_target_tag(site, entity, tag) {
-                Some(false) => return Some(false),
-                Some(true) => {}
-                None => {
+                _ => {
                     self.report(site, Issue::UnsupportedField("array filter target tag"));
                     return None;
                 }

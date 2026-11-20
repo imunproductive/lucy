@@ -47,7 +47,8 @@ fn listed_graphs(graphs: &orpheus_script::graph::GraphStore, chunk: &ReceivedChu
 /// The player picks Doomfist, the only hero C32S2 allows, and the rules
 /// run against him: "Player HUD" creates his HUD texts, each a Create HUD
 /// Text `1D8A` instance on the mode entity (its scope 31) that the
-/// mode entity's frames carry to his game. The ruleset's health packs are
+/// mode entity's frames carry to his game. The mode entity's root is
+/// Assault's own graph `0F4A`, run whole. The ruleset's health packs are
 /// off, so the map's never reach him.
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and the DPK archive (just test-dpk <install> <archive>)"]
@@ -186,6 +187,30 @@ fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
                     .is_some_and(|chunk| chunk.part.is_some())),
         "no mode frame in parts"
     );
+    // The root instance (1) is `0F4A`: it ran with no gap (this build's VM
+    // refuses one, `Unknowns::for_build`), so the client starts its
+    // client-only chain `1FEB` → `0CB6` → `106B`, which makes the HUD
+    // texts' containers (`refs/reports/ModeGraphGaps.md`), rather than
+    // `0CBB` alone.
+    let roots: Vec<u16> = mode_chunks(&watcher)
+        .iter()
+        .filter(|chunk| chunk.first == 0)
+        .map(|chunk| {
+            let head = read_full_head(&chunk.data, |graph| {
+                graphs
+                    .graph(u32::from(graph))
+                    .map(|graph| graph.header.states_bits)
+            })
+            .expect("a full frame's head");
+            head.instances
+                .iter()
+                .find(|&&(instance, ..)| instance == 1)
+                .expect("the root instance")
+                .1
+        })
+        .collect();
+    assert!(!roots.is_empty(), "no full mode frame");
+    assert!(roots.iter().all(|&graph| graph == 0x0f4a), "{roots:04X?}");
     // C32S2's "Spawn Health Packs: Disabled" (#9542e): each of Hanamura's
     // 18 health packs (server placeables `0FC2`/`0FC3`, game_map_areas)
     // plays `0046` on itself (`0216`/`0217`), which removes the pack one

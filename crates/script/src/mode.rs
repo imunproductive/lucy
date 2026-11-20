@@ -75,12 +75,14 @@ pub fn team_size(entries: &[(u8, u8)], team: i64) -> Option<i64> {
 }
 
 /// A player of the match as the mode graph knows him: his controller, his
-/// current body (none while he has none) and his team as the client reads
-/// it from the entity's filter bits (a free-for-all player is on team 4).
+/// current body and its hero (none while he has none) and his team as the
+/// client reads it from the entity's filter bits (a free-for-all player is
+/// on team 4).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ModePlayer {
     pub controller: u32,
     pub body: Option<u32>,
+    pub hero: Option<u64>,
     pub team: i64,
 }
 
@@ -287,7 +289,23 @@ impl World for ModeWorld {
         Some(entities)
     }
 
-    fn has_target_tag(&self, _site: Site, entity: u32, tag: u64) -> Option<bool> {
+    /// A map placeable's tags; a player's body's are its definition's
+    /// (the bundle's `bodies`), as the victim's tags at a kill
+    /// (`orpheus_sim::replication`). Assumption: its states add or remove
+    /// none the mode graph asks about.
+    fn has_target_tag(&self, site: Site, entity: u32, tag: u64) -> Option<bool> {
+        if let Some(player) = self.player_of(entity)
+            && player.body == Some(entity)
+        {
+            let definition = self.hero_body(site, player.hero?)?;
+            let tags = self
+                .graphs
+                .bodies()
+                .get(&definition)?
+                .target_tags
+                .as_ref()?;
+            return Some(tags.contains(&tag));
+        }
         let placed = self.map_tags.as_ref()?.get(entity)?;
         Some(placed.tags.contains(&tag))
     }
@@ -1167,6 +1185,7 @@ mod tests {
             .map(|team| ModePlayer {
                 controller: 0x100 + team as u32,
                 body: Some(0x200 + team as u32),
+                hero: None,
                 team,
             })
             .collect()

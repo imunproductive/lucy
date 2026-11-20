@@ -1746,6 +1746,7 @@ mod tests {
             .map(|team| ModePlayer {
                 controller: 0x1001 + team as u32,
                 body: None,
+                hero: None,
                 team,
             })
             .collect();

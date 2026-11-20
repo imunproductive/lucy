@@ -14,8 +14,8 @@
 //! ([`crate::messages`]), which routes it those sent to the mode entity or
 //! to every entity and gives every entity the broadcasts it holds
 //! ([`ModeRunner::held`]; in the Range `0724` for the spawn rooms, `06FD`
-//! for the bodies). Otherwise
-//! (0F4A and 0EC2 today, see `orpheus_script::mode`) the gaps are logged
+//! for the bodies). Otherwise (0EC2 today, see `orpheus_script::mode`;
+//! 0F4A outside a Workshop match, [`WORKSHOP_ONLY`]) the gaps are logged
 //! once and the mode entity gets graph 0CB6's frame with the flow's
 //! variables, as the countdown did before (match.py `_send_countdown`).
 
@@ -56,6 +56,15 @@ pub fn mode_graph(mode: u64) -> Option<u32> {
         _ => return None,
     })
 }
+
+/// The mode graphs that run whole at a match's start but can't play a
+/// match to its end yet, so they drive only a Workshop match, whose rules
+/// hold it in its round ([`ModeRunner::workshop`]): `0F4A` (Assault,
+/// Escort, Hybrid) meets unsupported classes at the match's end (phase 5)
+/// and its capture points can't decide an objective (`0E8E` runs without
+/// the residency natives). `docs/dev/loose-ends.md`, "`0F4A` in the
+/// Workshop match".
+const WORKSHOP_ONLY: [u32; 1] = [0x0f4a];
 
 /// Classes or faults by graph, with how often they were met.
 pub type Gaps = BTreeMap<(u32, String), usize>;
@@ -117,14 +126,31 @@ impl ModeRunner {
     /// Start the mode graph with the match's `players` now. The start
     /// condition `STU_81A9AB10` (server-only) is the server's own rule:
     /// true once the match's players are in the world, when the room
-    /// starts the mode.
+    /// starts the mode. A graph of [`WORKSHOP_ONLY`] doesn't drive.
     pub fn start(scene: &PreparedScene, frame: u32, players: Vec<ModePlayer>) -> Self {
+        Self::start_graph(scene, frame, players, false)
+    }
+
+    fn start_graph(
+        scene: &PreparedScene,
+        frame: u32,
+        players: Vec<ModePlayer>,
+        workshop: bool,
+    ) -> Self {
         let mode = scene.map().mode_guid;
         let Some(graph) = mode_graph(mode) else {
             return Self::HandBuilt { gaps: Gaps::new() };
         };
         match ModeScript::start(mode_world(scene, players), graph, frame) {
-            Ok(script) if script.complete() => Self::graph(scene, script, true),
+            Ok(script) if script.complete() && (workshop || !WORKSHOP_ONLY.contains(&graph)) => {
+                Self::graph(scene, script, true)
+            }
+            Ok(script) if script.complete() => {
+                eprintln!(
+                    "mode graph {graph:04X} drives only a Workshop match yet; the match flow drives the mode entity"
+                );
+                Self::HandBuilt { gaps: Gaps::new() }
+            }
             Ok(script) => {
                 let gaps = script.gaps();
                 eprintln!(
@@ -154,7 +180,7 @@ impl ModeRunner {
     /// the mode's `0724` from the flow ([`Self::holds_rooms`]). None when
     /// neither starts.
     pub fn workshop(scene: &PreparedScene, frame: u32, players: Vec<ModePlayer>) -> Option<Self> {
-        let started = Self::start(scene, frame, players.clone());
+        let started = Self::start_graph(scene, frame, players.clone(), true);
         if started.graph_driven() {
             return Some(started);
         }
