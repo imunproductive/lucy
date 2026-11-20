@@ -405,6 +405,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_FC3921B1" => self.create_dummy_bot(id, node, depth),
             "STU_C1561031" => self.remove_dummy_bot(id, node, depth),
             "STU_CFCE55DC" => self.move_body(id, node, depth),
+            "STU_1E93FE1F" | "STU_DC325C52" | "STU_ADAFD7FF" | "STU_99ED4486" => {
+                self.action_result(id, node, depth)
+            }
+            "STU_0BDBC7B2" => self.set_variable_of(id, node, depth),
+            "STU_D137ECA0" => self.for_each_index(id, node, depth),
             "STU_A1DF3B2D" => self.related_entities(id, node, depth),
             "STU_08D6BA6E" => {
                 self.cast_action(id, node)?;
@@ -439,7 +444,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 Ok(true)
             }
             class if SERVER_NO_OPS.contains(&class) => {
-                if matches!(class, "STU_7106C356" | "STUStatescriptActionEffect") {
+                if matches!(
+                    class,
+                    "STU_7106C356" | "STUStatescriptActionEffect" | "STU_100EF8C2"
+                ) {
                     self.record_frame_action(id, node);
                 }
                 self.follow(id, node, "m_outPlug", None, depth)?;
@@ -630,7 +638,24 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let site = self.site(id, node);
         let target = match expr::lvalue(target) {
             Ok(Some(target)) => source_key(id, target),
-            Ok(None) => return Ok(true),
+            // `#v[index] = value` (`expr::element_lvalue`): the Workshop's
+            // Set Variable At Index graphs.
+            Ok(None) => {
+                let Some(element) =
+                    self.evaluate_with(id, node, |context| expr::element_lvalue(target, context))
+                else {
+                    return Ok(false);
+                };
+                return match element {
+                    Some((variable, index)) => match usize::try_from(expr::to_int(&index, 0)) {
+                        Ok(index) => {
+                            self.write_element(site, source_key(id, variable), index, value)
+                        }
+                        Err(_) => Ok(true),
+                    },
+                    None => Ok(true),
+                };
+            }
             Err(error) => {
                 self.report(site, Issue::Expression(error));
                 return Ok(false);
@@ -671,36 +696,47 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 return Ok(false);
             };
             if let Ok(index) = usize::try_from(index) {
-                let mut items = match self.machine.value(target, None) {
-                    Value::Array(items) => items,
-                    Value::Null => Vec::new(),
-                    value => vec![value],
-                };
-                if index >= usize::from(u16::MAX) {
-                    self.report(
-                        site,
-                        Issue::UnsupportedField("SetVar array exceeds the wire count"),
-                    );
-                    return Ok(false);
-                }
-                if index >= items.len() {
-                    let extra = index + 1 - items.len();
-                    self.machine.work_left =
-                        self.machine
-                            .work_left
-                            .checked_sub(extra)
-                            .ok_or(InitFault::WorkBudget {
-                                limit: self.machine.max_work,
-                                operation: "SetVar array extension",
-                            })?;
-                    items.resize(index + 1, Value::Null);
-                }
-                items[index] = value;
-                self.write(target, Value::Array(items))?;
-                return Ok(true);
+                return self.write_element(site, target, index, value);
             }
         }
         self.write(target, value)?;
+        Ok(true)
+    }
+
+    /// Set item `index` of the array in `target`, which grows to hold it.
+    fn write_element(
+        &mut self,
+        site: Site,
+        target: VarKey,
+        index: usize,
+        value: Value,
+    ) -> Result<bool, InitFault> {
+        let mut items = match self.machine.value(target, None) {
+            Value::Array(items) => items,
+            Value::Null => Vec::new(),
+            value => vec![value],
+        };
+        if index >= usize::from(u16::MAX) {
+            self.report(
+                site,
+                Issue::UnsupportedField("SetVar array exceeds the wire count"),
+            );
+            return Ok(false);
+        }
+        if index >= items.len() {
+            let extra = index + 1 - items.len();
+            self.machine.work_left =
+                self.machine
+                    .work_left
+                    .checked_sub(extra)
+                    .ok_or(InitFault::WorkBudget {
+                        limit: self.machine.max_work,
+                        operation: "SetVar array extension",
+                    })?;
+            items.resize(index + 1, Value::Null);
+        }
+        items[index] = value;
+        self.write(target, Value::Array(items))?;
         Ok(true)
     }
 
@@ -748,6 +784,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // Python reference (`ow174/game/script/nodes.py`).
             "STUStatescriptState"
             | "STU_9D7BF987"
+            // ClientOnlySharedVars (`m_vars`): Small Message `1D7B` and
+            // Create HUD Text `1D8A` share `#22213`/`#19467` with their
+            // client-only nodes; nothing for the server.
+            | "STU_1B2CD7F2"
             | "STU_B4CD94F4"
             | "STU_90C3BCEA"
             | "STUStatescriptStateDataFlowMapping"

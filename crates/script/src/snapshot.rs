@@ -32,7 +32,7 @@ use orpheus_core::bits::{BitError, BitWriter};
 const OWNER_HEALTH: u32 = 253;
 /// How long a wheel action stays sendable after it ran (upstream
 /// `WHEEL_CALLOUT_MS`, server delivery policy).
-const ACTION_LIFETIME_MS: u64 = 2000;
+pub const ACTION_LIFETIME_MS: u64 = 2000;
 /// The wheel's callout graph: its actions go out only while its root wait
 /// (state 0) runs (upstream `callout_snapshot`).
 const CALLOUT_GRAPH: u32 = 0x0686;

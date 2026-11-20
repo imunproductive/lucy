@@ -210,9 +210,11 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
         entities.insert(key, Json::Object(record));
         queue.extend(used);
     }
+    let workshop = workshop_graphs(install)?;
     queue.extend(bundle_roots());
     queue.extend(ai_roots.iter().copied());
     queue.extend(placed_roots.iter().copied());
+    queue.extend(workshop.iter().copied());
 
     let mut graphs = BTreeMap::new();
     let mut missing = BTreeSet::new();
@@ -242,6 +244,7 @@ fn bundle(install: &Install, out: &Path, bots: bool) -> Result<Bundle> {
     let mut root_graphs: BTreeSet<u64> = bundle_roots().collect();
     root_graphs.extend(ai_roots);
     root_graphs.extend(placed_roots);
+    root_graphs.extend(workshop);
     let mut body_keys: Vec<&String> = bodies.keys().collect();
     body_keys.sort();
     let mut data = Map::new();
@@ -288,6 +291,44 @@ fn placed_entities(path: &Path) -> Result<(BTreeSet<u64>, BTreeSet<u64>)> {
         }
     }
     Ok((definitions, graphs))
+}
+
+/// `054/0154`, the Workshop events and the condition (`STU_8C73C07E`).
+const WORKSHOP_EVENTS: u64 = 0x154;
+/// `054/0155`, the Workshop actions (`STU_B85A66BB`).
+const WORKSHOP_ACTIONS: u64 = 0x155;
+const GENERIC_SETTINGS: u16 = 0x054;
+
+/// The Workshop's graphs: the condition's (`0154.m_16EC4AA9[].m_graph`,
+/// the comparison `14A4`) and each action's (`0155.m_35CA5DCD[].m_graph`,
+/// 211 of 222 actions; the control-flow actions have none). The server
+/// starts one per action a rule runs, with the parameters in `#18739`
+/// (`D:/Work/Coding/refs/reports/Workshop.md` §2); the helper graphs they
+/// play are followed as references.
+fn workshop_graphs(install: &Install) -> Result<BTreeSet<u64>> {
+    use crate::game_queues::{Node, typed};
+    let mut graphs = BTreeSet::new();
+    for (index, list) in [
+        (WORKSHOP_EVENTS, "m_16EC4AA9"),
+        (WORKSHOP_ACTIONS, "m_35CA5DCD"),
+    ] {
+        let asset = install.stu(typed(index, GENERIC_SETTINGS))?;
+        let root = Node::root(&asset)?;
+        let entries: Vec<Node> = match root.node(list) {
+            Some(single) if root.list(list).is_empty() => vec![single],
+            _ => root.nodes(list).collect(),
+        };
+        if entries.is_empty() {
+            return Err(asset_error(format!("054/{index:04X} has no {list}")));
+        }
+        for entry in entries {
+            let graph = entry.guid("m_graph");
+            if graph != 0 && guid_type(graph) == GRAPH {
+                graphs.insert(graph & INDEX);
+            }
+        }
+    }
+    Ok(graphs)
 }
 
 fn read_json(path: &Path) -> Result<Json> {

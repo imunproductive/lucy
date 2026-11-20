@@ -404,11 +404,7 @@ pub fn evaluate_with_budget(
             "instruction budget must be positive",
         ));
     }
-    Evaluator {
-        limit: max_steps,
-        steps: 0,
-    }
-    .config(config, context, 0)
+    Evaluator::new(max_steps).config(config, context, 0)
 }
 
 /// The config list, `STU_06610EBC`: an ordered group of configs.
@@ -420,11 +416,7 @@ pub(crate) const CONFIG_LIST: &str = "STU_06610EBC";
 /// does. From leafall903/ORPHEUS (MIT), commit c239a84
 /// (`docs/VARIABLE_ASSIGNMENTS.txt`, `play.evaluate_value`).
 pub fn evaluate_value(config: &Json, context: &mut impl Context) -> Result<Value, EvalError> {
-    Evaluator {
-        limit: MAX_EXPRESSION_STEPS,
-        steps: 0,
-    }
-    .value(config, context, 0)
+    Evaluator::new(MAX_EXPRESSION_STEPS).value(config, context, 0)
 }
 
 /// The configs of a config list in order, nested lists opened, missing
@@ -509,6 +501,97 @@ pub fn lvalue(config: &Json) -> Result<Option<Variable>, EvalError> {
     let index = byte(&parts.code[1], 1)?;
     let entry = table(parts.dynamics, index, 0)?;
     dynamic(entry)
+}
+
+/// An assignment to an array element, `#v[index]` (`[8 v, <index>, 17]`:
+/// Set Global Variable At Index `1DDD` writes `#514[clamp(#18739[1], 0,
+/// 999)]` so): the variable and the index, evaluated now. None: not that
+/// form.
+pub fn element_lvalue(
+    config: &Json,
+    context: &mut impl Context,
+) -> Result<Option<(Variable, Value)>, EvalError> {
+    if !is_expression(class(config)) {
+        return Ok(None);
+    }
+    let parts = Expression::read(config)?;
+    let end = parts
+        .code
+        .iter()
+        .rposition(|op| op.as_u64() != Some(0))
+        .unwrap_or(0);
+    if end < 3
+        || !matches!(parts.code[0].as_u64(), Some(8 | 9))
+        || parts.code[end].as_u64() != Some(17)
+    {
+        return Ok(None);
+    }
+    let Some(variable) = dynamic(table(parts.dynamics, byte(&parts.code[1], 1)?, 0)?)? else {
+        return Ok(None);
+    };
+    let index = Evaluator::new(MAX_EXPRESSION_STEPS).run(
+        Expression {
+            code: &parts.code[2..end],
+            ..parts
+        },
+        context,
+        0,
+    )?;
+    Ok(Some((variable, index)))
+}
+
+/// Workshop variable `index` (clamped to 0..=127) of an entity: its entity
+/// variable `index - 129` as a u16, `FF7F` to `FFFE` (the client's
+/// opcode 72, case 0x48 of 0x7FF78AA91210, writes a reference's id so).
+/// Workshop global variables are the mode entity's, player variables the
+/// player's (`refs/reports/Workshop.md` §2).
+pub fn workshop_variable(index: i64) -> u32 {
+    u32::from((index.clamp(0, 127) as u16).wrapping_sub(129))
+}
+
+/// An `m_out_Var` that names an entity's Workshop variable with opcode 72
+/// (`STU_0BDBC7B2` in Set Global Variable `1367`: `[14 0, 8 0, 6 0, 17,
+/// 72]`, the mode entity's variable `#18739[0]`): the entity the
+/// expression leaves and the variable. None: no opcode 72 named one.
+pub fn workshop_reference(
+    config: &Json,
+    context: &mut impl Context,
+) -> Result<Option<(Value, u32)>, EvalError> {
+    let mut evaluator = Evaluator::new(MAX_EXPRESSION_STEPS);
+    evaluator.reference = Some(None);
+    let entity = evaluator.config(config, context, 0)?;
+    Ok(evaluator.reference.flatten().map(|id| (entity, id)))
+}
+
+/// A value as Workshop text, for the client's string configs
+/// (`STU_903EAF27`): a string as it is, a number with at most two
+/// decimals as the Workshop shows it, an array's items joined with ", ".
+/// Assumption: the server formats the strings itself; the other forms
+/// only keep the server's own reads from failing.
+pub fn workshop_text(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::String(text) => text.clone(),
+        Value::Bool(value) => if *value { "True" } else { "False" }.to_owned(),
+        Value::Integer(value) => value.to_string(),
+        Value::Float(value) => {
+            let text = format!("{value:.2}");
+            text.trim_end_matches('0').trim_end_matches('.').to_owned()
+        }
+        Value::Vector(parts) => {
+            let parts: Vec<String> = parts
+                .iter()
+                .map(|part| workshop_text(&Value::Float(*part)))
+                .collect();
+            format!("({})", parts.join(", "))
+        }
+        Value::Array(items) => items
+            .iter()
+            .map(workshop_text)
+            .collect::<Vec<_>>()
+            .join(", "),
+        other => format!("{other:?}"),
+    }
 }
 
 /// The variable an entity member expression reads (`entity.#id`: a config
@@ -1159,6 +1242,19 @@ fn resource_field(class: &str) -> Option<&'static str> {
 struct Evaluator {
     limit: usize,
     steps: usize,
+    /// [`workshop_reference`]: opcode 72 with only its entity below it
+    /// names its variable here instead of reading it (none: not asked).
+    reference: Option<Option<u32>>,
+}
+
+impl Evaluator {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            steps: 0,
+            reference: None,
+        }
+    }
 }
 
 impl Evaluator {
@@ -1386,6 +1482,47 @@ impl Evaluator {
                 }
                 Value::Vector(parts)
             }
+            // A Workshop string as text (`Eval_STU_903EAF27`
+            // 0x7FF78984F4A0 formats its `m_value` with `sub_7FF789A700F0`;
+            // `STU_2566340D` gives its `m_string`'s with five flags,
+            // `m_DBF18833` … `m_796613D4`, unread here). The server hands
+            // the action graphs its strings already formatted (a string
+            // value), so the text is the value's: a string as it is, other
+            // values as [`workshop_text`] writes them. Assumption: the
+            // client's formatter leaves a plain string as it is.
+            "STU_903EAF27" => Value::String(workshop_text(&self.config(value, context, nested)?)),
+            "STU_2566340D" => {
+                return self.config(child(config, "m_string"), context, nested);
+            }
+            // A Workshop parameter as the action graphs read it from
+            // `#18739` (391 uses in 177 graphs): `m_35547D6E` within
+            // `m_FDCA1FD0` and `m_68CFF844` (slot 5 `sub_7FF789C19A10`,
+            // then `sub_7FF789C15350`: an integer clamped to them, a float
+            // only when they don't hold 0, any other value as it is). The
+            // client takes the value only as a keyed array (type 13),
+            // looked up by key `229A.01C` and the entity `m_entity` (a
+            // player's own value), which the server's plain values don't
+            // need here: it runs the parameter's value as it is.
+            "STU_77B0987E" => {
+                let value = self.config(child(config, "m_35547D6E"), context, nested)?;
+                let low = to_float(&self.config(child(config, "m_FDCA1FD0"), context, nested)?);
+                let high = to_float(&self.config(child(config, "m_68CFF844"), context, nested)?);
+                match value {
+                    Value::Integer(value) => {
+                        Value::Integer(value.clamp(low as i64, (high as i64).max(low as i64)))
+                    }
+                    Value::Float(value) if low > 0.0 || high < 0.0 => {
+                        Value::Float(value.clamp(low, high.max(low)))
+                    }
+                    value => value,
+                }
+            }
+            // A copy of a reevaluated Workshop parameter (Create HUD Text's
+            // scope `1D8A` rid6 and five more Create graphs). Server-only:
+            // the client's evaluate is the base config's `xor al, al`; the
+            // server gives its `m_value` (assumption: the server evaluates
+            // it again on its reevaluation, Workshop.md §8).
+            "STU_70757664" => return self.config(value, context, nested),
             "STU_919FD47C" | "STUConfigVarExpression" => {
                 return self.expression(config, context, nested);
             }
@@ -2177,7 +2314,12 @@ impl Evaluator {
                 }
                 Value::Bool(false)
             }
-            "STU_F76C486C" | "STU_F7262B36" | "STU_0AC15F78" | "STU_DB742151" => {
+            // `STU_0165541D` (`Eval_STU_0165541D` 0x7FF789BF3A40, which
+            // looks up the entity's component 44): the Workshop actions'
+            // body of a target player (Teleport `1D45`, Set Ability
+            // Cooldown `2735`). Assumption: the possessed body, as
+            // `STU_0AC15F78`; its other paths are not traced.
+            "STU_F76C486C" | "STU_F7262B36" | "STU_0AC15F78" | "STU_DB742151" | "STU_0165541D" => {
                 let (relation, operand) = match class {
                     "STU_F76C486C" => (EntityRelation::Owner, "m_D63CBEC2"),
                     "STU_F7262B36" => (EntityRelation::CurrentPossessor, "m_801B298F"),
@@ -2901,12 +3043,21 @@ impl Evaluator {
         context: &mut impl Context,
         depth: usize,
     ) -> Result<Value, EvalError> {
+        self.run(Expression::read(config)?, context, depth)
+    }
+
+    fn run(
+        &mut self,
+        parts: Expression,
+        context: &mut impl Context,
+        depth: usize,
+    ) -> Result<Value, EvalError> {
         let Expression {
             code,
             dynamics,
             floats,
             configs,
-        } = Expression::read(config)?;
+        } = parts;
         let mut pc = 0;
         let mut stack = Vec::new();
         while pc < code.len() {
@@ -3193,6 +3344,22 @@ impl Evaluator {
                     let (a, b) = pair(&mut stack, pc)?;
                     let (a, b) = (to_float(&a), to_float(&b));
                     Value::Float(rounded(a + (b - a) * t))
+                }
+                // An entity's Workshop variable: the index on top (an
+                // integer clamped to 0..=127) under the entity
+                // ([`workshop_variable`]). The client reads it through the
+                // entity's script host (case 0x48 of 0x7FF78AA91210); in a
+                // variable reference with only the entity below, it names
+                // the variable and leaves the entity ([`workshop_reference`]).
+                72 => {
+                    let id = workshop_variable(to_int(&pop(&mut stack, pc)?, 0));
+                    if let Some(reference) = self.reference.as_mut().filter(|_| stack.len() == 1) {
+                        *reference = Some(id);
+                        pc = next;
+                        continue;
+                    }
+                    let entity = pop(&mut stack, pc)?;
+                    entity_member(&entity, &Value::Integer(i64::from(id)), context)
                 }
                 _ => return Err(EvalError::UnsupportedOpcode { opcode, offset: pc }),
             };

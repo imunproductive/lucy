@@ -82,7 +82,7 @@ use orpheus_wire::{
     commands::{Command, CommandQueue, FRAME_HALF, SUBFRAME, frame_distance},
     entity::{
         CLOCK_FASTER, CLOCK_SLOWER, CLOCK_STRONGER, Component as WorldComponent, EntityUpdate,
-        GAME_MODE_ENTITY, MAX_PAYLOAD, Operation, SkinTheme, frame,
+        GAME_MODE_ENTITY, MAX_PAYLOAD, Movement, Operation, SkinTheme, frame,
     },
     link::delivery,
     messages::Message,
@@ -1760,6 +1760,11 @@ pub struct WorldDelivery {
     /// is his controller frames, and it counts his multikills
     /// (`crate::announcer`). Whether a pulse waits for its controller frame.
     controller_script: Option<ControllerScript>,
+    /// The pose the current body's last graph teleport left it in (a
+    /// Workshop Teleport, `STU_CFCE55DC` in the controller's scope), until
+    /// a frame carries it to the owner as a correction
+    /// ([`Self::apply_body_moves`]).
+    teleported: Option<Movement>,
     multikill_due: bool,
     /// The notices of the changes his body's modifiers made to the hits on
     /// it (`orpheus_script::vm::MODIFIED`), to go with its messages.
@@ -1922,6 +1927,7 @@ impl WorldDelivery {
             spawn_view: None,
             hurt: Vec::new(),
             controller_script: None,
+            teleported: None,
             multikill_due: false,
             modified: Vec::new(),
             placement: None,
@@ -2286,6 +2292,35 @@ impl WorldDelivery {
         if let Err(error) = script.advance(tick) {
             eprintln!("controller script of {:08X} stopped ({error})", self.owner);
             self.controller_script = None;
+        }
+        self.apply_body_moves();
+    }
+
+    /// The controller's graphs put the current body somewhere (a Workshop
+    /// Teleport's scope, `STU_CFCE55DC`): the mover takes it now, facing
+    /// the graph's direction when it gave one, and the next frame corrects
+    /// the owner's client with it ([`Self::send_frame`]); its raised
+    /// discontinuity counter makes the client take it without replaying
+    /// its commands (`orpheus_physics::mover::correction`). Retail's owner
+    /// correction for it is Workshop.md's inference.
+    fn apply_body_moves(&mut self) {
+        let Some(script) = &mut self.controller_script else {
+            return;
+        };
+        let moves = script.take_body_moves();
+        let body = self.body.map(|body| body.id.entity);
+        let Some(mover) = self.mover.as_mut() else {
+            return;
+        };
+        for body_move in moves
+            .into_iter()
+            .filter(|body_move| Some(body_move.body) == body)
+        {
+            let yaw = body_move
+                .facing
+                .map(|[x, _, z]| (x.atan2(z) * 65_536.0 / std::f64::consts::TAU).round() as i32);
+            mover.teleport(body_move.position, yaw);
+            self.teleported = Some(mover.pose());
         }
     }
 
@@ -2983,6 +3018,20 @@ impl WorldDelivery {
         if !reliable_only {
             self.prepare_body_updates(tick);
         }
+        // A teleport's pose ([`Self::apply_body_moves`]) goes once; a body
+        // with correction history carries it in its own candidate.
+        let teleport = if reliable_only {
+            None
+        } else {
+            self.teleported
+                .take()
+                .zip(self.body.map(|body| body.id.entity))
+                .map(|(pose, entity)| EntityUpdate {
+                    entity,
+                    movement: Some(pose),
+                    ..EntityUpdate::default()
+                })
+        };
         let script = self.body_script.as_ref();
         let history = script.and_then(|script| script.corrections.as_ref());
         let correction = if reliable_only {
@@ -2992,11 +3041,14 @@ impl WorldDelivery {
                 history?.candidate(tick, self.created.contains(&script.id.entity))
             })
         };
-        let owner_index = correction.map(|correction| {
-            let index = movements.len();
-            movements.push(correction.update());
-            index
-        });
+        let owner_index = correction
+            .map(|correction| correction.update())
+            .or(teleport)
+            .map(|update| {
+                let index = movements.len();
+                movements.push(update);
+                index
+            });
         let queued = self.ready();
         let newest = self.command_ack(tick);
         let sent = egress.send_frame(
@@ -4225,14 +4277,16 @@ impl WorldDelivery {
             .filter(|script| script.entity() == target)?;
         self.advance_controller(tick);
         let script = self.controller_script.as_mut()?;
-        match script.change_scope(tick, change) {
+        let opened = match script.change_scope(tick, change) {
             Ok(opened) => opened,
             Err(error) => {
                 eprintln!("controller script of {:08X} stopped ({error})", self.owner);
                 self.controller_script = None;
                 None
             }
-        }
+        };
+        self.apply_body_moves();
+        opened
     }
 
     /// The player and body the next dummy bot the current body's graphs

@@ -161,10 +161,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     /// ControllerWorld.md): put the body `m_target` at `m_AF774F7D` facing
     /// `m_E3779CD0` (strong guess from its uses: Reinhardt's Charge `007D`
     /// carries its pinned enemy #536 so, rid94 and rid115; the controller
-    /// `0C90` rid181 its body to the spawn point #8370). With no target it
-    /// moves nothing: `007D`'s entry rid17 runs it at every start with
-    /// #536 unset. The server moves no other body yet, so a target is
-    /// refused, or left where it is in a release build (an assumption).
+    /// `0C90` rid181 its body to the spawn point #8370; the Workshop's
+    /// Teleport `1D45` the target player's body to the parameter
+    /// `#18739[1]`, facing `STU_C8C4C20D` of the body, its own facing).
+    /// With no target it moves nothing: `007D`'s entry rid17 runs it at
+    /// every start with #536 unset. The world moves the body
+    /// ([`World::move_body`]); where it doesn't, or the place isn't a
+    /// vector, a target is refused, or left where it is in a release build
+    /// (an assumption).
     pub(super) fn move_body(
         &mut self,
         id: u16,
@@ -174,13 +178,39 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let Some(target) = self.evaluate(id, node, field(&node.fields, "m_target"), None) else {
             return Ok(false);
         };
-        if !entities(&target).is_empty() {
+        let bodies = entities(&target);
+        if !bodies.is_empty() {
             let site = self.site(id, node);
-            if !self.tolerates_unknowns() {
-                self.report(site, Issue::UnsupportedAction(node.class.clone()));
-                return Ok(false);
+            let position = match self.evaluate_quietly(id, node, field(&node.fields, "m_AF774F7D"))
+            {
+                Some(Value::Vector(position)) => Some(position),
+                _ => None,
+            };
+            let facing = match self.evaluate_quietly(id, node, field(&node.fields, "m_E3779CD0")) {
+                Some(Value::Vector(facing)) => Some(facing),
+                _ => None,
+            };
+            let mut moved = position.is_some();
+            for &body in &bodies {
+                moved = moved
+                    && position.is_some_and(|position| {
+                        self.world.move_body(
+                            site,
+                            BodyMove {
+                                body,
+                                position,
+                                facing,
+                            },
+                        )
+                    });
             }
-            self.assume(site, &node.class, "moves no body");
+            if !moved {
+                if !self.tolerates_unknowns() {
+                    self.report(site, Issue::UnsupportedAction(node.class.clone()));
+                    return Ok(false);
+                }
+                self.assume(site, &node.class, "moves no body");
+            }
         }
         self.follow(id, node, "m_outPlug", None, depth)?;
         Ok(true)

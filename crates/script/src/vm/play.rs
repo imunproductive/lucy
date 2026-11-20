@@ -165,10 +165,16 @@ impl<W: World> Vm<'_, '_, '_, W> {
         }
     }
 
-    /// A networked wheel action ran: keep it for the clients' frames.
+    /// A networked wheel action ran, or a Workshop action graph's
+    /// (an instance with its parameters `#18739`: Small and Big Message's
+    /// `STU_100EF8C2`, which the client runs from the frames with the
+    /// instance's `#18739` and `#20176`): keep it for the clients' frames.
     pub(super) fn record_frame_action(&mut self, id: u16, node: &Node) {
         let instance = &self.machine.snapshot.instances[&id];
-        if node.remote < 0 || !wheel::ACTION_GRAPHS.contains(&instance.graph) {
+        if node.remote < 0
+            || !(wheel::ACTION_GRAPHS.contains(&instance.graph)
+                || instance.variables.contains_key(&ACTION_PARAMETERS))
+        {
             return;
         }
         let instance_start_ms = instance.start_ms;

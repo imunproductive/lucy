@@ -15,8 +15,8 @@ use crate::{
     graph::GraphStore,
     map_tags::MapTags,
     vm::{
-        Component, GameMessage, InitFault, MAX_INIT_WORK, MapRays, Root, Site, Snapshot, Unknowns,
-        World,
+        ACTION_PARAMETERS, ActionOutcome, Component, GameMessage, InitFault, MAX_INIT_WORK,
+        MapRays, Root, ScopeChange, Site, Snapshot, Unknowns, World,
     },
     wire::{Value, Variables},
 };
@@ -94,6 +94,17 @@ pub struct ModeWorld {
     pub map_tags: Option<Arc<MapTags>>,
     /// The map's collision the graph's ray casts meet; none: no map.
     pub map_rays: Option<Arc<dyn MapRays>>,
+    /// Other entities' variables as the mode entity's graphs know them:
+    /// the server's ([`ModeScript::set_foreign_variable`]) and the graphs'
+    /// own writes (a Workshop action's player variables, `STU_0BDBC7B2`).
+    foreign: BTreeMap<(u32, u32), Value>,
+    /// The graphs' writes of other entities' variables since the server
+    /// took them ([`ModeScript::take_variable_writes`]).
+    variable_writes: Vec<(u32, u32, Value)>,
+    /// The scope instances the graphs open or close, until
+    /// [`ModeScript`] hands them on: its own entity's to its component,
+    /// the others' to the match ([`ModeScript::take_scope_changes`]).
+    scope_changes: Vec<ScopeChange>,
     outbox: Vec<GameMessage>,
     held: Vec<GameMessage>,
 }
@@ -113,6 +124,9 @@ impl ModeWorld {
             map_modes: None,
             map_tags: None,
             map_rays: None,
+            foreign: BTreeMap::new(),
+            variable_writes: Vec::new(),
+            scope_changes: Vec::new(),
             outbox: Vec::new(),
             held: Vec::new(),
         }
@@ -224,13 +238,33 @@ impl World for ModeWorld {
 
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
         if entity != GAME_MODE_ENTITY {
-            return Value::Null;
+            return self
+                .foreign
+                .get(&(entity, id))
+                .cloned()
+                .unwrap_or(Value::Null);
         }
         self.graphs
             .mode_variables(self.mode, self.ruleset)
             .and_then(|variables| variables.get(&id))
             .copied()
             .map_or(Value::Null, Value::from)
+    }
+
+    /// A Workshop action set a player's variable: kept for the graphs'
+    /// next reads and for the server to set in the player's script.
+    fn set_entity_variable(&mut self, _site: Site, entity: u32, id: u32, value: Value) -> bool {
+        self.foreign.insert((entity, id), value.clone());
+        self.variable_writes.push((entity, id, value));
+        true
+    }
+
+    /// Opened on the mode entity itself (Create HUD Text's scope `31`
+    /// targets it) or on a player (Teleport's on each target), by
+    /// [`ModeScript`] after the run.
+    fn change_scope(&mut self, _site: Site, change: ScopeChange) -> bool {
+        self.scope_changes.push(change);
+        true
     }
 
     /// `STU_A3DEF368` is the first entity with component 114, the mode
@@ -352,6 +386,30 @@ pub struct ModeScript {
     component: Component,
     world: ModeWorld,
     frame: u32,
+    /// The Workshop actions started here that may still need retiring
+    /// ([`Self::settle`]).
+    actions: Vec<WorkshopAction>,
+}
+
+/// A Workshop action graph started on the mode entity
+/// ([`ModeScript::start_workshop_action`]): its instance and when it was
+/// created, so a later instance with the same id isn't taken for it.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct WorkshopAction {
+    pub instance: u16,
+    pub start_ms: u64,
+}
+
+/// Where a Workshop action is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ActionStatus {
+    /// It hasn't reported its result yet (a Wait's timer runs).
+    Running,
+    /// It reported its result; the instance may still run (a Create
+    /// action's scope keeps its text up).
+    Finished(ActionOutcome),
+    /// Its instance ended without a result.
+    Ended,
 }
 
 impl ModeScript {
@@ -381,11 +439,184 @@ impl ModeScript {
             MAX_INIT_WORK,
         )?;
         component.advance_frame(frame, &mut world)?;
+        let mut script = Self {
+            component,
+            world,
+            frame,
+            actions: Vec::new(),
+        };
+        script.settle()?;
+        Ok(script)
+    }
+
+    /// The mode entity with no mode graph, to run Workshop actions on
+    /// ([`Self::start_workshop_action`]) where the mode graph doesn't
+    /// drive the mode.
+    pub fn start_host(mut world: ModeWorld, frame: u32) -> Result<Self, InitFault> {
+        let graphs = Arc::clone(&world.graphs);
+        let component = Component::start(
+            graphs,
+            GAME_MODE_ENTITY,
+            Variables::new(),
+            Vec::new(),
+            frame,
+            &mut world,
+            MAX_INIT_WORK,
+        )?;
         Ok(Self {
             component,
             world,
             frame,
+            actions: Vec::new(),
         })
+    }
+
+    /// Start a Workshop action's graph (`054/0155` `m_graph`) on the mode
+    /// entity with its evaluated `parameters` in `#18739`, in catalog
+    /// order (`refs/reports/Workshop.md` §2: the retail server's host is
+    /// an inference). Its synchronous part runs now: an action without a
+    /// wait has its result at once ([`Self::action_status`]). None: the
+    /// graph isn't in the bundle.
+    pub fn start_workshop_action(
+        &mut self,
+        graph: u32,
+        parameters: Vec<Value>,
+    ) -> Result<Option<WorkshopAction>, InitFault> {
+        let variables = Variables::from([(ACTION_PARAMETERS, Value::Array(parameters))]);
+        let started = self
+            .component
+            .run_instance(graph, variables, &mut self.world)?
+            .map(|(instance, start_ms)| WorkshopAction { instance, start_ms });
+        self.actions.extend(started);
+        self.settle()?;
+        Ok(started)
+    }
+
+    pub fn action_status(&self, action: WorkshopAction) -> ActionStatus {
+        match self
+            .component
+            .action_outcome(action.instance, action.start_ms)
+        {
+            Some(outcome) => ActionStatus::Finished(outcome),
+            None if self
+                .component
+                .instance_alive(action.instance, action.start_ms) =>
+            {
+                ActionStatus::Running
+            }
+            None => ActionStatus::Ended,
+        }
+    }
+
+    /// End a Workshop action's instance now (its rule stopped while it
+    /// waited).
+    pub fn stop_workshop_action(&mut self, action: WorkshopAction) -> Result<(), InitFault> {
+        if self
+            .component
+            .instance_alive(action.instance, action.start_ms)
+        {
+            self.component
+                .destroy_instance(action.instance, &mut self.world)?;
+        }
+        self.settle()
+    }
+
+    /// Workshop variable `index` of `entity` (the mode entity's are the
+    /// global variables, a player's his player variables) as the graphs
+    /// see it.
+    pub fn workshop_variable(&mut self, entity: u32, index: i64) -> Value {
+        let id = crate::expr::workshop_variable(index);
+        if entity == GAME_MODE_ENTITY {
+            return self
+                .snapshot()
+                .and_then(|snapshot| snapshot.variables.get(&id))
+                .cloned()
+                .unwrap_or(Value::Null);
+        }
+        self.world.entity_variable(entity, id)
+    }
+
+    /// Set another entity's variable as the mode entity's graphs see it
+    /// (a player variable a chase on the player's own script moved).
+    pub fn set_foreign_variable(&mut self, entity: u32, id: u32, value: Value) {
+        self.world.foreign.insert((entity, id), value);
+    }
+
+    /// The graphs' writes of other entities' variables (`STU_0BDBC7B2` on
+    /// a player: Set Player Variable `136B`), for the server to set in
+    /// their scripts.
+    pub fn take_variable_writes(&mut self) -> Vec<(u32, u32, Value)> {
+        std::mem::take(&mut self.world.variable_writes)
+    }
+
+    /// The scope instances the graphs open or close on other entities
+    /// (Teleport's on each target player), for the match to hand to the
+    /// target's script ([`Component::change_scope`]); the mode entity's
+    /// own it opened itself.
+    pub fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
+        std::mem::take(&mut self.world.scope_changes)
+    }
+
+    /// The match opened a scope instance of this entity's scope state on
+    /// `target` ([`Self::take_scope_changes`]).
+    pub fn scope_opened(&mut self, source: crate::vm::ScopeSource, target: u32, instance: u16) {
+        self.component.scope_opened(source, target, instance);
+    }
+
+    /// After each run: open and close the scopes the graphs' scope states
+    /// asked for on the mode entity itself, and retire each Workshop action
+    /// that reported its result and has nothing left to do (no active
+    /// state, no networked action the frames still carry,
+    /// [`crate::snapshot::ACTION_LIFETIME_MS`]): the engine started it for
+    /// its result, and a finished instance would stay in the mode entity's
+    /// frames for good (assumption: retail's lifetime is not known).
+    fn settle(&mut self) -> Result<(), InitFault> {
+        loop {
+            let (own, others): (Vec<_>, Vec<_>) = std::mem::take(&mut self.world.scope_changes)
+                .into_iter()
+                .partition(|change| change.target() == GAME_MODE_ENTITY);
+            self.world.scope_changes = others;
+            if own.is_empty() {
+                break;
+            }
+            for change in own {
+                let opened = self.component.change_scope(&change, &mut self.world)?;
+                if let (Some(instance), ScopeChange::Open { source, target, .. }) =
+                    (opened, &change)
+                {
+                    self.component.scope_opened(*source, *target, instance);
+                }
+            }
+        }
+        let now = self.component.now_ms();
+        let mut retired = Vec::new();
+        self.actions.retain(|&action| {
+            if !self
+                .component
+                .instance_alive(action.instance, action.start_ms)
+            {
+                return false;
+            }
+            let done = self
+                .component
+                .action_outcome(action.instance, action.start_ms)
+                .is_some()
+                && !self.component.instance_busy(action.instance)
+                && self
+                    .component
+                    .last_frame_action(action.instance, action.start_ms)
+                    .is_none_or(|time| {
+                        now.saturating_sub(time) > crate::snapshot::ACTION_LIFETIME_MS
+                    });
+            if done {
+                retired.push(action.instance);
+            }
+            !done
+        });
+        for instance in retired {
+            self.component.destroy_instance(instance, &mut self.world)?;
+        }
+        Ok(())
     }
 
     pub fn snapshot(&self) -> Option<&Snapshot> {
@@ -454,6 +685,7 @@ impl ModeScript {
         }
         self.frame = frame;
         self.component.advance_frame(frame, &mut self.world)?;
+        self.settle()?;
         Ok(true)
     }
 
@@ -477,8 +709,11 @@ impl ModeScript {
         message: u64,
         parameters: Variables,
     ) -> Result<usize, InitFault> {
-        self.component
-            .receive_message(sender, message, parameters, &mut self.world)
+        let taken = self
+            .component
+            .receive_message(sender, message, parameters, &mut self.world)?;
+        self.settle()?;
+        Ok(taken)
     }
 
     /// A persistent sender (`sender`) let its message to the mode entity
@@ -487,6 +722,9 @@ impl ModeScript {
         self.component.end_message(sender, message, &mut self.world)
     }
 }
+
+#[cfg(test)]
+mod workshop_tests;
 
 #[cfg(test)]
 mod tests {
