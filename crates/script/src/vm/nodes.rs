@@ -785,8 +785,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptState"
             | "STU_9D7BF987"
             // ClientOnlySharedVars (`m_vars`): Small Message `1D7B` and
-            // Create HUD Text `1D8A` share `#22213`/`#19467` with their
-            // client-only nodes; nothing for the server.
+            // Create HUD Text `1D8A` share the rule's event context
+            // (`#19467` Event Player, `#22213` Attacker, Victim…, read by
+            // `1B4A`) with the clients; nothing for the server.
             | "STU_1B2CD7F2"
             | "STU_B4CD94F4"
             | "STU_90C3BCEA"

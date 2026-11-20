@@ -611,11 +611,12 @@ impl ModeScript {
 
     /// After each run: open and close the scopes the graphs' scope states
     /// asked for on the mode entity itself, and retire each Workshop action
-    /// that reported its result and has nothing left to do (no active
-    /// state, no networked action the frames still carry,
-    /// [`crate::snapshot::ACTION_LIFETIME_MS`]): the engine started it for
-    /// its result, and a finished instance would stay in the mode entity's
-    /// frames for good (assumption: retail's lifetime is not known).
+    /// that reported its result and has nothing left to do (no work
+    /// [`Component::instance_busy`] counts, no networked action the frames
+    /// still carry, [`crate::snapshot::ACTION_LIFETIME_MS`]): the engine
+    /// started it for its result, and a finished instance would stay in the
+    /// mode entity's frames for good, since its ClientOnlySharedVars state
+    /// never ends (assumption: retail's lifetime is not known).
     fn settle(&mut self) -> Result<(), InitFault> {
         loop {
             let (own, others): (Vec<_>, Vec<_>) = std::mem::take(&mut self.world.scope_changes)

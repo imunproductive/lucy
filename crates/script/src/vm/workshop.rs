@@ -24,8 +24,11 @@
 //!
 //! An action ends with its first result: an Abort If whose condition is
 //! false runs on to `STU_1E93FE1F`, one whose condition is true stops at
-//! `STU_ADAFD7FF`. The instance can run on after it (a Create action's
-//! scope state keeps its HUD text up until a Destroy's message ends it).
+//! `STU_ADAFD7FF`. The instance can run on after it: a Create action's
+//! scope state opens its scope instance with the keep flag and aborts
+//! itself at once (`1D8A` uid36: `m_4B7DF406` true, its `m_onBeginPlug`
+//! into its own `m_F198FD3A`), and the kept instance holds the text until a
+//! Destroy's message exits it (`0E35` → `STU_22926252`).
 
 use super::*;
 
@@ -36,6 +39,16 @@ pub const ACTION_PARAMETERS: u32 = 18739;
 /// The loop index parameter of `STU_D137ECA0`'s `m_value` (`13 1` with
 /// dynamic `#12` in all 25 uses).
 const LOOP_INDEX: u32 = 12;
+
+/// The ClientOnlySharedVars states (`STU_9D7BF987`, which
+/// EntryClientOnlySharedVars `STU_571CC72E` begins, and `STU_1B2CD7F2`):
+/// they share the rule's event context with the clients, `#19467` Event
+/// Player and `#22213` the others by index (`1B4A`'s configs of `4C0F`
+/// Event Player, `4C0D` Attacker, `4C0E` Victim, `5AED` Healer). None of
+/// the 45 in the 211 action graphs has a transition plug or a link into
+/// its abort plug: each lasts as long as its instance (Small Message
+/// `1D7B` st0, Create HUD Text `1D8A` st24), so it is no work left.
+const SHARED_VARS: [&str; 2] = ["STU_9D7BF987", "STU_1B2CD7F2"];
 
 /// Whether an Abort or Loop applies always or by the rule's conditions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,14 +108,31 @@ impl Component {
             .is_some_and(|item| item.start_ms == start_ms)
     }
 
-    /// Whether the instance has an active state (a Wait, a Create action's
-    /// scope).
+    /// Whether the instance still has work: an active state (a Wait, the
+    /// scope of Disable Built-In Game Mode Scoring) other than a
+    /// ClientOnlySharedVars ([`SHARED_VARS`]), or a scope instance it
+    /// opened on this entity that is still up: Create HUD Text's scope 31
+    /// holds the text, and a scope instance reads its parameters from this
+    /// one (`1D8A` rid21's `10 1` reads of `#18739`, `#22213`, `#19467`;
+    /// [`Self::set_action_parameters`]).
     pub fn instance_busy(&self, instance: u16) -> bool {
-        self.machine
-            .snapshot
-            .instances
-            .get(&instance)
-            .is_some_and(|item| item.states.values().any(|state| state.active))
+        let snapshot = &self.machine.snapshot;
+        let Some(item) = snapshot.instances.get(&instance) else {
+            return false;
+        };
+        let graph = self.graphs.graph(item.graph);
+        let working = item.states.iter().any(|(&raw, state)| {
+            state.active
+                && graph
+                    .and_then(|graph| graph.state(usize::from(raw)))
+                    .is_none_or(|node| !SHARED_VARS.contains(&node.class.as_str()))
+        });
+        working
+            || snapshot.instances.values().any(|other| {
+                other.scope.as_ref().is_some_and(|scope| {
+                    scope.source.entity == snapshot.entity && scope.source.instance == instance
+                })
+            })
     }
 
     /// When the instance last ran a networked action the frames carry
