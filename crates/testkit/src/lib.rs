@@ -40,6 +40,15 @@ pub fn datatool_dump() -> PathBuf {
         .expect("set ORPHEUS_DATATOOL_DUMP to a DataTool XML export (just test-datatool <install> <dump>)")
 }
 
+/// The Doomfist parkour script archive (`dfp-archive`: workshop.codes and
+/// GitHub `.txt` Workshop scripts), named by `ORPHEUS_DPK_ARCHIVE`; the
+/// Workshop parser and engine run over it.
+pub fn dpk_archive() -> PathBuf {
+    env::var_os("ORPHEUS_DPK_ARCHIVE")
+        .map(PathBuf::from)
+        .expect("set ORPHEUS_DPK_ARCHIVE to the Doomfist parkour archive (just test-dpk <install> <archive>)")
+}
+
 /// The game data the server reads, derived from the install named by
 /// `ORPHEUS_GAME_DIR`, in `<test data>/104319/<key>`; `<key>` is the hash of
 /// the derivations' code, so a change to it derives again, and the derived

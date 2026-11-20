@@ -38,6 +38,7 @@ mod props;
 mod ray_profiles;
 mod tunables;
 mod voice_sets;
+mod workshop;
 
 use std::{
     fmt, fs, io,
@@ -215,6 +216,10 @@ pub const DERIVATIONS: &[Derivation] = &[
     Derivation {
         name: "game_progression",
         derive: progression::derive,
+    },
+    Derivation {
+        name: "workshop_catalog",
+        derive: workshop::derive,
     },
 ];
 

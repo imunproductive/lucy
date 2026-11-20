@@ -37,7 +37,7 @@ export RUST_TEST_THREADS := CARGO_BUILD_JOBS
 
 # Ignored tests that read an Overwatch 1.74 install or the game data derived from it, without the slow group; then the serial_ tests, one at a time.
 test-game game:
-    cargo build -p orpheus-relay --locked; $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo nextest run --workspace --exclude orpheus-launcher --locked --cargo-profile gametest --run-ignored only -j $env:RUST_TEST_THREADS -E 'not (test(/datatool/) | test(/matches_the_pack/) | test(/(^|::)slow_/) | test(/(^|::)serial_/))'; $parallel = $LASTEXITCODE; cargo nextest run --workspace --exclude orpheus-launcher --locked --cargo-profile gametest --run-ignored only -j 1 -E 'test(/(^|::)serial_/) & not test(/(^|::)slow_/)'; exit [Math]::Max($parallel, $LASTEXITCODE)
+    cargo build -p orpheus-relay --locked; $env:ORPHEUS_GAME_DIR = '{{game}}'; cargo nextest run --workspace --exclude orpheus-launcher --locked --cargo-profile gametest --run-ignored only -j $env:RUST_TEST_THREADS -E 'not (test(/datatool/) | test(/matches_the_pack/) | test(/dpk_archive/) | test(/(^|::)slow_/) | test(/(^|::)serial_/))'; $parallel = $LASTEXITCODE; cargo nextest run --workspace --exclude orpheus-launcher --locked --cargo-profile gametest --run-ignored only -j 1 -E 'test(/(^|::)serial_/) & not test(/(^|::)slow_/)'; exit [Math]::Max($parallel, $LASTEXITCODE)
 
 # The game-install tests that play a whole match or run over a minute: their names start with slow_.
 test-slow game:
@@ -59,6 +59,10 @@ test-assets game runtime:
 # Ignored tests that compare the asset reader with a DataTool XML export of the install.
 test-datatool game dump:
     $env:ORPHEUS_GAME_DIR = '{{game}}'; $env:ORPHEUS_DATATOOL_DUMP = '{{dump}}'; cargo test -p orpheus-stu --release --locked -- --ignored datatool
+
+# Ignored tests that run the Workshop parser and engine over the Doomfist parkour script archive.
+test-dpk game archive:
+    $env:ORPHEUS_GAME_DIR = '{{game}}'; $env:ORPHEUS_DPK_ARCHIVE = '{{archive}}'; cargo test -p orpheus-workshop --locked -- --ignored dpk_archive
 
 # Windows-only tests that load the relay DLL into a stand-in process.
 test-windows:
