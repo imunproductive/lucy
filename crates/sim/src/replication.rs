@@ -3312,8 +3312,8 @@ impl WorldDelivery {
             }
         }
         self.sent(&indexes);
-        let carried = owner_index
-            .is_some_and(|index| sent.records.contains(&RecordSource::Movement(index)));
+        let carried =
+            owner_index.is_some_and(|index| sent.records.contains(&RecordSource::Movement(index)));
         let history = self
             .body_script
             .as_mut()
