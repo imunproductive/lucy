@@ -31,9 +31,10 @@ build:
 # default is all of them): other agents and the user share the machine. The game-install tests also
 # need the cap for memory: each keeps a game server thread busy in real time beside its own and holds
 # about 0.7 GB, so one per CPU thread ran a 16-thread, 16 GB PC out of memory and its tests' waits for
-# datagrams timed out.
-export CARGO_BUILD_JOBS := `[Math]::Max(1, [Math]::Floor([Environment]::ProcessorCount / 4))`
-export RUST_TEST_THREADS := CARGO_BUILD_JOBS
+# datagrams timed out. A `CARGO_BUILD_JOBS` / `RUST_TEST_THREADS` already set in the environment wins
+# (when the PC is free).
+export CARGO_BUILD_JOBS := env_var_or_default("CARGO_BUILD_JOBS", `[Math]::Max(1, [Math]::Floor([Environment]::ProcessorCount / 4))`)
+export RUST_TEST_THREADS := env_var_or_default("RUST_TEST_THREADS", CARGO_BUILD_JOBS)
 
 # Ignored tests that read an Overwatch 1.74 install or the game data derived from it, without the slow group; then the serial_ tests, one at a time.
 test-game game:

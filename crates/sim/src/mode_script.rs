@@ -277,8 +277,8 @@ impl ModeRunner {
         };
     }
 
-    /// The mode entity's observer frame now, while the graph drives it,
-    /// with `previous`'s entity exclusions (`SnapshotEncoder::project_next`),
+    /// The mode entity's observer frame now, while the graph drives it, in
+    /// `previous`'s stream (`SnapshotEncoder::project_next`),
     /// so each client gets the match's frames as deltas of his first one
     /// (`crate::mode_view`). None while the graph doesn't drive it, or when
     /// the frame can't be made (said once until it can again). The
