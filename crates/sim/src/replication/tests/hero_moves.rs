@@ -1022,22 +1022,42 @@ fn doomfists_tapped_airborne_slam_flies_from_the_press_frame() {
     assert!(doomfist.graph_state(0x0b27, 9), "the flight begins");
     assert!(!doomfist.graph_state(0x0b27, 64), "st31 aborted st64");
     assert!(doomfist.graph_state(0x0b27, 17), "the chase runs");
+    // The point his client's own search found in df8 s1 (#431 at its
+    // press frame 7088, `D:/Temp/df8/s1/cp10_slam.jsonl`; the same jump and
+    // view), to its f32 step (9.5e-7 at 10): the server's was 1.7 m short,
+    // (18.556, 4.143, 9.973), before it searched as the client does.
+    let Some(ScriptValue::Vector(point)) = doomfist.graph_variable(0x0b27, 431) else {
+        panic!("no landing point");
+    };
+    let client = [
+        20.236_936_569_213_867,
+        4.176_490_306_854_248,
+        10.249_571_800_231_934,
+    ];
+    assert!(
+        point
+            .iter()
+            .zip(client)
+            .all(|(a, b)| (a - b).abs() <= 9.6e-7),
+        "{point:?}"
+    );
     let flight = chunks.correction(&doomfist).expect("the press's chunk");
     assert!(flight.contains(&ChangeKey::State(slam, 9)), "{flight:?}");
-    // 7545: his first move toward the point.
+    // 7545: his first move toward the point, as his client made it (7089).
     doomfist.step(view);
     assert_eq!(
         doomfist.velocity(),
-        [23.116_210_937_5, -8.732_421_875, 3.791_992_187_5]
+        [23.479_492_187_5, -7.672_851_562_5, 3.852_539_062_5]
     );
     assert_eq!(
         doomfist.position(),
-        [7.487_304_687_5, 8.324_218_75, 8.157_226_562_5]
+        [7.493_164_062_5, 8.340_820_312_5, 8.158_203_125]
     );
     // The flight's other changes: 0.15 s after the search ended (st65,
-    // 120 704 + 150 ms, in frame 7553) the preview's entity st5 ends, and
-    // at 7556 the ground ray (3 m down from 0.25 m above his feet) meets the
-    // ground (#2413).
+    // 120 704 + 150 ms, in frame 7553) the preview's entity st5 ends (his
+    // client's st5/st65 ended at 7097, the same frame), and at 7558 the
+    // ground ray (3 m down from 0.25 m above his feet) meets the ground
+    // (#2413) on the way to his client's point.
     let mut corrections = Vec::new();
     for frame in 7545..7560 {
         assert!(doomfist.graph_state(0x0b27, 17), "frame {frame}");
@@ -1046,7 +1066,7 @@ fn doomfists_tapped_airborne_slam_flies_from_the_press_frame() {
         }
         doomfist.step(view);
     }
-    let [(7553, ended), (7556, hit)] = &corrections[..] else {
+    let [(7553, ended), (7558, hit)] = &corrections[..] else {
         panic!("{corrections:?}");
     };
     assert!(
@@ -1090,6 +1110,27 @@ fn doomfists_rocket_punch_dashes_along_its_release_facing_with_records_to_its_ow
     assert!(
         doomfist.punch_state(42) && doomfist.punch_state(67),
         "dashing"
+    );
+    // The dash's view limits (st45, `STU_9935FBC8`): ±60° of yaw and ±30°
+    // of pitch around his facing at the release (#501, #502, degrees),
+    // each × 0.017453292 as his client's `0x7FF789BBC810` keeps them.
+    let punch = doomfist.instance_of(0x0d06);
+    let degrees = |var| match doomfist.graph_variable(0x0d06, var) {
+        Some(ScriptValue::Float(value)) => *value as f32,
+        other => panic!("#{var}: {other:?}"),
+    };
+    let facing = [degrees(501), degrees(502), -60.0, -30.0, 60.0, 30.0];
+    let expected: Vec<_> = facing
+        .iter()
+        .map(|degrees| ScriptValue::Float((degrees * 0.017_453_292).into()))
+        .chain([ScriptValue::Float(0.0)])
+        .collect();
+    assert_eq!(
+        doomfist
+            .owner_projection()
+            .state_payload(punch, 45)
+            .map(|payload| &payload["values"]),
+        Some(&ScriptValue::Array(expected))
     );
     for _ in 0..6 {
         hold(&mut doomfist, 0, turned);

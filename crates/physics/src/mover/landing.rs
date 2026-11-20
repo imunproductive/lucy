@@ -11,21 +11,32 @@
 //! `step`, and the contact pulled back along the aim by `step`; each is
 //! dropped when a sphere of `radius` swept to it from just before the
 //! contact is blocked (both blocked: no landing). Without a hit the reach's
-//! end is both. The candidate test (`0x7FF789BB0E50` → `0x7FF789BAE800`,
-//! `0x7FF789BAC760`, `0x7FF789BADA00`) walks each candidate back toward the
-//! eye in samples (the aim candidate twice, `step` apart; the normal one
-//! every `spacing`), casts a sphere down from each sample by `step` plus
-//! the reach the slope allows, and keeps a ground (normal y above 0.7193,
-//! a surface that may be stood on) that the eye sees both ways at
-//! `clearance / 2 + 0.1` above it and that has `reach_height` of room
-//! above that; of those, the one nearest the normal candidate's height.
+//! end is both.
 //!
-//! This follows upstream's reading (leafall903/ORPHEUS `collision.py`
-//! `landing_point`, checked on its host only) plus the eye ray above. Not
-//! ported: the search's angle retries (`m_1B05EA98`, unset on the slam, so
-//! the client's loop repeats the same aim), the client's spreading of the
-//! candidate test over frames (3 samples a frame, `word_7FF78BD3EBC8`), the
-//! entity filters of the casts (the casts meet the static map only).
+//! The candidate test `0x7FF789BB0E50` walks each candidate back toward the
+//! eye in samples (`0x7FF789BAE800`): first the normal candidate, at most
+//! twice `step` apart; then the aim candidate every `spacing` (its distance
+//! over the nearest whole count), each of these casting a sphere-swept
+//! segment to the next sample on the eye's side (the farther one when the
+//! eye is below). Each sample casts down by `step` plus the reach the slope
+//! allows (`0x7FF789BAC760`), with `radius` (+ 0.015 when the first sweep
+//! met nothing), and keeps a ground (normal y above 0.7193, a surface that
+//! may be stood on) no higher than the eye (`m_B221D18D`, `m_6E8CA10B`)
+//! that the eye sees both ways at `clearance / 2 + 0.1` above it and that
+//! has `reach_height` of room above that (`0x7FF789BADA00`). Console
+//! variable `0xC0F0180A` (on) cuts the walks short: the normal candidate's
+//! stops at its first ground, the aim candidate's two samples after its
+//! first. Of the grounds, the client keeps the first nearest on screen to
+//! the normal candidate, through a camera 1 m behind the eye looking at
+//! that candidate with the world's up (`0x7FF78A987380`, `0x7FF78A987F80`).
+//!
+//! The ground test (`0x7FF789BB5550`) and the sight lines follow upstream's
+//! reading (leafall903/ORPHEUS `collision.py` `landing_point`, checked on
+//! its host only). Not ported: the minimum distance `m_00A23E4B` (a
+//! candidate nearer retries the search at an aim turned by `m_1B05EA98`, a
+//! nearer ground is skipped; the slam sets neither), the test
+//! `0x7FF789B2F280` of each ground hit, the entity filters of the casts
+//! (the casts meet the static map only).
 
 use crate::contact::{
     gjk::{PointSetSize, sweep::MeshProbe},
@@ -42,10 +53,10 @@ const EPSILON: f64 = 1e-9;
 
 /// The selector's fields, evaluated (`0B27` st6: length `#1648` = 15,
 /// radius 0.1, step 0.5, slope 0.15 rad, spacing 3, clearance 1.5, reach
-/// height 1).
+/// height 1, no ground above the eye).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LandingSearch {
-    /// The eye: the body's position at its eye height (`m_6E8CA10B`).
+    /// The eye.
     pub origin: [f64; 3],
     /// The aim (the view's direction); made unit here.
     pub aim: [f64; 3],
@@ -64,6 +75,8 @@ pub struct LandingSearch {
     /// The height a sight line ends above the ground when there is no
     /// clearance (`m_15F880A4`).
     pub reach_height: f64,
+    /// No ground higher than this (`m_6E8CA10B` when `m_B221D18D` holds).
+    pub ceiling: Option<f64>,
 }
 
 struct Sweep {
@@ -89,6 +102,7 @@ pub fn landing_point(
         spacing,
         clearance,
         reach_height,
+        ceiling,
     } = *search;
     let finite = origin.iter().chain(&aim).all(|value| value.is_finite())
         && [
@@ -99,6 +113,7 @@ pub fn landing_point(
             spacing,
             clearance,
             reach_height,
+            ceiling.unwrap_or_default(),
         ]
         .iter()
         .all(|value| value.is_finite());
@@ -121,6 +136,7 @@ pub fn landing_point(
         origin,
         add(origin, scale(aim, length)),
         0.0,
+        None,
     )? {
         Some(hit) => length * hit.fraction,
         None => length,
@@ -128,7 +144,7 @@ pub fn landing_point(
     let end = add(origin, scale(aim, reach));
     let mut normal_candidate = end;
     let mut aim_candidate = end;
-    let hit = sweep(world, category, origin, end, radius + SKIN)?;
+    let hit = sweep(world, category, origin, end, radius + SKIN, None)?;
     if let Some(hit) = &hit {
         let offset = if hit.normal[1] > GROUND_Y {
             [0.0, 1.0, 0.0]
@@ -138,8 +154,9 @@ pub fn landing_point(
         normal_candidate = add(hit.point, scale(offset, step));
         aim_candidate = sub(hit.point, scale(aim, step));
         let start = add(origin, scale(aim, (hit.fraction * reach - SKIN).max(0.0)));
-        let normal_blocked = sweep(world, category, start, normal_candidate, radius)?.is_some();
-        let aim_blocked = sweep(world, category, start, aim_candidate, radius)?.is_some();
+        let normal_blocked =
+            sweep(world, category, start, normal_candidate, radius, None)?.is_some();
+        let aim_blocked = sweep(world, category, start, aim_candidate, radius, None)?.is_some();
         match (normal_blocked, aim_blocked) {
             (true, true) => return Ok(None),
             (true, false) => normal_candidate = aim_candidate,
@@ -147,91 +164,193 @@ pub fn landing_point(
             (false, false) => {}
         }
     }
+    let normal_distance = distance(origin, normal_candidate);
+    let aim_distance = distance(origin, aim_candidate);
+    if normal_distance <= EPSILON || aim_distance <= EPSILON {
+        return Ok(None);
+    }
     // `0x7FF789BAC760` bounds the ground cast by the aim's angle and the
     // distance left after stepping back from the candidate.
     let angle = std::f64::consts::PI - slope - (1.0 - aim[1]) * std::f64::consts::FRAC_PI_2;
-    let depth_scale = (angle > 0.0).then(|| slope.sin() / angle.sin());
-    let normal_distance = distance(origin, normal_candidate);
-    let normal_count = (normal_distance / spacing + 0.5) as usize;
-    let normal_radius = if hit.is_some() { radius } else { radius + SKIN };
-    let candidates = [
-        (aim_candidate, 2, step, 0.0),
-        (
-            normal_candidate,
-            normal_count,
-            normal_distance / normal_count.max(1) as f64,
-            normal_radius,
-        ),
-    ];
     let half = clearance * 0.5;
-    let has_clearance = half > 0.004;
-    let middle_height = if has_clearance {
-        half + 0.1
-    } else {
-        reach_height
+    let samples = Samples {
+        world,
+        category,
+        origin,
+        reach,
+        step,
+        depth_scale: (angle > 0.0).then(|| slope.sin() / angle.sin()),
+        radius: if hit.is_some() { radius } else { radius + SKIN },
+        ceiling,
+        middle_height: if half > 0.004 {
+            half + 0.1
+        } else {
+            reach_height
+        },
+        upper_height: (half > 0.004).then_some(reach_height),
     };
-    let mut best = None;
-    let mut best_height = f64::INFINITY;
-    for (candidate, count, interval, ground_radius) in candidates {
-        let candidate_distance = distance(origin, candidate);
-        if candidate_distance <= EPSILON {
-            continue;
+    let mut grounds = Vec::new();
+    let normal_count = ((normal_distance / step + 0.5) as usize).min(2);
+    for index in 0..normal_count {
+        if let Some(ground) =
+            samples.ground(normal_candidate, normal_distance, step, index, false)?
+        {
+            grounds.push(ground);
+            break;
         }
-        let toward_eye = scale(sub(origin, candidate), 1.0 / candidate_distance);
-        for index in 0..count {
-            let retreat = index as f64 * interval;
-            let remaining = candidate_distance - retreat;
-            if remaining <= 0.0 {
-                break;
-            }
-            let sample = add(candidate, scale(toward_eye, retreat));
-            let depth = step + depth_scale.map_or(length, |k| length.min(remaining * k));
-            let down = sub(sample, [0.0, depth, 0.0]);
-            let Some(ground) = sweep(world, category, sample, down, ground_radius)? else {
-                continue;
-            };
-            if ground.normal[1] <= GROUND_Y || ground.surface & NOT_GROUND != 0 {
-                continue;
-            }
-            // `0x7FF789BADA00`: the eye sees the raised point both ways,
-            // then the room above it.
-            let lifted = add(ground.point, [0.0, SKIN.min(depth * ground.fraction), 0.0]);
-            let middle = add(lifted, [0.0, middle_height, 0.0]);
-            if sweep(world, category, middle, origin, 0.0)?.is_some()
-                || sweep(world, category, origin, middle, 0.0)?.is_some()
-            {
-                continue;
-            }
-            if has_clearance {
-                let upper = add(lifted, [0.0, reach_height, 0.0]);
-                if sweep(world, category, middle, upper, 0.0)?.is_some() {
-                    continue;
-                }
-            }
-            let height = (ground.point[1] - normal_candidate[1]).abs();
-            if height < best_height {
-                best = Some(ground.point);
-                best_height = height;
-            }
+    }
+    let aim_count = (aim_distance / spacing + 0.5) as usize;
+    let aim_interval = if aim_count > 0 {
+        aim_distance / aim_count as f64
+    } else {
+        spacing
+    };
+    let mut last = aim_count;
+    let mut index = 0;
+    while index < last {
+        if let Some(ground) =
+            samples.ground(aim_candidate, aim_distance, aim_interval, index, true)?
+        {
+            grounds.push(ground);
+            last = last.min(index + 3);
+        }
+        index += 1;
+    }
+    // The camera of `0x7FF78A987380`: 1 m behind the eye, looking at the
+    // normal candidate, with the world's up as its second row as it is (not
+    // made square to the view); a point's view coordinates are its
+    // coordinates in that basis (`0x7FF789884260` inverts it). The candidate
+    // is at the screen's middle, so the nearest on screen has the least
+    // |up / depth|. A point not in front of the camera leaves the last
+    // projection's result as it was (`0x7FF78A987F80`).
+    let forward = scale(sub(normal_candidate, origin), 1.0 / normal_distance);
+    let flat = forward[0] * forward[0] + forward[2] * forward[2];
+    let mut best = None;
+    let mut best_offset = f64::MAX;
+    let mut offset = f64::MAX;
+    for ground in grounds {
+        let relative = sub(ground, origin);
+        let (depth, up) = if flat > 0.0 {
+            let depth = (relative[0] * forward[0] + relative[2] * forward[2]) / flat;
+            (depth, relative[1] - depth * forward[1])
+        } else {
+            (relative[1] / forward[1], 0.0)
+        };
+        if depth + 1.0 >= 1.192_092_9e-6 {
+            offset = (up / (depth + 1.0)).abs();
+        }
+        if offset < best_offset {
+            best = Some(ground);
+            best_offset = offset;
         }
     }
     Ok(best)
 }
 
-/// A sphere of `radius` (a ray when 0) swept from `start` to `end` through
-/// the static shapes of `category`: the first contact.
+/// The sample test `0x7FF789BAE800` with the search's numbers.
+struct Samples<'a> {
+    world: &'a ContactWorld,
+    category: u16,
+    origin: [f64; 3],
+    reach: f64,
+    step: f64,
+    depth_scale: Option<f64>,
+    radius: f64,
+    ceiling: Option<f64>,
+    middle_height: f64,
+    upper_height: Option<f64>,
+}
+
+impl Samples<'_> {
+    /// The ground under the sample `index` intervals from `candidate`
+    /// toward the eye; with `segment`, the cast spans to the next sample.
+    fn ground(
+        &self,
+        candidate: [f64; 3],
+        candidate_distance: f64,
+        interval: f64,
+        index: usize,
+        segment: bool,
+    ) -> Result<Option<[f64; 3]>, PointSetSize> {
+        let Self {
+            world,
+            category,
+            origin,
+            ..
+        } = *self;
+        let toward_eye = scale(sub(origin, candidate), 1.0 / candidate_distance);
+        let retreat = index as f64 * interval;
+        let sample = add(candidate, scale(toward_eye, retreat));
+        let depth = self.step
+            + self.depth_scale.map_or(self.reach, |k| {
+                self.reach.min((candidate_distance - retreat) * k)
+            });
+        // The segment runs to the next sample up toward the eye, or away
+        // from it when the eye is below (none from the first then).
+        let next = if toward_eye[1] < 0.0 {
+            index.checked_sub(1)
+        } else {
+            Some(index + 1)
+        };
+        let span = next
+            .filter(|_| segment)
+            .map(|next| scale(toward_eye, (next as f64 - index as f64) * interval));
+        let down = sub(sample, [0.0, depth, 0.0]);
+        let Some(ground) = sweep(world, category, sample, down, self.radius, span)? else {
+            return Ok(None);
+        };
+        if ground.normal[1] <= GROUND_Y || ground.surface & NOT_GROUND != 0 {
+            return Ok(None);
+        }
+        if self
+            .ceiling
+            .is_some_and(|ceiling| ground.point[1] > ceiling)
+        {
+            return Ok(None);
+        }
+        // `0x7FF789BADA00`: the eye sees the raised point both ways, then
+        // the room above it.
+        let lifted = add(ground.point, [0.0, SKIN.min(depth * ground.fraction), 0.0]);
+        let middle = add(lifted, [0.0, self.middle_height, 0.0]);
+        if sweep(world, category, middle, origin, 0.0, None)?.is_some()
+            || sweep(world, category, origin, middle, 0.0, None)?.is_some()
+        {
+            return Ok(None);
+        }
+        if let Some(height) = self.upper_height {
+            let upper = add(lifted, [0.0, height, 0.0]);
+            if sweep(world, category, middle, upper, 0.0, None)?.is_some() {
+                return Ok(None);
+            }
+        }
+        Ok(Some(ground.point))
+    }
+}
+
+/// A sphere of `radius` (a ray when 0), or the segment from it by `span`
+/// when given, swept from `start` to `end` through the static shapes of
+/// `category`: the first contact.
 fn sweep(
     world: &ContactWorld,
     category: u16,
     start: [f64; 3],
     end: [f64; 3],
     radius: f64,
+    span: Option<[f64; 3]>,
 ) -> Result<Option<Sweep>, PointSetSize> {
     if distance(start, end) <= EPSILON {
         return Ok(None);
     }
+    let segment;
+    let points: &[[f32; 3]] = match span {
+        Some(span) => {
+            segment = [[0.0; 3], span.map(|value| value as f32)];
+            &segment
+        }
+        None => &[[0.0; 3]],
+    };
     let Some(hit) = world.scene_sweep(MeshProbe {
-        points: &[[0.0; 3]],
+        points,
         radius: radius as f32,
         start: start.map(|value| value as f32),
         end: end.map(|value| value as f32),

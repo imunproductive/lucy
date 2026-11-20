@@ -929,6 +929,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STUStatescriptStateRayCast" | "STUStatescriptStateTrackRay" => StateKind::Ray,
             "STU_FBFF5DE7" => StateKind::WallCheck,
             "STU_4C96470A" => StateKind::Landing,
+            "STU_9935FBC8" => StateKind::ViewLimits { radians: [0; 6] },
             "STU_0A6BE10E" if filter_array::is_runnable_filter_array(node) => {
                 StateKind::FilterArray
             }
@@ -1133,6 +1134,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::Ray => self.begin_ray(key, node)?,
             StateKind::WallCheck => self.begin_wall_check(key, node)?,
             StateKind::Landing => self.begin_landing(key, node)?,
+            StateKind::ViewLimits { .. } => self.refresh_view_limits(key),
             StateKind::ModifyHealth { .. } => self.begin_modify_health(key, node)?,
             StateKind::Status => self.begin_status(key, node),
             StateKind::ProjectileSpeed => self.begin_projectile_speed(key, node),

@@ -105,14 +105,20 @@ impl Machine {
             let Some(top) = entries.last() else { continue };
             // A chase's link is a binding of its variable on the client too
             // (its begin binds the variable, `0x7FF78AAAF430`), as are a
-            // state's bound outputs; a frame that lists the variable without
-            // it unbinds the state there (`0x7FF78AAB78A0` → `0x7FF78AAB7420`
-            // takes the frame's list).
+            // state's bound outputs and an Ability's cooldown (slot 0, its
+            // restart `0x7FF789BBB110`; the client's output
+            // `0x7FF789B94D00` works the remaining time out from the
+            // state's timing block); a frame that lists the variable
+            // without it unbinds the state there (`0x7FF78AAB78A0` →
+            // `0x7FF78AAB7420` takes the frame's list).
             let stacked: Vec<_> = entries
                 .iter()
                 .filter(|entry| {
                     entry.stack
-                        || matches!(entry.output, LinkValue::Chase | LinkValue::Output { .. })
+                        || matches!(
+                            entry.output,
+                            LinkValue::Chase | LinkValue::Cooldown | LinkValue::Output { .. }
+                        )
                 })
                 .map(|entry| StackBinding {
                     instance: entry.state.instance,

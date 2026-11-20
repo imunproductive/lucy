@@ -13,10 +13,11 @@
 //! stack's "continuing" priority. An ability with a stack variable and a
 //! priority to set (m_5E561E77) pushes itself (flag 2, slot 1, value true) and
 //! starts when its entry is the top; it stops when it is no longer the top.
-//! Running is flag 1. The cooldown variable is linked as slot 0 and falls by
-//! `rate` per second from the value last written. AbilityCooldownDuration
-//! (evaluator 0x7FF789BE2E80) is `max(base * scalar, least)`, scalar 1 by
-//! default.
+//! Running is flag 1. The cooldown variable is linked as slot 0 (client
+//! restart 0x7FF789BBB110 → link 0x7FF78AA849B0) at the priority of
+//! `m_5E561E77`, as the stack is, and falls by `rate` per second from the
+//! value last written. AbilityCooldownDuration (evaluator 0x7FF789BE2E80) is
+//! `max(base * scalar, least)`, scalar 1 by default.
 
 use super::*;
 
@@ -426,6 +427,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             );
             return Ok(());
         }
+        let priority = match expr::stack_priority(field(&node.fields, "m_5E561E77")) {
+            Ok(priority) => priority,
+            Err(error) => {
+                self.report(self.site(id, node), Issue::Expression(error));
+                return Ok(());
+            }
+        };
         // The reference removes its previous slot before relinking at the same priority.
         if let Some(entries) = self.machine.links.get_mut(&target) {
             entries.retain(|entry| entry.state != key);
@@ -442,10 +450,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             target,
             VariableLink {
                 state: key,
-                priority: StackPriority {
-                    level: 0,
-                    above_equals: true,
-                },
+                priority,
                 output: LinkValue::Cooldown,
                 stack: false,
             },

@@ -30,6 +30,8 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 self.refresh_filter_array(key)?;
             } else if state.active && state.kind == StateKind::HeroSelect {
                 self.refresh_hero_select(key);
+            } else if state.active && matches!(state.kind, StateKind::ViewLimits { .. }) {
+                self.refresh_view_limits(key);
             } else if state.active && matches!(state.kind, StateKind::HealthPool { pool: Some(_) })
             {
                 let node = self

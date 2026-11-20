@@ -996,7 +996,7 @@ impl<'a> SnapshotEncoder<'a> {
                     && matches!(
                         (state.kind, binding.slot),
                         (StateKind::Stack { .. } | StateKind::ChaseVar, 0)
-                            | (StateKind::Ability { .. }, 1)
+                            | (StateKind::Ability { .. }, 0 | 1)
                             | (StateKind::GrappleCast, 0 | 1)
                     )
             }) {
@@ -2072,6 +2072,27 @@ fn state_payload(
         (StateKind::Landing, Some("none+u8")) => {
             StatePayload::from([("value".into(), Value::Integer(0))])
         }
+        // Shockwave (`STU_01D67FA0`, Doomfist's slam `0B27` st44): the
+        // VM runs it as a plain state and registers no hits, so its hit
+        // list (8-byte records, `Read_STU_01D67FA0` 0x7FF789BA11B0 replaces
+        // the client's with it) is empty: a 0 bit. Left out, the owner's
+        // client ended the shockwave it predicted at its next rollback.
+        (StateKind::Plain, Some("shockwave")) => StatePayload::new(),
+        // The view limits (`STU_9935FBC8`, `vm/view_limits.rs`): only the
+        // owner's full frames carry the block (no entity, the six angles,
+        // the entity's yaw 0); deltas the absent link. Left out, the
+        // owner's client dropped the limits of Doomfist's punch and slam
+        // at its next rollback.
+        (StateKind::ViewLimits { radians }, Some("linked_target")) => StatePayload::from([(
+            "values".into(),
+            Value::Array(
+                radians
+                    .iter()
+                    .map(|&bits| Value::Float(f32::from_bits(bits).into()))
+                    .chain([Value::Float(0.0)])
+                    .collect(),
+            ),
+        )]),
         // The Grappling Hook cast (`STU_4BBC5D09`): its begin; an owner frame
         // carries the milliseconds from it to the frame (`codecs.rs`
         // `project_start`).

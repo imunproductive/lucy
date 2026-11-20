@@ -32,6 +32,7 @@ mod statuses;
 mod switches;
 mod targets;
 mod timers;
+mod view_limits;
 mod volleys;
 mod walls;
 
@@ -1227,6 +1228,12 @@ pub enum StateKind {
     /// A placement selector's landing search (`STU_4C96470A`,
     /// `vm/landing.rs`): it searches each tick while its gate holds.
     Landing,
+    /// The view limits around a facing (`STU_9935FBC8`,
+    /// `vm/view_limits.rs`): the f32 bits of its yaw, pitch, least yaw,
+    /// least pitch, greatest yaw and greatest pitch, in radians.
+    ViewLimits {
+        radians: [u32; 6],
+    },
     /// A health change (`vm/health.rs`): a rate keeps when it last applied
     /// its share.
     ModifyHealth {
@@ -1317,6 +1324,7 @@ impl StateKind {
                 | Self::Watch
                 | Self::FilterArray
                 | Self::HeroSelect
+                | Self::ViewLimits { .. }
         )
     }
 
