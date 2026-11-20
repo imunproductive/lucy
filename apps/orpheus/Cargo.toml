@@ -27,7 +27,7 @@ orpheus-server.workspace = true
 orpheus-wire.workspace = true
 orpheus-sim.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 tempfile.workspace = true
 toml.workspace = true
 tracing.workspace = true

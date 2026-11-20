@@ -20,7 +20,7 @@ use orpheus_core::guid::parse_guid;
 use crate::{
     ai_definitions::{AI_DEFINITIONS_FILE, AiDefinitions},
     anim_lengths::{ANIM_LENGTHS_FILE, AnimLengths},
-    expr::Variable,
+    expr::{ConfigTable, Variable},
     rulesets::{self, Rulesets},
     weapons::{TUNABLES_FILE, Tunables},
 };
@@ -72,6 +72,8 @@ struct NodeInfo {
     /// Its class's entry in a codec table, by the table's id
     /// ([`crate::codecs::CodecTable::node_codec`]).
     codec: OnceLock<(u64, Option<usize>)>,
+    /// Its configs compiled ([`Node::configs`]).
+    configs: OnceLock<ConfigTable>,
 }
 
 impl NodeInfo {
@@ -86,6 +88,7 @@ impl NodeInfo {
                 .field("m_gameMessage.m_gameMessage")
                 .and_then(asset_guid),
             codec: OnceLock::new(),
+            configs: OnceLock::new(),
         }
     }
 }
@@ -122,6 +125,15 @@ impl Node {
 
     pub(crate) fn codec_cell(&self) -> &OnceLock<(u64, Option<usize>)> {
         &self.info.codec
+    }
+
+    /// Its fields' configs compiled for the evaluator, the first time the
+    /// VM evaluates one of them (most nodes of a loaded graph never run).
+    /// The fields must not change after that.
+    pub(crate) fn configs(&self) -> &ConfigTable {
+        self.info
+            .configs
+            .get_or_init(|| ConfigTable::of(&self.fields))
     }
 
     pub fn field(&self, path: &str) -> Option<&Value> {

@@ -457,6 +457,7 @@ pub type OwlibClass = (
     Vec<(String, String, Option<String>)>,
 );
 
+#[derive(Default)]
 pub struct Index {
     pub graphs: BTreeMap<Int, Summary>,
     pub vars: HashMap<Int, Vec<VarUse>>,
@@ -480,66 +481,29 @@ pub struct Index {
 impl Index {
     pub fn build(bundle: &Bundle, names: &Names, owlib: Option<&Path>) -> io::Result<Self> {
         let walker = Walker::new(names);
-        let mut index = Index {
-            graphs: BTreeMap::new(),
-            vars: HashMap::new(),
-            syncs: HashMap::new(),
-            sync_vars: HashMap::new(),
-            entries: HashMap::new(),
-            ids: HashMap::new(),
-            assets: HashMap::new(),
-            class_nodes: HashMap::new(),
-            class_values: HashMap::new(),
-            edges: Vec::new(),
-            fields: HashMap::new(),
-            objects: HashMap::new(),
-            constant_writes: HashMap::new(),
-            attach: HashMap::new(),
-            roles: HashMap::new(),
-            owlib: HashMap::new(),
-        };
-        for (&gi, graph) in &bundle.graphs {
-            let mut summary = Summary::of(graph);
-            index.add_refs(names, gi, None, walker.run(&graph.fields, "graph"));
-            for node in &graph.nodes {
-                let refs = walker.run(&node.fields, &node.cls);
-                if node.cls == ABILITY {
-                    let buttons: BTreeSet<Int> = refs
-                        .buttons
-                        .iter()
-                        .filter_map(|value| match value {
-                            Some(J::Int(value)) => Some(*value),
-                            _ => None,
-                        })
-                        .collect();
-                    summary
-                        .abilities
-                        .push((node.rid, node.state, buttons.into_iter().collect()));
-                }
-                index.add_refs(names, gi, Some(node.rid), refs);
-                index
-                    .class_nodes
-                    .entry(node.cls.clone())
-                    .or_default()
-                    .push((gi, node.rid));
+        let graphs: Vec<(Int, &Graph)> = bundle
+            .graphs
+            .iter()
+            .map(|(&gi, graph)| (gi, graph))
+            .collect();
+        // Each thread indexes runs of neighbouring graphs, and the runs are
+        // merged in order: merging one graph at a time costs as much as
+        // indexing it.
+        let threads = std::thread::available_parallelism().map_or(1, usize::from);
+        let runs: Vec<&[(Int, &Graph)]> = graphs
+            .chunks(graphs.len().div_ceil(threads * 4).max(1))
+            .collect();
+        let mut parts = super::par_map(&runs, |run| {
+            let mut part = Index::default();
+            for &(gi, graph) in *run {
+                part.add_graph(&walker, names, gi, graph);
             }
-            for entry in &graph.sync_vars {
-                if let Some(var) = entry.var {
-                    let bit = if entry.has_presence_bit() {
-                        graph.presence_bit(var)
-                    } else {
-                        None
-                    };
-                    index.sync_vars.entry(var).or_default().push(GraphSync {
-                        gi,
-                        number: entry.index,
-                        scope: entry.scope,
-                        flag: json::py_str(&entry.flag),
-                        bit,
-                    });
-                }
-            }
-            index.graphs.insert(gi, summary);
+            part
+        })
+        .into_iter();
+        let mut index = parts.next().unwrap_or_default();
+        for part in parts {
+            index.merge(part);
         }
         index.attach = index.attachments(bundle, names);
         index.roles = index.roles();
@@ -553,6 +517,93 @@ impl Index {
             index.owlib = owlib_types(folder, &wanted)?;
         }
         Ok(index)
+    }
+
+    /// Indexes the next graph.
+    fn add_graph(&mut self, walker: &Walker, names: &Names, gi: Int, graph: &Graph) {
+        let mut summary = Summary::of(graph);
+        self.add_refs(names, gi, None, walker.run(&graph.fields, "graph"));
+        for node in &graph.nodes {
+            let refs = walker.run(&node.fields, &node.cls);
+            if node.cls == ABILITY {
+                let buttons: BTreeSet<Int> = refs
+                    .buttons
+                    .iter()
+                    .filter_map(|value| match value {
+                        Some(J::Int(value)) => Some(*value),
+                        _ => None,
+                    })
+                    .collect();
+                summary
+                    .abilities
+                    .push((node.rid, node.state, buttons.into_iter().collect()));
+            }
+            self.add_refs(names, gi, Some(node.rid), refs);
+            self.class_nodes
+                .entry(node.cls.clone())
+                .or_default()
+                .push((gi, node.rid));
+        }
+        for entry in &graph.sync_vars {
+            if let Some(var) = entry.var {
+                let bit = if entry.has_presence_bit() {
+                    graph.presence_bit(var)
+                } else {
+                    None
+                };
+                self.sync_vars.entry(var).or_default().push(GraphSync {
+                    gi,
+                    number: entry.index,
+                    scope: entry.scope,
+                    flag: json::py_str(&entry.flag),
+                    bit,
+                });
+            }
+        }
+        self.graphs.insert(gi, summary);
+    }
+
+    /// Appends the index of the next graphs: each list in graph order, each
+    /// count summed, each map's keys in the order they first came.
+    fn merge(&mut self, part: Index) {
+        fn append<K: std::hash::Hash + Eq, V>(
+            into: &mut HashMap<K, Vec<V>>,
+            from: HashMap<K, Vec<V>>,
+        ) {
+            for (key, values) in from {
+                into.entry(key).or_default().extend(values);
+            }
+        }
+        self.graphs.extend(part.graphs);
+        append(&mut self.vars, part.vars);
+        append(&mut self.syncs, part.syncs);
+        append(&mut self.sync_vars, part.sync_vars);
+        append(&mut self.entries, part.entries);
+        append(&mut self.ids, part.ids);
+        append(&mut self.assets, part.assets);
+        append(&mut self.class_nodes, part.class_nodes);
+        append(&mut self.class_values, part.class_values);
+        self.edges.extend(part.edges);
+        for (cls, stats) in part.fields {
+            let into = self.fields.entry(cls).or_default();
+            for (key, (objects, set, labels)) in stats {
+                let entry = into.entry(key).or_default();
+                entry.0 += objects;
+                entry.1 += set;
+                for (label, count) in labels {
+                    *entry.2.entry(label).or_default() += count;
+                }
+            }
+        }
+        for (cls, count) in part.objects {
+            *self.objects.entry(cls).or_default() += count;
+        }
+        for (var, writes) in part.constant_writes {
+            let into = self.constant_writes.entry(var).or_default();
+            for (key, count) in writes {
+                *into.entry(key).or_default() += count;
+            }
+        }
     }
 
     fn add_refs(&mut self, names: &Names, gi: Int, rid: Option<Int>, refs: Refs) {

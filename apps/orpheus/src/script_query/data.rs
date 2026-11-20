@@ -10,6 +10,8 @@ use std::{
 };
 
 use flate2::read::MultiGzDecoder;
+use serde::Deserialize;
+use serde_json::value::RawValue;
 
 use super::json::{self, Int, J, Obj, invalid};
 
@@ -301,6 +303,18 @@ pub struct Bundle {
     pub missing: Vec<Int>,
 }
 
+/// The bundle's top level, each graph's JSON left as text to parse on a
+/// thread of its own.
+#[derive(Deserialize)]
+struct RawBundle<'a> {
+    #[serde(borrow)]
+    graphs: Vec<&'a RawValue>,
+    #[serde(borrow, default)]
+    bodies: Option<&'a RawValue>,
+    #[serde(borrow, default)]
+    missing: Option<&'a RawValue>,
+}
+
 impl Bundle {
     pub fn load(data: &Path) -> io::Result<Self> {
         let path = data.join(GRAPHS_FILE);
@@ -309,23 +323,24 @@ impl Bundle {
             |error| io::Error::new(error.kind(), format!("{}: {error}", path.display())),
         )?))
         .read_to_end(&mut bytes)?;
-        let mut bundle = json::parse(&bytes)?;
-        let graphs = match take(&mut bundle, "graphs") {
-            J::Arr(records) => records
-                .into_iter()
-                .map(|record| Graph::read(record).map(|graph| (graph.index, graph)))
-                .collect::<io::Result<_>>()?,
-            _ => return Err(invalid("graph bundle without graphs")),
+        let raw: RawBundle = serde_json::from_slice(&bytes).map_err(invalid)?;
+        let graphs = super::par_map(&raw.graphs, |text| {
+            Graph::read(json::parse(text.get().as_bytes())?)
+        })
+        .into_iter()
+        .map(|graph| graph.map(|graph| (graph.index, graph)))
+        .collect::<io::Result<_>>()?;
+        let parse = |text: Option<&RawValue>| {
+            text.map_or(Ok(J::Null), |text| json::parse(text.get().as_bytes()))
         };
-        let bodies = match take(&mut bundle, "bodies") {
+        let bodies = match parse(raw.bodies)? {
             J::Obj(obj) => obj
                 .into_entries()
                 .map(|(key, record)| Ok((hex_key(&key)?, record)))
                 .collect::<io::Result<_>>()?,
             _ => Vec::new(),
         };
-        let missing = bundle
-            .at("missing")
+        let missing = parse(raw.missing)?
             .items()
             .iter()
             .filter_map(J::as_int)
