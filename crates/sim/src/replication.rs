@@ -42,6 +42,7 @@ use crate::{
         PlayerAppearance, Possession, SHIELDED, body_filter, filter_component, player_team_bit,
     },
     scene_assets::PreparedScene,
+    spawned::ServerFlight,
     voice_lines::{VoiceLine, VoiceState, delay_ticks, is_death_cry},
 };
 use orpheus_content::{
@@ -1762,7 +1763,9 @@ pub struct WorldDelivery {
     controller_script: Option<ControllerScript>,
     multikill_due: bool,
     /// The notices of the changes his body's modifiers made to the hits on
-    /// it (`orpheus_script::vm::MODIFIED`), to go with its messages.
+    /// it (`orpheus_script::vm::MODIFIED`), and what the sources of his
+    /// body's health changes dealt ([`Self::source_dealt`]), to go with its
+    /// messages.
     modified: Vec<GameMessage>,
     /// Where his bodies come into the world instead of a spawn point, and
     /// their facing (1/65536 turns): a dummy bot's ([`Self::place_bodies_at`]).
@@ -3781,7 +3784,7 @@ impl WorldDelivery {
             team,
             pose: scene.player_target(hero, mover.pose().position, mover.crouched()),
             dead: self.death.is_some(),
-            hurt: vitals.is_some_and(Vitals::hurt),
+            health: vitals.map(|vitals| [vitals.total(), vitals.maximum()]),
             tags: scene.body_tags(hero.body),
             ai: self.ai_control(scene.graphs(), body.hero),
             dealt: self.body_effects().map_or_else(Vec::new, |effects| {
@@ -4368,6 +4371,36 @@ impl WorldDelivery {
         }
     }
 
+    /// The source of a health change the player's body instigated (its
+    /// `m_7B93233C`: a Biotic Orb, whose auras `1101`/`1102` heal or hurt
+    /// through the bodies' own graphs) dealt `amount` to `target`: it
+    /// takes the same `0012.025` (or `0044.025`) as the body
+    /// ([`Self::dealt`]), which the orb's `10FF`/`1100` rid15 counts
+    /// against its pool, whether or not the body still lives. It goes with
+    /// the body's messages ([`Self::take_messages`]), from the source
+    /// itself (assumption: retail's sender isn't known; the orbs' entries
+    /// don't filter it).
+    pub fn source_dealt(
+        &mut self,
+        source: u32,
+        target: u32,
+        amount: f64,
+        tags: &DamageTags,
+        heal: bool,
+    ) {
+        if amount <= 0.0 {
+            return;
+        }
+        let (message, parameters) =
+            orpheus_script::ultimate::dealt_message(target, amount, tags, heal);
+        self.modified.push(GameMessage {
+            sender: source,
+            target: source,
+            message,
+            parameters,
+        });
+    }
+
     /// combat.py `_respawn`: once the body's respawn is due ([`BodyDeath`]:
     /// its `0C8E` sent `0685`), a dead player gets a new body of the same
     /// hero at his spawn point, as a hero switch does (match.py
@@ -4889,6 +4922,55 @@ impl WorldDelivery {
         std::mem::take(&mut self.projectile_events)
     }
 
+    /// The player's server projectiles in flight that name an entity
+    /// definition, where each is now ([`crate::spawned`] runs the graphs
+    /// of those whose entity starts any).
+    pub(crate) fn server_flights(&self) -> Vec<ServerFlight> {
+        let Some(script) = &self.body_script else {
+            return Vec::new();
+        };
+        let hero = self
+            .body
+            .filter(|body| body.id == script.id)
+            .map_or(0, |body| body.hero);
+        script
+            .flights
+            .iter()
+            .filter_map(|(token, flight)| {
+                let token = token.filter(|token| token.is_server())?;
+                Some(ServerFlight {
+                    shot: (script.id, token),
+                    hero,
+                    definition: flight.definition()?,
+                    position: flight.position(),
+                })
+            })
+            .collect()
+    }
+
+    /// The server projectile `token` of `body` removed itself (its graph,
+    /// [`crate::spawned`]): its flight ends here, where it is, without an
+    /// explosion; the match finishes its copies.
+    pub(crate) fn end_server_flight(&mut self, body: BodyId, token: ProjectileToken) {
+        if let Some(script) = self.body_script.as_mut().filter(|script| script.id == body) {
+            script.flights.retain(|(flown, _)| *flown != Some(token));
+        }
+    }
+
+    /// The graphs of the server projectile `shot` give it this speed scale
+    /// ([`crate::spawned`]): its flight flies at it from its next step.
+    pub(crate) fn set_server_flight_speed(&mut self, (body, token): ShotKey, scale: f64) {
+        if let Some(script) = self.body_script.as_mut().filter(|script| script.id == body) {
+            for (_, flight) in script
+                .flights
+                .iter_mut()
+                .filter(|(flown, _)| *flown == Some(token))
+            {
+                flight.set_speed_scale(scale);
+            }
+        }
+    }
+
     /// The skin theme of the player's body (match.py `Player.skin`).
     pub(crate) fn skin(&self) -> SkinTheme {
         self.body.map(|body| body.skin).unwrap_or_default()
@@ -4932,6 +5014,15 @@ impl WorldDelivery {
         self.others
             .finish_server_projectile(body, token, tick, exploded);
         self.server_copies.finish(body, token, tick, exploded);
+    }
+
+    /// The graphs of a server projectile's entity have a frame
+    /// ([`crate::spawned`]: a Biotic Orb's): this client's copy of it,
+    /// another player's or its own, sends it once its create arrived
+    /// ([`Self::advance_observed`]).
+    pub(crate) fn refresh_server_projectile(&mut self, shot: ShotKey, frame: &PlacedFrame) {
+        self.others.set_projectile_frame(shot, frame);
+        self.server_copies.set_frame(shot, frame);
     }
 
     /// `_ObservedProjectile.advance` for this client's copies.

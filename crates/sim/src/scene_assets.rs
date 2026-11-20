@@ -2030,6 +2030,7 @@ mod tests {
             radius: 0.4,
             yaw: 0.0,
             tags: None,
+            health: None,
             spawned: Vec::new(),
         };
         let count = |candidates: &[TargetCandidate]| {
@@ -2135,6 +2136,7 @@ mod tests {
             radius: 0.4,
             yaw: 0.0,
             tags: None,
+            health: None,
             spawned: Vec::new(),
         };
         let swing = |candidates: &[TargetCandidate]| {
@@ -2244,7 +2246,7 @@ mod tests {
             team,
             pose: scene.player_target(hero, [x + dx, y, z + dz], false),
             dead: false,
-            hurt: false,
+            health: None,
             tags: None,
             ai: None,
             dealt: Vec::new(),
