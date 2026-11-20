@@ -1818,6 +1818,7 @@ fn state_payload(
             | StateKind::AiMove
             | StateKind::ModifyHealth { .. }
             | StateKind::Status
+            | StateKind::ProjectileSpeed
             | StateKind::CombatMod
             | StateKind::Assist
             | StateKind::HeroSelect

@@ -728,6 +728,7 @@ mod tests {
             radius: 0.4,
             yaw: 0.0,
             tags: None,
+            health: None,
             spawned: Vec::new(),
         }]);
         range.scene.take_scope_changes();
@@ -940,6 +941,7 @@ mod tests {
             radius: 0.4,
             yaw: 0.0,
             tags: None,
+            health: None,
             spawned: Vec::new(),
         };
         let outside = [spawn[0] + 60.0, spawn[1], spawn[2] + 60.0];

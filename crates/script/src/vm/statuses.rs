@@ -261,6 +261,30 @@ impl<W: World> Vm<'_, '_, '_, W> {
         }
     }
 
+    /// A projectile's speed scale state (`STU_D3F71FCF`) began: its scale
+    /// `m_67E8FF48` goes to the world ([`World::set_projectile_speed`]).
+    /// What the client does with it is an assumption (its component 50
+    /// `+0x3AC`, no reader found; BioticOrb.md §6).
+    pub(super) fn begin_projectile_speed(&mut self, key: StateKey, node: &Node) {
+        let site = self.site(key.instance, node);
+        let scale = self
+            .evaluate(
+                key.instance,
+                node,
+                field(&node.fields, "m_67E8FF48"),
+                Some(key),
+            )
+            .map_or(1.0, |value| expr::to_float(&value));
+        self.assume(site, &node.class, "the projectile's speed scale");
+        if !self.world.set_projectile_speed(site, Some(scale)) {
+            self.assume(
+                site,
+                &node.class,
+                "no effect (the world flies no projectile)",
+            );
+        }
+    }
+
     /// An assist state began: its credit goes to the world
     /// ([`World::assist`]) with the assisters and targets as they are now.
     pub(super) fn begin_assist(&mut self, key: StateKey, node: &Node) {

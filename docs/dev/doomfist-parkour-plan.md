@@ -15,15 +15,20 @@ Earlier findings this starts from: `D:/Work/Coding/refs/reports/GameSettings.md`
 2. **The custom game lobby protocol:** create (24000 kind 1/3), settings messages (24008-24028 ↔ 23300-23309), "Import code" (share code lookup), the lobby screen's team slots, Start, and the handoff of the settings to the game server (20300/20301 game struct, 53001).
 3. **Doomfist on the server vs his client:** each ability (Hand Cannon, Rocket Punch incl. wall impact, Seismic Slam, Rising Uppercut, Meteor Strike, the passive) and the parkour techniques (punch bounce, slam distance, uppercut-cancel, "bullet punch" cancel): which graphs and mover natives run, where the server's movement differs from the client's prediction. Known bug: the Rocket Punch works on the server but the client's camera sits out of bounds (`loose-ends.md`).
 
-## Phases
+## Phases (revised 2026-11-20 after the user's correction)
 
-1. **Research (parallel):** unknowns 1, 2 and 3, each into a report under `D:/Work/Coding/refs/reports/` (`Workshop.md`, `CustomGames.md`, `Doomfist.md`) and the index.
-2. **Custom games:** create a custom game from the client, its lobby screen with the host seated, settings changed from the client and from imported text or code (the server answers share codes from the archive), Start → a match on the chosen map with those settings applied (hero pool, respawn scalar, ult generation, kill feed, health packs, team sizes, mode start).
-3. **Workshop runtime:** by what unknown 1 finds: either the client's compile-to-graph path reproduced on the server, or a server rule engine plus the result messages. Build it up action by action, driven by C32S2, with each action tested against the client's behaviour; then the other DPK scripts in the archive.
-4. **Doomfist movement:** fix each ability's server movement to match the client's prediction (owner corrections must not snap him), starting with the Rocket Punch camera.
-5. **End to end:** C32S2 played through level 1 in the game: checkpoints, HUD, teleports, timers; then the other levels.
+The user: no full lobby or Workshop menu support for now. The player goes straight into the custom game as soon as his client reaches the main menu; the work is the game itself. Build any tooling that helps, including a new DLL injected into the client for debugging and driving it. The PC's resources are free to use.
 
-Phases 2 and 4 don't depend on unknown 1 and run alongside it; phase 3 starts when unknown 1 is answered.
+So the lobby half of the custom games (create, the lobby screen, settings uploads, Import/Paste, Start) is parked on `day/customlobby`; what the match needs from it (the settings carried to the game service, per-match ruleset overrides) is kept. The server reads the Workshop script text itself.
+
+1. **Research:** done (unknowns 1-3: `Workshop.md`, `CustomGames.md`, `Doomfist.md`).
+2. **Client probe DLL** (tooling, first): an in-process agent injected into the client beside the relay, driven over a local socket from a Python client: read and write memory, call client functions, hook functions and trace their arguments at full frame rate (owdbg's debugger runs the client at 3-20 FPS), read the statescript instances, the local body's position, velocity and camera, inject input, take screenshots. It turns the user's game checks into scripted checks that agents run themselves.
+3. **Straight into the parkour match:** a server option (CLI and dashboard) naming a Workshop script file: when the client reaches the menu, the server starts the custom match it describes (C32S2: Hanamura Assault, team 1 only, Doomfist only, the script's settings applied through per-match ruleset overrides) and seats the player in it.
+4. **Workshop runtime:** the rule engine (`crates/workshop`, `day/workshop`) running the script text, and the action graphs in the VM (`day/workshopvm`), action by action as C32S2 needs them.
+5. **Doomfist movement** (`day/doomfist`): each ability's server movement matches the client's prediction to the centimetre (wall impact, slams, uppercut, cancels), measured with the probe DLL.
+6. **End to end:** C32S2 level 1 played in the game: checkpoints, HUD, teleports, timers; then the other levels.
+
+Phases 2-5 run side by side; 6 joins them.
 
 ## Status
 

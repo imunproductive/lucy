@@ -1,0 +1,32 @@
+[package]
+name = "orpheus-probe"
+description = "owprobe.dll: an in-process probe for the Overwatch 1.74 client (memory, per-frame sampler, hooks, input) driven from tools/owprobe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "owprobe"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde_json.workspace = true
+
+[target."cfg(windows)".dependencies]
+iced-x86 = { version = "1.22", default-features = false, features = ["std", "decoder", "encoder", "block_encoder", "code_asm", "instr_info", "intel"] }
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Kernel",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Performance",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
