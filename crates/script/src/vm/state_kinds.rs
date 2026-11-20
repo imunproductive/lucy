@@ -279,8 +279,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         depth: usize,
     ) -> Result<(), InitFault> {
         let id = key.instance;
-        let target = match expr::lvalue(field(&node.fields, "m_out_Var")) {
-            Ok(target) => target.map(|target| source_key(id, target)),
+        let output = field(&node.fields, "m_out_Var");
+        let target = match expr::lvalue(output) {
+            Ok(Some(target)) => Some(source_key(id, target)),
+            Ok(None) if !output.is_null() => self.workshop_output(id, node, output),
+            Ok(None) => None,
             Err(error) => {
                 self.report(self.site(id, node), Issue::Expression(error));
                 return Ok(());
