@@ -103,6 +103,15 @@ def cmd_components(args):
         print(f"{c['component']:016X} entity {c['entity']:016X} id {c['id']:08X}")
 
 
+def cmd_entity_vars(args):
+    from .statescript import entity_vars, variable_name
+    p = connect(args)
+    values = entity_vars(p, args.entity, {int(v.rstrip("e")) for v in args.ids} if args.ids else None)
+    for ident in sorted(values):
+        name = variable_name(ident)
+        print(f"#{ident}e{f' {name}' if name else ''} = {json.dumps(values[ident])}")
+
+
 def describe_record(p, r):
     kind = r.get("kind")
     head = f"#{r['seq']} t={r['t']:.4f} tid={r['thread']}"
@@ -222,8 +231,10 @@ def trace(p, seconds, out, every=1, reads=(), input_text=None, log=print, script
                 frames += r.get("kind") == "frame"
                 hits += r.get("kind") == "hit"
                 for s in r.get("scripts") or ():
-                    entry = recorded.setdefault((s["entity"], s["graph"], s["instance"]), dict(s, vars={}))
+                    entry = recorded.setdefault((s["entity"], s["graph"], s["instance"]),
+                                                dict(s, vars={}, entity_vars={}))
                     entry["vars"].update(s.get("vars") or {})
+                    entry["entity_vars"].update(s.get("entity_vars") or {})
             if names and recorded:
                 from .statescript import name_scripts
                 named = name_scripts(p, list(recorded.values()))
@@ -322,6 +333,9 @@ def main(argv=None):
     c.add_argument("--max", type=int, default=1000)
     c = command("components", cmd_components, "components with a vtable (or compN) and their entities")
     c.add_argument("vtable")
+    c = command("entity-vars", cmd_entity_vars, "an entity's statescript entity variables (#Ne)")
+    c.add_argument("entity", help="the entity id in hex (A0000100), player or body")
+    c.add_argument("ids", nargs="*", help="variable ids (2438 or 2438e; default all)")
     c = command("hook", cmd_hook, "hook a function (or --mid a site) and log its hits")
     c.add_argument("addr")
     c.add_argument("--name")
@@ -352,7 +366,8 @@ def main(argv=None):
     c.add_argument("--input", help="an input script to run with the trace (see tools/owprobe/script.py)")
     c.add_argument("--script", action="append", default=[],
                    help="a statescript graph to record each frame: 0D06 (the body's), player:0C90, "
-                        "0D06:2083,11432 (only those variables)")
+                        "0D06:2083,11432 (only those variables), player:288B:1962,31435e (e: the entity's "
+                        "entity variables)")
     c.add_argument("--no-camera", action="store_true", help="don't read the camera")
     c.add_argument("--corrections", action="store_true",
                    help="hook the movement correction gate, the owner chunk applier and the rollback (for compare)")
