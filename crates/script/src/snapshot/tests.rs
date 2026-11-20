@@ -371,6 +371,58 @@ fn a_plain_state_whose_payload_is_a_link_goes_out_with_no_link() {
     check(&link, 1, "00");
 }
 
+/// The searches the owner's client runs itself go out in its frames, in
+/// both builds: the ray casts and the wall check with the empty payload of
+/// their codec `none`, the landing search (`STU_4C96470A`, codec `none+u8`)
+/// with the byte its begin sets to 0. Left out, Doomfist's client never ran
+/// his ground ray, his punch's wall check or his airborne slam's landing
+/// search (`refs/reports/Doomfist.md` §15).
+#[test]
+fn the_searches_the_owners_client_runs_go_out_in_its_frames() {
+    let (graphs, mut snapshot) = fixture();
+    let block = json!([{"op":"bits","n":8,"f":"m_B4802CE3","block":"B4802CE3"}]);
+    let owner_frame = PayloadMode::Owner {
+        full: false,
+        frame_time: 0,
+        frame_ms: 16,
+    };
+    for (kind, codec, layout, payload, bits) in [
+        (StateKind::Ray, "none", json!([]), StatePayload::new(), 0),
+        (
+            StateKind::WallCheck,
+            "none",
+            json!([]),
+            StatePayload::new(),
+            0,
+        ),
+        (
+            StateKind::Landing,
+            "none+u8",
+            block,
+            StatePayload::from([("value".into(), Value::Integer(0))]),
+            8,
+        ),
+    ] {
+        let mut raw: Json = serde_json::from_str(CODECS).unwrap();
+        raw["classes"]["12340001"]["codec"] = json!(codec);
+        raw["classes"]["12340001"]["layout"] = layout;
+        let codecs = CodecTable::from_json(&raw.to_string()).unwrap();
+        snapshot.instances[&1].states.get_mut(&2).unwrap().kind = kind;
+        for unknowns in [crate::vm::Unknowns::Refuse, crate::vm::Unknowns::Tolerate] {
+            let encoder = SnapshotEncoder::new(&graphs, &codecs).with_unknowns(unknowns);
+            let owner = encoder.project(&snapshot, View::Owner).unwrap();
+            assert_eq!(owner.state_payload(1, 2), Some(&payload), "{kind:?}");
+        }
+        let written = codecs
+            .codec("STUStatescriptState")
+            .unwrap()
+            .payload(&payload, owner_frame)
+            .unwrap();
+        assert_eq!(written.bit_len(), bits, "{kind:?}");
+        assert!(written.as_bytes().iter().all(|&byte| byte == 0), "{kind:?}");
+    }
+}
+
 #[test]
 fn stack_projection_rejects_missing_values_and_invalid_owner_binding_sources() {
     let (graphs, mut snapshot) = fixture();
@@ -1020,7 +1072,9 @@ fn initial_owner_and_corrections_match_python_bytes_in_both_views() {
 /// both every tick, so the owner's client read them every frame, and a frame
 /// listing the variable without the chase's binding unbound it there
 /// (`0x7FF78AAB7420`): the chase never arrived on the client. The chase
-/// toward a vector (state 1) steps each frame, so its payload still moves.
+/// toward a vector (state 1) steps each frame, so its payload moves, but the
+/// client steps it from the same payload itself: its steps make no
+/// correction go, and a chunk that goes for something else carries them.
 #[test]
 fn a_timed_chase_keeps_its_begin_payload_and_binding_until_it_arrives() {
     use crate::vm::Component;
@@ -1127,10 +1181,10 @@ fn a_timed_chase_keeps_its_begin_payload_and_binding_until_it_arrives() {
             .project(component.snapshot().unwrap(), View::Owner)
             .unwrap();
         assert_eq!(owner.state(1, 0).unwrap().payload, begun.payload);
-        // Corrections follow the initial owner frame once it settled.
+        // Corrections follow the initial owner frame once it settled. The
+        // vector chase's steps are its client's own: nothing goes.
         let listed = send(&owner, DeltaKind::Correction(frame + OWNER_SETTLE_FRAMES));
-        assert!(!listed.contains(&timed) && !listed.contains(&variable));
-        assert!(listed.contains(&vector_chase), "frame {frame}");
+        assert!(listed.is_empty(), "frame {frame}: {listed:?}");
     }
     // Read between ticks, the value is where the chase has got to: 96 of
     // 125 ms at frame 1006's start.
@@ -1149,6 +1203,7 @@ fn a_timed_chase_keeps_its_begin_payload_and_binding_until_it_arrives() {
     assert_eq!(arrived.instance_variable(1, 100), Some(&Value::Float(3.0)));
     let listed = send(&arrived, DeltaKind::Correction(1007 + OWNER_SETTLE_FRAMES));
     assert!(listed.contains(&timed) && listed.contains(&variable));
+    assert!(listed.contains(&vector_chase));
 }
 
 /// The owner's chunks list a weapon volley's ammunition variable at the
