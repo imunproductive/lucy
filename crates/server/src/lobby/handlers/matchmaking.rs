@@ -28,6 +28,12 @@ const fn route(group: u32, message: u32, handle: crate::lobby::router::Handler) 
     }
 }
 
+/// The client's migration query (60002, group `0x49963FA6`): it sends it
+/// once its main menu has the initial data (20502, `ow1-preservation.md`
+/// "Initial data"). Nothing answers it.
+const MIGRATION: u32 = 0x4996_3fa6;
+const MIGRATION_QUERY: u32 = 60002;
+
 pub(crate) const MODULE: Module = Module {
     routes: &[
         route(MATCHMAKE, ENTER_QUEUE, enter_queue),
@@ -39,6 +45,7 @@ pub(crate) const MODULE: Module = Module {
         route(MATCHMAKE, CHANGE_ROLES, change_roles),
         route(GAME_REQUEST, CREATE_GAME, create_game),
         route(MATCH_LOBBY_OUT, LOBBY_ANSWER, lobby_answer),
+        route(MIGRATION, MIGRATION_QUERY, menu_ready),
     ],
     hooks: Hooks {
         login: Some(login),
@@ -49,7 +56,15 @@ pub(crate) const MODULE: Module = Module {
 
 fn login(peer: &mut Peer<'_, '_>) -> io::Result<()> {
     peer.lobby.matchmaker.login(peer.login);
-    peer.lobby.matchmaker.workshop_login(peer.lobby, peer.login);
+    peer.lobby.matchmaker.workshop_login(peer.login);
+    Ok(())
+}
+
+/// The menu is up: a `--workshop` player's match is due.
+fn menu_ready(peer: &mut Peer<'_, '_>, _: Fields) -> io::Result<()> {
+    peer.lobby
+        .matchmaker
+        .workshop_menu_ready(peer.lobby, peer.login);
     Ok(())
 }
 

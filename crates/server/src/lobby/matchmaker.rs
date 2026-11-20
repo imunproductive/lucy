@@ -117,9 +117,10 @@ struct State {
     /// The Workshop script every player goes into from the menu
     /// (`--workshop`, the dashboard).
     workshop: Option<Arc<workshop::WorkshopScript>>,
-    /// Players who reached the menu and go into the Workshop match at
-    /// the deadline: the lobby session and the deadline, by account.
-    workshop_due: HashMap<u32, ([u64; 2], Duration)>,
+    /// Players who logged in and go into the Workshop match once their
+    /// menu is up: the lobby session and when it was (none yet), by
+    /// account.
+    workshop_due: HashMap<u32, ([u64; 2], Option<Duration>)>,
 }
 
 struct Online {

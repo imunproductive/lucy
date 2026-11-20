@@ -8,18 +8,12 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 use orpheus_lobby::{accounts::Account, session::PreparedLogin};
 
 use super::{Ctx, Lobby, Matchmaker, Parties, Party};
 use crate::workshop_match::{ScriptMatch, SettingNames};
-
-/// How long after login a player goes into the Workshop match: the menu is
-/// up by then (the account features go again 3 s after login for the same
-/// reason, `services.rs` `MENU_READY_DELAYS`).
-const MENU_READY: Duration = Duration::from_secs(3);
 
 /// A script file and what its settings describe.
 #[derive(Debug)]
@@ -87,14 +81,26 @@ impl Matchmaker {
     }
 
     /// A session logged in: with a Workshop script it goes into the match
-    /// once its menu is up.
-    pub(crate) fn workshop_login(&self, lobby: &Lobby, login: &PreparedLogin) {
+    /// once its menu is up ([`Matchmaker::workshop_menu_ready`]).
+    pub(crate) fn workshop_login(&self, login: &PreparedLogin) {
         let mut state = self.lock();
         if state.workshop.is_some() {
-            state.workshop_due.insert(
-                login.account.account_lo,
-                (login.identity.session, lobby.clock.now() + MENU_READY),
-            );
+            state
+                .workshop_due
+                .insert(login.account.account_lo, (login.identity.session, None));
+        }
+    }
+
+    /// The session's menu has its initial data (the client's 60002): its
+    /// Workshop match is due. A match handed off before it can leave the
+    /// client on the map without hero select (game check 2026-11-20: with
+    /// 60002 0.5 s before the match, hero select; 0.2 s after it, none).
+    pub(crate) fn workshop_menu_ready(&self, lobby: &Lobby, login: &PreparedLogin) {
+        let mut state = self.lock();
+        if let Some((session, due)) = state.workshop_due.get_mut(&login.account.account_lo)
+            && *session == login.identity.session
+        {
+            due.get_or_insert(lobby.clock.now());
         }
     }
 
@@ -112,7 +118,7 @@ impl Matchmaker {
             state
                 .workshop_due
                 .get(&account.account_lo)
-                .is_some_and(|&(of, deadline)| of == session && deadline <= now)
+                .is_some_and(|&(of, due)| of == session && due.is_some_and(|due| due <= now))
         };
         if !due {
             return Ok(());
@@ -173,6 +179,7 @@ impl Ctx<'_> {
             party,
             map,
             game.values.clone(),
+            script.script.bodies.clone(),
             Arc::clone(&script.script.logic),
         )
     }

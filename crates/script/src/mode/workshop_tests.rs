@@ -100,10 +100,7 @@ fn variable_actions_are_done_at_once() {
         vec![Value::Integer(3), constant(Value::Float(5.0))],
     );
     assert_eq!(finished(&script, set), ActionOutcome::Done);
-    assert_eq!(
-        script.workshop_global(3),
-        Value::Float(5.0)
-    );
+    assert_eq!(script.workshop_global(3), Value::Float(5.0));
     let at_index = run(
         &mut script,
         SET_GLOBAL_VARIABLE_AT_INDEX,
@@ -124,7 +121,11 @@ fn variable_actions_are_done_at_once() {
     let player = run(
         &mut script,
         SET_PLAYER_VARIABLE,
-        vec![constant(players), Value::Integer(2), constant(Value::Float(1.0))],
+        vec![
+            constant(players),
+            Value::Integer(2),
+            constant(Value::Float(1.0)),
+        ],
     );
     assert_eq!(finished(&script, player), ActionOutcome::Done);
     let id = crate::expr::workshop_variable(2);

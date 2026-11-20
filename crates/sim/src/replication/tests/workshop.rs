@@ -39,8 +39,8 @@ impl Parkour {
         let runtime = orpheus_testkit::runtime_dir();
         let data = runtime.join("data");
         let catalog = Arc::new(Catalog::load(&data).unwrap());
-        let path = orpheus_testkit::dpk_archive()
-            .join("workshop.codes/C32S2_OG_doom_parkur_hanamura.txt");
+        let path =
+            orpheus_testkit::dpk_archive().join("workshop.codes/C32S2_OG_doom_parkur_hanamura.txt");
         let logic = parse(&std::fs::read_to_string(path).unwrap(), &catalog)
             .unwrap()
             .logic;
@@ -221,7 +221,10 @@ fn number(value: &ScriptValue) -> f64 {
 }
 
 fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
-    (0..3).map(|axis| (a[axis] - b[axis]).powi(2)).sum::<f64>().sqrt()
+    (0..3)
+        .map(|axis| (a[axis] - b[axis]).powi(2))
+        .sum::<f64>()
+        .sqrt()
 }
 
 /// The player who joins is reset to the first checkpoint ("Player Joins"

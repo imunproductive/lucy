@@ -11,7 +11,10 @@
 //! them: each schema's `m_displayText` and, per entry, the identifier, the
 //! entry's `m_displayText` (the name a settings line starts with; the
 //! client's importer matches it, `sub_7FF789A8A0C0`), the type, a bool's
-//! two words, a number's range and an enum's choices with their names.
+//! two words, a number's range and an enum's choices with their names; an
+//! ability's entry also its logical button and name format. Its
+//! `abilities` are each hero's abilities (`m_heroLoadout`) by logical
+//! button, the names a hero's block writes those entries with.
 //!
 //! The modes file holds, per mode, its teams (`m_teams`: the team, its
 //! controller graph `m_controllerScript`, the graph every body of the team
@@ -41,7 +44,9 @@ m_entries: identifier m_3E783677 -> m_value.m_default; bools, ints, floats, enum
 the heroes (075) and game modes (0C5) list in m_gameRulesetSchemas, in order. Entry keys are 01C indexes. \
 settings: each 0C6's m_displayText and entries (key m_3E783677, name m_displayText, type by m_value's class, \
 bool words m_9EC1DF9A (true) / m_03613078 (false), number m_min/m_max, enum m_3FE1EA9E choices: name \
-m_displayText, identifier m_identifier), texts in the install's locale.";
+m_displayText, identifier m_identifier; an ability's entry: button m_65184E78.m_logicalButton, format \
+m_7DF418A5), texts in the install's locale. abilities: each hero's m_heroLoadout loadouts with a \
+m_logicalButton: name m_name, button.";
 
 const MODES_SOURCE: &str = "Build 1.74.0.0.104319: each game mode (0C5): its teams (m_teams: m_team as \
 TeamIndex, m_controllerScript graph, m_bodyScript graph, m_170AA4B8 players) and m_0FC17230 (the loading \
@@ -105,12 +110,33 @@ pub(crate) fn derive(install: &Install, _out: &Path) -> Result<Vec<Output>> {
             }),
         );
     }
+    // Each hero's abilities on a logical button: a settings entry with a
+    // button (`m_65184E78`) is named, in a hero's block, after that hero's
+    // ability on it.
+    let mut abilities = Map::new();
+    for (&index, asset) in &heroes {
+        let list: Vec<Json> = Node::root(asset)?
+            .guids("m_heroLoadout")
+            .filter_map(|loadout| {
+                let asset = install.stu(loadout).ok()?;
+                let node = Node::root(&asset).ok()?;
+                let button = node.guid("m_logicalButton");
+                (button != 0).then(
+                    || json!({"name": install.string(node.guid("m_name")), "button": key(button)}),
+                )
+            })
+            .collect();
+        if !list.is_empty() {
+            abilities.insert(key(typed(index, HERO)), Json::Array(list));
+        }
+    }
     let rulesets = json!({
         "source": RULESETS_SOURCE,
         "schemas": schemas,
         "heroes": hero_schemas,
         "modes": mode_schemas,
         "settings": settings,
+        "abilities": abilities,
     });
 
     let mut entries = Map::new();
@@ -170,13 +196,24 @@ fn entry_default(entry: Node) -> Option<Json> {
 /// name, and the value's type with what the text writes: a bool's two
 /// words (`m_9EC1DF9A` for true, `m_03613078` for false: "Enabled",
 /// "Disabled"; an inference from the defaults), a number's range
-/// (`m_min`, `m_max`), an enum's choices by name.
+/// (`m_min`, `m_max`), an enum's choices by name. An entry of a hero's
+/// ability has its logical button (`m_65184E78.m_logicalButton`) and the
+/// name format a hero's block writes it with (`m_7DF418A5`: "%1$s
+/// Cooldown Time" makes "Rocket Punch Cooldown Time"; none: the ability's
+/// name alone, as "Seismic Slam: Off").
 fn entry_setting(install: &Install, entry: Node) -> Option<Json> {
     let value = entry.node("m_value")?;
     let text = |node: Node, field: &str| install.string(node.guid(field));
     let mut setting = Map::new();
     setting.insert("key".into(), json!(entry.guid("m_3E783677") & INDEX));
     setting.insert("name".into(), json!(text(entry, "m_displayText")));
+    let button = entry
+        .node("m_65184E78")
+        .map_or(0, |button| button.guid("m_logicalButton"));
+    if button != 0 {
+        setting.insert("button".into(), json!(key(button)));
+        setting.insert("format".into(), json!(text(entry, "m_7DF418A5")));
+    }
     match value.class_name()? {
         "STU_8A8AA0A4" => {
             setting.insert("type".into(), json!("bool"));

@@ -3020,7 +3020,7 @@ impl State {
                             .iter()
                             .find(|(seated, _)| seated == connection)?;
                         let player = &room.players[slot];
-                        (!player.gone && peer.world.world_started()).then(|| WorkshopPlayer {
+                        (!player.gone && peer.world.world_started()).then_some(WorkshopPlayer {
                             controller: player.entity,
                             slot,
                             team: player.info.team,

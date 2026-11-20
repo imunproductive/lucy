@@ -37,8 +37,8 @@ use crate::{
     expr::EntityRelation,
     graph::GraphStore,
     vm::{
-        BodyMove, Component, GameMessage, InitFault, MAX_INIT_WORK, PlayRequest, Root,
-        ScopeChange, Site, Snapshot, StateKind, TrackedStat, Unknowns, VoiceRequest, World,
+        BodyMove, Component, GameMessage, InitFault, MAX_INIT_WORK, PlayRequest, Root, ScopeChange,
+        Site, Snapshot, StateKind, TrackedStat, Unknowns, VoiceRequest, World,
     },
     wire::{Value, Variables},
 };

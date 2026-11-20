@@ -1078,7 +1078,8 @@ impl Engine {
 
 /// Whether `arg` uses value `id` anywhere.
 fn names(arg: &Arg, id: Id) -> bool {
-    let value_names = |value: &logic::Value| value.id == id || value.args.iter().any(|arg| names(arg, id));
+    let value_names =
+        |value: &logic::Value| value.id == id || value.args.iter().any(|arg| names(arg, id));
     match arg {
         Arg::Value(value) => value_names(value),
         Arg::Array(values) => values.iter().any(value_names),
