@@ -28,6 +28,12 @@ use orpheus_script::{
 
 use crate::{placed_script::PlacedFrame, projectiles::ShotKey};
 
+/// The initial graphs of each entity the game spawns during the match, by
+/// entity definition (`game_spawns_174.json`: the Biotic Field `03DC`
+/// starts `0258`; the projectile entities' too, the Biotic Orbs `1E60`
+/// `10FF` and `1E61` `1100`, which the server doesn't run yet).
+pub type SpawnGraphs = BTreeMap<u64, Vec<u32>>;
+
 /// One field the room runs.
 struct Field {
     shot: ShotKey,

@@ -39,9 +39,10 @@ use crate::{
     objectives::CaptureBox,
     placed_script::PlacedScripts,
     pools::PoolCatalog,
-    projectiles::FIELD_ENTITY,
+    projectile_flight::WallHit,
     replication::OwnerBodyRuntime,
     scene::{PlayerAppearance, initial_world, mode_ui, placeable_components},
+    spawned::SpawnGraphs,
 };
 use orpheus_content::{
     heroes::{EyeCatalog, Hero, HeroCatalog, SOLDIER},
@@ -167,8 +168,9 @@ pub struct SceneAssets {
     respawns: RespawnTimes,
     /// The mode graphs' values the match flow uses.
     mode_graph_values: ModeGraphValues,
-    /// The Biotic Field's initial graphs; without them no field runs.
-    field_graphs: Vec<u32>,
+    /// The initial graphs of the entities the game spawns during the match
+    /// (`crate::spawned`); an entity without any doesn't run.
+    spawn_graphs: Arc<SpawnGraphs>,
     stats: Arc<StatsCatalog>,
     /// The stats the server counts (the Tab board's player list).
     board: BoardStats,
@@ -230,8 +232,9 @@ pub struct PreparedScene {
     stats: Arc<StatsCatalog>,
     board: BoardStats,
     pub owner_body_factory: Option<Arc<OwnerBodyFactory>>,
-    /// The Biotic Field's initial graphs (`03DC.003` starts `0258`).
-    field_graphs: Vec<u32>,
+    /// The spawned entities' initial graphs (`03DC.003`, the Biotic Field,
+    /// starts `0258`; `1E60.003`, the healing Biotic Orb, `10FF`).
+    spawn_graphs: Arc<SpawnGraphs>,
     /// The mode posts hero switches in the chat (notices.py).
     switch_notices: bool,
     /// The map's AI navigation, when the data has it (Practice vs AI).
@@ -294,10 +297,10 @@ impl SceneAssets {
             .get(SOLDIER)
             .ok_or_else(|| invalid("the hero catalog has no Soldier: 76"))?
             .body;
-        let field_graphs =
-            field_graphs(&data.join("game_spawns_174.json")).unwrap_or_else(|error| {
-                eprintln!("the Biotic Field is unavailable ({error})");
-                Vec::new()
+        let spawn_graphs =
+            spawn_graphs(&data.join("game_spawns_174.json")).unwrap_or_else(|error| {
+                eprintln!("the spawned entities' graphs are unavailable ({error})");
+                SpawnGraphs::new()
             });
         let stats = Arc::new(
             StatsCatalog::load(data.join("game_stats_174.json"))?
@@ -320,7 +323,7 @@ impl SceneAssets {
             build_collision: None,
             mode_props: read_mode_props(&data.join("collision_props_174.json"))?,
             mode_graph_values: ModeGraphValues::read(&graphs)?,
-            field_graphs,
+            spawn_graphs: Arc::new(spawn_graphs),
             graphs,
             codecs,
             owner_bodies: Mutex::default(),
@@ -568,7 +571,7 @@ impl SceneAssets {
             stats: Arc::clone(&self.stats),
             board: self.board,
             owner_body_factory: None,
-            field_graphs: self.field_graphs.clone(),
+            spawn_graphs: Arc::clone(&self.spawn_graphs),
             switch_notices: switch_notices(self.modes.get(map_mode)),
             navigation,
             paths: PathBudget::default(),
@@ -1069,9 +1072,10 @@ impl PreparedScene {
         &self.board
     }
 
-    /// The Biotic Field's initial graphs (`crate::spawned`).
-    pub(crate) fn field_graphs(&self) -> &[u32] {
-        &self.field_graphs
+    /// The initial graphs of the entities the game spawns during the match
+    /// (`crate::spawned`).
+    pub(crate) fn spawn_graphs(&self) -> &Arc<SpawnGraphs> {
+        &self.spawn_graphs
     }
 
     /// A player's body as a target (combat.py `_targets`): a capsule from
@@ -1113,6 +1117,19 @@ impl PreparedScene {
         reach: f64,
         profile: Option<u64>,
     ) -> Result<Option<f64>, orpheus_physics::collision::index::IndexError> {
+        self.projectile_wall(origin, direction, reach, profile)
+            .map(|hit| hit.map(|hit| hit.distance))
+    }
+
+    /// [`Self::hitscan_wall`] with the normal of the surface it meets, which
+    /// a bouncing projectile leaves by (`crate::projectile_flight`).
+    pub(crate) fn projectile_wall(
+        &self,
+        origin: [f64; 3],
+        direction: [f64; 3],
+        reach: f64,
+        profile: Option<u64>,
+    ) -> Result<Option<WallHit>, orpheus_physics::collision::index::IndexError> {
         self.rays
             .cast_ray(
                 origin,
@@ -1120,7 +1137,12 @@ impl PreparedScene {
                 reach,
                 self.ray_profiles.map_mask(profile),
             )
-            .map(|hit| hit.map(|hit| hit.distance))
+            .map(|hit| {
+                hit.map(|hit| WallHit {
+                    distance: hit.distance,
+                    normal: hit.normal,
+                })
+            })
     }
 
     /// Whether a shot or a projectile's sweep of the volley's ray profile
@@ -1463,10 +1485,11 @@ struct PropCatalog {
     modes: BTreeMap<String, Vec<String>>,
 }
 
-/// The Biotic Field's initial graphs: those of [`FIELD_ENTITY`] in
-/// `game_spawns_174.json` (`0258`). Assumption: they bind no values, as
+/// The spawned entities' initial graphs: `game_spawns_174.json`, each
+/// entity that starts any (the Biotic Field `03DC` `0258`, the Biotic Orbs
+/// `1E60` `10FF` and `1E61` `1100`). Assumption: they bind no values, as
 /// the file lists none.
-fn field_graphs(path: &Path) -> io::Result<Vec<u32>> {
+fn spawn_graphs(path: &Path) -> io::Result<SpawnGraphs> {
     #[derive(Deserialize)]
     struct Spawn {
         graphs: Vec<u32>,
@@ -1474,10 +1497,13 @@ fn field_graphs(path: &Path) -> io::Result<Vec<u32>> {
     let spawns: HashMap<String, Spawn> =
         serde_json::from_str(&fs::read_to_string(path)?).map_err(invalid)?;
     spawns
-        .get(&format!("0x{FIELD_ENTITY:016X}"))
-        .map(|spawn| spawn.graphs.clone())
-        .filter(|graphs| !graphs.is_empty())
-        .ok_or_else(|| invalid("the Biotic Field entity starts no graph"))
+        .into_iter()
+        .filter(|(_, spawn)| !spawn.graphs.is_empty())
+        .map(|(entity, spawn)| {
+            let entity = parse_guid(&entity).ok_or_else(|| invalid("invalid spawn GUID"))?;
+            Ok((entity, spawn.graphs))
+        })
+        .collect()
 }
 
 fn read_mode_props(path: &Path) -> io::Result<BTreeMap<u64, BTreeSet<u64>>> {

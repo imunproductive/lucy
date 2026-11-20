@@ -17,11 +17,13 @@
 //!   (`0F4A` sends its `#20680`, set to 10). A mode whose graph sends no such
 //!   message, or several values, is left out.
 //! - `data/game_spawns_174.json`: each entity a hero weapon volley's
-//!   projectile leaves where it lands (the `STU_8556841E` definitions of a
-//!   `STUStatescriptStateWeaponVolley`'s `m_49CBA3BC`, as
-//!   `ow174/game/projectiles.py` `_defs` reads them) and the initial graphs of
-//!   its statescript component (`m_B634821A[].m_graph`): `03DC.003`, the
-//!   Biotic Field, starts `0258`.
+//!   projectile is (`m_projectileEntity`) or leaves where it lands
+//!   (`m_49CBA3BC`, as `ow174/game/projectiles.py` `_defs` reads them):
+//!   the `STU_8556841E` definitions in either field of a
+//!   `STUStatescriptStateWeaponVolley`, with the initial graphs of the
+//!   entity's statescript component (`m_B634821A[].m_graph`). `03DC.003`,
+//!   the Biotic Field, starts `0258`; Moira's Biotic Orbs `1E60.003` and
+//!   `1E61.003` start `10FF` and `1100`.
 //!
 //! The hero bundle (`data/game_graphs_174.json.gz`) is read from the build
 //! folder.
@@ -210,11 +212,10 @@ fn spawns(install: &Install, out: &Path) -> Result<Json> {
             node.get("class").and_then(Json::as_str) == Some("STUStatescriptStateWeaponVolley")
         })
     {
-        if let Some(spawn) = node
-            .get("fields")
-            .and_then(|fields| fields.get("m_49CBA3BC"))
-        {
-            definitions(spawn, &mut spawned)?;
+        for name in ["m_49CBA3BC", "m_projectileEntity"] {
+            if let Some(spawn) = node.get("fields").and_then(|fields| fields.get(name)) {
+                definitions(spawn, &mut spawned)?;
+            }
         }
     }
     let entities = Assets::of(install, ENTITY);

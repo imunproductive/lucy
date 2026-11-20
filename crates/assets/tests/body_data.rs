@@ -62,10 +62,14 @@ fn respawns_match_the_python_reference() {
 }
 
 /// projectiles.py `FIELD_ENTITY` and `FIELD_GRAPH`: the Biotic Field
-/// `03DC.003`, which 0257's canister leaves, starts graph `0258`.
+/// `03DC.003`, which 0257's canister leaves, starts graph `0258`; the
+/// entities volleys fly as their projectiles start theirs: Moira's Biotic
+/// Orbs (`10E4` rid18 and rid19) `10FF` and `1100`.
 #[test]
 #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
-fn the_biotic_field_starts_its_graph() {
+fn the_spawned_entities_start_their_graphs() {
     let spawns = derived("data/game_spawns_174.json");
     assert_eq!(spawns["0x04000000000003DC"], json!({"graphs": [0x0258]}));
+    assert_eq!(spawns["0x0400000000001E60"], json!({"graphs": [0x10FF]}));
+    assert_eq!(spawns["0x0400000000001E61"], json!({"graphs": [0x1100]}));
 }

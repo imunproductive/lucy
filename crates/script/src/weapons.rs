@@ -331,13 +331,162 @@ pub struct ProjectileBallistics {
     /// A projectile that sticks to the first body or surface it hits and
     /// explodes this many seconds later; None ends where it hits.
     pub fuse: Option<f64>,
+    /// How it bounces off the map's surfaces (`m_E365DB20`); none ends it
+    /// at the first surface it hits.
+    pub bounce: Option<Bounce>,
     /// The volley's motion classes the flight doesn't model, which it flies
-    /// as if they weren't there (Pharah's `STU_7A5DFFF8`).
+    /// as if they weren't there (Pharah's `STU_7A5DFFF8`), and the bounce
+    /// fields it ignores ([`Bounce::from_authored`]).
     pub unmodelled: Vec<String>,
     /// The volley's ray profile ([`ray_profile`]), whose map mask its sweep
     /// meets the map with.
     pub ray_profile: Option<u64>,
 }
+
+/// What the side of a surface a projectile hits is, by the up part of the
+/// surface's normal toward the projectile: a ceiling at or below the
+/// volley's `m_7E3AEA51` (−cos 45° when unset), a floor at or above its
+/// `m_B752FBAE` (cos 45°), a wall between (the client's projectile hit
+/// `0x7FF789C85110` compares the hit's `+0x84` with the projectile setup's
+/// `+0x58` and `+0x54`, which `0x7FF789C97AF0` reads from those volley
+/// fields). Assumption: that `+0x84` of the hit is the normal's up part;
+/// the ±45° defaults suggest it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Surface {
+    Ceiling,
+    Wall,
+    Floor,
+}
+
+/// A projectile's bounces (`m_E365DB20`, `STU_3FE1A93B`, data only), as
+/// the client's projectile hit `0x7FF789C85110` and its bounce
+/// `0x7FF789C87B80` read the block the projectile setup `0x7FF789C97AF0`
+/// fills from it (an unset field: 0 or false, the restitution 1; refs
+/// report `BioticOrb.md` "Bounce"). A hit on a surface whose kind bounces
+/// takes the velocity's part into the surface back out, scaled by the
+/// restitution (`v − (1 + e)(v·n)n`), and counts a bounce; the hit after
+/// the last bounce, or on a surface that doesn't bounce or whose end flag
+/// is set, ends the projectile there. Moira's Biotic Orbs (`10E4` rid18,
+/// rid19) bounce 99 times off every surface at full speed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bounce {
+    /// `m_360294F0` (block `+0x20`): the bounces it makes.
+    pub count: u32,
+    /// Whether a ceiling, a wall or a floor bounces it (`m_D9EFD182`,
+    /// `m_E94D94BA`, `m_8BCA0BAF`; block `+0x24` to `+0x26`).
+    pub bounces: [bool; 3],
+    /// Whether a bounce off a ceiling, a wall or a floor ends it all the
+    /// same (`m_511E9659`, `m_02C525AF`, `m_BEBAF24B`; `+0x29` to `+0x2B`).
+    pub ends: [bool; 3],
+    /// `m_0D20DAFD` (`+0x30`): how much of its speed into the surface it
+    /// keeps, reversed; 1 when unset.
+    pub restitution: f64,
+    /// The up parts of a surface's normal at and below which it is a
+    /// ceiling, and at and above which a floor ([`Surface`]).
+    pub ceiling: f64,
+    pub floor: f64,
+}
+
+/// The bounce block's fields the server reads, in the block's order.
+const BOUNCE_FLAGS: [&str; 6] = [
+    "m_D9EFD182",
+    "m_E94D94BA",
+    "m_8BCA0BAF",
+    "m_511E9659",
+    "m_02C525AF",
+    "m_BEBAF24B",
+];
+
+/// The bounce block's fields the server doesn't model, with the value an
+/// unset one has: `m_C176AA10` (`+0x28`, a bounce rule for hits the
+/// collision marks `+0x3E` bit 0), `m_113221E0` and `m_E4405A7C` (`+0x2C`,
+/// `+0x2D`, for hits on bodies), `m_8CFC1C4D` (`+0x2E`: the bounce leaves
+/// along the normal), the four slowdowns `+0x34` to `+0x40` and the four
+/// scales `+0x44` to `+0x50` of the velocity's parts. A set one is ignored
+/// (recorded in [`ProjectileBallistics::unmodelled`]). `m_DF0FE3D5`
+/// (`+0x27`) is read by neither function.
+const BOUNCE_UNMODELLED: [(&str, f64); 12] = [
+    ("m_C176AA10", 0.0),
+    ("m_113221E0", 0.0),
+    ("m_E4405A7C", 0.0),
+    ("m_8CFC1C4D", 0.0),
+    ("m_CE33458D", 0.0),
+    ("m_F28BB504", 0.0),
+    ("m_7D58A06F", 0.0),
+    ("m_446C07E6", 0.0),
+    ("m_C29D35E8", 1.0),
+    ("m_2F054D7D", 1.0),
+    ("m_A28234C2", 1.0),
+    ("m_DD899B9D", 1.0),
+];
+
+impl Bounce {
+    /// The volley `node`'s bounces, if it names a bounce block; each field
+    /// it sets that the server ignores goes to `unmodelled`.
+    fn from_authored(
+        node: &Node,
+        evaluate: &mut impl FnMut(&Json) -> Result<Value, EvalError>,
+        unmodelled: &mut Vec<String>,
+    ) -> Result<Option<Self>, EvalError> {
+        let Some(block) = node.field("m_E365DB20").filter(|block| block.is_object()) else {
+            return Ok(None);
+        };
+        let mut flags = [false; 6];
+        for (flag, name) in flags.iter_mut().zip(BOUNCE_FLAGS) {
+            *flag = authored_number(block.get(name), 0.0, evaluate)? != 0.0;
+        }
+        for (name, unset) in BOUNCE_UNMODELLED {
+            let value = authored_number(block.get(name), unset, evaluate)?;
+            if (value - unset).abs() > BOUNCE_EPSILON {
+                unmodelled.push(format!("STU_3FE1A93B {name}"));
+            }
+        }
+        let count = authored_number(block.get("m_360294F0"), 0.0, evaluate)?;
+        let restitution = authored_number(block.get("m_0D20DAFD"), 1.0, evaluate)?;
+        let ceiling = authored_number(node.field("m_7E3AEA51"), -SURFACE_COS, evaluate)?;
+        let floor = authored_number(node.field("m_B752FBAE"), SURFACE_COS, evaluate)?;
+        if ![count, restitution, ceiling, floor]
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            count: count.clamp(0.0, f64::from(u32::MAX)) as u32,
+            bounces: [flags[0], flags[1], flags[2]],
+            ends: [flags[3], flags[4], flags[5]],
+            restitution,
+            ceiling,
+            floor,
+        }))
+    }
+
+    /// The kind of surface a hit with this normal (toward the projectile)
+    /// meets.
+    pub fn surface(&self, normal: [f64; 3]) -> Surface {
+        if normal[1] <= self.ceiling {
+            Surface::Ceiling
+        } else if normal[1] >= self.floor {
+            Surface::Floor
+        } else {
+            Surface::Wall
+        }
+    }
+
+    /// Whether the `bounce`th bounce (from 1) off `surface` happens and
+    /// the projectile flies on: the surface bounces it, it has bounces
+    /// left and the surface doesn't end it (`0x7FF789C87B80`).
+    pub fn flies_on(&self, surface: Surface, bounce: u32) -> bool {
+        let side = surface as usize;
+        self.bounces[side] && bounce <= self.count && !self.ends[side]
+    }
+}
+
+/// cos 45°, the client's default bounds of a floor's and a ceiling's
+/// normal (`0x3F3504F2`).
+const SURFACE_COS: f64 = std::f64::consts::FRAC_1_SQRT_2;
+/// The client's tolerance for a bounce scale that is 1 (`0.004`).
+const BOUNCE_EPSILON: f64 = 0.004;
 
 /// The class of a volley's literal ray profile reference (`m_C1903771`).
 const RAY_PROFILE_REFERENCE: &str = "STU_20DB8AB5";
@@ -538,6 +687,12 @@ impl ProjectileBallistics {
         // is read from those two, the Pulse Bomb and Echo's Sticky Bombs).
         let sticks =
             authored_number(node.field("m_55E8761C.m_47999E82"), 0.0, &mut evaluate)? != 0.0;
+        // A projectile that sticks doesn't bounce (no volley has both).
+        let bounce = if sticks {
+            None
+        } else {
+            Bounce::from_authored(node, &mut evaluate, &mut unmodelled)?
+        };
         Ok(Some(Self {
             speed,
             lifetime,
@@ -547,6 +702,7 @@ impl ProjectileBallistics {
             radius,
             gravity,
             fuse: sticks.then_some(STICK_FUSE),
+            bounce,
             unmodelled,
             ray_profile: ray_profile(node, &mut evaluate),
         }))
