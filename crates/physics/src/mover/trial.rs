@@ -34,6 +34,7 @@ use crate::{
     contact::math::{Vec3, dot, scale},
     contact::solver::clip_velocity,
     contact::world::ContactWorld,
+    mover::landing::{LandingSearch, landing_point},
 };
 
 /// A clipped move at most this share of the distance long stops the move.
@@ -86,6 +87,17 @@ impl TrialMove {
             }
         };
         Ok(f64::from(dot(turned, direction).clamp(-1.0, 1.0)))
+    }
+
+    /// Where a placement selector's landing search lands in the body's
+    /// world, its casts meeting the static shapes of `category`
+    /// ([`landing_point`]).
+    pub fn landing(
+        &self,
+        category: u16,
+        search: &LandingSearch,
+    ) -> Result<Option<[f64; 3]>, PointSetSize> {
+        landing_point(&self.world, category, search)
     }
 }
 

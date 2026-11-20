@@ -31,7 +31,7 @@ use crate::{
     wire::{Value, Variables},
 };
 use orpheus_content::maps::TUTORIAL_MODE;
-use orpheus_physics::mover::{sample_movement_flags, trial::TrialMove};
+use orpheus_physics::mover::{landing::LandingSearch, sample_movement_flags, trial::TrialMove};
 use orpheus_wire::entity::{GAME_MODE_ENTITY, Movement};
 
 /// The hero body graphs that raise the body's voice reactions: `01CA` and
@@ -572,6 +572,22 @@ impl World for PlayerWorld {
             return None;
         }
         self.trial.as_ref()?.turn(direction, distance).ok()
+    }
+
+    /// The search in the body's own world, meeting the map's categories of
+    /// the cast's ray profile.
+    fn landing_point(
+        &mut self,
+        site: Site,
+        entity: u32,
+        search: &LandingSearch,
+        profile: Option<u64>,
+    ) -> Option<Option<[f64; 3]>> {
+        if !self.is_player_site(site) || entity != self.entity {
+            return None;
+        }
+        let category = self.map_rays.as_deref()?.map_mask(profile);
+        self.trial.as_ref()?.landing(category, search).ok()
     }
 
     /// The body's team from its filter bits; the other bodies' as listed.

@@ -18,6 +18,7 @@ mod flow;
 mod grapple;
 mod health;
 mod hero_select;
+mod landing;
 mod lifecycle;
 mod links;
 mod machine;
@@ -497,6 +498,10 @@ pub trait MapRays: fmt::Debug + Send + Sync {
     /// meets the living bodies: only a profile whose rays test the bodies'
     /// hit shapes does (`m_0220680A` bit 0).
     fn meets_bodies(&self, profile: Option<u64>) -> bool;
+
+    /// The map's collision categories a cast of ray profile `profile` (none:
+    /// the default profile) meets.
+    fn map_mask(&self, profile: Option<u64>) -> u16;
 }
 
 /// External authored queries for this initialization. The caller owns mode,
@@ -760,6 +765,20 @@ pub trait World {
         _direction: [f64; 3],
         _distance: f64,
     ) -> Option<f64> {
+        None
+    }
+
+    /// Where a placement selector's landing search from `entity`'s eye
+    /// lands, its casts meeting the map as ray profile `profile` does
+    /// (`STU_4C96470A`, [`orpheus_physics::mover::landing`]): Some(None)
+    /// when it finds no ground. None: unknown here.
+    fn landing_point(
+        &mut self,
+        _site: Site,
+        _entity: u32,
+        _search: &orpheus_physics::mover::landing::LandingSearch,
+        _profile: Option<u64>,
+    ) -> Option<Option<[f64; 3]>> {
         None
     }
 
@@ -1205,6 +1224,9 @@ pub enum StateKind {
     /// A wall check (`STU_FBFF5DE7`, `vm/walls.rs`): a trial move of the
     /// body each tick, its output true when a wall turns it.
     WallCheck,
+    /// A placement selector's landing search (`STU_4C96470A`,
+    /// `vm/landing.rs`): it searches each tick while its gate holds.
+    Landing,
     /// A health change (`vm/health.rs`): a rate keeps when it last applied
     /// its share.
     ModifyHealth {

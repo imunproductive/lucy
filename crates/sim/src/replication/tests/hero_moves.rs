@@ -835,6 +835,16 @@ impl Player {
             .any(|instance| instance.states.get(&raw).is_some_and(|state| state.active))
     }
 
+    /// Instance variable `var` of the first instance of `graph`.
+    fn graph_variable(&self, graph: u32, var: u32) -> Option<&ScriptValue> {
+        self.snapshot()
+            .instances
+            .values()
+            .find(|instance| instance.graph == graph)?
+            .variables
+            .get(&var)
+    }
+
     fn velocity(&self) -> [f64; 3] {
         self.world.mover.as_ref().unwrap().pose().velocity
     }
