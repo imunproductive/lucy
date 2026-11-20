@@ -43,8 +43,9 @@ use orpheus_script::{
     vitals::Vitals,
     vm::{
         AssistLink, AuraChange, BodyEffects, Component, GameMessage, MAX_INIT_WORK, MapRays,
-        Motion, MoveRequest, ParentWrite, RaisedCriteria, Root, Scaled, ScopeChange, ScopeSource,
-        Site, Snapshot, StateKind, TargetCandidate, TrackedStat, Unknowns, VoiceRequest, World,
+        Motion, MoveRequest, ParentWrite, Pickup, RaisedCriteria, Root, Scaled, ScopeChange,
+        ScopeSource, Site, Snapshot, StateKind, TargetCandidate, TrackedStat, Unknowns,
+        VoiceRequest, World,
     },
     weapons::{DamageTags, HitDefinition, ProjectileBallistics, pellet_rings, ray_profile},
     wire::{Value, Variables},
@@ -689,6 +690,10 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
         let targets = self.world.targets.get_or_insert_with(Vec::new);
         targets.clear();
         targets.extend_from_slice(candidates);
+    }
+
+    fn set_pickups(&mut self, pickups: &[Pickup]) {
+        self.world.pickups = Some(pickups.to_vec());
     }
 
     /// The killer's possessor as the body's graphs would ask it

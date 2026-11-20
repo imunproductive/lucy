@@ -24,7 +24,7 @@ use crate::{
     vitals::{PoolKind, Vitals},
     vm::{
         AssistLink, AuraChange, BodyEffects, CombatMod, DummyBot, GameMessage, HealthChange,
-        MapRays, ParentWrite, RaisedCriteria, ScopeChange, SeenBodies, SeenBody, Site,
+        MapRays, ParentWrite, Pickup, RaisedCriteria, ScopeChange, SeenBodies, SeenBody, Site,
         TargetCandidate, TargetTagEffect, TrackedStat, Unknowns, VoiceRequest, World,
     },
     wheel::{Cosmetic, Cosmetics},
@@ -106,6 +106,10 @@ pub struct PlayerWorld {
     /// his body's script runs now, for the searches that rewind
     /// (`World::seen_bodies`); none: the match can't tell.
     pub seen: Option<Vec<SeenBody>>,
+    /// The pickups the map's placeables hold now (a health pack's `0046`
+    /// st5), which the body's search finds (`0033` st11, `STU_87621906`,
+    /// `vm/pickups.rs`); none: the match doesn't say.
+    pub pickups: Option<Vec<Pickup>>,
     /// The map's collision the body's ray casts meet; none: no map.
     pub map_rays: Option<Arc<dyn MapRays>>,
     /// The map's tagged placeables the scene tag queries find; none: no
@@ -323,6 +327,27 @@ impl World for PlayerWorld {
     fn change_scope(&mut self, _site: Site, change: ScopeChange) -> bool {
         self.scopes.push(change);
         true
+    }
+
+    /// The pickup of `kind` whose sphere touches the body's capsule as the
+    /// match placed it this tick, for its team (or any team).
+    fn touched_pickup(&mut self, site: Site, entity: u32, kind: i64) -> Option<Option<u32>> {
+        if !self.is_player_site(site) {
+            return None;
+        }
+        let body = self.listed(entity)?;
+        let team = body.team.map(i64::from);
+        Some(
+            self.pickups
+                .as_deref()?
+                .iter()
+                .find(|pickup| {
+                    pickup.kind == kind
+                        && (pickup.team == -1 || Some(pickup.team) == team)
+                        && pickup.touches(body.feet, body.height, body.radius)
+                })
+                .map(|pickup| pickup.entity),
+        )
     }
 
     /// A scope instance's write to its scope state's instance goes to the
@@ -795,6 +820,7 @@ impl PlayerWorld {
             controller_on_fire: false,
             targets: None,
             seen: None,
+            pickups: None,
             victim_tags: None,
             unknowns: Unknowns::for_build(),
             cosmetics: Cosmetics::default(),

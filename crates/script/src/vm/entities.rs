@@ -170,6 +170,89 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         Ok(true)
     }
 
+    /// `STUStatescriptStateCreateEntity` (`STU_BB1054F4`) begins (slot 23
+    /// `0x7FF7897FAC30`): as the action, the client makes the entity itself
+    /// only for an instance it runs on its own or a client-only node
+    /// (`sub_7FF789809ED0`), so a networked instance's is the server's.
+    /// The client reads `m_entityDef`, `m_position`, the scale
+    /// `m_40AF7E2D` and `m_1C558638` (evaluated, its value dropped), and
+    /// writes the entity to `m_E95B313B`; with `m_294B652A` it predicts it
+    /// (slot 56). A position is a vector or an array's first one
+    /// (`sub_7FF789806DE0` → `sub_7FF789E75E70`, type 6 only); anything
+    /// else (the health pack `0046` st15's `owner()`) leaves it to the
+    /// creator's default, here none ([`EntityCreation::position`]). A set
+    /// scale or prediction is refused. Its end (slot 24 `0x7FF7897FACF0`)
+    /// destroys the entity with its children ([`Self::end_create_entity`]).
+    pub(super) fn begin_create_entity(
+        &mut self,
+        key: StateKey,
+        node: &Node,
+    ) -> Result<(), InitFault> {
+        let id = key.instance;
+        let site = self.site(id, node);
+        if !field(&node.fields, "m_40AF7E2D").is_null()
+            || field(&node.fields, "m_294B652A").as_i64() != Some(0)
+        {
+            self.report(
+                site,
+                Issue::UnsupportedField("StateCreateEntity scale or prediction"),
+            );
+            return Ok(());
+        }
+        let Some(definition) = self.evaluate(id, node, field(&node.fields, "m_entityDef"), None)
+        else {
+            return Ok(());
+        };
+        let Value::Asset(definition) = definition else {
+            self.report(
+                site,
+                Issue::UnsupportedField("StateCreateEntity definition"),
+            );
+            return Ok(());
+        };
+        let position = match field(&node.fields, "m_position") {
+            Json::Null => None,
+            config => match self.evaluate(id, node, config, None) {
+                Some(value) => first_vector(&value),
+                None => return Ok(()),
+            },
+        };
+        let target = match expr::lvalue(field(&node.fields, "m_E95B313B")) {
+            Ok(target) => target.map(|target| source_key(id, target)),
+            Err(error) => {
+                self.report(site, Issue::Expression(error));
+                return Ok(());
+            }
+        };
+        let Some(entity) = self.world.create_entity(
+            site,
+            EntityCreation {
+                definition,
+                position,
+            },
+        ) else {
+            self.report(site, Issue::UnsupportedState(node.class.clone()));
+            return Ok(());
+        };
+        if let Some(state) = self.state_mut(key) {
+            state.kind = StateKind::CreateEntity {
+                entity: Some(entity),
+            };
+        }
+        if let Some(target) = target {
+            self.write(target, Value::Entity(entity))?;
+        }
+        Ok(())
+    }
+
+    /// The entity a `StateCreateEntity` made goes as the state ends.
+    pub(super) fn end_create_entity(&mut self, key: StateKey, node: &Node, entity: u32) {
+        let site = self.site(key.instance, node);
+        if !self.world.destroy_entity(site, entity) {
+            self.assume(site, &node.class, "the world removes no entity");
+        }
+    }
+
     /// `STU_FC3921B1` (server-only: the base action's run on the client):
     /// ask the world for a dummy bot of hero `m_heroGUID` in team
     /// `m_67465E75`'s slot `m_slot`, standing at `m_06B5A4F1` and facing
@@ -633,4 +716,15 @@ pub(super) fn entities(value: &Value) -> Vec<u32> {
         value => add(value),
     }
     found
+}
+
+/// A value as the client's position read takes it (`sub_7FF789E75E70`):
+/// a vector, or an array's first item followed down; none for anything
+/// else.
+fn first_vector(value: &Value) -> Option<[f64; 3]> {
+    match value {
+        Value::Vector(position) => Some(*position),
+        Value::Array(items) => first_vector(items.first()?),
+        _ => None,
+    }
 }

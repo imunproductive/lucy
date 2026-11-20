@@ -31,7 +31,7 @@ use crate::{
         ObservedScript, ObserverActivity, ObserverCache, OtherDelivery, Others, PlayerView,
         RemoteBody, RemoteDeath, ShowContext, ShowOutput, ViewerReadiness,
     },
-    placed_script::{PlacedFrame, PlacedViews},
+    placed_script::{MadeView, PlacedFrame, PlacedViews},
     pools::FALLBACK_POOLS,
     projectile_flight::{FlightEnd, ProjectileFlight},
     projectiles::{
@@ -73,9 +73,9 @@ use orpheus_script::{
     vitals::{Death, Vitals},
     vm::{
         AssistLink, AuraChange, BodyEffects, DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage,
-        HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, ParentWrite, PlayRequest,
-        RaisedCriteria, Scaled, ScopeChange, ScopeSource, Snapshot, TargetCandidate, TrackedStat,
-        VoiceRequest, combat_scale,
+        HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, ParentWrite, Pickup,
+        PlayRequest, RaisedCriteria, Scaled, ScopeChange, ScopeSource, Snapshot, TargetCandidate,
+        TrackedStat, VoiceRequest, combat_scale,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
@@ -500,6 +500,10 @@ pub trait OwnerBodyRuntime: Send {
     /// The bodies the body's target searches can find from now on
     /// (`Combat::target_candidates`).
     fn set_target_candidates(&mut self, _candidates: &[TargetCandidate]) {}
+
+    /// The pickups the map's placeables hold now (the health packs), for
+    /// the body's search (`0033` st11, `orpheus_script` `vm/pickups.rs`).
+    fn set_pickups(&mut self, _pickups: &[Pickup]) {}
 
     /// The death layer's parameters of the death message for a kill by the
     /// body `killer` ([`DeathCamera`]), as the body's world knows the
@@ -993,6 +997,13 @@ pub(crate) enum Lifetime {
     Live,
     Retiring,
     ReusableAt(Duration),
+}
+
+/// Whose graphs made an entity ([`WorldDelivery::update_made`]).
+#[derive(Clone, Copy)]
+enum MadeBy {
+    Mode,
+    Placeables,
 }
 
 #[derive(Clone, Copy)]
@@ -1779,9 +1790,15 @@ pub struct WorldDelivery {
     /// given (their create queued), and those whose destroy hasn't arrived.
     mode_entities: HashSet<u32>,
     mode_entity_destroys: HashSet<u32>,
+    /// The entities the placeables' graphs made that this client is given
+    /// (a health pack's visual), as [`Self::mode_entities`].
+    placed_made: HashSet<u32>,
     /// The bodies the target searches can find, as the match last placed
     /// them; a new body starts with them.
     target_candidates: Vec<TargetCandidate>,
+    /// The pickups the placeables held as the match last looked; a new
+    /// body starts with them.
+    pickups: Vec<Pickup>,
     /// The current body's death and respawn (combat.py `Vitals.died_at`).
     death: Option<BodyDeath>,
     /// Who last hurt which of the player's bodies, and when: the player
@@ -2002,7 +2019,9 @@ impl WorldDelivery {
             removed_placed: HashSet::new(),
             mode_entities: HashSet::new(),
             mode_entity_destroys: HashSet::new(),
+            placed_made: HashSet::new(),
             target_candidates: Vec::new(),
+            pickups: Vec::new(),
             death: None,
             attackers: Vec::new(),
             knocks: KnockCredit::default(),
@@ -2151,7 +2170,9 @@ impl WorldDelivery {
         self.removed_placed.clear();
         self.mode_entities.clear();
         self.mode_entity_destroys.clear();
+        self.placed_made.clear();
         self.target_candidates.clear();
+        self.pickups.clear();
         self.notices = SwitchNotices::default();
         self.spawn_room = None;
         self.spawn_view = None;
@@ -2609,7 +2630,8 @@ impl WorldDelivery {
     /// placeable (a mode graph's `STU_A3DC6A25`, or a health pack's own
     /// `STU_523EE38D`) gets no more frames, and its create no more sends;
     /// a client that has it gets its destroy (the client runs no
-    /// `STU_523EE38D`).
+    /// `STU_523EE38D`). Then the entities the placeables' graphs made (a
+    /// health pack's visual), as the mode entity's ([`Self::update_made`]).
     pub fn update_placed(&mut self, scene: &PreparedScene) {
         if self.started.is_none() {
             return;
@@ -2652,26 +2674,48 @@ impl WorldDelivery {
                 Delivery::Placed { last: chunk.last },
             ));
         }
+        let made: Vec<MadeView<'_>> = scene.placed_scripts().made().collect();
+        self.update_made(MadeBy::Placeables, &made);
     }
 
     /// The entities the mode entity's graphs made (the Workshop's effects
     /// and icons, [`ModeRunner::created`]) on this client, once its world
-    /// started: a create for each new one (its definition where the graph
-    /// put it), its frames once the create arrived and whenever they
-    /// change (as a server placeable's, on the entity's own stream), a
-    /// destroy for each that went.
+    /// started ([`Self::update_made`]).
     pub fn update_mode_entities(&mut self, mode: &ModeRunner) {
         if !self.world_started() {
             return;
         }
-        let gone: Vec<u32> = self
-            .mode_entities
+        let made: Vec<MadeView<'_>> = mode
+            .created()
+            .map(|made| MadeView {
+                entity: made.entity.entity,
+                definition: made.entity.definition,
+                position: made.entity.position,
+                frame: made.frame(),
+            })
+            .collect();
+        self.update_made(MadeBy::Mode, &made);
+    }
+
+    /// The entities a graph made, as they are now: a create for each new
+    /// one (its definition where the graph put it), its frames once the
+    /// create arrived and whenever they change (as a server placeable's,
+    /// on the entity's own stream), a destroy for each that went.
+    fn update_made(&mut self, by: MadeBy, made: &[MadeView<'_>]) {
+        let known = match by {
+            MadeBy::Mode => &self.mode_entities,
+            MadeBy::Placeables => &self.placed_made,
+        };
+        let gone: Vec<u32> = known
             .iter()
             .copied()
-            .filter(|&entity| !mode.created().any(|made| made.entity.entity == entity))
+            .filter(|&entity| !made.iter().any(|made| made.entity == entity))
             .collect();
         for entity in gone {
-            self.mode_entities.remove(&entity);
+            match by {
+                MadeBy::Mode => self.mode_entities.remove(&entity),
+                MadeBy::Placeables => self.placed_made.remove(&entity),
+            };
             self.created.remove(&entity);
             self.placed_views.forget(entity);
             self.mode_entity_destroys.insert(entity);
@@ -2685,17 +2729,20 @@ impl WorldDelivery {
                 Delivery::ModeEntity { destroy: true },
             ));
         }
-        for made in mode.created() {
-            let entity = made.entity.entity;
-            if !self.mode_entities.insert(entity) {
+        for made in made {
+            let new = match by {
+                MadeBy::Mode => self.mode_entities.insert(made.entity),
+                MadeBy::Placeables => self.placed_made.insert(made.entity),
+            };
+            if !new {
                 continue;
             }
-            self.mode_entity_destroys.remove(&entity);
-            let mut create = Create::new(made.entity.definition, Vec::new());
-            create.position = made.entity.position.map(|part| part as f32);
+            self.mode_entity_destroys.remove(&made.entity);
+            let mut create = Create::new(made.definition, Vec::new());
+            create.position = made.position.map(|part| part as f32);
             self.push(Record::new(
                 EntityUpdate {
-                    entity,
+                    entity: made.entity,
                     operation: Some(Operation::Create(Box::new(create))),
                     ..EntityUpdate::default()
                 },
@@ -2703,9 +2750,9 @@ impl WorldDelivery {
             ));
         }
         let created = |entity| self.created.contains(&entity);
-        let frames = mode
-            .created()
-            .filter_map(|made| Some((made.entity.entity, made.frame()?)));
+        let frames = made
+            .iter()
+            .filter_map(|made| Some((made.entity, made.frame?)));
         let chunks = match self.placed_views.update(frames, created) {
             Ok(chunks) => chunks,
             Err(error) => {
@@ -2872,7 +2919,9 @@ impl WorldDelivery {
             Delivery::BotSeen(seen) => self.bot_views.seen_current(seen, entity),
             Delivery::ServerSeen(seen) => self.server_copies.current(seen, entity),
             Delivery::Placed { last } => self.placed_views.current(entity, last),
-            Delivery::ModeEntity { destroy: false } => self.mode_entities.contains(&entity),
+            Delivery::ModeEntity { destroy: false } => {
+                self.mode_entities.contains(&entity) || self.placed_made.contains(&entity)
+            }
             Delivery::ModeEntity { destroy: true } => self.mode_entity_destroys.contains(&entity),
         }
     }
@@ -3912,6 +3961,16 @@ impl WorldDelivery {
         self.target_candidates.extend_from_slice(candidates);
         if let Some(script) = &mut self.body_script {
             script.runtime.set_target_candidates(candidates);
+        }
+    }
+
+    /// The pickups the map's placeables hold now (the health packs), for
+    /// the body's search.
+    pub fn set_pickups(&mut self, pickups: &[Pickup]) {
+        self.pickups.clear();
+        self.pickups.extend_from_slice(pickups);
+        if let Some(script) = &mut self.body_script {
+            script.runtime.set_pickups(pickups);
         }
     }
 
@@ -5803,6 +5862,7 @@ impl WorldDelivery {
             .flatten()
             .and_then(|mut runtime| {
                 runtime.set_target_candidates(&self.target_candidates);
+                runtime.set_pickups(&self.pickups);
                 // The body starts with the defaults; what the client sent
                 // replaces them.
                 let settings = hero_setting_variables(&self.hero_settings, hero.guid);

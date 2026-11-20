@@ -28,12 +28,20 @@
 //!   heal (10 a second) are rates, quick melee is a blow. The Biotic Field's
 //!   `017B` st6 spreads its heal over `#567`, the field's seconds.
 //! - Not read: the knockback rings `m_knockbackRings` (quick melee has
-//!   one), `m_8B707686`, `m_DD792FF0` (1, 2 or 3), the bools `m_79758CE9`,
+//!   one), `m_DD792FF0` (1, 2 or 3), the bools `m_79758CE9`,
 //!   `m_FF9E82FA`, `m_48BED081` (false in every use), `m_B12BFE8B` (quick
 //!   melee's TrackTargets output `#23530`), `m_C0139FA6`, `m_724CBA57`
 //!   (the owner where set), `m_E33EFEE1` and `m_10399AE7` (outputs) and the
 //!   other hashed fields of `m_modifyHealth`. Each use records an
 //!   assumption.
+//! - `m_8B707686` (u8) is the native health rule's own flag: the state is
+//!   server-only (no client code), the flag is no field of the change, and
+//!   its values cut across every kind of change in the bundle (1 on the
+//!   health pack `0046` st0, the respawn heal `0033` st5, the 1000000
+//!   suicide `0033` st26, Death Blossom; 0 on quick melee and most rates).
+//!   The server's own health code ([`World::modify_health`]) applies every
+//!   change alike, so it is handed on as is and records nothing; what it
+//!   changes is in `docs/dev/loose-ends.md`.
 //!
 //! Assumed, as nothing in the data says: a body comes in once per
 //! activation (a body the targets list again after it left is not struck
@@ -70,7 +78,7 @@ pub struct HealthChange {
 }
 
 /// The fields the server doesn't read; each set one is an assumption.
-const UNREAD: &[&str] = &["m_8B707686", "m_B12BFE8B"];
+const UNREAD: &[&str] = &["m_B12BFE8B"];
 const UNREAD_CHANGE: &[&str] = &["m_knockbackRings", "m_C0139FA6", "m_E33EFEE1", "m_10399AE7"];
 
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {

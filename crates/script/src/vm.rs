@@ -23,6 +23,7 @@ mod lifecycle;
 mod links;
 mod machine;
 mod nodes;
+mod pickups;
 mod play;
 mod rays;
 mod scopes;
@@ -47,6 +48,7 @@ use std::{
 pub use auras::{AURA_APPLIED, AuraChange, AuraSource};
 pub use health::HealthChange;
 use indexmap::IndexMap;
+pub use pickups::Pickup;
 pub use scopes::{ParentWrite, ScopeChange, ScopeHit, ScopeLink, ScopeSource};
 use serde_json::Value as Json;
 pub use statuses::{
@@ -1057,10 +1059,23 @@ pub trait World {
         false
     }
 
-    /// `STUStatescriptActionCreateEntity` made an entity
-    /// (`vm/entities.rs`): the world gives it an id, starts its script and
-    /// tells the clients. None: this world makes none.
+    /// `STUStatescriptActionCreateEntity` or `StateCreateEntity` made an
+    /// entity (`vm/entities.rs`): the world gives it an id, starts its
+    /// script and tells the clients. None: this world makes none.
     fn create_entity(&mut self, _site: Site, _creation: EntityCreation) -> Option<u32> {
+        None
+    }
+
+    /// A pickup state (`STU_913C09E4`, `vm/pickups.rs`) at `site` began
+    /// (Some) or ended (None). False: this world keeps none.
+    fn set_pickup(&mut self, _site: Site, _pickup: Option<Pickup>) -> bool {
+        false
+    }
+
+    /// The pickup of `kind` the body `entity` touches now, its entity
+    /// ([`Pickup::entity`]); Some(None): none. None: this world knows no
+    /// pickups.
+    fn touched_pickup(&mut self, _site: Site, _entity: u32, _kind: i64) -> Option<Option<u32>> {
         None
     }
 }
@@ -1376,6 +1391,18 @@ pub enum StateKind {
     /// A per-target scope (`STU_550D0C5C`, `vm/scopes.rs`): its targets'
     /// scope instances are [`State::scopes`].
     Scope,
+    /// `StateCreateEntity` (`vm/entities.rs`): the entity it made while
+    /// active, which goes as it ends.
+    CreateEntity {
+        entity: Option<u32>,
+    },
+    /// A pickup while active (`STU_913C09E4`, server-only; `vm/pickups.rs`).
+    Pickup,
+    /// A body's search for the pickup it touches (`STU_87621906`,
+    /// server-only; `vm/pickups.rs`): what it last wrote.
+    PickupSearch {
+        found: Option<u32>,
+    },
 }
 
 impl StateKind {

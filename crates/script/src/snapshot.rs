@@ -2024,7 +2024,13 @@ fn state_payload(
             // A ray cast (`STUStatescriptStateRayCast`, codec none: the
             // client casts its own; Seismic Slam's landing ray, `0B27`
             // st8); its hit goes in its output variable.
-            | StateKind::Ray,
+            | StateKind::Ray
+            // StateCreateEntity (record #1699, reader nullsub): the entity
+            // it made goes to the clients as an entity of its own.
+            | StateKind::CreateEntity { .. }
+            // The pickup pair (server-only, the base state's reader).
+            | StateKind::Pickup
+            | StateKind::PickupSearch { .. },
             Some("none"),
         ) if codec.empty() => StatePayload::new(),
         // The Grappling Hook cast (`STU_4BBC5D09`): its begin; an owner frame

@@ -35,8 +35,10 @@ pub const ATTACKER_LIST: ((u32, u16), u32) = ((0x01cf, 201), 0x1901);
 /// it, and one server frame after it starts (rid28 WaitForServerFrames 1)
 /// reads the ruleset's "Spawn Health Packs" (`#9542`, rid29): Disabled,
 /// or Determined By Mode with the mode's `#9664` set, removes the pack
-/// (rid31 `STU_523EE38D` on `owner()`).
-pub const HEALTH_PACKS: [u32; 2] = [0x0216, 0x0217];
+/// (rid31 `STU_523EE38D` on `owner()`). `0046` itself plays `0EB9` (rid37)
+/// on the visual its StateCreateEntity st15 made (#38) while the pack is
+/// up (`vm/pickups.rs`).
+pub const HEALTH_PACKS: [u32; 3] = [0x0216, 0x0217, 0x0046];
 
 /// The graph a server PlayScript node (not the wheel's) plays, if it is one.
 pub(super) fn server_played_graph(graph: u32, node: u16) -> Option<u32> {

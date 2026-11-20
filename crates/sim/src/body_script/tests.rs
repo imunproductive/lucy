@@ -2526,3 +2526,95 @@ fn an_ai_hero_deals_his_difficulty_profile_s_damage() {
     assert_eq!(damage(Some(MEDIUM)), [10.0, 20.0, 40.0]);
     assert_eq!(damage(Some(HARD)), [20.0, 40.0, 80.0]);
 }
+
+/// Every hero's `0033` asks a health pack for its heal: while the body is
+/// alive and hurt (st10), st11 (`STU_87621906`) finds the pickup whose
+/// sphere touches it (`orpheus_script` `vm/pickups.rs`) and rid23 sends it
+/// `0643.025`, again every 0.5 s (st12) while it still touches one. A body
+/// at full health, or one the sphere doesn't reach, asks nothing.
+#[test]
+#[ignore = "requires the derived 104319 statescript catalog"]
+fn a_hurt_body_on_a_health_pack_asks_it_for_its_heal() {
+    use orpheus_content::heroes::SOLDIER;
+    use orpheus_script::{vitals::Death, vm::Pickup};
+
+    const PACK: u32 = 0x8000_00b9;
+    const TOUCH: u64 = 0x0240_0000_0000_0643;
+    let (mut runtime, spawn) = hero_body(SOLDIER, None, None);
+    let [x, y, z] = spawn.pose.position;
+    runtime.set_target_candidates(&[standing(
+        spawn.entity,
+        0,
+        spawn.controller,
+        spawn.pose.position,
+    )]);
+    let pack = |dx: f64| Pickup {
+        entity: PACK,
+        kind: 0,
+        centre: [x + dx, y + 0.5, z],
+        radius: 0.7,
+        team: -1,
+    };
+    let mover = Mover::new(
+        MoverSettings::default(),
+        Arc::new(ContactWorld::new(Vec::new()).unwrap()),
+        spawn.pose.position,
+        0,
+        0x18,
+    )
+    .unwrap();
+    let mut frame = spawn.frame;
+    // The frames on which the body asked the pack.
+    let mut run = |runtime: &mut PlayerBodyRuntime, frames: u32| {
+        let mut asked = Vec::new();
+        for _ in 0..frames {
+            frame += 1;
+            runtime
+                .advance(
+                    Command {
+                        frame,
+                        ..Command::default()
+                    },
+                    &mover,
+                    BodyStep::Posed,
+                )
+                .unwrap();
+            if runtime
+                .take_messages()
+                .iter()
+                .any(|message| message.target == PACK && message.message == TOUCH)
+            {
+                asked.push(frame - spawn.frame);
+            }
+        }
+        asked
+    };
+    runtime.set_pickups(&[pack(0.0)]);
+    assert_eq!(run(&mut runtime, 10), [] as [u32; 0], "at full health");
+    runtime.vitals_mut().unwrap().damage(
+        50.0,
+        Death {
+            time: 1.0,
+            frame: spawn.frame,
+            killer: spawn.entity,
+        },
+    );
+    runtime.health_changed().unwrap();
+    runtime.set_pickups(&[pack(1.5)]);
+    assert_eq!(run(&mut runtime, 10), [] as [u32; 0], "out of reach");
+    runtime.set_pickups(&[pack(0.5)]);
+    // The first ask at once, the next 0.5 s (32 frames: the first after
+    // 500 ms) later.
+    let asked = run(&mut runtime, 40);
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(asked[1] - asked[0], 32, "{asked:?}");
+    let snapshot = runtime.snapshot().unwrap();
+    assert!(
+        !snapshot
+            .assumptions
+            .iter()
+            .any(|item| item.class == "STU_87621906"),
+        "{:?}",
+        snapshot.assumptions
+    );
+}
