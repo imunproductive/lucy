@@ -1062,3 +1062,71 @@ fn doomfists_punch_jump_launches_him_out_of_the_dash() {
     assert!(height > 0.3, "{height}");
     assert!(jumped > plain + 1.5, "{plain} -> {jumped}");
 }
+
+/// Seismic Slam in the air (`0B27`): while he is more than 3 m above the
+/// ground (st8's ray finds none) st7 runs the selector st6
+/// (`STU_4C96470A`), the slam's target preview. The press (`#59` = 2, st63
+/// sets `#1321`) makes it search the ground along his view from his eye
+/// and write the point (`#431`) and its validity (`#1627`); the transition
+/// `#1627 && #1321` then begins the `MoveTo` st9, which flies him to the
+/// point. Rising Uppercut lifts him first; the slam is pressed as soon as
+/// it is allowed, looking 33° down at the open floor ahead.
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_airborne_slam_flies_to_the_ground_ahead() {
+    let mut doomfist = Player::spawn(DOOMFIST);
+    let (open, _) = open_and_walled(&doomfist.scene);
+    let start = doomfist.position();
+    let down = Command {
+        yaw: open,
+        pitch: 6000,
+        ..Command::default()
+    };
+    doomfist.press(ABILITY_1, open);
+    let mut previewing = None;
+    for frame in 0..60 {
+        doomfist.step(down);
+        if doomfist.graph_state(0x0b27, 6) {
+            previewing = Some((frame, doomfist.position()));
+            break;
+        }
+    }
+    let (shown, above) = previewing.expect("the airborne slam's preview began");
+    assert!(above[1] > start[1] + 2.5, "preview at {shown}, {above:?}");
+    let mut flying = None;
+    for frame in 1..=90 {
+        let buttons = if flying.is_none() && frame % 2 == 1 {
+            ABILITY_2
+        } else {
+            0
+        };
+        doomfist.step(Command { buttons, ..down });
+        if flying.is_none() && doomfist.graph_state(0x0b27, 9) {
+            flying = Some(frame);
+        }
+    }
+    let Some(ScriptValue::Vector(point)) = doomfist.graph_variable(0x0b27, 431).cloned() else {
+        panic!(
+            "no landing point: {:?} #1627 {:?} #1321 {:?} {:?}",
+            doomfist.graph_variable(0x0b27, 431),
+            doomfist.graph_variable(0x0b27, 1627),
+            doomfist.graph_variable(0x0b27, 1321),
+            doomfist
+                .snapshot()
+                .assumptions
+                .iter()
+                .filter(|assumption| format!("{assumption:?}").contains("4C96470A"))
+                .collect::<Vec<_>>()
+        );
+    };
+    let flying = flying.expect("the MoveTo began");
+    assert!(flying <= 60, "MoveTo at frame {flying}");
+    // The point is ground below where he pressed and ahead of the spawn,
+    // and he gets there.
+    assert!(point[1] < above[1] - 1.0, "{above:?} -> {point:?}");
+    assert!(horizontal(start, point) > 3.0, "{start:?} -> {point:?}");
+    let end = doomfist.position();
+    // MoveTo's exit distance is 0.5 m; the step's edge stops him short of
+    // a point on top of it (not compared with the client yet).
+    assert!(horizontal(end, point) < 1.5, "{end:?} vs {point:?}");
+}
