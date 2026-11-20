@@ -102,6 +102,7 @@ impl Sprinter {
             quanta: RETAIL_QUANTA,
             mode_random: scene.mode_random(),
             ai: None,
+            respawn_held: false,
         };
         let runtime = scene.owner_body_runtime(hero, spawn).unwrap().unwrap();
         let mut sprinter = Self {

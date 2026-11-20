@@ -247,6 +247,12 @@ const GAME_IDENTIFIER: u64 = 0x0240_0000_0000_002d;
 /// `0458.026` (`0C90` st65 → #10489).
 const ALLOWED_HEROES: u64 = 0x0240_0000_0000_080d;
 const ALLOWED_HEROES_LIST: u32 = 0x0458;
+/// `0727.025` held by the mode graph to every entity (`13C0` st1, `0F4A`):
+/// the controllers' `0C90` st28 opens hero select on it.
+const MODE_OPENS_SELECT: u64 = 0x0240_0000_0000_0727;
+/// `06FD.025` held by the mode graph to every entity: the bodies' `0C8E`
+/// st2 takes the respawn seconds (`00B7`) from it.
+const RESPAWN_MESSAGE: u64 = 0x0240_0000_0000_06fd;
 
 /// Whether a living body of team `other` blocks the moves of a body of
 /// `team` (the server's mover then takes its capsule,
@@ -1736,6 +1742,11 @@ pub struct WorldDelivery {
     /// `crate::controller`): until the client closes it or the countdown
     /// ends.
     keep_open: bool,
+    /// The messages the mode graph holds to every entity now
+    /// ([`Self::set_mode_held`]): where it holds `0727` the controller's
+    /// graphs open hero select themselves, and where it holds `06FD` a new
+    /// body takes the respawn seconds from it.
+    mode_held: Vec<u64>,
     body: Option<Body>,
     bound: Option<BodyId>,
     generation: u64,
@@ -1978,6 +1989,7 @@ impl WorldDelivery {
             mode: ModeView::new(),
             select_shown: None,
             keep_open: false,
+            mode_held: Vec::new(),
             body: None,
             bound: None,
             generation: 0,
@@ -3547,12 +3559,16 @@ impl WorldDelivery {
             };
             self.receive_controller_message(tick, &[], &message);
         }
-        // Hero select opens at the start: nothing in `288B` opens it then
-        // (only the client-only rid21 and rid226 after a body goes away
-        // send `1360`), so the server sends the open itself, as the
-        // client's H would (stand-in: the mode or the client opens it in
-        // retail; not found).
-        self.select_request(tick, SelectRequest::OpenOrClose(true));
+        // Hero select opens at the start. Where the mode graph holds `0727`
+        // (`13C0` st1, `0F4A`), the controller's `0C90` st28 takes it and
+        // sends its own `0738`, whose `288B` st134 opens it
+        // (ModeGraphGaps.md "Step 3"). Elsewhere nothing in `288B` opens it
+        // then (only the client-only rid21 and rid226 after a body goes
+        // away send `1360`), so the server sends the open itself, as the
+        // client's H would.
+        if !self.mode_held.contains(&MODE_OPENS_SELECT) {
+            self.select_request(tick, SelectRequest::OpenOrClose(true));
+        }
         // The player's create sends the spawn room flag set.
         self.spawn_flag = (true, self.spawn_flag.1 + 1);
         Ok(())
@@ -3586,6 +3602,14 @@ impl WorldDelivery {
 
     pub fn set_assembling(&mut self, assembling: bool) {
         self.assembling = assembling;
+    }
+
+    /// The messages the mode graph holds to every entity now
+    /// (`ModeRunner::held`), before the world starts and each tick.
+    pub fn set_mode_held(&mut self, held: &[GameMessage]) {
+        self.mode_held.clear();
+        self.mode_held
+            .extend(held.iter().map(|message| message.message));
     }
 
     /// The match's overtime, for the current body's mode script and every
@@ -5797,6 +5821,7 @@ impl WorldDelivery {
                     quanta,
                     mode_random: scene.mode_random(),
                     ai: self.ai_control(scene.graphs(), hero.guid),
+                    respawn_held: self.mode_held.contains(&RESPAWN_MESSAGE),
                 },
             )
             .ok()

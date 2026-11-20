@@ -237,6 +237,13 @@ pub trait Context {
         None
     }
 
+    /// Every entity that has target tags (component 76), each once, in the
+    /// world's order: a tag query with no tag (`STU_EB216A0B`); None: the
+    /// world can't list them.
+    fn tagged_entities(&mut self) -> Option<Vec<u32>> {
+        None
+    }
+
     /// None leaves candidate flags unknown. A known absence can report zero.
     fn entity_filter_flags(&mut self, _entity: u32) -> Option<u64> {
         None
@@ -1493,15 +1500,27 @@ impl<'t> Evaluator<'t> {
             filter_tag_list(child(filter, field)).ok_or_else(unsupported)
         };
         let (filter_any, filter_all) = (filter_tags("m_9C7BD8B8")?, filter_tags("m_B486603E")?);
-        let listed: &[u64] = [&any, &all, &filter_any, &filter_all]
+        let listed: Option<&[u64]> = [&any, &all, &filter_any, &filter_all]
             .into_iter()
             .zip([usize::MAX, 1, usize::MAX, 1])
             .find(|(tags, _)| !tags.is_empty())
-            .map(|(tags, take)| &tags[..tags.len().min(take)])
-            .ok_or_else(unsupported)?;
+            .map(|(tags, take)| &tags[..tags.len().min(take)]);
+        // The candidates: those of the first tag list that names a tag. With
+        // no tag at all the client (0x7FF789CC32E0) walks its whole pool of
+        // tagged entities (component 76, 0x7FF789BA15F0), and an empty
+        // "any" list lets each through (0x7FF789CC5310): `0F4A` rid146 and
+        // rid277 ask so while their objective's tags (#20031, #12736) are
+        // unset.
+        let candidates: Vec<Vec<u32>> = match listed {
+            Some(listed) => listed
+                .iter()
+                .map(|&tag| context.entities_with_tag(tag).ok_or_else(unsupported))
+                .collect::<Result<_, _>>()?,
+            None => vec![context.tagged_entities().ok_or_else(unsupported)?],
+        };
         let mut found = Vec::new();
-        for &tag in listed {
-            for entity in context.entities_with_tag(tag).ok_or_else(unsupported)? {
+        for entities in candidates {
+            for entity in entities {
                 if found.contains(&entity) {
                     continue;
                 }
@@ -1595,6 +1614,12 @@ impl Evaluator<'_> {
                     && !json_truthy(child(config, "m_EE729DCB")) =>
             {
                 Value::Null
+            }
+            // Its text (`m_value`, a teString; the client's evaluate
+            // 0x7FF789840A00 copies it): a map objective's name in its
+            // `0E8E` binding (#7643, `1DDB`).
+            "STU_92CA44CC" if !json_truthy(child(config, "m_EE729DCB")) && value.is_string() => {
+                Value::String(value.as_str().unwrap_or_default().into())
             }
             "STU_58AA0A3B" => {
                 // The authored weapon-manager defaults take the false branch on an unset value.

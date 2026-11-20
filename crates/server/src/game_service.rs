@@ -912,15 +912,28 @@ impl Room {
         })
     }
 
-    /// The Practice Range, which has no match flow, starts its mode graph
-    /// with its first tick, before its placed scripts' first, so they find
-    /// its held `0724` as they start (`mode_script::without_flow`).
-    fn begin_mode_without_flow(&mut self, tick: u32) {
-        let Some(world) = &self.world else {
+    /// The Practice Range, which has no match flow, and a Workshop match
+    /// start their mode entity's graph with the room's first tick, before
+    /// its placed scripts' first, as the map's entities start with the mode
+    /// entity in retail: the placed scripts find its held `0724` as they
+    /// start (`mode_script::without_flow`), and the mode graph takes the
+    /// objectives' `0813` (`0F4C`, sent once as they start). A Workshop
+    /// match runs its actions on the mode entity, so a graph must drive it
+    /// (`ModeRunner::workshop`); its graph removes placeables as it starts
+    /// (`0CBB` st34, the health packs), before any world reaches a client.
+    fn begin_mode(&mut self, tick: u32) {
+        let Some(world) = &mut self.world else {
             return;
         };
-        if self.mode.is_none() && orpheus_sim::mode_script::without_flow(self.map.mode_guid) {
+        if self.mode.is_some() {
+            return;
+        }
+        if orpheus_sim::mode_script::without_flow(self.map.mode_guid) {
             self.mode = Some(ModeRunner::start(&world.scene, tick, Vec::new()));
+        } else if self.workshop.is_some()
+            && let Some(mode) = ModeRunner::workshop(&world.scene, tick, Vec::new())
+        {
+            take_placeable_removals(self.mode.insert(mode), &mut world.scene);
         }
     }
 
@@ -970,25 +983,26 @@ impl Room {
         );
         self.flow = Some(flow);
         // The players reach the graph with the next tick's flow
-        // (`update_flows`), as they join. A Workshop match runs its
-        // actions on the mode entity, so a graph must drive it
-        // (`ModeRunner::workshop`).
-        let workshop = self.workshop.as_mut().and_then(|workshop| {
-            let mode = ModeRunner::workshop(scene, tick, Vec::new())?;
+        // (`update_flows`), as they join. A Workshop match's graph started
+        // with the room (`Self::begin_mode`); its rules start now, against
+        // the players in the world.
+        if let (Some(workshop), true) = (
+            self.workshop.as_mut(),
+            self.mode.as_ref().is_some_and(ModeRunner::graph_driven),
+        ) {
             workshop.run = Some(WorkshopRun::new(
                 &workshop.logic,
                 Arc::clone(&workshop.catalog),
                 u64::from(tick),
             ));
-            Some(mode)
-        });
-        let mode = self
-            .mode
-            .insert(workshop.unwrap_or_else(|| ModeRunner::start(scene, tick, Vec::new())));
-        // The mode graph removes placeables as it starts (`0CBB` st34, the
-        // health packs): before the world that just started reaches the
-        // client, so their creates never go.
-        take_placeable_removals(mode, scene);
+        }
+        if self.mode.is_none() {
+            let mode = self.mode.insert(ModeRunner::start(scene, tick, Vec::new()));
+            // The mode graph removes placeables as it starts (`0CBB` st34,
+            // the health packs): before the world that just started
+            // reaches the client, so their creates never go.
+            take_placeable_removals(mode, scene);
+        }
         self.flow_at = now;
         self.flow_tick = tick;
         self.next_mode_frame = now;
@@ -1518,6 +1532,8 @@ impl Peer {
             self.world.end_assemble(&world.scene, tick)?;
         }
         self.world.set_assembling(room.assembling());
+        self.world
+            .set_mode_held(room.mode.as_ref().map_or(&[], ModeRunner::held));
         let spawned = self.advance_loading(schemas, room, slot, now, tick)?;
         if let Some(mut world) = room.world.take() {
             if spawned && !world.scene.controller().practice() {
@@ -2998,12 +3014,29 @@ impl State {
             let seconds = now.saturating_sub(room.flow_at).as_secs_f64();
             room.flow_at = now;
             let was = flow.phase();
-            let events = flow.advance(seconds, &participants);
-            let variables = flow.variables();
-            let mut messages = room
-                .mode
-                .as_mut()
-                .map_or_else(Vec::new, |mode| mode.advance(tick, &variables, players));
+            // The mode's own graph drives the match (`ModeRunner::holds_rooms`):
+            // it keeps its phase, clock, banner, sides and objective name
+            // itself and holds its phase messages to every entity, so the
+            // flow only follows its phase and clock (`MatchFlow::follow`).
+            // Else the flow drives, and its variables go into the graph.
+            let mut messages;
+            let events;
+            match room.mode.as_mut() {
+                Some(mode) if mode.holds_rooms() => {
+                    let variables = orpheus_script::wire::Variables::new();
+                    messages = mode.advance(tick, &variables, players);
+                    events = match mode.match_state() {
+                        Some(state) => flow.follow(seconds, state.phase, state.clock, state.winner),
+                        None => Vec::new(),
+                    };
+                }
+                mode => {
+                    events = flow.advance(seconds, &participants);
+                    let variables = flow.variables();
+                    messages =
+                        mode.map_or_else(Vec::new, |mode| mode.advance(tick, &variables, players));
+                }
+            }
             // The Workshop's rules after the mode entity's frame, against
             // the players in the world.
             if let (Some(run), Some(mode)) = (
@@ -3031,10 +3064,16 @@ impl State {
                 run.step(tick, &world.scene, mode, &mut players);
             }
             // The flow stands in for the mode graph's entries: what the
-            // mode entity's graphs sent it (the Workshop's Set Match Time).
-            if let Some(script) = room.mode.as_mut().and_then(ModeRunner::script_mut) {
-                for message in script.take_own_messages() {
-                    flow.receive(message.message, &message.parameters);
+            // mode entity's graphs sent it (the Workshop's Set Match Time),
+            // unless the mode's own graph took them itself.
+            if let Some(mode) = room.mode.as_mut() {
+                let own = mode.holds_rooms();
+                if let Some(script) = mode.script_mut() {
+                    for message in script.take_own_messages() {
+                        if !own {
+                            flow.receive(message.message, &message.parameters);
+                        }
+                    }
                 }
             }
             let changed = events
@@ -3051,7 +3090,7 @@ impl State {
                     room.graph_frame = None;
                     if changed || now >= room.next_mode_frame {
                         if mode.is_some() {
-                            match world.scene.mode_frame(&variables) {
+                            match world.scene.mode_frame(&flow.variables()) {
                                 Ok(frame) => room.mode_frame = Some(frame),
                                 Err(error) => tracing::warn!("[game] no game mode frame: {error}"),
                             }
@@ -3398,7 +3437,7 @@ impl State {
             let mut dummies = Vec::new();
             let mut scopes = Vec::new();
             for (&id, room) in &mut self.rooms {
-                room.begin_mode_without_flow(tick);
+                room.begin_mode(tick);
                 let next = room.next_dummy();
                 if let Some(world) = &mut room.world {
                     // combat.py `update`: the dead bots' death scripts, then

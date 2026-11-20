@@ -98,6 +98,21 @@ impl Created {
 /// (`refs/reports/Workshop.md` "WorkshopRuntime").
 pub const SHARED_MODE_GRAPH: u32 = 0x0cbb;
 
+/// The match's phase on the mode graph's root instance (`0F4A` v59,
+/// `match_flow::Phase` values).
+const PHASE: u32 = 59;
+/// The winning team on the same instance (`0F4A` #7525).
+const WINNER: u32 = 7525;
+
+/// The match as the mode's own graph keeps it ([`ModeRunner::match_state`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MatchState {
+    pub phase: match_flow::Phase,
+    /// Seconds on the clock.
+    pub clock: f64,
+    pub winner: Option<u8>,
+}
+
 impl ModeRunner {
     /// Start the mode graph with the match's `players` now. The start
     /// condition `STU_81A9AB10` (server-only) is the server's own rule:
@@ -185,6 +200,44 @@ impl ModeRunner {
                 ..
             }
         )
+    }
+
+    /// The match's phase and clock as the mode's own graph keeps them,
+    /// while it drives the match ([`Self::holds_rooms`]): its root's #59
+    /// (`0F4A`: 0 waiting, 1 assemble, 2 setup, 3 round, 4 round end, 5
+    /// match end), the mode entity's clock #1303 (`match_flow::CLOCK`) and
+    /// the winning team (#7525, which `0F4A` sends in `0695` as `03A6`).
+    /// None before the graph set its phase.
+    pub fn match_state(&self) -> Option<MatchState> {
+        let Self::Graph {
+            script,
+            mode_graph: true,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let root = script.snapshot()?.instances.get(&1)?;
+        let phase = match orpheus_script::expr::to_int(root.variables.get(&PHASE)?, -1) {
+            0 => match_flow::Phase::Waiting,
+            1 => match_flow::Phase::Assemble,
+            2 => match_flow::Phase::Setup,
+            3 => match_flow::Phase::Round,
+            4 => match_flow::Phase::RoundEnd,
+            5 => match_flow::Phase::MatchEnd,
+            _ => return None,
+        };
+        let winner = root
+            .variables
+            .get(&WINNER)
+            .map(|winner| orpheus_script::expr::to_int(winner, -1))
+            .and_then(|winner| u8::try_from(winner).ok())
+            .filter(|&winner| winner < 2);
+        Some(MatchState {
+            phase,
+            clock: orpheus_script::expr::to_float(&script.entity_value(match_flow::CLOCK)),
+            winner,
+        })
     }
 
     /// The graph on the mode entity, while one drives it.

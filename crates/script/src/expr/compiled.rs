@@ -91,8 +91,8 @@ fn compile(config: &Json) -> Option<Config> {
         "STU_919FD47C" | "STUConfigVarExpression" => {
             Program::compile(config).ok().map(Config::Expression)
         }
-        // STU_92CA44CC and the anim category are literals only in their
-        // null form; otherwise they reach the context's natives, and with
+        // STU_92CA44CC (null or a text) and the anim category (null) are
+        // literals only in those forms; otherwise they reach the context's natives, and with
         // the empty context they fail here and stay uncompiled.
         class if LITERALS.contains(&class) || resource_field(class).is_some() => {
             Evaluator::new(MAX_EXPRESSION_STEPS, None)
