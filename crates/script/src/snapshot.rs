@@ -292,6 +292,7 @@ impl ProjectedSnapshot {
                             ("fresh".into(), Value::Bool(true)),
                         ]),
                         volley: None,
+                        chase_steps: false,
                     })
                 } else {
                     before
@@ -380,6 +381,28 @@ pub struct ProjectedState {
     activation: u16,
     payload: StatePayload,
     volley: Option<VolleyActivation>,
+    /// A chase that steps each frame (no [`crate::vm::TimedChase`]): its
+    /// client steps it each frame too, from the same payload.
+    chase_steps: bool,
+}
+
+impl ProjectedState {
+    /// Whether this is `was` moved on by the chase's own steps alone: the
+    /// same activation of a chase that steps each frame, running in both,
+    /// arrived in both or in neither. The owner's client steps it each
+    /// frame from the payload it holds (`0x7FF78AAB1050`), so these values
+    /// are no correction for it: a chunk for each step rolled Doomfist's
+    /// client back every frame of a slam (`0B27` st17 toward `#10471e`;
+    /// `refs/reports/Doomfist.md` §15).
+    fn chase_stepped_from(&self, was: &Self) -> bool {
+        self.chase_steps
+            && was.chase_steps
+            && self.active
+            && was.active
+            && self.activation == was.activation
+            && self.payload.get("reached") == was.payload.get("reached")
+            && self.payload.contains_key("remaining") == was.payload.contains_key("remaining")
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -787,6 +810,10 @@ impl<'a> SnapshotEncoder<'a> {
                                 identity: (state.activation, state.start_ms),
                             },
                         ),
+                        chase_steps: state
+                            .chase
+                            .as_ref()
+                            .is_some_and(|chase| chase.timed.is_none()),
                     },
                 );
             }
@@ -1247,7 +1274,8 @@ impl<'a> SnapshotEncoder<'a> {
 
     /// Whether the owner's projection differs from what his client holds
     /// once the queued chunks arrive: a state, variable, binding or
-    /// instance, or an action no queued chunk carries yet.
+    /// instance, or an action no queued chunk carries yet. A chase's own
+    /// steps are not a difference ([`ProjectedState::chase_stepped_from`]).
     fn owner_changed(
         &self,
         stream: &BodyStream<ProjectedSnapshot>,
@@ -1263,10 +1291,14 @@ impl<'a> SnapshotEncoder<'a> {
         if action.is_some_and(|action| action.serial > expected.action_serial) {
             return Ok(true);
         }
-        Ok(!self
-            .differences(expected, current, &BTreeSet::new(), &BTreeSet::new())?
-            .keys
-            .is_empty())
+        let delta = self.differences(expected, current, &BTreeSet::new(), &BTreeSet::new())?;
+        Ok(delta.keys.iter().any(|key| match *key {
+            ChangeKey::State(id, raw) => !current
+                .state(id, raw)
+                .zip(expected.state(id, raw))
+                .is_some_and(|(now, was)| now.chase_stepped_from(was)),
+            _ => true,
+        }))
     }
 
     /// The owner's chunks list each weapon volley's ammunition variable
@@ -2021,10 +2053,14 @@ fn state_payload(
             // TrackStatTime: the client's reader is a nullsub
             // (`0x7FF78ABF5640`, `statescript_codecs.json`).
             | StateKind::StatTime
-            // A ray cast (`STUStatescriptStateRayCast`, codec none: the
-            // client casts its own; Seismic Slam's landing ray, `0B27`
-            // st8); its hit goes in its output variable.
+            // The searches the owner's client runs itself: the ray casts
+            // (RayCast, TrackRay), the wall check (`STU_FBFF5DE7`). Left
+            // out, its client never ran them: Doomfist's ground ray `0B27`
+            // st8 and the punch's wall check `0D06` st7 and wall rays
+            // st79/st80 were the server's values a round trip late
+            // (`refs/reports/Doomfist.md` §15).
             | StateKind::Ray
+            | StateKind::WallCheck
             // StateCreateEntity (record #1699, reader nullsub): the entity
             // it made goes to the clients as an entity of its own.
             | StateKind::CreateEntity { .. }
@@ -2033,6 +2069,15 @@ fn state_payload(
             | StateKind::PickupSearch { .. },
             Some("none"),
         ) if codec.empty() => StatePayload::new(),
+        // The landing search (`0B27` st6, `vm/landing.rs`): its block's
+        // byte, which its begin sets to 0 and only its input plug
+        // `m_6647ED22` (no link in the landing form) sets to 1
+        // (0x7FF7897F8770, 0x7FF7897F8AC0). Left out, the owner's client
+        // never searched: it waited a round trip for the server's point and
+        // its button state st64 cancelled a tapped airborne slam.
+        (StateKind::Landing, Some("none+u8")) => {
+            StatePayload::from([("value".into(), Value::Integer(0))])
+        }
         // The Grappling Hook cast (`STU_4BBC5D09`): its begin; an owner frame
         // carries the milliseconds from it to the frame (`codecs.rs`
         // `project_start`).
