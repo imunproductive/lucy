@@ -55,6 +55,7 @@ Do not run the full game-install suites (`just test-game`, `just test-slow`) for
 | `just test-affected <install>` | every test, ignored ones included, of the crates `tools/affected.py` names, without `slow_` and `serial_` | An agent's own check before reporting |
 | `just test-assets <install> <pack>` | ignored `matches_the_pack` tests of `orpheus-assets` | Derivations against a prepared pack |
 | `just test-datatool <install> <dump>` | ignored `datatool` tests of `orpheus-stu` | The asset reader against a DataTool export |
+| `just test-dpk <install> <archive>` | ignored `dpk_archive` tests of `orpheus-workshop` | The Workshop parser and engine over the Doomfist parkour scripts |
 | `just test-windows` | ignored tests of `orpheus-launcher` | Loads the relay DLL into a stand-in process |
 
 ## Test tiers
@@ -145,15 +146,25 @@ just test-datatool C:\Games\Overwatch D:\dumps\datatool
 
 This sets `ORPHEUS_DATATOOL_DUMP` and runs the `datatool` tests of `orpheus-stu`. The DataTool settings and revisions are in [data-sources.md](data-sources.md).
 
-### 5. Dashboard
+### 5. Workshop scripts
+
+The Workshop text parser, the binary form and the rule engine run over the Doomfist parkour archive (the `.txt` scripts of `dfp-archive`, kept outside the repository):
+
+```powershell
+just test-dpk C:\Games\Overwatch D:\Downloads\dfp-archive
+```
+
+This sets `ORPHEUS_DPK_ARCHIVE` (`testkit::dpk_archive()`) and runs the `dpk_archive` tests of `orpheus-workshop`. `just test-game` leaves them out.
+
+### 6. Dashboard
 
 `just dashboard-test` runs `web/tests/test_dashboard_client.mjs` with Node's test runner. It is part of `just check`.
 
-### 6. Windows relay
+### 7. Windows relay
 
 `just test-windows` builds the relay and loads it into a stand-in process. It does not need the game.
 
-### 7. Client acceptance
+### 8. Client acceptance
 
 Some behavior can only be checked with the original client. These checks are manual. Record each one in [behavior.md](../notes/behavior.md#client-acceptance-records): date, commit, client build and locale, hero, map, inputs, expected and observed result, and the number of runs.
 
