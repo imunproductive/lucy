@@ -171,12 +171,13 @@ impl<W: World> Vm<'_, '_, '_, W> {
         if node.remote < 0 || !wheel::ACTION_GRAPHS.contains(&instance.graph) {
             return;
         }
+        let instance_start_ms = instance.start_ms;
         let actions = &mut self.machine.snapshot.frame_actions;
         let serial = actions.last().map_or(1, |last| last.serial.wrapping_add(1));
         actions.push(FrameAction {
             serial,
             instance: id,
-            instance_start_ms: instance.start_ms,
+            instance_start_ms,
             node: node.pos,
             time_ms: self.machine.now_ms,
         });

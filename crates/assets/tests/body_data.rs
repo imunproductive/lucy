@@ -1,22 +1,10 @@
 //! The body and mode values derived from the install equal the values the
 //! Python reference hard-coded from the same assets.
 
-use orpheus_assets::{DERIVATIONS, Install};
 use serde_json::{Value, json};
 
 fn derived(path: &str) -> Value {
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::runtime_dir();
-    let derivation = DERIVATIONS
-        .iter()
-        .find(|derivation| derivation.name == "game_body_data")
-        .unwrap();
-    let output = (derivation.derive)(&install, &pack)
-        .unwrap()
-        .into_iter()
-        .find(|output| output.path == path)
-        .unwrap();
-    serde_json::from_slice(&output.bytes).unwrap()
+    orpheus_testkit::runtime_json(path)
 }
 
 /// combat.py `EYE` and `EYE_CROUCHED`: Soldier: 76's `03CF.003` eyes; every

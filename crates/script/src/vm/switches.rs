@@ -299,20 +299,27 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     }
 
     pub(super) fn cancel_delayed_timer(&mut self, key: StateKey, branch: bool) {
-        let pending = &mut self
-            .state_mut(key)
+        // A timer that isn't pending leaves the state (and the snapshot's
+        // revision) as it is.
+        let index = usize::from(branch);
+        if !self
+            .state(key)
             .expect("active delayed switch")
-            .delayed_timers[usize::from(branch)];
-        if std::mem::take(pending) {
-            let parameter = if branch {
-                SWITCH_TO_TRUE
-            } else {
-                SWITCH_TO_FALSE
-            };
-            self.machine.queues.retain(key.instance, |_, event| {
-                !matches!(event, Event::Timer(raw, param) if *raw == key.raw && *param == parameter)
-            });
+            .delayed_timers[index]
+        {
+            return;
         }
+        self.state_mut(key)
+            .expect("active delayed switch")
+            .delayed_timers[index] = false;
+        let parameter = if branch {
+            SWITCH_TO_TRUE
+        } else {
+            SWITCH_TO_FALSE
+        };
+        self.machine.queues.retain(key.instance, |_, event| {
+            !matches!(event, Event::Timer(raw, param) if *raw == key.raw && *param == parameter)
+        });
     }
 
     pub(super) fn set_delayed_branch(

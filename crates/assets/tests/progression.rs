@@ -1,20 +1,14 @@
 //! The XP gains and the level curve build 104319 derives
 //! (`game_progression_174.json`).
 
-use orpheus_assets::{DERIVATIONS, Install};
 use serde_json::{Value, json};
 
 fn derived() -> Value {
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let derivation = DERIVATIONS
-        .iter()
-        .find(|derivation| derivation.name == "game_progression")
-        .unwrap();
-    // The derivation reads no earlier output.
-    let outputs = (derivation.derive)(&install, &std::env::temp_dir()).unwrap();
-    assert_eq!(outputs.len(), 1);
-    assert_eq!(outputs[0].path, "data/game_progression_174.json");
-    serde_json::from_slice(&outputs[0].bytes).unwrap()
+    assert_eq!(
+        orpheus_testkit::derived_outputs("game_progression"),
+        ["data/game_progression_174.json"]
+    );
+    orpheus_testkit::runtime_json("data/game_progression_174.json")
 }
 
 #[test]

@@ -5,11 +5,11 @@
 //! per-column expansion cache or a lock. Prop placement, analytic round props,
 //! and character contacts are handled by their respective world layers.
 
-use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 
-use crate::collision::grid::{CELL_WIDTH, ColumnGrid, ColumnRange, cell};
+use crate::collision::grid::{CELL_WIDTH, ColumnGrid, ColumnRange, GridBuilder, cell};
+use crate::nav::FastSet;
 use crate::static_ray::{Vec3, inside_xz, triangle_distance};
 
 const MAX_RAY_COLUMNS: usize = 1 << 16;
@@ -139,24 +139,28 @@ pub struct TriangleIndex {
 
 impl TriangleIndex {
     pub fn new(triangles: impl IntoIterator<Item = SceneTriangle>) -> Result<Self, IndexError> {
-        let mut index = Self::default();
+        let triangles = triangles.into_iter();
+        let mut indexed = Vec::with_capacity(triangles.size_hint().0);
+        let mut grid = GridBuilder::default();
+        let mut lowest = None::<f64>;
         for triangle in triangles {
-            let number =
-                u32::try_from(index.triangles.len()).map_err(|_| IndexError::IndexLimit)?;
+            let number = u32::try_from(indexed.len()).map_err(|_| IndexError::IndexLimit)?;
             let triangle = IndexedTriangle::new(triangle)?;
             let range = triangle
                 .bounds
                 .columns()
                 .ok_or(IndexError::InvalidTriangle)?;
             let bottom = triangle.bounds.min[1];
-            index.lowest = Some(index.lowest.map_or(bottom, |value| value.min(bottom)));
-            index
-                .grid
-                .insert(number, range)
+            lowest = Some(lowest.map_or(bottom, |value| value.min(bottom)));
+            grid.insert(number, range)
                 .map_err(|_| IndexError::IndexLimit)?;
-            index.triangles.push(triangle);
+            indexed.push(triangle);
         }
-        Ok(index)
+        Ok(Self {
+            triangles: indexed,
+            grid: grid.build(),
+            lowest,
+        })
     }
 
     pub fn lowest(&self) -> f64 {
@@ -178,7 +182,7 @@ impl TriangleIndex {
         let Some(range) = bounds.columns() else {
             return found;
         };
-        let mut seen = HashSet::new();
+        let mut seen = FastSet::default();
         self.grid.visit(range, |number| {
             let candidate = &self.triangles[number as usize];
             if candidate.triangle.mask & category != 0
@@ -263,7 +267,7 @@ impl TriangleIndex {
         };
         let (step_x, mut next_x, delta_x) = ray_axis(ox, dx, x);
         let (step_z, mut next_z, delta_z) = ray_axis(oz, dz, z);
-        let mut seen = HashSet::new();
+        let mut seen = FastSet::default();
         let mut best = f64::INFINITY;
         let mut hit = None;
         let mut start = 0.0;

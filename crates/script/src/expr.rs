@@ -20,7 +20,7 @@ use serde_json::Value as Json;
 
 pub use crate::wire::Value;
 use crate::{
-    graph::{asset_guid, target_tag_guid},
+    graph::{asset_guid, member, target_tag_guid},
     vitals::PoolKind,
     wheel::{self, Cosmetic},
 };
@@ -797,7 +797,7 @@ fn index(object: Value, index: &Value) -> Value {
 }
 
 fn class(config: &Json) -> Option<&str> {
-    config.get("$")?.as_str()
+    member(config, "$")?.as_str()
 }
 
 pub fn native_shape(config: &Json, expected: &str, operand: Option<&str>) -> bool {
@@ -833,7 +833,7 @@ fn is_expression(class: Option<&str>) -> bool {
 }
 
 fn child<'a>(config: &'a Json, field: &str) -> &'a Json {
-    config.get(field).unwrap_or(&Json::Null)
+    member(config, field).unwrap_or(&Json::Null)
 }
 
 /// The operand of a config that only wraps it, such as the entity of a

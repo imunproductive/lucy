@@ -5186,16 +5186,19 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
             })
         },
     );
-    let scene = assets.prepare(map.clone()).unwrap();
+    // The game mode entity's frames as the scene makes them
+    // (`PreparedScene::mode_ui`, `PreparedScene::mode_frame`).
+    let mode_frame = |variables: &Variables| {
+        orpheus_sim::scene::mode_ui(assets.graphs(), map.mode_guid, variables).unwrap()
+    };
     let clock = |seconds: f64| {
-        scene
-            .mode_frame(&Variables::from([(
-                orpheus_sim::match_flow::CLOCK,
-                ScriptValue::Float(seconds),
-            )]))
-            .unwrap()
+        mode_frame(&Variables::from([(
+            orpheus_sim::match_flow::CLOCK,
+            ScriptValue::Float(seconds),
+        )]))
     };
     let (counting, over) = (clock(12.5), clock(0.0));
+    let mode_ui = mode_frame(&Variables::new()).bit_len();
     for watcher in [&*first, &*second] {
         let (closed, _) = controllers(watcher)
             .into_iter()
@@ -5256,7 +5259,7 @@ fn a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player() {
     // countdown (Skirmish has no round clock).
     let frames: Vec<_> = mode_frames(&third)
         .into_iter()
-        .filter(|(_, chunk)| chunk.width != scene.mode_ui().bit_len())
+        .filter(|(_, chunk)| chunk.width != mode_ui)
         .collect();
     assert!(
         frames
@@ -5494,7 +5497,12 @@ fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
     // with the phase banner and the objective's name while the round is
     // on, then the clock alone (no banner, no objective left) at the round's
     // and the match's end.
-    let scene = assets.prepare(map.clone()).unwrap();
+    // The frames as the scene makes them (`PreparedScene::mode_ui`,
+    // `PreparedScene::mode_frame`).
+    let mode_frame = |variables: &Variables| {
+        orpheus_sim::scene::mode_ui(assets.graphs(), map.mode_guid, variables).unwrap()
+    };
+    let mode_ui = mode_frame(&Variables::new()).bit_len();
     let width = |extra: &[(u32, ScriptValue)]| {
         let mut variables = Variables::from([(CLOCK, ScriptValue::Float(1.0))]);
         variables.extend(extra.iter().cloned());
@@ -5502,7 +5510,7 @@ fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
             (ATTACKERS, ScriptValue::Integer(1)),
             (DEFENDERS, ScriptValue::Integer(0)),
         ]);
-        scene.mode_frame(&variables).unwrap().bit_len()
+        mode_frame(&variables).bit_len()
     };
     let playing = width(&[
         (BANNER, ScriptValue::Asset(0x0de0_0000_0000_6116)),
@@ -5519,7 +5527,7 @@ fn an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home() {
             .filter_map(|record| record.script.as_ref().map(|chunk| chunk.width))
             // A client presented after the heroes assembled first gets the
             // mode UI without variables.
-            .filter(|&width| width != scene.mode_ui().bit_len())
+            .filter(|&width| width != mode_ui)
             .collect();
         // The playing frames carry the banner and the objective's name; at
         // the round's and the match's end they're gone (the clock's compact
@@ -6428,14 +6436,15 @@ fn the_range_mode_frames_leave_room_for_every_movement_record() {
     };
     let mut dropped = Vec::new();
     let mut frames = Vec::new();
-    for index in from + 1..watcher.datagrams.len() - 1 {
+    let last = watcher.datagrams.len() - 1;
+    for (index, &tick) in watcher.ticks.iter().enumerate().take(last).skip(from + 1) {
         let around: HashSet<u32> = moving(index - 1)
             .intersection(&moving(index + 1))
             .copied()
             .collect();
         let missing = around.difference(&moving(index)).count();
         if missing != 0 {
-            dropped.push((watcher.ticks[index], missing));
+            dropped.push((tick, missing));
         }
         frames.extend(
             mode_chunks(index)

@@ -27,8 +27,8 @@ use crate::{
     mode_view::{ModeFrame, ModeView},
     notices::{NOTICE_GAP, Switch},
     others::{
-        ObservedScript, ObserverActivity, OtherDelivery, Others, PlayerView, RemoteBody,
-        RemoteDeath, ShowContext, ShowOutput, ViewerReadiness,
+        ObservedScript, ObserverActivity, ObserverCache, OtherDelivery, Others, PlayerView,
+        RemoteBody, RemoteDeath, ShowContext, ShowOutput, ViewerReadiness,
     },
     placed_script::{PlacedFrame, PlacedViews},
     pools::FALLBACK_POOLS,
@@ -65,7 +65,7 @@ use orpheus_script::{
     graph::GraphStore,
     mode::EVERY_ENTITY,
     placed::{DummyChange, NextDummy},
-    snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
+    snapshot::{ProjectedSnapshot, ProjectionCache, SnapshotEncoder, View},
     stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, Stream},
     vitals::{Death, Vitals},
     vm::{
@@ -499,6 +499,11 @@ struct BodyScript {
     /// The last command the body ran with a pose: the frames of a gap
     /// repeat it ([`ScriptGap`]).
     input: Option<Command>,
+    /// The last owner projection, made again only when the script changed
+    /// or a pulse or wheel action in it ran out.
+    projection: Option<ProjectionCache>,
+    /// What the other clients get of the script, shared between them.
+    observers: ObserverCache,
 }
 
 impl BodyScript {
@@ -534,6 +539,8 @@ impl BodyScript {
             traced_buttons: 0,
             traced_states: BTreeSet::new(),
             input: None,
+            projection: None,
+            observers: ObserverCache::default(),
         })
     }
 
@@ -801,12 +808,22 @@ impl BodyScript {
                 .base()
                 .expect("owner delta requires the baseline");
             tracing::debug!(target: "orpheus::owner", base = base_last, "owner delta base");
-            let mut snapshot = encoder.project_next(snapshot, base).map_err(invalid)?;
-            if let Some(allowed) = kill_feed {
-                snapshot = snapshot.gate_kill_feed(encoder.graphs(), &self.stream, allowed);
-            }
+            let projected = encoder
+                .project_cached(snapshot, View::Owner, Some(base), &mut self.projection)
+                .map_err(invalid)?;
+            let gated;
+            let snapshot = match kill_feed {
+                Some(allowed) => {
+                    gated =
+                        projected
+                            .clone()
+                            .gate_kill_feed(encoder.graphs(), &self.stream, allowed);
+                    &gated
+                }
+                None => projected,
+            };
             let chunk = encoder
-                .queue_delta(&mut self.stream, &snapshot, kind, self.runtime.frame_ms())
+                .queue_delta(&mut self.stream, snapshot, kind, self.runtime.frame_ms())
                 .map_err(invalid)?
                 .expect("owner deltas include a command frame");
             (chunk, Some(kind))
@@ -1313,7 +1330,7 @@ impl InputQueue {
         }
         if depth == 0 {
             self.surplus = 0;
-            self.work.extend(self.buffer.drain(..));
+            self.work.append(&mut self.buffer);
             if sending {
                 if self.dry == 0 {
                     tracing::debug!(
@@ -2056,11 +2073,11 @@ impl WorldDelivery {
             .body
             .zip(self.mover.as_ref())
             .and_then(|(body, mover)| {
-                let runtime = self
+                let script = self
                     .body_script
                     .as_ref()
-                    .filter(|script| script.id == body.id)
-                    .map(|script| &script.runtime);
+                    .filter(|script| script.id == body.id);
+                let runtime = script.map(|script| &script.runtime);
                 let death = self
                     .death
                     .filter(|death| death.body == body.id)
@@ -2091,17 +2108,15 @@ impl WorldDelivery {
                         .filter(|(id, ..)| *id == body.id)
                         .map(|(_, revision, tags)| (*revision, tags)),
                     death,
-                    script: runtime.filter(|_| observed(body.id)).and_then(|runtime| {
-                        let encoder = runtime.encoder();
-                        let snapshot = runtime.snapshot()?;
-                        let projected = encoder.project(snapshot, View::Observer).ok()?;
-                        Some(ObservedScript {
-                            encoder,
-                            snapshot,
-                            projected,
-                            activity: runtime.observer_activity(),
-                            frame_ms: runtime.frame_ms(),
-                        })
+                    script: script.filter(|_| observed(body.id)).and_then(|script| {
+                        let runtime = &script.runtime;
+                        Some(ObservedScript::new(
+                            runtime.encoder(),
+                            runtime.snapshot()?,
+                            || runtime.observer_activity(),
+                            runtime.frame_ms(),
+                            &script.observers,
+                        ))
                     }),
                 })
             });

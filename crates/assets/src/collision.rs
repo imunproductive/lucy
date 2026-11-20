@@ -1,4 +1,4 @@
-//! The collision caches `collision/<map>.col` (format 5): a map's static
+//! The collision caches `collision/<map>.col` (format 6): a map's static
 //! collision as the character mover sees it (`tools/build_collision.py`,
 //! `ow174/game/collision.py`), and `collision/<map>.rays.col`, the same
 //! with every category, as the shots see it (`--ray-geometry`). The
@@ -43,6 +43,8 @@
 
 use std::io::Write;
 
+use flate2::{Compression, write::ZlibEncoder};
+
 use crate::{
     Install, Output, Result, asset_error, guid_name,
     map_chunk::{COLLISION, chunk_guid, read_chunk},
@@ -51,13 +53,13 @@ use crate::{
 
 const MAGIC: &[u8; 8] = b"OW174COL";
 /// 2: props with their identifiers; 3: no client-only breakables; 4: the
-/// engine's shapes; 5: only the props' static shapes, at their nodes.
-const VERSION: u32 = 5;
+/// engine's shapes; 5: only the props' static shapes, at their nodes; 6: the
+/// shapes packed with zlib rather than Python's XZ, which the server unpacks
+/// about ten times faster (the server still reads 5).
+const VERSION: u32 = 6;
 /// The Practice Range, the map the runtime pack ships a cache for.
 const PRACTICE_RANGE: u64 = 0x0800_0000_0000_0688;
 const PRACTICE_RANGE_NAME: &str = "Practice Range";
-/// The preset of Python's `lzma.compress`.
-const XZ_PRESET: u32 = 6;
 /// The ray cache's header marks (collision.py `RAY_GEOMETRY`,
 /// `ALL_CATEGORIES`, `RAY_PROP_SCOPE`), which the server's reader checks.
 const RAY_GEOMETRY: &str = "expanded-static-rays";
@@ -352,7 +354,7 @@ struct Source {
     geometry: Geometry,
 }
 
-/// The cache file: magic, version, a JSON header and the LZMA-packed shapes:
+/// The cache file: magic, version, a JSON header and the zlib-packed shapes:
 /// the chunk's meshes (vertices f32 x, y, z; triangles i32 corners and wings;
 /// u16 masks; u16 surfaces), its polytopes, the props' models (their shapes)
 /// and the placements (u32 model, u16 group: 0, or k when only the game
@@ -420,7 +422,8 @@ fn pack(
         placed.len(),
         identifiers,
     );
-    let mut encoder = liblzma::write::XzEncoder::new(Vec::new(), XZ_PRESET);
+    // The fastest level packs these shapes as small as the default does.
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
     encoder.write_all(&out)?;
     let payload = encoder.finish()?;
     let mut blob = Vec::with_capacity(16 + header.len() + payload.len());

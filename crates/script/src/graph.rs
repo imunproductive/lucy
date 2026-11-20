@@ -1,22 +1,26 @@
 //! State graph metadata for retail 1.74 and its owner/remote wire tables.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::File,
     io::{self, BufReader, Read},
     path::Path,
-    sync::Arc,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use flate2::bufread::MultiGzDecoder;
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, value::RawValue};
 
 use orpheus_core::guid::parse_guid;
 
 use crate::{
     ai_definitions::{AI_DEFINITIONS_FILE, AiDefinitions},
     anim_lengths::{ANIM_LENGTHS_FILE, AnimLengths},
+    expr::Variable,
     rulesets::{self, Rulesets},
     weapons::{TUNABLES_FILE, Tunables},
 };
@@ -50,6 +54,40 @@ pub struct Node {
     #[serde(deserialize_with = "node_flag")]
     pub server_only: bool,
     pub fields: Value,
+    /// What the VM and the projection read of `fields` on every pass,
+    /// worked out once by [`Graph::compile`].
+    #[serde(skip)]
+    info: NodeInfo,
+}
+
+/// A node's flags and ids taken from its configuration once, when its
+/// graph loads.
+#[derive(Debug, Default)]
+struct NodeInfo {
+    state: bool,
+    action: bool,
+    presenter: bool,
+    remote_synced: bool,
+    message: Option<u64>,
+    /// Its class's entry in a codec table, by the table's id
+    /// ([`crate::codecs::CodecTable::node_codec`]).
+    codec: OnceLock<(u64, Option<usize>)>,
+}
+
+impl NodeInfo {
+    fn of(node: &Node) -> Self {
+        Self {
+            state: node.fields.get("m_2BBEEAB8").is_some_and(truthy),
+            action: node.fields.get("m_ADEB6E05").is_some_and(truthy),
+            presenter: node.class == "STUStatescriptStateUXPresenter"
+                || node.fields.get("m_45216F79").is_some(),
+            remote_synced: false,
+            message: node
+                .field("m_gameMessage.m_gameMessage")
+                .and_then(asset_guid),
+            codec: OnceLock::new(),
+        }
+    }
 }
 
 impl Node {
@@ -58,11 +96,32 @@ impl Node {
     }
 
     pub fn is_state(&self) -> bool {
-        self.fields.get("m_2BBEEAB8").is_some_and(truthy)
+        self.info.state
     }
 
     pub fn is_action(&self) -> bool {
-        self.fields.get("m_ADEB6E05").is_some_and(truthy)
+        self.info.action
+    }
+
+    /// A UX presenter state, which an observer's frames leave out.
+    pub fn is_presenter(&self) -> bool {
+        self.info.presenter
+    }
+
+    /// Whether the node is in its graph's remote-synced list
+    /// ([`Graph::remote_positions`]).
+    pub fn is_remote_synced(&self) -> bool {
+        self.info.remote_synced
+    }
+
+    /// The game message of its `m_gameMessage` (a
+    /// `STUConfigVarGameMessage`), if it names one.
+    pub fn message(&self) -> Option<u64> {
+        self.info.message
+    }
+
+    pub(crate) fn codec_cell(&self) -> &OnceLock<(u64, Option<usize>)> {
+        &self.info.codec
     }
 
     pub fn field(&self, path: &str) -> Option<&Value> {
@@ -158,10 +217,23 @@ pub struct Graph {
     presence: Vec<usize>,
     #[serde(skip)]
     kill_feed_pulser: Option<u16>,
+    #[serde(skip)]
+    server_only_variables: BTreeSet<u32>,
+    /// The nodes the server runs (not client-only) by the game message
+    /// they name, each list in node order.
+    #[serde(skip)]
+    by_message: BTreeMap<u64, Vec<usize>>,
+    /// Each weapon volley state's raw index and its ammunition variable
+    /// (`m_24E351A4`), in node order.
+    #[serde(skip)]
+    volley_ammo: Vec<(u16, Variable)>,
 }
 
 impl Graph {
     fn compile(&mut self) -> io::Result<()> {
+        for node in &mut self.nodes {
+            node.info = NodeInfo::of(node);
+        }
         self.by_pos = vec![None; usize::from(self.items)];
         if let Some(max) = self.nodes.iter().map(|node| node.rid).max() {
             self.by_rid = vec![None; usize::from(max) + 1];
@@ -176,6 +248,16 @@ impl Graph {
         }
         self.owner = WireSlots::build(&self.states, self, false);
         self.remote = WireSlots::build(&self.remote_nodes, self, true);
+        for index in 0..self.remote.positions.len() {
+            let node = self.by_pos[usize::from(self.remote.positions[index])]
+                .expect("remote slots reference nodes");
+            self.nodes[node].info.remote_synced = true;
+        }
+        for (index, node) in self.nodes.iter().enumerate() {
+            if let Some(message) = node.message().filter(|_| !node.client_only) {
+                self.by_message.entry(message).or_default().push(index);
+            }
+        }
         self.presence = self
             .sync_vars
             .iter()
@@ -183,7 +265,41 @@ impl Graph {
             .filter_map(|(index, var)| var.has_presence_bit().then_some(index))
             .collect();
         self.kill_feed_pulser = self.find_kill_feed_pulser();
+        self.server_only_variables = self
+            .fields
+            .get("m_9CEC6985")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(asset_guid)
+            .map(|guid| u32::from(guid as u16))
+            .collect();
+        self.volley_ammo = self
+            .nodes
+            .iter()
+            .filter(|node| node.class == "STUStatescriptStateWeaponVolley")
+            .filter_map(|node| {
+                let raw = node.state?;
+                let Some(Ok(Some(variable))) = node.field("m_24E351A4").map(crate::expr::lvalue)
+                else {
+                    return None;
+                };
+                Some((raw, variable))
+            })
+            .collect();
         Ok(())
+    }
+
+    /// The variables only the server keeps (`m_9CEC6985`): the frames leave
+    /// them out.
+    pub fn server_only_variables(&self) -> &BTreeSet<u32> {
+        &self.server_only_variables
+    }
+
+    /// Each weapon volley state's raw index and the variable its
+    /// ammunition goes to (`m_24E351A4`), in node order.
+    pub fn volley_ammo(&self) -> &[(u16, Variable)] {
+        &self.volley_ammo
     }
 
     /// The state of the pulser whose client-only plug posts a kill feed line
@@ -207,12 +323,7 @@ impl Graph {
                     let Some(node) = self.node(position).filter(|_| seen.insert(position)) else {
                         continue;
                     };
-                    if node.client_only
-                        && node
-                            .field("m_gameMessage.m_gameMessage")
-                            .and_then(asset_guid)
-                            == Some(KILL_FEED)
-                    {
+                    if node.client_only && node.message() == Some(KILL_FEED) {
                         return true;
                     }
                     for plug in node.plugs().into_keys() {
@@ -227,13 +338,17 @@ impl Graph {
     /// Whether a node the server runs (not client-only) sends game message
     /// `message` (a `STUConfigVarGameMessage` in `m_gameMessage`).
     pub fn sends_message(&self, message: u64) -> bool {
-        self.nodes.iter().any(|node| {
-            !node.client_only
-                && node
-                    .field("m_gameMessage.m_gameMessage")
-                    .and_then(asset_guid)
-                    == Some(message)
-        })
+        self.by_message.contains_key(&message)
+    }
+
+    /// The nodes the server runs (not client-only) that name game message
+    /// `message` in their `m_gameMessage`, in node order.
+    pub fn message_nodes(&self, message: u64) -> impl Iterator<Item = &Node> {
+        self.by_message
+            .get(&message)
+            .into_iter()
+            .flatten()
+            .map(|&index| &self.nodes[index])
     }
 
     pub fn node(&self, pos: u16) -> Option<&Node> {
@@ -337,10 +452,13 @@ struct RulesetVariables {
     variables: BTreeMap<u32, Value>,
 }
 
+/// A bundle as read: each graph's JSON is kept as text, to be parsed on
+/// its own ([`parse_graphs`]).
 #[derive(Deserialize)]
-struct Bundle {
+struct Bundle<'a> {
     version: u32,
-    graphs: Vec<Graph>,
+    #[serde(borrow)]
+    graphs: Vec<&'a RawValue>,
     bodies: BTreeMap<String, Body>,
     #[serde(default)]
     entities: BTreeMap<String, Body>,
@@ -351,6 +469,86 @@ struct Bundle {
     missing: Vec<u32>,
     #[serde(default)]
     auras: BTreeMap<String, Value>,
+}
+
+impl<'a> Bundle<'a> {
+    fn read(data: &'a [u8]) -> io::Result<Self> {
+        let bundle: Self = serde_json::from_slice(data).map_err(invalid)?;
+        if bundle.version != 1 {
+            return Err(invalid("unsupported state graph bundle version"));
+        }
+        Ok(bundle)
+    }
+}
+
+/// The graphs of `raw`, parsed and compiled on the PC's threads: a bundle's
+/// JSON is tens of megabytes, seconds on one thread in a debug build.
+fn parse_graphs(raw: &[&RawValue]) -> io::Result<Vec<Graph>> {
+    let next = AtomicUsize::new(0);
+    let work = || -> io::Result<Vec<(usize, Graph)>> {
+        let mut parsed = Vec::new();
+        loop {
+            let index = next.fetch_add(1, Ordering::Relaxed);
+            let Some(text) = raw.get(index) else {
+                return Ok(parsed);
+            };
+            let mut graph: Graph = serde_json::from_str(text.get()).map_err(invalid)?;
+            graph.compile()?;
+            parsed.push((index, graph));
+        }
+    };
+    let threads = std::thread::available_parallelism().map_or(1, usize::from);
+    let mut parsed: Vec<(usize, Graph)> = std::thread::scope(|scope| {
+        let helpers: Vec<_> = (1..threads.min(raw.len()))
+            .map(|_| scope.spawn(work))
+            .collect();
+        let mut parsed = work()?;
+        for helper in helpers {
+            parsed.extend(
+                helper
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))?,
+            );
+        }
+        io::Result::Ok(parsed)
+    })?;
+    parsed.sort_unstable_by_key(|(index, _)| *index);
+    Ok(parsed.into_iter().map(|(_, graph)| graph).collect())
+}
+
+/// The files the server loads beside a bundle ([`GraphStore::load_runtime`]).
+struct RuntimeFiles {
+    rulesets: Arc<Rulesets>,
+    tunables: Arc<Tunables>,
+    anim_lengths: Arc<AnimLengths>,
+    ai_definitions: Arc<AiDefinitions>,
+}
+
+impl RuntimeFiles {
+    fn load(data: &Path) -> io::Result<Self> {
+        Ok(Self {
+            rulesets: Arc::new(Rulesets::load(data.join(rulesets::FILE))?),
+            tunables: Arc::new(Tunables::load(data.join(TUNABLES_FILE))?),
+            anim_lengths: Arc::new(AnimLengths::load(data.join(ANIM_LENGTHS_FILE))?),
+            ai_definitions: Arc::new(AiDefinitions::load(data.join(AI_DEFINITIONS_FILE))?),
+        })
+    }
+}
+
+/// A gzipped bundle's JSON.
+fn read_gzip(input: impl io::BufRead) -> io::Result<Vec<u8>> {
+    let mut data = Vec::new();
+    MultiGzDecoder::new(input)
+        .take(MAX_GRAPH_BYTES + 1)
+        .read_to_end(&mut data)?;
+    if data.len() as u64 > MAX_GRAPH_BYTES {
+        return Err(invalid("state graph bundle exceeds the size limit"));
+    }
+    Ok(data)
+}
+
+fn read_gzip_file(path: &Path) -> io::Result<Vec<u8>> {
+    read_gzip(BufReader::new(File::open(path)?))
 }
 
 /// An aura (`053`, `STU_76F2C784`): a status a body carries, its effect
@@ -371,7 +569,7 @@ pub struct Aura {
 
 #[derive(Debug)]
 pub struct GraphStore {
-    graphs: BTreeMap<u32, Graph>,
+    graphs: BTreeMap<u32, Arc<Graph>>,
     bodies: BTreeMap<u64, Body>,
     entities: BTreeMap<u64, Body>,
     mode_variables: BTreeMap<u64, BTreeMap<u32, ModeValue>>,
@@ -401,31 +599,24 @@ pub struct GraphStore {
 
 impl GraphStore {
     pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
-        let input = BufReader::new(File::open(path)?);
-        Self::from_gzip(input)
+        Self::from_json(&read_gzip_file(path.as_ref())?)
     }
 
     pub fn from_gzip(input: impl io::BufRead) -> io::Result<Self> {
-        let mut data = Vec::new();
-        MultiGzDecoder::new(input)
-            .take(MAX_GRAPH_BYTES + 1)
-            .read_to_end(&mut data)?;
-        if data.len() as u64 > MAX_GRAPH_BYTES {
-            return Err(invalid("state graph bundle exceeds the size limit"));
-        }
-        Self::from_json(&data)
+        Self::from_json(&read_gzip(input)?)
     }
 
     pub fn from_json(data: &[u8]) -> io::Result<Self> {
-        let bundle: Bundle = serde_json::from_slice(data).map_err(invalid)?;
-        if bundle.version != 1 {
-            return Err(invalid("unsupported state graph bundle version"));
-        }
-        let mut graphs = BTreeMap::new();
-        for mut graph in bundle.graphs {
-            graph.compile()?;
-            graphs.insert(graph.index, graph);
-        }
+        let bundle = Bundle::read(data)?;
+        let graphs = parse_graphs(&bundle.graphs)?
+            .into_iter()
+            .map(|graph| (graph.index, Arc::new(graph)))
+            .collect();
+        Self::assemble(bundle, graphs)
+    }
+
+    /// The store of `bundle`, its graphs parsed.
+    fn assemble(bundle: Bundle<'_>, graphs: BTreeMap<u32, Arc<Graph>>) -> io::Result<Self> {
         let auras: BTreeMap<u64, Aura> = keyed_by_guid(bundle.auras)?
             .into_iter()
             .map(|(guid, fields)| {
@@ -490,15 +681,74 @@ impl GraphStore {
     /// (`game_ai_definitions_174.json`), as the server runs it.
     pub fn load_runtime(data: impl AsRef<Path>, bundle: &str) -> io::Result<Self> {
         let data = data.as_ref();
-        let rulesets = Rulesets::load(data.join(rulesets::FILE))?;
-        let tunables = Tunables::load(data.join(TUNABLES_FILE))?;
-        let anim_lengths = AnimLengths::load(data.join(ANIM_LENGTHS_FILE))?;
-        let ai_definitions = AiDefinitions::load(data.join(AI_DEFINITIONS_FILE))?;
-        Ok(Self::load(data.join(bundle))?
-            .with_rulesets(Arc::new(rulesets))
-            .with_tunables(Arc::new(tunables))
-            .with_anim_lengths(Arc::new(anim_lengths))
-            .with_ai_definitions(Arc::new(ai_definitions)))
+        Ok(Self::load(data.join(bundle))?.with_runtime_files(&RuntimeFiles::load(data)?))
+    }
+
+    /// The hero bundle `heroes` and the bot bundle `bots` of the runtime
+    /// `data` folder, each as [`GraphStore::load_runtime`] loads it; no bot
+    /// store when the folder has no bot bundle. The bot bundle is the hero
+    /// bundle's graphs, all but a few the same, with the bots' own: a graph
+    /// whose JSON is the same in both is parsed once, and the stores share
+    /// it.
+    pub fn load_runtime_pair(
+        data: impl AsRef<Path>,
+        heroes: &str,
+        bots: &str,
+    ) -> io::Result<(Self, Option<Self>)> {
+        let data = data.as_ref();
+        let files = RuntimeFiles::load(data)?;
+        let hero_json = read_gzip_file(&data.join(heroes))?;
+        let bot_json = match read_gzip_file(&data.join(bots)) {
+            Ok(json) => Some(json),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        let hero_bundle = Bundle::read(&hero_json)?;
+        let bot_bundle = bot_json.as_deref().map(Bundle::read).transpose()?;
+        // Every hero graph, then each bot graph whose text no hero graph has.
+        let hero_texts: HashMap<&str, usize> = hero_bundle
+            .graphs
+            .iter()
+            .enumerate()
+            .map(|(position, &raw)| (raw.get(), position))
+            .collect();
+        let mut raw = hero_bundle.graphs.clone();
+        let bot_sources: Vec<usize> = bot_bundle
+            .iter()
+            .flat_map(|bundle| bundle.graphs.iter().copied())
+            .map(|text| {
+                hero_texts.get(text.get()).copied().unwrap_or_else(|| {
+                    raw.push(text);
+                    raw.len() - 1
+                })
+            })
+            .collect();
+        let parsed: Vec<Arc<Graph>> = parse_graphs(&raw)?.into_iter().map(Arc::new).collect();
+        let by_index = |positions: &mut dyn Iterator<Item = usize>| -> BTreeMap<u32, Arc<Graph>> {
+            positions
+                .map(|position| {
+                    let graph = &parsed[position];
+                    (graph.index, Arc::clone(graph))
+                })
+                .collect()
+        };
+        let hero_graphs = by_index(&mut (0..hero_bundle.graphs.len()));
+        let heroes = Self::assemble(hero_bundle, hero_graphs)?.with_runtime_files(&files);
+        let bots = match bot_bundle {
+            Some(bundle) => {
+                let graphs = by_index(&mut bot_sources.into_iter());
+                Some(Self::assemble(bundle, graphs)?.with_runtime_files(&files))
+            }
+            None => None,
+        };
+        Ok((heroes, bots))
+    }
+
+    fn with_runtime_files(self, files: &RuntimeFiles) -> Self {
+        self.with_rulesets(Arc::clone(&files.rulesets))
+            .with_tunables(Arc::clone(&files.tunables))
+            .with_anim_lengths(Arc::clone(&files.anim_lengths))
+            .with_ai_definitions(Arc::clone(&files.ai_definitions))
     }
 
     /// The AI definitions an AI-possessed body's graphs read
@@ -545,7 +795,7 @@ impl GraphStore {
     }
 
     pub fn graph(&self, index: u32) -> Option<&Graph> {
-        self.graphs.get(&index)
+        self.graphs.get(&index).map(Arc::as_ref)
     }
 
     pub fn graph_indexes(&self) -> impl Iterator<Item = u32> + '_ {
@@ -650,6 +900,22 @@ fn body_target_tags<'de, D: serde::Deserializer<'de>>(
         .transpose()
 }
 
+/// `value`'s member `key`, as `value.get(key)` finds it. The graphs'
+/// objects are mostly short: one of up to [`SCANNED_MEMBERS`] members is
+/// found by comparing the keys in order, which is faster than hashing the
+/// key (the objects keep their order, so their maps hash with SipHash).
+pub fn member<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    match value {
+        Value::Object(members) if members.len() <= SCANNED_MEMBERS => members
+            .iter()
+            .find_map(|(name, member)| (name == key).then_some(member)),
+        Value::Object(members) => members.get(key),
+        _ => None,
+    }
+}
+
+const SCANNED_MEMBERS: usize = 12;
+
 pub fn field_at<'a>(fields: &'a Value, path: &str) -> Option<&'a Value> {
     let mut value = fields;
     for part in path.split('.') {
@@ -657,7 +923,7 @@ pub fn field_at<'a>(fields: &'a Value, path: &str) -> Option<&'a Value> {
         if name.is_empty() || !name.chars().all(|ch| ch == '_' || ch.is_alphanumeric()) {
             return None;
         }
-        value = value.get(name)?;
+        value = member(value, name)?;
         while !indexes.is_empty() {
             let (index, tail) = indexes.strip_prefix('[')?.split_once(']')?;
             if index.is_empty() || !index.bytes().all(|ch| ch.is_ascii_digit()) {
@@ -718,7 +984,7 @@ fn collect_graphs(value: &Value, out: &mut BTreeSet<u64>) {
 
 /// `roots` and every graph their `PlayScript` actions play, in turn.
 fn played_closure(
-    graphs: &BTreeMap<u32, Graph>,
+    graphs: &BTreeMap<u32, Arc<Graph>>,
     roots: impl Iterator<Item = u32>,
 ) -> BTreeSet<u32> {
     let mut found = BTreeSet::new();

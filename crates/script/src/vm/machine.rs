@@ -23,7 +23,7 @@ impl Machine {
             return Err(InitFault::InvalidBudget);
         }
         Ok(Self {
-            snapshot: Snapshot {
+            snapshot: TrackedSnapshot::new(Snapshot {
                 entity,
                 variables,
                 instances: IndexMap::new(),
@@ -34,7 +34,8 @@ impl Machine {
                 assumptions: Vec::new(),
                 frame_actions: Vec::new(),
                 now_ms: frame_start(frame),
-            },
+                revision: Revision::first(),
+            }),
             queues: Timeline::new(MAX_PENDING_EVENTS),
             watchers: BTreeMap::new(),
             foreign_watchers: BTreeMap::new(),
@@ -66,9 +67,12 @@ impl Machine {
         })
     }
 
+    /// Take the clock, pending timers and links into the snapshot. Only
+    /// what changed is written, so a snapshot nothing else changed keeps
+    /// its revision ([`Snapshot::revision`]).
     pub(super) fn capture_outputs(&mut self) {
-        self.snapshot.now_ms = self.now_ms;
-        self.snapshot.pending_timers.clear();
+        self.snapshot.set_now_ms(self.now_ms);
+        let mut pending_timers = IndexMap::new();
         for &id in self.snapshot.instances.keys() {
             let timers: Vec<_> = self
                 .queues
@@ -88,11 +92,11 @@ impl Machine {
                 })
                 .collect();
             if !timers.is_empty() {
-                self.snapshot.pending_timers.insert(id, timers);
+                pending_timers.insert(id, timers);
             }
         }
-        self.snapshot.bindings.clear();
-        self.snapshot.resolved_bindings.clear();
+        let mut bindings = IndexMap::new();
+        let mut resolved_bindings = IndexMap::new();
         for (&variable, entries) in &self.links {
             let key = match variable {
                 VarKey::Entity(id) => (0, id),
@@ -104,7 +108,7 @@ impl Machine {
             // state's bound outputs; a frame that lists the variable without
             // it unbinds the state there (`0x7FF78AAB78A0` → `0x7FF78AAB7420`
             // takes the frame's list).
-            let bindings: Vec<_> = entries
+            let stacked: Vec<_> = entries
                 .iter()
                 .filter(|entry| {
                     entry.stack
@@ -121,11 +125,27 @@ impl Machine {
                     },
                 })
                 .collect();
-            if !bindings.is_empty() {
-                self.snapshot.bindings.insert(key, bindings);
+            if !stacked.is_empty() {
+                bindings.insert(key, stacked);
             }
-            let resolved = self.link_value(top);
-            self.snapshot.resolved_bindings.insert(key, resolved);
+            resolved_bindings.insert(key, self.link_value(top));
+        }
+        if !same_entries(
+            &self.snapshot.pending_timers,
+            &pending_timers,
+            PartialEq::eq,
+        ) {
+            self.snapshot.pending_timers = pending_timers;
+        }
+        if !same_entries(&self.snapshot.bindings, &bindings, PartialEq::eq) {
+            self.snapshot.bindings = bindings;
+        }
+        if !same_entries(
+            &self.snapshot.resolved_bindings,
+            &resolved_bindings,
+            Value::identical,
+        ) {
+            self.snapshot.resolved_bindings = resolved_bindings;
         }
     }
 
@@ -147,20 +167,13 @@ impl Machine {
             let scope = item.scope.as_ref().map_or(0, |scope| scope.id);
             entries.extend(
                 graph
-                    .nodes
-                    .iter()
+                    .message_nodes(message)
                     .filter(|node| {
-                        !node.client_only
-                            && node
-                                .field("m_gameMessage.m_gameMessage")
-                                .and_then(asset_guid)
-                                == Some(message)
-                            && ((is_message_entry(node)
-                                && super::scopes::entry_scope(node) == scope)
-                                || (node.is_state()
-                                    && node.state.is_some_and(|raw| {
-                                        item.states.get(&raw).is_some_and(|state| state.active)
-                                    })))
+                        (is_message_entry(node) && super::scopes::entry_scope(node) == scope)
+                            || (node.is_state()
+                                && node.state.is_some_and(|raw| {
+                                    item.states.get(&raw).is_some_and(|state| state.active)
+                                }))
                     })
                     .map(|node| (id, node.pos)),
             );
@@ -233,4 +246,16 @@ impl Machine {
                 })
         })
     }
+}
+
+/// The same keys with the same values, in the same order.
+fn same_entries<K: PartialEq, V>(
+    a: &IndexMap<K, V>,
+    b: &IndexMap<K, V>,
+    same: impl Fn(&V, &V) -> bool,
+) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|((ak, av), (bk, bv))| ak == bk && same(av, bv))
 }

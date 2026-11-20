@@ -3,24 +3,11 @@
 
 use std::sync::LazyLock;
 
-use orpheus_assets::{DERIVATIONS, Install};
 use serde_json::{Value, json};
 
-/// The derivation's output, derived once per test run.
-static DERIVED: LazyLock<Value> = LazyLock::new(|| {
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::runtime_dir();
-    let derivation = DERIVATIONS
-        .iter()
-        .find(|derivation| derivation.name == "game_objectives")
-        .unwrap();
-    let output = (derivation.derive)(&install, &pack)
-        .unwrap()
-        .into_iter()
-        .find(|output| output.path == "data/game_objectives_174.json")
-        .unwrap();
-    serde_json::from_slice(&output.bytes).unwrap()
-});
+/// The derivation's output, read once per test.
+static DERIVED: LazyLock<Value> =
+    LazyLock::new(|| orpheus_testkit::runtime_json("data/game_objectives_174.json"));
 
 fn derived() -> &'static Value {
     &DERIVED

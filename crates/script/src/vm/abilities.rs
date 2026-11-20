@@ -123,7 +123,17 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     }
 
     pub(super) fn set_ability_flags(&mut self, key: StateKey, flags: u8) {
-        self.state_mut(key).expect("active ability").kind = StateKind::Ability { flags };
+        if self.ability_flags_set(key) != Some(flags) {
+            self.state_mut(key).expect("active ability").kind = StateKind::Ability { flags };
+        }
+    }
+
+    /// The flags of the Ability state `key`, active or not.
+    fn ability_flags_set(&self, key: StateKey) -> Option<u8> {
+        match self.state(key)?.kind {
+            StateKind::Ability { flags } => Some(flags),
+            _ => None,
+        }
     }
 
     pub(super) fn ability_condition(&mut self, key: StateKey, node: &Node, name: &str) -> bool {

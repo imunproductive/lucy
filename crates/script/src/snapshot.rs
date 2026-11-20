@@ -21,9 +21,9 @@ use std::{
 
 use crate::codecs::{Codec, CodecTable, PayloadError, PayloadMode, StatePayload};
 use crate::expr::{Scope, equal};
-use crate::graph::{Graph, GraphStore, Node, asset_guid};
+use crate::graph::{Graph, GraphStore};
 use crate::stream::{BodyStream, ChangeKey, DeltaKind, ScriptChunk, StreamError};
-use crate::vm::{Snapshot, StackBinding, State, StateKind, Unknowns};
+use crate::vm::{Revision, Snapshot, StackBinding, State, StateKind, Unknowns};
 use crate::wire::{
     self, Binding, Bindings, Instance, Layout, Value, ValueEncoding, Variables, WireError,
 };
@@ -55,6 +55,20 @@ pub struct ProjectedSnapshot {
     /// The newest action this projection has passed: a full frame's
     /// baseline takes the newest one there is, a delta the one it carried.
     action_serial: u32,
+}
+
+/// A projection and what it was made from
+/// ([`SnapshotEncoder::project_cached`]): the snapshot's revision, the
+/// entity exclusions it kept, and the clock readings it holds for, from
+/// the snapshot's clock then to the first time a pulse goes stale or a
+/// wheel action runs out.
+#[derive(Debug)]
+pub struct ProjectionCache {
+    revision: Revision,
+    made_ms: u64,
+    fresh_until_ms: u64,
+    frozen: Option<BTreeSet<u32>>,
+    projected: ProjectedSnapshot,
 }
 
 impl ProjectedSnapshot {
@@ -501,7 +515,7 @@ impl<'a> SnapshotEncoder<'a> {
         snapshot: &Snapshot,
         view: View,
     ) -> Result<ProjectedSnapshot, SnapshotError> {
-        self.project_with_exclusions(snapshot, view, None)
+        self.project_with_exclusions(snapshot, view, None, &mut 0)
     }
 
     /// A later projection keeps the initial graph tree's entity exclusions.
@@ -514,14 +528,65 @@ impl<'a> SnapshotEncoder<'a> {
         if snapshot.entity != baseline.entity {
             return Err(SnapshotError::DifferentStream);
         }
-        self.project_with_exclusions(snapshot, baseline.view, Some(&baseline.entity_exclusions))
+        self.project_with_exclusions(
+            snapshot,
+            baseline.view,
+            Some(&baseline.entity_exclusions),
+            &mut 0,
+        )
     }
 
+    /// [`Self::project`] (no `baseline`) or [`Self::project_next`], kept in
+    /// `cache`: the projection `cache` holds is the answer again while the
+    /// snapshot keeps its revision and the clock hasn't passed what the
+    /// projection read of it ([`ProjectionCache`]). The cache must stay
+    /// with one encoder setup (graphs, codecs, unknowns, hidden instances).
+    pub fn project_cached<'c>(
+        &self,
+        snapshot: &Snapshot,
+        view: View,
+        baseline: Option<&ProjectedSnapshot>,
+        cache: &'c mut Option<ProjectionCache>,
+    ) -> Result<&'c ProjectedSnapshot, SnapshotError> {
+        if let Some(baseline) = baseline
+            && (snapshot.entity != baseline.entity || baseline.view != view)
+        {
+            return Err(SnapshotError::DifferentStream);
+        }
+        let frozen = baseline.map(|baseline| &baseline.entity_exclusions);
+        let reusable = cache.as_ref().is_some_and(|kept| {
+            kept.revision == snapshot.revision()
+                && kept.made_ms <= snapshot.now_ms
+                && snapshot.now_ms <= kept.fresh_until_ms
+                && kept.projected.view == view
+                && kept.frozen.as_ref() == frozen
+        });
+        if !reusable {
+            *cache = None;
+            let mut fresh_until_ms = u64::MAX;
+            let projected =
+                self.project_with_exclusions(snapshot, view, frozen, &mut fresh_until_ms)?;
+            *cache = Some(ProjectionCache {
+                revision: snapshot.revision(),
+                made_ms: snapshot.now_ms,
+                fresh_until_ms,
+                frozen: frozen.cloned(),
+                projected,
+            });
+        }
+        Ok(&cache.as_ref().expect("a kept projection").projected)
+    }
+
+    /// `fresh_until_ms` comes down to the last clock reading (from
+    /// `snapshot.now_ms` on) the projection holds for: the projection
+    /// reads the clock only for a pulse's freshness and a wheel action's
+    /// lifetime, each of which runs out once.
     fn project_with_exclusions(
         &self,
         snapshot: &Snapshot,
         view: View,
         frozen: Option<&BTreeSet<u32>>,
+        fresh_until_ms: &mut u64,
     ) -> Result<ProjectedSnapshot, SnapshotError> {
         if !snapshot.initialization_complete() {
             return Err(SnapshotError::Incomplete {
@@ -539,9 +604,9 @@ impl<'a> SnapshotEncoder<'a> {
                 continue;
             }
             let graph = self.graph(id, instance.graph)?;
-            let exclusions = server_only_variables(graph);
+            let exclusions = graph.server_only_variables();
             let variables =
-                self.project_variables(snapshot, id, &instance.variables, &exclusions, view)?;
+                self.project_variables(snapshot, id, &instance.variables, exclusions, view)?;
             if frozen.is_none() {
                 entity_exclusions.extend(exclusions);
             }
@@ -555,19 +620,23 @@ impl<'a> SnapshotEncoder<'a> {
                 let node = graph
                     .state(usize::from(raw))
                     .ok_or(SnapshotError::MissingState(site))?;
+                // A state that is off and was never activated is left out
+                // whatever its codec (below).
+                if !state.active && state.activation == 0 {
+                    continue;
+                }
                 if !node.is_networked()
-                    || (view == View::Observer
-                        && (presenter(node) || !graph.remote_positions().contains(&node.pos)))
+                    || (view == View::Observer && (node.is_presenter() || !node.is_remote_synced()))
                 {
                     continue;
                 }
-                let codec = self.codecs.codec(&node.class);
+                let codec = self.codecs.node_codec(node);
                 if !state.active && !(state.activation != 0 && codec.is_some_and(Codec::stec)) {
                     continue;
                 }
                 let Some(payload) = codec
                     .filter(|codec| codec.projected())
-                    .and_then(|codec| state_payload(state, codec, snapshot.now_ms))
+                    .and_then(|codec| state_payload(state, codec, snapshot.now_ms, fresh_until_ms))
                 else {
                     if self.unknowns == Unknowns::Tolerate {
                         log_left_out(&node.class, codec, state.kind);
@@ -617,7 +686,7 @@ impl<'a> SnapshotEncoder<'a> {
         }
         let variables =
             self.project_variables(snapshot, 0, &snapshot.variables, &entity_exclusions, view)?;
-        let actions = self.project_actions(snapshot, &instances)?;
+        let actions = self.project_actions(snapshot, &instances, fresh_until_ms)?;
         Ok(ProjectedSnapshot {
             entity: snapshot.entity,
             view,
@@ -639,6 +708,7 @@ impl<'a> SnapshotEncoder<'a> {
         &self,
         snapshot: &Snapshot,
         instances: &BTreeMap<u16, ProjectedInstance>,
+        fresh_until_ms: &mut u64,
     ) -> Result<Vec<ProjectedAction>, SnapshotError> {
         let mut actions = Vec::new();
         for action in &snapshot.frame_actions {
@@ -650,9 +720,13 @@ impl<'a> SnapshotEncoder<'a> {
             else {
                 continue;
             };
-            if snapshot.now_ms.saturating_sub(action.time_ms) > ACTION_LIFETIME_MS
-                || (instance.graph == CALLOUT_GRAPH
-                    && !instance.states.get(&0).is_some_and(|state| state.active))
+            if snapshot.now_ms.saturating_sub(action.time_ms) > ACTION_LIFETIME_MS {
+                continue;
+            }
+            let expires_ms = action.time_ms.saturating_add(ACTION_LIFETIME_MS);
+            *fresh_until_ms = (*fresh_until_ms).min(expires_ms);
+            if instance.graph == CALLOUT_GRAPH
+                && !instance.states.get(&0).is_some_and(|state| state.active)
             {
                 continue;
             }
@@ -892,7 +966,7 @@ impl<'a> SnapshotEncoder<'a> {
                 let slot = graph
                     .owner_slot(usize::from(raw))
                     .ok_or(SnapshotError::MissingState(site))?;
-                let codec = match self.codecs.codec(&node.class) {
+                let codec = match self.codecs.node_codec(node) {
                     Some(codec) if !codec.stec() => codec,
                     _ if self.unknowns == Unknowns::Tolerate => continue,
                     _ => {
@@ -1031,20 +1105,10 @@ impl<'a> SnapshotEncoder<'a> {
         }
         for (&id, instance) in &current.instances {
             let graph = self.graph(id, instance.graph)?;
-            for node in &graph.nodes {
-                let Some(raw) = node
-                    .state
-                    .filter(|_| node.class == "STUStatescriptStateWeaponVolley")
-                else {
-                    continue;
-                };
+            for &(raw, variable) in graph.volley_ammo() {
                 if instance.states.get(&raw).is_some_and(|state| state.active) {
                     continue;
                 }
-                let Some(Ok(Some(variable))) = node.field("m_24E351A4").map(crate::expr::lvalue)
-                else {
-                    continue;
-                };
                 let (owner, values) = match variable.scope {
                     Scope::Entity => (0, &current.variables.values),
                     Scope::Instance => (id, &instance.variables.values),
@@ -1139,7 +1203,7 @@ impl<'a> SnapshotEncoder<'a> {
                     // An StEC entry can't say "off" without a payload (its
                     // present bit of 0 changes nothing). One the client has
                     // running goes out off with the payload it had.
-                    None if self.codecs.codec(&node.class).is_some_and(Codec::stec) => {
+                    None if self.codecs.node_codec(node).is_some_and(Codec::stec) => {
                         let Some(was) = was.filter(|was| was.active) else {
                             continue;
                         };
@@ -1442,7 +1506,7 @@ impl<'a> SnapshotEncoder<'a> {
             };
             let codec = self
                 .codecs
-                .codec(&node.class)
+                .node_codec(node)
                 .ok_or_else(|| SnapshotError::Payload {
                     site,
                     source: PayloadError::Unverified(node.class.clone()),
@@ -1489,7 +1553,7 @@ impl<'a> SnapshotEncoder<'a> {
             if !node.is_networked() {
                 continue;
             }
-            if !self.codecs.sendable(&node.class, true) {
+            if !self.codecs.node_sendable(node, true) {
                 if self.unknowns == Unknowns::Tolerate {
                     continue;
                 }
@@ -1534,7 +1598,7 @@ impl<'a> SnapshotEncoder<'a> {
             };
             let codec = self
                 .codecs
-                .codec(&node.class)
+                .node_codec(node)
                 .ok_or_else(|| SnapshotError::Payload {
                     site,
                     source: PayloadError::Unverified(node.class.clone()),
@@ -1692,22 +1756,6 @@ fn write_delta_variables(
     wire::bound_variable_list(out, &extra, ValueEncoding::Compact, owner, &vars.bindings)
 }
 
-fn server_only_variables(graph: &Graph) -> BTreeSet<u32> {
-    graph
-        .fields
-        .get("m_9CEC6985")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(asset_guid)
-        .map(|guid| u32::from(guid as u16))
-        .collect()
-}
-
-fn presenter(node: &Node) -> bool {
-    node.class == "STUStatescriptStateUXPresenter" || node.fields.get("m_45216F79").is_some()
-}
-
 /// How long a pulse stays fresh for its first read
 /// (`ClientOnlyPulser.FRESH_MS` in `ow174/game/script/nodes.py`).
 const PULSE_FRESH_MS: u64 = 500;
@@ -1740,7 +1788,14 @@ fn log_left_out(class: &str, codec: Option<&Codec>, kind: StateKind) {
     eprintln!("statescript state {class} left out of frames: {reason}");
 }
 
-fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePayload> {
+/// A pulse's freshness is the one value read from the clock: while it is
+/// fresh, `fresh_until_ms` comes down to its last fresh time.
+fn state_payload(
+    state: &State,
+    codec: &Codec,
+    now_ms: u64,
+    fresh_until_ms: &mut u64,
+) -> Option<StatePayload> {
     Some(match (state.kind, codec.codec.as_deref()) {
         (
             StateKind::Plain
@@ -1791,15 +1846,17 @@ fn state_payload(state: &State, codec: &Codec, now_ms: u64) -> Option<StatePaylo
             | StateKind::Assist,
             Some("link"),
         ) => StatePayload::new(),
-        (StateKind::Pulser { pulses, pulsed_ms }, Some("pulser")) => StatePayload::from([
-            (
-                "fresh".into(),
-                Value::Bool(
-                    pulsed_ms.is_some_and(|pulsed| now_ms.saturating_sub(pulsed) <= PULSE_FRESH_MS),
-                ),
-            ),
-            ("count".into(), Value::Integer(i64::from(pulses))),
-        ]),
+        (StateKind::Pulser { pulses, pulsed_ms }, Some("pulser")) => {
+            let fresh =
+                pulsed_ms.is_some_and(|pulsed| now_ms.saturating_sub(pulsed) <= PULSE_FRESH_MS);
+            if let Some(pulsed) = pulsed_ms.filter(|_| fresh) {
+                *fresh_until_ms = (*fresh_until_ms).min(pulsed.saturating_add(PULSE_FRESH_MS));
+            }
+            StatePayload::from([
+                ("fresh".into(), Value::Bool(fresh)),
+                ("count".into(), Value::Integer(i64::from(pulses))),
+            ])
+        }
         (StateKind::BooleanSwitch(current), Some("switch")) => {
             StatePayload::from([("current".into(), Value::Bool(current))])
         }

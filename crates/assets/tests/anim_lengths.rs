@@ -1,21 +1,14 @@
 //! The animation lengths derived from the install
 //! (`data/game_anim_lengths_174.json`).
 
-use orpheus_assets::{DERIVATIONS, Install};
 use serde_json::{Value, json};
 
 fn derived() -> Value {
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::runtime_dir();
-    let derivation = DERIVATIONS
-        .iter()
-        .find(|derivation| derivation.name == "game_anim_lengths")
-        .unwrap();
-    let [output] = &(derivation.derive)(&install, &pack).unwrap()[..] else {
-        panic!("one file");
-    };
-    assert_eq!(output.path, "data/game_anim_lengths_174.json");
-    serde_json::from_slice(&output.bytes).unwrap()
+    assert_eq!(
+        orpheus_testkit::derived_outputs("game_anim_lengths"),
+        ["data/game_anim_lengths_174.json"]
+    );
+    orpheus_testkit::runtime_json("data/game_anim_lengths_174.json")
 }
 
 /// Every hero and bot body names one blend tree set, whose every alias is

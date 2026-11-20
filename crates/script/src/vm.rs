@@ -58,7 +58,7 @@ use crate::{
         self, Context, EmptyContext, EntityRelation, EvalError, Scope, StackPriority, Variable,
         equal, truthy,
     },
-    graph::{Body, Graph, GraphStore, Node, asset_guid},
+    graph::{Body, Graph, GraphStore, Node, asset_guid, member},
     timeline::{ButtonEdge, FRAME_MS, QueueFull, Timeline, button_edges, frame_start},
     vitals::PoolKind,
     wheel,
@@ -1433,6 +1433,60 @@ pub struct Snapshot {
     pub frame_actions: Vec<FrameAction>,
     /// The component's clock when this snapshot was taken.
     pub now_ms: u64,
+    /// Which content this is ([`Snapshot::revision`]).
+    revision: Revision,
+}
+
+/// What a snapshot holds apart from its clock (`now_ms`): two snapshots
+/// with the same revision hold the same values, in the same order. Every
+/// write the VM makes to its snapshot moves it on, whether or not the
+/// write changed anything ([`TrackedSnapshot`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Revision {
+    /// Unique to the component.
+    component: u64,
+    writes: u64,
+}
+
+impl Revision {
+    /// A new component's first revision.
+    fn first() -> Self {
+        static COMPONENTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        Self {
+            component: COMPONENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            writes: 0,
+        }
+    }
+}
+
+/// A machine's snapshot: a mutable borrow moves its revision on, so no
+/// write can leave it behind.
+struct TrackedSnapshot(Snapshot);
+
+impl TrackedSnapshot {
+    fn new(snapshot: Snapshot) -> Self {
+        Self(snapshot)
+    }
+
+    /// The clock, which the revision leaves out.
+    fn set_now_ms(&mut self, now_ms: u64) {
+        self.0.now_ms = now_ms;
+    }
+}
+
+impl std::ops::Deref for TrackedSnapshot {
+    type Target = Snapshot;
+
+    fn deref(&self) -> &Snapshot {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for TrackedSnapshot {
+    fn deref_mut(&mut self) -> &mut Snapshot {
+        self.0.revision.writes += 1;
+        &mut self.0
+    }
 }
 
 /// How many recent wheel actions a body keeps (upstream
@@ -1459,6 +1513,13 @@ impl Snapshot {
     /// dormant paths, later input, timers, messages, or gameplay.
     pub fn initialization_complete(&self) -> bool {
         self.diagnostics.is_empty()
+    }
+
+    /// Its content's revision: equal for two snapshots that hold the same
+    /// values (their clocks aside), so what was worked out from one holds
+    /// for the other.
+    pub fn revision(&self) -> Revision {
+        self.revision
     }
 }
 
@@ -1613,7 +1674,7 @@ impl Component {
     }
 
     pub fn snapshot(&self) -> Option<&Snapshot> {
-        (!self.halted).then_some(&self.machine.snapshot)
+        (!self.halted).then_some(&*self.machine.snapshot)
     }
 
     pub fn now_ms(&self) -> u64 {
@@ -2235,7 +2296,7 @@ pub fn initialize(
     let mut machine = Machine::new(entity, entity_variables, 0, max_work)?;
     Vm::new(graphs, world, &mut machine).start(roots)?;
     machine.capture_outputs();
-    Ok(machine.snapshot)
+    Ok(machine.snapshot.0)
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -2407,13 +2468,11 @@ struct Recipients {
 
 /// The game message a node sends or waits for; None for none.
 fn message_of(node: &Node) -> Option<u64> {
-    node.field("m_gameMessage.m_gameMessage")
-        .and_then(asset_guid)
-        .filter(|&id| id != 0)
+    node.message().filter(|&id| id != 0)
 }
 
 struct Machine {
-    snapshot: Snapshot,
+    snapshot: TrackedSnapshot,
     queues: Timeline<Event>,
     watchers: BTreeMap<VarKey, Vec<StateKey>>,
     /// The states whose expressions read another entity's variable
@@ -3417,6 +3476,16 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
     }
 
     fn set_base(&mut self, key: VarKey, value: Value) {
+        let snapshot = &self.machine.snapshot;
+        let current = match key {
+            VarKey::Entity(id) => snapshot.variables.get(&id),
+            VarKey::Instance(instance, id) => snapshot.instances[&instance].variables.get(&id),
+        };
+        // The same value again leaves the snapshot (and its revision) as
+        // it is.
+        if current.is_some_and(|current| current.identical(&value)) {
+            return;
+        }
         match key {
             VarKey::Entity(id) => self.machine.snapshot.variables.insert(id, value),
             VarKey::Instance(instance, id) => self.machine.snapshot.instances[&instance]
@@ -3609,7 +3678,7 @@ fn parameter_id(config: &Json) -> u32 {
 }
 
 fn field<'a>(fields: &'a Json, name: &str) -> &'a Json {
-    fields.get(name).unwrap_or(&Json::Null)
+    member(fields, name).unwrap_or(&Json::Null)
 }
 
 fn array_field<'a>(fields: &'a Json, name: &str) -> &'a [Json] {

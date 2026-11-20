@@ -13,15 +13,15 @@
 //! grown by their 1 cm radius (0x7FF789CF3360; measured on the running
 //! client's Practice Range meshes).
 
-use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use crate::collision::cache::{Mesh, Triangle};
-use crate::collision::grid::{ColumnGrid, ColumnRange};
+use crate::collision::grid::{ColumnGrid, ColumnRange, GridBuilder};
 use crate::contact::math::{Vec3, add, cross, dot, maxps, minps, mul, normalize, scale, sub};
 use crate::contact::triangle::{ContactTriangle, TOUCH};
+use crate::nav::FastSet;
 
 const QUERY_SLACK: f64 = 1e-3;
 
@@ -224,7 +224,7 @@ impl ContactMesh {
             return Err(ContactMeshError::InvalidGeometry);
         }
 
-        let mut grid = ColumnGrid::default();
+        let mut grid = GridBuilder::default();
         let mut records = Vec::with_capacity(raw.triangles.len());
         let mut bounds = None::<ContactBounds>;
         for (number, record) in raw.triangles.iter().enumerate() {
@@ -255,7 +255,7 @@ impl ContactMesh {
             scale: mesh_scale,
             inverse_scale,
             bounds,
-            grid,
+            grid: grid.build(),
             records,
             mask,
         })
@@ -308,7 +308,7 @@ impl ContactMesh {
         };
         let query = QueryBox::new(low, high);
         let vertices = self.scaled.as_deref().unwrap_or(&self.raw.vertices);
-        let mut seen = HashSet::new();
+        let mut seen = FastSet::default();
         let mut found = Vec::new();
         self.grid.visit(range, |number| {
             let slot = number as usize;

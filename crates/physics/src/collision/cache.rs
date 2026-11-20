@@ -1,8 +1,12 @@
 //! Prepared static collision geometry for retail build 104319.
 //!
-//! Both movement and expanded ray sidecars use the version-5 format in
-//! `ow174/game/collision.py`. This module decodes the geometry and metadata.
-//! Construction of contact worlds and spatial queries happens after loading.
+//! Both movement and expanded ray sidecars use the format of
+//! `ow174/game/collision.py`, version 5: a JSON header, then the shapes
+//! packed with XZ. Version 6 is the same with the shapes packed with zlib,
+//! which unpacks about ten times faster (0.05 s instead of 0.55 s for the
+//! Practice Range's ray cache); the server writes it and reads both. This
+//! module decodes the geometry and metadata. Construction of contact worlds
+//! and spatial queries happens after loading.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -11,12 +15,17 @@ use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::Path;
 
+use flate2::read::ZlibDecoder;
 use lzma_rust2::XzReader;
 use serde::{Deserialize, Deserializer, de};
 use serde_json::Value;
 
 pub const MAGIC: &[u8; 8] = b"OW174COL";
-pub const VERSION: u32 = 5;
+/// The version the server writes: the shapes packed with zlib.
+pub const VERSION: u32 = 6;
+/// The Python caches' version, which the server still reads: the shapes
+/// packed with XZ.
+pub const XZ_VERSION: u32 = 5;
 pub const RAY_GEOMETRY: &str = "expanded-static-rays";
 pub const RAY_PROP_SCOPE: &str = "indexed-static-models";
 pub const RAY_ROOT_PROP_SCOPE: &str = "indexed-and-authenticated-roots";
@@ -55,7 +64,7 @@ impl fmt::Display for CacheError {
             Self::HeaderLength(length) => write!(f, "invalid collision header length {length}"),
             Self::Header(error) => write!(f, "invalid collision header: {error}"),
             Self::CountLimit => f.write_str("collision cache has too many records"),
-            Self::Compression(error) => write!(f, "invalid XZ collision payload: {error}"),
+            Self::Compression(error) => write!(f, "invalid collision payload: {error}"),
             Self::GeometryLimit => f.write_str("collision payload exceeds the geometry limit"),
             Self::TruncatedGeometry => f.write_str("truncated collision geometry"),
             Self::InvalidGeometry(reason) => write!(f, "invalid collision geometry: {reason}"),
@@ -195,6 +204,11 @@ impl CacheHeader {
 }
 
 pub fn read_header(input: &mut impl Read) -> Result<CacheHeader, CacheError> {
+    read_versioned_header(input).map(|(_, header)| header)
+}
+
+/// The file's version ([`VERSION`] or [`XZ_VERSION`]) and header.
+fn read_versioned_header(input: &mut impl Read) -> Result<(u32, CacheHeader), CacheError> {
     let mut prefix = [0; 16];
     if let Err(error) = input.read_exact(&mut prefix) {
         return Err(if error.kind() == io::ErrorKind::UnexpectedEof {
@@ -207,7 +221,7 @@ pub fn read_header(input: &mut impl Read) -> Result<CacheHeader, CacheError> {
         return Err(CacheError::Magic);
     }
     let version = u32::from_le_bytes(prefix[8..12].try_into().unwrap());
-    if version != VERSION {
+    if version != VERSION && version != XZ_VERSION {
         return Err(CacheError::Version(version));
     }
     let length = u32::from_le_bytes(prefix[12..].try_into().unwrap());
@@ -229,7 +243,7 @@ pub fn read_header(input: &mut impl Read) -> Result<CacheHeader, CacheError> {
     {
         return Err(CacheError::CountLimit);
     }
-    Ok(header)
+    Ok((version, header))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -308,29 +322,41 @@ pub fn load_cache(path: impl AsRef<Path>) -> Result<CollisionCache, CacheError> 
 }
 
 pub fn read_cache(mut input: impl Read) -> Result<CollisionCache, CacheError> {
-    let header = read_header(&mut input)?;
-    decode(input, header)
+    let (version, header) = read_versioned_header(&mut input)?;
+    decode(input, version, header)
 }
 
 pub fn read_movement_cache(mut input: impl Read) -> Result<CollisionCache, CacheError> {
-    let header = read_header(&mut input)?;
+    let (version, header) = read_versioned_header(&mut input)?;
     header.check_movement()?;
-    decode(input, header)
+    decode(input, version, header)
 }
 
 pub fn read_ray_cache(
     mut input: impl Read,
     identity: RayCacheIdentity<'_>,
 ) -> Result<CollisionCache, CacheError> {
-    let header = read_header(&mut input)?;
+    let (version, header) = read_versioned_header(&mut input)?;
     header.check_ray(identity)?;
-    decode(input, header)
+    decode(input, version, header)
 }
 
-fn decode(input: impl Read, header: CacheHeader) -> Result<CollisionCache, CacheError> {
+fn decode(
+    input: impl Read,
+    version: u32,
+    header: CacheHeader,
+) -> Result<CollisionCache, CacheError> {
     let mut payload = Vec::new();
     let mut compressed = input.take(MAX_COMPRESSED_BYTES + 1);
-    let decoder = XzReader::new_mem_limit(&mut compressed, true, XZ_MEMORY_KIB);
+    let decoder: Box<dyn Read + '_> = if version == XZ_VERSION {
+        Box::new(XzReader::new_mem_limit(
+            &mut compressed,
+            true,
+            XZ_MEMORY_KIB,
+        ))
+    } else {
+        Box::new(ZlibDecoder::new(&mut compressed))
+    };
     decoder
         .take((MAX_GEOMETRY_BYTES + 1) as u64)
         .read_to_end(&mut payload)
@@ -376,14 +402,6 @@ impl<'a> Geometry<'a> {
         Ok(u32::from_le_bytes(self.bytes()?))
     }
 
-    fn index3(&mut self) -> Result<[i32; 3], CacheError> {
-        Ok([
-            i32::from_le_bytes(self.bytes()?),
-            i32::from_le_bytes(self.bytes()?),
-            i32::from_le_bytes(self.bytes()?),
-        ])
-    }
-
     fn f32(&mut self) -> Result<f32, CacheError> {
         Ok(f32::from_le_bytes(self.bytes()?))
     }
@@ -398,14 +416,24 @@ impl<'a> Geometry<'a> {
 
     fn mesh(&mut self, vertex_count: usize, triangle_count: usize) -> Result<Mesh, CacheError> {
         self.require(mesh_bytes(vertex_count, triangle_count))?;
-        let vertices = (0..vertex_count)
-            .map(|_| self.point())
-            .collect::<Result<_, _>>()?;
+        // The check above covers every field: the mesh is read in slices.
+        let vertices = self
+            .take(12 * vertex_count)?
+            .chunks_exact(12)
+            .map(|point| std::array::from_fn(|axis| f32::from_le_bytes(word(point, axis))))
+            .collect();
+        let records = self.take(24 * triangle_count)?;
+        let masks = self.take(2 * triangle_count)?;
+        let surfaces = self.take(2 * triangle_count)?;
+        let valid = |index| usize::try_from(index).is_ok_and(|index| index < vertex_count);
         let mut triangles = Vec::with_capacity(triangle_count);
-        for _ in 0..triangle_count {
-            let corners = self.index3()?;
-            let wings = self.index3()?;
-            let valid = |index| usize::try_from(index).is_ok_and(|index| index < vertex_count);
+        for ((record, mask), surface) in records
+            .chunks_exact(24)
+            .zip(masks.chunks_exact(2))
+            .zip(surfaces.chunks_exact(2))
+        {
+            let corners: [i32; 3] = std::array::from_fn(|n| i32::from_le_bytes(word(record, n)));
+            let wings: [i32; 3] = std::array::from_fn(|n| i32::from_le_bytes(word(record, 3 + n)));
             if !corners.into_iter().all(valid)
                 || !wings.into_iter().all(|index| index == -1 || valid(index))
             {
@@ -416,15 +444,9 @@ impl<'a> Geometry<'a> {
             triangles.push(Triangle {
                 corners,
                 wings,
-                mask: 0,
-                surface: 0,
+                mask: u16::from_le_bytes([mask[0], mask[1]]),
+                surface: u16::from_le_bytes([surface[0], surface[1]]),
             });
-        }
-        for triangle in &mut triangles {
-            triangle.mask = self.u16()?;
-        }
-        for triangle in &mut triangles {
-            triangle.surface = self.u16()?;
         }
         Ok(Mesh {
             vertices,
@@ -537,6 +559,12 @@ impl<'a> Geometry<'a> {
     }
 }
 
+/// The `index`-th four bytes of `bytes`.
+fn word(bytes: &[u8], index: usize) -> [u8; 4] {
+    let at = 4 * index;
+    [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]
+}
+
 fn mesh_bytes(vertices: usize, triangles: usize) -> usize {
     vertices
         .saturating_mul(12)
@@ -628,7 +656,7 @@ mod tests {
 
     #[test]
     fn reads_python_xz_geometry_without_changing_float_bits_or_order() {
-        let blob = [encode_header(VERSION, &header()), xz_fixture()].concat();
+        let blob = [encode_header(XZ_VERSION, &header()), xz_fixture()].concat();
         let cache = read_movement_cache(blob.as_slice()).unwrap();
         let mesh = &cache.meshes[0];
         assert_eq!(cache.header.name, "synthetic");
@@ -713,7 +741,7 @@ mod tests {
 
     #[test]
     fn rejects_other_versions_oversize_headers_and_truncated_compression() {
-        for version in [2, 3, 4, 6] {
+        for version in [2, 3, 4, 7] {
             let blob = encode_header(version, &header());
             assert!(
                 matches!(read_cache(blob.as_slice()), Err(CacheError::Version(found)) if found == version)
@@ -733,7 +761,7 @@ mod tests {
             Err(CacheError::CountLimit)
         ));
 
-        let mut blob = [encode_header(VERSION, &header()), xz_fixture()].concat();
+        let mut blob = [encode_header(XZ_VERSION, &header()), xz_fixture()].concat();
         blob.truncate(blob.len() - 6);
         assert!(matches!(
             read_cache(blob.as_slice()),
@@ -749,7 +777,7 @@ mod tests {
             "fd377a585a000004e6d6b44602002101200000000988a57601000468656c6c6f00000000b137b9d",
             "be5da1e9b00011d05b82d80af1fb6f37d010000000004595a",
         ));
-        let blob = [encode_header(VERSION, &header()), xz].concat();
+        let blob = [encode_header(XZ_VERSION, &header()), xz].concat();
         assert!(matches!(
             read_cache(blob.as_slice()),
             Err(CacheError::Compression(error)) if error.kind() == io::ErrorKind::OutOfMemory
@@ -792,7 +820,7 @@ mod tests {
         metadata["ckey"] = json!("core key");
         metadata["prop_placement_ckey"] = json!("prop key");
         metadata["prop_records_sha256"] = json!(digest);
-        let blob = [encode_header(VERSION, &metadata), xz_fixture()].concat();
+        let blob = [encode_header(XZ_VERSION, &metadata), xz_fixture()].concat();
         let required = RayCacheIdentity {
             map_guid: MAP,
             collision_ckey: "core key",

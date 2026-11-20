@@ -10,3 +10,7 @@ license.workspace = true
 [dependencies]
 md-5.workspace = true
 orpheus-assets.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+md-5.workspace = true

@@ -10,7 +10,7 @@ They must stay in the same folder. `orpheus` only loads the relay that is next t
 ## What you need
 
 1. **Windows.** The game, the launcher and the relay work only on Windows. The server code also builds on other systems, but it cannot start the game there.
-2. **Microsoft C++ Build Tools.** Install [Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/) and select the workload **Desktop development with C++**. It gives the MSVC linker and the Windows SDK, which Rust needs. It also gives the C compiler: one dependency (`liblzma-sys`, for XZ compression) compiles C code.
+2. **Microsoft C++ Build Tools.** Install [Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/) and select the workload **Desktop development with C++**. It gives the MSVC linker and the Windows SDK, which Rust needs.
 3. **Rust with the MSVC toolchain.** Install it from <https://rustup.rs>. On Windows the default toolchain is `stable-x86_64-pc-windows-msvc`. Rust 1.85 or newer is needed.
 4. **Git**, to get the source.
 
@@ -44,7 +44,6 @@ Your profiles and settings are in the state folder, not in the checkout, so an u
 | Message | Fix |
 | --- | --- |
 | `linker 'link.exe' not found` | Install the Build Tools with **Desktop development with C++**, then open a new terminal. |
-| `failed to find tool "cl.exe"` or an error from `liblzma-sys` | The C compiler is missing. Same fix as above. |
 | `the lock file needs to be updated but --locked was passed` | Your checkout is not clean. Run `git status` and restore `Cargo.lock`. |
 | `package requires rustc 1.85 or newer` | Run `rustup update`. |
 | `orpheus.exe` cannot be written | `orpheus` is still running. Close it, then build again. |

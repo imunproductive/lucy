@@ -14,13 +14,13 @@
 //! later shape counts only when strictly closer. Unverified: the world's
 //! shape order (chunk polytopes, meshes, then props in placeable order).
 
-use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
+use std::collections::{BTreeSet, HashMap, hash_map::Entry};
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
 use crate::collision::cache::{CacheError, CollisionCache, Hull, Mesh, Placement, Shape};
-use crate::collision::grid::{ColumnGrid, ColumnRange};
+use crate::collision::grid::{ColumnGrid, ColumnRange, GridBuilder};
 use crate::contact::gjk::PointSetSize;
 use crate::contact::gjk::sweep::{
     CastFrame, CastOptions, CastShape, MeshProbe, ShapeHit, mesh_sweep, shape_cast,
@@ -29,6 +29,7 @@ use crate::contact::math::{ContactFrame, Vec3, add, maxps, minps, mul, scale, su
 use crate::contact::mesh::{ContactBounds, ContactMesh, ContactMeshError};
 use crate::contact::round::{RoundObstacle, RoundShape};
 use crate::contact::triangle::SKIN;
+use crate::nav::FastSet;
 
 const STATIC_COLUMN_WIDTH: f64 = 4.0;
 const HUGE_PROXY_COLUMNS: u64 = 1024;
@@ -259,7 +260,7 @@ pub struct ContactWorld {
 impl ContactWorld {
     /// Keep the supplied proxy order. It also determines equal-fraction ties.
     pub fn new(shapes: Vec<StaticShape>) -> Result<Self, ContactWorldError> {
-        let mut grid = ColumnGrid::with_large_limit(HUGE_PROXY_COLUMNS);
+        let mut grid = GridBuilder::with_large_limit(HUGE_PROXY_COLUMNS);
         for (index, shape) in shapes.iter().enumerate() {
             let id = u32::try_from(index).map_err(|_| ContactWorldError::IndexLimit)?;
             let Some(bounds) = shape.fat else {
@@ -270,7 +271,10 @@ impl ContactWorld {
             grid.insert(id, range)
                 .map_err(|_| ContactWorldError::IndexLimit)?;
         }
-        Ok(Self { shapes, grid })
+        Ok(Self {
+            shapes,
+            grid: grid.build(),
+        })
     }
 
     /// Consume the movement cache and retain only the selected placement groups.
@@ -336,7 +340,7 @@ impl ContactWorld {
             return Vec::new();
         };
         let mut found = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen = FastSet::default();
         self.grid.visit(range.expanded(1), |id| {
             let shape = &self.shapes[id as usize];
             if shape.fat.is_some_and(|bounds| overlaps(low, high, bounds)) && seen.insert(id) {

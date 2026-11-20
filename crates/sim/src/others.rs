@@ -35,6 +35,8 @@
 //! or not (OW2 traffic).
 
 use std::{
+    borrow::Cow,
+    cell::{OnceCell, RefCell},
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io, mem,
     time::Duration,
@@ -57,11 +59,11 @@ use orpheus_content::{heroes::Hero, maps::GameMap};
 use orpheus_core::bits::BitWriter;
 use orpheus_script::{
     codecs::{Codec, CodecTable},
-    graph::{GraphStore, Node},
-    snapshot::{ProjectedSnapshot, SnapshotEncoder},
+    graph::GraphStore,
+    snapshot::{ProjectedSnapshot, ProjectionCache, SnapshotEncoder, View},
     stream::{BodyStream, DeltaKind, ScriptChunk, Stream},
     vitals::Vitals,
-    vm::Snapshot,
+    vm::{Revision, Snapshot},
     wire::WireError,
 };
 use orpheus_wire::{
@@ -103,16 +105,13 @@ impl ObserverActivity {
                 let Some(node) = graph.state(usize::from(raw)) else {
                     continue;
                 };
-                if !node.is_networked()
-                    || presenter(node)
-                    || !graph.remote_positions().contains(&node.pos)
-                {
+                if !node.is_networked() || node.is_presenter() || !node.is_remote_synced() {
                     continue;
                 }
                 if state.active {
                     activity.on.insert((id, raw));
                 }
-                if codecs.codec(&node.class).is_some_and(Codec::stec)
+                if codecs.node_codec(node).is_some_and(Codec::stec)
                     && (state.active || state.activation != 0)
                 {
                     activity.stec.insert((
@@ -126,11 +125,6 @@ impl ObserverActivity {
         }
         activity
     }
-}
-
-/// A HUD presenter (UXPresenter, or a screen m_45216F79): the owner's HUD.
-fn presenter(node: &Node) -> bool {
-    node.class == "STUStatescriptStateUXPresenter" || node.fields.get("m_45216F79").is_some()
 }
 
 /// One player of the room as the match sees him this tick.
@@ -217,14 +211,69 @@ impl ViewerReadiness<'_> {
 }
 
 /// A body's statescript as other clients get it (observers.py `snapshot`):
-/// projected once per tick for full frames, and from each client's
-/// acknowledged baseline for its deltas.
+/// projected at most once per tick, for the full frames a client still
+/// needs, and from each client's acknowledged baseline for its deltas.
 pub(crate) struct ObservedScript<'a> {
     pub encoder: SnapshotEncoder<'a>,
     pub snapshot: &'a Snapshot,
-    pub projected: ProjectedSnapshot,
     pub activity: Option<ObserverActivity>,
     pub frame_ms: u32,
+    projected: OnceCell<Option<ProjectedSnapshot>>,
+    kept: &'a ObserverCache,
+}
+
+impl<'a> ObservedScript<'a> {
+    /// `activity` makes the observer activity when `kept` has none for the
+    /// snapshot's revision.
+    pub fn new(
+        encoder: SnapshotEncoder<'a>,
+        snapshot: &'a Snapshot,
+        activity: impl FnOnce() -> Option<ObserverActivity>,
+        frame_ms: u32,
+        kept: &'a ObserverCache,
+    ) -> Self {
+        Self {
+            encoder,
+            snapshot,
+            activity: kept.activity(snapshot.revision(), activity),
+            frame_ms,
+            projected: OnceCell::new(),
+            kept,
+        }
+    }
+
+    /// The observer projection, made when a client first asks for it this
+    /// tick; none when the script can't be projected (no client gets its
+    /// frames then).
+    fn projected(&self) -> Option<&ProjectedSnapshot> {
+        self.projected
+            .get_or_init(|| self.encoder.project(self.snapshot, View::Observer).ok())
+            .as_ref()
+    }
+}
+
+/// What a body's statescript shows the other clients, kept from one client
+/// and tick to the next while the script stays as it was: its observer
+/// activity and its last delta projection (for the clients that share the
+/// baseline's entity exclusions, all of them in practice).
+#[derive(Default)]
+pub(crate) struct ObserverCache {
+    projection: RefCell<Option<ProjectionCache>>,
+    activity: RefCell<Option<(Revision, Option<ObserverActivity>)>>,
+}
+
+impl ObserverCache {
+    fn activity(
+        &self,
+        revision: Revision,
+        make: impl FnOnce() -> Option<ObserverActivity>,
+    ) -> Option<ObserverActivity> {
+        let mut kept = self.activity.borrow_mut();
+        match &*kept {
+            Some((at, activity)) if *at == revision => activity.clone(),
+            _ => kept.insert((revision, make())).1.clone(),
+        }
+    }
 }
 
 /// What the match knows for every client's update this tick.
@@ -898,9 +947,12 @@ impl Others {
         };
         let tick = context.tick;
         let chunk = if watch.stream.last() == 0 {
+            let Some(projected) = script.projected() else {
+                return;
+            };
             script
                 .encoder
-                .queue_full(&mut watch.stream, &script.projected)
+                .queue_full(&mut watch.stream, projected)
                 .map(Some)
         } else {
             let Some((_, base)) = watch.stream.base() else {
@@ -914,23 +966,33 @@ impl Others {
             {
                 return;
             }
-            script
-                .encoder
-                .project_next(script.snapshot, base)
-                .map(|next| match kill_feed {
-                    Some(allowed) => {
-                        next.gate_kill_feed(script.encoder.graphs(), &watch.stream, allowed)
-                    }
-                    None => next,
-                })
-                .and_then(|next| {
-                    script.encoder.queue_delta(
-                        &mut watch.stream,
-                        &next,
-                        DeltaKind::Observer { resend: false },
-                        script.frame_ms,
-                    )
-                })
+            let mut kept = script.kept.projection.borrow_mut();
+            let next = match script.encoder.project_cached(
+                script.snapshot,
+                View::Observer,
+                Some(base),
+                &mut kept,
+            ) {
+                // A script that can't be projected sends no frames.
+                Err(_) if script.projected().is_none() => return,
+                next => next,
+            };
+            next.map(|next| match kill_feed {
+                Some(allowed) => Cow::Owned(next.clone().gate_kill_feed(
+                    script.encoder.graphs(),
+                    &watch.stream,
+                    allowed,
+                )),
+                None => Cow::Borrowed(next),
+            })
+            .and_then(|next| {
+                script.encoder.queue_delta(
+                    &mut watch.stream,
+                    &next,
+                    DeltaKind::Observer { resend: false },
+                    script.frame_ms,
+                )
+            })
         };
         let chunk: Result<Option<ScriptChunk>, String> = chunk.map_err(|error| error.to_string());
         match chunk.and_then(|chunk| {

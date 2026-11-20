@@ -1,22 +1,10 @@
 //! The voice sets derived from the install: the bots' pain lines and Soldier:
 //! 76's communication wheel lines, as read from their `05F` and `078` assets.
 
-use orpheus_assets::{DERIVATIONS, Install};
 use serde_json::{Value, json};
 
 fn derived() -> Value {
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::runtime_dir();
-    let derivation = DERIVATIONS
-        .iter()
-        .find(|derivation| derivation.name == "game_voice_sets")
-        .unwrap();
-    let output = (derivation.derive)(&install, &pack)
-        .unwrap()
-        .into_iter()
-        .find(|output| output.path == "data/game_voice_sets_174.json")
-        .unwrap();
-    serde_json::from_slice(&output.bytes).unwrap()
+    orpheus_testkit::runtime_json("data/game_voice_sets_174.json")
 }
 
 /// The Practice Range bots share voice set `011D`, whose stimulus `0004`

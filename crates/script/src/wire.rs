@@ -110,6 +110,34 @@ pub enum Value {
     Pairs(Vec<(Value, Value)>),
 }
 
+impl Value {
+    /// The same value, bit for bit: unlike `==`, 0.0 and -0.0 differ (they
+    /// go out differently) and a NaN is itself.
+    pub fn identical(&self, other: &Self) -> bool {
+        let pairs = |a: &[(Self, Self)], b: &[(Self, Self)]| {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|((ak, av), (bk, bv))| ak.identical(bk) && av.identical(bv))
+        };
+        match (self, other) {
+            (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
+            (Self::Vector(a), Self::Vector(b)) => {
+                a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits())
+            }
+            (Self::Array(a), Self::Array(b)) => {
+                a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.identical(b))
+            }
+            (Self::Map(a), Self::Map(b)) | (Self::Pairs(a), Self::Pairs(b)) => pairs(a, b),
+            (
+                Self::Float(_) | Self::Vector(_) | Self::Array(_) | Self::Map(_) | Self::Pairs(_),
+                _,
+            ) => false,
+            _ => self == other,
+        }
+    }
+}
+
 impl From<ModeValue> for Value {
     fn from(value: ModeValue) -> Self {
         match value {

@@ -20,18 +20,21 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         depth: usize,
     ) -> Result<(), InitFault> {
         let old = self.machine.value(target, None);
-        match target {
-            VarKey::Entity(id) => self
-                .machine
-                .snapshot
-                .variables
-                .entry(id)
-                .or_insert(Value::Null),
-            VarKey::Instance(instance, id) => self.machine.snapshot.instances[&instance]
-                .variables
-                .entry(id)
-                .or_insert(Value::Null),
+        let snapshot = &self.machine.snapshot;
+        let present = match target {
+            VarKey::Entity(id) => snapshot.variables.contains_key(&id),
+            VarKey::Instance(instance, id) => {
+                snapshot.instances[&instance].variables.contains_key(&id)
+            }
         };
+        if !present {
+            match target {
+                VarKey::Entity(id) => self.machine.snapshot.variables.insert(id, Value::Null),
+                VarKey::Instance(instance, id) => self.machine.snapshot.instances[&instance]
+                    .variables
+                    .insert(id, Value::Null),
+            };
+        }
         let entries = self.machine.links.entry(target).or_default();
         entries.retain(|entry| entry.state != link.state);
         let at = entries

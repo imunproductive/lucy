@@ -200,14 +200,10 @@ impl<W: World> Vm<'_, '_, '_, W> {
         parameters: &[(u64, Value)],
     ) -> Result<(), InitFault> {
         let graph = self.graph(id);
-        for node in graph.nodes.iter().filter(|node| {
-            !node.client_only
-                && node.class == "STUStatescriptEntryGameMessage"
-                && node
-                    .field("m_gameMessage.m_gameMessage")
-                    .and_then(asset_guid)
-                    == Some(AURA_APPLIED)
-        }) {
+        for node in graph
+            .message_nodes(AURA_APPLIED)
+            .filter(|node| node.class == "STUStatescriptEntryGameMessage")
+        {
             for row in array_field(&node.fields, "m_params") {
                 let Some(key) = row.get("m_B5051BCE").and_then(asset_guid) else {
                     continue;

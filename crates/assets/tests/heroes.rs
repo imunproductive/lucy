@@ -46,13 +46,7 @@ fn game_stats_matches_the_pack() {
 #[test]
 #[ignore = "requires an Overwatch 1.74 install"]
 fn the_stat_rules_come_from_the_stats_own_fields() {
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let derivation = DERIVATIONS
-        .iter()
-        .find(|derivation| derivation.name == "game_stat_rules")
-        .unwrap();
-    let outputs = (derivation.derive)(&install, std::path::Path::new(".")).unwrap();
-    let table: serde_json::Value = serde_json::from_slice(&outputs[0].bytes).unwrap();
+    let table = orpheus_testkit::runtime_json("data/game_stat_rules_174.json");
     let stat = |index: u32| format!("0x0860{:012X}", index);
     assert_eq!(table["best"][stat(0x346)], "max");
     assert_eq!(table["best"][stat(0x23b)], "max");

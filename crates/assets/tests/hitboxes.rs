@@ -1,22 +1,10 @@
 //! The hit shapes derived from the install (`data/game_hitboxes_174.json`)
 //! and the bot bodies' rigs (`data/game_bot_animation_174.json`).
 
-use orpheus_assets::{DERIVATIONS, Install};
 use serde_json::Value;
 
 fn derived_file(path: &str) -> Value {
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let pack = orpheus_testkit::runtime_dir();
-    let derivation = DERIVATIONS
-        .iter()
-        .find(|derivation| derivation.name == "hitboxes")
-        .unwrap();
-    let output = (derivation.derive)(&install, &pack)
-        .unwrap()
-        .into_iter()
-        .find(|output| output.path == path)
-        .unwrap();
-    serde_json::from_slice(&output.bytes).unwrap()
+    orpheus_testkit::runtime_json(path)
 }
 
 fn derived() -> Value {

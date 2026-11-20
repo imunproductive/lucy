@@ -11,7 +11,7 @@ use std::{
     fs::{self, File},
     io::{self, BufReader, Read},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -143,12 +143,14 @@ pub struct SceneAssets {
     runtime: PathBuf,
     build_collision: Option<Arc<CollisionBuild>>,
     mode_props: BTreeMap<u64, BTreeSet<u64>>,
-    graphs: Arc<GraphStore>,
+    /// What the graph bundles give, loaded with the rest
+    /// ([`SceneAssets::load`]) or on first use
+    /// ([`SceneAssets::load_deferred`]).
+    scripts: OnceLock<Scripts>,
     codecs: Option<Arc<CodecTable>>,
     /// Each mode's owner body factory, made the first time a scene of the
     /// mode is prepared.
     owner_bodies: Mutex<HashMap<u64, Option<Arc<OwnerBodyFactory>>>>,
-    bot_graphs: Option<Arc<GraphStore>>,
     bot_unknowns: Unknowns,
     player_unknowns: Unknowns,
     /// Players' bodies' ultimate generation variables; None: the rulesets'
@@ -163,11 +165,7 @@ pub struct SceneAssets {
     hitboxes: Arc<HitboxCatalog>,
     /// The bot bodies' rigs (`game_bot_animation_174.json`).
     bot_rigs: BotRigCatalog,
-    /// The bots' graphs' states that animate them.
-    script_anims: Arc<ScriptAnims>,
     respawns: RespawnTimes,
-    /// The mode graphs' values the match flow uses.
-    mode_graph_values: ModeGraphValues,
     /// The initial graphs of the entities the game spawns during the match
     /// (`crate::spawned`); an entity without any doesn't run.
     spawn_graphs: Arc<SpawnGraphs>,
@@ -175,11 +173,8 @@ pub struct SceneAssets {
     /// The stats the server counts (the Tab board's player list).
     board: BoardStats,
     heroes: Arc<HeroCatalog>,
-    pools: Arc<PoolCatalog>,
     /// The game modes' teams (`game_modes_174.json`).
     modes: GameModes,
-    /// The match flow's values the graphs and objectives hold.
-    mode_rules: ModeRulesData,
     /// Each map's objective data (`game_objectives_174.json` `maps`).
     objectives: ObjectiveData,
     /// Each ray profile's map mask (`game_ray_profiles_174.json`).
@@ -187,8 +182,50 @@ pub struct SceneAssets {
     /// Each map's spawn rooms, damage areas and server placeables
     /// (`game_map_areas_174.json`).
     map_areas: MapAreaData,
+}
+
+/// What [`SceneAssets`] has from the graph bundles: most of its load (the
+/// two bundles' JSON).
+struct Scripts {
+    graphs: Arc<GraphStore>,
+    bot_graphs: Option<Arc<GraphStore>>,
+    pools: Arc<PoolCatalog>,
+    /// The match flow's values the graphs and objectives hold.
+    mode_rules: ModeRulesData,
+    /// The mode graphs' values the match flow uses.
+    mode_graph_values: ModeGraphValues,
     /// Each body definition's target tags ([`body_tags`]).
     body_tags: Arc<BodyTags>,
+    /// The bots' graphs' states that animate them.
+    script_anims: Arc<ScriptAnims>,
+}
+
+impl Scripts {
+    /// The bot bundle adds the bots' bodies to the hero bundle; the heroes
+    /// keep the hero bundle, which has their target tags.
+    fn load(data: &Path) -> io::Result<Self> {
+        let (graphs, bot_graphs) = GraphStore::load_runtime_pair(
+            data,
+            "game_graphs_174.json.gz",
+            "game_graphs_bots_174.json.gz",
+        )?;
+        let graphs = Arc::new(graphs);
+        let bot_graphs = bot_graphs.map(Arc::new);
+        Ok(Self {
+            pools: Arc::new(PoolCatalog::from_graphs(&graphs)?),
+            mode_rules: ModeRulesData::load(&graphs, data)?,
+            mode_graph_values: ModeGraphValues::read(&graphs)?,
+            body_tags: Arc::new(body_tags(&graphs, bot_graphs.as_deref())),
+            script_anims: Arc::new(
+                bot_graphs
+                    .as_deref()
+                    .map(ScriptAnims::from_graphs)
+                    .unwrap_or_default(),
+            ),
+            graphs,
+            bot_graphs,
+        })
+    }
 }
 
 /// Why the environment kills a body ([`PreparedScene::fell_out`]).
@@ -277,81 +314,79 @@ pub struct PreparedScene {
 }
 
 impl SceneAssets {
+    /// Every asset a scene needs. The graph bundles are most of the load
+    /// (their graphs parse on every thread), so the rest loads on a thread of
+    /// its own beside them.
     pub fn load(runtime: impl AsRef<Path>) -> io::Result<Self> {
         let runtime = runtime.as_ref();
+        let (scripts, assets) = std::thread::scope(|scope| {
+            let assets = scope.spawn(|| Self::load_deferred(runtime));
+            let scripts = Scripts::load(&runtime.join("data"));
+            (scripts, joined(assets))
+        });
+        let assets = assets?;
+        let _ = assets.scripts.set(scripts?);
+        Ok(assets)
+    }
+
+    /// The assets without the graph bundles, which load the first time a
+    /// scene is prepared or a graph asked for: for a lobby that may never
+    /// open a world (27 of the matchmaker's 28 ported tests open none).
+    pub fn load_deferred(runtime: impl AsRef<Path>) -> io::Result<Self> {
+        let runtime = runtime.as_ref();
         let data = runtime.join("data");
-        let graphs = Arc::new(GraphStore::load_runtime(&data, "game_graphs_174.json.gz")?);
-        // The bot bundle adds the bots' bodies to the hero bundle; the heroes
-        // keep the hero bundle, which has their target tags.
-        let bot_graphs = match GraphStore::load_runtime(&data, "game_graphs_bots_174.json.gz") {
-            Ok(graphs) => Some(Arc::new(graphs)),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error),
-        };
-        let codecs = Some(Arc::new(CodecTable::client()));
-        let pools = Arc::new(PoolCatalog::from_graphs(&graphs)?);
-        let heroes = HeroCatalog::load(data.join("game_heroes_174.json"))?;
-        // A body the movers or eyes don't list is the server's fallback
-        // hero's (mover.py `SOLDIER_BODY`).
-        let fallback = heroes
-            .get(SOLDIER)
-            .ok_or_else(|| invalid("the hero catalog has no Soldier: 76"))?
-            .body;
-        let spawn_graphs =
-            spawn_graphs(&data.join("game_spawns_174.json")).unwrap_or_else(|error| {
-                eprintln!("the spawned entities' graphs are unavailable ({error})");
-                SpawnGraphs::new()
-            });
-        let stats = Arc::new(
-            StatsCatalog::load(data.join("game_stats_174.json"))?
-                .with_rules(StatRules::load(data.join("game_stat_rules_174.json"))?),
-        );
-        let board = stats.board()?;
-        let mode_rules = ModeRulesData::load(&graphs, &data)?;
-        let objectives = ObjectiveData::load(&data)?;
-        let map_areas = MapAreaData::load(&data)?;
-        let body_tags = Arc::new(body_tags(&graphs, bot_graphs.as_deref()));
-        let script_anims = Arc::new(
-            bot_graphs
-                .as_deref()
-                .map(ScriptAnims::from_graphs)
-                .unwrap_or_default(),
-        );
-        Ok(Self {
-            collision: runtime.join("collision"),
-            runtime: runtime.to_path_buf(),
-            build_collision: None,
-            mode_props: read_mode_props(&data.join("collision_props_174.json"))?,
-            mode_graph_values: ModeGraphValues::read(&graphs)?,
-            spawn_graphs: Arc::new(spawn_graphs),
-            graphs,
-            codecs,
-            owner_bodies: Mutex::default(),
-            bot_graphs,
-            bot_unknowns: Unknowns::for_build(),
-            player_unknowns: Unknowns::for_build(),
-            ult_generation: None,
-            bots: BotCatalog::load(data.join("ai_spawners_174.json"))?,
-            movers: Arc::new(MoverCatalog::load(
-                data.join("game_movers_174.json"),
-                fallback,
-            )?),
-            eyes: Arc::new(EyeCatalog::load(data.join("game_eyes_174.json"), fallback)?),
-            voice_sets: Arc::new(VoiceCatalog::load(data.join("game_voice_sets_174.json"))?),
-            hitboxes: Arc::new(HitboxCatalog::load(data.join("game_hitboxes_174.json"))?),
-            bot_rigs: BotRigCatalog::load(data.join("game_bot_animation_174.json"))?,
-            script_anims,
-            respawns: RespawnTimes::load(data.join("game_respawns_174.json"))?,
-            stats,
-            board,
-            heroes: Arc::new(heroes),
-            pools,
-            modes: GameModes::load(data.join(MODES_FILE))?,
-            mode_rules,
-            objectives,
-            ray_profiles: Arc::new(RayProfiles::load(data.join(RAY_PROFILES_FILE))?),
-            map_areas,
-            body_tags,
+        std::thread::scope(|scope| {
+            // The map areas (11 MB of JSON) load beside the rest.
+            let map_areas = scope.spawn(|| MapAreaData::load(&data));
+            let codecs = Some(Arc::new(CodecTable::client()));
+            let heroes = HeroCatalog::load(data.join("game_heroes_174.json"))?;
+            // A body the movers or eyes don't list is the server's fallback
+            // hero's (mover.py `SOLDIER_BODY`).
+            let fallback = heroes
+                .get(SOLDIER)
+                .ok_or_else(|| invalid("the hero catalog has no Soldier: 76"))?
+                .body;
+            let spawn_graphs =
+                spawn_graphs(&data.join("game_spawns_174.json")).unwrap_or_else(|error| {
+                    eprintln!("the spawned entities' graphs are unavailable ({error})");
+                    SpawnGraphs::new()
+                });
+            let stats = Arc::new(
+                StatsCatalog::load(data.join("game_stats_174.json"))?
+                    .with_rules(StatRules::load(data.join("game_stat_rules_174.json"))?),
+            );
+            let board = stats.board()?;
+            let objectives = ObjectiveData::load(&data)?;
+            Ok(Self {
+                collision: runtime.join("collision"),
+                runtime: runtime.to_path_buf(),
+                build_collision: None,
+                mode_props: read_mode_props(&data.join("collision_props_174.json"))?,
+                scripts: OnceLock::new(),
+                spawn_graphs: Arc::new(spawn_graphs),
+                codecs,
+                owner_bodies: Mutex::default(),
+                bot_unknowns: Unknowns::for_build(),
+                player_unknowns: Unknowns::for_build(),
+                ult_generation: None,
+                bots: BotCatalog::load(data.join("ai_spawners_174.json"))?,
+                movers: Arc::new(MoverCatalog::load(
+                    data.join("game_movers_174.json"),
+                    fallback,
+                )?),
+                eyes: Arc::new(EyeCatalog::load(data.join("game_eyes_174.json"), fallback)?),
+                voice_sets: Arc::new(VoiceCatalog::load(data.join("game_voice_sets_174.json"))?),
+                hitboxes: Arc::new(HitboxCatalog::load(data.join("game_hitboxes_174.json"))?),
+                bot_rigs: BotRigCatalog::load(data.join("game_bot_animation_174.json"))?,
+                respawns: RespawnTimes::load(data.join("game_respawns_174.json"))?,
+                stats,
+                board,
+                heroes: Arc::new(heroes),
+                modes: GameModes::load(data.join(MODES_FILE))?,
+                objectives,
+                ray_profiles: Arc::new(RayProfiles::load(data.join(RAY_PROFILES_FILE))?),
+                map_areas: joined(map_areas)?,
+            })
         })
     }
 
@@ -367,8 +402,25 @@ impl SceneAssets {
         self
     }
 
+    /// The graph-bundle part: loaded with the rest, or now when
+    /// [`SceneAssets::load_deferred`] left it.
+    fn scripts(&self) -> io::Result<&Scripts> {
+        if let Some(scripts) = self.scripts.get() {
+            return Ok(scripts);
+        }
+        let scripts = Scripts::load(&self.runtime.join("data"))?;
+        Ok(self.scripts.get_or_init(|| scripts))
+    }
+
+    /// [`Self::scripts`] for the accessors: assets from
+    /// [`SceneAssets::load`] always have them.
+    fn loaded_scripts(&self) -> &Scripts {
+        self.scripts()
+            .unwrap_or_else(|error| panic!("the graph bundles can't be loaded: {error}"))
+    }
+
     pub fn graphs(&self) -> &GraphStore {
-        &self.graphs
+        &self.loaded_scripts().graphs
     }
 
     pub fn heroes(&self) -> &HeroCatalog {
@@ -378,7 +430,7 @@ impl SceneAssets {
     /// The bot graph bundle (`game_graphs_bots_174.json.gz`), when the data
     /// has one: the bots' bodies and their AI spawner graphs.
     pub fn bot_graphs(&self) -> Option<&GraphStore> {
-        self.bot_graphs.as_deref()
+        self.loaded_scripts().bot_graphs.as_deref()
     }
 
     /// How the bot scripts treat unknown statescript content. By default as
@@ -408,6 +460,7 @@ impl SceneAssets {
     /// outdated, which can take a while: callers prepare off the game thread
     /// (match.py `_refresh_collision`).
     pub fn prepare(&self, map: GameMap) -> io::Result<PreparedScene> {
+        let scripts = self.scripts()?;
         let index = map.map_guid as u32;
         let path = self.collision.join(format!("{index:04X}.col"));
         let rays_path = self.collision.join(format!("{index:04X}.rays.col"));
@@ -422,7 +475,6 @@ impl SceneAssets {
         }
         let empty = BTreeSet::new();
         let identifiers = self.mode_props.get(&map.mode_guid).unwrap_or(&empty);
-        let ground = CollisionScene::movement_probe(&cache, identifiers).map_err(invalid)?;
         // The ray cache is of the movement cache's chunk (both are built
         // together).
         let ckey = cache
@@ -430,28 +482,37 @@ impl SceneAssets {
             .source
             .get("ckey")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| invalid("movement cache without its chunk's content key"))?;
+            .ok_or_else(|| invalid("movement cache without its chunk's content key"))?
+            .to_owned();
         let identity = RayCacheIdentity {
             map_guid: map.map_guid,
-            collision_ckey: ckey,
+            collision_ckey: &ckey,
             placement_ckey: None,
             prop_records_sha256: None,
         };
-        let rays = {
-            let cache = read_ray_cache(BufReader::new(File::open(rays_path)?), identity)
-                .map_err(invalid)?;
-            Arc::new(CollisionScene::expanded_rays(&cache, identifiers, identity).map_err(invalid)?)
-        };
+        // The ray scene takes the longest (about 2 s for the Practice Range
+        // in a debug build): it builds on a thread of its own beside the
+        // movement scene, the contacts and the navigation.
+        let (ground, contacts, navigation, rays) = std::thread::scope(|scope| {
+            let rays = scope.spawn(|| {
+                let cache = read_ray_cache(BufReader::new(File::open(&rays_path)?), identity)
+                    .map_err(invalid)?;
+                CollisionScene::expanded_rays(&cache, identifiers, identity).map_err(invalid)
+            });
+            let ground = CollisionScene::movement_probe(&cache, identifiers).map_err(invalid);
+            // Every map's players move on its collision (match.py `new_mover`).
+            let contacts = ContactWorld::from_movement_cache(cache, identifiers)
+                .map(Arc::new)
+                .map_err(invalid);
+            let navigation = self.navigation(&map);
+            (ground, contacts, navigation, joined(rays))
+        });
+        let ground = ground?;
+        let contacts = Some(contacts?);
+        let rays = Arc::new(rays?);
         let mut bots = self.bots.make(map.map_guid, |body| {
             BotWalk::from_mover(self.movers.for_body(Some(body)))
         });
-        // Every map's players move on its collision (match.py `new_mover`).
-        let contacts = Some(
-            ContactWorld::from_movement_cache(cache, identifiers)
-                .map(Arc::new)
-                .map_err(invalid)?,
-        );
-        let navigation = self.navigation(&map);
         for bot in bots.iter_mut().filter(|bot| !bot.spawn.route.is_empty()) {
             if let Some(world) = &contacts {
                 let category = mover_category(&map, bot.spawn.team);
@@ -472,7 +533,7 @@ impl SceneAssets {
         }
         let map_rays = SceneRays::shared(&rays, &self.ray_profiles);
         let bot_scripts = BotScripts::new(
-            self.bot_graphs.clone(),
+            scripts.bot_graphs.clone(),
             self.codecs
                 .clone()
                 .unwrap_or_else(|| Arc::new(CodecTable::client())),
@@ -483,7 +544,7 @@ impl SceneAssets {
             Arc::clone(&map_rays),
         );
         let controller = Controller::load(
-            &self.graphs,
+            &scripts.graphs,
             map.mode_guid,
             map.ruleset,
             self.codecs
@@ -491,15 +552,16 @@ impl SceneAssets {
                 .unwrap_or_else(|| Arc::new(CodecTable::client())),
         )?
         .with_unknowns(self.player_unknowns);
-        let mode_ui = mode_ui(&self.graphs, map.mode_guid, &Variables::new())?;
+        let mode_ui = mode_ui(&scripts.graphs, map.mode_guid, &Variables::new())?;
         let initial_board =
             self.stats
                 .component(&PlayerStats::default(), map.mode_guid, None, None);
         let map_mode = map.mode_guid;
         let mode_random = crate::scene::draw_mode_random();
         let mode_rules =
-            self.mode_rules
-                .rules(self.graphs.rulesets(), map.mode_guid, mode_random)?;
+            scripts
+                .mode_rules
+                .rules(scripts.graphs.rulesets(), map.mode_guid, mode_random)?;
         let objectives = self.objectives.map(&map)?;
         let spawn_rooms = self.map_areas.spawn_rooms(&map);
         let lethal_areas = self.map_areas.lethal_areas(&map, identifiers);
@@ -507,7 +569,7 @@ impl SceneAssets {
         // The client shows a server-owned placeable only once the server
         // creates it.
         let server_placeables = self.map_areas.placed_scripts(&map, identifiers);
-        let map_tags = self.map_areas.map_tags(&map, identifiers, &self.graphs);
+        let map_tags = self.map_areas.map_tags(&map, identifiers, &scripts.graphs);
         let lowest_spawn = map
             .spawns
             .iter()
@@ -524,7 +586,7 @@ impl SceneAssets {
             && MatchFlow::new(
                 &map,
                 false,
-                self.mode_graph_values,
+                scripts.mode_graph_values,
                 mode_rules,
                 Arc::clone(&objectives),
                 Timers::default(),
@@ -537,7 +599,7 @@ impl SceneAssets {
             )));
         }
         let placed_scripts = PlacedScripts::new(
-            Arc::clone(&self.graphs),
+            Arc::clone(&scripts.graphs),
             map_mode,
             map.ruleset,
             mode_random,
@@ -555,19 +617,19 @@ impl SceneAssets {
             contacts,
             controller,
             mode_ui,
-            graphs: Arc::clone(&self.graphs),
+            graphs: Arc::clone(&scripts.graphs),
             initial_board,
             bots,
             bot_scripts,
             bot_plate: Arc::default(),
             hurt: HurtFeedback::default(),
-            script_anims: Arc::clone(&self.script_anims),
+            script_anims: Arc::clone(&scripts.script_anims),
             movers: Arc::clone(&self.movers),
             eyes: Arc::clone(&self.eyes),
             voice_sets: Arc::clone(&self.voice_sets),
             hitboxes: Arc::clone(&self.hitboxes),
             heroes: Arc::clone(&self.heroes),
-            pools: Arc::clone(&self.pools),
+            pools: Arc::clone(&scripts.pools),
             stats: Arc::clone(&self.stats),
             board: self.board,
             owner_body_factory: None,
@@ -576,7 +638,7 @@ impl SceneAssets {
             navigation,
             paths: PathBudget::default(),
             mode_rules,
-            mode_graph_values: self.mode_graph_values,
+            mode_graph_values: scripts.mode_graph_values,
             objectives,
             spawn_rooms,
             lethal_areas,
@@ -587,7 +649,7 @@ impl SceneAssets {
             placed_scripts,
             server_placeables,
             map_tags,
-            body_tags: Arc::clone(&self.body_tags),
+            body_tags: Arc::clone(&scripts.body_tags),
         };
         let mut factories = self
             .owner_bodies
@@ -595,7 +657,7 @@ impl SceneAssets {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         scene.owner_body_factory = factories
             .entry(scene.map.mode_guid)
-            .or_insert_with(|| self.prepare_owner_body(&scene))
+            .or_insert_with(|| self.prepare_owner_body(scripts, &scene))
             .clone();
         Ok(scene)
     }
@@ -616,20 +678,26 @@ impl SceneAssets {
             return Ok(());
         }
         // One cache build at a time in the process (collision.py
-        // `_building`, a module lock), whichever assets ask: two sets that
-        // share a cache folder, as tests side by side do, build a missing map
-        // once rather than both into the same file.
+        // `_building`, a module lock), whichever assets ask, and one build of
+        // a map at a time across processes (a lock file beside its caches):
+        // sets that share a cache folder, as the tests' processes do, build a
+        // missing map once rather than each into the same file.
         static BUILDING: Mutex<()> = Mutex::new(());
         let _building = BUILDING
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        fs::create_dir_all(&self.collision)?;
+        let _lock = lock(
+            &self
+                .collision
+                .join(format!("{:04X}.lock", map.map_guid as u32)),
+        )?;
         if ready() {
             return Ok(());
         }
         let files = build(map.map_guid, &map.name)?;
-        fs::create_dir_all(&self.collision)?;
         for (path, bytes) in paths.into_iter().zip([files.movement, files.rays]) {
-            let temporary = path.with_extension("col.tmp");
+            let temporary = path.with_extension(format!("col.{}.tmp", std::process::id()));
             fs::write(&temporary, bytes)?;
             fs::rename(&temporary, path)?;
         }
@@ -662,9 +730,13 @@ impl SceneAssets {
     /// (`ow174/game/match.py`) runs them all. Each hero's graphs are prepared
     /// the first time someone picks it, with that first spawn as the probe;
     /// a hero whose script can't start gets a body without one.
-    fn prepare_owner_body(&self, scene: &PreparedScene) -> Option<Arc<OwnerBodyFactory>> {
-        let graphs = Arc::clone(&self.graphs);
-        let pools = Arc::clone(&self.pools);
+    fn prepare_owner_body(
+        &self,
+        scripts: &Scripts,
+        scene: &PreparedScene,
+    ) -> Option<Arc<OwnerBodyFactory>> {
+        let graphs = Arc::clone(&scripts.graphs);
+        let pools = Arc::clone(&scripts.pools);
         let eyes = Arc::clone(&self.eyes);
         let player_unknowns = self.player_unknowns;
         let ult_generation = self.ult_generation.clone();
@@ -1555,6 +1627,25 @@ fn invalid(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
 
+/// A scoped thread's result; its panic goes on in the caller.
+fn joined<T>(thread: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    thread
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+/// Hold the lock file `path` (created if missing) until the returned file is
+/// dropped, waiting while another process holds it. The system lets it go
+/// when its process ends, however it ends.
+// The workspace's `rust-version` predates `File::lock` (1.89), but the
+// pinned toolchain (rust-toolchain.toml) has it.
+#[allow(clippy::incompatible_msrv)]
+fn lock(path: &Path) -> io::Result<File> {
+    let file = File::create(path)?;
+    file.lock()?;
+    Ok(file)
+}
+
 /// Builds a map's collision caches from `install`, for tests that prepare
 /// a map the runtime pack has no caches for.
 #[cfg(test)]
@@ -1615,7 +1706,8 @@ mod tests {
             .unwrap();
         let empty = BTreeSet::new();
         let identifiers = assets.mode_props.get(&mode).unwrap_or(&empty);
-        let mut world = ModeWorld::new(Arc::clone(&assets.graphs), mode, Unknowns::Tolerate);
+        let graphs = Arc::clone(&assets.loaded_scripts().graphs);
+        let mut world = ModeWorld::new(Arc::clone(&graphs), mode, Unknowns::Tolerate);
         world.players = (0..2)
             .map(|team| ModePlayer {
                 controller: 0x1001 + team as u32,
@@ -1625,7 +1717,7 @@ mod tests {
             .collect();
         world.team_sizes = vec![(0, 6), (1, 6)];
         world.ready = true;
-        let tags = assets.map_areas.map_tags(&map, identifiers, &assets.graphs);
+        let tags = assets.map_areas.map_tags(&map, identifiers, &graphs);
         world.map_tags = Some(Arc::clone(&tags));
         let mut script = ModeScript::start(world, 0x0f4a, 1).unwrap();
         let entities = |value: Option<&Value>| match value {

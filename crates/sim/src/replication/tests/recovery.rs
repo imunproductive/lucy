@@ -363,8 +363,9 @@ fn a_same_hero_pick_after_a_fault_replaces_the_body_and_waits_for_fresh_acks() {
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
 fn healthy_and_scriptless_same_hero_picks_keep_the_body() {
+    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
     for scripted in [true, false] {
-        let mut scene = practice_range();
+        let mut scene = assets.prepare(GameMap::practice_range()).unwrap();
         if !scripted {
             scene.owner_body_factory = None;
         }

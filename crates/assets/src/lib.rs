@@ -218,9 +218,16 @@ pub const DERIVATIONS: &[Derivation] = &[
     },
 ];
 
-/// Run every derivation and write its files under `out`.
+/// The list of what each derivation wrote, [`OUTPUTS`] in the pack: a line
+/// `<derivation>\t<path>` per file, in the order they were derived. It lets a
+/// derivation's test check the files it writes without deriving again.
+pub const OUTPUTS: &str = "outputs.txt";
+
+/// Run every derivation and write its files under `out`, and their list
+/// ([`OUTPUTS`]).
 pub fn build(install: &Install, out: &Path) -> Result<Vec<PathBuf>> {
     let mut written = Vec::new();
+    let mut list = String::new();
     for derivation in DERIVATIONS {
         for output in (derivation.derive)(install, out)? {
             let path = out.join(&output.path);
@@ -229,8 +236,10 @@ pub fn build(install: &Install, out: &Path) -> Result<Vec<PathBuf>> {
             }
             fs::write(&path, &output.bytes)?;
             written.push(path);
+            list.push_str(&format!("{}\t{}\n", derivation.name, output.path));
         }
     }
+    fs::write(out.join(OUTPUTS), list)?;
     Ok(written)
 }
 

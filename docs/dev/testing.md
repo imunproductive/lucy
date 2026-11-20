@@ -14,14 +14,15 @@ You need [just](https://github.com/casey/just) and Node.js in addition to the bu
 
 While you work on a feature, run only the tests that are directly involved:
 
-- `just check` (or `cargo test --workspace` and `just lint`). These are cheap.
+- `just check` (or `just test` and `just lint`). These are cheap.
+- `just test-affected <install>`: the tests, game-install tests included, of the crates your change touches and every crate that depends on them (`tools/affected.py`, changes since `main`).
 - The game-install tests of the area you touched, by name:
 
   ```powershell
   just test-named C:\Games\Overwatch orpheus-sim body_script
   ```
 
-  The last argument is a name filter, as in `cargo test`. `test-named` uses the debug build, which `cargo test --workspace` has already compiled. For the long match tests of `orpheus-server`, add `gametest` to use the optimised build: `just test-named C:\Games\Overwatch orpheus-server assault gametest`. That build takes about two minutes after a change in `sim`, but the tests then run two to three times faster.
+  The last argument is a name filter, as in `cargo test`. `test-named` uses the debug build, which `just test` has already compiled. For the long match tests of `orpheus-server`, add `gametest` to use the optimised build: `just test-named C:\Games\Overwatch orpheus-server assault gametest`. That build takes about two minutes after a change in `sim`, but the tests then run two to three times faster.
 
 Do not run the full game-install suites (`just test-game`, `just test-slow`) for a feature. The integrator (whoever merges) runs them once, after a batch of merges. An agent does not run them before it reports.
 
@@ -44,12 +45,13 @@ Do not run the full game-install suites (`just test-game`, `just test-slow`) for
 | `just fmt` | `cargo fmt --all` | Formats the code |
 | `just fmt-check` | `cargo fmt --all --check` | Fails on unformatted code |
 | `just lint` | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Clippy; every warning is an error |
-| `just test` | `cargo test --workspace --locked` | The public tests |
+| `just test` | `cargo nextest run --workspace --locked`, then the doc tests | The public tests |
 | `just dashboard-test` | `node --test web/tests/test_dashboard_client.mjs` | The dashboard JavaScript test |
 | `just build` | `cargo build --workspace --release --locked` | Release build of `orpheus.exe` and `owwfd_relay.dll` |
 | `just test-game <install>` | ignored tests with `ORPHEUS_GAME_DIR`, optimised, without the slow group, side by side; then the `serial_` tests one at a time | Tests that read the install; the integrator runs them after a batch of merges |
 | `just test-slow <install>` | ignored `slow_` tests, optimised | The game-install tests that play a whole match or run over a minute; the integrator runs them with `test-game` |
 | `just test-named <install> <crate> <filter> [gametest]` | ignored tests of one crate whose names contain the filter; debug build unless `gametest` is given | The game-install tests of the area you work on |
+| `just test-affected <install>` | every test, ignored ones included, of the crates `tools/affected.py` names, without `slow_` and `serial_` | An agent's own check before reporting |
 | `just test-assets <install> <pack>` | ignored `matches_the_pack` tests of `orpheus-assets` | Derivations against a prepared pack |
 | `just test-datatool <install> <dump>` | ignored `datatool` tests of `orpheus-stu` | The asset reader against a DataTool export |
 | `just test-windows` | ignored tests of `orpheus-launcher` | Loads the relay DLL into a stand-in process |
@@ -71,11 +73,11 @@ just test-game C:\Games\Overwatch
 The recipe builds the relay, sets `ORPHEUS_GAME_DIR` and runs every ignored test except the pack and DataTool comparisons and the slow group. Test code never reads environment variables itself; it asks `testkit`:
 
 - `testkit::game_dir()` returns the install from `ORPHEUS_GAME_DIR`.
-- `testkit::runtime_dir()` derives the game data from that install once and keeps it in `target/orpheus-test-data`. Later runs reuse it.
+- `testkit::runtime_dir()` derives the game data from that install once and keeps it in `<test data>/104319/<key>`. `<key>` is a hash of the code that makes the data (the library code of `assets`, `casc`, `fixed` and `stu`, computed by `crates/testkit/build.rs`), so a change to a derivation derives again, and a derivation's test reads the output of the code under test rather than deriving it itself: `testkit::runtime_json(path)` reads a derived file, and `testkit::derived_outputs(name)` lists the files the derivation `name` returned (`outputs.txt` in the pack, which `orpheus_assets::build` writes). The test data folder is `ORPHEUS_TEST_DATA`, by default the main checkout's `target/orpheus-test-data`: every worktree of the clone, and every branch with the same derivation code, shares one derivation. Test processes that start at once derive it once: they take turns on `<key>.lock`, and the one that derives builds in a folder of its own and renames it into place when it is whole. A process that derives deletes the data of other keys that no test used for 7 days (`<key>.used` holds the last use). The old layout, `target/orpheus-test-data/104319/data` and `collision` in each worktree, is no longer read; delete it.
 
 `just test-game` and `just test-slow` build with the Cargo profile `gametest` (in `Cargo.toml`). It optimises every crate as the release profile does, but it keeps the debug assertions and overflow checks. So the VM still refuses statescript content it does not implement, as in `cargo test`. Each game-install test, run alone, takes about half the time of a debug build; the `sim` tests take a third. The build goes to `target/gametest`, apart from the debug build. The first `gametest` build compiles everything once (about 7 minutes); after a change in `sim` it takes about two minutes.
 
-The `just` recipes build and run the tests with a quarter of the PC's CPU threads (`CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` in the `justfile`; 4 on a 16-thread PC), since other agents and the user share the machine. The game-install tests need a cap for memory too: each holds about 0.7 GB of game data, and with one test per CPU thread a PC with 16 threads and 16 GB ran out of memory. A test that opens a socket binds `127.0.0.1:0`, so the system gives it a free port, and writes only to its own temporary folder (`tempfile::tempdir()`). So the tests don't take each other's ports or files, and they run while a server listens on the default ports. A new test must do the same. Only the derived game data in `target/orpheus-test-data` and its collision caches are shared; a map's collision is built once per process, whichever test asks first.
+The `just` recipes build and run the tests with a quarter of the PC's CPU threads (`CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` in the `justfile`; 4 on a 16-thread PC), since other agents and the user share the machine. The game-install tests need a cap for memory too: each holds about 0.7 GB of game data, and with one test per CPU thread a PC with 16 threads and 16 GB ran out of memory. A test that opens a socket binds `127.0.0.1:0`, so the system gives it a free port, and writes only to its own temporary folder (`tempfile::tempdir()`). So the tests don't take each other's ports or files, and they run while a server listens on the default ports. A new test must do the same. Only the derived game data and its collision caches are shared; a missing map's collision is built once, by whichever test process asks first, while the others wait on its lock file (`collision/<map>.lock`).
 
 #### Game service tests
 
@@ -154,6 +156,146 @@ This sets `ORPHEUS_DATATOOL_DUMP` and runs the `datatool` tests of `orpheus-stu`
 
 Some behavior can only be checked with the original client. These checks are manual. Record each one in [behavior.md](../notes/behavior.md#client-acceptance-records): date, commit, client build and locale, hero, map, inputs, expected and observed result, and the number of runs.
 
+## Test speed
+
+The whole suite, debug build (Cranelift), 4 tests at once, before and after this work (2026-11-20; per-test times in `D:/Work/Coding/refs/test-times/2026-11-20-cranelift` and `…-integspeed`):
+
+| Phase | Before: wall (sum of tests) | After: wall (sum of tests) |
+| --- | --- | --- |
+| Game-install tests (283) | 864 s (3106 s; median 8.1 s, slowest 78 s) | 255 s (1001 s; median 2.5 s, slowest 33.5 s) |
+| Serial test | 21 s | 5.9 s |
+| Slow test | 924 s (partly while agents built) | 542 s |
+
+The unit tests (908) take about the same: one process per test adds about 0.03 s each.
+
+Each test runs in its own process (nextest), so whatever a test loads before its own work, it loads every time; a `LazyLock` fixture in test code lasts one test. Measured 2026-11-20 on the 16-thread PC: debug build (Cranelift), `cargo nextest run -j 4`, `CARGO_BUILD_JOBS=4`.
+
+What a game-install test that prepares the Practice Range spent before its own work, alone (timings in a throwaway build). "First" is before this work, "then" after the first round (shared test data, parallel loads), "now" after the second (one parse for both bundles, graphs parsed on every thread, zlib collision caches):
+
+| Step | First | Then | Now |
+| --- | --- | --- | --- |
+| `runtime_dir()`: is the derived data current? | 1.5 s: it opened the install's storage for the stamp | none: it reads `.build.info` | none |
+| Hero graph bundle, 32 MB of JSON (2.7 s of it `serde_json`) | 2.9 s | 2.9 s, beside the bot bundle | both bundles 1.7 s: the 628 graphs whose JSON the two share (of 661 and 660) are parsed once, every graph on a thread of the PC's (the hero bundle alone: 1.05 s) |
+| Bot graph bundle, 32 MB of JSON | 2.9 s | on a thread of its own | (above) |
+| Map areas, 11 MB of JSON | 0.4 s | on a thread of its own | on a thread of its own |
+| Movement collision: read (0.2 s), scene, contacts | 0.9 s | 0.9 s, beside the ray scene | read 0.09 s |
+| Ray collision: read (1.2 s: XZ 0.55 s, geometry 0.46 s), scene | 2.2 s | on a thread of its own | read 0.63 s: the caches are packed with zlib (format 6) |
+| Everything else (catalogs, navigation, controller) | 0.5 s | 0.5 s | 0.5 s |
+
+The derivations' own tests derived their file again in each test (`game_objectives` 35 s, `hitboxes` and `game_body_data` 9 s); they now read the file `runtime_dir()` derived with the same code (`testkit::runtime_json`), and check the list of files the derivation returned (`testkit::derived_outputs`).
+
+| Tests | First | Then | Now |
+| --- | --- | --- | --- |
+| `orpheus-assets` game-install tests (24) | 89.6 s wall, 277.7 s summed | 4.9 s wall, 10.6 s summed | 3.5 s wall |
+| `orpheus-sim` and `orpheus-server` game-install tests (166, without the slow and serial groups) | 680 s wall, 2693 s summed, median 16.5 s | 391 s wall, 1556 s summed, median 8.9 s | 326 s wall, 1292 s summed, median 6.7 s |
+| `spawn_room::a_hero_change_in_the_room_keeps_position_and_yaw`, alone | 13.6 s | 7.1 s | 4.8 s |
+| `scene_assets::tests::stock_soldier_plays_a_scripted_session`, alone | 19.3 s | 11.4 s | 10.5 s |
+| `game_service::tests::a_firing_practice_bot_shoots_the_player`, alone | 19.8 s | 14.2 s | 14.2 s |
+| `lobby::social::tests::match_commands_and_general_again_after_the_match`, alone | 18.0 s | 11.5 s | 9.9 s |
+| A derivation for a new key, four test processes asking at once | each process derived in a folder of its own (from the code; not measured) | one derived (6 min), three waited on the lock | the same |
+
+In the suite the game service tests (virtual clock, so bound by the CPU) vary by several seconds from run to run; the machine is shared, and each process's graph parse briefly takes every thread.
+
+The matchmaker's ported tests (`lobby::matchmaker::ported_tests`, 28) took 0.5 s each when every test of a binary shared one process (their `LazyLock` loaded the scene assets once for all of them), 12 s each per process before this work, and 2.65 s alone after the second round, 1.7 s of it the scene assets. Only one of them opens a world, so their lobby now takes `SceneAssets::load_deferred`: the graph bundles load the first time a scene is prepared or a graph asked for, and the map areas load beside the other catalogs (in `SceneAssets::load` too, which the server uses and which still loads everything at once). Alone, such a test takes 1.3 s (the assets 0.35 s); in the suite the 28 took 42 s summed instead of 117 s, and the `sim` and `server` game-install tests 260 s wall, 945 s summed, median 5.2 s (from 326 s, 1292 s and 6.7 s).
+
+Not changed, measured:
+
+- A binary form of the graph bundles does not pay off. Most of the parse is building the `serde_json::Value` trees of the nodes' fields, not reading the text: in a scratch program with the same profile, the hero bundle parsed into a `Value` in 1.7 s from JSON and 1.9 s from MessagePack (debug), 0.61 s and 0.51 s optimised.
+- `serde_json`'s `preserve_order` makes that parse 2.75 s instead of 1.69 s (debug), but the server needs it: it is on for every crate (Cargo builds one `serde_json` with the features any crate asks for, so it can't be on for the derivations' writers only), and the graphs' readers depend on the order of a node's fields. `vm/timers.rs` takes a node's first `STUConfigVarInt` field in file order; 1050 nodes of the hero bundle have more than one, and in 810 of them the first in file order is not the first by name. The derived files also keep the Python pack's key order (`Output::json`), which the catalogs read into `IndexMap`s in that order.
+
+### The slowest game-install tests
+
+Measured on 2026-11-20 with the debug build (Cranelift), `cargo nextest run --run-ignored only -j 4` of the tests in the table side by side, `CARGO_BUILD_JOBS=4`, on the same PC as the baseline, which other agents were also using. Expect a few seconds of noise. The times are in seconds.
+
+| Test | Before | After | What changed |
+| --- | ---: | ---: | --- |
+| `slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end` | 887 | 537 | Server: a body's observer frame is projected only when a client needs a full frame (below) |
+| `the_mode_graph_runs_assault_and_escort_until_its_first_gap` | 59 | 35 | Server: cached server-only variables, inactive states skipped first (below) |
+| `a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms` | 56 | 28 | Observer projection, scene preparation (below) |
+| `a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player` | 54 | 25 | The same; the mode frames come from `scene::mode_ui`, not from a second scene |
+| `a_reinhardt_training_partner_comes_once_with_the_consoles_spawn_effect` | 51 | 30 | Observer projection, scene preparation |
+| `an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home` | 50 | 24 | The same, and the mode frames without a second scene |
+| `a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it` | 48 | 26 | Observer projection, scene preparation |
+| `collision_ready::a_cache_only_server_fails_a_missing_map_and_a_builder_still_builds_it` | 44 | 15 | The builder server uses the same loaded data (one load, not two); scene preparation |
+| `practice_range_patrols_walk_around_what_blocks_the_straight_way` | 32 | 22 | Scene preparation |
+| `healthy_and_scriptless_same_hero_picks_keep_the_body` | 32 | 16 | The data is loaded once for both cases (each still prepares its own scene) |
+| `ana_and_widowmaker_walk_at_35_percent_once_fully_zoomed` | 30 | 13 | One prepared Practice Range for both heroes, not one load and scene each |
+| `an_ai_hero_walks_round_a_wall_to_the_point_behind_it` | 29 | 18 | Scene preparation (Gibraltar has the largest ray cache) |
+| `rialto_and_volskaya_get_their_server_placeables` | 26 | 20 | Scene preparation (two large maps) |
+| `elevated_practice_patrols_reach_their_hints_without_crossing_walls` | 24 | 16 | Scene preparation |
+| `an_attacker_walks_from_the_anubis_spawn_to_point_a` | 21 | 16 | Scene preparation |
+
+The changes to the code, which also make the server faster:
+
+- **Scene preparation** (`SceneAssets::prepare`). The collision grid (`orpheus_physics::collision::grid`) used to be a hash map with one `Vec` for each column. Now it is built once into flat arrays (`GridBuilder`): a slot for each column of the geometry's box (or a sorted list of the occupied columns when the geometry is spread thin), with no hashing on a query. The columns list their geometry in the same order as before. On Rialto the ray index (768k triangles) took 3.2 s and now takes 1.5 s. The meshes of the collision caches are read in slices, not field by field. The queries' "seen" sets use the physics crate's `FastSet`.
+- **Observer frames** (`orpheus_sim::others`). Every tick, the server made a full observer projection of each observed body's script, but used it only for a client that still needed a full frame. Now the projection is made only then, at most once a tick. In the gametest profile of the Practice vs AI match, these projections took 14% of the game loop.
+- **Snapshot projection** (`orpheus_script::snapshot`). A graph's server-only variables are read from its JSON once, when the graph loads (`Graph::server_only_variables`), not for each instance in each projection. A state that is off and was never activated is skipped before its codec is looked up by class name.
+
+What is left:
+
+- Loading takes about 6.5 s of each test that loads the data (`SceneAssets::load`). `testkit::runtime_dir` also opens the install in every test process to check the derived data. In the gametest profile, that check took 12% to 23% of a short test. Both belong to test fixture loading.
+- A scene's ray cache still takes 1 to 1.5 s to decompress (xz) and its triangle index 1 to 1.5 s to build in the debug build.
+- The server's tick: see below.
+- A sampling profile of the debug build can't name the functions of `sim`, `script` and `physics`: Cranelift writes no CodeView debug information for them. Profile the `gametest` build instead. Its stacks unwind with the executable's `.pdata`.
+
+### The server tick
+
+Measured with SlowTests' sampler on the `gametest` build (frame pointers on) of `slow_a_practice_vs_ai_match_plays_its_ai_heroes_to_the_end`, 100 samples a second, the same PC. Under the sampler the whole test took 120 s before these changes and 88 s with all of them but the short-object lookups and the last two no-op writes below; the game loop thread went from 22,000 samples to 15,800 (−28%). Run without the sampler, alternating old and new binaries, the test took 165 and 139 s before and 93 and 105 s after (82.8 s in nextest), but one earlier lone run of the old binary took 64 s: other agents were loading the PC, so the sample counts are the better measure.
+
+| Part of the game loop (base profile) | Share of the loop | After |
+| --- | ---: | --- |
+| Snapshot projection (`project_with_exclusions`) | 22% | reused while the snapshot's revision holds (below); made again for most AI bodies, whose scripts change almost every tick |
+| Owner and observer deltas (`queue_delta`) | 19% | unchanged |
+| JSON member lookups (`serde_json` `index_into`) | 19% | the largest callers removed; short objects searched without hashing |
+| `Machine::queue_entries` (a message's receivers) | 8.5% | gone: an index by message |
+| `ObserverActivity::of` (once per viewer and body) | 8.3% | once per body and revision |
+| `CodecTable::codec` (hash of the class name) | 5% | once per node |
+
+The game-install sets of `orpheus-script`, `orpheus-sim` and `orpheus-server` (debug build, `-j 4`, 210 tests, `slow_` and `serial_` left out), before and after, in seconds. The match tests gain the most; the tests that mostly load and prepare a scene stay within noise:
+
+| Test | Before | After |
+| --- | ---: | ---: |
+| `the_mode_graph_runs_assault_and_escort_until_its_first_gap` | 45.9 | 31.5 |
+| `a_competitive_assault_on_anubis_swaps_sides_and_spawn_rooms` | 36.2 | 22.3 |
+| `a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it` | 34.2 | 21.9 |
+| `a_reinhardt_training_partner_comes_once_with_the_consoles_spawn_effect` | 31.9 | 25.4 |
+| `a_pvp_match_on_another_map_assembles_its_team_and_takes_a_third_player` | 30.3 | 18.6 |
+| `a_firing_practice_bot_shoots_the_player` | 26.7 | 18.4 |
+| `an_assault_match_on_anubis_captures_a_and_b_and_sends_the_players_home` | 26.6 | 19.9 |
+| `a_pulse_bomb_sticks_to_a_bot_kills_it_after_its_fuse_and_another_client_sees_it` | 24.9 | 16.6 |
+| `rialto_and_volskaya_get_their_server_placeables` (loading) | 22.8 | 24.5 |
+| The whole set, run time | 671 | 651 |
+
+The changes (`orpheus_script::graph`, `snapshot`, `vm`; `orpheus_sim::others`, `replication`):
+
+- **Node information compiled once** (`Graph::compile`). Each node keeps what the VM and the projection read on every pass: its state and action flags, whether it is a UX presenter, whether it is remote-synced, and the game message of its `m_gameMessage` (`Node::message`). A graph keeps its server-run nodes by game message (`Graph::message_nodes`; `queue_entries`, auras and `sends_message` read it) and its weapon volleys' ammunition variables (`Graph::volley_ammo`, read by every owner delta). A node remembers its class's entry in the codec table (`CodecTable::node_codec`; every client table shares one id, a fixture table looks its classes up each time).
+- **Short JSON objects** (`graph::member`, behind `field_at`, the VM's `field` and the evaluator's `child`/`class`). An object of up to 12 members is searched in order: `serde_json` keeps the members' order (`preserve_order`, an `IndexMap` with SipHash), and comparing a few keys costs less than hashing one.
+- **Snapshot revisions** (`Snapshot::revision`). The machine's snapshot sits behind `TrackedSnapshot`: every mutable borrow moves its revision on, so no write can be missed. `capture_outputs` writes the pending timers, bindings and resolved values only when they changed (values compared bit for bit: `Value::identical`), and the clock outside the revision. A variable set to the value it has, a link to a variable that is already there, a delayed switch's timer that isn't pending and an Ability's unchanged flags write nothing.
+- **Kept projections** (`SnapshotEncoder::project_cached`, `ProjectionCache`). A body keeps its last owner projection, and one observer projection that all clients share. It is the answer again while the revision, view and entity exclusions are the same and the clock is still before the first moment a projected value depends on it: a pulser's `fresh` (500 ms from its pulse) or a wheel action's lifetime (2 s). The projection reads the clock nowhere else (a grapple's and a volley's start, and the owner timers, are absolute). The observer activity is kept per revision too. The kill feed test (`kill_feed_pulse_waits_for_the_world_then_stays_fresh_until_acknowledged`) checks a kept projection against a new one every frame while the pulse goes stale.
+
+How often a projection is kept: in the biotic field test about 30% of the owner and observer projections, in the Anubis assault nearly all (idle bots). Of the projections made again, 61% came out the same as the one before; the writes behind them were a delayed switch's timer cancel, an Ability's flags and the resolved values of links (a chase's value at the new time), fixed above except the last, and a ModifyHealth's `last_ms` (not projected).
+
+What is left in the tick: the deltas (each owner delta every tick: `differences`, the variable lists, the clone of the projection kept as the stream's pending baseline), the projection of the AI bodies that change every tick, the VM's config evaluation (`Evaluator::known_config`, `Expression::read` parses an expression's tables for each evaluation), and the mover (`Mover::step_pending_with`). The next steps would be per-instance revisions (an instance's projection kept while it doesn't change), compiled expressions, and a fast hasher for `wire::Variables` and the snapshot's binding maps (the `IndexMap`s hash `u32` and `(u16, u32)` keys with SipHash; 136 places build a `Variables` with `new()`).
+
 ## Debug and release builds
 
 Debug builds refuse statescript content the VM does not implement; release builds tolerate it (see [architecture](architecture.md#unknowns-policy)). A test that runs a hero graph in a debug build shows each gap as a diagnostic.
+
+## Build speed
+
+Measured 2026-11-20 on this PC (Ryzen 7 2700, 16 GB, Windows 10), 6 build jobs, at below-normal priority; one run each, while the PC was in use, so read the numbers as ±10-20 %. Scripts and logs: `D:/Temp/bench/`.
+
+| Step | stable 1.98, link.exe | stable + rust-lld | nightly 1.102 + rust-lld | nightly + Cranelift |
+| --- | --- | --- | --- | --- |
+| Full build of the test binaries | 636 s | 695 s | 479 s | 157 s |
+| Rebuild after touching `crates/script` | 391 s | 427 s | 314 s | 35 s |
+| Rebuild after touching `crates/server` | 23 s | 25 s | 13 s | 8.5 s |
+| sim `body_script` tests, run time | 19.0 s | 18.1 s | 14.5 s | 26.4 s |
+| server `practice_bots_run_their_scripts_for_a_client`, run time | 9.5 s | 10.2 s | 9.5 s | 17.0 s |
+
+- The linker is not what is slow: rust-lld alone changed nothing measurable.
+- Nightly compiles faster than stable, probably mostly through the parallel front end, on by default in nightly since 2026-11-14 (2 threads; `-Zunstable-options --jobs-frontend=N` sets more; not measured apart).
+- Cranelift compiles about nine times faster after a change to `orpheus-script` and makes the tests run 1.2-1.8 times slower. So debug builds and tests use Cranelift (`Cargo.toml` `profile.dev`), and `release` and `gametest` keep LLVM.
+- `rust-toolchain.toml` pins the nightly. Move the pin on purpose: install the new nightly with the `rustc-codegen-cranelift-preview` component, run `just check` and `just test-game`, then change the pin.
+- Cranelift can't unwind on Windows: a debug build aborts on a panic, and each test runs in its own process (`panic-abort-tests` in `.cargo/config.toml`; nextest does the same). So a fixture a test file shares through a `LazyLock` or `OnceLock` is built again by every test: keep expensive fixtures on disk (the derived test data), not in a static.
+- `tools/lowprio.ps1` keeps every build and test process at below-normal priority, so the user's programs come first.

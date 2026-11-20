@@ -65,6 +65,14 @@ fn flat_floor() -> (TriangleIndex, Arc<ContactWorld>) {
     (rays, Arc::new(ContactWorld::new(vec![shape]).unwrap()))
 }
 
+/// The Practice Range, its players' body scripts treating unknown content
+/// so.
+fn practice_range(unknowns: Unknowns) -> PreparedScene {
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(unknowns);
+    assets.prepare(GameMap::practice_range()).unwrap()
+}
+
 /// A hero on a flat floor with his stock owner script (`SprintTests.setUp`:
 /// `BodyScript(SOLDIER, 0xA0000101, 999)` and 30 still frames).
 struct Sprinter {
@@ -75,13 +83,11 @@ struct Sprinter {
 
 impl Sprinter {
     fn new() -> Self {
-        Self::of(SOLDIER, Unknowns::for_build())
+        Self::of(&practice_range(Unknowns::for_build()), SOLDIER)
     }
 
-    fn of(hero: u64, unknowns: Unknowns) -> Self {
-        let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
-        assets.set_player_unknowns(unknowns);
-        let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    /// `hero`'s body in `scene` (a [`practice_range`]).
+    fn of(scene: &PreparedScene, hero: u64) -> Self {
         let hero = scene.heroes().get(hero).unwrap();
         let (rays, contacts) = flat_floor();
         let settings = *scene.movers.for_body(Some(hero.body));
@@ -239,15 +245,16 @@ fn ana_and_widowmaker_walk_at_35_percent_once_fully_zoomed() {
     use orpheus_content::heroes::ANA;
     use orpheus_wire::commands::SECONDARY;
     const WIDOWMAKER: u64 = 0x02e0_0000_0000_000a;
+    // Their owner scripts start whole (their zoom-in flag `STU_D1BF5FA6`
+    // runs): a gap would refuse them.
+    let scene = practice_range(Unknowns::Refuse);
     // The frame the zoom gets full in, after the press in 1050, and where
     // the reference has the body when the button goes up in 1150.
     for (hero, zoomed, released_at, fov) in [
         (ANA, 1065, 5.857421875, (0x0B94, 23, 35)),
         (WIDOWMAKER, 1070, 6.140625, (0x001B, 7, 27)),
     ] {
-        // Their owner scripts start whole (their zoom-in flag
-        // `STU_D1BF5FA6` runs): a gap would refuse them.
-        let mut body = Sprinter::of(hero, Unknowns::Refuse);
+        let mut body = Sprinter::of(&scene, hero);
         let mut speeds = Vec::new();
         for frame in 1030..1155 {
             let scoped = (1050..1150).contains(&frame);

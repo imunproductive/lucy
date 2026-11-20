@@ -18,11 +18,13 @@ use std::{
     collections::{BTreeMap, HashMap},
     error::Error,
     fmt, io,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use indexmap::IndexMap;
 use serde::Deserialize;
 
+use crate::graph::Node;
 use crate::wire::{Value, ValueEncoding, WireError, write_value};
 use orpheus_core::bits::{BitError, BitWriter};
 
@@ -128,6 +130,9 @@ impl From<WireError> for PayloadError {
 
 #[derive(Debug)]
 pub struct CodecTable {
+    /// Unique to this table's content (0 for the client's), so a node's
+    /// cached entry ([`Self::node_codec`]) is never read with another table.
+    id: u64,
     entries: Vec<Codec>,
     index: HashMap<String, usize>,
 }
@@ -138,8 +143,10 @@ impl CodecTable {
     /// state of that class could never be sent (a release build leaves it
     /// out of frames and logs it once, `snapshot.rs`).
     pub fn client() -> Self {
-        let table = Self::from_json(orpheus_fixed::STATESCRIPT_CODECS)
+        let mut table = Self::from_json(orpheus_fixed::STATESCRIPT_CODECS)
             .expect("the embedded codec table parses");
+        // Every client table is the same table.
+        table.id = 0;
         if cfg!(debug_assertions) {
             let missing: Vec<_> = table
                 .classes()
@@ -175,11 +182,29 @@ impl CodecTable {
                 family,
             });
         }
-        Ok(Self { entries, index })
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Ok(Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            entries,
+            index,
+        })
     }
 
     pub fn codec(&self, class: &str) -> Option<&Codec> {
         self.entries.get(*self.index.get(class)?)
+    }
+
+    /// The codec of `node`'s class, looked up once for each node (with the
+    /// first table that asks; another table looks it up each time).
+    pub fn node_codec(&self, node: &Node) -> Option<&Codec> {
+        let &(table, entry) = node
+            .codec_cell()
+            .get_or_init(|| (self.id, self.index.get(&node.class).copied()));
+        if table == self.id {
+            entry.map(|entry| &self.entries[entry])
+        } else {
+            self.codec(&node.class)
+        }
     }
 
     pub fn classes(&self) -> impl Iterator<Item = &Codec> {
@@ -189,10 +214,19 @@ impl CodecTable {
     /// An unprojected state can only be sent off if its class has no StEC
     /// payload on the off path.
     pub fn sendable(&self, class: &str, active: bool) -> bool {
-        self.codec(class).map_or(!active, |codec| {
-            codec.projected() || (!active && !codec.stec())
-        })
+        sendable(self.codec(class), active)
     }
+
+    /// [`Self::sendable`] for `node`'s class.
+    pub fn node_sendable(&self, node: &Node, active: bool) -> bool {
+        sendable(self.node_codec(node), active)
+    }
+}
+
+fn sendable(codec: Option<&Codec>, active: bool) -> bool {
+    codec.map_or(!active, |codec| {
+        codec.projected() || (!active && !codec.stec())
+    })
 }
 
 #[derive(Debug)]

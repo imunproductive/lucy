@@ -64,14 +64,15 @@ const WAIT: Duration = Duration::from_secs(10);
 /// The game's 20304: back to the menu (`ow174/game/server.py` LEAVE_GAME).
 const LEAVE_GAME: u32 = 20304;
 
-/// The scene assets and the collection, loaded once for every test.
+/// The scene assets and the collection, loaded once for every test. The
+/// graph bundles load only when a test opens a world (one of them).
 static SHARED: LazyLock<(Arc<SceneAssets>, Arc<Collection>)> = LazyLock::new(|| {
     let runtime = orpheus_testkit::runtime_dir();
     let data = runtime.join("data");
     let items = Arc::new(ItemDb::load(&data).unwrap());
     let collection = Collection::new(&RetailTemplates::captured(), items).unwrap();
     (
-        Arc::new(SceneAssets::load(&runtime).unwrap()),
+        Arc::new(SceneAssets::load_deferred(&runtime).unwrap()),
         Arc::new(collection),
     )
 });

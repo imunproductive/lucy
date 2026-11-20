@@ -2037,6 +2037,16 @@ fn kill_feed_pulse_waits_for_the_world_then_stays_fresh_until_acknowledged() {
         .project(component.snapshot().unwrap(), View::Owner)
         .unwrap();
     assert_eq!(pulse(&live), Some((true, payload(true))));
+    // A kept projection is the projection again while the script stays
+    // the same, and is made again once the pulse goes stale.
+    let mut kept = None;
+    let cached = |kept: &mut Option<ProjectionCache>, component: &Component| {
+        encoder
+            .project_cached(component.snapshot().unwrap(), View::Owner, None, kept)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(cached(&mut kept, &component), live);
     assert_eq!(graphs.graph(0x01cf).unwrap().kill_feed_pulser(), Some(108));
     // Not allowed yet: the client keeps what it acknowledged.
     assert_eq!(
@@ -2053,6 +2063,10 @@ fn kill_feed_pulse_waits_for_the_world_then_stays_fresh_until_acknowledged() {
     // Later the pulse is stale, but the unacknowledged one keeps its value.
     for frame in 102..=140 {
         component.advance_frame(frame, &mut EmptyWorld).unwrap();
+        let fresh = encoder
+            .project(component.snapshot().unwrap(), View::Owner)
+            .unwrap();
+        assert_eq!(cached(&mut kept, &component), fresh, "frame {frame}");
     }
     let stale = encoder
         .project(component.snapshot().unwrap(), View::Owner)

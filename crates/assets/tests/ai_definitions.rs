@@ -1,20 +1,14 @@
 //! The hero bodies' AI definitions and difficulty profiles build 104319
 //! derives (`game_ai_definitions_174.json`).
 
-use orpheus_assets::{DERIVATIONS, Install};
 use serde_json::{Value, json};
 
 fn derived() -> Value {
-    let install = Install::open(&orpheus_testkit::game_dir(), "enUS").unwrap();
-    let derivation = DERIVATIONS
-        .iter()
-        .find(|derivation| derivation.name == "game_ai_definitions")
-        .unwrap();
-    // It reads game_heroes_174.json from the build folder.
-    let outputs = (derivation.derive)(&install, &orpheus_testkit::runtime_dir()).unwrap();
-    assert_eq!(outputs.len(), 1);
-    assert_eq!(outputs[0].path, "data/game_ai_definitions_174.json");
-    serde_json::from_slice(&outputs[0].bytes).unwrap()
+    assert_eq!(
+        orpheus_testkit::derived_outputs("game_ai_definitions"),
+        ["data/game_ai_definitions_174.json"]
+    );
+    orpheus_testkit::runtime_json("data/game_ai_definitions_174.json")
 }
 
 /// The twelve heroes the AI plays each have an AI definition of their own;

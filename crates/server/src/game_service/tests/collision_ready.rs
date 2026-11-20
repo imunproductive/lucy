@@ -321,10 +321,9 @@ fn a_cache_only_server_fails_a_missing_map_and_a_builder_still_builds_it() {
             })
         })
     };
-    let local = SceneAssets::load(&runtime)
-        .unwrap()
-        .with_collision_folder(folder.path())
-        .with_collision_build(build);
+    // The same data with the builder: whatever the failed preparation left
+    // in it must not keep the map from building.
+    let local = deployed.with_collision_build(build);
     local.prepare(GameMap::practice_range()).unwrap();
     assert_eq!(builds.load(Ordering::Relaxed), 1);
     assert!(cache.is_file());

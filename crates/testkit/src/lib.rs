@@ -11,9 +11,19 @@ pub mod casc;
 
 use std::{
     env,
+    fs::{self, File},
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::LazyLock,
+    time::{Duration, SystemTime},
 };
+
+use orpheus_assets::cache::{self, BUILD};
+
+/// The hash of the derivations' code (`build.rs`): the derived data of one
+/// code is kept apart from another's.
+const DERIVATIONS_KEY: &str = env!("ORPHEUS_DERIVATIONS_KEY");
+/// How long the derived data of other code is kept after its last use.
+const KEEP_UNUSED: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// The Overwatch 1.74 install named by `ORPHEUS_GAME_DIR`.
 pub fn game_dir() -> PathBuf {
@@ -31,18 +41,82 @@ pub fn datatool_dump() -> PathBuf {
 }
 
 /// The game data the server reads, derived from the install named by
-/// `ORPHEUS_GAME_DIR` once and kept in `target/orpheus-test-data` between runs.
+/// `ORPHEUS_GAME_DIR`, in `<test data>/104319/<key>`; `<key>` is the hash of
+/// the derivations' code, so a change to it derives again, and the derived
+/// data are the current code's output. Every checkout of the same code
+/// shares the folder, and the processes that ask at once derive it once
+/// (`orpheus_assets::cache::ensure_pack`).
+///
+/// The test data folder is `ORPHEUS_TEST_DATA`, by default the main
+/// checkout's `target/orpheus-test-data`, which its worktrees share. A
+/// process that derives deletes the data of other keys unused for
+/// [`KEEP_UNUSED`].
 pub fn runtime_dir() -> PathBuf {
-    static DERIVED: OnceLock<PathBuf> = OnceLock::new();
-    DERIVED
-        .get_or_init(|| {
-            let cache =
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/orpheus-test-data");
-            std::fs::create_dir_all(&cache).expect("the test data folder can be created");
-            orpheus_assets::cache::ensure(&game_dir(), "enUS", &cache)
-                .unwrap_or_else(|error| panic!("cannot derive the game data: {error}"))
-        })
-        .clone()
+    static DERIVED: LazyLock<PathBuf> = LazyLock::new(|| {
+        let builds = env::var_os("ORPHEUS_TEST_DATA")
+            .map_or_else(
+                || PathBuf::from(env!("ORPHEUS_TEST_DATA_DEFAULT")),
+                PathBuf::from,
+            )
+            .join(BUILD);
+        let pack = builds.join(DERIVATIONS_KEY);
+        let missing = !pack.is_dir();
+        cache::ensure_pack(&game_dir(), "enUS", &pack)
+            .unwrap_or_else(|error| panic!("cannot derive the game data: {error}"));
+        File::create(used(&pack)).expect("the test data folder is writable");
+        if missing {
+            prune(&builds, &pack);
+        }
+        pack
+    });
+    DERIVED.clone()
+}
+
+/// A derived file of [`runtime_dir`], parsed.
+pub fn runtime_json(path: &str) -> serde_json::Value {
+    let bytes =
+        fs::read(runtime_dir().join(path)).unwrap_or_else(|error| panic!("{path}: {error}"));
+    serde_json::from_slice(&bytes).unwrap_or_else(|error| panic!("{path}: {error}"))
+}
+
+/// The paths of the files the derivation `name` returned when it derived
+/// [`runtime_dir`], in its order (`orpheus_assets::OUTPUTS`).
+pub fn derived_outputs(name: &str) -> Vec<String> {
+    let path = runtime_dir().join(orpheus_assets::OUTPUTS);
+    let list =
+        fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    list.lines()
+        .filter_map(|line| line.split_once('\t'))
+        .filter(|(derivation, _)| *derivation == name)
+        .map(|(_, path)| path.to_owned())
+        .collect()
+}
+
+/// The file whose time is the last use of a derived pack.
+fn used(pack: &Path) -> PathBuf {
+    pack.with_extension("used")
+}
+
+/// Delete the packs in `builds` other than `current` unused for
+/// [`KEEP_UNUSED`]: their stamp first, so a pack that can't be deleted whole
+/// (a process still reads it) derives again rather than being trusted.
+fn prune(builds: &Path, current: &Path) {
+    let Ok(entries) = fs::read_dir(builds) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for pack in entries.flatten().map(|entry| entry.path()) {
+        let unused = fs::metadata(used(&pack))
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|last| now.duration_since(last).unwrap_or_default() > KEEP_UNUSED);
+        if pack == current || !pack.is_dir() || !unused {
+            continue;
+        }
+        let _ = fs::remove_file(pack.join("derived.txt"));
+        let _ = fs::remove_dir_all(&pack);
+        let _ = fs::remove_file(pack.with_extension("lock"));
+        let _ = fs::remove_file(used(&pack));
+    }
 }
 
 /// The prepared runtime pack named by `ORPHEUS_RUNTIME_DIR`: the files the

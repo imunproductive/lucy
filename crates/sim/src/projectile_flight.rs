@@ -545,7 +545,7 @@ impl ProjectileFlight {
             .into_iter()
             .find_map(|[x, y, z]| {
                 let length = x.hypot(y).hypot(z);
-                (length > 0.0).then(|| [x / length, y / length, z / length])
+                (length > 0.0).then_some([x / length, y / length, z / length])
             })
             .unwrap_or_default()
     }

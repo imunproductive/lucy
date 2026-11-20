@@ -18,7 +18,9 @@ This PC has 16 logical CPUs, and cargo by default uses all 16 to build and runs 
 $env:CARGO_BUILD_JOBS = 4; $env:RUST_TEST_THREADS = 4
 ```
 
-(in bash: `export CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4`). Other agents and the user share the machine.
+(in bash: `export CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4`). Other agents and the user share the machine. Keep builds at below-normal priority: the integrator runs `tools/lowprio.ps1`, which lowers every cargo, rustc and test process.
+
+Debug builds and tests compile with Cranelift on a pinned nightly (`rust-toolchain.toml`, `Cargo.toml` `profile.dev`): a rebuild after a change to `orpheus-script` took 35 s instead of 314 s with LLVM. Each test runs in its own process, so a test-file `LazyLock`/`OnceLock` fixture is rebuilt by every test; keep expensive fixtures on disk (see [testing.md](docs/dev/testing.md#build-speed)). For your own worktree use `python tools/wt.py new <name>` and `python tools/wt.py remove <name>`.
 
 ## Before you report
 
@@ -26,14 +28,14 @@ Run these, and nothing more:
 
 1. `cargo fmt --all`
 2. `cargo clippy --workspace --all-targets --locked -- -D warnings`
-3. `cargo test --workspace --locked`
+3. `just test` (`cargo nextest run --workspace --locked`, then the doc tests)
 4. The game-install tests of the area you touched, by name:
 
    ```powershell
    just test-named D:\Games\Overwatch orpheus-sim body_script
    ```
 
-   The last argument is a name filter, as in `cargo test`. Give the narrowest filter that runs the tests of the code you changed. The recipe uses the debug build that step 3 compiled. For the long match tests of `orpheus-server`, add `gametest` at the end to run them optimised.
+   The last argument is a name filter, as in `cargo test`. Give the narrowest filter that runs the tests of the code you changed. The recipe uses the debug build that step 3 compiled. For the long match tests of `orpheus-server`, add `gametest` at the end to run them optimised. `just test-affected D:\Games\Overwatch` runs every test of the crates your change can affect, when a name filter can't pick them.
 
    If you changed only `web/`, run `just dashboard-test` instead of steps 1-4.
 
