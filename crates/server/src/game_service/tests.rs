@@ -2366,19 +2366,24 @@ fn a_player_kills_another_who_respawns_after_the_practice_range_delay() {
     // The shooter's create of it carries its movement state at frame 0,
     // below every record of it that follows, so his client's sphere
     // history of it (`0x7FF789B80F70`) appends them; the target's own
-    // create keeps the default frame (`orpheus_sim::body::body_create`).
+    // create puts it 18 frames past its datagram's frame, ahead of his
+    // client's command frames and below the records that follow
+    // (`orpheus_sim::body::body_create`).
     assert_eq!(create.create_frame, Some(0));
-    let own = target
+    let own_index = target
         .find(0, |record| {
             record.entity == target_body && record.is_create()
         })
         .unwrap();
-    let own = target.datagrams[own]
+    let own = target.datagrams[own_index]
         .1
         .iter()
         .find(|record| record.entity == target_body && record.is_create())
         .unwrap();
-    assert_eq!(own.create_frame, Some(0xffff_fffe));
+    assert_eq!(
+        own.create_frame,
+        Some(target.ticks[own_index] + orpheus_sim::body::OWN_CREATE_LEAD)
+    );
     let dead = |watcher: &Watcher| {
         watcher
             .find(0, |record| {

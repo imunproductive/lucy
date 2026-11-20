@@ -51,7 +51,7 @@ use mio::{Events, Interest, Poll, Token, Waker, net::UdpSocket};
 
 use crate::{
     clock::{GameClock, Step, next_tick_after},
-    connection::{GameConnections, MAX_CONNECTION_ID, Outgoing, Received, SILENCE_TIME},
+    connection::{GameConnections, MAX_CONNECTION_ID, Outgoing, Received, SILENCE_TIME, Timeout},
     ingress::{GameIngress, MapReadiness, MapReadyStep, MessageKind, WorldReadiness, pong},
 };
 use orpheus_content::{
@@ -2107,6 +2107,19 @@ impl State {
         self.homeward.insert(connection, peer);
     }
 
+    /// Logs why a seated player's link ends (a silent drop once looked
+    /// like a stopped match).
+    fn report_leave(&self, connection: u32, why: &str) {
+        let Some(&(id, slot)) = self.seats.get(&connection) else {
+            return;
+        };
+        tracing::info!(
+            "[game] match {:04X}: {} left: {why}",
+            id[0] & 0xFFFF,
+            self.rooms[&id].players[slot].info.name
+        );
+    }
+
     fn retire(&mut self, connection: u32) {
         self.homeward.remove(&connection);
         self.peers.shift_remove(&connection);
@@ -2153,6 +2166,7 @@ impl State {
             let _ = send(socket, control);
         }
         if received.closed {
+            self.report_leave(connection, "his game closed its link");
             self.retire(connection);
             return;
         }
@@ -2399,7 +2413,13 @@ impl State {
             self.deliver_bot_hits(id, shooter, hits);
             self.resolve_player_hits(id, tick, now);
         }
-        self.peers.values().any(|peer| peer.world.has_input_work())
+        self.input_waits()
+    }
+
+    /// Input in hand that [`State::advance_input`] runs: the next pass of
+    /// the loop runs at once.
+    fn input_waits(&self) -> bool {
+        !self.clock.draining() && self.peers.values().any(|peer| peer.world.has_input_work())
     }
 
     /// projectiles.py `_show_others`: the other clients of the room see the
@@ -3381,6 +3401,13 @@ impl State {
             }
         };
         for expired in self.links.expire(now, force) {
+            let why = match expired.reason {
+                Timeout::Handoff => "his game did not connect in time",
+                Timeout::Silence => "nothing from his game for 10 s",
+                Timeout::LeaveGrace => "his game did not close its link after the leave",
+                Timeout::Drain => "the server is draining",
+            };
+            self.report_leave(expired.connection, why);
             self.retire(expired.connection);
         }
         let mut spawned = HashMap::new();
@@ -3724,8 +3751,10 @@ impl GameLoop {
 
     /// One pass of the loop: a batch of requests, a batch of datagrams if
     /// the socket is readable, the queued input, then the tick if it is
-    /// due. `clock` reads the time since the loop started; the real loop
-    /// (`run`) reads the wall clock, the tests a virtual one (`lockstep.rs`).
+    /// due. The input the tick gave (the AI players' commands, `drive_ai`)
+    /// makes the pass busy, so they run in the next pass, at once. `clock`
+    /// reads the time since the loop started; the real loop (`run`) reads
+    /// the wall clock, the tests a virtual one (`lockstep.rs`).
     fn pass(
         &mut self,
         socket: &impl Transport,
@@ -3776,9 +3805,13 @@ impl GameLoop {
         } else {
             None
         };
-        let input_ready = self.state.advance_input(now);
+        let mut input_ready = self.state.advance_input(now);
         if let Some(missed) = due {
             self.state.tick(socket, now, missed);
+            // An AI player's command runs right after the tick that gave
+            // it, before whatever comes in next: not when the next
+            // datagram, request or tick wakes the loop.
+            input_ready = self.state.input_waits();
         }
         Ok(Pass {
             handled,

@@ -31,7 +31,7 @@ use crate::{
     wire::{Value, Variables},
 };
 use orpheus_content::maps::TUTORIAL_MODE;
-use orpheus_physics::mover::sample_movement_flags;
+use orpheus_physics::mover::{landing::LandingSearch, sample_movement_flags, trial::TrialMove};
 use orpheus_wire::entity::{GAME_MODE_ENTITY, Movement};
 
 /// The hero body graphs that raise the body's voice reactions: `01CA` and
@@ -67,6 +67,10 @@ pub struct PlayerWorld {
     /// The move-speed scale the body's mover used on its last move (mover
     /// `+0x4D8`, `STU_ED807E07`); none: the match doesn't say.
     pub speed_scale: Option<f64>,
+    /// The body as its mover stands after its last move, for the wall
+    /// checks' trial moves ([`World::trial_turn`]); none: the match
+    /// doesn't say.
+    pub trial: Option<TrialMove>,
     pub throttles: [i8; 2],
     pub mode: u64,
     /// The game's ruleset ([`GraphStore::mode_variables`]); 0: none.
@@ -548,6 +552,44 @@ impl World for PlayerWorld {
             .flatten()
     }
 
+    /// The body's own mover capsule's.
+    fn body_radius(&self, site: Site, entity: u32) -> Option<f64> {
+        if !self.is_player_site(site) || entity != self.entity {
+            return None;
+        }
+        self.trial.as_ref().map(TrialMove::radius)
+    }
+
+    /// A trial move of the body's own capsule from where its mover stands.
+    fn trial_turn(
+        &mut self,
+        site: Site,
+        entity: u32,
+        direction: [f64; 3],
+        distance: f64,
+    ) -> Option<f64> {
+        if !self.is_player_site(site) || entity != self.entity {
+            return None;
+        }
+        self.trial.as_ref()?.turn(direction, distance).ok()
+    }
+
+    /// The search in the body's own world, meeting the map's categories of
+    /// the cast's ray profile.
+    fn landing_point(
+        &mut self,
+        site: Site,
+        entity: u32,
+        search: &LandingSearch,
+        profile: Option<u64>,
+    ) -> Option<Option<[f64; 3]>> {
+        if !self.is_player_site(site) || entity != self.entity {
+            return None;
+        }
+        let category = self.map_rays.as_deref()?.map_mask(profile);
+        self.trial.as_ref()?.landing(category, search).ok()
+    }
+
     /// The body's team from its filter bits; the other bodies' as listed.
     fn entity_team(&self, site: Site, entity: u32) -> Option<i64> {
         if !self.is_player_site(site) {
@@ -736,6 +778,7 @@ impl PlayerWorld {
             eye_height: None,
             movement: Movement::default(),
             speed_scale: None,
+            trial: None,
             throttles: [0; 2],
             mode,
             ruleset: 0,

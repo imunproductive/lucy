@@ -973,4 +973,46 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         self.assume(site, &node.class, "the server ends it at once");
         self.post(id, Event::Finish(key.raw))
     }
+
+    /// `STU_54FEB21C`'s other forms (melee `0043` st19, Seismic Slam
+    /// `0B27` st37, Reinhardt `007D` st37 and 23 more; codec none): a wait
+    /// the server ends. The client's (registration #1722) begin
+    /// `0x7FF7897F5A90` posts its event 1 after `m_ED97A97C` seconds (unset:
+    /// 0) and that event (`0x7FF7897F5F50`) finishes it only when
+    /// `m_7C8AD485` is set and true; unset (the slam's, the melee's), it
+    /// waits for the server's frame to end it. The slam's damage, its
+    /// shockwave and the end of the ability hang on its end. The server
+    /// finishes it after `m_ED97A97C` seconds when `m_7C8AD485` is unset or
+    /// true (every use in the data: unset or the constant true).
+    /// Assumption: retail's server did the same.
+    pub(super) fn begin_server_wait(
+        &mut self,
+        key: StateKey,
+        node: &Node,
+    ) -> Result<(), InitFault> {
+        let id = key.instance;
+        let site = self.site(id, node);
+        let condition = field(&node.fields, "m_7C8AD485");
+        if !condition.is_null()
+            && !self
+                .evaluate_quietly(id, node, condition)
+                .is_some_and(|value| expr::truthy(&value))
+        {
+            self.assume(site, &node.class, "stays on: its condition is false");
+            return Ok(());
+        }
+        let timeout = field(&node.fields, "m_ED97A97C");
+        let seconds = if timeout.is_null() {
+            0.0
+        } else {
+            self.config_number(id, node, timeout).unwrap_or(0.0)
+        };
+        self.assume(
+            site,
+            &node.class,
+            "the server finishes it after m_ED97A97C s",
+        );
+        let delay = ((seconds.max(0.0) * 1000.0) as f32).round() as u64;
+        self.post_after(id, delay, Event::Finish(key.raw))
+    }
 }

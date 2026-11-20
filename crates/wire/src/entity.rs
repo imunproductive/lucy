@@ -829,9 +829,29 @@ pub struct Create {
     pub position: [f32; 3],
     pub rotation: [f32; 4],
     pub movement: Option<Movement>,
-    pub frame_back: u32,
+    pub frame: CreateFrame,
     pub skin: SkinTheme,
     pub movement_parent: Option<u32>,
+}
+
+/// The frame of a create's movement state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CreateFrame {
+    /// Counted back from [`CREATE_BASE`] by this many frames: 1 is the
+    /// client's create default (0xFFFFFFFE), [`FRAME_ZERO_BACK`] frame 0.
+    Back(u32),
+    /// This many frames past the frame of the packet that carries the
+    /// create, so that a resend stays as far ahead.
+    PastPacket(u32),
+}
+
+impl CreateFrame {
+    fn back(self, tick: u32) -> u32 {
+        match self {
+            Self::Back(back) => back,
+            Self::PastPacket(lead) => CREATE_BASE.wrapping_sub(tick.wrapping_add(lead)),
+        }
+    }
 }
 
 impl Create {
@@ -843,15 +863,16 @@ impl Create {
             position: [0.0; 3],
             rotation: [0.0, 0.0, 0.0, 1.0],
             movement: None,
-            frame_back: 1,
+            frame: CreateFrame::Back(1),
             skin: SkinTheme::default(),
             movement_parent: None,
         }
     }
 }
 
-/// Create a definition-based entity. The origin is its bit offset in the payload.
-pub fn create(origin: usize, entity: &Create) -> Result<BitWriter, WorldError> {
+/// Create a definition-based entity. The origin is its bit offset in the
+/// payload, `tick` the frame of the packet.
+pub fn create(origin: usize, entity: &Create, tick: u32) -> Result<BitWriter, WorldError> {
     let mut flags = entity.flags;
     if entity.movement.is_some() {
         flags |= WITH_MOVEMENT;
@@ -881,7 +902,7 @@ pub fn create(origin: usize, entity: &Create) -> Result<BitWriter, WorldError> {
         write_movement(
             &mut out,
             movement,
-            Some(entity.frame_back),
+            Some(entity.frame.back(tick)),
             Some(CREATE_BASE),
             entity.movement_parent,
         )?;
@@ -969,7 +990,7 @@ fn write_entity(out: &mut BitWriter, item: &EntityUpdate, tick: u32) -> Result<(
     out.bits(opcode, 2)?;
     let origin = out.bit_len() + 14;
     let record = match operation {
-        Operation::Create(entity) => Some(create(origin, entity)?),
+        Operation::Create(entity) => Some(create(origin, entity, tick)?),
         Operation::Placeable(index, components) => {
             Some(create_placeable(origin, *index, components)?)
         }

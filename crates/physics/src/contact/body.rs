@@ -143,6 +143,11 @@ impl CharacterBody {
         Self::new(Arc::clone(&self.world), pose, self.category)
     }
 
+    /// The world it moves in, shared.
+    pub fn shared_world(&self) -> Arc<ContactWorld> {
+        Arc::clone(&self.world)
+    }
+
     /// Query the same upright capsule and mask without changing its contact state.
     pub fn sweep(&self, start: Vec3, end: Vec3) -> Result<Option<WorldHit>, PointSetSize> {
         self.world.scene_sweep(MeshProbe {

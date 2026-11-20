@@ -7,9 +7,12 @@
 //! requests, datagrams and input that came since the last tick (at the last
 //! tick's time, as a server that keeps up with its clients does between two
 //! ticks), then runs the next tick exactly when it is due, so no tick is ever
-//! skipped; the clients then read what it sent. Between steps the loop
-//! answers the service's requests (`snapshot` and the like) at the last
-//! tick's time. Nothing in a test's run depends on the PC's speed.
+//! skipped; the clients then read what it sent. A step ends once nothing
+//! waits, the AI players' commands the tick gave included
+//! ([`GameLoop::pass`]). Between steps the loop answers the service's
+//! requests (`snapshot` and the like) at the last tick's time, so they see
+//! the same state whichever thread runs first. Nothing in a test's run
+//! depends on the PC's speed.
 //!
 //! A match's scene is still prepared on a thread of its own, in real time
 //! ([`GameService::open_world`]): [`Lockstep::await_scenes`] holds the clock
