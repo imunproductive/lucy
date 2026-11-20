@@ -778,17 +778,18 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                             .definition
                             .and_then(|definition| self.leases.entity(definition, shot.frame, 0))
                             .is_some();
-                    if !leased && !ballistics.damaging() {
-                        return None;
-                    }
                     // The entity it leaves (projectiles.py `fired`): the
                     // Biotic Field canister leaves its field at the
                     // shooter's feet whatever its arc does.
                     let spawn = spawned_definitions(node).first().copied();
-                    // A networked volley the client doesn't shoot itself,
-                    // which flies for its damage: the server shows its one
-                    // projectile to every client, its shooter's included
-                    // (`projectiles::ServerCopies`; beyond Python).
+                    // A networked volley the client doesn't shoot itself:
+                    // the server flies its one projectile and shows it to
+                    // every client, its shooter's included, whose Volley
+                    // waits for the server's shot record
+                    // (`projectiles::ServerCopies`; beyond Python), whether
+                    // it deals damage where it hits or its entity does
+                    // something on its own graphs (the healing Biotic Orb
+                    // `10E4` rid18, `crate::spawned`).
                     let server_shown = !leased
                         && node.is_networked()
                         && !local_prediction(node)
@@ -796,6 +797,9 @@ impl OwnerBodyRuntime for PlayerBodyRuntime {
                         && spawn.is_none()
                         && rings.is_none()
                         && projectiles == 1;
+                    if !leased && !server_shown && !ballistics.damaging() {
+                        return None;
+                    }
                     let field = leased && spawn == Some(crate::projectiles::FIELD_ENTITY);
                     let volleys = self
                         .component

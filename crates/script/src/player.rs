@@ -923,6 +923,7 @@ mod tests {
             height: 1.8,
             radius: 0.4,
             yaw: 0.0,
+            health: None,
             spawned: Vec::new(),
             tags: None,
         }

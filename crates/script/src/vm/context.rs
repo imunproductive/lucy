@@ -151,10 +151,10 @@ impl<W: World> Context for InstanceContext<'_, W> {
     }
 
     fn body_health(&mut self, entity: u32, kind: Option<PoolKind>, maximum: bool) -> Option<f64> {
-        if entity != self.site.entity {
-            return None;
-        }
         self.read_native = true;
+        if entity != self.site.entity {
+            return self.world.listed_health(self.site, entity, kind, maximum);
+        }
         self.world.body_health(self.site, kind, maximum)
     }
 

@@ -5,7 +5,7 @@ use std::io::Read;
 use orpheus_assets::{DERIVATIONS, Install, Output, first_difference};
 use serde_json::Value;
 
-/// Graphs the derivation adds to the pack's hero bundle: the initial graphs
+/// Graphs the derivation adds to the pack's bundles (hero and bot): the initial graphs
 /// of the entities hero weapon volleys spawn, which the Python extractor
 /// didn't follow (it had only `0258`, the Biotic Field's, as a root), and the
 /// graphs they reference. `0C1B` is Tracer's Pulse Bomb (`0045.003`).
@@ -64,10 +64,13 @@ fn hero_bundle_matches_the_pack() {
 #[test]
 #[ignore = "requires an Overwatch 1.74 install and a runtime pack (just test-assets <install> <pack>)"]
 fn bot_bundle_matches_the_pack() {
-    keeps_the_pack(
+    let derived = keeps_the_pack(
         "data/game_graphs_bots_174.json.gz",
         &["version", "bodies", "mode_variables", "ai_weapon_buttons"],
     );
+    for index in SPAWNED_GRAPHS {
+        assert!(derived.contains_key(index), "graph {index:04X}");
+    }
 }
 
 /// Check that the derived bundle at `path` keeps every graph of the pack's

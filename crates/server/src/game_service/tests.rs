@@ -5002,6 +5002,261 @@ fn a_biotic_field_heals_a_wounded_teammate_and_every_client_sees_it() {
     server.stop().unwrap();
 }
 
+/// The health records of `entity` a client got from datagram `from` on,
+/// each with its datagram's tick.
+fn health_records(watcher: &Watcher, entity: u32, from: usize) -> Vec<(u32, f32)> {
+    watcher.datagrams[from..]
+        .iter()
+        .zip(&watcher.ticks[from..])
+        .flat_map(|((_, records), &tick)| {
+            records
+                .iter()
+                .filter(move |record| record.entity == entity)
+                .filter_map(move |record| Some((tick, record.base_health?)))
+        })
+        .collect()
+}
+
+/// Moira throws a Biotic Orb (E, then a fire button: `10E4` rid18/rid19)
+/// with her view at `pitch` (1/65536 turns, positive down), every command
+/// at that view; then she (and `others`, whose graphs run at their own
+/// commands) plays on until her client saw the copy of the orb of
+/// `definition` go. Returns the datagram of hers the throw went with, and
+/// the copy.
+fn throw_biotic_orb(
+    server: &Lockstep,
+    schemas: &Schemas,
+    moira: &mut Watcher,
+    others: &mut [&mut Watcher],
+    (pitch, button, definition): (i16, u32, u32),
+) -> (usize, u32) {
+    /// `10E4`'s button (E).
+    const ABILITY_2: u32 = 0x10;
+    let mut frames: Vec<u32> = others.iter().map(|watcher| watcher.tick + 1).collect();
+    let mut moira_frame = moira.tick + 1;
+    let mut play = |moira: &mut Watcher, others: &mut [&mut Watcher], buttons| {
+        send_input(moira, &mut moira_frame, 0, pitch, buttons, false);
+        for (watcher, frame) in others.iter_mut().zip(&mut frames) {
+            send_input(watcher, frame, 0, 0, 0, false);
+        }
+        moira.pump(schemas);
+        for watcher in others.iter_mut() {
+            watcher.pump(schemas);
+        }
+    };
+    for buttons in [0; 10].into_iter().chain([ABILITY_2]).chain([0; 20]) {
+        play(moira, others, buttons);
+    }
+    let thrown = moira.datagrams.len();
+    play(moira, others, button);
+    let copy = |moira: &Watcher| {
+        moira.datagrams[thrown..]
+            .iter()
+            .flat_map(|(_, records)| records)
+            .find(|record| record.is_create() && record.definition == Some(definition))
+            .map(|record| record.entity)
+    };
+    let deadline = server.now() + Duration::from_secs(12);
+    while !copy(moira).is_some_and(|entity| {
+        moira
+            .find(thrown, |record| {
+                record.entity == entity && record.operation == Some(3)
+            })
+            .is_some()
+    }) {
+        assert!(server.now() < deadline, "waiting for the orb to go");
+        play(moira, others, 0);
+    }
+    for _ in 0..30 {
+        play(moira, others, 0);
+    }
+    (thrown, copy(moira).unwrap())
+}
+
+/// The copy of Moira's orb on her client: its create, then its frame (the
+/// orb's graph on the server, `orpheus_sim::spawned`, whose remote speed
+/// state `STU_D3F71FCF` the client begins only from it), then its destroy.
+fn assert_orb_copy_framed(moira: &Watcher, thrown: usize, copy: u32) {
+    let created = moira
+        .find(thrown, |record| record.entity == copy && record.is_create())
+        .unwrap();
+    let framed = moira
+        .find(created, |record| {
+            record.entity == copy && record.script.is_some()
+        })
+        .expect("the orb's frame on its copy");
+    let gone = moira
+        .find(created, |record| {
+            record.entity == copy && record.operation == Some(3)
+        })
+        .unwrap();
+    assert!(
+        created < framed && framed <= gone,
+        "{created} {framed} {gone}"
+    );
+}
+
+/// Moira's damaging Biotic Orb (E, then the secondary fire: `10E4` rid19,
+/// `1E61.003`), thrown straight up in the Practice Range's spawn room
+/// between two enemy Training Bots 1.5 m to either side of her. The
+/// server flies it (`orpheus_sim::spawned`) between the room's ceiling,
+/// about 10 m up, and its floor (99 mirror bounces), slowed to 0.275 while
+/// it has targets; its graph `1100` puts its aura `02D5` on both bots
+/// while they are within 4 m of it, and their own scripts run the aura's
+/// `1101` (from the bot bundle), which hurts each by 50 a second for
+/// Moira. What they take comes back to the orb as its damage dealt, and
+/// once its pool of 200 is spent it removes itself, and its copy on her
+/// client goes. Each bot loses 0.8 a tick while it is a target. The two
+/// shares of the tick that fills the pool (250 shares, 125 a bot) reach
+/// the orb as messages the next tick (`orpheus_sim::messages` routes them
+/// once a tick), when the bots take one more share each before the orb's
+/// removal takes its auras off: 126 shares, 100.8 a bot.
+#[test]
+#[ignore = "requires the derived 104319 data with its bot graph bundle"]
+fn moiras_damaging_orb_hurts_two_bots_at_its_rate_until_its_pool_is_spent() {
+    use orpheus_script::vm::Unknowns;
+    use orpheus_sim::scene_assets::SceneAssets;
+    use orpheus_wire::commands::SECONDARY;
+    /// Straight up; the mover holds the view at 89°.
+    const UP: i16 = -16384;
+    /// 50 a second over a 16 ms tick.
+    const TICK_DAMAGE: f32 = 0.8;
+
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_bot_unknowns(Unknowns::Tolerate);
+    let mut targets = Vec::new();
+    let (mut server, schemas, [mut moira], _) =
+        practice_world([("moira#1111", 0, "Moira")], &assets, |scene| {
+            let ([x, y, z], _) = scene.map().spawn_point(0, 0).unwrap();
+            let standing: Vec<usize> = scene
+                .bots()
+                .iter()
+                .enumerate()
+                .filter(|(_, bot)| {
+                    bot.spawn.team == 1 && !bot.spawn.firing && bot.spawn.route.is_empty()
+                })
+                .map(|(slot, _)| slot)
+                .take(2)
+                .collect();
+            assert_eq!(standing.len(), 2, "two standing enemy bots");
+            for (slot, side) in standing.into_iter().zip([-1.5, 1.5]) {
+                let bot = &mut scene.bots_mut()[slot];
+                bot.position = [x + side, y, z];
+                targets.push((bot.entity, bot.spawn.health as f32));
+            }
+        });
+    let (thrown, copy) = throw_biotic_orb(
+        &server,
+        &schemas,
+        &mut moira,
+        &mut [],
+        (UP, SECONDARY, 0x1e61),
+    );
+    assert_orb_copy_framed(&moira, thrown, copy);
+    for (bot, full) in targets {
+        let healths = health_records(&moira, bot, thrown);
+        let mut last = (moira.ticks[thrown], full);
+        for &(tick, health) in &healths {
+            assert!(
+                last.1 - health <= TICK_DAMAGE * (tick - last.0) as f32 + 1e-3,
+                "faster than 50 a second: {last:?} to {:?}",
+                (tick, health)
+            );
+            last = (tick, health);
+        }
+        assert!((last.1 - (full - 100.8)).abs() < 1e-3, "{healths:?}");
+    }
+    server.stop().unwrap();
+}
+
+/// Moira's healing Biotic Orb (E, then the primary fire: `10E4` rid18,
+/// `1E60.003`), thrown at her feet beside her wounded teammate (an enemy
+/// Soldier: 76 wounds him first). The server flies it, its graph `10FF`
+/// puts its aura `02A1` on the hurt ally within 5 m, and his body's own
+/// graphs run the aura's `1102`, which heals him by 65 a second for Moira
+/// up to his full health. Moira's body tolerates unknown content: a debug
+/// build refuses `10E4` node 87's `STU_0340A42A` (loose ends), which stops
+/// her script and with it her orb's flight.
+#[test]
+#[ignore = "requires a prepared 104319 Practice Range scene"]
+fn moiras_healing_orb_heals_a_wounded_teammate_at_its_rate() {
+    use orpheus_script::vm::Unknowns;
+    use orpheus_sim::scene_assets::SceneAssets;
+    use orpheus_wire::commands::FIRE;
+    /// Straight down; the mover holds the view at 89°.
+    const DOWN: i16 = 16384;
+    /// 65 a second over a 16 ms tick.
+    const TICK_HEAL: f32 = 1.04;
+    const FULL: f32 = 200.0;
+
+    let mut assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    assets.set_player_unknowns(Unknowns::Tolerate);
+    let (mut server, schemas, [mut moira, mut ally, mut enemy], _) = practice_world(
+        [
+            ("moira#1111", 0, "Moira"),
+            ("ally#2222", 0, "Soldier: 76"),
+            ("enemy#3333", 1, "Soldier: 76"),
+        ],
+        &assets,
+        |_| {},
+    );
+    let ally_body = ally.owner | 1;
+    let health = |watcher: &Watcher| {
+        health_records(watcher, ally_body, 0)
+            .last()
+            .map(|&(_, health)| health)
+    };
+    // The enemy wounds the ally, aiming from where the two bodies stand
+    // (bodies: Moira's, the ally's, the enemy's).
+    let mut frames = [moira.tick + 1, ally.tick + 1, enemy.tick + 1];
+    let deadline = server.now() + Duration::from_secs(10);
+    while !health(&ally).is_some_and(|health| health < FULL) {
+        assert!(server.now() < deadline, "waiting for the wound");
+        let bodies = server.bodies(MATCH).unwrap();
+        let [from, to] = [2, 1].map(|index| bodies[index].position.unwrap());
+        let aim = ((to[0] - from[0]).atan2(to[2] - from[2]) * 32768.0 / std::f64::consts::PI)
+            .round() as i32 as i16;
+        send_input(&mut enemy, &mut frames[2], aim, 0, FIRE, false);
+        send_input(&mut moira, &mut frames[0], 0, 0, 0, false);
+        send_input(&mut ally, &mut frames[1], 0, 0, 0, false);
+        for watcher in [&mut moira, &mut ally, &mut enemy] {
+            watcher.pump(&schemas);
+        }
+    }
+    for _ in 0..20 {
+        send_input(&mut moira, &mut frames[0], 0, 0, 0, false);
+        send_input(&mut ally, &mut frames[1], 0, 0, 0, false);
+        send_input(&mut enemy, &mut frames[2], 0, 0, 0, false);
+        for watcher in [&mut moira, &mut ally, &mut enemy] {
+            watcher.pump(&schemas);
+        }
+    }
+    let wounded = health(&ally).unwrap();
+    assert!(wounded < FULL, "wounded to {wounded}");
+
+    let healing = ally.datagrams.len();
+    let (thrown, copy) = throw_biotic_orb(
+        &server,
+        &schemas,
+        &mut moira,
+        &mut [&mut ally, &mut enemy],
+        (DOWN, FIRE, 0x1e60),
+    );
+    assert_orb_copy_framed(&moira, thrown, copy);
+    let healths = health_records(&ally, ally_body, healing);
+    let mut last = (ally.ticks[healing], wounded);
+    for &(tick, health) in &healths {
+        assert!(
+            health - last.1 <= TICK_HEAL * (tick - last.0) as f32 + 1e-3,
+            "faster than 65 a second: {last:?} to {:?}",
+            (tick, health)
+        );
+        last = (tick, health);
+    }
+    assert_eq!(last.1, FULL, "{healths:?}");
+    server.stop().unwrap();
+}
+
 /// A PvP match on a map other than the Practice Range (ow174/game/match.py,
 /// server.py): its collision is built from the install while two players
 /// load, and both spawn on it. The first spawn starts "assemble your team":

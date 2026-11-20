@@ -26,7 +26,8 @@ use crate::{
 };
 use orpheus_core::guid::parse_guid;
 
-pub(crate) const EPSILON: f64 = 1.192_092_895_507_812_5e-5;
+/// The tolerance of an expression's comparisons (a float's epsilon).
+pub const EPSILON: f64 = 1.192_092_895_507_812_5e-5;
 const MAX_CONFIG_DEPTH: usize = 64;
 pub const MAX_EXPRESSION_STEPS: usize = 4096;
 
@@ -64,6 +65,13 @@ pub enum EntityRelation {
     /// The AI entity that drives the body (`STU_066B4605`'s target): none for
     /// a human player's body. Not a native of its own; the server's.
     AiControlEntity,
+    /// `STU_2B2E2F6D` kinds 0, 1 and 4 of a projectile no one re-owned
+    /// (`Eval_STU_2B2E2F6D` 0x7FF789BDFCC0 on component 50): the entity
+    /// that shot it, `+0x18`, which the projectile's creation
+    /// `0x7FF789C7E590` writes from the firing entity (the volley's body)
+    /// and copies to `+0x20` (kind 4's raw field); the null entity for an
+    /// entity that isn't a projectile.
+    Shooter,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2212,6 +2220,68 @@ impl Evaluator {
                     .related_entity(relation, entity)
                     .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
                 Value::Entity(related)
+            }
+            // A projectile's related entity (`Eval_STU_2B2E2F6D`
+            // 0x7FF789BDFCC0, component 50 of `m_81A364DE`; BioticOrb.md):
+            // kind `m_7BDB02D1` 0 is the last re-owner (a deflect), else the
+            // `+0x240` override, else the shooter `+0x18`; 1 the override,
+            // else the shooter; 4 the raw `+0x20`, the shooter at the
+            // creation. The server re-owns no projectile and sets no
+            // override, so all three are its shooter
+            // ([`EntityRelation::Shooter`]). Kinds 2 and 3 (`+0x1C` from the
+            // volley's state, `+0x244`) are not modelled. No entity, or one
+            // that isn't a projectile, reads the null entity.
+            "STU_2B2E2F6D" if native_fields(config, &["m_81A364DE", "m_7BDB02D1"]) => {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let kind = match child(config, "m_7BDB02D1") {
+                    Json::Null => 0,
+                    kind => kind.as_i64().ok_or_else(unsupported)?,
+                };
+                if !matches!(kind, 0 | 1 | 4) {
+                    return Err(unsupported());
+                }
+                let entity =
+                    to_entity(&self.config(child(config, "m_81A364DE"), context, nested)?)
+                        .ok_or_else(unsupported)?;
+                if !valid_entity(entity) {
+                    return Ok(Value::Entity(0));
+                }
+                let shooter = context
+                    .related_entity(EntityRelation::Shooter, entity)
+                    .ok_or_else(unsupported)?;
+                Value::Entity(shooter)
+            }
+            // Whether something of `m_entity` keeps it from `m_82B6345B`
+            // (`Eval_STU_7C005F8F` 0x7FF789BDBF90 → `0x7FF789B2DB30`): false
+            // when either entity doesn't exist, and for an entity whose
+            // filter word (component 25 `+0x58`) has neither `0x100` nor
+            // `0x200`, which no body's has (`vm/targets.rs` `filter_word`).
+            // With either bit the client tests the distance between the two
+            // against the `STU_33A46033` states on the first and the
+            // entities' hostility: not modelled. The damaging Biotic Orb's
+            // search `1100` st0 leaves out the bodies it is true for.
+            "STU_7C005F8F" if native_fields(config, &["m_entity", "m_82B6345B"]) => {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let mut entity = |name| -> Result<Option<u32>, EvalError> {
+                    Ok(
+                        to_entity(&self.config(child(config, name), context, nested)?)
+                            .filter(|&entity| valid_entity(entity)),
+                    )
+                };
+                let (Some(first), Some(second)) = (entity("m_entity")?, entity("m_82B6345B")?)
+                else {
+                    return Ok(Value::Bool(false));
+                };
+                if [first, second]
+                    .into_iter()
+                    .any(|entity| context.entity_exists(entity) == Some(false))
+                {
+                    return Ok(Value::Bool(false));
+                }
+                match context.entity_filter_flags(first) {
+                    Some(word) if word & 0x300 == 0 => Value::Bool(false),
+                    _ => return Err(unsupported()),
+                }
             }
             // The player entity of `m_entity`, as the client's
             // `Eval_STU_0340A42A` (0x7FF789C00660): the entity itself when it
