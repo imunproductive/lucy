@@ -12,7 +12,7 @@ use std::{
 use orpheus_workshop::{
     Catalog,
     catalog::Id,
-    host::{ActionCall, ActionHandle, Actions, Activity, RayHit, Variables, World},
+    host::{ActionCall, ActionHandle, Actions, Activity, Param, RayHit, Variables, World},
     value::{EntityId, Value},
 };
 
@@ -58,11 +58,13 @@ impl Player {
     }
 }
 
-/// One started action: its name and evaluated parameters.
+/// One started action: its name and evaluated parameters (the server's
+/// value of each, and the parameters as the engine gave them).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Started {
     pub name: String,
     pub params: Vec<Value>,
+    pub raw: Vec<Param>,
     pub event_player: Option<EntityId>,
 }
 
@@ -290,7 +292,8 @@ impl Actions for Match {
         let duration = self.durations.get(&name).copied().unwrap_or(0);
         self.started.push(Started {
             name,
-            params: call.params,
+            params: call.params.iter().map(|param| param.value().clone()).collect(),
+            raw: call.params,
             event_player: call.context.event_player,
         });
         self.next_handle += 1;

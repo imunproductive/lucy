@@ -53,12 +53,18 @@ impl<W: World> Vm<'_, '_, '_, W> {
         let Some(targets) = self.evaluate(id, node, field(&node.fields, "m_targets"), None) else {
             return Ok(());
         };
-        let target_self = match targets {
-            Value::Entity(target) => target == entity,
-            Value::Array(items) => items == [Value::Entity(entity)],
-            _ => false,
+        let targets: Vec<u32> = match targets {
+            Value::Entity(target) => vec![target],
+            Value::Array(items) => items
+                .iter()
+                .filter_map(|item| match item {
+                    Value::Entity(target) => Some(*target),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
         };
-        if !target_self {
+        if targets.is_empty() {
             return Ok(());
         }
         let mut parameters = Vec::new();
@@ -82,6 +88,36 @@ impl<W: World> Vm<'_, '_, '_, W> {
             .get("m_AA4DE426")
             .and_then(Json::as_i64)
             .unwrap_or(0);
+        let site = self.site(id, node);
+        for target in targets {
+            if target == entity {
+                self.play_here(graph, &parameters, policy, self.source_of(id), entity)?;
+                continue;
+            }
+            // Another entity's: a world that plays none there leaves it.
+            let request = PlayRequest {
+                target,
+                graph,
+                parameters: parameters.clone(),
+                policy,
+                caller: entity,
+            };
+            self.world.play_script(site, request);
+        }
+        Ok(())
+    }
+
+    /// Play `graph` on this entity with its start entries' `parameters`:
+    /// `policy` 0 keeps a running instance, 2 restarts its entries, 3
+    /// replaces it, others add another.
+    pub(super) fn play_here(
+        &mut self,
+        graph: u32,
+        parameters: &[(u64, Value)],
+        policy: i64,
+        source: u32,
+        caller: u32,
+    ) -> Result<(), InitFault> {
         let running: Vec<u16> = self
             .machine
             .snapshot
@@ -101,13 +137,13 @@ impl<W: World> Vm<'_, '_, '_, W> {
                 }
                 let created = u16::try_from(self.machine.next_id)
                     .map_err(|_| InitFault::InstanceIdExhausted)?;
-                if !self.create(created, graph, None, Variables::new(), self.source_of(id))? {
+                if !self.create(created, graph, None, Variables::new(), source)? {
                     return Ok(());
                 }
                 created
             }
         };
-        self.start_entries(target, &parameters, entity)
+        self.start_entries(target, parameters, caller)
     }
 
     /// `Instance.start_entries`: bind each start entry's named parameters,
@@ -165,10 +201,16 @@ impl<W: World> Vm<'_, '_, '_, W> {
         }
     }
 
-    /// A networked wheel action ran: keep it for the clients' frames.
+    /// A networked wheel action ran, or a Workshop action graph's
+    /// (an instance with its parameters `#18739`: Small and Big Message's
+    /// `STU_100EF8C2`, which the client runs from the frames with the
+    /// instance's `#18739` and `#20176`): keep it for the clients' frames.
     pub(super) fn record_frame_action(&mut self, id: u16, node: &Node) {
         let instance = &self.machine.snapshot.instances[&id];
-        if node.remote < 0 || !wheel::ACTION_GRAPHS.contains(&instance.graph) {
+        if node.remote < 0
+            || !(wheel::ACTION_GRAPHS.contains(&instance.graph)
+                || instance.variables.contains_key(&ACTION_PARAMETERS))
+        {
             return;
         }
         let instance_start_ms = instance.start_ms;

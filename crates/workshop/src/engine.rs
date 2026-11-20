@@ -40,15 +40,14 @@
 
 use std::{
     collections::{BTreeSet, HashMap},
-    rc::Rc,
     sync::Arc,
 };
 
 use crate::{
     catalog::{Catalog, Id},
     eval::{self, Rng, Scope, arithmetic, compare},
-    host::{ActionCall, ActionHandle, Context, GameEvent, Host},
-    logic::{Action, Arg, Condition, Event, Logic, WorkshopSetting, actions, events},
+    host::{ActionCall, ActionHandle, Context, GameEvent, Host, Param},
+    logic::{self, Action, Arg, Condition, Event, Logic, WorkshopSetting, actions, events},
     value::{EntityId, Value},
 };
 
@@ -114,18 +113,18 @@ struct Compiled {
     name: String,
     event: Event,
     conditions: Vec<Condition>,
-    actions: Vec<Rc<Action>>,
+    actions: Vec<Arc<Action>>,
     flow: Vec<Flow>,
 }
 
 impl Compiled {
     fn new(rule: &crate::logic::Rule) -> Self {
-        let actions: Vec<Rc<Action>> = rule
+        let actions: Vec<Arc<Action>> = rule
             .actions
             .iter()
             .filter(|action| !action.disabled)
             .cloned()
-            .map(Rc::new)
+            .map(Arc::new)
             .collect();
         let flow = flow(&actions);
         Self {
@@ -144,7 +143,7 @@ impl Compiled {
 }
 
 /// The block structure of an action list.
-fn flow(list: &[Rc<Action>]) -> Vec<Flow> {
+fn flow(list: &[Arc<Action>]) -> Vec<Flow> {
     let mut flow = vec![Flow::Plain; list.len()];
     // Open blocks: whether a loop, and the If chain's members (or the loop).
     let mut open: Vec<(bool, Vec<usize>)> = Vec::new();
@@ -459,6 +458,40 @@ impl Engine {
         value
     }
 
+    /// An action's parameters in `context`, as [`ActionCall::params`]
+    /// gives them: a parameter that names Local Player once per player.
+    /// The server evaluates a running action's reevaluated parameters
+    /// again with it.
+    pub fn evaluate_params<H: Host + ?Sized>(
+        &mut self,
+        host: &H,
+        action: &Action,
+        context: &Context,
+    ) -> Vec<Param> {
+        action
+            .args
+            .iter()
+            .map(|arg| {
+                let value = self.evaluate(context, host, arg);
+                if !names(arg, eval::ids::LOCAL_PLAYER) {
+                    return Param::Value(value);
+                }
+                let viewers = host
+                    .players()
+                    .into_iter()
+                    .map(|player| {
+                        let context = Context {
+                            local_player: Some(player),
+                            ..context.clone()
+                        };
+                        (player, self.evaluate(&context, host, arg))
+                    })
+                    .collect();
+                Param::PerViewer { value, viewers }
+            })
+            .collect()
+    }
+
     /// Advance every execution of `rule` (its own, and those Start Rule
     /// began on it) until each waits or ends.
     fn run_rule<H: Host + ?Sized>(&mut self, rule: usize, host: &mut H) {
@@ -553,7 +586,7 @@ impl Engine {
                     )
                 };
                 // The Wait Until is the action before the frame's pc.
-                let action = Rc::clone(&self.rules[frame.rule].actions[frame.pc - 1]);
+                let action = Arc::clone(&self.rules[frame.rule].actions[frame.pc - 1]);
                 let done = self.evaluate(&context, &*host, &action.args[0]).truthy();
                 if done || self.tick >= deadline {
                     self.executions[at].block = Block::Ready;
@@ -792,16 +825,12 @@ impl Engine {
                 let Some(graph) = self.catalog.action(index).and_then(|entry| entry.graph) else {
                     return Step::Continue;
                 };
-                let params = action
-                    .args
-                    .iter()
-                    .map(|arg| self.evaluate(&context, &*host, arg))
-                    .collect();
+                let params = self.evaluate_params(&*host, &action, &context);
                 let handle = host.start(ActionCall {
                     action: index,
                     graph,
                     params,
-                    source: Rc::clone(&action),
+                    source: Arc::clone(&action),
                     context,
                 });
                 if host.finished(handle) {
@@ -838,7 +867,7 @@ impl Engine {
             if next >= end {
                 return end + 1;
             }
-            let action = Rc::clone(&self.rules[rule].actions[next]);
+            let action = Arc::clone(&self.rules[rule].actions[next]);
             match action.index {
                 actions::ELSE => return next + 1,
                 actions::ELSE_IF => {
@@ -887,7 +916,7 @@ impl Engine {
         opener: usize,
         next: usize,
     ) -> usize {
-        let action = Rc::clone(&self.rules[rule].actions[opener]);
+        let action = Arc::clone(&self.rules[rule].actions[opener]);
         match action.index {
             actions::WHILE => opener,
             actions::FOR_GLOBAL_VARIABLE | actions::FOR_PLAYER_VARIABLE => {
@@ -1044,6 +1073,16 @@ impl Engine {
             Target::Global(index) => host.set_global(index, value),
             Target::Player(player, index) => host.set_player(player, index, value),
         }
+    }
+}
+
+/// Whether `arg` uses value `id` anywhere.
+fn names(arg: &Arg, id: Id) -> bool {
+    let value_names = |value: &logic::Value| value.id == id || value.args.iter().any(|arg| names(arg, id));
+    match arg {
+        Arg::Value(value) => value_names(value),
+        Arg::Array(values) => values.iter().any(value_names),
+        _ => false,
     }
 }
 

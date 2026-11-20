@@ -93,6 +93,7 @@ use orpheus_sim::{
     scene::{PlayerAppearance, PlayerCard},
     scene_assets::{CollisionBuild, CollisionFiles, FellOut, PreparedScene},
     voice_lines::VoiceLine,
+    workshop::{WorkshopPlayer, WorkshopRun},
 };
 use orpheus_wire::entity::Component as WorldComponent;
 use orpheus_wire::{
@@ -330,6 +331,7 @@ enum Request {
     Workshop {
         id: MatchId,
         logic: Arc<orpheus_workshop::Logic>,
+        catalog: Arc<orpheus_workshop::Catalog>,
         reply: mpsc::SyncSender<bool>,
     },
     /// The matches that ended since the last call, oldest first.
@@ -587,14 +589,20 @@ impl GameService {
     }
 
     /// Give a match that just opened (before its scene is ready: right
-    /// after `open_world`) its Workshop script, for the Workshop engine.
-    /// False when the match is gone.
+    /// after `open_world`) its Workshop script and the catalog it reads,
+    /// for the Workshop engine. False when the match is gone.
     pub fn attach_workshop(
         &self,
         id: MatchId,
         logic: Arc<orpheus_workshop::Logic>,
+        catalog: Arc<orpheus_workshop::Catalog>,
     ) -> io::Result<bool> {
-        self.request(|reply| Request::Workshop { id, logic, reply })
+        self.request(|reply| Request::Workshop {
+            id,
+            logic,
+            catalog,
+            reply,
+        })
     }
 
     /// The matches that ended by their rules since the last call, oldest
@@ -823,8 +831,17 @@ struct Room {
     ai: Option<Difficulty>,
     /// Its dummy bots (`ai.rs`): the Practice Range's Training Partner.
     dummies: Vec<ai::DummySeat>,
-    /// Its Workshop script (`attach_workshop`).
-    workshop: Option<Arc<orpheus_workshop::Logic>>,
+    /// Its Workshop script (`attach_workshop`) and, once the mode starts,
+    /// its engine (`orpheus_sim::workshop`).
+    workshop: Option<RoomWorkshop>,
+}
+
+/// A match's Workshop script and its engine.
+struct RoomWorkshop {
+    logic: Arc<orpheus_workshop::Logic>,
+    catalog: Arc<orpheus_workshop::Catalog>,
+    /// Runs from the mode's start (`Room::begin_flow`).
+    run: Option<WorkshopRun>,
 }
 
 impl Room {
@@ -957,8 +974,19 @@ impl Room {
         );
         self.flow = Some(flow);
         // The players reach the graph with the next tick's flow
-        // (`update_flows`), as they join.
-        self.mode = Some(ModeRunner::start(scene, tick, Vec::new()));
+        // (`update_flows`), as they join. A Workshop match runs its
+        // actions on the mode entity, so a graph must drive it
+        // (`ModeRunner::workshop`).
+        let workshop = self.workshop.as_mut().and_then(|workshop| {
+            let mode = ModeRunner::workshop(scene, tick, Vec::new())?;
+            workshop.run = Some(WorkshopRun::new(
+                &workshop.logic,
+                Arc::clone(&workshop.catalog),
+                u64::from(tick),
+            ));
+            Some(mode)
+        });
+        self.mode = Some(workshop.unwrap_or_else(|| ModeRunner::start(scene, tick, Vec::new())));
         self.flow_at = now;
         self.flow_tick = tick;
         self.next_mode_frame = now;
@@ -1741,7 +1769,10 @@ impl State {
                 id,
                 map: room.map.name.clone(),
                 mode: room.map.mode_name.clone(),
-                workshop_rules: room.workshop.as_ref().map(|logic| logic.rules.len()),
+                workshop_rules: room
+                    .workshop
+                    .as_ref()
+                    .map(|workshop| workshop.logic.rules.len()),
                 waiting: room
                     .flow
                     .as_ref()
@@ -1802,11 +1833,20 @@ impl State {
             Request::Snapshot { reply } => {
                 let _ = reply.send(self.snapshot());
             }
-            Request::Workshop { id, logic, reply } => {
+            Request::Workshop {
+                id,
+                logic,
+                catalog,
+                reply,
+            } => {
                 let room = self.rooms.get_mut(&id);
                 let found = room.is_some();
                 if let Some(room) = room {
-                    room.workshop = Some(logic);
+                    room.workshop = Some(RoomWorkshop {
+                        logic,
+                        catalog,
+                        run: None,
+                    });
                 }
                 let _ = reply.send(found);
             }
@@ -2964,6 +3004,32 @@ impl State {
                 .mode
                 .as_mut()
                 .map_or_else(Vec::new, |mode| mode.advance(tick, &variables, players));
+            // The Workshop's rules after the mode entity's frame, against
+            // the players in the world.
+            if let (Some(run), Some(mode)) = (
+                room.workshop
+                    .as_mut()
+                    .and_then(|workshop| workshop.run.as_mut()),
+                room.mode.as_mut(),
+            ) {
+                let mut players: Vec<WorkshopPlayer<'_>> = self
+                    .peers
+                    .iter_mut()
+                    .filter_map(|(connection, peer)| {
+                        let &(_, slot) = connections
+                            .iter()
+                            .find(|(seated, _)| seated == connection)?;
+                        let player = &room.players[slot];
+                        (!player.gone && peer.world.world_started()).then(|| WorkshopPlayer {
+                            controller: player.entity,
+                            slot,
+                            team: player.info.team,
+                            world: &mut peer.world,
+                        })
+                    })
+                    .collect();
+                run.step(tick, &world.scene, mode, &mut players);
+            }
             let changed = events
                 .iter()
                 .any(|event| matches!(event, FlowEvent::Phase(_)));
@@ -3334,7 +3400,7 @@ impl State {
                     // rooms the match flow's spawns hold get it here. The
                     // scripts' dummy bots (the Training Partner) are AI
                     // players of the room (`ai.rs`).
-                    let holds = if room.mode.as_ref().is_some_and(ModeRunner::graph_driven) {
+                    let holds = if room.mode.as_ref().is_some_and(ModeRunner::holds_rooms) {
                         Vec::new()
                     } else {
                         let flow = room.flow.as_ref();

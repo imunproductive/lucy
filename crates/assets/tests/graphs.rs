@@ -53,6 +53,11 @@ fn hero_bundle_matches_the_pack() {
     for index in SPAWNED_GRAPHS {
         assert!(derived.contains_key(index), "graph {index:04X}");
     }
+    // The Workshop's graphs (`054/0155` actions, the condition `14A4`,
+    // and helpers they play: the chase `1CCF`, Set Status's `224E`).
+    for index in [0x1367, 0x1D8A, 0x1D45, 0x2E19, 0x14A4, 0x1CCF, 0x224E] {
+        assert!(derived.contains_key(&index), "Workshop graph {index:04X}");
+    }
 }
 
 /// The bot bundle likewise keeps every pack graph, entity definition and

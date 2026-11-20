@@ -44,6 +44,7 @@ use crate::{
     scene_assets::PreparedScene,
     spawned::ServerFlight,
     voice_lines::{VoiceLine, VoiceState, delay_ticks, is_death_cry},
+    workshop::WorkshopView,
 };
 use orpheus_content::{
     hero_settings::{HeroSetting, HeroSettings, SENT_SETTINGS, SettingDefault, script_settings},
@@ -71,9 +72,9 @@ use orpheus_script::{
     vitals::{Death, Vitals},
     vm::{
         AssistLink, AuraChange, BodyEffects, DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage,
-        HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, ParentWrite, RaisedCriteria,
-        Scaled, ScopeChange, ScopeSource, Snapshot, TargetCandidate, TrackedStat, VoiceRequest,
-        combat_scale,
+        HEALING_DEALT, HEALING_TAKEN, MessageEnd, Motion, MoveRequest, ParentWrite, PlayRequest,
+        RaisedCriteria, Scaled, ScopeChange, ScopeSource, Snapshot, TargetCandidate, TrackedStat,
+        VoiceRequest, combat_scale,
     },
     weapons::{DamageTags, ProjectileBallistics},
     wire::{Value as ScriptValue, Variables},
@@ -83,7 +84,7 @@ use orpheus_wire::{
     commands::{Command, CommandQueue, FRAME_HALF, SUBFRAME, frame_distance},
     entity::{
         CLOCK_FASTER, CLOCK_SLOWER, CLOCK_STRONGER, Component as WorldComponent, EntityUpdate,
-        GAME_MODE_ENTITY, MAX_PAYLOAD, Operation, SkinTheme, frame,
+        GAME_MODE_ENTITY, MAX_PAYLOAD, Movement, Operation, SkinTheme, frame,
     },
     link::delivery,
     messages::Message,
@@ -1765,6 +1766,11 @@ pub struct WorldDelivery {
     /// is his controller frames, and it counts his multikills
     /// (`crate::announcer`). Whether a pulse waits for its controller frame.
     controller_script: Option<ControllerScript>,
+    /// The pose the current body's last graph teleport left it in (a
+    /// Workshop Teleport, `STU_CFCE55DC` in the controller's scope), until
+    /// a frame carries it to the owner as a correction
+    /// ([`Self::apply_body_moves`]).
+    teleported: Option<Movement>,
     multikill_due: bool,
     /// The notices of the changes his body's modifiers made to the hits on
     /// it (`orpheus_script::vm::MODIFIED`), and what the sources of his
@@ -1929,6 +1935,7 @@ impl WorldDelivery {
             spawn_view: None,
             hurt: Vec::new(),
             controller_script: None,
+            teleported: None,
             multikill_due: false,
             modified: Vec::new(),
             placement: None,
@@ -2293,6 +2300,35 @@ impl WorldDelivery {
         if let Err(error) = script.advance(tick) {
             eprintln!("controller script of {:08X} stopped ({error})", self.owner);
             self.controller_script = None;
+        }
+        self.apply_body_moves();
+    }
+
+    /// The controller's graphs put the current body somewhere (a Workshop
+    /// Teleport's scope, `STU_CFCE55DC`): the mover takes it now, facing
+    /// the graph's direction when it gave one, and the next frame corrects
+    /// the owner's client with it ([`Self::send_frame`]); its raised
+    /// discontinuity counter makes the client take it without replaying
+    /// its commands (`orpheus_physics::mover::correction`). Retail's owner
+    /// correction for it is Workshop.md's inference.
+    fn apply_body_moves(&mut self) {
+        let Some(script) = &mut self.controller_script else {
+            return;
+        };
+        let moves = script.take_body_moves();
+        let body = self.body.map(|body| body.id.entity);
+        let Some(mover) = self.mover.as_mut() else {
+            return;
+        };
+        for body_move in moves
+            .into_iter()
+            .filter(|body_move| Some(body_move.body) == body)
+        {
+            let yaw = body_move
+                .facing
+                .map(|[x, _, z]| (x.atan2(z) * 65_536.0 / std::f64::consts::TAU).round() as i32);
+            mover.teleport(body_move.position, yaw);
+            self.teleported = Some(mover.pose());
         }
     }
 
@@ -2990,6 +3026,20 @@ impl WorldDelivery {
         if !reliable_only {
             self.prepare_body_updates(tick);
         }
+        // A teleport's pose ([`Self::apply_body_moves`]) goes once; a body
+        // with correction history carries it in its own candidate.
+        let teleport = if reliable_only {
+            None
+        } else {
+            self.teleported
+                .take()
+                .zip(self.body.map(|body| body.id.entity))
+                .map(|(pose, entity)| EntityUpdate {
+                    entity,
+                    movement: Some(pose),
+                    ..EntityUpdate::default()
+                })
+        };
         let script = self.body_script.as_ref();
         let history = script.and_then(|script| script.corrections.as_ref());
         let correction = if reliable_only {
@@ -2999,11 +3049,14 @@ impl WorldDelivery {
                 history?.candidate(tick, self.created.contains(&script.id.entity))
             })
         };
-        let owner_index = correction.map(|correction| {
-            let index = movements.len();
-            movements.push(correction.update());
-            index
-        });
+        let owner_index = correction
+            .map(|correction| correction.update())
+            .or(teleport)
+            .map(|update| {
+                let index = movements.len();
+                movements.push(update);
+                index
+            });
         let queued = self.ready();
         let newest = self.command_ack(tick);
         let sent = egress.send_frame(
@@ -4252,14 +4305,105 @@ impl WorldDelivery {
             .filter(|script| script.entity() == target)?;
         self.advance_controller(tick);
         let script = self.controller_script.as_mut()?;
-        match script.change_scope(tick, change) {
+        let opened = match script.change_scope(tick, change) {
             Ok(opened) => opened,
             Err(error) => {
                 eprintln!("controller script of {:08X} stopped ({error})", self.owner);
                 self.controller_script = None;
                 None
             }
+        };
+        self.apply_body_moves();
+        opened
+    }
+
+    /// The player as the Workshop's values see him
+    /// ([`crate::workshop`]): none until his body is in the world.
+    pub fn workshop_view(&self, scene: &PreparedScene) -> Option<WorkshopView> {
+        self.started?;
+        let body = self.body?;
+        let mover = self.mover.as_ref()?;
+        let hero = scene.heroes().get(body.hero)?;
+        let pose = mover.pose();
+        let target = scene.player_target(hero, pose.position, mover.crouched());
+        let vitals = match self
+            .body_script
+            .as_ref()
+            .filter(|script| script.id == body.id)
+        {
+            Some(script) => script.runtime.vitals(),
+            None => self.plain_vitals.as_ref(),
+        };
+        let command = self.input.last;
+        let [right, forward] = pose.throttles.map(|throttle| f64::from(throttle) / 127.0);
+        Some(WorkshopView {
+            feet: pose.position,
+            eye: target.eye,
+            facing: command.map_or([target.yaw.sin(), 0.0, target.yaw.cos()], |command| {
+                crate::hitscan::aim_direction(&command)
+            }),
+            velocity: pose.velocity,
+            throttle: [-right, 0.0, forward],
+            buttons: self.input.ran,
+            on_ground: mover.on_ground(),
+            alive: self.death.is_none(),
+            hero: body.hero,
+            health: vitals.map_or(0.0, Vitals::total),
+            max_health: vitals.map_or(0.0, Vitals::maximum),
+        })
+    }
+
+    /// Workshop player variable `index` of this player: his controller's
+    /// entity variable (`orpheus_script::expr::workshop_variable`), a
+    /// chase's value included. None without a controller script.
+    pub fn workshop_variable(&self, index: u8) -> Option<ScriptValue> {
+        Some(
+            self.controller_script
+                .as_ref()?
+                .workshop_variable(i64::from(index)),
+        )
+    }
+
+    /// The controller's script at `tick`, before the Workshop's rules read
+    /// his variables (a chase moves them with time).
+    pub fn advance_controller_to(&mut self, tick: u32) {
+        self.advance_controller(tick);
+    }
+
+    /// Set Workshop player variable `index` of this player. A failure stops
+    /// the controller's script.
+    pub fn set_workshop_variable(&mut self, index: u8, value: ScriptValue) {
+        let Some(script) = &mut self.controller_script else {
+            return;
+        };
+        if let Err(error) = script.set_workshop_variable(i64::from(index), value) {
+            eprintln!("controller script of {:08X} stopped ({error})", self.owner);
+            self.controller_script = None;
         }
+        self.apply_body_moves();
+    }
+
+    /// The mode entity played `request.graph` on this player's controller
+    /// at `tick` (a Workshop Chase Variable's `1CCF`): whether his
+    /// controller is its target. A failure stops the controller's script.
+    pub fn play_script(&mut self, tick: u32, request: &PlayRequest) -> bool {
+        if !self
+            .controller_script
+            .as_ref()
+            .is_some_and(|script| script.entity() == request.target)
+        {
+            return false;
+        }
+        self.advance_controller(tick);
+        let Some(script) = &mut self.controller_script else {
+            return true;
+        };
+        if let Err(error) = script.play_script(request) {
+            eprintln!("controller script of {:08X} stopped ({error})", self.owner);
+            self.controller_script = None;
+        }
+        self.apply_body_moves();
+        true
     }
 
     /// The player and body the next dummy bot the current body's graphs

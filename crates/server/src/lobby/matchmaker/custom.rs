@@ -224,7 +224,10 @@ impl Ctx<'_> {
         }
         let id = self.state.rooms.last().expect("the started room").id;
         if let Some(game) = self.lobby.game.as_deref()
-            && let Err(error) = game.attach_workshop(id, logic)
+            && let Err(error) = self
+                .mm
+                .catalog()
+                .and_then(|catalog| game.attach_workshop(id, logic, catalog))
         {
             tracing::warn!("[CG] The game service did not take the Workshop: {error}");
         }

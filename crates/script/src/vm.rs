@@ -32,6 +32,7 @@ mod switches;
 mod targets;
 mod timers;
 mod volleys;
+mod workshop;
 
 use std::{
     cell::Cell,
@@ -51,6 +52,7 @@ pub use statuses::{
     DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, INVULNERABLE, MODIFIED, PHASED_OUT, PartyFilter,
     REDUCTION_CAP, Scaled, combat_scale,
 };
+pub use workshop::{ACTION_PARAMETERS, ActionOutcome, RuleTest};
 
 use crate::{
     ai_definitions::{AiControl, AiDefinitions},
@@ -978,6 +980,41 @@ pub trait World {
     fn set_parent_variable(&mut self, _site: Site, _write: ParentWrite) -> bool {
         false
     }
+
+    /// A graph set another entity's variable (`STU_0BDBC7B2`: a Workshop
+    /// action's write of a player's variable, `vm/workshop.rs`): the world
+    /// sets it in that entity's script. False: this world sets none.
+    fn set_entity_variable(&mut self, _site: Site, _entity: u32, _id: u32, _value: Value) -> bool {
+        false
+    }
+
+    /// A graph put a body somewhere (`STU_CFCE55DC`: the Workshop's
+    /// Teleport on its target's body): the match moves it and corrects its
+    /// owner's client. False: this world moves none.
+    fn move_body(&mut self, _site: Site, _move: BodyMove) -> bool {
+        false
+    }
+
+    /// A `PlayScript` action played its graph on another entity (the
+    /// Workshop's Chase Variable `1CCC` plays `1CCF` on each target
+    /// player): the match plays it in that entity's script
+    /// ([`Component::play_script`]). False: this world plays none there.
+    fn play_script(&mut self, _site: Site, _request: PlayRequest) -> bool {
+        false
+    }
+}
+
+/// A graph played on another entity ([`World::play_script`]): its target,
+/// the graph, the start entries' parameters and the action's policy for an
+/// instance already running (`m_AA4DE426`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayRequest {
+    pub target: u32,
+    pub graph: u32,
+    pub parameters: Vec<(u64, Value)>,
+    pub policy: i64,
+    /// The entity that played it (the start entries' caller).
+    pub caller: u32,
 }
 
 /// A criteria a graph raised ([`World::criteria`]).
@@ -1110,6 +1147,15 @@ pub enum Motion {
     EndRewind { finished: bool },
     /// An element of a velocity action (`STU_FF3471E9`) for the next pose.
     Velocity(VelocityElement),
+}
+
+/// Where a graph puts a body ([`World::move_body`]): its place and, when
+/// the graph says it, the direction it faces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BodyMove {
+    pub body: u32,
+    pub position: [f64; 3],
+    pub facing: Option<[f64; 3]>,
 }
 
 #[derive(Default)]
@@ -2593,6 +2639,9 @@ struct Machine {
     /// opened them: the instance and whether its state keeps it
     /// (`vm/scopes.rs`).
     scopes: BTreeMap<ScopeSource, (u16, bool)>,
+    /// The Workshop action results reported, by instance, with the
+    /// instance's start (`vm/workshop.rs`).
+    outcomes: BTreeMap<u16, (u64, ActionOutcome)>,
 }
 
 struct Vm<'graph, 'world, 'machine, W> {

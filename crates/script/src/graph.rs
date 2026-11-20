@@ -608,6 +608,10 @@ pub struct GraphStore {
     /// The aura graphs and the graphs they play (`PlayScript`), whose
     /// PlayScript actions the server runs.
     aura_graphs: BTreeSet<u32>,
+    /// The Workshop's values (`054/0162`) as the client evaluates them:
+    /// `1B4A`'s state `STU_25CBEFB0`, `m_108E51DD`, each value's `01C`
+    /// identifier with its config ([`GraphStore::workshop_value`]).
+    workshop_values: BTreeMap<u64, Value>,
 }
 
 impl GraphStore {
@@ -664,6 +668,10 @@ impl GraphStore {
                 Ok((guid, (mode, Arc::new(variables))))
             })
             .collect::<io::Result<_>>()?;
+        let workshop_values = graphs
+            .get(&WORKSHOP_VALUES_GRAPH)
+            .map(|graph| workshop_values(graph))
+            .unwrap_or_default();
         Ok(Self {
             graphs,
             bodies: keyed_by_guid(bundle.bodies)?,
@@ -678,6 +686,7 @@ impl GraphStore {
             missing: bundle.missing,
             auras,
             aura_graphs,
+            workshop_values,
         })
     }
 
@@ -689,6 +698,13 @@ impl GraphStore {
     /// Whether `graph` runs as an aura or is played by one.
     pub fn is_aura_graph(&self, graph: u32) -> bool {
         self.aura_graphs.contains(&graph)
+    }
+
+    /// The config the client evaluates for Workshop value `value` (its
+    /// `01C` GUID), with the value's parameters in `STU_710FE2E1`,
+    /// `STU_F619A2A1`… (`1B4A`).
+    pub fn workshop_value(&self, value: u64) -> Option<&Value> {
+        self.workshop_values.get(&value)
     }
 
     /// A bundle of the runtime `data` folder with the folder's ruleset
@@ -1084,6 +1100,29 @@ fn played_closure(
         );
     }
     found
+}
+
+/// The graph whose state holds the Workshop's value table: `0CBB` (every
+/// mode entity's shared subgraph) plays it from its entry.
+const WORKSHOP_VALUES_GRAPH: u32 = 0x1b4a;
+
+/// `1B4A`'s `STU_25CBEFB0` map (`m_108E51DD`): each Workshop value's `01C`
+/// GUID and the config the client evaluates for it
+/// (`sub_7FF789C14870` looks a value up there by its identifier).
+fn workshop_values(graph: &Graph) -> BTreeMap<u64, Value> {
+    graph
+        .nodes
+        .iter()
+        .filter(|node| node.class == "STU_25CBEFB0")
+        .filter_map(|node| node.fields.get("m_108E51DD")?.get("entries")?.as_array())
+        .flatten()
+        .filter_map(|entry| {
+            let [key, config] = entry.as_array()?.as_slice() else {
+                return None;
+            };
+            Some((asset_guid(key)?, config.clone()))
+        })
+        .collect()
 }
 
 fn keyed_by_guid<T>(records: BTreeMap<String, T>) -> io::Result<BTreeMap<u64, T>> {

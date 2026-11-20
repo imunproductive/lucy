@@ -114,6 +114,29 @@ impl Mover {
         self.pose.velocity = [0.0; 3];
     }
 
+    /// Put the feet at `position` at rest, facing `yaw` when given: a
+    /// graph's teleport (`STU_CFCE55DC`, the Workshop's Teleport). It ends
+    /// any dash or rewind and starts the recorded path over. The
+    /// discontinuity counter goes up, so the owner's client takes the next
+    /// correction as it is instead of replaying its commands on it
+    /// (`correction` module notes).
+    pub fn teleport(&mut self, position: [f64; 3], yaw: Option<i32>) {
+        let feet = position.map(snap);
+        let lift = f64::from(self.lift());
+        self.motion = None;
+        self.pose.position = feet;
+        self.body
+            .teleport([feet[0] as f32, (feet[1] + lift) as f32, feet[2] as f32]);
+        self.pose.velocity = [0.0; 3];
+        self.posture.fall = 0.0;
+        if let Some(yaw) = yaw {
+            self.pose.yaw = yaw;
+        }
+        self.pose.discontinuity = self.pose.discontinuity.wrapping_add(1);
+        self.history.clear();
+        self.history.push_back(feet);
+    }
+
     /// A dash or a rewind is running.
     pub fn authored_motion(&self) -> bool {
         self.motion.is_some()

@@ -61,17 +61,25 @@ pub fn mode_graph(mode: u64) -> Option<u32> {
 pub type Gaps = BTreeMap<(u32, String), usize>;
 
 pub enum ModeRunner {
-    /// The graph drives the mode entity's frames.
+    /// A graph drives the mode entity's frames.
     Graph {
         script: Box<ModeScript>,
         graphs: Arc<GraphStore>,
         codecs: Arc<CodecTable>,
         /// Its last projection failed (said once, [`Self::project`]).
         unprojected: bool,
+        /// The mode's own graph runs (not only a Workshop host,
+        /// [`Self::workshop`]): it holds the spawn rooms' `0724` itself.
+        mode_graph: bool,
     },
     /// The hand-built frame, and why the graph doesn't drive it.
     HandBuilt { gaps: Gaps },
 }
+
+/// The PvP modes' shared subgraph (`0CBB`, ModeGraphGaps.md), which plays
+/// the Workshop's value table `1B4A` from its entry
+/// (`refs/reports/Workshop.md` "WorkshopRuntime").
+pub const SHARED_MODE_GRAPH: u32 = 0x0cbb;
 
 impl ModeRunner {
     /// Start the mode graph with the match's `players` now. The start
@@ -83,26 +91,8 @@ impl ModeRunner {
         let Some(graph) = mode_graph(mode) else {
             return Self::HandBuilt { gaps: Gaps::new() };
         };
-        let graphs = scene.shared_graphs();
-        // The team sizes are the game's, as the 20300/20301 game struct
-        // sends them.
-        let mut world = ModeWorld::new(Arc::clone(&graphs), mode, Unknowns::for_build());
-        world.ruleset = scene.map().ruleset;
-        world.players = players;
-        world.ready = true;
-        world.team_sizes = crate::instance::team_entries(scene.map());
-        world.mode_random = Some(scene.mode_random());
-        world.match_seed = Some(crate::scene::draw_match_seed());
-        world.map_modes = Some(scene.map().supported_modes.clone());
-        world.map_tags = Some(scene.map_tags());
-        world.map_rays = Some(scene.map_rays());
-        match ModeScript::start(world, graph, frame) {
-            Ok(script) if script.complete() => Self::Graph {
-                script: Box::new(script),
-                graphs,
-                codecs: Arc::new(CodecTable::client()),
-                unprojected: false,
-            },
+        match ModeScript::start(mode_world(scene, players), graph, frame) {
+            Ok(script) if script.complete() => Self::graph(scene, script, true),
             Ok(script) => {
                 let gaps = script.gaps();
                 eprintln!(
@@ -122,8 +112,69 @@ impl ModeRunner {
         }
     }
 
+    /// The mode entity of a match that runs a Workshop script
+    /// ([`crate::workshop`]): the Workshop's action graphs run on it, so a
+    /// graph must drive it. The mode graph when it runs whole
+    /// ([`Self::start`]); else `0CBB` alone, the subgraph every mode graph
+    /// plays, whose entry plays `1B4A`, the table the clients evaluate the
+    /// actions' parameters with (`STU_77B0987E`). The match flow's
+    /// variables go into it as into the mode graph; the spawn rooms get
+    /// the mode's `0724` from the flow ([`Self::holds_rooms`]). None when
+    /// neither starts.
+    pub fn workshop(scene: &PreparedScene, frame: u32, players: Vec<ModePlayer>) -> Option<Self> {
+        let started = Self::start(scene, frame, players.clone());
+        if started.graph_driven() {
+            return Some(started);
+        }
+        match ModeScript::start(mode_world(scene, players), SHARED_MODE_GRAPH, frame) {
+            Ok(script) => {
+                if !script.complete() {
+                    eprintln!(
+                        "the Workshop's mode entity runs {SHARED_MODE_GRAPH:04X} with gaps: {:?}",
+                        script.gaps()
+                    );
+                }
+                Some(Self::graph(scene, script, false))
+            }
+            Err(error) => {
+                eprintln!("{SHARED_MODE_GRAPH:04X} does not start ({error}); no Workshop host");
+                None
+            }
+        }
+    }
+
+    fn graph(scene: &PreparedScene, script: ModeScript, mode_graph: bool) -> Self {
+        Self::Graph {
+            script: Box::new(script),
+            graphs: scene.shared_graphs(),
+            codecs: Arc::new(CodecTable::client()),
+            unprojected: false,
+            mode_graph,
+        }
+    }
+
     pub fn graph_driven(&self) -> bool {
         matches!(self, Self::Graph { .. })
+    }
+
+    /// Whether the mode's own graph runs and holds the spawn rooms' `0724`
+    /// itself; else the match flow's spawns give it.
+    pub fn holds_rooms(&self) -> bool {
+        matches!(
+            self,
+            Self::Graph {
+                mode_graph: true,
+                ..
+            }
+        )
+    }
+
+    /// The graph on the mode entity, while one drives it.
+    pub fn script_mut(&mut self) -> Option<&mut ModeScript> {
+        match self {
+            Self::Graph { script, .. } => Some(script),
+            Self::HandBuilt { .. } => None,
+        }
     }
 
     /// Why the graph doesn't drive the mode entity; empty when it does.
@@ -219,6 +270,7 @@ impl ModeRunner {
             graphs,
             codecs,
             unprojected,
+            ..
         } = self
         else {
             return None;
@@ -257,6 +309,25 @@ impl ModeRunner {
         };
         Some(SnapshotEncoder::new(graphs, codecs).with_unknowns(script.unknowns()))
     }
+}
+
+/// What the mode entity's graphs ask outside it, from the scene, with the
+/// match's `players` now.
+fn mode_world(scene: &PreparedScene, players: Vec<ModePlayer>) -> ModeWorld {
+    let mode = scene.map().mode_guid;
+    // The team sizes are the game's, as the 20300/20301 game struct sends
+    // them.
+    let mut world = ModeWorld::new(scene.shared_graphs(), mode, Unknowns::for_build());
+    world.ruleset = scene.map().ruleset;
+    world.players = players;
+    world.ready = true;
+    world.team_sizes = crate::instance::team_entries(scene.map());
+    world.mode_random = Some(scene.mode_random());
+    world.match_seed = Some(crate::scene::draw_match_seed());
+    world.map_modes = Some(scene.map().supported_modes.clone());
+    world.map_tags = Some(scene.map_tags());
+    world.map_rays = Some(scene.map_rays());
+    world
 }
 
 #[cfg(test)]

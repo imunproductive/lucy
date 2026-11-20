@@ -37,8 +37,8 @@ use crate::{
     expr::EntityRelation,
     graph::GraphStore,
     vm::{
-        Component, GameMessage, InitFault, MAX_INIT_WORK, Root, ScopeChange, Site, Snapshot,
-        StateKind, TrackedStat, Unknowns, VoiceRequest, World,
+        BodyMove, Component, GameMessage, InitFault, MAX_INIT_WORK, PlayRequest, Root,
+        ScopeChange, Site, Snapshot, StateKind, TrackedStat, Unknowns, VoiceRequest, World,
     },
     wire::{Value, Variables},
 };
@@ -169,6 +169,9 @@ pub struct ControllerWorld {
     /// The stats the graphs counted (`0215` Multikills, `0C90` Lives and
     /// Time Alive).
     tracked_stats: Vec<TrackedStat>,
+    /// The bodies the graphs put somewhere (`STU_CFCE55DC`: a Workshop
+    /// Teleport's scope on this controller).
+    body_moves: Vec<BodyMove>,
 }
 
 impl ControllerWorld {
@@ -189,6 +192,7 @@ impl ControllerWorld {
             outbox: Vec::new(),
             voices: Vec::new(),
             tracked_stats: Vec::new(),
+            body_moves: Vec::new(),
         }
     }
 
@@ -404,6 +408,17 @@ impl World for ControllerWorld {
             return false;
         }
         self.tracked_stats.push(stat);
+        true
+    }
+
+    /// The possessed body's move waits for the match, which moves it and
+    /// corrects the client ([`ControllerScript::take_body_moves`]); another
+    /// body is not this controller's to move.
+    fn move_body(&mut self, _site: Site, body_move: BodyMove) -> bool {
+        if self.body != Some(body_move.body) {
+            return false;
+        }
+        self.body_moves.push(body_move);
         true
     }
 }
@@ -667,6 +682,33 @@ impl ControllerScript {
     /// The stats the graphs counted since the last call, in order.
     pub fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
         std::mem::take(&mut self.world.tracked_stats)
+    }
+
+    /// The bodies the graphs put somewhere since the last call (a Workshop
+    /// Teleport on this player), for the match to move.
+    pub fn take_body_moves(&mut self) -> Vec<BodyMove> {
+        std::mem::take(&mut self.world.body_moves)
+    }
+
+    /// Workshop player variable `index` of this player: the controller's
+    /// entity variable ([`crate::expr::workshop_variable`]), where the
+    /// chase helper `1CCF` moves it too.
+    pub fn workshop_variable(&self, index: i64) -> Value {
+        self.component
+            .entity_value(crate::expr::workshop_variable(index))
+    }
+
+    /// Set Workshop player variable `index` of this player.
+    pub fn set_workshop_variable(&mut self, index: i64, value: Value) -> Result<(), InitFault> {
+        let id = crate::expr::workshop_variable(index);
+        self.component
+            .set_entity_variable(id, value, &mut self.world)
+    }
+
+    /// The mode entity played a graph on this controller (a Workshop
+    /// Chase Variable's helper `1CCF`, [`World::play_script`]).
+    pub fn play_script(&mut self, request: &PlayRequest) -> Result<(), InitFault> {
+        self.component.play_script(request, &mut self.world)
     }
 
     /// The controller now possesses `body` playing `hero`: its components

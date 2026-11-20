@@ -2303,3 +2303,4 @@ mod multikills;
 mod recovery;
 
 mod spawn_room;
+mod workshop;
