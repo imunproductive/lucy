@@ -43,6 +43,8 @@
 //!   at all: 4, 5, 6 and 8 (the decel_ground_* and decel_air_base scales
 //!   below), 12 (a runtime value at +0x4D4), 23 (runtime bytes +0x4D0 and
 //!   +0x4D1), 24, 25 (byte +0x14DB), 26 (+0x4DC), 27 and 37.
+//! - [`MOVE_HEADING`] (not a client id): a channel-2 vector mod, the
+//!   direction forward throttle moves in ([`ActiveModifiers::directed`]).
 
 use std::{cmp::Ordering, collections::BTreeMap};
 
@@ -52,7 +54,22 @@ use orpheus_wire::commands::{FRAME_HALF, frame_distance};
 pub const JUMP_INTENT: u8 = 20;
 pub const CROUCH_INTENT: u8 = 21;
 pub const LAND_LIMIT: u8 = 36;
+/// Not a client mod id: a channel-2 vector mod of a MovementMod (the
+/// mover's list at +0x7D0, entries of type 2, op +0x2C, vector +0x30) as
+/// the heading it sets, `atan2(x, z)` in radians of its flat part
+/// ([`heading`]). The mover takes only that from it.
+pub const MOVE_HEADING: u8 = 0xFF;
 pub(crate) const CAP_TINY: f64 = 1.1920929e-5;
+
+/// The heading of a direction mod's vector (0x7FF789B43C2A..0x7FF789B43D0C):
+/// its flat part made unit, (0, 0, 1) when too short, as `atan2(x, z)`.
+pub fn heading([x, _, z]: [f64; 3]) -> f64 {
+    let (x, z) = (x as f32, z as f32);
+    if x * x + z * z < EPSILON as f32 {
+        return 0.0;
+    }
+    f64::from(x.atan2(z))
+}
 
 const SPEED: usize = 0;
 const ACCEL_GROUND: usize = 1;
@@ -387,6 +404,33 @@ impl ActiveModifiers {
         (side.clamp(-1.0, 1.0), narrow(ahead - back).clamp(-1.0, 1.0))
     }
 
+    /// The throttles turned by [`MOVE_HEADING`] mods (0x7FF789B43A94..
+    /// 0x7FF789B43D50, after mods 17..19): forward throttle moves along the
+    /// heading they set instead of the facing `yaw` (radians), sideways
+    /// throttle across it, and the throttles keep their length. A heading
+    /// that is the facing's changes nothing. Rocket Punch's dash keeps its
+    /// release facing so while the view turns (upstream `directed_throttles`,
+    /// leafall903/ORPHEUS (MIT) 6bb305e9, checked there with the original
+    /// client).
+    pub fn directed(&self, right: f64, forward: f64, yaw: f32) -> (f64, f64) {
+        if !self.applies(MOVE_HEADING) {
+            return (right, forward);
+        }
+        let facing = heading([f64::from(yaw.sin()), 0.0, f64::from(yaw.cos())]);
+        let set = self.intent(MOVE_HEADING, facing);
+        if set == facing {
+            return (right, forward);
+        }
+        let length = narrow(right.hypot(forward));
+        let throttle = if right != 0.0 || forward != 0.0 {
+            narrow(right.atan2(forward))
+        } else {
+            0.0
+        };
+        let angle = narrow(throttle - narrow(set - facing));
+        (narrow(angle.sin() * length), narrow(angle.cos() * length))
+    }
+
     /// The velocity after gravity (0x7FF789B41870): mod 32 on its length,
     /// 33 on its horizontal length, 34 on its vertical part and 35 on the
     /// vertical part over `jump_speed` (the tick's, after mod 10).
@@ -645,6 +689,24 @@ mod tests {
         assert_eq!(mods.throttles(0.0, -1.0), (0.0, 0.0));
         let mods = on(SIDE_THROTTLE, Operation::Multiply, 3.0);
         assert_eq!(mods.throttles(-0.5, 0.25), (-1.0, 0.25));
+    }
+
+    #[test]
+    fn a_heading_mod_turns_the_throttles_onto_its_direction() {
+        let none = ActiveModifiers::default();
+        assert_eq!(none.directed(0.25, 0.5, 1.0), (0.25, 0.5));
+        // Facing +z with the heading set along +x: forward throttle turns
+        // to sideways -1, along the right axis (-fz, fx) = (-1, 0) negated:
+        // +x. The vector's height doesn't count.
+        let mods = on(MOVE_HEADING, Operation::Set, heading([2.0, 5.0, 0.0]));
+        let (right, forward) = mods.directed(0.0, 1.0, 0.0);
+        assert!((right + 1.0).abs() < 1e-6 && forward.abs() < 1e-6);
+        // A throttle keeps its length and its angle to the direction.
+        let (right, forward) = mods.directed(0.6, 0.8, 0.0);
+        assert!((right.hypot(forward) - 1.0).abs() < 1e-6);
+        assert!((right - -0.8).abs() < 1e-6 && (forward - 0.6).abs() < 1e-6);
+        // Too short a vector heads along +z.
+        assert_eq!(heading([0.0, 1.0, 0.0]), 0.0);
     }
 
     #[test]

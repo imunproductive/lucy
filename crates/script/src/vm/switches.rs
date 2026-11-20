@@ -343,6 +343,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         self.enter_branch(key, node, next, depth)
     }
 
+    /// The first case (of at most 64) whose `m_value` equals the switch's
+    /// value. A case without `m_value` stands for its row number when the
+    /// switch is indexed (`m_F0F0720B` = 1), else for 0 (the client's pick
+    /// 0x7FF78AAAB3C0, `+0x110` the form, 0x7FF78AAAB53D). Seismic Slam's
+    /// `0B27` st11 picks its grounded leap (row 1) so from #59. Not
+    /// modelled: `m_270252ED`, which makes the client take every matching
+    /// case (its mask), not only the first.
     pub(super) fn switch_case(&mut self, key: StateKey, node: &Node) -> Option<Option<usize>> {
         let value = self.evaluate(
             key.instance,
@@ -350,12 +357,20 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             field(&node.fields, "m_262AE982"),
             Some(key),
         )?;
-        for (index, case) in array_field(&node.fields, "m_05706D1C").iter().enumerate() {
-            if case.is_object() {
-                let candidate = self.evaluate(key.instance, node, field(case, "m_value"), None)?;
-                if equal(&value, &candidate) {
-                    return Some(Some(index));
-                }
+        let indexed = field(&node.fields, "m_F0F0720B").as_f64() == Some(1.0);
+        let cases = array_field(&node.fields, "m_05706D1C");
+        for (index, case) in cases.iter().enumerate().take(64) {
+            if !case.is_object() {
+                continue;
+            }
+            let config = field(case, "m_value");
+            let candidate = if config.is_null() {
+                Value::Integer(if indexed { index as i64 } else { 0 })
+            } else {
+                self.evaluate(key.instance, node, config, None)?
+            };
+            if equal(&value, &candidate) {
+                return Some(Some(index));
             }
         }
         Some(None)

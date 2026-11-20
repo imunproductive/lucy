@@ -199,8 +199,9 @@ use orpheus_script::{
 };
 use orpheus_wire::{
     entity::{
-        Component, ComponentValue, Create, EntityUpdate, FRAME_ZERO_BACK, GAME_MODE_ENTITY,
-        Movement, Operation, PLAYER_PATH, SkinTheme, WITH_PARTICIPANT, WITH_SCALE, WITH_TRANSFORM,
+        Component, ComponentValue, Create, CreateFrame, EntityUpdate, FRAME_ZERO_BACK,
+        GAME_MODE_ENTITY, Movement, Operation, PLAYER_PATH, SkinTheme, WITH_PARTICIPANT,
+        WITH_SCALE, WITH_TRANSFORM,
     },
     jam::codec::Fields,
 };
@@ -488,7 +489,7 @@ pub fn bot_create(bot: &Bot, plate: &BotPlate) -> io::Result<EntityUpdate> {
         input_throttles: [0; 2],
         ..bot.movement(0)
     });
-    definition.frame_back = FRAME_ZERO_BACK;
+    definition.frame = CreateFrame::Back(FRAME_ZERO_BACK);
     Ok(create(bot.entity, definition))
 }
 
@@ -777,8 +778,8 @@ mod tests {
                     *filter = filter_component(team);
                     let movement = create.movement.take().expect("a movement state");
                     assert_eq!(movement.position, bot.position);
-                    assert_eq!(create.frame_back, u32::MAX);
-                    create.frame_back = 1;
+                    assert_eq!(create.frame, CreateFrame::Back(u32::MAX));
+                    create.frame = CreateFrame::Back(1);
                     update.entity = update.entity - BOT_ENTITY + PYTHON_BOT_ENTITY;
                 }
                 update

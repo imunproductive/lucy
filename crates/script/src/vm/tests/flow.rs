@@ -537,3 +537,51 @@ fn authored_deadeye_window_runs_until_cancelled_or_six_seconds_pass() {
         assert!(!window(&component));
     }
 }
+
+/// A state Switch (`STU_DEBD057B`) takes a case without `m_value` as its
+/// row number when indexed (m_F0F0720B = 1), else as 0 (the client's pick
+/// 0x7FF78AAAB3C0): Seismic Slam's `0B27` st11 leaps (row 1) on #59 = 1.0.
+#[test]
+fn a_state_switchs_cases_without_values_stand_for_their_rows_when_indexed() {
+    for (indexed, value, expected) in [
+        (1, Value::Float(1.0), 1),
+        (1, Value::Integer(0), 0),
+        (0, Value::Integer(1), -1),
+        (0, Value::Integer(0), 0),
+    ] {
+        let case = |target: u16| json!({"$":"Plug","links":[[target,"m_inPlug"]]});
+        let graphs = Arc::new(store(vec![graph(
+            42,
+            vec![
+                entry(&[(1, "m_beginPlug")]),
+                node(
+                    1,
+                    "STU_DEBD057B",
+                    Some(0),
+                    json!({
+                        "m_F0F0720B":indexed,
+                        "m_262AE982":var(50, true),
+                        "m_05706D1C":[case(2), case(3)],
+                        "m_A5EF385D":plug(&[(4, "m_inPlug")], &[]),
+                    }),
+                ),
+                set_entity(2, 100, json!(0)),
+                set_entity(3, 100, json!(1)),
+                set_entity(4, 100, json!(-1)),
+            ],
+            json!([1]),
+            json!([0]),
+        )]));
+        let component = start_with(
+            graphs,
+            Variables::from([(50, value.clone())]),
+            100,
+            &mut EmptyWorld,
+        );
+        assert_eq!(
+            component.snapshot().unwrap().variables[&100],
+            Value::Integer(expected),
+            "{indexed} {value:?}"
+        );
+    }
+}
