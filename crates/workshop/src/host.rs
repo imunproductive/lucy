@@ -5,7 +5,7 @@
 //! player's controller, and each action runs its `054/0155` graph with the
 //! evaluated parameters in `#18739`.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::{
     catalog::Id,
@@ -187,7 +187,7 @@ pub struct ActionCall {
     /// The action as written, for the parameters an action re-evaluates
     /// (its Reevaluation enum): [`crate::Engine::evaluate_params`] with
     /// this context evaluates them again.
-    pub source: Rc<logic::Action>,
+    pub source: Arc<logic::Action>,
     pub context: Context,
 }
 

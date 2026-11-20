@@ -3294,7 +3294,7 @@ impl State {
                     // rooms the match flow's spawns hold get it here. The
                     // scripts' dummy bots (the Training Partner) are AI
                     // players of the room (`ai.rs`).
-                    let holds = if room.mode.as_ref().is_some_and(ModeRunner::graph_driven) {
+                    let holds = if room.mode.as_ref().is_some_and(ModeRunner::holds_rooms) {
                         Vec::new()
                     } else {
                         let flow = room.flow.as_ref();

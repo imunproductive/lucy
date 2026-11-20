@@ -534,8 +534,20 @@ impl ModeScript {
     /// Workshop global variable `index` as the graphs see it: the mode
     /// entity's entity variable (a chase's value included).
     pub fn workshop_global(&self, index: i64) -> Value {
+        self.entity_value(crate::expr::workshop_variable(index))
+    }
+
+    /// The mode entity's variable `id` now (a Create action's last created
+    /// id, `#20765`, `#20554`).
+    pub fn entity_value(&self, id: u32) -> Value {
+        self.component.entity_value(id)
+    }
+
+    /// Whether a Workshop action's instance is still there (a Create
+    /// action's scope keeps it up).
+    pub fn action_alive(&self, action: WorkshopAction) -> bool {
         self.component
-            .entity_value(crate::expr::workshop_variable(index))
+            .instance_alive(action.instance, action.start_ms)
     }
 
     /// Set another entity's variable as the mode entity's graphs see it

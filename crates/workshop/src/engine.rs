@@ -40,7 +40,6 @@
 
 use std::{
     collections::{BTreeSet, HashMap},
-    rc::Rc,
     sync::Arc,
 };
 
@@ -114,18 +113,18 @@ struct Compiled {
     name: String,
     event: Event,
     conditions: Vec<Condition>,
-    actions: Vec<Rc<Action>>,
+    actions: Vec<Arc<Action>>,
     flow: Vec<Flow>,
 }
 
 impl Compiled {
     fn new(rule: &crate::logic::Rule) -> Self {
-        let actions: Vec<Rc<Action>> = rule
+        let actions: Vec<Arc<Action>> = rule
             .actions
             .iter()
             .filter(|action| !action.disabled)
             .cloned()
-            .map(Rc::new)
+            .map(Arc::new)
             .collect();
         let flow = flow(&actions);
         Self {
@@ -144,7 +143,7 @@ impl Compiled {
 }
 
 /// The block structure of an action list.
-fn flow(list: &[Rc<Action>]) -> Vec<Flow> {
+fn flow(list: &[Arc<Action>]) -> Vec<Flow> {
     let mut flow = vec![Flow::Plain; list.len()];
     // Open blocks: whether a loop, and the If chain's members (or the loop).
     let mut open: Vec<(bool, Vec<usize>)> = Vec::new();
@@ -587,7 +586,7 @@ impl Engine {
                     )
                 };
                 // The Wait Until is the action before the frame's pc.
-                let action = Rc::clone(&self.rules[frame.rule].actions[frame.pc - 1]);
+                let action = Arc::clone(&self.rules[frame.rule].actions[frame.pc - 1]);
                 let done = self.evaluate(&context, &*host, &action.args[0]).truthy();
                 if done || self.tick >= deadline {
                     self.executions[at].block = Block::Ready;
@@ -831,7 +830,7 @@ impl Engine {
                     action: index,
                     graph,
                     params,
-                    source: Rc::clone(&action),
+                    source: Arc::clone(&action),
                     context,
                 });
                 if host.finished(handle) {
@@ -868,7 +867,7 @@ impl Engine {
             if next >= end {
                 return end + 1;
             }
-            let action = Rc::clone(&self.rules[rule].actions[next]);
+            let action = Arc::clone(&self.rules[rule].actions[next]);
             match action.index {
                 actions::ELSE => return next + 1,
                 actions::ELSE_IF => {
@@ -917,7 +916,7 @@ impl Engine {
         opener: usize,
         next: usize,
     ) -> usize {
-        let action = Rc::clone(&self.rules[rule].actions[opener]);
+        let action = Arc::clone(&self.rules[rule].actions[opener]);
         match action.index {
             actions::WHILE => opener,
             actions::FOR_GLOBAL_VARIABLE | actions::FOR_PLAYER_VARIABLE => {

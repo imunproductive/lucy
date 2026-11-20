@@ -14,6 +14,7 @@ orpheus-core.workspace = true
 orpheus-physics.workspace = true
 orpheus-script.workspace = true
 orpheus-wire.workspace = true
+orpheus-workshop.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
