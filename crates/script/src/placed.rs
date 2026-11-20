@@ -17,15 +17,22 @@
 //! itself). A spawned entity has an owner (its hero's controller), puts
 //! auras on the bodies ([`MapEntityWorld::take_auras`]) and removes itself
 //! (`STU_523EE38D`), which ends its graphs, so its ApplyAura takes its
-//! auras off ([`MapEntityWorld::take_destroyed`]). Assumption: the map's
-//! own placeables do neither yet (their auras and removals have no client
-//! side here).
+//! auras off ([`MapEntityWorld::take_destroyed`]). A map placeable removes
+//! itself the same way (a health pack whose ruleset turns packs off).
+//! Assumption: the map's own placeables put no auras on bodies yet (their
+//! auras have no client side here).
 //!
 //! A script can make and remove dummy bots (`STU_FC3921B1`,
 //! `STU_C1561031`: the Practice Range's Training Partner console `265F`):
 //! the match gives the player and body the next one gets
 //! ([`MapEntityWorld::set_next_dummy`]), the graph reads the body at once,
 //! and the match makes the bot ([`MapEntityWorld::take_dummy_changes`]).
+//!
+//! A health pack (`0046`, `vm/pickups.rs`) makes its visual while it is up
+//! (StateCreateEntity st15: [`MapEntityWorld::made`], whose graph `0EB9` it
+//! plays there), holds a pickup the hurt bodies' searches find
+//! ([`MapEntityWorld::pickups`]) and heals the body that asks
+//! ([`MapEntityWorld::take_health_changes`]).
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -37,14 +44,35 @@ use crate::{
     map_tags::{MapTags, TaggedEntity},
     target_tags::TargetTags,
     vm::{
-        AuraChange, Component, DummyBot, GameMessage, InitFault, MAX_INIT_WORK, MapRays,
-        MessageEnd, ParentWrite, Root, ScopeChange, ScopeSource, SeenBodies, Site, Snapshot,
-        TargetCandidate, TargetTagEffect, TrackedStat, Unknowns, World, bind_values,
-        listed_relation,
+        AuraChange, Component, DummyBot, EntityCreation, GameMessage, HealthChange, InitFault,
+        MAX_INIT_WORK, MapRays, MessageEnd, ParentWrite, Pickup, PlayRequest, Root, ScopeChange,
+        ScopeSource, SeenBodies, Site, Snapshot, TargetCandidate, TargetTagEffect, TrackedStat,
+        Unknowns, World, bind_values, listed_relation,
     },
     wire::{Value, Variables},
 };
 use orpheus_wire::entity::GAME_MODE_ENTITY;
+
+/// The ids of the entities the map placeables' graphs make
+/// ([`MapEntityWorld::make_entities`]): `MADE_FIRST + n % MADE_SPAN`, past
+/// the mode entity's made entities ([`crate::mode::CREATED_FIRST`]).
+/// Retail's ids are the server's own choice.
+pub const MADE_FIRST: u32 = 0xa014_0000;
+pub const MADE_SPAN: u32 = 0x0004_0000;
+
+/// An entity a placed entity's graph made (StateCreateEntity: a health
+/// pack's visual), as the clients get it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MadeEntity {
+    pub entity: u32,
+    /// Its entity definition (`003`).
+    pub definition: u64,
+    /// Where the graph put it; with no position, where its maker stands
+    /// (as [`crate::mode::ModeWorld`]'s made entities).
+    pub position: [f64; 3],
+    /// The placed entity whose graph made it.
+    pub maker: u32,
+}
 
 /// One placed entity as the map places it.
 pub struct Placement<'a> {
@@ -211,6 +239,50 @@ pub trait EntityVolumes: Send + Sync {
     fn contains(&self, entity: u32, point: [f64; 3]) -> Option<bool>;
 }
 
+/// What the scripts hand the match, until it takes them.
+#[derive(Default)]
+struct Outputs {
+    outbox: Vec<GameMessage>,
+    /// The auras the spawned entities put on bodies or took off.
+    auras: Vec<AuraChange>,
+    /// The entities that removed themselves (or were removed by their
+    /// maker) since the match last looked.
+    destroyed: Vec<u32>,
+    ends: Vec<MessageEnd>,
+    /// The stats the spawned entities counted ([`World::track_stat`]).
+    tracked_stats: Vec<TrackedStat>,
+    /// The scope instances the scope states opened or closed on their
+    /// targets ([`World::change_scope`]).
+    scopes: Vec<ScopeChange>,
+    /// The player and body the next dummy bot gets, if the match gave one.
+    next_dummy: Option<NextDummy>,
+    /// The dummy bots made or removed since the match last looked.
+    dummies: Vec<DummyChange>,
+    /// The entities the graphs made that haven't started yet, and those
+    /// that run ([`MapEntityWorld::made`]).
+    unstarted: Vec<MadeEntity>,
+    made: Vec<MadeEntity>,
+    /// The next id of [`MADE_FIRST`]'s span to try.
+    next_made: u32,
+    /// The pickups the pickup states hold ([`World::set_pickup`]).
+    pickups: Vec<(Site, Pickup)>,
+    /// The health changes the map placeables made since the match last
+    /// looked.
+    health_changes: Vec<HealthChange>,
+    /// The graphs played on the entities the graphs made, until they play.
+    plays: Vec<PlayRequest>,
+}
+
+impl Outputs {
+    /// An entity the graphs made, started or not.
+    fn made_entity(&self, entity: u32) -> Option<&MadeEntity> {
+        self.made
+            .iter()
+            .chain(&self.unstarted)
+            .find(|made| made.entity == entity)
+    }
+}
+
 /// What the match lends the placed scripts each frame.
 struct Shared<'a> {
     graphs: &'a GraphStore,
@@ -222,14 +294,9 @@ struct Shared<'a> {
     map_tags: Option<&'a MapTags>,
     map_rays: Option<&'a dyn MapRays>,
     volumes: Option<&'a dyn EntityVolumes>,
-    outbox: &'a mut Vec<GameMessage>,
-    next_dummy: &'a mut Option<NextDummy>,
-    dummies: &'a mut Vec<DummyChange>,
-    auras: &'a mut Vec<AuraChange>,
-    destroyed: &'a mut Vec<u32>,
-    ends: &'a mut Vec<MessageEnd>,
-    tracked_stats: &'a mut Vec<TrackedStat>,
-    scopes: &'a mut Vec<ScopeChange>,
+    /// Whether the graphs may make entities ([`MapEntityWorld::make_entities`]).
+    makes: bool,
+    out: &'a mut Outputs,
 }
 
 impl Shared<'_> {
@@ -267,8 +334,7 @@ impl World for EntityWorld<'_, '_> {
         let hero = self.shooter.map_or(0, |shooter| shooter.hero);
         self.shared
             .graphs
-            .rulesets()
-            .default(id, hero, self.shared.mode)
+            .ruleset_value(id, hero, self.shared.mode, self.shared.ruleset)
     }
 
     fn mode_random(&self) -> Option<f64> {
@@ -285,16 +351,26 @@ impl World for EntityWorld<'_, '_> {
         self.entity_position(site, entity).unwrap_or_default()
     }
 
-    /// The mode entity's variables are the game's (as [`crate::mode`]).
+    /// The mode entity's variables are the game's (as [`crate::mode`]); a
+    /// listed body's dead flag (#478, [`crate::bot::DEAD_FLAG`]) is the
+    /// match's word (the health pack `0046` rid1 heals no dead body).
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
+        if id == crate::bot::DEAD_FLAG
+            && let Some(body) = self
+                .shared
+                .players
+                .iter()
+                .find(|body| body.entity == entity)
+        {
+            return Value::Bool(body.dead);
+        }
         if entity != GAME_MODE_ENTITY {
             return Value::Null;
         }
         self.shared
             .graphs
             .mode_variables(self.shared.mode, self.shared.ruleset)
-            .and_then(|variables| variables.get(&id))
-            .copied()
+            .and_then(|variables| variables.get(&id).copied())
             .map_or(Value::Null, Value::from)
     }
 
@@ -389,12 +465,23 @@ impl World for EntityWorld<'_, '_> {
         self.shared.map_tags?.with_tag(tag)
     }
 
-    /// Its own tags as its states hold them, else the map's authored ones.
+    /// Its own tags as its states hold them, else the map's authored ones;
+    /// a listed body's, as the match lists them
+    /// ([`TargetCandidate::tags`]: the health pack `0046` rid1 heals no
+    /// body under anti-heal, tag `02FB`).
     fn has_target_tag(&self, _site: Site, entity: u32, tag: u64) -> Option<bool> {
         if entity == self.entity {
             if let Some(held) = self.target_tags.has(tag) {
                 return Some(held);
             }
+        }
+        if let Some(body) = self
+            .shared
+            .players
+            .iter()
+            .find(|body| body.entity == entity)
+        {
+            return Some(body.tags.as_ref()?.contains(&tag));
         }
         Some(self.shared.tagged(entity)?.tags.contains(&tag))
     }
@@ -413,7 +500,8 @@ impl World for EntityWorld<'_, '_> {
         effect.entity == self.entity && self.target_tags.set(effect, active)
     }
 
-    /// Itself, the players and the map's tagged placeables.
+    /// Itself, the players, the map's tagged placeables and the entities
+    /// the graphs made.
     fn entity_exists(&self, _site: Site, entity: u32) -> Option<bool> {
         Some(
             entity == self.entity
@@ -422,7 +510,8 @@ impl World for EntityWorld<'_, '_> {
                     .players
                     .iter()
                     .any(|player| player.entity == entity)
-                || self.shared.tagged(entity).is_some(),
+                || self.shared.tagged(entity).is_some()
+                || self.shared.out.made_entity(entity).is_some(),
         )
     }
 
@@ -436,6 +525,12 @@ impl World for EntityWorld<'_, '_> {
             .find(|player| player.entity == entity)
             .map(|player| player.feet)
             .or_else(|| self.shared.tagged(entity).map(|placed| placed.position))
+            .or_else(|| {
+                self.shared
+                    .out
+                    .made_entity(entity)
+                    .map(|made| made.position)
+            })
     }
 
     /// A tagged placeable faces its placement's forward axis
@@ -456,7 +551,7 @@ impl World for EntityWorld<'_, '_> {
         message: u64,
         parameters: &Variables,
     ) -> bool {
-        self.shared.outbox.push(GameMessage {
+        self.shared.out.outbox.push(GameMessage {
             sender: self.entity,
             target,
             message,
@@ -468,7 +563,7 @@ impl World for EntityWorld<'_, '_> {
     /// A message to every entity (`STU_1D719351`): queued with the target
     /// [`crate::mode::EVERY_ENTITY`], as the mode graph's.
     fn broadcast_message(&mut self, _source: Site, message: u64, parameters: &Variables) -> bool {
-        self.shared.outbox.push(GameMessage {
+        self.shared.out.outbox.push(GameMessage {
             sender: self.entity,
             target: crate::mode::EVERY_ENTITY,
             message,
@@ -511,7 +606,7 @@ impl World for EntityWorld<'_, '_> {
         if self.owner.is_none() {
             return false;
         }
-        self.shared.auras.push(change);
+        self.shared.out.auras.push(change);
         true
     }
 
@@ -525,13 +620,25 @@ impl World for EntityWorld<'_, '_> {
         true
     }
 
-    /// A spawned entity removes itself.
+    /// An entity removes itself: a spawned one (the Biotic Field), or a
+    /// map placeable (a health pack the ruleset turns off, `0046` rid31);
+    /// or its maker removes an entity it made (a health pack's visual as
+    /// its StateCreateEntity ends).
     fn destroy_entity(&mut self, _site: Site, entity: u32) -> bool {
-        if self.owner.is_none() || entity != self.entity {
+        let made = self
+            .shared
+            .out
+            .made_entity(entity)
+            .is_some_and(|made| made.maker == self.entity);
+        if entity != self.entity && !made {
             return false;
         }
-        if !self.shared.destroyed.contains(&entity) {
-            self.shared.destroyed.push(entity);
+        let out = &mut *self.shared.out;
+        if let Some(index) = out.unstarted.iter().position(|made| made.entity == entity) {
+            // Not started yet: it never will.
+            out.unstarted.remove(index);
+        } else if !out.destroyed.contains(&entity) {
+            out.destroyed.push(entity);
         }
         true
     }
@@ -542,15 +649,19 @@ impl World for EntityWorld<'_, '_> {
     /// scope 197 (`265F` rid46) runs on `STU_00707E1E(#29454)`, the body
     /// a controller possesses (TrainingPartner.md, "Day (2026-11-19)").
     fn create_dummy_bot(&mut self, _site: Site, dummy: DummyBot) -> Option<u32> {
-        let next = self.shared.next_dummy.take()?;
+        let next = self.shared.out.next_dummy.take()?;
         self.shared
+            .out
             .dummies
             .push(DummyChange::Create { dummy, next });
         Some(next.player)
     }
 
     fn remove_dummy_bot(&mut self, _site: Site, team: i64, slot: i64) -> bool {
-        self.shared.dummies.push(DummyChange::Remove { team, slot });
+        self.shared
+            .out
+            .dummies
+            .push(DummyChange::Remove { team, slot });
         true
     }
 
@@ -561,12 +672,12 @@ impl World for EntityWorld<'_, '_> {
         if self.owner.is_none() {
             return false;
         }
-        self.shared.tracked_stats.push(stat);
+        self.shared.out.tracked_stats.push(stat);
         true
     }
 
     fn end_message(&mut self, _source: Site, target: u32, message: u64) -> bool {
-        self.shared.ends.push(MessageEnd {
+        self.shared.out.ends.push(MessageEnd {
             sender: self.entity,
             target,
             message,
@@ -577,7 +688,7 @@ impl World for EntityWorld<'_, '_> {
     /// A scope state's instances on its targets go to the match, which
     /// opens them in the targets' components.
     fn change_scope(&mut self, _site: Site, change: ScopeChange) -> bool {
-        self.shared.scopes.push(change);
+        self.shared.out.scopes.push(change);
         true
     }
 
@@ -585,7 +696,71 @@ impl World for EntityWorld<'_, '_> {
     fn in_entity_volume(&self, _site: Site, entity: u32, point: [f64; 3]) -> Option<bool> {
         self.shared.volumes?.contains(entity, point)
     }
+
+    /// A map placeable's health change (the health pack `0046` st0 heals
+    /// the body that asked) goes to the match's health code
+    /// ([`MapEntityWorld::take_health_changes`]); a spawned or made
+    /// entity's applies none.
+    fn modify_health(&mut self, change: HealthChange) -> bool {
+        if self.owner.is_some() {
+            return false;
+        }
+        self.shared.out.health_changes.push(change);
+        true
+    }
+
+    /// The pickup a map placeable holds (`0046` st5), until it ends
+    /// ([`MapEntityWorld::pickups`]).
+    fn set_pickup(&mut self, site: Site, pickup: Option<Pickup>) -> bool {
+        let pickups = &mut self.shared.out.pickups;
+        pickups.retain(|(held, _)| *held != site);
+        if let Some(pickup) = pickup {
+            pickups.push((site, pickup));
+        }
+        true
+    }
+
+    /// An entity of the next free id of [`MADE_FIRST`]'s span, which
+    /// starts its definition's graphs after this run
+    /// ([`MapEntityWorld::made`]). With no position it stands where its
+    /// maker does. None when this world makes none or the span is full.
+    fn create_entity(&mut self, _site: Site, creation: EntityCreation) -> Option<u32> {
+        if !self.shared.makes {
+            return None;
+        }
+        let out = &mut *self.shared.out;
+        let entity = (0..MADE_SPAN)
+            .map(|step| MADE_FIRST + out.next_made.wrapping_add(step) % MADE_SPAN)
+            .find(|&entity| out.made_entity(entity).is_none())?;
+        out.next_made = (entity - MADE_FIRST + 1) % MADE_SPAN;
+        out.unstarted.push(MadeEntity {
+            entity,
+            definition: creation.definition,
+            position: creation.position.unwrap_or(self.position),
+            maker: self.entity,
+        });
+        Some(entity)
+    }
+
+    /// A graph played on an entity this entity made (`0046` plays `0EB9`
+    /// on its visual): it plays there after this run. False for any other.
+    fn play_script(&mut self, _site: Site, request: PlayRequest) -> bool {
+        let made = self
+            .shared
+            .out
+            .made_entity(request.target)
+            .is_some_and(|made| made.maker == self.entity);
+        if made {
+            self.shared.out.plays.push(request);
+        }
+        made
+    }
 }
+
+/// How many rounds [`MapEntityWorld`] hands things on after a run between
+/// its entities and the entities they made, at most: a health pack's
+/// visual starts, then takes its graph.
+const SETTLE_ROUNDS: usize = 16;
 
 /// Every placed entity's script in one match.
 pub struct MapEntityWorld {
@@ -602,22 +777,9 @@ pub struct MapEntityWorld {
     /// The map's collision the scripts' ray casts meet.
     map_rays: Option<Arc<dyn MapRays>>,
     volumes: Option<Arc<dyn EntityVolumes>>,
-    outbox: Vec<GameMessage>,
-    /// The auras the spawned entities put on bodies or took off.
-    auras: Vec<AuraChange>,
-    /// The spawned entities that removed themselves since the match last
-    /// looked.
-    destroyed: Vec<u32>,
-    ends: Vec<MessageEnd>,
-    /// The stats the spawned entities counted ([`World::track_stat`]).
-    tracked_stats: Vec<TrackedStat>,
-    /// The scope instances the scope states opened or closed on their
-    /// targets ([`World::change_scope`]).
-    scopes: Vec<ScopeChange>,
-    /// The player and body the next dummy bot gets, if the match gave one.
-    next_dummy: Option<NextDummy>,
-    /// The dummy bots made or removed since the match last looked.
-    dummies: Vec<DummyChange>,
+    /// Whether the graphs may make entities ([`Self::make_entities`]).
+    makes: bool,
+    out: Outputs,
     entities: Vec<PlacedEntity>,
     frame: u32,
 }
@@ -653,14 +815,8 @@ impl MapEntityWorld {
             map_tags,
             map_rays,
             volumes,
-            outbox: Vec::new(),
-            auras: Vec::new(),
-            destroyed: Vec::new(),
-            ends: Vec::new(),
-            tracked_stats: Vec::new(),
-            scopes: Vec::new(),
-            next_dummy: None,
-            dummies: Vec::new(),
+            makes: false,
+            out: Outputs::default(),
             entities: Vec::new(),
             frame,
         };
@@ -668,13 +824,61 @@ impl MapEntityWorld {
         world
     }
 
+    /// From now on the graphs make the entities they ask for
+    /// ([`MadeEntity`], ids from [`MADE_FIRST`]); until then they make
+    /// none. The match whose clients get them turns it on.
+    pub fn make_entities(&mut self) {
+        self.makes = true;
+    }
+
     /// Start more placements at the world's frame, in order, as
     /// [`Self::start`] does.
     pub fn place<'p>(&mut self, placements: impl IntoIterator<Item = Placement<'p>>) {
         for placement in placements {
             let roots = placed_roots(&self.graphs, &placement);
+            if roots.as_ref().is_ok_and(Vec::is_empty) {
+                continue;
+            }
             self.start_entity(placement.entity, placement.position, roots, None, None);
         }
+        self.settle();
+    }
+
+    /// An entity a graph made ([`crate::vm::World::create_entity`]), owned
+    /// by `owner`, the entity whose graph made it: it starts its
+    /// definition's graphs, if any, at once, and hosts the scope instances
+    /// other entities open on it (the Workshop's Create Effect `1CE8`
+    /// opens its scope 35 on the `304A` it made, whose definition has a
+    /// statescript component with no graphs; [`Self::change_scope`]). It
+    /// removes itself as a spawned entity does (`STU_523EE38D`).
+    pub fn create(&mut self, entity: u32, definition: u64, position: [f64; 3], owner: u32) {
+        let roots = self.definition_roots(definition);
+        self.start_entity(entity, position, roots, Some(owner), None);
+        self.settle();
+    }
+
+    fn definition_roots(&self, definition: u64) -> Result<Vec<Root>, InitFault> {
+        match self.graphs.entity_body(definition) {
+            Some(body) => crate::vm::body_roots(body),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// A scope instance another entity's scope state opened or closed on
+    /// one of these entities: its script opens or closes it now. The
+    /// instance it opened, for the scope state's frame record; none for a
+    /// close or an entity not here.
+    pub fn change_scope(&mut self, change: &ScopeChange) -> Option<u16> {
+        let target = change.target();
+        let mut opened = None;
+        self.run_scripts(
+            |entity| entity == target,
+            |component, world| {
+                opened = component.change_scope(change, world)?;
+                Ok(())
+            },
+        );
+        opened
     }
 
     /// Spawn an entity at the current frame: it starts its initial graphs
@@ -699,7 +903,41 @@ impl MapEntityWorld {
             Some(spawn.owner),
             spawn.shooter,
         );
+        self.settle();
         true
+    }
+
+    /// The world's lent parts and its entities, apart.
+    fn split(&mut self) -> (Shared<'_>, &mut Vec<PlacedEntity>) {
+        let Self {
+            graphs,
+            mode,
+            ruleset,
+            mode_random,
+            unknowns,
+            players,
+            map_tags,
+            map_rays,
+            volumes,
+            makes,
+            out,
+            entities,
+            ..
+        } = self;
+        let shared = Shared {
+            graphs,
+            mode: *mode,
+            ruleset: *ruleset,
+            mode_random: *mode_random,
+            unknowns: *unknowns,
+            players,
+            map_tags: map_tags.as_deref(),
+            map_rays: map_rays.as_deref(),
+            volumes: volumes.as_deref(),
+            makes: *makes,
+            out,
+        };
+        (shared, entities)
     }
 
     /// Start one entity's roots at the world's frame.
@@ -712,7 +950,6 @@ impl MapEntityWorld {
         shooter: Option<ProjectileShooter>,
     ) {
         let roots = match roots {
-            Ok(roots) if roots.is_empty() => return,
             Ok(roots) => roots,
             Err(error) => {
                 self.entities.push(PlacedEntity {
@@ -730,25 +967,8 @@ impl MapEntityWorld {
             }
         };
         let frame = self.frame;
-        let mut shared = Shared {
-            graphs: &self.graphs,
-            mode: self.mode,
-            ruleset: self.ruleset,
-            mode_random: self.mode_random,
-            unknowns: self.unknowns,
-            players: &self.players,
-            map_tags: self.map_tags.as_deref(),
-            map_rays: self.map_rays.as_deref(),
-            volumes: self.volumes.as_deref(),
-            outbox: &mut self.outbox,
-            auras: &mut self.auras,
-            destroyed: &mut self.destroyed,
-            ends: &mut self.ends,
-            tracked_stats: &mut self.tracked_stats,
-            scopes: &mut self.scopes,
-            next_dummy: &mut self.next_dummy,
-            dummies: &mut self.dummies,
-        };
+        let graphs = Arc::clone(&self.graphs);
+        let (mut shared, entities) = self.split();
         let mut team = None;
         let mut target_tags = TargetTags::default();
         let mut speed_scale = 1.0;
@@ -763,7 +983,7 @@ impl MapEntityWorld {
             speed_scale: &mut speed_scale,
         };
         let started = Component::start(
-            Arc::clone(&self.graphs),
+            graphs,
             entity,
             Variables::new(),
             roots,
@@ -779,7 +999,7 @@ impl MapEntityWorld {
             Ok(component) => (Some(component), None),
             Err(error) => (None, Some(error.to_string())),
         };
-        self.entities.push(PlacedEntity {
+        entities.push(PlacedEntity {
             entity,
             position,
             component,
@@ -791,6 +1011,30 @@ impl MapEntityWorld {
             speed_scale,
         });
         self.end_destroyed();
+    }
+
+    /// After a run, until nothing is left to hand on (at most
+    /// [`SETTLE_ROUNDS`] rounds): the entities the graphs made start, and
+    /// the graphs played on them play there.
+    fn settle(&mut self) {
+        for _ in 0..SETTLE_ROUNDS {
+            let made = std::mem::take(&mut self.out.unstarted);
+            let plays = std::mem::take(&mut self.out.plays);
+            if made.is_empty() && plays.is_empty() {
+                return;
+            }
+            for made in made {
+                let roots = self.definition_roots(made.definition);
+                self.out.made.push(made);
+                self.start_entity(made.entity, made.position, roots, Some(made.maker), None);
+            }
+            for request in plays {
+                self.run_each(
+                    |entity| entity == request.target,
+                    |component, world| component.play_script(&request, world),
+                );
+            }
+        }
     }
 
     /// A spawned entity moves to `position` (a projectile in flight): its
@@ -817,6 +1061,18 @@ impl MapEntityWorld {
 
     pub fn entity(&self, entity: u32) -> Option<&PlacedEntity> {
         self.entities.iter().find(|placed| placed.entity == entity)
+    }
+
+    /// The entities the graphs made that run now ([`Self::make_entities`]),
+    /// for the match to create on its clients.
+    pub fn made(&self) -> &[MadeEntity] {
+        &self.out.made
+    }
+
+    /// The pickups the pickup states hold now (`STU_913C09E4`), for the
+    /// bodies' searches.
+    pub fn pickups(&self) -> impl Iterator<Item = &Pickup> {
+        self.out.pickups.iter().map(|(_, pickup)| pickup)
     }
 
     /// The bodies the placeables' target searches find.
@@ -882,32 +1138,25 @@ impl MapEntityWorld {
     }
 
     /// Run `run` on the running script of each entity `pick` takes, with
-    /// its world; a script that faults stops.
+    /// its world (a script that faults stops), then hand on what they
+    /// asked for ([`Self::settle`]).
     fn run_scripts(
+        &mut self,
+        pick: impl FnMut(u32) -> bool,
+        run: impl FnMut(&mut Component, &mut EntityWorld<'_, '_>) -> Result<(), InitFault>,
+    ) {
+        self.run_each(pick, run);
+        self.settle();
+    }
+
+    /// [`Self::run_scripts`] without the handing on.
+    fn run_each(
         &mut self,
         mut pick: impl FnMut(u32) -> bool,
         mut run: impl FnMut(&mut Component, &mut EntityWorld<'_, '_>) -> Result<(), InitFault>,
     ) {
-        let mut shared = Shared {
-            graphs: &self.graphs,
-            mode: self.mode,
-            ruleset: self.ruleset,
-            mode_random: self.mode_random,
-            unknowns: self.unknowns,
-            players: &self.players,
-            map_tags: self.map_tags.as_deref(),
-            map_rays: self.map_rays.as_deref(),
-            volumes: self.volumes.as_deref(),
-            outbox: &mut self.outbox,
-            auras: &mut self.auras,
-            destroyed: &mut self.destroyed,
-            ends: &mut self.ends,
-            tracked_stats: &mut self.tracked_stats,
-            scopes: &mut self.scopes,
-            next_dummy: &mut self.next_dummy,
-            dummies: &mut self.dummies,
-        };
-        for placed in &mut self.entities {
+        let (mut shared, entities) = self.split();
+        for placed in entities.iter_mut() {
             if !pick(placed.entity) {
                 continue;
             }
@@ -927,40 +1176,51 @@ impl MapEntityWorld {
             if let Err(error) = run(component, &mut world) {
                 placed.fault = Some(error.to_string());
                 placed.component = None;
+                // Its states ended with it: it holds no pickup.
+                shared
+                    .out
+                    .pickups
+                    .retain(|(site, _)| site.entity != placed.entity);
             }
         }
         self.end_destroyed();
     }
 
-    /// Remove a spawned entity the match ends (its owner's body went): its
+    /// Remove an entity the match ends (a spawned one whose owner's body
+    /// went, a placed one a mode graph removed, `STU_A3DC6A25`): its
     /// graphs end, as when it removes itself. False: no such entity.
     pub fn remove(&mut self, entity: u32) -> bool {
         let Some(index) = self
             .entities
             .iter()
-            .position(|placed| placed.entity == entity && placed.owner.is_some())
+            .position(|placed| placed.entity == entity)
         else {
             return false;
         };
         self.end_entity(index);
+        self.end_destroyed();
         true
     }
 
-    /// The spawned entities that removed themselves go: their graphs end
-    /// (their ApplyAura states take their auras off).
+    /// The entities that removed themselves (or that their maker removed)
+    /// go: their graphs end (their ApplyAura states take their auras off,
+    /// a health pack's StateCreateEntity removes its visual).
     fn end_destroyed(&mut self) {
-        let mut index = 0;
-        while index < self.entities.len() {
-            if self.destroyed.contains(&self.entities[index].entity) {
-                self.end_entity(index);
-            } else {
-                index += 1;
-            }
+        while let Some(index) = self
+            .entities
+            .iter()
+            .position(|placed| self.out.destroyed.contains(&placed.entity))
+        {
+            self.end_entity(index);
         }
     }
 
     fn end_entity(&mut self, index: usize) {
         let mut placed = self.entities.remove(index);
+        self.out.made.retain(|made| made.entity != placed.entity);
+        self.out
+            .plays
+            .retain(|request| request.target != placed.entity);
         let Some(mut component) = placed.component.take() else {
             return;
         };
@@ -968,25 +1228,7 @@ impl MapEntityWorld {
             .snapshot()
             .map(|snapshot| snapshot.instances.keys().copied().collect())
             .unwrap_or_default();
-        let mut shared = Shared {
-            graphs: &self.graphs,
-            mode: self.mode,
-            ruleset: self.ruleset,
-            mode_random: self.mode_random,
-            unknowns: self.unknowns,
-            players: &self.players,
-            map_tags: self.map_tags.as_deref(),
-            map_rays: self.map_rays.as_deref(),
-            volumes: self.volumes.as_deref(),
-            outbox: &mut self.outbox,
-            auras: &mut self.auras,
-            destroyed: &mut self.destroyed,
-            ends: &mut self.ends,
-            tracked_stats: &mut self.tracked_stats,
-            scopes: &mut self.scopes,
-            next_dummy: &mut self.next_dummy,
-            dummies: &mut self.dummies,
-        };
+        let (mut shared, _) = self.split();
         let mut world = EntityWorld {
             shared: &mut shared,
             entity: placed.entity,
@@ -1001,41 +1243,53 @@ impl MapEntityWorld {
             // An instance that faults on its end leaves the rest to end.
             let _ = component.destroy_instance(id, &mut world);
         }
+        shared
+            .out
+            .pickups
+            .retain(|(site, _)| site.entity != placed.entity);
     }
 
     /// The game messages the scripts sent, for the match to route.
     pub fn take_messages(&mut self) -> Vec<GameMessage> {
-        std::mem::take(&mut self.outbox)
+        std::mem::take(&mut self.out.outbox)
     }
 
     /// The auras the spawned entities put on bodies or took off, for the
     /// match to hand to the bodies' scripts.
     pub fn take_auras(&mut self) -> Vec<AuraChange> {
-        std::mem::take(&mut self.auras)
+        std::mem::take(&mut self.out.auras)
     }
 
-    /// The spawned entities that removed themselves since the last call.
+    /// The entities that removed themselves since the last call (spawned
+    /// ones, map placeables, and the entities the graphs made that their
+    /// maker removed).
     pub fn take_destroyed(&mut self) -> Vec<u32> {
-        std::mem::take(&mut self.destroyed)
+        std::mem::take(&mut self.out.destroyed)
     }
 
     /// The messages the scripts' senders let go since the last call
     /// ([`World::end_message`]), for the match to route.
     pub fn take_message_ends(&mut self) -> Vec<MessageEnd> {
-        std::mem::take(&mut self.ends)
+        std::mem::take(&mut self.out.ends)
     }
 
     /// The stats the spawned entities counted since the last call, for the
     /// match to credit to their targets' players.
     pub fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
-        std::mem::take(&mut self.tracked_stats)
+        std::mem::take(&mut self.out.tracked_stats)
+    }
+
+    /// The health changes the map placeables made since the last call
+    /// (a health pack's heal), for the match's health code to apply.
+    pub fn take_health_changes(&mut self) -> Vec<HealthChange> {
+        std::mem::take(&mut self.out.health_changes)
     }
 
     /// The scope instances the scripts' scope states opened or closed on
     /// their targets since the last call, for the match to carry out in
     /// the targets' components (`vm/scopes.rs`).
     pub fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
-        std::mem::take(&mut self.scopes)
+        std::mem::take(&mut self.out.scopes)
     }
 
     /// The match opened the scope instance `instance` on `target` for the
@@ -1071,13 +1325,13 @@ impl MapEntityWorld {
     /// The player and first body the next dummy bot the scripts make gets
     /// (`STU_FC3921B1`); None: they can make none now. A bot made takes it.
     pub fn set_next_dummy(&mut self, next: Option<NextDummy>) {
-        self.next_dummy = next;
+        self.out.next_dummy = next;
     }
 
     /// The dummy bots the scripts made or removed since the last call, in
     /// order, for the match to make or remove.
     pub fn take_dummy_changes(&mut self) -> Vec<DummyChange> {
-        std::mem::take(&mut self.dummies)
+        std::mem::take(&mut self.out.dummies)
     }
 
     /// The classes the VM refused or answered by assumption, and the

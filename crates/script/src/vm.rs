@@ -23,6 +23,7 @@ mod lifecycle;
 mod links;
 mod machine;
 mod nodes;
+mod pickups;
 mod play;
 mod rays;
 mod scopes;
@@ -34,6 +35,7 @@ mod targets;
 mod timers;
 mod volleys;
 mod walls;
+mod workshop;
 
 use std::{
     cell::Cell,
@@ -46,6 +48,8 @@ use std::{
 pub use auras::{AURA_APPLIED, AuraChange, AuraSource};
 pub use health::HealthChange;
 use indexmap::IndexMap;
+pub use pickups::Pickup;
+pub use play::HEALTH_PACK;
 pub use scopes::{ParentWrite, ScopeChange, ScopeHit, ScopeLink, ScopeSource};
 use serde_json::Value as Json;
 pub use statuses::{
@@ -53,6 +57,8 @@ pub use statuses::{
     DAMAGE_TAKEN, HEALING_DEALT, HEALING_TAKEN, INVULNERABLE, MODIFIED, PHASED_OUT, PartyFilter,
     REDUCTION_CAP, Scaled, combat_scale,
 };
+pub(crate) use targets::DEAD as DEAD_FILTER_BIT;
+pub use workshop::{ACTION_PARAMETERS, ActionOutcome, RuleTest};
 
 use crate::{
     ai_definitions::{AiControl, AiDefinitions},
@@ -817,6 +823,12 @@ pub trait World {
         false
     }
 
+    /// Remove every map placeable whose identifier 2 is `identifier`
+    /// (`STU_A3DC6A25`, `vm/entities.rs`). False: this world removes none.
+    fn remove_placeables(&mut self, _site: Site, _identifier: u64) -> bool {
+        false
+    }
+
     /// Create a dummy bot (`STU_FC3921B1`): a hero body no player plays;
     /// the entity it gets. None: this world creates none.
     fn create_dummy_bot(&mut self, _site: Site, _dummy: DummyBot) -> Option<u32> {
@@ -908,6 +920,12 @@ pub trait World {
     ) -> bool {
         false
     }
+
+    /// A game message the script sent its own entity, which the VM's own
+    /// entries took ([`Machine::queue_entries`]); a world that stands in
+    /// for other receivers on that entity (the match flow in place of the
+    /// mode graph) may look at it.
+    fn observe_own_message(&mut self, _source: Site, _message: u64, _parameters: &Variables) {}
 
     /// Deliver a game message to every entity of the world but the sender
     /// (a `STU_38EE1100` target `STU_1D719351` with `m_6A8DB059` set; the
@@ -1020,6 +1038,71 @@ pub trait World {
     fn set_parent_variable(&mut self, _site: Site, _write: ParentWrite) -> bool {
         false
     }
+
+    /// A graph set another entity's variable (`STU_0BDBC7B2`: a Workshop
+    /// action's write of a player's variable, `vm/workshop.rs`): the world
+    /// sets it in that entity's script. False: this world sets none.
+    fn set_entity_variable(&mut self, _site: Site, _entity: u32, _id: u32, _value: Value) -> bool {
+        false
+    }
+
+    /// A graph put a body somewhere (`STU_CFCE55DC`: the Workshop's
+    /// Teleport on its target's body): the match moves it and corrects its
+    /// owner's client. False: this world moves none.
+    fn move_body(&mut self, _site: Site, _move: BodyMove) -> bool {
+        false
+    }
+
+    /// A `PlayScript` action played its graph on another entity (the
+    /// Workshop's Chase Variable `1CCC` plays `1CCF` on each target
+    /// player): the match plays it in that entity's script
+    /// ([`Component::play_script`]). False: this world plays none there.
+    fn play_script(&mut self, _site: Site, _request: PlayRequest) -> bool {
+        false
+    }
+
+    /// `STUStatescriptActionCreateEntity` or `StateCreateEntity` made an
+    /// entity (`vm/entities.rs`): the world gives it an id, starts its
+    /// script and tells the clients. None: this world makes none.
+    fn create_entity(&mut self, _site: Site, _creation: EntityCreation) -> Option<u32> {
+        None
+    }
+
+    /// A pickup state (`STU_913C09E4`, `vm/pickups.rs`) at `site` began
+    /// (Some) or ended (None). False: this world keeps none.
+    fn set_pickup(&mut self, _site: Site, _pickup: Option<Pickup>) -> bool {
+        false
+    }
+
+    /// The pickup of `kind` the body `entity` touches now, its entity
+    /// ([`Pickup::entity`]); Some(None): none. None: this world knows no
+    /// pickups.
+    fn touched_pickup(&mut self, _site: Site, _entity: u32, _kind: i64) -> Option<Option<u32>> {
+        None
+    }
+}
+
+/// A graph played on another entity ([`World::play_script`]): its target,
+/// the graph, the start entries' parameters and the action's policy for an
+/// instance already running (`m_AA4DE426`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayRequest {
+    pub target: u32,
+    pub graph: u32,
+    pub parameters: Vec<(u64, Value)>,
+    pub policy: i64,
+    /// The entity that played it (the start entries' caller).
+    pub caller: u32,
+}
+
+/// An entity a graph made ([`World::create_entity`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EntityCreation {
+    /// Its entity definition (`003`).
+    pub definition: u64,
+    /// Where the action put it (`m_position`); none: where it didn't say
+    /// (all the Workshop's Create Effect and Create Icon).
+    pub position: Option<[f64; 3]>,
 }
 
 /// A criteria a graph raised ([`World::criteria`]).
@@ -1152,6 +1235,15 @@ pub enum Motion {
     EndRewind { finished: bool },
     /// An element of a velocity action (`STU_FF3471E9`) for the next pose.
     Velocity(VelocityElement),
+}
+
+/// Where a graph puts a body ([`World::move_body`]): its place and, when
+/// the graph says it, the direction it faces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BodyMove {
+    pub body: u32,
+    pub position: [f64; 3],
+    pub facing: Option<[f64; 3]>,
 }
 
 #[derive(Default)]
@@ -1301,6 +1393,18 @@ pub enum StateKind {
     /// A per-target scope (`STU_550D0C5C`, `vm/scopes.rs`): its targets'
     /// scope instances are [`State::scopes`].
     Scope,
+    /// `StateCreateEntity` (`vm/entities.rs`): the entity it made while
+    /// active, which goes as it ends.
+    CreateEntity {
+        entity: Option<u32>,
+    },
+    /// A pickup while active (`STU_913C09E4`, server-only; `vm/pickups.rs`).
+    Pickup,
+    /// A body's search for the pickup it touches (`STU_87621906`,
+    /// server-only; `vm/pickups.rs`): what it last wrote.
+    PickupSearch {
+        found: Option<u32>,
+    },
 }
 
 impl StateKind {
@@ -2741,6 +2845,9 @@ struct Machine {
     /// opened them: the instance and whether its state keeps it
     /// (`vm/scopes.rs`).
     scopes: BTreeMap<ScopeSource, (u16, bool)>,
+    /// The Workshop action results reported, by instance, with the
+    /// instance's start (`vm/workshop.rs`).
+    outcomes: BTreeMap<u16, (u64, ActionOutcome)>,
 }
 
 struct Vm<'graph, 'world, 'machine, W> {
@@ -3494,6 +3601,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         for &entity in entities {
             self.spend("game message routing")?;
             if entity == site.entity {
+                self.world.observe_own_message(site, message, &parameters);
                 self.machine.queue_entries(
                     self.graphs,
                     None,

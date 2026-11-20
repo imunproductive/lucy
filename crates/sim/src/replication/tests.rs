@@ -73,10 +73,10 @@ fn bot_health_replaces_stale_packets_and_respawn_keeps_creation_order() {
     let mut world = WorldDelivery::new(OWNER);
     world.started = Some(FIRST_TICK);
     world.bots.insert(old, BotLifetime::Live);
-    world.push(Record {
-        update: create(old),
-        delivery: Delivery::BotCreate { after: None },
-    });
+    world.push(Record::new(
+        create(old),
+        Delivery::BotCreate { after: None },
+    ));
     world.queue_health(health_update(160.0));
     assert_eq!(world.ready().len(), 1);
     assert!(!world.identity_ready(old));
@@ -836,14 +836,14 @@ fn record(entity: u32, delivery: Delivery) -> Record {
         Delivery::DestroyBody(_) => Operation::Destroy,
         _ => Operation::Update(Vec::new()),
     };
-    Record {
-        update: EntityUpdate {
+    Record::new(
+        EntityUpdate {
             entity,
             operation: Some(operation),
             ..EntityUpdate::default()
         },
         delivery,
-    }
+    )
 }
 
 fn outcome(record: Arc<Record>, arrived: bool) -> DeliveryReport<Arc<Record>> {
@@ -1031,6 +1031,49 @@ fn projectile_retirement_retries_destroys_and_ignores_stale_confirmations() {
     world.acknowledge(outcome(destroy, true), Duration::ZERO);
     assert!(world.queued.is_empty());
     assert!(world.projectile_destroys.is_empty());
+}
+
+/// A controller frame too big for a datagram (a Workshop match's, with
+/// its rules' player variables) goes in parts, each small enough for one;
+/// a lost part alone goes again, the frame counts as arrived once every
+/// part did, and the controller's next frame waits for that.
+#[test]
+fn a_controller_frame_bigger_than_a_datagram_goes_in_parts() {
+    let mut world = WorldDelivery::new(OWNER);
+    world.started = Some(100);
+    let mut payload = orpheus_core::bits::BitWriter::new();
+    for byte in 0..3000u32 {
+        payload.bits(u64::from(byte % 251), 8).unwrap();
+    }
+    let chunk = world.controller.full(&payload).unwrap();
+    world.push(Record::script(chunk, false));
+    let records: Vec<Arc<Record>> = world.queued.clone();
+    assert_eq!(records.len(), 3);
+    for record in &records {
+        let bytes = record.update.chunk.as_ref().unwrap().as_bytes().len();
+        assert!(bytes <= parts::MAX_CHUNK_BYTES, "a part of {bytes} bytes");
+    }
+    assert_eq!(eligible(&world), [0, 1, 2]);
+    world.sent(&[0, 1, 2]);
+    let mut next = orpheus_core::bits::BitWriter::new();
+    next.bits(1, 8).unwrap();
+    let next = world.controller.full(&next).unwrap();
+    world.push(Record::script(next, false));
+    assert!(eligible(&world).is_empty(), "the next frame waits");
+
+    world.acknowledge(outcome(Arc::clone(&records[0]), true), Duration::ZERO);
+    world.acknowledge(outcome(Arc::clone(&records[1]), false), Duration::ZERO);
+    world.acknowledge(outcome(Arc::clone(&records[2]), true), Duration::ZERO);
+    assert!(
+        Arc::ptr_eq(&world.queued[0], &records[1]),
+        "the lost part goes again"
+    );
+    assert_eq!(eligible(&world), [0]);
+    world.sent(&[0]);
+    world.acknowledge(outcome(Arc::clone(&records[1]), true), Duration::ZERO);
+    // The first frame arrived: the next may go.
+    assert!(!world.controller.arrived(1));
+    assert_eq!(eligible(&world), [0]);
 }
 
 #[test]
@@ -2288,3 +2331,4 @@ mod multikills;
 mod recovery;
 
 mod spawn_room;
+mod workshop;

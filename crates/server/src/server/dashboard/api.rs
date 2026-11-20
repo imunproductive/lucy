@@ -283,6 +283,9 @@ impl Api<'_> {
             "forced_map": matchmaker
                 .and_then(|matchmaker| matchmaker.forced_map())
                 .map_or(String::new(), |map| format!("0x{map:X}")),
+            "workshop": matchmaker
+                .and_then(|matchmaker| matchmaker.workshop())
+                .map_or(String::new(), |path| path.display().to_string()),
         })
     }
 

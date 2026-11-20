@@ -213,6 +213,174 @@ fn one_player_to_start_pops_the_queue_and_hands_the_game_off() {
     server.stop().unwrap();
 }
 
+/// Play > Custom Games > Create and Start, as the client sends them
+/// (`refs/reports/CustomGames.md`): 24000 kind 1, then its settings
+/// upload (24008 header, a Hanamura entry with teams of 12 and 0, an
+/// Assault block); the host gets his lobby (23304-23306 echoing the upload,
+/// then the match lobby 53000 type 1, 53001, 53002), a later upload comes
+/// back as 23312, and Start (24018 3) opens Hanamura, with the custom
+/// game's settings and Workshop, and hands the host's game off.
+#[test]
+#[ignore = "requires an authorized 104319 runtime in ORPHEUS_RUNTIME_DIR"]
+fn a_host_creates_a_custom_game_and_starts_it() {
+    use orpheus_lobby::{
+        custom_game::{LOBBY_COMMAND, START},
+        handoff::{CREATE_GAME, GAME_REQUEST},
+    };
+    const CUSTOM_GAMES: u32 = 0x2128_6b49;
+    const HANAMURA: u64 = 0x0800_0000_0000_0165;
+    const ASSAULT: u64 = 0x0230_0000_0000_0014;
+    const GROUPS: [u32; 7] = [
+        IN_CONNECT,
+        OUT_CONNECT,
+        GAME_REQUEST,
+        CUSTOM_GAMES,
+        MATCH_LOBBY,
+        HANDOFF,
+        CHAT_IN,
+    ];
+    let runtime = orpheus_testkit::runtime_dir();
+    let state = tempfile::tempdir().unwrap();
+    let mut config = ServerConfig::new(runtime, state.path().into());
+    config.lobby_port = 0;
+    config.game_port = Some(0);
+    config.stall_port = 0;
+    config.rpc_port = 0;
+    config.dashboard_port = None;
+    // The clocks stand still: the replies come with each message.
+    let (mut server, _clocks) = Server::start_virtual(config).unwrap();
+    let schemas = Schemas::lobby();
+    let mut client = Client::connect(&schemas, SocketAddr::from(server.lobby_addr()), &GROUPS);
+    client.send(OUT_CONNECT, LOGIN_MESSAGE, Fields::new());
+
+    let custom = |client: &Client| -> Vec<u32> {
+        client
+            .received
+            .iter()
+            .filter(|&&(crc, _, _)| crc == CUSTOM_GAMES || crc == MATCH_LOBBY)
+            .map(|&(_, id, _)| id)
+            .collect()
+    };
+    let teams = Value::Array(
+        [(0, 12), (1, 0)]
+            .map(|(number, size)| {
+                Value::Struct(Fields::from([
+                    (0x60, Value::Unsigned(number)),
+                    (0x61, Value::Unsigned(size)),
+                ]))
+            })
+            .into(),
+    );
+    let header = |more| Fields::from([(0x3d0, Value::Bool(more))]);
+    client.send(
+        GAME_REQUEST,
+        CREATE_GAME,
+        Fields::from([
+            (0x78, Value::Unsigned(1)),
+            (0x80, Value::String("Parkour".into())),
+            (0xa8, Value::Signed(4)),
+        ]),
+    );
+    client.send(GAME_REQUEST, 24008, header(true));
+    client.send(
+        GAME_REQUEST,
+        24009,
+        Fields::from([
+            (
+                0x78,
+                Value::Struct(Fields::from([
+                    (0, Value::Struct(Fields::from([(0xc0, teams)]))),
+                    (0x138, Value::Unsigned(HANAMURA)),
+                ])),
+            ),
+            (0x1b8, Value::Bool(true)),
+        ]),
+    );
+    // Nothing until the upload's last message.
+    let at_login = custom(&client).len();
+    client.send(
+        GAME_REQUEST,
+        24010,
+        Fields::from([
+            (
+                0x78,
+                Value::Struct(Fields::from([(0xb0, Value::Unsigned(ASSAULT))])),
+            ),
+            (0x1b0, Value::Bool(false)),
+        ]),
+    );
+    assert_eq!(
+        custom(&client)[at_login..],
+        [23304, 23305, 23306, 53000, 53001, 53002]
+    );
+    let find = |client: &Client, wanted: u32| {
+        client
+            .received
+            .iter()
+            .rev()
+            .find(|&&(_, id, _)| id == wanted)
+            .unwrap()
+            .2
+            .clone()
+    };
+    // The host's card names him; the match lobby is a custom game's.
+    let descriptor = find(&client, 23304);
+    assert_ne!(structure(&descriptor[&0x78])[&0x78], Value::Unsigned(0));
+    assert_eq!(
+        structure(&find(&client, 53000)[&0x78])[&0x60],
+        Value::Unsigned(1)
+    );
+    let entered = custom(&client).len();
+    client.send(GAME_REQUEST, 24008, header(false));
+    assert_eq!(custom(&client)[entered..], [23312]);
+
+    // The settings Start plays: Hanamura and one Workshop rule (an empty
+    // rule, array selector 0).
+    client.send(GAME_REQUEST, 24008, header(true));
+    client.send(
+        GAME_REQUEST,
+        24009,
+        Fields::from([
+            (
+                0x78,
+                Value::Struct(Fields::from([(0x138, Value::Unsigned(HANAMURA))])),
+            ),
+            (0x1b8, Value::Bool(true)),
+        ]),
+    );
+    client.send(
+        GAME_REQUEST,
+        24012,
+        Fields::from([
+            (
+                0x78,
+                Value::Struct(Fields::from([(0x30, Value::Struct(Fields::new()))])),
+            ),
+            (0x1cc, Value::Signed(0)),
+            (0x1d0, Value::Unsigned(0)),
+            (0x1d1, Value::Bool(false)),
+        ]),
+    );
+    client.send(
+        GAME_REQUEST,
+        LOBBY_COMMAND,
+        Fields::from([(0x78, Value::Unsigned(START))]),
+    );
+    // As for the Practice Range, the 20600 is due at once (no "Game
+    // Found!" delay): the session's tick after 24018 sends it.
+    client.expect(HANDOFF, HANDOFF_MESSAGE);
+    let games = server.game_service().unwrap().snapshot().unwrap();
+    let [game] = games.as_slice() else {
+        panic!("{games:?}")
+    };
+    assert_eq!(game.map, "Hanamura");
+    assert_eq!(game.players.len(), 1);
+    // The match carries the custom game's Workshop, decoded.
+    assert_eq!(game.workshop_rules, Some(1));
+    client.close();
+    server.stop().unwrap();
+}
+
 /// Matches that ended by their rules, into the profiles of the room's seated
 /// players (`results.rs`), and on to their games.
 mod results {

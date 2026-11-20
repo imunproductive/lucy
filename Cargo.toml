@@ -29,6 +29,7 @@ orpheus-lobby = { path = "crates/lobby" }
 orpheus-server = { path = "crates/server" }
 orpheus-launcher = { path = "crates/launcher" }
 orpheus-testkit = { path = "crates/testkit" }
+orpheus-workshop = { path = "crates/workshop" }
 aes = "0.8"
 aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }

@@ -28,12 +28,31 @@
 //!   heal (10 a second) are rates, quick melee is a blow. The Biotic Field's
 //!   `017B` st6 spreads its heal over `#567`, the field's seconds.
 //! - Not read: the knockback rings `m_knockbackRings` (quick melee has
-//!   one), `m_8B707686`, `m_DD792FF0` (1, 2 or 3), the bools `m_79758CE9`,
+//!   one), `m_DD792FF0` (1, 2 or 3), the bools `m_79758CE9`,
 //!   `m_FF9E82FA`, `m_48BED081` (false in every use), `m_B12BFE8B` (quick
 //!   melee's TrackTargets output `#23530`), `m_C0139FA6`, `m_724CBA57`
 //!   (the owner where set), `m_E33EFEE1` and `m_10399AE7` (outputs) and the
 //!   other hashed fields of `m_modifyHealth`. Each use records an
 //!   assumption.
+//! - `m_8B707686` (u8, state `+0x14d`) is the retail server's own flag;
+//!   the client never reads it. ModifyHealth has no runtime of its own on
+//!   the client (state record #160 is the base state's, vtable
+//!   `0x7FF78B6BC800`: begin, end, update and event are `ret 0`), and the
+//!   only client code that names the hash is the class's descriptor
+//!   builder (`0x7FF78A490AC0`) and its default-value test
+//!   (`0x7FF78A492D40`: `cmp byte [rcx], 1`), so it defaults to 1
+//!   (`tools/who_reads.py 826613B7 m_8B707686`, 2026-11-20). In
+//!   `game_graphs_174.json.gz` 94 of 159 uses keep the default and 65 author
+//!   0. Neither value goes
+//!   with one kind of change (by node): 0 on 16 of the 22 heals over time
+//!   (the spawn room `0C8E` node 30, the payload `1225` node 11, the
+//!   Biotic Field `017B` node 11) and on 33 of the 89 single blows (quick
+//!   melee `0043` node 10, the 9999 kill volumes `096B`/`09BB`); 1 on 26
+//!   of the 27 single heals (the health pack `0046` node 0, the respawn
+//!   heal `0033` node 8) and the 1000000 suicide `0033` node 49. The
+//!   server's own health code ([`World::modify_health`])
+//!   applies every change alike, so the flag is handed on as is and records
+//!   nothing. `docs/dev/loose-ends.md` has the entry.
 //!
 //! Assumed, as nothing in the data says: a body comes in once per
 //! activation (a body the targets list again after it left is not struck
@@ -70,7 +89,7 @@ pub struct HealthChange {
 }
 
 /// The fields the server doesn't read; each set one is an assumption.
-const UNREAD: &[&str] = &["m_8B707686", "m_B12BFE8B"];
+const UNREAD: &[&str] = &["m_B12BFE8B"];
 const UNREAD_CHANGE: &[&str] = &["m_knockbackRings", "m_C0139FA6", "m_E33EFEE1", "m_10399AE7"];
 
 impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {

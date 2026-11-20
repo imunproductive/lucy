@@ -59,8 +59,8 @@ use orpheus_script::{
     vitals::{Death, Vitals},
     vm::{
         ASSIST_DEFENSIVE, ASSIST_OFFENSIVE, AssistLink, AuraChange, BodyEffects, CombatMod,
-        DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage, HEALING_DEALT, HEALING_TAKEN, HealthChange,
-        SeenBody, ShotEvent, TargetCandidate, TrackedStat, combat_scale,
+        DAMAGE_DEALT, DAMAGE_TAKEN, GameMessage, HEALING_DEALT, HEALING_TAKEN, HEALTH_PACK,
+        HealthChange, SeenBody, ShotEvent, TargetCandidate, TrackedStat, combat_scale,
     },
     weapons::{AllyHits, DamageTags, HitDefinition, ProjectileBallistics},
     wire::{Value, Variables},
@@ -480,6 +480,9 @@ pub struct PlayerHit {
     /// ([`HealthChange::source`]: a Biotic Orb), which takes the damage
     /// dealt or healing done too.
     pub source: Option<u32>,
+    /// A health pack's heal (the change of `0046` st0, [`HEALTH_PACK`]):
+    /// the Workshop's Event Was Health Pack.
+    pub health_pack: bool,
 }
 
 /// An explosion's push on another player's body ([`Combat::take_player_pushes`]),
@@ -497,6 +500,51 @@ pub struct PlayerPush {
     /// Whose explosion it was: the knock an environment kill credits
     /// ([`KnockCredit`]).
     pub by: Shooter,
+}
+
+/// What a hit or a push did between the room's players
+/// ([`apply_player_hits`], [`apply_player_pushes`]), for the Workshop's
+/// player events (`crate::workshop::WorkshopRun::player_events`). Each
+/// player is his entity ([`CombatPlayer::entity`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlayerEvent {
+    /// `dealt` damage to `victim`'s body. `attacker`: the player whose hit
+    /// it was, the one an environment kill is credited to
+    /// ([`KnockCredit`]), or the victim himself for his own blow and a fall
+    /// nobody knocked him into ([`Combat::environment_kill`]); none for a
+    /// bot's or a placeable's. `direction`: [`PlayerHit::direction`].
+    Damage {
+        attacker: Option<u32>,
+        victim: u32,
+        dealt: f64,
+        critical: bool,
+        environment: bool,
+        direction: Option<Vec3>,
+        killed: bool,
+    },
+    /// `victim`'s death counts as `player`'s elimination: his final blow,
+    /// or his share of the kill ([`kill_credit`]).
+    Elimination {
+        player: u32,
+        victim: u32,
+        final_blow: bool,
+    },
+    /// `healee`'s pools took `healed` (above 0) of a heal. `healer`: the
+    /// player whose heal it was; none for a bot's or a placeable's (a
+    /// health pack's, `health_pack`).
+    Heal {
+        healer: Option<u32>,
+        healee: u32,
+        healed: f64,
+        health_pack: bool,
+    },
+    /// `attacker`'s explosion pushed `victim`'s body by `push` (metres a
+    /// second).
+    Knockback {
+        attacker: u32,
+        victim: u32,
+        push: Vec3,
+    },
 }
 
 #[derive(Clone)]
@@ -837,6 +885,7 @@ impl Combat {
             environment: true,
             from: None,
             source: None,
+            health_pack: false,
         });
     }
 
@@ -1070,6 +1119,7 @@ impl Combat {
                 environment: false,
                 from,
                 source: change.source,
+                health_pack: change.heal && change.site.graph == HEALTH_PACK,
             });
             self.auras.extend(aura);
             return None;
@@ -1420,6 +1470,7 @@ impl Combat {
                 environment: false,
                 from: None,
                 source: None,
+                health_pack: false,
             });
         }
         Ok(step.end.map(|end| FlightEnd {
@@ -1539,6 +1590,7 @@ impl Combat {
                     environment: false,
                     from,
                     source: None,
+                    health_pack: false,
                 });
             }
             return None;
@@ -2015,16 +2067,18 @@ pub fn kill_credit(
 /// who knocked it and an Environmental Death for the victim. A heal of an
 /// ally (combat.py `_heal`, leafall903/ORPHEUS (MIT) commit c239a84) tells
 /// no one: a player healer's Healing Done and ultimate count what the pools
-/// took. Returns each player's notices, by slot.
+/// took. Returns each player's notices, by slot, and what the hits did
+/// between the players ([`PlayerEvent`]), in order.
 pub fn apply_player_hits(
     scene: &PreparedScene,
     hits: Vec<PlayerHit>,
     players: &mut [CombatPlayer<'_>],
     tick: u32,
     now: Duration,
-) -> Vec<Vec<CombatNotice>> {
+) -> (Vec<Vec<CombatNotice>>, Vec<PlayerEvent>) {
     let board = *scene.board_stats();
     let mut notices = vec![Vec::new(); players.len()];
+    let mut events = Vec::new();
     for mut hit in hits {
         let Some(victim) = players.iter().position(|player| {
             player
@@ -2045,6 +2099,17 @@ pub fn apply_player_hits(
                 .world
                 .as_deref_mut()
                 .map_or(0.0, |world| world.heal_body(scene, &hit));
+            let healer = (!hit.shooter.bot)
+                .then(|| player_of(players, hit.shooter.source))
+                .flatten();
+            if given > 0.0 {
+                events.push(PlayerEvent::Heal {
+                    healer: healer.map(|slot| players[slot].entity),
+                    healee: players[victim].entity,
+                    healed: given,
+                    health_pack: hit.health_pack,
+                });
+            }
             if !hit.shooter.bot {
                 let target = (hit.body, victim_body);
                 credit_healing(
@@ -2079,6 +2144,15 @@ pub fn apply_player_hits(
             .flatten();
         let own_blow = shooter == Some(victim);
         let killer = shooter.filter(|_| !own_blow);
+        events.push(PlayerEvent::Damage {
+            attacker: shooter.map(|slot| players[slot].entity),
+            victim: players[victim].entity,
+            dealt: damage.dealt,
+            critical: hit.critical,
+            environment: hit.environment,
+            direction: hit.direction,
+            killed: damage.killed,
+        });
         let bodies: Vec<Option<u32>> = players
             .iter()
             .map(|player| {
@@ -2143,6 +2217,11 @@ pub fn apply_player_hits(
             .into_iter()
             .chain(credit.eliminations.iter().map(|&slot| (slot, false)));
         for (slot, final_blow) in eliminators {
+            events.push(PlayerEvent::Elimination {
+                player: players[slot].entity,
+                victim: players[victim].entity,
+                final_blow,
+            });
             let player = &mut players[slot];
             player.stats.add(board.eliminations, 1.0);
             if final_blow {
@@ -2192,7 +2271,7 @@ pub fn apply_player_hits(
             killed_by: !own_blow,
         });
     }
-    notices
+    (notices, events)
 }
 
 /// [`kill_credit`] of a player's death: the victim's recent attackers and
@@ -2224,27 +2303,46 @@ fn death_credit(
 /// player whose body it is ([`WorldDelivery::knock`]) at `now`, as the knock
 /// an environment kill credits ([`KnockCredit`]). First, with the tick's
 /// environment kills dealt, a knock its body landed from is forgotten
-/// ([`KnockCredit::settle`]).
+/// ([`KnockCredit::settle`]). Returns the pushes that moved a player's
+/// body, as knockbacks between players ([`PlayerEvent::Knockback`]).
 pub fn apply_player_pushes(
     pushes: Vec<PlayerPush>,
     players: &mut [CombatPlayer<'_>],
     now: Duration,
-) {
+) -> Vec<PlayerEvent> {
     for world in players
         .iter_mut()
         .filter_map(|player| player.world.as_deref_mut())
     {
         world.settle_knock();
     }
+    let mut events = Vec::new();
     for push in pushes {
-        let world = players
-            .iter_mut()
-            .filter_map(|player| player.world.as_deref_mut())
-            .find(|world| world.current_body() == Some(push.body));
-        if let Some(world) = world {
-            world.knock(push.body, push.push, push.by, now);
+        let Some(victim) = players.iter().position(|player| {
+            player
+                .world
+                .as_deref()
+                .is_some_and(|world| world.current_body() == Some(push.body))
+        }) else {
+            continue;
+        };
+        let attacker = (!push.by.bot)
+            .then(|| player_of(players, push.by.source))
+            .flatten()
+            .map(|slot| players[slot].entity);
+        let knocked = players[victim]
+            .world
+            .as_deref_mut()
+            .is_some_and(|world| world.knock(push.body, push.push, push.by, now));
+        if let Some(attacker) = attacker.filter(|_| knocked) {
+            events.push(PlayerEvent::Knockback {
+                attacker,
+                victim: players[victim].entity,
+                push: push.push,
+            });
         }
     }
+    events
 }
 
 /// The healer's Healing Done counts `healed` of `target` (its entity and

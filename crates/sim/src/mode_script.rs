@@ -25,14 +25,14 @@ use orpheus_content::maps::{PRACTICE_RANGE_MODE, PYTHON_PRACTICE_RANGE_MODE};
 use orpheus_script::{
     codecs::CodecTable,
     graph::GraphStore,
-    mode::{ModePlayer, ModeScript, ModeWorld},
+    mode::{CreatedEntity, ModePlayer, ModeScript, ModeWorld},
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     vm::{GameMessage, InitFault, MessageEnd, Unknowns},
     wire::Variables,
 };
 use orpheus_wire::entity::GAME_MODE_ENTITY;
 
-use crate::{match_flow, scene_assets::PreparedScene};
+use crate::{match_flow, placed_script::PlacedFrame, scene_assets::PreparedScene};
 
 /// The modes with no match flow, the Practice Range's: the room starts
 /// their graph with itself, not at a match's start.
@@ -61,17 +61,42 @@ pub fn mode_graph(mode: u64) -> Option<u32> {
 pub type Gaps = BTreeMap<(u32, String), usize>;
 
 pub enum ModeRunner {
-    /// The graph drives the mode entity's frames.
+    /// A graph drives the mode entity's frames.
     Graph {
         script: Box<ModeScript>,
         graphs: Arc<GraphStore>,
         codecs: Arc<CodecTable>,
         /// Its last projection failed (said once, [`Self::project`]).
         unprojected: bool,
+        /// The mode's own graph runs (not only a Workshop host,
+        /// [`Self::workshop`]): it holds the spawn rooms' `0724` itself.
+        mode_graph: bool,
+        /// The entities the graph made and their latest frames
+        /// ([`Self::created`]).
+        created: BTreeMap<u32, Created>,
     },
     /// The hand-built frame, and why the graph doesn't drive it.
     HandBuilt { gaps: Gaps },
 }
+
+/// An entity the mode entity's graphs made (the Workshop's effects and
+/// icons), with its latest frame: the projection it was made from and the
+/// frame (none while it can't be made).
+pub struct Created {
+    pub entity: CreatedEntity,
+    frame: Option<(ProjectedSnapshot, PlacedFrame)>,
+}
+
+impl Created {
+    pub fn frame(&self) -> Option<&PlacedFrame> {
+        self.frame.as_ref().map(|(_, frame)| frame)
+    }
+}
+
+/// The PvP modes' shared subgraph (`0CBB`, ModeGraphGaps.md), which plays
+/// the Workshop's value table `1B4A` from its entry
+/// (`refs/reports/Workshop.md` "WorkshopRuntime").
+pub const SHARED_MODE_GRAPH: u32 = 0x0cbb;
 
 impl ModeRunner {
     /// Start the mode graph with the match's `players` now. The start
@@ -83,26 +108,8 @@ impl ModeRunner {
         let Some(graph) = mode_graph(mode) else {
             return Self::HandBuilt { gaps: Gaps::new() };
         };
-        let graphs = scene.shared_graphs();
-        // The team sizes are the game's, as the 20300/20301 game struct
-        // sends them.
-        let mut world = ModeWorld::new(Arc::clone(&graphs), mode, Unknowns::for_build());
-        world.ruleset = scene.map().ruleset;
-        world.players = players;
-        world.ready = true;
-        world.team_sizes = crate::instance::team_entries(scene.map());
-        world.mode_random = Some(scene.mode_random());
-        world.match_seed = Some(crate::scene::draw_match_seed());
-        world.map_modes = Some(scene.map().supported_modes.clone());
-        world.map_tags = Some(scene.map_tags());
-        world.map_rays = Some(scene.map_rays());
-        match ModeScript::start(world, graph, frame) {
-            Ok(script) if script.complete() => Self::Graph {
-                script: Box::new(script),
-                graphs,
-                codecs: Arc::new(CodecTable::client()),
-                unprojected: false,
-            },
+        match ModeScript::start(mode_world(scene, players), graph, frame) {
+            Ok(script) if script.complete() => Self::graph(scene, script, true),
             Ok(script) => {
                 let gaps = script.gaps();
                 eprintln!(
@@ -122,8 +129,70 @@ impl ModeRunner {
         }
     }
 
+    /// The mode entity of a match that runs a Workshop script
+    /// ([`crate::workshop`]): the Workshop's action graphs run on it, so a
+    /// graph must drive it. The mode graph when it runs whole
+    /// ([`Self::start`]); else `0CBB` alone, the subgraph every mode graph
+    /// plays, whose entry plays `1B4A`, the table the clients evaluate the
+    /// actions' parameters with (`STU_77B0987E`). The match flow's
+    /// variables go into it as into the mode graph; the spawn rooms get
+    /// the mode's `0724` from the flow ([`Self::holds_rooms`]). None when
+    /// neither starts.
+    pub fn workshop(scene: &PreparedScene, frame: u32, players: Vec<ModePlayer>) -> Option<Self> {
+        let started = Self::start(scene, frame, players.clone());
+        if started.graph_driven() {
+            return Some(started);
+        }
+        match ModeScript::start(mode_world(scene, players), SHARED_MODE_GRAPH, frame) {
+            Ok(script) => {
+                if !script.complete() {
+                    eprintln!(
+                        "the Workshop's mode entity runs {SHARED_MODE_GRAPH:04X} with gaps: {:?}",
+                        script.gaps()
+                    );
+                }
+                Some(Self::graph(scene, script, false))
+            }
+            Err(error) => {
+                eprintln!("{SHARED_MODE_GRAPH:04X} does not start ({error}); no Workshop host");
+                None
+            }
+        }
+    }
+
+    fn graph(scene: &PreparedScene, script: ModeScript, mode_graph: bool) -> Self {
+        Self::Graph {
+            script: Box::new(script),
+            graphs: scene.shared_graphs(),
+            codecs: Arc::new(CodecTable::client()),
+            unprojected: false,
+            mode_graph,
+            created: BTreeMap::new(),
+        }
+    }
+
     pub fn graph_driven(&self) -> bool {
         matches!(self, Self::Graph { .. })
+    }
+
+    /// Whether the mode's own graph runs and holds the spawn rooms' `0724`
+    /// itself; else the match flow's spawns give it.
+    pub fn holds_rooms(&self) -> bool {
+        matches!(
+            self,
+            Self::Graph {
+                mode_graph: true,
+                ..
+            }
+        )
+    }
+
+    /// The graph on the mode entity, while one drives it.
+    pub fn script_mut(&mut self) -> Option<&mut ModeScript> {
+        match self {
+            Self::Graph { script, .. } => Some(script),
+            Self::HandBuilt { .. } => None,
+        }
     }
 
     /// Why the graph doesn't drive the mode entity; empty when it does.
@@ -212,19 +281,23 @@ impl ModeRunner {
     /// `previous`'s stream (`SnapshotEncoder::project_next`),
     /// so each client gets the match's frames as deltas of his first one
     /// (`crate::mode_view`). None while the graph doesn't drive it, or when
-    /// the frame can't be made (said once until it can again).
+    /// the frame can't be made (said once until it can again). The
+    /// entities the graph made get their frames now too ([`Self::created`]).
     pub fn project(&mut self, previous: Option<&ProjectedSnapshot>) -> Option<ProjectedSnapshot> {
         let Self::Graph {
             script,
             graphs,
             codecs,
             unprojected,
+            created,
+            ..
         } = self
         else {
             return None;
         };
-        let snapshot = script.snapshot()?;
         let encoder = SnapshotEncoder::new(graphs, codecs).with_unknowns(script.unknowns());
+        project_created(script, &encoder, created);
+        let snapshot = script.snapshot()?;
         let projected = match previous {
             Some(previous) => encoder.project_next(snapshot, previous),
             None => encoder.project(snapshot, View::Observer),
@@ -244,6 +317,18 @@ impl ModeRunner {
         }
     }
 
+    /// The entities the mode entity's graphs made that are still there,
+    /// with their frames as of the last [`Self::project`]: each client
+    /// creates them and gets their frames on their own streams
+    /// ([`crate::replication::WorldDelivery::update_mode_entities`]).
+    pub fn created(&self) -> impl Iterator<Item = &Created> {
+        let created = match self {
+            Self::Graph { created, .. } => Some(created.values()),
+            Self::HandBuilt { .. } => None,
+        };
+        created.into_iter().flatten()
+    }
+
     /// The encoder of the graph's frames, while it drives the mode entity.
     pub fn encoder(&self) -> Option<SnapshotEncoder<'_>> {
         let Self::Graph {
@@ -257,6 +342,92 @@ impl ModeRunner {
         };
         Some(SnapshotEncoder::new(graphs, codecs).with_unknowns(script.unknowns()))
     }
+}
+
+/// The made entities' frames, as the server placeables' are made
+/// (`placed_script.rs`): the observer projection of each, a new full frame
+/// when it changed; an entity that went is dropped. A script with gaps or
+/// a fault sends no frame (its gaps are the mode entity's,
+/// [`ModeScript::gaps`]).
+fn project_created(
+    script: &ModeScript,
+    encoder: &SnapshotEncoder<'_>,
+    created: &mut BTreeMap<u32, Created>,
+) {
+    created.retain(|entity, _| script.created().iter().any(|made| made.entity == *entity));
+    for made in script.created() {
+        let item = created.entry(made.entity).or_insert(Created {
+            entity: *made,
+            frame: None,
+        });
+        let snapshot = match script.created_script(made.entity) {
+            Some(placed) if placed.complete() => placed.snapshot(),
+            _ => None,
+        };
+        let Some(projected) = snapshot.and_then(|snapshot| {
+            encoder
+                .project(snapshot, View::Observer)
+                .inspect_err(|error| {
+                    eprintln!(
+                        "the made entity {:08X}'s frame does not project ({error:?})",
+                        made.entity
+                    );
+                })
+                .ok()
+        }) else {
+            item.frame = None;
+            continue;
+        };
+        if item
+            .frame
+            .as_ref()
+            .is_some_and(|(known, _)| *known == projected)
+        {
+            continue;
+        }
+        item.frame = match encoder.full(&projected) {
+            Ok(bits) => Some((
+                projected,
+                PlacedFrame {
+                    serial: item.frame.as_ref().map_or(1, |(_, frame)| frame.serial + 1),
+                    bits: Arc::new(bits),
+                },
+            )),
+            Err(error) => {
+                eprintln!(
+                    "the made entity {:08X}'s frame does not encode ({error:?})",
+                    made.entity
+                );
+                None
+            }
+        };
+    }
+}
+
+/// What the mode entity's graphs ask outside it, from the scene, with the
+/// match's `players` now.
+fn mode_world(scene: &PreparedScene, players: Vec<ModePlayer>) -> ModeWorld {
+    let mode = scene.map().mode_guid;
+    // The team sizes are the game's, as the 20300/20301 game struct sends
+    // them.
+    let mut world = ModeWorld::new(scene.shared_graphs(), mode, Unknowns::for_build());
+    world.ruleset = scene.map().ruleset;
+    world.players = players;
+    world.ready = true;
+    world.team_sizes = crate::instance::team_entries(scene.map());
+    world.mode_random = Some(scene.mode_random());
+    world.match_seed = Some(crate::scene::draw_match_seed());
+    world.map_modes = Some(scene.map().supported_modes.clone());
+    world.map_tags = Some(scene.map_tags());
+    world.map_rays = Some(scene.map_rays());
+    world.heroes = Some(
+        scene
+            .heroes()
+            .heroes()
+            .map(|hero| (hero.guid, hero.body))
+            .collect(),
+    );
+    world
 }
 
 #[cfg(test)]

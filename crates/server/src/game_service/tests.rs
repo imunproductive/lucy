@@ -2,6 +2,7 @@ use super::*;
 use lockstep::{Client, Lockstep};
 use orpheus_content::maps::PRACTICE_RANGE_MAP;
 use orpheus_core::bits::{BitReader, BitWriter};
+use orpheus_core::tick::FIRST_TICK;
 use orpheus_wire::{
     link::{FIN, KIND_CONTROL, SYN},
     messages::{read_channel, write_channel},
@@ -414,6 +415,8 @@ fn first_pool(components: &[DecodedComponent]) -> Option<f32> {
 struct ReceivedChunk {
     first: u32,
     span: u32,
+    /// A part's number and whether it is the last (`mode_view.rs`).
+    part: Option<(u16, bool)>,
     width: usize,
     data: Vec<u8>,
 }
@@ -422,6 +425,44 @@ impl ReceivedChunk {
     fn bits(&self) -> BitReader<'_> {
         BitReader::with_range(&self.data, 0, self.width).unwrap()
     }
+}
+
+/// The whole chunks among `chunks` (one entity's, in arrival order): each
+/// whole one, and each chunk in parts once its parts up to the last are
+/// all there, joined as the client's joiner does (`0x7FF78991FE30`).
+fn joined_chunks<'a>(chunks: impl IntoIterator<Item = &'a ReceivedChunk>) -> Vec<ReceivedChunk> {
+    let mut parts: HashMap<(u32, u32), std::collections::BTreeMap<u16, &ReceivedChunk>> =
+        HashMap::new();
+    let mut whole = Vec::new();
+    for chunk in chunks {
+        let Some((number, _)) = chunk.part else {
+            whole.push(chunk.clone());
+            continue;
+        };
+        let held = parts.entry((chunk.first, chunk.span)).or_default();
+        held.insert(number, chunk);
+        let Some((&last, _)) = held
+            .iter()
+            .find(|(_, part)| part.part.is_some_and(|(_, last)| last))
+        else {
+            continue;
+        };
+        if (0..=last).all(|number| held.contains_key(&number)) {
+            let mut data = BitWriter::new();
+            for part in held.values() {
+                data.raw_bits(&part.data, part.width).unwrap();
+            }
+            whole.push(ReceivedChunk {
+                first: chunk.first,
+                span: chunk.span,
+                part: None,
+                width: data.bit_len(),
+                data: data.into_bytes(),
+            });
+            parts.remove(&(chunk.first, chunk.span));
+        }
+    }
+    whole
 }
 
 /// What a full owner controller frame shows (its head: the controller
@@ -593,11 +634,15 @@ fn world_records(schemas: &Schemas, packet: &Packet) -> Vec<WorldRecord> {
                 assert!(!reader.bit().unwrap());
                 let first = reader.w_u32().unwrap();
                 let span = reader.w_var().unwrap();
-                assert!(!reader.bit().unwrap());
+                let part = reader
+                    .bit()
+                    .unwrap()
+                    .then(|| (reader.w_u16().unwrap(), reader.bit().unwrap()));
                 let width = reader.w_var().unwrap() as usize;
                 record.script = Some(ReceivedChunk {
                     first,
                     span,
+                    part,
                     width,
                     data: reader.raw_bits(width).unwrap(),
                 });
@@ -1183,14 +1228,19 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     let mut controller = false;
     // The mode's and the controller's first script chunks (the Training
     // Partner's player, `player_entity(1)`, and his body have their own,
-    // as do the server placeables whose scripts run whole, once their
-    // creates arrived (`placed_script.rs`): not checked here).
+    // as do the server placeables whose scripts run whole and the
+    // entities their graphs make (the health packs' visuals, running
+    // `0EB9`), once their creates arrived (`placed_script.rs`): not
+    // checked here).
     let first_script = |record: &WorldRecord, mode: &mut bool, controller: &mut bool| {
         let Some(script) = &record.script else {
             return;
         };
         let placeable = record.entity & 0xFFFF_F000 == 0x8000_0000;
-        if record.entity & !0xFF == player_entity(1) || placeable {
+        let made = (orpheus_script::placed::MADE_FIRST
+            ..orpheus_script::placed::MADE_FIRST + orpheus_script::placed::MADE_SPAN)
+            .contains(&record.entity);
+        if record.entity & !0xFF == player_entity(1) || placeable || made {
             return;
         }
         if record.entity == GAME_MODE_ENTITY {
@@ -1216,10 +1266,12 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
     // The rest of the world follows, with no script whose create the
     // client hasn't acknowledged: 4 placeables, the player, the mode, the
     // map's 26 server placeables (`game_map_areas` `server_placeables`),
-    // 15 bots and their 15 stand-in controllers, and the Training Partner
-    // the console `265F` makes (his player and body, `ai.rs`):
-    // 4 + 2 + 26 + 15 + 15 + 2 = 64.
-    while creates.len() < 64 {
+    // 15 bots and their 15 stand-in controllers, the Training Partner
+    // the console `265F` makes (his player and body, `ai.rs`), and the
+    // visuals of the Range's 4 health packs (`0046` st15
+    // StateCreateEntity, made by the server's instance of the pack):
+    // 4 + 2 + 26 + 15 + 15 + 2 + 4 = 68.
+    while creates.len() < 68 {
         let frame = client.receive();
         assert!(client.window.accept(frame.seq));
         let records = world_records(&schemas, &frame);
@@ -1236,7 +1288,7 @@ fn exercise_prepared_world(fixture: PreparedFixture) {
         }
         assert!(client.now() < deadline, "waiting for the rest of the world");
     }
-    assert_eq!(creates.len(), 64);
+    assert_eq!(creates.len(), 68);
 
     // Even after the retransmission, a script stays behind its create ACK.
     let withheld = client.receive();
@@ -6958,6 +7010,7 @@ fn a_firing_practice_bot_shoots_the_player() {
 }
 
 mod collision_ready;
+mod workshop;
 
 /// A living enemy training bot blocks Soldier: 76's body on the server
 /// (`orpheus_sim::replication::blocks`), as the client's own mover stops at

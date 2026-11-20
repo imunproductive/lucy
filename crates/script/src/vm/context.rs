@@ -171,12 +171,20 @@ impl<W: World> Context for InstanceContext<'_, W> {
         Some(value)
     }
 
+    fn instance_id(&mut self) -> Option<u16> {
+        Some(self.site.instance)
+    }
+
     fn tolerate_unknown(&mut self, what: &str) -> bool {
         if self.world.unknowns() != Unknowns::Tolerate {
             return false;
         }
         self.assumed.push((what.to_owned(), "null"));
         true
+    }
+
+    fn workshop_value(&mut self, value: u64) -> Option<Json> {
+        self.graphs.workshop_value(value).cloned()
     }
 
     fn equipped_cosmetic(

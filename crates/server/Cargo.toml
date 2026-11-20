@@ -21,6 +21,7 @@ orpheus-lobby.workspace = true
 orpheus-script.workspace = true
 orpheus-sim.workspace = true
 orpheus-wire.workspace = true
+orpheus-workshop.workspace = true
 serde_json.workspace = true
 tiny_http.workspace = true
 tracing.workspace = true

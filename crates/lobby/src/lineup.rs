@@ -72,7 +72,21 @@ fn lobby_id(id: [u64; 2]) -> Value {
 /// always resets the lobby itself after its own 52902 (0x7FF789A9DBC0 keeps it
 /// only for a queue card asset).
 pub fn lobby_state(match_id: [u64; 2]) -> LobbyMessage {
-    let lobby = Fields::from([(0x30, lobby_id(match_id)), (0x60, Unsigned(LOBBY_TYPE))]);
+    state(match_id, LOBBY_TYPE)
+}
+
+/// 53000 of a custom game lobby: type 1 CUSTOM_GAME (the names of
+/// 0x7FF7896954B0: 0 UNKNOWN, 1 CUSTOM_GAME, 2 PRACTICE, 3 TUTORIAL,
+/// 4 GAME_QUEUE). The custom game screens compare it with their node's
+/// type (`Eval_STU_A0806584`; `refs/reports/CustomGames.md` §4).
+pub fn custom_game_lobby(lobby_id: [u64; 2]) -> LobbyMessage {
+    state(lobby_id, CUSTOM_GAME)
+}
+
+const CUSTOM_GAME: u64 = 1;
+
+fn state(lobby: [u64; 2], kind: u64) -> LobbyMessage {
+    let lobby = Fields::from([(0x30, lobby_id(lobby)), (0x60, Unsigned(kind))]);
     (
         MATCH_LOBBY,
         LOBBY_STATE,

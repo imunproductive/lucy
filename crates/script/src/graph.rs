@@ -6,7 +6,7 @@ use std::{
     io::{self, BufReader, Read},
     path::Path,
     sync::{
-        Arc, OnceLock,
+        Arc, OnceLock, RwLock, RwLockReadGuard,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -448,6 +448,36 @@ pub struct Body {
     pub target_tags: Option<BTreeSet<u64>>,
 }
 
+/// A single match's own ruleset ([`GraphStore::add_match_ruleset`]): its
+/// mode, its values by ruleset key, the values only some of its bodies
+/// get, and the mode entity's variables (the mode's with those values
+/// over them).
+#[derive(Debug)]
+struct MatchRuleset {
+    mode: u64,
+    values: BTreeMap<u32, ModeValue>,
+    bodies: Vec<BodyValues>,
+    variables: Arc<BTreeMap<u32, ModeValue>>,
+}
+
+/// Ruleset values a custom match gives one team's bodies, one hero's, or
+/// one hero's of one team (a Workshop script's `heroes` blocks: `Team 1`,
+/// `General` > `Doomfist`, `Team 2` > `Doomfist`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BodyValues {
+    /// The room's team (0 is Team 1); none: every team.
+    pub team: Option<u8>,
+    /// None: every hero.
+    pub hero: Option<u64>,
+    pub values: BTreeMap<u32, ModeValue>,
+}
+
+impl BodyValues {
+    fn covers(&self, hero: u64, team: Option<u8>) -> bool {
+        self.hero.is_none_or(|own| own == hero) && self.team.is_none_or(|own| Some(own) == team)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ModeValue {
     Bool(bool),
@@ -584,10 +614,13 @@ pub struct GraphStore {
     graphs: BTreeMap<u32, Arc<Graph>>,
     bodies: BTreeMap<u64, Body>,
     entities: BTreeMap<u64, Body>,
-    mode_variables: BTreeMap<u64, BTreeMap<u32, ModeValue>>,
+    mode_variables: BTreeMap<u64, Arc<BTreeMap<u32, ModeValue>>>,
     /// Each game ruleset's mode and the mode entity's variables in its
     /// games: the mode's, with the ruleset's own values over them.
-    ruleset_variables: BTreeMap<u64, (u64, BTreeMap<u32, ModeValue>)>,
+    ruleset_variables: BTreeMap<u64, (u64, Arc<BTreeMap<u32, ModeValue>>)>,
+    /// The rulesets of single matches (a custom game's settings), by the
+    /// ruleset id the match plays ([`GraphStore::add_match_ruleset`]).
+    match_rulesets: RwLock<HashMap<u64, MatchRuleset>>,
     /// The heroes' and modes' ruleset defaults, which the server loads
     /// beside the bundle; none until [`GraphStore::with_rulesets`].
     rulesets: Arc<Rulesets>,
@@ -607,6 +640,15 @@ pub struct GraphStore {
     /// The aura graphs and the graphs they play (`PlayScript`), whose
     /// PlayScript actions the server runs.
     aura_graphs: BTreeSet<u32>,
+    /// The Workshop's action graphs: the 211 that hold its server-only
+    /// done node `STU_1E93FE1F` (`refs/reports/Workshop.md` §2), whose
+    /// PlayScript actions the server runs (Chase Variable `1CCC` plays
+    /// `1CCF` on each target player).
+    workshop_actions: BTreeSet<u32>,
+    /// The Workshop's values (`054/0162`) as the client evaluates them:
+    /// `1B4A`'s state `STU_25CBEFB0`, `m_108E51DD`, each value's `01C`
+    /// identifier with its config ([`GraphStore::workshop_value`]).
+    workshop_values: BTreeMap<u64, Value>,
 }
 
 impl GraphStore {
@@ -645,27 +687,40 @@ impl GraphStore {
             })
             .collect();
         let aura_graphs = played_closure(&graphs, auras.values().filter_map(|aura| aura.graph));
-        let mode_variables: BTreeMap<u64, BTreeMap<u32, ModeValue>> =
+        let mode_variables: BTreeMap<u64, Arc<BTreeMap<u32, ModeValue>>> =
             keyed_by_guid(bundle.mode_variables)?
                 .into_iter()
-                .map(|(guid, values)| Ok((guid, mode_values(values)?)))
+                .map(|(guid, values)| Ok((guid, Arc::new(mode_values(values)?))))
                 .collect::<io::Result<_>>()?;
         let ruleset_variables = keyed_by_guid(bundle.ruleset_variables)?
             .into_iter()
             .map(|(guid, ruleset)| {
                 let mode = asset_guid(&ruleset.mode)
                     .ok_or_else(|| invalid("a ruleset's mode must be a GUID"))?;
-                let mut variables = mode_variables.get(&mode).cloned().unwrap_or_default();
+                let mut variables = mode_variables
+                    .get(&mode)
+                    .map(|variables| BTreeMap::clone(variables))
+                    .unwrap_or_default();
                 variables.extend(mode_values(ruleset.variables)?);
-                Ok((guid, (mode, variables)))
+                Ok((guid, (mode, Arc::new(variables))))
             })
             .collect::<io::Result<_>>()?;
+        let workshop_values = graphs
+            .get(&WORKSHOP_VALUES_GRAPH)
+            .map(|graph| workshop_values(graph))
+            .unwrap_or_default();
+        let workshop_actions = graphs
+            .iter()
+            .filter(|(_, graph)| graph.nodes.iter().any(|node| node.class == "STU_1E93FE1F"))
+            .map(|(&index, _)| index)
+            .collect();
         Ok(Self {
             graphs,
             bodies: keyed_by_guid(bundle.bodies)?,
             entities: keyed_by_guid(bundle.entities)?,
             mode_variables,
             ruleset_variables,
+            match_rulesets: RwLock::default(),
             rulesets: Arc::default(),
             tunables: Arc::default(),
             anim_lengths: Arc::default(),
@@ -673,6 +728,8 @@ impl GraphStore {
             missing: bundle.missing,
             auras,
             aura_graphs,
+            workshop_actions,
+            workshop_values,
         })
     }
 
@@ -684,6 +741,18 @@ impl GraphStore {
     /// Whether `graph` runs as an aura or is played by one.
     pub fn is_aura_graph(&self, graph: u32) -> bool {
         self.aura_graphs.contains(&graph)
+    }
+
+    /// Whether `graph` is one of the Workshop's actions.
+    pub fn is_workshop_action(&self, graph: u32) -> bool {
+        self.workshop_actions.contains(&graph)
+    }
+
+    /// The config the client evaluates for Workshop value `value` (its
+    /// `01C` GUID), with the value's parameters in `STU_710FE2E1`,
+    /// `STU_F619A2A1`… (`1B4A`).
+    pub fn workshop_value(&self, value: u64) -> Option<&Value> {
+        self.workshop_values.get(&value)
     }
 
     /// A bundle of the runtime `data` folder with the folder's ruleset
@@ -862,15 +931,120 @@ impl GraphStore {
     }
 
     /// The mode entity's variables at the start of a game of `mode` that
-    /// `ruleset` (a `0C0` GUID; 0: none) sets: the mode's own
-    /// (`0C5.m_3CE93B76`) with the ruleset's mode-level values over them
-    /// (`0C0` `m_gamemode.m_3CE93B76`: the Practice Range's `0C0:34` turns
-    /// the hero limit #9548 off). None: the bundle has none for the mode.
-    pub fn mode_variables(&self, mode: u64, ruleset: u64) -> Option<&BTreeMap<u32, ModeValue>> {
-        match self.ruleset_variables.get(&ruleset) {
-            Some((of, variables)) if *of == mode => Some(variables),
-            _ => self.mode_variables.get(&mode),
+    /// `ruleset` sets: the mode's own (`0C5.m_3CE93B76`) with the ruleset's
+    /// mode-level values over them (`0C0` `m_gamemode.m_3CE93B76`: the
+    /// Practice Range's `0C0:34` turns the hero limit #9548 off). `ruleset`
+    /// is a `0C0` GUID, a match's own ruleset
+    /// ([`GraphStore::add_match_ruleset`], its values over the mode's), or 0
+    /// for none. None: the bundle has none for the mode.
+    pub fn mode_variables(&self, mode: u64, ruleset: u64) -> Option<Arc<BTreeMap<u32, ModeValue>>> {
+        if let Some(own) = self.match_rulesets().get(&ruleset)
+            && own.mode == mode
+        {
+            return Some(Arc::clone(&own.variables));
         }
+        match self.ruleset_variables.get(&ruleset) {
+            Some((of, variables)) if *of == mode => Some(Arc::clone(variables)),
+            _ => self.mode_variables.get(&mode).cloned(),
+        }
+    }
+
+    /// `GetGameRulesetValue`'s answer for `key` after the entity variable:
+    /// a match ruleset's own value of the key (for `hero` of any team, then
+    /// for every body), else the hero's and mode's schema default
+    /// ([`Rulesets::default`]).
+    pub fn ruleset_value(
+        &self,
+        key: u32,
+        hero: u64,
+        mode: u64,
+        ruleset: u64,
+    ) -> Option<crate::wire::Value> {
+        let own = self.match_rulesets().get(&ruleset).and_then(|own| {
+            own.bodies
+                .iter()
+                .rev()
+                .filter(|body| body.covers(hero, None))
+                .find_map(|body| body.values.get(&key))
+                .or_else(|| own.values.get(&key))
+                .copied()
+        });
+        match own {
+            Some(value) => Some(value.into()),
+            None => self.rulesets.default(key, hero, mode),
+        }
+    }
+
+    /// A body's entity variables from a match's own ruleset: its values,
+    /// then those of the [`BodyValues`] for the body's `hero` and `team`
+    /// in order. A graph's `GetGameRulesetValue` reads the owner's entity
+    /// variable of the key first, on the server and on each client
+    /// (`Eval_STU_3832D36C`); the client has no other way to a custom
+    /// match's values (its fallback is the schema defaults,
+    /// `sub_7FF789CAC540`), so they go to the bodies its graphs run on: the
+    /// enemy health bars (`0D24` st11, #9539), the cooldown scalars the
+    /// ability graphs read (#9528, #9536, …). Empty for every other match.
+    pub fn body_variables(
+        &self,
+        ruleset: u64,
+        hero: u64,
+        team: Option<u8>,
+    ) -> crate::wire::Variables {
+        let rulesets = self.match_rulesets();
+        let Some(own) = rulesets.get(&ruleset) else {
+            return crate::wire::Variables::new();
+        };
+        own.bodies
+            .iter()
+            .filter(|body| body.covers(hero, team))
+            .fold(own.values.clone(), |mut values, body| {
+                values.extend(&body.values);
+                values
+            })
+            .into_iter()
+            .map(|(key, value)| (key, value.into()))
+            .collect()
+    }
+
+    /// Give a single match its own ruleset `id` (unused by any `0C0`):
+    /// its games of `mode` read `values` before the schema defaults and
+    /// over the mode entity's own variables, and its bodies get them with
+    /// the `bodies` that cover them ([`GraphStore::body_variables`]).
+    /// Empty for every match that is not a custom game;
+    /// [`GraphStore::remove_match_ruleset`] when it ends.
+    pub fn add_match_ruleset(
+        &self,
+        id: u64,
+        mode: u64,
+        values: BTreeMap<u32, ModeValue>,
+        bodies: Vec<BodyValues>,
+    ) {
+        let mut variables = self
+            .mode_variables
+            .get(&mode)
+            .map(|variables| BTreeMap::clone(variables))
+            .unwrap_or_default();
+        variables.extend(values.iter().map(|(&key, &value)| (key, value)));
+        self.match_rulesets.write().expect("match rulesets").insert(
+            id,
+            MatchRuleset {
+                mode,
+                values,
+                bodies,
+                variables: Arc::new(variables),
+            },
+        );
+    }
+
+    pub fn remove_match_ruleset(&self, id: u64) {
+        self.match_rulesets
+            .write()
+            .expect("match rulesets")
+            .remove(&id);
+    }
+
+    fn match_rulesets(&self) -> RwLockReadGuard<'_, HashMap<u64, MatchRuleset>> {
+        self.match_rulesets.read().expect("match rulesets")
     }
 
     pub fn missing(&self) -> &[u32] {
@@ -1019,6 +1193,29 @@ fn played_closure(
         );
     }
     found
+}
+
+/// The graph whose state holds the Workshop's value table: `0CBB` (every
+/// mode entity's shared subgraph) plays it from its entry.
+const WORKSHOP_VALUES_GRAPH: u32 = 0x1b4a;
+
+/// `1B4A`'s `STU_25CBEFB0` map (`m_108E51DD`): each Workshop value's `01C`
+/// GUID and the config the client evaluates for it
+/// (`sub_7FF789C14870` looks a value up there by its identifier).
+fn workshop_values(graph: &Graph) -> BTreeMap<u64, Value> {
+    graph
+        .nodes
+        .iter()
+        .filter(|node| node.class == "STU_25CBEFB0")
+        .filter_map(|node| node.fields.get("m_108E51DD")?.get("entries")?.as_array())
+        .flatten()
+        .filter_map(|entry| {
+            let [key, config] = entry.as_array()?.as_slice() else {
+                return None;
+            };
+            Some((asset_guid(key)?, config.clone()))
+        })
+        .collect()
 }
 
 fn keyed_by_guid<T>(records: BTreeMap<String, T>) -> io::Result<BTreeMap<u64, T>> {
@@ -1200,8 +1397,8 @@ mod tests {
             "Fixture"
         );
         assert_eq!(
-            store.mode_variables(0x0230_0000_0000_0018, 0).unwrap(),
-            &BTreeMap::from([
+            *store.mode_variables(0x0230_0000_0000_0018, 0).unwrap(),
+            BTreeMap::from([
                 (1, ModeValue::Bool(false)),
                 (2, ModeValue::Integer(3)),
                 (3, ModeValue::Asset(0x0d80_0000_0000_195f)),
@@ -1212,7 +1409,10 @@ mod tests {
     /// A game ruleset's mode-level values (`0C0` `m_gamemode.m_3CE93B76`)
     /// go over its mode's variables in its games: the Practice Range's
     /// `0C0:34` sets the hero limit #9548 to `254D`. A game without a
-    /// ruleset, or of another mode, has the mode's own.
+    /// ruleset, or of another mode, has the mode's own. A match's own
+    /// ruleset (a custom game) does the same with its values, and answers
+    /// `GetGameRulesetValue` with them before the schema defaults, until it
+    /// is removed.
     #[test]
     fn a_rulesets_values_go_over_its_modes_variables() {
         const MODE: u64 = 0x0230_0000_0000_0018;
@@ -1234,9 +1434,64 @@ mod tests {
             (9531, ModeValue::Float(0.3)),
             (9548, ModeValue::Asset(0x0d80_0000_0000_254d)),
         ]);
-        assert_eq!(store.mode_variables(MODE, RULESET), Some(&ruled));
-        assert_eq!(store.mode_variables(MODE, 0), Some(&own));
+        assert_eq!(store.mode_variables(MODE, RULESET).as_deref(), Some(&ruled));
+        assert_eq!(store.mode_variables(MODE, 0).as_deref(), Some(&own));
         assert_eq!(store.mode_variables(0x0230_0000_0000_005a, RULESET), None);
+
+        const CUSTOM: u64 = 0x0fd0_ffff_0000_0001;
+        const DOOMFIST: u64 = 0x02e0_0000_0000_012f;
+        assert_eq!(store.ruleset_value(9531, 0, MODE, CUSTOM), None);
+        store.add_match_ruleset(
+            CUSTOM,
+            MODE,
+            BTreeMap::from([(9531, ModeValue::Float(0.0)), (2, ModeValue::Integer(12))]),
+            vec![
+                BodyValues {
+                    team: None,
+                    hero: Some(DOOMFIST),
+                    values: BTreeMap::from([(9744, ModeValue::Float(0.25))]),
+                },
+                BodyValues {
+                    team: Some(1),
+                    hero: None,
+                    values: BTreeMap::from([(9531, ModeValue::Float(0.5))]),
+                },
+            ],
+        );
+        let mut custom = own.clone();
+        custom.extend([(9531, ModeValue::Float(0.0)), (2, ModeValue::Integer(12))]);
+        assert_eq!(store.mode_variables(MODE, CUSTOM).as_deref(), Some(&custom));
+        assert_eq!(
+            store.ruleset_value(9531, 0, MODE, CUSTOM),
+            Some(crate::wire::Value::Float(0.0))
+        );
+        // A hero's own value is his in either team; a team's needs the
+        // body's team.
+        assert_eq!(
+            store.ruleset_value(9744, DOOMFIST, MODE, CUSTOM),
+            Some(crate::wire::Value::Float(0.25))
+        );
+        assert_eq!(store.ruleset_value(9744, 0, MODE, CUSTOM), None);
+        use crate::wire::{Value as Wire, Variables};
+        assert_eq!(
+            store.body_variables(CUSTOM, DOOMFIST, Some(1)),
+            Variables::from([
+                (2, Wire::Integer(12)),
+                (9531, Wire::Float(0.5)),
+                (9744, Wire::Float(0.25)),
+            ])
+        );
+        assert_eq!(
+            store.body_variables(CUSTOM, 0x02e0_0000_0000_0002, Some(0)),
+            Variables::from([(2, Wire::Integer(12)), (9531, Wire::Float(0.0))])
+        );
+        assert!(store.body_variables(0, DOOMFIST, Some(0)).is_empty());
+        // Every other match keeps its values.
+        assert_eq!(store.ruleset_value(9531, 0, MODE, 0), None);
+        assert_eq!(store.mode_variables(MODE, 0).as_deref(), Some(&own));
+        store.remove_match_ruleset(CUSTOM);
+        assert_eq!(store.ruleset_value(9531, 0, MODE, CUSTOM), None);
+        assert_eq!(store.mode_variables(MODE, CUSTOM).as_deref(), Some(&own));
     }
 
     #[test]
@@ -1362,6 +1617,18 @@ mod tests {
         let spawned = walk(&mut reached, SPAWNED.to_vec());
         let auras = walk(&mut reached, aura_graphs("m_5A4051BC"));
         let second_auras = walk(&mut reached, aura_graphs("m_14AA219A"));
+        // The Workshop's condition and action graphs (2026-11-20,
+        // `workshop_graphs`), roots of their own: the catalog's.
+        let catalog: Value = serde_json::from_slice(
+            &std::fs::read(root.join("data/workshop_catalog_174.json")).unwrap(),
+        )
+        .unwrap();
+        let workshop_roots: BTreeSet<u32> = ["events", "conditions", "actions"]
+            .into_iter()
+            .flat_map(|kind| catalog[kind].as_array().unwrap())
+            .filter_map(|entry| asset_guid(&entry["graph"]))
+            .filter_map(|graph| u32::try_from(graph & 0xFFFF_FFFF_FFFF).ok())
+            .collect();
         let placeables = walk(
             &mut reached,
             raw["roots"]["graphs"]
@@ -1369,20 +1636,23 @@ mod tests {
                 .unwrap()
                 .iter()
                 .map(|graph| u32::try_from(graph.as_u64().unwrap()).unwrap())
+                .filter(|graph| !workshop_roots.contains(graph))
                 .chain(store.entities.values().flat_map(body_graphs))
                 .collect(),
         );
+        let workshop = walk(&mut reached, workshop_roots.into_iter().collect());
         let unreached: Vec<u32> = store
             .graph_indexes()
             .filter(|index| !reached.contains(index))
             .collect();
         eprintln!(
-            "left out: spawned {}, aura m_5A4051BC {}, aura m_14AA219A {}, placeables {}; \
-             unreached {unreached:04X?}",
+            "left out: spawned {}, aura m_5A4051BC {}, aura m_14AA219A {}, placeables {}, \
+             Workshop {}; unreached {unreached:04X?}",
             spawned.len(),
             auras.len(),
             second_auras.len(),
-            placeables.len()
+            placeables.len(),
+            workshop.len()
         );
         assert!(
             unreached.is_empty(),
@@ -1394,6 +1664,7 @@ mod tests {
             auras.len(),
             second_auras.len(),
             placeables.len(),
+            workshop.len(),
         );
         let mut hashed = 0;
         for index in store.graph_indexes() {
@@ -1454,7 +1725,7 @@ mod tests {
                 assert_eq!(store.mode_variables.len(), 25);
                 // Data version 25: the auras counted include those only the
                 // placeables' graphs name, as their walk comes first.
-                assert_eq!(left_out, (25, 44, 21, 159));
+                assert_eq!(left_out, (25, 44, 21, 159, 237));
                 "1c4229042f26d5ec0168a49e7f82d55167543ae849baa86f9bfdba7ece355691"
             }
             count => panic!("no reference vector for the {count}-graph bundle (digest {digest})"),

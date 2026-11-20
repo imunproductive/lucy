@@ -283,6 +283,9 @@ pub struct PlacedScript {
     /// Its definition moves it by an idle animation the client plays (a
     /// `STUMirroredIdleAnimComponent`): the Practice Range's platforms.
     pub moving: bool,
+    /// Its second identifier, by which a mode graph removes it
+    /// (`STU_A3DC6A25`: Hanamura's health packs carry `2AB0.01C`).
+    pub second_identifier: Option<u64>,
 }
 
 impl PlacedScript {
@@ -375,6 +378,8 @@ struct RawServerPlaceable {
     script: RawScript,
     #[serde(default)]
     moving: bool,
+    #[serde(default)]
+    second_identifier: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -471,18 +476,19 @@ impl MapAreaData {
             let mut scripts = Vec::new();
             for raw in raw.server_placeables {
                 let placeable = raw.placeable.read(&key)?;
-                let definition = raw
-                    .definition
-                    .map(|text| {
+                let guid = |what: &str, text: Option<String>| {
+                    text.map(|text| {
                         u64::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|_| {
                             invalid(format!(
-                                "{FILE}: map {key}: placeable {}: definition {text}",
+                                "{FILE}: map {key}: placeable {}: {what} {text}",
                                 placeable.placeable
                             ))
                         })
                     })
-                    .transpose()?
-                    .unwrap_or_default();
+                    .transpose()
+                };
+                let definition = guid("definition", raw.definition)?.unwrap_or_default();
+                let second_identifier = guid("second identifier", raw.second_identifier)?;
                 scripts.push(Arc::new(PlacedScript {
                     placeable: placeable.placeable,
                     definition,
@@ -490,6 +496,7 @@ impl MapAreaData {
                     overrides: raw.script.overrides,
                     extra: raw.script.extra,
                     moving: raw.moving,
+                    second_identifier,
                 }));
                 server_placeables.push(placeable);
             }

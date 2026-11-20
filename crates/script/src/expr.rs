@@ -35,6 +35,9 @@ use compiled::{Config, Program};
 pub const EPSILON: f64 = 1.192_092_895_507_812_5e-5;
 const MAX_CONFIG_DEPTH: usize = 64;
 pub const MAX_EXPRESSION_STEPS: usize = 4096;
+/// The parameter a mapped array's expression reads its item's index as
+/// (`STU_6C846FF5`; the item is every other).
+const MAPPED_INDEX: u32 = 12;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Scope {
@@ -356,6 +359,19 @@ pub trait Context {
         None
     }
 
+    /// The config of Workshop value `value` (its `01C` GUID) in `1B4A`
+    /// ([`GraphStore::workshop_value`](crate::graph::GraphStore::workshop_value));
+    /// None: unknown.
+    fn workshop_value(&mut self, _value: u64) -> Option<Json> {
+        None
+    }
+
+    /// The id of the instance whose config is evaluated; None: not an
+    /// instance's.
+    fn instance_id(&mut self) -> Option<u16> {
+        None
+    }
+
     /// Whether an unknown config class or opcode reads as null, as in the
     /// Python reference, instead of failing the expression. A context that
     /// answers true records the case.
@@ -541,6 +557,124 @@ pub fn lvalue(config: &Json) -> Result<Option<Variable>, EvalError> {
     let index = byte(&parts.code[1], 1)?;
     let entry = table(parts.dynamics, index, 0)?;
     dynamic(entry)
+}
+
+/// An assignment to an array element, `#v[index]` (`[8 v, <index>, 17]`:
+/// Set Global Variable At Index `1DDD` writes `#514[clamp(#18739[1], 0,
+/// 999)]` so): the variable and the index, evaluated now. None: not that
+/// form.
+pub fn element_lvalue(
+    config: &Json,
+    context: &mut impl Context,
+) -> Result<Option<(Variable, Value)>, EvalError> {
+    if !is_expression(class(config)) {
+        return Ok(None);
+    }
+    let parts = Expression::read(config)?;
+    let end = parts
+        .code
+        .iter()
+        .rposition(|op| op.as_u64() != Some(0))
+        .unwrap_or(0);
+    if end < 3
+        || !matches!(parts.code[0].as_u64(), Some(8 | 9))
+        || parts.code[end].as_u64() != Some(17)
+    {
+        return Ok(None);
+    }
+    let Some(variable) = dynamic(table(parts.dynamics, byte(&parts.code[1], 1)?, 0)?)? else {
+        return Ok(None);
+    };
+    let program = Program::compile(config)?;
+    let index =
+        Evaluator::new(MAX_EXPRESSION_STEPS, None).run(&program, 2..end, config, context, 0)?;
+    Ok(Some((variable, index)))
+}
+
+/// Workshop variable `index` (clamped to 0..=127) of an entity: its entity
+/// variable `index - 129` as a u16, `FF7F` to `FFFE` (the client's
+/// opcode 72, case 0x48 of 0x7FF78AA91210, writes a reference's id so).
+/// Workshop global variables are the mode entity's, player variables the
+/// player's (`refs/reports/Workshop.md` §2).
+pub fn workshop_variable(index: i64) -> u32 {
+    u32::from((index.clamp(0, 127) as u16).wrapping_sub(129))
+}
+
+/// An `m_out_Var` that names an entity's Workshop variable with opcode 72
+/// (`STU_0BDBC7B2` in Set Global Variable `1367`: `[14 0, 8 0, 6 0, 17,
+/// 72]`, the mode entity's variable `#18739[0]`): the entity the
+/// expression leaves and the variable. None: no opcode 72 named one.
+pub fn workshop_reference(
+    config: &Json,
+    context: &mut impl Context,
+) -> Result<Option<(Value, u32)>, EvalError> {
+    let mut evaluator = Evaluator::new(MAX_EXPRESSION_STEPS, None);
+    evaluator.reference = Some(None);
+    let entity = evaluator.config(config, context, 0)?;
+    Ok(evaluator.reference.flatten().map(|id| (entity, id)))
+}
+
+/// The keys of a Workshop value tree (a keyed array, `sub_7FF789C14870`):
+/// the value's `01C` GUID, its parameters, and the mark of an item taken
+/// as it is.
+pub const WORKSHOP_VALUE: u16 = 0x229a;
+pub const WORKSHOP_PARAMETERS: u16 = 0x4932;
+const WORKSHOP_AS_IS: u16 = 0x4e90;
+
+/// Workshop value `value` (its `01C` GUID) with `parameters`, as the
+/// action graphs' `STU_77B0987E` reads it from `#18739`.
+pub fn workshop_tree(value: u64, parameters: Vec<Value>) -> Value {
+    Value::Map(vec![
+        (
+            Value::Integer(i64::from(WORKSHOP_VALUE)),
+            Value::Asset(value),
+        ),
+        (
+            Value::Integer(i64::from(WORKSHOP_PARAMETERS)),
+            Value::Array(parameters),
+        ),
+    ])
+}
+
+fn workshop_key(tree: &[(Value, Value)], key: u16) -> Option<&Value> {
+    tree.iter()
+        .find(|(item, _)| *item == Value::Integer(i64::from(key)))
+        .map(|(_, value)| value)
+}
+
+/// A value as Workshop text, for the client's string configs
+/// (`STU_903EAF27`, `sub_7FF789A700F0`): a string as it is, an integer
+/// with `%d`, a float with `%d` when it is whole and `%.2f` otherwise, an
+/// array's items joined with ", ".
+pub fn workshop_text(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::String(text) => text.clone(),
+        Value::Bool(value) => if *value { "True" } else { "False" }.to_owned(),
+        Value::Integer(value) => value.to_string(),
+        Value::Float(value) => {
+            let value = *value as f32;
+            let whole = value.round();
+            if (whole - value).abs() < 0.000_011_920_929 {
+                format!("{}", whole as i32)
+            } else {
+                format!("{value:.2}")
+            }
+        }
+        Value::Vector(parts) => {
+            let parts: Vec<String> = parts
+                .iter()
+                .map(|part| workshop_text(&Value::Float(*part)))
+                .collect();
+            format!("({})", parts.join(", "))
+        }
+        Value::Array(items) => items
+            .iter()
+            .map(workshop_text)
+            .collect::<Vec<_>>()
+            .join(", "),
+        other => format!("{other:?}"),
+    }
 }
 
 /// The variable an entity member expression reads (`entity.#id`: a config
@@ -1193,6 +1327,15 @@ struct Evaluator<'t> {
     steps: usize,
     /// The compiled configs of the node whose fields are evaluated.
     table: Option<&'t ConfigTable>,
+    /// [`workshop_reference`]: opcode 72 with only its entity below it
+    /// names its variable here instead of reading it (none: not asked).
+    reference: Option<Option<u32>>,
+    /// The parameters of the Workshop values being evaluated, innermost
+    /// last ([`Self::workshop_tree`]).
+    workshop_parameters: Vec<Vec<Value>>,
+    /// The items of the mapped arrays being evaluated, innermost last, with
+    /// their index (`STU_6C846FF5`): parameter reads take them.
+    mapped: Vec<(i64, Value)>,
 }
 
 impl<'t> Evaluator<'t> {
@@ -1201,7 +1344,52 @@ impl<'t> Evaluator<'t> {
             limit,
             steps: 0,
             table,
+            reference: None,
+            workshop_parameters: Vec::new(),
+            mapped: Vec::new(),
         }
+    }
+
+    /// A Workshop value tree as the client evaluates it
+    /// (`sub_7FF789C14870`): key `229A` names the value (its `01C` GUID),
+    /// whose config in `1B4A` ([`Context::workshop_value`]) runs with the
+    /// items of key `4932` as its parameters, at most eight. An item that
+    /// is itself a tree with parameters is evaluated first; one with key
+    /// `4E90` too, or any other value, is taken as it is. Nothing for an
+    /// unknown value. (The client's other item forms, keys `0C6B`, `06F1`,
+    /// `03AC`, `6933`, `1EE2`, `01D1`, are a player slot, team, hero, map,
+    /// game mode and an identifier read from the match; the server sends
+    /// none of them.)
+    fn workshop_tree(
+        &mut self,
+        tree: &[(Value, Value)],
+        context: &mut impl Context,
+        depth: usize,
+    ) -> Result<Value, EvalError> {
+        let Some(Value::Asset(value)) = workshop_key(tree, WORKSHOP_VALUE) else {
+            return Ok(Value::Null);
+        };
+        let Some(config) = context.workshop_value(*value) else {
+            return Ok(Value::Null);
+        };
+        let mut parameters = Vec::new();
+        if let Some(Value::Array(items)) = workshop_key(tree, WORKSHOP_PARAMETERS) {
+            for item in items.iter().take(8) {
+                parameters.push(match item {
+                    Value::Map(nested)
+                        if workshop_key(nested, WORKSHOP_PARAMETERS).is_some()
+                            && workshop_key(nested, WORKSHOP_AS_IS).is_none() =>
+                    {
+                        self.workshop_tree(nested, context, depth + 1)?
+                    }
+                    item => item.clone(),
+                });
+            }
+        }
+        self.workshop_parameters.push(parameters);
+        let result = self.config(&config, context, depth + 1);
+        self.workshop_parameters.pop();
+        result
     }
 
     fn config(
@@ -1435,6 +1623,145 @@ impl Evaluator<'_> {
                 }
                 Value::Vector(parts)
             }
+            // A Workshop string as text (`Eval_STU_903EAF27`
+            // 0x7FF78984F4A0 formats its `m_value` with `sub_7FF789A700F0`;
+            // `STU_2566340D` gives its `m_string`'s with five flags,
+            // `m_DBF18833` … `m_796613D4`, unread here). The server hands
+            // the action graphs its strings already formatted (a string
+            // value), so the text is the value's: a string as it is, other
+            // values as [`workshop_text`] writes them. Assumption: the
+            // client's formatter leaves a plain string as it is.
+            "STU_903EAF27" => Value::String(workshop_text(&self.config(value, context, nested)?)),
+            "STU_2566340D" => {
+                return self.config(child(config, "m_string"), context, nested);
+            }
+            // A Workshop parameter as the action graphs read it from
+            // `#18739` (391 uses in 177 graphs): `m_35547D6E` within
+            // `m_FDCA1FD0` and `m_68CFF844` (slot 5 `sub_7FF789C19A10`,
+            // then `sub_7FF789C15350`: an integer clamped to them, a float
+            // only when they don't hold 0, any other value as it is). The
+            // value is a Workshop value tree, a keyed array (type 13):
+            // anything else reads as nothing ([`Self::workshop_tree`]).
+            "STU_77B0987E" => {
+                let value = match self.config(child(config, "m_35547D6E"), context, nested)? {
+                    Value::Map(tree) => self.workshop_tree(&tree, context, nested)?,
+                    _ => Value::Null,
+                };
+                let low = to_float(&self.config(child(config, "m_FDCA1FD0"), context, nested)?);
+                let high = to_float(&self.config(child(config, "m_68CFF844"), context, nested)?);
+                match value {
+                    Value::Integer(value) => {
+                        Value::Integer(value.clamp(low as i64, (high as i64).max(low as i64)))
+                    }
+                    Value::Float(value) if low > 0.0 || high < 0.0 => {
+                        Value::Float(value.clamp(low, high.max(low)))
+                    }
+                    value => value,
+                }
+            }
+            // A Workshop value's parameters as `1B4A`'s configs read them
+            // (slot 5: the parameter array at `+0x370` plus 16 bytes per
+            // index; evaluate `sub_7FF78AA88550`, shared).
+            "STU_710FE2E1" | "STU_F619A2A1" | "STU_F8C22BD0" | "STU_E2D4B7FE" | "STU_B7520848" => {
+                let index = match class {
+                    "STU_710FE2E1" => 0,
+                    "STU_F619A2A1" => 1,
+                    "STU_F8C22BD0" => 2,
+                    "STU_E2D4B7FE" => 3,
+                    _ => 4,
+                };
+                self.workshop_parameters
+                    .last()
+                    .and_then(|parameters| parameters.get(index))
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            }
+            // Local Player (`Eval_STU_8985E00A`: the client's own player
+            // entity): the server has none.
+            "STU_8985E00A" => Value::Null,
+            // A console variable's value by its hash `m_74A2248F` (slot 5
+            // `sub_7FF789C04A60`: the getters of the client's 1601 console
+            // variables, a table at 0x7FF78B574A90 by hash; `0CBB` rid122
+            // reads `0FE1E03E`, DevFeatures). A hash not in that table
+            // leaves the evaluate's value as it starts, integer 0
+            // (`sub_7FF78AA88550`, type 2), a value. Custom String `5C14`
+            // in `1B4A` tests `A3AAEC43`, which no 1.74 console variable
+            // has (`owsearch cvar`, the table), so it writes its text. The
+            // server knows no other console variable's value.
+            "STU_A753DC79"
+                if child(config, "m_74A2248F").as_i64().map(|hash| hash as u32)
+                    == Some(0xA3AA_EC43) =>
+            {
+                Value::Integer(0)
+            }
+            // A copy of a reevaluated Workshop parameter (Create HUD Text's
+            // scope `1D8A` rid6 and five more Create graphs). Server-only:
+            // the client's evaluate is the base config's `xor al, al`; the
+            // server gives its `m_value` (assumption: the server evaluates
+            // it again on its reevaluation, Workshop.md §8).
+            "STU_70757664" => return self.config(value, context, nested),
+            // An instance's id (`Eval_STU_5F94FAF9` 0x7FF789BEFEA0): with a
+            // graph `m_E153523C` and `m_entity`, that graph's instance on
+            // the entity's component 47 (refused: unset in all 23 uses);
+            // without, the evaluating instance. It gives the instance's
+            // vtable +248, `sub_7FF7898AC7E0`: the i16 at `+24`, which the
+            // constructor `sub_7FF78AAA0800` sets from the id the host
+            // creates it with (`sub_7FF789887F20` a3), as an integer.
+            // Start Forcing Player Position `292F` keeps it in `#16797`.
+            "STU_5F94FAF9" => {
+                if !child(config, "m_E153523C").is_null() || !child(config, "m_entity").is_null() {
+                    return Err(EvalError::UnsupportedConfig(class.into()));
+                }
+                let id = context
+                    .instance_id()
+                    .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
+                Value::Integer(i64::from(id as i16))
+            }
+            // A filtered array (slot 5 `sub_7FF78AA8A300`): the items of
+            // `m_814F8EC3` (a non-array as one) for which `m_condition`,
+            // evaluated with the same frame {index, item, output} as a
+            // mapped array's (`+1272`), is true, in order. Set Player
+            // Allowed Heroes `1D57` keeps the heroes of All Heroes its
+            // parameter lists (parameter 142, the item).
+            "STU_951CAB4C" => {
+                let items =
+                    into_array(self.config(child(config, "m_814F8EC3"), context, nested)?);
+                let mut kept = Vec::new();
+                for (index, item) in (0..).zip(items) {
+                    self.mapped.push((index, item));
+                    let pass = self.config(child(config, "m_condition"), context, nested);
+                    let (_, item) = self.mapped.pop().expect("pushed above");
+                    if truthy(&pass?) {
+                        kept.push(item);
+                    }
+                }
+                Value::Array(kept)
+            }
+            // A mapped array (slot 5 `sub_7FF78AA89DD0`): each item of
+            // `m_814F8EC3` (a non-array as one) is replaced by
+            // `m_260A4690` evaluated with a frame {index, item, output}
+            // pushed on the context's stack (`+1272`). `m_5CB50308`, which
+            // would run first for each item, is unset in all its uses
+            // (refused). Its uses read the item as parameter 142 (Cancel
+            // Primary Action `2736` maps its players to their bodies, the
+            // scope's targets) and the index as parameter 12 (`288B` st193:
+            // `#3437[param 12]`); any other parameter reads the item, as a
+            // FilterArray's candidate is read (`vm/filter_array.rs`).
+            "STU_6C846FF5" => {
+                if !child(config, "m_5CB50308").is_null() {
+                    return Err(EvalError::UnsupportedConfig(class.into()));
+                }
+                let items =
+                    into_array(self.config(child(config, "m_814F8EC3"), context, nested)?);
+                let mut mapped = Vec::with_capacity(items.len());
+                for (index, item) in (0..).zip(items) {
+                    self.mapped.push((index, item));
+                    let value = self.config(child(config, "m_260A4690"), context, nested);
+                    self.mapped.pop();
+                    mapped.push(value?);
+                }
+                Value::Array(mapped)
+            }
             "STU_919FD47C" | "STUConfigVarExpression" => {
                 return self.expression(&Program::compile(config)?, config, context, nested);
             }
@@ -1448,6 +1775,11 @@ impl Evaluator<'_> {
             // Baptiste's graphs store in `#8518` by the owner's team for
             // their volleys' `m_C1903771` (`weapons::ray_profile`).
             "STU_20DB8AB5" => literal_asset(config, class, "m_C1903771", 0x0690)
+                .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
+            // An entity definition (`003`): the health packs' `0216`/`0217`
+            // pass their visual (`005F`/`0060`) to `0046` as #1206, which
+            // its StateCreateEntity makes (`vm/entities.rs`).
+            "STU_8556841E" => literal_asset(config, class, "m_entityDef", 0x0400)
                 .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
             "STU_ABB6C23E" => {
                 if !native_shape(config, class, Some("m_resourceKey"))
@@ -1700,6 +2032,12 @@ impl Evaluator<'_> {
             // c239a84, `CONFIG_EVALUATION.txt`).
             "STU_BD6CC023" if native_shape(config, class, Some("m_6CE7A900")) => {
                 Value::Integer(i64::from(integer(child(config, "m_6CE7A900"))? as i32))
+            }
+            // The pickup kind (`vm/pickups.rs`): the same evaluate
+            // (0x7FF78AA960F0, shared by 30 classes) reads its enum at +0x10
+            // as a signed 32-bit integer (`python tools/stu.py STU_B9BE2BE1`).
+            "STU_B9BE2BE1" if native_shape(config, class, Some("m_1A69E234")) => {
+                Value::Integer(i64::from(integer(child(config, "m_1A69E234"))? as i32))
             }
             // The scalar read (+20, 1B77980) of a config list takes only its
             // first config, failure included (`play._scalar` in
@@ -2226,7 +2564,12 @@ impl Evaluator<'_> {
                 }
                 Value::Bool(false)
             }
-            "STU_F76C486C" | "STU_F7262B36" | "STU_0AC15F78" | "STU_DB742151" => {
+            // `STU_0165541D` (`Eval_STU_0165541D` 0x7FF789BF3A40, which
+            // looks up the entity's component 44): the Workshop actions'
+            // body of a target player (Teleport `1D45`, Set Ability
+            // Cooldown `2735`). Assumption: the possessed body, as
+            // `STU_0AC15F78`; its other paths are not traced.
+            "STU_F76C486C" | "STU_F7262B36" | "STU_0AC15F78" | "STU_DB742151" | "STU_0165541D" => {
                 let (relation, operand) = match class {
                     "STU_F76C486C" => (EntityRelation::Owner, "m_D63CBEC2"),
                     "STU_F7262B36" => (EntityRelation::CurrentPossessor, "m_801B298F"),
@@ -3031,11 +3374,23 @@ impl Evaluator<'_> {
         context: &mut impl Context,
         depth: usize,
     ) -> Result<Value, EvalError> {
+        self.run(program, 0..program.steps.len(), config, context, depth)
+    }
+
+    /// Run the steps of `program` in `steps` (a jump out of them ends it).
+    fn run(
+        &mut self,
+        program: &Program,
+        steps: std::ops::Range<usize>,
+        config: &Json,
+        context: &mut impl Context,
+        depth: usize,
+    ) -> Result<Value, EvalError> {
         // Read when a config push first runs.
         let mut configs = None;
-        let mut pc = 0;
+        let mut pc = steps.start;
         let mut stack = Vec::new();
-        while pc < program.steps.len() {
+        while pc < steps.end {
             if self.steps >= self.limit {
                 return Err(EvalError::BudgetExceeded {
                     offset: pc,
@@ -3086,7 +3441,14 @@ impl Evaluator<'_> {
                         context.parent_variable(arg, variable)
                     })
                 }
-                13 => context.parameter(step.parameter()?),
+                13 => {
+                    let id = step.parameter()?;
+                    match self.mapped.last() {
+                        Some(&(index, _)) if id == MAPPED_INDEX => Value::Integer(index),
+                        Some((_, item)) => item.clone(),
+                        None => context.parameter(id),
+                    }
+                }
                 14 => {
                     let configs = *configs.get_or_insert_with(|| {
                         array_field(config, "m_configVars")
@@ -3308,6 +3670,22 @@ impl Evaluator<'_> {
                     let (a, b) = pair(&mut stack, pc)?;
                     let (a, b) = (to_float(&a), to_float(&b));
                     Value::Float(rounded(a + (b - a) * t))
+                }
+                // An entity's Workshop variable: the index on top (an
+                // integer clamped to 0..=127) under the entity
+                // ([`workshop_variable`]). The client reads it through the
+                // entity's script host (case 0x48 of 0x7FF78AA91210); in a
+                // variable reference with only the entity below, it names
+                // the variable and leaves the entity ([`workshop_reference`]).
+                72 => {
+                    let id = workshop_variable(to_int(&pop(&mut stack, pc)?, 0));
+                    if let Some(reference) = self.reference.as_mut().filter(|_| stack.len() == 1) {
+                        *reference = Some(id);
+                        pc = next;
+                        continue;
+                    }
+                    let entity = pop(&mut stack, pc)?;
+                    entity_member(&entity, &Value::Integer(i64::from(id)), context)
                 }
                 _ => return Err(EvalError::UnsupportedOpcode { opcode, offset: pc }),
             };

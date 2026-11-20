@@ -12,7 +12,6 @@
 //! does, an inference from the reads, GameSettings.md).
 
 use crate::{
-    rulesets::Rulesets,
     weapons::DamageTags,
     wire::{Value, Variables},
 };
@@ -33,12 +32,13 @@ pub const ULTIMATE_GENERATION: u32 = 0x253C;
 pub const PASSIVE_GENERATION: u32 = 0x3276;
 pub const COMBAT_GENERATION: u32 = 0x32DE;
 
-/// The ruleset's ultimate generation settings for the hero in the mode,
-/// as entity variables for the body's spawn: the ones the schemas set.
-pub fn generation_variables(rulesets: &Rulesets, hero: u64, mode: u64) -> Variables {
+/// The ruleset's ultimate generation settings for the body's spawn, as
+/// entity variables: the ones `ruleset` answers (the hero's and mode's
+/// schemas, or a match's own ruleset, `GraphStore::ruleset_value`).
+pub fn generation_variables(ruleset: impl Fn(u32) -> Option<Value>) -> Variables {
     [ULTIMATE_GENERATION, PASSIVE_GENERATION, COMBAT_GENERATION]
         .into_iter()
-        .filter_map(|key| Some((key, rulesets.default(key, hero, mode)?)))
+        .filter_map(|key| Some((key, ruleset(key)?)))
         .collect()
 }
 

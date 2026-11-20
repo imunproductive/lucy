@@ -70,6 +70,13 @@ const SERVER_NO_OPS: &[&str] = &[
     // index; the server has no voice playing, and its frames don't pulse
     // remote actions outside the wheel's graphs yet.
     "STU_3D419B63",
+    // The Workshop Inspector's server-only nodes (no client registration):
+    // Enable/Disable Inspector Recording `2425`/`2426` (`STU_B80EB51C`, its
+    // bool `m_9A9E72EC`) and Log To Inspector `2E80` (`STU_61975068`). The
+    // retail server recorded for the Inspector; ORPHEUS keeps no Inspector
+    // (`docs/dev/loose-ends.md`), so they only go on.
+    "STU_B80EB51C",
+    "STU_61975068",
 ];
 
 /// Unnamed actions the server runs as no-ops without knowing what they do,
@@ -267,9 +274,17 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                     .or_else(|| play::server_played_graph(graph, node.pos))
                 {
                     self.play_script(id, node, played)?;
-                } else if self.graphs.is_aura_graph(graph) {
+                } else if self.graphs.is_aura_graph(graph)
+                    || self.graphs.is_workshop_action(graph)
+                    || play::HEALTH_PACKS.contains(&graph)
+                {
                     // An aura's graph plays its effect on the body
-                    // (`vm/auras.rs`: `0C71` plays `0B99` or `0C72`).
+                    // (`vm/auras.rs`: `0C71` plays `0B99` or `0C72`); a
+                    // Workshop action its helper on its targets (Chase
+                    // Player Variable At Rate `1CCC` plays `1CCF` on each
+                    // player's controller, `vm/workshop.rs`); a health
+                    // pack `0046` on itself and `0046` its visual's `0EB9`
+                    // ([`play::HEALTH_PACKS`]).
                     let played = node
                         .field("m_script.m_graph")
                         .and_then(asset_guid)
@@ -402,8 +417,14 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             "STU_D49BBD03" => self.set_parent_variable(id, node, depth),
             "STU_523EE38D" => self.destroy_entity(id, node, depth),
             "STU_FC3921B1" => self.create_dummy_bot(id, node, depth),
+            "STUStatescriptActionCreateEntity" => self.create_entity(id, node, depth),
             "STU_C1561031" => self.remove_dummy_bot(id, node, depth),
             "STU_CFCE55DC" => self.move_body(id, node, depth),
+            "STU_1E93FE1F" | "STU_DC325C52" | "STU_ADAFD7FF" | "STU_99ED4486" => {
+                self.action_result(id, node, depth)
+            }
+            "STU_0BDBC7B2" => self.set_variable_of(id, node, depth),
+            "STU_D137ECA0" => self.for_each_index(id, node, depth),
             "STU_A1DF3B2D" => self.related_entities(id, node, depth),
             "STU_08D6BA6E" => {
                 self.cast_action(id, node)?;
@@ -438,7 +459,10 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 Ok(true)
             }
             class if SERVER_NO_OPS.contains(&class) => {
-                if matches!(class, "STU_7106C356" | "STUStatescriptActionEffect") {
+                if matches!(
+                    class,
+                    "STU_7106C356" | "STUStatescriptActionEffect" | "STU_100EF8C2"
+                ) {
                     self.record_frame_action(id, node);
                 }
                 self.follow(id, node, "m_outPlug", None, depth)?;
@@ -629,7 +653,24 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
         let site = self.site(id, node);
         let target = match expr::lvalue(target) {
             Ok(Some(target)) => source_key(id, target),
-            Ok(None) => return Ok(true),
+            // `#v[index] = value` (`expr::element_lvalue`): the Workshop's
+            // Set Variable At Index graphs.
+            Ok(None) => {
+                let Some(element) =
+                    self.evaluate_with(id, node, |context| expr::element_lvalue(target, context))
+                else {
+                    return Ok(false);
+                };
+                return match element {
+                    Some((variable, index)) => match usize::try_from(expr::to_int(&index, 0)) {
+                        Ok(index) => {
+                            self.write_element(site, source_key(id, variable), index, value)
+                        }
+                        Err(_) => Ok(true),
+                    },
+                    None => Ok(true),
+                };
+            }
             Err(error) => {
                 self.report(site, Issue::Expression(error));
                 return Ok(false);
@@ -670,36 +711,47 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 return Ok(false);
             };
             if let Ok(index) = usize::try_from(index) {
-                let mut items = match self.machine.value(target, None) {
-                    Value::Array(items) => items,
-                    Value::Null => Vec::new(),
-                    value => vec![value],
-                };
-                if index >= usize::from(u16::MAX) {
-                    self.report(
-                        site,
-                        Issue::UnsupportedField("SetVar array exceeds the wire count"),
-                    );
-                    return Ok(false);
-                }
-                if index >= items.len() {
-                    let extra = index + 1 - items.len();
-                    self.machine.work_left =
-                        self.machine
-                            .work_left
-                            .checked_sub(extra)
-                            .ok_or(InitFault::WorkBudget {
-                                limit: self.machine.max_work,
-                                operation: "SetVar array extension",
-                            })?;
-                    items.resize(index + 1, Value::Null);
-                }
-                items[index] = value;
-                self.write(target, Value::Array(items))?;
-                return Ok(true);
+                return self.write_element(site, target, index, value);
             }
         }
         self.write(target, value)?;
+        Ok(true)
+    }
+
+    /// Set item `index` of the array in `target`, which grows to hold it.
+    fn write_element(
+        &mut self,
+        site: Site,
+        target: VarKey,
+        index: usize,
+        value: Value,
+    ) -> Result<bool, InitFault> {
+        let mut items = match self.machine.value(target, None) {
+            Value::Array(items) => items,
+            Value::Null => Vec::new(),
+            value => vec![value],
+        };
+        if index >= usize::from(u16::MAX) {
+            self.report(
+                site,
+                Issue::UnsupportedField("SetVar array exceeds the wire count"),
+            );
+            return Ok(false);
+        }
+        if index >= items.len() {
+            let extra = index + 1 - items.len();
+            self.machine.work_left =
+                self.machine
+                    .work_left
+                    .checked_sub(extra)
+                    .ok_or(InitFault::WorkBudget {
+                        limit: self.machine.max_work,
+                        operation: "SetVar array extension",
+                    })?;
+            items.resize(index + 1, Value::Null);
+        }
+        items[index] = value;
+        self.write(target, Value::Array(items))?;
         Ok(true)
     }
 
@@ -747,6 +799,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // Python reference (`ow174/game/script/nodes.py`).
             "STUStatescriptState"
             | "STU_9D7BF987"
+            // ClientOnlySharedVars (`m_vars`): Small Message `1D7B` and
+            // Create HUD Text `1D8A` share the rule's event context
+            // (`#19467` Event Player, `#22213` Attacker, Victim…, read by
+            // `1B4A`) with the clients; nothing for the server.
+            | "STU_1B2CD7F2"
             | "STU_B4CD94F4"
             | "STU_90C3BCEA"
             | "STUStatescriptStateDataFlowMapping"
@@ -814,10 +871,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             // doesn't have: a plain state, as Python ran it, that its frames
             // carry for the client to run.
             "STU_75D1C308" => StateKind::Plain,
-            // The scene tag query state, the spawn picker and the shuffled
-            // picker run the base lifecycle; their work is `vm/entities.rs`
-            // (codec `none`).
-            "STU_160F2578" | "STU_5E805B5A" | "STU_37072672" => StateKind::Plain,
+            // The scene tag query state, the spawn picker, the shuffled
+            // picker and the placeable remover run the base lifecycle; their
+            // work is `vm/entities.rs` (codec `none`).
+            "STU_160F2578" | "STU_5E805B5A" | "STU_37072672" | "STU_A3DC6A25" => {
+                StateKind::Plain
+            }
             // The aim speed (`STU_3716E1D4`): its own begin, end and update
             // (0x7FF7897F6390, 0x7FF7897F63E0, 0x7FF7897F6410) only call
             // 0x7FF789808820, which scales the pose rates of the entity's
@@ -992,22 +1051,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 );
                 StateKind::Plain
             }
-            // `STU_87621906` (server-only, `0033` st11 alone): while a living
-            // hero body is hurt (st10) it writes an entity into
-            // `m_0E739B87` (#1195), which `0033` then sends `0643.025`
-            // every 0.5 s when that entity's #6396 is on a team or is the
-            // body; `m_1A69E234` is `STU_B9BE2BE1` 0 and `m_05140BC3` the
-            // owner. Which entity it picks is not derivable (no client
-            // code): it writes none, as the release build's plain state
-            // did, so `0643` goes nowhere.
-            "STU_87621906" => {
-                self.assume(
-                    self.site(id, node),
-                    &node.class,
-                    "plain state (server-only, picks no entity)",
-                );
-                StateKind::Plain
-            }
+            // The pickup pair (server-only, `vm/pickups.rs`): the health
+            // pack's pickup `0046` st5 and the hurt body's search `0033`
+            // st11 for the pickup it touches.
+            "STU_913C09E4" => StateKind::Pickup,
+            "STU_87621906" => StateKind::PickupSearch { found: None },
+            "STUStatescriptStateCreateEntity" => StateKind::CreateEntity { entity: None },
             // A wait the server ends (`begin_server_wait`, `end_wind_up`).
             "STU_54FEB21C" => StateKind::Plain,
             class if ASSUMED_PLAIN_STATES.contains(&class) => StateKind::Plain,
@@ -1149,6 +1198,12 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             StateKind::HitList => self.assume(self.site(id, node), &node.class, "no hits"),
             StateKind::Scope => self.begin_scope(key, node, depth)?,
+            StateKind::CreateEntity { .. } => self.begin_create_entity(key, node)?,
+            StateKind::Pickup => self.begin_pickup(key, node),
+            StateKind::PickupSearch { .. } => {
+                self.search_pickup(key, node, true)?;
+                self.register_tick(key, self.machine.now_ms);
+            }
             StateKind::Plain if node.class == "STU_160F2578" => {
                 if !self.write_tag_query(id, node)? {
                     return Ok(());
@@ -1156,6 +1211,11 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             }
             StateKind::Plain if node.class == "STU_37072672" => {
                 if !self.pick_shuffled(id, node)? {
+                    return Ok(());
+                }
+            }
+            StateKind::Plain if node.class == "STU_A3DC6A25" => {
+                if !self.remove_placeables(id, node)? {
                     return Ok(());
                 }
             }

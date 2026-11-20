@@ -64,6 +64,7 @@ impl Machine {
             motions: Vec::new(),
             applied_auras: BTreeMap::new(),
             scopes: BTreeMap::new(),
+            outcomes: BTreeMap::new(),
         })
     }
 
