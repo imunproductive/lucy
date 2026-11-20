@@ -1454,6 +1454,53 @@ fn owner_correction_respects_create_budget_and_failed_transport() {
     assert!(world.queued.is_empty());
 }
 
+/// A graph's teleport of a body that keeps no correction history goes
+/// once, after the body's create arrived, in a packet of its pose's frame
+/// or later: the mover runs the client's commands, whose frames lead the
+/// server's, and a packet can't carry a state of a later frame (the C32S2
+/// spawn's "a state of frame 2111 cannot go in packet frame 2109").
+#[test]
+fn a_teleport_waits_for_the_create_and_a_packet_of_its_frame() {
+    let mut world = WorldDelivery::new(OWNER);
+    let id = avatar(1, 1);
+    world.started = Some(100);
+    world.body = Some(body(id));
+    world
+        .bodies
+        .insert(id.entity, (id.generation, Lifetime::Live));
+    world.teleported = Some(Movement {
+        frame: Some(111),
+        ..Movement::default()
+    });
+    let mut egress = GameEgress::default();
+    assert!(
+        transmit(&mut world, &mut egress, 111, 0)
+            .1
+            .records
+            .is_empty()
+    );
+    world.acknowledge(
+        outcome(Arc::new(record(id.entity, Delivery::CreateBody(id))), true),
+        Duration::ZERO,
+    );
+    assert!(
+        transmit(&mut world, &mut egress, 110, 1)
+            .1
+            .records
+            .is_empty()
+    );
+    assert_eq!(
+        transmit(&mut world, &mut egress, 111, 2).1.records,
+        [RecordSource::Movement(0)]
+    );
+    assert!(
+        transmit(&mut world, &mut egress, 112, 3)
+            .1
+            .records
+            .is_empty()
+    );
+}
+
 #[test]
 #[ignore = "requires a derived 104319 Practice Range pack without bot VM graphs"]
 fn prepared_worker_resumes_unposed_vm_frames_before_advancing_physics() {

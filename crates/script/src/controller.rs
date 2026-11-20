@@ -992,6 +992,34 @@ mod tests {
         projects(&script);
     }
 
+    /// The mode's `0727` (held to every entity from the match's start,
+    /// `0F4A` st22 / `13C0` st1) opens hero select for a player with no
+    /// body and keeps it open, in any phase, until he has one: `0C90` st28
+    /// → st30 (no possessed body) → st29, whose st32 holds `0738` to its
+    /// own controller → `288B` st126 → st134 (`!STU_A89D860A()` and may
+    /// pick) → st130 stacks #2438e true. His own close doesn't shut it
+    /// (rid22 writes the value under the stack). Once his picked hero's
+    /// body lives, st30 lets `0738` go, the stack ends and st95 closes it.
+    #[test]
+    #[ignore = "requires the derived 104319 graph bundle"]
+    fn the_modes_0727_keeps_hero_select_open_until_the_player_has_a_body() {
+        const MODE_CONTROLLERS: u64 = 0x0240_0000_0000_0727;
+        let state = |open, pick| Some(HeroSelectState { open, pick });
+        let mut script = start(ESCORT);
+        script.advance(10).unwrap();
+        assert_eq!(script.hero_select_state(), state(false, None));
+        script.receive(MODE_CONTROLLERS, Variables::new()).unwrap();
+        script.advance(11).unwrap();
+        assert_eq!(script.hero_select_state(), state(true, None));
+        let close = script.hero_select(20, HeroSelectRequest::OpenOrClose(false));
+        assert_eq!(close.unwrap(), state(true, None));
+        let pick = script.hero_select(30, HeroSelectRequest::Pick(SOLDIER));
+        assert_eq!(pick.unwrap(), state(true, Some(SOLDIER)));
+        script.possessed(0x20, SOLDIER);
+        script.advance(40).unwrap();
+        assert_eq!(script.hero_select_state(), state(false, Some(SOLDIER)));
+    }
+
     /// The mode's respawn hand-off in the Practice Range: a pick with no
     /// possessed body sends `0685` {`0221` the controller} to the mode
     /// (`0C90` st122), and `13C0`'s `0C8F` answers with `0687` {`03A1` the

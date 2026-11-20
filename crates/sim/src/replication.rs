@@ -247,9 +247,6 @@ const GAME_IDENTIFIER: u64 = 0x0240_0000_0000_002d;
 /// `0458.026` (`0C90` st65 → #10489).
 const ALLOWED_HEROES: u64 = 0x0240_0000_0000_080d;
 const ALLOWED_HEROES_LIST: u32 = 0x0458;
-/// `0727.025` held by the mode graph to every entity (`13C0` st1, `0F4A`):
-/// the controllers' `0C90` st28 opens hero select on it.
-const MODE_OPENS_SELECT: u64 = 0x0240_0000_0000_0727;
 /// `06FD.025` held by the mode graph to every entity: the bodies' `0C8E`
 /// st2 takes the respawn seconds (`00B7`) from it.
 const RESPAWN_MESSAGE: u64 = 0x0240_0000_0000_06fd;
@@ -1743,9 +1740,8 @@ pub struct WorldDelivery {
     /// ends.
     keep_open: bool,
     /// The messages the mode graph holds to every entity now
-    /// ([`Self::set_mode_held`]): where it holds `0727` the controller's
-    /// graphs open hero select themselves, and where it holds `06FD` a new
-    /// body takes the respawn seconds from it.
+    /// ([`Self::set_mode_held`]): where it holds `06FD` a new body takes
+    /// the respawn seconds from it.
     mode_held: Vec<u64>,
     body: Option<Body>,
     bound: Option<BodyId>,
@@ -1864,9 +1860,9 @@ pub struct WorldDelivery {
     /// (`crate::announcer`). Whether a pulse waits for its controller frame.
     controller_script: Option<ControllerScript>,
     /// The pose the current body's last graph teleport left it in (a
-    /// Workshop Teleport, `STU_CFCE55DC` in the controller's scope), until
-    /// a frame carries it to the owner as a correction
-    /// ([`Self::apply_body_moves`]).
+    /// Workshop Teleport, `STU_CFCE55DC` in the controller's scope), when
+    /// the body keeps no correction history, until a frame carries it to
+    /// the owner as a correction ([`Self::apply_body_moves`]).
     teleported: Option<Movement>,
     multikill_due: bool,
     /// The notices of the changes his body's modifiers made to the hits on
@@ -2146,6 +2142,7 @@ impl WorldDelivery {
         self.started = None;
         self.presentation_due = false;
         self.mover = None;
+        self.teleported = None;
         self.body_script = None;
         self.script_failed = false;
         self.projectile_destroys.clear();
@@ -2409,11 +2406,16 @@ impl WorldDelivery {
 
     /// The controller's graphs put the current body somewhere (a Workshop
     /// Teleport's scope, `STU_CFCE55DC`): the mover takes it now, facing
-    /// the graph's direction when it gave one, and the next frame corrects
-    /// the owner's client with it ([`Self::send_frame`]); its raised
-    /// discontinuity counter makes the client take it without replaying
-    /// its commands (`orpheus_physics::mover::correction`). Retail's owner
-    /// correction for it is Workshop.md's inference.
+    /// the graph's direction when it gave one, and corrects the owner's
+    /// client with it; its raised discontinuity counter makes the client
+    /// take it without replaying its commands
+    /// (`orpheus_physics::mover::correction`). A body that keeps a
+    /// correction history sends the poses of the frames after it
+    /// ([`CorrectionHistory::discontinue`]); another sends this pose
+    /// ([`Self::send_frame`]). Either waits for the body's create and for
+    /// a packet of the pose's frame: the mover runs the client's commands,
+    /// whose frames lead the server's. Retail's owner correction for it is
+    /// Workshop.md's inference.
     fn apply_body_moves(&mut self) {
         let Some(script) = &mut self.controller_script else {
             return;
@@ -2431,7 +2433,17 @@ impl WorldDelivery {
                 .facing
                 .map(|[x, _, z]| (x.atan2(z) * 65_536.0 / std::f64::consts::TAU).round() as i32);
             mover.teleport(body_move.position, yaw);
-            self.teleported = Some(mover.pose());
+            let pose = mover.pose();
+            let history = self.body_script.as_mut().and_then(|script| {
+                let tail = RECORD_TAIL_MS.div_ceil(script.runtime.frame_ms());
+                script.corrections.as_mut().map(|history| (history, tail))
+            });
+            match history {
+                Some((history, tail)) => {
+                    history.discontinue(pose.frame.map_or(0, |frame| frame + 1), tail);
+                }
+                None => self.teleported = Some(pose),
+            }
         }
     }
 
@@ -3257,14 +3269,19 @@ impl WorldDelivery {
         if !reliable_only {
             self.prepare_body_updates(tick);
         }
-        // A teleport's pose ([`Self::apply_body_moves`]) goes once; a body
+        // A teleport's pose ([`Self::apply_body_moves`]) goes once its
+        // body's create arrived, in a packet of its frame or later; a body
         // with correction history carries it in its own candidate.
         let teleport = if reliable_only {
             None
         } else {
             self.teleported
-                .take()
-                .zip(self.body.map(|body| body.id.entity))
+                .filter(|pose| pose.frame.is_none_or(|frame| frame <= tick))
+                .zip(
+                    self.body
+                        .map(|body| body.id.entity)
+                        .filter(|entity| self.created.contains(entity)),
+                )
                 .map(|(pose, entity)| EntityUpdate {
                     entity,
                     movement: Some(pose),
@@ -3343,15 +3360,18 @@ impl WorldDelivery {
             }
         }
         self.sent(&indexes);
-        let selected = owner_index
-            .zip(correction)
-            .filter(|(index, _)| sent.records.contains(&RecordSource::Movement(*index)));
+        let carried =
+            owner_index.is_some_and(|index| sent.records.contains(&RecordSource::Movement(index)));
         let history = self
             .body_script
             .as_mut()
             .and_then(|script| script.corrections.as_mut());
-        if let (Some((_, correction)), Some(history)) = (selected, history) {
-            history.sent(&correction);
+        match (correction, history) {
+            (Some(correction), Some(history)) if carried => {
+                history.sent(&correction);
+            }
+            (None, _) if carried => self.teleported = None,
+            _ => {}
         }
         for source in &sent.records {
             let RecordSource::Movement(index) = *source else {
@@ -3559,16 +3579,9 @@ impl WorldDelivery {
             };
             self.receive_controller_message(tick, &[], &message);
         }
-        // Hero select opens at the start. Where the mode graph holds `0727`
-        // (`13C0` st1, `0F4A`), the controller's `0C90` st28 takes it and
-        // sends its own `0738`, whose `288B` st134 opens it
-        // (ModeGraphGaps.md "Step 3"). Elsewhere nothing in `288B` opens it
-        // then (only the client-only rid21 and rid226 after a body goes
-        // away send `1360`), so the server sends the open itself, as the
-        // client's H would.
-        if !self.mode_held.contains(&MODE_OPENS_SELECT) {
-            self.select_request(tick, SelectRequest::OpenOrClose(true));
-        }
+        // Hero select opens on the mode's `0727`, which the room holds to
+        // every entity (`crate::mode_script::held`): `0C90` st28 → `0738`
+        // → `288B` st134 keeps it open while the player has no body.
         // The player's create sends the spawn room flag set.
         self.spawn_flag = (true, self.spawn_flag.1 + 1);
         Ok(())
@@ -5908,6 +5921,7 @@ impl WorldDelivery {
             self.drop_failed_script(&error.to_string());
         }
         self.mover = Some(mover);
+        self.teleported = None;
         self.bound = None;
         // combat.py `retire_player_body`: the old body's death and pools go
         // with it.

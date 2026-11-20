@@ -25,7 +25,7 @@ use orpheus_content::maps::{PRACTICE_RANGE_MODE, PYTHON_PRACTICE_RANGE_MODE};
 use orpheus_script::{
     codecs::CodecTable,
     graph::GraphStore,
-    mode::{CreatedEntity, ModePlayer, ModeScript, ModeWorld},
+    mode::{CreatedEntity, EVERY_ENTITY, ModePlayer, ModeScript, ModeWorld},
     snapshot::{ProjectedSnapshot, SnapshotEncoder, View},
     vm::{GameMessage, InitFault, MessageEnd, Unknowns},
     wire::Variables,
@@ -120,6 +120,33 @@ pub struct MatchState {
     /// Seconds on the clock.
     pub clock: f64,
     pub winner: Option<u8>,
+}
+
+/// `0727.025` (no parameters), which the mode graphs hold to every entity
+/// from their start (`0F4A` st22 beside its `0CBB` SubScript st12, `13C0`
+/// st1). A controller's `0C90` st28 takes it: while he possesses no body,
+/// st29 allows hero select (#8419) and st32 holds `0738` to his own
+/// controller, whose `288B` st126 → st134 stacks hero select open
+/// (#2438e) until he has a body. So a player with no hero has hero select
+/// in every phase, and one who joins a running match gets it.
+pub const ALLOW_HERO_SELECT: u64 = 0x0240_0000_0000_0727;
+
+/// The messages held to every entity now: those of the mode graph while
+/// it runs whole ([`ModeRunner::holds_rooms`]); else (`0CBB` alone on a
+/// Workshop's mode entity, the hand-built frame, or before the match's
+/// mode starts) those of what runs, and [`ALLOW_HERO_SELECT`] held by
+/// the match flow in the mode graph's place.
+pub fn held(mode: Option<&ModeRunner>) -> Vec<GameMessage> {
+    let mut held = mode.map_or_else(Vec::new, |mode| mode.held().to_vec());
+    if !mode.is_some_and(ModeRunner::holds_rooms) {
+        held.push(GameMessage {
+            sender: GAME_MODE_ENTITY,
+            target: EVERY_ENTITY,
+            message: ALLOW_HERO_SELECT,
+            parameters: Variables::new(),
+        });
+    }
+    held
 }
 
 impl ModeRunner {
@@ -217,7 +244,8 @@ impl ModeRunner {
     }
 
     /// Whether the mode's own graph runs and holds the spawn rooms' `0724`
-    /// itself; else the match flow's spawns give it.
+    /// and the controllers' `0727` itself; else the match flow's spawns
+    /// give the first and the flow holds the other ([`held`]).
     pub fn holds_rooms(&self) -> bool {
         matches!(
             self,
