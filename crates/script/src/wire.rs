@@ -710,26 +710,7 @@ pub fn read_full_head(
             break;
         }
         id = id.checked_add(step).ok_or(WireError::InstanceId)?;
-        let graph = bits.bits(16)? as u16;
-        let creator = if bits.bit()? { bits.entity_id()? } else { None };
-        bits.bit()?;
-        let parent = if bits.bit()? {
-            Some((bits.w_var()?, bits.w_var()?))
-        } else {
-            None
-        };
-        // A scope instance's references (scope id, count, then each
-        // entity and, for a valid one, its instance and state).
-        if bits.bit()? {
-            bits.w_var()?;
-            for _ in 0..bits.w_u16()? {
-                if bits.entity_id()?.is_some() {
-                    bits.w_var()?;
-                    bits.w_var()?;
-                }
-            }
-        }
-        instances.push((id, graph, creator, parent));
+        instances.push(read_descriptor(&mut bits, id)?);
     }
     let mut variables = Variables::new();
     let mut links = BTreeMap::new();
@@ -754,6 +735,69 @@ pub fn read_full_head(
         links,
         end: bits.position(),
     })
+}
+
+/// Instance `id`'s descriptor as [`write_descriptor`] writes it: graph,
+/// creator and parent; the scope's references are read past.
+fn read_descriptor(bits: &mut BitReader<'_>, id: u16) -> Result<ListedInstance, WireError> {
+    let graph = bits.bits(16)? as u16;
+    let creator = if bits.bit()? { bits.entity_id()? } else { None };
+    bits.bit()?;
+    let parent = if bits.bit()? {
+        Some((bits.w_var()?, bits.w_var()?))
+    } else {
+        None
+    };
+    // A scope instance's references (scope id, count, then each entity
+    // and, for a valid one, its instance and state).
+    if bits.bit()? {
+        bits.w_var()?;
+        for _ in 0..bits.w_u16()? {
+            if bits.entity_id()?.is_some() {
+                bits.w_var()?;
+                bits.w_var()?;
+            }
+        }
+    }
+    Ok((id, graph, creator, parent))
+}
+
+/// An instance an observer delta lists: what it says of it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DeltaInstance {
+    /// Gone.
+    Removed(u16),
+    /// Changed, with no new descriptor.
+    Changed(u16),
+    /// New (or replaced): its listed form.
+    Described(ListedInstance),
+}
+
+/// The instance list at the head of an observer delta (`SnapshotEncoder`'s
+/// `delta_frame`). For tests and logs.
+pub fn read_delta_instances(bytes: &[u8]) -> Result<Vec<DeltaInstance>, WireError> {
+    let mut bits = BitReader::new(bytes);
+    if bits.bit()? || bits.bit()? {
+        // Not a delta, or an owner's (CmFD).
+        return Err(WireError::InvalidValue);
+    }
+    let mut instances = Vec::new();
+    let mut id = 0_u16;
+    loop {
+        let step = bits.w_u16()?;
+        if step == 0 {
+            break;
+        }
+        id = id.checked_add(step).ok_or(WireError::InstanceId)?;
+        instances.push(if bits.bit()? {
+            DeltaInstance::Removed(id)
+        } else if bits.bit()? {
+            DeltaInstance::Described(read_descriptor(&mut bits, id)?)
+        } else {
+            DeltaInstance::Changed(id)
+        });
+    }
+    Ok(instances)
 }
 
 /// A tagged value as [`write_value`] writes it, in either encoding. For

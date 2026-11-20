@@ -3004,6 +3004,14 @@ impl State {
                 .mode
                 .as_mut()
                 .map_or_else(Vec::new, |mode| mode.advance(tick, &variables, players));
+            // The flow stands in for the mode graph's entries (the
+            // Workshop's Set Match Time).
+            for message in messages
+                .iter()
+                .filter(|message| message.target == GAME_MODE_ENTITY)
+            {
+                flow.receive(message.message, &message.parameters);
+            }
             // The Workshop's rules after the mode entity's frame, against
             // the players in the world.
             if let (Some(run), Some(mode)) = (

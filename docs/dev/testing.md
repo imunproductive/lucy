@@ -55,7 +55,7 @@ Do not run the full game-install suites (`just test-game`, `just test-slow`) for
 | `just test-affected <install>` | every test, ignored ones included, of the crates `tools/affected.py` names, without `slow_` and `serial_` | An agent's own check before reporting |
 | `just test-assets <install> <pack>` | ignored `matches_the_pack` tests of `orpheus-assets` | Derivations against a prepared pack |
 | `just test-datatool <install> <dump>` | ignored `datatool` tests of `orpheus-stu` | The asset reader against a DataTool export |
-| `just test-dpk <install> <archive>` | ignored `dpk_archive` tests of `orpheus-workshop` and `orpheus-sim`, optimised (`gametest`) | The Workshop parser and engine over the Doomfist parkour scripts, and C32S2 in a simulated match |
+| `just test-dpk <install> <archive>` | ignored `dpk_archive` tests of `orpheus-workshop`, `orpheus-sim` and `orpheus-server`, optimised (`gametest`) | The Workshop parser and engine over the Doomfist parkour scripts; C32S2 in a simulated match and in a hosted one |
 | `just test-windows` | ignored tests of `orpheus-launcher` | Loads the relay DLL into a stand-in process |
 
 ## Test tiers
@@ -154,7 +154,7 @@ The Workshop text parser, the binary form and the rule engine run over the Doomf
 just test-dpk C:\Games\Overwatch D:\Downloads\dfp-archive
 ```
 
-This sets `ORPHEUS_DPK_ARCHIVE` (`testkit::dpk_archive()`) and runs the `dpk_archive` tests of `orpheus-workshop`. `just test-game` leaves them out.
+This sets `ORPHEUS_DPK_ARCHIVE` (`testkit::dpk_archive()`) and runs the `dpk_archive` tests of `orpheus-workshop`, `orpheus-sim` (C32S2 over a player's ticks) and `orpheus-server` (C32S2 in a match the game service hosts: a HUD text on the mode entity's frames). `just test-game` leaves them out.
 
 ### 6. Dashboard
 

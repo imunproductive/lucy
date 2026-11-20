@@ -61,9 +61,9 @@ test-datatool game dump:
     $env:ORPHEUS_GAME_DIR = '{{game}}'; $env:ORPHEUS_DATATOOL_DUMP = '{{dump}}'; cargo test -p orpheus-stu --release --locked -- --ignored datatool
 
 # Ignored tests that run the Workshop parser and engine over the Doomfist parkour script archive, and
-# C32S2 in a simulated match (optimised).
+# C32S2 in a simulated match and in a match the game service hosts (optimised).
 test-dpk game archive:
-    $env:ORPHEUS_GAME_DIR = '{{game}}'; $env:ORPHEUS_DPK_ARCHIVE = '{{archive}}'; cargo nextest run -p orpheus-workshop -p orpheus-sim --locked --cargo-profile gametest --run-ignored only -j $env:RUST_TEST_THREADS dpk_archive
+    $env:ORPHEUS_GAME_DIR = '{{game}}'; $env:ORPHEUS_DPK_ARCHIVE = '{{archive}}'; cargo nextest run -p orpheus-workshop -p orpheus-sim -p orpheus-server --locked --cargo-profile gametest --run-ignored only -j $env:RUST_TEST_THREADS dpk_archive
 
 # Windows-only tests that load the relay and probe DLLs into a stand-in process.
 test-windows:
