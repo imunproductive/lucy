@@ -72,6 +72,15 @@ enum Coverage {
     Window(Option<(u32, u32)>),
 }
 
+/// A move of the body its owner's client doesn't predict (a graph's
+/// teleport) before frame `from`, until a pose of it has gone
+/// ([`CorrectionHistory::discontinue`]).
+#[derive(Clone, Copy, Debug)]
+struct Owed {
+    from: u32,
+    tail: u32,
+}
+
 /// State for a body whose mover and statescript are eligible for correction.
 /// Renew the generation when replacing the mover or reusing the entity ID.
 pub struct CorrectionHistory {
@@ -79,6 +88,7 @@ pub struct CorrectionHistory {
     coverage: Coverage,
     poses: VecDeque<Movement>,
     corrected: Option<u32>,
+    owed: Option<Owed>,
 }
 
 impl CorrectionHistory {
@@ -99,6 +109,7 @@ impl CorrectionHistory {
             coverage,
             poses: VecDeque::with_capacity(HISTORY),
             corrected: None,
+            owed: None,
         }
     }
 
@@ -116,7 +127,22 @@ impl CorrectionHistory {
         }
     }
 
+    /// The body was put elsewhere before frame `from` (a graph's teleport,
+    /// [`crate::mover::Mover::teleport`]), which its owner's client
+    /// doesn't predict: the poses from `from` on go to him whatever the
+    /// window, each once a packet of its frame or later can carry it
+    /// ([`Self::candidate`]), until one has gone; then the `tail` frames
+    /// after that one too, so that one lost datagram doesn't lose the
+    /// move. He takes the first without replaying his commands (its
+    /// discontinuity counter is new to him), the next ones with.
+    pub fn discontinue(&mut self, from: u32, tail: u32) {
+        self.owed = Some(Owed { from, tail });
+    }
+
     fn covers(&self, frame: u32) -> bool {
+        if self.owed.is_some_and(|owed| frame >= owed.from) {
+            return true;
+        }
         match self.coverage {
             Coverage::Every => true,
             Coverage::Window(window) => {
@@ -126,11 +152,15 @@ impl CorrectionHistory {
     }
 
     /// Whether the owner gets no poses now: a windowed history whose
-    /// window lies behind its newest pose (or that has none).
+    /// window lies behind its newest pose (or that has none), with no move
+    /// owed.
     fn closed(&self) -> bool {
         let Coverage::Window(window) = self.coverage else {
             return false;
         };
+        if self.owed.is_some() {
+            return false;
+        }
         let newest = self.poses.back().and_then(|pose| pose.frame);
         window.is_none_or(|(_, through)| newest.is_some_and(|newest| newest > through))
     }
@@ -210,7 +240,9 @@ impl CorrectionHistory {
         newest.min(replay_from.saturating_add(ACK_LEAD))
     }
 
-    /// Commit after the selected datagram has been sent successfully.
+    /// Commit after the selected datagram has been sent successfully. A
+    /// pose of an owed move ends the debt and opens its tail
+    /// ([`Self::discontinue`]).
     pub fn sent(&mut self, correction: &Correction) -> bool {
         if correction.body != self.body
             || self.corrected.is_some_and(|sent| correction.frame <= sent)
@@ -218,6 +250,10 @@ impl CorrectionHistory {
             return false;
         }
         self.corrected = Some(correction.frame);
+        if let Some(owed) = self.owed.filter(|owed| correction.frame >= owed.from) {
+            self.owed = None;
+            self.open(correction.frame, correction.frame.saturating_add(owed.tail));
+        }
         true
     }
 }
@@ -289,6 +325,35 @@ mod tests {
         history.record(pose(200));
         assert_eq!(history.command_ack(200, Some(205), None), 202);
         assert_eq!(history.candidate(200, true).unwrap().frame(), 200);
+    }
+
+    #[test]
+    fn a_teleport_goes_from_its_first_due_pose_until_one_is_sent_then_its_tail() {
+        // The server runs the client's commands ahead of its own frame:
+        // poses up to 110 at frame 105, the teleport after 105.
+        let mut history = CorrectionHistory::windowed(ENTITY, 1);
+        for frame in 100..=105 {
+            history.record(pose(frame));
+        }
+        history.discontinue(106, 4);
+        for frame in 106..=110 {
+            history.record(pose(frame));
+        }
+        // A packet of frame 105 carries no state of a later frame, nor one
+        // from before the teleport; none goes before the create arrived.
+        assert!(history.candidate(105, true).is_none());
+        assert!(history.candidate(107, false).is_none());
+        // Unsent (a full or failed datagram), it stays owed.
+        assert_eq!(history.candidate(107, true).unwrap().frame(), 107);
+        let first = history.candidate(108, true).unwrap();
+        assert_eq!(first.frame(), 108);
+        assert!(history.sent(&first));
+        for frame in 111..=114 {
+            history.record(pose(frame));
+        }
+        // Then its tail, 108 + 4, and nothing after.
+        assert_eq!(history.candidate(112, true).unwrap().frame(), 112);
+        assert!(history.candidate(113, true).is_none());
     }
 
     #[test]
