@@ -7,6 +7,7 @@ use super::*;
 use crate::{
     match_flow::ASSAULT,
     mode_script::ModeRunner,
+    scene_assets::install_collision_build,
     workshop::{WorkshopPlayer, WorkshopRun},
 };
 use orpheus_content::maps::{GameModes, MODES_FILE, MapCatalog, SpawnChoice};
@@ -54,7 +55,9 @@ impl Parkour {
         let map = maps
             .game_map(hanamura.guid, ASSAULT, "Assault", false, &[6, 6])
             .unwrap();
-        let mut assets = SceneAssets::load(&runtime).unwrap();
+        let mut assets = SceneAssets::load(&runtime)
+            .unwrap()
+            .with_collision_build(install_collision_build(orpheus_testkit::game_dir()));
         assets.set_player_unknowns(orpheus_script::vm::Unknowns::Tolerate);
         let scene = assets.prepare(map).unwrap();
         let card = PlayerCard::default();
