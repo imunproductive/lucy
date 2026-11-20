@@ -21,7 +21,9 @@ use crate::{
     client::*,
     expr::Expr,
     input::{Sample, Script, view_quaternion},
-    layout::{CAMERA_MATRIX_TABLE, Camera, MOVEMENT_BYTES, MOVEMENT_TICKED, Movement, script_value},
+    layout::{
+        CAMERA_MATRIX_TABLE, Camera, MOVEMENT_BYTES, MOVEMENT_TICKED, Movement, script_value,
+    },
     ring::{Event, FrameSample},
 };
 
