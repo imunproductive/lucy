@@ -76,6 +76,10 @@ impl MapRays for Range {
     fn meets_bodies(&self, profile: Option<u64>) -> bool {
         profile != Some(PASSING)
     }
+
+    fn map_mask(&self, _profile: Option<u64>) -> u16 {
+        u16::MAX
+    }
 }
 
 fn vec3(x: f64, y: f64, z: f64) -> Json {

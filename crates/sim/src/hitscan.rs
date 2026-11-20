@@ -177,6 +177,10 @@ impl MapRays for SceneRays {
     fn meets_bodies(&self, profile: Option<u64>) -> bool {
         self.profiles.meets_bodies(profile)
     }
+
+    fn map_mask(&self, profile: Option<u64>) -> u16 {
+        self.profiles.map_mask(profile)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

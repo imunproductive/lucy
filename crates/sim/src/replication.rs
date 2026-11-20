@@ -63,7 +63,7 @@ use orpheus_script::controller::{
 };
 use orpheus_script::{
     ai_definitions::AiControl,
-    graph::GraphStore,
+    graph::{GraphStore, Node},
     mode::EVERY_ENTITY,
     placed::{DummyChange, NextDummy},
     snapshot::{ProjectedSnapshot, ProjectionCache, SnapshotEncoder, View},
@@ -177,8 +177,57 @@ fn clock_flags(depth: usize) -> u8 {
 /// 0.5 m) and was pulled back. A ledge pull whose navigation path her
 /// client finds (`STU_1F5ED928`) would still pull her back. The other
 /// heroes stay out until the server runs all of their movement
-/// (`docs/notes/behavior.md`, "Owner corrections").
+/// (`docs/notes/behavior.md`, "Owner corrections"); they get their body's
+/// records only in windows ([`server_shows_owner_movement`]).
 const CORRECTED_HEROES: [u64; 3] = [SOLDIER, ANA, WIDOWMAKER];
+
+/// How long an uncorrected hero's owner still gets his body's records after
+/// the movement that needed them (upstream `SERVER_MOTION_TAIL_US`,
+/// leafall903/ORPHEUS (MIT) 6bb305e9): his client needs one to take the end
+/// of the movement, and the state's end can still change it.
+const RECORD_TAIL_MS: u32 = 250;
+
+/// Whether a body's statescript moves it now in a way only the server's
+/// records show its owner, so he gets them although his hero isn't
+/// corrected (refs report Doomfist.md):
+///
+/// - a server-only MovementMod is on (Rocket Punch's dash, `0D06` st42,
+///   st44, st74, the only ones in 1.74): his client runs no server-only
+///   state, so it doesn't predict the move;
+/// - a `STU_4773DA56` registration is on (`0D06` st67 in the dash,
+///   Reinhardt's `007D` st2 and `0083` st9, `01C9` st8, `0CCE` st1): his
+///   client then draws his first-person view from the movement states it
+///   keeps of his body, which only the records bring up to date
+///   (upstream 266b28fd, checked with the original client; without
+///   records the view sat where the create left it);
+/// - an ability runs whose graph has a server-only MovementMod (Rocket
+///   Punch's charge; an ability state is on as long as the hero has it, so
+///   it counts once its button started it): his client begins the dash's
+///   registration itself, at its own release, before the server's frame,
+///   so the kept states must be current by then. Reinhardt's Charge
+///   (`007D`) needs no lead: its registration st2 is on through the whole
+///   charge (#435, st18 under the charge's MovementMod st36).
+pub(crate) fn server_shows_owner_movement(snapshot: &Snapshot, graphs: &GraphStore) -> bool {
+    const REGISTRATION: &str = "STU_4773DA56";
+    const MOVEMENT_MOD: &str = "STU_316CFEF2";
+    let server_moves = |node: &Node| node.server_only && node.class == MOVEMENT_MOD;
+    snapshot.instances.values().any(|instance| {
+        let Some(graph) = graphs.graph(instance.graph) else {
+            return false;
+        };
+        instance
+            .states
+            .iter()
+            .filter(|(_, state)| state.active)
+            .any(|(&raw, state)| {
+                graph.state(usize::from(raw)).is_some_and(|node| {
+                    node.class == REGISTRATION
+                        || server_moves(node)
+                        || (state.kind.runs_ability() && graph.nodes.iter().any(server_moves))
+                })
+            })
+    })
+}
 
 /// `0013.025`: the entity is revived (the bots' reset, [`orpheus_script::bot::RESET`]).
 const REVIVED: u64 = orpheus_script::bot::RESET;
@@ -278,6 +327,12 @@ pub trait OwnerBodyRuntime: Send {
 
     fn movement_modifiers(&self) -> Option<&BTreeMap<ModifierKey, Modifier>> {
         None
+    }
+
+    /// Whether the body's statescript moves it in a way only the server's
+    /// records show its owner now ([`server_shows_owner_movement`]).
+    fn owner_needs_records(&self) -> bool {
+        false
     }
 
     fn take_shots(&mut self, _command: Option<Command>, _mover: &Mover) -> Vec<PosedShot> {
@@ -519,9 +574,13 @@ impl BodyScript {
             .encoder()
             .project(snapshot, View::Owner)
             .map_err(invalid)?;
-        let corrections = (CORRECTED_HEROES.contains(&body.hero)
-            && runtime.movement_modifiers().is_some())
-        .then(|| CorrectionHistory::new(body.id.entity, body.id.generation));
+        let corrections = runtime.movement_modifiers().is_some().then(|| {
+            if CORRECTED_HEROES.contains(&body.hero) {
+                CorrectionHistory::new(body.id.entity, body.id.generation)
+            } else {
+                CorrectionHistory::windowed(body.id.entity, body.id.generation)
+            }
+        });
         let projectiles = runtime
             .projectile_leases()
             .filter(|leases| !leases.blocks().is_empty())
@@ -660,6 +719,10 @@ impl BodyScript {
             .as_mut()
             .filter(|_| step == BodyStep::Posed)
         {
+            if self.runtime.owner_needs_records() {
+                let tail = RECORD_TAIL_MS.div_ceil(self.runtime.frame_ms());
+                history.open(command.frame, command.frame.saturating_add(tail));
+            }
             history.record(mover.pose());
         }
         let mut hits = Vec::new();

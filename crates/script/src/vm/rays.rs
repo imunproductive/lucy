@@ -134,7 +134,9 @@ pub(super) struct Ray {
     direction: [f64; 3],
     reach: f64,
     radius: f64,
-    filter: BodyFilter,
+    /// The filter's masks and words, or the first field the server doesn't
+    /// model (it matters only when the ray tests bodies).
+    filter: Result<BodyFilter, &'static str>,
     /// The node's filter field (its condition is evaluated per body).
     filter_name: &'static str,
     profile: Option<u64>,
@@ -325,11 +327,17 @@ impl<W: World> Vm<'_, '_, '_, W> {
         let map = map_rays
             .cast(ray.origin, ray.direction, ray.reach, ray.profile)
             .ok_or(RayGap::NoMap)?;
-        let bodies = if meets_bodies {
-            self.passing_bodies(site, &ray.filter)?
-        } else {
-            Vec::new()
-        };
+        let map_hit = map.map(|hit| Hit {
+            entity: None,
+            point: hit.point,
+            normal: hit.normal,
+        });
+        // The filter's body fields matter only to rays that test bodies.
+        if !meets_bodies {
+            return Ok(map_hit);
+        }
+        let filter = ray.filter.as_ref().map_err(|name| RayGap::Filter(name))?;
+        let bodies = self.passing_bodies(site, filter)?;
         let reach = map.map_or(ray.reach, |hit| hit.distance);
         let mut met: Vec<(f64, [f64; 3], u32)> = bodies
             .iter()
@@ -343,7 +351,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
         met.sort_by(|a, b| a.0.total_cmp(&b.0));
         let filter_config = field(&node.fields, ray.filter_name);
         for (distance, normal, entity) in met {
-            if self.filter_admits(id, node, filter_config, &ray.filter, entity)? {
+            if self.filter_admits(id, node, filter_config, filter, entity)? {
                 return Ok(Some(Hit {
                     entity: Some(entity),
                     point: std::array::from_fn(|axis| {
@@ -353,11 +361,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
                 }));
             }
         }
-        Ok(map.map(|hit| Hit {
-            entity: None,
-            point: hit.point,
-            normal: hit.normal,
-        }))
+        Ok(map_hit)
     }
 
     /// The action's and RayCast's ray.
@@ -481,7 +485,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
             direction,
             reach,
             radius,
-            filter: BodyFilter::read(filter, &FILTER_FIELDS).map_err(RayGap::Filter)?,
+            filter: BodyFilter::read(filter, &FILTER_FIELDS),
             filter_name,
             profile: profile(filter)?,
             ignore,

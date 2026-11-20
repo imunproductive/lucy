@@ -31,7 +31,9 @@ ORPHEUS_EXE = paths.ORPHEUS_EXE
 RELAY_DLL = paths.RELAY_DLL
 PROBE_DLL = paths.PROBE_DLL
 RELAY_LOG = RELAY_DLL.parent / "log" / "wfd.log"
-USER_STATE = Path(os.environ.get("APPDATA", "")) / "orpheus"
+# The state folder each session copies (cache, profiles); OWDBG_STATE_SOURCE names another one, e.g.
+# a folder whose cache this checkout's build derived, so the session doesn't derive it again.
+USER_STATE = Path(os.environ.get("OWDBG_STATE_SOURCE") or Path(os.environ.get("APPDATA", "")) / "orpheus")
 STATE_ITEMS = ("cache", "profiles", "profile.json")
 GAME_ARGS = ["--BNetServer=127.0.0.1:1119", "--tank_Locale=enUS", "--tank_NoFullScreen=1"]
 LOBBY_PORT = 3724

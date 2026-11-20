@@ -237,6 +237,49 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             for (slot, config) in array_field(&node.fields, "m_BC5E91CF").iter().enumerate() {
                 self.spend("movement modifier")?;
                 let shape = config.get("$").and_then(Json::as_str);
+                // The vector form of set (`STU_09F9B1FE`) on channel 2 turns
+                // the direction forward throttle moves in: the mover keeps
+                // it in its list at +0x7D0 as type 2 and reads it after
+                // mods 17..19 (0x7FF789B43A94..0x7FF789B43D50), flat and
+                // unit, so only its heading counts and it goes to the mover
+                // as one ([`MOVE_HEADING`]). Rocket Punch's dash (`0D06`
+                // st42, the release facing #2083) is its only use in 1.74;
+                // the add and multiply forms (`STU_56F54BF7`,
+                // `STU_09441550`) and other channels are not modelled.
+                if shape == Some("STU_09F9B1FE")
+                    && config.get("m_CFEC5F76").and_then(Json::as_u64) == Some(2)
+                {
+                    let vector = match self.evaluate(id, node, field(config, "m_9B7A63EA"), None) {
+                        Some(Value::Vector(vector)) => vector,
+                        Some(_) => {
+                            self.report(
+                                self.site(id, node),
+                                Issue::UnsupportedField("movement direction"),
+                            );
+                            continue;
+                        }
+                        None => continue,
+                    };
+                    let Some(priority) =
+                        self.movement_number(id, node, field(config, "m_priority"), 0.0)
+                    else {
+                        continue;
+                    };
+                    modifiers.insert(
+                        ModifierKey {
+                            instance: id,
+                            state: key.raw,
+                            slot,
+                        },
+                        Modifier {
+                            index: MOVE_HEADING,
+                            operation: Operation::Set,
+                            value: heading(vector),
+                            priority,
+                        },
+                    );
+                    continue;
+                }
                 // The clamp (STU_0A019882, client kind 5) keeps its bounds in
                 // m_8AD739CE (lower) and m_8213EB22 (upper); [ASSUMPTION] an
                 // unset bound is 0.

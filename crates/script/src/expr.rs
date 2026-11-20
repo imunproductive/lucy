@@ -289,6 +289,13 @@ pub trait Context {
         None
     }
 
+    /// The radius of `entity`'s mover capsule in its stance now (the
+    /// mover's stand or crouch radius, component 31 `+0x434`/`+0x440`);
+    /// None: unknown.
+    fn body_radius(&mut self, _entity: u32) -> Option<f64> {
+        None
+    }
+
     /// The map point a ray from `origin` along unit `direction` meets
     /// within `reach` (a cast without a ray profile); Some(None) when it
     /// meets none, None when this world has no map.
@@ -2599,6 +2606,22 @@ impl Evaluator<'_> {
                     .body_scale(entity)
                     .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?;
                 Value::Float(scale)
+            }
+            // An entity's capsule radius (`Eval_STU_F7FD94F9` 0x7FF789BFEAD0
+            // → 0x7FF789C27470): its mover's stand radius (component 31
+            // `+0x434`), crouched (movement flag 2) its crouch radius
+            // (`+0x440`), times max(0.35, the body record's `+28`), taken
+            // here as the body's scale (`STU_FDBB0B67`, an assumption). No
+            // mover: it fails. Rocket Punch's wall rays (`0D06` st79/st80)
+            // start a radius up and reach three.
+            "STU_F7FD94F9" if native_shape(config, class, Some("m_entity")) => {
+                let unsupported = || EvalError::UnsupportedConfig(class.into());
+                let entity = to_entity(&self.config(child(config, "m_entity"), context, nested)?)
+                    .filter(|&entity| valid_entity(entity))
+                    .ok_or_else(unsupported)?;
+                let radius = context.body_radius(entity).ok_or_else(unsupported)?;
+                let scale = context.body_scale(entity).ok_or_else(unsupported)?;
+                Value::Float(f64::from(radius as f32 * (scale as f32).max(0.35)))
             }
             // GetGameRulesetValue (`Eval_STU_3832D36C` 0x7FF789BDFAC0,
             // GameSettings.md 15.2): `m_value` first, and a value wins (an

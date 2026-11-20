@@ -158,6 +158,7 @@ impl MotionInput {
             .max(pitch_min)
             .clamp(-PITCH_LIMIT, PITCH_LIMIT);
         let (right, forward) = mods.throttles(right, forward);
+        let (right, forward) = mods.directed(right, forward, yaw_held);
         Self {
             yaw: if yaw_held == yaw {
                 command.yaw

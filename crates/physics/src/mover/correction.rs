@@ -62,21 +62,77 @@ impl Correction {
     }
 }
 
+/// The frames whose poses go to the owner.
+#[derive(Clone, Copy, Debug)]
+enum Coverage {
+    /// Every frame: a hero whose movement the server's mover follows.
+    Every,
+    /// The frames of the last window opened, `first..=through`; none
+    /// before the first ([`CorrectionHistory::open`]).
+    Window(Option<(u32, u32)>),
+}
+
 /// State for a body whose mover and statescript are eligible for correction.
 /// Renew the generation when replacing the mover or reusing the entity ID.
 pub struct CorrectionHistory {
     body: BodyLifetime,
+    coverage: Coverage,
     poses: VecDeque<Movement>,
     corrected: Option<u32>,
 }
 
 impl CorrectionHistory {
+    /// A history whose every pose goes to the owner.
     pub fn new(entity: u32, generation: u64) -> Self {
+        Self::with(entity, generation, Coverage::Every)
+    }
+
+    /// A history whose poses go to the owner only in the windows
+    /// [`open`](Self::open)ed.
+    pub fn windowed(entity: u32, generation: u64) -> Self {
+        Self::with(entity, generation, Coverage::Window(None))
+    }
+
+    fn with(entity: u32, generation: u64, coverage: Coverage) -> Self {
         Self {
             body: BodyLifetime { entity, generation },
+            coverage,
             poses: VecDeque::with_capacity(HISTORY),
             corrected: None,
         }
+    }
+
+    /// Send the poses of frames `frame..=through` too (a windowed history;
+    /// one with every pose ignores it). A window that is still open, or
+    /// ends just before `frame`, grows; another one replaces it.
+    pub fn open(&mut self, frame: u32, through: u32) {
+        if let Coverage::Window(window) = &mut self.coverage {
+            *window = Some(match *window {
+                Some((first, last)) if frame <= last.saturating_add(1) => {
+                    (first, last.max(through))
+                }
+                _ => (frame, through),
+            });
+        }
+    }
+
+    fn covers(&self, frame: u32) -> bool {
+        match self.coverage {
+            Coverage::Every => true,
+            Coverage::Window(window) => {
+                window.is_some_and(|(first, through)| (first..=through).contains(&frame))
+            }
+        }
+    }
+
+    /// Whether the owner gets no poses now: a windowed history whose
+    /// window lies behind its newest pose (or that has none).
+    fn closed(&self) -> bool {
+        let Coverage::Window(window) = self.coverage else {
+            return false;
+        };
+        let newest = self.poses.back().and_then(|pose| pose.frame);
+        window.is_none_or(|(_, through)| newest.is_some_and(|newest| newest > through))
     }
 
     /// Save each simulated pose, including recovered poses in a command gap.
@@ -112,7 +168,9 @@ impl CorrectionHistory {
                 let frame = pose.frame?;
                 (frame <= tick).then_some((frame, pose))
             })
-            .filter(|&(frame, _)| self.corrected.is_none_or(|sent| frame > sent))
+            .filter(|&(frame, _)| {
+                self.covers(frame) && self.corrected.is_none_or(|sent| frame > sent)
+            })
     }
 
     pub fn candidate(&self, tick: u32, create_arrived: bool) -> Option<Correction> {
@@ -129,7 +187,8 @@ impl CorrectionHistory {
 
     /// Use the correction only if this exact candidate is in the packet under
     /// consideration. Until the first send, a usable pose already caps the ACK
-    /// even when the body create or packet budget holds that pose back.
+    /// even when the body create or packet budget holds that pose back. A
+    /// closed window caps nothing.
     pub fn command_ack(
         &self,
         tick: u32,
@@ -137,10 +196,15 @@ impl CorrectionHistory {
         selected: Option<&Correction>,
     ) -> u32 {
         let newest = latest_input.unwrap_or(tick);
+        if selected.is_none() && self.closed() {
+            return newest;
+        }
+        // A pose sent in an earlier window says nothing of this one.
+        let corrected = self.corrected.filter(|&frame| self.covers(frame));
         let replay_from = selected
             .filter(|candidate| candidate.body == self.body)
             .map(Correction::frame)
-            .max(self.corrected)
+            .max(corrected)
             .or_else(|| self.snapshot_for(tick).map(|(frame, _)| frame))
             .unwrap_or(tick);
         newest.min(replay_from.saturating_add(ACK_LEAD))
@@ -194,6 +258,37 @@ mod tests {
         assert_eq!(latest.frame(), 7009);
         assert!(history.sent(&latest));
         assert!(history.candidate(7021, true).is_none());
+    }
+
+    #[test]
+    fn a_windowed_history_sends_only_the_poses_of_its_window() {
+        let mut history = CorrectionHistory::windowed(ENTITY, 1);
+        for frame in 100..110 {
+            history.record(pose(frame));
+        }
+        // No window yet: no pose, and the acknowledgement runs free.
+        assert!(history.candidate(109, true).is_none());
+        assert_eq!(history.command_ack(109, Some(112), None), 112);
+        history.open(110, 115);
+        for frame in 110..113 {
+            history.record(pose(frame));
+        }
+        let first = history.candidate(112, true).unwrap();
+        assert_eq!(first.frame(), 112);
+        assert_eq!(history.command_ack(112, Some(120), None), 114);
+        assert!(history.sent(&first));
+        for frame in 113..118 {
+            history.record(pose(frame));
+        }
+        assert_eq!(history.candidate(115, true).unwrap().frame(), 115);
+        // Past the window: nothing more, and the acknowledgement is free.
+        assert!(history.candidate(117, true).is_none());
+        assert_eq!(history.command_ack(117, Some(120), None), 120);
+        // A later window caps it from its own poses, not the last one sent.
+        history.open(200, 210);
+        history.record(pose(200));
+        assert_eq!(history.command_ack(200, Some(205), None), 202);
+        assert_eq!(history.candidate(200, true).unwrap().frame(), 200);
     }
 
     #[test]

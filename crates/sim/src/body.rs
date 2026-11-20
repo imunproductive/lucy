@@ -8,11 +8,18 @@ use std::f64::consts::PI;
 use crate::pools::PoolCatalog;
 use orpheus_content::heroes::Hero;
 use orpheus_wire::entity::{
-    Component, ComponentValue, Create, EntityUpdate, FRAME_ZERO_BACK, LeaseBlock, Movement,
-    NO_INPUT, Operation, SkinTheme,
+    Component, ComponentValue, Create, CreateFrame, EntityUpdate, FRAME_ZERO_BACK, LeaseBlock,
+    Movement, NO_INPUT, Operation, SkinTheme,
 };
 
 pub const CROUCHED_MOVEMENT_FLAG: u32 = 0x2;
+/// Frames past the packet's frame for the movement state of the owner's
+/// create of his own body: his client's command frames run at most 16
+/// ahead of a packet's frame (`0x7FF7896DAF7A`..`0x7FF7896DB296`), so the
+/// state is ahead of every frame he predicted, and below the frames of the
+/// records that follow (upstream `CREATE_LEAD`, leafall903/ORPHEUS (MIT)
+/// 36d57fef; checked there with the original client).
+pub const OWN_CREATE_LEAD: u32 = 18;
 
 pub struct BodyCreate<'a> {
     pub entity: u32,
@@ -125,18 +132,21 @@ pub fn body_create(input: BodyCreate<'_>, view: BodyView<'_>, pools: &PoolCatalo
         },
     ];
     let mut definition = Create::new(input.hero.body, Vec::new());
-    // The owner's create keeps the default frame (0xFFFFFFFE): his client
-    // takes his body's later records into its kept movement state only
-    // above it (`0x7FF7896DA7E7`), so that state stays the spawn pose, but
-    // the possessor's component 59 path after that test is not behind it,
-    // and upstream saw a frame change there matter (a Doomfist under the
-    // floor; refs report UpstreamPort-2026-11-17.md, "own-body create
-    // lead"): unchanged. Another client's create carries the body's state
-    // at frame 0, older than every record after it, or its component 24
-    // sphere history (`0x7FF789B80F70`, appends only on a higher frame)
-    // keeps the create's sample and its shots' rewind meets the body at
-    // the world origin (HitPredict.md "Day (2026-11-17), part 2"; bots
-    // likewise, `scene::bot_create`).
+    // The owner's create puts his body's state [`OWN_CREATE_LEAD`] frames
+    // past the packet's frame. His client keeps every body's movement
+    // states, his own one's too, and takes a later record into them only
+    // above the newest kept frame (`0x7FF7896DA7E7`, unsigned); at the
+    // create's default 0xFFFFFFFE none would ever get in, and while a
+    // `STU_4773DA56` registration is on (Rocket Punch's dash, `0D06` st67)
+    // the client draws his first-person view from those kept states: it
+    // stayed at the spawn, out of the map (refs report Doomfist.md). At a
+    // frame he had already predicted, upstream saw his body start under
+    // the floor. Another client's create carries the body's state at frame
+    // 0, older than every record after it, or its component 24 sphere
+    // history (`0x7FF789B80F70`, appends only on a higher frame) keeps the
+    // create's sample and its shots' rewind meets the body at the world
+    // origin (HitPredict.md "Day (2026-11-17), part 2"; bots likewise,
+    // `scene::bot_create`).
     let movement = match view {
         BodyView::Owner { pose, leases } => {
             if !leases.is_empty() {
@@ -146,6 +156,7 @@ pub fn body_create(input: BodyCreate<'_>, view: BodyView<'_>, pools: &PoolCatalo
                 });
             }
             definition.movement = pose;
+            definition.frame = CreateFrame::PastPacket(OWN_CREATE_LEAD);
             pose
         }
         BodyView::Observer { pose, gravity } => {
@@ -156,7 +167,7 @@ pub fn body_create(input: BodyCreate<'_>, view: BodyView<'_>, pools: &PoolCatalo
                 input_throttles: [0; 2],
                 ..remote_movement(pose, 0, gravity)
             });
-            definition.frame_back = FRAME_ZERO_BACK;
+            definition.frame = CreateFrame::Back(FRAME_ZERO_BACK);
             None
         }
     };
@@ -273,7 +284,7 @@ mod tests {
         assert_eq!(update.movement, Some(pose));
         let definition = definition(&update);
         assert_eq!(definition.flags, WITH_SCALE | WITH_TRANSFORM);
-        assert_eq!(definition.frame_back, 1);
+        assert_eq!(definition.frame, CreateFrame::PastPacket(OWN_CREATE_LEAD));
         assert_eq!(definition.movement, update.movement);
         assert_eq!(
             definition
@@ -287,19 +298,40 @@ mod tests {
             definition.components[3].fields[0],
             Some(ComponentValue::Leases(lease.to_vec()))
         );
-        let record = create(3, definition).unwrap();
+        // Python's create kept the create's default frame; with it the
+        // record is Python's.
+        let python = Create {
+            frame: CreateFrame::Back(1),
+            ..definition.clone()
+        };
+        let record = create(3, &python, 1200).unwrap();
         assert_eq!(record.bit_len(), 1365);
         assert_eq!(
             format!("{:x}", Sha256::digest(record.as_bytes())),
             "a157b1187c3679a0e869d69ec935efa82d85d66b92ed5f3616fea8c93fe1ee46"
         );
-        let packet = frame(1200, 900, 0, &[], &[], &[&update]).unwrap();
+        let python_update = EntityUpdate {
+            operation: Some(Operation::Create(Box::new(python.clone()))),
+            ..update.clone()
+        };
+        let packet = frame(1200, 900, 0, &[], &[], &[&python_update]).unwrap();
         assert_eq!(
             format!("{:x}", Sha256::digest(&packet)),
             "44d49b099d2766c02592e1dd41acef3d53b1d41c10bd6c9edb173755d683dbab"
         );
+        // Ours puts the state 18 frames past each packet that carries it.
+        for tick in [1200, 1300] {
+            let at = Create {
+                frame: CreateFrame::Back(CREATE_BASE - (tick + OWN_CREATE_LEAD)),
+                ..definition.clone()
+            };
+            assert_eq!(
+                create(3, definition, tick).unwrap(),
+                create(3, &at, 0).unwrap()
+            );
+        }
         lease[0].start = 9;
-        assert_eq!(create(3, definition).unwrap(), record);
+        assert_eq!(create(3, &python, 1200).unwrap(), record);
         assert_ne!(
             definition.components[3].fields[0],
             Some(ComponentValue::Leases(lease.to_vec()))
@@ -431,16 +463,16 @@ mod tests {
         );
         let python = Create {
             movement: None,
-            frame_back: 1,
+            frame: CreateFrame::Back(1),
             ..definition.clone()
         };
-        let python = create(5, &python).unwrap();
+        let python = create(5, &python, 0).unwrap();
         assert_eq!(python.bit_len(), 843);
         assert_eq!(
             format!("{:x}", Sha256::digest(python.as_bytes())),
             "79d53aa18f160aa2245a17da9ce7f2ef80ac04dae880f65830f66c9c4d4a1898"
         );
-        let record = create(5, definition).unwrap();
+        let record = create(5, definition, 0).unwrap();
         let mut bits = BitReader::new(record.as_bytes());
         let mut plain = BitReader::new(python.as_bytes());
         let same = |bits: &mut BitReader<'_>, other: &mut BitReader<'_>, count: usize| {
@@ -509,7 +541,7 @@ mod tests {
             python_components.bit_len(),
         );
         assert_eq!(live.heal(25.0), 25.0);
-        assert_eq!(create(5, definition).unwrap(), record);
+        assert_eq!(create(5, definition, 0).unwrap(), record);
         assert_ne!(live.component(), definition.components[0]);
     }
 
@@ -576,13 +608,16 @@ mod tests {
                     &pools,
                 );
                 // Python's observer create had no movement state (ours at
-                // frame 0: `observer_create_freezes_damaged_pools_and_puts_the_pose_at_frame_zero`).
+                // frame 0: `observer_create_freezes_damaged_pools_and_puts_the_pose_at_frame_zero`),
+                // and its owner create kept the create's default frame
+                // (ours: `OWN_CREATE_LEAD` past the packet).
+                let ours = definition(&body);
                 let python = Create {
-                    movement: None,
-                    frame_back: 1,
-                    ..definition(&body).clone()
+                    movement: if own { ours.movement } else { None },
+                    frame: CreateFrame::Back(1),
+                    ..ours.clone()
                 };
-                let record = create(origin, if own { definition(&body) } else { &python }).unwrap();
+                let record = create(origin, &python, 0).unwrap();
                 digest.update(hero.guid.to_le_bytes());
                 digest.update([u8::from(own)]);
                 digest.update(u32::try_from(origin).unwrap().to_le_bytes());
