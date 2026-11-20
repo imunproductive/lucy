@@ -1169,6 +1169,17 @@ impl<'a> SnapshotEncoder<'a> {
 
     /// Encode a cumulative projection from the acknowledged baseline. The
     /// caller supplies the owner phase selected by the body's stream.
+    ///
+    /// A correction goes only when the projection differs from what the
+    /// owner's client holds once the queued chunks arrive
+    /// ([`BodyStream::expected`]), or when the newest one was lost. The
+    /// client rolls its statescript back for every chunk with the
+    /// correction bit and compares nothing first (applier `0x7FF78991E3C0`
+    /// → `0x7FF78991F5D0`), and it needs none to move on: once its oldest
+    /// unconfirmed frame is 40 frames old it settles its prediction itself
+    /// (`0x7FF78991B200`, each frame). Retail sent owner data only for
+    /// frame ranges with changes (refs/reports/OwnerPrediction.md
+    /// "DayOwnerChunks").
     pub fn queue_delta(
         &self,
         stream: &mut BodyStream<ProjectedSnapshot>,
@@ -1188,7 +1199,16 @@ impl<'a> SnapshotEncoder<'a> {
         {
             return Err(SnapshotError::DifferentStream);
         }
-        let touched = stream.touched();
+        if matches!(kind, DeltaKind::Correction(_))
+            && !stream.resend_due()
+            && !self.owner_changed(stream, snapshot)?
+        {
+            return Ok(None);
+        }
+        let mut touched = stream.touched();
+        // An idle volley's ammunition goes in every owner chunk, but makes
+        // none go by itself.
+        touched.extend(self.idle_volley_ammo(snapshot)?);
         let known: BTreeSet<_> = if view == View::Observer {
             base.instances
                 .keys()
@@ -1237,6 +1257,30 @@ impl<'a> SnapshotEncoder<'a> {
         Ok(Some(stream.delta(&frame, delivered, delta.keys, kind)?))
     }
 
+    /// Whether the owner's projection differs from what his client holds
+    /// once the queued chunks arrive: a state, variable, binding or
+    /// instance, or an action no queued chunk carries yet.
+    fn owner_changed(
+        &self,
+        stream: &BodyStream<ProjectedSnapshot>,
+        current: &ProjectedSnapshot,
+    ) -> Result<bool, SnapshotError> {
+        let (Some((_, base)), Some(expected)) = (stream.base(), stream.expected()) else {
+            return Ok(true);
+        };
+        let action = current
+            .actions
+            .iter()
+            .find(|action| action.serial > base.action_serial);
+        if action.is_some_and(|action| action.serial > expected.action_serial) {
+            return Ok(true);
+        }
+        Ok(!self
+            .differences(expected, current, &BTreeSet::new(), &BTreeSet::new())?
+            .keys
+            .is_empty())
+    }
+
     /// The owner's chunks list each weapon volley's ammunition variable
     /// (`m_24E351A4`) at its own value, unbound, while the volley is off.
     /// The client binds the variable to the volley's output when it
@@ -1248,7 +1292,9 @@ impl<'a> SnapshotEncoder<'a> {
     /// stays bound to it: the replayed press then read 0 and drew 0
     /// (refs/reports/OwnerPrediction.md, 2026-11-18). Listed, the variable
     /// is unbound by the chunk before the replay, and the replay reads the
-    /// count.
+    /// count. The server can't tell whether the client predicted a press
+    /// after a chunk's frame, so every owner chunk that goes lists it; an
+    /// unchanged one makes no chunk go ([`Self::queue_delta`]).
     fn idle_volley_ammo(
         &self,
         current: &ProjectedSnapshot,
@@ -1283,12 +1329,6 @@ impl<'a> SnapshotEncoder<'a> {
         known: &BTreeSet<u16>,
     ) -> Result<SnapshotDelta<'s>, SnapshotError> {
         let mut delta = SnapshotDelta::default();
-        let idle = self.idle_volley_ammo(current)?;
-        let touched = &if idle.is_empty() {
-            Cow::Borrowed(touched)
-        } else {
-            Cow::Owned(touched.union(&idle).copied().collect())
-        };
         delta.variables = delta_variables(
             0,
             Some(&base.variables),

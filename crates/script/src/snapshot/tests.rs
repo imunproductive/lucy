@@ -1158,7 +1158,10 @@ fn a_timed_chase_keeps_its_begin_payload_and_binding_until_it_arrives() {
 /// (StartFiring reads it as resolved). While the volley runs, the variable
 /// goes only when its value changes, as its output, never as the count
 /// before the volley (the old seed, which the client drew for a frame on
-/// every tap; refs/reports/OwnerPrediction.md, 2026-11-18).
+/// every tap; refs/reports/OwnerPrediction.md, 2026-11-18). The idle
+/// listing makes no chunk go by itself: an idle body sends no correction
+/// after the acknowledged frame (each one rolled the client back,
+/// "DayOwnerChunks").
 #[test]
 fn owner_chunks_list_an_idle_volley_s_ammo_and_never_seed_it() {
     const RIFLE: u16 = 11;
@@ -1236,43 +1239,38 @@ fn owner_chunks_list_an_idle_volley_s_ammo_and_never_seed_it() {
     stream.arrived(baseline.last);
     let key = ChangeKey::Variable(RIFLE, AMMO);
     let intro = ChangeKey::VolleyIntroduction(RIFLE, VOLLEY);
-    // Each chunk arrives; what it listed and the ammunition it carried.
+    // Each chunk arrives; what it listed and the ammunition it carried, or
+    // none when no chunk goes.
     let mut send = |state: &ProjectedSnapshot, kind| {
-        let chunk = encoder
-            .queue_delta(&mut stream, state, kind, 16)
-            .unwrap()
-            .unwrap();
+        let chunk = encoder.queue_delta(&mut stream, state, kind, 16).unwrap()?;
         let sent = stream.sent(chunk.last).unwrap();
         let listed = sent.changes.clone();
         let variables = &sent.snapshot.instances[&RIFLE].variables;
         let ammo = variables.values[&AMMO].clone();
         assert!(!variables.bindings.contains_key(&AMMO));
         assert!(stream.arrived(chunk.last).advanced);
-        (listed, ammo)
+        Some((listed, ammo))
     };
-    // Idle: listed at its own value in every chunk.
-    for kind in [
-        DeltaKind::InitialOwner(1001),
-        DeltaKind::Correction(1001 + OWNER_SETTLE_FRAMES),
-    ] {
-        let (listed, ammo) = send(&idle, kind);
-        assert!(listed.contains(&key), "{kind:?}");
-        assert_eq!(ammo, Value::Integer(30));
+    // Idle: listed at its own value (unchanged from the full frame) in the
+    // initial owner frame, which always goes; then idle frames send nothing.
+    let (listed, ammo) = send(&idle, DeltaKind::InitialOwner(1001)).unwrap();
+    assert!(listed.contains(&key));
+    assert_eq!(ammo, Value::Integer(30));
+    for frame in 1017..1031 {
+        assert_eq!(send(&idle, DeltaKind::Correction(frame)), None, "{frame}");
     }
     // The press frame: the volley's output after its first shot, not 30.
-    let (listed, ammo) = send(&first, DeltaKind::Correction(1031));
+    let (listed, ammo) = send(&first, DeltaKind::Correction(1031)).unwrap();
     assert!(listed.contains(&intro) && listed.contains(&key));
     assert_eq!(ammo, Value::Integer(29));
-    // Running and unchanged: not listed.
-    let (listed, _) = send(&first, DeltaKind::Correction(1032));
-    assert!(!listed.contains(&key));
-    // Off again: listed every chunk.
-    for frame in [1035, 1036] {
-        let (listed, ammo) = send(&stopped, DeltaKind::Correction(frame));
-        assert!(listed.contains(&key), "frame {frame}");
-        assert_eq!(ammo, Value::Integer(29));
-    }
-    let (listed, ammo) = send(&second, DeltaKind::Correction(1042));
+    // Running and unchanged: nothing.
+    assert_eq!(send(&first, DeltaKind::Correction(1032)), None);
+    // Off again: listed at its own value, then nothing while it stays off.
+    let (listed, ammo) = send(&stopped, DeltaKind::Correction(1035)).unwrap();
+    assert!(listed.contains(&key));
+    assert_eq!(ammo, Value::Integer(29));
+    assert_eq!(send(&stopped, DeltaKind::Correction(1036)), None);
+    let (listed, ammo) = send(&second, DeltaKind::Correction(1042)).unwrap();
     assert!(listed.contains(&intro) && listed.contains(&key));
     assert_eq!(ammo, Value::Integer(28));
 
@@ -1300,7 +1298,10 @@ fn owner_chunks_list_an_idle_volley_s_ammo_and_never_seed_it() {
 /// The owner's client begins a networked state only when a frame lists it on
 /// (0x7FF78991C620). A state that ended and began again since the
 /// acknowledged frame is listed, so a client whose copy ended (its own timer
-/// ran out first) begins it again.
+/// ran out first) begins it again. A change goes in one correction: none
+/// follows while it is in flight, one more only if it was lost, and none
+/// after its acknowledgement ("DayOwnerChunks": each correction rolls the
+/// client back).
 #[test]
 fn an_owner_delta_lists_a_state_that_ended_and_began_again() {
     let (graphs, mut snapshot) = fixture();
@@ -1311,26 +1312,32 @@ fn an_owner_delta_lists_a_state_that_ended_and_began_again() {
     let baseline = encoder.queue_full(&mut stream, &owner).unwrap();
     stream.create_arrived();
     stream.arrived(baseline.last);
-    let mut send = |owner: &ProjectedSnapshot, kind| {
-        let chunk = encoder
-            .queue_delta(&mut stream, owner, kind, 16)
-            .unwrap()
-            .unwrap();
+    // The chunk that goes, sent: its number and what it listed.
+    let send = |stream: &mut BodyStream<_>, owner: &ProjectedSnapshot, kind| {
+        let chunk = encoder.queue_delta(stream, owner, kind, 16).unwrap()?;
         let listed = stream.sent(chunk.last).unwrap().changes.clone();
-        assert!(stream.arrived(chunk.last).advanced);
-        listed
+        Some((chunk.last, listed))
     };
     let plain = ChangeKey::State(1, 2);
-    assert!(send(&owner, DeltaKind::InitialOwner(1000)).contains(&plain));
-    assert!(!send(&owner, DeltaKind::Correction(1016)).contains(&plain));
+    let (last, listed) = send(&mut stream, &owner, DeltaKind::InitialOwner(1000)).unwrap();
+    assert!(listed.contains(&plain));
+    assert!(stream.arrived(last).advanced);
+    assert_eq!(send(&mut stream, &owner, DeltaKind::Correction(1016)), None);
 
     let state = snapshot.instances[&1].states.get_mut(&2).unwrap();
     assert!(state.active && state.kind == StateKind::Plain);
     state.activation += 1;
     state.start_ms += 16;
     let again = encoder.project(&snapshot, View::Owner).unwrap();
-    assert!(send(&again, DeltaKind::Correction(1017)).contains(&plain));
-    assert!(!send(&again, DeltaKind::Correction(1018)).contains(&plain));
+    let (lost, listed) = send(&mut stream, &again, DeltaKind::Correction(1017)).unwrap();
+    assert!(listed.contains(&plain));
+    assert_eq!(send(&mut stream, &again, DeltaKind::Correction(1018)), None);
+    stream.lost(lost);
+    let (resent, relisted) = send(&mut stream, &again, DeltaKind::Correction(1019)).unwrap();
+    assert_eq!(relisted, listed);
+    assert_eq!(send(&mut stream, &again, DeltaKind::Correction(1020)), None);
+    assert!(stream.arrived(resent).advanced);
+    assert_eq!(send(&mut stream, &again, DeltaKind::Correction(1021)), None);
 }
 
 /// A listed StEC state with a present bit of 0 changes nothing on the owner's
@@ -1417,12 +1424,12 @@ fn a_running_stec_state_that_leaves_the_projection_goes_out_off() {
         encoder
             .queue_delta(&mut stream, owner, DeltaKind::Correction(1032), 16)
             .unwrap()
-            .unwrap()
-            .update
-            .chunk
+            .map(|chunk| chunk.update.chunk)
     };
+    assert!(next(&vanished).is_some());
     assert_eq!(next(&vanished), next(&stopped));
-    assert_ne!(next(&vanished), next(&running));
+    // Still running: nothing changed, no correction goes.
+    assert_eq!(next(&running), None);
 }
 
 /// Widowmaker's Grappling Hook cast (`STU_4BBC5D09`, `005A` st0) goes out
@@ -1547,24 +1554,27 @@ fn the_grappling_hooks_cast_goes_out_in_owner_frames_with_its_begin() {
         .unwrap();
     assert_eq!(observer.bit_len(), 0);
 
-    // Listed in the frame it began, then the client keeps it while it flies.
+    // Listed in the frame it began, then the client keeps it while it flies:
+    // no correction goes for it.
     let mut stream = BodyStream::new(ENTITY);
     stream.create_arrived();
     let baseline = encoder.queue_full(&mut stream, &idle).unwrap();
     stream.arrived(baseline.last);
     let mut send = |owner: &ProjectedSnapshot, kind| {
-        let chunk = encoder
-            .queue_delta(&mut stream, owner, kind, 16)
-            .unwrap()
-            .unwrap();
+        let chunk = encoder.queue_delta(&mut stream, owner, kind, 16).unwrap()?;
         let listed = stream.sent(chunk.last).unwrap().changes.clone();
         assert!(stream.arrived(chunk.last).advanced);
-        listed
+        Some(listed)
     };
     let key = ChangeKey::State(HOOK, CAST);
-    assert!(!send(&idle, DeltaKind::InitialOwner(1040 - OWNER_SETTLE_FRAMES)).contains(&key));
-    assert!(send(&flying, DeltaKind::Correction(1040)).contains(&key));
-    assert!(!send(&flying, DeltaKind::Correction(1041)).contains(&key));
+    let initial = DeltaKind::InitialOwner(1040 - OWNER_SETTLE_FRAMES);
+    assert!(!send(&idle, initial).unwrap().contains(&key));
+    assert!(
+        send(&flying, DeltaKind::Correction(1040))
+            .unwrap()
+            .contains(&key)
+    );
+    assert_eq!(send(&flying, DeltaKind::Correction(1041)), None);
 }
 
 /// Tracer's Recall (`001A` st0, `STU_41B3FC2B`) goes out with its end and
@@ -1629,24 +1639,27 @@ fn recalls_rewind_goes_out_with_its_end_and_history() {
         *payload
     );
 
-    // Listed in the frame it began, then the client keeps it.
+    // Listed in the frame it began, then the client keeps it: the next
+    // correction has nothing to change, so none goes.
     let mut stream = BodyStream::new(ENTITY);
     stream.create_arrived();
     let baseline = encoder.queue_full(&mut stream, &idle).unwrap();
     stream.arrived(baseline.last);
     let mut send = |owner: &ProjectedSnapshot, kind| {
-        let chunk = encoder
-            .queue_delta(&mut stream, owner, kind, 16)
-            .unwrap()
-            .unwrap();
+        let chunk = encoder.queue_delta(&mut stream, owner, kind, 16).unwrap()?;
         let listed = stream.sent(chunk.last).unwrap().changes.clone();
         assert!(stream.arrived(chunk.last).advanced);
-        listed
+        Some(listed)
     };
     let key = ChangeKey::State(RECALL, REWIND);
-    assert!(!send(&idle, DeltaKind::InitialOwner(1031 - OWNER_SETTLE_FRAMES)).contains(&key));
-    assert!(send(&rewinding, DeltaKind::Correction(1031)).contains(&key));
-    assert!(!send(&rewinding, DeltaKind::Correction(1032)).contains(&key));
+    let initial = send(&idle, DeltaKind::InitialOwner(1031 - OWNER_SETTLE_FRAMES)).unwrap();
+    assert!(!initial.contains(&key));
+    assert!(
+        send(&rewinding, DeltaKind::Correction(1031))
+            .unwrap()
+            .contains(&key)
+    );
+    assert_eq!(send(&rewinding, DeltaKind::Correction(1032)), None);
 }
 
 #[test]
