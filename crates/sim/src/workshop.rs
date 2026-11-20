@@ -298,7 +298,10 @@ impl Host<'_, '_> {
             .collect();
         for handle in due {
             let running = &self.actions[&handle];
-            let (source, context) = (Arc::clone(&running.call.source), running.call.context.clone());
+            let (source, context) = (
+                Arc::clone(&running.call.source),
+                running.call.context.clone(),
+            );
             let params = engine.evaluate_params(&*self, &source, &context);
             let kinds = param_kinds(self.catalog, running.call.action);
             let running = self.actions.get_mut(&handle).expect("due action");
@@ -532,7 +535,10 @@ impl World for Host<'_, '_> {
     /// Team 1 then Team 2, each in slot order ([`WorkshopRun::step`]
     /// sorts them so).
     fn players(&self) -> Vec<EntityId> {
-        self.players.iter().map(|player| player.controller).collect()
+        self.players
+            .iter()
+            .map(|player| player.controller)
+            .collect()
     }
     fn team_of(&self, player: EntityId) -> u8 {
         self.index(player)
@@ -749,11 +755,8 @@ impl Variables for Host<'_, '_> {
     fn set_player(&mut self, player: EntityId, index: u8, value: Value) {
         let wire = plain(self.catalog, &value);
         // The mode entity's graphs read the player's variable too.
-        self.script.set_foreign_variable(
-            player,
-            workshop_variable(i64::from(index)),
-            wire.clone(),
-        );
+        self.script
+            .set_foreign_variable(player, workshop_variable(i64::from(index)), wire.clone());
         if let Some(at) = self.index(player) {
             self.players[at]
                 .world

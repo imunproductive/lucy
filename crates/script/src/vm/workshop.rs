@@ -168,9 +168,10 @@ impl Component {
         let entity = self.machine.snapshot.entity;
         let mut children = Vec::new();
         for (&id, item) in &mut self.machine.snapshot.instances {
-            let scoped = item.scope.as_mut().filter(|scope| {
-                scope.source.entity == entity && scope.source.instance == instance
-            });
+            let scoped = item
+                .scope
+                .as_mut()
+                .filter(|scope| scope.source.entity == entity && scope.source.instance == instance);
             let opened = scoped.is_some();
             if let Some(scope) = scoped {
                 scope.parent.insert(ACTION_PARAMETERS, parameters.clone());
@@ -227,7 +228,11 @@ impl<W: World> Vm<'_, '_, '_, W> {
     /// [`Component::set_action_parameters`]: the copies again.
     fn copy_parameters(&mut self, id: u16) -> Result<(), InitFault> {
         let graph = self.graph(id);
-        for node in graph.nodes.iter().filter(|node| node.class == "STU_12F5D52D") {
+        for node in graph
+            .nodes
+            .iter()
+            .filter(|node| node.class == "STU_12F5D52D")
+        {
             for item in array_field(&node.fields, "m_143D4C5B") {
                 if field(item, "m_value").get("$").and_then(Json::as_str) == Some("STU_70757664") {
                     self.store(id, node, item, false)?;
@@ -342,7 +347,11 @@ impl<W: World> Vm<'_, '_, '_, W> {
             Some(entity) if entity == self.machine.snapshot.entity => {
                 self.write(VarKey::Entity(variable), value)?;
             }
-            Some(entity) if !self.world.set_entity_variable(site, entity, variable, value) => {
+            Some(entity)
+                if !self
+                    .world
+                    .set_entity_variable(site, entity, variable, value) =>
+            {
                 self.assume(site, &node.class, "sets no other entity's variable");
             }
             // Set by the world, or no entity (a player list that was

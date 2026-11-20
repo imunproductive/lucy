@@ -18,7 +18,7 @@ use orpheus_lobby::{
     custom_game::{self, CustomSettings, RulesetValue, Upload},
     transport::LobbyMessage,
 };
-use orpheus_script::graph::ModeValue;
+use orpheus_script::graph::{BodyValues, ModeValue};
 use orpheus_wire::jam::codec::Fields;
 
 use super::{Ctx, Lobby, Matchmaker, Parties, Party, Ticket, rules};
@@ -177,19 +177,22 @@ impl Ctx<'_> {
             .into_iter()
             .map(|(key, value)| (key, mode_value(value)))
             .collect();
-        self.start_custom(account, party, map, values, Arc::new(logic));
+        self.start_custom(account, party, map, values, Vec::new(), Arc::new(logic));
     }
 
     /// Open a custom match for its host, alone in team 1: `map` with a
     /// ruleset of its own, whose `values` its graphs read before the schema
     /// defaults (`GraphStore::ruleset_value`) and over the mode entity's
-    /// variables, and its Workshop `logic` for the Workshop engine.
+    /// variables, with the `bodies` values its bodies get as well
+    /// (`GraphStore::body_variables`), and its Workshop `logic` for the
+    /// Workshop engine.
     pub(super) fn start_custom(
         &mut self,
         account: &Arc<Account>,
         party: &Party,
         mut map: GameMap,
         values: BTreeMap<u32, ModeValue>,
+        bodies: Vec<BodyValues>,
         logic: Arc<orpheus_workshop::Logic>,
     ) -> bool {
         if map.team_sizes.first().is_none_or(|&size| size == 0) {
@@ -208,9 +211,9 @@ impl Ctx<'_> {
         };
         map.ruleset = MATCH_RULESETS | NEXT_RULESET.fetch_add(1, Ordering::Relaxed);
         let graphs = self.lobby.assets.graphs();
-        graphs.add_match_ruleset(map.ruleset, map.mode_guid, values.clone());
+        graphs.add_match_ruleset(map.ruleset, map.mode_guid, values.clone(), bodies.clone());
         tracing::info!(
-            "[CG] {} starts {} ({}), teams {:?}, {} Workshop rules, ruleset values {values:?}",
+            "[CG] {} starts {} ({}), teams {:?}, {} Workshop rules, ruleset values {values:?}, body values {bodies:?}",
             account.name,
             map.name,
             map.mode_name,

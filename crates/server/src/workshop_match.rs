@@ -9,7 +9,10 @@
 //! `game_rulesets_174.json` `settings`. So a General line under `modes`
 //! resolves against each played mode's own schemas (`0C5`
 //! `m_gameRulesetSchemas`), and a mode's block against that mode's; a
-//! General line under `heroes` against the heroes' schemas. The lobby lines
+//! General line under `heroes` against the heroes' schemas, and a line of
+//! a hero's block against his, an ability's entry by his ability's name
+//! ("Rocket Punch Cooldown Time"). A hero's or a team's block gives only
+//! those bodies its values ([`ScriptMatch::bodies`]). The lobby lines
 //! are no ruleset values (the lobby parser `sub_7FF789A87C40` writes them
 //! into the settings struct): only the team sizes are read. What the server
 //! does not apply is kept in [`ScriptMatch::skipped`] to be logged, the
@@ -23,7 +26,10 @@ use std::{
 };
 
 use orpheus_core::guid::parse_guid;
-use orpheus_script::{graph::ModeValue, rulesets};
+use orpheus_script::{
+    graph::{BodyValues, ModeValue},
+    rulesets,
+};
 use orpheus_workshop::{Catalog, Logic, text::Setting};
 use serde_json::Value as Json;
 
@@ -32,18 +38,24 @@ const MAP_GUID: u64 = 0x0800_0000_0000_0000;
 const IDENTIFIER_GUID: u64 = 0x0d80_0000_0000_0000;
 
 /// The settings the text names, by schema: `game_rulesets_174.json`
-/// `settings`, and which schemas each mode and hero lists.
+/// `settings`, which schemas each mode and hero lists, and each hero's
+/// abilities by logical button (`abilities`).
 #[derive(Debug, Default)]
 pub struct SettingNames {
     schemas: HashMap<u64, Vec<Entry>>,
     modes: HashMap<u64, Vec<u64>>,
     heroes: HashMap<u64, Vec<u64>>,
+    abilities: HashMap<u64, Vec<(String, u64)>>,
 }
 
 #[derive(Debug)]
 struct Entry {
     key: u32,
-    name: String,
+    /// None: an ability's entry, named only in a hero's block.
+    name: Option<String>,
+    /// An ability's entry: the logical button of the ability and the
+    /// format of its name ("%1$s Cooldown Time"; none: the ability's name).
+    button: Option<(u64, Option<String>)>,
     kind: Kind,
 }
 
@@ -86,29 +98,49 @@ impl SettingNames {
                 .collect();
             schemas.insert(guid(&Json::String(schema.clone()))?, entries);
         }
+        let mut abilities = HashMap::new();
+        for (hero, list) in object(&file["abilities"])? {
+            let list = list
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|ability| {
+                    Some((
+                        ability["name"].as_str()?.to_owned(),
+                        guid(&ability["button"]).ok()?,
+                    ))
+                })
+                .collect();
+            abilities.insert(guid(&Json::String(hero.clone()))?, list);
+        }
         Ok(Self {
             schemas,
             modes: lists("modes")?,
             heroes: lists("heroes")?,
+            abilities,
         })
     }
 
-    /// The entry named `name` (as the importer compares, ignoring case) in
-    /// the schemas `owners` list, first schema first.
+    /// The first entry of the `schemas` (first schema first) that `named`
+    /// takes.
     fn find<'a>(
         &'a self,
         schemas: impl IntoIterator<Item = &'a u64>,
-        name: &str,
+        named: impl Fn(&Entry) -> bool,
     ) -> Option<&'a Entry> {
         schemas
             .into_iter()
             .filter_map(|schema| self.schemas.get(schema))
             .flatten()
-            .find(|entry| entry.name.eq_ignore_ascii_case(name))
+            .find(|entry| named(entry))
     }
 
+    /// The mode's entry named `name` (as the importer compares, ignoring
+    /// case).
     fn mode_entry(&self, mode: u64, name: &str) -> Option<&Entry> {
-        self.find(self.modes.get(&mode).into_iter().flatten(), name)
+        self.find(self.modes.get(&mode).into_iter().flatten(), |entry| {
+            entry.named(name)
+        })
     }
 
     /// A General hero line: the first hero schema that has the name (the
@@ -118,7 +150,34 @@ impl SettingNames {
         let mut schemas: Vec<&u64> = self.heroes.values().flatten().collect();
         schemas.sort_unstable();
         schemas.dedup();
-        self.find(schemas, name)
+        self.find(schemas, |entry| entry.named(name))
+    }
+
+    /// A line of `hero`'s own block: an entry of his schemas by its name,
+    /// or by the name it takes from his ability on its logical button
+    /// ("Rocket Punch Cooldown Time", "Seismic Slam",
+    /// "Ultimate Generation (Meteor Strike)"). The archive's scripts write
+    /// that last one without the brackets ("Ultimate Generation Meteor
+    /// Strike"); both are taken (assumption: the export of a later client
+    /// drops them, and the line means the same entry).
+    fn hero_block_entry(&self, hero: u64, name: &str) -> Option<&Entry> {
+        let abilities = self.abilities.get(&hero).map_or(&[][..], Vec::as_slice);
+        self.find(self.heroes.get(&hero).into_iter().flatten(), |entry| {
+            entry.named(name)
+                || entry.button.as_ref().is_some_and(|(button, format)| {
+                    abilities
+                        .iter()
+                        .filter(|(_, own)| own == button)
+                        .any(|(ability, _)| {
+                            let full = format.as_deref().map_or_else(
+                                || ability.clone(),
+                                |format| format.replace("%1$s", ability),
+                            );
+                            full.eq_ignore_ascii_case(name)
+                                || full.replace(['(', ')'], "").eq_ignore_ascii_case(name)
+                        })
+                })
+        })
     }
 }
 
@@ -153,14 +212,21 @@ fn entry(json: &Json) -> Option<Entry> {
     };
     Some(Entry {
         key: u32::try_from(json["key"].as_u64()?).ok()?,
-        // An entry without a name (a hero's per-ability lines) is never
-        // matched by a line.
-        name: text("name")?,
+        name: text("name"),
+        button: guid(&json["button"])
+            .ok()
+            .map(|button| (button, text("format"))),
         kind,
     })
 }
 
 impl Entry {
+    fn named(&self, name: &str) -> bool {
+        self.name
+            .as_deref()
+            .is_some_and(|own| own.eq_ignore_ascii_case(name))
+    }
+
     /// The value a line gives, as the client reads the text: a bool by
     /// its words or On/Off (what the writer prints; the archive's scripts
     /// have both), a number with `%` as a fraction (`Respawn Time Scalar:
@@ -224,10 +290,25 @@ pub struct ScriptMatch {
     pub team_sizes: [Option<u8>; 2],
     /// The heroes' General `enabled heroes`; `None`: every hero.
     pub heroes: Option<Vec<u64>>,
+    /// The values of the `heroes` blocks that only some bodies get (a
+    /// hero's block, a team's block), each over the ones before: General's
+    /// heroes, then each team's lines, then each team's heroes
+    /// (assumption: the narrower scope wins, a team's over General's).
+    pub bodies: Vec<BodyValues>,
     /// The script's rules, for the Workshop engine.
     pub logic: Arc<Logic>,
     /// The lines the match does not apply, each with why.
     pub skipped: Vec<String>,
+}
+
+/// The lines of one `heroes` block: a team's or General's, or one hero's
+/// in it.
+struct HeroLines<'a> {
+    /// How the skipped lines name it.
+    block: String,
+    team: Option<u8>,
+    hero: Option<u64>,
+    lines: Vec<(&'a str, &'a str)>,
 }
 
 impl ScriptMatch {
@@ -239,7 +320,7 @@ impl ScriptMatch {
             ..Self::default()
         };
         let mut mode_lines: Vec<(&str, &str)> = Vec::new();
-        let mut hero_lines: Vec<(&str, &str)> = Vec::new();
+        let mut hero_lines: Vec<HeroLines<'_>> = Vec::new();
         let mut blocks: Vec<(u64, &[Setting])> = Vec::new();
         for setting in &script.settings {
             let Setting::Block(name, block) = setting else {
@@ -271,17 +352,32 @@ impl ScriptMatch {
             }
         }
         let mut hero_values = BTreeMap::new();
-        for (name, text) in hero_lines {
-            match names
-                .hero_entry(name)
-                .and_then(|entry| Some((entry.key, entry.value(text)?)))
-            {
-                Some((key, value)) => {
-                    hero_values.insert(key, value);
+        for scope in hero_lines {
+            let mut values = BTreeMap::new();
+            for (name, text) in scope.lines {
+                let entry = match scope.hero {
+                    Some(hero) => names.hero_block_entry(hero, name),
+                    None => names.hero_entry(name),
+                };
+                match entry.and_then(|entry| Some((entry.key, entry.value(text)?))) {
+                    Some((key, value)) => {
+                        values.insert(key, value);
+                    }
+                    None => found.skip(format!(
+                        "heroes: {}: {name}: {text}: no 1.74 hero setting",
+                        scope.block
+                    )),
                 }
-                None => found.skip(format!("heroes: {name}: {text}: no 1.74 hero setting")),
+            }
+            match (scope.team, scope.hero) {
+                (None, None) => hero_values.extend(values),
+                _ if values.is_empty() => {}
+                (team, hero) => found.bodies.push(BodyValues { team, hero, values }),
             }
         }
+        found
+            .bodies
+            .sort_by_key(|body| (body.team.is_some(), body.hero.is_some()));
         for (mode, block) in blocks {
             let mut game = ScriptGame {
                 mode,
@@ -344,44 +440,69 @@ impl ScriptMatch {
         }
     }
 
+    /// The `heroes` blocks: `General` and `Team 1`/`Team 2`, each with its
+    /// lines and its heroes' blocks, into `lines` in the text's order.
     fn heroes<'a>(
         &mut self,
         block: &'a [Setting],
         catalog: &Catalog,
-        lines: &mut Vec<(&'a str, &'a str)>,
+        lines: &mut Vec<HeroLines<'a>>,
     ) {
         for setting in block {
-            match setting {
-                Setting::Block(name, block) if name == "General" => {
-                    lines.extend(pairs(block));
-                    for setting in block {
-                        match setting {
-                            Setting::Block(list, heroes) if list == "enabled heroes" => {
-                                self.heroes = Some(self.hero_list(heroes, catalog));
-                            }
-                            Setting::Block(list, heroes) if list == "disabled heroes" => {
-                                let disabled = self.hero_list(heroes, catalog);
-                                self.heroes = Some(
-                                    catalog
-                                        .heroes()
-                                        .map(|(_, hero)| hero)
-                                        .filter(|hero| !disabled.contains(hero))
-                                        .collect(),
-                                );
-                            }
-                            Setting::Block(hero, _) => {
-                                self.skip(format!(
-                                    "heroes: General: {hero}: hero settings not applied"
-                                ));
-                            }
-                            _ => {}
-                        }
+            let Setting::Block(name, block) = setting else {
+                self.skip(format!("heroes: {setting:?}"));
+                continue;
+            };
+            let team = match name.as_str() {
+                "General" => None,
+                "Team 1" => Some(0),
+                "Team 2" => Some(1),
+                _ => {
+                    self.skip(format!("heroes: {name}: no such block"));
+                    continue;
+                }
+            };
+            lines.push(HeroLines {
+                block: name.clone(),
+                team,
+                hero: None,
+                lines: pairs(block),
+            });
+            for setting in block {
+                let Setting::Block(list, heroes) = setting else {
+                    continue;
+                };
+                let pool = match list.as_str() {
+                    "enabled heroes" => Some(self.hero_list(heroes, catalog)),
+                    "disabled heroes" => {
+                        let disabled = self.hero_list(heroes, catalog);
+                        Some(
+                            catalog
+                                .heroes()
+                                .map(|(_, hero)| hero)
+                                .filter(|hero| !disabled.contains(hero))
+                                .collect(),
+                        )
                     }
+                    _ => None,
+                };
+                match (pool, team) {
+                    (Some(pool), None) => self.heroes = Some(pool),
+                    (Some(_), Some(_)) => {
+                        self.skip(format!(
+                            "heroes: {name}: {list}: a team's heroes not applied"
+                        ));
+                    }
+                    (None, _) => match catalog.hero(list) {
+                        Some(hero) => lines.push(HeroLines {
+                            block: format!("{name}: {list}"),
+                            team,
+                            hero: Some(hero),
+                            lines: pairs(heroes),
+                        }),
+                        None => self.skip(format!("heroes: {name}: {list}: no such hero")),
+                    },
                 }
-                Setting::Block(name, _) => {
-                    self.skip(format!("heroes: {name}: team settings not applied"))
-                }
-                other => self.skip(format!("heroes: {other:?}")),
             }
         }
     }
@@ -546,11 +667,103 @@ mod tests {
         );
         assert_eq!(script.team_sizes, [Some(12), Some(0)]);
         assert_eq!(script.heroes, Some(vec![catalog.hero("Doomfist").unwrap()]));
+        assert!(script.bodies.is_empty());
         assert!(
             script
                 .skipped
                 .iter()
                 .any(|line| line.contains("Tank Role Passive Health Bonus")),
+            "{:?}",
+            script.skipped
+        );
+    }
+
+    /// A hero's block names his abilities' entries after his ability on
+    /// their logical button (ZBFZG's Doomfist lines; Team 2 as in other
+    /// archive scripts): Rocket Punch's cooldown is Doomfist's 9744,
+    /// Rising Uppercut's and Seismic Slam's the shared Abilities entries of
+    /// buttons 78 and 79 (9536, 9538), the ultimate's bracketed name
+    /// without its brackets; a team's lines are that team's. The General
+    /// lines stay every body's ruleset values.
+    #[test]
+    #[ignore = "requires an Overwatch 1.74 install (just test-game <install>)"]
+    fn hero_and_team_blocks_give_their_bodies_values() {
+        const TEXT: &str = r#"settings
+{
+	modes
+	{
+		Assault
+		{
+		}
+	}
+	heroes
+	{
+		General
+		{
+			Ultimate Ability: Off
+
+			Doomfist
+			{
+				Rising Uppercut Cooldown Time: 5%
+				Rocket Punch Cooldown Time: 25%
+				Seismic Slam: Off
+				Ultimate Generation Meteor Strike: 10%
+				Wall Jump: On
+			}
+		}
+		Team 2
+		{
+			Damage Dealt: 50%
+
+			Doomfist
+			{
+				Rocket Punch Cooldown Time: 0%
+			}
+		}
+	}
+}
+"#;
+        let data = orpheus_testkit::runtime_dir().join("data");
+        let catalog = Catalog::load(&data).unwrap();
+        let names = SettingNames::load(&data).unwrap();
+        let script = ScriptMatch::parse(TEXT, &catalog, &names).unwrap();
+        let doomfist = catalog.hero("Doomfist").unwrap();
+        let [game] = script.games.as_slice() else {
+            panic!("{:?}", script.games)
+        };
+        assert_eq!(
+            game.values,
+            BTreeMap::from([(9530, ModeValue::Bool(false))])
+        );
+        assert_eq!(
+            script.bodies,
+            vec![
+                BodyValues {
+                    team: None,
+                    hero: Some(doomfist),
+                    values: BTreeMap::from([
+                        (9532, ModeValue::Float(0.1)),
+                        (9536, ModeValue::Float(0.05)),
+                        (9538, ModeValue::Bool(false)),
+                        (9744, ModeValue::Float(0.25)),
+                    ]),
+                },
+                BodyValues {
+                    team: Some(1),
+                    hero: None,
+                    values: BTreeMap::from([(9529, ModeValue::Float(0.5))]),
+                },
+                BodyValues {
+                    team: Some(1),
+                    hero: Some(doomfist),
+                    values: BTreeMap::from([(9744, ModeValue::Float(0.0))]),
+                },
+            ]
+        );
+        assert!(
+            script.skipped.iter().any(
+                |line| line == "heroes: General: Doomfist: Wall Jump: On: no 1.74 hero setting"
+            ),
             "{:?}",
             script.skipped
         );

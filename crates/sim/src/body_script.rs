@@ -285,21 +285,27 @@ impl PlayerBodyFactory {
         world.controller_on_fire = self.controller_on_fire;
         world.unknowns = self.unknowns;
         world.team_sizes = self.mode_body.team_sizes.clone();
+        let team = team_from_filter(spawn.body_filter);
         let mut roots = self.roots.clone();
-        let mode_script = self
-            .mode_body
-            .scripts
-            .get(&team_from_filter(spawn.body_filter))
-            .copied();
+        let mode_script = self.mode_body.scripts.get(&team).copied();
         if let Some(graph) = mode_script {
             let id = roots.last().map_or(Some(1), |root| root.id.checked_add(1));
             let id = id.ok_or_else(|| unsupported("no instance id left for the mode body"))?;
             roots.push(Root::new(id, graph));
         }
+        // A custom match's ruleset values, which the client's graphs read
+        // only as the body's entity variables
+        // (`GraphStore::body_variables`).
+        let mut variables = self.variables.clone();
+        variables.extend(self.graphs.body_variables(
+            self.ruleset,
+            self.hero,
+            u8::try_from(team).ok(),
+        ));
         let mut component = Component::start(
             Arc::clone(&self.graphs),
             spawn.entity,
-            self.variables.clone(),
+            variables,
             roots,
             spawn.frame,
             &mut world,

@@ -292,7 +292,11 @@ impl Actions for Match {
         let duration = self.durations.get(&name).copied().unwrap_or(0);
         self.started.push(Started {
             name,
-            params: call.params.iter().map(|param| param.value().clone()).collect(),
+            params: call
+                .params
+                .iter()
+                .map(|param| param.value().clone())
+                .collect(),
             raw: call.params,
             event_player: call.context.event_player,
         });

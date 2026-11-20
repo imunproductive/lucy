@@ -437,13 +437,33 @@ pub struct Body {
 }
 
 /// A single match's own ruleset ([`GraphStore::add_match_ruleset`]): its
-/// mode, its values by ruleset key, and the mode entity's variables (the
-/// mode's with those values over them).
+/// mode, its values by ruleset key, the values only some of its bodies
+/// get, and the mode entity's variables (the mode's with those values
+/// over them).
 #[derive(Debug)]
 struct MatchRuleset {
     mode: u64,
     values: BTreeMap<u32, ModeValue>,
+    bodies: Vec<BodyValues>,
     variables: Arc<BTreeMap<u32, ModeValue>>,
+}
+
+/// Ruleset values a custom match gives one team's bodies, one hero's, or
+/// one hero's of one team (a Workshop script's `heroes` blocks: `Team 1`,
+/// `General` > `Doomfist`, `Team 2` > `Doomfist`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BodyValues {
+    /// The room's team (0 is Team 1); none: every team.
+    pub team: Option<u8>,
+    /// None: every hero.
+    pub hero: Option<u64>,
+    pub values: BTreeMap<u32, ModeValue>,
+}
+
+impl BodyValues {
+    fn covers(&self, hero: u64, team: Option<u8>) -> bool {
+        self.hero.is_none_or(|own| own == hero) && self.team.is_none_or(|own| Some(own) == team)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -902,8 +922,9 @@ impl GraphStore {
     }
 
     /// `GetGameRulesetValue`'s answer for `key` after the entity variable:
-    /// a match ruleset's own value of the key, else the hero's and mode's
-    /// schema default ([`Rulesets::default`]).
+    /// a match ruleset's own value of the key (for `hero` of any team, then
+    /// for every body), else the hero's and mode's schema default
+    /// ([`Rulesets::default`]).
     pub fn ruleset_value(
         &self,
         key: u32,
@@ -911,22 +932,65 @@ impl GraphStore {
         mode: u64,
         ruleset: u64,
     ) -> Option<crate::wire::Value> {
-        let own = self
-            .match_rulesets()
-            .get(&ruleset)
-            .and_then(|own| own.values.get(&key).copied());
+        let own = self.match_rulesets().get(&ruleset).and_then(|own| {
+            own.bodies
+                .iter()
+                .rev()
+                .filter(|body| body.covers(hero, None))
+                .find_map(|body| body.values.get(&key))
+                .or_else(|| own.values.get(&key))
+                .copied()
+        });
         match own {
             Some(value) => Some(value.into()),
             None => self.rulesets.default(key, hero, mode),
         }
     }
 
+    /// A body's entity variables from a match's own ruleset: its values,
+    /// then those of the [`BodyValues`] for the body's `hero` and `team`
+    /// in order. A graph's `GetGameRulesetValue` reads the owner's entity
+    /// variable of the key first, on the server and on each client
+    /// (`Eval_STU_3832D36C`); the client has no other way to a custom
+    /// match's values (its fallback is the schema defaults,
+    /// `sub_7FF789CAC540`), so they go to the bodies its graphs run on: the
+    /// enemy health bars (`0D24` st11, #9539), the cooldown scalars the
+    /// ability graphs read (#9528, #9536, …). Empty for every other match.
+    pub fn body_variables(
+        &self,
+        ruleset: u64,
+        hero: u64,
+        team: Option<u8>,
+    ) -> crate::wire::Variables {
+        let rulesets = self.match_rulesets();
+        let Some(own) = rulesets.get(&ruleset) else {
+            return crate::wire::Variables::new();
+        };
+        own.bodies
+            .iter()
+            .filter(|body| body.covers(hero, team))
+            .fold(own.values.clone(), |mut values, body| {
+                values.extend(&body.values);
+                values
+            })
+            .into_iter()
+            .map(|(key, value)| (key, value.into()))
+            .collect()
+    }
+
     /// Give a single match its own ruleset `id` (unused by any `0C0`):
     /// its games of `mode` read `values` before the schema defaults and
-    /// over the mode entity's own variables. Empty for every match that
-    /// is not a custom game; [`GraphStore::remove_match_ruleset`] when it
-    /// ends.
-    pub fn add_match_ruleset(&self, id: u64, mode: u64, values: BTreeMap<u32, ModeValue>) {
+    /// over the mode entity's own variables, and its bodies get them with
+    /// the `bodies` that cover them ([`GraphStore::body_variables`]).
+    /// Empty for every match that is not a custom game;
+    /// [`GraphStore::remove_match_ruleset`] when it ends.
+    pub fn add_match_ruleset(
+        &self,
+        id: u64,
+        mode: u64,
+        values: BTreeMap<u32, ModeValue>,
+        bodies: Vec<BodyValues>,
+    ) {
         let mut variables = self
             .mode_variables
             .get(&mode)
@@ -938,6 +1002,7 @@ impl GraphStore {
             MatchRuleset {
                 mode,
                 values,
+                bodies,
                 variables: Arc::new(variables),
             },
         );
@@ -1346,11 +1411,24 @@ mod tests {
         assert_eq!(store.mode_variables(0x0230_0000_0000_005a, RULESET), None);
 
         const CUSTOM: u64 = 0x0fd0_ffff_0000_0001;
+        const DOOMFIST: u64 = 0x02e0_0000_0000_012f;
         assert_eq!(store.ruleset_value(9531, 0, MODE, CUSTOM), None);
         store.add_match_ruleset(
             CUSTOM,
             MODE,
             BTreeMap::from([(9531, ModeValue::Float(0.0)), (2, ModeValue::Integer(12))]),
+            vec![
+                BodyValues {
+                    team: None,
+                    hero: Some(DOOMFIST),
+                    values: BTreeMap::from([(9744, ModeValue::Float(0.25))]),
+                },
+                BodyValues {
+                    team: Some(1),
+                    hero: None,
+                    values: BTreeMap::from([(9531, ModeValue::Float(0.5))]),
+                },
+            ],
         );
         let mut custom = own.clone();
         custom.extend([(9531, ModeValue::Float(0.0)), (2, ModeValue::Integer(12))]);
@@ -1359,6 +1437,27 @@ mod tests {
             store.ruleset_value(9531, 0, MODE, CUSTOM),
             Some(crate::wire::Value::Float(0.0))
         );
+        // A hero's own value is his in either team; a team's needs the
+        // body's team.
+        assert_eq!(
+            store.ruleset_value(9744, DOOMFIST, MODE, CUSTOM),
+            Some(crate::wire::Value::Float(0.25))
+        );
+        assert_eq!(store.ruleset_value(9744, 0, MODE, CUSTOM), None);
+        use crate::wire::{Value as Wire, Variables};
+        assert_eq!(
+            store.body_variables(CUSTOM, DOOMFIST, Some(1)),
+            Variables::from([
+                (2, Wire::Integer(12)),
+                (9531, Wire::Float(0.5)),
+                (9744, Wire::Float(0.25)),
+            ])
+        );
+        assert_eq!(
+            store.body_variables(CUSTOM, 0x02e0_0000_0000_0002, Some(0)),
+            Variables::from([(2, Wire::Integer(12)), (9531, Wire::Float(0.0))])
+        );
+        assert!(store.body_variables(0, DOOMFIST, Some(0)).is_empty());
         // Every other match keeps its values.
         assert_eq!(store.ruleset_value(9531, 0, MODE, 0), None);
         assert_eq!(store.mode_variables(MODE, 0).as_deref(), Some(&own));
