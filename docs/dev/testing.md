@@ -15,14 +15,15 @@ You need [just](https://github.com/casey/just) and Node.js in addition to the bu
 While you work on a feature, run only the tests that are directly involved:
 
 - `just check` (or `just test` and `just lint`). These are cheap.
-- `just test-affected <install>`: the tests, game-install tests included, of the crates your change touches and every crate that depends on them (`tools/affected.py`, changes since `main`).
-- The game-install tests of the area you touched, by name:
+- For a quick loop, the game-install tests of the area you are working on, by name:
 
   ```powershell
   just test-named C:\Games\Overwatch orpheus-sim body_script
   ```
 
   The last argument is a name filter, as in `cargo test`. `test-named` uses the debug build, which `just test` has already compiled. For the long match tests of `orpheus-server`, add `gametest` to use the optimised build: `just test-named C:\Games\Overwatch orpheus-server assault gametest`. That build takes about two minutes after a change in `sim`, but the tests then run two to three times faster.
+
+Before you report, run `just test-affected <install>`: every test, game-install tests included, of the crates your change touches and every crate that depends on them (`tools/affected.py`, changes since `main`), without `slow_` and `serial_`. A name filter misses tests in the crates that depend on yours.
 
 Do not run the full game-install suites (`just test-game`, `just test-slow`) for a feature. The integrator (whoever merges) runs them once, after a batch of merges. An agent does not run them before it reports.
 

@@ -29,13 +29,15 @@ Run these, and nothing more:
 1. `cargo fmt --all`
 2. `cargo clippy --workspace --all-targets --locked -- -D warnings`
 3. `just test` (`cargo nextest run --workspace --locked`, then the doc tests)
-4. The game-install tests of the area you touched, by name:
+4. The tests of every crate your change can affect, game-install tests included:
 
    ```powershell
-   just test-named D:\Games\Overwatch orpheus-sim body_script
+   just test-affected D:\Games\Overwatch
    ```
 
-   The last argument is a name filter, as in `cargo test`. Give the narrowest filter that runs the tests of the code you changed. The recipe uses the debug build that step 3 compiled. For the long match tests of `orpheus-server`, add `gametest` at the end to run them optimised. `just test-affected D:\Games\Overwatch` runs every test of the crates your change can affect, when a name filter can't pick them.
+   It runs the crates `tools/affected.py` names: the ones you changed since `main` and every crate that depends on them, without the `slow_` and `serial_` tests. A change to `script`, `sim` or `physics` reaches nearly every crate (about 4 minutes); a change to `lobby` or `assets`, far less. A name filter is not enough here: a bot change once passed its own `sim` filters and broke a `server` test that only the full run at merge found.
+
+   While you work, `just test-named D:\Games\Overwatch orpheus-sim body_script` runs the game-install tests of one crate whose names contain the filter (as in `cargo test`), for a quick loop. For the long match tests of `orpheus-server`, add `gametest` at the end to run them optimised.
 
    If you changed only `web/`, run `just dashboard-test` instead of steps 1-4.
 
