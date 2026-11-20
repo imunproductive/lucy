@@ -1,6 +1,7 @@
 """A game session for the probe: `orpheus play --probe` on a temporary copy of the state folder (never the user's
 own), the decrypted debug build as the game, the login and, on request, the way into the Practice Range by
-clicks (owdbg's RangeEntry positions). One game at a time: it takes owdbg's machine-wide game lock.
+clicks (owdbg's RangeEntry positions). One game at a time: it takes the agents' game lock (TEAM_LOCK, owner.txt)
+and owdbg's machine-wide byte lock, and at its end stops the game, then the server, and releases both.
 
     with Session(enter_range=True, hero="Soldier") as s:
         p = s.probe                    # a connected tools.owprobe.Probe, frame sampler on
@@ -19,6 +20,47 @@ from tools.owdbg import win32 as w
 from tools.owdbg.game import STATE_ITEMS, USER_STATE, _GameLock, capture, find_window, post_click, post_key
 
 from .client import Probe
+from .screenshot import screenshot
+
+TEAM_LOCK = Path(os.environ.get("ORPHEUS_GAME_LOCK", "D:/Temp/orpheus-game.lock"))
+
+
+def _pids_of(image):
+    """The PIDs of the running processes with this image name."""
+    out = subprocess.run(["tasklist", "/FO", "CSV", "/NH", "/FI", f"IMAGENAME eq {image}"], capture_output=True,
+                         text=True).stdout
+    pids = []
+    for line in out.splitlines():
+        fields = [f.strip('"') for f in line.split('","')]
+        if len(fields) > 1 and fields[0].strip('"').lower() == image.lower() and fields[1].isdigit():
+            pids.append(int(fields[1]))
+    return pids
+
+
+def _terminate(pids, wait):
+    """TerminateProcess each, then wait up to `wait` s in all for them to be gone; returns those still running."""
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    terminate_and_wait = 0x0001 | 0x00100000  # PROCESS_TERMINATE | SYNCHRONIZE
+    handles = {}
+    for pid in pids:
+        handle = kernel32.OpenProcess(terminate_and_wait, False, pid)
+        if handle:
+            kernel32.TerminateProcess(handle, 1)
+            handles[pid] = handle
+    end = time.monotonic() + wait
+    left = []
+    for pid, handle in handles.items():
+        remaining = max(0, int((end - time.monotonic()) * 1000))
+        if kernel32.WaitForSingleObject(handle, remaining) != 0:
+            left.append(pid)
+        kernel32.CloseHandle(handle)
+    return left
+
 
 ORPHEUS_EXE = Path(os.environ.get("ORPHEUS_BIN", paths.ORPHEUS_EXE))
 GAME_EXE = paths.GAME_EXE  # the decrypted debug build: code hooks need a writable image
@@ -34,11 +76,19 @@ LOGIN_PIXEL = (0.44, 0.88)
 
 class Session:
     def __init__(self, orpheus=None, game=None, port=None, enter_range=False, hero=None, account="Researcher",
-                 keep_state=False, log=None, game_args=(), timeout=300.0, seed_state=None):
+                 keep_state=False, log=None, game_args=(), timeout=300.0, seed_state=None, rust_log=None,
+                 team_lock=True, owner=None):
         """seed_state: the state folder whose cache (derived game data) and profiles the temp state copies
         (default the user's %APPDATA%/orpheus, read only); a cache from another code version is derived again
-        on the first start (minutes, before the game starts)."""
+        on the first start (minutes, before the game starts). rust_log: the server's RUST_LOG, e.g.
+        `info,orpheus::pose=debug` for the per-frame poses `compare` reads from `state/play.log`. team_lock: take
+        the agents' game lock (TEAM_LOCK, a folder with owner.txt naming `owner`) for the session and release it
+        at its end; False when the caller holds it already."""
         self.seed_state = Path(seed_state) if seed_state else USER_STATE
+        self.rust_log = rust_log
+        self.team_lock = team_lock
+        self.owner = owner or os.environ.get("ORPHEUS_AGENT") or "owprobe"
+        self._team_locked = False
         self.orpheus = Path(orpheus or ORPHEUS_EXE)
         self.game = Path(game or GAME_EXE)
         self.port = port or 21150
@@ -60,8 +110,10 @@ class Session:
 
     # ---- lifetime
     def __enter__(self):
-        self._lock.acquire()
+        if self.team_lock:
+            self._take_team_lock()
         try:
+            self._lock.acquire()
             self.start()
             if self.enter_range:
                 self.enter_practice_range()
@@ -73,6 +125,37 @@ class Session:
     def __exit__(self, *exc):
         self.close()
         return False
+
+    def _take_team_lock(self):
+        """The agents' game lock: mkdir TEAM_LOCK, owner.txt with the owner and the time; waits while another
+        holds it, saying who."""
+        told = None
+        while True:
+            try:
+                TEAM_LOCK.mkdir(parents=False)
+                break
+            except FileExistsError:
+                try:
+                    holder = (TEAM_LOCK / "owner.txt").read_text(encoding="utf-8").strip()
+                except OSError:
+                    holder = "?"
+                if holder != told:
+                    self.log(f"[owprobe] waiting for the game lock {TEAM_LOCK} (held by: {holder})")
+                    told = holder
+                time.sleep(30)
+        self._team_locked = True
+        (TEAM_LOCK / "owner.txt").write_text(f"{self.owner} {time.strftime('%Y-%m-%dT%H:%M:%S')} owprobe session "
+                                             f"(PID {os.getpid()})\n", encoding="utf-8")
+
+    def _release_team_lock(self):
+        if not self._team_locked:
+            return
+        try:
+            (TEAM_LOCK / "owner.txt").unlink(missing_ok=True)
+            TEAM_LOCK.rmdir()
+        except OSError as error:
+            self.log(f"[owprobe] could not release {TEAM_LOCK}: {error}")
+        self._team_locked = False
 
     def elapsed(self):
         return time.monotonic() - self.t0
@@ -96,6 +179,8 @@ class Session:
         self.out = open(self.state / "play.log", "wb")
         env = dict(os.environ)
         env.pop("ORPHEUS_PROBE", None)
+        if self.rust_log:
+            env["RUST_LOG"] = self.rust_log
         self.proc = subprocess.Popen(cmd, cwd=str(self.orpheus.parent), stdout=self.out, stderr=subprocess.STDOUT,
                                      stdin=subprocess.DEVNULL, env=env,
                                      creationflags=w.CREATE_NEW_PROCESS_GROUP | w.CREATE_NO_WINDOW)
@@ -123,20 +208,30 @@ class Session:
         self.wait_login()
 
     def close(self):
+        """Stop the game first (TerminateProcess, waiting until it is gone), then the server, then release the
+        locks. The game is this session's PID and any other process of the game's image (the session holds the
+        game lock, so they are its own: the client can restart itself outside orpheus's process tree)."""
         if self.probe is not None:
             try:
                 self.probe.close()
             except OSError:
                 pass
             self.probe = None
+        if self.proc is not None or self.pid:
+            pids = set(_pids_of(self.game.name))
+            if self.pid:
+                pids.add(self.pid)
+            started = time.monotonic()
+            left = _terminate(pids, wait=30.0)
+            if pids:
+                self.log(f"[owprobe] game {sorted(pids)} stopped in {time.monotonic() - started:.1f} s"
+                         + (f"; still running: {left}" if left else ""))
         if self.proc is not None and self.proc.poll() is None:
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.proc.pid)], capture_output=True)
             try:
                 self.proc.wait(10)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
-        if self.pid:
-            subprocess.run(["taskkill", "/F", "/PID", str(self.pid)], capture_output=True)
         if self.job:
             w.CloseHandle(self.job)
             self.job = None
@@ -148,6 +243,7 @@ class Session:
             else:
                 shutil.rmtree(self.state, ignore_errors=True)
         self._lock.release()
+        self._release_team_lock()
 
     # ---- logs and the window
     def text(self, name):
@@ -243,29 +339,36 @@ class Session:
         else:
             raise RuntimeError("the Practice Range did not start")
         self.log(f"[owprobe] t={self.elapsed():.0f}s match found; hero select")
+        self.probe.sampler(every=0)
         end = time.monotonic() + 120
-        clicked_hero, selects = False, 0
+        clicked_hero, selects, picked = False, 0, None
         while time.monotonic() < end:
+            if self.probe.info().get("body"):
+                break
             if self.select_visible():
                 if hero_at and not clicked_hero:
                     self.click(hero_at, f"{self.hero}'s portrait")
-                    clicked_hero = True
+                    clicked_hero, picked = True, time.monotonic()
                 elif selects < 6:
                     self.click(SELECT, "SELECT")
                     selects += 1
-            elif selects:
-                break
+            elif clicked_hero and not selects and time.monotonic() - picked > 8:
+                # The button can hide behind the picked hero's card: press it where it was.
+                self.click(SELECT, "SELECT (not seen)")
+                selects += 1
             time.sleep(2)
-        self.probe.sampler(every=0)
+        # The body the player possesses (component 44, from the probe's component scan) with its mover.
         end = time.monotonic() + 120
         while time.monotonic() < end:
             info = self.probe.info()
-            if info["frames"] and (info["comp4"] or time.monotonic() > end - 90):
-                self.log(f"[owprobe] t={self.elapsed():.0f}s in the Range: entity {info['entity_id']}, "
-                         f"component 4 {info['comp4']:#x}, {info['frames']} input samples")
+            if info["frames"] and info.get("body") and info["comp31"]:
+                self.log(f"[owprobe] t={self.elapsed():.0f}s in the Range: player {info['entity_id']:08X}, body "
+                         f"{info['body']:08X}, mover {info['comp31']:#x}, {info['frames']} input samples")
                 return
             time.sleep(1)
-        raise RuntimeError("no input samples after hero select")
+        shot = self.state / "no-body.png"
+        screenshot(self.pid, shot)
+        raise RuntimeError(f"no possessed body with a mover after hero select (frames {info['frames']}); see {shot}")
 
     def server_log_matches(self, pattern):
         return re.findall(pattern, (self.state / "play.log").read_text("utf-8", "replace"))
