@@ -23,20 +23,19 @@ impl Drop for Kill {
 }
 
 fn relay_dll() -> PathBuf {
-    // target/<profile>/deps/inject-<hash>.exe -> target/<profile>/owwfd_relay.dll
+    // The test binary sits below the profile folder (target/<profile>/deps/,
+    // or target/<profile>/build/<package>/<hash>/out/ in newer cargo
+    // layouts); the relay is target/<profile>/owwfd_relay.dll.
     let exe = std::env::current_exe().unwrap();
-    let dll = exe
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("owwfd_relay.dll");
-    assert!(
-        dll.is_file(),
-        "{} is missing: run just test-windows",
-        dll.display()
-    );
-    dll
+    exe.ancestors()
+        .map(|folder| folder.join("owwfd_relay.dll"))
+        .find(|dll| dll.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "no owwfd_relay.dll in the folders above {}: run just test-windows",
+                exe.display()
+            )
+        })
 }
 
 fn wait_for(path: &Path, text: &str) -> String {
