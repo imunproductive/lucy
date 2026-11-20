@@ -152,6 +152,30 @@ pub trait Variables {
 
 pub type ActionHandle = u64;
 
+/// An action parameter as the engine evaluated it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Param {
+    /// The same for every player.
+    Value(Value),
+    /// A parameter that names Local Player: its value with no local
+    /// player (the server's), and each player's own (the parameter
+    /// evaluated with [`Context::local_player`] that player), in
+    /// [`World::players`] order.
+    PerViewer {
+        value: Value,
+        viewers: Vec<(EntityId, Value)>,
+    },
+}
+
+impl Param {
+    /// The value the server sees.
+    pub fn value(&self) -> &Value {
+        match self {
+            Self::Value(value) | Self::PerViewer { value, .. } => value,
+        }
+    }
+}
+
 /// An action to run as its graph.
 pub struct ActionCall {
     /// The action's index (`054/0155`).
@@ -159,11 +183,10 @@ pub struct ActionCall {
     /// Its graph (`m_graph`); every action the engine hands over has one.
     pub graph: u64,
     /// The parameters evaluated once, in catalog order (`#18739`).
-    pub params: Vec<Value>,
+    pub params: Vec<Param>,
     /// The action as written, for the parameters an action re-evaluates
-    /// (its Reevaluation enum): evaluate them again with
-    /// [`crate::eval::evaluate`] and this context (with `local_player` set
-    /// per viewer).
+    /// (its Reevaluation enum): [`crate::Engine::evaluate_params`] with
+    /// this context evaluates them again.
     pub source: Rc<logic::Action>,
     pub context: Context,
 }

@@ -26,6 +26,9 @@ const CREATE_HUD_TEXT: u32 = 0x1D8A;
 const DESTROY_HUD_TEXT: u32 = 0x1D8B;
 const TELEPORT: u32 = 0x1D45;
 
+/// The Workshop value Number (`01C:4876`).
+const NUMBER: u64 = 0x0D80_0000_0000_4876;
+
 /// Create HUD Text's scope (`1D8A` st36's plug, `m_5AEA0A51` 31): it
 /// targets the mode entity itself.
 const HUD_TEXT_SCOPE: u32 = 31;
@@ -72,6 +75,12 @@ fn finished(script: &ModeScript, action: WorkshopAction) -> ActionOutcome {
     }
 }
 
+/// A constant Workshop parameter as the engine gives it: the value inside
+/// Number (`4876`), whose `1B4A` config is its parameter 0.
+fn constant(value: Value) -> Value {
+    crate::expr::workshop_tree(NUMBER, vec![value])
+}
+
 fn assert_complete(script: &ModeScript) {
     assert!(script.complete(), "gaps: {:?}", script.gaps());
 }
@@ -88,21 +97,25 @@ fn variable_actions_are_done_at_once() {
     let set = run(
         &mut script,
         SET_GLOBAL_VARIABLE,
-        vec![Value::Integer(3), Value::Float(5.0)],
+        vec![Value::Integer(3), constant(Value::Float(5.0))],
     );
     assert_eq!(finished(&script, set), ActionOutcome::Done);
     assert_eq!(
-        script.workshop_variable(GAME_MODE_ENTITY, 3),
+        script.workshop_global(3),
         Value::Float(5.0)
     );
     let at_index = run(
         &mut script,
         SET_GLOBAL_VARIABLE_AT_INDEX,
-        vec![Value::Integer(4), Value::Integer(2), Value::Float(9.0)],
+        vec![
+            Value::Integer(4),
+            constant(Value::Integer(2)),
+            constant(Value::Float(9.0)),
+        ],
     );
     assert_eq!(finished(&script, at_index), ActionOutcome::Done);
     assert_eq!(
-        script.workshop_variable(GAME_MODE_ENTITY, 4),
+        script.workshop_global(4),
         Value::Array(vec![Value::Null, Value::Null, Value::Float(9.0)])
     );
     // Set Player Variable: `STU_D137ECA0` loops over the players, each
@@ -111,7 +124,7 @@ fn variable_actions_are_done_at_once() {
     let player = run(
         &mut script,
         SET_PLAYER_VARIABLE,
-        vec![players, Value::Integer(2), Value::Float(1.0)],
+        vec![constant(players), Value::Integer(2), constant(Value::Float(1.0))],
     );
     assert_eq!(finished(&script, player), ActionOutcome::Done);
     let id = crate::expr::workshop_variable(2);
@@ -122,7 +135,6 @@ fn variable_actions_are_done_at_once() {
             (OTHER_PLAYER, id, Value::Float(1.0))
         ]
     );
-    assert_eq!(script.workshop_variable(PLAYER, 2), Value::Float(1.0));
     assert_complete(&script);
     for action in [set, at_index, player] {
         assert!(
@@ -144,7 +156,7 @@ fn a_wait_is_done_when_its_time_is_up() {
     let wait = run(
         &mut script,
         WAIT,
-        vec![Value::Float(0.5), Value::Integer(0)],
+        vec![constant(Value::Float(0.5)), Value::Integer(0)],
     );
     assert_eq!(script.action_status(wait), ActionStatus::Running);
     let mut frame = 1;
@@ -171,21 +183,21 @@ fn flow_actions_report_their_result() {
     let skip = run(
         &mut script,
         SKIP_IF,
-        vec![Value::Bool(true), Value::Integer(3)],
+        vec![constant(Value::Bool(true)), constant(Value::Integer(3))],
     );
     assert_eq!(finished(&script, skip), ActionOutcome::Skip(3));
     let no_skip = run(
         &mut script,
         SKIP_IF,
-        vec![Value::Bool(false), Value::Integer(3)],
+        vec![constant(Value::Bool(false)), constant(Value::Integer(3))],
     );
     assert_eq!(finished(&script, no_skip), ActionOutcome::Done);
-    let abort = run(&mut script, ABORT_IF, vec![Value::Bool(true)]);
+    let abort = run(&mut script, ABORT_IF, vec![constant(Value::Bool(true))]);
     assert_eq!(
         finished(&script, abort),
         ActionOutcome::Abort(RuleTest::Always)
     );
-    let no_abort = run(&mut script, ABORT_IF, vec![Value::Bool(false)]);
+    let no_abort = run(&mut script, ABORT_IF, vec![constant(Value::Bool(false))]);
     assert_eq!(finished(&script, no_abort), ActionOutcome::Done);
     let by_conditions = run(&mut script, ABORT_IF_CONDITION_IS_TRUE, Vec::new());
     assert_eq!(
@@ -209,22 +221,25 @@ fn flow_actions_report_their_result() {
 #[ignore = "requires the derived 104319 graph bundle"]
 fn hud_text_stays_up_until_destroyed() {
     let mut script = host();
-    let text = |value: &str| Value::String(value.into());
+    let text = |value: &str| constant(Value::String(value.into()));
+    let identifier = |id: u64| Value::Asset(0x0D80_0000_0000_0000 | id);
     let create = run(
         &mut script,
         CREATE_HUD_TEXT,
         vec![
-            Value::Array(vec![Value::Entity(PLAYER)]),
+            constant(Value::Array(vec![Value::Entity(PLAYER)])),
             text("Level 1"),
             text(""),
             text("Checkpoint 3"),
-            Value::Integer(0),
-            Value::Float(0.0),
-            Value::Integer(0),
-            Value::Integer(0),
-            Value::Integer(0),
-            Value::Integer(0),
-            Value::Integer(0),
+            // The enums' catalog defaults: Location, then Sort Order and
+            // the colours, Reevaluation, Non-Team Spectators.
+            identifier(0x51F3),
+            constant(Value::Float(0.0)),
+            constant(Value::Null),
+            constant(Value::Null),
+            constant(Value::Null),
+            identifier(0x51AA),
+            identifier(0x5C26),
         ],
     );
     assert_eq!(finished(&script, create), ActionOutcome::Done);
@@ -249,12 +264,12 @@ fn hud_text_stays_up_until_destroyed() {
     assert!(projected.has_instance(scope));
     assert_eq!(
         projected.instance_variable(scope, VISIBLE_TO),
-        Some(&Value::Array(vec![Value::Entity(PLAYER)]))
+        Some(&constant(Value::Array(vec![Value::Entity(PLAYER)])))
     );
     // Destroy HUD Text sends `0E35` with the id to the mode entity, which
     // takes it at once (a message to its own entity).
     let id = script.snapshot().unwrap().variables[&LAST_TEXT_ID].clone();
-    let destroy = run(&mut script, DESTROY_HUD_TEXT, vec![id]);
+    let destroy = run(&mut script, DESTROY_HUD_TEXT, vec![constant(id)]);
     assert_eq!(finished(&script, destroy), ActionOutcome::Done);
     script.advance(2).unwrap();
     let instances = &script.snapshot().unwrap().instances;
@@ -275,8 +290,8 @@ fn small_message_reaches_its_target_in_the_frames() {
         &mut script,
         SMALL_MESSAGE,
         vec![
-            Value::Array(vec![Value::Entity(PLAYER)]),
-            Value::String("Checkpoint!".into()),
+            constant(Value::Array(vec![Value::Entity(PLAYER)])),
+            constant(Value::String("Checkpoint!".into())),
         ],
     );
     assert_eq!(finished(&script, message), ActionOutcome::Done);
@@ -318,8 +333,8 @@ fn teleport_opens_its_scope_on_the_target() {
         &mut script,
         TELEPORT,
         vec![
-            Value::Array(vec![Value::Entity(PLAYER)]),
-            Value::Vector([10.0, 2.0, -5.0]),
+            constant(Value::Array(vec![Value::Entity(PLAYER)])),
+            constant(Value::Vector([10.0, 2.0, -5.0])),
         ],
     );
     assert_eq!(finished(&script, teleport), ActionOutcome::Done);

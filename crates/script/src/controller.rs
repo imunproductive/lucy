@@ -37,8 +37,8 @@ use crate::{
     expr::EntityRelation,
     graph::GraphStore,
     vm::{
-        BodyMove, Component, GameMessage, InitFault, MAX_INIT_WORK, Root, ScopeChange, Site,
-        Snapshot, StateKind, TrackedStat, Unknowns, VoiceRequest, World,
+        BodyMove, Component, GameMessage, InitFault, MAX_INIT_WORK, PlayRequest, Root,
+        ScopeChange, Site, Snapshot, StateKind, TrackedStat, Unknowns, VoiceRequest, World,
     },
     wire::{Value, Variables},
 };
@@ -689,6 +689,27 @@ impl ControllerScript {
     /// Teleport on this player), for the match to move.
     pub fn take_body_moves(&mut self) -> Vec<BodyMove> {
         std::mem::take(&mut self.world.body_moves)
+    }
+
+    /// Workshop player variable `index` of this player: the controller's
+    /// entity variable ([`crate::expr::workshop_variable`]), where the
+    /// chase helper `1CCF` moves it too.
+    pub fn workshop_variable(&self, index: i64) -> Value {
+        self.component
+            .entity_value(crate::expr::workshop_variable(index))
+    }
+
+    /// Set Workshop player variable `index` of this player.
+    pub fn set_workshop_variable(&mut self, index: i64, value: Value) -> Result<(), InitFault> {
+        let id = crate::expr::workshop_variable(index);
+        self.component
+            .set_entity_variable(id, value, &mut self.world)
+    }
+
+    /// The mode entity played a graph on this controller (a Workshop
+    /// Chase Variable's helper `1CCF`, [`World::play_script`]).
+    pub fn play_script(&mut self, request: &PlayRequest) -> Result<(), InitFault> {
+        self.component.play_script(request, &mut self.world)
     }
 
     /// The controller now possesses `body` playing `hero`: its components

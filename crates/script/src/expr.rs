@@ -336,6 +336,13 @@ pub trait Context {
         None
     }
 
+    /// The config of Workshop value `value` (its `01C` GUID) in `1B4A`
+    /// ([`GraphStore::workshop_value`](crate::graph::GraphStore::workshop_value));
+    /// None: unknown.
+    fn workshop_value(&mut self, _value: u64) -> Option<Json> {
+        None
+    }
+
     /// Whether an unknown config class or opcode reads as null, as in the
     /// Python reference, instead of failing the expression. A context that
     /// answers true records the case.
@@ -563,11 +570,38 @@ pub fn workshop_reference(
     Ok(evaluator.reference.flatten().map(|id| (entity, id)))
 }
 
+/// The keys of a Workshop value tree (a keyed array, `sub_7FF789C14870`):
+/// the value's `01C` GUID, its parameters, and the mark of an item taken
+/// as it is.
+pub const WORKSHOP_VALUE: u16 = 0x229a;
+pub const WORKSHOP_PARAMETERS: u16 = 0x4932;
+const WORKSHOP_AS_IS: u16 = 0x4e90;
+
+/// Workshop value `value` (its `01C` GUID) with `parameters`, as the
+/// action graphs' `STU_77B0987E` reads it from `#18739`.
+pub fn workshop_tree(value: u64, parameters: Vec<Value>) -> Value {
+    Value::Map(vec![
+        (
+            Value::Integer(i64::from(WORKSHOP_VALUE)),
+            Value::Asset(value),
+        ),
+        (
+            Value::Integer(i64::from(WORKSHOP_PARAMETERS)),
+            Value::Array(parameters),
+        ),
+    ])
+}
+
+fn workshop_key(tree: &[(Value, Value)], key: u16) -> Option<&Value> {
+    tree.iter()
+        .find(|(item, _)| *item == Value::Integer(i64::from(key)))
+        .map(|(_, value)| value)
+}
+
 /// A value as Workshop text, for the client's string configs
-/// (`STU_903EAF27`): a string as it is, a number with at most two
-/// decimals as the Workshop shows it, an array's items joined with ", ".
-/// Assumption: the server formats the strings itself; the other forms
-/// only keep the server's own reads from failing.
+/// (`STU_903EAF27`, `sub_7FF789A700F0`): a string as it is, an integer
+/// with `%d`, a float with `%d` when it is whole and `%.2f` otherwise, an
+/// array's items joined with ", ".
 pub fn workshop_text(value: &Value) -> String {
     match value {
         Value::Null => String::new(),
@@ -575,8 +609,13 @@ pub fn workshop_text(value: &Value) -> String {
         Value::Bool(value) => if *value { "True" } else { "False" }.to_owned(),
         Value::Integer(value) => value.to_string(),
         Value::Float(value) => {
-            let text = format!("{value:.2}");
-            text.trim_end_matches('0').trim_end_matches('.').to_owned()
+            let value = *value as f32;
+            let whole = value.round();
+            if (whole - value).abs() < 0.000_011_920_929 {
+                format!("{}", whole as i32)
+            } else {
+                format!("{value:.2}")
+            }
         }
         Value::Vector(parts) => {
             let parts: Vec<String> = parts
@@ -1245,6 +1284,9 @@ struct Evaluator {
     /// [`workshop_reference`]: opcode 72 with only its entity below it
     /// names its variable here instead of reading it (none: not asked).
     reference: Option<Option<u32>>,
+    /// The parameters of the Workshop values being evaluated, innermost
+    /// last ([`Self::workshop_tree`]).
+    workshop_parameters: Vec<Vec<Value>>,
 }
 
 impl Evaluator {
@@ -1253,7 +1295,50 @@ impl Evaluator {
             limit,
             steps: 0,
             reference: None,
+            workshop_parameters: Vec::new(),
         }
+    }
+
+    /// A Workshop value tree as the client evaluates it
+    /// (`sub_7FF789C14870`): key `229A` names the value (its `01C` GUID),
+    /// whose config in `1B4A` ([`Context::workshop_value`]) runs with the
+    /// items of key `4932` as its parameters, at most eight. An item that
+    /// is itself a tree with parameters is evaluated first; one with key
+    /// `4E90` too, or any other value, is taken as it is. Nothing for an
+    /// unknown value. (The client's other item forms, keys `0C6B`, `06F1`,
+    /// `03AC`, `6933`, `1EE2`, `01D1`, are a player slot, team, hero, map,
+    /// game mode and an identifier read from the match; the server sends
+    /// none of them.)
+    fn workshop_tree(
+        &mut self,
+        tree: &[(Value, Value)],
+        context: &mut impl Context,
+        depth: usize,
+    ) -> Result<Value, EvalError> {
+        let Some(Value::Asset(value)) = workshop_key(tree, WORKSHOP_VALUE) else {
+            return Ok(Value::Null);
+        };
+        let Some(config) = context.workshop_value(*value) else {
+            return Ok(Value::Null);
+        };
+        let mut parameters = Vec::new();
+        if let Some(Value::Array(items)) = workshop_key(tree, WORKSHOP_PARAMETERS) {
+            for item in items.iter().take(8) {
+                parameters.push(match item {
+                    Value::Map(nested)
+                        if workshop_key(nested, WORKSHOP_PARAMETERS).is_some()
+                            && workshop_key(nested, WORKSHOP_AS_IS).is_none() =>
+                    {
+                        self.workshop_tree(nested, context, depth + 1)?
+                    }
+                    item => item.clone(),
+                });
+            }
+        }
+        self.workshop_parameters.push(parameters);
+        let result = self.config(&config, context, depth + 1);
+        self.workshop_parameters.pop();
+        result
     }
 }
 
@@ -1499,12 +1584,13 @@ impl Evaluator {
             // `m_FDCA1FD0` and `m_68CFF844` (slot 5 `sub_7FF789C19A10`,
             // then `sub_7FF789C15350`: an integer clamped to them, a float
             // only when they don't hold 0, any other value as it is). The
-            // client takes the value only as a keyed array (type 13),
-            // looked up by key `229A.01C` and the entity `m_entity` (a
-            // player's own value), which the server's plain values don't
-            // need here: it runs the parameter's value as it is.
+            // value is a Workshop value tree, a keyed array (type 13):
+            // anything else reads as nothing ([`Self::workshop_tree`]).
             "STU_77B0987E" => {
-                let value = self.config(child(config, "m_35547D6E"), context, nested)?;
+                let value = match self.config(child(config, "m_35547D6E"), context, nested)? {
+                    Value::Map(tree) => self.workshop_tree(&tree, context, nested)?,
+                    _ => Value::Null,
+                };
                 let low = to_float(&self.config(child(config, "m_FDCA1FD0"), context, nested)?);
                 let high = to_float(&self.config(child(config, "m_68CFF844"), context, nested)?);
                 match value {
@@ -1517,6 +1603,26 @@ impl Evaluator {
                     value => value,
                 }
             }
+            // A Workshop value's parameters as `1B4A`'s configs read them
+            // (slot 5: the parameter array at `+0x370` plus 16 bytes per
+            // index; evaluate `sub_7FF78AA88550`, shared).
+            "STU_710FE2E1" | "STU_F619A2A1" | "STU_F8C22BD0" | "STU_E2D4B7FE" | "STU_B7520848" => {
+                let index = match class {
+                    "STU_710FE2E1" => 0,
+                    "STU_F619A2A1" => 1,
+                    "STU_F8C22BD0" => 2,
+                    "STU_E2D4B7FE" => 3,
+                    _ => 4,
+                };
+                self.workshop_parameters
+                    .last()
+                    .and_then(|parameters| parameters.get(index))
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            }
+            // Local Player (`Eval_STU_8985E00A`: the client's own player
+            // entity): the server has none.
+            "STU_8985E00A" => Value::Null,
             // A copy of a reevaluated Workshop parameter (Create HUD Text's
             // scope `1D8A` rid6 and five more Create graphs). Server-only:
             // the client's evaluate is the base config's `xor al, al`; the

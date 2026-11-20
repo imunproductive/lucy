@@ -144,6 +144,72 @@ impl Component {
         })?;
         Ok(created.then_some((id, start)))
     }
+
+    /// The rule engine evaluated a running action's parameters again (its
+    /// Reevaluation enum): `#18739` takes them, and each instance the
+    /// action opened on this entity (Create HUD Text's scope 31) copies
+    /// them again where it copied them at its start (the `STU_12F5D52D`
+    /// entries whose value is `STU_70757664`, server-only: 1D8A rid21 and
+    /// the other Create graphs), so the copies its presenters read change
+    /// in the frames. Assumption: retail changed them so (Workshop.md §8,
+    /// question 2). Nothing for an action that ended.
+    pub fn set_action_parameters(
+        &mut self,
+        instance: u16,
+        start_ms: u64,
+        parameters: Vec<Value>,
+        world: &mut impl World,
+    ) -> Result<(), InitFault> {
+        if !self.instance_alive(instance, start_ms) {
+            return Ok(());
+        }
+        let parameters = Value::Array(parameters);
+        self.set_instance_variable(instance, ACTION_PARAMETERS, parameters.clone(), world)?;
+        let entity = self.machine.snapshot.entity;
+        let mut children = Vec::new();
+        for (&id, item) in &mut self.machine.snapshot.instances {
+            let scoped = item.scope.as_mut().filter(|scope| {
+                scope.source.entity == entity && scope.source.instance == instance
+            });
+            let opened = scoped.is_some();
+            if let Some(scope) = scoped {
+                scope.parent.insert(ACTION_PARAMETERS, parameters.clone());
+            }
+            if opened || item.parent.is_some_and(|(parent, _)| parent == instance) {
+                children.push(id);
+            }
+        }
+        self.run(world, |vm| {
+            for child in children {
+                vm.copy_parameters(child)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Entity variable `id` now, a chase's or stack's value included.
+    pub fn entity_value(&self, id: u32) -> Value {
+        self.machine.value(VarKey::Entity(id), None)
+    }
+
+    /// Another entity played `request.graph` on this one
+    /// ([`World::play_script`]): played here as its `PlayScript` would.
+    pub fn play_script(
+        &mut self,
+        request: &PlayRequest,
+        world: &mut impl World,
+    ) -> Result<(), InitFault> {
+        self.run(world, |vm| {
+            vm.play_here(
+                request.graph,
+                &request.parameters,
+                request.policy,
+                request.caller,
+                request.caller,
+            )?;
+            vm.run()
+        })
+    }
 }
 
 impl<W: World> Vm<'_, '_, '_, W> {
@@ -156,6 +222,19 @@ impl<W: World> Vm<'_, '_, '_, W> {
                 self.machine.outcomes.insert(id, (start, outcome));
             }
         }
+    }
+
+    /// [`Component::set_action_parameters`]: the copies again.
+    fn copy_parameters(&mut self, id: u16) -> Result<(), InitFault> {
+        let graph = self.graph(id);
+        for node in graph.nodes.iter().filter(|node| node.class == "STU_12F5D52D") {
+            for item in array_field(&node.fields, "m_143D4C5B") {
+                if field(item, "m_value").get("$").and_then(Json::as_str) == Some("STU_70757664") {
+                    self.store(id, node, item, false)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// `STU_1E93FE1F`, `STU_DC325C52`, `STU_ADAFD7FF`, `STU_99ED4486`.

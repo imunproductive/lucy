@@ -16,7 +16,7 @@ use crate::{
     map_tags::MapTags,
     vm::{
         ACTION_PARAMETERS, ActionOutcome, Component, GameMessage, InitFault, MAX_INIT_WORK,
-        MapRays, Root, ScopeChange, Site, Snapshot, Unknowns, World,
+        MapRays, PlayRequest, Root, ScopeChange, Site, Snapshot, Unknowns, World,
     },
     wire::{Value, Variables},
 };
@@ -105,6 +105,9 @@ pub struct ModeWorld {
     /// [`ModeScript`] hands them on: its own entity's to its component,
     /// the others' to the match ([`ModeScript::take_scope_changes`]).
     scope_changes: Vec<ScopeChange>,
+    /// The graphs the graphs played on other entities, until the match
+    /// takes them ([`ModeScript::take_play_requests`]).
+    plays: Vec<PlayRequest>,
     outbox: Vec<GameMessage>,
     held: Vec<GameMessage>,
 }
@@ -127,6 +130,7 @@ impl ModeWorld {
             foreign: BTreeMap::new(),
             variable_writes: Vec::new(),
             scope_changes: Vec::new(),
+            plays: Vec::new(),
             outbox: Vec::new(),
             held: Vec::new(),
         }
@@ -264,6 +268,12 @@ impl World for ModeWorld {
     /// [`ModeScript`] after the run.
     fn change_scope(&mut self, _site: Site, change: ScopeChange) -> bool {
         self.scope_changes.push(change);
+        true
+    }
+
+    /// Played on a player (Chase Variable's `1CCF`), by the match.
+    fn play_script(&mut self, _site: Site, request: PlayRequest) -> bool {
+        self.plays.push(request);
         true
     }
 
@@ -521,25 +531,43 @@ impl ModeScript {
         self.settle()
     }
 
-    /// Workshop variable `index` of `entity` (the mode entity's are the
-    /// global variables, a player's his player variables) as the graphs
-    /// see it.
-    pub fn workshop_variable(&mut self, entity: u32, index: i64) -> Value {
-        let id = crate::expr::workshop_variable(index);
-        if entity == GAME_MODE_ENTITY {
-            return self
-                .snapshot()
-                .and_then(|snapshot| snapshot.variables.get(&id))
-                .cloned()
-                .unwrap_or(Value::Null);
-        }
-        self.world.entity_variable(entity, id)
+    /// Workshop global variable `index` as the graphs see it: the mode
+    /// entity's entity variable (a chase's value included).
+    pub fn workshop_global(&self, index: i64) -> Value {
+        self.component
+            .entity_value(crate::expr::workshop_variable(index))
     }
 
     /// Set another entity's variable as the mode entity's graphs see it
     /// (a player variable a chase on the player's own script moved).
     pub fn set_foreign_variable(&mut self, entity: u32, id: u32, value: Value) {
         self.world.foreign.insert((entity, id), value);
+    }
+
+    /// Set Workshop global variable `index`: the mode entity's entity
+    /// variable ([`crate::expr::workshop_variable`]); the states that read
+    /// it take the change.
+    pub fn set_workshop_global(&mut self, index: i64, value: Value) -> Result<(), InitFault> {
+        let id = crate::expr::workshop_variable(index);
+        self.component
+            .set_entity_variable(id, value, &mut self.world)?;
+        self.settle()
+    }
+
+    /// The rule engine evaluated a running action's parameters again
+    /// ([`Component::set_action_parameters`]).
+    pub fn set_action_parameters(
+        &mut self,
+        action: WorkshopAction,
+        parameters: Vec<Value>,
+    ) -> Result<(), InitFault> {
+        self.component.set_action_parameters(
+            action.instance,
+            action.start_ms,
+            parameters,
+            &mut self.world,
+        )?;
+        self.settle()
     }
 
     /// The graphs' writes of other entities' variables (`STU_0BDBC7B2` on
@@ -555,6 +583,13 @@ impl ModeScript {
     /// own it opened itself.
     pub fn take_scope_changes(&mut self) -> Vec<ScopeChange> {
         std::mem::take(&mut self.world.scope_changes)
+    }
+
+    /// The graphs the graphs played on other entities (Chase Variable's
+    /// `1CCF` on each target player), for the match to play in their
+    /// scripts ([`crate::controller::ControllerScript::play_script`]).
+    pub fn take_play_requests(&mut self) -> Vec<PlayRequest> {
+        std::mem::take(&mut self.world.plays)
     }
 
     /// The match opened a scope instance of this entity's scope state on

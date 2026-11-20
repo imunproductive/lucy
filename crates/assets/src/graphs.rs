@@ -676,7 +676,22 @@ impl<'a> View<'a> {
                     .collect::<Result<_>>()?,
             ),
             Value::Floats(values) => vector(field, values)?,
-            Value::Map(_) => json!({"$": "map"}),
+            // A hash map (`STU_25CBEFB0`'s `m_108E51DD` in `1B4A`: the
+            // Workshop's values by their `01C` identifier): each key with
+            // its object.
+            Value::Map(entries) => json!({
+                "$": "map",
+                "entries": entries
+                    .iter()
+                    .map(|&(key, index)| {
+                        let object = match index.and_then(|index| self.asset.instances.get(index)?.as_ref()) {
+                            Some(object) => self.object_value(object, encoding)?,
+                            None => Json::Null,
+                        };
+                        Ok(json!([guid_text(key), object]))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            }),
             // A map placeable's UUID (`STUConfigVarEntityReference`, in the
             // map entity graphs): its bytes in hex.
             Value::Bytes(bytes) if field.type_name == "teUUID" => bytes

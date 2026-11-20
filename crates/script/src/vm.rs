@@ -936,6 +936,27 @@ pub trait World {
     fn move_body(&mut self, _site: Site, _move: BodyMove) -> bool {
         false
     }
+
+    /// A `PlayScript` action played its graph on another entity (the
+    /// Workshop's Chase Variable `1CCC` plays `1CCF` on each target
+    /// player): the match plays it in that entity's script
+    /// ([`Component::play_script`]). False: this world plays none there.
+    fn play_script(&mut self, _site: Site, _request: PlayRequest) -> bool {
+        false
+    }
+}
+
+/// A graph played on another entity ([`World::play_script`]): its target,
+/// the graph, the start entries' parameters and the action's policy for an
+/// instance already running (`m_AA4DE426`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayRequest {
+    pub target: u32,
+    pub graph: u32,
+    pub parameters: Vec<(u64, Value)>,
+    pub policy: i64,
+    /// The entity that played it (the start entries' caller).
+    pub caller: u32,
 }
 
 /// A criteria a graph raised ([`World::criteria`]).

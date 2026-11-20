@@ -47,8 +47,8 @@ use std::{
 use crate::{
     catalog::{Catalog, Id},
     eval::{self, Rng, Scope, arithmetic, compare},
-    host::{ActionCall, ActionHandle, Context, GameEvent, Host},
-    logic::{Action, Arg, Condition, Event, Logic, WorkshopSetting, actions, events},
+    host::{ActionCall, ActionHandle, Context, GameEvent, Host, Param},
+    logic::{self, Action, Arg, Condition, Event, Logic, WorkshopSetting, actions, events},
     value::{EntityId, Value},
 };
 
@@ -459,6 +459,40 @@ impl Engine {
         value
     }
 
+    /// An action's parameters in `context`, as [`ActionCall::params`]
+    /// gives them: a parameter that names Local Player once per player.
+    /// The server evaluates a running action's reevaluated parameters
+    /// again with it.
+    pub fn evaluate_params<H: Host + ?Sized>(
+        &mut self,
+        host: &H,
+        action: &Action,
+        context: &Context,
+    ) -> Vec<Param> {
+        action
+            .args
+            .iter()
+            .map(|arg| {
+                let value = self.evaluate(context, host, arg);
+                if !names(arg, eval::ids::LOCAL_PLAYER) {
+                    return Param::Value(value);
+                }
+                let viewers = host
+                    .players()
+                    .into_iter()
+                    .map(|player| {
+                        let context = Context {
+                            local_player: Some(player),
+                            ..context.clone()
+                        };
+                        (player, self.evaluate(&context, host, arg))
+                    })
+                    .collect();
+                Param::PerViewer { value, viewers }
+            })
+            .collect()
+    }
+
     /// Advance every execution of `rule` (its own, and those Start Rule
     /// began on it) until each waits or ends.
     fn run_rule<H: Host + ?Sized>(&mut self, rule: usize, host: &mut H) {
@@ -792,11 +826,7 @@ impl Engine {
                 let Some(graph) = self.catalog.action(index).and_then(|entry| entry.graph) else {
                     return Step::Continue;
                 };
-                let params = action
-                    .args
-                    .iter()
-                    .map(|arg| self.evaluate(&context, &*host, arg))
-                    .collect();
+                let params = self.evaluate_params(&*host, &action, &context);
                 let handle = host.start(ActionCall {
                     action: index,
                     graph,
@@ -1044,6 +1074,16 @@ impl Engine {
             Target::Global(index) => host.set_global(index, value),
             Target::Player(player, index) => host.set_player(player, index, value),
         }
+    }
+}
+
+/// Whether `arg` uses value `id` anywhere.
+fn names(arg: &Arg, id: Id) -> bool {
+    let value_names = |value: &logic::Value| value.id == id || value.args.iter().any(|arg| names(arg, id));
+    match arg {
+        Arg::Value(value) => value_names(value),
+        Arg::Array(values) => values.iter().any(value_names),
+        _ => false,
     }
 }
 

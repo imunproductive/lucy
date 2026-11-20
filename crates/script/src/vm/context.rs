@@ -179,6 +179,10 @@ impl<W: World> Context for InstanceContext<'_, W> {
         true
     }
 
+    fn workshop_value(&mut self, value: u64) -> Option<Json> {
+        self.graphs.workshop_value(value).cloned()
+    }
+
     fn equipped_cosmetic(
         &mut self,
         entity: u32,
