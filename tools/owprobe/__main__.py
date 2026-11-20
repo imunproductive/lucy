@@ -121,7 +121,19 @@ def describe_record(p, r):
     if kind == "frame":
         pos = r.get("position")
         at = "None" if pos is None else "(" + ", ".join(f"{v:.3f}" for v in pos) + ")"
-        return f"{head} frame {r['frame']} pos={at} view={r['view']} buttons={r['buttons']:#x}"
+        text = f"{head} frame {r['frame']} pos={at} view={r['view']} buttons={r['buttons']:#x}"
+        mover = r.get("mover")
+        if mover:
+            feet = ", ".join(f"{v:.3f}" for v in mover["position"])
+            speed = ", ".join(f"{v:.2f}" for v in mover["velocity"])
+            text += (f" mover f{mover['frame']} feet=({feet}) v=({speed}) flags={mover['flags']:#x}"
+                     f"{' grounded' if mover['grounded'] else ''}")
+        camera = r.get("camera")
+        if camera:
+            text += " camera=(" + ", ".join(f"{v:.3f}" for v in camera["position"]) + f") yaw={camera['yaw']:.1f}"
+        for s in r.get("scripts") or ():
+            text += f" {s['graph']}#{s['instance']}:{s['states']}"
+        return text
     return f"{head} {kind} {json.dumps({k: v for k, v in r.items() if k not in ('seq', 't', 'thread', 'kind')})}"
 
 
@@ -175,20 +187,52 @@ def cmd_fetch(args):
     print(f"next {got['next']}, lost {got['lost']}", file=sys.stderr)
 
 
-def trace(p, seconds, out, every=1, reads=(), input_text=None, log=print):
+# The client's correction points (OwnerPrediction.md): the movement correction gate (returns 1 when it takes a server
+# record that differs from its prediction and replays; [rdx+0x78] the record's frame), the owner chunk applier and the
+# statescript rollback.
+CORRECTION_HOOKS = (
+    ("correction", 0x7FF78970F660, {"reads": ["[rdx+0x78]:u32"], "ret": True}),
+    ("applier", 0x7FF78991E3C0, {}),
+    ("rollback", 0x7FF78991F5D0, {}),
+)
+
+
+def trace(p, seconds, out, every=1, reads=(), input_text=None, log=print, scripts=(), camera=True,
+          corrections=False, names=True):
     """Record frame samples (and any hook records) for `seconds` into a JSONL file; with `input_text` the input
-    script starts with the trace. Returns (frames, hits)."""
-    p.sampler(every=every, reads=list(reads))
+    script starts with the trace; `scripts` graphs are recorded each frame (Probe.sampler); `corrections` hooks
+    the client's correction points for the trace (`compare`). With `names` the file ends with a `names` record
+    (the recorded states' classes and variables' names). Returns (frames, hits)."""
+    p.sampler(every=every, reads=list(reads), scripts=list(scripts), camera=camera)
     seq = p.note(f"trace starts ({seconds} s)")
+    hooks = []
+    if corrections:
+        for role, address, options in CORRECTION_HOOKS:
+            hook = p.hook(address, name=role, **options)
+            hooks.append(hook["id"])
+            p.note(f"hook {hook['id']} {role}")
     if input_text:
         p.input(script.parse(input_text), clear=True)
     frames = hits = 0
-    with open(out, "w", encoding="utf-8") as f:
-        for r in p.records(seconds=seconds, since=seq):
-            f.write(json.dumps(r) + "\n")
-            frames += r.get("kind") == "frame"
-            hits += r.get("kind") == "hit"
-    p.sampler(every=0)
+    recorded = {}
+    try:
+        with open(out, "w", encoding="utf-8") as f:
+            for r in p.records(seconds=seconds, since=seq - 1):
+                f.write(json.dumps(r) + "\n")
+                frames += r.get("kind") == "frame"
+                hits += r.get("kind") == "hit"
+                for s in r.get("scripts") or ():
+                    entry = recorded.setdefault((s["entity"], s["graph"], s["instance"]), dict(s, vars={}))
+                    entry["vars"].update(s.get("vars") or {})
+            if names and recorded:
+                from .statescript import name_scripts
+                named = name_scripts(p, list(recorded.values()))
+                f.write(json.dumps({"kind": "names", "scripts": [
+                    {"entity": e, "graph": g, "instance": i, **v} for (e, g, i), v in named.items()]}) + "\n")
+    finally:
+        for hook in hooks:
+            p.unhook(hook)
+        p.sampler(every=0)
     log(f"{frames} frame samples ({frames / seconds:.1f}/s), {hits} hook hits in {seconds} s -> {out}")
     return frames, hits
 
@@ -196,7 +240,13 @@ def trace(p, seconds, out, every=1, reads=(), input_text=None, log=print):
 def cmd_trace(args):
     p = connect(args)
     out = Path(args.out) if args.out else out_path("trace", ".jsonl")
-    trace(p, args.seconds, out, args.every, args.read, args.input)
+    trace(p, args.seconds, out, args.every, args.read, args.input, scripts=args.script, camera=not args.no_camera,
+          corrections=args.corrections)
+
+
+def cmd_compare(args):
+    from .compare import report
+    report(args.server, args.trace, body=args.body, threshold=args.threshold, out=args.out)
 
 
 def cmd_input(args):
@@ -227,7 +277,8 @@ def cmd_call(args):
 def cmd_launch(args):
     from .session import Session
     with Session(orpheus=args.orpheus, game=args.game, port=args.port, enter_range=args.enter_range,
-                 hero=args.hero, keep_state=args.keep_state, seed_state=args.seed_state) as s:
+                 hero=args.hero, keep_state=args.keep_state, seed_state=args.seed_state,
+                 rust_log=args.rust_log) as s:
         print(f"[owprobe] ready: PID {s.pid}, probe on 127.0.0.1:{s.port}; state {s.state}", flush=True)
         end = time.monotonic() + args.duration
         while time.monotonic() < end and s.proc.poll() is None:
@@ -299,6 +350,18 @@ def main(argv=None):
     c.add_argument("--every", type=int, default=1, help="record every Nth input sample")
     c.add_argument("--read", action="append", default=[], help="extra expression per frame ('[c4+0x170]:f32x3')")
     c.add_argument("--input", help="an input script to run with the trace (see tools/owprobe/script.py)")
+    c.add_argument("--script", action="append", default=[],
+                   help="a statescript graph to record each frame: 0D06 (the body's), player:0C90, "
+                        "0D06:2083,11432 (only those variables)")
+    c.add_argument("--no-camera", action="store_true", help="don't read the camera")
+    c.add_argument("--corrections", action="store_true",
+                   help="hook the movement correction gate, the owner chunk applier and the rollback (for compare)")
+    c = command("compare", cmd_compare, "the server's orpheus::pose trace against a probe trace, frame by frame")
+    c.add_argument("--server", required=True, help="the server's log with orpheus::pose debug lines (play.log)")
+    c.add_argument("--trace", required=True, help="a probe trace (trace --corrections)")
+    c.add_argument("--body", help="the body's entity id in hex (default the first in the log)")
+    c.add_argument("--threshold", type=float, default=0.01, help="print frames farther apart than this (m)")
+    c.add_argument("--out", help="JSONL of every compared frame")
     c = command("input", cmd_input, "queue an input script (see tools/owprobe/script.py)")
     c.add_argument("script")
     c.add_argument("--clear", action="store_true", help="drop the queued steps and held input first")
@@ -321,6 +384,8 @@ def main(argv=None):
     c.add_argument("--keep-state", action="store_true")
     c.add_argument("--seed-state", help="state folder to copy the derived game data and profiles from "
                                         "(default %%APPDATA%%/orpheus, read only)")
+    c.add_argument("--rust-log", help="the server's RUST_LOG (info,orpheus::pose=debug for compare's server poses "
+                                      "in <state>/play.log; with --keep-state)")
     args = ap.parse_args(argv)
     try:
         args.fn(args)

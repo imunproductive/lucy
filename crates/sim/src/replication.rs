@@ -828,10 +828,14 @@ impl BodyScript {
                 }
                 None => projected,
             };
-            let chunk = encoder
+            // A correction goes only when something changed
+            // (`SnapshotEncoder::queue_delta`).
+            let Some(chunk) = encoder
                 .queue_delta(&mut self.stream, snapshot, kind, self.runtime.frame_ms())
                 .map_err(invalid)?
-                .expect("owner deltas include a command frame");
+            else {
+                return Ok(None);
+            };
             (chunk, Some(kind))
         };
         // An individual chunk that cannot fit alone needs fragmentation.
@@ -858,6 +862,7 @@ impl BodyScript {
             bytes = packet.len(),
             replaced = ?replaced,
             volleys = %self.volleys(),
+            keys = ?self.stream.pending().find(|&(number, ..)| number == last).map(|(.., keys)| keys),
             "owner frame queued"
         );
         let record = Record {

@@ -5,6 +5,8 @@ use std::collections::VecDeque;
 
 use serde_json::{Value, json};
 
+use crate::layout::{Camera, Movement};
+
 /// What the frame sampler saw at one input sample.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FrameSample {
@@ -14,13 +16,22 @@ pub struct FrameSample {
     /// sample's own `+0x1038` is still 0 at the sample site).
     pub frame: u32,
     pub comp59: u64,
-    pub entity: u64,
-    pub entity_id: u32,
+    /// The local player entity (component 59's owner) and its id.
+    pub player: u64,
+    pub player_id: u32,
+    /// The body the player possesses (its component 44), or the one named
+    /// by `sampler {"body"}`.
+    pub body_id: u32,
     pub comp4: u64,
+    pub comp31: u64,
     /// Component 4 `+0x160`: about 1 m above the feet.
     pub position: Option<[f32; 3]>,
-    /// The position change since the previous sample, per second.
+    /// The position change since the previous sample, per second (the
+    /// position moves at the simulation's rate).
     pub velocity: Option<[f32; 3]>,
+    /// The mover's movement state.
+    pub mover: Option<Movement>,
+    pub camera: Option<Camera>,
     /// The stored view (`+0x107A`, `+0x107C`), 16-bit angles.
     pub view: [i16; 2],
     /// What the sample carries after the probe's input.
@@ -28,6 +39,8 @@ pub struct FrameSample {
     pub forward: i8,
     pub right: i8,
     pub action: u8,
+    /// The watched statescript instances: running states and variables.
+    pub scripts: Vec<Value>,
     /// The sampler's extra reads, in the order they were set.
     pub reads: Vec<Value>,
 }
@@ -38,16 +51,21 @@ impl FrameSample {
             "index": self.index,
             "frame": self.frame,
             "comp59": self.comp59,
-            "entity": self.entity,
-            "entity_id": self.entity_id,
+            "player": self.player,
+            "player_id": self.player_id,
+            "body": self.body_id,
             "comp4": self.comp4,
+            "comp31": self.comp31,
             "position": self.position,
             "velocity": self.velocity,
+            "mover": self.mover.as_ref().map(Movement::json),
+            "camera": self.camera.as_ref().map(Camera::json),
             "view": self.view,
             "buttons": self.buttons,
             "forward": self.forward,
             "right": self.right,
             "action": self.action,
+            "scripts": self.scripts,
             "reads": self.reads,
         })
     }

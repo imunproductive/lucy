@@ -257,9 +257,11 @@ class Probe:
             seq = got["next"]
 
     # ---- the frame sampler and input
-    def sampler(self, every=None, reads=None, body=None):
+    def sampler(self, every=None, reads=None, body=None, camera=None, scripts=None):
         """Turn the frame sampler on (every N input samples; 0 stops recording) with extra reads; body: the
-        entity id whose component 4 is our position (default 0: the player's id + 1)."""
+        entity id to record (default 0: the one the player possesses); camera: read the camera each recorded
+        frame (default on); scripts: statescript graphs to record each frame ('0D06' on the body,
+        'player:0C90' on the player, '0D06:2083,11432' only those variables)."""
         args = {}
         if every is not None:
             args["every"] = every
@@ -267,6 +269,10 @@ class Probe:
             args["reads"] = list(reads)
         if body is not None:
             args["body"] = body
+        if camera is not None:
+            args["camera"] = bool(camera)
+        if scripts is not None:
+            args["scripts"] = list(scripts)
         return self.request("sampler", **args)
 
     def frame(self):
