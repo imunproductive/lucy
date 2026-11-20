@@ -894,8 +894,14 @@ fn doomfists_rocket_punch_dashes_along_its_release_facing_with_records_to_its_ow
         assert_eq!(doomfist.records(), (true, true));
     }
     let moved = horizontal(start, doomfist.position());
-    // 6 frames of the dash at up to 45 m/s (its first frame accelerates).
-    assert!(moved > 3.0 && moved <= 6.0 * 45.0 * DT + 0.01, "{moved}");
+    // Game session s3 (D:/Temp/df5, `refs/reports/Doomfist.md` §12), the
+    // punch released at frame 11967: its first dash frame moved 0.4033 m
+    // ((-4.246, -24.840) m/s), each later one 0.7202 m (45.0 m/s, the
+    // (-0.1211, -0.7100) m steps of the 1/1024 m grid): 4.0044 m in all
+    // after 6 frames. Here the heading differs, and each frame's feet snap
+    // to the grid on each axis (up to 0.49 mm), so 6 frames may differ by
+    // up to 6 × 0.69 mm.
+    assert!((moved - 4.0044).abs() < 0.0042, "{moved}");
     let [dx, _, dz] = std::array::from_fn(|axis| doomfist.position()[axis] - start[axis]);
     let off = off_heading(dx, dz, open);
     assert!(off.abs() < 0.01, "the dash turned by {off} rad");
@@ -990,77 +996,86 @@ fn doomfists_grounded_slam_leaps_lands_and_ends() {
     assert!(off_heading(vx, vz, open).abs() < 0.01, "{vx} {vz}");
     let mut landed = None;
     let mut shockwave = None;
+    let mut moved = 0.0;
     for frame in 1..=64 {
         doomfist.idle(1, open);
         if landed.is_none() && doomfist.grounded() {
             landed = Some(frame);
+            moved = horizontal(start, doomfist.position());
         }
         if shockwave.is_none() && doomfist.graph_state(0x0b27, 44) {
             shockwave = Some(frame);
         }
     }
+    // Game session s4 (D:/Temp/df5, `refs/reports/Doomfist.md` §12; the
+    // client's state after each command tick, equal to the server's to the
+    // millimetre): the press at frame 7819 from (54.580, 1.0, 42.235)
+    // facing 157.5°, the leap's first frame 7820 (`press` runs both, so the
+    // loop's frame k is 7820 + k), the landing at 7847 at (57.292, 1.010,
+    // 35.683), 7.0918 m away on the same flat floor, and the shockwave
+    // (st44) at 7855.
     let landed = landed.expect("he lands");
-    // About 0.4 s up and down under 1.5 × gravity.
-    assert!((20..=40).contains(&landed), "landed at {landed}");
-    assert!(horizontal(start, doomfist.position()) > 6.0);
-    let shockwave = shockwave.expect("the slam hits");
-    // st45's 0.1 s (7 frames) after the landing state, then st37 ends.
-    assert!(
-        (landed..=landed + 12).contains(&shockwave),
-        "landed at {landed}, shockwave at {shockwave}"
-    );
+    assert_eq!(landed, 27);
+    assert!((moved - 7.0918).abs() < 0.002, "{moved}");
+    assert_eq!(shockwave, Some(landed + 8));
     doomfist.press(ABILITY_1, open);
-    let mut rise: f64 = 0.0;
-    for _ in 0..20 {
-        doomfist.idle(1, open);
-        rise = rise.max(doomfist.velocity()[1]);
+    let rises: Vec<f64> = (0..20)
+        .map(|_| {
+            doomfist.idle(1, open);
+            doomfist.velocity()[1]
+        })
+        .collect();
+    // The game (s4, frames 9790-9796): 40 m/s up (`rid8`), less 0.28 m/s of
+    // gravity a frame for the 0.1 s of st11, then a fifth of it (`rid14`).
+    let rise = rises
+        .iter()
+        .position(|&vy| vy == 40.0)
+        .unwrap_or_else(|| panic!("Rising Uppercut after the slam: {rises:?}"));
+    let expected = [40.0, 39.72, 39.44, 39.16, 38.88, 38.60, 7.66];
+    for (got, want) in rises[rise..].iter().zip(expected) {
+        assert!((got - want).abs() < 0.005, "{:?}", &rises[rise..]);
     }
-    assert!(rise > 39.0, "Rising Uppercut after the slam: {rise}");
 }
 
 /// The punch jump: a jump pressed at least 0.1 s into Rocket Punch's dash
 /// (st63, then the jump button st62 sets #11432) ends the dash (st5) and
-/// launches him (`rid112` adds the facing × 25 and 5 up on channel 1): he
-/// leaves the ground and gets further than the same punch without it.
+/// launches him (`rid112` adds the facing × 25 and 5 up on channel 1 to
+/// what the dash leaves him). All of it is server-only (st42's end plug),
+/// so his client shows it from the records.
 #[test]
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
 fn doomfists_punch_jump_launches_him_out_of_the_dash() {
-    let reach = |jump: bool| {
-        let mut doomfist = Player::spawn(DOOMFIST);
-        let (open, _) = open_and_walled(&doomfist.scene);
-        let hold = |doomfist: &mut Player, buttons| {
-            doomfist.step(Command {
-                yaw: open,
-                buttons,
-                ..Command::default()
-            });
-        };
-        // 0.2 s of charge, the least (#9273).
-        for _ in 0..14 {
-            hold(&mut doomfist, orpheus_wire::commands::SECONDARY);
-        }
-        let start = doomfist.position();
-        // 8 frames (0.125 s) into the dash.
-        for _ in 0..8 {
-            hold(&mut doomfist, 0);
-            assert!(doomfist.punch_state(42), "dashing");
-        }
-        let mut height: f64 = 0.0;
-        if jump {
-            hold(&mut doomfist, orpheus_wire::commands::JUMP);
-            assert!(!doomfist.punch_state(42), "the jump ends the dash");
-        }
-        for _ in 0..40 {
-            hold(&mut doomfist, 0);
-            height = height.max(doomfist.position()[1] - start[1]);
-        }
-        (horizontal(start, doomfist.position()), height)
+    let mut doomfist = Player::spawn(DOOMFIST);
+    let (open, _) = open_and_walled(&doomfist.scene);
+    let hold = |doomfist: &mut Player, buttons| {
+        doomfist.step(Command {
+            yaw: open,
+            buttons,
+            ..Command::default()
+        });
     };
-    let (plain, plain_height) = reach(false);
-    let (jumped, height) = reach(true);
-    assert!(plain_height < 0.01, "{plain_height}");
-    assert!(height > 0.3, "{height}");
-    assert!(jumped > plain + 1.5, "{plain} -> {jumped}");
+    // Game session s3 (D:/Temp/df5, `refs/reports/Doomfist.md` §12): a
+    // 0.6 s charge (37 frames), the release at frame 11967 (here the first
+    // frame without the button), the jump 9 frames later at 11976.
+    for _ in 0..37 {
+        hold(&mut doomfist, orpheus_wire::commands::SECONDARY);
+    }
+    for _ in 0..9 {
+        hold(&mut doomfist, 0);
+        assert!(doomfist.punch_state(42), "dashing");
+    }
+    hold(&mut doomfist, orpheus_wire::commands::JUMP);
+    assert!(!doomfist.punch_state(42), "the jump ends the dash");
+    // 11976: the jump's own frame still dashes at 45 m/s, 3.2 m/s up.
+    let [vx, vy, vz] = doomfist.velocity();
+    assert!((vx.hypot(vz) - 45.0).abs() < 0.01, "{vx} {vy} {vz}");
+    assert!((vy - 3.2002).abs() < 0.001, "{vx} {vy} {vz}");
+    // 11977: (-5.2217, 5.3994, -30.5439) m/s, 30.987 m/s along the facing.
+    hold(&mut doomfist, 0);
+    let [vx, vy, vz] = doomfist.velocity();
+    assert!((vx.hypot(vz) - 30.987).abs() < 0.002, "{vx} {vy} {vz}");
+    assert!((vy - 5.3994).abs() < 0.001, "{vx} {vy} {vz}");
+    assert!(off_heading(vx, vz, open).abs() < 0.01, "{vx} {vz}");
 }
 
 /// Seismic Slam in the air (`0B27`): while he is more than 3 m above the
@@ -1068,12 +1083,19 @@ fn doomfists_punch_jump_launches_him_out_of_the_dash() {
 /// (`STU_4C96470A`), the slam's target preview. The press (`#59` = 2, st63
 /// sets `#1321`) makes it search the ground along his view from his eye
 /// and write the point (`#431`) and its validity (`#1627`); the transition
-/// `#1627 && #1321` then begins the `MoveTo` st9, which flies him to the
+/// `#1627 && #1321` then begins the `MoveTo` st9, which flies him at the
 /// point. Rising Uppercut lifts him first; the slam is pressed as soon as
-/// it is allowed, looking 33° down at the open floor ahead.
+/// it is allowed, looking 33° down at the open floor ahead. The point is
+/// at the edge of a step, and the straight flight to it meets the edge:
+/// the move stops there (`m_725EB364`'s 0.1 s without 0.5 m of progress,
+/// farther than 0.5 m from the point) and aborts (st54), as both his
+/// client's flight and the server's did at a step edge in game session s4
+/// (`refs/reports/Doomfist.md` §12: the server's blocked 0.68 m from the
+/// point at frame 8851, his client's own flight touched the same edge at
+/// 8852; st54 began on both).
 #[test]
 #[ignore = "requires the derived 104319 data and the Practice Range collision"]
-fn doomfists_airborne_slam_flies_to_the_ground_ahead() {
+fn doomfists_airborne_slam_flies_at_the_ground_ahead_and_stops_at_a_step_edge() {
     let mut doomfist = Player::spawn(DOOMFIST);
     let (open, _) = open_and_walled(&doomfist.scene);
     let start = doomfist.position();
@@ -1094,6 +1116,7 @@ fn doomfists_airborne_slam_flies_to_the_ground_ahead() {
     let (shown, above) = previewing.expect("the airborne slam's preview began");
     assert!(above[1] > start[1] + 2.5, "preview at {shown}, {above:?}");
     let mut flying = None;
+    let mut aborted = false;
     for frame in 1..=90 {
         let buttons = if flying.is_none() && frame % 2 == 1 {
             ABILITY_2
@@ -1104,6 +1127,7 @@ fn doomfists_airborne_slam_flies_to_the_ground_ahead() {
         if flying.is_none() && doomfist.graph_state(0x0b27, 9) {
             flying = Some(frame);
         }
+        aborted |= doomfist.graph_state(0x0b27, 54);
     }
     let Some(ScriptValue::Vector(point)) = doomfist.graph_variable(0x0b27, 431).cloned() else {
         panic!(
@@ -1119,14 +1143,9 @@ fn doomfists_airborne_slam_flies_to_the_ground_ahead() {
                 .collect::<Vec<_>>()
         );
     };
-    let flying = flying.expect("the MoveTo began");
-    assert!(flying <= 60, "MoveTo at frame {flying}");
-    // The point is ground below where he pressed and ahead of the spawn,
-    // and he gets there.
+    flying.expect("the MoveTo began");
+    // The point is ground below where he pressed and ahead of the spawn.
     assert!(point[1] < above[1] - 1.0, "{above:?} -> {point:?}");
     assert!(horizontal(start, point) > 3.0, "{start:?} -> {point:?}");
-    let end = doomfist.position();
-    // MoveTo's exit distance is 0.5 m; the step's edge stops him short of
-    // a point on top of it (not compared with the client yet).
-    assert!(horizontal(end, point) < 1.5, "{end:?} vs {point:?}");
+    assert!(aborted, "the flight stops at the step's edge");
 }
