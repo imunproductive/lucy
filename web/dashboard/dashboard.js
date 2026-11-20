@@ -403,6 +403,8 @@ import {api, selectAccount} from './dashboard-api.mjs';
       mapSelect.replaceChildren(...options);
     }
     if (mapSelect && document.activeElement !== mapSelect) mapSelect.value = server.forced_map || 'random';
+    const workshopPath = $('#workshop-path');
+    if (workshopPath && document.activeElement !== workshopPath) workshopPath.value = server.workshop || '';
     renderModes(server.modes || []);
     const accounts = $('#sessions-accounts'); accounts.replaceChildren();
     for (const item of state.accounts || []) {
@@ -746,6 +748,11 @@ import {api, selectAccount} from './dashboard-api.mjs';
     event.preventDefault(); showError('#map-error', '');
     try { toast((await api('/api/set_map', {map: $('#map-select').value})).message); }
     catch (error) { showError('#map-error', error.message); }
+  });
+  $('#workshop-form').addEventListener('submit', async event => {
+    event.preventDefault(); showError('#workshop-error', '');
+    try { toast((await api('/api/set_workshop', {path: $('#workshop-path').value})).message); }
+    catch (error) { showError('#workshop-error', error.message); }
   });
   $('#plate-form').addEventListener('submit', event => {
     event.preventDefault();

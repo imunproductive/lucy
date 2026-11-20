@@ -2,6 +2,7 @@
 //! and its session hooks; [`MODULES`] lists them all.
 
 mod chat;
+mod custom_game;
 mod friends;
 mod gallery;
 mod groups;
@@ -22,6 +23,7 @@ pub(crate) const MODULES: &[&Module] = &[
     &party::MODULE,
     &groups::MODULE,
     &matchmaking::MODULE,
+    &custom_game::MODULE,
     &leaving::MODULE,
     &settings::MODULE,
     &lookups::MODULE,

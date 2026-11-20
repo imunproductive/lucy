@@ -107,6 +107,11 @@ pub struct ServerArgs {
     /// features on). Commands run on the client only.
     #[arg(long, env = "ORPHEUS_DEV_CONSOLE", value_parser = clap::builder::FalseyValueParser::new())]
     pub dev_console: bool,
+    /// A Workshop script (its text, as Overwatch copies it): every player
+    /// goes from the menu straight into the custom match its settings
+    /// describe.
+    #[arg(long, value_name = "FILE")]
+    pub workshop: Option<PathBuf>,
 }
 
 /// What `orpheus` starts: the modes of `ow174/cli.py`, in its menu order.
@@ -217,6 +222,8 @@ pub struct Settings {
     pub template: Option<PathBuf>,
     /// The client's engine console and developer features (`--dev-console`).
     pub dev_console: bool,
+    /// The Workshop script players go into from the menu (`--workshop`).
+    pub workshop: Option<PathBuf>,
     /// Extra arguments for Overwatch.exe (after `--`), for the modes that
     /// start the game.
     pub game_args: Vec<String>,
@@ -255,6 +262,7 @@ impl Settings {
             test_ai: args.test_ai,
             template: args.save.clone(),
             dev_console: args.dev_console || file.dev_console.unwrap_or(false),
+            workshop: args.workshop.clone(),
             game_args: Vec::new(),
         })
     }

@@ -857,6 +857,7 @@ dependencies = [
  "orpheus-sim",
  "orpheus-testkit",
  "orpheus-wire",
+ "orpheus-workshop",
  "serde_json",
  "tempfile",
  "tiny_http",

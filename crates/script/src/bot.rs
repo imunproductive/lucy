@@ -210,7 +210,8 @@ impl World for BotWorld {
     }
 
     fn ruleset(&mut self, id: u32) -> Option<Value> {
-        self.graphs.rulesets().default(id, self.hero, self.mode)
+        self.graphs
+            .ruleset_value(id, self.hero, self.mode, self.ruleset)
     }
 
     fn entity_variable(&mut self, entity: u32, id: u32) -> Value {
@@ -219,8 +220,7 @@ impl World for BotWorld {
         }
         self.graphs
             .mode_variables(self.mode, self.ruleset)
-            .and_then(|variables| variables.get(&id))
-            .copied()
+            .and_then(|variables| variables.get(&id).copied())
             .map_or(Value::Null, Value::from)
     }
 

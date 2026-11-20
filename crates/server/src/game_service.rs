@@ -148,6 +148,9 @@ pub struct MatchSnapshot {
     /// (match.py `waiting_for_players`).
     pub waiting: bool,
     pub players: Vec<PlayerSnapshot>,
+    /// A Workshop match (a custom game, or `--workshop`): how many rules
+    /// its script has for the Workshop engine; `None` for every other match.
+    pub workshop_rules: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -322,6 +325,12 @@ enum Request {
     },
     Snapshot {
         reply: mpsc::SyncSender<Vec<MatchSnapshot>>,
+    },
+    /// The Workshop script of the match that just opened.
+    Workshop {
+        id: MatchId,
+        logic: Arc<orpheus_workshop::Logic>,
+        reply: mpsc::SyncSender<bool>,
     },
     /// The matches that ended since the last call, oldest first.
     Results {
@@ -577,6 +586,17 @@ impl GameService {
         self.request(|reply| Request::Snapshot { reply })
     }
 
+    /// Give a match that just opened (before its scene is ready: right
+    /// after `open_world`) its Workshop script, for the Workshop engine.
+    /// False when the match is gone.
+    pub fn attach_workshop(
+        &self,
+        id: MatchId,
+        logic: Arc<orpheus_workshop::Logic>,
+    ) -> io::Result<bool> {
+        self.request(|reply| Request::Workshop { id, logic, reply })
+    }
+
     /// The matches that ended by their rules since the last call, oldest
     /// first; the lobby records them in the players' profiles.
     pub fn take_results(&self) -> io::Result<Vec<MatchResult>> {
@@ -803,6 +823,8 @@ struct Room {
     ai: Option<Difficulty>,
     /// Its dummy bots (`ai.rs`): the Practice Range's Training Partner.
     dummies: Vec<ai::DummySeat>,
+    /// Its Workshop script (`attach_workshop`).
+    workshop: Option<Arc<orpheus_workshop::Logic>>,
 }
 
 impl Room {
@@ -826,6 +848,7 @@ impl Room {
             started: Instant::now(),
             ai: None,
             dummies: Vec::new(),
+            workshop: None,
         };
         room.add(players);
         room
@@ -1718,6 +1741,7 @@ impl State {
                 id,
                 map: room.map.name.clone(),
                 mode: room.map.mode_name.clone(),
+                workshop_rules: room.workshop.as_ref().map(|logic| logic.rules.len()),
                 waiting: room
                     .flow
                     .as_ref()
@@ -1777,6 +1801,14 @@ impl State {
             Request::Scene { id, scene } => self.scene_ready(id, scene, now),
             Request::Snapshot { reply } => {
                 let _ = reply.send(self.snapshot());
+            }
+            Request::Workshop { id, logic, reply } => {
+                let room = self.rooms.get_mut(&id);
+                let found = room.is_some();
+                if let Some(room) = room {
+                    room.workshop = Some(logic);
+                }
+                let _ = reply.send(found);
             }
             Request::Results { reply } => {
                 let _ = reply.send(std::mem::take(&mut self.results));

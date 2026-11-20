@@ -81,6 +81,9 @@ pub struct ServerConfig {
     /// Turn on the client's own engine console (Alt+backtick) and developer
     /// features in the login config (`--dev-console`).
     pub dev_console: bool,
+    /// A Workshop script every player goes into from the menu: the custom
+    /// match its settings describe (`--workshop`).
+    pub workshop: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -103,6 +106,7 @@ impl ServerConfig {
             test_ai: None,
             template: None,
             dev_console: false,
+            workshop: None,
         }
     }
 }
@@ -179,6 +183,7 @@ impl Server {
             .chain(assets.graphs().weapon_cosmetics())
             .collect();
         let matchmaker = Matchmaker::new(&data, &config.data, config.test_players, config.test_ai)?;
+        matchmaker.set_workshop(config.workshop.as_deref())?;
         // The Practice Range's scene is prepared up front for the first match
         // (`ow174/lobby/server.py` `start_game_server`); no match starts
         // without the game server.
@@ -318,6 +323,11 @@ impl Server {
     /// The game server's address, when it runs.
     pub fn game_addr(&self) -> Option<SocketAddr> {
         self.game_addr
+    }
+    /// The game service, for a test to look at its matches.
+    #[cfg(test)]
+    pub(crate) fn game_service(&self) -> Option<&GameService> {
+        self.game.as_deref()
     }
     /// The local Battle.net's port the game dials, when it runs.
     pub fn stall_addr(&self) -> Option<SocketAddr> {

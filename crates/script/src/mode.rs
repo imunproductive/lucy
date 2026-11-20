@@ -177,7 +177,7 @@ impl World for ModeWorld {
     }
 
     fn ruleset(&mut self, id: u32) -> Option<Value> {
-        self.graphs.rulesets().default(id, 0, self.mode)
+        self.graphs.ruleset_value(id, 0, self.mode, self.ruleset)
     }
 
     fn mode_random(&self) -> Option<f64> {
@@ -250,8 +250,7 @@ impl World for ModeWorld {
         }
         self.graphs
             .mode_variables(self.mode, self.ruleset)
-            .and_then(|variables| variables.get(&id))
-            .copied()
+            .and_then(|variables| variables.get(&id).copied())
             .map_or(Value::Null, Value::from)
     }
 
@@ -435,8 +434,8 @@ impl ModeScript {
         let graphs = Arc::clone(&world.graphs);
         let variables: Variables = graphs
             .mode_variables(world.mode, world.ruleset)
-            .into_iter()
-            .flatten()
+            .iter()
+            .flat_map(|variables| variables.iter())
             .map(|(&id, &value)| (id, Value::from(value)))
             .collect();
         let mut component = Component::start(

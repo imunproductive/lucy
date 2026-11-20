@@ -174,9 +174,12 @@ impl PlayerBodyFactory {
         let health = pools.unwrap_or(FALLBACK_POOLS).total();
         let mut variables = orpheus_script::vm::player_entity_variables(body, health, health);
         // The ruleset's ultimate generation settings, which `0B8B` reads as
-        // entity variables (`orpheus_script::ultimate`), or the override.
+        // entity variables (`orpheus_script::ultimate`), a match's own
+        // ruleset first (a Workshop script's), or the override.
         variables.extend(ult_generation.unwrap_or_else(|| {
-            orpheus_script::ultimate::generation_variables(graphs.rulesets(), hero.guid, mode)
+            orpheus_script::ultimate::generation_variables(|key| {
+                graphs.ruleset_value(key, hero.guid, mode, ruleset)
+            })
         }));
         // The hero settings its graphs read, at their defaults; what the
         // client sent replaces them once the body runs (`WorldDelivery`).
