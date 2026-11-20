@@ -513,7 +513,7 @@ pub fn shared(arena: &mut mem::Arena, text: (u64, u64)) -> Result<Shared, String
     mem::put_code(return_stub, &code);
     // `call rax` (FF D0) then `jmp return_stub` (E9 rel32): the fake return
     // address is after the call. Then `call rax; jmp r12` for calls.
-    let cave = find_cave(text, 16);
+    let cave = find_cave(text, 12);
     let in_image = cave.and_then(|cave| {
         let mut code = vec![0xFF, 0xD0, 0xE9];
         let rel = return_stub as i64 - (cave + 7) as i64;
@@ -545,19 +545,33 @@ pub fn shared(arena: &mut mem::Arena, text: (u64, u64)) -> Result<Shared, String
     })
 }
 
-/// `size` bytes of int3 padding at a 16-byte boundary near the end of `.text`.
+/// `size` bytes inside a run of int3 padding of `.text`, with two more int3
+/// on each side (so the run is padding, not an instruction's tail), the one
+/// nearest the end. The debug build has no run of 32 (functions are not
+/// 16-aligned there), but thousands of 12 and some of 16.
 fn find_cave((start, end): (u64, u64), size: usize) -> Option<u64> {
-    let window = 0x10_0000u64;
-    let mut at = end.saturating_sub(window).max(start) & !0xF;
-    let data = mem::read_partial(at, (end - at) as usize);
-    let mut offset = 0usize;
-    while offset + size + 16 <= data.len() {
-        // Padding before the slot too, so it cannot be the tail of an instruction.
-        if data[offset..offset + size + 16].iter().all(|&b| b == 0xCC) {
-            at += offset as u64 + 16;
-            return Some(at);
+    const WINDOW: u64 = 0x10_0000;
+    let need = size + 4;
+    let mut window_end = end;
+    while window_end > start {
+        // Overlap by `need` so a run across two windows is found.
+        let window_start = window_end.saturating_sub(WINDOW).max(start);
+        let data = mem::read_partial(window_start, (window_end - window_start) as usize);
+        let mut run = 0usize;
+        let mut found = None;
+        for (offset, &byte) in data.iter().enumerate() {
+            run = if byte == 0xCC { run + 1 } else { 0 };
+            if run >= need {
+                found = Some(offset + 1 - need);
+            }
         }
-        offset += 16;
+        if let Some(offset) = found {
+            return Some(window_start + offset as u64 + 2);
+        }
+        window_end = (window_start + need as u64).min(window_end) - 1;
+        if window_start == start {
+            break;
+        }
     }
     None
 }

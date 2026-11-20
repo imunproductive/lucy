@@ -161,4 +161,13 @@ fn the_probe_answers_on_the_given_port() {
         &format!(r#"{{"id": 2, "cmd": "read", "addr": {base}, "len": 2}}"#),
     );
     assert!(header.contains(r#""hex":"4d5a""#), "{header}");
+    // A call that faults (a jump to an unmapped page) comes back as an error
+    // and the process goes on answering.
+    let call = ask(
+        &mut stream,
+        r#"{"id": 3, "cmd": "call", "addr": 16, "thread": "probe", "force": true}"#,
+    );
+    assert!(call.contains("faulted (0xC0000005"), "{call}");
+    let again = ask(&mut stream, r#"{"id": 4, "cmd": "info"}"#);
+    assert!(again.contains(r#""ok":true"#), "{again}");
 }

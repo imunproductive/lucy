@@ -1110,8 +1110,8 @@ fn body_script_retries_frozen_initial_frames_and_ignores_old_generation_reports(
     world.push(record(id.entity, Delivery::CreateBody(id)));
     let mut egress = GameEgress::default();
     // The script record a datagram carried: its chunk (first, span), the
-    // owner frame's `lead | H | C` bits (6: a correction, 2: the initial
-    // owner delta) and its CmFD.
+    // owner frame's `lead | H | C` bits (2: the initial owner delta) and its
+    // CmFD.
     let owner_frame = |report: &DeliveryReport<Arc<Record>>| {
         let records: Vec<_> = report
             .packets
@@ -1223,39 +1223,24 @@ fn body_script_retries_frozen_initial_frames_and_ignores_old_generation_reports(
     );
     transport_outcome(&mut world, &mut egress, 9, false);
     assert_eq!(transmit(&mut world, &mut egress, 104, 11).0, c0);
-    // c0, the initial owner delta at command 103: chunks 2 to 3, the
-    // pending frame above (it replaced the unsent one at 102).
-    let arrived = egress.acknowledge(12, 1);
-    assert_eq!(owner_frame(&arrived), (2, 1, 2, 103));
-    world.acknowledge(arrived, Duration::ZERO);
-    assert_eq!(
-        transmit(&mut world, &mut egress, 119, 12).1.records,
-        [RecordSource::Queued(0)]
-    );
-    // After the commands up to 119 the owner frame is a correction in the
-    // next chunk.
-    let lost = egress.acknowledge(13, 0);
-    assert_eq!(owner_frame(&lost), (4, 0, 6, 119));
-    world.acknowledge(lost, Duration::ZERO);
+    // Nothing more goes while the initial owner delta is retried; this
+    // synthetic body never changes, so no correction would follow it either
+    // (`SnapshotEncoder::queue_delta`).
+    advance(&mut world, &mut mover, 120);
     assert!(
-        transmit(&mut world, &mut egress, 120, 13)
+        transmit(&mut world, &mut egress, 120, 12)
             .1
             .records
             .is_empty()
     );
-
-    advance(&mut world, &mut mover, 120);
-    assert_eq!(
-        transmit(&mut world, &mut egress, 120, 14).1.records,
-        [RecordSource::Queued(0)]
-    );
     world.cancel_body_script();
     let reused = avatar(1, 257);
     activate_script(&mut world, reused, 7, Arc::default());
-    // The lost correction is covered by the next one: chunk 4 again, with
-    // the one more command.
-    let arrived = egress.acknowledge(15, 1);
-    assert_eq!(owner_frame(&arrived), (4, 1, 6, 120));
+    // c0, the initial owner delta at command 103: chunks 2 to 3, the
+    // pending frame above (it replaced the unsent one at 102). It arrives
+    // after the body's script was replaced: the new stream ignores it.
+    let arrived = egress.acknowledge(12, 1);
+    assert_eq!(owner_frame(&arrived), (2, 1, 2, 103));
     world.acknowledge(arrived, Duration::ZERO);
     assert_eq!(world.body_script.as_ref().unwrap().stream.last(), 0);
     assert!(world.queued.is_empty());

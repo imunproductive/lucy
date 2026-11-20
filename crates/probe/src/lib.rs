@@ -21,6 +21,7 @@
 
 pub mod expr;
 pub mod input;
+pub mod layout;
 pub mod ring;
 
 #[cfg(windows)]
@@ -61,6 +62,55 @@ pub mod client {
     pub const COMP4_POSITION: u64 = 0x160;
     /// The entity's id.
     pub const ENTITY_ID: u64 = 0xB0;
+
+    /// Component 31 (the mover), 44 (`MECPossessorData`) and 47 (the
+    /// statescript component) by their vtables.
+    pub const COMP31_VTABLE: u64 = 0x7FF7_8B51_E7C8;
+    pub const COMP44_VTABLE: u64 = 0x7FF7_8B52_03D8;
+    pub const COMP47_VTABLE: u64 = 0x7FF7_8B52_1F68;
+    /// Component 44's mirror field 0 (`m_1AB5E773`): the entity the player
+    /// possesses.
+    pub const POSSESSED: u64 = 0xD0;
+
+    /// The world: `[entity+0x28] ^ WORLD_KEY`; its systems:
+    /// `[world+0x140] ^ (SYSTEMS_KEY - [SYSTEMS_KEY_GLOBAL])`
+    /// (`0x7FF789CB7F10`).
+    pub const ENTITY_WORLD: u64 = 0x28;
+    pub const WORLD_KEY: u64 = 0x98DE_97B5_0B3B_E1E3;
+    pub const WORLD_SYSTEMS: u64 = 0x140;
+    pub const SYSTEMS_KEY: u64 = 0x4E34_94C6_3319_4824;
+    pub const SYSTEMS_KEY_GLOBAL: u64 = 0x7FF7_8BDF_4BD0;
+    /// The camera: `CAMERA_GET(systems[4])` returns the camera object; its
+    /// world matrix is the 64 bytes at `+0x10`, encrypted with the key
+    /// `CAMERA_KEY([camera+0x50])` (`0x7FF78970A120`).
+    pub const CAMERA_SYSTEM: u64 = 4;
+    pub const CAMERA_GET: u64 = 0x7FF7_894F_2CD0;
+    pub const CAMERA_KEY: u64 = 0x7FF7_894C_05F0;
+    pub const CAMERA_MATRIX: u64 = 0x10;
+    pub const CAMERA_SEED: u64 = 0x50;
+    /// `CAMERA_KEY` faults unless its return address is inside
+    /// `[DECRYPT_CALLERS, +[DECRYPT_CALLERS+8] as u32)` after a CALL.
+    pub const DECRYPT_CALLERS: u64 = 0x7FF7_8B4F_1600;
+
+    /// Component 47's statescript host and its instances
+    /// (`tools/owprobe/statescript.py`).
+    pub const HOST_IN_COMP47: u64 = 0xD0;
+    pub const HOST_INSTANCES: u64 = 0x8;
+    pub const HOST_COUNT: u64 = 0x10;
+    /// An instance: its id, variable store, state array (indexed by the
+    /// graph's state index, made on first use, `0x7FF78AAA1460`) and graph.
+    pub const INSTANCE_ID: u64 = 0x18;
+    pub const INSTANCE_VARIABLES: u64 = 0x98;
+    pub const INSTANCE_STATES: u64 = 0xA0;
+    pub const INSTANCE_STATE_COUNT: u64 = 0xA8;
+    pub const INSTANCE_GRAPH: u64 = 0x1E8;
+    /// A state's flags: bit 0 while it runs.
+    pub const STATE_FLAGS: u64 = 0x40;
+    /// The variable store: 16 buckets `{entries, u32 count}` of 32 bytes
+    /// from `+0x20` by `index & 0xF`, 16-byte entries `{u16 index, variable}`;
+    /// a variable's own value at `+0x50` (Grapple.md "DayFirstGrapple2").
+    pub const VARIABLE_BUCKETS: u64 = 0x20;
+    pub const VARIABLE_VALUE: u64 = 0x50;
 
     /// Component 59: the sample being built and the stored view.
     pub const SAMPLE_YAW: u64 = 0x1042;

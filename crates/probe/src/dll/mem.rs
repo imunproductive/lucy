@@ -201,6 +201,15 @@ pub fn heap_regions() -> Vec<Region> {
 
 /// The 8-byte aligned addresses in `regions` holding `value`, at most `max`.
 pub fn scan_u64(regions: &[Region], value: u64, max: usize) -> Vec<u64> {
+    scan_values(regions, &[value], max)
+        .into_iter()
+        .map(|(address, _)| address)
+        .collect()
+}
+
+/// The 8-byte aligned addresses in `regions` holding any of `values` (a
+/// few), with the value found, at most `max`.
+pub fn scan_values(regions: &[Region], values: &[u64], max: usize) -> Vec<(u64, u64)> {
     let mut found = Vec::new();
     let mut chunk = vec![0u8; 1 << 20];
     for region in regions {
@@ -210,8 +219,9 @@ pub fn scan_u64(regions: &[Region], value: u64, max: usize) -> Vec<u64> {
             let length = ((end - at) as usize).min(chunk.len());
             if read(at, &mut chunk[..length]) {
                 for (index, word) in chunk[..length].chunks_exact(8).enumerate() {
-                    if u64::from_le_bytes(word.try_into().expect("8 bytes")) == value {
-                        found.push(at + index as u64 * 8);
+                    let word = u64::from_le_bytes(word.try_into().expect("8 bytes"));
+                    if values.contains(&word) {
+                        found.push((at + index as u64 * 8, word));
                         if found.len() >= max {
                             return found;
                         }
