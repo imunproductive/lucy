@@ -1383,6 +1383,92 @@ pub struct Instance {
     /// A scope instance's link to the scope state that opened it on
     /// another entity (`vm/scopes.rs`).
     pub scope: Option<ScopeLink>,
+    /// Moved on by every mutable borrow through [`Instances`].
+    revision: u64,
+}
+
+impl Instance {
+    /// Its content's revision in its snapshot: equal for two borrows
+    /// between which nothing could change it. A projection of it holds
+    /// while this and the snapshot's outputs for it (timers, links) stay
+    /// ([`Instances::touch`]).
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+}
+
+/// A snapshot's instances by id. Each mutable borrow of an instance moves
+/// that instance's revision on ([`Instance::revision`]), so no write can
+/// leave it behind; reads go through the map ([`std::ops::Deref`]).
+#[derive(Debug, Default)]
+pub struct Instances {
+    map: IndexMap<u16, Instance>,
+    /// The last revision given out.
+    writes: u64,
+}
+
+impl Instances {
+    fn next_revision(&mut self) -> u64 {
+        self.writes += 1;
+        self.writes
+    }
+
+    pub fn get_mut(&mut self, id: &u16) -> Option<&mut Instance> {
+        let revision = self.next_revision();
+        let instance = self.map.get_mut(id)?;
+        instance.revision = revision;
+        Some(instance)
+    }
+
+    pub fn insert(&mut self, id: u16, mut instance: Instance) -> Option<Instance> {
+        instance.revision = self.next_revision();
+        self.map.insert(id, instance)
+    }
+
+    pub fn shift_remove(&mut self, id: &u16) -> Option<Instance> {
+        self.map.shift_remove(id)
+    }
+
+    pub fn clear(&mut self) {
+        self.map.clear();
+    }
+
+    /// Move an instance's revision on for a change kept outside it (its
+    /// pending timers, its variables' links).
+    pub(crate) fn touch(&mut self, id: u16) {
+        self.get_mut(&id);
+    }
+}
+
+impl std::ops::Deref for Instances {
+    type Target = IndexMap<u16, Instance>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl std::ops::Index<&u16> for Instances {
+    type Output = Instance;
+
+    fn index(&self, id: &u16) -> &Instance {
+        &self.map[id]
+    }
+}
+
+impl std::ops::IndexMut<&u16> for Instances {
+    fn index_mut(&mut self, id: &u16) -> &mut Instance {
+        self.get_mut(id).expect("IndexMap: key not found")
+    }
+}
+
+impl<'a> IntoIterator for &'a Instances {
+    type Item = (&'a u16, &'a Instance);
+    type IntoIter = indexmap::map::Iter<'a, u16, Instance>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.map.iter()
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -1418,7 +1504,7 @@ pub struct Assumption {
 pub struct Snapshot {
     pub entity: u32,
     pub variables: Variables,
-    pub instances: IndexMap<u16, Instance>,
+    pub instances: Instances,
     /// Pending state timers and finishes in their per-instance execution order.
     pub pending_timers: IndexMap<u16, Vec<PendingTimer>>,
     /// Stack links by (instance or zero for the entity, variable).
@@ -1456,6 +1542,13 @@ impl Revision {
             component: COMPONENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             writes: 0,
         }
+    }
+
+    /// Whether both are revisions of one component's snapshot, whose
+    /// instances' revisions ([`Instance::revision`]) count on from each
+    /// other.
+    pub fn same_component(self, other: Self) -> bool {
+        self.component == other.component
     }
 }
 
@@ -1717,8 +1810,8 @@ impl Component {
         config: &Json,
         world: &mut impl World,
     ) -> Result<Value, EvalError> {
-        self.evaluate_in_state(instance, raw_state, None, world, |_, context| {
-            expr::evaluate(config, context)
+        self.evaluate_in_state(instance, raw_state, None, world, |node, context| {
+            expr::evaluate_in(config, node.configs(), context)
         })
     }
 
@@ -2647,6 +2740,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 variables,
                 states: IndexMap::new(),
                 scope,
+                revision: 0,
             },
         );
         for position in definition.entries.iter().flatten() {
@@ -3368,9 +3462,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             assumed: Vec::new(),
         };
         let result = if assignment {
-            expr::evaluate_value(config, &mut context)
+            expr::evaluate_value_in(config, node.configs(), &mut context)
         } else {
-            expr::evaluate(config, &mut context)
+            expr::evaluate_in(config, node.configs(), &mut context)
         };
         let reads = context.reads;
         let foreign_reads = context.foreign_reads;

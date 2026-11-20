@@ -17,6 +17,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt,
+    sync::Arc,
 };
 
 use crate::codecs::{Codec, CodecTable, PayloadError, PayloadMode, StatePayload};
@@ -49,7 +50,9 @@ pub struct ProjectedSnapshot {
     view: View,
     entity_exclusions: BTreeSet<u32>,
     variables: ProjectedVariables,
-    instances: BTreeMap<u16, ProjectedInstance>,
+    /// Each shared with the projections it didn't change in
+    /// ([`SnapshotEncoder::project_cached`]).
+    instances: BTreeMap<u16, Arc<ProjectedInstance>>,
     /// The wheel actions still sendable, oldest first.
     actions: Vec<ProjectedAction>,
     /// The newest action this projection has passed: a full frame's
@@ -61,7 +64,7 @@ pub struct ProjectedSnapshot {
 /// ([`SnapshotEncoder::project_cached`]): the snapshot's revision, the
 /// entity exclusions it kept, and the clock readings it holds for, from
 /// the snapshot's clock then to the first time a pulse goes stale or a
-/// wheel action runs out.
+/// wheel action runs out; and the same for each instance.
 #[derive(Debug)]
 pub struct ProjectionCache {
     revision: Revision,
@@ -69,6 +72,67 @@ pub struct ProjectionCache {
     fresh_until_ms: u64,
     frozen: Option<BTreeSet<u32>>,
     projected: ProjectedSnapshot,
+    instances: BTreeMap<u16, InstanceStamp>,
+}
+
+/// What one instance's projection was made from: the instance's revision
+/// ([`crate::vm::Instance::revision`]), the revisions of the instances
+/// whose states its links name, and the clock readings it holds for.
+#[derive(Debug)]
+struct InstanceStamp {
+    revision: u64,
+    sources: Vec<(u16, u64)>,
+    made_ms: u64,
+    fresh_until_ms: u64,
+}
+
+impl ProjectionCache {
+    /// Instance `id`'s kept projection and stamp, if they still hold for
+    /// the instance at `revision` in `snapshot`.
+    fn instance(
+        &self,
+        id: u16,
+        revision: u64,
+        snapshot: &Snapshot,
+    ) -> Option<(&Arc<ProjectedInstance>, &InstanceStamp)> {
+        let stamp = self.instances.get(&id)?;
+        let holds = stamp.revision == revision
+            && stamp.made_ms <= snapshot.now_ms
+            && snapshot.now_ms <= stamp.fresh_until_ms
+            && stamp.sources.iter().all(|&(source, revision)| {
+                snapshot
+                    .instances
+                    .get(&source)
+                    .map(|source| source.revision())
+                    == Some(revision)
+            });
+        holds.then_some((self.projected.instances.get(&id)?, stamp))
+    }
+}
+
+/// The instances whose states an instance's projected links name
+/// ([`SnapshotEncoder::project_bindings`]), with their revisions.
+fn binding_sources(
+    snapshot: &Snapshot,
+    id: u16,
+    instance: &crate::vm::Instance,
+    excluded: &BTreeSet<u32>,
+    view: View,
+) -> Vec<(u16, u64)> {
+    if view != View::Owner {
+        return Vec::new();
+    }
+    instance
+        .variables
+        .keys()
+        .filter(|variable| !excluded.contains(variable))
+        .filter_map(|&variable| snapshot.bindings.get(&(id, variable)))
+        .flatten()
+        .filter_map(|binding| {
+            let source = snapshot.instances.get(&binding.instance)?;
+            Some((binding.instance, source.revision()))
+        })
+        .collect()
 }
 
 impl ProjectedSnapshot {
@@ -123,7 +187,7 @@ impl ProjectedSnapshot {
     /// nothing without the instance.
     pub fn set_instance_variable(&mut self, instance: u16, id: u32, value: Option<Value>) {
         if let Some(instance) = self.instances.get_mut(&instance) {
-            instance.variables.set(id, value);
+            Arc::make_mut(instance).variables.set(id, value);
         }
     }
 
@@ -163,6 +227,7 @@ impl ProjectedSnapshot {
         let Some(instance) = self.instances.get_mut(&instance) else {
             return;
         };
+        let instance = Arc::make_mut(instance);
         match value {
             Some(value) => {
                 instance.states.insert(state, value);
@@ -239,9 +304,10 @@ impl ProjectedSnapshot {
             if value.as_ref() == current {
                 continue;
             }
+            let states = &mut Arc::make_mut(instance).states;
             match value {
-                Some(value) => instance.states.insert(raw, value),
-                None => instance.states.remove(&raw),
+                Some(value) => states.insert(raw, value),
+                None => states.remove(&raw),
             };
         }
         self
@@ -261,6 +327,48 @@ struct ProjectedInstance {
     variables: ProjectedVariables,
     states: BTreeMap<u16, ProjectedState>,
     events: Vec<ProjectedEvent>,
+    self_same: SelfSame,
+}
+
+/// [`ProjectedInstance::self_same`], worked out once. It takes no part
+/// in comparisons, and a clone (made to be edited) works it out again.
+#[derive(Debug, Default)]
+struct SelfSame(std::sync::OnceLock<bool>);
+
+impl Clone for SelfSame {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for SelfSame {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl ProjectedInstance {
+    /// Whether a delta ([`SnapshotEncoder::differences`]) finds each of
+    /// its variables, links and states the same as itself (not so for a
+    /// NaN), so that a delta between two shares of it lists only what was
+    /// touched.
+    fn self_same(&self) -> bool {
+        *self.self_same.0.get_or_init(|| {
+            self.variables
+                .values
+                .values()
+                .all(|value| same_on_wire(value, value))
+                && self
+                    .variables
+                    .bindings
+                    .values()
+                    .all(|links| PartialEq::eq(links, links))
+                && self
+                    .states
+                    .values()
+                    .all(|state| PartialEq::eq(state, state))
+        })
+    }
 }
 
 /// One projected state: whether it runs, its payload and volley, and its
@@ -515,7 +623,7 @@ impl<'a> SnapshotEncoder<'a> {
         snapshot: &Snapshot,
         view: View,
     ) -> Result<ProjectedSnapshot, SnapshotError> {
-        self.project_with_exclusions(snapshot, view, None, &mut 0)
+        self.project_with_exclusions(snapshot, view, None, &mut 0, None)
     }
 
     /// A later projection keeps the initial graph tree's entity exclusions.
@@ -533,14 +641,18 @@ impl<'a> SnapshotEncoder<'a> {
             baseline.view,
             Some(&baseline.entity_exclusions),
             &mut 0,
+            None,
         )
     }
 
     /// [`Self::project`] (no `baseline`) or [`Self::project_next`], kept in
     /// `cache`: the projection `cache` holds is the answer again while the
     /// snapshot keeps its revision and the clock hasn't passed what the
-    /// projection read of it ([`ProjectionCache`]). The cache must stay
-    /// with one encoder setup (graphs, codecs, unknowns, hidden instances).
+    /// projection read of it ([`ProjectionCache`]). Otherwise each instance
+    /// keeps its projection while it keeps its revision, so do the
+    /// instances its links name, and the clock stays within what it read
+    /// ([`InstanceStamp`]). The cache must stay with one encoder setup
+    /// (graphs, codecs, unknowns, hidden instances).
     pub fn project_cached<'c>(
         &self,
         snapshot: &Snapshot,
@@ -562,16 +674,25 @@ impl<'a> SnapshotEncoder<'a> {
                 && kept.frozen.as_ref() == frozen
         });
         if !reusable {
-            *cache = None;
+            let kept = cache.take().filter(|kept| {
+                kept.revision.same_component(snapshot.revision()) && kept.projected.view == view
+            });
             let mut fresh_until_ms = u64::MAX;
-            let projected =
-                self.project_with_exclusions(snapshot, view, frozen, &mut fresh_until_ms)?;
+            let mut instances = BTreeMap::new();
+            let projected = self.project_with_exclusions(
+                snapshot,
+                view,
+                frozen,
+                &mut fresh_until_ms,
+                Some((kept.as_ref(), &mut instances)),
+            )?;
             *cache = Some(ProjectionCache {
                 revision: snapshot.revision(),
                 made_ms: snapshot.now_ms,
                 fresh_until_ms,
                 frozen: frozen.cloned(),
                 projected,
+                instances,
             });
         }
         Ok(&cache.as_ref().expect("a kept projection").projected)
@@ -580,13 +701,16 @@ impl<'a> SnapshotEncoder<'a> {
     /// `fresh_until_ms` comes down to the last clock reading (from
     /// `snapshot.now_ms` on) the projection holds for: the projection
     /// reads the clock only for a pulse's freshness and a wheel action's
-    /// lifetime, each of which runs out once.
+    /// lifetime, each of which runs out once. With `stamps`, an instance of
+    /// the kept projection that still holds is shared, not made again, and
+    /// each instance's stamp is recorded.
     fn project_with_exclusions(
         &self,
         snapshot: &Snapshot,
         view: View,
         frozen: Option<&BTreeSet<u32>>,
         fresh_until_ms: &mut u64,
+        mut stamps: Option<(Option<&ProjectionCache>, &mut BTreeMap<u16, InstanceStamp>)>,
     ) -> Result<ProjectedSnapshot, SnapshotError> {
         if !snapshot.initialization_complete() {
             return Err(SnapshotError::Incomplete {
@@ -605,11 +729,28 @@ impl<'a> SnapshotEncoder<'a> {
             }
             let graph = self.graph(id, instance.graph)?;
             let exclusions = graph.server_only_variables();
-            let variables =
-                self.project_variables(snapshot, id, &instance.variables, exclusions, view)?;
             if frozen.is_none() {
                 entity_exclusions.extend(exclusions);
             }
+            if let Some((kept, stamps)) = &mut stamps {
+                if let Some((projected, stamp)) =
+                    kept.and_then(|kept| kept.instance(id, instance.revision(), snapshot))
+                {
+                    *fresh_until_ms = (*fresh_until_ms).min(stamp.fresh_until_ms);
+                    instances.insert(id, Arc::clone(projected));
+                    stamps.insert(
+                        id,
+                        InstanceStamp {
+                            sources: stamp.sources.clone(),
+                            ..*stamp
+                        },
+                    );
+                    continue;
+                }
+            }
+            let mut instance_fresh_ms = u64::MAX;
+            let variables =
+                self.project_variables(snapshot, id, &instance.variables, exclusions, view)?;
             let mut states = BTreeMap::new();
             for (&raw, state) in &instance.states {
                 let site = StateSite {
@@ -634,10 +775,9 @@ impl<'a> SnapshotEncoder<'a> {
                 if !state.active && !(state.activation != 0 && codec.is_some_and(Codec::stec)) {
                     continue;
                 }
-                let Some(payload) = codec
-                    .filter(|codec| codec.projected())
-                    .and_then(|codec| state_payload(state, codec, snapshot.now_ms, fresh_until_ms))
-                else {
+                let Some(payload) = codec.filter(|codec| codec.projected()).and_then(|codec| {
+                    state_payload(state, codec, snapshot.now_ms, &mut instance_fresh_ms)
+                }) else {
                     if self.unknowns == Unknowns::Tolerate {
                         log_left_out(&node.class, codec, state.kind);
                         continue;
@@ -662,9 +802,26 @@ impl<'a> SnapshotEncoder<'a> {
                     },
                 );
             }
+            let events = if view == View::Owner {
+                self.project_timers(snapshot, id, graph)?
+            } else {
+                Vec::new()
+            };
+            *fresh_until_ms = (*fresh_until_ms).min(instance_fresh_ms);
+            if let Some((_, stamps)) = &mut stamps {
+                stamps.insert(
+                    id,
+                    InstanceStamp {
+                        revision: instance.revision(),
+                        sources: binding_sources(snapshot, id, instance, exclusions, view),
+                        made_ms: snapshot.now_ms,
+                        fresh_until_ms: instance_fresh_ms,
+                    },
+                );
+            }
             instances.insert(
                 id,
-                ProjectedInstance {
+                Arc::new(ProjectedInstance {
                     graph: instance.graph,
                     creator: (instance.source != snapshot.entity).then_some(instance.source),
                     parent: instance.parent,
@@ -676,12 +833,9 @@ impl<'a> SnapshotEncoder<'a> {
                     }),
                     variables,
                     states,
-                    events: if view == View::Owner {
-                        self.project_timers(snapshot, id, graph)?
-                    } else {
-                        Vec::new()
-                    },
-                },
+                    events,
+                    self_same: SelfSame::default(),
+                }),
             );
         }
         let variables =
@@ -707,7 +861,7 @@ impl<'a> SnapshotEncoder<'a> {
     fn project_actions(
         &self,
         snapshot: &Snapshot,
-        instances: &BTreeMap<u16, ProjectedInstance>,
+        instances: &BTreeMap<u16, Arc<ProjectedInstance>>,
         fresh_until_ms: &mut u64,
     ) -> Result<Vec<ProjectedAction>, SnapshotError> {
         let mut actions = Vec::new();
@@ -1004,7 +1158,7 @@ impl<'a> SnapshotEncoder<'a> {
         let mut baseline = snapshot.clone();
         if baseline.view == View::Owner {
             baseline.variables.bindings.clear();
-            for instance in baseline.instances.values_mut() {
+            for instance in baseline.instances.values_mut().map(Arc::make_mut) {
                 instance.variables.bindings.clear();
                 instance.states.clear();
                 instance.events.clear();
@@ -1140,6 +1294,7 @@ impl<'a> SnapshotEncoder<'a> {
             Some(&base.variables),
             &current.variables,
             touched,
+            false,
             &mut delta.keys,
         );
         for (&id, next) in &current.instances {
@@ -1156,32 +1311,38 @@ impl<'a> SnapshotEncoder<'a> {
             if descriptor {
                 delta.keys.insert(ChangeKey::Instance(id));
             }
+            // A baseline instance the projection shares lists only what
+            // was touched: each entry compares equal to itself.
+            let shared = before.is_some_and(|before| Arc::ptr_eq(before, next) && next.self_same());
             let variables = delta_variables(
                 id,
                 before.map(|before| &before.variables),
                 &next.variables,
                 touched,
+                shared,
                 &mut delta.keys,
             );
             let graph = self.graph(id, next.graph)?;
-            let raw_slots: BTreeSet<_> = next
-                .states
-                .keys()
-                .copied()
-                .chain(
-                    before
-                        .into_iter()
-                        .flat_map(|before| before.states.keys().copied()),
-                )
-                .chain(
-                    touched
-                        .range(ChangeKey::State(id, 0)..=ChangeKey::State(id, u16::MAX))
-                        .filter_map(|key| match key {
-                            ChangeKey::State(_, state) => Some(*state),
-                            _ => None,
-                        }),
-                )
-                .collect();
+            let touched_states = touched
+                .range(ChangeKey::State(id, 0)..=ChangeKey::State(id, u16::MAX))
+                .filter_map(|key| match key {
+                    ChangeKey::State(_, state) => Some(*state),
+                    _ => None,
+                });
+            let raw_slots: BTreeSet<_> = if shared {
+                touched_states.collect()
+            } else {
+                next.states
+                    .keys()
+                    .copied()
+                    .chain(
+                        before
+                            .into_iter()
+                            .flat_map(|before| before.states.keys().copied()),
+                    )
+                    .chain(touched_states)
+                    .collect()
+            };
             let mut states = BTreeMap::new();
             for raw in raw_slots {
                 let now = next.states.get(&raw);
@@ -1634,31 +1795,38 @@ struct InstanceDelta<'a> {
     states: BTreeMap<u16, Option<Cow<'a, ProjectedState>>>,
 }
 
+/// The variables of `current` a delta from `before` lists. `shared`:
+/// `before` is `current`, and each entry is the same as itself
+/// ([`ProjectedInstance::self_same`]), so only the touched ones are.
 fn delta_variables(
     instance: u16,
     before: Option<&ProjectedVariables>,
     current: &ProjectedVariables,
     touched: &BTreeSet<ChangeKey>,
+    shared: bool,
     changes: &mut BTreeSet<ChangeKey>,
 ) -> ProjectedVariables {
-    let ids: BTreeSet<_> = current
-        .values
-        .keys()
-        .copied()
-        .chain(
-            before
-                .into_iter()
-                .flat_map(|vars| vars.values.keys().copied()),
-        )
-        .chain(
-            touched
-                .range(ChangeKey::Variable(instance, 0)..=ChangeKey::Variable(instance, u32::MAX))
-                .filter_map(|key| match key {
-                    ChangeKey::Variable(_, id) => Some(*id),
-                    _ => None,
-                }),
-        )
-        .collect();
+    let touched_ids = touched
+        .range(ChangeKey::Variable(instance, 0)..=ChangeKey::Variable(instance, u32::MAX))
+        .filter_map(|key| match key {
+            ChangeKey::Variable(_, id) => Some(*id),
+            _ => None,
+        });
+    let ids: BTreeSet<_> = if shared {
+        touched_ids.collect()
+    } else {
+        current
+            .values
+            .keys()
+            .copied()
+            .chain(
+                before
+                    .into_iter()
+                    .flat_map(|vars| vars.values.keys().copied()),
+            )
+            .chain(touched_ids)
+            .collect()
+    };
     let mut result = ProjectedVariables::default();
     for id in ids {
         let now = current.values.get(&id).unwrap_or(&Value::Null);

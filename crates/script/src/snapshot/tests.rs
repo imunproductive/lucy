@@ -511,7 +511,7 @@ fn initial_owner_delta_matches_python_stack_bindings_and_payloads() {
     // owner_delta at CmFD 1001).
     let mut python = owner.clone();
     python.variables.values[&7] = Value::Integer(31);
-    python.instances.get_mut(&1).unwrap().variables.values[&100] = Value::Integer(17);
+    instance_mut(&mut python, 1).variables.values[&100] = Value::Integer(17);
     check(
         &encoder.full(&python).unwrap(),
         111,
@@ -548,13 +548,7 @@ fn initial_owner_delta_matches_python_stack_bindings_and_payloads() {
     // The bindings going away resend the values.
     let mut unbound = owner.clone();
     unbound.variables.bindings.clear();
-    unbound
-        .instances
-        .get_mut(&1)
-        .unwrap()
-        .variables
-        .bindings
-        .clear();
+    instance_mut(&mut unbound, 1).variables.bindings.clear();
     let delta = encoder
         .differences(&owner, &unbound, &BTreeSet::new(), &BTreeSet::new())
         .unwrap();
@@ -660,9 +654,14 @@ fn a_stack_adding_to_its_own_variable_counts_once_on_the_owners_client() {
     assert!((twice - 1.3).abs() < 1e-6, "{twice}");
 }
 
+/// A projected instance to edit (a copy of its own if shared).
+fn instance_mut(snapshot: &mut ProjectedSnapshot, id: u16) -> &mut ProjectedInstance {
+    Arc::make_mut(snapshot.instances.get_mut(&id).unwrap())
+}
+
 fn after_body_change(mut snapshot: ProjectedSnapshot) -> ProjectedSnapshot {
     snapshot.variables.values.swap_remove(&55);
-    let root = snapshot.instances.get_mut(&1).unwrap();
+    let root = instance_mut(&mut snapshot, 1);
     root.variables.values.insert(100, Value::Integer(99));
     root.variables.values.swap_remove(&200);
     root.states
@@ -1696,12 +1695,12 @@ fn owner_timer_replacement_preserves_signed_time_steps_and_fifo_ties() {
     let codecs = CodecTable::from_json(CODECS).unwrap();
     let encoder = SnapshotEncoder::new(&graphs, &codecs);
     let mut owner = encoder.project(&snapshot, View::Owner).unwrap();
-    owner.instances.get_mut(&1).unwrap().states.clear();
+    instance_mut(&mut owner, 1).states.clear();
     let mut stream = BodyStream::new(ENTITY);
     let baseline = encoder.queue_full(&mut stream, &owner).unwrap();
     stream.create_arrived();
     stream.arrived(baseline.last);
-    owner.instances.get_mut(&1).unwrap().events = vec![
+    instance_mut(&mut owner, 1).events = vec![
         ProjectedEvent {
             due_ms: 16000,
             raw_state: 0,
@@ -1765,7 +1764,14 @@ fn a_delta_lists_a_variable_that_went_from_unset_to_false_or_zero() {
         (5, Value::Array(vec![Value::Bool(false)])),
     ]);
     let mut changes = BTreeSet::new();
-    let delta = delta_variables(7, Some(&before), &current, &BTreeSet::new(), &mut changes);
+    let delta = delta_variables(
+        7,
+        Some(&before),
+        &current,
+        &BTreeSet::new(),
+        false,
+        &mut changes,
+    );
     let mut listed: Vec<_> = delta.values.keys().copied().collect();
     listed.sort_unstable();
     assert_eq!(listed, [2, 5, 1821]);
@@ -2104,4 +2110,43 @@ fn the_kill_feed_pulsers_are_the_python_reference_table() {
         pulsers(orpheus_testkit::runtime_dir().join("data/game_graphs_174.json.gz")),
         [(0x01cf, 108)]
     );
+}
+
+#[test]
+fn a_kept_projection_shares_the_instances_that_did_not_change() {
+    let (graphs, _) = fixture();
+    let graphs = Arc::new(graphs);
+    let codecs = CodecTable::from_json(CODECS).unwrap();
+    let mut root = Root::new(1, 42);
+    root.variables.insert(100, Value::Integer(17));
+    let mut component = crate::vm::Component::start(
+        Arc::clone(&graphs),
+        ENTITY,
+        Variables::new(),
+        vec![root],
+        100,
+        &mut EmptyWorld,
+        MAX_INIT_WORK,
+    )
+    .unwrap();
+    let encoder = SnapshotEncoder::new(&graphs, &codecs);
+    let mut kept = None;
+    let mut cached = |component: &crate::vm::Component| {
+        let snapshot = component.snapshot().unwrap();
+        let cached = encoder
+            .project_cached(snapshot, View::Owner, None, &mut kept)
+            .unwrap()
+            .clone();
+        assert_eq!(cached, encoder.project(snapshot, View::Owner).unwrap());
+        cached
+    };
+    let first = cached(&component);
+    assert_eq!(first.instance_count(), 2);
+    component
+        .set_instance_variable(1, 100, Value::Integer(18), &mut EmptyWorld)
+        .unwrap();
+    let next = cached(&component);
+    assert_ne!(next, first);
+    assert!(!Arc::ptr_eq(&next.instances[&1], &first.instances[&1]));
+    assert!(Arc::ptr_eq(&next.instances[&2], &first.instances[&2]));
 }
