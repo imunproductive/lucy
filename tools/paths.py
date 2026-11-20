@@ -29,6 +29,7 @@ RESEARCH_TOOLS = RESEARCH / "tools"  # dumpfix.py, ida_apply_rose.py
 # --- this repo
 ORPHEUS_EXE = Path(os.environ.get("ORPHEUS_BIN", ORPHEUS / "target" / "release" / "orpheus.exe"))
 RELAY_DLL = ORPHEUS / "target" / "release" / "owwfd_relay.dll"
+PROBE_DLL = ORPHEUS / "target" / "release" / "owprobe.dll"  # the client probe (crates/probe, tools/owprobe)
 OWLIB_TYPES = ORPHEUS / "crates" / "stu" / "data" / "types.txt"
 CODECS_JSON = Path(os.environ.get("OW_CODECS_JSON",
                                   ORPHEUS / "crates" / "fixed" / "data" / "statescript_codecs.json"))

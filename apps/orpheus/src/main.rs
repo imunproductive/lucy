@@ -232,7 +232,9 @@ fn launch_game(
     hosting: Hosting,
 ) -> io::Result<()> {
     match mode {
-        Mode::Retail | Mode::Host => play::retail(settings, hosting, options.timeout),
+        Mode::Retail | Mode::Host => {
+            play::retail(settings, hosting, options.timeout, options.probe)
+        }
         Mode::Tournament => play::tournament(
             settings,
             Hosting {

@@ -160,6 +160,7 @@ mod client {
             relay_log: logs.join("relay.log"),
             timeout: options.timeout,
             extra_arguments: settings.game_args.clone(),
+            probe: play::probe_setup(settings, options.probe)?,
         });
         let (child, started) = games.start()?;
         play::log_relay(&started, None);

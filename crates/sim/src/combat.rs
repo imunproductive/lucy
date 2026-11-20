@@ -48,7 +48,7 @@ use crate::{
     replication::WorldDelivery,
     scene::{bot_controller_entity, bot_controller_link, bot_create, bot_filter},
     scene_assets::PreparedScene,
-    spawned::SpawnedFields,
+    spawned::{ServerFlight, SpawnedEntities},
 };
 use orpheus_content::{heroes::Eyes, stats::PlayerStats};
 use orpheus_core::guid::parse_guid;
@@ -433,6 +433,10 @@ pub struct BotHit {
     /// The health change's tags (the hit's, or the heal's), for the
     /// shooter's damage dealt or healing done (`orpheus_script::ultimate`).
     pub tags: DamageTags,
+    /// The health change's source besides the shooter
+    /// ([`HealthChange::source`]: a Biotic Orb), which takes the damage
+    /// dealt or healing done too.
+    pub source: Option<u32>,
 }
 
 /// What the environment deals a body it kills: more than any hero's pools
@@ -472,6 +476,10 @@ pub struct PlayerHit {
     /// placed them; none for his own explosion (assumption: one's own
     /// blow shows no arc) and when that isn't known.
     pub from: Option<Vec3>,
+    /// The health change's source besides the shooter
+    /// ([`HealthChange::source`]: a Biotic Orb), which takes the damage
+    /// dealt or healing done too.
+    pub source: Option<u32>,
 }
 
 /// An explosion's push on another player's body ([`Combat::take_player_pushes`]),
@@ -507,9 +515,11 @@ pub struct PlayerTarget {
     pub team: u8,
     pub pose: TargetPose,
     pub dead: bool,
-    /// Its pools are below their maximum ([`Vitals::hurt`]): a hit that
-    /// strikes hurt allies strikes it.
-    pub hurt: bool,
+    /// Its pools' health and their maximum, every kind together; none:
+    /// unknown. A hit that strikes hurt allies strikes it while hurt
+    /// ([`Self::hurt`]); the graphs' searches read it
+    /// ([`TargetCandidate::health`]).
+    pub health: Option<[f64; 2]>,
     /// Its body definition's target tags, if the data gives them
     /// ([`PreparedScene::body_tags`]).
     pub tags: Option<Arc<BTreeSet<u64>>>,
@@ -520,6 +530,15 @@ pub struct PlayerTarget {
     /// graphs hold now (`orpheus_script::vm::statuses`: Nano Boost's
     /// `0B9F` st19), for its hits.
     pub dealt: Vec<CombatMod>,
+}
+
+impl PlayerTarget {
+    /// Its pools are below their maximum, as a statescript expression
+    /// compares them ([`Vitals::hurt`]).
+    pub fn hurt(&self) -> bool {
+        self.health
+            .is_some_and(|[now, most]| now < most - orpheus_script::expr::EPSILON)
+    }
 }
 
 struct Target {
@@ -602,8 +621,9 @@ pub struct Combat {
     /// Fields (projectiles.py `Projectiles.next_seen`, `next_field`).
     seen_ids: SeenIds,
     field_ids: FieldIds,
-    /// The Biotic Fields the room runs on their graphs.
-    fields: SpawnedFields,
+    /// The Biotic Fields and the server projectiles whose entity starts
+    /// graphs (the Biotic Orbs) the room runs on their graphs.
+    spawned: SpawnedEntities,
     /// The last bot rocket's id, and the ids of those that landed since
     /// the match last looked.
     next_rocket: u64,
@@ -644,13 +664,14 @@ impl Combat {
             next_bot: BOT_ENTITY + scene.bots().len() as u32,
             seen_ids: SeenIds::new(),
             field_ids: FieldIds::default(),
-            fields: SpawnedFields::new(
+            spawned: SpawnedEntities::new(
                 scene.shared_graphs(),
                 scene
                     .spawn_graphs()
                     .get(&FIELD_ENTITY)
                     .cloned()
                     .unwrap_or_default(),
+                Arc::clone(scene.spawn_graphs()),
                 scene.map().mode_guid,
                 scene.map().ruleset,
                 scene.mode_random(),
@@ -706,7 +727,7 @@ impl Combat {
         let free_for_all = scene.map().free_for_all;
         let definitions = scene.graphs().ai_definitions();
         let candidate =
-            |entity, team, dead, controller, ai, pose: &TargetPose, tags| TargetCandidate {
+            |entity, team, dead, controller, ai, pose: &TargetPose, tags, health| TargetCandidate {
                 entity,
                 team: (!free_for_all).then_some(team),
                 dead,
@@ -719,6 +740,7 @@ impl Combat {
                 radius: pose.radius,
                 yaw: pose.yaw,
                 tags,
+                health,
                 spawned: Vec::new(),
             };
         self.players
@@ -730,7 +752,7 @@ impl Combat {
                 TargetCandidate {
                     player: Some(player),
                     ai_control: target.ai,
-                    spawned: self.fields.owned_by(target.body),
+                    spawned: self.spawned.owned_by(target.body),
                     ..candidate(
                         target.body,
                         target.team,
@@ -739,12 +761,14 @@ impl Combat {
                         target.ai.is_some_and(|ai| ai.has_component_92(definitions)),
                         &target.pose,
                         target.tags.clone(),
+                        target.health,
                     )
                 }
             })
             .chain(scene.bots().iter().enumerate().map(|(slot, bot)| {
                 let controller = bot_controller_entity(slot).ok();
                 let pose = scene.bot_target(bot);
+                let vitals = self.targets.get(slot).map(|target| &target.vitals);
                 candidate(
                     bot.entity,
                     bot.spawn.team,
@@ -753,6 +777,7 @@ impl Combat {
                     true,
                     &pose,
                     scene.body_tags(bot.spawn.body),
+                    vitals.map(|vitals| [vitals.total(), vitals.maximum()]),
                 )
             }))
             .collect()
@@ -811,6 +836,7 @@ impl Combat {
             direction: None,
             environment: true,
             from: None,
+            source: None,
         });
     }
 
@@ -830,7 +856,7 @@ impl Combat {
             let target = &slot.target;
             let enemy = free_for_all || target.team != shooter.team;
             (target.body != shooter.source
-                && (enemy || strikes_ally(allies, target.hurt))
+                && (enemy || strikes_ally(allies, target.hurt()))
                 && !target.dead)
                 .then(|| Some((target.body, pose(slot)?)))
                 .flatten()
@@ -1043,6 +1069,7 @@ impl Combat {
                 direction,
                 environment: false,
                 from,
+                source: change.source,
             });
             self.auras.extend(aura);
             return None;
@@ -1059,11 +1086,11 @@ impl Combat {
             tags: change.tags,
             heal: if change.heal { change.amount } else { 0.0 },
         };
-        let hit = self.apply_bot_impact(scene, shooter, change.frame, None, context, &impact, None);
-        if hit.is_some() {
-            self.auras.extend(aura);
-        }
-        hit
+        let mut hit =
+            self.apply_bot_impact(scene, shooter, change.frame, None, context, &impact, None)?;
+        hit.source = change.source;
+        self.auras.extend(aura);
+        Some(hit)
     }
 
     /// The shooter `entity` is: a player's body as the match last placed
@@ -1151,10 +1178,11 @@ impl Combat {
         std::mem::take(&mut self.auras)
     }
 
-    /// The auras the room's Biotic Fields put on bodies or took off since
-    /// the last call (`crate::spawned`), for the bodies' scripts.
+    /// The auras the room's spawned entities (Biotic Fields and Orbs) put
+    /// on bodies or took off since the last call (`crate::spawned`), for
+    /// the bodies' scripts.
     pub fn take_field_auras(&mut self) -> Vec<AuraChange> {
-        self.fields.take_auras()
+        self.spawned.take_auras()
     }
 
     /// The stats the room counted since the last call, for the players
@@ -1166,7 +1194,7 @@ impl Combat {
     /// ([`Self::apply_bot_impact`]), and his weapons' shots
     /// ([`Self::count_shot`]).
     pub fn take_tracked_stats(&mut self) -> Vec<TrackedStat> {
-        let mut stats = self.fields.take_tracked_stats();
+        let mut stats = self.spawned.take_tracked_stats();
         stats.append(&mut self.counted);
         stats
     }
@@ -1229,10 +1257,10 @@ impl Combat {
         team.is_some_and(|team| entity != shooter.source && (free_for_all || team != shooter.team))
     }
 
-    /// The room's Biotic Fields, which send and take game messages
+    /// The room's spawned entities, which send and take game messages
     /// ([`crate::messages`]).
-    pub fn fields_mut(&mut self) -> &mut SpawnedFields {
-        &mut self.fields
+    pub fn spawned_mut(&mut self) -> &mut SpawnedEntities {
+        &mut self.spawned
     }
 
     pub fn step_projectile(
@@ -1391,6 +1419,7 @@ impl Combat {
                 direction: Some(own.direction),
                 environment: false,
                 from: None,
+                source: None,
             });
         }
         Ok(step.end.map(|end| FlightEnd {
@@ -1509,6 +1538,7 @@ impl Combat {
                     direction,
                     environment: false,
                     from,
+                    source: None,
                 });
             }
             return None;
@@ -1648,6 +1678,7 @@ impl Combat {
             remaining: target.vitals.total(),
             healed: 0.0,
             tags,
+            source: None,
             death: result.killed.then_some(BotDeath {
                 bot: bot.entity,
                 killer: shooter.source,
@@ -1742,6 +1773,7 @@ fn healed_bot(
         healed: given,
         damage: None,
         tags,
+        source: None,
     }
 }
 
@@ -2015,7 +2047,15 @@ pub fn apply_player_hits(
                 .map_or(0.0, |world| world.heal_body(scene, &hit));
             if !hit.shooter.bot {
                 let target = (hit.body, victim_body);
-                credit_healing(scene, players, hit.shooter.source, target, given, &hit.tags);
+                credit_healing(
+                    scene,
+                    players,
+                    hit.shooter.source,
+                    target,
+                    given,
+                    &hit.tags,
+                    hit.source,
+                );
             }
             continue;
         }
@@ -2072,6 +2112,9 @@ pub fn apply_player_hits(
                 &hit.tags,
                 false,
             );
+            if let Some(source) = hit.source {
+                world.source_dealt(source, hit.body, damage.dealt, &hit.tags, false);
+            }
         }
         if let Some(shooter) = killer.filter(|_| !hit.environment) {
             notices[shooter].push(CombatNotice::Hit {
@@ -2206,7 +2249,8 @@ pub fn apply_player_pushes(
 
 /// The healer's Healing Done counts `healed` of `target` (its entity and
 /// body definition), and his body takes it as healing done (combat.py
-/// `_heal`), when he is a player of the room.
+/// `_heal`), when he is a player of the room; so does the heal's `source`
+/// besides him (a Biotic Orb, [`WorldDelivery::source_dealt`]).
 fn credit_healing(
     scene: &PreparedScene,
     players: &mut [CombatPlayer<'_>],
@@ -2214,6 +2258,7 @@ fn credit_healing(
     (target, target_body): (u32, Option<u64>),
     healed: f64,
     tags: &DamageTags,
+    source: Option<u32>,
 ) {
     if let Some(healer) = player_of(players, healer).filter(|_| healed > 0.0) {
         players[healer]
@@ -2228,6 +2273,9 @@ fn credit_healing(
                 tags,
                 true,
             );
+            if let Some(source) = source {
+                world.source_dealt(source, target, healed, tags, true);
+            }
         }
     }
 }
@@ -2281,11 +2329,14 @@ pub fn finish_bot_rockets(
 
 /// projectiles.py `Projectiles.update` for a room, once every player's
 /// shots stepped (`WorldDelivery::advance_projectiles`), by slot: an ended
-/// shot finishes its copies on the other clients (`_end`); the Biotic
-/// Fields run on their graphs (`crate::spawned`): those whose shot no
-/// longer runs end, the others advance, those that opened start, and a
-/// field its graph removed ends its shot; every client in the world gets
-/// each running field's entity once (`_deliver_field`: the owner's
+/// shot finishes its copies on the other clients (`_end`); the spawned
+/// entities run on their graphs (`crate::spawned`): the Biotic Fields whose
+/// shot no longer runs end, the server projectiles whose entity starts
+/// graphs (the Biotic Orbs) move with their flights or go with them, the
+/// others advance, the fields that opened and the new such flights start,
+/// a field its graph removed ends its shot and a projectile its graph
+/// removed ends its flight (its copies finish); every client in the world
+/// gets each running field's entity once (`_deliver_field`: the owner's
 /// parented to each of his canisters that arrived, the others' at the
 /// shooter's feet) and the field graph's frame whenever it changes; the
 /// fields whose shot no longer runs go (`_end`); then each client's copies
@@ -2311,7 +2362,7 @@ pub fn deliver_projectiles(
         .flatten()
         .flat_map(|world| world.live_fields())
         .collect();
-    combat.fields.end_unless(&live);
+    combat.spawned.end_unless(&live);
     let mut opened = Vec::new();
     let mut delivers = Vec::new();
     for (owner, skin, body, event) in events {
@@ -2337,14 +2388,40 @@ pub fn deliver_projectiles(
         }
     }
     let candidates = combat.target_candidates(scene);
-    combat.fields.advance(tick, candidates, opened);
-    for shot in combat.fields.take_ended() {
+    let flights: Vec<ServerFlight> = worlds
+        .iter()
+        .flatten()
+        .flat_map(|world| world.server_flights())
+        .collect();
+    let seen_ids = &mut combat.seen_ids;
+    combat
+        .spawned
+        .advance(tick, candidates, opened, &flights, || seen_ids.next());
+    for shot in combat.spawned.take_ended() {
         for world in worlds.iter_mut().flatten() {
             world.end_field(shot);
         }
     }
+    for (body, token) in combat.spawned.take_ended_flights() {
+        for world in worlds.iter_mut().flatten() {
+            world.end_server_flight(body, token);
+        }
+        for world in worlds.iter_mut().flatten() {
+            world.finish_server_projectile(body, token, tick, None);
+        }
+    }
+    for (shot, frame) in combat.spawned.flight_frames() {
+        for world in worlds.iter_mut().flatten() {
+            world.refresh_server_projectile(shot, frame);
+        }
+    }
+    for (shot, scale) in combat.spawned.flight_speeds() {
+        for world in worlds.iter_mut().flatten() {
+            world.set_server_flight_speed(shot, scale);
+        }
+    }
     for (owner, skin, shot, feet, parents) in delivers {
-        let Some(frame) = combat.fields.frame(shot) else {
+        let Some(frame) = combat.spawned.frame(shot) else {
             continue;
         };
         let canisters: Vec<_> = parents.into_iter().map(Some).collect();

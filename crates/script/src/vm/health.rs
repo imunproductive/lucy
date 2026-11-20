@@ -51,6 +51,11 @@ pub struct HealthChange {
     pub site: Site,
     /// Who dealt it (`m_instigator`): the kill feed's killer.
     pub instigator: u32,
+    /// The entity that did it, when it isn't the instigator
+    /// (`m_7B93233C`: the Biotic Orbs' auras `1101`/`1102` name the orb,
+    /// their `#40`): it takes the healing done or damage dealt too, as its
+    /// instigator does (`crate::ultimate::dealt_message`).
+    pub source: Option<u32>,
     pub target: u32,
     /// How much; above 0.
     pub amount: f64,
@@ -200,6 +205,13 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 .and_then(|value| expr::to_entity(&value)),
         }
         .unwrap_or(self.machine.snapshot.entity);
+        let source = match field(change, "m_7B93233C") {
+            Json::Null => None,
+            config => self
+                .evaluate(id, node, config, None)
+                .and_then(|value| expr::to_entity(&value)),
+        }
+        .filter(|&source| expr::valid_entity(source) && source != instigator);
         let loadout = match self.evaluate_set(id, node, field(change, "m_loadout")) {
             Some(Value::Asset(guid)) => Some(guid),
             _ => None,
@@ -218,6 +230,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             taken &= self.world.modify_health(HealthChange {
                 site,
                 instigator,
+                source,
                 target,
                 amount,
                 heal,

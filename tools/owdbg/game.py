@@ -29,6 +29,7 @@ GAME_EXE = paths.GAME_EXE
 SERVER_GAME = GAME_DIR / "Overwatch.exe"  # the server reads its game data from this install
 ORPHEUS_EXE = paths.ORPHEUS_EXE
 RELAY_DLL = paths.RELAY_DLL
+PROBE_DLL = paths.PROBE_DLL
 RELAY_LOG = RELAY_DLL.parent / "log" / "wfd.log"
 USER_STATE = Path(os.environ.get("APPDATA", "")) / "orpheus"
 STATE_ITEMS = ("cache", "profiles", "profile.json")
@@ -51,6 +52,8 @@ def add_session_args(p, duration=None):
     g.add_argument("--exe-args", nargs="*", default=[], help="arguments for --exe")
     g.add_argument("--no-server", action="store_true", help="do not start ORPHEUS serve (use a running one)")
     g.add_argument("--no-relay", action="store_true", help="do not load owwfd_relay.dll")
+    g.add_argument("--probe", type=int, nargs="?", const=21150, metavar="PORT",
+                   help="also load owprobe.dll (tools/owprobe), listening on 127.0.0.1:PORT (default 21150)")
     g.add_argument("--account", default="Researcher", help="ORPHEUS account (default Researcher)")
     g.add_argument("--game-arg", action="append", default=[], help="extra game argument (repeatable)")
     g.add_argument("--keep-state", action="store_true", help="keep the temp ORPHEUS state folder (logs)")
@@ -250,7 +253,11 @@ class Session:
             # loader's NtContinue): write them again at the entry point.
             dbg.on("system_breakpoint", lambda: dbg.add_bp(
                 dbg.main.base + dbg.main.pe.entry_rva, lambda hit: dbg.hw_active() and dbg.apply_hw(), oneshot=True))
-        pid = dbg.create(str(self.exe), args, cwd)
+        env = None
+        if self.is_game and getattr(self.args, "probe", None):
+            env = dict(os.environ, ORPHEUS_PROBE_PORT=str(self.args.probe),
+                       ORPHEUS_PROBE_LOG=str(PROBE_DLL.parent / "log" / "probe.log"))
+        pid = dbg.create(str(self.exe), args, cwd, env=env)
         self.log(f"[owdbg] started {self.exe.name} pid {pid}: {' '.join(args)}")
         dbg.on("create_process", lambda: self.log(
             f"[owdbg] image base 0x{dbg.main.base:X} (ORPHEUS base 0x{ORPHEUS_BASE:X})"))
@@ -288,28 +295,35 @@ class Session:
     # ---- relay
     def _inject_relay(self):
         """CreateRemoteThread(LoadLibraryW, relay) at the system breakpoint: the thread runs once
-        the loader lock is free, before the client's first Battle.net connection."""
+        the loader lock is free, before the client's first Battle.net connection. The probe
+        (--probe) the same way."""
+        self._load_dll(RELAY_DLL, "relay")
+        if getattr(self.args, "probe", None):
+            self._load_dll(PROBE_DLL, "probe")
+
+    def _load_dll(self, dll, what):
         dbg = self.dbg
-        path = (str(RELAY_DLL) + "\0").encode("utf-16-le")
+        path = (str(dll) + "\0").encode("utf-16-le")
         remote = w.VirtualAllocEx(dbg.process, None, len(path), w.MEM_COMMIT | w.MEM_RESERVE, w.PAGE_READWRITE)
         if not remote:
-            self.log(f"[owdbg] relay: VirtualAllocEx failed {w.last_error()}")
+            self.log(f"[owdbg] {what}: VirtualAllocEx failed {w.last_error()}")
             return
         dbg.write(remote, path)
         k32 = w.GetModuleHandleW("kernel32.dll")
         ours = dbg.module("kernel32.dll")
         if ours is None or ours.base != k32:
-            self.log("[owdbg] relay: kernel32 base differs in the target; not injecting")
+            self.log(f"[owdbg] {what}: kernel32 base differs in the target; not injecting")
             return
         loader = w.GetProcAddress(k32, b"LoadLibraryW")
         tid = wt.DWORD()
         h = w.CreateRemoteThread(dbg.process, None, 0, loader, remote, 0, ctypes.byref(tid))
         if not h:
-            self.log(f"[owdbg] relay: CreateRemoteThread failed {w.last_error()}")
+            self.log(f"[owdbg] {what}: CreateRemoteThread failed {w.last_error()}")
             return
         w.CloseHandle(h)
-        self._relay_thread = tid.value
-        self.log(f"[owdbg] relay: LoadLibraryW thread {tid.value} created")
+        if what == "relay":
+            self._relay_thread = tid.value
+        self.log(f"[owdbg] {what}: LoadLibraryW thread {tid.value} created")
 
     def _relay_loaded(self, mod):
         if mod.path and os.path.basename(mod.path).lower() == RELAY_DLL.name.lower():

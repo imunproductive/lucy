@@ -114,6 +114,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             StateKind::Status => {
                 self.world.set_status(self.site(id, node), None);
             }
+            StateKind::ProjectileSpeed => {
+                self.world.set_projectile_speed(self.site(id, node), None);
+            }
             StateKind::CombatMod => {
                 self.world.combat_mod(self.site(id, node), None);
             }

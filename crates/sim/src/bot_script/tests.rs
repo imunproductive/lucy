@@ -681,7 +681,7 @@ fn a_firing_bots_rocket_hits_the_player_in_front_of_it() {
             shapes: None,
         },
         dead: false,
-        hurt: false,
+        health: None,
         tags: None,
         ai: None,
         dealt: Vec::new(),
@@ -784,7 +784,7 @@ fn nano_boost_halves_the_damage_a_bot_takes_and_boosts_what_it_deals() {
             shapes: None,
         },
         dead: false,
-        hurt: false,
+        health: None,
         tags: None,
         ai: None,
         dealt: Vec::new(),
@@ -805,6 +805,7 @@ fn nano_boost_halves_the_damage_a_bot_takes_and_boosts_what_it_deals() {
                 node: None,
             },
             instigator,
+            source: None,
             target,
             amount: 40.0,
             heal: false,
@@ -888,6 +889,7 @@ fn a_bots_target_tags_go_out_as_its_component_76() {
         radius: 0.4,
         yaw: 0.0,
         tags: None,
+        health: None,
         spawned: Vec::new(),
     };
     let candidates = [body(target, 1, bot.position), body(ANA, 0, [0.0; 3])];
@@ -945,4 +947,99 @@ fn a_bots_target_tags_go_out_as_its_component_76() {
             .iter()
             .all(|update| tags_of(update).is_none())
     );
+}
+
+/// Moira's damaging Biotic Orb puts `02D5.053` (`002A` = 50) on an enemy
+/// bot, the orb its instigator; the bot runs the aura's graph `1101`
+/// (from its own bundle), whose ModifyHealth hurts it by `#499` = 50 a
+/// second, dealt by Moira (`#42` = `STU_2B2E2F6D(#40, 0)`, the orb's
+/// shooter, which the bot's world reads from her listed orb) with the orb
+/// as its source (`m_7B93233C` = `#40`). The bot takes an aura of tick T
+/// at the end of its frame T − 1 (`BotBody::change_aura`), and the rate
+/// applies each frame its share of the time since (`vm/health.rs`); a bot
+/// runs every frame while the rate does (`BotBody::due_by`). So by tick
+/// T + 125 it has dealt 126 frames of 16 ms at 50 a second, 100.8, and
+/// once the orb takes its aura off, nothing more.
+#[test]
+#[ignore = "requires the derived 104319 data with its bot graph bundle"]
+fn the_damaging_orbs_aura_hurts_a_bot_for_its_thrower() {
+    use orpheus_script::{
+        vm::{AuraChange, AuraSource, OwnedEntity, TargetCandidate},
+        wire::Value,
+    };
+
+    const DAMAGE_ORB_AURA: u64 = 0x04a0_0000_0000_02d5;
+    const MOIRA: u32 = OWNER | 1;
+    const ORB: u32 = 0xa00f_0000;
+    let mut scene = practice_scene();
+    let mut tick = FIRST_TICK;
+    while !scene.bot_scripts_ready() {
+        scene.step_bots(tick);
+        tick += 1;
+    }
+    let bot = scene.bots().iter().find(|bot| bot.spawn.team == 1).unwrap();
+    let target = bot.entity;
+    let body = |entity, team, feet| TargetCandidate {
+        entity,
+        team: Some(team),
+        dead: false,
+        controller: Some(entity & !0xff),
+        player: Some(entity & !0xff),
+        ai: false,
+        ai_control: None,
+        feet,
+        height: 1.8,
+        radius: 0.4,
+        yaw: 0.0,
+        tags: None,
+        health: None,
+        spawned: Vec::new(),
+    };
+    let mut moira = body(MOIRA, 0, [0.0; 3]);
+    moira.spawned = vec![OwnedEntity {
+        entity: ORB,
+        projectile: true,
+    }];
+    scene.set_bot_target_candidates(&[body(target, 1, bot.position), moira]);
+    let source = AuraSource {
+        entity: ORB,
+        instance: 1,
+        state: 1,
+        activation: 1,
+    };
+    tick += 1;
+    scene.change_bot_aura(
+        &AuraChange::Apply {
+            source: Some(source),
+            target,
+            aura: DAMAGE_ORB_AURA,
+            instigator: ORB,
+            creator: ORB,
+            parameters: vec![(0x0a40_0000_0000_002a, Value::Integer(50))],
+        },
+        tick,
+    );
+    assert!(scene.take_bot_health_changes().is_empty());
+    let mut dealt = 0.0;
+    for _ in 0..125 {
+        tick += 1;
+        scene.advance_live_bots(tick);
+        let changes = scene.take_bot_health_changes();
+        assert!(!changes.is_empty(), "a share every tick");
+        for change in changes {
+            assert_eq!(
+                (change.target, change.instigator, change.source, change.heal),
+                (target, MOIRA, Some(ORB), false),
+                "{change:?}"
+            );
+            dealt += change.amount;
+        }
+    }
+    assert!((dealt - 100.8_f64).abs() < 1e-9, "{dealt}");
+    scene.change_bot_aura(&AuraChange::Remove { source, target }, tick);
+    for _ in 0..10 {
+        tick += 1;
+        scene.advance_live_bots(tick);
+    }
+    assert!(scene.take_bot_health_changes().is_empty());
 }

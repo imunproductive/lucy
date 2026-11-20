@@ -77,6 +77,9 @@ pub struct ProjectileFlight {
     passes_bodies: bool,
     /// The surfaces it bounced off so far.
     bounces: u32,
+    /// The scale of its speed its entity's graphs set
+    /// ([`ProjectileFlight::set_speed_scale`]); 1 otherwise.
+    speed_scale: f64,
 }
 
 /// A projectile that stuck: to a body (`entity`) at `offset` from its feet,
@@ -163,6 +166,7 @@ impl ProjectileFlight {
             launched: None,
             passes_bodies: false,
             bounces: 0,
+            speed_scale: 1.0,
         })
     }
 
@@ -199,6 +203,17 @@ impl ProjectileFlight {
         self.struck
     }
 
+    /// Where it is now.
+    pub fn position(&self) -> Vec3 {
+        self.position
+    }
+
+    /// Its entity definition (`m_projectileEntity`), if the volley names
+    /// one.
+    pub fn definition(&self) -> Option<u64> {
+        self.ballistics.definition
+    }
+
     /// The direct hit of the projectile, if it has one.
     pub fn direct(&self) -> Option<HitDefinition> {
         self.ballistics.direct
@@ -214,6 +229,16 @@ impl ProjectileFlight {
     /// them.
     pub fn pass_bodies(&mut self) {
         self.passes_bodies = true;
+    }
+
+    /// Its entity's graphs scale its speed (`STU_D3F71FCF`: a Biotic Orb
+    /// flies at 0.275 while it has targets, assumption): its next steps
+    /// fly that much slower; its bounces keep their own speed. Its
+    /// lifetime runs as before.
+    pub fn set_speed_scale(&mut self, scale: f64) {
+        if scale.is_finite() && scale > 0.0 {
+            self.speed_scale = scale;
+        }
     }
 
     /// Advance the elapsed portion of a tick, even when it ends inside the
@@ -281,7 +306,9 @@ impl ProjectileFlight {
                     None
                 };
                 let (distance, seconds) = match hit {
-                    Some((distance, _)) if gravity == 0.0 => (distance, distance / self.speed),
+                    Some((distance, _)) if gravity == 0.0 => {
+                        (distance, distance / (self.speed * self.speed_scale))
+                    }
                     Some((distance, _)) => (distance, left * distance / reach),
                     None => (reach, left),
                 };
@@ -320,10 +347,11 @@ impl ProjectileFlight {
     /// chord of its arc; its direction and length.
     fn chord(&self, seconds: f64) -> (Vec3, f64) {
         let gravity = self.ballistics.gravity;
+        let speed = self.speed * self.speed_scale;
         if gravity == 0.0 {
-            return (self.direction, self.speed * seconds);
+            return (self.direction, speed * seconds);
         }
-        let mut chord = self.direction.map(|part| part * self.speed * seconds);
+        let mut chord = self.direction.map(|part| part * speed * seconds);
         chord[1] -= (self.fall + 0.5 * gravity * seconds) * seconds;
         let length = chord.iter().map(|part| part * part).sum::<f64>().sqrt();
         (

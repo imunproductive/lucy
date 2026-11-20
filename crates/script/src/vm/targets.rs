@@ -1190,7 +1190,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             natives: Vec::new(),
             assumed: Vec::new(),
         };
-        let result = expr::evaluate(config, &mut context);
+        let result = expr::evaluate_in(config, node.configs(), &mut context);
         for (class, answer) in context.assumed {
             self.assume(site, &class, answer);
         }

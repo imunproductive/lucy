@@ -272,10 +272,26 @@ pub struct TargetCandidate {
     /// tag its own graphs add or suppress (only the player's own body
     /// knows those).
     pub tags: Option<Arc<BTreeSet<u64>>>,
+    /// Its pools' health and their maximum, every kind together: what
+    /// `STU_32E6E4D8` and `STU_7D7D2470` read of it from another entity's
+    /// graph (the healing Biotic Orb `10FF` st0 finds only hurt allies).
+    /// None: unknown.
+    pub health: Option<[f64; 2]>,
     /// The spawned entities the match runs whose owner is its controller
     /// (its Biotic Fields: [`crate::placed::MapEntityWorld::spawn`]), for
-    /// the owner relation.
-    pub spawned: Vec<u32>,
+    /// the owner relation, and the projectiles among them that this body
+    /// shot (its Biotic Orbs), for the shooter relation.
+    pub spawned: Vec<OwnedEntity>,
+}
+
+/// A spawned entity a listed body's controller owns
+/// ([`TargetCandidate::spawned`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OwnedEntity {
+    pub entity: u32,
+    /// A projectile the body shot (component 50, whose `+0x18` names the
+    /// body); else an entity it left (the Biotic Field).
+    pub projectile: bool,
 }
 
 /// Where a listed body was as the searcher's player saw it, rewound to his
@@ -397,7 +413,9 @@ impl TargetCandidate {
 /// controller, which also possesses it now; a listed controller or player
 /// is its own (it has component 44) and possesses its body; a spawned
 /// entity a body lists ([`TargetCandidate::spawned`]) is owned by that
-/// body's controller.
+/// body's controller, and a projectile among them was shot by that body,
+/// while a listed body, controller or spawned entity that isn't a
+/// projectile has no shooter (no component 50).
 /// Assumption: the owner (component 72) of an entity the game spawns for
 /// a hero is his controller, as the Biotic Field's aura `0B3C` heals for
 /// `STU_0AC15F78(STU_F76C486C(#40))`, the body the field's owner
@@ -417,6 +435,14 @@ pub fn listed_relation(
             .iter()
             .find(|body| body.controller == Some(entity) || body.player == Some(entity))
     };
+    let owner_of = || {
+        bodies.iter().find_map(|body| {
+            body.spawned
+                .iter()
+                .find(|owned| owned.entity == entity)
+                .map(|owned| (body, owned.projectile))
+        })
+    };
     match relation {
         EntityRelation::Controller => bodies
             .iter()
@@ -426,12 +452,17 @@ pub fn listed_relation(
             bodies.iter().find(|body| body.entity == entity)?.controller
         }
         EntityRelation::PossessedBody => by_controller().map(|body| body.entity),
-        EntityRelation::Owner => {
-            bodies
-                .iter()
-                .find(|body| body.spawned.contains(&entity))?
-                .controller
-        }
+        EntityRelation::Owner => owner_of()?.0.controller,
+        EntityRelation::Shooter => match owner_of() {
+            Some((body, true)) => Some(body.entity),
+            Some((_, false)) => Some(0),
+            None if bodies.iter().any(|body| body.entity == entity)
+                || by_controller().is_some() =>
+            {
+                Some(0)
+            }
+            None => None,
+        },
         _ => None,
     }
 }
@@ -558,6 +589,26 @@ pub trait World {
     /// A missing kind reads the total across all pools.
     fn body_health(&self, _site: Site, _kind: Option<PoolKind>, _maximum: bool) -> Option<f64> {
         None
+    }
+
+    /// Another body's health or its maximum, every kind together: a listed
+    /// body's ([`TargetCandidate::health`]). None: unknown, or a pool kind.
+    fn listed_health(
+        &self,
+        site: Site,
+        entity: u32,
+        kind: Option<PoolKind>,
+        maximum: bool,
+    ) -> Option<f64> {
+        if kind.is_some() {
+            return None;
+        }
+        let [current, most] = self
+            .target_candidates(site)?
+            .iter()
+            .find(|body| body.entity == entity)?
+            .health?;
+        Some(if maximum { most } else { current })
     }
 
     fn add_health_pool(
@@ -884,6 +935,13 @@ pub trait World {
         false
     }
 
+    /// A projectile's speed scale state (`STU_D3F71FCF`) began with its
+    /// scale (Some) or ended (None, back to 1). False: this entity is no
+    /// projectile the world flies.
+    fn set_projectile_speed(&mut self, _site: Site, _scale: Option<f64>) -> bool {
+        false
+    }
+
     /// A `CombatModFilter` state began with its modifier (Some) or ended
     /// (None). False: this world keeps none.
     fn combat_mod(&mut self, _site: Site, _modifier: Option<CombatMod>) -> bool {
@@ -1128,6 +1186,9 @@ pub enum StateKind {
     },
     /// A status on the body while active (`STU_9028E035`, `vm/statuses.rs`).
     Status,
+    /// A projectile's speed scale while active (`STU_D3F71FCF`,
+    /// `vm/statuses.rs`).
+    ProjectileSpeed,
     /// A combat modifier on the body while active (`CombatModFilter`).
     CombatMod,
     /// An assist credit while active, and for its linger after
@@ -1383,6 +1444,92 @@ pub struct Instance {
     /// A scope instance's link to the scope state that opened it on
     /// another entity (`vm/scopes.rs`).
     pub scope: Option<ScopeLink>,
+    /// Moved on by every mutable borrow through [`Instances`].
+    revision: u64,
+}
+
+impl Instance {
+    /// Its content's revision in its snapshot: equal for two borrows
+    /// between which nothing could change it. A projection of it holds
+    /// while this and the snapshot's outputs for it (timers, links) stay
+    /// ([`Instances::touch`]).
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+}
+
+/// A snapshot's instances by id. Each mutable borrow of an instance moves
+/// that instance's revision on ([`Instance::revision`]), so no write can
+/// leave it behind; reads go through the map ([`std::ops::Deref`]).
+#[derive(Debug, Default)]
+pub struct Instances {
+    map: IndexMap<u16, Instance>,
+    /// The last revision given out.
+    writes: u64,
+}
+
+impl Instances {
+    fn next_revision(&mut self) -> u64 {
+        self.writes += 1;
+        self.writes
+    }
+
+    pub fn get_mut(&mut self, id: &u16) -> Option<&mut Instance> {
+        let revision = self.next_revision();
+        let instance = self.map.get_mut(id)?;
+        instance.revision = revision;
+        Some(instance)
+    }
+
+    pub fn insert(&mut self, id: u16, mut instance: Instance) -> Option<Instance> {
+        instance.revision = self.next_revision();
+        self.map.insert(id, instance)
+    }
+
+    pub fn shift_remove(&mut self, id: &u16) -> Option<Instance> {
+        self.map.shift_remove(id)
+    }
+
+    pub fn clear(&mut self) {
+        self.map.clear();
+    }
+
+    /// Move an instance's revision on for a change kept outside it (its
+    /// pending timers, its variables' links).
+    pub(crate) fn touch(&mut self, id: u16) {
+        self.get_mut(&id);
+    }
+}
+
+impl std::ops::Deref for Instances {
+    type Target = IndexMap<u16, Instance>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl std::ops::Index<&u16> for Instances {
+    type Output = Instance;
+
+    fn index(&self, id: &u16) -> &Instance {
+        &self.map[id]
+    }
+}
+
+impl std::ops::IndexMut<&u16> for Instances {
+    fn index_mut(&mut self, id: &u16) -> &mut Instance {
+        self.get_mut(id).expect("IndexMap: key not found")
+    }
+}
+
+impl<'a> IntoIterator for &'a Instances {
+    type Item = (&'a u16, &'a Instance);
+    type IntoIter = indexmap::map::Iter<'a, u16, Instance>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.map.iter()
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -1418,7 +1565,7 @@ pub struct Assumption {
 pub struct Snapshot {
     pub entity: u32,
     pub variables: Variables,
-    pub instances: IndexMap<u16, Instance>,
+    pub instances: Instances,
     /// Pending state timers and finishes in their per-instance execution order.
     pub pending_timers: IndexMap<u16, Vec<PendingTimer>>,
     /// Stack links by (instance or zero for the entity, variable).
@@ -1456,6 +1603,13 @@ impl Revision {
             component: COMPONENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             writes: 0,
         }
+    }
+
+    /// Whether both are revisions of one component's snapshot, whose
+    /// instances' revisions ([`Instance::revision`]) count on from each
+    /// other.
+    pub fn same_component(self, other: Self) -> bool {
+        self.component == other.component
     }
 }
 
@@ -1717,8 +1871,8 @@ impl Component {
         config: &Json,
         world: &mut impl World,
     ) -> Result<Value, EvalError> {
-        self.evaluate_in_state(instance, raw_state, None, world, |_, context| {
-            expr::evaluate(config, context)
+        self.evaluate_in_state(instance, raw_state, None, world, |node, context| {
+            expr::evaluate_in(config, node.configs(), context)
         })
     }
 
@@ -2081,6 +2235,18 @@ impl Component {
     /// When the next queued event is due.
     pub fn next_due_ms(&self) -> Option<u64> {
         self.machine.queues.next_due()
+    }
+
+    /// Whether a health change state runs (`STUStatescriptStateModifyHealth`,
+    /// `vm/health.rs`: an aura's rate, the damaging Biotic Orb's `1101`):
+    /// the client applies it at every frame.
+    pub fn changes_health(&self) -> bool {
+        self.machine
+            .snapshot
+            .instances
+            .values()
+            .flat_map(|instance| instance.states.values())
+            .any(|state| state.active && matches!(state.kind, StateKind::ModifyHealth { .. }))
     }
 
     /// The active mover behaviour states' requests, for the mover.
@@ -2647,6 +2813,7 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
                 variables,
                 states: IndexMap::new(),
                 scope,
+                revision: 0,
             },
         );
         for position in definition.entries.iter().flatten() {
@@ -3368,9 +3535,9 @@ impl<'graph, 'world, 'machine, W: World> Vm<'graph, 'world, 'machine, W> {
             assumed: Vec::new(),
         };
         let result = if assignment {
-            expr::evaluate_value(config, &mut context)
+            expr::evaluate_value_in(config, node.configs(), &mut context)
         } else {
-            expr::evaluate(config, &mut context)
+            expr::evaluate_in(config, node.configs(), &mut context)
         };
         let reads = context.reads;
         let foreign_reads = context.foreign_reads;
