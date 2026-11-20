@@ -1659,6 +1659,21 @@ impl Evaluator<'_> {
             // Local Player (`Eval_STU_8985E00A`: the client's own player
             // entity): the server has none.
             "STU_8985E00A" => Value::Null,
+            // A console variable's value by its hash `m_74A2248F` (slot 5
+            // `sub_7FF789C04A60`: the getters of the client's 1601 console
+            // variables, a table at 0x7FF78B574A90 by hash; `0CBB` rid122
+            // reads `0FE1E03E`, DevFeatures). A hash not in that table
+            // leaves the evaluate's value as it starts, integer 0
+            // (`sub_7FF78AA88550`, type 2), a value. Custom String `5C14`
+            // in `1B4A` tests `A3AAEC43`, which no 1.74 console variable
+            // has (`owsearch cvar`, the table), so it writes its text. The
+            // server knows no other console variable's value.
+            "STU_A753DC79"
+                if child(config, "m_74A2248F").as_i64().map(|hash| hash as u32)
+                    == Some(0xA3AA_EC43) =>
+            {
+                Value::Integer(0)
+            }
             // A copy of a reevaluated Workshop parameter (Create HUD Text's
             // scope `1D8A` rid6 and five more Create graphs). Server-only:
             // the client's evaluate is the base config's `xor al, al`; the

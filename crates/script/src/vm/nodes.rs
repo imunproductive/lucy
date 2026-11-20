@@ -70,6 +70,13 @@ const SERVER_NO_OPS: &[&str] = &[
     // index; the server has no voice playing, and its frames don't pulse
     // remote actions outside the wheel's graphs yet.
     "STU_3D419B63",
+    // The Workshop Inspector's server-only nodes (no client registration):
+    // Enable/Disable Inspector Recording `2425`/`2426` (`STU_B80EB51C`, its
+    // bool `m_9A9E72EC`) and Log To Inspector `2E80` (`STU_61975068`). The
+    // retail server recorded for the Inspector; ORPHEUS keeps no Inspector
+    // (`docs/dev/loose-ends.md`), so they only go on.
+    "STU_B80EB51C",
+    "STU_61975068",
 ];
 
 /// Unnamed actions the server runs as no-ops without knowing what they do,

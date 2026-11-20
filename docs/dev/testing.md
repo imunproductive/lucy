@@ -55,7 +55,7 @@ Do not run the full game-install suites (`just test-game`, `just test-slow`) for
 | `just test-affected <install>` | every test, ignored ones included, of the crates `tools/affected.py` names, without `slow_` and `serial_` | An agent's own check before reporting |
 | `just test-assets <install> <pack>` | ignored `matches_the_pack` tests of `orpheus-assets` | Derivations against a prepared pack |
 | `just test-datatool <install> <dump>` | ignored `datatool` tests of `orpheus-stu` | The asset reader against a DataTool export |
-| `just test-dpk <install> <archive>` | ignored `dpk_archive` tests of `orpheus-workshop` | The Workshop parser and engine over the Doomfist parkour scripts |
+| `just test-dpk <install> <archive>` | ignored `dpk_archive` tests of `orpheus-workshop` and `orpheus-sim`, optimised (`gametest`) | The Workshop parser and engine over the Doomfist parkour scripts, and C32S2 in a simulated match |
 | `just test-windows` | ignored tests of `orpheus-launcher` | Loads the relay DLL into a stand-in process |
 
 ## Test tiers
