@@ -949,11 +949,13 @@ impl BotBody {
     }
 
     /// Whether the live body has something to run by the end of `frame`: a
-    /// graph event due (its waits after a hit), or a state that runs each
-    /// frame (an aura's health rate: the damaging Biotic Orb's `1101`).
+    /// graph event due (its waits after a hit), or a health change that
+    /// applies each frame (an aura's rate: the damaging Biotic Orb's
+    /// `1101`). Other per-frame states don't make it run: an idle bot runs
+    /// only for its events, which its hit reactions' timing depends on.
     pub fn due_by(&self, frame: u32) -> bool {
         !self.component.owner_dead()
-            && (self.component.ticking()
+            && (self.component.changes_health()
                 || self
                     .component
                     .next_due_ms()

@@ -2144,14 +2144,16 @@ impl Component {
         self.machine.queues.next_due()
     }
 
-    /// Whether a state runs each frame (a health rate, a target search):
-    /// the client runs it at every frame, so the frames must not be
-    /// skipped.
-    pub fn ticking(&self) -> bool {
+    /// Whether a health change state runs (`STUStatescriptStateModifyHealth`,
+    /// `vm/health.rs`: an aura's rate, the damaging Biotic Orb's `1101`):
+    /// the client applies it at every frame.
+    pub fn changes_health(&self) -> bool {
         self.machine
-            .ticking
+            .snapshot
+            .instances
             .values()
-            .any(|states| !states.is_empty())
+            .flat_map(|instance| instance.states.values())
+            .any(|state| state.active && matches!(state.kind, StateKind::ModifyHealth { .. }))
     }
 
     /// The active mover behaviour states' requests, for the mover.
