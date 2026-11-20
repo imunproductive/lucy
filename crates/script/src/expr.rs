@@ -26,6 +26,11 @@ use crate::{
 };
 use orpheus_core::guid::parse_guid;
 
+mod compiled;
+
+pub(crate) use compiled::ConfigTable;
+use compiled::{Config, Program};
+
 /// The tolerance of an expression's comparisons (a float's epsilon).
 pub const EPSILON: f64 = 1.192_092_895_507_812_5e-5;
 const MAX_CONFIG_DEPTH: usize = 64;
@@ -364,7 +369,7 @@ pub struct EmptyContext;
 
 impl Context for EmptyContext {}
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EvalError {
     UnsupportedConfig(String),
     UnsupportedOpcode { opcode: u8, offset: usize },
@@ -419,11 +424,17 @@ pub fn evaluate_with_budget(
             "instruction budget must be positive",
         ));
     }
-    Evaluator {
-        limit: max_steps,
-        steps: 0,
-    }
-    .config(config, context, 0)
+    Evaluator::new(max_steps, None).config(config, context, 0)
+}
+
+/// [`evaluate`] of a config in a node's fields, with the node's compiled
+/// configs ([`ConfigTable`]).
+pub(crate) fn evaluate_in(
+    config: &Json,
+    table: &ConfigTable,
+    context: &mut impl Context,
+) -> Result<Value, EvalError> {
+    Evaluator::new(MAX_EXPRESSION_STEPS, Some(table)).config(config, context, 0)
 }
 
 /// The config list, `STU_06610EBC`: an ordered group of configs.
@@ -435,11 +446,17 @@ pub(crate) const CONFIG_LIST: &str = "STU_06610EBC";
 /// does. From leafall903/ORPHEUS (MIT), commit c239a84
 /// (`docs/VARIABLE_ASSIGNMENTS.txt`, `play.evaluate_value`).
 pub fn evaluate_value(config: &Json, context: &mut impl Context) -> Result<Value, EvalError> {
-    Evaluator {
-        limit: MAX_EXPRESSION_STEPS,
-        steps: 0,
-    }
-    .value(config, context, 0)
+    Evaluator::new(MAX_EXPRESSION_STEPS, None).value(config, context, 0)
+}
+
+/// [`evaluate_value`] of a config in a node's fields, with the node's
+/// compiled configs ([`ConfigTable`]).
+pub(crate) fn evaluate_value_in(
+    config: &Json,
+    table: &ConfigTable,
+    context: &mut impl Context,
+) -> Result<Value, EvalError> {
+    Evaluator::new(MAX_EXPRESSION_STEPS, Some(table)).value(config, context, 0)
 }
 
 /// The configs of a config list in order, nested lists opened, missing
@@ -1171,12 +1188,22 @@ fn resource_field(class: &str) -> Option<&'static str> {
     }
 }
 
-struct Evaluator {
+struct Evaluator<'t> {
     limit: usize,
     steps: usize,
+    /// The compiled configs of the node whose fields are evaluated.
+    table: Option<&'t ConfigTable>,
 }
 
-impl Evaluator {
+impl<'t> Evaluator<'t> {
+    fn new(limit: usize, table: Option<&'t ConfigTable>) -> Self {
+        Self {
+            limit,
+            steps: 0,
+            table,
+        }
+    }
+
     fn config(
         &mut self,
         config: &Json,
@@ -1335,7 +1362,7 @@ pub(crate) fn filter_tag_list(field: &Json) -> Option<Vec<u64>> {
     Some(tags)
 }
 
-impl Evaluator {
+impl Evaluator<'_> {
     fn known_config(
         &mut self,
         config: &Json,
@@ -1356,6 +1383,13 @@ impl Evaluator {
             Json::Array(_) => return Err(EvalError::UnsupportedConfig("untyped array".into())),
             Json::Object(fields) => fields,
         };
+        if let Some(compiled) = self.table.and_then(|table| table.get(config)) {
+            return match compiled {
+                Config::Value(value) => Ok(value.clone()),
+                Config::Dynamic(variable) => Ok(context.variable(*variable)),
+                Config::Expression(program) => self.expression(program, config, context, depth + 1),
+            };
+        }
         let class = class(config).unwrap_or("?");
         let value = child(config, "m_value");
         let nested = depth + 1;
@@ -1402,7 +1436,7 @@ impl Evaluator {
                 Value::Vector(parts)
             }
             "STU_919FD47C" | "STUConfigVarExpression" => {
-                return self.expression(config, context, nested);
+                return self.expression(&Program::compile(config)?, config, context, nested);
             }
             "STU_B70476F3" => literal_asset(config, class, "m_548E5344", 0x0a90)
                 .ok_or_else(|| EvalError::UnsupportedConfig(class.into()))?,
@@ -2971,14 +3005,15 @@ fn filter_facts(
     Ok(has_fact.then_some(true))
 }
 
-impl Evaluator {
+impl Evaluator<'_> {
     fn expression(
         &mut self,
+        program: &Program,
         config: &Json,
         context: &mut impl Context,
         depth: usize,
     ) -> Result<Value, EvalError> {
-        match self.known_expression(config, context, depth) {
+        match self.known_expression(program, config, context, depth) {
             Err(EvalError::UnsupportedOpcode { opcode, .. })
                 if context.tolerate_unknown(&format!("expression opcode {opcode}")) =>
             {
@@ -2988,21 +3023,19 @@ impl Evaluator {
         }
     }
 
+    /// Run `program`, the compiled bytecode of the expression `config`.
     fn known_expression(
         &mut self,
+        program: &Program,
         config: &Json,
         context: &mut impl Context,
         depth: usize,
     ) -> Result<Value, EvalError> {
-        let Expression {
-            code,
-            dynamics,
-            floats,
-            configs,
-        } = Expression::read(config)?;
+        // Read when a config push first runs.
+        let mut configs = None;
         let mut pc = 0;
         let mut stack = Vec::new();
-        while pc < code.len() {
+        while pc < program.steps.len() {
             if self.steps >= self.limit {
                 return Err(EvalError::BudgetExceeded {
                     offset: pc,
@@ -3010,21 +3043,13 @@ impl Evaluator {
                 });
             }
             self.steps += 1;
-            let opcode = byte(&code[pc], pc)?;
-            let width = operand_count(opcode);
-            let next = pc + 1 + width;
-            let operands = code
-                .get(pc + 1..next)
-                .ok_or_else(|| malformed(pc, "truncated opcode"))?;
-            let mut args = [0; 2];
-            for (index, (arg, value)) in args.iter_mut().zip(operands).enumerate() {
-                *arg = byte(value, pc + 1 + index)?;
-            }
+            let step = program.steps[pc].as_ref().map_err(EvalError::clone)?;
+            let (opcode, args, next) = (step.opcode, step.args, step.next);
             let arg = args[0];
             let value = match opcode {
                 0 => break,
                 1 => {
-                    pc = jump(pc, arg, code.len())?;
+                    pc = step.jump()?;
                     continue;
                 }
                 2 | 3 => {
@@ -3032,7 +3057,7 @@ impl Evaluator {
                         .last()
                         .ok_or_else(|| malformed(pc, "expression stack underflow"))?;
                     if truthy(top) != (opcode == 2) {
-                        pc = jump(pc, arg, code.len())?;
+                        pc = step.jump()?;
                     } else {
                         stack.pop();
                         pc = next;
@@ -3042,22 +3067,15 @@ impl Evaluator {
                 4 | 5 => {
                     let flag = truthy(&pop(&mut stack, pc)?);
                     pc = if flag == (opcode == 5) {
-                        jump(pc, arg, code.len())?
+                        step.jump()?
                     } else {
                         next
                     };
                     continue;
                 }
-                6 => {
-                    let value = table(floats, arg, pc)?;
-                    if value.is_null() {
-                        return Err(malformed(pc, "expected a float constant"));
-                    }
-                    Value::Float(rounded(number(value)?))
-                }
-                7 => Value::Integer(i64::from(identifier(table(dynamics, arg, pc)?)?)),
-                8 | 9 => context.variable(stack_var(dynamics, arg, pc)?),
-                10 => context.parent_variable(arg, stack_var(dynamics, args[1], pc)?),
+                6 | 7 => step.value()?,
+                8 | 9 => context.variable(step.variable()?),
+                10 => context.parent_variable(arg, step.variable()?),
                 11 | 12 => {
                     let scope = if opcode == 11 {
                         Scope::Instance
@@ -3068,8 +3086,12 @@ impl Evaluator {
                         context.parent_variable(arg, variable)
                     })
                 }
-                13 => context.parameter(identifier(table(dynamics, arg, pc)?)?),
+                13 => context.parameter(step.parameter()?),
                 14 => {
+                    let configs = *configs.get_or_insert_with(|| {
+                        array_field(config, "m_configVars")
+                            .expect("read when the expression compiled")
+                    });
                     let value = configs.get(usize::from(arg)).unwrap_or(&Json::Null);
                     self.config(value, context, depth)?
                 }
@@ -3296,22 +3318,24 @@ impl Evaluator {
     }
 }
 
+/// An expression's bytecode tables; its config table (`m_configVars`) is
+/// checked too, and read when a config push runs.
 struct Expression<'a> {
     code: &'a [Json],
     dynamics: &'a [Json],
     floats: &'a [Json],
-    configs: &'a [Json],
 }
 
 impl<'a> Expression<'a> {
     fn read(config: &'a Json) -> Result<Self, EvalError> {
         let data = child(config, "m_expression");
-        Ok(Self {
+        let parts = Self {
             code: array_field(data, "m_opcodes")?,
             dynamics: array_field(data, "m_dynamicVars")?,
             floats: array_field(data, "m_D99EF254")?,
-            configs: array_field(config, "m_configVars")?,
-        })
+        };
+        array_field(config, "m_configVars")?;
+        Ok(parts)
     }
 }
 
