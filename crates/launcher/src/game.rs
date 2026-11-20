@@ -105,8 +105,17 @@ fn plain(path: &str) -> &str {
     }
 }
 
+/// The game itself, or a copy of it given by its path and named
+/// `Overwatch.<name>.exe`: the research's decrypted `Overwatch.debug.exe`,
+/// whose code the probe's hooks can patch.
 fn is_game(path: &Path) -> bool {
-    file_name_is(path, GAME_EXE) && path.is_file()
+    let copy = path
+        .file_name()
+        .and_then(|file| file.to_str())
+        .map(str::to_ascii_lowercase)
+        .and_then(|file| Some(file.strip_prefix("overwatch.")?.strip_suffix(".exe")?.len()))
+        .is_some_and(|middle| middle > 0);
+    (file_name_is(path, GAME_EXE) || copy) && path.is_file()
 }
 
 fn file_name_is(path: &Path, name: &str) -> bool {
@@ -250,6 +259,10 @@ mod tests {
             );
         }
         assert_eq!(resolve_game(&install.path().join("missing.exe")), None);
+        let debug = retail.join("Overwatch.debug.exe");
+        fs::write(&debug, b"").unwrap();
+        assert_eq!(resolve_game(&debug), plain_canonical(&debug));
+        assert_eq!(resolve_game(install.path()), Some(expected.clone()));
     }
 
     #[test]

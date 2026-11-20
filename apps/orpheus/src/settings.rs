@@ -165,6 +165,17 @@ pub struct ModeArgs {
     /// Seconds to wait for the game to be ready for the relay.
     #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = parse_timeout)]
     pub timeout: Duration,
+    /// Also load owprobe.dll, the client probe `tools/owprobe` talks to on
+    /// 127.0.0.1:PORT [default: 21150]. A research tool: its hooks need the
+    /// decrypted Overwatch.debug.exe as --game (docs/dev/client-tools.md).
+    #[arg(
+        long,
+        value_name = "PORT",
+        num_args = 0..=1,
+        default_missing_value = "21150",
+        env = "ORPHEUS_PROBE"
+    )]
+    pub probe: Option<u16>,
     /// Arguments passed to Overwatch.exe as they are, after `--` (for example
     /// `-- --tank_Console`). They come after the ones orpheus passes itself.
     #[arg(last = true, value_name = "GAME ARGUMENTS")]
