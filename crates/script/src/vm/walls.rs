@@ -77,7 +77,7 @@ impl<W: World> Vm<'_, '_, '_, W> {
     }
 
     /// A bool field; false when unset or not a value.
-    fn flag_or(&mut self, id: u16, node: &Node, name: &str) -> bool {
+    pub(super) fn flag_or(&mut self, id: u16, node: &Node, name: &str) -> bool {
         let config = field(&node.fields, name);
         !config.is_null()
             && self

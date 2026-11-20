@@ -30,6 +30,7 @@ use std::sync::Arc;
 use crate::{
     contact::body::CharacterBody,
     contact::cache::CapsulePose,
+    contact::gjk::PointSetSize,
     contact::hull::HullContactError,
     contact::math::{Vec3, dot, scale},
     contact::solver::clip_velocity,

@@ -1149,3 +1149,94 @@ fn doomfists_airborne_slam_flies_at_the_ground_ahead_and_stops_at_a_step_edge() 
     assert!(horizontal(start, point) > 3.0, "{start:?} -> {point:?}");
     assert!(aborted, "the flight stops at the step's edge");
 }
+
+/// The airborne slam's flight (`0B27` st9's `MoveTo`: 25 m/s, acceleration
+/// 100, lateral time 0, 0.5 m in 0.1 s or stuck, exit limit 0 held at the
+/// end) as Doomfist's client flew it in game session s4
+/// (`refs/reports/Doomfist.md` §12; the client's movement state after each
+/// command tick, mover `+0x10B0`): from his feet at frame 8830 toward the
+/// point his landing search picked, 0.5269 m a move along the line, until
+/// the capsule met the edge of the step beside the point (8852, its 21st
+/// move: his states labelled 8840 and 8842 are one move apart) and came to
+/// rest in the corner at 8853, 0.68 m from the point (the server's flight
+/// stopped at the same spot to the millimetre).
+#[test]
+#[ignore = "requires the derived 104319 data and the Practice Range collision"]
+fn doomfists_airborne_slam_flight_stops_at_the_step_edge_where_his_client_did() {
+    use orpheus_physics::mover::{Behaviour, MoveEnd, MoveKey, MoveTo, Speed};
+    let assets = SceneAssets::load(orpheus_testkit::runtime_dir()).unwrap();
+    let scene = assets.prepare(GameMap::practice_range()).unwrap();
+    let body = scene.heroes().get(DOOMFIST).unwrap().body;
+    let rays = scene.movement_index();
+    let mut mover = scene
+        .player_mover_at(body, 0, [55.400_390_625, 6.972_656_25, 38.931_640_625], 0)
+        .unwrap();
+    let flight = Behaviour::MoveTo(MoveTo {
+        destination: [
+            58.414_775_848_388_67,
+            1.944_159_269_332_885_7,
+            31.884_201_049_804_688,
+        ],
+        surface: [0.0; 3],
+        free_spot: false,
+        speed: Speed::MetresPerSecond(25.0),
+        acceleration: 100.0,
+        slow_radius: 0.0,
+        lateral_seconds: 0.0,
+        stuck_distance: 0.5,
+        stuck_seconds: f64::from(0.1_f32),
+        exit_horizontal: 10_000.0,
+        exit_vertical: 10_000.0,
+        exit_total: 0.0,
+        exit_on_end: true,
+        abort_past: false,
+    });
+    let key = MoveKey {
+        instance: 1,
+        raw_state: 9,
+        activation: 1,
+    };
+    // The client's feet after his first, 8th, 15th, 20th and 21st move
+    // (frames 8831, 8838, 8846, 8851 and 8852).
+    let client: [(usize, [f64; 3]); 5] = [
+        (0, [55.532_226_562_5, 6.752_929_687_5, 38.624_023_437_5]),
+        (7, [56.455_078_125, 5.214_843_75, 36.470_703_125]),
+        (14, [57.375_976_562_5, 3.677_734_375, 34.317_382_812_5]),
+        (19, [58.033_203_125, 2.582_031_25, 32.779_296_875]),
+        (20, [58.037_109_375, 2.461_914_062_5, 32.481_445_312_5]),
+    ];
+    // Where it came to rest (8853 on).
+    let corner = [57.996_093_75, 2.364_257_812_5, 32.235_351_562_5];
+    let mut feet = Vec::new();
+    let mut end = None;
+    for frame in 1..=40 {
+        let command = Command {
+            frame,
+            ..Command::default()
+        };
+        end = mover
+            .step_pose_to(rays, command, DT, Some((key, &flight)))
+            .unwrap();
+        feet.push(mover.pose().position);
+        if end.is_some() {
+            break;
+        }
+    }
+    for (index, at) in client {
+        let distance = (0..3)
+            .map(|axis| (feet[index][axis] - at[axis]).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        assert!(
+            distance < 0.01,
+            "frame {index}: {:?} vs {at:?}",
+            feet[index]
+        );
+    }
+    assert_eq!(end, Some(MoveEnd::Blocked), "{feet:?}");
+    let rest = *feet.last().unwrap();
+    assert!(
+        (0..3).all(|axis| (rest[axis] - corner[axis]).abs() < 0.01),
+        "{rest:?} vs {corner:?}"
+    );
+}
