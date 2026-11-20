@@ -138,7 +138,8 @@ def report(server, trace, body=None, threshold=0.01, out=None, log=print):
         f"{sum('R' in m for m in marks.values())}")
     log(f"{'frame':>7} {'dist':>8}  {'client feet':>27}  {'server feet':>27}  flags c/s     marks states")
     for r in rows:
-        if r["distance"] > threshold or r["marks"] or r["began"] or r["ended"] or r["client_flags"] != r["server_flags"]:
+        if (r["distance"] > threshold or "C" in r["marks"] or r["began"] or r["ended"]
+                or r["client_flags"] != r["server_flags"]):
             c = "(" + ", ".join(f"{v:7.3f}" for v in r["client"]) + ")"
             s = "(" + ", ".join(f"{v:7.3f}" for v in r["server"]) + ")"
             states = " ".join(["+" + b for b in r["began"]] + ["-" + e for e in r["ended"]])
