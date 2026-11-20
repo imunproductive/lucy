@@ -464,15 +464,18 @@ fn joined_chunks<'a>(chunks: impl IntoIterator<Item = &'a ReceivedChunk>) -> Vec
     whole
 }
 
+/// Hero select open (#2438e), the pick (#13161e while #2114e) and the hero
+/// he plays (#940e), as a full owner controller frame shows them.
+type ControllerShows = (bool, Option<u64>, Option<u64>);
+
 /// What a full owner controller frame shows (its head: the controller
-/// script's projection, `orpheus_sim::controller`): hero select open
-/// (#2438e), the pick (#13161e while #2114e) and the hero he plays (#940e).
+/// script's projection, `orpheus_sim::controller`): [`ControllerShows`].
 /// None for another chunk. `graphs` give the states of the variables' Stack
 /// links (`0C90`'s mode ruleset switch st47 binds #8430e or #8431e).
 fn controller_shows(
     graphs: &orpheus_script::graph::GraphStore,
     chunk: &ReceivedChunk,
-) -> Option<(bool, Option<u64>, Option<u64>)> {
+) -> Option<ControllerShows> {
     let (shown, instances) = controller_head(graphs, chunk)?;
     // On the Practice Range the Training Partner console's scope 126
     // (`265F`) opens on every controller once the console runs.
@@ -489,7 +492,7 @@ fn controller_shows(
 fn controller_head(
     graphs: &orpheus_script::graph::GraphStore,
     chunk: &ReceivedChunk,
-) -> Option<((bool, Option<u64>, Option<u64>), Vec<u16>)> {
+) -> Option<(ControllerShows, Vec<u16>)> {
     use orpheus_script::wire::{Value as ScriptValue, read_full_head};
     if chunk.first != 0 {
         return None;

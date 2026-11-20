@@ -150,11 +150,11 @@ fn dpk_archive_c32s2_hosted_match_shows_a_hud_text_on_the_mode_entity() {
             .filter(|record| record.entity == watcher.owner)
             .filter_map(|record| record.script.as_ref())
             .filter_map(|chunk| controller_head(assets.graphs(), chunk))
-            .inspect(|(_, instances)| {
+            .map(|(shown, instances)| {
                 assert_eq!(instances[..5], [0x0c90, 0x288a, 0x0215, 0x288b, 0x288d]);
+                shown
             })
-            .map(|(shown, _)| shown)
-            .last()
+            .reduce(|_, newer| newer)
     };
     // Rule "Match time": Set Match Time(1) at 0.25 s, again 1.1 s later,
     // then Set Match Time(3600) after another 1.1 s: Assemble ends at
