@@ -799,14 +799,16 @@ mod tests {
         start_in(mode, 0)
     }
 
-    fn start_in(mode: u64, ruleset: u64) -> ControllerScript {
+    /// The bundle, as the server loads it, with the ruleset defaults: an
+    /// unset mode variable reads its schema default (#9548 → `254E`).
+    /// Loaded once a test: several start the controller more than once.
+    static GRAPHS: std::sync::LazyLock<Arc<GraphStore>> = std::sync::LazyLock::new(|| {
         let root = orpheus_testkit::runtime_dir();
-        // With the ruleset defaults, as the server loads the bundle: an
-        // unset mode variable reads its schema default (#9548 → `254E`).
-        let graphs = Arc::new(
-            GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap(),
-        );
-        let mut world = ControllerWorld::new(graphs, mode, CONTROLLER, Unknowns::Refuse);
+        Arc::new(GraphStore::load_runtime(root.join("data"), "game_graphs_174.json.gz").unwrap())
+    });
+
+    fn start_in(mode: u64, ruleset: u64) -> ControllerScript {
+        let mut world = ControllerWorld::new(GRAPHS.clone(), mode, CONTROLLER, Unknowns::Refuse);
         world.ruleset = ruleset;
         world.team = Some(0);
         world.heroes = vec![playable(SOLDIER)];
