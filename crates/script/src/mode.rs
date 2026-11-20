@@ -141,6 +141,9 @@ pub struct ModeWorld {
     /// takes them ([`ModeScript::take_play_requests`]).
     plays: Vec<PlayRequest>,
     outbox: Vec<GameMessage>,
+    /// The messages the graphs sent the mode entity itself, until the match
+    /// takes them ([`ModeScript::take_own_messages`]).
+    own: Vec<GameMessage>,
     held: Vec<GameMessage>,
     /// The entities the graphs made that [`ModeScript`] hasn't started
     /// yet, and those it runs.
@@ -171,6 +174,7 @@ impl ModeWorld {
             scope_changes: Vec::new(),
             plays: Vec::new(),
             outbox: Vec::new(),
+            own: Vec::new(),
             held: Vec::new(),
             made: Vec::new(),
             created: Vec::new(),
@@ -450,6 +454,17 @@ impl World for ModeWorld {
             parameters: parameters.clone(),
         });
         true
+    }
+
+    /// Kept for the match flow, which takes `0F4A`'s messages in its
+    /// place (Set Match Time's `08D8`).
+    fn observe_own_message(&mut self, _source: Site, message: u64, parameters: &Variables) {
+        self.own.push(GameMessage {
+            sender: GAME_MODE_ENTITY,
+            target: GAME_MODE_ENTITY,
+            message,
+            parameters: parameters.clone(),
+        });
     }
 
     fn broadcast_message(&mut self, _source: Site, message: u64, parameters: &Variables) -> bool {
@@ -1002,6 +1017,12 @@ impl ModeScript {
         let mut messages = std::mem::take(&mut self.routed);
         messages.append(&mut self.world.take_messages());
         messages
+    }
+
+    /// The messages the graphs sent the mode entity itself since the last
+    /// call (its own entries took them too).
+    pub fn take_own_messages(&mut self) -> Vec<GameMessage> {
+        std::mem::take(&mut self.world.own)
     }
 
     /// The messages the graph holds to every entity now, in the order its

@@ -1601,6 +1601,18 @@ mod tests {
         let spawned = walk(&mut reached, SPAWNED.to_vec());
         let auras = walk(&mut reached, aura_graphs("m_5A4051BC"));
         let second_auras = walk(&mut reached, aura_graphs("m_14AA219A"));
+        // The Workshop's condition and action graphs (2026-11-20,
+        // `workshop_graphs`), roots of their own: the catalog's.
+        let catalog: Value = serde_json::from_slice(
+            &std::fs::read(root.join("data/workshop_catalog_174.json")).unwrap(),
+        )
+        .unwrap();
+        let workshop_roots: BTreeSet<u32> = ["events", "conditions", "actions"]
+            .into_iter()
+            .flat_map(|kind| catalog[kind].as_array().unwrap())
+            .filter_map(|entry| asset_guid(&entry["graph"]))
+            .filter_map(|graph| u32::try_from(graph & 0xFFFF_FFFF_FFFF).ok())
+            .collect();
         let placeables = walk(
             &mut reached,
             raw["roots"]["graphs"]
@@ -1608,20 +1620,23 @@ mod tests {
                 .unwrap()
                 .iter()
                 .map(|graph| u32::try_from(graph.as_u64().unwrap()).unwrap())
+                .filter(|graph| !workshop_roots.contains(graph))
                 .chain(store.entities.values().flat_map(body_graphs))
                 .collect(),
         );
+        let workshop = walk(&mut reached, workshop_roots.into_iter().collect());
         let unreached: Vec<u32> = store
             .graph_indexes()
             .filter(|index| !reached.contains(index))
             .collect();
         eprintln!(
-            "left out: spawned {}, aura m_5A4051BC {}, aura m_14AA219A {}, placeables {}; \
-             unreached {unreached:04X?}",
+            "left out: spawned {}, aura m_5A4051BC {}, aura m_14AA219A {}, placeables {}, \
+             Workshop {}; unreached {unreached:04X?}",
             spawned.len(),
             auras.len(),
             second_auras.len(),
-            placeables.len()
+            placeables.len(),
+            workshop.len()
         );
         assert!(
             unreached.is_empty(),
@@ -1633,6 +1648,7 @@ mod tests {
             auras.len(),
             second_auras.len(),
             placeables.len(),
+            workshop.len(),
         );
         let mut hashed = 0;
         for index in store.graph_indexes() {
@@ -1693,7 +1709,7 @@ mod tests {
                 assert_eq!(store.mode_variables.len(), 25);
                 // Data version 25: the auras counted include those only the
                 // placeables' graphs name, as their walk comes first.
-                assert_eq!(left_out, (25, 44, 21, 159));
+                assert_eq!(left_out, (25, 44, 21, 159, 237));
                 "1c4229042f26d5ec0168a49e7f82d55167543ae849baa86f9bfdba7ece355691"
             }
             count => panic!("no reference vector for the {count}-graph bundle (digest {digest})"),

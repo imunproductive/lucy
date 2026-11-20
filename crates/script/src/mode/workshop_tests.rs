@@ -367,3 +367,28 @@ fn teleport_opens_its_scope_on_the_target() {
     );
     assert_complete(&script);
 }
+
+/// Set Match Time `1ABC` sends `08D8` to the mode entity with its seconds
+/// as `017E`: the mode entity's own entries take it, and the match flow,
+/// which stands in for `0F4A`'s, gets it from `take_own_messages`.
+#[test]
+#[ignore = "requires the derived 104319 graph bundle"]
+fn set_match_time_reaches_the_flow_as_an_own_message() {
+    let mut script = host();
+    run(&mut script, 0x1ABC, vec![constant(Value::Float(1.0))]);
+    let own = script.take_own_messages();
+    assert!(
+        own.iter()
+            .any(|message| message.message == 0x0240_0000_0000_08d8
+                && message
+                    .parameters
+                    .get(&0x017e)
+                    .is_some_and(|seconds| match seconds {
+                        Value::Float(seconds) => *seconds == 1.0,
+                        Value::Integer(seconds) => *seconds == 1,
+                        _ => false,
+                    })),
+        "{own:?}"
+    );
+    assert!(script.take_own_messages().is_empty());
+}

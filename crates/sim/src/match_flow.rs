@@ -75,7 +75,14 @@ pub const SETUP_MESSAGE: u64 = 0x0240_0000_0000_0692;
 pub const ROUND_MESSAGE: u64 = 0x0240_0000_0000_0701;
 pub const ROUND_END_MESSAGE: u64 = 0x0240_0000_0000_0694;
 pub const MATCH_END_MESSAGE: u64 = 0x0240_0000_0000_0695;
+/// The clock parameter of 0F4A's messages (`0A4:017E`).
 const SETUP_CLOCK: u32 = 0x017e;
+/// Set Match Time: the Workshop action `1ABC` sends `08D8` to the mode
+/// entity with the seconds (`#18739[0]`, 0 to 3599) as `017E`; 0F4A's
+/// entry for it (node 187) writes them into the phase's clock `#1303`,
+/// which the phase states chase to 0 (Assemble's st7 then sets `#59` = 2,
+/// setup).
+pub const SET_MATCH_TIME_MESSAGE: u64 = 0x0240_0000_0000_08d8;
 const ROUND_STARTED: u32 = 0x085a;
 const WINNER: u32 = 0x03a6;
 
@@ -693,6 +700,23 @@ impl MatchFlow {
             let seconds = self.rules.assemble;
             self.enter(Phase::Assemble, seconds);
         }
+    }
+
+    /// A message to the mode entity that 0F4A takes and the flow stands in
+    /// for: Set Match Time ([`SET_MATCH_TIME_MESSAGE`]) gives the current
+    /// phase that many seconds left (the Workshop's "Set Match Time":
+    /// assembling heroes, setup or the round). Others are left to the mode
+    /// entity's graph.
+    pub fn receive(&mut self, message: u64, parameters: &Variables) {
+        if message != SET_MATCH_TIME_MESSAGE || self.phase == Phase::Waiting {
+            return;
+        }
+        let seconds = match parameters.get(&SETUP_CLOCK) {
+            Some(Value::Float(seconds)) => *seconds,
+            Some(Value::Integer(seconds)) => *seconds as f64,
+            _ => return,
+        };
+        self.left = seconds.clamp(0.0, 3599.0);
     }
 
     /// A kill: the killer's slot and team (none for the world or a bot) and
